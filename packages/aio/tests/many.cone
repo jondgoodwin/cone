@@ -12,82 +12,75 @@ mod many;
 import testing use *;
 import sync use Channel, Sender, Receiver;
 import collections use List;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket;
 
 const readers = 4u64;
 
-fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
-  s;
+  s
 }
 
-fn take[T](rx &mut Receiver[T], dflt T) T {
-  match rx.recv() {
-    case imm v Some {v;}
-    else {dflt;}
-  }
-}
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
 actor Reader {
-  pool Pool;
 
-  pub async do join(self, port u16, ready Sender[u64], arrived Sender[u64]) {
-    imm c = await aio.connect(SocketAddr.localhost(port));
-    imm s = socketOf(c);
+  pub async fn join(self, port: u16, ready: Sender[u64], arrived: Sender[u64]) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
     ready.send(1u64);
-    imm r = await s.read(pool.mustTake(64usize));
+    let r = await s.read(IoBuf(64usize));
     match r {
-      case imm b Ok {
+      case let Ok(b) {
         if b.len() == 1usize {
           arrived.send(u64.from(b.view()[0usize]));
         } else {
           arrived.send(100u64 + u64.from(b.len()));
         }
       }
-      case imm e Error {arrived.send(1000u64 + u64.from(e.code));}
+      case let Err(e) {arrived.send(1000u64 + u64.from(e.code));}
     }
   }
 }
 
 actor Hub {
-  pool Pool;
-  conns List[Socket];
+  conns: List[Socket];
 
-  pub async do open(self, ports Sender[u64]) {
-    imm l = await aio.listen(SocketAddr.localhost(0u16));
-    imm ls = socketOf(l);
-    imm a = await ls.localAddr();
+  pub async fn open(self, ports: Sender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
     match a {
-      case imm addr Ok {ports.send(u64.from(addr.port()));}
+      case let Ok(addr) {ports.send(u64.from(addr.port()));}
       else {ports.send(0u64);}
     }
-    mut k = 0u64;
+    var k = 0u64;
     while k < readers {
-      imm c = await ls.accept();
+      let c = await ls.accept();
       conns.push(socketOf(c));
       k = k + 1u64;
     }
     ports.send(k);
   }
 
-  pub async do write(self, wrote Sender[u64]) {
-    mut i = conns.len();
+  pub async fn write(self, wrote: Sender[u64]) {
+    var i = conns.len();
     while i > 0usize {
       i = i - 1usize;
-      mut b = pool.mustTake(64usize);
-      imm one = [u8.from(i)];
+      var b = IoBuf(64usize);
+      let one = [u8.from(i)];
       b.append(&one);
-      imm w = await conns[i].write(b);
+      let w = await conns[i].write(b);
       match w {
-        case imm n Ok {wrote.send(u64.from(n));}
+        case let Ok(n) {wrote.send(u64.from(n));}
         else {wrote.send(0u64);}
       }
     }
@@ -96,23 +89,23 @@ actor Hub {
 
 fn main() i32 {
   initAll();
-  mut ptx Sender[u64];
-  mut prx Receiver[u64];
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
   ptx, prx = Channel[u64].make();
-  mut rtx Sender[u64];
-  mut rrx Receiver[u64];
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
   rtx, rrx = Channel[u64].make();
-  mut atx Sender[u64];
-  mut arx Receiver[u64];
+  var atx: Sender[u64];
+  var arx: Receiver[u64];
   atx, arx = Channel[u64].make();
   {
-    imm hub = new Hub(Pool.make(), List[Socket].empty());
+    let hub = Hub(List[Socket]());
     hub.open(ptx.clone());
-    imm port = take[u64](&mut prx, 0u64);
+    let port = take[u64](&mut prx, 0u64);
     require(port != 0u64, "the hub is listening");
-    mut i = 0u64;
+    var i = 0u64;
     while i < readers {
-      imm r = new Reader(Pool.make());
+      let r = Reader();
       r.join(u16.from(port), rtx.clone(), atx.clone());
       i = i + 1u64;
     }
@@ -124,11 +117,11 @@ fn main() i32 {
     expectUInt(take[u64](&mut prx, 0u64), readers, "the hub accepted every reader");
     hub.write(ptx.clone());
   }
-  mut seen = 0u64;
-  mut wrote = 0u64;
-  mut i = 0u64;
+  var seen = 0u64;
+  var wrote = 0u64;
+  var i = 0u64;
   while i < readers {
-    imm b = take[u64](&mut arx, 999u64);
+    let b = take[u64](&mut arx, 999u64);
     if b < readers {seen = seen | (1u64 << b);}
     wrote = wrote + take[u64](&mut prx, 0u64);
     i = i + 1u64;
@@ -136,5 +129,5 @@ fn main() i32 {
   finalAll();
   expectUInt(seen, 15u64, "the readers got each of 0 to 3 once");
   expectUInt(wrote, readers, "each write answered its count, one byte");
-  done();
+  done()
 }

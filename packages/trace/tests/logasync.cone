@@ -1,0 +1,107 @@
+// A log send across an 'await' and from several workers at once. Twelve Askers, each
+// on whatever worker runs it, log from one call site before and after awaiting a
+// Squarer, and with an 'await' inside a piece. The first events race to make the
+// site's kind: every event must carry the one kind (one address), with the right
+// fields, however the workers interleave.
+
+mod logasync;
+
+import testing use *;
+import actors;
+import trace use Level, Log, Value;
+
+let log: Log;
+let kind0: Atomic[usize];
+let kind1: Atomic[usize];
+let kind2: Atomic[usize];
+let events: Atomic[u64];
+let wrongKind: Atomic[u64];
+let badField: Atomic[u64];
+let sum: Atomic[u64];
+
+fn @initpure init() {
+  log = Log.make("logasync", Level.Info);
+  kind0 = Atomic[usize].of(0usize);
+  kind1 = Atomic[usize].of(0usize);
+  kind2 = Atomic[usize].of(0usize);
+  events = Atomic[u64].of(0u64);
+  wrongKind = Atomic[u64].of(0u64);
+  badField = Atomic[u64].of(0u64);
+  sum = Atomic[u64].of(0u64);
+}
+
+actor Squarer {
+  pub async fn square(self, n: u64) u64 {n * n}
+}
+
+actor Asker {
+  sq: Squarer;
+
+  pub async fn many(self, n: u64) {
+    var i = 1u64;
+    while i <= n {
+      selfactor.one(i);
+      i = i + 1u64;
+    }
+  }
+
+  pub async fn one(self, i: u64) {
+    log <- $"asking {i}";
+    let s = await sq.square(i);
+    log <- $"answered {i} {s}";
+    log <- $"inline {await sq.square(i)}";
+  }
+}
+
+// Which kinds were seen: those of the three sites, by name, each at one address
+struct Recorder is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {
+    events.add(1u64);
+    if e.kind.name.len == 0usize || e.kind.fields != u32.from(e.values.len) {
+      badField.add(1u64);
+    }
+    // The kind is one per site: whichever worker made it, its address is the same each time
+    let addr = (e.kind as *u8) as usize;
+    let slot = if e.kind.name[2] == 'k' {&kind0} else if e.kind.name[2] == 's' {&kind1} else {&kind2};
+    let was = slot.swap(addr);
+    if was != 0usize && was != addr {
+      wrongKind.add(1u64);
+    }
+    // 'asking {i}', 'answered {i} {s}' and 'inline {await ...}': the first value is a number
+    var k = 0usize;
+    while k < e.values.len {
+      match e.values[k] {
+        case let U64(x) {sum.add(x);}
+        else {badField.add(1u64);}
+      }
+      k = k + 1usize;
+    }
+  }
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 3u32));
+  expect(trace.install(Uni[Recorder](0u64)), "the sink is installed");
+  trace.setLevel("logasync", Level.Info);
+  {
+    let sq = Squarer();
+    // Twelve askers at once, each asking five times
+    var a = 0u64;
+    while a < 12u64 {
+      let ask = Asker(sq);
+      ask.many(5u64);
+      a = a + 1u64;
+    }
+    actors.waitUntilIdle();
+  }
+  // 12 askers x 5 questions x 3 events
+  expectUInt(events.load(), 180u64, "every event reached the sink");
+  expectUInt(badField.load(), 0u64, "every event has its fields");
+  expectUInt(wrongKind.load(), 0u64, "each site has one kind, whichever worker made it");
+  expect(kind0.load() != kind1.load() && kind1.load() != kind2.load(), "three sites, three kinds");
+  // asking i: i; answered: i + i*i; inline: i*i  = 2i + 2i*i per question; i = 1..5: 2*15 + 2*55 = 140; x12 askers
+  expectUInt(sum.load(), 1680u64, "the values are right");
+  done()
+}

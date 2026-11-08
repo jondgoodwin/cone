@@ -1,0 +1,84 @@
+// A ''static' field takes only a global's borrow, wherever the value holding
+// it is built. A value whose type holds only ''static' borrows carries no
+// loan at a call (lifetime_band_static_holder_result), so a local's borrow
+// put in one would leave through any call: 'stash' keeps its by-value
+// parameter in a global, which would point at 'put's dead 'v', and a thread
+// would read 'go's 'v' after it returned. Refused where the borrow goes in.
+// So is a borrow the caller lent, reborrowed or read through a parameter, and
+// a local's borrow first held in a variable, or given by field name.
+//
+// Verdict: refuse: ErrorEscape at each borrow given to the field.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a ''static'
+// field holds only a global borrow).
+// Master ce306fc05: all accepted ('put' compiled and printed 0, not 777).
+// Before that (f87669cd3): 'put' refused at 'stash' (ErrorEscape), 'go' at
+// the thread's start (ErrorLifetimeBound).
+
+mod lifetime_band_static_field_given_local;
+
+import thread;
+
+struct H {
+  pub r: &'static i64;
+}
+
+// Sendable: a borrow crosses threads only if it is ''static' and 'imm'
+struct HI {
+  pub r: &'static imm i64;
+}
+
+let D: i64 = 1;
+var G: H;
+
+fn @initpure init() {
+  G = H(&D);
+}
+
+fn stash(h: H) {
+  G = h;
+}
+
+fn useH(h: HI) i64 {
+  *h.r
+}
+
+fn put() {
+  let v = 777i64;
+  stash(H(&v));                     //~ ErrorEscape "The field 'r' holds only ''static' borrows"
+}
+
+fn go() i64 {
+  let v = 5i64;
+  let t = thread.start(HI(&imm v), &useH);  //~ ErrorEscape "carries a borrow of 'v'"
+  t.join()
+}
+
+fn viaVar() {
+  let v = 5i64;
+  let q = &v;
+  stash(H(q));                      //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn viaReborrow() {
+  let v = 5i64;
+  let q = &v;
+  stash(H(&*q));                    //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn named() {
+  let v = 5i64;
+  stash(H(r: &v));                  //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn fromCaller(p: &i64) {
+  stash(H(&*p));                    //~ ErrorEscape "the borrow the caller lent through 'p'"
+}
+
+fn heldByCaller(pp: &&i64) {
+  stash(H(*pp));                    //~ ErrorEscape "the borrow the caller lent through 'pp'"
+}
+
+fn main() {
+  put();
+  go();
+}

@@ -85,8 +85,15 @@ void aliasDclNameRes(NameResState *pstate, AliasDclNode *node) {
 // reaches it through the alias; a type alias's target is a type expression no
 // other node owns, so it is checked here.
 void aliasDclTypeCheck(TypeCheckState *pstate, AliasDclNode *node) {
-    if (node->flags & FlagTypeAlias)
-        itypeTypeCheck(pstate, &node->target);
+    if (!(node->flags & FlagTypeAlias))
+        return;
+    // Rule 3, as for a variable's declared type (varDclTypeCheck): the target is
+    // in place before the members queue its check may fill is worked, so a
+    // member naming the alias reads the instance 'Box[Svc]' rather than the
+    // generic call it was written as
+    structLayoutEnter();
+    itypeTypeCheck(pstate, &node->target);
+    structLayoutExit();
 }
 
 // The next alias along a chain, or NULL where the chain ends at something else

@@ -1,6 +1,6 @@
 # array - fixed-size arrays: the type 'Array[T, n]' (several sizes for several
 # dimensions, 'Array[T, n, m]'), the array literal, an array constructed with
-# its contents ('new Array[T, n] <- fill x'), indexing, element assignment and
+# its contents ('Array[T, n]() <- fill x'), indexing, element assignment and
 # array copy semantics. Tier 1.
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
@@ -50,8 +50,6 @@
 # - ErrorBadElems belongs to tuples, not arrays: it is raised only for a tuple
 #   whose elements are not all types or all values. An array literal with
 #   inconsistent element types reports ErrorBadArray instead.
-# - WarnCopy is declared in error.h and never raised anywhere in the compiler.
-#   ErrorBadSlice was too, and has since been deleted from the enum.
 
 support = []
 
@@ -68,7 +66,7 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 # it will not accept.
 [scenario.array_body]
 category = "run"
-description = "Array[T], the body of a run-time length: &Array[T] as parameters, variables, aliases, fields and mutable borrows, a fixed array's borrow converting to it, owners So, Rc and Arc (len, index, borrowed ranges and element borrows, lent as the slice, inferring a generic's element)"
+description = "Array[T], the body of a run-time length: &Array[T] as parameters, variables, aliases, fields and mutable borrows, a fixed array's borrow converting to it, owners Uni, Rc and Arc (len, index, borrowed ranges and element borrows, lent as the slice, inferring a generic's element)"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 # Separate from array_success because it is the scenario a code generation fix
@@ -162,6 +160,11 @@ category = "run"
 description = "Indexing an array field of a struct or tuple returned by a call or method"
 tags = ["genllvm", "runtime"]
 
+[scenario.array_borrow_rvalue_index]
+category = "run"
+description = "A borrow of an element of an array field of a call's result, '&make().m[1]': taken by a 'let', as an argument, mutably and written through, and as a bare statement, the temporary held to the end of its statement"
+tags = ["typecheck", "genllvm", "runtime"]
+
 # The scenario a code generation fix landed with: in a borrow of a nested
 # array's element, '&m[1][0]', the outer index's receiver is the inner index, a
 # reference to the row, where generation took it to be the borrow at the
@@ -218,7 +221,7 @@ target = "preir"
 contains = ["@grid(ptr noalias sret([2 x [3 x i32]]) %sret)"]
 
 # The scenario a code generation fix landed with: an array of variants wanted
-# as an array of their enum ('new Array[None[W], 4] <- fill None[W]' as an
+# as an array of their enum ('Array[None[W], 4]() <- fill None[W]' as an
 # 'Array[Option[W], 4]' field) is
 # a reinterpretation of the whole array, which was generated as an LLVM bitcast
 # of an aggregate, and conec crashed with no diagnostic. A 'run' because the
@@ -249,7 +252,7 @@ diagnostics = 4
 category = "reject"
 description = "An array type's size that is not an integer literal, 'Array' alone, and a generic's instance revealing the old spelling of an array type"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 5
 
 [scenario.array_typecheck_range]
 category = "reject"
@@ -295,13 +298,12 @@ diagnostics = 5
 
 # Separate from array_reject_use because that file's subject is what an array
 # value will not accept at type check, and this one is a flow diagnostic about
-# what an assignment reads. It also pins a deliberate non-diagnostic, which is
-# why it is worth its own file: the boundary is as much the claim as the error.
+# what an assignment reads.
 [scenario.array_flow_index]
 category = "reject"
-description = "An index on the left of an assignment is read, and the base of a partial write is not"
+description = "An index on the left of an assignment is read, and an element is stored only into an array that holds a value"
 tags = ["flow"]
-diagnostics = 1
+diagnostics = 2
 
 [scenario.array_reject_use]
 category = "reject"
@@ -323,3 +325,8 @@ tags = ["genllvm", "runtime"]
 name = "global-nested-array-of-strings-is-a-constant-of-rows"
 target = "preir"
 contains = ["@gstr = internal constant [2 x [3 x i8]] [[3 x i8] c\"abc\", [3 x i8] c\"def\"]"]
+
+# A named constant sizes an array type: usize, untyped, and a chain of constants.
+[scenario.array_const_size]
+category = "run"
+description = "A named constant sizes an array type: usize, untyped integer, and a constant naming another"

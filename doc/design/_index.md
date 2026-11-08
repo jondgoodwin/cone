@@ -153,7 +153,7 @@ summary here was thin; the note was not.**
 
 | Note | Serves | The position | The distance |
 | --- | --- | --- | --- |
-| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship in core (`So` and `Rc`), a third in the `sync` package (`Arc`, whose count is atomic), and a fourth, reference counting with weak references, as a library package; an arena and a generational pool ship as library values, not region refs (an allocation names an arena by its value, `new a[T](...)`, and a growable collection made there draws its block from it); an incremental tracing collector ships as a library package, `collector`'s `Gc` (single threaded, outside actors only, discouraged), the compiler emitting its write barrier, with a generational mode a program chooses; and each actor's own copying collector, the `actors` package's `ActorGc`, run between its messages; no read barrier |
+| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship in core (`Uni` and `Rc`), a third in the `sync` package (`Arc`, whose count is atomic), and a fourth, reference counting with weak references, as a library package; an arena and a generational pool ship as library values, not region refs (an allocation names an arena by its value, `new a[T](...)`, and a growable collection made there draws its block from it); an incremental tracing collector ships as a library package, `collector`'s `Gc` (single threaded, outside actors only, discouraged), the compiler emitting its write barrier, with a generational mode a program chooses; and each actor's own copying collector, the `actors` package's `ActorGc`, run between its messages; no read barrier |
 | [Performance](performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
 | [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
 | [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
@@ -229,34 +229,34 @@ Most real work crosses phases. Start here instead.
 | find out what the compiler is actually doing | [Measuring](../../compiler/c/doc/diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
 | add or change a diagnostic | [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `So` and `Rc` are Cone source in `packages/core/src/core.cone`, and so are the intrinsics declared with `@intrinsic`, whose registry is `ir/stmt/intrinsic.c` ([intrinsic](../../compiler/c/doc/nodes/intrinsic.md)) |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `Uni` and `Rc` are Cone source in `packages/core/src/core.cone`, and so are the intrinsics declared with `@intrinsic`, whose registry is `ir/stmt/intrinsic.c` ([intrinsic](../../compiler/c/doc/nodes/intrinsic.md)) |
 | find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](../../compiler/c/doc/nodes/module.md), "The packages folder" |
 
 ## By language feature
 
 The other two tables route by *compiler* structure. This one routes by the
 language itself — start here when you know what the feature is called to a
-programmer but not which phase or node owns it. The reference pages under
-`doc/reference/` are the user-facing description; the notes are the
+programmer but not which phase or node owns it. The manual pages under
+`doc/manual/` are the user-facing description; the notes are the
 design behind it.
 
-| Category | Reference pages | Design note |
+| Category | Manual pages | Design note |
 | --- | --- | --- |
-| **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
-| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refparallel` · `refblock` · `refmatch` · `refflow` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
-| **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
-| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
-| **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
-| **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
-| **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
-| **Modules and packages** | `refmodule` · `refinclude` | [module](../../compiler/c/doc/nodes/module.md) |
-| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
-| **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
-| **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refactor` · `refawait` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refactor`, and `await` in an actor's behaviour in `refawait`, a behaviour's value kept as a future in its "Futures", and on an I/O operation of the `aio` package in `refconcio`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
-| **Collections** | `reftypecoll` | ⚠ **no note** |
+| **Lexical and basic form** | `syntax-lexical` · `guide-first` · `guide-values` · `syntax-ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
+| **Expressions and control flow** | `guide-numbers` · `guide-conditionals` · `guide-loops` · `guide-parallel` · `conc-parallel` · `rec-with` · `rec-patterns` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
+| **Functions** | `guide-functions` · `guide-structs` (methods) · `rec-methods` · `mod-functions` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
+| **Core types** | `guide-values` · `guide-numbers` · `guide-structs` · `guide-enums` · `guide-tuples` · `lib-collections` (arrays) · `mod-namespaces` (alias) · `safe-types` (void) | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
+| **Traits and polymorphism** | `mod-substitution` · `mod-subtyping` · `mod-extensibility` · `mod-generativity` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
+| **References, permissions, regions** | `memory` · `safe-pointers` · `mem-borrowing` · `mem-shape` · `mem-permissions` · `conc-locks` · `mem-weak` · `mem-regions` · `mem-rc` · `mem-arenas` · `mem-pools` · `mem-gc` · `mem-collections` · `mem-ownregion` · `rec-moves` · `mem-lifetimes` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
+| **Lifetime and construction** | `rec-methods` (init, final) · `mem-lifecycle` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
+| **Modules and packages** | `mod-namespaces` · `mod-encapsulation` · `mod-packages` · `mod-globals` · `guide-congo` | [module](../../compiler/c/doc/nodes/module.md) |
+| **Safety and trust** | `safety` · `safe-types` · `safe-trust` · `safe-c` · `safe-purity` · `safe-intrinsics` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
+| **Error handling** | `safe-panics` · `guide-enums` (Option, Result) | [Panics](panics.md); ⚠ **no note for recoverable errors** |
+| **Metaprogramming** | `mod-generativity` (macros; `#meta`) | [generic](../../compiler/c/doc/nodes/generic.md) |
+| **Concurrency** | `guide-actors` · `concurrency` · `conc-actors` · `conc-await` · `conc-io` · `conc-ioloop` · `conc-runtime` · `conc-sharing` · `conc-threads` · `conc-primitives` · `rec-generators` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `conc-threads` and `conc-primitives`; the `actor` declaration and the `actors` package it runs on are described in `conc-actors`, and `await` in an actor's behaviour in `conc-await`, a behaviour's value kept as a future in its "Futures", and on an I/O operation of the `aio` package in `conc-io`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
+| **Collections** | `guide-collections` · `guide-list` · `guide-dict` · `lib-collections` · `mem-collections` | ⚠ **no note** |
 
-⚠ **A reference page shows the language's *intended* shape, not only what is
+⚠ **A manual page shows the language's *intended* shape, not only what is
 built** — see "The language reference" below. Two categories above have no
 design note at all, and error handling has one for panics only; the
 concurrency one has no implementation either.
@@ -285,9 +285,9 @@ and carries the manifest for the per-node notes beside it.
 | `CastNode` — `as`, `is`, a bound pattern's conversion, and injected coercions | [cast](../../compiler/c/doc/nodes/cast.md) |
 | `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](../../compiler/c/doc/nodes/return.md) |
 | `BlockNode` — blocks and loops | [block](../../compiler/c/doc/nodes/block.md) |
-| `IfNode` — `if`, `elif`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |
+| `IfNode` — `if`, `else if`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |
 | flow typing — a name tested for a variant is that variant where the test holds (no node of its own) | [narrow](../../compiler/c/doc/nodes/narrow.md) |
-| literals — `nil`, numbers, strings, arrays, type literals; construction, `new T(...)`, and the init it selects | [literals](../../compiler/c/doc/nodes/literals.md) |
+| literals — `nil`, numbers, strings, arrays, type literals; construction, `T(...)`, and the init it selects | [literals](../../compiler/c/doc/nodes/literals.md) |
 | `GenericInfo`, `GenVarDclNode`, `MacroDclNode`, cloning | [generic](../../compiler/c/doc/nodes/generic.md) |
 
 ## Diagnostics
@@ -353,7 +353,7 @@ paragraph, or a bullet, so the referent is never ambiguous:
 
 ```
 Regions are declared `region @move so:` with `alloc` and `free`
-[differs: implemented as `struct So is RegionRef, Move`, a struct and not a module]
+[differs: implemented as `struct Uni is RegionRef, Move`, a struct and not a module]
 ```
 
 Mark at the coarsest level that is true, and override inline only where a child
@@ -374,7 +374,7 @@ it or not writing it.
 
 ## The language reference
 
-`doc/reference/` shows the language's **intended** shape, not only what
+`doc/manual/` shows the language's **intended** shape, not only what
 is built. With no users yet, the breadth is what a reader needs to see.
 
 Each page opens with an italic status note naming the exceptions — the form 31 of
@@ -406,7 +406,7 @@ worthless; any two notes in this folder are "related".
 ```
 The symbol scheme — consumed by `compiler/c/doc/phases/generation.md` (lowering), by
 `nameSymbol`, `nameType` and `genlLinkage`, and by
-`doc/reference/refmodule.html` (name qualification).
+`doc/manual/mod-namespaces.html` (name qualification).
 ```
 
 **Name an area, never a precise location.** Same reason a code pointer names a

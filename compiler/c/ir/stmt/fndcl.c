@@ -27,6 +27,8 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->where = NULL;
     node->compute[0] = node->compute[1] = node->compute[2] = 0;
     node->closure = NULL;
+    node->generatedFor = NULL;
+    node->gen = NULL;
     return node;
 }
 
@@ -201,7 +203,10 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     // compile can give it a symbol an importer links against. A function nested
     // in such a body is part of it, so it inherits the expander.
     INode *svexpander = nstate->expander;
-    if (fnDclIsExpanded(fndclnode, nstate->typenode))
+    // An actor's state methods are carried whole in the include file and
+    // generated again by an importer, so they are expanded bodies too
+    if (fnDclIsExpanded(fndclnode, nstate->typenode)
+        || (nstate->typenode && actorIsState(nstate->typenode)))
         nstate->expander = (INode*)fndclnode;
     // A generator not (yet) known to be expanded: what its body names is recorded,
     // and marked afterwards if it turns out to be (exportGenReach)
@@ -209,6 +214,10 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         nstate->expander = (INode*)fndclnode;
         exportCondStep(fndclnode);
     }
+
+    // A method made for each field of a type parameter: the type it describes (fields.h)
+    if (fndclnode->gen)
+        fieldEachSubjectNameRes(nstate, fndclnode->gen->fe);
 
     nametblHookPush();
     // Resolve generic parameters inside the hooked context. Resolving one hooks
@@ -244,6 +253,26 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     inodeNameRes(nstate, &fndclnode->vtype);
     nstate->sigfn = svsigfn;
 
+    // A function's parameters must differ from each other, 'self' among them.
+    // A generator's are refused at parse (parseGenFinish) and a closure's by
+    // closureNameRes; a signature that is only a type (fnSigNameRes) names
+    // nothing, so it is not asked.
+    if (fndclnode->vtype && fndclnode->vtype->tag == FnSigTag) {
+        FnSigNode *sig = (FnSigNode*)fndclnode->vtype;
+        for (nodesFor(sig->parms, cnt, nodesp)) {
+            if ((*nodesp)->tag != VarDclTag)
+                continue;
+            for (INode **priorp = &nodesGet(sig->parms, 0); priorp != nodesp; ++priorp)
+                if ((*priorp)->tag == VarDclTag
+                    && ((VarDclNode*)*priorp)->namesym == ((VarDclNode*)*nodesp)->namesym) {
+                    errorMsgNode(*nodesp, ErrorDupName,
+                        "Duplicate name %s: every parameter of a function needs its own name.",
+                        &((VarDclNode*)*nodesp)->namesym->namestr);
+                    break;
+                }
+        }
+    }
+
     if (fndclnode->value) {
 
         uint16_t oldscope = nstate->scope;
@@ -266,6 +295,7 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         intrinsicDclNameRes(fndclnode);
     else {
         sliceEqDclNameRes(fndclnode);
+        tupleEqDclNameRes(fndclnode);
         heapRegionDclNameRes(fndclnode);
     }
 
@@ -289,7 +319,7 @@ int fnDclIsInit(FnDclNode *fn) {
 }
 
 // A struct's function named 'init', or joining the overload name 'init', is an
-// initializer, and it fills its value in place: 'self &new', a reference to
+// initializer, and it fills its value in place: 'self: &new', a reference to
 // memory that holds no value yet, and nothing returned. '&new' marks nothing
 // else (the parameter's own check refuses it elsewhere, refTypeCheck). A
 // module's 'init' is its own, and not one of these. Returns 0 when the
@@ -303,12 +333,12 @@ static int fnDclInitCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return 1;
     if (!named) {
         errorMsgNode((INode*)fnnode, ErrorPermNew,
-            "'self &new' is the self of a struct's init, which fills its value in place: 'fn init(self &new, ...)'.");
+            "'self: &new' is the self of a struct's init, which fills its value in place: 'fn init(self: &new, ...)'.");
         return 0;
     }
     if (!newself) {
         errorMsgNode((INode*)fnnode, ErrorInitDcl,
-            "An init fills its value in place, through a reference to memory that holds no value yet: 'fn init(self &new, ...)'.");
+            "An init fills its value in place, through a reference to memory that holds no value yet: 'fn init(self: &new, ...)'.");
         return 0;
     }
     INode *rettype = itypeGetTypeDcl(((FnSigNode*)fnnode->vtype)->rettype);
@@ -576,7 +606,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
             && itypeIsArrayBody((INode*)pstate->typenode)
             && itypeIsSame(((RefNode*)selfdcl)->vtexp, itypeLenBodyElem((INode*)pstate->typenode));
         // A method may ask for the owner of its type, as Rust's 'self: &Rc<Self>'
-        // does: 'self &So[str]' is a borrow of an owner of 'str', and a receiver
+        // does: 'self: &Uni[str]' is a borrow of an owner of 'str', and a receiver
         // that is not an owner (a plain '&str') has no such method
         int selfisowner = 0;
         if (selfdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)selfdcl)->region) == borrowRef) {
@@ -593,8 +623,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // (A closure whose return type is not written reads it off its paths)
     if (fnnode->closure && fnnode->closure->retinfer)
         closureImplicitReturn(fnnode);
-    else
+    else {
+        // A function literal with no name, and a closure, take their return type from where
+        // they are given when they write none
+        if (fnnode->closure || fnnode->namesym == NULL)
+            closureContextTail(fnnode);
         fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
+    }
 
     // Type check/inference of the function's logic.
     //
@@ -641,14 +676,15 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
-    // An init's 'self &new' holds no value until '*self = value' fills it
+    fstate.intrinsic = (fnnode->dclinfo.facts & DclIntrinsic) != 0;
+    // An init's 'self: &new' holds no value until '*self = value' fills it
     VarDclNode *newself = fnDclIsInit(fnnode) ? (VarDclNode *)nodesGet(((FnSigNode *)fnnode->vtype)->parms, 0) : NULL;
     if (newself)
         newself->flowtempflags |= VarUnfilled;
     // A module's 'init' starts with its module's uninitialized globals holding
     // nothing, as a local does, and must leave each one assigned
     ModuleNode *initmod = modInitOf(fnnode);
-    uint16_t *saved = initmod ? modInitFlowBegin(initmod) : NULL;
+    uint16_t *saved = initmod ? modInitFlowBegin(initmod, fnnode) : NULL;
     // Flow runs inside type check's span, which may itself be nested in another
     // function's, so the timer hands the time back to whichever was running
     size_t svTimer = timerCurrent;

@@ -1,0 +1,1433 @@
+// peoplebench: humanbody's test bench. The cast of seven (the main avatar and six) built as blends of the two base
+// bodies, dressed, with faces that move, walking, sitting and hailing, drawn offscreen on a real GPU under day and dusk
+// light, written as 2560 x 1440 PNG sheets.
+//
+//   congo run --release packages/humanbody/examples/peoplebench.cone -- --out C:/src/humanbody-shots [--quick] [--only NAME]
+//
+// The sheets (--quick: fewer temporal AA frames; --first: sheet 01 alone; --head: the head study; --stages: the
+// sculpting step by step into OUT/stages; --mouth: sheets 01 and 11b alone):
+//   01-main-avatar          the main avatar: front, back (the cape), side, his face near
+//   11b-avatar-expressions  the main avatar's face near: neutral, a smile, surprise, "ah", "oo", a blink
+//   02-cast-day             the seven dressed, side by side, day; 03 the same turned a third of a turn; 04 from behind
+//   05-cast-dusk            the seven at dusk; 06 turned
+//   07-cast-underwear       the seven base bodies in plain underwear, front; 08 from the side
+//   09-proportions          each in underwear, seen square on (orthographic), with its ANSUR II measures drawn behind it as
+//                           bars at their heights: the body's edges should touch the bars' ends
+//   10-mannequin-compare    today's pegasus3d mannequin (its numbers) beside the average man and the main avatar, one scale
+//   11-faces                the seven faces: neutral, a smile, surprise, speaking ("ah"), a blink
+//   12-walk                 the main avatar (cape) and the petite woman walking, eight frames each
+//   13-sit-chair            the average man sitting down on a chair and standing up; 14-sit-bench: two on a bench
+//   15-hail                 three hailing
+//   16-rt-off               sheet 02 with ray tracing off (render's ray-traced glass and reflections; the bodies are raster)
+//   stages/                 the sculpting, step by step, for the main avatar and the average woman
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing.
+
+mod peoplebench;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import time use *;
+import imagedecode use *;
+import gpu use *;
+import render use *;
+import fs;
+import path use Path;
+import sculpt;
+import sdfmesh use surfaceNet;
+import bonepose use *;
+import walkgait use Walker;
+import xpbdsoftbody use Workers, writeMesh, outputVertexCount, outputIndexCount;
+import garmentdrape use Garment, ClothLook, WearBand, addClothPipeline, addClothMaterial;
+import facerig use FaceRig, FaceFrame, utteranceFromText, applyFace, EXPR_HAPPINESS, EXPR_SURPRISE, AU_JAW_DROP, AU_LIPS_PART,
+  AU_LIP_FUNNELER, AU_LIP_PUCKER, SIDE_BOTH;
+import humanbody use *;
+
+const SW = 2560u32;
+const SH = 1440u32;
+
+// ------------------------------------------------------------------------------ pictures
+
+struct Sheet {
+  raster: Raster;
+
+  fn make(w: i32, h: i32) Sheet {
+    var r = Raster();
+    r.width = w;
+    r.height = h;
+    r.depth = 8;
+    r.colorSpace = ColorSpace.Srgb;
+    r.pixels8.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    Sheet(r)
+  }
+
+  // A readback 'tw' by 'th' (rows from the top) into the sheet at (x, y)
+  fn put(self: &mut, x0: i32, y0: i32, tw: i32, th: i32, px: *u8) {
+    var y = 0;
+    while y < th {
+      var x = 0;
+      while x < tw {
+        let s = usize.from((y * tw + x) * 4);
+        let d = usize.from(((y0 + y) * raster.width + x0 + x) * 4);
+        raster.pixels8.set(d, *(px + s));
+        raster.pixels8.set(d + 1usize, *(px + s + 1usize));
+        raster.pixels8.set(d + 2usize, *(px + s + 2usize));
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn save(self: &, dir: &String, name: &str) {
+    let png = encodePng(&raster, 2);
+    var full = dir.clone();
+    full.append("/");
+    full.append(name);
+    full.append(".png");
+    let op = Path.from(full.view());
+    if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e, "\n"; return; }
+    printStr("wrote "); printStr(full.view()); printStr("\n");
+  }
+}
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+fn argString(p: *u8) String {
+  var s = String();
+  var i = 0usize;
+  while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
+  s
+}
+
+// ------------------------------------------------------------------------------ the stage
+
+struct Stage {
+  renderer: Renderer;
+  post: Post;
+  fx: ImageFx;
+  morpher: Morpher;
+  cloth: PipelineHandle;
+  w: u32;
+  h: u32;
+  color: Texture;
+  depth: Texture;
+  readback: Buffer;
+  sun: Light;
+  floorMesh: MeshHandle;
+  floorMat: MaterialHandle;
+  cube: MeshHandle;
+  wood: MaterialHandle;
+  barMat: MaterialHandle;
+  clay: MaterialHandle;
+}
+
+fn daySky() Sky {
+  var s = Sky.dusk(radians(50.), radians(135.));
+  s.zenith = Color(0.16, 0.30, 0.66, 1.);
+  s.horizon = Color(0.62, 0.68, 0.78, 1.);
+  s.sunColor = Color(30., 28., 24., 1.);
+  s.glow = Color(0.20, 0.18, 0.12, 1.);
+  s.ground = Color(0.20, 0.19, 0.16, 1.);
+  s
+}
+
+fn duskSky() Sky {
+  var s = Sky.dusk(radians(7.), radians(250.));
+  s.zenith = Color(0.08, 0.12, 0.30, 1.);
+  s.horizon = Color(0.70, 0.42, 0.26, 1.);
+  s.sunColor = Color(24., 12., 5., 1.);
+  s.glow = Color(0.55, 0.28, 0.12, 1.);
+  s.ground = Color(0.10, 0.08, 0.07, 1.);
+  s
+}
+
+fn setDay(device: &mut Device, st: &mut Stage, day: bool) {
+  let sky = if day { daySky() } else { duskSky() };
+  st.renderer.setSky(device, &sky);
+  st.sun = if day { sky.sunLight(Color(3.0, 2.85, 2.6, 1.), Color(0.10, 0.11, 0.13, 1.)) }
+    else { sky.sunLight(Color(2.4, 1.35, 0.75, 1.), Color(0.05, 0.06, 0.10, 1.)) };
+}
+
+fn resize(device: &mut Device, st: &mut Stage, w: u32, h: u32) {
+  if st.w == w && st.h == h { return; }
+  let outDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  st.color = device.createTexture(&outDesc);
+  let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  st.depth = device.createTexture(&depthDesc);
+  st.readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  st.post.resize(device, w, h);
+  st.w = w;
+  st.h = h;
+}
+
+fn makeStage(device: &mut Device) Stage {
+  var renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, SW, SH);
+  var fx = ImageFx.create(device, &renderer, &mut post);
+  var fs = FxSettings.high();
+  fs.exposure.enabled = false;
+  fx.configure(&fs);
+  let shadows = ShadowSettings.high();
+  renderer.setShadows(device, &shadows);
+  var morpher = Morpher.create(device);
+  let cloth = addClothPipeline(&mut renderer, device);
+  let outDesc = TextureDescriptor(SW, SH, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let color = device.createTexture(&outDesc);
+  let depthDesc = TextureDescriptor(SW, SH, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let depth = device.createTexture(&depthDesc);
+  let readback = device.createBuffer(u64.from(SW) * u64.from(SH) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  // a stone floor: a fine checker of two greys
+  let img = Image.checker(512, 512, 64, 64, Color(0.40, 0.38, 0.35, 1.), Color(0.36, 0.34, 0.31, 1.));
+  let tex = renderer.addTexture(device, &img);
+  var fm = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.85);
+  fm.texture = tex;
+  let floorMat = renderer.addPbrMaterial(device, &fm);
+  let cubeMesh = Mesh.cube(0.5);
+  let floorMesh = renderer.addMesh(device, &cubeMesh);
+  let cube = renderer.addMesh(device, &cubeMesh);
+  let wood = renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0.30, 0.17, 0.08, 1.), 0., 0.55));
+  let barMat = renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0., 0., 0., 1.), 0., 1.).glowing(Color(1., 0.55, 0.1, 1.), 1.6));
+  let clay = renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0.62, 0.50, 0.42, 1.), 0., 0.6));
+  var st = Stage(renderer, post, fx, morpher, cloth, SW, SH, color, depth, readback, Light.directional(Vec3(0., -1., 0.),
+    Color(1., 1., 1., 1.), Color(0.1, 0.1, 0.1, 1.)), floorMesh, floorMat, cube, wood, barMat, clay);
+  setDay(device, &mut st, true);
+  st
+}
+
+// Draw 'list' 'frames' times (temporal AA converges on a still picture) and read the last back
+fn shoot(device: &mut Device, st: &mut Stage, camera: &Camera, list: &DrawList, frames: i32) *u8 {
+  st.fx.cut = true;
+  var f = 0;
+  while f < frames {
+    var encoder = device.createCommandEncoder();
+    st.morpher.update(device, &mut encoder, &st.renderer);
+    st.fx.render(device, &mut encoder, &mut st.renderer, &mut st.post, camera, &st.sun, list, &st.color);
+    if f + 1 == frames { encoder.copyTextureToBuffer(&st.color, &st.readback); }
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    f = f + 1;
+  }
+  st.readback.mappedRange()
+}
+
+fn floor(list: &mut DrawList, st: &Stage) {
+  list.add(st.floorMesh, st.floorMat, Mat4.fromTrs(Vec3(0., -0.5, 0.), Quat.identity(), Vec3(30., 1., 30.)));
+}
+
+fn box(list: &mut DrawList, st: &Stage, mat: MaterialHandle, c: Vec3, half: Vec3, yaw: f32) {
+  list.add(st.cube, mat, Mat4.fromTrs(c, Quat.angleAxis(yaw, Vec3(0., 1., 0.)), half * 2.));
+}
+
+// The faces' rows: 0 neutral, 1 a smile, 2 surprise, 3 "ah", 4 "oo", 5 neutral (a blink is started after)
+fn setFaceRow(ac: &mut Actor, row: i32) {
+  ac.pose = standPose(&ac.body.skeleton);
+  ac.rig.clearExpressions(0.01);
+  ac.rig.blinking = false;
+  ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
+  ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
+  if row == 1 { ac.rig.express(EXPR_HAPPINESS, 1., 0.01); }
+  if row == 2 { ac.rig.express(EXPR_SURPRISE, 1., 0.01); }
+  // the visemes as their units: "ah" the jaw down and the lips apart; "oo" the lips rounded and pushed out
+  if row == 3 { ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.55); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.6); }
+  if row == 4 { ac.rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.45); ac.rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.35);
+    ac.rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.12); ac.rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.15); }
+}
+
+// ------------------------------------------------------------------------------ the cape's folds
+
+// A hanging garment drawn with folds. The drape settles the cape's cut at a coarse grid (28 by 24 cells for a cape
+// a metre long), too coarse to buckle into the narrow folds heavy cloth makes, so its look is finished in the
+// drawing: each vertex moves along the cloth's normal by a wave round the neck (the folds fan out from the
+// shoulders, as a cape's do) that grows from nothing at the collar to its depth at the hem, and the normals are
+// found again from the moved surface so the folds catch the light. The simulation is untouched; this is paint.
+struct FoldedView {
+  mesh: MeshHandle;
+  material: MaterialHandle;
+  scratch: Mesh;
+  normals: List[Vec3];
+  acc: List[Vec3];
+}
+
+fn makeFolded(renderer: &mut Renderer, device: &mut Device, g: &Garment, material: MaterialHandle) FoldedView {
+  let mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
+  FoldedView(mesh, material, Mesh(), List[Vec3](), List[Vec3]())
+}
+
+// 'neck' the neck's place (world), 'up' the body's up; 'folds' waves a full turn round, 'depth' at the hem, 'drop'
+// the distance below the neck where the folds reach their depth
+fn drawFolded(v: &mut FoldedView, renderer: &mut Renderer, device: &mut Device, g: &Garment, list: &mut DrawList, neck: Vec3,
+    folds: f32, depth: f32, drop: f32) {
+  writeMesh(&g.soft, &mut v.scratch, true, &mut v.normals);
+  let nv = v.scratch.positions.len() / 2usize;
+  var i = 0usize;
+  while i < nv {
+    let p = *v.scratch.positions[i];
+    let n = *v.scratch.normals[i];
+    let dx = p.x - neck.x;
+    let dz = p.z - neck.z;
+    let ang = atan2(dx, dz);
+    let below = neck.y - p.y;
+    let amp = depth * smoothstep(0.04, drop, below);
+    // a second, slower wave makes the folds uneven, as cloth's are
+    let w = sin(folds * ang) + 0.35 * sin(folds * 0.43 * ang + 1.7);
+    let q = p + n * (amp * w);
+    v.scratch.positions.set(i, q);
+    v.scratch.positions.set(nv + i, q);
+    i = i + 1usize;
+  }
+  // the normals of the moved surface, from the front's triangles (the first half of the indices), turned to agree
+  // with the cloth's own
+  v.acc.clear();
+  i = 0usize;
+  while i < nv { v.acc.push(Vec3(0., 0., 0.)); i = i + 1usize; }
+  let half = v.scratch.indices.len() / 2usize;
+  var t = 0usize;
+  while t + 2usize < half {
+    let a = usize.from(*v.scratch.indices[t]);
+    let b = usize.from(*v.scratch.indices[t + 1usize]);
+    let c = usize.from(*v.scratch.indices[t + 2usize]);
+    let fa = (*v.scratch.positions[b] - *v.scratch.positions[a]).cross(*v.scratch.positions[c] - *v.scratch.positions[a]);
+    v.acc.set(a, *v.acc[a] + fa);
+    v.acc.set(b, *v.acc[b] + fa);
+    v.acc.set(c, *v.acc[c] + fa);
+    t = t + 3usize;
+  }
+  i = 0usize;
+  while i < nv {
+    let old = *v.scratch.normals[i];
+    var n = *v.acc[i];
+    if n.length() > 1e-12 {
+      n = n.normalize();
+      if n.dot(old) < 0. { n = n * -1.; }
+      v.scratch.normals.set(i, n);
+      v.scratch.normals.set(nv + i, n * -1.);
+    }
+    i = i + 1usize;
+  }
+  renderer.writeDynamicMesh(device, v.mesh, &v.scratch);
+  list.add(v.mesh, v.material, Mat4.identity());
+}
+
+// ------------------------------------------------------------------------------ the people
+
+struct Actor {
+  index: usize;
+  name: String;
+  body: Body;
+  face: BodyFace;
+  rig: FaceRig;
+  frame: FaceFrame;
+  full: Wardrobe;
+  under: Wardrobe;
+  copyFull: MorphHandle;
+  copyUnder: MorphHandle;
+  skinMat: MaterialHandle;
+  eyeMat: MaterialHandle;
+  teethMat: MaterialHandle;
+  tongueMat: MaterialHandle;
+  cavMat: MaterialHandle;
+  hEyes: MeshHandle;
+  hEars: MeshHandle;
+  hTeeth: MeshHandle;
+  hTongue: MeshHandle;
+  hCav: MeshHandle;
+  fullPieces: List[MeshHandle];
+  fullMats: List[MaterialHandle];
+  underPieces: List[MeshHandle];
+  underMats: List[MaterialHandle];
+  capeView: List[FoldedView];
+  restInv: List[Mat4];
+  pose: Pose;
+  models: List[Transform3];
+  world: List[Transform3];
+  mats: List[Mat4];
+  walker: Walker;
+}
+
+fn clothMaterial(device: &mut Device, st: &mut Stage, c: Vec3, kind: u32) MaterialHandle {
+  let lin = linearOf(c);
+  var m = PbrMaterial.standard(lin, 0., 0.78);
+  if kind == CLOTH_PLAIN { m.sheenColor = Color(lin.red * 0.35 + 0.05, lin.green * 0.35 + 0.05, lin.blue * 0.35 + 0.05, 1.); m.sheenRoughness = 0.6; }
+  if kind == CLOTH_WOOL { m.roughness = 0.9; m.sheenColor = Color(lin.red * 0.5 + 0.04, lin.green * 0.5 + 0.04, lin.blue * 0.5 + 0.04, 1.); m.sheenRoughness = 0.75; }
+  if kind == CLOTH_SILK { m.roughness = 0.38; m.sheenColor = Color(lin.red * 0.7 + 0.08, lin.green * 0.7 + 0.08, lin.blue * 0.7 + 0.08, 1.); m.sheenRoughness = 0.35; }
+  if kind == CLOTH_LEATHER { m.roughness = 0.42; m.clearcoat = 0.25; m.clearcoatRoughness = 0.35; }
+  st.renderer.addPbrMaterial(device, &m)
+}
+
+fn indexedMesh(m: &Mesh, idx: &List[u32]) Mesh {
+  var out = copyMesh(m);
+  out.indices.clear();
+  var i = 0usize;
+  while i < idx.len() { out.indices.push(*idx[i]); i = i + 1usize; }
+  out
+}
+
+fn makeActor(device: &mut Device, st: &mut Stage, set: &BlendSet, p: &Person, index: usize, workers: &mut Workers) Actor {
+  var body = personBody(set, &p.measures);
+  let face = buildFace(&mut body);
+  let full = dressPerson(&body, p, false, 4u32);
+  let under = dressPerson(&body, p, true, 1u32);
+  let skin = body.skin();
+  let mt = morphTargetsOf(&face, body.mesh.positions.len());
+  let morphSet = st.morpher.addSet(device, &mt, &body.mesh);
+  let hFull = st.renderer.addSkinnedMesh(device, &indexedMesh(&body.mesh, &full.bodyIndices), &skin);
+  let hUnder = st.renderer.addSkinnedMesh(device, &indexedMesh(&body.mesh, &under.bodyIndices), &skin);
+  var enc0 = device.createCommandEncoder();
+  let copyFull = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, hFull, morphSet, false);
+  let copyUnder = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, hUnder, morphSet, false);
+  device.queue.submit(enc0.finish());
+  device.endFrame();
+  device.waitIdle();
+  let tex = paintSkin(&body, &p.look, 2048);
+  let albedo = st.renderer.addTexture(device, &tex.albedo);
+  let roughTex = st.renderer.addLinearTexture(device, &tex.roughness);
+  var sm = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 1.).skin();
+  sm.texture = albedo;
+  sm.metallicRoughnessTexture = roughTex;
+  let skinMat = st.renderer.addPbrMaterial(device, &sm);
+  let eyeTex = st.renderer.addTexture(device, &paintEye(p.look.iris));
+  var em = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.3);
+  em.texture = eyeTex;
+  em.clearcoat = 1.;
+  em.clearcoatRoughness = 0.02;
+  let eyeMat = st.renderer.addPbrMaterial(device, &em);
+  let teethMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0.78, 0.74, 0.64, 1.), 0., 0.3));
+  // (the mouth's inside is lit as if open to the sky; its colours are darkened by the shadow it would have)
+  let tongueMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0.24, 0.07, 0.08, 1.), 0., 0.4));
+  let cavMat = st.renderer.addPbrMaterial(device, &PbrMaterial.standard(Color(0.045, 0.012, 0.012, 1.), 0., 0.9));
+  let hEyes = st.renderer.addSkinnedMesh(device, &face.parts.eyes, &face.parts.eyesSkin);
+  let hEars = st.renderer.addSkinnedMesh(device, &face.parts.ears, &face.parts.earsSkin);
+  let hTeeth = st.renderer.addSkinnedMesh(device, &face.parts.teeth, &face.parts.teethSkin);
+  let hTongue = st.renderer.addSkinnedMesh(device, &face.parts.tongue, &face.parts.tongueSkin);
+  let hCav = st.renderer.addSkinnedMesh(device, &face.parts.cavity, &face.parts.cavitySkin);
+  var fullPieces = List[MeshHandle]();
+  var fullMats = List[MaterialHandle]();
+  var i = 0usize;
+  while i < full.pieces.len() {
+    fullPieces.push(st.renderer.addSkinnedMesh(device, &full.pieces[i].mesh, &full.pieces[i].skin));
+    fullMats.push(clothMaterial(device, st, full.pieces[i].color, full.pieces[i].kind));
+    i = i + 1usize;
+  }
+  var underPieces = List[MeshHandle]();
+  var underMats = List[MaterialHandle]();
+  i = 0usize;
+  while i < under.pieces.len() {
+    underPieces.push(st.renderer.addSkinnedMesh(device, &under.pieces[i].mesh, &under.pieces[i].skin));
+    underMats.push(clothMaterial(device, st, under.pieces[i].color, under.pieces[i].kind));
+    i = i + 1usize;
+  }
+  var capeView = List[FoldedView]();
+  if full.capeIndex >= 0i32 {
+    let g = &full.outfit.garments[usize.from(full.capeIndex)];
+    // black velvet: the pile's sheen a cool grey, bright enough at grazing angles that the folds read, no dirt, no wear
+    let look = ClothLook(Color(0.016, 0.016, 0.019, 1.), Color(0.018, 0.018, 0.021, 1.), Color(0.55, 0.55, 0.60, 1.), 1.0,
+      0.32, Color(1., 1., 1., 1.), 900., 0.25, 2u32, 0.10, 0., 0., 0., 37u32);
+    let bands = List[WearBand]();
+    let cm = addClothMaterial(&mut st.renderer, device, st.cloth, g, &look, &bands);
+    capeView.push(makeFolded(&mut st.renderer, device, g, cm));
+  }
+  let rest = restModels(&body.skeleton);
+  var restInv = List[Mat4]();
+  i = 0usize;
+  while i < rest.len() { restInv.push((*rest[i]).toMat4().inverse()); i = i + 1usize; }
+  var rig = FaceRig.make(&face.spec, &face.units, &face.targets, 20261015u32 + u32.from(index));
+  rig.idleAmount = 0.;
+  rig.blinking = false;
+  let frame = rig.newFrame();
+  let pose = body.skeleton.restPose();
+  var walker = Walker.make(p.measures.height, u32.from(index) + 3u32);
+  walker.hipSpan = hipHalfSpan(&p.measures) / p.measures.height;
+  print <- "  "; printStr(p.name.view()); print <- ": "; print <- body.vertexCount(); print <- " vertices, ";
+  print <- body.mesh.triangleCount(); print <- " triangles; "; print <- full.pieces.len(); print <- " pieces; body drawn ";
+  print <- full.bodyIndices.len() / 3usize; print <- " triangles dressed\n";
+  Actor(index, p.name.clone(), body, face, rig, frame, full, under, copyFull, copyUnder, skinMat, eyeMat, teethMat, tongueMat, cavMat,
+    hEyes, hEars, hTeeth, hTongue, hCav, fullPieces, fullMats, underPieces, underMats, capeView, restInv, pose, List[Transform3](),
+    List[Transform3](), List[Mat4](), walker)
+}
+
+// The actor's pose placed in the world at 'at' facing 'yaw': the face's jaw and eyes from its frame, the bones in the
+// world, the skinning matrices
+fn place(a: &mut Actor, at: Vec3, yaw: f32) {
+  applyFace(&mut a.pose, &a.face.bones, &a.frame, &a.face.spec, false);
+  a.body.skeleton.modelTransforms(&a.pose, &mut a.models);
+  let root = Transform3(at, Quat.angleAxis(yaw, Vec3(0., 1., 0.)), Vec3(1., 1., 1.));
+  a.world.clear();
+  a.mats.clear();
+  var i = 0usize;
+  while i < a.models.len() {
+    let w = root * *a.models[i];
+    a.world.push(w);
+    a.mats.push(w.toMat4() * *a.restInv[i]);
+    i = i + 1usize;
+  }
+}
+
+fn faceStep(st: &mut Stage, a: &mut Actor, frames: i32) {
+  var k = 0;
+  while k < frames { a.rig.update(1. / 60., &mut a.frame); k = k + 1; }
+}
+
+// The cape brought to the pose and let settle for 'frames' sixtieths
+fn settleCape(a: &mut Actor, workers: &mut Workers, frames: i32, snap: bool) {
+  if a.full.capeIndex < 0i32 { return; }
+  if snap {
+    a.full.outfit.snap(&a.full.rig, &a.world);
+    rippleGarment(&mut a.full, usize.from(a.full.capeIndex), (*a.world[NECK]).translation, 7., 0.12);
+  }
+  var k = 0;
+  while k < frames { a.full.outfit.step(&a.full.rig, &a.world, 1. / 60., Vec3(0.3, 0., 0.2), workers); k = k + 1; }
+}
+
+fn draw(device: &mut Device, st: &mut Stage, list: &mut DrawList, a: &mut Actor, dressed: bool) {
+  st.morpher.setWeights(&mut st.renderer, if dressed { a.copyFull } else { a.copyUnder }, &a.frame.weights);
+  let mesh = st.morpher.mesh(if dressed { a.copyFull } else { a.copyUnder });
+  list.addSkinned(mesh, a.skinMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hEyes, a.eyeMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hEars, a.skinMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hTeeth, a.teethMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hTongue, a.tongueMat, Mat4.identity(), a.mats.view());
+  list.addSkinned(a.hCav, a.cavMat, Mat4.identity(), a.mats.view());
+  var i = 0usize;
+  if dressed {
+    while i < a.fullPieces.len() { list.addSkinned(*a.fullPieces[i], *a.fullMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+    if a.capeView.len() > 0usize {
+      let g = &a.full.outfit.garments[usize.from(a.full.capeIndex)];
+      let neck = (*a.world[NECK]).translation;
+      drawFolded(&mut a.capeView[0usize], &mut st.renderer, device, g, list, neck, 16., 0.022, 0.55);
+    }
+  } else {
+    while i < a.underPieces.len() { list.addSkinned(*a.underPieces[i], *a.underMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+  }
+}
+
+fn ground(x: f32, z: f32) f32 { 0. }
+
+// ------------------------------------------------------------------------------ main
+
+fn main(argc: i32, argv: **u8) i32 {
+  var outDir = String.from("C:/src/humanbody-shots");
+  var quick = false;
+  var firstOnly = false;
+  var headOnly = false;
+  var stagesOnly = false;
+  var pairsOnly = false;
+  var mouthOnly = false;
+  var a = 1;
+  while a < argc {
+    let arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") && a + 1 < argc { outDir = argString(*(argv + usize.from(a + 1))); a += 1; }
+    if cstrEquals(arg, "--quick") { quick = true; }
+    if cstrEquals(arg, "--first") { firstOnly = true; }
+    if cstrEquals(arg, "--head") { headOnly = true; }
+    if cstrEquals(arg, "--stages") { stagesOnly = true; }
+    if cstrEquals(arg, "--pairs") { pairsOnly = true; }
+    if cstrEquals(arg, "--mouth") { mouthOnly = true; }
+    a += 1;
+  }
+  let taaFrames = if quick { 2 } else { 10 };
+  var instance = Instance.create("humanbody peoplebench");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1; }
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1; }
+  printStr("adapter: "); printStr(adapter.name.view()); printStr("\n");
+  var st = makeStage(&mut device);
+  if headOnly { headStudy(&mut device, &mut st, &outDir); return 0; }
+  let rayTraced = st.renderer.setRayTracing(&mut device, true);
+  print <- "ray tracing: "; print <- if rayTraced { "on" } else { "not on this device" }; print <- "\n";
+  var workers = Workers.make(4u32);
+
+  // ---- the bases and their blends ----
+  let t0 = Instant.now();
+  let men = buildBlendSet(MALE, 1u32);
+  let women = buildBlendSet(FEMALE, 1u32);
+  print <- "the two bases and their "; print <- men.blends.len() + women.blends.len(); print <- " blends in ";
+  print <- t0.elapsed().nanos() / 1000000i64; print <- " ms\n";
+  let people = cast();
+  if pairsOnly {
+    // the main avatar and the average woman alone, square on, in underwear, filling a 1280 x 2560 frame head to foot:
+    // for setting beside the classical figures (a composite made outside, in the shots folder)
+    {
+      let empty = DrawList();
+      let cam = Camera.make();
+      shoot(&mut device, &mut st, &cam, &empty, 1);
+    }
+    resize(&mut device, &mut st, 1280u32, 2560u32);
+    var k = 0usize;
+    while k < 2usize {
+      let idx = if k == 0usize { 0usize } else { 6usize };
+      let p = &people[idx];
+      let set = if p.measures.sex == MALE { &men } else { &women };
+      var ac = makeActor(&mut device, &mut st, set, p, idx, &mut workers);
+      ac.pose = standPose(&ac.body.skeleton);
+      faceStep(&mut st, &mut ac, 10);
+      place(&mut ac, Vec3(0., 0., 0.), 0.);
+      var list = DrawList();
+      draw(&mut device, &mut st, &mut list, &mut ac, false);
+      var cam = Camera.make();
+      cam.projection = Orthogonal;
+      cam.viewHeight = p.measures.height * 0.515;
+      cam.near = 0.05;
+      cam.far = 100.;
+      cam.background = Color(0.82, 0.82, 0.80, 1.);
+      let cy = p.measures.height * 0.5;
+      cam.lookAt(Vec3(0., cy, -20.), Vec3(0., cy, 0.), Vec3(0., 1., 0.));
+      let px = shoot(&mut device, &mut st, &cam, &list, 10);
+      var sheet = Sheet.make(1280, 2560);
+      sheet.put(0, 0, 1280, 2560, px);
+      sheet.save(&outDir, if k == 0usize { "pair-avatar" } else { "pair-woman" });
+      k = k + 1usize;
+    }
+    workers.stop();
+    return 0;
+  }
+  if stagesOnly {
+    stages(&mut device, &mut st, &men, &people[0usize], 0usize, &outDir, &mut workers);
+    stages(&mut device, &mut st, &women, &people[6usize], 6usize, &outDir, &mut workers);
+    workers.stop();
+    return 0;
+  }
+  var actors = List[Actor]();
+  var i = 0usize;
+  while i < people.len() {
+    let p = &people[i];
+    let set = if p.measures.sex == MALE { &men } else { &women };
+    actors.push(makeActor(&mut device, &mut st, set, p, i, &mut workers));
+    // what the blends made of the person's measures, against what they should be
+    let meas = measuredOfBody(&actors[i].body);
+    let models = restModels(&actors[i].body.skeleton);
+    print <- "    measures (mm, made / ANSUR II):";
+    var k = 1usize;
+    while k < 14usize {
+      // (the neck's girth is set on the head's part from the survey, not measured on the body: skipped)
+      if k == 8usize { k = 9usize; }
+      print <- " "; printStr(measureName(k).view()); print <- " "; print <- i64.from(meas.measure(k, &models) * 1000.); print <- "/";
+      print <- i64.from(measureAt(&p.measures, k) * 1000.);
+      k = k + 1usize;
+    }
+    print <- "\n";
+    i = i + 1usize;
+  }
+  let n = actors.len();
+  // the line-up's places: 0.9 m apart, the main avatar in the middle
+  var xs = List[f32]();
+  i = 0usize;
+  while i < n {
+    let order = [3, 2, 4, 1, 5, 0, 6];
+    xs.push(f32.from(order[i] - 3) * 0.92);
+    i = i + 1usize;
+  }
+  var list = DrawList();
+  var camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 200.;
+  camera.background = Color(0.5, 0.55, 0.62, 1.);
+
+  // ---- standing poses, the faces neutral (the avatar's with the hint of a smile), the cape settled ----
+  i = 0usize;
+  while i < n {
+    actors[i].pose = standPose(&actors[i].body.skeleton);
+    actors[i].rig.clearExpressions(0.01);
+    if i == 0usize { actors[i].rig.express(EXPR_HAPPINESS, 0.25, 0.01); }
+    faceStep(&mut st, &mut actors[i], 20);
+    place(&mut actors[i], Vec3(*xs[i], 0., 0.), 0.);
+    settleCape(&mut actors[i], &mut workers, 150, true);
+    i = i + 1usize;
+  }
+
+  // ---- 01: the main avatar ----
+  {
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    resize(&mut device, &mut st, 640u32, 1440u32);
+    let av = 0usize;
+    let ax = *xs[av];
+    let h = people[av].measures.height;
+    var k = 0;
+    while k < 4 {
+      list.clear();
+      floor(&mut list, &st);
+      draw(&mut device, &mut st, &mut list, &mut actors[av], true);
+      camera.fov = radians(20.);
+      let at = Vec3(ax, h * 0.52, 0.);
+      if k == 0 { camera.lookAt(Vec3(ax - 0.6, h * 0.55, -6.2), at, Vec3(0., 1., 0.)); }
+      if k == 1 { camera.lookAt(Vec3(ax + 3.2, h * 0.58, 5.4), at, Vec3(0., 1., 0.)); }
+      if k == 2 { camera.lookAt(Vec3(ax - 6.2, h * 0.55, -0.4), at, Vec3(0., 1., 0.)); }
+      if k == 3 {
+        camera.fov = radians(10.);
+        let eye = *actors[av].body.points[POINT_HEAD] + Vec3(ax, 0., 0.);
+        camera.lookAt(eye + Vec3(-0.55, 0.05, -1.55), eye + Vec3(0., -0.05, 0.), Vec3(0., 1., 0.));
+      }
+      let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      sheet.put(k * 640, 0, 640, 1440, px);
+      k = k + 1;
+    }
+    sheet.save(&outDir, "01-main-avatar");
+  }
+  if firstOnly { workers.stop(); return 0; }
+
+  // ---- 11b: the main avatar's face close: neutral, a smile, surprise, "ah", "oo", a blink ----
+  {
+    let tw = 853u32;
+    let th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    var row = 0;
+    while row < 6 {
+      var ac = &mut actors[0usize];
+      setFaceRow(ac, row);
+      faceStep(&mut st, ac, 30);
+      if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
+      place(ac, Vec3(0., 0., 0.), 0.);
+      list.clear();
+      floor(&mut list, &st);
+      draw(&mut device, &mut st, &mut list, ac, true);
+      let eye = *ac.body.points[POINT_HEAD];
+      camera.fov = radians(9.);
+      camera.lookAt(eye + Vec3(-0.35, 0.02, -1.25), eye + Vec3(0., -0.045, 0.), Vec3(0., 1., 0.));
+      let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      sheet.put((row % 3) * i32.from(tw), (row / 3) * i32.from(th), i32.from(tw), i32.from(th), px);
+      row = row + 1;
+    }
+    sheet.save(&outDir, "11b-avatar-expressions");
+    setFaceRow(&mut actors[0usize], 0);
+    actors[0usize].rig.express(EXPR_HAPPINESS, 0.25, 0.01);
+    faceStep(&mut st, &mut actors[0usize], 30);
+    place(&mut actors[0usize], Vec3(*xs[0usize], 0., 0.), 0.);
+  }
+  if mouthOnly { workers.stop(); return 0; }
+
+  // ---- 02 to 06: the cast, day and dusk ----
+  resize(&mut device, &mut st, SW, SH);
+  var view = 0;
+  while view < 6 {
+    let day = view < 3;
+    setDay(&mut device, &mut st, day);
+    let yaw = if view == 1 || view == 4 { radians(-38.) } else if view == 2 { pi } else if view == 5 { radians(38.) } else { 0. };
+    i = 0usize;
+    while i < n {
+      place(&mut actors[i], Vec3(*xs[i], 0., 0.), yaw);
+      settleCape(&mut actors[i], &mut workers, 40, false);
+      i = i + 1usize;
+    }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], true); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(Vec3(0., 1.05, -9.8), Vec3(0., 0.92, 0.), Vec3(0., 1., 0.));
+    let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    let names = ["02-cast-day", "03-cast-day-turned", "04-cast-day-back", "05-cast-dusk", "06-cast-dusk-turned", "06b-cast-dusk-turned-other"];
+    sheet.save(&outDir, names[usize.from(view)]);
+    view = view + 1;
+  }
+  setDay(&mut device, &mut st, true);
+
+  // ---- 07, 08: the base bodies in underwear ----
+  view = 0;
+  while view < 2 {
+    let yaw = if view == 1 { radians(-90.) } else { 0. };
+    i = 0usize;
+    while i < n { place(&mut actors[i], Vec3(*xs[i], 0., 0.), yaw); i = i + 1usize; }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], false); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(Vec3(0., 1.05, -9.8), Vec3(0., 0.92, 0.), Vec3(0., 1., 0.));
+    let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, if view == 0 { "07-cast-underwear" } else { "08-cast-underwear-side" });
+    view = view + 1;
+  }
+
+  // ---- 09: proportions, square on, with the measures behind ----
+  {
+    var barPos = List[Vec3]();
+    var barIdx = List[u32]();
+    i = 0usize;
+    while i < n {
+      place(&mut actors[i], Vec3(*xs[i], 0., 0.), 0.);
+      measureBars(&people[i].measures, *xs[i], &mut barPos, &mut barIdx);
+      i = i + 1usize;
+    }
+    var bars = Mesh();
+    i = 0usize;
+    while i < barPos.len() { bars.positions.push(*barPos[i]); bars.normals.push(Vec3(0., 0., -1.)); bars.uvs.push(Vec2(0., 0.)); i = i + 1usize; }
+    i = 0usize;
+    while i < barIdx.len() { bars.indices.push(*barIdx[i]); i = i + 1usize; }
+    let hBars = st.renderer.addMesh(&mut device, &bars);
+    list.clear();
+    floor(&mut list, &st);
+    list.add(hBars, st.barMat, Mat4.identity());
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], false); i = i + 1usize; }
+    camera.projection = Orthogonal;
+    camera.viewHeight = 1.0;
+    // (the line-up is 5.5 m wide, the frame 3.6 at this height: two frames, the left half and the right)
+    var half = 0;
+    while half < 2 {
+      let cx = if half == 0 { -1.38f } else { 1.38 };
+      camera.lookAt(Vec3(cx, 0.98, -20.), Vec3(cx, 0.98, 0.), Vec3(0., 1., 0.));
+      let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+      var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+      sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+      sheet.save(&outDir, if half == 0 { "09-proportions-left" } else { "09-proportions-right" });
+      half = half + 1;
+    }
+    camera.projection = Perspective;
+  }
+
+  // ---- 10: today's mannequin beside the average man and the main avatar ----
+  {
+    let mq = mannequinMesh(1.75);
+    let hMq = st.renderer.addMesh(&mut device, &mq);
+    let woodMat = st.renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.672, 0.434, 0.216, 1.), 0., 0.45));
+    list.clear();
+    floor(&mut list, &st);
+    // (seen from the front, +x is on the picture's left): left to right the main avatar, the average man, today's
+    // mannequin, and the mannequin from its side
+    list.add(hMq, woodMat, Mat4.fromTranslation(Vec3(-0.25, 0., 0.)));
+    list.add(hMq, woodMat, Mat4.fromTrs(Vec3(-1.25, 0., 0.), Quat.angleAxis(radians(-90.), Vec3(0., 1., 0.)), Vec3(1., 1., 1.)));
+    place(&mut actors[3usize], Vec3(0.75, 0., 0.), 0.);
+    draw(&mut device, &mut st, &mut list, &mut actors[3usize], false);
+    place(&mut actors[0usize], Vec3(1.65, 0., 0.), 0.);
+    draw(&mut device, &mut st, &mut list, &mut actors[0usize], false);
+    camera.projection = Orthogonal;
+    camera.viewHeight = 1.0;
+    camera.lookAt(Vec3(0.2, 0.98, -20.), Vec3(0.2, 0.98, 0.), Vec3(0., 1., 0.));
+    let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "10-mannequin-compare");
+    camera.projection = Perspective;
+  }
+
+  // ---- 11: the faces: neutral, a smile, surprise, "ah", "oo", a blink ----
+  {
+    let tw = 365u32;
+    let th = 240u32;
+    resize(&mut device, &mut st, tw, th);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    var row = 0;
+    while row < 6 {
+      i = 0usize;
+      while i < n {
+        var ac = &mut actors[i];
+        setFaceRow(ac, row);
+        faceStep(&mut st, ac, 30);
+        if row == 5 { ac.rig.blinking = true; ac.rig.blinker.start(1.); faceStep(&mut st, ac, 6); ac.rig.blinking = false; }
+        place(ac, Vec3(0., 0., 0.), 0.);
+        list.clear();
+        floor(&mut list, &st);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        let eye = *ac.body.points[POINT_HEAD];
+        camera.fov = radians(13.);
+        camera.lookAt(eye + Vec3(-0.30, 0.03, -1.05), eye + Vec3(0., -0.045, 0.), Vec3(0., 1., 0.));
+        let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(i) * i32.from(tw), row * i32.from(th), i32.from(tw), i32.from(th), px);
+        i = i + 1usize;
+      }
+      row = row + 1;
+    }
+    sheet.save(&outDir, "11-faces");
+    i = 0usize;
+    while i < n {
+      actors[i].rig.clearExpressions(0.01);
+      actors[i].rig.setUnit(AU_LIP_FUNNELER, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_LIP_PUCKER, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_JAW_DROP, SIDE_BOTH, 0.);
+      actors[i].rig.setUnit(AU_LIPS_PART, SIDE_BOTH, 0.);
+      faceStep(&mut st, &mut actors[i], 30);
+      i = i + 1usize;
+    }
+  }
+
+  // ---- 12: walking ----
+  {
+    let tw = 320u32;
+    let th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    let who = [0usize, 4usize];
+    var r = 0usize;
+    while r < 2usize {
+      var ac = &mut actors[who[r]];
+      ac.walker = Walker.make(ac.body.measures.height, 7u32);
+      ac.walker.hipSpan = hipHalfSpan(&ac.body.measures) / ac.body.measures.height;
+      var z = 0.f;
+      let speed = 1.35f;
+      let dt = 1.f / 60.;
+      var models = List[Transform3]();
+      // walk a second and a half to get going, the cape with it
+      var frame = 0;
+      var shot = 0;
+      while shot < 8 {
+        z = z - speed * dt;
+        ac.walker.update(&ac.body.skeleton, &mut ac.pose, &mut models, Vec3(0., 0., z), 0., speed, 0., true, &ground, dt);
+        place(ac, Vec3(0., 0., z), 0.);
+        if frame == 0 { settleCape(ac, &mut workers, 60, true); } else { settleCape(ac, &mut workers, 1, false); }
+        if frame >= 90 && (frame - 90) % 5 == 0 {
+          list.clear();
+          floor(&mut list, &st);
+          draw(&mut device, &mut st, &mut list, ac, true);
+          camera.fov = radians(26.);
+          let hh = ac.body.measures.height;
+          camera.lookAt(Vec3(-4.6, hh * 0.55, z - 0.6), Vec3(0., hh * 0.5, z), Vec3(0., 1., 0.));
+          let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+          sheet.put(shot * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+          shot = shot + 1;
+        }
+        frame = frame + 1;
+      }
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "12-walk");
+  }
+
+  // ---- 13: sitting down on a chair and standing up ----
+  {
+    let tw = 426u32;
+    let th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    let who = [3usize, 6usize];
+    var r = 0usize;
+    while r < 2usize {
+      var ac = &mut actors[who[r]];
+      let seat = Seat.chair(Vec3(0., 0.45, 0.35), 0., 0.45);
+      let feet = seatFeet(&seat, &ac.body.skeleton);
+      let phases = [0.f, 0.3, 0.55, 0.8, 1.0, 0.45];
+      var k = 0usize;
+      while k < 6usize {
+        let down = k < 5usize;
+        ac.pose = sitPose(&ac.body.skeleton, &seat, phases[k], down);
+        place(ac, feet, 0.);
+        list.clear();
+        floor(&mut list, &st);
+        chair(&mut list, &st, &seat);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        camera.fov = radians(30.);
+        camera.lookAt(Vec3(-3.0, 1.0, -0.9), Vec3(0., 0.75, 0.2), Vec3(0., 1., 0.));
+        let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(k) * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+        k = k + 1usize;
+      }
+      ac.pose = standPose(&ac.body.skeleton);
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "13-sit-chair");
+  }
+
+  // ---- 14: two on a bench ----
+  {
+    resize(&mut device, &mut st, SW, SH);
+    let seatA = Seat.chair(Vec3(-0.35, 0.43, 0.30), 0., 0.43);
+    let seatB = Seat.chair(Vec3(0.40, 0.43, 0.30), 0., 0.43);
+    var ac = &mut actors[5usize];
+    ac.pose = sitPose(&ac.body.skeleton, &seatA, 1., true);
+    place(ac, seatFeet(&seatA, &ac.body.skeleton), 0.);
+    var bc = &mut actors[1usize];
+    bc.pose = sitPose(&bc.body.skeleton, &seatB, 1., true);
+    place(bc, seatFeet(&seatB, &bc.body.skeleton), 0.);
+    settleCape(bc, &mut workers, 60, true);
+    list.clear();
+    floor(&mut list, &st);
+    bench(&mut list, &st, Vec3(0., 0.43, 0.30), 1.8);
+    draw(&mut device, &mut st, &mut list, &mut actors[5usize], true);
+    draw(&mut device, &mut st, &mut list, &mut actors[1usize], true);
+    camera.fov = radians(26.);
+    camera.lookAt(Vec3(-1.6, 1.25, -3.4), Vec3(0., 0.75, 0.2), Vec3(0., 1., 0.));
+    let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "14-sit-bench");
+    actors[5usize].pose = standPose(&actors[5usize].body.skeleton);
+    actors[1usize].pose = standPose(&actors[1usize].body.skeleton);
+  }
+
+  // ---- 15: hailing ----
+  {
+    let tw = 426u32;
+    let th = 720u32;
+    resize(&mut device, &mut st, tw, th);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    let who = [0usize, 3usize];
+    var r = 0usize;
+    while r < 2usize {
+      var ac = &mut actors[who[r]];
+      let times = [0.0f, 0.3, 0.6, 0.75, 0.9, 1.05];
+      var k = 0usize;
+      while k < 6usize {
+        ac.pose = hailPose(&ac.body.skeleton, times[k]);
+        ac.rig.clearExpressions(0.01);
+        ac.rig.express(EXPR_HAPPINESS, 0.6, 0.01);
+        faceStep(&mut st, ac, 20);
+        place(ac, Vec3(0., 0., 0.), 0.);
+        settleCape(ac, &mut workers, if k == 0usize { 60 } else { 10 }, k == 0usize);
+        list.clear();
+        floor(&mut list, &st);
+        draw(&mut device, &mut st, &mut list, ac, true);
+        camera.fov = radians(28.);
+        let hh = ac.body.measures.height;
+        camera.lookAt(Vec3(-1.4, hh * 0.62, -3.4), Vec3(0., hh * 0.62, 0.), Vec3(0., 1., 0.));
+        let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+        sheet.put(i32.from(k) * i32.from(tw), i32.from(r) * i32.from(th), i32.from(tw), i32.from(th), px);
+        k = k + 1usize;
+      }
+      ac.pose = standPose(&ac.body.skeleton);
+      ac.rig.clearExpressions(0.01);
+      faceStep(&mut st, ac, 30);
+      r = r + 1usize;
+    }
+    sheet.save(&outDir, "15-hail");
+  }
+
+  // ---- 16: the cast with ray tracing off ----
+  {
+    resize(&mut device, &mut st, SW, SH);
+    st.renderer.setRayTracing(&mut device, false);
+    i = 0usize;
+    while i < n {
+      actors[i].pose = standPose(&actors[i].body.skeleton);
+      place(&mut actors[i], Vec3(*xs[i], 0., 0.), 0.);
+      settleCape(&mut actors[i], &mut workers, 90, true);
+      i = i + 1usize;
+    }
+    list.clear();
+    floor(&mut list, &st);
+    i = 0usize;
+    while i < n { draw(&mut device, &mut st, &mut list, &mut actors[i], true); i = i + 1usize; }
+    camera.fov = radians(22.);
+    camera.lookAt(Vec3(0., 1.05, -9.8), Vec3(0., 0.92, 0.), Vec3(0., 1., 0.));
+    let px = shoot(&mut device, &mut st, &camera, &list, taaFrames);
+    var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+    sheet.put(0, 0, i32.from(SW), i32.from(SH), px);
+    sheet.save(&outDir, "16-rt-off");
+  }
+  workers.stop();
+  0
+}
+
+// The sculpting step by step for one person, from one fixed camera, into OUT/stages/<who>-NN-<step>.png (--stages):
+// the forms, the blended field, the ring mesh laid on it, the mesh shaded, the base body of the sex and the blends
+// applied a group at a time (the height, the trunk, the limbs, the head and face, the build), the skin, the underwear,
+// the clothes and (the main avatar) the cape
+fn stages(device: &mut Device, st: &mut Stage, set: &BlendSet, p: &Person, index: usize, outDir: &String, workers: &mut Workers) {
+  let m = &p.measures;
+  let who = if index == 0usize { "avatar" } else { "woman" };
+  let w = 1920u32;
+  let hgt = 1080u32;
+  {
+    let empty = DrawList();
+    let cam = Camera.make();
+    shoot(device, st, &cam, &empty, 1);
+  }
+  resize(device, st, w, hgt);
+  var camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 100.;
+  camera.fov = radians(24.);
+  let hh = m.height;
+  camera.lookAt(Vec3(-2.3, hh * 0.62, -4.1), Vec3(0., hh * 0.50, 0.), Vec3(0., 1., 0.));
+  var n = 1;
+  // the direct sculpt of this person (the forms, the field, the mesh)
+  let gains = fitGains(m, 1u32, 3);
+  let skel = personSkeleton(m);
+  let models = restModels(&skel);
+  let forms = bodyForms(m, &models, &gains);
+  let body = assembleBody(m, &gains, 1u32);
+  let hf = headFieldOf(m);
+  let hbox = Aabb3(hf.origin + Vec3(-0.12, -0.20, -0.16), hf.origin + Vec3(0.12, 0.16, 0.14));
+  let headNet = surfaceNet(&hf, hbox, 0.003, 1u32, true).toMesh();
+  let hHeadField = st.renderer.addMesh(device, &headNet);
+  let hForms = st.renderer.addMesh(device, &formsMesh(&forms, GROUP_ALL));
+  let field = FormField(forms, GROUP_ALL);
+  let box = Aabb3(Vec3(-0.6, -0.02, -0.4), Vec3(0.6, hh * 0.86, 0.4));
+  let hField = st.renderer.addMesh(device, &surfaceNet(&field, box, 0.007, 1u32, true).toMesh());
+  let hMesh = st.renderer.addMesh(device, &body.mesh);
+  var wire = List[u32]();
+  var q = 0usize;
+  while q + 2usize < body.mesh.indices.len() {
+    var e = 0usize;
+    while e < 3usize { wire.push(*body.mesh.indices[q + e]); wire.push(*body.mesh.indices[q + (e + 1usize) % 3usize]); e = e + 1usize; }
+    q = q + 3usize;
+  }
+  let hWire = st.renderer.addLines(device, body.mesh.positions.view(), wire.view());
+  var list = DrawList();
+  var k = 0;
+  while k < 4 {
+    list.clear();
+    floor(&mut list, st);
+    if k == 0 { list.add(hForms, st.clay, Mat4.identity()); list.add(hHeadField, st.clay, Mat4.identity()); }
+    if k == 1 { list.add(hField, st.clay, Mat4.identity()); list.add(hHeadField, st.clay, Mat4.identity()); }
+    if k == 2 {
+      list.add(hField, st.clay, Mat4.identity());
+      list.add(hHeadField, st.clay, Mat4.identity());
+      list.addLines(hWire, Mat4.identity(), Color(0.05, 0.10, 0.30, 1.));
+    }
+    if k == 3 { list.add(hMesh, st.clay, Mat4.identity()); }
+    let names = ["forms", "sculpt", "mesh-on-sculpt", "mesh-shaded"];
+    stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, names[usize.from(k)]);
+    n = n + 1;
+    k = k + 1;
+  }
+  // the blends, a group at a time, from the base of the sex
+  let full = blendWeights(set, m);
+  let groups = [0usize, 1usize, 2usize, 3usize, 4usize, 5usize];
+  let groupNames = ["base", "height", "trunk", "limbs", "head-face", "build"];
+  var g = 0usize;
+  while g < 6usize {
+    var wts = List[f32]();
+    var i = 0usize;
+    while i < set.blends.len() {
+      let ax = set.blends[i].axis;
+      let grp = if ax <= 7usize { 2usize } else if ax <= 13usize { 3usize } else if ax <= 25usize { 4usize } else { 5usize };
+      wts.push(if grp <= groups[g] { *full[i] } else { 0. });
+      i = i + 1usize;
+    }
+    let scale = if g == 0usize { 1. } else { m.height / set.base.measures.height };
+    let b = bodyFromWeights(set, m, &wts, scale);
+    let hb = st.renderer.addMesh(device, &b.mesh);
+    list.clear();
+    floor(&mut list, st);
+    list.add(hb, st.clay, Mat4.identity());
+    var nm = String.from("blend-");
+    nm.append(groupNames[g]);
+    stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, nm.view());
+    n = n + 1;
+    g = g + 1usize;
+  }
+  // the skin, the underwear, the clothes, the cape
+  var a = makeActor(device, st, set, p, index, workers);
+  a.pose = standPose(&a.body.skeleton);
+  faceStep(st, &mut a, 10);
+  place(&mut a, Vec3(0., 0., 0.), 0.);
+  settleCape(&mut a, workers, 150, true);
+  k = 0;
+  while k < 4 {
+    list.clear();
+    floor(&mut list, st);
+    if k == 0 {
+      // the skin alone: the body with no clothes at all, but its underwear (the base bodies are never shown bare)
+      draw(device, st, &mut list, &mut a, false);
+    }
+    if k == 1 { draw(device, st, &mut list, &mut a, false); }
+    if k >= 2 {
+      if k == 2 && a.capeView.len() > 0usize {
+        // the clothes without the cape: the cape's view left out
+        st.morpher.setWeights(&mut st.renderer, a.copyFull, &a.frame.weights);
+        list.addSkinned(st.morpher.mesh(a.copyFull), a.skinMat, Mat4.identity(), a.mats.view());
+        list.addSkinned(a.hEyes, a.eyeMat, Mat4.identity(), a.mats.view());
+        list.addSkinned(a.hEars, a.skinMat, Mat4.identity(), a.mats.view());
+        var i = 0usize;
+        while i < a.fullPieces.len() { list.addSkinned(*a.fullPieces[i], *a.fullMats[i], Mat4.identity(), a.mats.view()); i = i + 1usize; }
+      } else {
+        draw(device, st, &mut list, &mut a, true);
+      }
+    }
+    let names = ["skin", "underwear", "clothes", "cape"];
+    if !(k == 3 && a.capeView.len() == 0usize) && k != 1 {
+      stageShot(device, st, &camera, &list, w, hgt, outDir, who, n, names[usize.from(k)]);
+      n = n + 1;
+    }
+    k = k + 1;
+  }
+}
+
+fn stageShot(device: &mut Device, st: &mut Stage, camera: &Camera, list: &DrawList, w: u32, h: u32, outDir: &String, who: &str, n: i32, name: &str) {
+  let px = shoot(device, st, camera, list, 10);
+  var sheet = Sheet.make(i32.from(w), i32.from(h));
+  sheet.put(0, 0, i32.from(w), i32.from(h), px);
+  var file = String.from("stages/");
+  file.append(who);
+  file.append("-");
+  if n < 10 { file.append("0"); }
+  file.appendUInt(u64.from(u32.from(n)));
+  file.append("-");
+  file.append(name);
+  sheet.save(outDir, file.view());
+}
+
+// The head study (--head): the main avatar's and the average woman's heads sculpted directly (no blends), skinned and
+// painted, front, three-quarter and profile, near: for working on the face quickly
+fn headStudy(device: &mut Device, st: &mut Stage, outDir: &String) {
+  let people = cast();
+  let who = [0usize, 6usize];
+  var sheet = Sheet.make(i32.from(SW), i32.from(SH));
+  // one frame first: the stage's first work (the sky's bake) must be done before its targets are remade
+  {
+    let empty = DrawList();
+    let cam = Camera.make();
+    shoot(device, st, &cam, &empty, 1);
+  }
+  resize(device, st, 853u32, 720u32);
+  var r = 0usize;
+  while r < 2usize {
+    let p = &people[who[r]];
+    let gains = fitGains(&p.measures, 1u32, 2);
+    var body = assembleBody(&p.measures, &gains, 1u32);
+    let face = buildFace(&mut body);
+    let skin = body.skin();
+    let hBody = st.renderer.addSkinnedMesh(device, &body.mesh, &skin);
+    let tex = paintSkin(&body, &p.look, 2048);
+    var sm = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 1.).skin();
+    sm.texture = st.renderer.addTexture(device, &tex.albedo);
+    sm.metallicRoughnessTexture = st.renderer.addLinearTexture(device, &tex.roughness);
+    let skinMat = st.renderer.addPbrMaterial(device, &sm);
+    var em = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.3);
+    em.texture = st.renderer.addTexture(device, &paintEye(p.look.iris));
+    em.clearcoat = 1.;
+    em.clearcoatRoughness = 0.02;
+    let eyeMat = st.renderer.addPbrMaterial(device, &em);
+    let hEyes = st.renderer.addSkinnedMesh(device, &face.parts.eyes, &face.parts.eyesSkin);
+    let hEars = st.renderer.addSkinnedMesh(device, &face.parts.ears, &face.parts.earsSkin);
+    let rest = restModels(&body.skeleton);
+    var mats = List[Mat4]();
+    var i = 0usize;
+    while i < rest.len() { mats.push(Mat4.identity()); i = i + 1usize; }
+    var camera = Camera.make();
+    camera.near = 0.05;
+    camera.far = 50.;
+    camera.fov = radians(14.);
+    let o = body.head.origin;
+    var k = 0;
+    while k < 3 {
+      var list = DrawList();
+      list.addSkinned(hBody, skinMat, Mat4.identity(), mats.view());
+      list.addSkinned(hEyes, eyeMat, Mat4.identity(), mats.view());
+      list.addSkinned(hEars, skinMat, Mat4.identity(), mats.view());
+      let at = o + Vec3(0., -0.04, -0.02);
+      if k == 0 { camera.lookAt(o + Vec3(0., 0.0, -1.25), at, Vec3(0., 1., 0.)); }
+      if k == 1 { camera.lookAt(o + Vec3(-0.80, 0.03, -0.95), at, Vec3(0., 1., 0.)); }
+      if k == 2 { camera.lookAt(o + Vec3(-1.25, 0.0, 0.), at, Vec3(0., 1., 0.)); }
+      let px = shoot(device, st, &camera, &list, 6);
+      sheet.put(k * 853, i32.from(r) * 720, 853, 720, px);
+      k = k + 1;
+    }
+    r = r + 1usize;
+  }
+  sheet.save(outDir, "head-study");
+}
+
+// ------------------------------------------------------------------------------ furniture and measures
+
+// A chair: a seat at the seat's height, four legs, a back behind the sit point
+fn chair(list: &mut DrawList, st: &Stage, seat: &Seat) {
+  let c = seat.point;
+  let y = seat.height;
+  box(list, st, st.wood, Vec3(c.x, y - 0.02, c.z + 0.02), Vec3(0.23, 0.02, 0.22), 0.);
+  var sx = -1.f;
+  while sx < 2. {
+    var sz = -1.f;
+    while sz < 2. {
+      box(list, st, st.wood, Vec3(c.x + sx * 0.20, (y - 0.04) * 0.5, c.z + 0.02 + sz * 0.19), Vec3(0.02, (y - 0.04) * 0.5, 0.02), 0.);
+      sz = sz + 2.;
+    }
+    sx = sx + 2.;
+  }
+  box(list, st, st.wood, Vec3(c.x, y + 0.24, c.z + 0.23), Vec3(0.22, 0.24, 0.02), 0.);
+}
+
+// A bench 'length' long, its seat's top at the centre's height
+fn bench(list: &mut DrawList, st: &Stage, c: Vec3, length: f32) {
+  box(list, st, st.wood, Vec3(c.x, c.y - 0.025, c.z + 0.02), Vec3(length * 0.5, 0.025, 0.20), 0.);
+  var sx = -1.f;
+  while sx < 2. {
+    box(list, st, st.wood, Vec3(c.x + sx * (length * 0.5 - 0.08), (c.y - 0.05) * 0.5, c.z + 0.02), Vec3(0.04, (c.y - 0.05) * 0.5, 0.17), 0.);
+    sx = sx + 2.;
+  }
+}
+
+// Bars at the person's landmark heights, as wide as their ANSUR II breadths (the arms out at the shoulders), behind them
+fn measureBars(m: &Measures, x: f32, pos: &mut List[Vec3], idx: &mut List[u32]) {
+  let h = m.height;
+  let z = 0.45f;
+  let t = 0.0035f;
+  let ys = [m.acromionAt * h - 0.03, m.chestAt * h, m.waistAt * h, m.trochanterAt * h, (m.crotchAt - 0.02) * h, h];
+  let thighW = m.thighGirth / 3.1416;
+  let ws = [m.bideltoid, m.chestBreadth, m.waistBreadth, m.hipBreadth, 2. * hipHalfSpan(m) + thighW, 0.12];
+  var k = 0usize;
+  while k < 6usize {
+    let base = u32.from(pos.len());
+    let hw = ws[k] * 0.5;
+    pos.push(Vec3(x - hw, ys[k] - t, z)); pos.push(Vec3(x + hw, ys[k] - t, z));
+    pos.push(Vec3(x + hw, ys[k] + t, z)); pos.push(Vec3(x - hw, ys[k] + t, z));
+    idx.push(base); idx.push(base + 2u32); idx.push(base + 1u32);
+    idx.push(base); idx.push(base + 3u32); idx.push(base + 2u32);
+    // ticks at the bar's ends
+    let b2 = u32.from(pos.len());
+    pos.push(Vec3(x - hw - t, ys[k] - 0.025, z)); pos.push(Vec3(x - hw + t, ys[k] - 0.025, z));
+    pos.push(Vec3(x - hw + t, ys[k] + 0.025, z)); pos.push(Vec3(x - hw - t, ys[k] + 0.025, z));
+    idx.push(b2); idx.push(b2 + 2u32); idx.push(b2 + 1u32);
+    idx.push(b2); idx.push(b2 + 3u32); idx.push(b2 + 2u32);
+    let b3 = u32.from(pos.len());
+    pos.push(Vec3(x + hw - t, ys[k] - 0.025, z)); pos.push(Vec3(x + hw + t, ys[k] - 0.025, z));
+    pos.push(Vec3(x + hw + t, ys[k] + 0.025, z)); pos.push(Vec3(x + hw - t, ys[k] + 0.025, z));
+    idx.push(b3); idx.push(b3 + 2u32); idx.push(b3 + 1u32);
+    idx.push(b3); idx.push(b3 + 3u32); idx.push(b3 + 2u32);
+    k = k + 1usize;
+  }
+}
+
+// ------------------------------------------------------------------------------ today's mannequin, for comparison
+//
+// pegasus3d's browser/src/mannequin.cone's body, its tables and lofts copied here as they are (unskinned: it stands in
+// its rest pose), to draw it at the same scale. That file is the truth; this is a reading of it on 15 Oct 2026.
+
+const MQ_TRUNK: Array[f32, 72] = [
+  0.445, 0.040, 0.030, 0.000, 0.465, 0.105, 0.066, 0.006, 0.500, 0.136, 0.076, 0.009, 0.545, 0.140, 0.072, 0.005,
+  0.600, 0.110, 0.062, 0.001, 0.660, 0.110, 0.064, -0.003, 0.720, 0.120, 0.070, -0.006, 0.775, 0.130, 0.065, -0.002,
+  0.812, 0.124, 0.056, 0.004, 0.835, 0.098, 0.048, 0.006, 0.850, 0.050, 0.038, 0.005, 0.862, 0.034, 0.034, 0.004,
+  0.878, 0.031, 0.034, 0.001, 0.896, 0.040, 0.050, -0.006, 0.930, 0.046, 0.058, -0.004, 0.966, 0.044, 0.054, 0.000,
+  0.991, 0.030, 0.038, 0.002, 1.002, 0.008, 0.010, 0.000];
+const MQ_LEG: Array[f32, 30] = [0.000, 0.020, 0.000, 0.020, 0.041, 0.000, 0.050, 0.050, 0.000, 0.140, 0.050, -0.003,
+  0.220, 0.044, 0.000, 0.295, 0.037, 0.000, 0.355, 0.040, 0.006, 0.445, 0.031, 0.003, 0.541, 0.023, 0.000, 0.556, 0.013, 0.000];
+const MQ_ARM: Array[f32, 20] = [0.000, 0.010, 0.010, 0.027, 0.022, 0.035, 0.082, 0.033, 0.162, 0.030, 0.210, 0.026,
+  0.246, 0.029, 0.310, 0.024, 0.355, 0.018, 0.365, 0.013];
+const MQ_HAND: Array[f32, 15] = [0.00, 0.016, 0.012, 0.25, 0.024, 0.013, 0.60, 0.025, 0.011, 0.90, 0.018, 0.008, 1.00, 0.006, 0.004];
+const MQ_FOOT: Array[f32, 18] = [0.00, 0.009, 0.018, 0.07, 0.021, 0.044, 0.28, 0.024, 0.058, 0.55, 0.029, 0.040, 0.85, 0.027, 0.026,
+  1.00, 0.010, 0.012];
+
+fn mqEllipse(n: usize, a: f32, b: f32, cx: f32, cy: f32) sculpt.Profile {
+  var pts = List[Vec2].withCapacity(n);
+  var k = 0usize;
+  while k < n {
+    let t = 2. * pi * f32.from(k) / f32.from(n);
+    pts.push(Vec2(cx + a * cos(t), cy + b * sin(t)));
+    k = k + 1usize;
+  }
+  sculpt.Profile.fromPoints(pts.view(), true)
+}
+
+fn mqSole(n: usize, hw: f32, top: f32) sculpt.Profile {
+  var pts = List[Vec2].withCapacity(n);
+  let half = top * 0.5;
+  let mid = half * 0.8;
+  var k = 0usize;
+  while k < n {
+    let t = 2. * pi * f32.from(k) / f32.from(n);
+    let y = mid + half * sin(t);
+    pts.push(Vec2(hw * cos(t), if y < 0. { 0. } else { y }));
+    k = k + 1usize;
+  }
+  sculpt.Profile.fromPoints(pts.view(), true)
+}
+
+fn mqLoft(from: Vec3, to: Vec3, up: Vec3, profiles: &List[sculpt.Profile], at: &Array[f32]) Mesh {
+  let ends = [from, to];
+  var path = sculpt.Path.fromPoints(&ends, false);
+  path.up = up;
+  let pm = sculpt.loftAlong(profiles, &path, at, 0u32, 2u32, true, true);
+  pm.triangulate(true)
+}
+
+fn mannequinMesh(h: f32) Mesh {
+  let skel = humanoid(h);
+  let rest = restModels(&skel);
+  var body = Mesh();
+  {
+    var profiles = List[sculpt.Profile]();
+    var at = List[f32]();
+    let y0 = MQ_TRUNK[0] * h;
+    let y1 = MQ_TRUNK[68usize] * h;
+    var r = 0usize;
+    while r < 18usize {
+      let e = r * 4usize;
+      profiles.push(mqEllipse(24usize, MQ_TRUNK[e + 1usize] * h, MQ_TRUNK[e + 2usize] * h, 0., MQ_TRUNK[e + 3usize] * h));
+      at.push((MQ_TRUNK[e] * h - y0) / (y1 - y0));
+      r = r + 1usize;
+    }
+    let piece = mqLoft(Vec3(0., y0, 0.), Vec3(0., y1, 0.), Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    var nose = Mesh.sphere(1., 10);
+    nose.transform(Mat4.fromTrs(Vec3(0., 0.925 * h, -0.058 * h), Quat.identity(), Vec3(0.009 * h, 0.013 * h, 0.012 * h)));
+    body.append(&nose);
+  }
+  var side = 0usize;
+  while side < 2usize {
+    let thigh = if side == 0usize { THIGH_L } else { THIGH_R };
+    let hip = (*rest[thigh]).translation;
+    let ankle = (*rest[thigh + 4usize]).translation;
+    let down = (ankle - hip).normalize();
+    let top = hip - down * (0.05 * h);
+    let length = MQ_LEG[27usize] * h;
+    var profiles = List[sculpt.Profile]();
+    var at = List[f32]();
+    var r = 0usize;
+    while r < 10usize {
+      let e = r * 3usize;
+      let radius = MQ_LEG[e + 1usize] * h;
+      profiles.push(mqEllipse(16usize, radius, radius, 0., MQ_LEG[e + 2usize] * h));
+      at.push(MQ_LEG[e] * h / length);
+      r = r + 1usize;
+    }
+    let piece = mqLoft(top, top + down * length, Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    var feet = List[sculpt.Profile]();
+    var fat = List[f32]();
+    r = 0usize;
+    while r < 6usize {
+      let e = r * 3usize;
+      feet.push(mqSole(16usize, MQ_FOOT[e + 1usize] * h, MQ_FOOT[e + 2usize] * h));
+      fat.push(MQ_FOOT[e]);
+      r = r + 1usize;
+    }
+    let heel = Vec3(ankle.x, 0., ankle.z + 0.045 * h);
+    let toe = Vec3(ankle.x, 0., ankle.z - 0.115 * h);
+    let footPiece = mqLoft(heel, toe, Vec3(0., 1., 0.), &feet, fat.view());
+    body.append(&footPiece);
+    side = side + 1usize;
+  }
+  side = 0usize;
+  while side < 2usize {
+    let upper = if side == 0usize { UPPER_ARM_L } else { UPPER_ARM_R };
+    let shoulder = (*rest[upper]).translation;
+    let wrist = (*rest[upper + 4usize]).translation;
+    let down = (wrist - shoulder).normalize();
+    let top = shoulder - down * (0.022 * h);
+    let length = MQ_ARM[18usize] * h;
+    var profiles = List[sculpt.Profile]();
+    var at = List[f32]();
+    var r = 0usize;
+    while r < 10usize {
+      let e = r * 2usize;
+      let radius = MQ_ARM[e + 1usize] * h;
+      profiles.push(mqEllipse(16usize, radius, radius, 0., 0.));
+      at.push(MQ_ARM[e] * h / length);
+      r = r + 1usize;
+    }
+    let piece = mqLoft(top, top + down * length, Vec3(0., 0., 1.), &profiles, at.view());
+    body.append(&piece);
+    var rings = List[sculpt.Profile]();
+    var hat = List[f32]();
+    r = 0usize;
+    while r < 5usize {
+      let e = r * 3usize;
+      rings.push(mqEllipse(12usize, MQ_HAND[e + 1usize] * h, MQ_HAND[e + 2usize] * h, 0., 0.));
+      hat.push(MQ_HAND[e]);
+      r = r + 1usize;
+    }
+    let out = if side == 0usize { Vec3(-1., 0., 0.) } else { Vec3(1., 0., 0.) };
+    let handPiece = mqLoft(wrist, wrist + down * (0.108 * h), out, &rings, hat.view());
+    body.append(&handPiece);
+    side = side + 1usize;
+  }
+  body
+}

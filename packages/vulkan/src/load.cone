@@ -10,40 +10,40 @@
 // 'DeviceFns').
 
 extern {
-  fn @initpure @c(system) LoadLibraryA(name *u8) usize;
-  fn @initpure @c(system) GetProcAddress(module usize, name *u8) usize;
-  fn @initpure @c dlopen(name *u8, flags i32) usize;
-  fn @initpure @c dlsym(handle usize, name *u8) usize;
+  fn @initpure @c(system) LoadLibraryA(name: *u8) usize;
+  fn @initpure @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @initpure @c dlopen(name: *u8, flags: i32) usize;
+  fn @initpure @c dlsym(handle: usize, name: *u8) usize;
 }
 
 // dlopen's RTLD_NOW: Linux's and macOS's value alike
 const rtldNow = 2i32;
 
 // The Vulkan loader library of this OS, opened: 0 if there is none
-fn @initpure openLoader() usize {
-  if isWindows() {
-    return LoadLibraryA(&"vulkan-1.dll" as *u8);
-  }
-  if isMacOS() {
-    mut h = dlopen(&"libvulkan.1.dylib" as *u8, rtldNow);
+fn openLoader() usize {
+  #if #os == .windows {
+    LoadLibraryA(&"vulkan-1.dll" as *u8)
+  } #elif #os == .macos {
+    var h = dlopen(&"libvulkan.1.dylib" as *u8, rtldNow);
     if h == 0usize { h = dlopen(&"libvulkan.dylib" as *u8, rtldNow); }
-    return h;
+    h
+  } #else {
+    dlopen(&"libvulkan.so.1" as *u8, rtldNow)
   }
-  dlopen(&"libvulkan.so.1" as *u8, rtldNow);
 }
 
 // A function of the opened loader library
-fn @initpure loaderSymbol(library usize, name *u8) usize {
-  if isWindows() { GetProcAddress(library, name); } else { dlsym(library, name); }
+fn loaderSymbol(library: usize, name: *u8) usize {
+  #if #os == .windows { GetProcAddress(library, name) } #else { dlsym(library, name) }
 }
 
 // The global-level functions, found by the module's 'init': nothing found
 // when there is no Vulkan loader
-imm globals GlobalFns;
+let globals: GlobalFns;
 
 fn @initpure init() {
-  imm library = openLoader();
-  mut gipa = 0usize;
+  let library = openLoader();
+  var gipa = 0usize;
   if library != 0usize { gipa = loaderSymbol(library, &"vkGetInstanceProcAddr" as *u8); }
   globals = GlobalFns.find(gipa as *u8 as PFN_GetInstanceProcAddr);
 }
@@ -52,33 +52,41 @@ fn @initpure init() {
 // When it is not, calling 'createInstance' and the other global-level
 // functions calls address 0 and crashes: check this first.
 pub fn available() bool {
-  globals.pfnGetInstanceProcAddr != 0usize and globals.missing == 0u32;
+  globals.pfnGetInstanceProcAddr != 0usize && globals.missing == 0u32
+}
+
+// The Vulkan loader's vkGetInstanceProcAddr itself, as a function reference:
+// what a runtime that makes the instance or the device for the program wants
+// to be handed (OpenXR's XR_KHR_vulkan_enable2 takes it in its create-infos).
+// Address 0 when there is no loader: check 'available' first.
+pub fn instanceProcAddrFn() PFN_GetInstanceProcAddr {
+  globals.pfnGetInstanceProcAddr as *u8 as PFN_GetInstanceProcAddr
 }
 
 // Look a function up through a vkGetInstanceProcAddr
-fn lookup(getInstanceProcAddr PFN_GetInstanceProcAddr, instance Instance, name *u8) usize {
-  getInstanceProcAddr(instance, name) as usize;
+fn lookup(getInstanceProcAddr: PFN_GetInstanceProcAddr, instance: Instance, name: *u8) usize {
+  getInstanceProcAddr(instance, name) as usize
 }
 
 // The functions needing no instance. 'init' finds them through the OS loader;
 // 'find' takes any vkGetInstanceProcAddr, which is how a test stands one in.
 pub struct GlobalFns {
-  pfnGetInstanceProcAddr usize = 0usize;
-  pfnEnumerateInstanceVersion usize = 0usize;
-  pfnEnumerateInstanceExtensionProperties usize = 0usize;
-  pfnEnumerateInstanceLayerProperties usize = 0usize;
-  pfnCreateInstance usize = 0usize;
+  pfnGetInstanceProcAddr: usize = 0usize;
+  pfnEnumerateInstanceVersion: usize = 0usize;
+  pfnEnumerateInstanceExtensionProperties: usize = 0usize;
+  pfnEnumerateInstanceLayerProperties: usize = 0usize;
+  pfnCreateInstance: usize = 0usize;
   // How many of its functions were not found
-  pub missing u32 = 0u32;
+  pub missing: u32 = 0u32;
 
   // Keep 'getInstanceProcAddr' and look the other four up through it. A null
   // one gives a table with nothing found and nothing counted missing
-  pub fn find(getInstanceProcAddr PFN_GetInstanceProcAddr) GlobalFns {
-    mut t = new GlobalFns();
+  pub fn find(getInstanceProcAddr: PFN_GetInstanceProcAddr) GlobalFns {
+    var t = GlobalFns();
     if getInstanceProcAddr as usize == 0usize { return t; }
-    mut missing = 0u32;
+    var missing = 0u32;
     t.pfnGetInstanceProcAddr = getInstanceProcAddr as usize;
-    imm none = 0usize as Instance;
+    let none = 0usize as Instance;
     t.pfnEnumerateInstanceVersion = lookup(getInstanceProcAddr, none, &"vkEnumerateInstanceVersion" as *u8);
     if t.pfnEnumerateInstanceVersion == 0usize { missing = missing + 1u32; }
     t.pfnEnumerateInstanceExtensionProperties = lookup(getInstanceProcAddr, none, &"vkEnumerateInstanceExtensionProperties" as *u8);
@@ -88,40 +96,40 @@ pub struct GlobalFns {
     t.pfnCreateInstance = lookup(getInstanceProcAddr, none, &"vkCreateInstance" as *u8);
     if t.pfnCreateInstance == 0usize { missing = missing + 1u32; }
     t.missing = missing;
-    t;
+    t
   }
 
-  pub fn getInstanceProcAddr(self &, instance Instance, pName *u8) *u8 {
-    (pfnGetInstanceProcAddr as *u8 as PFN_GetInstanceProcAddr)(instance, pName);
+  pub fn getInstanceProcAddr(self: &, instance: Instance, pName: *u8) *u8 {
+    (pfnGetInstanceProcAddr as *u8 as PFN_GetInstanceProcAddr)(instance, pName)
   }
-  pub fn enumerateInstanceVersion(self &, pApiVersion &mut u32) i32 {
-    (pfnEnumerateInstanceVersion as *u8 as PFN_EnumerateInstanceVersion)(pApiVersion);
+  pub fn enumerateInstanceVersion(self: &, pApiVersion: &mut u32) i32 {
+    (pfnEnumerateInstanceVersion as *u8 as PFN_EnumerateInstanceVersion)(pApiVersion)
   }
-  pub fn enumerateInstanceExtensionProperties(self &, pLayerName *u8, pPropertyCount &mut u32, pProperties *ExtensionProperties) i32 {
-    (pfnEnumerateInstanceExtensionProperties as *u8 as PFN_EnumerateInstanceExtensionProperties)(pLayerName, pPropertyCount, pProperties);
+  pub fn enumerateInstanceExtensionProperties(self: &, pLayerName: *u8, pPropertyCount: &mut u32, pProperties: *ExtensionProperties) i32 {
+    (pfnEnumerateInstanceExtensionProperties as *u8 as PFN_EnumerateInstanceExtensionProperties)(pLayerName, pPropertyCount, pProperties)
   }
-  pub fn enumerateInstanceLayerProperties(self &, pPropertyCount &mut u32, pProperties *LayerProperties) i32 {
-    (pfnEnumerateInstanceLayerProperties as *u8 as PFN_EnumerateInstanceLayerProperties)(pPropertyCount, pProperties);
+  pub fn enumerateInstanceLayerProperties(self: &, pPropertyCount: &mut u32, pProperties: *LayerProperties) i32 {
+    (pfnEnumerateInstanceLayerProperties as *u8 as PFN_EnumerateInstanceLayerProperties)(pPropertyCount, pProperties)
   }
-  pub fn createInstance(self &, pCreateInfo &InstanceCreateInfo, pAllocator *u8, pInstance &mut Instance) i32 {
-    (pfnCreateInstance as *u8 as PFN_CreateInstance)(pCreateInfo, pAllocator, pInstance);
+  pub fn createInstance(self: &, pCreateInfo: &InstanceCreateInfo, pAllocator: *u8, pInstance: &mut Instance) i32 {
+    (pfnCreateInstance as *u8 as PFN_CreateInstance)(pCreateInfo, pAllocator, pInstance)
   }
 }
 
 // ---- The global-level functions, called on what 'init' found ----
 
-pub fn getInstanceProcAddr(instance Instance, pName *u8) *u8 {
-  globals.getInstanceProcAddr(instance, pName);
+pub fn getInstanceProcAddr(instance: Instance, pName: *u8) *u8 {
+  globals.getInstanceProcAddr(instance, pName)
 }
-pub fn enumerateInstanceVersion(pApiVersion &mut u32) i32 {
-  globals.enumerateInstanceVersion(pApiVersion);
+pub fn enumerateInstanceVersion(pApiVersion: &mut u32) i32 {
+  globals.enumerateInstanceVersion(pApiVersion)
 }
-pub fn enumerateInstanceExtensionProperties(pLayerName *u8, pPropertyCount &mut u32, pProperties *ExtensionProperties) i32 {
-  globals.enumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties);
+pub fn enumerateInstanceExtensionProperties(pLayerName: *u8, pPropertyCount: &mut u32, pProperties: *ExtensionProperties) i32 {
+  globals.enumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties)
 }
-pub fn enumerateInstanceLayerProperties(pPropertyCount &mut u32, pProperties *LayerProperties) i32 {
-  globals.enumerateInstanceLayerProperties(pPropertyCount, pProperties);
+pub fn enumerateInstanceLayerProperties(pPropertyCount: &mut u32, pProperties: *LayerProperties) i32 {
+  globals.enumerateInstanceLayerProperties(pPropertyCount, pProperties)
 }
-pub fn createInstance(pCreateInfo &InstanceCreateInfo, pAllocator *u8, pInstance &mut Instance) i32 {
-  globals.createInstance(pCreateInfo, pAllocator, pInstance);
+pub fn createInstance(pCreateInfo: &InstanceCreateInfo, pAllocator: *u8, pInstance: &mut Instance) i32 {
+  globals.createInstance(pCreateInfo, pAllocator, pInstance)
 }

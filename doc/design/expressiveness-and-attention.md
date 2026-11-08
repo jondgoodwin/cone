@@ -125,7 +125,7 @@ sharing, means most aliasing questions never arise to be asked.
 concurrency one.** [References and Regions](references-and-regions.md) carries
 what borrowing does today.
 
-## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour, a future or an I/O operation; no 'actor trait', no generic actor]
+## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour, a future or an I/O operation]
 
 > *"What I like about actors is how much simpler it makes talking about
 > concurrency and designing around concurrency, and the modularness of it, as
@@ -141,8 +141,8 @@ systems."*
 records as the largest single hole in the layer table. The `thread` package's
 OS threads and futex are library ground for one, not the layer. Actors are
 declared (`actor`, the reference manual's "Actors"): fields as private state,
-`new` making one and answering its handle, each behaviour (a method declared
-`async do`) a message whose arguments must be Sendable, run one at a time on
+constructing one by its name and answering its handle, each behaviour (a method declared
+`async fn`) a message whose arguments must be Sendable, run one at a time on
 the `actors` package's runtime (mailboxes, a work-stealing scheduler,
 quiescence), and each method declared `fn` synchronous, run inside the actor
 by its caller. A behaviour may return a value to an `await` in another

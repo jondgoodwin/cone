@@ -1,0 +1,213 @@
+// Cancelled decoded fetches (Bug 41): 22 fetches of one 8 MiB incompressible zstd body, each through its own
+// httpdecode.Decoder into a sink that keeps its source, all in one CancelGroup. Once every fetch has its head
+// and a moment has passed, the group is cancelled, and the program ends after actors.waitUntilIdle. Meant for
+// LSan on the Linux server (nothing may leak). On any machine the output checks only that all 22 fetches got
+// their heads and that the program ends; it does not count the sinks' ends or check the bytes.
+//
+// The server is a loopback actorhttp server of the test's own: GET /rand/zstd/<N> answers N pseudo-random bytes
+// zstd-compressed, with Content-Encoding: zstd.
+
+mod cancel;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending;
+import zstd;
+import httpdecode use Decoder;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+let heads: Atomic[u64];
+
+fn @initpure init() {
+  heads = Atomic[u64].of(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+// The path's segments after the first '/', split at '/'
+fn segments(p: &str) List[String] {
+  var out = List[String]();
+  var cur = String();
+  var i = 1usize;
+  while i < p.len {
+    if p[i] == 47u8 {out.push(cur); cur = String();}
+    else {cur.append(&p[i ..< i + 1usize]);}
+    i = i + 1usize;
+  }
+  out.push(cur);
+  out
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let segs = segments(path.view());   // "rand", "zstd", "<N>"
+    let n = number(segs[2usize].view());
+    var raw = List[u8].withCapacity(usize.from(n));
+    var i = 0u64;
+    var x = 12345u64;
+    while i < n {
+      // incompressible, so the body on the wire is about n bytes
+      x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
+      raw.push(u8.from((x / 65536u64) % 256u64));
+      i = i + 1u64;
+    }
+    let body = zstd.compress(raw.view(), 3i32);
+    var head = ResponseHead.make(200u16);
+    head.headers.add("Content-Encoding", "zstd");
+    ex.start(head, BodyLength.sized(u64.from(body.len())));
+    var at = 0usize;
+    var going = true;
+    while going && at < body.len() {
+      let left = body.len() - at;
+      let m = if left < 65536usize {left} else {65536usize};
+      let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
+      match w {
+        case is Ok { at = at + m; }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sink: gives each chunk back at once, and keeps its source after the end
+// ---------------------------------------------------------------------------
+
+actor Count is ChunkSink {
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource]);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      case is None {}
+    }
+  }
+
+  // 'up' is kept on purpose (the repro): whoever sends the end lets go of this sink (the ChunkSink contract),
+  // so a sink that keeps its source costs nothing (Bug 41: 72 MB under LSan when the sender kept it).
+  pub async fn end(self, how: Ending) {}
+}
+
+// A fetch in group 'g': counts the head when it arrives
+actor Fetch2 {
+  client: Client;
+
+  pub async fn run(self, u: String, d: Decoder, g: CancelGroup) {
+    var req = Request.get(u.view());
+    req.group = Some[CancelGroup](g);
+    let r = await d.open(client.clone(), req);
+    match r {
+      case is Ok { heads.add(1u64); }
+      case is Err {}
+    }
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let plain = Acceptor(Server.none());
+    plain.open(ServerConfig.make(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    plain.serve();
+    heads.store(0u64);
+    let g = CancelGroup.make();
+    var k = 0;
+    while k < 22 {
+      let sink = Count();
+      let d = Decoder(sink, 268435456usize);
+      let f = Fetch2(Client.standard());
+      f.run(url(port, "/rand/zstd/8388608"), d, g);
+      k = k + 1;
+    }
+    waitFor(&heads, 22u64);
+    thread.sleep(Duration.fromMillis(200i64));
+    // The group is cancelled mid-body. A fetch that sees it gets a Cancelled event from the client, and
+    // streamservice's onSinkEvent then sends the sink its one end (Failed) and lets the sink go; a buffer given
+    // back in the cancelled group also ends the fetch. What is left is dropped when the program ends.
+    g.cancel();
+    thread.sleep(Duration.fromMillis(1500i64));
+    printStr("heads: ");
+    printStr(yes(heads.load() == 22u64));
+    printStr("\n");
+    plain.stop();
+  }
+  actors.waitUntilIdle();
+  finalAll();
+  printStr("end\n");
+  0i32
+}

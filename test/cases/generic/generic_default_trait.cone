@@ -1,0 +1,129 @@
+// Core's Default, "made by T() with no arguments". A number type and bool meet it by
+// the compiler's grant (their T() is 0, 0.0, false), a collection by declaring it, a
+// struct that declares it by being made from its fields: each field's declared
+// '= value', else its type's own T(). A struct with an init of its own is made by
+// that init. Nothing is Default unless it says so (generic_typecheck_default). A T()
+// written in generic code builds in the heap, where a collection made with a region
+// named lives in that region. Each printed value was checked by hand.
+
+mod generic_default_trait;
+
+import stdio use *;
+import collections use *;
+import libc;
+
+fn showB(b: bool) { if b { printStr("true\n"); } else { printStr("false\n"); } }
+fn showI(n: i32) { printInt(n); printStr("\n"); }
+
+// The bound as a type parameter's: generic code writes T()
+fn make[T: Default]() T { T() }
+
+// Numbers and bool, then a struct with defaults declared and not, a float, a bool
+struct Pt is Default { x: i32; y: i32 = 5; w: f64; ok: bool }
+
+// Nested: structs that declare Default, a String, a List
+struct Line is Default { a: Pt; b: Pt; name: String; tags: List[i32] }
+
+// Over a generic parameter
+struct Pair[T] is Default { a: T; b: T }
+
+// No fields
+struct Unit is Default {}
+
+// Its own init, which T() calls
+struct Own is Default {
+  n: i32;
+  pub fn init(self: &new) { *self = Own(42); }
+}
+
+// A region that counts what it is asked for
+struct Counting {
+  header: MemRegion;
+  blocks: usize;
+  bytes: usize;
+}
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
+  (*c).blocks = (*c).blocks + 1usize;
+  (*c).bytes = (*c).bytes + bytes;
+  libc.malloc(bytes)
+}
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
+  (*c).bytes = (*c).bytes + newBytes - oldBytes;
+  libc.realloc(block, newBytes)
+}
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
+  if block as usize == 0usize { return; }
+  let c = r as *Counting;
+  (*c).bytes = (*c).bytes - bytes;
+  libc.free(block);
+}
+fn countSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
+
+fn main() {
+  // Numbers and bool, through the bound
+  showI(make[i32]());                                // 0
+  showI(i32.from(make[u8]()));                          // 0
+  showB(make[f64]() == 0.0);                         // true
+  showB(make[bool]());                               // false
+  showI(if make[i64]() == 0i64 { 1 } else { 0 });   // 1
+
+  // and written directly
+  showI(i32() + 3);                                  // 3
+  showB(bool());                                     // false
+
+  // Collections: empty, and then usable
+  var l = make[List[i32]]();
+  showB(l.len() == 0usize);                          // true
+  l.push(9);
+  showI(*l.get(0usize).unwrap());                              // 9
+  showB(make[String]().len() == 0usize);             // true
+  showB(make[Dict[i32, i32]]().len() == 0usize);     // true
+  showB(make[Deque[i32]]().len() == 0usize);         // true
+
+  // A struct: x from the type (0), y declared (5), w 0.0, ok false
+  let p = make[Pt]();
+  showI(p.x * 100 + p.y);                            // 5
+  showB(p.w == 0.0);                                 // true
+  showB(p.ok);                                       // false
+  // an argument given still wins, and a field left out is its default
+  let q = Pt(7, 8, 1.5, true);
+  showI(q.x + q.y);                                  // 15
+  let q2 = Pt(x: 3);
+  showI(q2.x + q2.y);                                // 3 + 5 = 8
+
+  // Nested
+  let ln = make[Line]();
+  showI(ln.a.y + ln.b.y);                            // 5 + 5 = 10
+  showB(ln.name.len() == 0usize);                    // true
+  showB(ln.tags.len() == 0usize);                    // true
+  let ln2 = Line();
+  showI(ln2.b.x);                                    // 0
+
+  // Over a parameter
+  let pr = make[Pair[i64]]();
+  showB(pr.a == 0i64 && pr.b == 0i64);               // true
+  let pf = make[Pair[f32]]();
+  showB(pf.a == 0.0f32);                             // true
+
+  let u = make[Unit]();
+  showI(7);                                          // 7: a struct with no fields is made
+
+  // Its own init
+  showI(make[Own]().n);                              // 42
+
+  // A collection made in a region lives there; T() in generic code lives in the heap
+  var counting = Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize);
+  let region = (&counting) as *MemRegion;
+  {
+    var inRegion = List[i64](region);
+    inRegion.push(1i64);
+    showB(counting.bytes > 0usize);                  // true
+    let before = counting.bytes;
+    var heaped = make[List[i64]]();
+    heaped.push(1i64);
+    showB(counting.bytes == before);                 // true: the generic T() asked the region for nothing
+  }
+  showB(counting.bytes == 0usize);                   // true: the region's list gave its block back
+}

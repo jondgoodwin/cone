@@ -16,9 +16,53 @@
 
 int errors = 0;
 int warnings = 0;
-// Non-zero while a closure's body is tried under a guess at its permissions
-// (closure.c): a diagnostic is counted and not printed
+// Non-zero while code is checked as a trial (error.h): a diagnostic is counted
+// and not printed
 int errorSilent = 0;
+uint32_t errorTrialMark = 0;
+// Inside a loud window: how deep, and the diagnostics it reported
+static int errorLoudDepth = 0;
+static int errorsLoud = 0;
+static int warningsLoud = 0;
+
+void errorTrialBegin(ErrorTrial *trial, uint32_t mark) {
+    trial->errors = errors;
+    trial->warnings = warnings;
+    trial->loudErrors = errorsLoud;
+    trial->loudWarnings = warningsLoud;
+    trial->mark = mark;
+    trial->svmark = errorTrialMark;
+    if (errorSilent == 0)
+        errorTrialMark = mark;
+    ++errorSilent;
+}
+
+int errorTrialEnd(ErrorTrial *trial) {
+    --errorSilent;
+    if (errorSilent == 0)
+        errorTrialMark = trial->svmark;
+    int loudErrors = errorsLoud - trial->loudErrors;
+    int own = (errors - trial->errors) - loudErrors;
+    errors = trial->errors + loudErrors;
+    warnings = trial->warnings + (warningsLoud - trial->loudWarnings);
+    return own == 0;
+}
+
+int errorLoudBegin(void) {
+    int saved = errorSilent;
+    errorSilent = 0;
+    ++errorLoudDepth;
+    return saved;
+}
+
+void errorLoudEnd(int saved) {
+    --errorLoudDepth;
+    errorSilent = saved;
+}
+
+int errorsOwn(void) {
+    return errors - errorsLoud;
+}
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
@@ -40,11 +84,15 @@ void errorOut(int code, const char *msg, va_list args) {
     // Prefix for error message
     if (code < WarnCode) {
         errors++;
+        if (!errorSilent && errorLoudDepth)
+            errorsLoud++;
         if (!errorSilent)
             fprintf(stderr, "Error %d: ", code);
     }
     else if (code < Uncounted) {
         warnings++;
+        if (!errorSilent && errorLoudDepth)
+            warningsLoud++;
         if (!errorSilent)
             fprintf(stderr, "Warning %d: ", code);
     }
@@ -109,8 +157,21 @@ static void errorOutGen(Lexer *lexer, char *tokp, char *linep, int code, const c
     char *srcp = linep;
     while (srcp < tokp && (*srcp == ' ' || *srcp == '\t'))
         ++srcp;
-    while (*srcp && *srcp != '\n')
+    while (*srcp && *srcp != '\n') {
+        // A name no source can spell, written '`#n`', is shown as the string it reads as
+        if (srcp[0] == '`' && srcp[1] == '#' && lexer->gennames) {
+            char *p = srcp + 2;
+            uint32_t n = 0;
+            while (*p >= '0' && *p <= '9')
+                n = n * 10 + (uint32_t)(*p++ - '0');
+            if (p > srcp + 2 && *p == '`' && n < lexer->ngennames && lexer->gennames[n]) {
+                fputs(&lexer->gennames[n]->namestr, stderr);
+                srcp = p + 1;
+                continue;
+            }
+        }
         fputc(*srcp++, stderr);
+    }
     fputc('\n', stderr);
 }
 
@@ -129,12 +190,25 @@ static void errorMsgFrame(INode *node, int code, const char *msg, ...) {
     va_end(argptr);
 }
 
+EachPass *errorEachPass = NULL;
+
+// Say which pass of which '#each' an error was in, innermost first. Only an error
+// is placed so: the notes and warnings a pass makes are not
+static void errorEachNote(int code) {
+    if (code == Uncounted || code >= WarnCode)
+        return;
+    for (EachPass *pass = errorEachPass; pass; pass = pass->outer)
+        errorMsgFrame(pass->loop, Uncounted, "... in pass %u of %u of this '#each', where %s is %s",
+            pass->pass, pass->npasses, pass->var, pass->item);
+}
+
 // Send an error message to stderr
 void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
     errorOutNode(node, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 
     // Name what instantiated this node, and what instantiated that, outward
     uint32_t shown = 0;
@@ -162,6 +236,7 @@ void errorMsgLexAfter(int code, const char *msg, ...) {
     else
         errorOutCode(lex->prevend, lex->prevlinenbr, lex->prevlinep, lex->url, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 }
 
 // Send an error message to stderr
@@ -173,6 +248,7 @@ void errorMsgLex(int code, const char *msg, ...) {
     else
         errorOutCode(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 }
 
 // Send an error message to stderr

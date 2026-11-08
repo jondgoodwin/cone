@@ -1,8 +1,8 @@
 // ---- Failures ----
 
 // The two counters are atomics (any thread may fail a call or hear the validation layer), made in the module's init
-imm failureCount Atomic[u32];
-imm messageCount Atomic[u32];
+let failureCount: Atomic[u32];
+let messageCount: Atomic[u32];
 
 fn @initpure init() {
   failureCount = Atomic[u32].of(0u32);
@@ -15,70 +15,69 @@ alias InstFns = Arc[imm, vulkan.InstanceFns];
 alias DevFns = Arc[imm, vulkan.DeviceFns];
 
 // Tables with nothing found, for the objects that are not valid
-fn noInstFns() InstFns { new Arc[imm, vulkan.InstanceFns](new vulkan.InstanceFns()); }
-fn noDevFns() DevFns { new Arc[imm, vulkan.DeviceFns](new vulkan.DeviceFns()); }
+fn noInstFns() InstFns { Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns()) }
+fn noDevFns() DevFns { Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns()) }
 
 // How many Vulkan calls have failed
-pub fn failures() u32 { failureCount.load(); }
+pub fn failures() u32 { failureCount.load() }
 
 // How many warnings and errors the validation layer has reported (the
 // loader's own, about its configuration, are printed and not counted)
-pub fn validationMessages() u32 { messageCount.load(); }
+pub fn validationMessages() u32 { messageCount.load() }
 
 // Whether 'r' is success; if not, report it, naming 'what', and count it
-fn check(r i32, what &str) bool {
+fn check(r: i32, what: &str) bool {
   if r == vulkan.SUCCESS { return true; }
   failureCount.add(1u32);
-  mut m = String.from("gpu: ");
+  var m = String.from("gpu: ");
   m <- what;
   m <- " failed: ";
   m <- vulkan.resultName(r);
   logLine(m.view());
-  false;
+  false
 }
 
 // Report a failure that is not a VkResult, and count it
-fn fail(msg &str) {
+fn fail(msg: &str) {
   failureCount.add(1u32);
-  mut m = String.from("gpu: ");
+  var m = String.from("gpu: ");
   m <- msg;
   logLine(m.view());
 }
 
-fn logLine(msg &str) {
-  mut m = String.from(msg);
+fn logLine(msg: &str) {
+  var m = String.from(msg);
   m.appendByte('\n');
-  imm v &Array[u8] = m.view();
+  let v: &Array[u8] = m.view();
   libc.fflush(libc.stdout());
   libc.fwrite(v as *u8, 1usize, v.len, libc.stderr());
 }
 
-fn appendCStr(s &mut String, p *u8) {
-  mut i = 0usize;
+fn appendCStr(s: &mut String, p: *u8) {
+  var i = 0usize;
   while *(p + i) != 0u8 {
     s.appendByte(*(p + i));
     i = i + 1usize;
   }
 }
 
-fn nullp() *u8 { null; }
-fn nullCommandBuffer() vulkan.CommandBuffer { 0usize as vulkan.CommandBuffer; }
-fn isNull(cmd vulkan.CommandBuffer) bool { (cmd as *u8 as usize) == 0usize; }
-fn umax(a u32, b u32) u32 { if a > b { a; } else { b; } }
+fn nullp() *u8 { null }
+fn nullCommandBuffer() vulkan.CommandBuffer { 0usize as vulkan.CommandBuffer }
+fn isNull(cmd: vulkan.CommandBuffer) bool { (cmd as *u8 as usize) == 0usize }
 
 // A value of T with every byte zero, for a C struct Vulkan fills in
 fn zeroed[T]() T {
-  imm p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
-  imm v = mem.readRaw[T](p);
+  let p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
+  let v = mem.readRaw[T](p);
   libc.free(p as *u8);
-  v;
+  v
 }
 
 // The debug messenger's callback: the loader or the validation layer calls
 // it with a warning or an error, so it is a C-named function: '@c'
-fn @c onDebugMessage(severity u32, types u32, data *vulkan.DebugUtilsMessengerCallbackDataEXT, user *u8) u32 {
+fn @c onDebugMessage(severity: u32, types: u32, data: *vulkan.DebugUtilsMessengerCallbackDataEXT, user: *u8) u32 {
   if (types & vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0u32 { messageCount.add(1u32); }
-  mut m = String.from("gpu: Vulkan ");
+  var m = String.from("gpu: Vulkan ");
   if severity >= vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT {
     m <- "error: ";
   } else {
@@ -86,69 +85,69 @@ fn @c onDebugMessage(severity u32, types u32, data *vulkan.DebugUtilsMessengerCa
   }
   appendCStr(&mut m, data.pMessage);
   logLine(m.view());
-  vulkan.FALSE;
+  vulkan.FALSE
 }
 
 // Whether the instance layer 'name' is installed
-fn hasInstanceLayer(name cstr) bool {
-  mut n = 0u32;
+fn hasInstanceLayer(name: cstr) bool {
+  var n = 0u32;
   if vulkan.enumerateInstanceLayerProperties(&mut n, null) != vulkan.SUCCESS { return false; }
   if n == 0u32 { return false; }
-  mut props = List[vulkan.LayerProperties].empty();
+  var props = List[vulkan.LayerProperties]();
   props.resize(usize.from(n), zeroed[vulkan.LayerProperties]());
-  mut written = n;
+  var written = n;
   vulkan.enumerateInstanceLayerProperties(&mut written, props.viewMut() as *vulkan.LayerProperties);
   props.truncate(usize.from(written));
-  mut found = false;
-  mut i = 0usize;
+  var found = false;
+  var i = 0usize;
   while i < props.len() {
     // layerName is the first field
     if libc.strcmp(cstr.fromPtr(&mut props[i] as *u8), name) == 0i32 { found = true; }
     i = i + 1usize;
   }
-  found;
+  found
 }
 
 // Whether the instance extension 'name' is offered by the loader (with
 // 'layer' null) or by the instance layer 'layer'
-fn hasInstanceExtension(layer *u8, name cstr) bool {
-  mut n = 0u32;
+fn hasInstanceExtension(layer: *u8, name: cstr) bool {
+  var n = 0u32;
   if vulkan.enumerateInstanceExtensionProperties(layer, &mut n, null) != vulkan.SUCCESS {
     return false;
   }
   if n == 0u32 { return false; }
-  mut props = List[vulkan.ExtensionProperties].empty();
+  var props = List[vulkan.ExtensionProperties]();
   props.resize(usize.from(n), zeroed[vulkan.ExtensionProperties]());
-  mut written = n;
+  var written = n;
   vulkan.enumerateInstanceExtensionProperties(layer, &mut written, props.viewMut() as *vulkan.ExtensionProperties);
   props.truncate(usize.from(written));
-  mut found = false;
-  mut i = 0usize;
+  var found = false;
+  var i = 0usize;
   while i < props.len() {
     if libc.strcmp(cstr.fromPtr(&mut props[i] as *u8), name) == 0i32 { found = true; }
     i = i + 1usize;
   }
-  found;
+  found
 }
 
 // Whether 'physical' offers the device extension 'name'
-fn hasDeviceExtension(ifns &InstFns, physical vulkan.PhysicalDevice, name cstr) bool {
-  mut n = 0u32;
+fn hasDeviceExtension(ifns: &InstFns, physical: vulkan.PhysicalDevice, name: cstr) bool {
+  var n = 0u32;
   if ifns.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, null)
       != vulkan.SUCCESS {
     return false;
   }
   if n == 0u32 { return false; }
-  mut props = List[vulkan.ExtensionProperties].empty();
+  var props = List[vulkan.ExtensionProperties]();
   props.resize(usize.from(n), zeroed[vulkan.ExtensionProperties]());
-  mut written = n;
+  var written = n;
   ifns.enumerateDeviceExtensionProperties(physical, nullp(), &mut written, props.viewMut() as *vulkan.ExtensionProperties);
   props.truncate(usize.from(written));
-  mut found = false;
-  mut i = 0usize;
+  var found = false;
+  var i = 0usize;
   while i < props.len() {
     if libc.strcmp(cstr.fromPtr(&mut props[i] as *u8), name) == 0i32 { found = true; }
     i = i + 1usize;
   }
-  found;
+  found
 }

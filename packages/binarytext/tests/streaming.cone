@@ -1,0 +1,285 @@
+// Streaming encode and decode. The text a streaming codec makes must be the
+// one-shot text, however its input is cut: this test cuts every input at every
+// offset (one cut, then two cuts so that a chunk can be empty or a single byte,
+// and a base64 group is split at each of its digits), and feeds the bytes one
+// at a time and in blocks. It also reuses a codec after 'finish', and checks
+// that 'finish' is where the end of a text is judged.
+
+mod streaming;
+
+import testing use *;
+import collections use *;
+import binarytext;
+
+fn lcgBytes(n: usize, seed: u32) List[u8] {
+  var out = List[u8]();
+  var x = seed;
+  var i = 0usize;
+  while i < n {
+    x = x * 1664525u32 + 1013904223u32;
+    out.push(u8.from(x >> 24u32));
+    i = i + 1usize;
+  }
+  out
+}
+
+// The part of data from a up to, not including, b
+fn part(data: &Array[u8], a: usize, b: usize) &Array[u8] { &data[a..<b] }
+
+fn same(got: &Array[u8], want: &Array[u8], what: &str, n: usize, k: usize) {
+  if got == want {
+    expect(true, what);
+  } else {
+    var label = String.from(what);
+    label.append(" (length ");
+    label.appendUInt(u64.from(n));
+    label.append(", cut at ");
+    label.appendUInt(u64.from(k));
+    label.append(")");
+    expectStr(got, want, label.view());
+  }
+}
+
+// -------- base64 --------
+
+fn encodeCut(fmt: &binarytext.Base64Format, data: &Array[u8], a: usize, b: usize) String {
+  var enc = binarytext.Base64Encoder.forFormat(fmt);
+  var out = String();
+  enc.update(part(data, 0usize, a), &mut out);
+  enc.update(part(data, a, b), &mut out);
+  enc.update(part(data, b, data.len), &mut out);
+  enc.finish(&mut out);
+  out
+}
+
+// The decoded bytes, or None if the decoder refused
+fn decodeCut(fmt: &binarytext.Base64Format, text: &Array[u8], a: usize, b: usize) Option[List[u8]] {
+  var dec = binarytext.Base64Decoder.forFormat(fmt);
+  var out = List[u8]();
+  dec.update(part(text, 0usize, a), &mut out).ok()?;
+  dec.update(part(text, a, b), &mut out).ok()?;
+  dec.update(part(text, b, text.len), &mut out).ok()?;
+  dec.finish(&mut out).ok()?;
+  Some[List[u8]](out)
+}
+
+fn checkBase64(fmt: &binarytext.Base64Format, n: usize, name: &str) {
+  let data = lcgBytes(n, u32.from(n) + 7u32);
+  let whole = binarytext.encodeBase64With(data.view(), fmt);
+  var label = String.from(name);
+
+  // One cut at every offset, then two
+  var a = 0usize;
+  while a <= n {
+    let one = encodeCut(fmt, data.view(), a, a);
+    label.clear();
+    label.append(name);
+    label.append(" encode, one cut");
+    same(one.view(), whole.view(), label.view(), n, a);
+    var b = a;
+    while b <= n && n <= 13usize {
+      let two = encodeCut(fmt, data.view(), a, b);
+      same(two.view(), whole.view(), "encode, two cuts", n, a * 100usize + b);
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+
+  // The same for decoding the text: cut at every offset of the text
+  let m = whole.len();
+  a = 0usize;
+  while a <= m {
+    match decodeCut(fmt, whole.view(), a, a) {
+      case let Some(got) { same(got.view(), data.view(), "decode, one cut", m, a); }
+      case is None { expect(false, "decode, one cut: refused"); }
+    }
+    var b = a;
+    while b <= m && m <= 20usize {
+      match decodeCut(fmt, whole.view(), a, b) {
+        case let Some(got) { same(got.view(), data.view(), "decode, two cuts", m, a * 100usize + b); }
+        case is None { expect(false, "decode, two cuts: refused"); }
+      }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+}
+
+fn checkEveryFormat(n: usize) {
+  checkBase64(&binarytext.Base64Format.standard(), n, "standard");
+  checkBase64(&binarytext.Base64Format.urlSafe(), n, "url-safe");
+  checkBase64(&binarytext.Base64Format.standardUnpadded(), n, "standard unpadded");
+  checkBase64(&binarytext.Base64Format.urlSafeUnpadded(), n, "url-safe unpadded");
+}
+
+// One byte at a time, and in blocks of the given size
+fn checkBlocks(fmt: &binarytext.Base64Format, data: &Array[u8], block: usize) {
+  let whole = binarytext.encodeBase64With(data, fmt);
+  var enc = binarytext.Base64Encoder.forFormat(fmt);
+  var text = String();
+  var i = 0usize;
+  while i < data.len {
+    var j = i + block;
+    if j > data.len { j = data.len; }
+    enc.update(part(data, i, j), &mut text);
+    i = j;
+  }
+  enc.finish(&mut text);
+  same(text.view(), whole.view(), "encode in blocks", block, data.len);
+
+  var dec = binarytext.Base64Decoder.forFormat(fmt);
+  var back = List[u8]();
+  i = 0usize;
+  var allOk = true;
+  while i < text.len() {
+    var j = i + block;
+    if j > text.len() { j = text.len(); }
+    match dec.update(part(text.view(), i, j), &mut back) { case is Err { allOk = false; } case is Ok { } }
+    i = j;
+  }
+  match dec.finish(&mut back) { case is Err { allOk = false; } case is Ok { } }
+  expect(allOk, "decode in blocks: accepted");
+  same(back.view(), data, "decode in blocks", block, data.len);
+}
+
+// -------- hex --------
+
+fn hexCut(data: &Array[u8], a: usize, b: usize, upper: bool) String {
+  var enc = if upper { binarytext.HexEncoder.upperCase() } else { binarytext.HexEncoder.lower() };
+  var out = String();
+  enc.update(part(data, 0usize, a), &mut out);
+  enc.update(part(data, a, b), &mut out);
+  enc.update(part(data, b, data.len), &mut out);
+  enc.finish(&mut out);
+  out
+}
+
+fn hexDecodeCut(dec: &mut binarytext.HexDecoder, text: &Array[u8], a: usize, b: usize) Option[List[u8]] {
+  var out = List[u8]();
+  dec.update(part(text, 0usize, a), &mut out).ok()?;
+  dec.update(part(text, a, b), &mut out).ok()?;
+  dec.update(part(text, b, text.len), &mut out).ok()?;
+  dec.finish(&mut out).ok()?;
+  Some[List[u8]](out)
+}
+
+fn checkHex(n: usize) {
+  let data = lcgBytes(n, u32.from(n) + 91u32);
+  let lowerWhole = binarytext.encodeHex(data.view());
+  let upperWhole = binarytext.encodeHexUpper(data.view());
+  var a = 0usize;
+  while a <= n {
+    var b = a;
+    while b <= n {
+      let lo = hexCut(data.view(), a, b, false);
+      same(lo.view(), lowerWhole.view(), "hex lower encode, two cuts", n, a * 100usize + b);
+      let up = hexCut(data.view(), a, b, true);
+      same(up.view(), upperWhole.view(), "hex upper encode, two cuts", n, a * 100usize + b);
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+
+  // Decoding: every cut of the text, mixed case, strict
+  var mixed = String();
+  var i = 0usize;
+  while i < lowerWhole.len() {
+    mixed.appendByte(if i % 3usize == 0usize { upperWhole.view()[i] } else { lowerWhole.view()[i] });
+    i = i + 1usize;
+  }
+  let m = mixed.len();
+  a = 0usize;
+  while a <= m {
+    var b = a;
+    while b <= m {
+      var dec = binarytext.HexDecoder.strict();
+      match hexDecodeCut(&mut dec, mixed.view(), a, b) {
+        case let Some(got) { same(got.view(), data.view(), "hex decode, two cuts", m, a * 100usize + b); }
+        case is None { expect(false, "hex decode, two cuts: refused"); }
+      }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+}
+
+fn main() i32 {
+  // Every length from 0 to 40 (so each padding length meets each cut)
+  var n = 0usize;
+  while n <= 40usize {
+    checkEveryFormat(n);
+    n = n + 1usize;
+  }
+
+  // Long inputs, one byte at a time and in blocks of every awkward size
+  let big = lcgBytes(3001usize, 5u32);
+  var sizes = List[usize]();
+  sizes.push(1usize); sizes.push(2usize); sizes.push(3usize); sizes.push(4usize); sizes.push(5usize);
+  sizes.push(7usize); sizes.push(64usize); sizes.push(1000usize); sizes.push(4096usize);
+  var s = 0usize;
+  while s < sizes.len() {
+    checkBlocks(&binarytext.Base64Format.standard(), big.view(), *sizes[s]);
+    checkBlocks(&binarytext.Base64Format.urlSafeUnpadded(), big.view(), *sizes[s]);
+    s = s + 1usize;
+  }
+
+  // Hex
+  n = 0usize;
+  while n <= 24usize {
+    checkHex(n);
+    n = n + 1usize;
+  }
+
+  // A codec is ready for the next text after 'finish'
+  let fmt = binarytext.Base64Format.standard();
+  var enc = binarytext.Base64Encoder.forFormat(&fmt);
+  var text = String();
+  enc.update("foob", &mut text);
+  expectUInt(u64.from(enc.pending()), 1u64, "one byte pending after 'foob'");
+  enc.finish(&mut text);
+  expectStr(text.view(), "Zm9vYg==", "first text");
+  text.clear();
+  enc.update("fo", &mut text);
+  expectUInt(u64.from(enc.pending()), 2u64, "two bytes pending after 'fo'");
+  enc.finish(&mut text);
+  expectStr(text.view(), "Zm8=", "second text, same encoder");
+  expectUInt(u64.from(enc.pending()), 0u64, "nothing pending after finish");
+  text.clear();
+  enc.finish(&mut text);
+  expectStr(text.view(), "", "finish with nothing fed writes nothing");
+
+  var dec = binarytext.Base64Decoder.forFormat(&fmt);
+  var out = List[u8]();
+  match dec.update("Zm9v", &mut out) {
+    case let Ok(k) { expectUInt(u64.from(k), 3u64, "a whole group gives 3 bytes"); }
+    case is Err { expect(false, "update refused"); }
+  }
+  match dec.update("Yg", &mut out) {
+    case let Ok(k) { expectUInt(u64.from(k), 0u64, "half a group gives none yet"); }
+    case is Err { expect(false, "update refused"); }
+  }
+  expectUInt(u64.from(dec.consumed()), 6u64, "six characters consumed");
+  match dec.update("==", &mut out) {
+    case let Ok(k) { expectUInt(u64.from(k), 1u64, "the padding releases the last byte"); }
+    case is Err { expect(false, "update refused"); }
+  }
+  match dec.finish(&mut out) {
+    case let Ok(k) { expectUInt(u64.from(k), 0u64, "finish adds nothing here"); }
+    case is Err { expect(false, "finish refused"); }
+  }
+  expectStr(out.view(), "foob", "decoded in pieces");
+  expectUInt(u64.from(dec.consumed()), 0u64, "finish readies the decoder for the next text");
+  out.clear();
+  match dec.update("Zm8=", &mut out) { case is Ok { } case is Err { expect(false, "second text refused"); } }
+  match dec.finish(&mut out) { case is Ok { } case is Err { expect(false, "second text refused at its end"); } }
+  expectStr(out.view(), "fo", "second text, same decoder");
+
+  // finish is where the end of a text is judged: a cut-off group is fine
+  // mid-stream and refused at the end
+  dec.reset();
+  out.clear();
+  match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "a partial group is waiting"); } case is Err { expect(false, "refused early"); } }
+  match dec.finish(&mut out) { case is Ok { expect(false, "padding missing at the end was accepted"); } case is Err { expect(true, "padding missing at the end"); } }
+
+  done()
+}

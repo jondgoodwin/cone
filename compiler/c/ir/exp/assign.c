@@ -39,123 +39,257 @@ void assignPrint(AssignNode *node) {
     inodeFprint(")");
 }
 
+// Is this target '_', which takes its value and drops it at the end of the statement? It
+// names no variable, so it stays unresolved and has no type of its own: it is the type of
+// the value it takes.
+int assignIsAnon(INode *node) {
+    return isNameUseNode(node) && ((NameUseNode*)node)->namesym == anonName;
+}
+
+// Name resolution of an assignment's targets: each one, but a '_' names nothing to resolve
+static void assignTargetNameRes(NameResState *pstate, INode **targetp) {
+    if (assignIsAnon(*targetp))
+        return;
+    if ((*targetp)->tag == TupleTag) {
+        // The targets are all places: a value tuple (ttupleNameRes decides this from its elements)
+        TupleNode *targets = (TupleNode*)*targetp;
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(targets->elems, cnt, elemp))
+            assignTargetNameRes(pstate, elemp);
+        targets->tag = VTupleTag;
+        targets->vtype = unknownType;
+        return;
+    }
+    inodeNameRes(pstate, targetp);
+}
+
 // Name resolution for assignment node
 void assignNameRes(NameResState *pstate, AssignNode *node) {
-    inodeNameRes(pstate, &node->lval);
+    // 'let a, b = values;' declares its names after the values are resolved, so a value
+    // that names an outer 'a' means that one (varDclNameRes leaves the names unhooked)
+    if (node->flags & FlagDestructAssign) {
+        inodeNameRes(pstate, &node->rval);
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)node->lval)->elems, cnt, elemp)) {
+            INode *dcl = isNameUseNode(*elemp) ? ((NameUseNode*)*elemp)->dclnode : NULL;
+            if (dcl && dcl->tag == VarDclTag && (dcl->flags & FlagDestructDcl))
+                varDclHook(pstate, (VarDclNode*)dcl);
+        }
+        assignTargetNameRes(pstate, &node->lval);
+        return;
+    }
+    assignTargetNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
+    // In a macro's body, a store to a plain parameter is refused here
+    macroChangeNameRes(node->lval, node->lval, MacroChangePlace);
 }
 
 // Type check a single matched assignment between lval and rval
 // - lval must be a lval
 // - rval's type must coerce to lval's type
 void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
-    // '_' named lval need not be checked. It is a placeholder that just swallows a value
-    if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
+    // '_' takes the value whatever its type: the value is checked, and nothing else
+    if (assignIsAnon(lval)) {
+        if (iexpTypeCheckAny(pstate, rval))
+            ((IExpNode*)lval)->vtype = ((IExpNode*)*rval)->vtype;
         return;
+    }
 
     if (iexpIsLvalError(lval) == 0) {
         return;
     }
-    if (iexpTypeCheckCoerce(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
+    if (iexpTypeCheckCoerceStated(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
         iexpMismatchMsg(*rval, ((IExpNode*)lval)->vtype, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
 }
 
-// Type check the rvals no lval receives, and give the rval tuple its type.
-//
-// More values than lvals is accepted: the extra values are still evaluated,
-// and the assignment's value is the whole rval tuple. So each extra needs a
-// type of its own, and the tuple's type has to list every value. Before this,
-// nothing type checked an extra at all -- an ill-typed one crashed the
-// compiler, and 'x = 1, 2' crashed it with a tuple that had no type.
-// 'received' is how many leading values were already checked against lvals.
-static void assignExtraRvalsCheck(TypeCheckState *pstate, TupleNode *rval, uint32_t received) {
-    TupleNode *ttuple = newTupleNode(rval->elems->used);
-    ttuple->tag = TTupleTag;
-    INode **nodesp;
-    uint32_t cnt;
-    uint32_t index = 0;
-    for (nodesFor(rval->elems, cnt, nodesp)) {
-        if (index++ >= received && iexpTypeCheckAny(pstate, nodesp) == 0)
-            continue;
-        nodesAdd(&ttuple->elems, ((IExpNode *)*nodesp)->vtype);
-    }
-    rval->vtype = (INode *)ttuple;
+// The message for targets that are not as many as the values they take apart
+static void assignCountMsg(INode *at, uint32_t targets, uint32_t values) {
+    errorMsgNode(at, ErrorTargetCount,
+        "%u targets are given %u value%s. A target takes exactly one value: write one target for each, and '_' for a value you do not want.",
+        targets, values, values == 1 ? "" : "s");
 }
 
-// Handle parallel assignment (multiple values on both sides)
-void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
+// A target's type for the tuple type of the targets: the type of a '_' is that of the value it takes
+static void assignAnonTypes(TupleNode *lval, Nodes *rtypes) {
+    INode **lnodesp;
+    uint32_t lcnt;
+    uint32_t index = 0;
+    for (nodesFor(lval->elems, lcnt, lnodesp)) {
+        if (assignIsAnon(*lnodesp)) {
+            ((IExpNode*)*lnodesp)->vtype = nodesGet(rtypes, index);
+            if (lval->vtype && lval->vtype->tag == TTupleTag && ((TupleNode*)lval->vtype)->elems->used > index)
+                nodesGet(((TupleNode*)lval->vtype)->elems, index) = nodesGet(rtypes, index);
+        }
+        ++index;
+    }
+}
+
+// Handle parallel assignment (multiple values on both sides): each target takes exactly one
+// value. 'prechecked', where given, marks the values already checked (and coerced to their
+// names' types) when a declaration gave its names their types (assignDestructInfer)
+void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval, uint8_t *prechecked) {
     Nodes *lnodes = lval->elems;
     Nodes *rnodes = rval->elems;
-    if (lnodes->used > rnodes->used) {
-        errorMsgNode((INode*)rval, ErrorBadTerm, "Not enough tuple values given to lvals");
+    if (lnodes->used != rnodes->used) {
+        for (uint32_t i = 0; i < rnodes->used; ++i) {     // (the values are still checked)
+            if (!prechecked || !prechecked[i])
+                iexpTypeCheckAny(pstate, &nodesGet(rnodes, i));
+        }
+        assignCountMsg((INode*)rval, lnodes->used, rnodes->used);
+        rval->vtype = errorType;
         return;
     }
     uint32_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    uint32_t rcnt = rnodes->used;
+    uint32_t index = 0;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        assignSingleCheck(pstate, *lnodesp, rnodesp++);
-        rcnt--;
+        if (!prechecked || !prechecked[index])
+            assignSingleCheck(pstate, *lnodesp, rnodesp);
+        ++rnodesp;
+        ++index;
     }
-    // rcnt is now the number of values no lval receives
-    if (rcnt > 0)
-        assignExtraRvalsCheck(pstate, rval, lnodes->used);
-    else
-        rval->vtype = lval->vtype;
+    // The tuple of what is taken: its values' types, as coerced to the targets'
+    TupleNode *ttuple = newTupleNode(rnodes->used);
+    ttuple->tag = TTupleTag;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(rnodes, cnt, nodesp))
+        nodesAdd(&ttuple->elems, ((IExpNode *)*nodesp)->vtype);
+    rval->vtype = (INode *)ttuple;
+    assignAnonTypes(lval, ttuple->elems);
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
-    if (iexpTypeCheckAny(pstate, rval) == 0)
-        return;;
+void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval, int rvalchecked) {
+    if (!rvalchecked && iexpTypeCheckAny(pstate, rval) == 0)
+        return;
     // Resolved, because the rval's type may be a name standing for the tuple
     // rather than the tuple itself
     INode *rtype = iexpGetTypeDcl(*rval);
+    Nodes *lnodes = lval->elems;
     if (rtype->tag != TTupleTag) {
-        errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
+        assignCountMsg(*rval, lnodes->used, 1);
         return;
     }
-    Nodes *lnodes = lval->elems;
     Nodes *rtypes = ((TupleNode*)rtype)->elems;
-    if (lnodes->used > rtypes->used) {
-        errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
+    if (lnodes->used != rtypes->used) {
+        assignCountMsg(*rval, lnodes->used, rtypes->used);
         return;
     }
     uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
+        INode *given = *rtypep++;
+        if (assignIsAnon(*lnodesp))
+            continue;
         if (iexpIsLvalError(*lnodesp) == 0)
             continue;
-        if (itypeIsSame(((IExpNode *)*lnodesp)->vtype, *rtypep++) == 0)
+        if (itypeIsSame(((IExpNode *)*lnodesp)->vtype, given) == 0)
             errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
     }
-}
-
-// Handle when multiple expressions assigned to single lval
-// - the lval receives the first; the rest are evaluated and stored nowhere
-void assignToOneCheck(TypeCheckState *pstate, INode *lval, TupleNode *rval) {
-    assignSingleCheck(pstate, lval, &nodesGet(rval->elems, 0));
-    assignExtraRvalsCheck(pstate, rval, 1);
+    assignAnonTypes(lval, rtypes);
 }
 
 // Is this one tuple-typed lval given a value tuple? It receives the tuple
-// whole, as a declaration's initial value is received, and not its first
-// value: 'p = 5, 6' (or 'p = (5, 6)', the same) gives a '(i64, i64)' variable
-// both values, each coerced to its element's type. Where the counts differ the
-// tuple does not match the lval's type and is refused, rather than having its
-// extra values dropped. The parser cannot tell this from 'x = 7, 8', which
-// gives the one lval the first value (assignToOneCheck); only the lval's type
-// can, so every later phase asks this rather than the rval's tag alone.
+// whole, as a declaration's initial value is received: 'p = 5, 6' (or
+// 'p = (5, 6)', the same) gives a '(i64, i64)' variable both values, each
+// coerced to its element's type. Where the counts differ the tuple does not
+// match the lval's type and is refused. One target of any other type given a
+// list of values is refused too (assignToOneCheck): a single target takes the
+// whole of what it is given. The parser cannot tell the two apart; only the
+// lval's type can, so every later phase asks this rather than the rval's tag alone.
 int assignOneTakesTuple(AssignNode *node) {
     return node->lval->tag != VTupleTag && node->rval->tag == VTupleTag
-        && isExpNode(node->lval) && iexpGetTypeDcl(node->lval)->tag == TTupleTag;
+        && !assignIsAnon(node->lval) && isExpNode(node->lval) && iexpGetTypeDcl(node->lval)->tag == TTupleTag;
 }
 
-// '*self = new T(...)' in an init, where the construction selected that same
+// Handle when a list of values is given to a single target that is not a tuple: refused,
+// since a target takes the whole of what it is given and the values are no one value of its type
+static void assignToOneCheck(TypeCheckState *pstate, INode *lval, INode **rvalp) {
+    if (iexpIsLvalError(lval) == 0)
+        return;
+    uint32_t count = ((TupleNode*)*rvalp)->elems->used;
+    iexpTypeCheckAny(pstate, rvalp);
+    errorMsgNode(*rvalp, ErrorOneTarget,
+        "%u values are given to one target, which takes the whole of what it is given and is not a tuple of them. Write a target for each value, 'a, b = ...', with '_' for each you do not want.",
+        count);
+}
+
+// The names of 'let a, b = values;' that were declared with no type take the types of the
+// values they are given, as a name declared with a value does. A value given to a name that
+// has a type is checked against that type as any assignment is. Done ahead of the targets
+// being checked, since each name has its type by then. Where the values are a list they are
+// checked here, one by one, and marked in 'prechecked'; a single value is checked here and
+// its tuple type read. Returns 0 where the values cannot be taken apart (reported).
+static int assignDestructInfer(TypeCheckState *pstate, AssignNode *node, uint8_t *prechecked, int *rvalchecked) {
+    TupleNode *targets = (TupleNode*)node->lval;
+    Nodes *lnodes = targets->elems;
+    *rvalchecked = 0;
+    for (uint32_t i = 0; i < lnodes->used; ++i) {
+        INode *use = nodesGet(lnodes, i);
+        if (!assignIsAnon(use))
+            ((NameUseNode*)use)->dclnode->flags &= ~FlagDestructDcl;
+    }
+    if (node->rval->tag == VTupleTag) {
+        Nodes *rnodes = ((TupleNode*)node->rval)->elems;
+        if (lnodes->used != rnodes->used)
+            return 1;       // (assignParaCheck reports it)
+        for (uint32_t i = 0; i < lnodes->used; ++i) {
+            INode *use = nodesGet(lnodes, i);
+            VarDclNode *var = (VarDclNode*)((NameUseNode*)use)->dclnode;
+            if (assignIsAnon(use) || var->vtype != unknownType)
+                continue;
+            // The name is declared with this value, as 'let name = value;' would
+            var->value = nodesGet(rnodes, i);
+            varDclTypeCheck(pstate, var);
+            nodesGet(rnodes, i) = var->value;
+            var->value = NULL;
+            prechecked[i] = 1;
+        }
+        return 1;
+    }
+    // One value, taken apart: its tuple type gives each name its type
+    if (iexpTypeCheckAny(pstate, &node->rval) == 0) {
+        for (uint32_t i = 0; i < lnodes->used; ++i) {
+            INode *use = nodesGet(lnodes, i);
+            if (!assignIsAnon(use) && ((NameUseNode*)use)->dclnode->tag == VarDclTag
+                && ((VarDclNode*)((NameUseNode*)use)->dclnode)->vtype == unknownType)
+                ((VarDclNode*)((NameUseNode*)use)->dclnode)->vtype = errorType;
+        }
+        return 0;
+    }
+    *rvalchecked = 1;
+    INode *rtype = iexpGetTypeDcl(node->rval);
+    if (rtype->tag != TTupleTag || ((TupleNode*)rtype)->elems->used != lnodes->used) {
+        assignCountMsg(node->rval, lnodes->used, rtype->tag == TTupleTag ? ((TupleNode*)rtype)->elems->used : 1);
+        for (uint32_t i = 0; i < lnodes->used; ++i) {
+            INode *use = nodesGet(lnodes, i);
+            if (!assignIsAnon(use) && ((VarDclNode*)((NameUseNode*)use)->dclnode)->vtype == unknownType)
+                ((VarDclNode*)((NameUseNode*)use)->dclnode)->vtype = errorType;
+        }
+        return 0;
+    }
+    Nodes *rtypes = ((TupleNode*)rtype)->elems;
+    for (uint32_t i = 0; i < lnodes->used; ++i) {
+        INode *use = nodesGet(lnodes, i);
+        if (assignIsAnon(use))
+            continue;
+        VarDclNode *var = (VarDclNode*)((NameUseNode*)use)->dclnode;
+        if (var->vtype != unknownType)
+            continue;
+        var->vtype = nodesGet(rtypes, i);
+        varDclTypeCheck(pstate, var);
+    }
+    return 1;
+}
+
+// '*self = T(...)' in an init, where the construction selected that same
 // init (typeLitNewCheck prefers a declared init to the implicit one): filling
 // self would run the init again before it ever filled it. The field-wise fill
 // names the fields, which only the implicit init takes.
@@ -173,7 +307,7 @@ static void assignInitRecurse(TypeCheckState *pstate, INode *lval, INode *rval) 
         return;
     INode *owner = inodeGetOwner((INode *)pstate->fn);
     errorMsgNode(rval, ErrorInitRecurse,
-        "Filling self with a construction that runs this same init again: an init fills its value by the fields' names, 'new %s(field: value)'.",
+        "Filling self with a construction that runs this same init again: an init fills its value by the fields' names, '%s(field: value)'.",
         owner && owner->tag == StructTag ? &((StructNode *)owner)->namesym->namestr : "T");
 }
 
@@ -189,33 +323,73 @@ static int assignFillsInitSelf(TypeCheckState *pstate, INode *lval) {
     return isNameUseNode(self) && parms->used > 0 && ((NameUseNode *)self)->dclnode == nodesGet(parms, 0);
 }
 
+// Type check the targets of an assignment. A '_' has no type until its value is known.
+// Returns 0 where a target could not be checked
+static int assignTargetsTypeCheck(TypeCheckState *pstate, INode **lvalp) {
+    if (assignIsAnon(*lvalp)) {
+        ((IExpNode*)*lvalp)->vtype = unknownType;
+        return 1;
+    }
+    if ((*lvalp)->tag != VTupleTag) {
+        // 'x[i] = v', 'x[i].f = v' and 'a[g].b[i].f = v': on a type declaring '&[]',
+        // each index of the place is the element's mutable borrow (fnCallTypeCheck),
+        // and the whole place is stored through, as Rust's IndexMut is
+        FnCallNode *setindex = fnCallSetIndexRoot(*lvalp);
+        uint32_t setmark = fnCallSetPlace(*lvalp);
+        int typed = iexpTypeCheckAny(pstate, lvalp);
+        fnCallSetPlaceEnd(setmark);
+        if (typed == 0)
+            return 0;
+        if (setindex && *lvalp == (INode*)setindex && (setindex->flags & FlagBorrow))
+            derefInject(lvalp);
+        return 1;
+    }
+    // The targets of a parallel assignment, each its own place; the tuple of their types
+    TupleNode *targets = (TupleNode*)*lvalp;
+    TupleNode *ttuple = newTupleNode(targets->elems->used);
+    ttuple->tag = TTupleTag;
+    targets->vtype = (INode*)ttuple;
+    int allok = 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(targets->elems, cnt, nodesp)) {
+        if (assignTargetsTypeCheck(pstate, nodesp) == 0) {
+            allok = 0;
+            nodesAdd(&ttuple->elems, errorType);
+            continue;
+        }
+        nodesAdd(&ttuple->elems, ((IExpNode*)*nodesp)->vtype);
+    }
+    return allok;
+}
+
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
-    // 'x[i] = v', 'x[i].f = v' and 'a[g].b[i].f = v': on a type declaring '&[]',
-    // each index of the place is the element's mutable borrow (fnCallTypeCheck),
-    // and the whole place is stored through, as Rust's IndexMut is
-    FnCallNode *setindex = fnCallSetIndexRoot(node->lval);
-    uint32_t setmark = fnCallSetPlace(node->lval);
-    int typed = iexpTypeCheckAny(pstate, &node->lval);
-    fnCallSetPlaceEnd(setmark);
-    if (typed == 0)
+    // 'let a, b = values;': the names declared with no type take their values' types first
+    uint8_t *prechecked = NULL;
+    int rvalchecked = 0;
+    if (node->flags & FlagDestructAssign) {
+        prechecked = (uint8_t*)memAllocBlk(((TupleNode*)node->lval)->elems->used + 1);
+        memset(prechecked, 0, ((TupleNode*)node->lval)->elems->used + 1);
+        if (!assignDestructInfer(pstate, node, prechecked, &rvalchecked))
+            return;
+    }
+    if (assignTargetsTypeCheck(pstate, &node->lval) == 0)
         return;
-    if (setindex && node->lval == (INode*)setindex && (setindex->flags & FlagBorrow))
-        derefInject(&node->lval);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
     if (lval->tag == VTupleTag) {
         if (node->rval->tag == VTupleTag)
-            assignParaCheck(pstate, (TupleNode*)node->lval, (TupleNode*)node->rval);
+            assignParaCheck(pstate, (TupleNode*)node->lval, (TupleNode*)node->rval, prechecked);
         else
-            assignMultRetCheck(pstate, (TupleNode*)node->lval, &node->rval);
+            assignMultRetCheck(pstate, (TupleNode*)node->lval, &node->rval, rvalchecked);
     }
     else {
         if (assignOneTakesTuple(node))
             assignSingleCheck(pstate, node->lval, &node->rval);
-        else if (node->rval->tag == VTupleTag)
-            assignToOneCheck(pstate, node->lval, (TupleNode*)node->rval);
+        else if (node->rval->tag == VTupleTag && !assignIsAnon(node->lval))
+            assignToOneCheck(pstate, node->lval, &node->rval);
         else {
             // The construction filling an init's self is the one an actor's
             // state may be made by outside its handle's initializer
@@ -227,19 +401,46 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
             assignInitRecurse(pstate, node->lval, node->rval);
         }
     }
+    // The values of 'let a, b = &f(), &g();' are one initializer: a temporary a borrow in it
+    // is rooted in lives to the block's end, as it does for a single name's
+    if ((node->flags & FlagDestructAssign) && node->rval->tag == VTupleTag
+            && ((IExpNode*)node->rval)->vtype != errorType)
+        varDclExtendInit(pstate, &node->rval);
     // What the names assigned hold now: the variant stored, where it is known (narrow.h)
     if (lval->tag == VTupleTag) {
         INode **elemp;
         uint32_t cnt;
-        for (nodesFor(((TupleNode*)lval)->elems, cnt, elemp))
-            narrowAssigned(*elemp, NULL);
+        for (nodesFor(((TupleNode*)lval)->elems, cnt, elemp)) {
+            if (!assignIsAnon(*elemp))
+                narrowAssigned(*elemp, NULL);
+        }
     }
-    else
+    else if (!assignIsAnon(lval))
         narrowAssigned(lval, assignOneTakesTuple(node) || node->rval->tag != VTupleTag ? node->rval : NULL);
     // A store through a reference or a field may change an enum another name reaches
-    if (!(isNameUseNode(lval) && isExpNode(lval)))
+    if (!assignIsAnon(lval) && !(isNameUseNode(lval) && isExpNode(lval)))
         narrowCallMade((INode*)node);
     node->vtype = ((IExpNode*)node->rval)->vtype;
+}
+
+// An atomic value, or a value holding one inline, is replaced plainly only
+// through a unique path [Jon 26 Sep]: every reference on the way to the place
+// is 'uni' (iexpPathNonUniLink), or there is none (a variable, a field of a
+// value held by value). Any other reference ('&mut', 'Rc[mut, T]') may be one
+// of several names for the value, and another thread may be changing it with
+// an atomic operation as it is overwritten. Answers 0 where refused.
+int assignAtomicStoreCheck(INode *lval) {
+    if (!isExpNode(lval) || !itypeHoldsAtomic(((IExpNode*)lval)->vtype))
+        return 1;
+    INode *link = iexpPathNonUniLink(lval);
+    if (link == NULL)
+        return 1;
+    INode *perm = itypeGetTypeDcl(((RefNode*)link)->perm);
+    char *permname = perm->tag == PermTag ? &((PermNode*)perm)->namesym->namestr : "shared";
+    errorMsgNode(lval, ErrorAtomicPlainWrite,
+        "This place holds an atomic value and is written plainly through a '%s' reference, which may be one of several names for it, while another thread changes it atomically. Change it with the atomic's own operation (store, swap, compareSwap), or write it through a unique path: a variable or field held by value, or a '&uni' / 'uni' owner.",
+        permname);
+    return 0;
 }
 
 // Handle data flow analysis related to single assignment rval
@@ -250,20 +451,11 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
 // not given, such a variable's old allocation is left unreleased, as a moved
 // one's value is.
 int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
-    // '_' named lval is a placeholder that swallows (maybe drops) a value
-    int lvalIsName = isNameUseNode(lval) && isExpNode(lval);
-    if (lvalIsName && ((NameUseNode*)lval)->namesym == anonName) {
-        // When lval = '_' and this is an own reference, we may have a problem
-        // If this assignment is supposed to return a reference, it cannot
-        /*
-        if (flowAliasGet(0) > 0) {
-            RefNode *reftype = (RefNode *)((IExpNode*)*rval)->vtype;
-            if (reftype->tag == RefTag && reftype->region == (INode*)soRegion)
-                errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
-        }
-        */
+    // '_' is no variable: it takes the value and drops it at the end of the statement
+    // (genlDiscard), so nothing about a variable changes
+    if (assignIsAnon(lval))
         return 1;
-    }
+    int lvalIsName = isNameUseNode(lval) && isExpNode(lval);
 
     // Ensure lval is either mutable or var in need of initialization or mutable.
     uint16_t lvalscope;
@@ -275,10 +467,14 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
             permLockRefused(lval, lvalperm, "write");
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()");
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused(lval, (VarDclNode*)lvalvar);
         else
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;
     }
+    if (!assignAtomicStoreCheck(lval))
+        return 0;
 
     // Mark that lval variable has valid initialized value.
     if (lvalIsName) {
@@ -291,6 +487,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         // its place.
         VarDclNode *var = (VarDclNode*)lvalvar;
         uint16_t flowflags = var->flowtempflags;
+        modInitNoteSet(var);
         // A match's binding by value names the matched value's own storage
         // (flowMatchInPlace), so a store over it releases the value it
         // replaces, and the matched value's variable releases the new one. A
@@ -304,7 +501,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         flowVarSetFlags(var, (flowflags | VarInitialized) & (0xFFFF - (VarMoved | VarHollow)), NULL);
         // The value stored into such a binding is the matched value's variable's
         // to release, so that variable holds a value again, as a moved plain
-        // 'mut' local does once assigned
+        // 'var' local does once assigned
         if (flowMatchInPlace(var)) {
             VarDclNode *owner = flowDropOwner(var);
             if (owner != var)
@@ -313,12 +510,22 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         flowDropNote(flowCurrent, var);
     }
     // A part of a local's own value -- a field, an element -- is stored over:
-    // its old value is released unless the variable holds none (never given a
-    // value, or moved out), whose part is garbage or another owner's
-    else if ((lval->tag == FldAccessTag || lval->tag == ArrIndexTag) && !flowNoDeath(((IExpNode *)lval)->vtype)) {
+    // its old value is released unless the variable holds none, whose part is
+    // another owner's
+    // (a variable never given a value, or whose whole value was moved out, has
+    // no parts to store into: the whole of it is given first, so that no part
+    // is left holding a value nothing releases. A hollowed one still owns its
+    // allocation, and a store there has no old value to release)
+    else if (lval->tag == FldAccessTag || lval->tag == ArrIndexTag) {
         VarDclNode *root = flowLvalRootVar(lval);
-        if (root && (!(root->flowtempflags & VarInitialized) || (root->flowtempflags & (VarMoved | VarHollow))
-                || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
+        if (root && !(root->flowtempflags & VarInitialized) && !flowNewSelfVar(root))
+            errorMsgNode(lval, ErrorMove, "A field or element is stored only into a variable that holds a value. Give the whole variable its value first.");
+        else if (root && (root->flowtempflags & VarMoved))
+            errorMsgNode(lval, ErrorMove, "A field or element is not stored into a variable whose value has been moved out. Give the whole variable a new value first.");
+        // VarHollow is a guard, not a path: a hollowed owner is refused first, as a use
+        else if (!flowNoDeath(((IExpNode *)lval)->vtype) && root
+                && ((root->flowtempflags & VarHollow)
+                    || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
             lval->flags |= FlagPartNoPrior;
     }
 
@@ -373,7 +580,7 @@ static int assignIsLocalPlace(INode *lval) {
 // 'lvalscope', when the value is a borrowed reference the lval would outlive.
 // Assignment stores one way; swap stores both ways and so calls this twice.
 // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
-// does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
+// does a virtual reference (VirtRefTag), which doc/manual/mod-substitution.html#virtref
 // describes as a borrowed reference carrying a vtable; all three tags carry
 // the same scope and are subject to the same rule. A store into a variable's
 // own storage is the loan walk's (assignIsLocalPlace); this refuses a store
@@ -388,13 +595,6 @@ void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
         }
     }
-}
-
-// Perform data flow analysis between two single assignment nodes:
-// - Lval is mutable
-// - Borrowed reference lifetime is greater than its container
-static int assignIsAnon(INode *lval) {
-    return isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName;
 }
 
 // The target of an assignment, once the value it is given has left its source
@@ -415,15 +615,11 @@ static void assignSingleTarget(INode *lval, INode **rval) {
 // them. So 'p = p', or 'p = if c {p} else {q}', finds 'p' empty where it moved,
 // and releases nothing the new value still is.
 void assignSingleFlow(INode *lval, INode **rval) {
-    // '_' swallows the value: nothing moves or is counted into it
-    if (assignIsAnon(lval)) {
-        assignlvalrtype(lval, ((IExpNode*)*rval)->vtype, NULL);
-        return;
-    }
-    // Non-anonymous lval means assignment moves/copies rvalue
+    // The assignment moves/copies the rvalue, '_' as well as any other target:
     // - Enforce move semantics
     // - Handle copy semantic aliasing
-    flowHandleMoveOrCopy(rval);
+    // A '_' takes it and drops it at the statement's end (genlDiscard)
+    flowHandleMoveOrCopyLast(rval);
     assignSingleTarget(lval, rval);
 }
 
@@ -437,16 +633,12 @@ void assignParaFlow(TupleNode *lval, TupleNode *rval) {
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        if (!assignIsAnon(*lnodesp))
-            flowHandleMoveOrCopy(rnodesp);
+        flowHandleMoveOrCopy(rnodesp);
         ++rnodesp;
     }
     rnodesp = &nodesGet(rnodes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        if (assignIsAnon(*lnodesp))
-            assignlvalrtype(*lnodesp, ((IExpNode*)*rnodesp)->vtype, NULL);
-        else
-            assignSingleTarget(*lnodesp, rnodesp);
+        assignSingleTarget(*lnodesp, rnodesp);
         ++rnodesp;
     }
 }
@@ -460,34 +652,17 @@ void assignMultRetFlow(TupleNode *lval, INode **rval) {
     uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
-    int anyanon = 0;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         // Need mutability check and borrowed lifetime check
-        anyanon |= assignlvalrtype(*lnodesp, *rtypep++, NULL);
+        assignlvalrtype(*lnodesp, *rtypep++, NULL);
     }
 
     // The elements are moved or copied into their lvals as one value would be:
     // a move deactivates the source, a copy out of an lvalue adds a holder per
-    // counted element (flowInjectRefCountAmt fills the per-element counts).
+    // counted element (flowInjectRefCountAmt fills the per-element counts). An
+    // element a '_' takes is moved or counted like the rest, and dropped at the
+    // statement's end (genlDiscard)
     flowHandleMoveOrCopy(rval);
-
-    // An element swallowed by '_' is stored nowhere, so it gains no holder
-    if (anyanon && (*rval)->tag == RefCountTag && ((RefCountNode *)*rval)->counts != NULL) {
-        int16_t *countp = ((RefCountNode *)*rval)->counts;
-        for (nodesFor(lnodes, lcnt, lnodesp)) {
-            if (isNameUseNode(*lnodesp) && isExpNode(*lnodesp) && ((NameUseNode *)*lnodesp)->namesym == anonName)
-                *countp = 0;
-            ++countp;
-        }
-    }
-}
-
-// Handle when multiple expressions assigned to single lval
-void assignToOneFlow(INode *lval, TupleNode *rval) {
-    Nodes *rnodes = rval->elems;
-    INode **rnodesp = &nodesGet(rnodes, 0);
-    uint32_t rcnt = rnodes->used;
-    assignSingleFlow(lval, rnodesp++);
 }
 
 // Perform data flow analysis on assignment node
@@ -560,11 +735,6 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         else
             assignMultRetFlow((TupleNode*)node->lval, &node->rval);
     }
-    else {
-        if (node->rval->tag == VTupleTag && !assignOneTakesTuple(node))
-            assignToOneFlow(node->lval, (TupleNode*)node->rval);
-        else {
-            assignSingleFlow(node->lval, &node->rval);
-        }
-    }
+    else
+        assignSingleFlow(node->lval, &node->rval);
 }

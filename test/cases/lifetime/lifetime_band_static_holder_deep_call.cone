@@ -1,0 +1,156 @@
+// A '&mut self' method called on a service whose field chain, eighteen
+// structs deep, ends in a value holding only a ''static' borrow (an
+// 'Option' of a struct with a '&'static str' field), given another '&mut'
+// argument, the method's signature naming no lifetimes. The service holds no
+// borrow that ends, so the call stores none of the caller's borrows in it:
+// not the one 'lp' lent, and not a local's, so 'feed' may lend one.
+//
+// Verdict: accept; prints "6 4".
+// Basis: mem-lifetimes.html, "The global lifetime: 'static"; actorhttp's
+// Service.onExchangeEvent (http2's FrameError.detail) is this shape.
+// Master 6f2481669: refused, Error 1085 at 'self.sendBody(lp, ..)' (the
+// writable-borrow walk of the service's type stopped at its depth cap and
+// answered 'as deep as asked', so the call was taken to store through
+// borrows the service does not hold) and at the callers.
+// lifetime_band_static_holder_deep_call_ending is the same shape with a
+// field that holds a borrow that ends, refused.
+
+mod lifetime_band_static_holder_deep_call;
+
+import stdio use *;
+
+struct Loop {
+  ticks: u32;
+}
+
+struct Fault {
+  code: u32;
+  detail: &'static str;
+}
+
+struct Reader {
+  last: Option[Fault];
+  count: u32;
+}
+
+struct Level0 {
+  inner: Reader;
+  tag: u32;
+}
+
+struct Level1 {
+  inner: Level0;
+  tag: u32;
+}
+
+struct Level2 {
+  inner: Level1;
+  tag: u32;
+}
+
+struct Level3 {
+  inner: Level2;
+  tag: u32;
+}
+
+struct Level4 {
+  inner: Level3;
+  tag: u32;
+}
+
+struct Level5 {
+  inner: Level4;
+  tag: u32;
+}
+
+struct Level6 {
+  inner: Level5;
+  tag: u32;
+}
+
+struct Level7 {
+  inner: Level6;
+  tag: u32;
+}
+
+struct Level8 {
+  inner: Level7;
+  tag: u32;
+}
+
+struct Level9 {
+  inner: Level8;
+  tag: u32;
+}
+
+struct Level10 {
+  inner: Level9;
+  tag: u32;
+}
+
+struct Level11 {
+  inner: Level10;
+  tag: u32;
+}
+
+struct Level12 {
+  inner: Level11;
+  tag: u32;
+}
+
+struct Level13 {
+  inner: Level12;
+  tag: u32;
+}
+
+struct Level14 {
+  inner: Level13;
+  tag: u32;
+}
+
+struct Level15 {
+  inner: Level14;
+  tag: u32;
+}
+
+struct Level16 {
+  inner: Level15;
+  tag: u32;
+}
+
+struct Level17 {
+  inner: Level16;
+  tag: u32;
+}
+
+struct Service {
+  drv: Level17;
+  sent: u32;
+
+  fn sendBody(self: &mut, lp: &mut Loop, slot: u32) {
+    lp.ticks = lp.ticks + slot;
+    sent = sent + slot;
+  }
+
+  fn turn(self: &mut, lp: &mut Loop) {
+    self.sendBody(lp, 2u32);
+  }
+}
+
+// A service that outlives this function is lent a local
+fn feed(s: &mut Service) {
+  var tmp = Loop(0u32);
+  s.turn(&mut tmp);
+}
+
+fn main() {
+  var lp = Loop(0u32);
+  var s = Service(Level17(Level16(Level15(Level14(Level13(Level12(Level11(Level10(Level9(Level8(Level7(Level6(Level5(Level4(Level3(Level2(Level1(Level0(Reader(Some[Fault](Fault(1u32, "oops")), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32);
+  s.turn(&mut lp);
+  s.turn(&mut lp);
+  feed(&mut s);
+  printInt(i64.from(s.sent));
+  printStr(" ");
+  printInt(i64.from(lp.ticks));
+  printStr("\n");
+}

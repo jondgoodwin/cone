@@ -23,7 +23,10 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt) {
 // declares an overload name, to that name's separate FnOverloadDclNode.
 // Two functions/methods declaring the same concrete name are a duplicate name error.
 void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
-    if (namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode) != NULL)
+    INode *prior = namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
+    if (prior != NULL && prior->tag == MacroDclTag)
+        macroMixedRefused((INode*)fnnode, prior);
+    else if (prior != NULL)
         errorMsgNode((INode*)fnnode, ErrorDupName,
             "Duplicate name %s: every function/method needs its own name.", &fnnode->namesym->namestr);
 
@@ -61,12 +64,23 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
 }
 
 // Add a macro to type's dictionary and owned list. It shares the one namespace
-// with fields and methods, so it duplicates anything already bound there, and
-// it takes part in no overload set. A macro leaves no symbol behind, so there
-// is no owner to record.
+// with fields and methods, so it duplicates anything already bound there, except
+// another macro: macros declared under one name in one type form a set, the
+// first bound to the name and the rest chained after it (macroSetAdd). A macro
+// beside a function of its name is refused, since a set holds all macros or all
+// functions. A macro leaves no symbol behind, so there is no owner to record.
 void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro) {
     nodelistAdd(&type->nodelist, (INode*)macro);
-    if (namespaceAdd(&type->namespace, macro->namesym, (INode*)macro) != NULL)
+    if (macro->flags & FlagMethFld)
+        macroMethodNameNote(macro->namesym);
+    INode *prior = namespaceAdd(&type->namespace, macro->namesym, (INode*)macro);
+    if (prior == NULL)
+        return;
+    if (prior->tag == MacroDclTag)
+        macroSetAdd((MacroDclNode*)prior, macro);
+    else if (prior->tag == FnDclTag)
+        macroMixedRefused((INode*)macro, prior);
+    else
         errorMsgNode((INode*)macro, ErrorDupName,
             "Duplicate name %s: a macro shares its type's namespace with fields and methods.", &macro->namesym->namestr);
 }
@@ -87,6 +101,10 @@ void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var) {
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
+    // A member read of an instance decides first which of its members exist,
+    // where their 'where' waited on an argument's layout
+    if (type->tag == StructTag && ((StructNode*)type)->latewhere)
+        genericLateWhereNow((StructNode*)type);
     return namespaceFind(&type->namespace, name);
 }
 
@@ -230,27 +248,109 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
     return found;
 }
 
-// Find method whose method signature matches exactly (except for self)
+// Find the method that meets the requirement 'matchmeth' (except for self)
 // 'binding' is the namespace's binding for the method's name
 // return NULL if none, or if more than one candidate matches
+//
+// A candidate of the requirement's exact signature is the one that meets it. Only
+// where the name has none is a candidate whose signature is a subtype of the
+// requirement's looked for (fnSigVrefMeets): parameters that are supertypes of
+// the requirement's, a result that is a subtype of its. So a requirement some
+// candidate met before is still met by that one, whatever else the name declares.
 FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *selftype) {
+    for (int loose = 0; loose <= 1; ++loose) {
+        INode **candidatep;
+        uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+
+        // Look through every candidate the name declares for the sole match
+        FnDclNode *found = NULL;
+        while (cnt--) {
+            FnDclNode *methnode = (FnDclNode *)*candidatep++;
+            // A generic method does not meet a requirement that is not generic: it
+            // is a family of methods, not the one the requirement asks for, and its
+            // signature is written in type parameters that are not types
+            if (methnode->genericinfo && !matchmeth->genericinfo)
+                continue;
+            if (loose ? !fnSigVrefMeets((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype)
+                      : !fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
+                continue;
+            if (found)
+                return NULL;
+            found = methnode;
+        }
+        if (found)
+            return found;
+    }
+    return NULL;
+}
+
+// Where no candidate meets the requirement 'matchmeth': does one differ from it
+// in nothing but a value held by value that is not one layout? The same test as
+// iNsTypeFindVrefMethod's loose reading, asked for its one refusal.
+int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype, struct FnSigLayoutDiff *diff) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
-
-    // Look through every candidate the name declares for the sole exact match
-    FnDclNode *found = NULL;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
-        // A generic method does not meet a requirement that is not generic: it
-        // is a family of methods, not the one the requirement asks for, and its
-        // signature is written in type parameters that are not types
         if (methnode->genericinfo && !matchmeth->genericinfo)
             continue;
-        if (!fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
+        if (fnSigLayoutDiff((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype, ReceiverBoth, 0, diff))
+            return 1;
+    }
+    return 0;
+}
+
+// One position of a number method meeting a trait's requirement: the requirement
+// names the number type, 'Self', or the trait itself (a receiver), held directly
+// or through any reference; the number's method holds the number by value.
+static int iNsTypeNumberPosMeets(INode *req, INode *implty, INode *nbr, INode *trait) {
+    // the number's method holds the number by value, or reads it through a reference
+    INode *impldcl = itypeGetTypeDcl(implty);
+    if (impldcl->tag == RefTag)
+        impldcl = itypeGetTypeDcl(((RefNode*)impldcl)->vtexp);
+    if (impldcl != nbr)
+        return 0;
+    for (int depth = 0; depth < 4; ++depth) {
+        if (isNameUseNode(req) && ((NameUseNode*)req)->namesym == selfTypeName)
+            return 1;
+        INode *dcl = itypeGetTypeDcl(req);
+        if (dcl == nbr || dcl == trait)
+            return 1;
+        if (dcl->tag != RefTag)
+            return 0;
+        req = ((RefNode*)dcl)->vtexp;
+    }
+    return 0;
+}
+
+// Does a number type's built-in method meet the trait method 'req'? The number's
+// methods take the number by value, where a trait must write 'Self' behind a
+// reference (a trait cannot hold it by value, Error 1069), so a requirement's
+// '&Self' is met by the number held by value: the number is Copy, the call reads
+// the referent. 'binding' is the number namespace's binding for the method's name.
+int iNsTypeNumberMeets(INode *binding, FnDclNode *req, INode *nbr, INode *trait) {
+    INode **candidatep;
+    uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+    FnSigNode *reqsig = (FnSigNode*)req->vtype;
+    int found = 0;
+    while (cnt--) {
+        FnDclNode *methnode = (FnDclNode *)*candidatep++;
+        if (methnode->genericinfo)
+            continue;
+        FnSigNode *sig = (FnSigNode*)methnode->vtype;
+        if (sig->parms->used != reqsig->parms->used)
+            continue;
+        int ok = (itypeIsSame(reqsig->rettype, sig->rettype)
+            || iNsTypeNumberPosMeets(reqsig->rettype, sig->rettype, nbr, trait));
+        INode **reqp = &nodesGet(reqsig->parms, 0);
+        INode **implp = &nodesGet(sig->parms, 0);
+        for (uint32_t i = 0; ok && i < sig->parms->used; ++i)
+            ok = iNsTypeNumberPosMeets(((IExpNode*)reqp[i])->vtype, ((IExpNode*)implp[i])->vtype, nbr, trait);
+        if (!ok)
             continue;
         if (found)
-            return NULL;
-        found = methnode;
+            return 0;
+        found = 1;
     }
     return found;
 }

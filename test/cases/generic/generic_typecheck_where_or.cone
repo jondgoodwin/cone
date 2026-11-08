@@ -1,8 +1,8 @@
-// What a constraint joined by 'or' refuses at an instance, and what 'Pointer'
-// is not granted to. An unmet condition joined by 'or' or 'and' is false as a
+// What a constraint joined by '||' refuses at an instance, and what 'Pointer'
+// is not granted to. An unmet condition joined by '||' or '&&' is false as a
 // whole, and named whole, with the arguments it turned on: a requirement where
 // the instance is asked for (ErrorWhereUnmet), a method's condition where the
-// method is called (ErrorWhereAbsent). Where an 'and' at the top of a clause
+// method is called (ErrorWhereAbsent). Where a '&&' at the top of a clause
 // joins conditions, each is its own and the first false one is named alone:
 // 'tight' is 'A and (B or C)', which a type that is only C fails at its A,
 // while 'loose', '(A and B) or C', takes it.
@@ -18,65 +18,65 @@ trait A {}
 trait B {}
 trait C {}
 
-struct OnlyA is A {pub n i64;}
-struct OnlyC is C {pub n i64;}
+struct OnlyA is A {pub n: i64;}
+struct OnlyC is C {pub n: i64;}
 
-fn loose[T](x &T) i64 where T is A and T is B or T is C {1;}
-fn tight[T](x &T) i64 where T is A and (T is B or T is C) {2;}
+fn loose[T](x: &T) i64 where T is A && T is B || T is C {1}
+fn tight[T](x: &T) i64 where T is A && (T is B || T is C) {2}
 
-fn intOrFlag[T](x T) T where T is Integer or T is bool {x;}
+fn intOrFlag[T](x: T) T where T is Integer || T is bool {x}
 
-fn address[T](p T) usize where T is Pointer {p as usize;}
+fn address[T](p: T) usize where T is Pointer {p as usize}
 
-struct Cell[T] where T is Integer or T is bool or T is Pointer {
-  pub v T;
-  pub fn get(self &) T {v;}
-  pub fn twice(self &) T where T is Integer {v + v;}
-  pub fn flip(self &) T where T is Integer or T is bool {v ^ v;}
+struct Cell[T] where T is Integer || T is bool || T is Pointer {
+  pub v: T;
+  pub fn get(self: &) T {v}
+  pub fn twice(self: &) T where T is Integer {v + v}
+  pub fn flip(self: &) T where T is Integer || T is bool {v ^ v}
 }
 
 // A method present in every instance naming one that is not
 struct Counter[T] {
-  pub v T;
-  pub fn step(self &) T where (T is Integer or T is bool) and T is Copy {v;}
-  pub fn again(self &) T {
-    step();                      //~ ErrorWhereAbsent:5 "step exists only where (T is Integer or T is bool) and T is Copy"
+  pub v: T;
+  pub fn step(self: &) T where (T is Integer || T is bool) && T is Copy {v}
+  pub fn again(self: &) T {
+    step()                      //~ ErrorWhereAbsent:5 "step exists only where (T is Integer or T is bool) and T is Copy"
   }
 }
 
 struct Holder[T] {
-  pub v T;
-  pub fn pick[U](self &, u U) U where T is Integer or U is bool {u;}
+  pub v: T;
+  pub fn pick[U](self: &, u: U) U where T is Integer || U is bool {u}
 }
 
 fn main() {
-  imm a = new OnlyA(1);
-  imm c = new OnlyC(2);
+  let a = OnlyA(1);
+  let c = OnlyC(2);
   loose(&c);
   loose(&a);                     //~ ErrorWhereUnmet:8 "loose requires T is A and T is B or T is C, and it is false for T = OnlyA"
   tight(&c);                     //~ ErrorWhereUnmet:8 "tight requires T is A, and OnlyC is not A"
   tight(&a);                     //~ ErrorWhereUnmet:8 "tight requires T is B or T is C, and it is false for T = OnlyA"
 
-  intOrFlag(1.5);                //~ ErrorWhereUnmet:12 "intOrFlag requires T is Integer or T is bool, and it is false for T = f32"
+  intOrFlag(1.5);                //~ ErrorWhereUnmet:12 "intOrFlag requires T is Integer or T is bool, and it is false for T = f64"
 
-  mut n = 5i32;
+  var n = 5i32;
   address(&mut n as *i32);
   address(&n);                   //~ ErrorWhereUnmet:10 "address requires T is Pointer, and &ro i32 is not Pointer"
   address(5i32);                 //~ ErrorWhereUnmet:10 "and i32 is not Pointer"
 
-  imm cf = Cell[f32][1.5];       //~ ErrorWhereUnmet:16 "Cell requires T is Integer or T is bool or T is Pointer, and it is false for T = f32"
-  imm cb = new Cell[bool](true);
+  let cf = Cell[f32][1.5];       //~ ErrorWhereUnmet:16 "Cell requires T is Integer or T is bool or T is Pointer, and it is false for T = f32"
+  let cb = Cell[bool](true);
   cb.flip();
   cb.twice();                    //~ ErrorWhereAbsent:5 "No method twice for Cell[bool]: it exists only where T is Integer, and bool is not Integer"
-  imm cp = new Cell[*i32](&mut n as *i32);
+  let cp = Cell[*i32](&mut n as *i32);
   cp.get();
   cp.flip();                     //~ ErrorWhereAbsent:5 "No method flip for Cell[*i32]: it exists only where T is Integer or T is bool, and that is false for T = *i32"
 
-  mut counter = new Counter[f32](1.5);
+  var counter = Counter[f32](1.5);
 
-  imm hf = new Holder[f32](1.5);
+  let hf = Holder[f32](1.5);
   hf.pick(true);
   hf.pick(3i32);                 //~ ErrorWhereUnmet:5 "pick requires f32 is Integer or U is bool, and it is false for U = i32"
-  imm hi = new Holder[i32](1);
+  let hi = Holder[i32](1);
   hi.pick(3i32);
 }

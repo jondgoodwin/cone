@@ -1,0 +1,95 @@
+// A value is awaitable by the method its type declares, named 'await', taking
+// only 'self' and giving the operation or the future the wait is on:
+// 'await x' is 'await x.await()' (C#'s GetAwaiter). The types here are the
+// library's own, known to nothing in the compiler:
+//
+// - Delay holds a number and its 'await' builds an Awaitable[u64] on
+//   Awaitable.make, the closure answering the number at once;
+// - Pending holds a handle to an actor and its 'await' gives the Future[u64] a
+//   call of the actor's behaviour gave;
+// - Wrapped, a Delay's wrapper, shows the method found through a borrow
+//   ('await w.d' and 'await' on a field, and on a call's result).
+// Each case is awaited with a value in flight and one kept across the seam,
+// as an operation or a future is awaited directly. Each case sends the next
+// when it ends, so the order is fixed. Each printed value was checked by hand
+// against the source.
+
+mod concurrency_await_method;
+
+import stdio use *;
+import actors;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn two(a: u64, b: u64) u64 {a * 10u64 + b}
+
+struct Delay {
+  pub n: u64;
+
+  pub fn await(self) actors.Awaitable[u64] {
+    let v = n;
+    actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [v] {
+      rp.answer(v + 1u64);
+    })
+  }
+}
+
+actor Maker {
+  pub async fn count(self, k: u64) u64 {k * 2u64}
+}
+
+struct Pending {
+  pub m: Maker;
+  pub k: u64;
+
+  pub fn await(self) actors.Future[u64] {
+    m.count(k)
+  }
+}
+
+struct Wrapped {
+  pub d: Delay;
+}
+
+fn delayOf(n: u64) Delay {Delay(n)}
+
+actor Prober {
+  pub async fn go(self) {
+    selfactor.operation();
+  }
+
+  pub async fn operation(self) {
+    let d = Delay(4u64);
+    say("operation", 0u64);
+    let v = await d;
+    say("operation after", v);
+    say("operation flight", two(7u64, await Delay(1u64)));
+    selfactor.future();
+  }
+
+  pub async fn future(self) {
+    let m = Maker();
+    let p = Pending(m, 5u64);
+    say("future", 0u64);
+    let v = await p;
+    say("future after", v);
+    say("future flight", two(3u64, await Pending(m, 6u64)));
+    selfactor.inner();
+  }
+
+  pub async fn inner(self) {
+    let w = Wrapped(Delay(9u64));
+    say("inner", 0u64);
+    say("inner field", await w.d);
+    say("inner call", await delayOf(20u64));
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let p = Prober();
+    p.go();
+  }
+  finalAll();
+  say("end", 0u64);
+}

@@ -18,21 +18,21 @@ import time use Duration;
 
 const rounds = 3000u64;
 
-imm rw Rwlock;
+let rw: Rwlock;
 
 // Guarded by rw: written only under its write lock
 // (relaxed atomics: no ordering of their own, so only the lock orders them)
-imm a Atomic[u64];
-imm b Atomic[u64];
+let a: Atomic[u64];
+let b: Atomic[u64];
 
 // Who is inside, and the times anything was seen that a working lock forbids
-imm readersInside Atomic[u32];
-imm writersInside Atomic[u32];
-imm violations Atomic[u32];
+let readersInside: Atomic[u32];
+let writersInside: Atomic[u32];
+let violations: Atomic[u32];
 
 // The starting gate, so the threads run at once
-imm ready Atomic[u32];
-imm go Atomic[u32];
+let ready: Atomic[u32];
+let go: Atomic[u32];
 
 fn @initpure init() {
   a = Atomic[u64].of(0u64);
@@ -52,7 +52,7 @@ fn atGate() {
   }
 }
 
-fn openGate(n u32) {
+fn openGate(n: u32) {
   while ready.load() < n {
     thread.yieldNow();
   }
@@ -61,25 +61,25 @@ fn openGate(n u32) {
 }
 
 // Take a read lock, and hold it until n readers hold it: whether they did
-fn readTogether(n u32) bool {
+fn readTogether(n: u32) bool {
   rw.readLock();
   readersInside.add(1u32);
-  mut waited = 0;
-  while readersInside.load() < n and waited < 2000 {
+  var waited = 0;
+  while readersInside.load() < n && waited < 2000 {
     thread.sleep(Duration.fromMillis(1));
     waited = waited + 1;
   }
-  imm all = readersInside.load() >= n;
+  let all = readersInside.load() >= n;
   rw.readUnlock();
-  all;
+  all
 }
 
-fn writer(n u64) u64 {
+fn writer(n: u64) u64 {
   atGate();
-  mut i = 0u64;
+  var i = 0u64;
   while i < rounds {
     rw.writeLock();
-    if writersInside.add(1u32) != 0u32 or readersInside.load() != 0u32 {
+    if writersInside.add(1u32) != 0u32 || readersInside.load() != 0u32 {
       violations.add(1u32);
     }
     a.storeOrdered(a.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
@@ -89,23 +89,23 @@ fn writer(n u64) u64 {
     rw.writeUnlock();
     i = i + 1u64;
   }
-  i;
+  i
 }
 
-fn reader(n u64) u64 {
+fn reader(n: u64) u64 {
   atGate();
-  mut i = 0u64;
+  var i = 0u64;
   while i < rounds {
     rw.readLock();
     readersInside.add(1u32);
-    if writersInside.load() != 0u32 or a.loadOrdered(MemOrder.Relaxed) != b.loadOrdered(MemOrder.Relaxed) {
+    if writersInside.load() != 0u32 || a.loadOrdered(MemOrder.Relaxed) != b.loadOrdered(MemOrder.Relaxed) {
       violations.add(1u32);
     }
     readersInside.sub(1u32);
     rw.readUnlock();
     i = i + 1u64;
   }
-  i;
+  i
 }
 
 // One race: whether it ended with the pair right and nothing forbidden seen
@@ -115,30 +115,30 @@ fn race() bool {
   violations.store(0u32);
   ready.store(0u32);
   go.store(0u32);
-  imm w1 = thread.start(0u64, &writer);
-  imm w2 = thread.start(1u64, &writer);
-  imm r1 = thread.start(0u64, &reader);
-  imm r2 = thread.start(1u64, &reader);
-  imm r3 = thread.start(2u64, &reader);
+  let w1 = thread.start(0u64, &writer);
+  let w2 = thread.start(1u64, &writer);
+  let r1 = thread.start(0u64, &reader);
+  let r2 = thread.start(1u64, &reader);
+  let r3 = thread.start(2u64, &reader);
   openGate(5u32);
-  imm done = w1.join() + w2.join() + r1.join() + r2.join() + r3.join();
-  done == 5u64 * rounds and violations.load() == 0u32 and a.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds and b.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds;
+  let done = w1.join() + w2.join() + r1.join() + r2.join() + r3.join();
+  done == 5u64 * rounds && violations.load() == 0u32 && a.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds && b.loadOrdered(MemOrder.Relaxed) == 2u64 * rounds
 }
 
 fn main() i32 {
   initAll();
 
   // Readers share it
-  imm t1 = thread.start(4u32, &readTogether);
-  imm t2 = thread.start(4u32, &readTogether);
-  imm t3 = thread.start(4u32, &readTogether);
-  imm t4 = thread.start(4u32, &readTogether);
-  expect(t1.join() and t2.join() and t3.join() and t4.join(), "four readers held the read lock at once");
+  let t1 = thread.start(4u32, &readTogether);
+  let t2 = thread.start(4u32, &readTogether);
+  let t3 = thread.start(4u32, &readTogether);
+  let t4 = thread.start(4u32, &readTogether);
+  expect(t1.join() && t2.join() && t3.join() && t4.join(), "four readers held the read lock at once");
   readersInside.store(0u32);
 
   // A writer is alone
-  mut good = 0u64;
-  mut run = 0;
+  var good = 0u64;
+  var run = 0;
   while run < 25 {
     if race() { good = good + 1u64; }
     run = run + 1;
@@ -147,7 +147,7 @@ fn main() i32 {
   expectUInt(a.loadOrdered(MemOrder.Relaxed), 6000u64, "the last race's a");
 
   // The try forms
-  imm l = Rwlock.make();
+  let l = Rwlock.make();
   expect(l.tryWriteLock(), "tryWriteLock takes an unlocked Rwlock");
   expect(!l.tryReadLock(), "tryReadLock fails while it is write-locked");
   expect(!l.tryWriteLock(), "tryWriteLock fails while it is write-locked");
@@ -168,5 +168,5 @@ fn main() i32 {
   l.writeLock();
   expect(!l.tryReadLock(), "tryReadLock fails while writeLock() holds it");
   l.writeUnlock();
-  done();
+  done()
 }

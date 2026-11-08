@@ -1,0 +1,189 @@
+// Core's Eq, "has ==". A number type and bool meet it by their built-in ==, a
+// struct by a == written against &Self, and a struct that declares Eq and writes
+// no == is given one that compares its fields in order. Option, Result, tuples and
+// List have == where their elements do, and a generic struct can say the same of
+// its own (Box, below). Results are printed for equal pairs and for pairs that
+// differ in each place, because a derived == that compared the wrong field, or
+// stopped after the first, shows here. Each printed value was checked by hand.
+
+mod generic_eq_trait;
+
+import stdio use *;
+import collections use *;
+
+fn showB(b: bool) { if b { printStr("true\n"); } else { printStr("false\n"); } }
+fn showI(n: i32) { printInt(n); printStr("\n"); }
+
+// The bound as a type parameter's, and as a where clause
+fn same[T: Eq](a: &T, b: &T) bool { a == b }
+fn differ[T](a: &T, b: &T) bool where T is Eq { a != b }
+
+// A struct that writes its own, against &Self
+struct Id is Eq {
+  n: i32;
+  pub fn `==`(self: &, o: &Id) bool { n == o.n }
+}
+
+// Derived: three fields, one a float
+struct Pt is Eq { x: i32; y: i32; w: f64 }
+
+// Derived, nested: a derived struct, one with its own ==, a String, and a pair
+struct Rec is Eq { id: Id; at: Pt; name: String; flag: bool }
+
+// Derived over a generic parameter
+struct Pair[T] is Eq { a: T; b: T }
+
+// No fields: every two are equal
+struct Unit is Eq {}
+
+// An == that exists only where T is Eq
+struct Box[T] {
+  v: T;
+  pub fn `==`(self: &, o: &Box[T]) bool where T is Eq { &v == &o.v }
+}
+
+fn main() {
+  // Numbers and bool, through the bound
+  showB(same(&3i32, &3i32));           // true
+  showB(same(&3i32, &4i32));           // false
+  showB(same(&10000000000u64, &10000000000u64)); // true
+  showB(same(&2.5f64, &2.5f64));       // true
+  showB(same(&true, &false));          // false
+  showB(differ(&1u8, &2u8));           // true
+  // A float's == is IEEE's: NaN is not equal to itself
+  let nan = 0.0f64 / 0.0f64;
+  showB(same(&nan, &nan));             // false
+  showB(same(&0.0f64, &-0.0f64));      // true
+
+  // A struct that wrote its own
+  showB(same(&Id(7), &Id(7)));         // true
+  showB(same(&Id(7), &Id(8)));         // false
+
+  // Derived: each field differing on its own, and none
+  let p = Pt(1, 2, 0.5);
+  showB(same(&p, &Pt(1, 2, 0.5)));     // true
+  showB(same(&p, &Pt(9, 2, 0.5)));     // false
+  showB(same(&p, &Pt(1, 9, 0.5)));     // false
+  showB(same(&p, &Pt(1, 2, 0.75)));    // false
+  showB(&p == &Pt(1, 2, 0.5));         // true
+  showB(&p != &Pt(1, 2, 0.5));         // false
+  showB(differ(&p, &Pt(1, 2, 0.75)));  // true
+  // a float field holding NaN makes the struct unequal to itself
+  let pn = Pt(1, 2, nan);
+  showB(same(&pn, &pn));               // false
+
+  // Derived, nested
+  let r1 = Rec(Id(1), Pt(1, 2, 0.5), String.from("a"), true);
+  let r2 = Rec(Id(1), Pt(1, 2, 0.5), String.from("a"), true);
+  let r3 = Rec(Id(1), Pt(1, 2, 0.5), String.from("b"), true);
+  let r4 = Rec(Id(1), Pt(1, 2, 0.5), String.from("a"), false);
+  let r5 = Rec(Id(2), Pt(1, 2, 0.5), String.from("a"), true);
+  let r6 = Rec(Id(1), Pt(1, 3, 0.5), String.from("a"), true);
+  showB(same(&r1, &r2));               // true
+  showB(same(&r1, &r3));               // false
+  showB(same(&r1, &r4));               // false
+  showB(same(&r1, &r5));               // false
+  showB(same(&r1, &r6));               // false
+
+  // Derived over a parameter, and with no fields
+  showB(same(&Pair[i32](1, 2), &Pair[i32](1, 2)));  // true
+  showB(same(&Pair[i32](1, 2), &Pair[i32](1, 3)));  // false
+  showB(same(&Pair[String](String.from("p"), String.from("q")),
+             &Pair[String](String.from("p"), String.from("q"))));  // true
+  showB(same(&Unit(), &Unit()));       // true
+
+  // The conditional ==: present for Box[i32], Box[Pt], Box[String]
+  showB(&Box[i32](4) == &Box[i32](4)); // true
+  showB(&Box[i32](4) == &Box[i32](5)); // false
+  showB(&Box[Pt](p) == &Box[Pt](Pt(1, 2, 0.5))); // true
+  showB(&Box[String](String.from("s")) != &Box[String](String.from("t"))); // true
+
+  // Option
+  let some3: Option[i32] = Some[i32](3);
+  let some3b: Option[i32] = Some[i32](3);
+  let some4: Option[i32] = Some[i32](4);
+  let none: Option[i32] = None;
+  showB(&some3 == &some3b);            // true
+  showB(&some3 == &some4);             // false
+  showB(&some3 == &none);              // false
+  showB(&none == &some3);              // false
+  showB(&none == &none);               // true
+  showB(&some3 != &none);              // true
+  showB(same(&some3, &some3b));        // true
+  let sa: Option[String] = Some[String](String.from("x"));
+  let sb: Option[String] = Some[String](String.from("x"));
+  showB(&sa == &sb);                   // true
+  let op: Option[Pt] = Some[Pt](p);
+  let opb: Option[Pt] = Some[Pt](Pt(1, 2, 0.5));
+  showB(&op == &opb);                  // true
+
+  // Result: Ok against Ok, Err against Err, and across
+  let ok1: Result[i32, String] = Ok[i32, String](1);
+  let ok1b: Result[i32, String] = Ok[i32, String](1);
+  let ok2: Result[i32, String] = Ok[i32, String](2);
+  let er1: Result[i32, String] = Err[i32, String](String.from("bad"));
+  let er1b: Result[i32, String] = Err[i32, String](String.from("bad"));
+  let er2: Result[i32, String] = Err[i32, String](String.from("worse"));
+  showB(&ok1 == &ok1b);                // true
+  showB(&ok1 == &ok2);                 // false
+  showB(&er1 == &er1b);                // true
+  showB(&er1 == &er2);                 // false
+  showB(&ok1 == &er1);                 // false
+  showB(&er1 != &ok1);                 // true
+
+  // Tuples of two, three and four, by value and by reference
+  let t = (1i32, 2i64);
+  let u = (1i32, 2i64);
+  let v = (1i32, 3i64);
+  showB(t == u);                       // true
+  showB(t == v);                       // false
+  showB(t != v);                       // true
+  showB(&t == &u);                     // true
+  showB(&t != &u);                     // false
+  showB((1i32, 2i32, 3i32) == (1i32, 2i32, 3i32)); // true
+  showB((1i32, 2i32, 3i32) == (1i32, 2i32, 4i32)); // false
+  showB((1i32, 2i32, 3i32, 4i32) == (0i32, 2i32, 3i32, 4i32)); // false
+  showB((1i32, 2i32, 3i32, 4i32) == (1i32, 2i32, 3i32, 4i32)); // true
+  let ta = (String.from("x"), Pt(1, 2, 0.5), 1.5f64);
+  let tb = (String.from("x"), Pt(1, 2, 0.5), 1.5f64);
+  let tc = (String.from("x"), Pt(1, 2, 0.5), 2.5f64);
+  showB(ta == tb);                     // true
+  showB(ta == tc);                     // false
+
+  // List: ==, contains, indexOf, dedup
+  var xs = List[String]();
+  xs.push(String.from("x"));
+  xs.push(String.from("y"));
+  var ys = List[String]();
+  ys.push(String.from("x"));
+  ys.push(String.from("y"));
+  var zs = List[String]();
+  zs.push(String.from("x"));
+  showB(&xs == &ys);                   // true
+  showB(&xs == &zs);                   // false
+  ys.push(String.from("z"));
+  showB(&xs == &ys);                   // false
+  showB(xs.contains(&String.from("y"))); // true
+  showB(xs.contains(&String.from("q"))); // false
+  match xs.indexOf(&String.from("y")) {
+    case let Some(i) { showI(i32.from(i)); }   // 1
+    case is None { printStr("none\n"); }
+  }
+  match xs.indexOf(&String.from("q")) {
+    case let Some(i) { showI(i32.from(i)); }
+    case is None { printStr("none\n"); }       // none
+  }
+  var ns = List[i64]();
+  ns.push(5i64); ns.push(6i64); ns.push(7i64);
+  showB(ns.contains(&6i64));           // true
+  showB(ns.contains(&8i64));           // false
+  var ps = List[Pt]();
+  ps.push(Pt(1, 1, 0.0)); ps.push(Pt(1, 1, 0.0)); ps.push(Pt(2, 2, 0.0)); ps.push(Pt(1, 1, 0.0));
+  ps.dedup();
+  showI(i32.from(ps.len()));           // 3: the first two merge
+  var lo = List[Option[i32]]();
+  lo.push(some3); lo.push(none);
+  var lo2 = List[Option[i32]]();
+  lo2.push(some3b); lo2.push(none);
+  showB(&lo == &lo2);                  // true
+}

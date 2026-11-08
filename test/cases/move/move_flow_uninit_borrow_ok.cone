@@ -1,0 +1,166 @@
+// The neighbours move_flow_uninit_borrow must not refuse: a local declared
+// without a value, given one on every path that reaches a borrow, before the
+// borrow, a method call or a store of a field. Each function prints what it
+// computed.
+
+mod move_flow_uninit_borrow_ok;
+
+import stdio use *;
+
+struct Counter {
+  pub n: i32;
+  pub fn bump(self: &mut) { n = n + 1; }
+  pub fn get(self: &) i32 { n }
+}
+
+struct Pair {
+  pub a: i32;
+  pub b: Counter;
+}
+
+enum Dir {
+  Up, Down, Left
+}
+
+fn peek(c: &Counter) i32 { c.get() }
+fn fill(c: &mut Counter) { c.n = 5; }
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Given a value, then borrowed three ways
+fn before() i32 {
+  var c: Counter;
+  c = Counter(2);
+  c.bump();
+  fill(&mut c);
+  c.bump();
+  peek(&c)
+}
+
+// Given a value in both arms
+fn bothArms(k: bool) i32 {
+  var c: Counter;
+  if k { c = Counter(1); } else { c = Counter(2); }
+  c.bump();
+  peek(&c)
+}
+
+// Given a value before the branch, and again in one arm
+fn beforeBranch(k: bool) i32 {
+  var c: Counter;
+  c = Counter(10);
+  if k { c = Counter(20); }
+  c.bump();
+  peek(&c)
+}
+
+// Given a value in every arm of a 'match'
+fn matchEveryArm(d: Dir) i32 {
+  var c: Counter;
+  match d {
+    case is Up { c = Counter(1); }
+    case is Down { c = Counter(2); }
+    case is Left { c = Counter(3); }
+  }
+  peek(&c)
+}
+
+// Given a value in an 'else'
+fn matchElse(d: Dir) i32 {
+  var c: Counter;
+  match d {
+    case is Up { c = Counter(1); }
+    else { c = Counter(9); }
+  }
+  c.bump();
+  peek(&c)
+}
+
+// Given a value in one arm while the other returns
+fn otherArmReturns(k: bool) i32 {
+  var c: Counter;
+  if k { c = Counter(4); } else { return 0; }
+  c.bump();
+  peek(&c)
+}
+
+// Given a value before the loop that borrows it each pass
+fn beforeLoop(n: i32) i32 {
+  var c: Counter;
+  c = Counter(0);
+  var i = 0;
+  while i < n {
+    c.bump();
+    i = i + 1;
+  }
+  peek(&c)
+}
+
+// Given a value in the loop, before the borrow, on each pass
+fn inLoop(n: i32) i32 {
+  var sum = 0;
+  var i = 0;
+  while i < n {
+    var c: Counter;
+    c = Counter(i);
+    c.bump();
+    sum = sum + peek(&c);
+    i = i + 1;
+  }
+  sum
+}
+
+// Given a value before the borrow in the loop's own body, whichever pass
+fn loopGivesFirst(n: i32) i32 {
+  var c: Counter;
+  var sum = 0;
+  var i = 0;
+  while i < n {
+    c = Counter(i * 10);
+    c.bump();
+    sum = sum + peek(&c);
+    i = i + 1;
+  }
+  sum
+}
+
+// The whole struct given a value, then a field stored and borrowed
+fn fieldAfterWhole() i32 {
+  var p: Pair;
+  p = Pair(1, Counter(2));
+  p.a = 3;
+  p.b.bump();
+  p.a + peek(&p.b)
+}
+
+// A number borrowed after it is given a value on every path
+fn numberBorrowed(k: bool) i32 {
+  var x: i32;
+  if k { x = 7; } else { x = 8; }
+  let r = &x;
+  *r
+}
+
+fn main() {
+  show("before", before());
+  show("both-arms-true", bothArms(true));
+  show("both-arms-false", bothArms(false));
+  show("before-branch-true", beforeBranch(true));
+  show("before-branch-false", beforeBranch(false));
+  show("match-every-up", matchEveryArm(Dir.Up));
+  show("match-every-left", matchEveryArm(Dir.Left));
+  show("match-else-up", matchElse(Dir.Up));
+  show("match-else-down", matchElse(Dir.Down));
+  show("other-arm-returns-true", otherArmReturns(true));
+  show("other-arm-returns-false", otherArmReturns(false));
+  show("before-loop", beforeLoop(3));
+  show("in-loop", inLoop(3));
+  show("loop-gives-first", loopGivesFirst(3));
+  show("field-after-whole", fieldAfterWhole());
+  show("number-borrowed", numberBorrowed(true));
+}

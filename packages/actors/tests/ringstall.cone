@@ -1,0 +1,153 @@
+// A slot claimed and not yet published (THE MAILBOX, A SLOT CLAIMED AND NOT
+// YET PUBLISHED, in the package's header). The package's test hook holds a
+// sender between its claim and its publication: a thread sends the consumer
+// message A, claims A's position, and waits. Then the main thread sends 3,000
+// more messages behind it, from other threads and from main, which are
+// published (the ring grows through several segments while it is stalled), and
+// the consumer runs, finds the position it is at not published, and:
+//
+// - does not wait for the sender: the program's wait for idle returns while
+//   the sender is still held, the consumer having stopped, and the worker
+//   that ran it did not spin (the count of turns the workers have taken does
+//   not grow while the sender is held);
+// - takes nothing out of order: none of the 3,000 behind A has been handled;
+// - is not lost idle: when the sender is released it publishes A, finds the
+//   consumer's idle mark, and schedules it; then A and the 3,000 behind it are
+//   handled, A first, in the order sent.
+//
+// It is run twice: with the consumer idle when A is claimed, and with it
+// running (busy on a long message) when A is claimed and stopped by the time
+// A is released.
+
+mod ringstall;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+struct Log {
+  pub taken: Atomic[u64];
+  pub first: Atomic[u64];    // the value of the first message taken
+  pub order: Atomic[u64];    // messages that arrived after one with a higher number
+  pub last: Atomic[u64];
+  pub gate: Atomic[u64];     // a message holds the consumer until this is 1
+}
+
+let log: Log;
+
+fn @initpure init() {
+  log = Log(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Consumer {
+  pub async fn take(self, n: u64) {
+    if log.taken.load() == 0u64 {
+      log.first.store(n);
+    } else if n < log.last.load() {
+      log.order.add(1u64);
+    }
+    log.last.store(n);
+    log.taken.add(1u64);
+  }
+
+  // Holds the worker until the gate opens: the consumer is running when the
+  // stalled sender claims its position
+  pub async fn hold(self) {
+    while log.gate.load() == 0u64 {
+      var i = 0u64;
+      while i < 1000u64 {
+        i = i + 1u64;
+      }
+    }
+  }
+}
+
+struct SendArg is Sendable {
+  pub to: Consumer;
+  pub n: u64;
+}
+
+fn sendOne(arg: SendArg) u32 {
+  arg.to.take(arg.n);
+  0u32
+}
+
+fn pause(ms: i64) {
+  thread.sleep(time.Duration.fromMillis(ms));
+}
+
+const behind = 3000u64;
+
+// The stalled send, then 'behind' sends after it, from main; returns with the
+// sender still held, the consumer stopped
+fn stallThenSend(c: Consumer, first: u64, behind: u64) {
+  actors.stallNextPublish();
+  let t = thread.startWith(thread.Options(name: "stalled sender"), SendArg(c, first), &sendOne);
+  while !actors.publishStalled() {
+    thread.yieldNow();
+  }
+  var i = 1u64;
+  while i <= behind {
+    c.take(first + i);
+    i = i + 1u64;
+  }
+  actors.waitUntilIdle();
+  // The consumer has stopped with the sender held; the turns do not grow
+  let turns = actors.stats().activations;
+  pause(60i64);
+  expectUInt(actors.stats().activations, turns, "the consumer is not polling for the stalled slot");
+  expectUInt(log.taken.load(), 0u64, "nothing behind the stalled slot is taken before it");
+  actors.releaseStalled();
+  t.join();
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let c = Consumer();
+    actors.waitUntilIdle();
+    stallThenSend(c, 1u64, behind);
+    actors.waitUntilIdle();
+    expectUInt(log.taken.load(), behind + 1u64, "idle consumer: the sender released, A and all behind it taken");
+    expectUInt(log.first.load(), 1u64, "idle consumer: A, the stalled message, taken first");
+    expectUInt(log.order.load(), 0u64, "idle consumer: in the order sent");
+  }
+  log.taken.store(0u64);
+  log.order.store(0u64);
+  {
+    let c = Consumer();
+    c.hold();
+    pause(30i64);
+    // The consumer is running, held on a message; the stalled sender claims
+    // its position meanwhile and the messages behind it are published
+    actors.stallNextPublish();
+    let t = thread.startWith(thread.Options(name: "stalled sender"), SendArg(c, 1u64), &sendOne);
+    while !actors.publishStalled() {
+      thread.yieldNow();
+    }
+    var i = 1u64;
+    while i <= behind {
+      c.take(1u64 + i);
+      i = i + 1u64;
+    }
+    // Let the consumer go: it finishes the held message, finds the stalled
+    // position, and stops
+    log.gate.store(1u64);
+    actors.waitUntilIdle();
+    let turns = actors.stats().activations;
+    pause(60i64);
+    expectUInt(actors.stats().activations, turns, "busy consumer: stopped, not polling for the stalled slot");
+    expectUInt(log.taken.load(), 0u64, "busy consumer: nothing behind the stalled slot taken before it");
+    actors.releaseStalled();
+    t.join();
+    actors.waitUntilIdle();
+    expectUInt(log.taken.load(), behind + 1u64, "busy consumer: the sender released, A and all behind it taken");
+    expectUInt(log.first.load(), 1u64, "busy consumer: A taken first");
+    expectUInt(log.order.load(), 0u64, "busy consumer: in the order sent");
+  }
+  finalAll();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "every segment freed once the actors have died");
+  done()
+}

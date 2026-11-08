@@ -1,0 +1,129 @@
+// A macro's arguments checked when it is expanded, and the type parameters a
+// use leaves off inferred from them.
+//
+// A 'lazy' argument is substituted whole wherever the body names it, but it is
+// still typed: it is checked against its parameter's type when the macro is
+// expanded, before it is substituted, so a wrong type is refused at the use,
+// naming the parameter, and not deep inside the body -- or not at all, where
+// the body never names it. 'lazy void' takes a block that gives no value. A
+// plain argument is checked as the variable it is bound to, with the same
+// diagnostic. The check of a lazy argument is made on a copy (generic_macro_lazy
+// runs the cases where that matters).
+//
+// A use that writes no type arguments has them inferred from its arguments by
+// the rule a generic function's call follows, the plain arguments first, then
+// the lazy ones for what the plain ones leave open: refused where no argument
+// says what a type parameter is, or two say it differently, and refused with
+// its own diagnostic where only a lazy argument whose type is a closure's could
+// say it. A type parameter only ever written out ('unitAs[i64]()') is no
+// question for inference.
+
+mod generic_typecheck_macro_args;
+
+struct Pair {
+  pub a: i64;
+  pub b: i64;
+
+  macro scaledAs[T][self, k: T] {
+    let f: T = k;
+    (self.a + self.b) * f
+  }
+}
+
+macro first[a: lazy i64] {
+  a
+}
+
+macro never[a: lazy i64] {
+  0i64
+}
+
+macro twice[a: lazy void] {
+  a;
+  a
+}
+
+macro pick[T][yes: bool, a: lazy T, b: lazy T] {
+  if yes {a} else {b}
+}
+
+macro plain[a: i64] {
+  a + a
+}
+
+macro sizedAs[T][a: T] {
+  let v: T = a;
+  v
+}
+
+macro unitAs[T][] {
+  let z: T = 1;
+  z
+}
+
+macro larger[T][a: T, b: T] {
+  if a > b {a} else {b}
+}
+
+// -------- a lazy argument of the wrong type --------
+
+fn lazyWrongType() {
+  var x = 1i64;
+  let r = first("one");                 //~ ErrorMacroArgType:17 "parameter a is 'a: lazy i64'"
+  let s = never(1.5);                   //~ ErrorMacroArgType:17 "parameter a is 'a: lazy i64'"
+  twice(3);                             //~ ErrorMacroArgType:9 "parameter a is 'a: lazy void'"
+  twice({x = x + 1});
+  let t = pick[i64](true, 1, "two");    //~ ErrorMacroArgType:30 "parameter b is 'b: lazy i64'"
+  // A plain argument fixes T first, and a lazy one is checked against it
+  let u = keepOr(1i64, "two");          //~ ErrorMacroArgType:24 "parameter b is 'b: lazy i64'"
+}
+
+// -------- a type parameter the lazy arguments say --------
+
+// Where the plain arguments leave a type parameter open, the lazy ones say it,
+// each as a copy, by the same rule: two that say it differently are refused as
+// two plain ones are. A copy whose type is a closure's is the copy's own, so
+// it says nothing: the type arguments are written out, or the parameter made
+// plain
+macro keepOr[T][a: T, b: lazy T] {
+  if a > a {b} else {a}
+}
+
+macro callIt[F][f: lazy F] {
+  f(1i64)
+}
+
+fn lazyInferred() {
+  let r = pick(true, 1i64, 2.5);        //~ ErrorInvType:28 "must agree"
+  let s = callIt(fn (y: i64) i64 { y }); //~ ErrorMacroLazyInfer:17 "callIt[F](...)"
+  let t = pick(true, 1i64, 2i64);
+  let u = keepOr(1i64, 2);
+}
+
+// -------- a plain argument of the wrong type --------
+
+fn plainWrongType() {
+  let r = plain("one");                 //~ ErrorMacroArgType:17 "parameter a is 'a: i64'"
+}
+
+// -------- type arguments left off --------
+
+fn inferred() {
+  var p = Pair(1i64, 2i64);
+  let r = sizedAs(1i64);
+  let s = p.scaledAs(2i64);
+  let t = larger(3, 4i64);
+  let u = unitAs[i64]();
+}
+
+fn notInferred() {
+  let r = unitAs;                       //~ ErrorInvType:11 "Could not infer the type parameter T of the macro unitAs"
+  let s = unitAs();                     //~ ErrorInvType:17 "none of its arguments says"
+  let t = larger(3i32, 4i64);           //~ ErrorInvType:24 "must agree"
+}
+
+// An argument that does not check on its own says nothing of a type
+// parameter: its own error is the one reported, once
+fn argumentAlone() {
+  let r = sizedAs(None);                //~ ErrorInvType:19 "Could not infer the type parameter T of None"
+}

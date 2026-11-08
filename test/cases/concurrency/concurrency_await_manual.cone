@@ -1,5 +1,5 @@
 // The examples of the reference manual's section on 'await' in an actor's
-// methods (doc/reference/refawait.html), compiled and
+// methods (doc/manual/conc-await.html), compiled and
 // run, so the page cannot drift from what the compiler does. Each block the
 // page shows is copied from here verbatim, between the "manual:" lines; what
 // the page leaves out is the scaffolding below them that drives the examples
@@ -24,7 +24,7 @@
 // - Several awaits in a place: Board.fill's indexes are worked out first, the
 //   arrays reached after the last reply.
 //
-// doc/reference/refpermlock.html shows Tally.bump too, and says what Mixed
+// doc/manual/conc-locks.html shows Tally.bump too, and says what Mixed
 // below checks.
 //
 // Driver.go runs each in turn, awaiting each one's reply, and sends
@@ -37,43 +37,43 @@ import actors;
 import sync use Arc, Mutex;
 import collections use List;
 
-fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
 // manual: worked example
 struct Conn {
-  pub url u64;
-  fn final(self &uni) {say("  close", url);}
+  pub url: u64;
+  fn final(self: &uni) {say("  close", url);}
 }
 
 struct Buffer {
-  pub size u64;
+  pub size: u64;
 }
 
 actor Net {
-  pub async do read(self, url u64) Buffer {
+  pub async fn read(self, url: u64) Buffer {
     say("  read", url);
-    new Buffer(url * 100u64);
+    Buffer(url * 100u64)
   }
 }
 
 actor Fetcher {
-  net Net;
+  net: Net;
 
-  pub async do fetch(self, url u64) Buffer {
-    imm conn = new Conn(url);             // opened
-    imm buf = await net.read(conn.url);   // conn waits, with the method
+  pub async fn fetch(self, url: u64) Buffer {
+    let conn = Conn(url);             // opened
+    let buf = await net.read(conn.url);   // conn waits, with the method
     say("  fetched", buf.size);
-    buf;                                  // the reply to the 'await' on fetch
+    buf                                  // the reply to the 'await' on fetch
   }                                       // conn closes here
 }
 
 actor Page {
-  fetcher Fetcher;
-  body u64;
+  fetcher: Fetcher;
+  body: u64;
 
-  pub async do load(self, u u64) {
+  pub async fn load(self, u: u64) {
     say("load", u);
-    imm b = await fetcher.fetch(u);       // pauses here
+    let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the reply comes
     say("loaded", body);
   }
@@ -82,180 +82,180 @@ actor Page {
 
 // manual: one scope
 struct Note {
-  pub n u64;
-  fn final(self &uni) {say("  drop", n);}
+  pub n: u64;
+  fn final(self: &uni) {say("  drop", n);}
 }
 
 actor Clock {
-  pub async do now(self) u64 {42u64;}
+  pub async fn now(self) u64 {42u64}
 }
 
 actor Logger {
-  clock Clock;
+  clock: Clock;
 
-  pub async do log(self) u64 {
-    imm first = new Note(1u64);
-    imm second = new Note(2u64);
-    imm t = await clock.now();
+  pub async fn log(self) u64 {
+    let first = Note(1u64);
+    let second = Note(2u64);
+    let t = await clock.now();
     say("  at", t + first.n);             // 'second' is not named again
-    t;
+    t
   }                                       // second dies, then first
 }
 // manual: end
 
 // manual: static
-imm limit u64 = 100u64;
+let limit: u64 = 100u64;
 
 actor Gauge {
-  clock Clock;
+  clock: Clock;
 
-  pub async do check(self) u64 {
-    imm max = &limit;                     // a borrow of a global: 'static
-    imm t = await clock.now();
-    *max - t;                             // still valid after the 'await'
+  pub async fn check(self) u64 {
+    let max = &limit;                     // a borrow of a global: 'static
+    let t = await clock.now();
+    *max - t                             // still valid after the 'await'
   }
 }
 // manual: end
 
 // manual: lock
-struct Count {pub n u64;}
+struct Count {pub n: u64;}
 
 actor Tally {
-  count Arc[Mutex, Count];
-  clock Clock;
+  count: Arc[Mutex, Count];
+  clock: Clock;
 
-  pub async do bump(self) u64 {
-    imm c = &mut *count;                  // takes the lock
+  pub async fn bump(self) u64 {
+    let c = &mut *count;                  // takes the lock
     c.n += 1u64;
-    imm t = await clock.now();            // gives it back
+    let t = await clock.now();            // gives it back
     (&mut *count).n += t;                 // takes it again, for the statement
-    (&*count).n;
+    (&*count).n
   }
 }
 // manual: end
 
 // manual: selfactor
 actor Doubler {
-  pub async do double(self, n u64) u64 {n * 2u64;}
+  pub async fn double(self, n: u64) u64 {n * 2u64}
 
-  pub async do twice(self, n u64) u64 {
-    imm once = await selfactor.double(n);  // a message to itself
-    imm again = await selfactor.double(once);
-    again;
+  pub async fn twice(self, n: u64) u64 {
+    let once = await selfactor.double(n);  // a message to itself
+    let again = await selfactor.double(once);
+    again
   }
 }
 // manual: end
 
 // manual: one reply
 actor Cache {
-  net Net;
-  hot u64;
+  net: Net;
+  hot: u64;
 
-  pub async do get(self, url u64) u64 {
+  pub async fn get(self, url: u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
-    imm b = await net.read(url);
-    b.size;                               // or here, once the reply came
+    let b = await net.read(url);
+    b.size                               // or here, once the reply came
   }
 }
 // manual: end
 
 // manual: loop
 actor Sizes {
-  net Net;
+  net: Net;
 
-  pub async do total(self, n u64) u64 {
-    mut sum = 0u64;
+  pub async fn total(self, n: u64) u64 {
+    var sum = 0u64;
     each i in 0u64 ..< n {
-      imm b = await net.read(i);          // one request at a time
+      let b = await net.read(i);          // one request at a time
       sum = sum + b.size;
     }
-    sum;
+    sum
   }
 }
 // manual: end
 
 // manual: rest of the statement
 actor Counter {
-  pub async do next(self) u64 {2u64;}
+  pub async fn next(self) u64 {2u64}
 }
 
 actor Shelf {
-  counter Counter;
-  slots Array[u64, 4];
-  total u64;
+  counter: Counter;
+  slots: Array[u64, 4];
+  total: u64;
 
-  fn put(self, n u64) {total = total + n;}
+  fn put(self, n: u64) {total = total + n;}
 
-  pub async do stock(self) u64 {
+  pub async fn stock(self) u64 {
     slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
     self.put(await counter.next());       // and so is self, put's receiver
     total += await counter.next();        // total is read and written after it
-    slots[2] + total;
+    slots[2] + total
   }
 }
 // manual: end
 
 // manual: several awaits in a place
 actor Lane {
-  pub async do pick(self, n u64) u64 {n;}
+  pub async fn pick(self, n: u64) u64 {n}
 }
 
 actor Board {
-  lane Lane;
-  cells Array[Array[u64, 3], 2];
-  marks List[u64];
+  lane: Lane;
+  cells: Array[Array[u64, 3], 2];
+  marks: List[u64];
 
-  pub async do fill(self) u64 {
+  pub async fn fill(self) u64 {
     cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
-    cells[await lane.pick(0u64)][0u64] <=> cells[await lane.pick(1u64)][2u64];  // both sides
+    cells[await lane.pick(0u64)][0u64] <-> cells[await lane.pick(1u64)][2u64];  // both sides
     (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
     marks <- (cells[1][2], await lane.pick(9u64), 3u64);
-    imm row = &cells[await lane.pick(1u64)][await lane.pick(0u64)..<await lane.pick(2u64)];
-    row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1];
+    let row = &cells[await lane.pick(1u64)][await lane.pick(0u64)..<await lane.pick(2u64)];
+    row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1]
   }
 }
 // manual: end
 
-// Not shown, but said on refpermlock.html: a borrow through a lock that is
+// Not shown, but said on conc-locks.html: a borrow through a lock that is
 // no local's lasts to the end of its statement, or to an 'await' within it.
 // Mixed reads under the lock, then awaits Locker, which takes the same lock:
 // were it still held, Locker would wait for it, and Mixed for Locker, for
 // good. 7 + 42, then 8 once Locker has added its 1.
 actor Locker {
-  count Arc[Mutex, Count];
+  count: Arc[Mutex, Count];
 
-  pub async do now(self) u64 {
+  pub async fn now(self) u64 {
     (&mut *count).n += 1u64;
-    42u64;
+    42u64
   }
 }
 
 actor Mixed {
-  count Arc[Mutex, Count];
-  locker Locker;
+  count: Arc[Mutex, Count];
+  locker: Locker;
 
-  pub async do read(self) u64 {
+  pub async fn read(self) u64 {
     (&mut *count).n = 7u64;
-    imm x = (&*count).n + await locker.now();
-    x + (&*count).n;
+    let x = (&*count).n + await locker.now();
+    x + (&*count).n
   }
 }
 
 actor Driver {
-  mixed Mixed;
-  page Page;
-  logger Logger;
-  gauge Gauge;
-  tally Tally;
-  doubler Doubler;
-  cache Cache;
-  sizes Sizes;
-  shelf Shelf;
-  board Board;
+  mixed: Mixed;
+  page: Page;
+  logger: Logger;
+  gauge: Gauge;
+  tally: Tally;
+  doubler: Doubler;
+  cache: Cache;
+  sizes: Sizes;
+  shelf: Shelf;
+  board: Board;
 
-  pub async do go(self) {
+  pub async fn go(self) {
     say("log", await logger.log());
     say("check", await gauge.check());
     say("bump", await tally.bump());
@@ -273,15 +273,15 @@ actor Driver {
 fn main() {
   initAll();
   {
-    imm net = new Net();
-    imm clock = new Clock();
-    imm fetcher = new Fetcher(net);
-    imm page = new Page(fetcher, 0u64);
-    imm count = new Arc[Mutex, Count](0u64);
-    imm shared = new Arc[Mutex, Count](0u64);
-    imm d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
-      new Doubler(), new Cache(net, 3u64), new Sizes(net), new Shelf(new Counter(), [0u64, 0u64, 0u64, 0u64], 0u64),
-      new Board(new Lane(), [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]], List[u64].empty()));
+    let net = Net();
+    let clock = Clock();
+    let fetcher = Fetcher(net);
+    let page = Page(fetcher, 0u64);
+    let count = Arc[Mutex, Count](0u64);
+    let shared = Arc[Mutex, Count](0u64);
+    let d = Driver(Mixed(shared, Locker(shared)), page, Logger(clock), Gauge(clock), Tally(count, clock),
+      Doubler(), Cache(net, 3u64), Sizes(net), Shelf(Counter(), [0u64, 0u64, 0u64, 0u64], 0u64),
+      Board(Lane(), [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]], List[u64]()));
     d.go();
   }
   finalAll();

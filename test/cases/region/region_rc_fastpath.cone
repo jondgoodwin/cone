@@ -1,0 +1,97 @@
+// A counted reference's release is a decrement in line and, only when the count
+// reaches zero, a call to a cold function that finishes the death (finalizes the
+// value, frees its memory). So a drop stays a few instructions wherever its
+// instance is compiled, and the finalizer still runs exactly once, when the last
+// owner goes. Every value is worked out by hand from the rules: a new value has
+// one owner, each copy of an aliasable owner one more.
+//
+// A chain of 'Rc' links dropped from its head dies link by link: each link's
+// death releases the next, whose death releases the next. The cold function does
+// not flatten that recursion: a chain of some tens of thousands overflows the
+// stack, as it did before, so the chain here is a modest two thousand.
+
+mod region_rc_fastpath;
+
+import stdio use *;
+import sync use Arc;
+
+var @threadlocal finals = 0i32;
+var @threadlocal links = 0i32;
+
+struct Note {
+  pub id: i32;
+  fn final(self: &uni) {
+    finals = finals + 1i32;
+  }
+}
+
+struct Link {
+  pub next: Option[Rc[mut, Link]];
+  pub id: i32;
+  fn final(self: &uni) {
+    links = links + 1i32;
+  }
+}
+
+fn line(label: &str, n: i32) {
+  printStr(label);
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+// A parameter's copy is one more owner, gone as the call returns
+fn peek(n: Rc[imm, Note]) i32 { n.id }
+
+fn peekArc(n: Arc[imm, Note]) i32 { n.id }
+
+// Held in an Option, as a task table slot is: the Option's drop releases it
+fn slot() {
+  let held = Some(Rc[imm, Note](1i32));
+  line("rc owner in an Option, finals ", finals);
+}
+
+fn sharedRc() {
+  let a = Rc[imm, Note](2i32);
+  {
+    let b = a;
+    line("two owners, read ", peek(b) + a.id);
+  }
+  line("one owner left, finals ", finals);
+}
+
+fn sharedArc() {
+  let a = Arc[imm, Note](3i32);
+  {
+    let b = a;
+    line("arc two owners, read ", peekArc(b) + a.id);
+  }
+  line("arc one owner left, finals ", finals);
+}
+
+fn chain(n: i32) Option[Rc[mut, Link]] {
+  var head = None[Rc[mut, Link]];
+  var i = 0i32;
+  while i < n {
+    let prev = head;
+    head = Some(Rc[mut, Link](prev, i));
+    i = i + 1i32;
+  }
+  head
+}
+
+fn dropChain(n: i32) {
+  let h = chain(n);
+  line("chain built, links finalized ", links);
+}
+
+fn main() i32 {
+  slot();
+  line("after the Option dropped, finals ", finals);
+  sharedRc();
+  line("after the last Rc owner, finals ", finals);
+  sharedArc();
+  line("after the last Arc owner, finals ", finals);
+  dropChain(2000i32);
+  line("chain dropped, links finalized ", links);
+  0i32
+}

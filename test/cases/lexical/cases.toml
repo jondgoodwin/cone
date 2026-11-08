@@ -6,6 +6,16 @@
 
 support = []
 
+[scenario.lexical_range_ops]
+category = "run"
+description = "The range operators '..=' and '..<' as tokens beside everything that follows them: a negative bound, a name with and without a blank, a parenthesis, a character, a float, 'by', a case's '|' and brace; and the bare '..' of an open slice"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.lexical_swap_arrow]
+category = "run"
+description = "'<->' (swap) and '<=>' (three-way comparison) as tokens beside every blank placement and a negative operand, with '<-' (send) and '<' unchanged beside them; a swap of a local, a field, a tuple element, an array element and a text"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
 [scenario.lexical_literals]
 category = "run"
 description = "Integer, float, character, string and boolean literal tokens"
@@ -55,7 +65,7 @@ contains = [
   "@cbypos = internal constant %Named { i32 1, { ptr, i64 } { ptr @string",
 ]
 
-# The rules of doc/reference/reftoken.html, "Multi-line String Literals", each
+# The rules of doc/manual/syntax-lexical.html#multiline, "Multi-line String Literals", each
 # literal printed a byte at a time so a new-line, tab or carriage return shows.
 # The _crlf file is the same rules written with CRLF line ends, and prints the
 # same lines: .gitattributes keeps it CRLF in every checkout.
@@ -138,7 +148,7 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "A raw control character other than a tab or a line end, refused in a string, a multi-line string and a character literal"
 tags = ["parse"]
-diagnostics = 14
+diagnostics = 16
 
 [scenario.lexical_tokens]
 category = "compile"
@@ -169,9 +179,9 @@ diagnostics = 8
 # one diagnostic, and the parse around it carries on as though it were absent.
 [scenario.lexical_reject_unbuilt]
 category = "reject"
-description = "'?.', a '#' word and a '@' word naming no attribute ('@move', retired into 'is Move', among them), one diagnostic each"
+description = "'?.', a '#' word outside the built vocabulary ('#splice', '#layout', a misspelt '#iff') and a '@' word naming no attribute ('@move', retired into 'is Move', among them), one diagnostic each"
 tags = ["parse"]
-diagnostics = 6
+diagnostics = 7
 
 # The dual of lexical_tokens' identifier facts: where that file shows two
 # spellings that are two names, this one shows two that are one.
@@ -241,7 +251,7 @@ diagnostics = 2
 category = "reject"
 description = "A \\x, \\u or \\U escape with too few digits, ended by a closing quote, a space, a tab or the line's end, in a character literal or a string"
 tags = ["parse"]
-diagnostics = 12
+diagnostics = 13
 
 [scenario.lexical_reject_short_escape_end]
 category = "reject"
@@ -280,6 +290,20 @@ description = "An integer literal whose digits do not fit in 64 bits, in either 
 tags = ["parse"]
 diagnostics = 7
 
+# Binary and octal literals: the values they build, in every width and suffix,
+# and the malformed forms (no digit, a digit past the radix, a fraction, an
+# exponent, a float suffix), each refused once at the character that makes it so.
+[scenario.lexical_literals_radix]
+category = "run"
+description = "Binary and octal integer literals: prefixes, separators, suffixes, 64-bit and per-width maxima"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.lexical_reject_radix]
+category = "reject"
+description = "A binary or octal literal with no digit, a digit past its radix, or a fraction, exponent or float suffix"
+tags = ["parse"]
+diagnostics = 26
+
 # The float counterpart. A float literal's type is decided in the lexer and
 # never changed, so a value past its range was generated as infinity.
 [scenario.lexical_reject_float_range]
@@ -300,6 +324,104 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 # a name. The integers have no such methods, so the refusal is at the name.
 [scenario.lexical_reject_int_method]
 category = "reject"
-description = "A method called on an integer literal: '4.max(5)', '3.e5', '3.foo', '0x1f.foo' end the number at the dot"
+description = "A method called on an integer literal: '4.mx(5)', '3.e5', '3.foo', '0x1f.foo' end the number at the dot (the method 'max' exists, and is called on a literal in intrinsic_numbers)"
 tags = ["parse", "typecheck"]
 diagnostics = 8
+
+# Text after the opening quote that runs on to another line is neither the
+# multi-line literal nor a one-line one (the manual: the opening line ends
+# right after the quote). The legal forms beside it are the run scenario.
+[scenario.lexical_reject_mlstring_open]
+category = "reject"
+description = "A string literal with text after its opening quote that runs on to another line, refused at the opening quote"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.lexical_mlstring_open]
+category = "run"
+description = "One-line string literals and the legal multi-line form, unaffected by the refusal of text on the opening line"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# 'imm' and 'mut' are permissions, not the words a declaration starts with. One
+# diagnostic for each position, so the count is the number of old words written.
+[scenario.lexical_reject_old_dcl_word]
+category = "reject"
+description = "'imm' and 'mut' where a declaration starts -- a global, a field, a static, a parameter, 'self', a closure's parameter and state entry, a local, an 'if' and a 'case' binding -- refused with the word that replaces them"
+tags = ["parse"]
+diagnostics = 15
+
+# 'let' and 'var' in every position that takes a declaration word, with the
+# defaults written out beside the defaults left out.
+[scenario.lexical_let_var]
+category = "run"
+description = "'let' and 'var' on a global, a thread-local global, a field, a static, a parameter, a by-value 'self', a closure's parameter and state entry, a local and a pattern binding, a written default meaning what none means"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# 'let' and 'var' begin a declaration, so neither names a function or a variable.
+[scenario.lexical_reject_dcl_word_name]
+category = "reject"
+description = "'let' and 'var' as the name of a function and of a variable, refused as keywords"
+tags = ["parse"]
+diagnostics = 3
+
+# '&&', '||' and '!' are the logical operators; 'and', 'or' and 'not' are ordinary names.
+# The words written as operators are refused as a name where an operator belongs, with
+# no message of their own.
+[scenario.lexical_reject_logic_words]
+category = "reject"
+description = "'and', 'or' and 'not' written as operators, in conditions and as a case's joiner: refused as the names they now are"
+tags = ["parse"]
+diagnostics = 4
+
+# '&&' after an operand is logical and, '||' logical or, '!' logical not, with the
+# precedence and short-circuit 'and', 'or' and 'not' had; the words are names.
+[scenario.lexical_logic_symbols]
+category = "run"
+description = "'&&', '||' and '!' short-circuit and take the precedence of the words they replace; 'and', 'or' and 'not' name variables, functions and fields; '!=' and the bitwise '|' are unchanged"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# A '||' or an '!' written where a case wants a pattern is a condition, refused as
+# the other conditions are.
+[scenario.lexical_reject_logic_pattern]
+category = "reject"
+description = "'||' and '!' where a case wants a pattern are conditions, not patterns"
+tags = ["parse"]
+diagnostics = 2
+
+# What '&&' is not, and what '&&' and '||' do: '&&x' and '&&T' stay two borrows, '& &x'
+# and '&(&x)' a borrow of a borrow, '&' and '|' stay bitwise, and '&&' and '||' skip a
+# right side that cannot change the answer (the calls counted).
+[scenario.lexical_andand_borrows]
+category = "run"
+description = "'&&' and '||' skip a right side the left already decides; '&&x' and '&&T' stay two borrows, '& &x' and '&(&x)' a borrow of a borrow, and '&' stays bitwise and"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# The 'd' suffix is retired with no message of its own: the 'd' after a number is
+# a name where the parser wants an operator or the end of the statement.
+[scenario.lexical_reject_d_suffix]
+category = "reject"
+description = "A float literal followed by the retired 'd' suffix: refused as a stray name after a finished number"
+tags = ["parse"]
+diagnostics = 3
+
+# 'do' is not a keyword: it names a global, a local, a parameter, a field and a method
+# like any other word.
+[scenario.lexical_do_name]
+category = "run"
+description = "'do' is an ordinary name: a global, a local, a parameter, a field and a method are each called 'do'"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# 'elif' is not a keyword either: 'else if' is the one chaining form, and 'elif' names a
+# global, a local, a parameter, a field and a method like any other word.
+[scenario.lexical_elif_name]
+category = "run"
+description = "'elif' is an ordinary name: a global, a local, a parameter, a field and a method are each called 'elif', beside an 'else if' chain"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# The retired 'elif' clause is a name where the parser wants a statement's end; no message
+# of its own.
+[scenario.lexical_reject_elif]
+category = "reject"
+description = "An 'elif' clause after an 'if' block: refused as a stray name starting a statement, and the 'else' after it as one with no 'if'; 'else if' is accepted"
+tags = ["parse"]
+diagnostics = 4

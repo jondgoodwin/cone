@@ -1,0 +1,38 @@
+// The overload name an actor trait's behaviour declares belongs to the trait's
+// handle alone. An actor that conforms need not repeat it, and does not gain it:
+// `<-` on Doubler's own handle is not found, as for any method it never
+// declared that name for. A trait whose behaviours carry different overload
+// names keeps each apart.
+
+mod concurrency_actor_trait_overload_name;
+
+import actors;
+
+actor trait Sink {
+  pub async fn accept overload `<-`(self, c: i32);
+  pub async fn flush overload drain(self);
+}
+
+actor Doubler {
+  sum: i32;
+  fn init(self: &new) {*self = Self(sum: 0);}
+  pub async fn accept(self, c: i32) {sum = sum + c * 2;}
+  pub async fn flush(self) {sum = 0;}
+}
+
+fn viaTrait(s: Sink) {
+  s <- 1;
+  s.drain();
+  s.flush();
+}
+
+fn main() {
+  initAll();
+  {
+    let d = Doubler();
+    viaTrait(d);
+    d <- 2;               //~ ErrorNoMbr "Method or field `<-` not found"
+    d.drain();            //~ ErrorNoMbr "drain"
+  }
+  finalAll();
+}

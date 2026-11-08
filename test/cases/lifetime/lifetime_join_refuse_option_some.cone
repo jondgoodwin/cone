@@ -1,0 +1,13 @@
+// Bug 62: 'Some(C(h, &mut t))', put through a '&mut Option'. Refuse: the borrows are one value, and a store through it could put the younger one where the holder points.
+// Master e9e953096: compiled, and the program printed: holder reads 0
+// (the younger local's function had returned and a call had reused its stack before the read; 7 would have been a live read).
+mod lifetime_join_refuse_option_some;
+import stdio use *;
+
+struct T { pub v: i64; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct H { pub p: Option[&mut T]; }
+struct C { pub h: &mut H; pub x: &mut T; }
+fn put(c: &mut Option[C]) { match c { case let Some(k) { k.h.p = Some(k.x); } case None { } } }
+fn scope(h: &mut H) { var t = T(7); var c = Some(C(h, &mut t)); put(&mut c); }  //~ ErrorCallEscape
+fn main() { var h = H(None); var y = T(1); scope(&mut h); print <- clobber(3), "\n"; match h.p { case let Some(r) { print <- "holder reads ", r.v, "\n"; } case None { print <- "none\n"; } } }

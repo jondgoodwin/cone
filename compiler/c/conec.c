@@ -10,6 +10,7 @@
 #include "shared/fileio.h"
 #include "ir/nametbl.h"
 #include "ir/ir.h"
+#include "ir/flowloan.h"
 #include "shared/error.h"
 #include "shared/timer.h"
 #include "parser/lexer.h"
@@ -184,7 +185,7 @@ int main(int argc, char **argv) {
     coneopt.srcname = fileName(coneopt.srcpath);
     intrinsicForceFallback = coneopt.intrinsic_fallback;
     awaitDirect = coneopt.await_direct;
-    intrinsicBuildSetup(&coneopt);
+    derefWarnIndexStar = coneopt.warn_index_star;
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;
 
@@ -215,7 +216,21 @@ int main(int argc, char **argv) {
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);
-        if (errors == 0) {
+        // Nothing generated will say what a kernel reaches: report the GPU
+        // refusals held (flowloan.h)
+        if (flowGpu && (errors != 0 || coneopt.report_trust))
+            loanGpuHeldFlush(NULL, NULL);
+        if (errors == 0 && coneopt.report_trust) {
+            trustReport((INode*)pgmnode);
+            // A library's include file is still written, so that what imports it can be
+            // reported against it (tools/trustmap.py); nothing else is generated
+            if (desc && desc->library) {
+                size_t inclen = 0;
+                char *inctext = incFileGenerate(pgmnode, &inclen);
+                if (inctext && errors == 0)
+                    writeIncludeFile(&coneopt, pgmnode, desc, includeFilePath(&coneopt, pgmnode), inctext, inclen);
+            }
+        } else if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);

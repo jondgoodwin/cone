@@ -1,0 +1,297 @@
+// ======== Exact decimals: the slow path of number conversion ========
+//
+// An f64 is written as the shortest text that reads back as the same f64,
+// through an exact decimal: the digits of the value, a decimal point, and
+// shifts by powers of two that move the point without losing a digit. This is
+// the method of Go's 'strconv' (its 'decimal' type), written afresh here: slow,
+// simple, and right for every input. Reading text into an f64 no longer lives
+// here: 'f64.parse' (core, with conestd's exact reader, the same method) does
+// it, and numberF64 calls that.
+//
+// A Dec holds at most 800 digits. That is more than the 767 significant digits
+// any f64 can need, and a digit dropped past it sets 'trunc', which only
+// breaks the tie of a value exactly halfway between two f64s.
+
+// The most digits a Dec holds
+const decMaxDigits = 800usize;
+// The most bits one shift moves: n * 10 + carry stays inside a u64
+const decMaxShift = 60i32;
+
+// The value 0.d1d2d3... times 10^dp, the digits 0 to 9 held most significant
+// first, with no trailing zero (zero is no digits)
+struct Dec {
+  pub digits: List[u8];
+  pub dp: i32;
+  // Nonzero digits beyond the 800 were dropped
+  pub trunc: bool;
+}
+
+fn decNew() Dec { Dec(List[u8](), 0i32, false) }
+
+// Trailing zeros off; an empty Dec is zero, and its point is at 0
+fn decTrim(a: &mut Dec) {
+  while a.digits.len() > 0usize && *a.digits[a.digits.len() - 1usize] == 0u8 {
+    a.digits.pop();
+  }
+  if a.digits.len() == 0usize { a.dp = 0i32; }
+}
+
+// The Dec holds v exactly
+fn decAssign(a: &mut Dec, v: u64) {
+  a.digits.clear();
+  a.trunc = false;
+  var rev = List[u8]();
+  var x = v;
+  while x > 0u64 {
+    rev.push(u8.from(x % 10u64));
+    x = x / 10u64;
+  }
+  var i = rev.len();
+  while i > 0usize {
+    i = i - 1usize;
+    a.digits.push(*rev[i]);
+  }
+  a.dp = i32.from(a.digits.len());
+  decTrim(a);
+}
+
+// Divide by 2^k, k from 1 to decMaxShift
+fn decRightShift(a: &mut Dec, k: i32) {
+  let kk = u64.from(k);
+  let nd = a.digits.len();
+  var r = 0usize;
+  var n = 0u64;
+  // Pick up enough leading digits to cover the first shift
+  while (n >> kk) == 0u64 {
+    if r >= nd {
+      if n == 0u64 {
+        a.digits.clear();
+        a.dp = 0i32;
+        return;
+      }
+      while (n >> kk) == 0u64 {
+        n = n * 10u64;
+        r = r + 1usize;
+      }
+      break;
+    }
+    n = n * 10u64 + u64.from(*a.digits[r]);
+    r = r + 1usize;
+  }
+  a.dp = a.dp - (i32.from(r) - 1i32);
+  let mask = (1u64 << kk) - 1u64;
+  var out = List[u8].withCapacity(nd + 24usize);
+  // Pick up a digit, put down a digit
+  while r < nd {
+    let dig = n >> kk;
+    n = n & mask;
+    out.push(u8.from(dig));
+    n = n * 10u64 + u64.from(*a.digits[r]);
+    r = r + 1usize;
+  }
+  // Put down the extra digits
+  while n > 0u64 {
+    let dig = n >> kk;
+    n = n & mask;
+    if out.len() < decMaxDigits { out.push(u8.from(dig)); }
+    else if dig > 0u64 { a.trunc = true; }
+    n = n * 10u64;
+  }
+  a.digits = out;
+  decTrim(a);
+}
+
+// Multiply by 2^k, k from 1 to decMaxShift
+fn decLeftShift(a: &mut Dec, k: i32) {
+  let kk = u64.from(k);
+  // The product's digits, least significant first
+  var rev = List[u8].withCapacity(a.digits.len() + 24usize);
+  var n = 0u64;
+  var r = a.digits.len();
+  while r > 0usize {
+    r = r - 1usize;
+    n = n + (u64.from(*a.digits[r]) << kk);
+    let quo = n / 10u64;
+    rev.push(u8.from(n - 10u64 * quo));
+    n = quo;
+  }
+  while n > 0u64 {
+    let quo = n / 10u64;
+    rev.push(u8.from(n - 10u64 * quo));
+    n = quo;
+  }
+  let total = rev.len();
+  a.dp = a.dp + i32.from(total) - i32.from(a.digits.len());
+  var out = List[u8].withCapacity(total);
+  var i = total;
+  while i > 0usize {
+    i = i - 1usize;
+    if out.len() < decMaxDigits { out.push(*rev[i]); }
+    else if *rev[i] != 0u8 { a.trunc = true; }
+  }
+  a.digits = out;
+  decTrim(a);
+}
+
+// Multiply by 2^k, k any sign
+fn decShift(a: &mut Dec, k: i32) {
+  if a.digits.len() == 0usize { return; }
+  var left = k;
+  if left > 0i32 {
+    while left > decMaxShift {
+      decLeftShift(a, decMaxShift);
+      left = left - decMaxShift;
+    }
+    decLeftShift(a, left);
+  }
+  else if left < 0i32 {
+    while left < -decMaxShift {
+      decRightShift(a, decMaxShift);
+      left = left + decMaxShift;
+    }
+    decRightShift(a, -left);
+  }
+}
+
+// Whether rounding to nd digits goes up
+fn decShouldRoundUp(a: &Dec, nd: i32) bool {
+  if nd < 0i32 || usize.from(nd) >= a.digits.len() { return false; }
+  let at = usize.from(nd);
+  let digit = *a.digits[at];
+  // Exactly halfway: to even, unless digits were dropped, which makes it a
+  // little more than halfway
+  if digit == 5u8 && at + 1usize == a.digits.len() {
+    if a.trunc { return true; }
+    return at > 0usize && (*a.digits[at - 1usize] % 2u8) != 0u8;
+  }
+  digit >= 5u8
+}
+
+fn decRoundDown(a: &mut Dec, nd: i32) {
+  if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
+  a.digits.truncate(usize.from(nd));
+  decTrim(a);
+}
+
+fn decRoundUp(a: &mut Dec, nd: i32) {
+  if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
+  var i = usize.from(nd);
+  while i > 0usize {
+    i = i - 1usize;
+    let c = *a.digits[i];
+    if c < 9u8 {
+      a.digits.set(i, c + 1u8);
+      a.digits.truncate(i + 1usize);
+      return;
+    }
+  }
+  // All nines: a single 1, the point one place on
+  a.digits.clear();
+  a.digits.push(1u8);
+  a.dp = a.dp + 1i32;
+}
+
+fn decRound(a: &mut Dec, nd: i32) {
+  if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
+  if decShouldRoundUp(a, nd) { decRoundUp(a, nd); } else { decRoundDown(a, nd); }
+}
+
+// -------- f64 to the shortest Dec --------
+
+// The Dec holds x's exact decimal, cut to the fewest digits that still read
+// back as x. x is finite and positive.
+fn decShortest(a: &mut Dec, x: f64) {
+  let bits = x.bits();
+  var mant = bits & ((1u64 << 52u64) - 1u64);
+  var exp = i32.from((bits >> 52u64) & 0x7FFu64);
+  if exp == 0i32 {
+    exp = 1i32;
+  }
+  else {
+    mant = mant | (1u64 << 52u64);
+  }
+  exp = exp - 1023i32;
+  decAssign(a, mant);
+  decShift(a, exp - 52i32);
+  decRoundShortest(a, mant, exp);
+}
+
+// Cut a (the exact value of mant * 2^(exp-52)) to the fewest digits that lie
+// between the halves to the neighbouring f64s
+fn decRoundShortest(a: &mut Dec, mant: u64, exp: i32) {
+  if mant == 0u64 {
+    a.digits.clear();
+    a.dp = 0i32;
+    return;
+  }
+  // Already shortest when 10^(dp-nd) is beyond the gap between f64s:
+  // log2(10) > 3.32
+  if exp > -1022i32 && 332i32 * (a.dp - i32.from(a.digits.len())) >= 100i32 * (exp - 52i32) {
+    return;
+  }
+  // Halfway to the next f64 up
+  var upper = decNew();
+  decAssign(&mut upper, mant * 2u64 + 1u64);
+  decShift(&mut upper, exp - 52i32 - 1i32);
+  // Halfway to the next f64 down; below a power of two the gap halves
+  var mantlo = mant - 1u64;
+  var explo = exp;
+  if !(mant > (1u64 << 52u64) || exp == -1022i32) {
+    mantlo = mant * 2u64 - 1u64;
+    explo = exp - 1i32;
+  }
+  var lower = decNew();
+  decAssign(&mut lower, mantlo * 2u64 + 1u64);
+  decShift(&mut lower, explo - 52i32 - 1i32);
+
+  // The bounds are readable as x only when x's mantissa is even, since a tie
+  // rounds to even
+  let inclusive = mant % 2u64 == 0u64;
+
+  // 0: the digits of a and upper agree so far; 1: they differ by one place,
+  // then only nines in a against zeros in upper; 2: they differ by more
+  var upperdelta = 0u8;
+  var ui = 0i32;
+  while true {
+    let mi = ui - upper.dp + a.dp;
+    if mi >= i32.from(a.digits.len()) { break; }
+    let li = ui - upper.dp + lower.dp;
+    var l = 0u8;
+    if li >= 0i32 && usize.from(li) < lower.digits.len() { l = *lower.digits[usize.from(li)]; }
+    var m = 0u8;
+    if mi >= 0i32 { m = *a.digits[usize.from(mi)]; }
+    var u = 0u8;
+    if usize.from(ui) < upper.digits.len() { u = *upper.digits[usize.from(ui)]; }
+
+    // Truncating is allowed once lower has a different digit, or is exactly
+    // the result of truncating and inclusive
+    let okdown = l != m || (inclusive && li + 1i32 == i32.from(lower.digits.len()));
+
+    if upperdelta == 0u8 && m + 1u8 < u {
+      upperdelta = 2u8;
+    }
+    else if upperdelta == 0u8 && m != u {
+      upperdelta = 1u8;
+    }
+    else if upperdelta == 1u8 && (m != 9u8 || u != 0u8) {
+      upperdelta = 2u8;
+    }
+    // Rounding up is allowed once upper has a different digit and is either
+    // inclusive or farther than the rounded value
+    let okup = upperdelta > 0u8 && (inclusive || upperdelta > 1u8 || usize.from(ui) + 1usize < upper.digits.len());
+
+    if okdown && okup {
+      decRound(a, mi + 1i32);
+      return;
+    }
+    if okdown {
+      decRoundDown(a, mi + 1i32);
+      return;
+    }
+    if okup {
+      decRoundUp(a, mi + 1i32);
+      return;
+    }
+    ui = ui + 1i32;
+  }
+}

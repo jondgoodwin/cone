@@ -1,0 +1,594 @@
+// An HTTP server whose requests are taken by actors (the package's header, A
+// SERVER), on loopback, with the package's own client as the other end.
+// Acceptor listens and awaits 'next' in a loop, handing each request's
+// Exchange to a Handler actor of its own that answers it. Checked, in order:
+// a GET (the request's method, path, query, field and address as the actor
+// sees them); a POST whose body comes back; a HEAD, whose response has the
+// length but no body; a 204; an error status; an exchange dropped without an
+// answer (500); a streamed chunked response; a streamed response of a
+// declared length; a large response (600,000 bytes, checked byte by byte); a
+// second request on the connection of the first (kept alive); a POST of
+// 60,000 bytes of three-byte characters (a piece the client sends ends inside
+// one); a streamed response of 40 writes of 64 KiB, each awaited; two hundred requests
+// from four actors at once; a server with a small body limit (413 for a body
+// over it, 200 under it); a server with room for two waiting requests and no
+// actor to take them (the other two requests get 503, the two that waited
+// are abandoned by their clients, and an actor that then asks takes only a
+// new request, not those dead ones); and a closed server (the 'next' waiting
+// is answered Closed and a connection to it is refused), and one closed by its
+// last handle's going.
+
+mod server;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import aio use IoLimits;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// ---------------------------------------------------------------------------
+// The server's side
+// ---------------------------------------------------------------------------
+
+fn bigBody(n: usize) String {
+  var b = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.appendByte(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  b
+}
+
+// Answers one request
+actor Handler {
+  ex: Exchange;
+  finished: Sender[u64];      // told how many body bytes each streamed response ended with
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if p == "/hello" {
+      var t = String.from("hello ");
+      t.append(ex.request.methodName());
+      ex.text(200u16, t.view());
+    } else if p == "/info" {
+      var t = String.from(ex.request.methodName());
+      t.append("|");
+      t.append(ex.request.path());
+      t.append("|");
+      t.append(ex.request.query());
+      t.append("|");
+      t.appendBytes(ex.request.header("x-test"));
+      t.append("|");
+      if ex.request.secure {t.append("secure");} else {t.append("plain");}
+      t.append("|");
+      if ex.request.peer.port() != 0u16 {t.append("peer");} else {t.append("nopeer");}
+      ex.text(200u16, t.view());
+    } else if p == "/echo" {
+      var t = String.from(ex.request.methodName());
+      t.append("|");
+      t.appendUInt(u64.from(ex.request.body.len()));
+      t.append("|");
+      t.append(ex.request.body.view());
+      ex.text(200u16, t.view());
+    } else if p == "/count" {
+      var t = String();
+      t.appendUInt(u64.from(ex.request.body.len()));
+      ex.text(200u16, t.view());
+    } else if p == "/head" {
+      ex.respond(ResponseHead.make(200u16), String.from("hello"));
+    } else if p == "/nocontent" {
+      ex.respond(ResponseHead.make(204u16), String());
+    } else if p == "/missing" {
+      ex.text(404u16, "not found");
+    } else if p == "/stream" {
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      let a = await ex.write(String.from("one "));
+      let b = await ex.write(String.from("two "));
+      let c = await ex.write(String.from("three"));
+      let f = await ex.finish();
+      match f {
+        case let Ok(n) {finished.send(n);}
+        case let Err(e) {finished.send(0u64);}
+      }
+    } else if p == "/sized" {
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(10u64));
+      let a = await ex.write(String.from("01234"));
+      let b = await ex.write(String.from("56789"));
+      let f = await ex.finish();
+      match f {
+        case let Ok(n) {finished.send(n);}
+        case let Err(e) {finished.send(0u64);}
+      }
+    } else if p == "/big" {
+      ex.respond(ResponseHead.make(200u16), bigBody(600000usize));
+    } else if p == "/bigstream" {
+      // 40 writes of 64 KiB, each awaited: the connection takes them as its peer reads
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      var i = 0usize;
+      while i < 40usize {
+        let w = await ex.write(bigBody(65536usize));
+        i = i + 1usize;
+      }
+      let f = await ex.finish();
+    } else {
+      ex.text(400u16, "unknown path");
+    }
+  }
+}
+
+// Takes the requests of a server it listens for and gives each to a Handler
+actor Acceptor {
+  server: Server;
+  finished: Sender[u64];
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n");}
+    }
+    ports.send(server.port());
+  }
+
+  // Take requests until the server is closed
+  pub async fn serve(self, ended: Sender[u64]) {
+    var count = 0u64;
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          count = count + 1u64;
+          dispatch(ok, finished.clone());
+        }
+        case let Err(e) {break;}
+      }
+    }
+    ended.send(count);
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn dispatch(ex: Exchange, finished: Sender[u64]) {
+  let path = String.from(ex.request.path());
+  if path.view() == "/none" {return;}       // dropped without an answer
+  let h = Handler(ex, finished);
+  h.run();
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn field(r: &Response, name: &str) String {
+  match r.headers.get(name) {
+    case let Some(v) {String.fromBytes(v)}
+    case is None[&Array[u8]] {String.from("(none)")}
+  }
+}
+
+// How an exchange ended: the status and body, or the kind of error
+fn say2(what: &str, r: Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match &r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      if ok.body.len() > 0usize {
+        printStr(" ");
+        printStr(ok.body.view());
+      }
+      printStr("\n");
+    }
+    case let &Err(e) {
+      if e.isTimedOut() {printStr("timed out\n");}
+      else if e.isCancelled() {printStr("cancelled\n");}
+      else {printStr("failed: "); print <- e; printStr("\n");}
+    }
+  }
+}
+
+fn statusOf(r: &Result[Response, FetchError]) u64 {
+  match r {
+    case let &Ok(ok) {u64.from(ok.status)}
+    case let &Err(e) {0u64}
+  }
+}
+
+actor Prober {
+  client: Client;
+
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    say2("hello", await client.get(url(port, "/hello").view()));
+    let first = await client.get(url(port, "/hello").view());
+    match &first {
+      case let &Ok(ok) {printStr("  kept alive: "); printStr(yes(ok.timing.reused)); printStr("\n");}
+      else {}
+    }
+
+    var info = Request.get(url(port, "/info?a=1&b=2").view());
+    info.headers.add("X-Test", "yes");
+    say2("info", await client.send(info));
+
+    var post = Request.make("POST", url(port, "/echo").view());
+    post.headers.add("Content-Type", "text/plain");
+    post.body = String.from("hello world");
+    say2("post", await client.send(post));
+
+    // A body of three-byte characters, longer than a piece the client sends: a
+    // piece ends inside a character
+    var euros = Request.make("POST", url(port, "/count").view());
+    euros.body = String();
+    var e = 0usize;
+    while e < 20000usize {
+      euros.body.appendByte(0xE2u8);
+      euros.body.appendByte(0x82u8);
+      euros.body.appendByte(0xACu8);
+      e = e + 1usize;
+    }
+    let euros2 = euros.body.clone();
+    say2("euros posted, bytes", await client.send(euros));
+    // ...and on a connection of the actor's own, whose request body the service thread cuts into pieces
+    let cr = await actorhttp.connect("127.0.0.1", port);
+    match cr {
+      case let Ok(c) {
+        say2("euros posted on a connection, bytes",
+          await c.request(RequestHead.make("POST", "/count", "127.0.0.1"), euros2));
+      }
+      case let Err(er) {printStr("connect failed\n");}
+    }
+
+    let head = await client.send(Request.make("HEAD", url(port, "/head").view()));
+    match &head {
+      case let &Ok(ok) {
+        printStr("head: ");
+        printUInt(u64.from(ok.status));
+        printStr(" length ");
+        printStr(field(ok, "Content-Length").view());
+        printStr(", body bytes ");
+        printUInt(u64.from(ok.body.len()));
+        printStr("\n");
+      }
+      case let &Err(e) {printStr("head failed\n");}
+    }
+    let nc = await client.get(url(port, "/nocontent").view());
+    match &nc {
+      case let &Ok(ok) {printStr("nocontent: "); printUInt(u64.from(ok.status)); printStr(", body bytes "); printUInt(u64.from(ok.body.len())); printStr("\n");}
+      else {printStr("nocontent failed\n");}
+    }
+    say2("missing", await client.get(url(port, "/missing").view()));
+    say2("unanswered", await client.get(url(port, "/none").view()));
+
+    let st = await client.get(url(port, "/stream").view());
+    match &st {
+      case let &Ok(ok) {
+        printStr("stream: ");
+        printUInt(u64.from(ok.status));
+        printStr(" ");
+        printStr(ok.body.view());
+        printStr(" (");
+        printStr(field(ok, "Transfer-Encoding").view());
+        printStr(")\n");
+      }
+      else {printStr("stream failed\n");}
+    }
+    let sz = await client.get(url(port, "/sized").view());
+    match &sz {
+      case let &Ok(ok) {
+        printStr("sized: ");
+        printStr(ok.body.view());
+        printStr(" (length ");
+        printStr(field(ok, "Content-Length").view());
+        printStr(")\n");
+      }
+      else {printStr("sized failed\n");}
+    }
+
+    let big = await client.get(url(port, "/big").view());
+    match &big {
+      case let &Ok(ok) {
+        let expected = bigBody(600000usize);
+        printStr("big: ");
+        printUInt(u64.from(ok.body.len()));
+        if ok.body.view() == expected.view() {printStr(" bytes, every one right\n");} else {printStr(" bytes, WRONG\n");}
+      }
+      else {printStr("big failed\n");}
+    }
+
+    let bs = await client.get(url(port, "/bigstream").view());
+    match &bs {
+      case let &Ok(ok) {
+        var expected = String.withCapacity(40usize * 65536usize);
+        var i = 0usize;
+        while i < 40usize {
+          expected.appendBytes(bigBody(65536usize).view());
+          i = i + 1usize;
+        }
+        printStr("bigstream: ");
+        printUInt(u64.from(ok.body.len()));
+        if ok.body.view() == expected.view() {printStr(" bytes, every one right\n");} else {printStr(" bytes, WRONG\n");}
+      }
+      else {printStr("bigstream failed\n");}
+    }
+
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+// Several of these at once, each asking for a few things through one client
+actor Crowd {
+  client: Client;
+
+  pub async fn run(self, port: u16, n: u64, oks: Sender[u64]) {
+    var k = 0u64;
+    while k < n {
+      let r = await client.get(url(port, "/hello").view());
+      oks.send(statusOf(&r));
+      k = k + 1u64;
+    }
+  }
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var etx: Sender[u64];
+  var erx: Receiver[u64];
+  etx, erx = Channel[u64].make();
+
+  var ftx: Sender[u64];
+  var frx: Receiver[u64];
+  ftx, frx = Channel[u64].make();
+
+  // The main server, and its actors' answers
+  let acceptor = Acceptor(Server.none(), ftx.clone());
+  acceptor.open(ServerConfig.make(), ptx.clone());
+  let port = take[u16](&mut prx, 0u16);
+  acceptor.serve(etx.clone());
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober(Client.standard());
+    p.run(port, tx);
+    rx.recv();
+    // What the two streamed responses finished with (13 and 10 bytes, in either order)
+    let sum = take[u64](&mut frx, 0u64) + take[u64](&mut frx, 0u64);
+    say("the streamed responses finished with bytes (summed):", sum);
+  }
+
+  // Two hundred requests, from four actors at once
+  {
+    var otx: Sender[u64];
+    var orx: Receiver[u64];
+    otx, orx = Channel[u64].make();
+    let shared = Client.standard();
+    var crowd = List[Crowd]();
+    var c = 0u64;
+    while c < 4u64 {
+      let cr = Crowd(shared.clone());
+      cr.run(port, 50u64, otx.clone());
+      crowd.push(cr);
+      c = c + 1u64;
+    }
+    var good = 0u64;
+    var k = 0u64;
+    while k < 200u64 {
+      if take[u64](&mut orx, 0u64) == 200u64 {good = good + 1u64;}
+      k = k + 1u64;
+    }
+    say("two hundred requests from four actors, answered 200:", good);
+  }
+
+  // A body limit
+  {
+    var cfg = ServerConfig.make();
+    cfg.maxBody = 1000usize;
+    let small = Acceptor(Server.none(), ftx.clone());
+    small.open(cfg, ptx.clone());
+    let sport = take[u16](&mut prx, 0u16);
+    small.serve(etx.clone());
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Limiter(Client.standard());
+    p.run(sport, tx);
+    rx.recv();
+    small.stop();
+    say("the limited server's actor took requests:", take[u64](&mut erx, 99u64));
+  }
+
+  // Requests nobody takes
+  {
+    var cfg = ServerConfig.make();
+    cfg.maxPending = 2usize;
+    let busy = Acceptor(Server.none(), ftx.clone());
+    busy.open(cfg, ptx.clone());
+    let bport = take[u16](&mut prx, 0u16);
+    // Four requests, each from a client of its own, given a second and a half
+    var stx: Sender[u64];
+    var srx: Receiver[u64];
+    stx, srx = Channel[u64].make();
+    var singles = List[Single]();
+    var s = 0u64;
+    while s < 4u64 {
+      let one = Single(Client.standard());
+      one.run(bport, 1500i64, stx.clone());
+      singles.push(one);
+      s = s + 1u64;
+    }
+    var busyCount = 0u64;
+    var timedCount = 0u64;
+    var otherCount = 0u64;
+    s = 0u64;
+    while s < 4u64 {
+      let status = take[u64](&mut srx, 1u64);
+      if status == 503u64 {busyCount = busyCount + 1u64;}
+      else if status == 0u64 {timedCount = timedCount + 1u64;}
+      else {otherCount = otherCount + 1u64;}
+      s = s + 1u64;
+    }
+    say("flood: answered 503:", busyCount);
+    say("flood: abandoned by the client:", timedCount);
+    say("flood: anything else:", otherCount);
+    // Let the server see the two abandoned connections go
+    thread.sleep(Duration.fromMillis(500i64));
+    // Only now does an actor ask for requests: the two that waited were
+    // abandoned by their clients, so it gets the next new one
+    busy.serve(etx.clone());
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let after = Prober2(Client.standard());
+    var tx2: OneshotSender[u64];
+    var rx2: OneshotReceiver[u64];
+    tx2, rx2 = Oneshot[u64].make();
+    after.run(bport, tx2);
+    rx2.recv();
+    busy.stop();
+    say("the busy server's actor took requests:", take[u64](&mut erx, 99u64));
+  }
+
+  // The main server closed
+  acceptor.stop();
+  say("the main server's actor took requests:", take[u64](&mut erx, 99u64));
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober2(Client.standard());
+    p.refused(port, String.from("closed server"), tx);
+    rx.recv();
+  }
+
+  // A server closed by dropping its last handle
+  {
+    let holder = Holder(Server.none());
+    holder.open(ptx.clone());
+    let hport = take[u16](&mut prx, 0u16);
+    holder.release();
+    thread.sleep(Duration.fromMillis(200i64));
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let p = Prober2(Client.standard());
+    p.refused(hport, String.from("server whose last handle went"), tx);
+    rx.recv();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}
+
+// Holds a server's only handle, then lets it go
+actor Holder {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      else {}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn release(self) {
+    server = Server.none();
+  }
+}
+
+// The body limit: 413 over it, 200 under it
+actor Limiter {
+  client: Client;
+
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    var under = Request.make("POST", url(port, "/echo").view());
+    under.body = bigBody(500usize);
+    let r1 = await client.send(under);
+    say2("body under the limit", shortened(r1));
+    var over = Request.make("POST", url(port, "/echo").view());
+    over.body = bigBody(3000usize);
+    let r2 = await client.send(over);
+    say2("body over the limit", r2);
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+// A response with its body shortened to its length, so that its text is short
+fn shortened(r: Result[Response, FetchError]) Result[Response, FetchError] {
+  var res = r;
+  match &mut res {
+    case var &mut Ok(ok) {
+      let n = ok.body.len();
+      ok.body = String.from("(");
+      ok.body.appendUInt(u64.from(n));
+      ok.body.append(" bytes)");
+    }
+    else {}
+  }
+  res
+}
+
+// One request from a client of its own, to a server with room for two waiting
+// and nobody to take them
+actor Single {
+  client: Client;
+
+  // One request given ms milliseconds: its status, or 0 if it was not answered
+  pub async fn run(self, port: u16, ms: i64, out: Sender[u64]) {
+    let lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));
+    let r = await client.getIn(url(port, "/hello").view(), lim);
+    out.send(statusOf(&r));
+  }
+}
+
+actor Prober2 {
+  client: Client;
+
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    say2("after the flood", await client.get(url(port, "/hello").view()));
+    var d = done;
+    d.send(1u64);
+  }
+
+  pub async fn refused(self, port: u16, label: String, done: OneshotSender[u64]) {
+    let r = await client.get(url(port, "/hello").view());
+    printStr(label.view());
+    match &r {
+      case let &Err(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
+      case let &Ok(ok) {printStr(": ANSWERED\n");}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}

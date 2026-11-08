@@ -53,6 +53,10 @@ void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 
+    // A layout fact is the code generator's constant, not a value the front end can hold in a const
+    if (sizeofConstRefused(name->value, "a 'const' initializer"))
+        return;
+
     // An initializer need not be specified, but if not, it must have a declared type
     // Verify that declared type and initial value type match
     if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))

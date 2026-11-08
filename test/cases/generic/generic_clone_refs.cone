@@ -1,0 +1,66 @@
+// Clone of a read-only borrow, and of a struct that takes a trait in. A read-only
+// '&' copies (the language already lets `let b = a` read it twice), so it is Clone
+// by the same grant, and its clone is the same borrow: Option[&T] has a clone, a
+// struct with a '&' field can declare Clone and has that field copied, and a
+// generic function bounded by Clone accepts '&T' as its type. A borrow that moves
+// ('&mut') is not Clone (generic_typecheck_clone). A struct that declares a trait
+// with fields in its 'is' list and Clone gets every field cloned, the trait's
+// required ones too: the trait itself holds no storage of its own to skip.
+// Each printed value was checked by hand.
+
+mod generic_clone_refs;
+
+import stdio use *;
+import collections use *;
+
+fn showI(n: i32) { printInt(n); printStr("\n"); }
+fn showS(s: &str) { printStr(s); printStr("\n"); }
+
+fn dup[T: Clone](a: &T) T { a.clone() }
+
+struct Pt { x: i32; y: i32 }
+
+// A '&' field, copied; the number beside it is cloned as usual
+struct View is Clone { p: &Pt; n: i32 }
+
+// A trait with a field and a method, and a struct that takes it in
+trait Meter {
+  pub level: i32;
+  pub fn reading(self: &) i32 {level * 2}
+}
+
+struct Gauge is Meter, Clone {
+  pub level: i32;
+  pub name: String;
+}
+
+fn main() {
+  let pt = Pt(3, 4);
+
+  // Option[&T] has a clone that is the same borrow
+  let o: Option[&Pt] = Some[&Pt](&pt);
+  let o2 = o.clone();
+  showI(o2.unwrap().x * 10 + o2.unwrap().y);     // 3 * 10 + 4 = 34
+  let none: Option[&Pt] = None;
+  showI(if none.clone() == None { 1 } else { 0 });   // 1
+
+  // A '&' as the type parameter of a Clone bound
+  let r = &pt;
+  let r2 = dup(&r);
+  showI(r2.y);                                    // 4
+
+  // A struct with a '&' field declares Clone: the field is copied, the number cloned
+  let v = View(&pt, 7);
+  let v2 = v.clone();
+  showI(v2.p.x + v2.n);                           // 3 + 7 = 10
+
+  // A struct with a trait in its 'is' list: its fields (the trait's level among them) are all cloned
+  var g = Gauge(5, String.from("ab"));
+  var g2 = g.clone();
+  g2.level = 6;
+  g2.name.appendByte(33u8);
+  showI(g.level * 10 + g2.level);                 // 5 * 10 + 6 = 56
+  showS(g.name.view());                           // ab
+  showS(g2.name.view());                          // ab!
+  showI(g2.reading());                            // the trait's default on the clone: 6 * 2 = 12
+}

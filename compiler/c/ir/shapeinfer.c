@@ -140,7 +140,7 @@ enum SiMode {
     SiModeField,
     SiModeType,
     SiModeOut,
-    // SiModeType and SiModeOut, for a borrow into a 'mut' global (shapeTypeWritesGlobal): a call
+    // SiModeType and SiModeOut, for a borrow into a 'var' global (shapeTypeWritesGlobal): a call
     // that could run any code (through a virtual reference or a function pointer) is taken to write
     // any global, whatever it is handed
     SiModeTypeG,
@@ -283,6 +283,8 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
         return siVisit(((RefNode *)node)->vtexp, fn, ctx);
     case NotLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx);
+    case DestructTag:
+        return siVisit(((DestructNode *)node)->exp, fn, ctx);
     case OrLogicTag:
     case AndLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx) || siVisit(((LogicNode *)node)->rexp, fn, ctx);
@@ -381,9 +383,10 @@ static int siReadsStorage(INode *e, SiCtx *c) {
 }
 
 // Does a write to this place write storage of the parameter's pointee: a place in
-// it, or all of it, that holds storage?
+// it, or all of it, that holds storage? A '_' target is no place: it takes its
+// value and drops it (assignIsAnon), and, naming nothing, has no type to ask
 static int siWriteHits(INode *lval, SiCtx *c) {
-    if (!c->isref)
+    if (!c->isref || assignIsAnon(lval))
         return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
@@ -443,8 +446,11 @@ static int siPlaceInCont(INode *e, INode *cont) {
 }
 
 // A write at this place, in a type mode: a place of the collection's type, that is
-// not a local of the function's own, and, in SiModeOut, one reached from a global
+// not a local of the function's own, and, in SiModeOut, one reached from a global.
+// A '_' target writes no place (siWriteHits)
 static int siTypeWriteHits(INode *lval, SiCtx *c) {
+    if (assignIsAnon(lval))
+        return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
         uint32_t cnt;
@@ -617,7 +623,7 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
+    // Into a borrow of a 'var' global: a virtual call, or a call of a function value (a '&fn' held in
     // a field, a parameter, a global or a local), runs code that is not known, which may write any
     // global without being handed it; so does an 'extern' function handed anything that can reach
     // something callable (a '&fn', a virtual reference, a closure an owner holds), which C may call
@@ -927,7 +933,7 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
 }
 
 // Can a value of this type reach anything callable: a '&fn' (a reference to a function), a virtual
-// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('So[fn]',
+// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('Uni[fn]',
 // 'Rc[Trait]')? By containment, a field, an element, or through a pointer or a reference: the same
 // idea as reshapeReach, with code to call as the thing wanted. A type graph too large to follow is
 // taken as reaching one. Only a positive answer is kept, for a struct, for a negative one found
@@ -1049,7 +1055,7 @@ int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
     return 0;
 }
 
-// The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,
+// The same, asked of a call made while a borrow into a 'var' global is held (reshape.h,
 // 'globalview'): only through a global, with a call into unknown code (a virtual call, a function
 // value) taken to write any
 int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {
@@ -1695,7 +1701,10 @@ static void skSay(FnDclNode *meth, StructNode *impl, StructNode *cont, INode *hi
 // 'final': no body will be checked later, so one not ready is taken as reshaping
 static int skMethod(FnDclNode *meth, StructNode *impl, char *why, size_t size, int final) {
     if (!siVisible(meth)) {
-        if (why)
+        if (why && impl && siIsRecorded(impl))
+            snprintf(why, size, "%s is a type of a package whose include file has no bodies, and does not record it as `ShapeKeeping`: a method of it reshapes a collection it reaches through a shared mutable path, or is code the compiler could not read when that package was compiled, so `%s` is assumed to reshape what it reaches",
+                &impl->namesym->namestr, &meth->namesym->namestr);
+        else if (why)
             snprintf(why, size, "%s `%s` is %s whose body the compiler cannot read here (an include file left it out, an extern, a function reference held in a variable or a virtual call), so it is assumed to reshape what it reaches",
                 impl && closureOfStruct((INode *)impl) ? "this closure's" : impl ? (const char *)&impl->namesym->namestr : "the function",
                 &meth->namesym->namestr, impl ? "a method" : "a function");
@@ -1753,6 +1762,10 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
         }
         return pending ? ShapeKeepsPending : ShapeKeepsYes;
     }
+    // A type of a package whose include file is read here: the file left the bodies
+    // out, and says what the package's own compile found of them (shapeKeepRecordable)
+    if (siIsRecorded(impl) && structDeclaresTrait(impl, shapeKeepingTrait))
+        return ShapeKeepsYes;
     FnDclNode *meths[24];
     int nmeths = skMethods(impl, trait, meths, 24);
     int pending = 0;
@@ -1764,6 +1777,35 @@ static int skAsk(StructNode *impl, StructNode *trait, char *why, size_t size, in
             pending = 1;
     }
     return pending ? ShapeKeepsPending : ShapeKeepsYes;
+}
+
+// Does the include file record this type of the package as keeping the shape of what
+// a caller borrows? Every method a trait could dispatch to (a public one with a
+// 'self', not generic or inline: skMethods's choice) is asked as a virtual call asks
+// it, wherever the trait is declared, and at least one must be there to record.
+// A type whose source declares it already is as written
+int shapeKeepRecordable(StructNode *st) {
+    if ((st->flags & (TraitType | EnumType)) || st->genericinfo != NULL || dclIsInstance((INode *)st)
+        || siIsRecorded(st) || structDeclaresTrait(st, shapeKeepingTrait))
+        return 0;
+    int found = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld) || structIsWholeEnumMethod(*nodesp))
+            continue;
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        if (meth->genericinfo || meth->where || (meth->flags & FlagInline) || inodeIsPrivate((INode *)meth)
+            || meth->vtype == NULL || meth->vtype->tag != FnSigTag)
+            continue;
+        FnSigNode *sig = (FnSigNode *)meth->vtype;
+        if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName)
+            continue;
+        found = 1;
+        if (skMethod(meth, st, NULL, 0, 1) != ShapeKeepsYes)
+            return 0;
+    }
+    return found;
 }
 
 int shapeKeepsVia(StructNode *impl, StructNode *trait, char *why, size_t size) {

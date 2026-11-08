@@ -38,8 +38,8 @@
 #   struct's.
 # - trait_parse_kind_modifier is at that same stage and separate from it because
 #   the subject is the kind keyword rather than the base clause: the 'trait'
-#   modifier written twice, and 'actor trait', the kind's abstraction the grammar
-#   admits and the compiler does not build.
+#   modifier written twice, and 'actor trait' read as the kind it is (the
+#   concurrency group owns what it means).
 # - trait_typecheck_vref and trait_typecheck_dispatch answer different
 #   questions -- what a virtual reference may be built from, versus what may be
 #   done through one that is well formed. Together they would be twenty-two
@@ -51,10 +51,10 @@
 #
 # Left out, with reasons:
 #
-# - Closure references. doc/reference/refcloref.html opens with "None
+# - Closure references. doc/manual/mod-functions.html opens with "None
 #   of this is implemented", and every part of it is absent: the closure literal
 #   '|{capture}| {...}' does not lex as anything (ErrorBadTerm, then the rest of
-#   the statement is swallowed), and the '+<So ||' type does not parse. The one
+#   the statement is swallowed), and the '+<Uni ||' type does not parse. The one
 #   piece that can be written -- a trait declaring '()', reached through a
 #   virtual reference and called as 'f(u)', which is the mechanism the page
 #   describes -- is trait_vref_call, which is the whole of what can be claimed
@@ -303,6 +303,22 @@ category = "run"
 description = "An owning virtual reference finalizes and frees its value once, as a plain owner does, through the implementer's type record in the vtable"
 tags = ["flow", "genllvm", "runtime"]
 
+# An implementer that holds an owner of its own trait, directly, by a field's
+# field, in an Option or an array, and the neighbours of that shape: a counted
+# owner holding counted and sole ones, a List of them, closures holding them
+# and holding an owner of their own callable trait, and a trait's field read
+# through the offset the vtable holds, and a same-size enum implementing the
+# trait whose variant holds a sole or a counted owner of it. Every block comes
+# from a guarded region whose free counts a block whose guard bytes were
+# written. A run because the
+# claim is the size each allocation is given and each finalizer run once;
+# without the vtables built after the type is laid out, the implementer
+# measured 0 bytes, its blocks were overrun and Rc's count was overwritten.
+[scenario.trait_vref_owner_nested]
+category = "run"
+description = "An implementer holding an owning virtual reference to its own trait is laid out before its vtable measures it: every block big enough, every finalizer run once"
+tags = ["genllvm", "runtime"]
+
 # Every pairing of a virtual reference's permission, borrowed or owning, with
 # the permission a dispatched method's 'self' declares, that the permission
 # allows. A run because the claim is that a 'self &mut' call through each
@@ -366,6 +382,11 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "compile"
 description = "Two types inheriting one trait default each get their own copy of it, spelled after the type"
 tags = ["typecheck", "genllvm"]
+
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.trait_inherited_defaults.run]]
+name = "default"
+options = ["--strip"]
 
 # Two implementers of the same trait inherit the same default. Each clone is
 # owned by its implementing type and so lands on its own symbol, and each is a
@@ -570,16 +591,15 @@ tags = ["parse"]
 diagnostics = 3
 
 # The other half of trait_kind_modifier: what the modifier grammar refuses. The
-# modifier does not stack, and a kind whose abstraction does not exist says so
-# where the declaration is written rather than being accepted with nothing under
-# it. 'actor' is here rather than in a concurrency group because carrying this
-# modifier is the only thing that spelling does today. 'mod trait' is built and
-# belongs to module, as 'mod' by itself does.
+# modifier does not stack, and 'actor trait' is read as an actor's abstraction:
+# a 'fn' in one, and a module without the actors package, are refused where
+# they are written. 'mod trait' is built and belongs to module, as 'mod' by
+# itself does.
 [scenario.trait_parse_kind_modifier]
 category = "reject"
-description = "'trait' written twice, and the kind whose abstraction the grammar admits and the compiler does not build"
+description = "'trait' written twice, and an 'actor trait' holding a 'fn' in a module that does not import actors"
 tags = ["parse"]
-diagnostics = 3
+diagnostics = 4
 
 # -------- name resolution stage --------
 
@@ -653,6 +673,11 @@ diagnostics = 14
 [scenario.trait_hash]
 category = "run"
 description = "Hash: the compiler's hash feeds each field in order, over a nested struct and a generic's instance; an integer or bool feeds its bits; a hash of one's own is kept; a terminator ends a variable-length value; a fixed seed gives fixed numbers, worked out apart"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.trait_hash_owned_str]
+category = "run"
+description = "Hash: a struct declaring Hash may hold a Uni[str] or Rc[str] field; the supplied hash feeds it as the str it owns, in field order, through a nested struct and a generic's instance, each compared with the same bytes fed by hand"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.trait_typecheck_vref]
@@ -772,7 +797,7 @@ description = "A generic method meeting a trait's method that is not generic, th
 tags = ["typecheck"]
 diagnostics = 2
 
-# Core's Iterator[T] and Iterable[T, I], met by the methods a type has: what a
+# Core's Iterator[T] and Iterable[T], met by the methods a type has: what a
 # call that asks for one is refused for. trait_typecheck_generic_method is the
 # neighbouring rule for a generic method; test/cases/lifetime holds the cursor
 # that lends (lifetime_band_struct_cursor_meets_trait).
@@ -785,4 +810,176 @@ diagnostics = 5
 [scenario.trait_default_names_self]
 category = "run"
 description = "A trait's generic default naming Self in the type it returns (a step holding the cursor it came from), a chain of two, the step declaring the trait too; and a type with the required method and no is meeting a bound on the trait"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A struct whose field has a narrower type than the trait gives it ('Shape.Circle'
+# where the trait says 'Shape'), given as a virtual reference that may write: as
+# an argument, a local's initializer, an owner's making, and an enum's variant.
+# Refused at the point it is given, naming the field and both types. Apart from
+# trait_typecheck_vref_perm because the subject is what an implementer declares,
+# not what the reference lends; trait_vref_field runs the read-only view it allows.
+[scenario.trait_typecheck_vref_field]
+category = "reject"
+description = "A struct whose field is narrower than the trait's, given as a virtual reference that may write"
+tags = ["typecheck"]
+diagnostics = 4
+
+# What a virtual reference sees of a field: a reference that may write sees it at
+# exactly the trait's type, and so writes through the trait land in the struct's
+# own field; a read-only one also sees a narrower field (a Circle where the trait
+# says Shape). trait_typecheck_vref_field holds the writable view of the narrower
+# field, refused.
+[scenario.trait_vref_field]
+category = "run"
+description = "A virtual reference reads a field of a narrower type, and writes one declared exactly as the trait does"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A private member does not meet a trait's requirement from outside its module:
+# not through a virtual reference (borrowed, mutable), not through a plain
+# reference to the trait, and not as a generic's bound ('[T Trait]', 'where T is
+# Trait', a generic type's 'where'). The types are in vault.cone beside the
+# scenario, and the same members made 'pub' fit every one. The privacy rule is
+# the module's (trait_typecheck_vref_private, a trait's own private members, is
+# the other half of private members and traits). trait_private_match runs what
+# still fits.
+[scenario.trait_typecheck_private_match]
+category = "reject"
+description = "A type's private field or method offered as a trait's requirement from another module, refused for a virtual and a plain reference and for a generic bound"
+tags = ["typecheck"]
+diagnostics = 9
+
+# The private members that do count towards a trait: inside the module that
+# declares the type, through a view that module made and handed out, for a type
+# declaring the trait with 'is', and for an enrichment declared in the asking
+# module (an enrichment is inside its base's encapsulation).
+[scenario.trait_private_match]
+category = "run"
+description = "Private members meeting a trait inside their module, through a view the module made, by 'is', and through an enrichment"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A type's method meets a trait's method when its signature is a subtype of the
+# trait's by a recast alone: a parameter that asks for less permission, a result
+# that promises more, a reference to a variant for one to its enum and the reverse.
+# As a generic's bound, through a virtual reference and an owner, by 'is', for an
+# enrichment and a callable's '()'; an exactly matching candidate is the one that
+# meets it when the name has a looser one too. trait_typecheck_method_variance
+# holds the differences that need a conversion, refused.
+[scenario.trait_method_variance]
+category = "run"
+description = "Methods meeting a trait's by a contravariant parameter and a covariant result, as a bound, a virtual reference, an owner, 'is', an enrichment and a callable"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# What a method does not meet a trait's by: a parameter asking for more
+# permission, a result promising less, a wider number or a narrower one, a
+# variant or an enum held by value for the other, a parameter narrower than the
+# trait's, a result broader, a value behind '&mut' that differs at all.
+[scenario.trait_typecheck_method_variance]
+category = "reject"
+description = "A method whose signature is not a recast of the trait's, refused as a virtual reference, a generic bound and by 'is'"
+tags = ["typecheck"]
+diagnostics = 17
+
+# A generic's bound is checked from the generic's own module, because the
+# generic's body is the code that names the member. A type with a private field
+# or method, handed to another module's generic from the type's own module or from
+# a third, fails the bound (1505) instead of passing it and failing the body
+# (1042). trait_typecheck_bound_privacy_back: the generics' module itself.
+# trait_bound_privacy runs the generics that live in the type's module.
+[scenario.trait_typecheck_bound_privacy]
+category = "reject"
+description = "A type's private field or method offered to another module's generic bound from the type's own module and from a third, refused as failing the bound"
+tags = ["typecheck"]
+diagnostics = 10
+
+[scenario.trait_typecheck_bound_privacy_back]
+category = "reject"
+description = "A type's private field or method offered to a generic bound from the generics' module, which instantiates them with another module's type"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.trait_bound_privacy]
+category = "run"
+description = "Generics in the type's module bounded by traits its private field and method meet, instantiated from the module, a sister and the module above"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A type that declares a trait with 'is' meets it from every module though its
+# member is private (mod-subtyping): another module's generic bounded by the
+# trait takes it and its body names the member the trait requires.
+[scenario.trait_priv_is_generic]
+category = "run"
+description = "A type declaring a trait with 'is', its method and field private, given to another module's generic bounded by the trait: the bound and the body accept it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# What trait_priv_is_generic leaves refused: a member the generic's bound does not
+# name, a type that does not declare the trait, and a direct call from outside.
+[scenario.trait_typecheck_priv_is_generic]
+category = "reject"
+description = "A type declaring a trait with 'is' meets another module's generic bound, but the generic's body names no other private member; a type not declaring it fails the bound; a direct call is refused"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.trait_downcast]
+category = "run"
+description = "A trait value downcast to its concrete type: tested and bound for two types, written through a '&<mut', a '&<uni', a generic instance, and borrowed, not moved, through owners (a local, a field through '&' and '&mut', a call's answer, an Rc)"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.trait_typecheck_downcast]
+category = "reject"
+description = "A downcast from a trait value names a concrete type that meets the trait; its binding through an owner is a borrow, which moves nothing out and writes only where the path does; and a match of type arms on one needs an else"
+tags = ["typecheck", "flow"]
+
+# Associated types: 'type Cursor: Iterator[T];' in a trait, a type the type
+# meeting it chooses, said by the shape of the method that mentions it or by an
+# alias, and named in generic code through the parameter, 'C.Cursor'. One run
+# scenario, and a reject scenario for each stage that refuses something of it:
+# the parser (an equality constraint by name), name resolution (a name no bound
+# declares, one two bounds declare, an associated type given as an argument)
+# and type check (a type that does not say it, or says what its bound refuses;
+# a virtual reference to such a trait).
+[scenario.trait_assoc_types]
+category = "run"
+description = "Associated types said by shape (two types), by an alias with 'is', named as C.Cursor in a local's type, a result, a type argument and a field; T read through the bound; a trait with no written parameter written bare; an unbounded one read off a tuple"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.trait_parse_assoc]
+category = "reject"
+description = "An associated type fixed by name in a constraint (an equality constraint, not built), and a bound with no trait after its ':'"
+tags = ["parse"]
+diagnostics = 2
+
+[scenario.trait_nameres_assoc]
+category = "reject"
+description = "C.Nope, which no bound of C declares; C.Cursor where two bounds each declare one; an associated type given as a trait's argument"
+tags = ["nameres"]
+diagnostics = 3
+
+[scenario.trait_typecheck_assoc]
+category = "reject"
+description = "A type whose method gives what the associated type's bound refuses, one saying it nowhere, a declaring type whose alias the bound refuses or whose method disagrees with its alias, and virtual references to a trait with an associated type"
+tags = ["typecheck"]
+diagnostics = 8
+
+# Bug 19: a '&<uni' is borrowed from, not used up, by a call through it, by
+# being passed on, and by being taken from a sole owner; trait_flow_vref_reborrow
+# holds what stays refused.
+[scenario.trait_vref_reborrow]
+category = "run"
+description = "Calls through a '&<uni' twice and more, a '&<uni' passed on and used again, and a '&<uni' taken from an owner that stays, from '&uni *u', from 'Uni[App]' and from 'Rc[App]'"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.trait_flow_vref_reborrow]
+category = "reject"
+description = "Two '&<uni' to one owner in one call, the owner used or moved while one is still to be used, and a '&<uni' used while its reborrow is"
+tags = ["flow"]
+diagnostics = 5
+
+[scenario.trait_typecheck_whole_enum_meth]
+category = "reject"
+description = "A variant viewed as a trait whose pub method the enum writes over the whole enum ('self: &Two') is refused with ErrorWholeEnumMeth saying to write 'self: &', directly, through AnyError.from and at a return; a private requirement written so does not take that message from a conversion refused for another reason"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.trait_whole_enum_meth_ok]
+category = "run"
+description = "The rule did not move: an enum's 'self: &' method meets a pub trait requirement for its variants, and a whole-enum method meets a private requirement"
 tags = ["typecheck", "genllvm", "runtime"]

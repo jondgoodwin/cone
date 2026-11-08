@@ -6,7 +6,9 @@ a numeric range, by type check once it knows the source.
 **At a glance.** Built by `parseExprBlock`. Name resolution pushes a scope,
 binds a lifetime label, enforces jump placement, and repairs `each`'s
 `continue`. Type check builds the loop of an `each` over a source that is not
-a range (`FlagEach`), then folds the block's value paths into one type. Flow
+a range (`FlagEach`) and the test and return of a `?` (`FlagPropagate`), wraps a
+`try` block's success and aims its `?`s at it (`FlagTry`), then
+folds the block's value paths into one type. Flow
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
@@ -19,16 +21,22 @@ caused, were measured.*
 | --- | --- |
 | `stmts` | ordered statements. **Never NULL** — `--checktree` reports `ErrorBadTree` if it is |
 | `lifesym` | the `Name` of a `'label:` annotation, else NULL. The *declaration* side; `BreakRetNode.life` is the use side |
+| `tailmark` | the parser's note on the last line, with `FlagTailSemi` or `FlagTailOpen`: the `;` that makes the block's last statement an empty one, or the last line's first token where it has no `;`. Read by `parseTailCheck` as the construct the block stands in is finished, and by a closure's body; nothing after type check reads it |
+| `elseblk` | on a loop, the block of its `else` (`blockElseFinish`), which `parseTailCheck` judges with the loop's use |
 | `breaks` | the `BreakRetNode`s targeting this block. NULL for a regular block; allocated for a loop; created lazily for an **inline** function's body |
 | `vtype` | `unknownType` until the end of type check |
 | `flowmark` | where this block's scope starts on the flow stack. Set by `blockFlow` on entry and **valid only while flow is inside the block**; read by a `break` or `continue` naming it, to know how many scopes it is leaving |
+| `eachpass` | on a block that is one pass of a `#each` ([Parse](../phases/parse.md), "The meta layer"), which pass of which loop; NULL on any other block. `blockNameRes`, `blockTypeCheck` and `blockFlow` set `errorEachPass` to it while they handle the block, so an error says which pass it was in. Cloning copies the pointer |
 
 | Flag | Means |
 | --- | --- |
 | `FlagLoop` | a loop block. **Set only by `newLoopBlockNode`** |
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
+| `FlagTailSemi`, `FlagTailOpen` | `FlagTailSemi`: the block ends in a `;` after an expression or a statement that ends in a block, so its last statement is an empty one (a `;` delimits statements, and an empty statement has no value). `FlagTailOpen`: the last statement is an expression with no `;` before the `}`. Whether that is right depends on whether the block's value is used ([Parse](../phases/parse.md), "Blocks and statement ends") |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
+| `FlagPropagate` | the block `x?` is parsed to (`parsePropagate`), holding `x` in a hidden variable, its only statement: `blockTypeCheck` checks that variable, then builds the test and the early return after it (`propagateLower`, `ir/exp/propagate.h`) and clears the flag |
+| `FlagTry` | a `try` block (`parseTry`), its `breaks` made by the parser. `blockTypeCheck` holds its last value in a hidden variable and wraps it as the success, and the `?`s inside leave it by `break`s aimed at it (`propagateTryEnter`, `propagateTryFinish`, `ir/exp/propagate.h`). **Kept** through generation, where the block's own value joins its breaks' phi |
 | `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
 | `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
@@ -39,18 +47,18 @@ caused, were measured.*
 a macro body, and the wrapper blocks pattern-matching builds — is regular.
 
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
-`if not cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
+`if !cond { break }` inserted at index 0. `each x in a ..< b by s` (`a ..= b`
 runs through `b`) becomes an
 outer block holding the range's first value (`first`, a hidden variable), its end
 unless the end is a literal (`end`, read once, before the first pass, as the step is), the
 loop's **counter** (`counter`, another, no name of the
 reader's) and the count of steps taken (`n`), plus a loop block that begins with the guard and the pass's variable,
-`imm x = counter`, and whose **last statement is the synthesized step**, flagged
-`FlagLoopStep`. The guard is `c < b` (`c <= b` for `..`) going up and `c > b`
+`let x = counter`, and whose **last statement is the synthesized step**, flagged
+`FlagLoopStep`. The guard is `c < b` (`c <= b` for `..=`) going up and `c > b`
 (`c >= b`) going down; which way a range goes is the sign of its step, read off
 a literal step by the parser, or, for a step that is not a literal, held in a
 hidden variable (`by`, evaluated once) whose two signs are held in two more
-(`up` and `down`, so the guard is `(up and c < b) or (down and c > b)`; a step of
+(`up` and `down`, so the guard is `(up && c < b) || (down && c > b)`; a step of
 zero is neither, and runs no pass). With no `by` the range goes up. The variable
 is a new one on every pass and cannot be written;
 the loop steps its counter, whose uses are bound as the parser builds them, so a
@@ -62,7 +70,7 @@ turns into the operator (`c += s`, `c++`) or, for a float counter, into
 computed from the first value and the count, never added up. Where stepping
 past the bound could wrap the counter around the type's extreme, and so satisfy
 the comparison again, that block holds the guard. For an inclusive range without
-`by` it is `{ n += 1; if c == b {break}; c++ }`. With `by` it is `{ imm prev = c; n += 1; c += s;
+`by` it is `{ n += 1; if c == b {break}; c++ }`. With `by` it is `{ let prev = c; n += 1; c += s;
 if c < prev {break} }`, `>` in place of `<` for a range counting down: a step of
 more than one need never land on the bound, and neither the distance to the bound
 nor the step's sign may be computed ahead of the step, so the wrap is recognized
@@ -75,7 +83,7 @@ name of its own (`-counter`): an assignment to the anonymous name discards its v
 
 **`each` over anything else is finished by type check.** The parser cannot say
 how a loop walks its source, which is the source's type to say, so it builds an
-outer block flagged `FlagEach` holding `mut hidden = src` and the loop block,
+outer block flagged `FlagEach` holding `var hidden = src` and the loop block,
 whose leading statements declare the reader's variables with no value and whose
 body follows them. Name resolution sees an ordinary pair of nested blocks, and
 the variables, the body and every `break`/`continue` in it resolve as for a
@@ -84,7 +92,7 @@ the loop keeps the body's statements where they are and adds only to its head.
 
 **A header `if`, and the loop's `else`.** A filter, `each p in src if cond {…}`
 (`parseEachFilter`, which the header of an `each` entry of `<-` reads with the same call),
-becomes `if not cond { continue }` as the first statement of the body after the
+becomes `if !cond { continue }` as the first statement of the body after the
 pass's variables, built by `parseEachFilterStmt`; for a range the `continue`
 carries the step like any other. A trailing `if` on `break`, `continue` or
 `return` is the same jump inside an `if` arm (`parseJumpEnd`). The `if` after
@@ -99,20 +107,20 @@ then an expression: `blockElseFinish` flags the block `FlagLoopElse` and ends
 it with a `break` carrying its last expression (or nil, or nothing when it ends
 in a `return`, `break` or `continue`), aimed at the loop it leaves
 (`FlagBreakAimed`, which `breakNameRes` keeps). `while cond {…} else {…}` puts it
-where `if not cond { break }` goes. An `each` over anything but a range puts it
+where `if !cond { break }` goes. An `each` over anything but a range puts it
 first among the loop's statements, ahead of the reader's variables so that it
 cannot name them, and `eachLower` takes it out to make the exit of the counted
 loop or of the cursor's `None` arm. A range has several places it runs out
 (the guard, and the steps that stop a counter wrapping or reaching its bound),
 and one `else`: they set a hidden flag instead of breaking, and the guard
-`if flag or not (guard) {…else…}` leaves at the top of the next pass.
+`if flag || !(guard) {…else…}` leaves at the top of the next pass.
 
 **`parallel each` is parsed as `each` is**, with `FlagParallel` beside `FlagEach`.
 `parallel` is an ordinary name (`parallelName`) that `parseExprBlock` takes for the
 word only when `each` follows it directly (`lexNextIsWord`), so it stays usable as
 a variable, a function or a field. A number range is not rewritten to a counter, as
 `each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
-the block has three statements, and `FlagParIncl` says `..`. A count down, a
+the block has three statements, and `FlagParIncl` says `..=`. A count down, a
 `by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
 header `if` is the same `continue` statement after the pass's variable. As an
 entry of `<-` it is read by `parseEntry` the same way (`parseParallelEachEntry`),
@@ -148,31 +156,95 @@ needs no hooked name.)
 
 ## Type check
 
+**`FlagPropagate`: a `?` is built here, from what it is given.** As for
+`FlagEach` below, `blockTypeCheck` checks the first statement, the hidden
+variable holding `x`, and `propagateLower` appends the match the reader would
+have written: `if -held is Ok { let -ok = [Ok]-held; -ok } else if -held is
+Err { let -err = [Err]-held; return Err(conv(-err)) }` (Some and None for
+an Option), with every name bound to its declaration. The arm that returns gives
+the `if` no value, so the block's value is what `Ok` holds; `ifExhaustCheck`
+makes the last test the `else`. Where `?` is refused, the block ends in an error
+node typed as what `Ok` holds, so nothing that uses it reports again.
+
+**`FlagTry`: a `try` block catches its `?`s.** Before its statements,
+`propagateTryEnter` takes the type expected of it, when that is a Result or an
+Option, as its type, moves its last expression into a hidden variable
+(`let -tryval = last`, typed as the success that type holds) and appends a
+placeholder as the last statement (a body ending in `;` or a declaration gets
+the placeholder alone, a nil success; one ending in a jump gets none), and
+pushes the block on a stack of try blocks keyed by the function being checked.
+A `?` checked while the top of that stack is of the same function (a closure's
+`?` is the closure's) ends its failure's arm in a `break` aimed at the block
+(`FlagBreakAimed`, joined to `breaks` by `breakTypeCheck`) with a stand-in
+value. Once every statement but the last is checked, `propagateTryFinish` pops
+the block and knows its type: the context's, or `Result[T, E]` / `Option[T]`
+instantiated from the first `?`'s operand with `T` the hidden variable's type
+(void for a nil success). It gives each break its value, `Err(conv(-err))` or
+`None`, converting as `?` in a function does, and the placeholder becomes
+`Ok(-tryval)` (or `Some`, or `Ok(nil)`). The last statement and the breaks are
+then checked against that type, as any block's are against the type expected of
+it, so the block's type is that type even where its value is thrown away. A type
+it cannot have (`ErrorTryType`) makes every path an error node and the type the
+error type. `break` and `continue` written in the body are untouched: name
+resolution binds them to loops, and a try block is none. A try block with no
+function around it (a global's value, a field's default) is refused at the start
+of `blockTypeCheck` (`ErrorNotLit`), takes the error type, and nothing in it is
+checked. A loop there is checked as any: `blockTypeCheck` compares a block's
+breaks with the function body's block only when there is a function.
+
 **`FlagEach`: the loop is built here, from the source's type.** Before any
 statement is checked, `blockTypeCheck` checks the block's first statement, the
-hidden variable `mut hidden = src` (`blockStmtTypeCheck`, so the source is
+hidden variable `var hidden = src` (`blockStmtTypeCheck`, so the source is
 lowered once and a temporary it extends is hoisted as any initializer's is),
 and `eachLower` reads what the checked source is and rewrites the block's
 statements; the loop below then checks them as built. By the source's type:
 
 - **an array, or a reference to one, a slice, or a type that lends an array it
-  holds** (a list, `structLentBody`): a counted loop over the slice, `mut i = 0`
-  and `loop { if i >= s.len {break}; imm x = &s[i]; i++; ...body }`, the slice
+  holds** (a list, `structLentBody`): a counted loop over the slice, `var i = 0`
+  and `loop { if i >= s.len {break}; let x = &s[i]; i++; ...body }` (for a written
+  borrow; a plain source copies, below), the slice
   being the array lent as one, the source itself, or the lending method's
   result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
   list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
   an Option each pass, whose null test on a pointer the optimizer cannot know is
   not null blocks the loop's vectorization. A slice that is mutable (what
   `mutItems()` answers) lends each element as `&mut s[i]`; any other as `&s[i]`.
-  A source *written* `&mut src` (a borrow expression with the `mut` permission,
-  in `each`, `parallel each` and `<- each` alike) never gets this far: the parser
-  refuses it (`parseEachMutSource`, `ErrorEachMutSource`) naming `src.mutItems()`.
-  A `&mut` variable or parameter that is itself the source is no written borrow
-  and is walked as the reference it is, a read.
+  A source *written* as a borrow with a permission that writes, `&mut src` or
+  `&uni src` (`eachWrittenPerm`, in `each`, `parallel each` and `<- each` alike),
+  lends each element with that permission: an array's slice is borrowed with it,
+  and a list lends `viewMut()` or `viewUni()` in place of `view()`. A type
+  walked through its `iter` (Deque, Set, Dict) lends items to be read, and a
+  permission written on it is `ErrorEachBorrowPerm`. A `&mut` variable or
+  parameter that is itself the source is no written borrow and is walked as the
+  reference it is.
+
+  **A plain source** (not a written borrow, `unwritten` in `eachLower`) hands out
+  each item as `let x = item` would, decided by the item type (`itypeIsMove`):
+  - an item that copies is copied: the loop is the same counted loop, each variable
+    `s[i]` itself in place of `&s[i]`, and the source stays (frozen for the loop, as
+    ever). A Deque, Set, Dict or OrderedDict, whose `iter()` lends `&T` or
+    `(&K, &V)`, has each item read through (`*item`, or a tuple of the reads for
+    one variable over a pair);
+  - an item that moves is taken out, which consumes the source: it is moved into the
+    hidden variable (the place is not used) and the loop walks the type's `drain()`,
+    a cursor that moves each item out and finalizes the ones a `break` leaves
+    (`List`, `Deque`, `Set`, `Dict`, `OrderedDict`). The variable the source named is
+    recorded (`eachMarkMoved`), so a later use is the move error saying to write
+    `'each x in &name'` (`nameuseFlow`). Several variables over a pair that moves are
+    its elements moved out by the assignment `k, v = item`, as `let k, v = f()` does
+    (`eachBindVars`);
+  - what cannot be consumed, a source behind a borrow (a reference, a slice, a field
+    reached through one: `iexpPathThroughBorrow`), is `ErrorEachBehindBorrow`, naming
+    the borrow to write, `&l` or `&*r`; an owned fixed array of items that move has
+    no cursor yet, `ErrorEachNoDrain`. A `parallel each` (`eachParallelKind`) copies
+    items that copy and refuses items that move, behind a borrow or not.
+
+  A cursor, a type's own `iter()` and a written borrow hand out what their cursor
+  lends, as before.
 - **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
   place, not behind a reference; `iter()` with one variable, `indexed()` with
   two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
-  from the position it holds (`mut i = cursor.pos`), so a cursor made by the loop
+  from the position it holds (`var i = cursor.pos`), so a cursor made by the loop
   is no cursor in the code. With `indexed()` the first variable is a copy of `i`
   and the second the element's borrow. A cursor kept in a variable, or taken
   whole by one variable of `indexed()`, is walked through its `next`.
@@ -189,14 +261,14 @@ statements; the loop below then checks them as built. By the source's type:
   one, a dereference of one) is advanced where it stands, so a cursor left part
   way by a `break` is finished by the next loop; another place is borrowed once;
   a value is held in the hidden variable.
-- **a type with `iter` and no `next`**: `mut cursor = src.iter()`, the source
+- **a type with `iter` and no `next`**: `var cursor = src.iter()`, the source
   held first unless it is a place.
 
 Each pass of a cursor loop declares its variable from the item:
-`imm x = match cursor.next() { case imm s Some { s; } case is None {
+`let x = match cursor.next() { case let Some(s) { s } case is None {
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
-a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
+a variable of the pass's own, `let -item = ...; let k = -item.0; let v =
 -item.1`. The pass's binding of the `Some` has a name no reader can write
 (`-some`), so that a move out of it is marked at the move as a named binding's
 is. An item that moves is taken whole by one variable, the binding of the
@@ -244,8 +316,8 @@ range, the statements
 
 ```
 [source held and lent as a slice, or the range's bounds]
-imm lo' = 0;  imm hi' = s.len;  mut k' = lo';
-loop { if k' >= hi' {break}; imm x = &s[k'] (or first + T.from(k')); k'++; ...body }
+let lo' = 0;  let hi' = s.len;  var k' = lo';
+loop { if k' >= hi' {break}; let x = &s[k'] (or first + T.from(k')); k'++; ...body }
 ```
 
 whose hidden variables carry names no source can spell, so generation finds the
@@ -264,7 +336,7 @@ has no borrow node to see, so `parCheckLentArgs` looks at the calls: an argument
 actor's allocator is `ErrorActorGcPiece`'s). A call whose callee's body the compiler
 can read (`siVisible`) is noted (`parNoteHelperCalls`), and once every body is checked
 (`parallelHelperGlobalsCheckAll`, after type check in `conec.c`) the bodies it reaches are
-read, each once: one that assigns to or swaps a place of a shared `mut` global, or lends
+read, each once: one that assigns to or swaps a place of a shared `var` global, or lends
 one for writing (a method that changes it, a `&mut` of it), makes the call the same
 `ErrorParWrite`, naming the global and the function that writes it. A `@threadlocal` or
 `@workgroup` global is not shared; a borrow made a raw pointer on the spot is an address and
@@ -382,10 +454,10 @@ actor's behaviour pass: `parSelfIsBehaviour` is set from `actorOfBehaviour` for 
 written directly in a behaviour (`parBodiesIn` counts one), whose `self` is the one name
 for the state because the behaviour runs alone on its actor and its parameters cannot be
 borrows; a sync method's `&mut self` is refused. A cursor held in a variable is followed to
-the call that made it when the variable is `imm` and has its value (`var->value` is judged
-as if written in the header); a `mut` one, a parameter, or a field holding a cursor has no
+the call that made it when the variable is `let` and has its value (`var->value` is judged
+as if written in the header); a `var` one, a parameter, or a field holding a cursor has no
 origin to follow and is refused (`parCursorWhy`), so a writable cursor named as a source
-must be built in the loop's header or in an `imm` variable.
+must be built in the loop's header or in a `let` variable.
 
 **Cursors in a `parallel each`** (`parCursorOf`). A source of core's cursor types
 (`ArrayChunks`, `ArrayMutChunks`, `ArrayMutItems`, and the `ArrayIndexed`,
@@ -398,7 +470,7 @@ recognises a method by name: what is lent, `&` or `&mut`, is what the cursor's o
 types say, so a bare `indexed()` lends `&` on any slice and `mutItems().indexed()`
 `&mut`. An indexed cursor takes two variables (any other source one,
 `ErrorParSource` otherwise) and its `at(k)` gives the position and the item as a
-tuple, which the loop unpacks: `imm pair' = c.at(k'); imm i = pair'.0; imm x =
+tuple, which the loop unpacks: `let pair' = c.at(k'); let i = pair'.0; let x =
 pair'.1; k'++`. The position is the cursor's own count plus `k'`, so it is global
 whichever piece runs it. A write through the pass's own run or item is its own;
 naming the buffer the cursor comes from is refused as for `mutItems()`. A cursor
@@ -414,7 +486,7 @@ for `Zip3Indexed`, the position first), unpacked from the tuple its `at` gives. 
 three-way zip is a struct of its own, not a `Zip` of a `Zip`, so that its item is
 one flat tuple that three variables unpack; its `len` is the shortest's and its
 `split` cuts all three at one place. It has `len` (the shorter's), `at`
-and `split` only where both sources do (`where I is RandomAccess[A] and J is
+and `split` only where both sources do (`where I is RandomAccess[A] && J is
 RandomAccess[B]`; the core traits `RandomAccess` and `ParallelIterable`, met by
 the methods), so a zip with a source that cannot be cut or walked by position has
 no `len` or `at`, and `parallelEachLower` refuses it with that reason
@@ -437,10 +509,10 @@ is refused) and that the function is not an actor's method (`ErrorParRuntime`),
 builds the statements around the loop (`parBuilderLower`):
 
 ```
-mut bag' = (*recv).pieceBag();                       // before k': the caller's
-mut k' = lo';                                        // from here, the piece's
-mut list' = (*recv).emptyPiece();                    //   the piece's own list, a local
-imm piece' = &mut list';                             //   what the yield appends through
+var bag' = (*recv).pieceBag();                       // before k': the caller's
+var k' = lo';                                        // from here, the piece's
+var list' = (*recv).emptyPiece();                    //   the piece's own list, a local
+let piece' = &mut list';                             //   what the yield appends through
 loop { if k' >= hi' { (*recv).depositPiece(&mut bag', lo', list'); break }; ... *piece' <- v }
 (*recv).joinPieces(&mut bag')                        // after the loop: the caller's
 ```
@@ -530,20 +602,17 @@ loop block, whose final expression loops back, and a block typed with no value
 function's own block, typed with none whatever it returns, unless the function
 returns nothing. Its final expression is a statement's: a temporary there is
 wrapped as one thrown away, and a local it names is no result, so the release
-list does not exempt it (`flowresult` is NULL). `if c { imm x = mk(); x; }`
+list does not exempt it (`flowresult` is NULL). `if c { let x = mk(); x; }`
 finalizes `x` at the branch's end.
 
-**Each statement that made a temporary is walked again** once flow has walked
-it (`blockTempEscape`), so that a temporary a raw pointer going out of it may
-point into is kept: a variable's initializer, and a `return`'s, a `break`'s or
-a used block's value, go out ([Flow](../phases/flow.md), "Temporaries"). A
-borrow of one going out is the loan walk's to check.
 
 ## Generation
 
-**Basic blocks are created only when needed**: `isPhiBlk = isLoop || breaks > 1`.
+**Basic blocks are created only when needed**: `isPhiBlk = isLoop || breaks > 1`,
+or, for a `try` block, any break: its own last value is one more path to its end.
 A regular block with at most one break emits its statements straight into the
-current block. A loop gets `loopbeg` and `loopend` and a back-edge; a phi block
+current block. A `try` block's path that reaches its end adds its last value to
+the phi (or the slot) and branches to `blockend`, as a break does. A loop gets `loopbeg` and `loopend` and a back-edge; a phi block
 gets `blockend` and a `GenBlockState` on a fixed 256-deep stack.
 
 **A phi is built only where the block converges on a value**, and one condition
@@ -569,7 +638,7 @@ statement's entries are then dropped ([Generation](../phases/generation.md),
 ## Hazards
 
 - **A regular block must not get two `blockret`s.** `blockTypeCheck` appends one
-  for a block not ending in an expression or a jump -- `{}`, `{ imm f = mk(); }`
+  for a block not ending in an expression or a jump -- `{}`, `{ let f = mk(); }`
   -- so `blockFlow` treats a final `blockret` as present. It once appended a
   second: the main walk built the first one's `dealias` empty, but the path
   walk records a release at every exit it meets, and the drop walk

@@ -62,6 +62,16 @@ void parseEndOfStatement() {
     errorMsgLexAfter(ErrorNoSemi, "Expected ';' to end the statement");
 }
 
+// The end of a member of a type's braces, a struct's, a trait's, an enum's or an
+// actor's. There ';' delimits declarations, so the last one needs none: the '}'
+// that closes the body ends it. Anything else a declaration that is not itself a
+// block is followed by must be the ';'. The '}' is left for the body to consume.
+void parseEndOfMember() {
+    if (lexIsToken(RCurlyToken))
+        return;
+    parseEndOfStatement();
+}
+
 // Return true if a block starts here. ':' counts so that the off-side form
 // reaches parseBlockStart and is diagnosed as what it is, rather than falling
 // through to whatever a construct does when it has no block.

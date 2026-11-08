@@ -131,7 +131,7 @@ void returnFlowEscape(INode *exp) {
             ? closureOfStruct(itypeGetTypeDcl(((VarDclNode *)vardcl)->vtype)) : NULL;
         if (closure) {
             size_t used = snprintf(advice, sizeof(advice),
-                ". '%s' is a closure: it can leave this function as an owner, 'new So[fn(...)](%s)', if it holds what it uses",
+                ". '%s' is a closure: it can leave this function as an owner, 'Uni[fn(...)](%s)', if it holds what it uses",
                 &((VarDclNode *)vardcl)->namesym->namestr, &((VarDclNode *)vardcl)->namesym->namestr);
             const char *sep = ": list ";
             for (uint32_t c = 0; c < closure->ncaps && used < sizeof(advice) - 80; ++c) {
@@ -212,14 +212,21 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         }
         // A closure's value that already failed is reported where it failed: it
         // does not also mismatch the signature the closure was given to
-        else if (tstate->fn && tstate->fn->closure && errors > tstate->fn->closure->errbase)
+        else if (tstate->fn && tstate->fn->closure && errorsOwn() > tstate->fn->closure->errbase)
             ;
         else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
-            char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype) : NULL;
+            int whycode;
+            char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype, &whycode) : NULL;
+            char privwhy[400];
             if (why)
-                errorMsgNode((INode*)retnode, ErrorFnRefConv, "%s", why);
+                fnSigRefusalMsg((INode*)retnode, whycode, why);
+            else if (isExpNode(retnode->exp)
+                && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
+                errorMsgNode((INode*)retnode, ErrorPrivateMatch,
+                    "Return expression type does not match return type on function.%s", privwhy);
             else
-                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
+                errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s",
+                    iexpImmBorrowHint(retnode->exp, fnsig->rettype));
             errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
         }
     }

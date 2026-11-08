@@ -37,9 +37,9 @@ support = ["modulesub.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulehide.cone", "modulehidelate.cone", "modselfnamed",
-           "modulemacro.cone", "moduledeclared.cone",
+           "modulemacro.cone", "modulemacro_overload.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
-           "moduleextbase.cone", "modulepkgs", "modulepkgfiles", "modtree",
+           "moduleextbase.cone", "modulepkgs", "modulepkgfiles", "modulefileorder", "modtree",
            "moduleinline.cone", "moduleextern.cone",
            "modulenomod.cone", "modulecomments.cone", "modulecfree.cone",
            "module_gpu_cbinding.cone"]
@@ -320,6 +320,12 @@ description = "A submodule's types' private fields, methods, construction values
 tags = ["typecheck"]
 diagnostics = 12
 
+[scenario.module_privacy_istrue_typecheck]
+category = "reject"
+description = "A type's private isTrue refused to a sister module when a condition, the right operand of '&&' or '!' injects the call, as the explicit call is; the declaring module's own conditions reach it"
+tags = ["typecheck"]
+diagnostics = 4
+
 [scenario.module_privacy_package_typecheck]
 category = "reject"
 description = "A program compiled against a package's include file refused the private method and field of the package's public type, which the include file declares for the package's inline body"
@@ -451,6 +457,18 @@ contains = [
   "define internal pkgfiles.scale.triple comdat nodeduplicate",
 ]
 
+# module_file_order: a type's conformance to a trait does not depend on the file
+# that declares it. fileorder's holder.cone makes an AnyError from a type that
+# later.cone declares (Bug 28).
+[scenario.module_file_order]
+category = "run"
+description = "A type declared in a later file of a package meets Error for a method of an earlier file"
+tags = ["typecheck", "nameres", "genllvm", "runtime"]
+
+[[scenario.module_file_order.run]]
+name = "search-path"
+options = ["--path=test/cases/module/modulefileorder"]
+
 # -------- the C library packages --------
 #
 # libc and posix are C packages in the packages folder: C-named modules of raw
@@ -547,15 +565,68 @@ excludes = ["fabsf"]
 # -------- what the runtime prints --------
 #
 # stdio's printing is conestd's, the runtime every run scenario links, written
-# in Cone (packages/conestd/stdio.cone, floatfmt.cone). Its expected .out and
-# .err are what the C library it replaced printed, but for a NaN, which is "nan"
-# whatever its sign, so a change to how any value is spelled shows here, the same
-# text on every OS.
+# in Cone (packages/conestd/stdio.cone, with core's TextOut writing the text). Its
+# expected .out and .err are the text core writes for each value, a float as the
+# shortest text that reads back as it, a NaN "nan" whatever its sign, so a change to
+# how any value is spelled shows here, the same text on every OS.
 
 [scenario.module_stdio_values]
 category = "run"
-description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as '%g' with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
+description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as the shortest text that reads back with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
 tags = ["runtime"]
+
+# The stream operator's bool and char entries (packages/stdio), to each stream.
+[scenario.module_stdio_bool_char]
+category = "run"
+description = "A bool and a char printed by 'print <-' and 'eprint <-': true and false, a function's bool result, a comparison, a char of one to four UTF-8 bytes and '\\n', chained with int, float, unsigned and string entries in one list, the same text on standard output and standard error"
+tags = ["runtime"]
+
+# A borrowed byte is a number to '<-', and a C string is a 'cstr' (packages/stdio).
+[scenario.module_stdio_cstr]
+category = "run"
+description = "A '&u8' given to 'print <-' and 'eprint <-' (from an 'each' over a List of bytes holding a zero, a lone borrow, a borrow of a borrow) is the byte's number and reads nothing past it; the C-string entry 'appendCStr' takes a 'cstr' (a literal, a String's, an owner of text's, 'cstr.fromPtr' and a C function's answer), the same text on standard output and standard error"
+tags = ["runtime"]
+
+[scenario.module_stdio_cstr_reject]
+category = "reject"
+description = "The stream's C-string entry refuses what does not promise the zero that ends a C string: a raw '*u8' given to 'print <-' or 'eprint <-', and a raw '*u8' or a borrow of a byte given to 'appendCStr', to each stream"
+tags = ["typecheck"]
+
+# What a send of a value as text does (core's TextOut, the compiler's lowering of
+# '<-' for a writer, a text sink and a record maker): a receiver's own '<-' first,
+# then the value's own toText written into the writer the receiver is or lends; a
+# value with none is refused naming the type and the method.
+[scenario.module_text_overloads]
+category = "run"
+description = "A receiver's own '<-' is tried before a value's toText: a List receiving a point appends the point, a String a text, a text sink with a '<-' for points takes the point itself; anything else a point writes goes into a String, the console and the sink's own String as the point's text"
+tags = ["runtime"]
+
+[scenario.module_text_nesting]
+category = "run"
+description = "How a send to the console brackets when sends nest: a parenthesized String send is a value of the outer record, a function a piece calls that prints writes its own record first, a held record takes only what is sent to it, and a toText writes into the record of the statement that called it"
+tags = ["runtime"]
+
+[scenario.module_text_interp]
+category = "run"
+description = "An interpolated string sent directly is exactly the send list it spells (print, a String, a held TextOut, a toText body), doubled braces and escapes, a multi-line literal, and elsewhere it is a String: stored, returned, passed"
+tags = ["runtime"]
+
+[scenario.module_text_refuse]
+category = "reject"
+description = "A value with no toText sent as text is refused, naming the type and the method: to a String (alone and among pieces), to the console, to a writer, and in a list to a record held in a variable; a type with one is accepted beside them"
+tags = ["typecheck"]
+diagnostics = 6
+
+# 'String.fromCStr' takes a 'cstr' (packages/collections).
+[scenario.module_string_fromcstr]
+category = "run"
+description = "String.fromCStr takes a 'cstr': a literal, the empty literal, a String's, an owner of text's, 'cstr.fromPtr' of a literal's bytes and of bytes holding a zero (the copy ends there) and a C function's answer (strerror) each make the right String; a pointer C may leave null (getenv of an unset name) is checked by the caller before it is vouched for"
+tags = ["runtime"]
+
+[scenario.module_string_fromcstr_reject]
+category = "reject"
+description = "String.fromCStr refuses what does not promise the zero that ends a C string: a '&u8' from an 'each' over a List of bytes, a lone borrow, a borrow of a borrow, a raw '*u8', a C function's raw answer and null"
+tags = ["typecheck"]
 
 # -------- what the runtime asks of the OS --------
 #
@@ -653,9 +724,31 @@ excludes = ["draw.area", "draw.edge", "gallery.ft", "gallery.units", "gallery.me
 
 [scenario.module_import_use_nameres]
 category = "reject"
-description = "What an import's 'use' clause does not put in reach, and each name it refuses to fold or to leave out: absent, private, colliding, the module itself, and a 'but' of its finalizer, clone or own name"
+description = "What an import's 'use' clause does not put in reach, and each name it refuses to fold or to leave out: absent, private, colliding, the module itself, and a 'but' of its finalizer, clone or own name, and a list naming its finalizer or clone"
 tags = ["nameres"]
-diagnostics = 13
+diagnostics = 15
+
+# A module's 'init' and 'final' are run by the program, once each, and are not
+# named: module_lifecycle_named_nameres pins every refused use -- another
+# module's, public or private, called or borrowed; a module's own, bare or by
+# its own path; a fold list or a 'but' naming one -- beside the accepted
+# neighbours (a public function of the same module, a star that folds the rest).
+# module_lifecycle_unnamed runs public ones nobody names, each exactly once.
+[scenario.module_lifecycle_named_nameres]
+category = "reject"
+description = "A module's init or final called, borrowed or named by a path from another module (public or private), bare or by its own name inside the module, listed in an import's fold or left out of a star by a 'but'; its public function beside them, and a star folding the rest, are accepted"
+tags = ["nameres"]
+diagnostics = 14
+
+[scenario.module_lifecycle_unnamed]
+category = "run"
+description = "A submodule whose init and final are public and which nothing names: each runs exactly once, in the module order and its reverse, and a public function of the same module is called by path as ever"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_extends_lifecycle]
+category = "run"
+description = "A module extending another keeps both lifecycles: the extended module's init and final stay its own and run once, and the extender declares its own; init runs extended-first, final in the reverse"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.module_import_use_parse]
 category = "reject"
@@ -693,8 +786,8 @@ tags = ["nameres"]
 diagnostics = 3
 
 # The reference manual's examples, each a sister's text as printed:
-# refinclude.html, "Importing under another name", and refmethod.html,
-# "Implicit field and method access", whose refused example is
+# mod-namespaces.html#as, "Importing under another name", and mod-namespaces.html#hiding,
+# "A member's name hides an outer one", whose refused example is
 # module_import_as_manual_refused.
 [scenario.module_import_as_manual]
 category = "run"
@@ -736,9 +829,9 @@ excludes = ["calc.BigInt", "calc.metres", "calc.area", "calc.volume", "relay.Big
 
 [scenario.module_mod_default_nameres]
 category = "reject"
-description = "What a module's default fold may not name -- a missing name, a private one, a 'but' of a missing one -- a default meeting a declaration, and a default an importer's clause replaced"
+description = "What a module's default fold may not name -- a missing name, a private one, its finalizer or clone, a 'but' of a missing one -- a default meeting a declaration, and a default an importer's clause replaced"
 tags = ["nameres"]
-diagnostics = 7
+diagnostics = 9
 
 [scenario.module_mod_default_parse]
 category = "reject"
@@ -849,9 +942,9 @@ excludes = ["toInches", "facade.innerValue", "reader.innerValue", "module_use_su
 
 [scenario.module_use_submodule_nameres]
 category = "reject"
-description = "What a standalone 'use' of a module refuses: a private name listed, a second 'use' of one submodule, a 'but' naming nothing, a private name or the module's finalizer, an imported module by name and by path, the module itself, and a private fold read by path and by import"
+description = "What a standalone 'use' of a module refuses: a private name, finalizer or clone listed, a second 'use' of one submodule, a 'but' naming nothing, a private name or the module's finalizer, an imported module by name and by path, the module itself, and a private fold read by path and by import"
 tags = ["nameres"]
-diagnostics = 11
+diagnostics = 13
 
 # -------- whose names a fold is resolved in --------
 #
@@ -958,6 +1051,20 @@ excludes = ["hosts.run", "hosts.tick", "hosts.offset", "hosts.calls", "hosts.lab
             "hosts.step", "hosts.scale", "Runner", "layered.run", "layered.tick",
             "layered.calls", "layered.offset", "caller.run"]
 
+# A module trait's body and an extern block end like every body of braces
+# (struct_body_delimiters, enum_body_delimiters): ';' delimits the declarations, the
+# last needs none, and a lone ';' is an empty declaration.
+[scenario.module_body_delimiters]
+category = "run"
+description = "A module trait's last requirement or global, and an extern block's last item, without a ';', and empty declarations beside them"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_parse_delimiters]
+category = "reject"
+description = "A module trait or an extern block that leaves the ';' out between two declarations that do not end in a block, or writes a comma for it"
+tags = ["parse"]
+diagnostics = 5
+
 [scenario.module_trait_parse]
 category = "reject"
 description = "What a module trait's body refuses -- a type, an import, a generic fn, an overload name, a name twice -- a trait with no name, and the 'is' clause by a path, as a list, before 'extends', after 'use', and naming nothing"
@@ -976,6 +1083,23 @@ description = "What a conforming module declares under a member's name without t
 tags = ["typecheck"]
 diagnostics = 6
 
+# A module meets a module trait's function as a subtype of the trait's signature,
+# by a recast alone (a parameter asking for less permission, a result promising
+# more, a reference to a variant for one to its enum and the reverse), the rule a
+# struct's method meets a trait's by. module_trait_variance runs it, and an exact
+# candidate winning over a looser one under one name;
+# module_trait_typecheck_variance holds what needs a conversion, refused.
+[scenario.module_trait_variance]
+category = "run"
+description = "A module meeting a module trait's functions by a contravariant parameter and a covariant result, and an exact candidate winning over a looser one"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_trait_typecheck_variance]
+category = "reject"
+description = "A module's function that is not a recast of the module trait's signature: more permission asked, less promised, a wider number, a variant or an enum by value, a value behind '&mut', a narrower parameter, a C-named function"
+tags = ["typecheck"]
+diagnostics = 10
+
 # A MODULE'S 'init' AND 'final' [Jon 23 Sep]: each module declares its own, and
 # the program's stitched init and final run them all -- every 'init' in the
 # module order, dependencies first and the root last, and every finalizer in
@@ -988,7 +1112,7 @@ diagnostics = 6
 # what 'init' and 'final' must be.
 [scenario.module_init]
 category = "run"
-description = "Every module's 'init' in the module order and every finalizer in the reverse, through 'initAll()' and 'finalAll()': an 'imm' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and a module's 'drop' finalizing its globals after its 'final'"
+description = "Every module's 'init' in the module order and every finalizer in the reverse, through 'initAll()' and 'finalAll()': a 'let' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and a module's 'drop' finalizing its globals after its 'final'"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # The stitched pair is the program's own. A module's finalizer is the 'drop' it
@@ -1010,7 +1134,7 @@ excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
 [scenario.module_final_globals]
 category = "run"
-description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
+description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in the reverse of declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
 tags = ["genllvm", "runtime"]
 
 [scenario.module_init_link]
@@ -1225,6 +1349,42 @@ target = "symbols"
 object = "g"
 excludes = ["g[", "g.add", "g.total"]
 
+# The same three objects in an optimized program: an instance's function small
+# enough to inline is the program's own copy (internal), while a library keeps
+# its copies shared, and the instance's counter and the trait objects' vtables
+# stay shared everywhere, since each must be one object in the program. A
+# function's address is promised the same only within one object (nothing says
+# two objects, or two folded copies, share one), so only that is pinned.
+[scenario.module_generic_private]
+category = "run"
+description = "An optimized program, a library and a generic module's package: the program keeps a small generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+[[scenario.module_generic_private.check]]
+name = "the-program-keeps-a-small-instance-function-to-itself"
+target = "symbols"
+contains = [
+  "define internal g[i64].add comdat nodeduplicate",
+  "define internal g[i64].sameAddress comdat nodeduplicate",
+  "global linkonce_odr thread_local g[i64].total comdat any",
+  "global linkonce_odr thread_local g[i64].adds comdat any",
+  "define linkonce_odr g[i64].heavy comdat any",
+  "constant linkonce_odr q.Wrap[i64] as q.Shape (vtable) comdat any",
+  "constant linkonce_odr q.Wrap[f64] as q.Shape (vtable) comdat any",
+]
+excludes = ["define linkonce_odr g[i64].add comdat", "global internal thread_local", "constant internal q.Wrap"]
+
+[[scenario.module_generic_private.check]]
+name = "the-library-keeps-its-instance-shared"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "global linkonce_odr thread_local g[i64].total comdat any",
+]
+
 [scenario.module_generic_parse]
 category = "reject"
 description = "A generic module's 'mod' line with an empty parameter list, and one C-named"
@@ -1233,9 +1393,9 @@ diagnostics = 2
 
 [scenario.module_generic_nameres]
 category = "reject"
-description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a generic function, a trait or a submodule"
+description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a module trait or a generic submodule"
 tags = ["nameres"]
-diagnostics = 8
+diagnostics = 7
 
 [scenario.module_generic_typecheck]
 category = "reject"
@@ -1248,6 +1408,180 @@ category = "reject"
 description = "A program whose root module is declared generic"
 tags = ["nameres"]
 diagnostics = 1
+
+# WHAT A GENERIC MODULE DECLARES, each kind cloned into every instance with the
+# module's type parameter substituted, as a generic type's members are [Jon 23
+# Sep]. Each runs two instances, at i64 and at f64, and shows each holding its
+# own copy: an enum (and a generic enum, an enum extending it, a standalone
+# 'use' of it), a generic type, a generic function, a trait, a macro, and a
+# global's 'use' clause. module_generic_body_link carries every kind across
+# packages. What a generic module still refuses is in module_generic_nameres.
+[scenario.module_generic_enum]
+category = "run"
+description = "Enums inside a generic module: a plain enum whose variant holds T, folded in by a standalone 'use'; a generic enum with a parameter of its own; an enum extending the first; a global of the enum's type, each instance's own"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_generic_gentype]
+category = "run"
+description = "A generic type inside a generic module: each instance's copy is still generic, with its own instances; its methods name both parameters, its own name inside its braces, a generic method; a generic function given its type argument through the instance"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The copy's instances carry both lists: the module's on the module, the type's
+# on the type
+[[scenario.module_generic_gentype.check]]
+name = "a-generic-type-of-an-instance-is-spelled-with-both-lists"
+target = "symbols"
+contains = [
+  "define internal pairs[i64].Pair[f64].first comdat nodeduplicate",
+  "define internal pairs[f64].Pair[i32].first comdat nodeduplicate",
+  "define internal pairs[f64].Pair[i32].keep[i64] comdat nodeduplicate",
+  "define internal pairs[i64].make[f64] comdat nodeduplicate",
+  "define internal pairs[f64].make[i32] comdat nodeduplicate",
+]
+excludes = ["pairs.Pair", "pairs.make"]
+
+[scenario.module_generic_genfn]
+category = "run"
+description = "A generic function inside a generic module, instantiated per module instance and per its own type argument, inferred or written through the instance, each counting into its own module instance's global"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# One instance per module instance and per the function's own argument
+[[scenario.module_generic_genfn.check]]
+name = "a-generic-function-of-an-instance-is-instantiated-per-pair"
+target = "symbols"
+contains = [
+  "define internal tags[i64].tag[f64] comdat nodeduplicate",
+  "define internal tags[i64].tag[i64] comdat nodeduplicate",
+  "define internal tags[f64].tag[i64] comdat nodeduplicate",
+  "define internal tags[f64].tag[f64] comdat nodeduplicate",
+]
+excludes = ["tags.tag"]
+
+[scenario.module_generic_trait]
+category = "run"
+description = "A trait inside a generic module, with a requirement and a default naming T, taken by two types of the module, used through a virtual reference and as a bound: each instance's trait and vtables its own"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# Each instance's types meet each instance's own trait, with vtables of their own
+[[scenario.module_generic_trait.check]]
+name = "each-instance-has-its-own-vtables"
+target = "symbols"
+contains = [
+  "shapes[i64].Box as shapes[i64].Has (vtable)",
+  "shapes[f64].Pair as shapes[f64].Has (vtable)",
+  "define internal shapes[i64].Pair.twice comdat nodeduplicate",
+  "define internal shapes[f64].Box.twice comdat nodeduplicate",
+]
+excludes = ["shapes.Has", "shapes.Box"]
+
+[scenario.module_generic_macro]
+category = "run"
+description = "A macro inside a generic module, its parameter of type T and its body naming the instance's global, expanded in the module's own function and named through the instance, and a second macro of that name, which the instance's copy holds as the set"
+tags = ["nameres", "typecheck", "runtime"]
+
+[scenario.module_generic_fold]
+category = "run"
+description = "A global's 'use' clause inside a generic module: each instance's folded names reached through its own copy of the global, whose type holds the module's T"
+tags = ["nameres", "typecheck", "runtime"]
+
+[scenario.module_generic_extends]
+category = "run"
+description = "'extends' inside a generic module: a type enriching a base the module declares, written before it, and one enriching another module's type, each instance's copy enriched from the instance's own base"
+tags = ["nameres", "typecheck", "runtime"]
+
+# A generic module's submodule, instantiated with it [design chat, 28 Oct]:
+# the parent's T in scope, each instance's copy its own, and each instance and
+# its copy taking the instance's place in the init order, the submodule's
+# 'init' first, as an ordinary parent's and submodule's
+[scenario.module_generic_submodule]
+category = "run"
+description = "A generic module's submodule: its parent's T in scope and substituted, each instance's copy with its own globals, 'init' and 'final', named bare by the parent and through the instance from outside; each instance and its submodule's copy initialized together, the submodule first, finalized in reverse"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.module_generic_submodule.check]]
+name = "an-instance-submodule-is-spelled-under-the-instance"
+target = "symbols"
+contains = [
+  "define internal holder[i64].inner.twice comdat nodeduplicate",
+  "define internal holder[f64].inner.twice comdat nodeduplicate",
+  "global internal thread_local holder[i64].inner.hits comdat nodeduplicate",
+]
+excludes = ["holder.inner", "inner[i64]"]
+
+# A generic instance only a package uses: q uses g[i64] and the program never
+# names it. q's include file records the instance, so the program's compile
+# builds it and the stitched init and final place it, once, before q's init and
+# after q's final. g[i64].inits reads 1: the program's object and q's both hold
+# the instance's 'init', shared, and the stitched init calls it once.
+[scenario.module_generic_pkguse]
+category = "run"
+description = "A generic instance only a package uses, named nowhere in the program: its init runs once before the package's and its final once after it"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+# The program's object defines the instance q's include file records, from g's
+# include file, though no line of the program names it
+[[scenario.module_generic_pkguse.check]]
+name = "the-program-defines-the-instance-only-q-uses"
+target = "symbols"
+contains = ["define linkonce_odr g[i64].init comdat any"]
+
+# Once only: q and q2 both use g[i64], and the program names it too. The
+# instance is one, built in four objects and merged at link, and its init and
+# final run once each (g init, q init, q2 init; the finals reversed).
+[scenario.module_generic_pkguseonce]
+category = "run"
+description = "A generic instance used by two packages and named by the program too: its init and final each run once"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild", "q2/q2.conebuild"]
+include = ["include/g.cone", "include/q.cone", "include/q2.cone"]
+
+# A generic struct's statics, in an instance only a package uses. A static takes
+# a literal (ErrorNotLit otherwise), so it has no run-time init and nothing to
+# finalize: the instance only q uses has nothing for the stitched init to miss.
+# Pinned: the program's read of the static and q's calls meet in one copy.
+[scenario.module_generic_struct_static]
+category = "run"
+description = "A generic struct's static, in an instance only a package uses: one shared copy, and nothing to init or finalize"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+# Every kind across packages, as module_generic_link carries the flat case: g
+# declares an enum, a generic type, a generic function, a trait and a type
+# taking it, a macro and a global's 'use' clause; its include file is its whole
+# source, and q's object and the program's each define g[i64] -- its types'
+# methods, its instances of its generics and its vtables too -- shared, so the
+# copies merge into one storage and one total.
+[scenario.module_generic_body_link]
+category = "run"
+description = "A generic module declaring every kind its instances hold copies of, in a package of its own, instantiated at i64 in a package compiled alone and in the program, whose copies merge at link; and an instance the program alone uses"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+[[scenario.module_generic_body_link.check]]
+name = "q-defines-every-copy-of-the-instance-it-uses-shared"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "define linkonce_odr g[i64].Box.get comdat any",
+  "define linkonce_odr g[i64].Pair[i32].first comdat any",
+  "define linkonce_odr g[i64].second[i64] comdat any",
+  "global linkonce_odr thread_local g[i64].last comdat any",
+  "global linkonce_odr thread_local g[i64].dial comdat any",
+  "g[i64].Box as g[i64].Has (vtable) comdat any",
+  "define q.addTwice comdat nodeduplicate",
+]
+excludes = ["g[f64]"]
+
+[[scenario.module_generic_body_link.check]]
+name = "the-generic-package-defines-nothing-of-any-kind"
+target = "symbols"
+object = "g"
+excludes = ["g[", "g.add", "g.Box", "g.Pair", "g.second"]
 
 # A module or a module trait named where a type must be. Each used to reach
 # generation unrefused and crash the compiler there.
@@ -1427,6 +1761,20 @@ name = "folded-macro-expands-into-its-use"
 target = "preir"
 contains = ["(i64 4)"]
 
+[scenario.module_imports_macro_overload]
+category = "compile"
+description = "A wildcard import of a module declaring macros overloaded by repeating the name: each use picks among the whole set, and a public macro's body that uses a private overloaded pair expands in the importer"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# Each use expanded the body its argument picked: the i64 pick's '+ 1000', the
+# bool pick's 2000 and 3000 branches, and outer's body with both of the private
+# pair's bodies, '+ 4000' for the i64 and the 5000 and 6000 branches for the
+# bool. Pre-optimization IR, because the optimizer folds the sums.
+[[scenario.module_imports_macro_overload.check]]
+name = "each-use-expands-the-macro-its-argument-picks"
+target = "preir"
+contains = ["add i64 %a1, 1000", "[ 2000, %ifblk ], [ 3000, %ifnext ]", "add i64 %a7, 4000", "[ 5000, %ifblk11 ], [ 6000, %ifnext10 ]"]
+
 [scenario.module_qualified]
 category = "compile"
 description = "An import without a 'use' clause, whose members are reached by qualifying them"
@@ -1535,7 +1883,7 @@ description = "What an importer emits for an imported global, private declaratio
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # An imported global is an 'external' declaration spelled after its module,
-# with no initializer and no COMDAT; an imported 'imm' global is an 'external
+# with no initializer and no COMDAT; an imported 'let' global is an 'external
 # constant'. A definition's line would carry its COMDAT.
 [[scenario.module_symbols.check]]
 name = "imported-global-is-an-external-declaration"
@@ -1601,7 +1949,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # the module (and the type), exactly as a package compiled on its own defines
 # it, so an include file reaches the package's object. The private ones are
 # declared too, since the public inline body the importer expands names them.
-# None is a definition here, so none leads a COMDAT. An 'extern' 'imm' global
+# None is a definition here, so none leads a COMDAT. An 'extern' 'let' global
 # is not a constant here: its value is the defining object's, which its
 # module's 'init' may assign at run time.
 [[scenario.module_extern_cone_names.check]]
@@ -2286,7 +2634,7 @@ excludes = ["OpSRem", "OpSMod"]
 
 [scenario.module_target_spirv_switch]
 category = "compile"
-description = "An if-elif chain on one integer on SPIR-V's Vulkan form, which the optimizer makes a switch: made a tree of comparisons before the control flow is structured, so no arm branches on nothing"
+description = "An if-else if chain on one integer on SPIR-V's Vulkan form, which the optimizer makes a switch: made a tree of comparisons before the control flow is structured, so no arm branches on nothing"
 tags = ["genllvm"]
 
 [[scenario.module_target_spirv_switch.run]]
@@ -2455,7 +2803,7 @@ excludes = ["seq_cst", "cmpxchg ptr", "addrspacecast", "atomicrmw add ptr addrsp
 
 [scenario.module_workgroup_parse]
 category = "reject"
-description = "'@workgroup' anywhere but after a module global's 'mut', beside '@threadlocal', on an 'imm' global, or with an initial value; one with none accepted"
+description = "'@workgroup' anywhere but after a module global's 'let' or 'var', beside '@threadlocal', on a 'let' global, or with an initial value; one with none accepted"
 tags = ["parse"]
 diagnostics = 12
 
@@ -2607,6 +2955,18 @@ category = "reject"
 description = "'@c' that says nothing, is malformed, or names what has no symbol"
 tags = ["parse"]
 
+[scenario.module_c_llvm_reject]
+category = "reject"
+description = "A function whose own '@c' string begins 'llvm.', an LLVM intrinsic's name, declared 'extern' or defined: refused where written; names that only contain or resemble 'llvm' are ordinary C names"
+tags = ["parse"]
+diagnostics = 2
+
+[scenario.module_c_llvm_prefix]
+category = "reject"
+description = "A C-named module whose prefix 'llvm.' makes each function and global it owns an intrinsic's name: refused at each, naming the module and the name built; a function's own string replaces the prefix and is judged alone"
+tags = ["parse"]
+diagnostics = 4
+
 [scenario.module_c_fnref_reject]
 category = "reject"
 description = "A reference to a C-named function, '&fn @c (...)', and one to a Cone function, '&fn (...)', are two types that never convert: each given where the other is wanted is refused in an initializer, an assignment, an argument, a return and a struct's field, with no thunk; a C-named function is no callable ('&<fn'), and '@c' is not written on one; the same kind on both sides compiles"
@@ -2621,6 +2981,11 @@ tags = ["parse"]
 category = "run"
 description = "'&fn @c (...)' and '&fn (...)' used each on its own side: a C-named function's reference and a Cone function's called, held in a struct's field, passed and returned; a type's '@c' method keeps Cone's convention, so a reference to it is a plain '&fn'"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_c_fnref_byvalue]
+category = "run"
+description = "A call through a reference to a C-named function, '&f' with its '&fn @c (...)' type inferred, passes and returns a struct by value as a direct call does: 3-, 4-, 8-, 16-, 24- and 32-byte structs as an argument and as a returned value, among scalar arguments"
+tags = ["genllvm", "runtime"]
 
 [scenario.module_c_no_prelude]
 category = "reject"
@@ -2958,11 +3323,55 @@ name = "an-unlisted-file-is-not-compiled"
 target = "symbols"
 excludes = ["unlistedFn"]
 
-# 'build: release' decides the optimisation options: no debug information.
+# 'build: release' decides the optimisation options, not whether the object
+# carries debug information: it has a subprogram for each function it defines
+# (module_debug_info pins the rest).
 [[scenario.module_build_lib.check]]
-name = "build-release-emits-no-debug-info"
+name = "build-release-emits-debug-info"
 target = "preir"
-excludes = ["!dbg"]
+contains = ["!DISubprogram(name: \"addOne\"", "!DISubprogram(name: \"triple\""]
+
+[scenario.module_debug_info]
+category = "compile"
+description = "A release build, which is the default, carries debug information: a subprogram for each function it defines, the program's entry included"
+tags = ["genllvm"]
+
+[[scenario.module_debug_info.check]]
+name = "release-defines-a-subprogram-per-function"
+target = "preir"
+contains = ["!DISubprogram(name: \"main\"", "!DISubprogram(name: \"twice\"", "!dbg"]
+
+[scenario.module_debug_strip]
+category = "compile"
+description = "'--strip' emits no debug information, in a release build or a debug one"
+tags = ["genllvm"]
+
+[[scenario.module_debug_strip.run]]
+name = "release"
+options = ["--strip"]
+
+[[scenario.module_debug_strip.run]]
+name = "debug"
+options = ["--debug", "--strip"]
+
+[[scenario.module_debug_strip.check]]
+name = "a-stripped-build-has-no-locations-or-subprograms"
+target = "preir"
+excludes = ["!dbg", "DISubprogram", "DICompileUnit"]
+
+[scenario.module_debug_wasm]
+category = "compile"
+description = "A release WebAssembly build carries no debug information (a debug one does): it is as small as it can be, and has no PDB to hold it"
+tags = ["genllvm"]
+
+[[scenario.module_debug_wasm.run]]
+name = "release"
+options = ["--wasm"]
+
+[[scenario.module_debug_wasm.check]]
+name = "a-release-wasm-build-has-no-debug-info"
+target = "preir"
+excludes = ["!dbg", "DISubprogram"]
 
 [scenario.module_build_exe]
 category = "run"
@@ -3511,6 +3920,21 @@ description = "A library global whose inferred type is another package's submodu
 tags = ["genllvm"]
 diagnostics = 1
 
+# A generic instance the include file cannot record: g[bool] has no spelling in
+# '__uses', and g declares an 'init', so the package's include file is refused
+# rather than leaving g[bool]'s init to be missed unseen.
+[scenario.module_generic_pkguse_unspelled]
+category = "reject"
+description = "A package using an instance of a generic module with an 'init' that its include file cannot spell (a non-number argument) is refused, since the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
+[scenario.module_generic_pkguse_submodule]
+category = "reject"
+description = "A package's submodule using an instance of a generic module with an 'init' is refused, since the root's include file cannot record it and the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
 [scenario.module_gpu_unavailable]
 category = "reject"
 description = "In GPU code a reference to a function, a virtual reference made from a reference, and an allocation are refused where they are written; a call by name, a generic over a signature or a trait, and a struct built as a value are not"
@@ -3661,3 +4085,344 @@ include = ["include/cimp.cone"]
 category = "reject"
 description = "A C-named module's 'init' runs before the program starts, ahead of every Cone module's, so a C-named module with an 'init' that imports a Cone module with an 'init' of its own is refused"
 tags = ["typecheck"]
+
+# A downcast between two objects of an optimized program, linked with the
+# linker's defaults: identical-COMDAT folding (link.exe's /OPT:ICF) makes the two
+# types' 'sides' one function, and the comparison of vtable addresses still tells
+# them apart, because each vtable's last slot names its own type's record
+# (generation.md, "Vtables").
+[scenario.module_downcast_icf]
+category = "run"
+description = "Two types whose methods fold into one function, downcast in one object from values made in the other, optimized and linked with the linker's defaults"
+tags = ["genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# Neither vtable is unnamed_addr, so neither may be merged with the other, and
+# each points at its own record, private and not unnamed_addr either
+[[scenario.module_downcast_icf.check]]
+name = "the-vtables-and-records-keep-their-addresses"
+target = "llvmir"
+object = "q"
+contains = [
+  "@_CYNtC1q6CircleNtC1q5Shape = linkonce_odr constant",
+  "@_CYNtC1q6SquareNtC1q5Shape = linkonce_odr constant",
+  "@cone.tyrec.0 = private constant %TypeRecord",
+  "@cone.tyrec.1 = private constant %TypeRecord",
+]
+
+# A number's math methods on the Vulkan form: each is the GLSL.std.450 instruction
+# LLVM's SPIR-V back end selects for the intrinsic (the C library's math is
+# module_target_spirv_math)
+[scenario.module_target_spirv_numbers]
+category = "compile"
+description = "A number's abs, min, max, floor, ceil, round and fma in compute kernels on SPIR-V's Vulkan form: FAbs, NMin, NMax, Floor, Ceil, Round and Fma for floats, SAbs, SMin and SMax for a signed integer, the module validating"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_numbers.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_numbers.check]]
+name = "each-is-a-glsl-instruction"
+target = "asm"
+contains = [" FAbs %", " NMin %", " NMax %", " Floor %", " Ceil %", " Round %", " Fma %", " SAbs %", " SMin %", " SMax %"]
+
+[scenario.module_text_listrecord]
+category = "run"
+description = "A send to the console whose list has entries that are not plain values ('3 of x', 'each', 'fill') is still one record: a function a piece calls that prints comes before the whole of it, a piece's final after the pieces before it"
+tags = ["runtime"]
+
+[scenario.module_debug_basic]
+category = "run"
+description = "The debug form a call to toDebug generates for a struct, an enum's variants, a tuple and a nested value: field names, quoted and escaped text, a type's own toDebug used inside"
+tags = ["runtime"]
+
+# A generated form is never pub, so its symbol is internal (genllvm.c, genlInstanceIsPrivate):
+# two library packages that each generate a 'toDebug#1' (the serial restarts in every compile)
+# define it in their own objects alone, and link into one program together.
+[[scenario.module_debug_basic.check]]
+name = "the-generated-form-is-internal"
+target = "preir"
+contains = ["define internal %void @_CINvC4coreu15_toDebug1_"]
+
+[scenario.module_debug_more]
+category = "run"
+description = "The debug form of Option and Result, a fixed array, a List and a Dict (generic free functions of core and collections), and escaped text: quotes, backslash, a tab, a control character, multibyte letters"
+tags = ["runtime"]
+
+[scenario.module_debug_sink]
+category = "run"
+description = "A sink declaring DebugText takes values in the debug form and literal text as it stands; toText(x) and toDebug(x) override the form on either kind of sink; a type with no toText goes to the debug sink"
+tags = ["runtime"]
+
+[scenario.module_debug_cycle]
+category = "run"
+description = "A generated toDebug that follows an Rc round a cycle ends at the writer's depth limit, writing '...'"
+tags = ["runtime"]
+
+[scenario.module_debug_sink_refuse]
+category = "reject"
+description = "A type with no toText goes to a sink declaring DebugText and to print through toDebug(x), and is refused by print itself"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.module_text_nodebug]
+  category = "compile"
+  description = "A program that never asks for toDebug, optimized, holds no toDebug symbol and no debugArray body: the debug form costs nothing to a program that does not use it"
+  tags = ["genllvm"]
+
+  [[scenario.module_text_nodebug.run]]
+  name = "library"
+  options = ["--library"]
+
+  [[scenario.module_text_nodebug.check]]
+  name = "no-generated-debug-code"
+  target = "llvmir"
+  contains = ["define"]
+  excludes = ["toDebug", "debugArray"]
+
+[scenario.module_text_noformat]
+  category = "compile"
+  description = "A program that never imports the format package, optimized, holds none of its symbols: the number wrappers cost nothing to a program that does not use them"
+  tags = ["genllvm"]
+
+  [[scenario.module_text_noformat.run]]
+  name = "library"
+  options = ["--library"]
+
+  [[scenario.module_text_noformat.check]]
+  name = "no-format-code"
+  target = "llvmir"
+  contains = ["define"]
+  excludes = ["FloatFormat", "RadixText", "SignedText"]
+
+[scenario.module_debug_private]
+category = "run"
+description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_text_interp_threads]
+category = "run"
+description = "An interpolated string sent to the console is one record: eight threads print 60 identical interpolated lines each and none is torn"
+tags = ["runtime"]
+
+[scenario.module_text_interp_await]
+category = "run"
+description = "An 'await' in the braces of an interpolated string sent from a behaviour is an await among the pieces of the send list: the awaited pieces are made first and the statement is one whole record"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_interp_refuse]
+category = "reject"
+description = "An interpolated string refuses a lone close brace, empty braces, text after the expression, a value with no toText (sent and stored), and reports an error inside the braces at its real line and column, on a later line of a multi-line literal too"
+tags = ["parse", "typecheck"]
+
+[scenario.module_text_interp_unclosed]
+category = "reject"
+description = "An open brace of an interpolated string that no close brace closes is refused at the brace"
+tags = ["parse"]
+
+[scenario.module_text_interp_nocollections]
+category = "reject"
+description = "An interpolated string met anywhere but a send is a String: with no import of collections it is refused with a message saying what to import, and the string sent directly is accepted"
+tags = ["typecheck"]
+
+[scenario.module_text_interp_refuse_types]
+category = "reject"
+description = "An interpolated string sending a value with no toText is refused (sent, and stored as a String), and an error inside the braces is reported at its real line and column, on a later line of a multi-line literal too"
+tags = ["typecheck"]
+
+[scenario.module_text_interp_refuse_names]
+category = "reject"
+description = "An error inside the braces of an interpolated string is reported at its real line and column, on a later line of a multi-line literal too"
+tags = ["typecheck"]
+
+# -------- the 'wants' guard on text sends --------
+# A receiver with 'wants(self: &) bool' decides first: declined, the pieces are not evaluated.
+[scenario.module_text_wants]
+category = "run"
+description = "A text send to a receiver with 'wants' (a text sink, a record maker, a global, a send that builds its receiver) makes none of its pieces when it says no, for a single piece, a list and a '$\"...\"'; the receiver is evaluated once either way, and with it on the output is what it is with no 'wants'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_text_wants_move]
+category = "run"
+description = "A piece that moves, given to a sink's own '<-' behind 'wants': skipped, the variable is finalized once at the scope's end; sent, the callee finalizes it once"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_move_use]
+category = "reject"
+description = "A piece moved into a send behind 'wants' is maybe-moved, and reading it afterward is the ordinary moved-out refusal"
+tags = ["flow"]
+
+[scenario.module_text_wants_warn]
+category = "warn"
+description = "WarnTextEffect: an expression sent to a receiver with 'wants' that changes state (a block assigning or changing in place, a '&mut' call, a send, inside a '$\"...\"') is warned of; a read-only call, and a receiver with no 'wants', are not; the compile succeeds"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.module_text_wants_await]
+category = "run"
+description = "An 'await' among the pieces of a send behind 'wants': declined, none runs; accepted, the awaited pieces are made first and the record is whole"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_ir]
+category = "compile"
+description = "A guarded send with constant pieces, optimized, is a load of the flag, a compare and a branch around the record, which is built only on the branch taken"
+tags = ["genllvm"]
+
+[[scenario.module_text_wants_ir.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.module_text_wants_ir.check]]
+name = "the-flag-is-loaded-and-the-record-is-behind-the-branch"
+target = "llvmir"
+contains = ["load i1, ptr %0", ", label %ifblk, label %endif", "ifblk:"]
+
+[scenario.module_trace_wants_ir]
+category = "compile"
+description = "A log send to a trace Log from another package, optimized: 'wants' is inlined, so the off path is an atomic load of the kind's state and a compare, with no call to wants and no read of the any-sink flag; the record is built only past the test"
+tags = ["genllvm"]
+
+[[scenario.module_trace_wants_ir.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.module_trace_wants_ir.check]]
+name = "the-state-is-loaded-and-wants-is-not-called"
+target = "llvmir"
+contains = ["load atomic i8, ptr %state monotonic", "switch i8 %atomicload", "i8 0, label %endif"]
+excludes = ["@_CNvNtC5trace3Log5wants"]
+
+[scenario.module_text_site]
+category = "run"
+description = "A '<-' to a receiver whose 'open' takes a call site's storage is one event: the fixed text to 'text', each value to the overloaded 'value', then 'finish'; the spec names each value from its brace's source text, or by number in a plain list; one Site per call site, shared by its calls"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_text_site_plain]
+category = "run"
+description = "A five-parameter 'open' that is not the call-site protocol (the second parameter '&' not '&mut', the last an i64 not a u32, a record without 'value', or no self) leaves its type an ordinary receiver of its own '<-'"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_text_site_inline]
+category = "reject"
+description = "A log send in an inline function is refused (ErrorBadStatic): its call-site kind is a static, which an inline body would copy into each caller"
+tags = ["typecheck"]
+
+[scenario.module_debug_work]
+category = "run"
+description = "A generated toDebug over two Rc edges round a cycle, and over a tree with parent pointers, ends: the writer counts the bodies it enters and writes '...' past 65,536, resetting when a value is done, so 70,000 separate values in a List are each written whole"
+tags = ["runtime"]
+
+[scenario.module_debug_actor]
+category = "run"
+description = "A struct holding a concrete actor's handle has a generated toDebug, and writes the handle as the actor's own name, and an actor-trait handle as the trait's name"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_final_setup_order]
+category = "run"
+description = "A module's globals are finalized in the reverse of the order they are set, which is the order 'init' first assigns each, not the order declared: a global 'init' never sets is set first; a branch whose arms set the same globals in different orders takes the first order written; an earlier-declared global set from a later one is finalized before it"
+tags = ["genllvm", "runtime"]
+
+[scenario.module_init_reach]
+category = "run"
+description = "A module's 'init' calls its own functions that read its globals once those are set: a read counts at the call through two levels of helpers, a cycle of helpers ends, a global set after the calls and not read by them is not counted, a method and a generic function of the module are read after the set, and a call through a function reference or a virtual call, which cannot be followed, passes (a known gap that 'trust' closes)"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_init_reach_reject]
+category = "reject"
+description = "A call 'init' makes reads a global of its module that 'init' has not set yet, through a helper, through two levels of helpers, round a cycle of helpers, through a method of a type the module declares, a generic function, a generic method, and a method of a generic type's instance; a helper that sets a global and then reads it, called before 'init' sets it, is refused (its assignment is not init's); the same calls after the set are accepted"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.module_setup_order]
+category = "run"
+description = "A 'let' global given a value that is not a constant is a setup the module runs before its 'init': ordered by what each reads whatever order they are written in, one reading another directly and one through a function of the module; finalized in the exact reverse of the order set (a constant value first, the setups in the order they ran, then what 'init' sets)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_modules]
+category = "run"
+description = "Setups across modules: a module with a setup and no 'init' is given one that runs it; the imported module's setups run before the importer's, whose setup reads the imported module's global through a call into it; finals run in the exact reverse across the two modules"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_reject]
+category = "reject"
+description = "Setups with no order or no value yet are refused: two setups reading each other, one reaching the other through a function, and one reading itself (a cycle); a setup reading a global 'init' sets, directly and through a function of the module. A 'var' global and a static are still refused a value that is not a constant"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.module_setup_panic]
+category = "run"
+description = "A setup that fails panics at start-up, before the module's 'init' and the program's 'main'; the setup before it has run"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.module_setup_generic]
+category = "run"
+description = "A generic module's setup: each instance is a module of its own with its own global and its own setup, run once with that instance's type, in the module order before the root's 'init'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_link]
+category = "run"
+description = "A package compiled on its own, whose module has setups and no 'init': the library compile gives it an 'init' that runs them and exports it, its include file declares that 'init', and the program's stitched init calls it before the program's own setup, which reads the package's setups; the package's finalizer, linked, runs them in the reverse"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
+
+[scenario.module_setup_link_untyped]
+category = "run"
+description = "A package whose 'pub' setups are untyped ('pub let first = make(1)'): its include file declares each with the type its value has, as it does a typed one, and the program's stitched init and final run them as for module_setup_link"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
+
+[scenario.module_setup_borrow_temp_reject]
+category = "reject"
+description = "A setup's store is judged as init's is: a 'let' global of reference type set to a borrow of a temporary, directly and through a function handing the borrow back, is refused as the same store in 'init' is"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.module_setup_borrow_struct_reject]
+category = "reject"
+description = "A setup storing a struct value that carries a borrow of a temporary is refused, as the same store in 'init' is: the setup is walked for loans as any function is"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.module_setup_borrow_global]
+category = "run"
+description = "A setup may store a borrow of another global, directly and through a function handing the borrow back"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_generic_callback]
+category = "run"
+description = "The setups' order follows a generic instance of another module: its function, and a method of its generic type's instance, call back this module's type, whose method reads a later setup, which therefore runs first"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_init_reach_other_reject]
+category = "reject"
+description = "'init' reading a global before it sets it, through a generic function of another module and a method of its generic type's instance, each given this module's type whose method reads it; the same calls after the set are accepted"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.module_setup_block_local_reject]
+category = "reject"
+description = "A block giving a global its value cannot declare a local that is computed: the report says so and points to a function, not to the local as the fault; a local started by a constant is still fine, a 'var' global's block is refused at its local and again at the global, an 'if let' is refused at its hidden variable, and a parameter's non-literal default keeps the old wording"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.module_setup_try_reject]
+category = "reject"
+description = "'?' in a 'let' global's value has no function to return from and is refused for that alone (ErrorQuesReturn); the value it takes is not also reported as a local that is not a constant"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.module_setup_try_block_reject]
+category = "reject"
+description = "A try block with no function around it, as a 'let' global's value or a field's default, is refused at the 'try', once, whatever it holds, and the compiler stops cleanly (it crashed: no function around it to compare its breaks with); nothing in it is checked, so a '?', a computed local or a type it cannot have adds nothing"
+tags = ["typecheck"]
+diagnostics = 12
+
+[scenario.module_setup_block_loop]
+category = "run"
+description = "A 'while' or 'each' in a block giving a global its value runs in the global's setup and gives the right value (it crashed: a loop's breaks were compared with the body of a function, and there is none here)"
+tags = ["typecheck", "genllvm", "runtime"]

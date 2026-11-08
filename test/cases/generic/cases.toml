@@ -23,7 +23,14 @@
 # own braces or inside another generic's), and generic_typecheck_macro covers what
 # expansion itself cannot serve -- an argument list that does not match, a body
 # that would expand forever, and a macro method with nothing to stand in for
-# its self.
+# its self -- and generic_typecheck_macro_args a macro's arguments: a lazy or
+# plain one of the wrong type, and type arguments inference cannot find. A
+# macro body changing a plain parameter, which is evaluated once, is refused
+# at three stages: where the macro is declared when no type is in question
+# (generic_nameres_macro_once), and otherwise where it is used, by what does
+# the changing -- a borrow to change it at type check
+# (generic_typecheck_macro_once), a store into it at flow analysis
+# (generic_flow_macro_once).
 
 support = []
 
@@ -158,6 +165,21 @@ category = "run"
 description = "Type arguments inferred through a pointer, reference, owning reference or slice parameter, a generic type's instance, a function reference's signature, and a variant passed for its enum, including the intrinsics a collection calls"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.generic_infer_receiver]
+category = "run"
+description = "A generic method's type arguments inferred from its receiver, matched against 'self' as the call fits it: a value borrowed for 'self: &Box[Box[U]]', a reference for it, a reference dereferenced for a by-value 'self', a receiver and an argument agreeing; a generic struct and a generic enum, on a variant's value and the enum's"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_infer_receiver_helpers]
+category = "run"
+description = "Core's Option and Result helpers generic beyond their enum (flatten, map, andThen, filter, okOr, mapError) called with no type arguments and nothing expected of their value, on a variant's value, an enum's and through a reference: flatten's U is said only by its receiver"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_typecheck_infer_receiver]
+category = "reject"
+description = "A receiver and an argument that infer two different types for one type parameter of a generic method, refused at the argument as two arguments are"
+tags = ["typecheck"]
+
 [scenario.generic_infer_value_type]
 category = "run"
 description = "A type argument inferred from a variable whose value is a block's or an 'if''s, which types as the struct's declaration itself: a plain struct's and a generic type's instance, each with a method whose body holds a blockret, named by the instance and not cloned into it"
@@ -186,14 +208,53 @@ contains = [
   "define internal Holder.pick[i32] comdat nodeduplicate",
   "define internal Holder.zero[i64] comdat nodeduplicate",
   "define internal Box[i64].pair[i64] comdat nodeduplicate",
-  "define internal Box[f32].pair[i64] comdat nodeduplicate",
+  "define internal Box[f64].pair[i64] comdat nodeduplicate",
 ]
 excludes = [" Holder.pick ", " Box[i64].pair ", "].1 "]
 
 [scenario.generic_macro]
 category = "run"
-description = "Macro expansion: substitution rather than evaluation, what a macro parameter may be, every value position a parameterless name expands in, and macros declared in a type as its methods"
+description = "Macro expansion: typed parameters, a lazy one substituted rather than evaluated, 'lazy void' for a block, type parameters given in brackets to a macro and a macro method, every value position a parameterless name expands in, and macros declared in a type as its methods, a generic type's keeping its parameter types"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.generic_macro_once]
+category = "run"
+description = "A macro's plain parameter evaluated once, its argument bound before the body in the parameters' order: a side-effecting argument named twice or never runs once, as an argument of a macro method, typed by a type parameter, and through a nested macro; a lazy one runs once per use, not at all where the body never reaches it"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.generic_macro_operator]
+category = "run"
+description = "An operator whose method is a macro method expands it, the receiver as 'self' as it is: binary '+' with a plain operand evaluated once, '*' with a lazy operand not evaluated where the body does not use it, unary '-', '<', '==' and a '!=' derived through it, '-=' declared, '+=' through '+', '++', an index '[]', '<-', '<=>', '~', through a reference, on a construction, chained, and on a generic type's instance; a type whose '+' is a function still calls it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A function operator method is still a function the operator calls: its
+# definition is generated, and a macro method leaves no symbol
+[[scenario.generic_macro_operator.check]]
+name = "a-function-operator-is-called"
+target = "symbols"
+contains = ["define internal W.+ comdat nodeduplicate"]
+excludes = ["V.+", "V.-", "V.<", "V.=="]
+
+[scenario.generic_macro_lazy]
+category = "run"
+description = "A macro's lazy argument checked against its type on a copy before it is substituted, the expansion after the check unchanged: inside two instances of a generic at different types, with a macro use as another's lazy argument, and a side-effect block for 'lazy void'; type parameters inferred from plain arguments, from lazy ones where no plain one says them, and from a plain and a lazy one agreeing, and written, in one program"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A closure in a lazy argument, and one as a plain argument inferring F: one
+# struct per closure written. Each is numbered by the compiler's serial, the
+# trials' copies taking the numbers between, so the two written are #4 and #6
+# and none of the others is in the IR; nor is an instance of 'applyTwice' for
+# a trial's struct.
+[scenario.generic_macro_lazy_closure]
+category = "run"
+description = "A closure written inside a lazy argument, checked on a copy, built once with its own captures, the copy's struct and generic instance generated nowhere; a closure given as a plain argument whose type infers the macro's type parameter"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_macro_lazy_closure.check]]
+name = "one-struct-per-closure-written"
+target = "preir"
+contains = ['%"closure#4" = type', '%"closure#6" = type', "_closure4_"]
+excludes = ['%"closure#1"', '%"closure#2"', '%"closure#3"', '%"closure#5"', '%"closure#7"', "_closure1_", "_closure2_", "_closure3_"]
 
 [scenario.generic_instance_path]
 category = "run"
@@ -225,6 +286,56 @@ category = "run"
 description = "An Option first instantiated by a generic instance's method signature, matched through a call to it from another type's method and from a free function, with the variant bare and written out"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.generic_global_instance]
+category = "run"
+description = "A global of a generic instance first laid out by its own declared type, reached from a function above it; a finalizer of a type its type argument's method makes calls a generic method on the global through a generic function"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_field]
+category = "run"
+description = "A global of a generic struct's instance declared above its type argument, whose method reads the global's fields"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_method]
+category = "run"
+description = "A generic method called on a global of a generic instance from its type argument's method, the global declared before the instance is laid out and another after"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_before]
+category = "run"
+description = "A global of a generic instance used above its declaration in file order, before its type argument's method calls a generic method on it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_nested]
+category = "run"
+description = "A global of a generic instance nested in another, Option[Box[Svc]], matched in its type argument's method and a generic method called on what it binds"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_module]
+category = "run"
+description = "A global of another module's generic type declared in a submodule above its type argument, whose method calls a generic method on it; the root module reads a field through it and calls the method"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_alias_instance]
+category = "run"
+description = "A type alias naming a generic instance for the first time, used by a method of the instance's type argument to make a value and call a generic method on it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_where_member]
+category = "run"
+description = "A global whose instance's bound is fit structurally by its type argument, whose method, checked inside the global's held declared type, calls overloads of instances made while their argument was not yet laid out: a member whose 'where' names a type or asks a trait is left out where false, its body never checked, and selected where true"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_global_where_module]
+category = "run"
+description = "generic_global_where_member across modules: the generic types in one submodule, the fields holding their instances in another, the global and its type argument in the root"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_field_where_member]
+category = "run"
+description = "generic_global_where_member reached from a struct's field and from a function's signature, each naming an instance whose bound checks its type argument's method inside a layout in flight"
+tags = ["typecheck", "genllvm", "runtime"]
+
 [scenario.generic_tuple_return]
 category = "run"
 description = "A generic function, an inline one and a generic type's method each returning a tuple of values, whose templates hold value tuples no phase types"
@@ -232,7 +343,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.generic_constraint]
 category = "run"
-description = "Constraints: the inline and 'where' forms alike, '+' and 'and', a requirement met by grant, declaration or structure, a method existing only where its clause holds, and an instance's structural conformance to what it has"
+description = "Constraints: the inline and 'where' forms alike, '+' and '&&', a requirement met by grant, declaration or structure, a method existing only where its clause holds, and an instance's structural conformance to what it has"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # A method whose clause an instance does not meet is absent from it: nothing of
@@ -288,6 +399,14 @@ contains = [
   "define internal tick3[Ticker] comdat nodeduplicate",
 ]
 
+# A signature bound is met by the one rule a callable meets a signature by
+# (fnSigMeets): a recast's difference, as a function reference's and a trait's
+# method are. generic_typecheck_fn_bound_variance holds the refusals.
+[scenario.generic_fn_bound_variance]
+category = "run"
+description = "A function signature as a generic bound met by a plain function and by a struct's '()' that differ from it by a recast: a read-only borrow for a writable one, a reference to the enum for one to the variant, a result holding fewer borrows"
+tags = ["typecheck", "genllvm", "runtime"]
+
 [scenario.generic_infer_literal]
 category = "run"
 description = "An unsuffixed integer literal passed for a bare type parameter takes the type another argument or a bound gives, and only a literal left alone defaults to i32: a stack of i64, u8 and f64 filled with 8, 200 and 3, in a function, with a 'where' clause and in a method, and a literal beside an i64 in either order"
@@ -308,7 +427,7 @@ excludes = ["fill[i32,"]
 
 [scenario.generic_infer_expected]
 category = "run"
-description = "A generic's type arguments no argument says, read off the type expected of its value: None, Some, Ok and Error into a variable, a return, an assignment, a call's argument, a struct's field, the branches of an 'if', a block's last value, an append and an overload set's agreed parameter; a user generic enum; a function making a generic type from nothing; arguments and the expected type each giving a parameter; 'new Box(5)' wanted as a Box of i64; and a literal following the expected type before it defaults"
+description = "A generic's type arguments no argument says, read off the type expected of its value: None, Some, Ok and Err into a variable, a return, an assignment, a call's argument, a struct's field, the branches of an 'if', a block's last value, an append and an overload set's agreed parameter; a user generic enum; a function making a generic type from nothing; arguments and the expected type each giving a parameter; 'Box(5)' wanted as a Box of i64; and a literal following the expected type before it defaults"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # Where the arguments leave a parameter unsaid, the expected type names the
@@ -327,11 +446,27 @@ contains = [
 ]
 excludes = ["add[i32]", "same[i32]"]
 
+[scenario.generic_infer_nested]
+category = "run"
+description = "A generic's type arguments read off where its value goes at every depth: a construction in a construction ('Some(None)', 'Some(Some(None))', a user enum's, a function's result wrapping one), a construction that waits for the arguments that can say its type ('id2(None, 5)', before or after it, following an i64 the value goes to), and 'None' as the receiver of '==' and '!='"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_infer_variant_arg]
+category = "run"
+description = "A variant given to a generic variant, 'Err(Fault.SoldOut)', 'Ok(Drink.Tea)', 'Some(Color.Red)', is the enum its place says when the type expected of the whole says one: into a return, an argument, a declared variable, an assignment, a struct's field, the branches of an 'if', a construction in a construction, a user generic enum and a generic function, also holding a value and with the type arguments written"
+tags = ["typecheck", "runtime"]
+
+[scenario.generic_typecheck_variant_arg]
+category = "reject"
+description = "With no type expected of the whole, a variant given to a generic variant stays its own type ('Some(Color.Red)' is an Option[Color.Red]); a variant of another enum is refused where an enum is wanted"
+tags = ["typecheck"]
+diagnostics = 3
+
 [scenario.generic_typecheck_infer_expected]
 category = "reject"
-description = "A type argument nothing gives is refused naming the parameters, also where the expected type does not match what the generic makes; a constructor in a constructor, a later argument, 'None[]' as a receiver and an overload set whose candidates differ are not inferred"
+description = "A type argument nothing gives is refused naming the parameters, also where the expected type does not match what the generic makes; an overload set whose candidates differ is not inferred"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 6
 
 [scenario.generic_value_params]
 category = "run"
@@ -387,11 +522,11 @@ diagnostics = 2
 
 [scenario.generic_constraint_or]
 category = "run"
-description = "Constraints joined by 'or': 'and' binding tighter, parentheses grouping, '+' inside an alternative, a clause naming a type, requirements met, methods existing only where an 'or' holds, and the built-in marker Pointer granted to a raw pointer"
+description = "Constraints joined by '||': '&&' binding tighter, parentheses grouping, '+' inside an alternative, a clause naming a type, requirements met, methods existing only where a '||' holds, and the built-in marker Pointer granted to a raw pointer"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
-# A method whose 'or' an instance does not meet is absent from it, and one
-# whose 'or' it meets is generated there
+# A method whose '||' an instance does not meet is absent from it, and one
+# whose '||' it meets is generated there
 [[scenario.generic_constraint_or.check]]
 name = "a-method-absent-under-or-is-not-generated"
 target = "symbols"
@@ -423,22 +558,28 @@ excludes = ["Labelled[Plain].twice", "Labelled[Plain].show"]
 
 [scenario.generic_parse]
 category = "reject"
-description = "Type parameter lists that do not close or declare nothing, a macro parameter given an annotation, a macro with no name, and a macro whose name a field or method of its type already has"
+description = "Type parameter lists that do not close or declare nothing; a macro's value parameter untyped or typed without its ':', 'lazy' with no type, a constraint on its type parameter, 'self' typed, lazy, not first or outside a type; a macro with no name, and a macro whose name a field or method of its type already has"
 tags = ["parse"]
-diagnostics = 12
+diagnostics = 23
 [scenario.generic_parse_where]
 category = "reject"
-description = "'where' clauses joined by 'or' and grouped, which parse; clauses of a form not built -- 'not' before a clause or its trait, a relation between parameters, a constraint on a type expression, no trait, an 'or' with nothing after it, an unclosed parenthesis -- 'or' in the inline form, and a clause on a type with no type parameters"
+description = "'where' clauses joined by '||' and grouped, which parse; clauses of a form not built -- '!' before a clause or its trait, a relation between parameters, a constraint on a type expression, no trait, a '||' with nothing after it, an unclosed parenthesis -- '||' in the inline form, and a clause on a type with no type parameters"
 tags = ["parse"]
 diagnostics = 9
+
+[scenario.generic_parse_nametype]
+category = "reject"
+description = "A type parameter and what it must be take a ':' between them: a trait, a value's integer type and a function signature written with none are refused, and so is a ':' with nothing after it; a macro's parameter takes its type after one; a lifetime bound alone takes no ':'"
+tags = ["parse"]
+
 [scenario.generic_parse_conditional_is]
 category = "reject"
-description = "Conditions on an 'is' entry grouped, joined and followed by another entry and a trailing 'where', which parse; conditions of a form not built -- 'not', a relation between parameters, no trait, an 'or' with nothing after it, an unclosed parenthesis -- and a lifetime comparison, which decides nothing for an instance"
+description = "Conditions on an 'is' entry grouped, joined and followed by another entry and a trailing 'where', which parse; conditions of a form not built -- '!', a relation between parameters, no trait, a '||' with nothing after it, an unclosed parenthesis -- and a lifetime comparison, which decides nothing for an instance"
 tags = ["parse"]
 diagnostics = 6
 [scenario.generic_parse_fn_bound]
 category = "reject"
-description = "A function signature as the bound of a macro's parameter, whose own commas do not end the parameter: refused with the other macro and module parameters' annotations"
+description = "A bare function signature as a macro parameter's type, which is no type, whose own commas do not end the parameter"
 tags = ["parse"]
 diagnostics = 1
 
@@ -446,9 +587,14 @@ diagnostics = 1
 
 [scenario.generic_nameres_macro]
 category = "reject"
-description = "A macro method's body naming a member of its type without self"
+description = "A macro method's body naming a member of its type without self, and a macro parameter's type naming a function, nothing, or a trait (not built, as a constraint on a macro's type parameter is not); an enum and a reference to a trait are types it may name"
 tags = ["nameres"]
-diagnostics = 4
+diagnostics = 9
+[scenario.generic_nameres_macro_once]
+category = "reject"
+description = "A macro's body changing a plain parameter where no type is in question, refused where the macro is declared, none of them used: an assignment, a swap on either side, a '&mut' and an operator in place on the parameter or on a part of it reached through no reference (a field, a nested field, an array value's element, a reference field itself), and an assignment to a type parameter's value; through a reference, a type parameter's part, a method, a lazy parameter and a shadowing local accepted here"
+tags = ["nameres"]
+diagnostics = 12
 [scenario.generic_nameres_where]
 category = "reject"
 description = "Constraints whose subject is not a type parameter or whose name is neither a trait nor a type (a function, a generic type without arguments), a parameter annotated with a type, and a 'where' on a function with no type parameters in scope"
@@ -456,9 +602,9 @@ tags = ["nameres"]
 diagnostics = 7
 [scenario.generic_nameres_trait_bound]
 category = "reject"
-description = "A generic trait as a constraint without type arguments, inline and in a 'where' clause, with too few and too many, and as an instance in a condition on an 'is' entry"
+description = "A generic trait as a constraint without type arguments, inline and in a 'where' clause, with too few and too many, and as an instance in a condition on an 'is' entry; a generic enum named bare is called a generic type"
 tags = ["nameres"]
-diagnostics = 5
+diagnostics = 7
 [scenario.generic_nameres_fn_bound]
 category = "reject"
 description = "A function signature as a bound naming a type that does not exist, inline and in a 'where' clause, and as the condition on a type's 'is' entry, which is not built"
@@ -469,6 +615,11 @@ category = "reject"
 description = "A type not meeting a function signature bound: functions of another parameter type, return type and arity, a struct with no '()', with one that is not pub, with one taking fewer parameters and with one returning another type, each message naming the signature as written and as it comes to at the arguments; and the signature joined to Sendable, each asked"
 tags = ["typecheck"]
 diagnostics = 9
+[scenario.generic_typecheck_fn_bound_variance]
+category = "reject"
+description = "A type not meeting a function signature bound that differs from it by more than a recast: a variant or an enum by value on a function and on a struct's '()', a wider number, a value made an Option, more permission asked, less promised, more borrows held"
+tags = ["typecheck"]
+diagnostics = 11
 [scenario.generic_typecheck_fn_bound_receiver]
 category = "reject"
 description = "A signature bound leaves a '()' that takes 'self &mut' to the generic's permission: reached through '&F' it is refused in the instance's body, reached through '&mut F' it is not, and a '()' taking 'self &' is reached by both"
@@ -525,9 +676,39 @@ diagnostics = 3
 
 [scenario.generic_typecheck_macro]
 category = "reject"
-description = "Macro argument counts that do not match the declaration, expansion that would never terminate, one branching at each level included, and a macro method with no self to stand in for"
+description = "Macro argument counts that do not match the declaration, expansion that would never terminate, one branching at each level included, a macro method with no self to stand in for, and type arguments given to a macro without type parameters, too many, or not a type"
 tags = ["typecheck"]
-diagnostics = 17
+diagnostics = 20
+[scenario.generic_typecheck_macro_args]
+category = "reject"
+description = "A macro's arguments checked at expansion: a lazy argument of the wrong type refused at the use naming its parameter (a string, a float, a value for 'lazy void', one of a written type parameter's, one of a type a plain argument inferred), a plain one likewise as its binding; type parameters left off inferred, refused where no argument says them (a bare name, empty parentheses) or two say them differently (two plain, two lazy), refused with their own diagnostic where only a lazy argument whose type is a closure's could say them, and an argument that does not check on its own reported once"
+tags = ["typecheck"]
+diagnostics = 12
+[scenario.generic_typecheck_macro_operator]
+category = "reject"
+description = "An operator whose method is a macro method, refused at the use: a binary macro written as a unary operator and a unary one as a binary operator, naming the operator and the parameter count; a plain and a lazy operand of the wrong type, naming the parameter; a compound assignment through a macro '+' that gives back another type than the place holds"
+tags = ["typecheck"]
+diagnostics = 5
+[scenario.generic_typecheck_macro_await]
+category = "reject"
+description = "A compound assignment through a macro '+' whose operand holds an 'await', 'total += await f()', and the right operand of Option's '||' or '&&' (a macro method) holding one, refused where it is used (the expansion substitutes the operand into the body, where the wait cannot be cut); awaiting into a local first is accepted"
+tags = ["typecheck"]
+diagnostics = 3
+[scenario.generic_typecheck_macro_once]
+category = "reject"
+description = "A macro's body changing a plain parameter in a way that waits on a type, refused where the macro is used: a method taking 'self: &mut', a mutable borrow of a type parameter's part, an operator in place on a type parameter's value and on its part; the same through a reference argument, a reference type argument and a lazy parameter accepted"
+tags = ["typecheck"]
+diagnostics = 4
+[scenario.generic_typecheck_macro_ques]
+category = "reject"
+description = "'?' over a macro's value parameter, plain or lazy, is refused where the macro writes it, as it is anywhere a '?' is no type; '?' over a type parameter stays the Option type"
+tags = ["typecheck"]
+diagnostics = 2
+[scenario.generic_typecheck_refused_type]
+category = "reject"
+description = "A generic type refused where it is written ('Box[3]', a bare 'Box', 'Box[i32, i32]', each alone and as an array's element) is reported there once: no 'Expected a type', no element that must be known, no field access refused on a variable declared with it; an unrelated type that is no type, later in the file, still gets its 'Expected a type'"
+tags = ["typecheck"]
+diagnostics = 7
 [scenario.generic_typecheck_size_markers]
 category = "reject"
 description = "Sized refused to the body of bytes, the body of a run-time length, an open trait, an @opaque type and an @unsized enum; DynSized refused to the last two; and a type declaring either marker, which the compiler grants from the type's size"
@@ -540,7 +721,7 @@ tags = ["typecheck"]
 diagnostics = 10
 [scenario.generic_typecheck_where_or]
 category = "reject"
-description = "Conditions joined by 'or' unmet: a requirement named whole with the arguments it turned on, the first false of an 'and', a method absent under 'or', one naming it bare, a generic method's 'or' over its type's parameter and its own; Pointer refused to a reference and an integer"
+description = "Conditions joined by '||' unmet: a requirement named whole with the arguments it turned on, the first false of a '&&', a method absent under '||', one naming it bare, a generic method's '||' over its type's parameter and its own; Pointer refused to a reference and an integer"
 tags = ["typecheck"]
 diagnostics = 11
 [scenario.generic_typecheck_conditional_is]
@@ -548,6 +729,20 @@ category = "reject"
 description = "An instance lacking an 'is' entry its condition decides: a requirement of Move, a marker and a trait with methods refused naming the false condition, of Copy naming the true 'is Move if' condition, of Copy where a field moves naming none, a default method absent, a generic function taking the conditional type refused at its instance, and a trailing 'where' still a requirement on the whole type"
 tags = ["typecheck"]
 diagnostics = 8
+
+[scenario.generic_typecheck_where_in_layout]
+category = "reject"
+description = "A call to a member its instance's 'where' leaves out, from a method body checked inside a layout in flight, refused as no candidate accepting it -- a type named and a trait asked -- rather than selecting the member and checking its body"
+tags = ["typecheck"]
+diagnostics = 2
+
+# -------- flow analysis stage --------
+
+[scenario.generic_flow_macro_once]
+category = "reject"
+description = "A macro's body storing into a plain parameter in a way that waits on a type, refused where the macro is used: an assignment to and a swap of a type parameter's part, and the plain parameter given to another macro's lazy parameter that is stored into; the same through a reference type argument and on a lazy parameter accepted"
+tags = ["flow"]
+diagnostics = 3
 
 [scenario.generic_lifetime_fn_instances]
 category = "run"
@@ -564,17 +759,178 @@ contains = [
 
 [scenario.generic_constraint_type_instance]
 category = "run"
-description = "A clause naming an instance, 'where K is So[str]': a region's reference, a generic type's instance and one whose arguments name another parameter, met by that type alone, joined with 'and' and 'or' beside a trait, in a function and on a generic type's methods"
+description = "A clause naming an instance, 'where K is Uni[str]': a region's reference, a generic type's instance and one whose arguments name another parameter, met by that type alone, joined with '&&' and '||' beside a trait, in a function and on a generic type's methods"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.generic_typecheck_type_instance]
 category = "reject"
-description = "An instance named in a clause, unmet: another region's reference and an integer for 'So[str]', methods absent from instances that do not meet it, and an Option of another type, the refusal naming the clause as written"
+description = "An instance named in a clause, unmet: another region's reference and an integer for 'Uni[str]', methods absent from instances that do not meet it, and an Option of another type, the refusal naming the clause as written"
 tags = ["typecheck"]
 diagnostics = 5
+
+[scenario.generic_typecheck_where_enum_instance]
+category = "reject"
+description = "An instance of a generic enum named in a clause, unmet: the refusal names the clause and explains no fit by the enum's methods or tag, whole-enum methods by value and by borrow included"
+tags = ["typecheck"]
+diagnostics = 3
 
 [scenario.generic_typecheck_generic_method_bound]
 category = "reject"
 description = "A generic method meeting a trait's method that is not generic, under a static bound: refused, naming the type, the method and that it is generic, for a generic trait's instance and for a trait with no type arguments, with the method's own parameter in the signature or not; the same methods not generic are accepted"
 tags = ["typecheck"]
 diagnostics = 2
+
+[scenario.generic_macro_operator_field]
+category = "run"
+description = "A macro operator on a type's own field, by its bare name or through 'self', expands the macro alike: '+=' through a macro '+', '+' and a lazy-operand '-', in a plain type's methods and in an actor's behaviours, each operand evaluated once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_macro_overload]
+category = "run"
+description = "Macros overloaded by repeating the name: free macros picked by an argument's type, by the number of arguments, with a type parameter, with type arguments written or the brackets taken as values, an argument that waits for its type ('None'), a string literal taken as the '&str' it is before one made into a type by 'fromLiteral'; macro methods and operator macros ('+', and '+=' through it) picked by the argument after the receiver; a lazy parameter in a set whose argument runs only where the chosen body reaches it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_typecheck_macro_overload]
+category = "reject"
+description = "A use of overloaded macros that picks no one: no candidate accepts the arguments (a string for number and bool parameters, too many arguments, a method's and an operator's), listing the candidates; two number literals fitting both an i32 and an f64 candidate, as they do overloaded functions, naming the two, for a free macro and an operator"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.generic_parse_macro_mixed]
+category = "reject"
+description = "A macro and a function under one name in one scope: a module's, and one type's methods, each in either order, refused at the second declaration and again at the first, naming both"
+tags = ["parse"]
+diagnostics = 8
+
+[scenario.generic_macro_logic]
+category = "run"
+description = "'||' and '&&' are methods of the left operand's type: a macro method with a lazy right side (the right runs only where it is the answer, the left evaluated once however the body names it, a call or a method call or a chain as the receiver), a function method called with both operands evaluated, and a bool's own '||' and '&&' short-circuiting"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_typecheck_macro_logic]
+category = "reject"
+description = "'||' and '&&' on a left operand whose type declares neither (a number, a float, a pointer, a struct, an integer literal, in a condition too), naming the operator and the type; Option's '&&' takes no plain value on the right; a bool's operator still takes a number on the right and a number is still a condition"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.generic_number_ordered]
+category = "run"
+description = "A number type meets core's Ordered by its built-in methods: i32, u64 and f64 through a bound, a call written against &Self (a.cmp(&b)) reading the referent, the operator, str and String, and a where clause; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_number_ordered.run]]
+name = "release"
+options = []
+
+[[scenario.generic_number_ordered.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_typecheck_number_trait]
+category = "reject"
+description = "A number type refused for a trait it does not meet: a method it lacks, bool for Ordered, and a method of the right name in another shape"
+tags = ["typecheck"]
+
+[scenario.generic_number_markers]
+category = "run"
+description = "The number markers Float, Signed, Unsigned and Numeric, granted to the number types they name: constraints met, methods of a generic type existing only where a marker holds"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_typecheck_number_markers]
+category = "reject"
+description = "Each number marker refused where it is not granted: Float for an integer, bool and a struct, Signed for an unsigned integer, Unsigned for a float, Numeric for bool, char and a struct; a method absent where its marker fails"
+tags = ["typecheck"]
+diagnostics = 10
+
+[scenario.generic_eq_trait]
+category = "run"
+description = "Core's Eq: met by numbers and bool through their built-in ==, by a struct that writes == against &Self, and by a struct declaring Eq with no == (compared field by field, nested, with a float, a String and a generic parameter); a generic struct whose == exists only where its parameter is Eq; == on Option, Result, tuples and List where the elements are Eq; List contains, indexOf and dedup; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_eq_trait.run]]
+name = "release"
+options = []
+
+[[scenario.generic_eq_trait.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_typecheck_eq]
+category = "reject"
+description = "Eq refused where there is no ==: a struct declaring Eq whose field has none, a struct with no == for an Eq bound, == on Option and List of such a struct, a conditional == absent where its parameter is not Eq, a tuple of five"
+tags = ["typecheck"]
+
+[scenario.generic_not_clone]
+category = "run"
+description = "A generic function's body holding '!', a 'while' loop's wrapped exit test and a '!=' derived from '==', cloned for several instances (a LogicNode's clone read a right operand a '!' never has); every result printed"
+tags = ["typecheck", "runtime"]
+
+[[scenario.generic_not_clone.run]]
+name = "release"
+options = []
+
+[[scenario.generic_not_clone.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_clone_trait]
+category = "run"
+description = "Core's Clone: every Copy type is Clone (numbers, bool, a Copy struct, even one declaring it) and clone() is the value; a struct declaring Clone with no clone is given one that clones its fields in order (a String, a List and a nested derived struct, deep); a written clone is used, also through the bound; Option, Result, List and String clone where their elements are Clone; List resize and appendSlice and Dict getCopy fill with clones of a move type; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_clone_trait.run]]
+name = "release"
+options = []
+
+[[scenario.generic_clone_trait.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_typecheck_clone]
+category = "reject"
+description = "Clone refused where nothing duplicates: a struct declaring Clone whose field moves with no clone or is a &mut, clone() on a struct that moves, such a struct handed to a Clone bound, List clone and resize and Option clone absent where the element is not Clone"
+tags = ["typecheck"]
+
+[scenario.generic_compare_autolend]
+category = "run"
+description = "A comparison whose == or ordering takes &Self lends both operands: a == b for a hand-written == against &Self, a derived == (Pt), Option, List, an ordering against &Self; Result, Option[String], an enum whose variants carry fields and an enum with a == of its own against &Self; the explicit &a == &b still works; numbers unchanged; a temporary is lent and finalized at the end of its statement; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_compare_autolend.run]]
+name = "release"
+options = []
+
+[[scenario.generic_compare_autolend.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_clone_refs]
+category = "run"
+description = "Clone of a read-only borrow: Option[&T] clones to the same borrow, a & is the type argument of a Clone bound, a struct with a & field declares Clone and has it copied; a struct that takes a trait with fields in its is list and declares Clone has every field cloned, the trait's own included; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_clone_refs.run]]
+name = "release"
+options = []
+
+[[scenario.generic_clone_refs.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_default_trait]
+category = "run"
+description = "Core's Default is T(): numbers and bool by grant (0, 0.0, false), collections and structs by declaring it, a struct made from its fields' declared values or their types' T(), a struct with an init of its own made by it; a T() in generic code builds in the heap while a collection made with a region lives there; every result printed"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.generic_default_trait.run]]
+name = "release"
+options = []
+
+[[scenario.generic_default_trait.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.generic_typecheck_default]
+category = "reject"
+description = "Default is opt-in: a struct of numbers that declares nothing, a struct that moves, char and a reference are refused at a Default bound; a struct declaring Default is refused at a field with no value and no Default type; a number is still not constructed with an argument"
+tags = ["typecheck"]

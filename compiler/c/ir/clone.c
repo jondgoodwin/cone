@@ -27,10 +27,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     // 'Item' -- is a use of the alias, whose own copy substitutes the
     // parameter; its name is hooked to nothing, and reading it as the
     // parameter cloned nothing at all
+    //
+    // A macro's plain parameter is hooked to the variable its expansion binds
+    // the argument to (macroExpand), and a use of it is copied as a use of that
+    // variable, keeping the use's own place.
     if (isNameUseNode(nodep) && ((NameUseNode*)nodep)->dclnode
         && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
-        if (!(hooked && hooked->tag == GenVarDclTag)) {
+        int ownuse = hooked && (hooked->tag == GenVarDclTag
+            || (hooked->tag == VarDclTag && (hooked->flags & FlagMacroBind)));
+        if (!ownuse) {
             // A type argument is the use's own source, resolved where the use is: a
             // 'Self' in it (a trait's default naming 'Wrap[Self]') is the type the
             // default was taken into, and is not repointed at the type being
@@ -95,6 +101,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneAwaitNode(cstate, (AwaitNode *)nodep); break;
     case YieldTag:
         node = cloneYieldNode(cstate, (YieldNode *)nodep); break;
+    case DestructTag:
+        node = cloneDestructNode(cstate, (DestructNode *)nodep); break;
     case SelfActorTag:
         node = (INode *)newSelfActorNode();
         inodeLexCopy(node, nodep);
@@ -144,6 +152,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case ArrayLitTag:
     case ArrayTag:
         node = cloneArrayNode(cstate, (ArrayNode *)nodep); break;
+    case VectorTag:
+        node = cloneVectorNode(cstate, (VectorNode *)nodep); break;
     case FnSigTag:
         node = cloneFnSigNode(cstate, (FnSigNode *)nodep); break;
     case PtrTag:
@@ -206,6 +216,8 @@ void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32
     cstate->late = NULL;
     cstate->latepairs = NULL;
     cstate->scope = scope;
+    cstate->modinst = 0;
+    cstate->enrichfix = NULL;
     nametblHookPush();
 
     if (parms) {

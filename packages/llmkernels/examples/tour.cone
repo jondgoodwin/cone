@@ -1,0 +1,67 @@
+// One matrix-vector product on the GPU, checked against its CPU twin: a seeded random 64 x 256 Q4_K matrix
+// and input, the kernels made once, a job that uploads, dispatches and reads back, and the answer compared
+// with llmreference's twin.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import libc;
+import collections use List;
+import random;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+fn main() i32 {
+  var instance = Instance.create("llmkernels tour");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var device = adapter.requestDevice();
+  if !device.isValid() {
+    printStr("no device\n");
+    return 1i32;
+  }
+  let kernels = Kernels.make(&device);                          // the pipelines, made once
+  var works = Works.make();
+
+  // a 64 x 256 Q4_K matrix (random blocks, seeded) and an input vector
+  var rng = random.Rng.fromSeed(1u64);
+  match syntheticMatrix(&mut rng, QTYPE_Q4_K, 64usize, 256usize) {
+    case let Some(m) {
+      let x = syntheticFloats(&mut rng, 256usize, 1.0);
+      var job = Job.make(&mut device);
+      let w = job.give(upload(&mut device, m.words().view()));     // the weights' bytes, as words
+      let xb = job.give(upload(&mut device, floatWords(x.view()).view()));
+      let yb = job.give(zeroed(&mut device, 64usize));
+      kernels.matvec(&mut job, &mut device, w, xb, yb, QTYPE_Q4_K, 64usize, 256usize);
+      let back = job.readback(&mut device, yb);
+      let ticket = works.submit(&mut device, job, Target.Here(1u64));
+      var done = List[Completion]();
+      works.waitFor(&mut device, ticket, &mut done);
+      let y = wordFloats(done[0usize].words(back).view());         // 64 f32s
+
+      // the CPU's answer
+      var want = List[f32].withCapacity(64usize);
+      var i = 0usize;
+      while i < 64usize { want.push(0.0); i = i + 1usize; }
+      matvecCpu(&m, x.view(), want.viewMut());
+      var worst = 0.0;
+      i = 0usize;
+      while i < 64usize {
+        let e = libc.fabs(f64.from(*y[i]) - f64.from(*want[i]));
+        if e > worst { worst = e; }
+        i = i + 1usize;
+      }
+      printStr("y[0] = "); printFloat(f64.from(*y[0usize])); printStr(" on the GPU, ");
+      printFloat(f64.from(*want[0usize])); printStr(" on the CPU; the largest difference over 64 rows is ");
+      printFloat(worst); printStr("\n");
+    }
+    case is None { printStr("not a whole number of blocks\n"); return 1i32; }
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32
+}

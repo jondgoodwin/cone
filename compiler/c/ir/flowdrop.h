@@ -27,9 +27,13 @@ void dropWalkBegin();
 // the owner of the value, for a match's binding: the value leaves here
 void dropMove(uint32_t var, INode *node, int hollow);
 
-// A use of the variable at 'var' that needs its value: a read (or, with
-// 'borrow', a borrow, which needs it only not moved out)
+// A use of the variable at 'var' that needs its value: a read, or, with
+// 'borrow', a borrow (they differ only in what the message says)
 void dropUse(uint32_t var, INode *node, int borrow);
+
+// A field or an element stored into the variable at 'var': refused where some
+// path reaching it gave the variable no value
+void dropPartUse(uint32_t var, INode *node);
 
 // The variable at 'var' is stored over whole ('lval' names it; 'rvalp' is the
 // value's slot, NULL where the value is one element of another), or in part

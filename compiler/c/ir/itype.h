@@ -60,10 +60,28 @@ INode *itypeGetDerefTypeDcl(INode *node);
 // Remembered per struct once the struct is type checked.
 int itypeCarriesBorrow(INode *type);
 
+// May a value of this type hold a borrow of a lifetime that ends: one not
+// ''static' (nor a key or a function's, which itypeCarriesBorrow passes too)?
+// A ''static' borrow lends nothing of any caller's, so what a signature lets a
+// value of the type carry from, or be given through, a parameter asks this
+// (lifetime.h), while a value a body makes keeps whatever loans flow into it
+// (itypeCarriesBorrow). Remembered per struct apart from that answer.
+int itypeCarriesEndingBorrow(INode *type);
+
 // Can a borrowed reference to 'want' (a type declaration) be stored somewhere
 // in a value of this type: does it hold a borrowed reference to that type, or
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
+
+// Is it certain no value of this type holds a borrowed reference anywhere?
+// Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
+// type parameter, closure, virtual reference) answers no.
+int itypeHoldsNoBorrow(INode *type);
+
+// Is it a struct declaring 'NoLoanMut', an arena? It holds what is stored in it
+// through raw memory its fields do not show, so it is a place a borrow is stored
+// in though its type carries none (Bug 51).
+int itypeIsArena(INode *type);
 
 // How many writable borrows deep can a store into a value of this type reach,
 // to store a borrow there, up to 'most'? A callee handed a '&mut H', 'H'
@@ -79,7 +97,7 @@ int itypeDropReadsBorrow(INode *type);
 
 // Does a value of this type need tracing: hold a traced reference where it
 // sits, a reference into a region declaring 'Traced'; or through an owning
-// reference of another region ('Rc', 'So'); or in a tuple, array, struct or
+// reference of another region ('Rc', 'Uni'); or in a tuple, array, struct or
 // enum, or in what a type declaring GcTraceElements gives references to? Not through a
 // borrow or a raw pointer. Remembered per struct once it is type checked.
 int itypeHoldsTraced(INode *type);
@@ -99,8 +117,18 @@ int itypeHoldsBarriered(INode *type);
 // Does a value of this type hold, where itypeHoldsTraced looks, a reference into
 // a traced region that is not 'ActorLocal': one whose collector runs whenever
 // and wherever a program says, and so is unsafe in an actor or a 'parallel each'
-// (ErrorGcStopgap)? Not remembered: asked of a declaration or a node once.
+// (ErrorGcStopgap)? Not remembered: asked of a declaration or a node once. Core's
+// Erased is not one here (itypeHoldsRooted says it is).
 int itypeHoldsCollected(INode *type);
+
+// Does a value of this type need a slot in a function's root frame: does it hold
+// a collected reference (itypeHoldsCollected), one a stack's roots must find? An
+// Erased value does wherever a traced region that is not 'ActorLocal' is declared
+// (regionCollectedAnywhere). An actor-local reference is found from the actor's
+// state, never from a stack. Where the walk could not finish, yes. Roots only: a
+// type's trace, its record's Traced flag and a parked record's fields still ask
+// itypeHoldsTraced.
+int itypeHoldsRooted(INode *type);
 
 // Does a value of this type hold a traced reference where a collector must find
 // it, as itypeHoldsTraced looks, but for an actor's state, which the actors

@@ -1,0 +1,278 @@
+// The cancel group by itself, with no I/O loop under it.
+//
+// 1. A live group says so; a cancel is true once and false after; the cause is
+//    the first one given (Cancelled by default; SiblingFinished, Shutdown).
+// 2. A child is cancelled by its parent, with the parent's cause; the child's
+//    own cancel does not reach the parent or a sibling.
+// 3. A shield under a cancelled parent stays live, and its own cancel still
+//    ends it; a child of a shield is cancelled by the shield.
+// 4. A deadline is one timer that sets the flag: a group 'until' a time is
+//    live before it and cancelled with the cause TimedOut after, with no
+//    one reading the clock; its child inherits the flag; a child with a
+//    tighter deadline times out first, the parent not; a looser child arms
+//    nothing of its own and still follows the parent.
+// 5. A group whose last handle is dropped before its deadline disarms the
+//    timer: no timer remains (the group is freed), and a cancel from the other
+//    handles before that still works.
+// 6. A cancel from another thread is seen by a loop spinning on isCancelled.
+// 7. A registered Wakeup is signalled by a cancel of the group or of an
+//    ancestor, once per cancel, once per loop however often it registers; a
+//    loop that has gone is dropped at the next registration.
+// 8. Many deadline groups: a thousand armed, all but ten dropped: only the ten
+//    fire.
+
+mod groups;
+
+import testing use *;
+import thread;
+import actors;
+import sync use Arc;
+import collections use List;
+import time use Instant, Duration;
+import cancelgroups use *;
+
+// A loop's waker for the tests: counts its signals
+struct Ear is Sendable {
+  pub signals: Arc[imm, Atomic[u32]];
+  pub gone: bool;
+  pub fn signal(self: &) bool {
+    signals.add(1u32);
+    !gone
+  }
+  pub fn isGone(self: &) bool {gone}
+}
+
+fn ear(count: &Arc[imm, Atomic[u32]], gone: bool) Ear {Ear(*count, gone)}
+
+struct Spin is Sendable {
+  pub g: CancelGroup;
+  pub seen: Arc[imm, Atomic[u32]];
+}
+
+// Spin until the group says cancelled, then say so
+fn spin(a: Spin) {
+  while !a.g.isCancelled() {thread.yieldNow();}
+  a.seen.store(1u32);
+}
+
+fn num(c: Cause) u32 {
+  match c {
+    case Cause.Cancelled {1u32}
+    case Cause.TimedOut {2u32}
+    case Cause.SiblingFinished {3u32}
+    case Cause.Shutdown {4u32}
+  }
+}
+
+fn causeIs(g: &CancelGroup, want: Cause) bool {
+  match g.cause() {
+    case let Some(c) {num(c) == num(want)}
+    else {false}
+  }
+}
+
+fn waitUntilCancelled(g: &CancelGroup, limitMs: i64) {
+  let limit = Instant.now() + Duration.fromMillis(limitMs);
+  while !g.isCancelled() && Instant.now() < limit {thread.sleep(Duration.fromMillis(1i64));}
+}
+
+fn main() i32 {
+  // 1. State and cause
+  {
+    let g = CancelGroup.make();
+    expect(!g.isCancelled(), "live at first");
+    expect(!g.cause().isTrue(), "no cause while live");
+    expect(g.cancel(), "the first cancel says true");
+    expect(!g.cancel(), "the second says false");
+    expect(g.isCancelled(), "cancelled is a state");
+    expect(causeIs(&g, Cause.Cancelled), "the cause is Cancelled");
+    let h = CancelGroup.make();
+    expect(h.cancelWith(Cause.SiblingFinished), "cancelWith says true");
+    expect(!h.cancelWith(Cause.Shutdown), "a second cancel, even with another cause, says false");
+    expect(causeIs(&h, Cause.SiblingFinished), "the first cause stays");
+    let k = CancelGroup.make();
+    k.cancelWith(Cause.Shutdown);
+    expect(causeIs(&k, Cause.Shutdown), "Shutdown");
+    expectUInt(g.id() + 1u64, h.id(), "ids are sequential");
+    expect(g.deadline() == forever(), "no deadline");
+    expect(!g.isShield(), "not a shield");
+  }
+
+  // 2. Children
+  {
+    let p = CancelGroup.make();
+    let c = p.child();
+    let c2 = p.child();
+    let gc = c.child();
+    c.cancel();
+    expect(c.isCancelled() && gc.isCancelled(), "a child's cancel reaches its own child");
+    expect(!p.isCancelled() && !c2.isCancelled(), "but not its parent or sibling");
+    expect(causeIs(&gc, Cause.Cancelled), "the grandchild's cause is its parent's");
+    let d = CancelGroup.make();
+    let dc = d.child().child();
+    d.cancelWith(Cause.Shutdown);
+    expect(dc.isCancelled(), "a parent's cancel reaches the grandchild");
+    expect(causeIs(&dc, Cause.Shutdown), "with the parent's cause");
+    // A child outliving its parent's last handle
+    var orphan = CancelGroup.make().child();
+    expect(!orphan.isCancelled(), "a child keeps its parent alive");
+  }
+
+  // 3. Shields
+  {
+    let p = CancelGroup.make();
+    let s = p.shield(forever());
+    let sc = s.child();
+    p.cancel();
+    expect(!s.isCancelled() && !sc.isCancelled(), "a shield stands under a cancelled parent");
+    expect(s.isShield(), "isShield");
+    sc.cancel();
+    expect(sc.isCancelled() && !s.isCancelled(), "a child's cancel stays below the shield");
+    s.cancel();
+    expect(s.isCancelled(), "the shield's own cancel ends it");
+    let s2 = p.shield(forever());
+    let s2c = s2.child();
+    s2.cancel();
+    expect(s2c.isCancelled(), "a shield's cancel reaches its child");
+  }
+
+  // 4. Deadlines
+  {
+    let t0 = Instant.now();
+    let g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
+    let c = g.child();
+    let tight = g.childUntil(t0 + Duration.fromMillis(20i64));
+    let loose = g.childUntil(t0 + Duration.fromSeconds(60i64));
+    expect(g.deadline() == t0 + Duration.fromMillis(60i64), "the group's deadline");
+    expect(c.deadline() == g.deadline(), "a child inherits it");
+    expect(tight.deadline() == t0 + Duration.fromMillis(20i64), "a tighter child wins");
+    expect(loose.deadline() == g.deadline(), "a looser one gives way to the parent's");
+    expect(!g.isCancelled() && !tight.isCancelled(), "live before the deadline");
+    waitUntilCancelled(&tight, 5000i64);
+    expect(tight.isCancelled(), "the tight child timed out");
+    expect(Instant.now() >= t0 + Duration.fromMillis(20i64), "not before its deadline");
+    expect(causeIs(&tight, Cause.TimedOut), "with the cause TimedOut");
+    expect(!g.isCancelled(), "its parent did not");
+    waitUntilCancelled(&g, 5000i64);
+    expect(g.isCancelled() && c.isCancelled() && loose.isCancelled(), "then the parent and what follows it");
+    expect(causeIs(&c, Cause.TimedOut), "TimedOut reaches the child");
+    expect(!g.cancel(), "a cancel after the timeout says false");
+    // A deadline already past
+    let past = CancelGroup.until(Instant.now() - Duration.fromSeconds(1i64));
+    waitUntilCancelled(&past, 5000i64);
+    expect(past.isCancelled() && causeIs(&past, Cause.TimedOut), "a deadline past fires at once");
+    // A cancel before the deadline keeps its cause
+    let early = CancelGroup.until(Instant.now() + Duration.fromMillis(30i64));
+    early.cancel();
+    thread.sleep(Duration.fromMillis(80i64));
+    expect(causeIs(&early, Cause.Cancelled), "a cancel before the deadline stays Cancelled");
+    // A shield with its own deadline
+    let p = CancelGroup.make();
+    let sh = p.shield(Instant.now() + Duration.fromMillis(20i64));
+    p.cancel();
+    expect(!sh.isCancelled(), "the shield lives under a cancelled parent");
+    waitUntilCancelled(&sh, 5000i64);
+    expect(sh.isCancelled() && causeIs(&sh, Cause.TimedOut), "until its own deadline");
+  }
+
+  // 5 and 8. Dropped groups disarm; only the held ones fire
+  {
+    let t0 = Instant.now();
+    var keep = List[CancelGroup]();
+    var n = 0usize;
+    while n < 1000usize {
+      let g = CancelGroup.until(t0 + Duration.fromMillis(100i64));
+      if n % 100usize == 0usize {keep.push(g);}
+      n = n + 1usize;
+    }
+    expectUInt(u64.from(keep.len()), 10u64, "ten kept");
+    expectUInt(u64.from(armedTimers()), 10u64, "the other 990 timers were disarmed with their last handle");
+    waitUntilCancelled(&keep[0usize], 5000i64);
+    thread.sleep(Duration.fromMillis(20i64));
+    var all = true;
+    n = 0usize;
+    while n < keep.len() {all = all && keep[n].isCancelled(); n = n + 1usize;}
+    expect(all, "all ten fired");
+    expectUInt(u64.from(armedTimers()), 0u64, "none remains armed");
+    // One handle dropped, another held: the timer stays
+    let a = CancelGroup.until(Instant.now() + Duration.fromMillis(40i64));
+    {
+      let b = a;
+    }
+    waitUntilCancelled(&a, 5000i64);
+    expect(a.isCancelled(), "a copy's drop leaves the timer");
+  }
+
+  // 6. A cancel from another thread
+  {
+    let g = CancelGroup.make();
+    let c = g.child().child();
+    let seen = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let t = thread.start(Spin(c, seen), &spin);
+    thread.sleep(Duration.fromMillis(20i64));
+    expectUInt(u64.from(seen.load()), 0u64, "still spinning");
+    g.cancel();
+    t.join();
+    expectUInt(u64.from(seen.load()), 1u64, "the spinner saw the cancel");
+  }
+
+  // 7. Wakeups
+  {
+    let n1 = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let n2 = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let n3 = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let p = CancelGroup.make();
+    let c = p.child();
+    let e1 = ear(&n1, false);
+    let e2 = ear(&n2, false);
+    c.watch(1u64, &e1);
+    c.watch(1u64, &e1);
+    p.watch(2u64, &e2);
+    expectUInt(u64.from(n1.load()), 0u64, "nothing signalled yet");
+    p.cancel();
+    expectUInt(u64.from(n1.load()), 1u64, "loop 1, registered through the child, told by the parent's cancel");
+    expectUInt(u64.from(n2.load()), 1u64, "loop 2 told once");
+    p.cancel();
+    expectUInt(u64.from(n1.load()), 1u64, "a second cancel tells no one");
+    // A dead loop is dropped at the next registration
+    let q = CancelGroup.make();
+    let dead = ear(&n3, true);
+    q.watch(7u64, &dead);
+    let live = ear(&n1, false);
+    q.watch(8u64, &live);
+    q.cancel();
+    expectUInt(u64.from(n3.load()), 0u64, "the gone loop's entry went at the next registration");
+    // A timeout tells the loops too
+    let m = CancelGroup.until(Instant.now() + Duration.fromMillis(20i64));
+    let e4 = ear(&n2, false);
+    m.watch(9u64, &e4);
+    waitUntilCancelled(&m, 5000i64);
+    thread.sleep(Duration.fromMillis(10i64));
+    expectUInt(u64.from(n2.load()), 2u64, "a deadline's cancel signals the loop");
+  }
+
+  // 9. 'parallel each' may check a group declared outside it, a child of one
+  //    included (the group is Sendable through its waker list too)
+  {
+    let g = CancelGroup.make();
+    let c = g.child().child();
+    let work = List[u32](100000usize) <- fill 1u32;
+    let live = Atomic[u64].of(0u64);
+    let skipped = Atomic[u64].of(0u64);
+    parallel each x in work.view().chunks(1000usize) {
+      if c.isCancelled() {skipped.add(1u64);} else {live.add(u64.from(x.len()));}
+    }
+    expectUInt(live.load(), 100000u64, "every piece ran while the group was live");
+    expectUInt(skipped.load(), 0u64, "none skipped");
+    g.cancel();
+    let live2 = Atomic[u64].of(0u64);
+    let skipped2 = Atomic[u64].of(0u64);
+    parallel each x in work.view().chunks(1000usize) {
+      if c.isCancelled() {skipped2.add(1u64);} else {live2.add(u64.from(x.len()));}
+    }
+    expectUInt(live2.load(), 0u64, "none ran once it was cancelled");
+    expectUInt(skipped2.load(), 100u64, "all hundred pieces saw the cancel");
+  }
+
+  done()
+}

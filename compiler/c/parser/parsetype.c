@@ -28,36 +28,62 @@ INode *parsePerm() {
     return unknownType;
 }
 
-// Parse the permission a declaration carries, defaulting to 'defperm' when the
+// Parse the word a declaration begins with, 'let' or 'var', and return the
+// permission it stands for: 'let' is 'imm' and 'var' is 'mut'. Unknown when the
 // source writes none.
 //
 // A declaration names one storage location that only it owns, so the aliasing
 // distinctions the reference permissions draw have nothing to say about it --
 // MayAlias is read only off a reference type's permission, and MayAliasWrite is
-// read nowhere. What is left to choose is whether the value may change, and
-// 'mut' and 'imm' are the two that say it.
+// read nowhere. What is left to choose is whether the name may be given a new
+// value, and 'let' and 'var' are the two that say it.
 //
-// The defaults differ, and deliberately: a variable defaults to 'imm', so
-// mutation is opted into, while a field defaults to 'mut', which per
-// doc/reference/refstruct.html means the container's permission governs.
+// 'imm' and 'mut' are the permissions of a reference, never the word of a
+// declaration. One written here is reported with the word to write instead, and
+// read as that word so that the rest of the declaration parses and checks as it
+// was meant. Any other permission declares nothing and is reported as such.
+INode *parseDclWord() {
+    if (lexIsToken(LetToken) || lexIsToken(VarToken)) {
+        INode *perm = newPermUseNode(lexIsToken(LetToken) ? immPerm : mutPerm);
+        lexNextToken();
+        return perm;
+    }
+    if (!lexIsToken(PermToken))
+        return unknownType;
+    INode *perm = parsePerm();
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl == (INode*)immPerm || permdcl == (INode*)mutPerm)
+        errorMsgNode(perm, ErrorDclWord,
+            "A declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value); 'imm' and 'mut' are permissions, written on references. Write '%s' here.",
+            permdcl == (INode*)immPerm ? "let" : "var");
+    else
+        errorMsgNode(perm, ErrorInvType,
+            "A declaration starts with 'let' or 'var'; '%s' is a permission, written on references",
+            &inodeGetName(permdcl)->namestr);
+    return perm;
+}
+
+// Parse the word a declaration carries, defaulting to 'defperm' when the source
+// writes none.
+//
+// The defaults differ, and deliberately: a variable defaults to 'let', so
+// mutation is opted into, while a field defaults to 'var', which per
+// doc/manual/guide-structs.html means the container's permission governs.
 //
 // workitems/permissions.md records what is not settled here, including that a
 // global needs a third answer this vocabulary cannot give.
 INode *parseDclPerm(PermNode *defperm) {
-    INode *perm = parsePerm();
+    INode *perm = parseDclWord();
     if (perm->tag == UnknownTag)
         perm = (INode*)defperm;
-    INode *permdcl = itypeGetTypeDcl(perm);
-    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(perm, ErrorInvType, "A declaration's permission must be 'mut' or 'imm'");
     return perm;
 }
 
 // '@threadlocal' and '@workgroup' are written after a module global's
-// permission. With '@threadlocal' every thread has its own copy of the global,
+// let or var. With '@threadlocal' every thread has its own copy of the global,
 // each starting from its initial value; with '@workgroup', on a GPU, every
 // workgroup has its own, which its invocations share. Each is read wherever a
-// declaration's permission is, so that written on a local, a static, a
+// declaration's let or var is, so that written on a local, a static, a
 // parameter, a field or a module trait's global it is refused by its own
 // diagnostic, and the declaration after it still parses. A global has one
 // kind of storage, so the two together are refused.
@@ -67,7 +93,7 @@ uint16_t parseStorageAttr(int allowed) {
         if (lexIsToken(ThreadLocalToken)) {
             if (!allowed)
                 errorMsgLex(ErrorThreadLocalPlace,
-                    "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'mut @threadlocal name'.");
+                    "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'var @threadlocal name'.");
             else if (facts & DclWorkgroup)
                 errorMsgLex(ErrorWorkgroupPlace,
                     "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
@@ -76,7 +102,7 @@ uint16_t parseStorageAttr(int allowed) {
         else {
             if (!allowed)
                 errorMsgLex(ErrorWorkgroupPlace,
-                    "Only a global declared at module scope may be '@workgroup', which gives it one copy for each workgroup of a GPU's invocations: 'mut @workgroup name'.");
+                    "Only a global declared at module scope may be '@workgroup', which gives it one copy for each workgroup of a GPU's invocations: 'var @workgroup name'.");
             else if (facts & DclThreadLocal)
                 errorMsgLex(ErrorWorkgroupPlace,
                     "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
@@ -95,8 +121,13 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     INode *perm = parseDclPerm(defperm);
     uint16_t storage = parseStorageAttr(flags & ParseMayThreadLocal);
 
-    // Obtain variable's name
-    if (!lexIsToken(IdentToken)) {
+    // Obtain variable's name. 'let' and 'var' begin a declaration, so neither can
+    // name one; the word is reported and read as the name, so that the rest of
+    // the declaration parses as written instead of cascading.
+    if (lexIsToken(LetToken) || lexIsToken(VarToken))
+        errorMsgLex(ErrorNoIdent, "'%s' begins a declaration, so it cannot name a variable. Rename it.",
+            &lex->val.ident->namestr);
+    else if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
         parse->bodyp = parse->bodyendp = parse->nameendp = NULL;
         parse->typed = 0;
@@ -110,27 +141,30 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         // A copy per thread of a value no thread can change is one copy
         if (itypeGetTypeDcl(perm) == (INode*)immPerm)
             errorMsgNode((INode*)varnode, ErrorThreadLocalImm,
-                "A thread-local global is a copy per thread so that each thread may change its own. An 'imm' global never changes, so every copy would be the same: declare it 'mut', or drop '@threadlocal'.");
+                "A thread-local global is a copy per thread so that each thread may change its own. A 'let' global never changes, so every copy would be the same: declare it 'var', or drop '@threadlocal'.");
     }
     if (storage & DclWorkgroup) {
         varnode->dclinfo.facts |= DclWorkgroup;
         // Nothing writes a value into a workgroup's copy but its invocations
         if (itypeGetTypeDcl(perm) == (INode*)immPerm)
             errorMsgNode((INode*)varnode, ErrorWorkgroupImm,
-                "A '@workgroup' global is a copy for each workgroup, there for its invocations to write and read: declare it 'mut'. An 'imm' one would never hold a value.");
+                "A '@workgroup' global is a copy for each workgroup, there for its invocations to write and read: declare it 'var'. A 'let' one would never hold a value.");
     }
     char *nameendp = lex->prevend;
 
-    // Get value type, if provided
+    // Get value type, if provided: a ':' and the type
     char *typep = lex->tokp;
-    // A local may be bound by a pattern a function runs, 'imm rest using prefix("GET ") = line': the
+    // A local may be bound by a pattern a function runs, 'let rest using prefix("GET ") = line': the
     // call stands where the type does, and becomes the value once the matched value after '=' is known
     FnCallNode *usingcall = NULL;
     parse->usingdcl = 0;
     if ((flags & ParseMayUsing) && lexIsToken(UsingToken))
         usingcall = parseUsingCall(parse);
-    else
-        varnode->vtype = parseType(parse);
+    else if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        typep = lex->tokp;
+        varnode->vtype = parseTypeReq(parse, "':'");
+    }
     int typed = varnode->vtype != unknownType;
     char *typeendp = lex->prevend;
 
@@ -142,9 +176,9 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         bodyp = lex->tokp;
         lexNextToken();
         if (lexIsToken(UndefToken)) {
-            // 'undef' is used to signal that programmer believes variable
-            // can be considered safely "initialized", even though it is UB.
-            varnode->flowtempflags |= VarInitialized;
+            // 'undef' declares the variable with no value, exactly as leaving
+            // the initializer off does: no value node, and no VarInitialized,
+            // so flow tracks it as unvalued
             lexNextToken();
         }
         else
@@ -160,7 +194,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     if (usingcall) {
         if (varnode->value == NULL)
             errorMsgNode((INode*)usingcall, ErrorUsingForm,
-                "A binding by 'using' names the value to match after the call: 'imm rest using prefix(\"GET \") = line else {...};'.");
+                "A binding by 'using' names the value to match after the call: 'let rest using prefix(\"GET \") = line else {...};'.");
         else {
             parseUsingMatchee(usingcall, varnode->value);
             varnode->value = (INode*)usingcall;
@@ -207,7 +241,10 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     lexNextToken();
 
     // Get value type, if provided
-    constnode->vtype = parseType(parse);
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        constnode->vtype = parseTypeReq(parse, "':'");
+    }
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -251,9 +288,9 @@ INode *parseTypeName(ParseState *parse) {
 // Is the lexer on 'tag', where a field's type is written?
 //
 // 'tag' is recognized here and nowhere else, so it is not a reserved word and
-// 'pub tag i32' still declares a field named 'tag'. What it names is the
+// 'pub tag: i32' still declares a field named 'tag'. What it names is the
 // discriminant type an enum synthesizes for itself; an author writes it, as
-// '_ tag', only to place that field somewhere other than position 0, which is
+// '_: tag', only to place that field somewhere other than position 0, which is
 // done for alignment.
 static int parseIsTagType() {
     return lexIsToken(IdentToken) && lex->val.ident == tagName;
@@ -400,7 +437,7 @@ FoldClause *parseFoldClause(ParseState *parse, int maypub) {
 // end of the statement. Naming the source is what asks for its members, so every
 // one of them is the default and there is no second spelling for it: '*' is
 // refused with 'starmsg'. A name after the source starts a list.
-static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
+static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg, int member) {
     fold->star = 1;
     if (lexIsToken(StarToken)) {
         errorMsgLex(ErrorBadFold, "%s", starmsg);
@@ -409,7 +446,10 @@ static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
     else if (lexIsToken(IdentToken))
         fold->star = 0;
     parseFoldItems(parse, fold, 0);
-    parseEndOfStatement();
+    if (member)
+        parseEndOfMember();
+    else
+        parseEndOfStatement();
 }
 
 // Parse a type body's 'use' clause, with the lexer on the 'use': the sibling
@@ -440,12 +480,28 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
         if (lexIsToken(IdentToken)) {
             use->via = lex->val.ident;
             lexNextToken();
+            // Up to two more lenders, one for each permission a method's receiver
+            // may ask: 'via view, viewMut, viewUni'
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                if (!lexIsToken(IdentToken)) {
+                    errorMsgLex(ErrorNoIdent, "Expected the name of another method this type lends the body through, as in 'use Array[T] via view, viewMut, viewUni;'");
+                    break;
+                }
+                if (use->via2 == NULL)
+                    use->via2 = lex->val.ident;
+                else if (use->via3 == NULL)
+                    use->via3 = lex->val.ident;
+                else
+                    errorMsgLex(ErrorBadFold, "A lend names at most three lenders: one for '&', one for '&mut' and one for '&uni'.");
+                lexNextToken();
+            }
         }
         else
             errorMsgLex(ErrorNoIdent, "Expected the name of the method this type lends the body through, as in 'use str via view;'");
     }
     parseUseAdmits(parse, fold,
-        "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
+        "A type body's 'use' brings in every member of what it names already; '*' says nothing more.", 1);
     return use;
 }
 
@@ -456,7 +512,7 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
 //
 // 'pub use' makes the bindings public names of this module, so a module that
 // imports this one with 'use *' receives them too. It is how core makes Some, None,
-// Ok and Error bare in every program. The 'pub' is read with the statement's
+// Ok and Err bare in every program. The 'pub' is read with the statement's
 // other leading words, before the 'use', and arrives as 'pubflag'.
 //
 // The source is a type expression, a path included, and nothing about what it
@@ -477,7 +533,7 @@ ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag) {
     }
     use->source = parseTypeName(parse);
     parseUseAdmits(parse, fold,
-        "A module's 'use' brings in every variant of the enum, or every public name of the submodule, it names already; '*' says nothing more.");
+        "A module's 'use' brings in every variant of the enum, or every public name of the submodule, it names already; '*' says nothing more.", 0);
     return use;
 }
 
@@ -496,10 +552,14 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
     StructNode *svlifestruct = parse->lifestruct;
     parse->lifestruct = lifeowner;
     char *typep = lex->tokp;
-    if (parseIsTagType())
-        fldnode->vtype = parseTagType(parse);
-    else if ((vtype = parseType(parse)))
-        fldnode->vtype = vtype;
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        typep = lex->tokp;
+        if (parseIsTagType())
+            fldnode->vtype = parseTagType(parse);
+        else if ((vtype = parseTypeReq(parse, "':'")))
+            fldnode->vtype = vtype;
+    }
     parse->lifestruct = svlifestruct;
     char *typeendp = lex->prevend;
 
@@ -535,9 +595,9 @@ static int parseNamesType(INode *named, StructNode *type) {
     return named->tag == NameUseTag && ((NameUseNode*)named)->namesym == type->namesym;
 }
 
-// Does this method's receiver, as written, name the enum: 'self &Lamp', '&mut Lamp'
+// Does this method's receiver, as written, name the enum: 'self: &Lamp', '&mut Lamp'
 // or by value 'self Lamp'? Such a method is one function over the whole enum
-// (structIsWholeEnumMethod), where 'self &' and 'self &Self' are the variant's.
+// (structIsWholeEnumMethod), where 'self: &' and 'self: &Self' are the variant's.
 static int parseNamesEnumReceiver(FnDclNode *fn, StructNode *enumnode) {
     if (fn->vtype == NULL || fn->vtype->tag != FnSigTag)
         return 0;
@@ -668,6 +728,46 @@ static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what
         &strnode->namesym->namestr, what);
 }
 
+// An associated type in a trait's body, with the lexer on 'type' and a name
+// after it: 'type Cursor: Iterator[T];', or unbounded, 'type Piece;'. It is a
+// parameter of the trait that no use writes (FlagAssocType), appended after the
+// written ones, its bound read as a generic parameter's is, '+'-joined, so name
+// resolution folds it into the trait's constraints as it folds '[T: Ordered]'.
+static void parseAssocType(ParseState *parse, StructNode *strnode) {
+    lexNextToken();     // 'type'
+    GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+    parm->flags |= FlagAssocType;
+    lexNextToken();
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        if (!lexIsToken(IdentToken))
+            errorMsgLexAfter(ErrorNoType, "Expected a trait after ':': an associated type is bounded as a type parameter is, 'type Cursor: Iterator[T];'");
+        else {
+            parm->annot = newNodes(2);
+            nodesAdd(&parm->annot, parseType(parse));
+            while (lexIsToken(PlusToken)) {
+                lexNextToken();
+                nodesAdd(&parm->annot, parseTypeReq(parse, "'+'"));
+            }
+        }
+    }
+    parseEndOfMember();
+    if (strnode->genericinfo == NULL) {
+        strnode->genericinfo = newGenericInfo();
+        strnode->genericinfo->parms = newNodes(2);
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+        if (((GenVarDclNode*)*nodesp)->namesym == parm->namesym) {
+            errorMsgNode((INode*)parm, ErrorDupName, "Duplicate name %s: a trait's associated type is named apart from its type parameters and its other associated types.",
+                &parm->namesym->namestr);
+            return;
+        }
+    }
+    nodesAdd(&strnode->genericinfo->parms, (INode*)parm);
+}
+
 // Parse the '= value' pinning a variant's tag value, if one is written, leaving
 // the tag unassigned when none is. Written where the variant's name is, both for
 // a bare name and for a struct's.
@@ -701,26 +801,35 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
-// With the lexer on the '(' after a name in an enum's body: does the
-// parenthesized text hold a comma at its top level? 'Ok(i32);' does not, and is
-// a variant declared as a type; 't (A, B);' does, and is a common field whose
-// type is a tuple, as it has always been. Read from the source text, because
-// which of the two to build is settled before the type is.
-static int parseParenHoldsComma() {
-    int depth = 0;
-    for (char *p = lex->tokp; *p; ++p) {
-        if (*p == '(' || *p == '[' || *p == '{')
-            ++depth;
-        else if (*p == ')' || *p == ']' || *p == '}') {
-            if (--depth <= 0)
-                return 0;
-        }
-        else if (*p == ',' && depth == 1)
-            return 1;
-        else if (*p == ';')
-            return 0;
+// Parse one variant of an enum's variant list, with the lexer just past its name
+// and 'substruct' built for it. A bare name holds nothing; a name and a type in
+// parentheses, 'Ok(i32)', is a variant that holds that type itself, with no name
+// for it and no field to reach it by. Either may pin its tag value, '= 3', after
+// whatever it holds. The same reading serves the first variant of a list and each
+// one after a comma, so any of them may carry a payload.
+//
+// The type is read while the lexer is on it, so that a diagnostic about the
+// variant's field points there, and may name the lifetimes of 'lifeowner', the
+// enum.
+static void parseVariantItem(ParseState *parse, StructNode *strnode, StructNode *lifeowner,
+    StructNode *substruct, uint16_t variantflags, StructNode **prior) {
+    strnode->flags |= HasTagField;
+    substruct->tag = StructTag;
+    substruct->flags |= variantflags;
+    if (lexIsToken(LParenToken)) {
+        lexNextToken();
+        FieldDclNode *contents = newFieldDclNode(payloadName, (INode*)mutPerm);
+        contents->index = 0;
+        contents->flags |= FlagMethFld | FlagPub;
+        StructNode *svlifestruct = parse->lifestruct;
+        parse->lifestruct = lifeowner;
+        contents->vtype = parseTypeReq(parse, "'(' of a variant");
+        parse->lifestruct = svlifestruct;
+        parseCloseTok(RParenToken);
+        structAddField(substruct, contents);
     }
-    return 0;
+    parseVariantTagPin(substruct);
+    parseAddVariant(parse, strnode, substruct, prior);
 }
 
 // An enum with fields in common has a name for everything it holds, so no
@@ -752,13 +861,459 @@ static void parseCheckTypeVariants(StructNode *strnode) {
     }
 }
 
+// What the items of a type's braces are read into: the type, and the state of the
+// reading that more than one '#if' branch of the braces shares, since the braces
+// of a branch open no scope of their own -- what it declares belongs to the type
+typedef struct StructItems {
+    StructNode *strnode;        // The type the items join
+    int isenum;                 // It is an enum
+    StructNode *lifeowner;      // The struct whose field names its lifetimes: an enum's, for its variants
+    uint16_t methflags;         // What a method of it may be written as
+    uint16_t fieldnbr;          // The index the next field takes
+    StructNode *priortag;       // The variant the next unpinned one numbers on from
+    int hasEnumFld;             // An enum has placed its discriminant
+    int inloop;                 // The items are the body of a '#each #f in #fields(T)' (parsemeta.c)
+} StructItems;
+
+static void parseStructItems(ParseState *parse, StructItems *it);
+
+// The members of a '#each #f in #fields(T)' in a generic type's braces, read through its '}'
+static void parseStructLoopItems(ParseState *parse, void *ctx) {
+    parseStructItems(parse, (StructItems*)ctx);
+}
+
+// A branch of a '#if' in a type's braces. A taken one joins the type; one the
+// build does not take is read into a stand-in of the same kind, which is dropped
+static INode *parseStructBranch(ParseState *parse, void *ctx, int mode) {
+    StructItems *it = (StructItems*)ctx;
+    if (mode == MetaTaken) {
+        parseStructItems(parse, it);
+        return NULL;
+    }
+    StructNode *real = it->strnode;
+    // A branch that asks what a type parameter is: its fields and methods join the type,
+    // each under the condition (a field's 'hashcond', a method's 'where', which an
+    // instance reads as the member existing or not). Nothing else in a type's braces has a
+    // condition to hold, so a static, a macro or an alias there is refused
+    if (mode == MetaDeferred) {
+        uint32_t f0 = real->fields.used, n0 = real->nodelist.used;
+        parseStructItems(parse, it);
+        for (uint32_t i = f0; i < real->fields.used; ++i) {
+            FieldDclNode *fld = (FieldDclNode*)real->fields.nodes[i];
+            if (fld->tag != FieldDclTag)
+                continue;
+            INode *cond = parseMetaMemberCond();
+            if (fld->hashcond) {
+                LogicNode *both = newLogicNode(AndLogicTag);
+                inodeLexCopy((INode*)both, fld->hashcond);
+                both->lexp = fld->hashcond;
+                both->rexp = cond;
+                cond = (INode*)both;
+            }
+            fld->hashcond = cond;
+        }
+        for (uint32_t i = n0; i < real->nodelist.used; ++i) {
+            INode *member = real->nodelist.nodes[i];
+            if (member->tag != FnDclTag) {
+                errorMsgNode(member, ErrorMetaTypeFact,
+                    "A '#if' that asks what a type parameter is holds fields and methods in a type's braces: a static, a macro or an alias has no condition to exist under.");
+                continue;
+            }
+            FnDclNode *fn = (FnDclNode*)member;
+            if (fn->where == NULL)
+                fn->where = newNodes(2);
+            nodesAdd(&fn->where, parseMetaMemberCond());
+        }
+        return NULL;
+    }
+    StructNode *stand = newStructNode(real->namesym);
+    stand->tag = real->tag;
+    stand->flags = real->flags;
+    stand->genericinfo = real->genericinfo;
+    stand->lifeparms = real->lifeparms;
+    stand->basetrait = real->basetrait;
+    stand->extendsbase = real->extendsbase;
+    StructItems copy = *it;
+    copy.strnode = stand;
+    if (it->lifeowner == real)
+        copy.lifeowner = stand;
+    INsTypeNode *svtype = parse->typenode;
+    parse->typenode = (INsTypeNode*)stand;
+    parseStructItems(parse, &copy);
+    parse->typenode = svtype;
+    return NULL;
+}
+
+// Read a type's items -- fields, methods, variants, statics, macros -- from just
+// after a '{' through the '}' that closes it. A '#if' inside reads the same
+// items again, for the branch it takes
+static void parseStructItems(ParseState *parse, StructItems *it) {
+    StructNode *strnode = it->strnode;
+    int isenum = it->isenum;
+    StructNode *lifeowner = it->lifeowner;
+    uint16_t methflags = it->methflags;
+    while (!parseBlockEnd()) {
+        // '#if' chooses which members exist, from the facts of the build
+        if (lexIsToken(HashIfToken)) {
+            // A question about a type parameter is held by a generic struct's fields and methods
+            const char *nodefer = NULL;
+            if (it->inloop)
+                nodefer = "A '#if' that asks what a type parameter is is not built inside a '#each #f in #fields(T)' in a type's braces: a member made for each field would need a condition per field.";
+            else if (strnode->genericinfo == NULL)
+                nodefer = "A '#if' that asks what a type parameter is stands in the body of a generic type or function: this type has no type parameters.";
+            else if (isenum || (strnode->flags & TraitType))
+                nodefer = "A '#if' that asks what a type parameter is is not built in the body of an enum or a trait: a generic struct's fields and methods are conditioned by it.";
+            parseHashIf(parse, parseStructBranch, it, nodefer, nodefer ? NULL :
+                "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
+            continue;
+        }
+        // '#each #f in #fields(T) { ... }' makes the members it holds once for each field of a type
+        // parameter, in a generic struct's braces
+        if (lexIsToken(HashEachToken) && !it->inloop && strnode->genericinfo && !isenum && !(strnode->flags & TraitType)) {
+            StructItems loop = *it;
+            loop.inloop = 1;
+            parseHashEachMembers(parse, strnode, parseStructLoopItems, &loop);
+            it->fieldnbr = loop.fieldnbr;
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        // A lone ';' is an empty declaration: ';' delimits the body's
+        // declarations, so one after the last, one after a declaration that
+        // ends in its own block and one before the first delimit nothing
+        // between them, and are harmless
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
+        // Where the member starts, at its 'pub', and its keyword after that:
+        // each member's span is recorded once it is parsed (dclspan.h)
+        char *mstart = lex->tokp;
+        uint16_t pubflag = parsePub();
+        char *mkw = lex->tokp;
+        uint16_t staticflag = parseStatic();
+        if (staticflag && (lexIsDclStart() || lexIsToken(IdentToken))) {
+            // One copy shared by every value of the type: a variable in the
+            // type's namespace, reached as Type.name from outside and by its
+            // bare name from the type's own functions and methods. It is not
+            // a field, so it has no slot in the value and no receiver.
+            VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
+            var->flags |= FlagStatic | pubflag;
+            iNsTypeAddStatic((INsTypeNode*)strnode, var);
+            parseEndOfMember();
+            parseSpan(parse, &strnode->spans, (INode*)var, mstart, mkw, SpanDcl);
+            continue;
+        }
+        parseBadStatic(staticflag);
+        // 'extern' before a method or a type's function: defined elsewhere,
+        // so written without a body, as an include file declares what a
+        // package's object defines. Its symbol is the one the definition
+        // has, spelled after the module and the type. A trait's methods and
+        // a generic type's are copied into each implementer or instance,
+        // which is where their bodies are needed, so they have no one
+        // definition elsewhere to name
+        uint16_t externflag = 0;
+        // An enum's method whose receiver names the enum ('self: &Lamp') is one
+        // function over the whole enum, defined in one place, so an include file
+        // may declare it 'extern'. Which receiver is written is known only once
+        // the signature is parsed, where it is checked
+        int externenum = 0;
+        if (lexIsToken(ExternToken)) {
+            lexNextToken();
+            if (!lexIsToken(FnToken)) {
+                errorMsgLex(ErrorBadExtern,
+                    "Inside a type, 'extern' declares a method or function defined elsewhere, written 'extern fn'. A field is part of the value, and is declared as it is.");
+                parseSkipToNextStmt();
+                continue;
+            }
+            if (isenum)
+                externenum = 1;
+            else if (strnode->flags & TraitType)
+                errorMsgLex(ErrorBadExtern,
+                    "A trait's method is a requirement each implementer meets, or a default copied into each, so it is defined in no one place for 'extern' to name.");
+            else if (strnode->genericinfo)
+                errorMsgLex(ErrorBadExtern,
+                    "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
+            externflag = FlagExtern;
+        }
+        // 'async fn': an actor's behaviour, read as a method and noted as
+        // one (parseactor.c). Anywhere else, and 'async' alone, it is
+        // reported and the declaration passed over
+        int behaviour = 0;
+        if (lexIsToken(AsyncToken)) {
+            char where[300];
+            if (parse->dcltexts == NULL)
+                snprintf(where, sizeof(where), "the body of %s %s",
+                    isenum ? "enum" : (strnode->flags & TraitType) ? "trait" : "struct",
+                    &strnode->namesym->namestr);
+            behaviour = parseBehaviourWords(parse->dcltexts ? NULL : where);
+            if (!behaviour)
+                continue;
+        }
+        if (lexIsToken(FnToken) || behaviour) {
+            FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig | ParseMemberEnd : methflags);
+            if (behaviour)
+                nodesAdd(&parse->dcltexts->behaviours, (INode*)fn);
+            fn->flags |= externflag;
+            parseExternFnCheck(fn);
+            if (externenum && !parseNamesEnumReceiver(fn, strnode))
+                errorMsgNode((INode*)fn, ErrorBadExtern,
+                    "An enum's method is a requirement each variant meets, or a default copied into each, so it is defined in no one place for 'extern' to name, unless its receiver names the enum, as 'self: &%s'.",
+                    &strnode->namesym->namestr);
+            // A function whose name was missing is reported and not added:
+            // the type's namespace binds names, and it has none
+            if (fn->namesym) {
+                Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
+                if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
+                    fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
+                // A method an extension declares is given to every variant of
+                // its set, and most of those are copies of the base's, written
+                // against the base with no body of their own to meet it in. So a
+                // requirement declared here could never be met: it is declared on
+                // the base, which is where the variants that implement it are.
+                if (parseIsEnumExtension(isenum, strnode) && (fn->flags & FlagMethFld) && fn->value == NULL)
+                    errorMsgNode((INode*)fn, ErrorEnumExtends,
+                        "%s extends an enum, so the method %s needs a body: every variant of %s answers it, and the copies of its base's variants were written without it, with no body of their own to implement it in. Declare the requirement on the enum it extends.",
+                        &strnode->namesym->namestr, &fn->namesym->namestr, &strnode->namesym->namestr);
+                fn->flags |= pubflag;
+                iNsTypeAddFn((INsTypeNode*)strnode, fn);
+            }
+            parseSpan(parse, &strnode->spans, (INode*)fn, mstart, mkw, SpanDcl);
+        }
+        else if (lexIsToken(MacroToken)) {
+            // A macro is a member by the same rule as a function: it is a
+            // method when its first parameter is 'self', and the receiver
+            // stands in for that parameter when it is expanded
+            parseEnumExtensionMember(isenum, strnode, "a macro");
+            MacroDclNode *macro = parseMacro(parse, 1);
+            if (macro->namesym != anonName) {
+                Nodes *parms = macro->parms;
+                if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)
+                    macro->flags |= FlagMethFld;
+                macro->flags |= pubflag;
+                iNsTypeAddMacro((INsTypeNode*)strnode, macro);
+            }
+            parseSpan(parse, &strnode->spans, (INode*)macro, mstart, mkw, SpanDcl);
+        }
+        else if (lexIsToken(UseToken)) {
+            // A type body's 'use' folds in a SIBLING: another type that
+            // declared this type's base, whose methods therefore already
+            // take a receiver this type's values substitute for. Producer-side
+            // composition, never a consumer-side import: ordinary lookup
+            // inside a type comes from the enclosing module.
+            //
+            // It declares no name of its own, so there is nothing for 'pub'
+            // to expose; each folded name carries its target's visibility.
+            if (pubflag)
+                errorMsgLex(ErrorBadPub, "'pub' may not precede a 'use', which declares no name of its own");
+            // Only a struct enriches a concrete base, so only a struct has a
+            // base to share with a sibling. An enum before a trait, because
+            // an enum carries TraitType too: it is the closed abstraction
+            // over its own variants.
+            if (isenum)
+                errorMsgLex(ErrorBadFold, "An enum's variant set is its identity: it has no concrete base to share with a sibling.");
+            else if (strnode->flags & TraitType)
+                errorMsgLex(ErrorBadFold, "A trait is an abstraction: it has no concrete base to share with a sibling, and nothing of its own to fold through.");
+            FieldDclNode *use = parseUseSibling(parse);
+            if (strnode->siblings == NULL)
+                strnode->siblings = newNodes(4);
+            nodesAdd(&strnode->siblings, (INode*)use);
+            parseSpan(parse, &strnode->spans, (INode*)use, mstart, mkw, SpanMember);
+        }
+        else if (lexIsToken(MixinToken)) {
+            // 'mixin' is retired: what it took in is declared with 'is' on the
+            // declaration line, the type's, the enum's or the variant's, where
+            // every abstraction a type complies with is named in one list.
+            // Reported once, at the keyword, and the statement read through so
+            // that the body recovers. A parse diagnostic ends the compile before
+            // name resolution, so nothing is built for it.
+            errorMsgLex(ErrorMixin,
+                "'mixin' is retired: declare conformance with 'is' on the declaration line -- the type's, the enum's or the variant's -- as in 'struct Gauge is Meter'.");
+            lexNextToken();
+            parseType(parse);
+            if (parseIsFoldClause())
+                parseFoldClause(parse, FoldRecover);
+            parseEndOfStatement();
+        }
+        // 'type Cursor: Iterator[T];' in a trait: an associated type, a type
+        // its implementer chooses and says by the shape of its methods
+        // (generic.c, "Associated types"). 'type' is a contextual word, read
+        // only here and only before a name, so a field named 'type' stays legal
+        else if ((strnode->flags & TraitType) && !isenum && lexIsToken(IdentToken)
+            && lex->val.ident == typeWordName && lexPeekIsIdent()) {
+            parseAssocType(parse, strnode);
+            parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
+        }
+        // 'alias Cursor = ListIter[T];' in a type: a name for a type, in the
+        // type's namespace, which is how a type says an associated type of a
+        // trait it meets outright rather than by the shape of its methods
+        else if (lexIsToken(AliasToken) && !(strnode->flags & TraitType)) {
+            AliasDclNode *alias = parseAlias(parse);
+            if (alias) {
+                alias->flags |= pubflag;
+                nodelistAdd(&strnode->nodelist, (INode*)alias);
+                if (namespaceAdd(&strnode->namespace, alias->namesym, (INode*)alias) != NULL)
+                    errorMsgNode((INode*)alias, ErrorDupName,
+                        "Duplicate name %s: an alias shares its type's namespace with fields and methods.", &alias->namesym->namestr);
+            }
+            parseSpan(parse, &strnode->spans, (INode*)alias, mstart, mkw, SpanMember);
+        }
+        else if (lexIsDclStart() || lexIsToken(IdentToken) || parseMetaIsGenName()) {
+            int hadperm = lexIsDclStart();
+            INode *perm = parseDclPerm(mutPerm);
+            parseStorageAttr(0);
+            // A field of a '#each #f in #fields(T)' is named '#f' or '#name("get", #f)' (parsemeta.c)
+            int isgen = parseMetaIsGenName();
+            if (!isgen && !lexIsToken(IdentToken)) {
+                errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
+                parseSkipToNextStmt();
+                continue;
+            }
+            // Built while the lexer is still on the name, so that a
+            // diagnostic about this member points at the name rather than at
+            // whatever follows it
+            FieldDclNode *field = newFieldDclNode(isgen ? anonName : lex->val.ident, perm);
+            if (isgen) {
+                Name *genname = it->inloop ? parseMetaGenName(parse, &field->gen) : NULL;
+                if (!it->inloop)
+                    errorMsgLex(ErrorMetaGenName, "A generated name, '#f' or '#name(...)', names a member inside a '#each #f in #fields(T)' in a generic type's braces.");
+                if (genname == NULL) {
+                    parseSkipToNextStmt();
+                    continue;
+                }
+                field->namesym = genname;
+            }
+            else
+                lexNextToken();
+
+            // In an enum, a bare name is an empty struct variant -- which is
+            // what makes one construct serve both the payload-carrying form
+            // and the plain set of named symbols. What follows the name says
+            // which was written: a separator, a pinned tag value or the end of
+            // the body makes it a variant, so does a type in parentheses, 'Ok(i32)', which is a
+            // variant that holds that type itself, with no name for it and no
+            // field to reach it by, and anything else is a common field's
+            // type. A name and a type after a ':' is always a common field
+            // ('time: datetime;'), and so is one whose type is a tuple
+            // ('t: (A, B);').
+            //
+            // The variants are a comma-separated list, and any of them may
+            // carry a payload. The list is one declaration, so it ends as
+            // any does: with the ';', which the '}' closing the body stands
+            // in for on the last.
+            if (isenum && (lexIsToken(CommaToken) || lexIsToken(SemiToken) || lexIsToken(AssgnToken)
+                || lexIsToken(RCurlyToken) || (!hadperm && lexIsToken(LParenToken)))) {
+                uint16_t variantflags = pubflag | (strnode->flags & FlagPub);
+                StructNode *substruct = newStructNode(field->namesym);
+                inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
+                parseVariantItem(parse, strnode, lifeowner, substruct, variantflags, &it->priortag);
+                int listbroke = 0;
+                while (lexIsToken(CommaToken)) {
+                    lexNextToken();
+                    if (!lexIsToken(IdentToken)) {
+                        errorMsgLex(ErrorNoIdent, "Expected the name of the next variant");
+                        listbroke = 1;
+                        break;
+                    }
+                    // On the name, so this one needs no position copied
+                    StructNode *next = newStructNode(lex->val.ident);
+                    lexNextToken();
+                    parseVariantItem(parse, strnode, lifeowner, next, variantflags, &it->priortag);
+                }
+                // A list cut short by a comma with no name after it has been
+                // reported; what ends it is not reported a second time
+                if (listbroke) {
+                    if (lexIsToken(SemiToken))
+                        lexNextToken();
+                }
+                else
+                    parseEndOfMember();
+                parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
+                continue;
+            }
+
+            parseFieldDclBody(parse, field, lifeowner);
+            // A common field is part of every variant's layout, the copies of the
+            // base's included, and their methods were written against the
+            // base's: the fields they read sit where the base put them. The
+            // discriminant is one of those fields, and the base's.
+            if (parseIsEnumExtension(isenum, strnode)) {
+                if (field->vtype->tag == EnumTag)
+                    errorMsgNode((INode*)field, ErrorEnumExtends,
+                        "%s takes its base's discriminant, so where its tag is laid out was settled on the enum it extends.",
+                        &strnode->namesym->namestr);
+                else
+                    errorMsgNode((INode*)field, ErrorEnumExtends,
+                        "%s extends an enum, so it declares no common field: %s would change the layout of the copies of its base's variants, whose methods were written against the base's. Declare it on the enum it extends.",
+                        &strnode->namesym->namestr, &field->namesym->namestr);
+            }
+            field->index = it->fieldnbr++;
+            field->flags |= FlagMethFld | pubflag;
+            // Only a struct folds: a trait and an enum are abstractions over
+            // their implementers, with no organizing details of their own to
+            // fold through
+            if (field->fold && (strnode->flags & TraitType))
+                errorMsgNode(field->fold->at, ErrorBadFold, "Only a struct folds a field's members in. A trait and an enum have no organizing details of their own to fold through.");
+            // An enum's first 'tag'-typed field is its discriminant, written
+            // only to place it somewhere other than position 0, which is done
+            // for alignment. Marked here because a variant copies the enum's
+            // fields as soon as it is name resolved, ahead of the enum's type
+            // check; type check validates the mark and refuses a second one.
+            //
+            // Only an enum carries a discriminant at all: it is the tag that
+            // says which variant a value holds, and a struct, a trait and a
+            // variant each have nothing for one to distinguish.
+            if (field->vtype->tag == EnumTag) {
+                if (!isenum)
+                    errorMsgNode((INode*)field, ErrorInvType,
+                        "Only an enum carries a discriminant: there is nothing here for a tag to tell apart.");
+                else if (!it->hasEnumFld && strnode->basetrait == NULL)
+                    field->flags |= IsTagField;
+                it->hasEnumFld = 1;
+            }
+            structAddField(strnode, field);
+            parseEndOfMember();
+            parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
+        }
+        else if (lexIsToken(StructToken)) {
+            // A struct written inside an enum is one of its variants.
+            //
+            // Only an enum: a trait is the open abstraction, and its
+            // implementers are ordinary structs declared beside it that name
+            // it with 'is'. A closed set of variants is an enum, which
+            // is where the tag and the exhaustive match live.
+            if (isenum) {
+                strnode->flags |= HasTagField;
+
+                // A variant is as visible as its enum: a use that can name
+                // the enum can match on it. It may also be declared 'pub' itself.
+                StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub));
+                parseAddVariant(parse, strnode, substruct, &it->priortag);
+                parseSpan(parse, &strnode->spans, (INode*)substruct, mstart, mkw, SpanDcl);
+            }
+            else if (strnode->flags & TraitType) {
+                errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'is'. A closed set of variants is an 'enum'.");
+                parseStruct(parse, 0);
+            }
+            else {
+                errorMsgLex(ErrorNoIdent, "structs in structs not yet supported");
+                parseStruct(parse, 0);
+            }
+        }
+        else {
+            errorMsgLex(ErrorNoSemi, "Unknown struct statement.");
+            parseSkipToNextStmt();
+        }
+    }
+}
+
 // Parse a struct, a trait or an enum. They are one node, and what tells them
 // apart is in 'strflags': see the flag block in ir/inode.h.
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
-    uint16_t fieldnbr = 0;
-    StructNode *priortag = NULL;   // The variant the next unpinned one numbers on from
     int isenum = (strflags & EnumType) != 0;
 
     // Capture the kind of type, then get next token (name)
@@ -790,7 +1345,15 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // Handle attributes
+    int mustuse = 0;
+    int reflect = 0;
     while (1) {
+        if (lex->toktype == ReflectToken) {
+            // Reflection ('#fields') lists this type's private fields to code outside its module (fields.h)
+            reflect = 1;
+            lexNextToken();
+            continue;
+        }
         if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
             lexNextToken();
@@ -804,6 +1367,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             if (!isenum)
                 errorMsgLex(ErrorBadUnsized, "'@unsized' declines an enum's padding. Only an enum pads its variants.");
             strflags &= ~SameSize;
+            lexNextToken();
+        }
+        else if (lex->toktype == MustUseToken) {
+            // A statement that drops a value of this type is warned (discard.h)
+            mustuse = 1;
             lexNextToken();
         }
         else if (lex->toktype == CAttrToken) {
@@ -841,11 +1409,13 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;
+    strnode->mustuse = (uint8_t)mustuse;
+    strnode->reflect = (uint8_t)reflect;
     parse->typenode = (INsTypeNode *)strnode;
     if (named)
         lexNextToken();
 
-    uint16_t methflags = ParseMayName | ParseMayImpl;
+    uint16_t methflags = ParseMayName | ParseMayImpl | ParseMemberEnd;
     if (strnode->flags & TraitType)
         methflags |= ParseMaySig;
 
@@ -860,6 +1430,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         parse->tparms = tparms;
         parse->tparmsend = lex->prevend - 1;
+        if (parse->dcltexts && parse->dcltexts->tparms == NULL) {
+            parse->dcltexts->tparms = parse->tparms;
+            parse->dcltexts->tparmsend = parse->tparmsend;
+        }
         if (parms->used > 0 || strnode->lifeparms == NULL) {
             strnode->genericinfo = newGenericInfo();
             strnode->genericinfo->parms = parms;
@@ -883,8 +1457,13 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // tag's width, so a pinned value too large for it is refused rather than
     // silently widening the tag.
     INode *underlying = NULL;
-    if (isenum && lexIsToken(IdentToken))
-        underlying = parseTypeName(parse);
+    if (isenum && lexIsToken(ColonToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken))
+            underlying = parseTypeName(parse);
+        else
+            errorMsgLexAfter(ErrorNoType, "Expected a type after ':'");
+    }
 
     // 'is' asserts, in the type's own declaration, that it complies with one or
     // more abstractions. It is the only subtype relationship in Cone that is
@@ -925,6 +1504,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 continue;
             }
             int nth = 0;
+            // Where the list is written, for an actor (parseactor.c), which holds it apart
+            if (parse->dcltexts && parse->dcltexts->istext == NULL)
+                parse->dcltexts->istext = lex->tokp;
             do {
                 if (nth++ > 0)
                     lexNextToken();     // the comma
@@ -967,6 +1549,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 structAddField(strnode, isafld);
             } while (lexIsToken(CommaToken));
             isend = lex->prevend;
+            if (parse->dcltexts && parse->dcltexts->isend == NULL) {
+                parse->dcltexts->isend = isend;
+                parse->dcltexts->isnames = (uint32_t)nth;
+            }
             // 'is' takes no siblings to fold from: it names abstractions, and an
             // abstraction has no value to reach a folded name through. Delegation is
             // what a field's own 'use' clause is for.
@@ -982,7 +1568,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         // into 'extendsbase' -- the slot for whatever base an 'extends' names --
         // and never into 'basetrait', because 'basetrait' is what every
         // substitution walk follows and these two enums do not substitute for each
-        // other in either direction (doc/reference/refenum.html, compiler/c/doc/nodes/struct.md).
+        // other in either direction (doc/manual/guide-enums.html, compiler/c/doc/nodes/struct.md).
         if (isenum) {
             if (sawextends++)
                 errorMsgLex(ErrorExtends, "An enum extends one enum.");
@@ -1041,315 +1627,22 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // If block has been provided, process field or method definitions
-    int hasEnumFld = 0;
+    StructItems items;
+    items.strnode = strnode;
+    items.isenum = isenum;
+    items.lifeowner = lifeowner;
+    items.methflags = methflags;
+    items.fieldnbr = 0;
+    items.priortag = NULL;
+    items.hasEnumFld = 0;
+    items.inloop = 0;
     if (parseHasBlock()) {
         parseBlockStart();
-        while (!parseBlockEnd()) {
-            // Where the member starts, at its 'pub', and its keyword after that:
-            // each member's span is recorded once it is parsed (dclspan.h)
-            char *mstart = lex->tokp;
-            uint16_t pubflag = parsePub();
-            char *mkw = lex->tokp;
-            uint16_t staticflag = parseStatic();
-            if (staticflag && (lexIsToken(PermToken) || lexIsToken(IdentToken))) {
-                // One copy shared by every value of the type: a variable in the
-                // type's namespace, reached as Type.name from outside and by its
-                // bare name from the type's own functions and methods. It is not
-                // a field, so it has no slot in the value and no receiver.
-                VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
-                var->flags |= FlagStatic | pubflag;
-                iNsTypeAddStatic((INsTypeNode*)strnode, var);
-                parseEndOfStatement();
-                parseSpan(parse, &strnode->spans, (INode*)var, mstart, mkw, SpanDcl);
-                continue;
-            }
-            parseBadStatic(staticflag);
-            // 'extern' before a method or a type's function: defined elsewhere,
-            // so written without a body, as an include file declares what a
-            // package's object defines. Its symbol is the one the definition
-            // has, spelled after the module and the type. A trait's methods and
-            // a generic type's are copied into each implementer or instance,
-            // which is where their bodies are needed, so they have no one
-            // definition elsewhere to name
-            uint16_t externflag = 0;
-            // An enum's method whose receiver names the enum ('self &Lamp') is one
-            // function over the whole enum, defined in one place, so an include file
-            // may declare it 'extern'. Which receiver is written is known only once
-            // the signature is parsed, where it is checked
-            int externenum = 0;
-            if (lexIsToken(ExternToken)) {
-                lexNextToken();
-                if (!lexIsToken(FnToken)) {
-                    errorMsgLex(ErrorBadExtern,
-                        "Inside a type, 'extern' declares a method or function defined elsewhere, written 'extern fn'. A field is part of the value, and is declared as it is.");
-                    parseSkipToNextStmt();
-                    continue;
-                }
-                if (isenum)
-                    externenum = 1;
-                else if (strnode->flags & TraitType)
-                    errorMsgLex(ErrorBadExtern,
-                        "A trait's method is a requirement each implementer meets, or a default copied into each, so it is defined in no one place for 'extern' to name.");
-                else if (strnode->genericinfo)
-                    errorMsgLex(ErrorBadExtern,
-                        "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
-                externflag = FlagExtern;
-            }
-            // 'async do': an actor's behaviour, read as a method and noted as
-            // one (parseactor.c). Anywhere else, and either word alone, it is
-            // reported and the declaration passed over
-            int behaviour = 0;
-            if (lexIsToken(AsyncToken) || lexIsToken(DoToken)) {
-                char where[300];
-                if (parse->dcltexts == NULL)
-                    snprintf(where, sizeof(where), "the body of %s %s",
-                        isenum ? "enum" : (strnode->flags & TraitType) ? "trait" : "struct",
-                        &strnode->namesym->namestr);
-                behaviour = parseBehaviourWords(parse->dcltexts ? NULL : where);
-                if (!behaviour)
-                    continue;
-            }
-            if (lexIsToken(FnToken) || behaviour) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig : methflags);
-                if (behaviour)
-                    nodesAdd(&parse->dcltexts->behaviours, (INode*)fn);
-                fn->flags |= externflag;
-                parseExternFnCheck(fn);
-                if (externenum && !parseNamesEnumReceiver(fn, strnode))
-                    errorMsgNode((INode*)fn, ErrorBadExtern,
-                        "An enum's method is a requirement each variant meets, or a default copied into each, so it is defined in no one place for 'extern' to name, unless its receiver names the enum, as 'self &%s'.",
-                        &strnode->namesym->namestr);
-                // A function whose name was missing is reported and not added:
-                // the type's namespace binds names, and it has none
-                if (fn->namesym) {
-                    Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
-                    if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
-                        fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
-                    // A method an extension declares is given to every variant of
-                    // its set, and most of those are copies of the base's, written
-                    // against the base with no body of their own to meet it in. So a
-                    // requirement declared here could never be met: it is declared on
-                    // the base, which is where the variants that implement it are.
-                    if (parseIsEnumExtension(isenum, strnode) && (fn->flags & FlagMethFld) && fn->value == NULL)
-                        errorMsgNode((INode*)fn, ErrorEnumExtends,
-                            "%s extends an enum, so the method %s needs a body: every variant of %s answers it, and the copies of its base's variants were written without it, with no body of their own to implement it in. Declare the requirement on the enum it extends.",
-                            &strnode->namesym->namestr, &fn->namesym->namestr, &strnode->namesym->namestr);
-                    fn->flags |= pubflag;
-                    iNsTypeAddFn((INsTypeNode*)strnode, fn);
-                }
-                parseSpan(parse, &strnode->spans, (INode*)fn, mstart, mkw, SpanDcl);
-            }
-            else if (lexIsToken(MacroToken)) {
-                // A macro is a member by the same rule as a function: it is a
-                // method when its first parameter is 'self', and the receiver
-                // stands in for that parameter when it is expanded
-                parseEnumExtensionMember(isenum, strnode, "a macro");
-                MacroDclNode *macro = parseMacro(parse);
-                if (macro->namesym != anonName) {
-                    Nodes *parms = macro->parms;
-                    if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)
-                        macro->flags |= FlagMethFld;
-                    macro->flags |= pubflag;
-                    iNsTypeAddMacro((INsTypeNode*)strnode, macro);
-                }
-                parseSpan(parse, &strnode->spans, (INode*)macro, mstart, mkw, SpanDcl);
-            }
-            else if (lexIsToken(UseToken)) {
-                // A type body's 'use' folds in a SIBLING: another type that
-                // declared this type's base, whose methods therefore already
-                // take a receiver this type's values substitute for. Producer-side
-                // composition, never a consumer-side import: ordinary lookup
-                // inside a type comes from the enclosing module.
-                //
-                // It declares no name of its own, so there is nothing for 'pub'
-                // to expose; each folded name carries its target's visibility.
-                if (pubflag)
-                    errorMsgLex(ErrorBadPub, "'pub' may not precede a 'use', which declares no name of its own");
-                // Only a struct enriches a concrete base, so only a struct has a
-                // base to share with a sibling. An enum before a trait, because
-                // an enum carries TraitType too: it is the closed abstraction
-                // over its own variants.
-                if (isenum)
-                    errorMsgLex(ErrorBadFold, "An enum's variant set is its identity: it has no concrete base to share with a sibling.");
-                else if (strnode->flags & TraitType)
-                    errorMsgLex(ErrorBadFold, "A trait is an abstraction: it has no concrete base to share with a sibling, and nothing of its own to fold through.");
-                FieldDclNode *use = parseUseSibling(parse);
-                if (strnode->siblings == NULL)
-                    strnode->siblings = newNodes(4);
-                nodesAdd(&strnode->siblings, (INode*)use);
-                parseSpan(parse, &strnode->spans, (INode*)use, mstart, mkw, SpanMember);
-            }
-            else if (lexIsToken(MixinToken)) {
-                // 'mixin' is retired: what it took in is declared with 'is' on the
-                // declaration line, the type's, the enum's or the variant's, where
-                // every abstraction a type complies with is named in one list.
-                // Reported once, at the keyword, and the statement read through so
-                // that the body recovers. A parse diagnostic ends the compile before
-                // name resolution, so nothing is built for it.
-                errorMsgLex(ErrorMixin,
-                    "'mixin' is retired: declare conformance with 'is' on the declaration line -- the type's, the enum's or the variant's -- as in 'struct Gauge is Meter'.");
-                lexNextToken();
-                parseType(parse);
-                if (parseIsFoldClause())
-                    parseFoldClause(parse, FoldRecover);
-                parseEndOfStatement();
-            }
-            else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                int hadperm = lexIsToken(PermToken);
-                INode *perm = parseDclPerm(mutPerm);
-                parseStorageAttr(0);
-                if (!lexIsToken(IdentToken)) {
-                    errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
-                    parseSkipToNextStmt();
-                    continue;
-                }
-                // Built while the lexer is still on the name, so that a
-                // diagnostic about this member points at the name rather than at
-                // whatever follows it
-                FieldDclNode *field = newFieldDclNode(lex->val.ident, perm);
-                lexNextToken();
-
-                // In an enum, a bare name is an empty struct variant -- which is
-                // what makes one construct serve both the payload-carrying form
-                // and the plain set of named symbols. What follows the name says
-                // which was written: a separator or a pinned tag value makes it a
-                // variant, and anything else is a common field's type.
-                if (isenum && (lexIsToken(CommaToken) || lexIsToken(SemiToken) || lexIsToken(AssgnToken))) {
-                    strnode->flags |= HasTagField;
-                    uint16_t variantflags = pubflag | (strnode->flags & FlagPub);
-                    StructNode *substruct = newStructNode(field->namesym);
-                    inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
-                    substruct->tag = StructTag;
-                    substruct->flags |= variantflags;
-                    parseVariantTagPin(substruct);
-                    parseAddVariant(parse, strnode, substruct, &priortag);
-                    while (lexIsToken(CommaToken)) {
-                        lexNextToken();
-                        if (!lexIsToken(IdentToken)) {
-                            errorMsgLex(ErrorNoIdent, "Expected the name of the next variant");
-                            break;
-                        }
-                        // On the name, so this one needs no position copied
-                        StructNode *next = newStructNode(lex->val.ident);
-                        next->tag = StructTag;
-                        next->flags |= variantflags;
-                        lexNextToken();
-                        parseVariantTagPin(next);
-                        parseAddVariant(parse, strnode, next, &priortag);
-                    }
-                    parseEndOfStatement();
-                    parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
-                    continue;
-                }
-
-                // In an enum, a name and a type in parentheses, 'Ok(i32);', is a
-                // variant declared as a type: a variant that holds that type
-                // itself, with no name for it and no field to reach it by. A name
-                // and a type without parentheses is always a common field
-                // ('time datetime;'), and so is one whose parentheses are a tuple
-                // type ('t (A, B);').
-                if (isenum && !hadperm && lexIsToken(LParenToken) && !parseParenHoldsComma()) {
-                    lexNextToken();
-                    strnode->flags |= HasTagField;
-                    StructNode *substruct = newStructNode(field->namesym);
-                    inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
-                    substruct->tag = StructTag;
-                    substruct->flags |= pubflag | (strnode->flags & FlagPub);
-                    // The contents, held in the variant's one field. The field is
-                    // built while the lexer is on the type, so a diagnostic about
-                    // it points there.
-                    FieldDclNode *contents = newFieldDclNode(payloadName, (INode*)mutPerm);
-                    contents->index = 0;
-                    contents->flags |= FlagMethFld | FlagPub;
-                    StructNode *svlifestruct = parse->lifestruct;
-                    parse->lifestruct = lifeowner;
-                    contents->vtype = parseTypeReq(parse, "'(' of a variant");
-                    parse->lifestruct = svlifestruct;
-                    parseCloseTok(RParenToken);
-                    structAddField(substruct, contents);
-                    parseVariantTagPin(substruct);
-                    parseAddVariant(parse, strnode, substruct, &priortag);
-                    parseEndOfStatement();
-                    parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
-                    continue;
-                }
-
-                parseFieldDclBody(parse, field, lifeowner);
-                // A common field is part of every variant's layout, the copies of the
-                // base's included, and their methods were written against the
-                // base's: the fields they read sit where the base put them. The
-                // discriminant is one of those fields, and the base's.
-                if (parseIsEnumExtension(isenum, strnode)) {
-                    if (field->vtype->tag == EnumTag)
-                        errorMsgNode((INode*)field, ErrorEnumExtends,
-                            "%s takes its base's discriminant, so where its tag is laid out was settled on the enum it extends.",
-                            &strnode->namesym->namestr);
-                    else
-                        errorMsgNode((INode*)field, ErrorEnumExtends,
-                            "%s extends an enum, so it declares no common field: %s would change the layout of the copies of its base's variants, whose methods were written against the base's. Declare it on the enum it extends.",
-                            &strnode->namesym->namestr, &field->namesym->namestr);
-                }
-                field->index = fieldnbr++;
-                field->flags |= FlagMethFld | pubflag;
-                // Only a struct folds: a trait and an enum are abstractions over
-                // their implementers, with no organizing details of their own to
-                // fold through
-                if (field->fold && (strnode->flags & TraitType))
-                    errorMsgNode(field->fold->at, ErrorBadFold, "Only a struct folds a field's members in. A trait and an enum have no organizing details of their own to fold through.");
-                // An enum's first 'tag'-typed field is its discriminant, written
-                // only to place it somewhere other than position 0, which is done
-                // for alignment. Marked here because a variant copies the enum's
-                // fields as soon as it is name resolved, ahead of the enum's type
-                // check; type check validates the mark and refuses a second one.
-                //
-                // Only an enum carries a discriminant at all: it is the tag that
-                // says which variant a value holds, and a struct, a trait and a
-                // variant each have nothing for one to distinguish.
-                if (field->vtype->tag == EnumTag) {
-                    if (!isenum)
-                        errorMsgNode((INode*)field, ErrorInvType,
-                            "Only an enum carries a discriminant: there is nothing here for a tag to tell apart.");
-                    else if (!hasEnumFld && strnode->basetrait == NULL)
-                        field->flags |= IsTagField;
-                    hasEnumFld = 1;
-                }
-                structAddField(strnode, field);
-                parseEndOfStatement();
-                parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
-            }
-            else if (lexIsToken(StructToken)) {
-                // A struct written inside an enum is one of its variants.
-                //
-                // Only an enum: a trait is the open abstraction, and its
-                // implementers are ordinary structs declared beside it that name
-                // it with 'is'. A closed set of variants is an enum, which
-                // is where the tag and the exhaustive match live.
-                if (isenum) {
-                    strnode->flags |= HasTagField;
-
-                    // A variant is as visible as its enum: a use that can name
-                    // the enum can match on it. It may also be declared 'pub' itself.
-                    StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub));
-                    parseAddVariant(parse, strnode, substruct, &priortag);
-                    parseSpan(parse, &strnode->spans, (INode*)substruct, mstart, mkw, SpanDcl);
-                }
-                else if (strnode->flags & TraitType) {
-                    errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'is'. A closed set of variants is an 'enum'.");
-                    parseStruct(parse, 0);
-                }
-                else {
-                    errorMsgLex(ErrorNoIdent, "structs in structs not yet supported");
-                    parseStruct(parse, 0);
-                }
-            }
-            else {
-                errorMsgLex(ErrorNoSemi, "Unknown struct statement.");
-                parseSkipToNextStmt();
-            }
-        }
+        parseStructItems(parse, &items);
     }
     else
         parseEndOfStatement();
+    int hasEnumFld = items.hasEnumFld;
 
     // An enum's identity is its variant set, so an enum with no variants names
     // nothing a value of it could be and nothing a match could account for. An
@@ -1375,7 +1668,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // each variant a value. A trait is open, so its implementers may be extended
     // by another module and no value could be unique: there is nothing to
     // synthesize, and dispatch and narrowing go through a virtual reference
-    // instead (doc/reference/refvirtref.html). One is inserted here unless the enum
+    // instead (doc/manual/mod-substitution.html#virtref). One is inserted here unless the enum
     // placed its own, which the walk above has already marked.
     //
     // An extension has no discriminant of its own to place or synthesize: its
@@ -1422,7 +1715,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 }
 
 // A method's parameter written without a type is Self, and so is what a
-// reference written without its pointee ('self &') points to. The inferred
+// reference written without its pointee ('self: &') points to. The inferred
 // name is placed where the lexer is, or, given 'at', there.
 static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
     if (!parse->typenode)
@@ -1443,7 +1736,7 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
 static int parseInFnBound = 0;
 
 // Parse a function signature written bare, with the lexer on its 'fn': what a
-// generic bound or a 'where' clause says a type parameter has, 'F fn(a &T, b &T) i32'.
+// generic bound or a 'where' clause says a type parameter has, 'F: fn(a: &T, b: &T) i32'.
 // It is read as the type after '&fn' is, a signature with no body, whose
 // parameters may be named or only typed. Inside the brackets or the clause a
 // comma after its return type ends the signature, as in a parameter list, and a
@@ -1481,7 +1774,7 @@ INode *parseFnBound(ParseState *parse) {
 // ('geomath.Vec3', 'List[i32]'). A lone name ('&fn(Vec3) f32') reads as a name
 // until parseFnSigSettle knows whether a body follows.
 //
-// Several return types are separated by commas, 'fn ceil(x i32) i32, i32',
+// Several return types are separated by commas, 'fn ceil(x: i32) i32, i32',
 // only where the signature is not inside a list (ParseState.inlist). Inside
 // one, a parameter list above all, the comma after a return type continues the
 // list: '(f &fn(u32) u32, x u32)' is two parameters.
@@ -1523,9 +1816,9 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
         parse->inlist = 1;
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
+        while (lexIsDclStart() || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
             VarDclNode *parm;
-            if (reftype && !lexIsToken(PermToken) && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
+            if (reftype && !lexIsDclStart() && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
                 // An unnamed parameter: its type alone
                 parm = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
                 parm->vtype = parseType(parse);
@@ -1573,21 +1866,23 @@ INode *parseFnSig(ParseState *parse, int reftype) {
         fnsig->rettype = parseType(parse);
         gensig.ytypeend = lex->prevend;
         if (fnsig->rettype == unknownType) {
-            errorMsgLex(ErrorInvType, "Expected the type a generator yields after 'yields', as in 'fn walk(t &Tree) yields &Node'.");
+            errorMsgLex(ErrorInvType, "Expected the type a generator yields after 'yields', as in 'fn walk(t: &Tree) yields &Node'.");
             fnsig->rettype = (INode*)newVoidNode();
             inodeLexCopy(fnsig->rettype, (INode*)fnsig);
         }
         else
             isgen = 1;
     }
+    // (a generator's 'yields' type is no return type: the generator's body ends in a ';')
     // A '+' and a marker's name after the parameters of a function-reference type,
-    // '&<fn(x i32) + ShapeKeeping', joins the marker to the reference (parseRefBounds);
+    // '&<fn(x: i32) + ShapeKeeping', joins the marker to the reference (parseRefBounds);
     // it does not begin a return type
     else if (!(atbound && lexIsToken(PlusToken))
             && !(reftype && lexIsToken(PlusToken)
                 && (lexNextIsWord("Sendable") || lexNextIsWord("Shareable") || lexNextIsWord("ShapeKeeping")))
             && (fnsig->rettype = parseType(parse)) != unknownType) {
-        // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
+        fnsig->retwritten = 1;
+        // Handle multiple return types: 'fn ceil(x: i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
         // the list instead, so a signature there returning several values
         // parenthesises them: 'apply(f &fn(u32) (u32, u32), x u32)'.
@@ -1667,7 +1962,7 @@ AliasDclNode *parseAlias(ParseState *parse) {
     lexNextToken();
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
-        // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'So[Profile]' name
+        // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'Uni[Profile]' name
         if (lexIsToken(FnToken))
             newnode->target = parseFnBound(parse);
         else
@@ -1699,6 +1994,7 @@ INode* parseType(ParseState *parse) {
 int parseIsTypeStart() {
     switch (lex->toktype) {
     case IdentToken:    // type identifier (or generic)
+    case MetaVarToken:  // a meta variable standing for a type ('#each #T in (i32, f64)')
     case VoidToken:     // void
     case QuesToken:     // Optional type sugar
     case LBracketToken: // Array

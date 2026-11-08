@@ -1,0 +1,44 @@
+// An actor trait declared in one module, an actor conforming to it in another,
+// and a third in the module that declares the trait. The trait's handle, its
+// behaviours and its conversion are the declaring module's, 'pub' as the trait
+// is; the actor that conforms never names the trait. Main makes a Doubler of
+// its own, and a Counter of sub's, converts both where a 'sub.ChunkSink' is
+// wanted, and has sub's 'feed' send through the handle and sub's 'total'
+// await through it.
+
+mod concurrency_actor_trait_module;
+
+import stdio use *;
+import actors;
+
+actor Doubler {
+  sum: u64;
+
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+
+  pub async fn accept(self, c: sub.Chunk) {sum = sum + c.n * 2u64;}
+
+  pub async fn total(self) u64 {sum}
+}
+
+actor Printer {
+  pub async fn show(self, first: sub.ChunkSink, second: sub.ChunkSink) {
+    let a = await first.total();
+    printStr("total "); printUInt(a); printStr("\n");
+    let b = await second.total();
+    printStr("total "); printUInt(b); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let d = Doubler();
+    let c = sub.Counter();
+    sub.feed(d, 4u64);
+    sub.feed(c, 4u64);
+    let p = Printer();
+    p.show(d, c);
+  }
+  finalAll();
+}

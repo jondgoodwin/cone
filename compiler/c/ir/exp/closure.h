@@ -1,6 +1,6 @@
 /** Handling for closure literals
  *
- * A closure is written 'fn (u f32) [ribs, mut n = 0] f32 { ... }', or in the
+ * A closure is written 'fn (u: f32) [ribs, var n = 0] f32 { ... }', or in the
  * short form 'x => x * 2'. Type check makes it a value of a struct the compiler
  * writes (the "hidden struct"): the state list's entries and the variables the
  * body borrows are its fields, and its one method, '()', is the body.
@@ -47,11 +47,15 @@ typedef struct ClosureInfo {
     uint8_t expanded;           // Written in a body an importer expands (an inline function, a generic's instance): every object that makes the closure defines it
     ClosureNode *lit;           // The literal, for messages
     Name *method;               // The name of its one method: '()', or the trait's method it was given to fill
-    int errbase;                // The error count when its struct began to be checked: a failure since is its body's, reported there
+    int errbase;                // The error count (errorsOwn) when its struct began to be checked: a failure since is its body's, reported there
+    uint32_t serial;            // The number in its struct's name, 'closure#N': which was made before which
 } ClosureInfo;
 
 ClosureNode *newClosureNode();
 INode *cloneClosureNode(CloneState *cstate, ClosureNode *node);
+// How many closure literals have been cloned: a caller that clones an expression to
+// check it as a trial asks whether any was inside it
+extern uint32_t closuresCloned;
 void closurePrint(ClosureNode *node);
 
 // Name resolution of a literal, and of a name used inside one
@@ -64,6 +68,18 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
 // The closure a hidden struct, or one of its members, belongs to; else NULL
 ClosureInfo *closureOfStruct(INode *node);
 ClosureInfo *closureOfDcl(INode *dcl);
+
+// Is this declaration the work of a trial now open (error.h, "A trial"), so that
+// what checking it reports is the trial's to discard? Else it is the program's.
+int closureTrialOwns(INode *dcl);
+// Does any of these type arguments name a closure's hidden struct made by a trial
+// now open? An instance made with one is the trial's (genericTrialPurge)
+int closureTrialArgs(Nodes *args);
+// Does this type name a closure's hidden struct a trial now open made, or an
+// instance made with one? A type the trial alone has, which it drops
+int closureTrialType(INode *type);
+// The number of the last hidden struct made: what a trial opens with (errorTrialBegin)
+uint32_t closureSerialNow(void);
 
 // A name use inside a closure's '()' that names a variable the closure holds:
 // rewritten to the access of its field. Answers whether it was.
@@ -80,6 +96,7 @@ INode *closureSelfParm(FnDclNode *fn);
 
 // Reading the return type off a closure's paths (fndcl.c, return.c)
 void closureImplicitReturn(FnDclNode *fn);
+void closureContextTail(FnDclNode *fn);
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode);
 
 // The signature a closure given as an argument is to fit, set by the call that
@@ -99,7 +116,7 @@ extern StructNode *closureTrait;
 // exactly one required method and no field ('*count' says how many it has)
 FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count);
 
-// Whether a closure's one method takes 'self &mut'
+// Whether a closure's one method takes 'self: &mut'
 int closureMethodMutates(ClosureInfo *info);
 
 // Set while the return type of a closure is being read off its paths, so that

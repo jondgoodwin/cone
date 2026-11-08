@@ -1,0 +1,88 @@
+// What a generic actor's behaviours may do that a plain actor's may: await
+// another actor (the instance's behaviour is split at the 'await', and parks
+// in the pending table the instance's state carries), return the awaited value
+// (a T) to a third actor that awaits it in turn, send to itself ('self.m()'),
+// and be made at two instances side by side.
+//
+// - Counter[T] holds a T and answers it (as in concurrency_actor_generic).
+// - Relay[T] is given a Counter[T], sends itself two 'kick' messages, awaits
+//   the counter's value and returns it.
+// - Two relays, at u64 and at f64, each over a counter of its own type.
+//
+// Worked out by hand. The u64 counter starts at 40 and is sent 2: 42. The f64
+// counter starts at 1.5 and is sent 0.25 twice: 2.0. Each relay is asked once, so
+// pulls 42 and 2 and counts 2 kicks. The kicks are sent before the pull's
+// reply, and the reporter asks 'kicked' only after that reply, so they are in
+// the relay's mailbox ahead of it: both are counted when it answers.
+
+mod concurrency_actor_generic_await;
+
+import stdio use *;
+import actors;
+
+actor Counter[T] {
+  total: T;
+
+  fn init(self: &new, start: T) {
+    *self = Self(total: start);
+  }
+
+  pub async fn add(self, x: T) {
+    total = total + x;
+  }
+
+  pub async fn get(self) T {
+    total
+  }
+}
+
+actor Relay[T] {
+  kicks: u64;
+
+  fn init(self: &new) {
+    *self = Self(kicks: 0u64);
+  }
+
+  pub async fn pull(self, from: Counter[T]) T {
+    self.kick();
+    self.kick();
+    let v = await from.get();
+    v
+  }
+
+  pub async fn kick(self) {
+    kicks = kicks + 1u64;
+  }
+
+  pub async fn kicked(self) u64 {
+    kicks
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, uc: Counter[u64], ur: Relay[u64], fc: Counter[f64], fr: Relay[f64]) {
+    let u = await ur.pull(uc);
+    let f = await fr.pull(fc);
+    printStr("u64 relay pulled "); printUInt(u); printStr("\n");
+    printStr("f64 relay pulled "); printFloat(f); printStr("\n");
+    let uk = await ur.kicked();
+    let fk = await fr.kicked();
+    printStr("kicks "); printUInt(uk); printStr(" and "); printUInt(fk); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let uc = Counter[u64](40u64);
+    let fc = Counter[f64](1.5);
+    uc.add(2u64);
+    fc.add(0.25);
+    fc.add(0.25);
+    let ur = Relay[u64]();
+    let fr = Relay[f64]();
+    let reporter = Reporter();
+    reporter.report(uc, ur, fc, fr);
+  }
+  finalAll();
+}

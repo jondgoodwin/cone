@@ -1,0 +1,567 @@
+// ======== Layer 3, stages between actors: chunks that move under credit ========
+//
+// Between two actors a stream is a run of owned chunks (an IoBuf each), handed
+// on by a call and given back by another. Two actor traits say what a stage
+// is to its neighbours; neither names the other's actor, so any actor that has
+// the behaviours is a stage (the manual's Actor traits).
+//
+//   ChunkSink    what takes chunks:  accept(c)   a chunk, moved in
+//                                    end(how)    the stream is over: Ending
+//                                    attach(up)  who to give buffers back to
+//   ChunkSource  what gets them back: giveBack(b) an emptied buffer
+//                                    stop(why)   the consumer wants no more (the rules: beside the trait)
+//
+// The end, and an error, travel FORWARD as the call 'end(how)', after the last
+// chunk and from the same sender, so they arrive in order. They are never a
+// cancel. An 'Ending' is Finished or Failed(AnyError): the AnyError is Sendable,
+// so it crosses between actors, and a transform's 'failure()' makes it from the
+// codec's own typed error (DeflateError, ZstdError) with nothing lost: its
+// message, its chain of causes, and 'holds[E]()' to take the typed error out.
+//
+// THE CREDIT IS A WINDOW OF BYTES, THE MEMORY A POOL (chunkwindow.cone, chunkpool.cone). A
+// stage owns a ChunkWindow, its stream's window (256 KiB by default), and sends only
+// while the chunks it has out stay within it; the buffers come from a ChunkPool, shared
+// by the stages of a pipeline or the streams of a connection and bounded by a cap,
+// taken only when there is data and sized to it. The consumer gives the same
+// buffer back when it has FINISHED with the chunk: 'giveBack' IS the
+// acknowledgement "chunk n is done". A stage made without a pool has one of its
+// own. A pipeline is wired from the sink end back: each stage
+// is made with the stage after it, and tells that stage who it is with
+// 'attach(selfactor)' in its 'init', so the consumer can give buffers back.
+// The handles that point upstream are dropped at the end of the stream (when
+// the stage has seen the upstream 'end' and returned every buffer it holds), so
+// the actors do not keep each other alive.
+//
+// THE ORDER OF A STREAM (chunkinbox.cone). A stage that never awaits handles one
+// chunk after another by the nature of an actor, and needs nothing more. A sink
+// whose 'accept' awaits (a file write) is parked there while the actor runs its
+// next message, which could be chunk n+1 or the 'end'; its stream keeps order with
+// a ChunkInbox, the receiving half of the link, so that one stream's chunks are handled
+// in the order sent and its 'end' after the last of them, and so that a stalled
+// stream holds up no other. The promises each side makes, for a stream:
+//
+//   P1  the producer sends the chunks in order, each only while its window and the pool have room;
+//   P2  it sends exactly one 'end' per stream, after its last chunk (Finished, or Failed(err)), and
+//       nothing after it. It need not wait for the buffers to come back first: 'end' queues behind
+//       the chunks at the sink;
+//   S1  the sink handles one stream's chunks in the order sent, chunk n+1 starting only once n is
+//       finished (its effect done, a write completed, say);
+//   S2  it gives each buffer back only once finished with it;
+//   S3  it handles 'end' only after every chunk before it, then passes it on or settles its result
+//       (DigestSink's digest);
+//   S4  it keeps each stream's queue and credit apart, so a slow or stalled stream never holds up
+//       another sharing the stage, a connection or a pool.
+//
+// FAILURE. A sink that fails on chunk n gives back n and every queued buffer and
+// sends 'end(Failed(err))' on; chunks that still arrive are given back unhandled.
+// A producer that fails sends 'end(Failed(err))' in order after what it already
+// sent; the sink handles those chunks, then fails. ABANDONMENT: a stage that quits
+// stops sending and gives back what it holds; a ChunkInbox that is dropped frees what it
+// queued; a ChunkWindow that is dropped returns its share of the pool.
+//
+// CANCELLATION. A stage works in the cancel group of the message it handles: a
+// chunk and an 'end' come in the group the sender works in (the source's), a buffer
+// given back in the consumer's. So a pipeline is cancelled from the consumer back
+// by building it so: the consumer has a group Gc, the source runs in a child of Gc
+// (actors.withGroup(&gc.child(), ...) around its 'start'), and the consumer quits
+// by cancelling Gc, from a behaviour or from outside. The next stage up sees a
+// cancelled group on the next buffer given back (or chunk arriving) and stops: it
+// ends downstream with Failed (once; the hash stage also answers its digest sink
+// with an error), gives its input back, and drops its upstream handle, so the
+// actors do not keep each other alive even if the source never sends an 'end'. The
+// stage above that sees the chunks it gave back, in the same group, and does the
+// same, to the source. Buffers granted in flight still come back to their links;
+// a chunk that arrives after the stage has stopped is freed. A stage in no group
+// never sees a cancel.
+//
+//   // sink end first; each stage is made with its downstream
+//   let count = Counter();
+//   let hash  = HashStage[cryptohash.Sha256](count, cryptohash.Sha256.make(), whoGetsTheDigest);
+//   let inf   = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+//   source.start(inf);
+//
+// TWO ACTORS, each generic. 'TransformStage[T]' holds any Transform with its ChunkWindow and
+// does the work of a stage that makes new chunks (inflate, deflate, zstd): feed
+// what arrives, pull what comes out into the link's buffers, and hold the input
+// chunk until all its output is out. A pass-through such as a hash stage is
+// 'HashStage[D]' over a Digester: the chunk goes on as it is, unmoved and
+// uncopied, and comes back through the stage to the source. (Before generic
+// actors each codec was an actor of its own over a 'StageCore[T]' or a
+// 'HashCore[D]' that did the work; the actor is now the work.)
+//
+// 'sink <- chunk' is 'sink.accept(chunk)': the behaviour declares '<-' as its overload name.
+
+// How a stream ended
+pub enum Ending {
+  // Every chunk has been sent
+  Finished;
+  // The stream could not be completed; the error says why
+  Failed(AnyError);
+}
+
+// A stage that takes chunks: the chunk is moved in, the end follows the last
+// chunk, and 'attach' comes before the first.
+//
+// WHO HOLDS WHOM. A sink may keep the 'up' it was attached with: that costs
+// nothing, because whoever sends a sink its 'end' lets go of the sink in the
+// same step (a stage sets its 'down' to None, a forwarder its target), so the
+// source no longer holds the sink and the pair is not a reference cycle. A
+// sender therefore sends nothing after 'end' and keeps no handle to the sink
+// past it. A sink that keeps 'up' need not drop it on 'end'.
+pub actor trait ChunkSink {
+  // A chunk of the stream. Give it back to the source when its bytes are used.
+  pub async fn accept overload `<-`(self, c: IoBuf);
+  // The stream is over, one way or the other. Nothing is sent after.
+  pub async fn end(self, how: Ending);
+  // The stage that sends here, to give buffers back to; sent once, before the
+  // first chunk.
+  //
+  // WHY 'attach' CANNOT BE OVERTAKEN by the first 'accept'. A source sends
+  // 'attach' in its 'init', and 'accept' only from a behaviour that runs after
+  // the init returned (a 'start' message, or a 'giveBack'), so the 'accept' is
+  // caused by a send that came after the 'attach' in the creating thread. The
+  // mailbox gives the consumer its messages in the order the sends claimed their
+  // positions: a send claims with one sequentially consistent atomic add on the
+  // mailbox's tail ('claim', packages/actors/src/actors.cone, THE MAILBOX) before
+  // it returns, the consumer takes positions in order, and a message is never
+  // overtaken by one it caused (the package header, MESSAGES). That holds across
+  // the ring's segments and for senders on different workers
+  // (actors/tests/ringfanin.cone checks each sender's order under fan-in). The
+  // downstream stage therefore always knows its source before its first chunk.
+  pub async fn attach(self, up: ChunkSource);
+}
+
+// A stage that lends buffers and takes them back
+pub actor trait ChunkSource {
+  // An emptied buffer back from its consumer: one more chunk may be sent
+  pub async fn giveBack(self, b: IoBuf);
+  // The consumer wants no more, or has failed: end the work that feeds this
+  // stream, at once. 'why' is what the source's one 'end' carries, unchanged:
+  // Finished means "I have what I need", Failed(e) "I failed, and why".
+  // The rules, which every implementer follows:
+  //  - The first terminal event a source sees decides. A stop after the source
+  //    has sent its 'end', or a second stop, does nothing.
+  //  - The source still sends its one 'end', carrying the stop's reason, so a
+  //    sink sees exactly one 'end' whichever of 'stop' and a failure crossed.
+  //  - Buffers already lent still come back through 'giveBack', and the source
+  //    keeps crediting them after a stop. A sink that has stopped gives back
+  //    every chunk that still arrives.
+  //  - A stage in the middle forwards the stop upstream with the same reason
+  //    (an AnyError cannot be copied: the upstream gets the original, the
+  //    stage's own downstream the same kind with a failure as text) and ends
+  //    its own downstream once. It keeps its upstream handle until the upstream's 'end'
+  //    comes, so the buffers still in flight have somewhere to go back to.
+  pub async fn stop(self, why: Ending);
+}
+
+// Whoever wants the digest a hash stage worked out, 'Out' being the digest's
+// type (Array[u8, 32] for sha256). It gets exactly one answer, when the stream
+// ends: Ok with the digest if the stream finished, Err with the failure if it
+// did not (the error that ended it, as text: see HashStage.end). So a waiter is
+// never left waiting for a digest that will not come.
+pub actor trait DigestSink[Out] {
+  pub async fn digest(self, r: Result[Out, AnyError]);
+}
+
+// A second Ending of the same kind (an AnyError cannot be copied): a failure's message
+// and causes become text, the typed error is not kept.
+fn reasonCopy(why: &Ending) Ending {
+  match why {
+    case is Finished { Ending.Finished }
+    case let &Failed(e) { Ending.Failed(textCopy(e)) }
+  }
+}
+
+// What a digest sink is told when a stop ends the stream before its end
+fn reasonError(why: &Ending) AnyError {
+  match why {
+    case is Finished { AnyError.msg("streams: stopped before the end") }
+    case let &Failed(e) { textCopy(e) }
+  }
+}
+
+// An error's message and causes as an error of its own, in text
+fn textCopy(e: &AnyError) AnyError {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  AnyError.msg(text.view())
+}
+
+// Gives a chunk back to its source, if the source is still held
+fn handBack(up: &Option[ChunkSource], b: IoBuf) {
+  match up {
+    case let &Some(u) { u.giveBack(b); }
+    case is None {}
+  }
+}
+
+// ---- a stage that transforms: any Transform ----
+
+// A stage over a transform 't', sending its output to 'down' in chunks of up to
+// 'linkBytes', its stream's window 'linkWindow' bytes and a pool of its own. The
+// transform comes in whole ('make' it first), and is the stage's from then on:
+//
+//   TransformStage[deflate.Inflater](down, deflate.Inflater.make(deflate.Format.Gzip))
+//   TransformStage[deflate.Deflater](down, deflate.Deflater.make(deflate.Format.Gzip, 6i32))
+//   TransformStage[zstd.Decompressor](down, zstd.Decompressor.make())
+//   TransformStage[zstd.Compressor](down, zstd.Compressor.make(3i32))
+//
+// A stage of a pipeline or connection that shares a pool, and has a window of its
+// own choosing, is made with the pool: TransformStage[T](down, t, pool, window).
+pub actor TransformStage[T: Transform] is ChunkSink, ChunkSource {
+  t: T;
+  link: ChunkWindow;                 // the output's window, and its buffers from a pool
+  down: Option[ChunkSink];    // the consumer; let go when our 'end' is sent
+  up: Option[ChunkSource];
+  cur: Option[IoBuf];         // the input chunk being worked on; held until its output is all out
+  backlog: Deque[IoBuf];      // chunks that arrived while 'cur' was held (at most the upstream's window)
+  waiting: bool;              // a pull wants an output buffer and the window or the pool is full
+  finishing: bool;            // the transform has been told its input is over
+  dry: bool;                  // a pull after that said NeedInput once
+  upEnded: bool;              // the upstream's 'end' has arrived
+  ended: bool;                // our 'end' has been sent downstream
+
+  pub fn own overload init(self: &new, down: ChunkSink, t: T) {
+    *self = Self(t: t, link: ChunkWindow.own(linkWindow), down: Some[ChunkSink](down), up: None[ChunkSource],
+      cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
+      upEnded: false, ended: false);
+    down.attach(selfactor);
+  }
+
+  // The same, its output buffers from a shared 'pool' and its window 'window' bytes
+  pub fn shared overload init(self: &new, down: ChunkSink, t: T, pool: ChunkPool, window: usize) {
+    *self = Self(t: t, link: ChunkWindow.make(window, pool), down: Some[ChunkSink](down), up: None[ChunkSource],
+      cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
+      upEnded: false, ended: false);
+    down.attach(selfactor);
+  }
+
+  // The stage that sends here (the sink's 'attach')
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  // A chunk arrives (the sink's 'accept')
+  pub async fn accept(self, c: IoBuf) {
+    self.cancelCheck();
+    if ended {
+      handBack(&up, c);
+    } else if cur is Some || upEnded {
+      backlog.push(c);
+    } else {
+      t.feed(c.view());
+      cur = Some[IoBuf](c);
+      self.drain();
+    }
+    self.settle();
+  }
+
+  // The upstream's end arrives (the sink's 'end')
+  pub async fn end(self, how: Ending) {
+    self.cancelCheck();
+    upEnded = true;
+    match how {
+      case is Finished {
+        if !waiting && !ended { self.drain(); }
+      }
+      case let Failed(e) {
+        if !ended { self.finish(Ending.Failed(e)); }
+      }
+    }
+    self.settle();
+  }
+
+  // An output buffer comes back (the source's 'giveBack')
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.cancelCheck();
+    if waiting { self.drain(); }
+    self.settle();
+  }
+
+  // A stop from downstream (ChunkSource.stop): our end goes down once, the stop
+  // goes on upstream, the input held goes back. The upstream handle stays until
+  // its 'end' comes (settle), so chunks still in flight are given back.
+  pub async fn stop(self, why: Ending) {
+    if ended { return; }
+    self.finish(reasonCopy(&why));
+    self.flush();
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      case is None {}
+    }
+  }
+
+  // CANCELLATION. The stage works in the cancel group of the message it handles
+  // (a chunk and an end come in the group the sender works in; a buffer given back,
+  // in the consumer's): when that group is cancelled, the stage stops. It sends
+  // 'end(Failed)' on (once), pulls no more, and gives the input it holds back to
+  // its upstream, which hears that its consumer has quit by the same cancelled
+  // group on the buffers it gets back. Output buffers still granted downstream
+  // return to the link as they come back. The upstream handle is dropped, as at any
+  // end, when the upstream's own 'end' has come (settle). A pipeline built so that
+  // each stage's group is a child of its consumer's therefore stops from the
+  // consumer back to the source.
+  fn cancelCheck(self: &mut) {
+    if ended || !actors.isCancelled() { return; }
+    self.finish(Ending.Failed(AnyError.msg("streams: cancelled")));
+    self.flush();
+    // The upstream is told by the chunks given back; its 'end' may never come (a
+    // producer that does not look at its group), so the handle goes now. A chunk
+    // that still arrives has nowhere to go back to and is freed.
+    up = None[ChunkSource];
+  }
+
+  // Every input chunk held goes back to the upstream
+  fn flush(self: &mut) {
+    self.returnCur();
+    var more = true;
+    while more {
+      match backlog.popFront() {
+        case let Some(c) { handBack(&up, c); }
+        case is None { more = false; }
+      }
+    }
+  }
+
+  // Pull while there is a buffer to pull into and something to pull
+  fn drain(self: &mut) {
+    waiting = false;
+    self.cancelCheck();
+    var go = !ended;
+    while go {
+      match link.take(linkBytes) {
+        case is None {
+          waiting = true;
+          go = false;
+        }
+        case let Some(b) {
+          var out = b;
+          let st = t.pull(&mut out);
+          if out.isEmpty() { link.give(out); } else { self.send(out); }
+          if st == Status.Done {
+            self.finish(Ending.Finished);
+            go = false;
+          } else if st == Status.Failed {
+            self.failStop();
+            go = false;
+          } else if st == Status.NeedInput {
+            go = self.nextInput();
+          }
+          // a long run of pulls stops at a cancel between chunks
+          self.cancelCheck();
+          if ended { go = false; }
+        }
+      }
+    }
+  }
+
+  // The input is used up: give the chunk back and go on to the next, or to the
+  // end. Whether to pull again.
+  fn nextInput(self: &mut) bool {
+    self.returnCur();
+    match backlog.popFront() {
+      case let Some(c) {
+        t.feed(c.view());
+        cur = Some[IoBuf](c);
+        return true;
+      }
+      case is None {}
+    }
+    if !upEnded { return false; }
+    if !finishing {
+      t.finish();
+      finishing = true;
+      return true;
+    }
+    if dry {
+      self.finish(Ending.Failed(AnyError.msg("streams: the transform wants input after the stream's end")));
+      return false;
+    }
+    dry = true;
+    true
+  }
+
+  // The transform failed: the failure goes down as our end and, as a stop (a copy as text:
+  // an AnyError cannot be copied), upstream, so the work feeding us ends at once. The input
+  // held goes back; the upstream handle stays until its 'end' (settle), if that has not come.
+  fn failStop(self: &mut) {
+    let f = self.failed();
+    let w = reasonCopy(&f);
+    self.finish(f);
+    self.flush();
+    if upEnded { return; }
+    match &up {
+      case let &Some(u) { u.stop(w); }
+      case is None {}
+    }
+  }
+
+  // Our end, once
+  fn finish(self: &mut, how: Ending) {
+    if ended { return; }
+    ended = true;
+    // the end is the last thing sent down, so the handle goes with it (the ChunkSink contract)
+    var d = None[ChunkSink];
+    d <-> down;
+    match d {
+      case let Some(k) { k.end(how); }
+      case is None {}
+    }
+  }
+
+  fn send(self: &mut, c: IoBuf) {
+    match &down {
+      case let &Some(k) { k.accept(c); }
+      case is None { link.give(c); }   // 'c' is this stage's own output buffer, never upstream's
+    }
+  }
+
+  fn failed(self: &) Ending {
+    match t.failure() {
+      case let Some(e) { Ending.Failed(e) }
+      case is None { Ending.Failed(AnyError.msg("streams: the transform failed")) }
+    }
+  }
+
+  fn returnCur(self: &mut) {
+    var taken = None[IoBuf];
+    taken <-> cur;
+    match taken {
+      case let Some(c) { handBack(&up, c); }
+      case is None {}
+    }
+  }
+
+  // Once both ends are over, every chunk held goes home and the upstream handle goes
+  fn settle(self: &mut) {
+    if ended && upEnded {
+      self.returnCur();
+      var more = true;
+      while more {
+        match backlog.popFront() {
+          case let Some(c) { handBack(&up, c); }
+          case is None { more = false; }
+        }
+      }
+      up = None[ChunkSource];
+    }
+  }
+}
+
+// ---- a stage that passes chunks on and watches them: a digest ----
+
+// A stage over a Digester 'd'. The chunk goes on as it is; the buffer comes
+// back through this stage to the source. 'to' gets exactly one answer, when
+// the stream ends, its digest type the digester's own ('D.Out'):
+//
+//   HashStage[cryptohash.Sha256](down, cryptohash.Sha256.make(), to)   // to: DigestSink[Array[u8, 32]]
+pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
+  d: D;
+  down: Option[ChunkSink];    // let go when the end is sent (the ChunkSink contract)
+  up: Option[ChunkSource];
+  out: usize;                 // chunks passed on and not yet back
+  upEnded: bool;
+  to: DigestSink[D.Out];      // gets exactly one answer, when the stream ends
+  stopped: bool;              // the stream's cancel group was cancelled: the answer and the end have gone
+
+  pub fn init(self: &new, down: ChunkSink, d: D, to: DigestSink[D.Out]) {
+    *self = Self(d: d, down: Some[ChunkSink](down), up: None[ChunkSource], out: 0usize, upEnded: false, to: to, stopped: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  // The stage works in the cancel group of the message it handles; when that
+  // group is cancelled (TransformStage.cancelCheck) it answers the digest sink with an
+  // error and ends downstream with Failed, once, and gives later chunks back
+  fn cancelCheck(self: &mut) {
+    if stopped || upEnded || !actors.isCancelled() { return; }
+    stopped = true;
+    to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
+    self.endDown(Ending.Failed(AnyError.msg("streams: cancelled")));
+    up = None[ChunkSource];
+  }
+
+  // A stop from downstream (ChunkSource.stop): the digest sink is answered with an
+  // error and the end goes down once, as on a cancel; the stop goes on upstream.
+  // The upstream handle stays until its 'end' comes (settle).
+  pub async fn stop(self, why: Ending) {
+    if stopped || upEnded { return; }
+    stopped = true;
+    to.digest(Err[D.Out, AnyError](reasonError(&why)));
+    self.endDown(reasonCopy(&why));
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      case is None {}
+    }
+  }
+
+  // The one end downstream; the handle goes with it
+  fn endDown(self: &mut, how: Ending) {
+    var k = None[ChunkSink];
+    k <-> down;
+    match k {
+      case let Some(s) { s.end(how); }
+      case is None {}
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    self.cancelCheck();
+    if upEnded || stopped {
+      // nothing is sent after an 'end' (P2): given back unhandled
+      handBack(&up, c);
+      return;
+    }
+    d.feed(c.view());
+    out = out + 1usize;
+    match &down {
+      case let &Some(k) { k.accept(c); }
+      case is None { handBack(&up, c); }
+    }
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    self.cancelCheck();
+    out = out - 1usize;
+    handBack(&up, b);
+    self.settle();
+  }
+
+  // Answers the digest sink, once: the digest if the stream finished, else an
+  // error. An AnyError cannot be copied, so the sink gets the failure as text
+  // (its report) and the stage after this one gets the original, typed.
+  // Then passes the end on.
+  pub async fn end(self, how: Ending) {
+    self.cancelCheck();
+    upEnded = true;
+    if stopped {
+      // already answered and ended on a cancel
+      self.settle();
+      return;
+    }
+    match &how {
+      case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
+      case let &Failed(e) {
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        to.digest(Err[D.Out, AnyError](AnyError.msg(text.view())));
+      }
+    }
+    self.endDown(how);
+    self.settle();
+  }
+
+  fn settle(self: &mut) {
+    if upEnded && out == 0usize { up = None[ChunkSource]; }
+  }
+}

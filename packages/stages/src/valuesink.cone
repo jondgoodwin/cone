@@ -1,0 +1,176 @@
+// ======== Layer 3, a stream of VALUES: ValueSink[T], ValueSource, ValueReader[T, R] ========
+//
+// The chunk traits (transformstage.cone) carry bytes: an IoBuf each, the credit a window of
+// bytes that comes back as 'giveBack'. This is the second family of the same shape, for any
+// value a stream between actors may carry: a network event, an utterance, a parsed message.
+// The value is moved to the sink's 'accept'; credit is a COUNT of items, granted by the sink.
+//
+//   ValueSink[T]   accept(v), end(how), attach(up)       (T has no bound here)
+//   ValueSource    credit(n), stop(why)
+//
+// T needs no bound: whether it can cross to the sink is judged where an actor is made for a
+// T (error 1194 names the behaviour and the type), so an unsendable T is refused at the
+// instance, not here. 'Ending' is the bytes family's (transformstage.cone).
+//
+// THE CONTRACT, the bytes family's rules where they apply.
+//  - CREDIT. A source sends an item only against credit its sink has granted with 'credit(n)',
+//    one unit per item, and with none it sends nothing and waits. WHO SENDS THE FIRST CREDIT:
+//    the sink, after 'attach' (there is no window the source brings with it), so a sink sends
+//    'credit(window)' when it is attached and the source sends nothing before it. A stage in
+//    the middle may be sent credit before its own 'attach' has come (the sink end is made
+//    first); it keeps the credit and passes it up when the 'attach' arrives.
+//  - WHEN CREDIT IS GRANTED. The sink grants a unit when it has USED an item (read it, played
+//    it, passed it on), not when the item arrived. So the items in flight and waiting are at
+//    most what the sink has granted, however slow it is, and a sink that is slow slows its
+//    source and nothing else. A sink decides what "used" means (a speaker: when it has played).
+//  - CONTROL ITEMS. A source may send an item that is not data (a join, a leave, a refusal,
+//    speech starting) WITHOUT credit, because it must not be stalled behind full credit: a
+//    sink that is stuck is just the one that needs to hear "left". Rules for the source:
+//      * each source sends a bounded number of them, so memory stays bounded;
+//      * a control item does not change the source's credit count;
+//      * because the sink cannot always tell a control item from data when it has used it, the
+//        credit a source holds saturates at the first window it was granted
+//        (min(window, held + n)), so a unit returned for a control item cannot inflate it.
+//    Whether an item is a control item is the item's own business: the type says.
+//  - SEVERAL SOURCES, ONE SINK. 'attach(up)' names one source. A sink fed by several (one
+//    handler for every connection of a server) must be able to tell them apart from the item
+//    itself (an id, a handle) and credit the right one; it keeps its own map of them.
+//  - 'stop' AND 'Ending', exactly as for bytes (ChunkSource.stop): the first terminal event a
+//    source sees decides; the source still sends its one 'end', carrying the stop's reason; a
+//    stop after the source's 'end', or a second stop, does nothing. A sink that has stopped
+//    still accepts what is in flight (and credits it, so the count balances). A stage in the
+//    middle forwards the stop upstream and ends its own downstream once.
+//  - WHO HOLDS WHOM, as ChunkSink: the sender sends nothing after 'end' and keeps no handle to
+//    the sink past it; a sink may keep the 'up' it was attached with.
+//  - ORDER. Items, control items and the 'end' reach the sink in the order the source sent them
+//    (the mailbox keeps each sender's order).
+//
+// A SINK THAT AWAITS inside 'accept' is parked there and the actor runs its next message
+// meanwhile: it must keep its own order (see ChunkInbox for the bytes version). Not here.
+//
+// 'down <- v' is 'down.accept(v)': ValueSink's accept declares '<-' as its overload name.
+
+pub actor trait ValueSink[T] {
+  // An item of the stream (or a control item). Grant a unit of credit when it is used.
+  pub async fn accept overload `<-`(self, v: T);
+  // The stream is over, one way or the other. Nothing is sent after.
+  pub async fn end(self, how: Ending);
+  // The source that sends here, to credit; sent once, before the first item. The sink sends
+  // its first credit after it.
+  pub async fn attach(self, up: ValueSource);
+}
+
+pub actor trait ValueSource {
+  // The sink has used n items: n more may be sent (see the contract above)
+  pub async fn credit(self, n: u32);
+  // The sink wants no more, or has failed: end the work that feeds this stream, at once.
+  // 'why' is what the source's one 'end' carries (as ChunkSource.stop).
+  pub async fn stop(self, why: Ending);
+}
+
+// ======== ValueReader[T, R]: a sink an actor reads, the value twin of ReaderSink[R] ========
+//
+//   let vr = ValueReader[u32, Result[Option[u32], AnyError]](4u32, &onValue, &onEnd);
+//   source.start(vr);                          // the sink end of a link, as any ValueSink
+//   ...
+//   let r = await readValue(&vr);              // the next item, or the end
+//
+// R is what a read answers, made by two plain functions given at construction: 'onValue(v)'
+// builds the answer from the item (it is moved in), and 'onEnd(&how)' builds it once the items are
+// all read (and again, the same, at every read after). One read is outstanding at a time: a
+// second, while one waits, is answered with onEnd of a Failed ending.
+//
+// WHAT BOUNDS IT. It grants 'window' units at 'attach' and one more for each item a read takes,
+// so the items held are at most the window (plus the source's bounded control items, which
+// are held too): a reader that is slow slows the source and nothing else.
+
+// A read is a message to the sink that carries the reply
+pub fn readValue[T, R](s: &ValueReader[T, R]) actors.Awaitable[R] {
+  let h = s.clone();
+  actors.Awaitable[R].make(fn(rp: actors.ReplyOf[R]) [h] {
+    h.want(rp);
+  })
+}
+
+pub actor ValueReader[T, R] is ValueSink[T] {
+  up: Option[ValueSource];
+  window: u32;                                // credit granted at attach
+  held: Deque[T];                             // items arrived and not yet read
+  waiting: Option[actors.ReplyOf[R]];         // a reader awaiting the next item
+  ended: Option[Ending];                      // the end, once it has come
+  onValue: &fn(v: T) R;
+  onEnd: &fn(how: &Ending) R;
+
+  pub fn init(self: &new, window: u32, onValue: &fn(v: T) R, onEnd: &fn(how: &Ending) R) {
+    *self = Self(up: None[ValueSource], window: window, held: Deque[T](), waiting: None[actors.ReplyOf[R]],
+      ended: None[Ending], onValue: onValue, onEnd: onEnd);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(window);
+  }
+
+  pub async fn accept(self, v: T) {
+    var taken: Option[actors.ReplyOf[R]] = None;
+    taken <-> waiting;
+    match taken {
+      case let Some(rp) {
+        let f = onValue;
+        rp.answer(f(v));
+        self.creditOne();
+      }
+      else { held.push(v); }
+    }
+  }
+
+  // The end. The source lets go of this sink with it, and this lets go of the source
+  pub async fn end(self, how: Ending) {
+    up = None[ValueSource];
+    if held.len() == 0usize {
+      var taken: Option[actors.ReplyOf[R]] = None;
+      taken <-> waiting;
+      match taken {
+        case let Some(rp) {
+          let f = onEnd;
+          rp.answer(f(&how));
+        }
+        else {}
+      }
+    }
+    ended = Some[Ending](how);
+  }
+
+  // A read: the next item, else the end, else wait
+  pub async fn want(self, rp: actors.ReplyOf[R]) {
+    if waiting is Some {
+      let f = onEnd;
+      rp.answer(f(&Ending.Failed(AnyError.msg("a second read while one waits"))));
+      return;
+    }
+    match held.popFront() {
+      case let Some(v) {
+        let f = onValue;
+        rp.answer(f(v));
+        self.creditOne();
+        return;
+      }
+      else {}
+    }
+    match &ended {
+      case let &Some(how) {
+        let f = onEnd;
+        rp.answer(f(how));
+      }
+      else { waiting = Some[actors.ReplyOf[R]](rp); }
+    }
+  }
+
+  // An item has been read: one more may be sent
+  fn creditOne(self) {
+    match &up {
+      case let &Some(u) { u.credit(1u32); }
+      else {}
+    }
+  }
+}

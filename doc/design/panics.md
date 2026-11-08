@@ -3,7 +3,8 @@
 A panic is the program saying that something which must not happen has: an
 index past the end, memory exhausted, an invariant broken. It is a bug report,
 not error handling — a failure a program expects and recovers from is an
-`Option` or a `Result` (and, unbuilt, `throw`; `refexcept.html`). This note
+`Option` or a `Result` (`safe-panics.html`), passed on with `?` and caught by
+`match` or a `try` block, never thrown. This note
 follows panics through the language, core, the compiler and the C runtime.
 
 ## Principles
@@ -48,12 +49,11 @@ bytes, which any `&str` converts to.
 **Checks a debug build alone makes** [Jon 27 Sep]: `assertDebug(cond)` and
 `assertDebugMsg(cond, msg)` are core **macros**, not functions, so the
 condition is substituted where they are used instead of evaluated before a
-call. Each expands to `if isDebugBuild() {assert(cond, ...);} else {}`.
-`isDebugBuild()` is a core intrinsic, a constant for the compile: true under
+call. Each expands to `#if #debug {assert(cond, ...)} #else {}`.
+`#debug` is a fact of the compile: true under
 `conec --debug` or `build: debug` (Congo's default for `build`, `run` and
 `test`; `--release` for the other), false otherwise. In a release build the
-branch is never generated (generation emits only the side of an `if` on a
-constant of the build that the build takes, `genlIf`), so the condition is
+branch is dropped by the parser, so the condition is
 never evaluated and nothing of the use reaches the object;
 `exception_assertdebug_release` pins both, the second with an IR check. A
 macro takes no default argument, so the form with a message has a name of its
@@ -61,10 +61,9 @@ own. Plain `assert` stays a function: as one it takes a default message and
 the forwarded `file` and `line`, which a macro cannot, and it loses nothing by
 evaluating its condition, which it always does. The camelCase `assertDebug`
 is for now: whether Cone has a naming convention is a question Jon has queued
-for review, as is the design of compile-time constants (C's `-D` and `#if`),
-of which `isDebugBuild()` was the first, narrow case. The target's OS and
-`conec -D` are built beside it as a provisional mechanism whose final design
-is open (`doc/reference/refintrinsic.html`, "Constants of the build").
+for review. The build's facts (`#os`, `#arch`, `#debug`, `#defined`, `#define`)
+are read by the parser (`doc/manual/mod-generativity.html#meta`); the earlier
+`isDebugBuild`, `isWindows` and kin intrinsics are gone.
 
 **The location is a default argument.** `srcFile()` and `srcLine()` are core
 intrinsics answering where their call is written, the file's name without its
@@ -112,13 +111,11 @@ Everything above is built. Not built:
   test-build check and a `requires` statement as the always-on one; Jon's
   ruling of 27 Sep made `assert` the always-on check and `assertDebug` the
   debug-only one, and left `requires`/`ensures` for contracts, not built.
-- **`?` on a `None`**, which the manual says panics, is not built, and nor are
-  `throw` and `catch`.
 
 ## What lives elsewhere
 
-- What a panic looks like to a programmer: `doc/reference/refexcept.html`
-- `srcFile`, `srcLine` and `isDebugBuild`: `doc/reference/refintrinsic.html`
+- What a panic looks like to a programmer: `doc/manual/safe-panics.html`
+- `srcFile` and `srcLine`: `doc/manual/safe-intrinsics.html`
 - Where a failed check branches and what it calls: [Generation](../../compiler/c/doc/phases/generation.md), "Statements and expressions"
 - How a block ending in a call returning `Never` becomes a `return`: [block](../../compiler/c/doc/nodes/block.md), [return](../../compiler/c/doc/nodes/return.md)
 - Which checks exist: [Safety](safety.md), the scorecard

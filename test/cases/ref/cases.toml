@@ -27,7 +27,7 @@
 # Left out deliberately:
 #
 # - Lifetime annotations ('a on a signature, <'a, 'b> on a type). Not
-#   implemented; doc/reference/reflifefn.html says so and the parser has no syntax
+#   implemented; doc/manual/mem-lifetimes.html says so and the parser has no syntax
 #   for them. The lifetime rules the compiler does enforce -- a borrowed
 #   reference may not be stored or returned where it would outlive what it
 #   points at, and a call's returned borrow shares the lifetime of the narrowest
@@ -79,6 +79,23 @@ category = "run"
 description = "Function-reference types with unnamed parameters: the manual's '&fn(u32) u32', a struct's field, a method's parameter, reference, generic, array and nested function-reference parameter types, named and unnamed mixed, and a returned function reference's type"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
 
+# Separate from ref_success because its subject is which functions a function-
+# reference type accepts by what they pass and return by value: the references
+# and enrichments whose layout is the type's own, run to read the right values.
+# ref_typecheck_fnref_byvalue holds what is refused.
+[scenario.ref_fnref_byvalue]
+category = "run"
+description = "Function references accepted for a signature that differs by a recast of one layout: a reference to a variant or an enum, an enrichment and its base by value, an array of references, a narrowed permission"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The lifetimes of a function reference meet the wanted type's as a method's meet a
+# trait's (lifeSigMeets), not agree: a result holding fewer borrows is accepted.
+# ref_typecheck_fnref_lifetimes holds the opposite, refused.
+[scenario.ref_fnref_lifetimes]
+category = "run"
+description = "A function reference whose function's result holds fewer borrows than the reference's type says it may: accepted as an argument and an initializer, and what runs is right"
+tags = ["typecheck", "genllvm", "runtime"]
+
 # Separate from ref_success because its subject is a spelling rather than a
 # feature: every dereference here has a twin written with the concrete type, and
 # the pairing is the assertion. Folding it into ref_success would scatter the
@@ -116,7 +133,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 # of part of it, as '&mut' was: nothing is moved out of the slice.
 [scenario.ref_unislice]
 category = "run"
-description = "A sub-slice ('&uni s[a..<b]', 'a..', '..<b', 'a...b') and an element ('&uni s[i]') of a '&uni' slice or of a 'So' array borrowed '&uni': as an argument, in a local, handed back by a function and borrowed again from, a sub-slice of a sub-slice, beside '&mut' sub-slices; values checked"
+description = "A sub-slice ('&uni s[a..<b]', 'a..', '..<b', 'a..=b') and an element ('&uni s[i]') of a '&uni' slice or of a 'Uni' array borrowed '&uni': as an argument, in a local, handed back by a function and borrowed again from, a sub-slice of a sub-slice, beside '&mut' sub-slices; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.ref_flow_unislice]
@@ -145,11 +162,11 @@ category = "run"
 description = "What one call may still be handed: '&uni' of distinct fields of a struct and of two different references, one '&uni' element in two calls, two '&mut' and two '&' of the same element; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
-# A 'mut' local is a source reached as 'uni': it lends '&uni' while nothing else
+# A 'var' local is a source reached as 'uni': it lends '&uni' while nothing else
 # borrows it, and is frozen against all else until the borrow's last use.
 [scenario.ref_unilocal]
 category = "run"
-description = "A 'mut' local (a collection, a struct, an integer, an owner, a held reference), a field and an element of one, and two of its fields at once lent '&uni'; lent again, held and used, in a loop, with the sibling field changed, and used directly after the last use; values checked"
+description = "A 'var' local (a collection, a struct, an integer, an owner, a held reference), a field and an element of one, and two of its fields at once lent '&uni'; lent again, held and used, in a loop, with the sibling field changed, and used directly after the last use; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.ref_flow_unilocal]
@@ -160,18 +177,18 @@ diagnostics = 11
 
 [scenario.ref_typecheck_unilocal]
 category = "reject"
-description = "'&uni' of what a local does not lend it from: an 'imm' local or field, a global, a field of a '&mut' parameter, what a '&mut' held in a local points at"
+description = "'&uni' of what a local does not lend it from: a 'let' local or field, a global, a field of a '&mut' parameter, what a '&mut' held in a local points at"
 tags = ["typecheck"]
 diagnostics = 5
 
-# A method declaring 'self &uni' called by name on a 'mut' local lends it '&uni'
+# A method declaring 'self &uni' called by name on a 'var' local lends it '&uni'
 # as '(&uni p).bump()' does (fnCallBorrowReceiver tries 'uni' after 'ro', 'imm',
 # 'mut'): ref_uni_receiver runs it; the aliasing a written '&uni' refuses is
 # refused too (ref_flow_uni_receiver), and so is a receiver that cannot lend
 # '&uni' (ref_typecheck_uni_receiver).
 [scenario.ref_uni_receiver]
 category = "run"
-description = "A 'self &uni' method called by name on a 'mut' local, a field and an array element of one, a temporary and a '&uni' parameter, twice, in a loop and with a result; a type with a '&', a '&mut' and a '&uni' method each reached; values checked"
+description = "A 'self &uni' method called by name on a 'var' local, a field and an array element of one, a temporary and a '&uni' parameter, twice, in a loop and with a result; a type with a '&', a '&mut' and a '&uni' method each reached; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.ref_flow_uni_receiver]
@@ -182,7 +199,7 @@ diagnostics = 6
 
 [scenario.ref_typecheck_uni_receiver]
 category = "reject"
-description = "A 'self &uni' method called on what cannot lend '&uni': an 'imm' local or field, a global, a field of a '&mut' parameter (was: no method accepts the call)"
+description = "A 'self &uni' method called on what cannot lend '&uni': a 'let' local or field, a global, a field of a '&mut' parameter (was: no method accepts the call)"
 tags = ["typecheck"]
 diagnostics = 4
 
@@ -201,12 +218,12 @@ diagnostics = 13
 # as the reference it holds; a borrow of the function's own value it was given is not
 [scenario.ref_unicursor]
 category = "run"
-description = "A 'mut' local holding a '&uni' parameter returned as a '&uni', a '&mut' and a '&', bare, declared, after a cursor walk reassigned from a call on itself, from a branch, with its field or its element borrowed '&uni', along a slice; values checked"
+description = "A 'var' local holding a '&uni' parameter returned as a '&uni', a '&mut' and a '&', bare, declared, after a cursor walk reassigned from a call on itself, from a branch, with its field or its element borrowed '&uni', along a slice; values checked"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.ref_flow_unicursor]
 category = "reject"
-description = "A 'mut' local holding a '&uni' parameter, then given a borrow of a local's value (written, an owner lent, a call's result, from a branch or a loop, from another local), returned, its field returned, or stored past the function; a local that only held its own value's borrow"
+description = "A 'var' local holding a '&uni' parameter, then given a borrow of a local's value (written, an owner lent, a call's result, from a branch or a loop, from another local), returned, its field returned, or stored past the function; a local that only held its own value's borrow"
 tags = ["typecheck", "flow"]
 diagnostics = 11
 
@@ -215,14 +232,14 @@ diagnostics = 11
 # borrow '&uni *o' built for it, and still finalized at its own scope end.
 [scenario.ref_ownerunilend]
 category = "run"
-description = "A 'So' or 'Rc' owner lent to a '&uni' parameter, a 'self &uni' receiver, a '&uni' local and an enrichment's '&uni', used again after, and finalized at its own scope end"
+description = "A 'Uni' or 'Rc' owner lent to a '&uni' parameter, a 'self &uni' receiver, a '&uni' local and an enrichment's '&uni', used again after, and finalized at its own scope end"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # An owner lent as '&' or '&mut' with no written borrow in the function, the
 # lends not overlapping: what ref_flow_ownerlend_call's refusals leave allowed.
 [scenario.ref_ownerlend_call]
 category = "run"
-description = "A 'So' or 'Rc' owner lent as '&mut' in one call after another, as '&' twice to one call, as a mutable receiver beside an argument reading it, and as a '&' receiver and argument"
+description = "A 'Uni' or 'Rc' owner lent as '&mut' in one call after another, as '&' twice to one call, as a mutable receiver beside an argument reading it, and as a '&' receiver and argument"
 tags = ["flow", "genllvm", "runtime"]
 
 # An owner in a field, reached through a reference that only reads, lent as a
@@ -231,7 +248,7 @@ tags = ["flow", "genllvm", "runtime"]
 # ref_owner_field runs stays allowed.
 [scenario.ref_typecheck_owner_field]
 category = "reject"
-description = "An owner held in a field of a '&' or '&imm' reference's value lent as a '&mut' receiver, argument, initializer or written borrow, called as a 'So[fn]', as an 'Rc[mut]', and nested in another owner"
+description = "An owner held in a field of a '&' or '&imm' reference's value lent as a '&mut' receiver, argument, initializer or written borrow, called as a 'Uni[fn]', as an 'Rc[mut]', and nested in another owner"
 tags = ["typecheck"]
 diagnostics = 8
 
@@ -241,7 +258,7 @@ diagnostics = 8
 # a '&mut' parameter's field changed, so the numbers show each call reached it.
 [scenario.ref_owner_field]
 category = "run"
-description = "An owner in a field lent as '&' through a '&', as '&mut' through a '&mut' or '&uni', as '&mut' from a local struct, called as a 'So[fn]' through each"
+description = "An owner in a field lent as '&' through a '&', as '&mut' through a '&mut' or '&uni', as '&mut' from a local struct, called as a 'Uni[fn]' through each"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # What an owner in a field lends by the reference its holder is reached
@@ -255,7 +272,7 @@ tags = ["typecheck"]
 diagnostics = 10
 
 # What ref_typecheck_owner_field_shared's rule leaves allowed: the owner in a
-# field lent as '&mut' and '&' through a '&mut', '&imm' for a 'So[imm]' or an
+# field lent as '&mut' and '&' through a '&mut', '&imm' for a 'Uni[imm]' or an
 # 'Rc[imm]', '&uni' and '&imm' through a '&uni' holder and from a local, '&imm'
 # through a '&imm' holder.
 [scenario.ref_owner_field_shared]
@@ -274,7 +291,7 @@ tags = ["typecheck"]
 diagnostics = 8
 
 # What ref_typecheck_owner_field_rc's rule leaves allowed: the owner in a field
-# of an 'Rc[mut]' lent as '&mut' and '&', its 'So[imm]' and 'Rc[imm]' fields as
+# of an 'Rc[mut]' lent as '&mut' and '&', its 'Uni[imm]' and 'Rc[imm]' fields as
 # '&imm', an 'Rc[imm]' holder's owner as '&', and an owner in a local struct as
 # '&uni'.
 [scenario.ref_owner_field_rc]
@@ -300,7 +317,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 # '&imm str'. The refusals are ref_typecheck_literal.
 [scenario.ref_literal]
 category = "run"
-description = "A string literal as '&imm str': any '&str' converts implicitly to '&Array[u8]' (a parameter, variable, field, return, '=='), the way back is 'as'; the NUL after the text for C, the written borrow '&\"text\"' still the array; a literal fills a byte array of its length (variable, field, parameter, return, constant, global, assignment) and is copied into an owner of 'str' (So, Rc, Arc: variable, parameter, return, field, branch)"
+description = "A string literal as '&imm str': any '&str' converts implicitly to '&Array[u8]' (a parameter, variable, field, return, '=='), the way back is 'as'; the NUL after the text for C, the written borrow '&\"text\"' still the array; a literal fills a byte array of its length (variable, field, parameter, return, constant, global, assignment) and is copied into an owner of 'str' (Uni, Rc, Arc: variable, parameter, return, field, branch)"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # -------- name resolution stage --------
@@ -315,7 +332,7 @@ diagnostics = 3
 
 [scenario.ref_typecheck_immutable]
 category = "reject"
-description = "'mut', 'mut1' and a lock permission on a type declaring Immutable ('str', a struct): on a borrow, an owner in 'So' and 'Rc', in a struct's 'self &mut', through a generic's argument and in a '&mut *v', each naming Immutable; and 'where T is Immutable' unmet by an integer and by a struct holding an Immutable one"
+description = "'mut', 'mut1' and a lock permission on a type declaring Immutable ('str', a struct): on a borrow, an owner in 'Rc' (and 'Uni', whose sole owner takes no 'mut' at all: ErrorSoleOwnerMut first), in a struct's 'self &mut', through a generic's argument and in a '&mut *v', each naming Immutable; and 'where T is Immutable' unmet by an integer and by a struct holding an Immutable one"
 tags = ["typecheck"]
 diagnostics = 12
 
@@ -358,6 +375,26 @@ description = "Comparisons two references cannot make: a referent without the op
 tags = ["typecheck"]
 diagnostics = 6
 
+# Separate from ref_typecheck_compare and the other type-check files because its
+# question is which function a function-reference type refuses by what it
+# passes or returns by value: a variant for its enum, or the reverse, at any
+# position, the position named in the message; and the conversions refused
+# already, pinned to stay.
+[scenario.ref_typecheck_fnref_byvalue]
+category = "reject"
+description = "A function reference refused where a parameter or the result held by value is a variant for its enum or the reverse, named by position, as an argument, initializer, assignment, return and array; a conversion stays a plain mismatch"
+tags = ["typecheck"]
+diagnostics = 12
+
+# Separate from ref_typecheck_fnref_byvalue because its question is the lifetimes a
+# function reference's function promises: more borrows held in the result than the
+# type says it may is refused, where fewer is accepted (ref_fnref_lifetimes).
+[scenario.ref_typecheck_fnref_lifetimes]
+category = "reject"
+description = "A function reference refused where the function's result holds more borrows than the reference's type says it may, as an argument and an initializer"
+tags = ["typecheck"]
+diagnostics = 2
+
 # -------- flow stage --------
 
 [scenario.ref_flow]
@@ -380,10 +417,10 @@ diagnostics = 3
 
 # Separate from ref_flow_body because its subject is the owner's permission: what
 # Immutable changes is the one left unwritten, so 'Rc[str]' copies and 'Rc[uni,
-# str]' and a plain struct's 'Rc' move, as an 'So' of anything does.
+# str]' and a plain struct's 'Rc' move, as a 'Uni' of anything does.
 [scenario.ref_flow_immutable]
 category = "reject"
-description = "An owner of an Immutable type with no permission written copies and is used again; with 'uni' written, an 'Rc' of a type that does not declare it, and an 'So' of one that does, it moves"
+description = "An owner of an Immutable type with no permission written copies and is used again; with 'uni' written, an 'Rc' of a type that does not declare it, and a 'Uni' of one that does, it moves"
 tags = ["flow"]
 diagnostics = 3
 
@@ -431,7 +468,7 @@ diagnostics = 5
 # per touch, so that one borrow's conflict cannot stand in for another's.
 [scenario.ref_flow_freeze]
 category = "reject"
-description = "A local read, changed, moved, replaced, swapped, borrowed or ended while a borrow of it that forbids that is still to be used; a 'Rc[mut, T]' or 'So[mut, T]' owner moved, replaced, changed or borrowed where it is held, or ended, while a borrow through it is; a local enum changed while a binding into its variant is"
+description = "A local read, changed, moved, replaced, swapped, borrowed or ended while a borrow of it that forbids that is still to be used; a 'Rc[mut, T]' or 'Uni[T]' owner moved, replaced, changed or borrowed where it is held, or ended, while a borrow through it is; a local enum changed while a binding into its variant is"
 tags = ["flow"]
 diagnostics = 19
 
@@ -475,7 +512,7 @@ diagnostics = 4
 # implicit lend, or the loan walk never runs.
 [scenario.ref_flow_ownerlend_call]
 category = "reject"
-description = "A lend of a 'So' or 'Rc' owner, with no written borrow, meeting a move of it in one call as '&mut', and the receiver lent mutably beside an argument moving it"
+description = "A lend of a 'Uni' or 'Rc' owner, with no written borrow, meeting a move of it in one call as '&mut', and the receiver lent mutably beside an argument moving it"
 tags = ["flow"]
 diagnostics = 2
 
@@ -546,6 +583,15 @@ description = "A field written and a 'self &mut' method called through a '&' hel
 tags = ["typecheck"]
 diagnostics = 11
 
+# A method call on a reference whose permission cannot give 'self': the permission's
+# refusal (ErrorInvType), as '(*r).m()' and '<-' report it; a call refused for another
+# reason (no such method, arguments or arity no method takes) keeps its own code.
+[scenario.ref_typecheck_named_call_perm]
+category = "reject"
+description = "A named method on a '&' parameter, a '&imm' one, an 'Rc[imm, ...]' and an 'Arc[imm, ...]' whose 'self' wants more than the reference permits is ErrorInvType, as '(*l).push(1)' and '<-' are; a method that does not exist, arguments no method takes and a wrong arity keep ErrorNoMbr / ErrorNoCandidate; reads through '&' and writes through '&mut' compile"
+tags = ["typecheck"]
+diagnostics = 14
+
 # A borrowed reference held in a field lends what the reference its holder is
 # reached through lets: through a '&' (or '&imm') a '&mut' field reads
 # and lends only '&', as an owning field does (ref_typecheck_owner_field).
@@ -563,7 +609,7 @@ description = "A '&mut' field read and lent as '&' through a '&', written and le
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # A '&uni' field is seen only through '&uni' references or a holder held by value
-# (refperm.html, "Viewpoint Adaptation"). ref_typecheck_viewpoint_borrowed holds
+# (mem-permissions.html#view, "Viewpoint Adaptation"). ref_typecheck_viewpoint_borrowed holds
 # what a '&' refuses of a '&mut' field.
 [scenario.ref_typecheck_uni_field_shared]
 category = "reject"
@@ -593,16 +639,148 @@ category = "run"
 description = "A '&uni' array or tuple element read, wiped and replaced through a '&uni' holder, an owner, and an array or tuple held by value in a local"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
-# 'as' between references is only a legal coercion (reftrust.html, "Type
-# Reinterpretation"); the writes, the sharing and the freezing it would otherwise
+# 'as' between references is only a legal coercion (safe-trust.html#reinterpret, "Reinterpretations that need trust");
+# the writes, the sharing and the freezing it would otherwise
 # allow need 'trust', which is not built yet. ref_cast_perm_legal runs what stays.
 [scenario.ref_typecheck_cast_perm]
 category = "reject"
-description = "A '&' cast to '&mut' or '&uni', a '&imm' to '&mut' or '&uni' (also as a local, written through), a '&mut' to '&uni', a slice and a list lent '&mut' cast '&uni', a '&' slice cast '&mut'; a '&' cast to a written '&imm P', '&imm str' or 'So[imm, str]' (only the 'imm' a type declaring Immutable defaults to may come from a '&'); a coercion written out, and a pointer cast to a reference, stay allowed"
+description = "A '&' cast to '&mut' or '&uni', a '&imm' to '&mut' or '&uni' (also as a local, written through), a '&mut' to '&uni', a slice and a list lent '&mut' cast '&uni', a '&' slice cast '&mut'; a '&' cast to a written '&imm P', '&imm str' or 'Uni[imm, str]' (only the 'imm' a type declaring Immutable defaults to may come from a '&'); a coercion written out, and a pointer cast to a reference, stay allowed"
 tags = ["typecheck"]
 diagnostics = 13
 
 [scenario.ref_cast_perm_legal]
 category = "run"
-description = "Casts between references that are legal coercions ('&uni' to '&mut', '&imm' and '&', '&mut' and '&imm' to '&', the same permission, on a slice too), a pointer cast to '&mut' and '&uni', and a slice of bytes cast to text ('&str', 'So[str]': the 'imm' defaulted from Immutable, no permission written)"
+description = "Casts between references that are legal coercions ('&uni' to '&mut', '&imm' and '&', '&mut' and '&imm' to '&', the same permission, on a slice too), a pointer cast to '&mut' and '&uni', and a slice of bytes cast to text ('&str', 'Uni[str]': the 'imm' defaulted from Immutable, no permission written)"
 tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.ref_typecheck_imm_hint]
+category = "reject"
+description = "A plain '&' borrow where an '&imm' reference is wanted (a declared type, inside Some, an argument): ErrorInvType as before, and the message tells the author to write '&imm' on the borrowed value; the '&imm' spelling compiles"
+tags = ["typecheck"]
+diagnostics = 4
+
+# Separate from ref_unireborrow because its subject is generation, not flow: the attributes a
+# function Cone defines gives a borrowed parameter (compiler/c/doc/phases/generation.md,
+# "noalias on a borrowed parameter"). The checks pin the signatures; the run is the same
+# borrows chained and lent on, which is where a wrong 'noalias' would show.
+[scenario.ref_noalias]
+category = "run"
+description = "'noalias nonnull dereferenceable(n)' on a '&uni' parameter, '+ readonly' on an '&imm' one, nothing on '&mut', '&' or an '&imm' of a struct holding an atomic; a '&uni' reborrowed down a chain and a chain three deep the optimizer inlines; the methods' self; values checked"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias.check]]
+name = "uni-and-imm-borrow-parameters-are-noalias"
+target = "preir"
+contains = [
+  "define internal %void @byUni(ptr noalias nonnull align 4 dereferenceable(32) %0, ptr noalias nonnull readonly align 4 dereferenceable(32) %1, i64 %2)",
+  "define internal i64 @twice(ptr noalias nonnull readonly align 8 dereferenceable(16) %0, ptr noalias nonnull align 8 dereferenceable(16) %1)",
+  "define internal %void @leaf(ptr noalias nonnull align 8 dereferenceable(16) %0, i64 %1)",
+  "define internal %void @inc3(ptr noalias nonnull align 8 dereferenceable(16) %0)",
+]
+
+[[scenario.ref_noalias.check]]
+name = "a-rewritten-signature-keeps-the-borrowed-parameters-attributes"
+target = "preir"
+contains = ["define internal void @grow(ptr noalias sret(%Big) %sret, ptr noalias nonnull align 8 dereferenceable(16) %0, ptr noalias readonly captures(none) dereferenceable(32) %1, ptr noalias nonnull readonly align 8 dereferenceable(16) %2)"]
+
+[[scenario.ref_noalias.check]]
+name = "the-align-of-a-borrow-is-capped-at-the-16-a-heap-block-gives"
+target = "preir"
+contains = ["@lane(ptr noalias nonnull readonly align 16 dereferenceable(32) %0)"]
+excludes = ["nonnull readonly align 32"]
+
+[[scenario.ref_noalias.check]]
+name = "a-method-self-is-noalias-by-its-permission"
+target = "preir"
+contains = [
+  "(ptr noalias nonnull align 8 dereferenceable(8) %0, i64 %1)",
+  "(ptr noalias nonnull readonly align 8 dereferenceable(8) %0)",
+]
+
+[[scenario.ref_noalias.check]]
+name = "mut-and-read-only-borrows-and-an-atomic-holder-get-none"
+target = "preir"
+contains = [
+  "define internal %void @byMut(ptr %0, ptr %1, i64 %2)",
+  "define internal %void @countHit(ptr %0)",
+  "define internal i64 @hitsOf(ptr %0)",
+  "define internal %void @_CNvNt3Acc4bump(ptr %0, i64 %1)",
+]
+excludes = ["@byMut(ptr noalias", "@countHit(ptr noalias", "@hitsOf(ptr noalias"]
+
+[scenario.ref_noalias_reject]
+category = "reject"
+description = "What 'noalias' relies on: a '&uni' lent beside a borrow of one of its parts, and a '&uni' or '&imm' of a global, are refused"
+tags = ["typecheck", "flow"]
+diagnostics = 6
+
+[scenario.ref_noalias_dyn]
+category = "run"
+description = "A method that fills a vtable slot and a function called through a '&fn' carry 'noalias' as a direct call's callee does; called through a '&<uni' and '&<imm' trait value and a function reference, the values are those of direct calls"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias_dyn.check]]
+name = "slot-methods-and-fn-targets-are-noalias-the-callers-are-not"
+target = "preir"
+contains = [
+  "define internal %void @_CNvNt3Sum3add(ptr noalias nonnull align 8 dereferenceable(8) %0, i64 %1)",
+  "define internal i64 @_CNvNt3Dbl5total(ptr noalias nonnull readonly align 8 dereferenceable(8) %0)",
+  "define internal %void @bumpSum(ptr noalias nonnull align 8 dereferenceable(8) %0, i64 %1)",
+  "define internal %void @apply(ptr %0, ptr noalias nonnull align 8 dereferenceable(8) %1, i64 %2)",
+]
+
+# Separate from ref_noalias because its subject is a slice, which is a pointer and a count and
+# has no place for an attribute: Cone's convention passes it as the two (genlAggCopies).
+[scenario.ref_noalias_slice]
+category = "run"
+description = "A slice parameter passed as its pointer and its count, 'noalias' on a '&uni' slice's pointer, nothing on an '&imm' slice's or a '&str''s (lead 1 in Backlog\\llvm-generation.md, 'PR 2 = #827'), a '&mut' or a '&' slice's; an empty slice, a slice lent on, beside a large argument and an sret result, through a function reference and a virtual reference; values checked"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "a-uni-slice-is-two-parameters-the-pointer-noalias-an-imm-slice-and-a-str-none"
+target = "preir"
+contains = [
+  "define internal %void @addUni(ptr noalias %0, i64 %len, ptr %1, i64 %len1)",
+  "define internal i64 @total(ptr %0, i64 %len)",
+  "define internal i64 @label(ptr %0, i64 %len)",
+  "define internal %void @leaf(ptr noalias %0, i64 %len, i64 %1)",
+]
+excludes = ["nonnull %0, i64 %len", "dereferenceable(8) %0, i64 %len"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "a-mut-or-read-only-slice-is-two-parameters-with-no-attribute"
+target = "preir"
+contains = ["define internal %void @addMut(ptr %0, i64 %len, ptr %1, i64 %len1)"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "slices-beside-an-sret-result-and-a-large-argument-keep-their-positions"
+target = "preir"
+contains = ["define internal void @grow(ptr noalias sret(%Big) %sret, ptr noalias %0, i64 %len, ptr noalias readonly captures(none) dereferenceable(32) %1, ptr %2, i64 %len1)"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "fn-references-and-virtual-references-pass-the-same-two"
+target = "preir"
+contains = [
+  "define internal %void @applyTo(ptr %0, ptr noalias %1, i64 %len, i64 %2)",
+  "define internal %void @_CNvNt5Adder3put(ptr noalias nonnull align 8 dereferenceable(8) %0, ptr %1, i64 %len, ptr noalias %2, i64 %len1)",
+  "define internal %void @feed(%\"Sink:Vtable.0\" %0, ptr %1, i64 %len, ptr noalias %2, i64 %len1)",
+]
+
+[scenario.ref_gpu_choice_kernel]
+category = "reject"
+description = "On a GPU target, a kernel calling a plain function that chooses between references at run time: the choice is refused"
+tags = ["flow"]
+diagnostics = 1
+
+[[scenario.ref_gpu_choice_kernel.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.ref_gpu_choice_unreached]
+category = "compile"
+description = "On a GPU target, a plain function choosing between references at run time that no kernel calls is accepted"
+tags = ["flow"]
+
+[[scenario.ref_gpu_choice_unreached.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]

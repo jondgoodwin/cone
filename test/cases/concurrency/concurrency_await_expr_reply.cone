@@ -12,7 +12,7 @@
 // - indexed: 'items[await ...]' read after poke, poke's 1000 seen;
 // - value: 'body + await ...' -- body is a value, read before the request,
 //   poke's 1000 not seen;
-// - swapped: 'a <=> items[await ...]', after poke;
+// - swapped: 'a <-> items[await ...]', after poke;
 // - borrowed: 'take(&x, await ...)', x travelling and borrowed after;
 // - added: 'body += await ...' reads and writes body after poke, so poke's
 //   change is kept;
@@ -31,47 +31,47 @@ import stdio use *;
 import actors;
 import sync use Arc, Mutex;
 
-struct Count {pub n u64;}
+struct Count {pub n: u64;}
 
-fn say(s &str, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
-fn head(s &str) {printStr(s); printStr("\n");}
-fn mk(n u64) u64 {say("mk", n); n;}
-fn take(r &u64, n u64) u64 {say("take", *r); *r + n;}
-fn addTo(c &mut Count, n u64) {say("add", c.n + n); c.n = c.n + n;}
+fn say(s: &str, n: u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s: &str) {printStr(s); printStr("\n");}
+fn mk(n: u64) u64 {say("mk", n); n}
+fn take(r: &u64, n: u64) u64 {say("take", *r); *r + n}
+fn addTo(c: &mut Count, n: u64) {say("add", c.n + n); c.n = c.n + n;}
 
 actor Helper {
-  count Arc[Mutex, Count];
+  count: Arc[Mutex, Count];
 
-  pub async do get(self, p Page, n u64) u64 {
+  pub async fn get(self, p: Page, n: u64) u64 {
     say("get", n);
     (&mut *count).n += 1u64;
     p.poke();
-    n;
+    n
   }
 
-  pub async do note(self, n u64) {say("note", n);}
+  pub async fn note(self, n: u64) {say("note", n);}
 }
 
 actor Page {
-  h Helper;
-  count Arc[Mutex, Count];
-  body u64;
-  row u64;
-  items Array[u64, 4];
-  grid Array[Array[u64, 3], 2];
+  h: Helper;
+  count: Arc[Mutex, Count];
+  body: u64;
+  row: u64;
+  items: Array[u64, 4];
+  grid: Array[Array[u64, 3], 2];
 
-  fn store(self, n u64) {say("store", n); body = n;}
+  fn store(self, n: u64) {say("store", n); body = n;}
 
-  pub async do poke(self) {
+  pub async fn poke(self) {
     say("poke", body);
     body = body + 1000u64;
     items[2] = items[2] + 1000u64;
   }
 
-  pub async do show(self, n u64) {say("show", n);}
-  pub async do double(self, n u64) u64 {say("double", n); n * 2u64;}
+  pub async fn show(self, n: u64) {say("show", n);}
+  pub async fn double(self, n: u64) u64 {say("double", n); n * 2u64}
 
-  pub async do run(self) {
+  pub async fn run(self) {
     head("receiver");
     body = 1u64;
     self.store(await h.get(selfactor, 3u64));
@@ -84,24 +84,24 @@ actor Page {
 
     head("indexed");
     items[2] = 5u64;
-    imm v = items[await h.get(selfactor, 2u64)];
+    let v = items[await h.get(selfactor, 2u64)];
     say("v", v);
 
     head("value");
     body = 1u64;
-    imm w = body + await h.get(selfactor, 1u64);
+    let w = body + await h.get(selfactor, 1u64);
     say("w", w);
     say("body", body);
 
     head("swapped");
     items[2] = 9u64;
-    mut a = 1u64;
-    a <=> items[await h.get(selfactor, 2u64)];
+    var a = 1u64;
+    a <-> items[await h.get(selfactor, 2u64)];
     say("a", a);
     say("items2", items[2]);
 
     head("borrowed");
-    imm x = 30u64;
+    let x = 30u64;
     body = take(&x, await h.get(selfactor, 4u64));
     say("body", body);
 
@@ -109,7 +109,7 @@ actor Page {
     body = 100u64;
     body += await h.get(selfactor, 5u64);
     say("body", body);
-    mut y = 10u64;
+    var y = 10u64;
     y += await h.get(selfactor, 6u64);
     say("y", y);
 
@@ -133,8 +133,8 @@ actor Page {
 fn main() {
   initAll();
   {
-    imm count = new Arc[Mutex, Count](0u64);
-    imm p = new Page(new Helper(count), count, 0u64, 0u64, [0u64, 0u64, 0u64, 0u64],
+    let count = Arc[Mutex, Count](0u64);
+    let p = Page(Helper(count), count, 0u64, 0u64, [0u64, 0u64, 0u64, 0u64],
       [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]]);
     p.run();
   }

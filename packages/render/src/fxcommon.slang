@@ -32,7 +32,7 @@ struct FxFrame {
     float4 sunDirection;               // 272: xyz towards the sun, unit; w the exposure every output was multiplied by
     float4 sunColor;                   // 288: rgb irradiance head on; w the time in seconds
     float4 ambient;                    // 304: rgb radiance; w the seconds since the last frame
-    float4 misc;                       // 320: x the frame number, y the far plane's distance, z 1 to ignore the history (a cut), w 0
+    float4 misc;                       // 320: x the frame number, y the far plane's distance, z 1 to ignore the history (a cut), w 1 if the camera is clipped (an oblique near plane: its depth row is not a plain perspective's)
 };
 
 static const float FX_PI = 3.14159265358979;

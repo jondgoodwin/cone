@@ -37,6 +37,8 @@ typedef struct ModuleNode {
     INode *traitname;        // 'mod A is T': T as written, a NameUseNode bound to the module trait once modTraitConform finds it; else NULL
     struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
+    Nodes *setorder;         // The globals its 'init' assigns, in the order the flow pass first met an assignment to each (modInitNoteSet); NULL where none
+    Nodes *setups;           // The assignments that set its 'let' globals given a value that is not a constant (modAddSetup): in the order type check met them, then in the order they run once modLifecycle has ordered them; NULL where none
     struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
     struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
     GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
@@ -44,6 +46,7 @@ typedef struct ModuleNode {
     Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
     DclSpans *spans;         // Where each of its statements sits in its files, in the order parsed (dclspan.h); NULL for none
     uint16_t holdsexpanded;  // Whether it declares a body an importer expands (export.c): 0 not yet asked, 1 no, 2 yes
+    uint8_t scratch;         // Made by the parser to read an untaken '#if' branch for its syntax (parsemeta.c): it keeps and binds nothing, and is dropped
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -56,6 +59,10 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node);
 void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
+
+// Whether a module is a generic module, or a submodule inside one: compiled
+// only as each instance's copy of it, never itself type checked or generated
+int modIsTemplate(ModuleNode *mod);
 
 // Whether the module's finalizer finalizes this global (itypeNeedsFinal, and
 // not C's storage): what modGiveDrop builds and an include file keeps
@@ -145,10 +152,20 @@ ModuleNode *modInitOf(FnDclNode *fnnode);
 
 // Around the data flow pass of a module's 'init': each global the module declares
 // without an initial value starts the pass unassigned, so 'init' may assign it
-// once -- an 'imm' one included -- and may not read it before it does. After the
+// once -- a 'let' one included -- and may not read it before it does. After the
 // pass, each one it never saw assigned is ErrorGlobalUninit, and every global
 // holds a value again for every other function. 'saved' carries their flags
-uint16_t *modInitFlowBegin(ModuleNode *mod);
+uint16_t *modInitFlowBegin(ModuleNode *mod, struct FnDclNode *initfn);
+// A call 'init' makes: where it is to one of the module's own functions, what that
+// function reads of the module's globals, and what the module's functions it calls
+// read in turn, counts as read at this call, so one 'init' has not yet set is refused
+void modInitCall(struct FlowState *fstate, struct FnCallNode *call);
+// A 'let' global whose value is not a constant is a setup: the module takes the type-checked
+// value to set the global before its 'init'. Answers 0, taking nothing, where the declaration
+// is not one a setup can serve (not a 'let' global of a Cone-named module), for the caller to
+// refuse the value as it refuses any global's
+int modAddSetup(struct VarDclNode *var);
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
+void modInitNoteSet(struct VarDclNode *var);
 
 #endif

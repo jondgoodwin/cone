@@ -66,9 +66,6 @@
 #   struct owns operator methods and covers both outcomes.
 # - An index past the end of a slice. It compiles, and the bounds check that
 #   would catch it aborts the process rather than failing an assertion.
-# - WarnCopy sounds as though a slice might provoke it. It is declared in
-#   error.h and raised nowhere. ErrorNotLval, ErrorAddr and ErrorNoFlds sounded
-#   the same way and have been deleted; ErrorBadAlloc is now region's.
 
 support = []
 
@@ -86,6 +83,32 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 category = "run"
 description = "A list read while an element borrow is used and pushed after its last use, 'v.push(v.len())', a pool read under a borrow, arena allocations live together, an owner moved after its coerced borrow's last use"
 tags = ["flow", "genllvm", "runtime"]
+
+# '&x[i]' calls '[]' (Index); '&mut x[i]' calls '&[]' (IndexMut). Uses the
+# collections, pool and arena packages.
+[scenario.collection_index_borrow_success]
+category = "run"
+description = "'&x[i]' through '[]' of a List (a 'var' and a '&' parameter), a Dict by key and by text, a Pool, a DynArena, a user type and a generic function's '&l[0]'; '&mut x[i]' beside each; a push after the borrow's last use"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# An index through a type's '[]' is a place (Rust's Index): copied out, written,
+# borrowed only with '&'. Uses the collections and pool packages.
+[scenario.collection_index_place_success]
+category = "run"
+description = "A List element copied out and the list pushed while the copy is used, passed by value, read by a generic body; written, '+=', borrowed with '&' and pushed after its last use; a List of Lists, a Dict, a Deque and a Pool read and written; a struct element's field and method, a swap of two elements; a List of a non-copyable enum matched by place with 'case is' (nothing moved, matched again) and through '&l[i]' with a binding"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# '*x[i]', the spelling from when 'x[i]' was a borrow: kept, and reported only
+# under --warn-index-star until the packages drop it
+[scenario.collection_warn_index_star]
+category = "warn"
+description = "'*x[i]' over a List's element and '**x[i]' over a List of references reported under --warn-index-star; a slice's element and '*&x[i]' not"
+tags = ["typecheck"]
+diagnostics = 2
+
+[[scenario.collection_warn_index_star.run]]
+name = "warn-index-star"
+options = ["--warn-index-star"]
 [scenario.collection_subslice]
 category = "run"
 description = "A slice of part of an array or a slice, borrowed with a range index: each range form, through a reference, of a slice, written through, returned from a parameter, and nested: a range of a row, a row of a range"
@@ -119,6 +142,11 @@ category = "compile"
 description = "Indexing a slice is bounds-checked against the length the slice carries"
 tags = ["typecheck", "genllvm"]
 
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.collection_bounds_slice.run]]
+name = "default"
+options = ["--strip"]
+
 [[scenario.collection_bounds_slice.check]]
 name = "slice-index-emits-bounds-check"
 target = "preir"
@@ -150,6 +178,11 @@ category = "compile"
 description = "A range index on a slice is bounds-checked: the start may not pass the end, nor the end the slice's length"
 tags = ["typecheck", "genllvm"]
 
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.collection_bounds_subslice.run]]
+name = "default"
+options = ["--strip"]
+
 [[scenario.collection_bounds_subslice.check]]
 name = "range-emits-bounds-check"
 target = "preir"
@@ -167,6 +200,20 @@ contains = ["icmp ule i64", ", %count",
 category = "run"
 description = "The list after '<-': listed values, 'n of x' evaluating x for each, 'fill x' to the capacity, pairs with a later key winning, after a construction and an existing collection, across lines and in an argument; 'of' and 'fill' as names"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# '<-' borrows its receiver with the permission its method's 'self' declares
+# (the refusals are collection_typecheck_append_perm's)
+[scenario.collection_append_borrow]
+category = "run"
+description = "'<-' borrows its receiver with what its method's 'self' declares: 'self &' appends through a 'let' variable, a 'let' global and a read-only reference, one entry or several; overloads of both kinds on a 'mut' receiver"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# '<-' and '=' through a reference take their borrow from the reference, not the variable
+# (the refusals are collection_typecheck_append_through_ref's)
+[scenario.collection_append_through_ref]
+category = "run"
+description = "'<-' and '=' through a 'let' variable holding an 'Rc[mut, ...]' or an 'Arc[mut, ...]', and '<-' on a '&mut' parameter: one entry and several, a field, the whole value and an element stored through the owner"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # -------- name resolution stage --------
 
@@ -192,6 +239,18 @@ tags = ["nameres"]
 diagnostics = 5
 
 # -------- type check stage --------
+
+[scenario.collection_typecheck_append_perm]
+category = "reject"
+description = "A '<-' whose method takes 'self &mut' is refused on a 'let' variable, a 'let' global and a receiver lent read-only, for one entry and for several; of two overloads, only the writing one is refused"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.collection_typecheck_append_through_ref]
+category = "reject"
+description = "'<-' and '=' through a reference need the reference to permit the write: an 'Arc[imm, ...]' or 'Rc[imm, ...]' in a 'var' variable, a '&' parameter and an 'imm' List are refused, one entry or several"
+tags = ["typecheck"]
+diagnostics = 16
 
 [scenario.collection_typecheck_contents]
 category = "reject"
@@ -220,6 +279,18 @@ description = "A range written with '...', with and without an end, and 'a..<' w
 tags = ["parse"]
 diagnostics = 3
 
+[scenario.collection_parse_range_prefix]
+category = "reject"
+description = "A range index with an end and no start, '..b', refused with the two forms that say whether the end is included, in a borrow, a '&mut' and a '&uni' borrow and a segment copy"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.collection_parse_range_bare]
+category = "reject"
+description = "A range index written with a bare '..' between its start and its end, spaced and not, refused with the two forms that say whether the end is included; and 'a..=' with no end"
+tags = ["parse"]
+diagnostics = 4
+
 # 'of' and 'fill' outside a list after '<-' are names, so what follows them
 # there is a malformed statement
 [scenario.collection_parse_contents]
@@ -227,6 +298,14 @@ category = "reject"
 description = "'n of x' and 'fill x' written outside a list after '<-'"
 tags = ["parse"]
 diagnostics = 3
+
+# A '<-' with no entry, or one that is no term, and a '-' before such an operand:
+# one ErrorBadTerm each, and the compile ends normally
+[scenario.collection_parse_append_operand]
+category = "reject"
+description = "A '<-' whose entry is missing or is no term (after the receiver, after a comma, before 'of' or ':', on a member or an index), a '-' before a missing operand, and a case whose pattern or range end is no term: one ErrorBadTerm each, with no crash"
+tags = ["parse"]
+diagnostics = 19
 
 [scenario.collection_typecheck_perm]
 category = "reject"
@@ -263,6 +342,44 @@ category = "reject"
 description = "A list pushed onto, or a pool's value removed, while a borrow a method returned is still to be used; a list pushed onto, and a String grown, while a 'viewMut' slice is still to be used (a change of shape); a receiver's mutable borrow activated meeting a borrow another argument carries"
 tags = ["flow"]
 diagnostics = 5
+
+# '&x[i]' through a type's '[]' loans the collection as any borrow a method
+# returns does. Uses the collections and pool packages.
+[scenario.collection_flow_index_borrow]
+category = "reject"
+description = "A List pushed onto and its element written, a Dict's entry removed and a Pool's value removed, while '&l[i]', '&d[k]' or '&p[r]' is still to be used"
+tags = ["flow"]
+diagnostics = 4
+
+# A non-copyable element is not moved out by index (Rust's "cannot move out of
+# index"): ErrorMoveElem names '&x[i]', a swap and 'remove'
+[scenario.collection_flow_index_move]
+category = "reject"
+description = "A List[String]'s element moved out by 'let', as an argument taken by value and by a return; a slice's element by 'let'; a match on a List element whose arm binds its String by value"
+tags = ["flow"]
+diagnostics = 5
+
+# An argument whose value is a borrow into a collection's contents keeps it
+# borrowed through the later arguments and the call, as a 'let' holding it would
+# (collection_args_borrow_success holds the neighbours that stay accepted).
+[scenario.collection_flow_args_borrow]
+category = "reject"
+description = "A view, an element borrow a call returned, a view handed on by a call, and a view in a struct literal or a tuple, as one argument, with the same String or List borrowed mutably by a later argument or inside one, a generic function's too: each was accepted and read freed memory once the callee grew it; and kept beside them, the receiver's '&mut self' meeting a view argument and a '&mut' argument before a view or an element borrow of the same source"
+tags = ["flow"]
+diagnostics = 13
+
+# Two arguments borrowing the whole of one source are accepted because the callee
+# refuses a borrow into one parameter's collection across a growth through another
+[scenario.collection_flow_args_borrow_callee]
+category = "reject"
+description = "A callee taking a view into what one reference parameter reaches, then growing what another reaches: two '&mut List', a '&String' and a '&mut String', two '&mut' structs holding lists"
+tags = ["flow"]
+diagnostics = 3
+
+[scenario.collection_args_borrow_success]
+category = "run"
+description = "One call's arguments: two views of one source, a view and a '&mut' of different sources, a number computed from a view beside a '&mut', and two borrows of the whole of one source ('&mut b, &mut b' written and through locals, '&s, &mut s', a cursor's 'at' twice) handed to a callee that grows through one and reads through the other"
+tags = ["flow", "genllvm", "runtime"]
 
 # What a 'mut' borrow of a local, or of what a '&uni' reference points at, an alias
 # loan, still refuses: a change of the collection's shape (a push by its name, through
@@ -344,6 +461,12 @@ description = "An element borrowed through a field of 'self', a shared 'Rc[mut, 
 tags = ["flow"]
 diagnostics = 4
 
+[scenario.collection_flow_reshape_slots]
+category = "reject"
+description = "A borrow of a value in a slots SlotTable (borrow, borrowMut, borrowAt, borrowMutAt) holds the table: an add, remove, removeAt or take while it is still to be used is refused, through a '&mut' parameter and on a local; two mutable borrows held at once, reading the table, and an add after the last use compile; of an element holding a List lent twice, a push through one loan while the other is used compiles, and is refused while a borrow into the List made through the other is"
+tags = ["flow"]
+diagnostics = 8
+
 # A borrow a free function hands out is followed like a method's, and a free
 # function beside a type counts among the code that lends from it and changes it
 # (collection_reshape_free_success holds what is accepted beside each refusal).
@@ -376,18 +499,18 @@ category = "run"
 description = "A borrow of an element held while another name replaces it with a value that owns nothing, an element's field replaced through the borrow of the element, a number in it through the other name, a field of some other struct that holds a String, a list the function owns, and a view used up before the store"
 tags = ["flow", "genllvm", "runtime"]
 
-# The same store over a field that OWNS the collection ('So', 'Rc', 'Arc', a program's own
+# The same store over a field that OWNS the collection ('Uni', 'Rc', 'Arc', a program's own
 # region): replaced, the owner frees the collection (collection_store_owner_success holds
 # what is accepted beside each refusal)
 [scenario.collection_flow_store_owner]
 category = "reject"
-description = "An element borrowed through one '&mut' ship while another name replaces the field holding the list's owner ('So', 'Rc', 'Arc', a user region), the whole ship, a ship nested in a struct, or the list through the owner; with the controls: the list held inline, the same name, and a push through another owner"
+description = "An element borrowed through one '&mut' ship while another name replaces the field holding the list's owner ('Uni', 'Rc', 'Arc', a user region), the whole ship, a ship nested in a struct, or the list through the owner; with the controls: the list held inline, the same name, and a push through another owner"
 tags = ["flow"]
 diagnostics = 12
 
 [scenario.collection_store_owner_success]
 category = "run"
-description = "A borrow of an element of a list a 'So' owns, held while another field of the other ship is written, a borrow used up before the owner is replaced, two local ships, and one shared 'Rc' ship replaced after the last use"
+description = "A borrow of an element of a list a 'Uni' owns, held while another field of the other ship is written, a borrow used up before the owner is replaced, two local ships, and one shared 'Rc' ship replaced after the last use"
 tags = ["flow", "genllvm", "runtime"]
 
 [scenario.collection_freeze_shared_success]
@@ -409,12 +532,12 @@ tags = ["flow", "genllvm", "runtime"]
 # struct_use_lend; the package's own tests cover the String itself.
 [scenario.collection_str]
 category = "run"
-description = "The methods of str on a literal, a borrow and an owner (len, bytes, indexing, boundaries, searching, trimming); a part taken with a borrowed range, through a reference, a result and another part; '==' and the orderings across str, So[str] and Rc[str], by byte"
+description = "The methods of str on a literal, a borrow and an owner (len, bytes, indexing, boundaries, searching, trimming); a part taken with a borrowed range, through a reference, a result and another part; '==' and the orderings across str, Uni[str] and Rc[str], by byte"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.collection_str_symmetric]
 category = "run"
-description = "'==', '!=' and the four orderings across '&str', '&String', '&So[str]', '&Rc[str]' and a literal, each kind on the left and on the right of each other (an owner on the left against a '&str' was refused as a reference compared with a value); the answers do not depend on operand order"
+description = "'==', '!=' and the four orderings across '&str', '&String', '&Uni[str]', '&Rc[str]' and a literal, each kind on the left and on the right of each other (an owner on the left against a '&str' was refused as a reference compared with a value); the answers do not depend on operand order"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.collection_typecheck_str]
@@ -422,6 +545,14 @@ category = "reject"
 description = "A range of text not borrowed, from a borrow and from an owner; an index that is not an integer; text written through an index"
 tags = ["typecheck"]
 diagnostics = 4
+
+# A read-only '&x[i]' calls '[]', which must lend a borrow for there to be a
+# place; '&[]' (IndexMut) may not be declared without '[]' (Index)
+[scenario.collection_typecheck_index_borrow]
+category = "reject"
+description = "'&[]' taking an index declared with no '[]'; '&x[i]' of a String's byte and of a user type's '[]' returning a value, which name no place"
+tags = ["typecheck"]
+diagnostics = 3
 
 [scenario.collection_reshape_through_call_success]
 category = "run"
@@ -459,6 +590,34 @@ description = "A view of a String, or of an element of a List, handed to a call 
 tags = ["flow"]
 diagnostics = 13
 
+# A String appended to that is a field of another struct than the viewed value's owner is another
+# value, and is not asked; what stays refused beside it is held here
+# (collection_reshape_receiver_other_struct_success holds what is accepted).
+[scenario.collection_flow_reshape_receiver_other_struct]
+category = "reject"
+description = "A view held across an append to a String or push to a List that may be the very value it points into: the same struct through two references or the same generic instance, a receiver that is a name, a list's element or a field holding a reference, a view reached through a name or a reference field, and the variants of one enum"
+tags = ["flow"]
+diagnostics = 15
+
+# A view through a field that holds a reference or pointer is into a String another struct holds:
+# the struct with the reference field is not its owner (collection_reshape_reffield_owner_success
+# holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_reffield_owner]
+category = "reject"
+description = "A view of a String reached through a field that holds a '&mut' to it (directly, through '*', held in a name, one struct down, in a method's own field), handed to a call that appends to a String that field may point at: the struct that holds the String, or another struct holding one"
+tags = ["flow"]
+diagnostics = 7
+
+[scenario.collection_reshape_reffield_owner_success]
+category = "run"
+description = "A view of a String a struct holds by value (one struct down, or by a by-value field of what a reference field points at), appended to another struct's String; a view through a reference field handed a call that holds no String, or only reads one"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.collection_reshape_receiver_other_struct_success]
+category = "run"
+description = "A view of a String that is a field, or a list's element, of one struct, held across an append to a String (or a push to a List) that is a field of another struct (the clipboard of a Ui beside its texts, a document's note beside its items), through one reference, two, a method's self, a loop, and a name holding the borrow"
+tags = ["flow", "genllvm", "runtime"]
+
 # A mutable virtual call hides the type behind it, so it may reach any container
 # (collection_reshape_virtual_success holds what is accepted beside each refusal).
 [scenario.collection_flow_reshape_virtual]
@@ -473,20 +632,20 @@ description = "A view held across a virtual call that cannot reach the container
 tags = ["flow", "genllvm", "runtime"]
 
 # A function may write a global by its name, whatever it is handed, and the loan walk does not follow
-# which one: a borrow into a 'mut' global is refused across a call that may reshape the container's type
+# which one: a borrow into a 'var' global is refused across a call that may reshape the container's type
 # by the shape inference, a callee it cannot read counting as one that does
 # (collection_reshape_global_success holds what is accepted beside each refusal).
 [scenario.collection_flow_reshape_global]
 category = "reject"
-description = "A view of a String, or of an element of a List, held in a 'mut' global across a call that may reshape it: handed to a function that writes the global by its name, held in a name across such a call, a closure in an 'imm' owner, a '&<fn', and a view passed on by a helper that calls a closure"
+description = "A view of a String, or of an element of a List, held in a 'var' global across a call that may reshape it: handed to a function that writes the global by its name, held in a name across such a call, a closure in an 'imm' owner, a '&<fn', and a view passed on by a helper that calls a closure"
 tags = ["flow"]
 diagnostics = 5
 
-# A function handed a reference cannot tell it is a 'mut' global, so where one reaches the type
+# A function handed a reference cannot tell it is a 'var' global, so where one reaches the type
 # the view reached through the reference is asked of the same calls
 [scenario.collection_flow_reshape_global_param]
 category = "reject"
-description = "A view of a String, or of an element of a List, reached through a '&mut' parameter, held across a call that may reshape it in a program with a 'mut' global that reaches the type: handed on beside a closure in an 'imm' owner, beside a '&<fn', through a '&<fn' whose body is not visible, and held in a name across such a call"
+description = "A view of a String, or of an element of a List, reached through a '&mut' parameter, held across a call that may reshape it in a program with a 'var' global that reaches the type: handed on beside a closure in an 'imm' owner, beside a '&<fn', through a '&<fn' whose body is not visible, and held in a name across such a call"
 tags = ["flow"]
 diagnostics = 4
 
@@ -495,13 +654,13 @@ diagnostics = 4
 # and a String made from a view, are refused alike; the cure is a copy made by a method of the global)
 [scenario.collection_flow_reshape_global_opaque]
 category = "reject"
-description = "A view of a 'mut' global held across a call through a function value (a parameter, a struct's field, a 'mut' global, a local), across an extern handed a callback that writes the global, a quiet callback, a struct holding a '&fn', a '&<mut fn' or a So[fn], and across String.from, which allocates through a '&fn'"
+description = "A view of a 'var' global held across a call through a function value (a parameter, a struct's field, a 'var' global, a local), across an extern handed a callback that writes the global, a quiet callback, a struct holding a '&fn', a '&<mut fn' or a Uni[fn], and across String.from, which allocates through a '&fn'"
 tags = ["flow"]
 diagnostics = 10
 
 [scenario.collection_reshape_global_success]
 category = "run"
-description = "A view of a 'mut' global across calls that cannot reshape it: its length, a copy, a call that writes nothing, a print, a view of an 'imm' global, a '&<mut fn' marked '+ ShapeKeeping', a view of a local beside a 'mut' global, and a view through a reference of a type no 'mut' global reaches"
+description = "A view of a 'var' global across calls that cannot reshape it: its length, a copy, a call that writes nothing, a print, a view of a 'let' global, a '&<mut fn' marked '+ ShapeKeeping', a view of a local beside a 'var' global, and a view through a reference of a type no 'var' global reaches"
 tags = ["flow", "genllvm", "runtime"]
 
 # A generic closure that captured the owner by '&mut' holds it as '& &mut Ed': a read-only reference
@@ -511,3 +670,121 @@ category = "reject"
 description = "A view of a String handed to a generic closure ('F fn(&str)') that captured the struct holding it by '&mut', so holds it as '& &mut Ed' and can grow the String through it: the view inline, and held in a name"
 tags = ["flow"]
 diagnostics = 2
+
+[scenario.collection_shapekeeping_link]
+category = "run"
+description = "A struct of a package compiled on its own behind a '&<mut Trait + ShapeKeeping' in the program that imports it: the package's include file, which has no method bodies, records ShapeKeeping on each type whose methods reshape nothing a caller borrows, and the program takes the type as the file says"
+tags = ["flow", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+[scenario.collection_flow_shapekeeping_xpkg]
+category = "reject"
+description = "A type of another package behind a '&<mut Trait + ShapeKeeping', taken as the package's include file says: one it does not record (a method that pushes into a collection it reaches through a '&mut' parameter, or one such method beside one that is fine) is refused at the pass; the recorded type passes"
+tags = ["flow"]
+diagnostics = 2
+
+# A '_' target in a body the shape inference reads (shapeinfer.c): it writes no
+# place, and names nothing, so it has no type to ask. Asking one was error 1075,
+# a compiler defect, wherever such a body was read: a callee of a call made while
+# a borrow into a collection is held, and a public method a library's include file
+# records the shape of. What the '_' takes is still made, so a call that reshapes
+# is still seen
+[scenario.collection_reshape_discard_success]
+category = "run"
+description = "A borrow into a 'List[i64]' held across calls whose bodies discard with '_': a value that copies, inside a block, in a generic function, in a method of a generic type, a by-value result that moves, one of two values taken apart, a refused value a push hands back in a 'match' arm in a loop (iocore's shape), and a popped value inside an 'if' in a method (http2's shape)"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.collection_flow_reshape_discard]
+category = "reject"
+description = "A borrow into a 'List[i64]' held across a call whose callee discards with '_' the result of a call that reshapes the list: a pop, and a push inside an 'if'"
+tags = ["flow"]
+diagnostics = 2
+
+[scenario.collection_reshape_discard_link]
+category = "run"
+description = "A package whose public methods, and a function they call, discard with '_', compiled on its own: its include file records ShapeKeeping on the type whose discards reshape nothing, and not on the one that discards what a reshaping call hands back; the program takes the recorded type behind a '&<mut Trait + ShapeKeeping'"
+tags = ["flow", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+[scenario.collection_temp_key_finalized]
+category = "run"
+description = "A temporary key lent to a Dict or OrderedDict method taking &mut self (remove, swapRemove, getMut) is finalized at its statement's end, as one lent to contains is"
+tags = ["flow", "genllvm", "runtime"]
+
+# The unstable sort and a comparison that is not an order: always memory-safe and every value kept
+# (release), and a panic in a debug build.
+[scenario.collection_sort_bad_order]
+category = "run"
+description = "sortUnstableBy with a comparison that always answers before, always after, or drifts: it returns, and each of the 300 values is still present once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.collection_sort_bad_order.run]]
+name = "release"
+options = []
+
+[scenario.collection_sort_bad_order_debug]
+category = "run"
+description = "sortUnstableBy with a comparison that always answers before panics in a debug build, after the line before the sort printed"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core\.cone:)\d+']
+
+[[scenario.collection_sort_bad_order_debug.run]]
+name = "debug"
+options = ["--debug"]
+
+# The stable sort and a comparison that is not an order: always memory-safe and every value kept
+# (release), and a panic in a debug build.
+[scenario.collection_sort_stable_bad_order]
+category = "run"
+description = "sortBy with a comparison that always answers before, always after, or drifts: it returns, and each of the 300 values is still present once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.collection_sort_stable_bad_order.run]]
+name = "release"
+options = []
+
+[scenario.collection_sort_stable_bad_order_debug]
+category = "run"
+description = "sortBy with a comparison that always answers before panics in a debug build, after the line before the sort printed"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core\.cone:)\d+']
+
+[[scenario.collection_sort_stable_bad_order_debug.run]]
+name = "debug"
+options = ["--debug"]
+
+# Bug 30: a virtual reference reached as a field of a struct was "anything" to the reshape check,
+# so every holder of a trait-object field was refused a call to code the compiler cannot read
+# while a borrow through a shared owner was live. One marked '+ ShapeKeeping' is held to keep
+# shape where it is made (refuse), and reaches nothing more (marked); unmarked it still does
+[scenario.collection_flow_traitfield_marked]
+category = "compile"
+description = "A struct holding a 'Uni[Waker + ShapeKeeping]' in a list, reached through a pointer, handed read-only to an extern while a borrow through an 'Arc' owner is live: accepted"
+tags = ["flow"]
+
+[scenario.collection_flow_traitfield_unmarked]
+category = "reject"
+description = "The same with an unmarked 'Uni[Waker]' field is refused (1339: the call may store over the Arc); the same shape with no trait-object field passes"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_flow_traitfield_refuse]
+category = "reject"
+description = "A type whose method pushes to a list it reaches through a '&mut' parameter, made a 'Uni[Waker + ShapeKeeping]', is refused naming the push; one that writes only its own field is accepted"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_flow_slot_read_success]
+category = "run"
+description = "Bug 49: a borrow copied out of a list of borrows, '*(&mut b.kids[i])', is the node the slot points at and not a borrow into the list's block, so a push to another list and a later use of the copy compile and run"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.collection_flow_slot_read_refuse]
+category = "reject"
+description = "Bug 49: a reference to the list's slot itself held across a push, a reference into a value the list holds by value held across a push, and a slot reference kept in use after a copy was read out of it are still refused (1339)"
+tags = ["flow"]
+diagnostics = 3

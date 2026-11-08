@@ -1,0 +1,83 @@
+// Build a tokenizer from a small hand-made vocabulary (the 256 byte tokens, three
+// merged tokens and one special token), encode a text with the special token in
+// it, decode the ids, and show how a word is cut before it is merged.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import bpetokenize;
+
+fn showIds(ids: &List[u32]) {
+  var i = 0usize;
+  while i < ids.len() {
+    if i > 0usize { printStr(" "); }
+    printInt(i64.from(ids.view()[i]));
+    i = i + 1usize;
+  }
+  printStr("\n");
+}
+
+fn main() i32 {
+  // 256 byte tokens (id = the byte), then the tokens the merges make, then a special token
+  var tokens = List[String]();
+  var b = 0u32;
+  while b < 256u32 {
+    var one = List[u8]();
+    one.push(u8.from(b));
+    tokens.push(bpetokenize.toByteLevel(one.view()));
+    b = b + 1u32;
+  }
+  tokens.push("he");                    // 256
+  tokens.push("ll");                    // 257
+  tokens.push("hell");                  // 258
+  tokens.push("<|end|>");               // 259: special, written as itself
+  var merges = List[String]();    // best merge first
+  merges.push("h e");
+  merges.push("l l");
+  merges.push("he ll");
+  var special = List[String]();
+  special.push("<|end|>");
+
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), bpetokenize.PreTokenizer.Gpt2) {
+    case let Ok(tok) {
+      // 'hell' is one token (258), 'o' a byte (111), the special token is matched whole (259)
+      let ids = tok.encode("hello<|end|>");
+      showIds(&ids);
+      match tok.decode(ids.view()) {
+        case let Ok(bytes) { printStr(bytes.view() as &str); printStr("\n"); }
+        case let Err(e) { let m = String() <- e; printStr(m.view()); printStr("\n"); }
+      }
+
+      // GPT-2's cut: a word takes the space before it, and numbers and punctuation are words
+      let text = "hello, world 42!";
+      let ends = bpetokenize.pieceEnds(tok.preTokenizer(), text);
+      var start = 0usize;
+      var i = 0usize;
+      while i < ends.len() {
+        printStr("[");
+        printStr(text.slice(start, ends.view()[i]));
+        printStr("]");
+        start = ends.view()[i];
+        i = i + 1usize;
+      }
+      printStr("\n");
+
+      // Any bytes encode and decode as they are, UTF-8 or not
+      var raw = List[u8]();
+      raw.push(0xFFu8);
+      raw.push('h');
+      raw.push('e');
+      let rawIds = tok.encode(raw.view());
+      showIds(&rawIds);
+    }
+    case let Err(e) {
+      let m = String() <- e;
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  0i32
+}

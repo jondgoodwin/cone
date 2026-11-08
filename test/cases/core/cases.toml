@@ -233,6 +233,16 @@ category = "run"
 description = "An overload name called before its candidates, each returning a generic instance, from a method, a function and each other"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.core_params_distinct]
+category = "run"
+description = "Parameters of distinct names in every way a list is declared (function, method, generic, closure, anonymous function), the same names in different lists, and a parameter named as a field or a global, still bind each to its own argument"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.core_nametype]
+category = "run"
+description = "A ':' between a name and its type in each place they meet (a global, a constant, a local, a static, a parameter with a default, a receiver, a closure's and a function type's, a field, a type parameter and what it must be, an enum and its integer type), a bare return type, and a variant bound by let-else with no ':'"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
 [scenario.core_shadowing]
 category = "run"
 description = "Which of two declarations under one spelling a bare name binds to, by scope"
@@ -400,13 +410,23 @@ diagnostics = 2
 category = "reject"
 description = "Statement and expression syntax the parser cannot accept"
 tags = ["parse"]
-diagnostics = 11
+diagnostics = 10
 
 [scenario.core_parse_decls]
 category = "reject"
 description = "Global-area declaration syntax the parser cannot accept"
 tags = ["parse"]
 diagnostics = 10
+
+[scenario.core_parse_nametype]
+category = "reject"
+description = "A name followed by its type with no ':' between them is refused, in a global, a constant, a parameter (with a default, a receiver), a closure's and a function type's, a local and a static"
+tags = ["parse"]
+
+[scenario.core_parse_keyword_arg]
+category = "reject"
+description = "A keyword where an argument's name belongs, before a ':', is reported once at the keyword, in a call, a method's call, a construction and a type's arguments; the compiler does not crash"
+tags = ["parse"]
 
 [scenario.core_parse_fns]
 category = "reject"
@@ -434,7 +454,7 @@ diagnostics = 2
 
 [scenario.core_parse_threadlocal]
 category = "reject"
-description = "'@threadlocal' anywhere but after a module global's 'mut', and a thread-local with no initial value"
+description = "'@threadlocal' anywhere but after a module global's 'let' or 'var', and a thread-local with no initial value"
 tags = ["parse"]
 diagnostics = 12
 
@@ -447,6 +467,28 @@ category = "reject"
 description = "A block the file never closes"
 tags = ["parse"]
 diagnostics = 1
+
+# The ';' of a block's last line goes by where the block stands: left off where its value is
+# used (ErrorTailSemi), kept where it is not (ErrorTailOpen), whatever type the line has. The
+# parser judges it, one function to a condition.
+[scenario.core_parse_tailvalue]
+category = "reject"
+description = "A block's last line with the ';' where its value is used, and without it where it is not"
+tags = ["parse"]
+diagnostics = 51
+
+[scenario.core_tailvalue]
+category = "run"
+description = "A block's value is its last line without a ';' in each place a value is used, and the ';' stays where it is not"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+# A run because the claim is the value each function returns: generation once
+# kept a branch's jump to its 'if''s end after a 'return' ending a plain block,
+# and LLVM dropped the 'return', so each function gave its fall-through value
+[scenario.core_jump_nested_block]
+category = "run"
+description = "A 'return' ending a plain block ends the path wherever the block is: an 'if''s branch, its 'else', an 'else if', a bound 'if', blocks several deep, a function's body, a loop's body and an 'if' in one, a bound block, a call's argument, a returned value, an inline function and a closure; locals released once as it leaves; a 'break' and a 'continue' in a conditional block inside another"
+tags = ["typecheck", "genllvm", "runtime"]
 
 # -------- name resolution stage --------
 
@@ -484,13 +526,21 @@ description = "Two declarations claiming one name in one block: a local, and a l
 tags = ["nameres"]
 diagnostics = 4
 
+# A parameter is a local of the function: a name given twice in one parameter
+# list is the same refusal, at the second, in every way a list is declared.
+[scenario.core_nameres_dupparm]
+category = "reject"
+description = "A parameter named twice: a function, a method, a method's receiver 'self', a generic function, a generic type's method, an extern declaration, a trait's method, an actor's synchronous method, a closure (full and short form) and an anonymous function; distinct names accepted"
+tags = ["nameres"]
+diagnostics = 11
+
 # -------- type check stage --------
 
 [scenario.core_typecheck]
 category = "reject"
 description = "Types and arities that do not agree"
 tags = ["typecheck"]
-diagnostics = 19
+diagnostics = 21
 
 [scenario.core_typecheck_namedarg]
 category = "reject"
@@ -578,3 +628,205 @@ diagnostics = 2
 [[scenario.core_gpu_recursion.run]]
 name = "vulkan"
 options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+# A float's '!=' is true for a NaN, itself included, where '==', '<', '<=',
+# '>' and '>=' are false: IEEE's unordered compare. Two runs, as core_success's,
+# so that what the optimizer folds from a NaN cannot hide a wrong compare.
+[scenario.core_float_nan_compare]
+category = "run"
+description = "A float NaN is unequal to everything, itself included: '!=' is true and '==', '<', '<=', '>', '>=' false, for f64 and f32, in a branch, as a value, under '!', in a generic's instance, derived from a struct's '==', and on slices; zero of either sign, infinities and ordinary values unmoved"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.core_float_nan_compare.run]]
+name = "release"
+options = []
+
+[[scenario.core_float_nan_compare.run]]
+name = "debug"
+options = ["--debug"]
+
+# '<=>' is the three-way comparison: built in for numbers, 'char' and text, an i32 -1, 0
+# or 1; a float NaN answers 0. Two runs, as core_float_nan_compare's, so that what the
+# optimizer folds cannot hide a wrong compare, with the constants folded in both.
+[scenario.core_threeway_compare]
+category = "run"
+description = "'<=>' on signed and unsigned integers of every width, char, f64 and f32 (zero signs, infinities, NaN answering 0), text (a prefix first), references, a literal taking the other side's type, used as an i32, and constant folded"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[[scenario.core_threeway_compare.run]]
+name = "release"
+options = []
+
+[[scenario.core_threeway_compare.run]]
+name = "debug"
+options = ["--debug"]
+
+# -------- several targets: destructuring and '_' --------
+
+[scenario.core_destructure]
+category = "run"
+description = "Several targets take several values apart, in a declaration and an assignment; '_' drops the value it takes at the statement's end; one target takes the whole tuple"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.core_destructure.run]]
+name = "release"
+options = []
+
+[[scenario.core_destructure.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.core_destructure_reject]
+category = "reject"
+description = "Several targets and a number of values that is not theirs, a list of values given to one target, and a type given to '_'"
+tags = ["typecheck"]
+diagnostics = 15
+
+[scenario.core_destructure_form]
+category = "reject"
+description = "A declaration of several names with no '=', and a type written on a '_'"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.core_destructure_dup]
+category = "reject"
+description = "A name declared twice in a declaration of several, and a value naming a name the declaration has not yet declared"
+tags = ["nameres"]
+diagnostics = 4
+
+[scenario.core_destructure_borrow]
+category = "reject"
+description = "A borrow passed to a call in the values of a declaration of several names, as in a single name's initializer: the temporary ends with its statement"
+tags = ["flow"]
+diagnostics = 2
+
+# -------- a float's encoding as methods --------
+
+# 'x.bits()', 'f32.fromBits(b)' and the rest read and build a float's encoding
+# with no 'as'. Every value comes through a C function the optimizer cannot see
+# into, so the methods run as the program runs, and the release and debug builds
+# give the one .out. Both widths, with the edge values listed in the source.
+[scenario.core_float_bits]
+category = "run"
+description = "A float's bits(), fromBits(), exponent(), mantissa() and signBit() on f32 and f64: 0.0, -0.0, the smallest subnormal, the largest finite, both infinities, two NaNs (one with the sign bit set), 1.0, 0.5 and -2.5, as run-time values and as literals; the round trip through fromBits, and the sign, exponent and mantissa rebuilding the bits"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.core_float_bits.run]]
+name = "release"
+options = []
+
+[[scenario.core_float_bits.run]]
+name = "debug"
+options = ["--debug"]
+
+# A float's encoding methods cost the bit operation and nothing more: compiled as
+# a library so that the public functions are kept, the optimized IR holds only
+# bitcasts, a compare, a mask and a shift, with no call, branch, select or load
+[scenario.core_genllvm_floatbits]
+category = "compile"
+description = "A float's bits(), fromBits(), signBit(), mantissa() and exponent() are one bit operation each once optimized: a bitcast, a signed compare with zero, a mask, a shift and the bias, with no call, branch, select or memory access"
+tags = ["genllvm"]
+
+[[scenario.core_genllvm_floatbits.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.core_genllvm_floatbits.check]]
+name = "each-is-the-bit-operation"
+target = "llvmir"
+contains = ["bitcast float %0 to i32", "bitcast double %0 to i64", "bitcast i32 %0 to float", "bitcast i64 %0 to double", "icmp slt i32", "icmp slt i64", "and i32", "and i64", "lshr i32", "lshr i64", "add nsw i32 %2, -127", "add nsw i32 %3, -1023"]
+excludes = ["call ", "br ", "select", "load", "store", "alloca"]
+
+# A float converted to an integer with '.from' saturates and never has an
+# undefined value (Bug 43): every float width into every integer width, at the
+# limits, just past them, at the infinities and at NaN, against an oracle. Two
+# runs, as core_success's: the result must not depend on the optimizer. The IR
+# checks pin that the conversion is the saturating one, and the bounds check an
+# index of it meets survives.
+[scenario.core_from_saturate]
+category = "run"
+description = "A float converted with .from to an integer saturates: top, bottom, 0 for NaN"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_from_saturate.run]]
+name = "release"
+options = []
+
+[[scenario.core_from_saturate.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.core_from_saturate.check]]
+name = "conversion-is-saturating"
+target = "preir"
+contains = ["llvm.fptosi.sat", "llvm.fptoui.sat"]
+
+# The conversion's effect on the optimizer (Bug 43): an index converted from a
+# float constant that cannot be an index was poison, and LLVM deleted the bounds
+# check, the panic and the read as undefined behavior. Saturated, the index is
+# 0 for NaN and -1.0, usize's top for 1.0e30, the optimized IR keeps the failing
+# check as a panic with that index, and no poison appears.
+[scenario.core_from_saturate_ir]
+category = "run"
+description = "A float constant converted to an index saturates: the bounds check stays, as a panic with the top index, and no poison appears"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core_from_saturate_ir\.cone:)\d+']
+
+[[scenario.core_from_saturate_ir.run]]
+name = "release"
+options = []
+
+[[scenario.core_from_saturate_ir.check]]
+name = "conversion-is-saturating"
+target = "preir"
+contains = ["llvm.fptoui.sat"]
+excludes = ["fptoui double", "br i1 poison"]
+
+[[scenario.core_from_saturate_ir.check]]
+name = "optimized-keeps-the-bounds-check"
+target = "llvmir"
+contains = ["call void @cone_panicIndex(i64 -1, i64 4,"]
+excludes = ["poison"]
+
+# A float constant its integer type cannot hold, and a constant that is no code
+# point converted to a char, are refused in any expression as a 'const' refuses
+# them (Bug 43); what fits, and what reaches '.from' through a call, is not.
+[scenario.core_typecheck_fromconst]
+category = "reject"
+description = "A constant float past its integer type, or a constant that is no code point as a char, is refused wherever it is written"
+tags = ["typecheck"]
+diagnostics = 12
+
+# 'char.from(n)' of a number that is no code point is U+FFFD (Bug 43): every
+# integer width and both float widths, at 0x10FFFF, 0x110000, the surrogates and
+# a negative. Two runs, as core_success's.
+[scenario.core_char_from]
+category = "run"
+description = "char.from of a number that is no code point is U+FFFD: above 0x10FFFF, a surrogate, a negative, a float's conversion"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_char_from.run]]
+name = "release"
+options = []
+
+[[scenario.core_char_from.run]]
+name = "debug"
+options = ["--debug"]
+
+# A discarded literal of a nullable-pointer enum that is the first to lay out its type
+# (bug 52): the flag that marks the type as a nullable pointer is set during layout, and
+# the literal read it before. Without the fix conec dies with 0xC0000409 and no message.
+[scenario.core_nullable_literal_first]
+category = "run"
+description = "A discarded None[&mut T] literal that is the first use of its type compiles and runs"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_nullable_literal_first.run]]
+name = "release"
+options = []
+
+[[scenario.core_nullable_literal_first.run]]
+name = "debug"
+options = ["--debug"]

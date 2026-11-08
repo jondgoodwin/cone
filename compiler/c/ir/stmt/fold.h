@@ -42,7 +42,7 @@ int foldAdmitsOwn(INode *member);
 // can get wrong by itself. 'base' is the base a sibling fold shares with the
 // folding type (NULL for any other fold): the private members a sibling has
 // from it are its base's to keep private, and the message says so.
-void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base);
+void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base, StructNode *src);
 
 // Expand a global's fold clause into its module's namespace, hooking each entry
 // when name resolution asks

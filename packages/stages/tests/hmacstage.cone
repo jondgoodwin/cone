@@ -1,0 +1,90 @@
+// A HashStage over an HmacSha256 gives the tag that update/finish gives: the
+// stage needs only the Digester trait, and the Hmacs meet it through 'feed'.
+// Two chunks go in; the stage's digest sink compares the tag it is given with the
+// one computed here by update/finish, and reports 1 for equal, 2 otherwise.
+
+mod hmacstage;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streams use *;
+import stages use *;
+import cryptohash;
+
+actor Sink is ChunkSink {
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {}
+  pub async fn accept(self, c: IoBuf) {}
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished { done.send(1u64); }
+      case is Failed { done.send(2u64); }
+    }
+  }
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+actor Compare is DigestSink[Array[u8, 32]] {
+  want: Array[u8, 32];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, want: Array[u8, 32], done: OneshotSender[u64]) {
+    *self = Self(want: want, done: done);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    match r {
+      case let Ok(tag) { done.send(if same(&tag, &want) {1u64} else {2u64}); }
+      case is Err { done.send(3u64); }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  var key = List[u8]();
+  var part1 = List[u8]();
+  var part2 = List[u8]();
+  var i = 0u8;
+  while i < 40u8 { key.push(i + 1u8); i = i + 1u8; }
+  i = 0u8;
+  while i < 100u8 { part1.push(i); i = i + 1u8; }
+  while i < 150u8 { part2.push(i); i = i + 1u8; }
+
+  var ref = cryptohash.HmacSha256.make(key.view());
+  ref.update(part1.view());
+  ref.update(part2.view());
+  let want = ref.finish();
+
+  var t: OneshotSender[u64];
+  var r: OneshotReceiver[u64];
+  t, r = Oneshot[u64].make();
+  var d: OneshotSender[u64];
+  var q: OneshotReceiver[u64];
+  d, q = Oneshot[u64].make();
+  {
+    let s = HashStage[cryptohash.HmacSha256](Sink(t), cryptohash.HmacSha256.make(key.view()), Compare(want, d));
+    var b1 = IoBuf(part1.len());
+    b1.append(part1.view());
+    s.accept(b1);
+    var b2 = IoBuf(part2.len());
+    b2.append(part2.view());
+    s.accept(b2);
+    s.end(Ending.Finished);
+  }
+  expectUInt((r.recv() || 0u64), 1u64, "the sink behind the hash stage heard Finished");
+  expectUInt((q.recv() || 0u64), 1u64, "the stage's tag over an HmacSha256 is update/finish's tag");
+  finalAll();
+  done()
+}

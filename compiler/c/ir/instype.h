@@ -83,4 +83,16 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
 // NULL where a vtable slot is filled and the match must be exact.
 FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *selftype);
 
+// Where iNsTypeFindVrefMethod found none: does a candidate differ from the
+// requirement in nothing but a parameter or the result held by value that is not
+// one layout (a variant for its enum, or the reverse)? 'diff' says where
+// (fnSigLayoutDiff), for the refusal under ErrorFnRefByValue.
+struct FnSigLayoutDiff;
+int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype, struct FnSigLayoutDiff *diff);
+
+
+// Does a number type's built-in method meet the trait method 'req', its
+// by-value number standing for a requirement's reference to 'Self'? See the
+// definition. 'binding' is the number namespace's binding for the method's name.
+int iNsTypeNumberMeets(INode *binding, FnDclNode *req, INode *nbr, INode *trait);
 #endif

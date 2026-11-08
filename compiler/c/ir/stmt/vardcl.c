@@ -125,17 +125,29 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
         pstate->declaring = svdeclaring;
     }
 
+    // A name of 'let a, b = values;' is hooked by the assignment that gives it its value, once
+    // that value is resolved (varDclHook)
+    if (name->flags & FlagDestructDcl) {
+        name->scope = pstate->scope;
+        return;
+    }
+
     // Variable declaration within a block is a local variable
-    if (pstate->scope > 0) {
-        if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
-            errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
-            errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
-        }
-        else {
-            name->scope = pstate->scope;
-            // Add name to global name table (containing block will unhook it later)
-            nametblHookNode(name->namesym, (INode*)name);
-        }
+    if (pstate->scope > 0)
+        varDclHook(pstate, name);
+}
+
+// Make a local variable's name the one its block's names mean from here, unless the block already
+// has a name by that
+void varDclHook(NameResState *pstate, VarDclNode *name) {
+    if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
+        errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
+        errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+    }
+    else {
+        name->scope = pstate->scope;
+        // Add name to global name table (containing block will unhook it later)
+        nametblHookNode(name->namesym, (INode*)name);
     }
 }
 
@@ -145,8 +157,8 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // A temporary dies at the end of the statement that made it (flow.c,
 // "Temporaries"), except where Rust's rule extends it to the end of the
 // enclosing block: what a borrow in an extending position of a local's
-// initializer borrows ('imm r = &make();', '&make().x', '&*makeOwner()'), and
-// the owner such an initializer lends where a borrow is wanted ('imm r &R =
+// initializer borrows ('let r = &make();', '&make().x', '&*makeOwner()'), and
+// the owner such an initializer lends where a borrow is wanted ('let r &R =
 // makeOwner();', read as Rust's '&*'). The initializer is an extending
 // position, and so, recursively, are the operand of an extending borrow or
 // recast and each element of an extending tuple, array or variant literal
@@ -154,7 +166,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // 'if''s or a 'match''s arm, as Rust 2024 extends them; a place an extending
 // borrow reaches extends the value it is part of, or that its owner is
 // reached through. A call's arguments, a method's receiver, a block's other
-// statements and a construction's arguments ('new H(..)') are not extending:
+// statements and a construction's arguments ('H(..)') are not extending:
 // a temporary there ends with its statement, and a borrow of it held past
 // that is refused (flowpath.c).
 //
@@ -359,7 +371,7 @@ static void varDclExtendPlace(VarDclExtend *ext, INode **nodep) {
     }
 }
 
-// Does this recast lend an owning reference as a borrowed one ('imm r &R =
+// Does this recast lend an owning reference as a borrowed one ('let r &R =
 // owner'), a borrow of what it owns?
 static int varDclLendsOwner(CastNode *cast) {
     if (cast->flags & FlagConvert)
@@ -404,7 +416,7 @@ static void varDclExtendExp(VarDclExtend *ext, INode **nodep) {
     case ArrayLitTag:
     case TypeLitTag:
     {
-        // A variant's literal ('Some(x)'), not a construction ('new H(x)')
+        // A variant's literal ('Some(x)'), not a construction ('H(x)')
         if (node->tag == TypeLitTag && !(node->flags & FlagIndex))
             return;
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems
@@ -477,6 +489,14 @@ static void varDclExtend(VarDclExtend *ext, INode **valuep) {
     ext->npending = 0;
 }
 
+// The values of a declaration of several names, 'let a, b = &f(), &g();', are one
+// initializer: each element is an extending position, as the elements of a tuple
+// a single name is given are
+void varDclExtendInit(TypeCheckState *pstate, INode **valuep) {
+    if (pstate->extend)
+        varDclExtend(pstate->extend, valuep);
+}
+
 Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
     pstate->extend = ext->outer;
     for (uint32_t i = 0; i < ext->ntemps; ++i) {
@@ -520,8 +540,20 @@ static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extr
 
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
+    // Rule 3: the declared type is established before anything that could read
+    // this variable is checked. Checking it can lay out a type for the first
+    // time -- the instance 'Box[Svc]' a global is declared with -- and the last
+    // layout to finish works the members queue, which could hold a method that
+    // reads this global (Svc's own, among them). Held as a layout in flight, the
+    // queue is worked only once the type is in place, so such a use reads the
+    // instance rather than the generic call it was written as. As for a
+    // function's signature (fnDclTypeCheck); see compiler/c/doc/phases/type-check.md,
+    // "Layout before members".
+    structLayoutEnter();
     itypeTypeCheck(pstate, (INode**)&name->perm);
-    if (itypeTypeCheck(pstate, &name->vtype) == 0)
+    int typed = itypeTypeCheck(pstate, &name->vtype);
+    structLayoutExit();
+    if (typed == 0)
         return;
 
     // Every function can reach a global: whether one holds a collection decides
@@ -568,6 +600,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
         if (name->vtype == unknownType) {
+            // A name of 'let a, b = values;' has the type of the value it is given: its assignment
+            // sets that and checks the declaration then (assignDestructInfer)
+            if (name->flags & FlagDestructDcl)
+                return;
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
             return;
         }
@@ -589,17 +625,26 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         }
         else
-            matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
+            matches = iexpTypeCheckCoerceStated(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
         if (!matches) {
             int whycode;
             char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype, &whycode) : NULL;
+            char privwhy[400];
             if (why)
-                errorMsgNode(name->value, whycode, "%s", why);
+                fnSigRefusalMsg(name->value, whycode, why);
+            // A macro's plain argument, bound to its parameter: said of the parameter
+            else if (name->flags & FlagMacroBind)
+                macroArgTypeRefused(name->value, name->namesym, 0, name->vtype);
+            else if (isExpNode(name->value)
+                && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)name->value)->vtype, name->vtype))
+                errorMsgNode(name->value, ErrorPrivateMatch,
+                    "Initialization value's type does not match variable's declared type.%s", privwhy);
             else
-                errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+                errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type%s",
+                    iexpImmBorrowHint(name->value, name->vtype));
         }
         else if (name->vtype == unknownType) {
             // A local of the type its initializer has, a '&uni' reference held
@@ -608,6 +653,18 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
                 && borrowUniReborrows(name->value, iexpGetTypeDcl(name->value)))
                 borrowUniReborrow(&name->value, iexpGetTypeDcl(name->value));
             name->vtype = ((IExpNode *)name->value)->vtype;
+            // A 'var' one that starts as a variant holds its enum, so another variant can follow.
+            // Not a pattern's binding, which is the matched value's own storage under its
+            // variant's name, nor a variable the compiler makes (its name starts with '-').
+            // Not a global or a static either: globals are held (the 12 Oct globals hold),
+            // so a global keeps the type its initializer has
+            if (name->scope >= 1 && !(name->flags & FlagStatic)
+                && !(name->value->tag == CastTag && (name->value->flags & FlagMatchBind))
+                && name->namesym != anonName && (&name->namesym->namestr)[0] != '-') {
+                INode *enumtype = iexpMutDclEnum(name->perm, &name->value);
+                if (enumtype)
+                    name->vtype = enumtype;
+            }
         }
         // A declared borrowed-reference type is a shared node carrying no
         // lifetime, so the variable takes a copy of it scoped as its initializer
@@ -624,10 +681,25 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // before anything runs. A parameter may default to 'srcFile()' or
         // 'srcLine()' too, each a constant where each call taking it is
         // (fnCallFinalizeArgs). An expression of constants is folded into the
-        // one it computes (litFoldConst).
+        // one it computes (litFoldConst). A 'let' global given any other value
+        // is a setup, which its module runs before its 'init' (modAddSetup).
         if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litFoldConst(&name->value)
-            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value)))
-            errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
+            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value))
+            && !modAddSetup(name)) {
+            // A local of the block that gives a global its value (scope 1 reached with no
+            // function around, where a parameter's scope is 0 here) is no global, and
+            // naming it the fault would mislead: the block may not declare a computed local
+            if (name->scope == 1 && !(name->flags & FlagStatic) && pstate->fn == NULL && pstate->scope >= 1) {
+                // The variable holding a '?' operand reports nothing: with no function here
+                // and no try block (refused unchecked, block.c), propagateLower always
+                // refuses that '?', the one fault here
+                if (!(name->flags & FlagQuesHeld))
+                    errorMsgNode((INode*)name, ErrorNotLit,
+                        "A block that gives a global its value cannot declare a local that is computed at run time: only a constant can start a variable here. Put the work in a function, which can declare locals, and give the global a call to it.");
+            }
+            else
+                errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
+        }
     }
 
     // The variable the parser names '-using' holds what a pattern's function gave back, and a
@@ -689,7 +761,7 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
         flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
         flowLoadValue(fstate, &((*vardclnode)->value));
-        flowHandleMoveOrCopy(&((*vardclnode)->value));  // initialization copies/moves value
+        flowHandleMoveOrCopyLast(&((*vardclnode)->value));  // initialization copies/moves value
         (*vardclnode)->flowtempflags |= VarInitialized;
     }
     else if (!((*vardclnode)->flowtempflags & VarInitialized))

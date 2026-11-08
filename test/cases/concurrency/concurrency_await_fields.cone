@@ -1,0 +1,94 @@
+// A value taken apart, `x.(a, b)`, across a seam (actor-continuations; the field
+// list is struct_fields_take's). The value is moved whole into the list and the
+// fields not named die with the statement, so a seam inside the statement leaves
+// the rest waiting in its slot, and a field taken before a seam travels in the
+// record like any value moved:
+//
+// - after: the list is on what is awaited, `(await make(1)).(g)`; the rest dies
+//   at the statement's end, after the seam;
+// - across: the fields are taken before the seam and used after it, one in flight
+//   in the call whose later argument holds the seam;
+// - held: the taken field is kept in a local across a seam and dies with the
+//   method's scope.
+//
+// What is awaited is a plain function, so this compiles with '--await-direct',
+// for tests (concurrency_await_split). Each behaviour is run beside its twin with
+// no 'await', and the two traces are the same.
+
+mod concurrency_await_fields;
+
+import stdio use *;
+import actors;
+
+struct Fin {
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+struct Hold {
+  pub f: Fin;
+  pub g: Fin;
+  pub k: u64;
+}
+
+fn give(n: u64) u64 {printStr("  give "); printUInt(n); printStr("\n"); n}
+fn makeHold(n: u64) Hold {printStr("  make "); printUInt(n); printStr("\n"); Hold(Fin(n * 10u64), Fin(n * 10u64 + 1u64), n)}
+fn eat(f: Fin, n: u64) u64 {printStr("  eat "); printUInt(f.n); printStr(" "); printUInt(n); printStr("\n"); f.n + n}
+fn say(s: &str, n: u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s: &str) {printStr(s); printStr("\n");}
+
+actor Page {
+  body: u64;
+
+  pub async fn after(self) {
+    head("after");
+    let g = (await makeHold(1u64)).(g);
+    say("g", g.n);
+  }
+  pub async fn afterPlain(self) {
+    head("after plain");
+    let g = (makeHold(1u64)).(g);
+    say("g", g.n);
+  }
+
+  pub async fn across(self) {
+    head("across");
+    let h = makeHold(2u64);
+    body = eat(h.(f), await give(5u64));
+    say("body", body);
+  }
+  pub async fn acrossPlain(self) {
+    head("across plain");
+    let h = makeHold(2u64);
+    body = eat(h.(f), give(5u64));
+    say("body", body);
+  }
+
+  pub async fn held(self) {
+    head("held");
+    let a, k = makeHold(3u64).(f, k);
+    body = await give(6u64);
+    say("held", a.n + k + body);
+  }
+  pub async fn heldPlain(self) {
+    head("held plain");
+    let a, k = makeHold(3u64).(f, k);
+    body = give(6u64);
+    say("held", a.n + k + body);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  {
+    let p = Page(0u64);
+    p.after();
+    p.afterPlain();
+    p.across();
+    p.acrossPlain();
+    p.held();
+    p.heldPlain();
+  }
+  finalAll();
+}

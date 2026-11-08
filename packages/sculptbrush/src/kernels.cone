@@ -1,0 +1,265 @@
+// ======== Brush kernels: a dab's weights to a displacement per vertex ========
+//
+// Each brush is a function of a dab (its frame 'DabCtx' and its vertices
+// 'DabData') to the displacement of each vertex, in the order of the dab's
+// list. The amounts are in units of the radius and the strength, tuned so a
+// stroke of strength 1 spaced 0.1 builds a form of a tenth of the radius or so
+// (Blender's default feel); the form of each brush follows Blender's manual.
+// Whether a brush's default action is to add or take away is Blender's, and
+// 'subtract' (sign -1) is its Ctrl action.
+
+fn vzero() Vec3 { Vec3(0., 0., 0.) }
+
+// The weight-averaged position of a dab's vertices
+fn areaCentre(s: &Sculptor, d: &DabData) Vec3 {
+  var sum = vzero();
+  var tw = 0.f;
+  var i = 0usize;
+  while i < d.vs.len() {
+    sum = sum + *s.mesh.positions[usize.from(*d.vs[i])] * *d.w[i];
+    tw = tw + *d.w[i];
+    i = i + 1usize;
+  }
+  if tw > 0. { sum * (1. / tw) } else { vzero() }
+}
+
+// The displacement of every vertex of the dab
+pub fn kernelDisp(s: &Sculptor, st: &Stroke, cx: &DabCtx, d: &DabData) List[Vec3] {
+  let kind = st.brush.kind;
+  let n = cx.n;
+  let r = cx.r;
+  let sg = cx.sign;
+  let sc = cx.s;
+  let cnt = d.vs.len();
+  var out = List[Vec3].withCapacity(cnt);
+  // The pull a plane-seeking brush makes in a dab: strength, held to 1
+  let pull = if sc > 1. {1.} else {sc};
+  if kind == BrushDraw {
+    // Along the area normal
+    let amt = sg * sc * r * 0.012;
+    var i = 0usize;
+    while i < cnt { out.push(n * (amt * *d.w[i])); i = i + 1usize; }
+  } else if kind == BrushDrawSharp {
+    // Tied to the surface as the stroke began: each vertex goes towards a height
+    // over its starting place and no farther, so dabs do not pile up
+    let top = sg * sc * r * 0.15;
+    var i = 0usize;
+    while i < cnt {
+      let v = usize.from(*d.vs[i]);
+      let off = (*s.mesh.positions[v] - *s.start[v]).dot(n);
+      let target = top * *d.w[i];
+      if (target - off) * sg > 0. {
+        out.push(n * ((target - off) * 0.5));
+      } else {
+        out.push(vzero());
+      }
+      i = i + 1usize;
+    }
+  } else if kind == BrushClay || kind == BrushClayStrips {
+    // Towards a plane just above the dab's mean place, so hollows fill and stacked strokes build up
+    let a = areaCentre(s, d);
+    let q = a + n * (sg * st.brush.height * r);
+    let f = 0.45 * pull;
+    var i = 0usize;
+    while i < cnt {
+      let dist = (q - *s.mesh.positions[usize.from(*d.vs[i])]).dot(n);
+      if dist * sg > 0. { out.push(n * (dist * f * *d.w[i])); } else { out.push(vzero()); }
+      i = i + 1usize;
+    }
+  } else if kind == BrushLayer {
+    // Raised to a fixed height over the base and held there
+    let cap = sg * st.brush.height * r;
+    let rate = (if cap < 0. {-cap} else {cap}) * pull * 0.5;
+    var i = 0usize;
+    while i < cnt {
+      let v = usize.from(*d.vs[i]);
+      let basePos = if s.hasBase {*s.base[v]} else {*s.start[v]};
+      let nb = vertexNormalOf(&s.mesh, if s.hasBase {&s.base} else {&s.start}, *d.vs[i]);
+      let off = (*s.mesh.positions[v] - basePos).dot(nb);
+      var moved = off;
+      if cap >= 0. {
+        let up = off + rate * *d.w[i];
+        let held = if up > cap {cap} else {up};
+        if held > off { moved = held; }
+      } else {
+        let dn = off - rate * *d.w[i];
+        let held = if dn < cap {cap} else {dn};
+        if held < off { moved = held; }
+      }
+      out.push(nb * (moved - off));
+      i = i + 1usize;
+    }
+  } else if kind == BrushInflate {
+    let amt = sg * sc * r * 0.012;
+    var i = 0usize;
+    while i < cnt { out.push(*d.nrm[i] * (amt * *d.w[i])); i = i + 1usize; }
+  } else if kind == BrushBlob {
+    // Along the normals, drawn towards a sphere whose centre lies under the dab
+    let amt = sg * sc * r * 0.014;
+    let sphereC = cx.c - n * (0.5 * r);
+    var i = 0usize;
+    while i < cnt {
+      let p = *s.mesh.positions[usize.from(*d.vs[i])];
+      let radial = (p - sphereC).normalize();
+      let dir = (*d.nrm[i] * (1. - st.brush.sphere) + radial * st.brush.sphere).normalize();
+      out.push(dir * (amt * *d.w[i]));
+      i = i + 1usize;
+    }
+  } else if kind == BrushCrease || kind == BrushDam {
+    // Pushed in along the normal and pinched towards the stroke line
+    let depth = if kind == BrushDam {0.03f} else {0.015};
+    let amt = sg * sc * r * depth;
+    let pinchF = st.brush.pinch * pull * 0.15 * sg;
+    var i = 0usize;
+    while i < cnt {
+      let v = usize.from(*d.vs[i]);
+      let x = *s.mesh.positions[v] - cx.c;
+      var lat = x - n * x.dot(n);
+      if cx.hasDir { lat = lat - cx.dir * lat.dot(cx.dir); }
+      out.push(n * (-amt * *d.w[i]) - lat * (pinchF * *d.w[i]));
+      i = i + 1usize;
+    }
+  } else if kind == BrushPlane {
+    // To a plane through the dab's mean place, flat, filling or scraping
+    let a = areaCentre(s, d);
+    let q = a + n * (st.brush.height * r);
+    let f = 0.6 * pull;
+    let depth = st.brush.depth * r;
+    var mode = st.brush.planeMode;
+    if sg < 0. && mode == PlaneFill { mode = PlaneScrape; }
+    else if sg < 0. && mode == PlaneScrape { mode = PlaneFill; }
+    let away = sg < 0. && st.brush.planeMode == PlaneFlatten;
+    var i = 0usize;
+    while i < cnt {
+      let dist = (q - *s.mesh.positions[usize.from(*d.vs[i])]).dot(n);
+      var ok = true;
+      if mode == PlaneFill && dist <= 0. { ok = false; }
+      if mode == PlaneScrape && dist >= 0. { ok = false; }
+      if st.brush.depth > 0. && dist.abs() > depth { ok = false; }
+      if ok {
+        let amt = if away {-dist * f * 0.5} else {dist * f};
+        out.push(n * (amt * *d.w[i]));
+      } else {
+        out.push(vzero());
+      }
+      i = i + 1usize;
+    }
+  } else if kind == BrushPinch {
+    // Towards the centre across the surface (Magnify, inverted, away from it)
+    let f = sg * st.brush.pinch * pull * 0.3;
+    var i = 0usize;
+    while i < cnt {
+      let x = cx.c - *s.mesh.positions[usize.from(*d.vs[i])];
+      let t = x - n * x.dot(n);
+      out.push(t * (f * *d.w[i]));
+      i = i + 1usize;
+    }
+  } else if kind == BrushSnakeHook {
+    // Dragged by the centre's move
+    let f = pull;
+    var i = 0usize;
+    while i < cnt { out.push(cx.delta * (f * *d.w[i])); i = i + 1usize; }
+  } else if kind == BrushThumb {
+    // Flattened to the dab's mean plane and smeared along the stroke
+    let a = areaCentre(s, d);
+    var i = 0usize;
+    while i < cnt {
+      let p = *s.mesh.positions[usize.from(*d.vs[i])];
+      let flat = n * ((a - p).dot(n) * 0.35 * pull);
+      let smear = cx.dir * (sg * sc * r * 0.04);
+      out.push((flat + smear) * *d.w[i]);
+      i = i + 1usize;
+    }
+  } else if kind == BrushNudge {
+    let amt = sg * sc * r * 0.04;
+    var i = 0usize;
+    while i < cnt { out.push(cx.dir * (amt * *d.w[i])); i = i + 1usize; }
+  } else if kind == BrushRotate {
+    // About the dab's normal through its centre
+    var i = 0usize;
+    while i < cnt {
+      let th = st.brush.angle * sg * sc * *d.w[i];
+      let len = (1. + th * th).sqrt();
+      let qv = n * (th / len);
+      let qq = 1. / len;
+      let x = *s.mesh.positions[usize.from(*d.vs[i])] - cx.c;
+      let t1 = qv.cross(x);
+      out.push(t1 * (2. * qq) + qv.cross(t1) * 2.);
+      i = i + 1usize;
+    }
+  } else {
+    var i = 0usize;
+    while i < cnt { out.push(vzero()); i = i + 1usize; }
+  }
+  out
+}
+
+// A relaxing step: each vertex moves 'factor' x weight of the way to the mean
+// of its neighbours (along the boundary, for a boundary vertex), all from the
+// positions as they are; 'slide' keeps only the part across the surface
+pub fn relaxDisp(s: &Sculptor, st: &Stroke, d: &DabData, factor: f32, slide: bool) List[Vec3] {
+  var out = List[Vec3].withCapacity(d.vs.len());
+  var i = 0usize;
+  while i < d.vs.len() {
+    let v = *d.vs[i];
+    let p = *s.mesh.positions[usize.from(v)];
+    let hs = s.mesh.vertexOutgoing(v);
+    let onBoundary = s.mesh.isBoundaryVertex(v);
+    var sum = vzero();
+    var cnt = 0.f;
+    var k = 0usize;
+    while k < hs.len() {
+      let h = *hs[k];
+      if !onBoundary || s.mesh.isBoundaryEdge(s.mesh.edge(h)) {
+        sum = sum + *s.mesh.positions[usize.from(s.mesh.toVertex(h))];
+        cnt = cnt + 1.;
+      }
+      k = k + 1usize;
+    }
+    if cnt > 0. {
+      var step = (sum * (1. / cnt) - p) * (factor * *d.w[i]);
+      if slide {
+        let nv = *d.nrm[i];
+        step = step - nv * step.dot(nv);
+      }
+      out.push(step);
+    } else {
+      out.push(vzero());
+    }
+    i = i + 1usize;
+  }
+  out
+}
+
+// The regularised Kelvinlet of de Goes and James (2017), "Regularized
+// Kelvinlets: sculpting brushes based on fundamental solutions of elasticity":
+// the displacement at offset x from a point force f in an elastic solid with
+// regularisation radius eps is [(a - b)/r_e I + b/r_e^3 x x^T + a eps^2/(2 r_e^3) I] f,
+// r_e = sqrt(|x|^2 + eps^2), a = 1/(4 pi mu), b = a / (4 (1 - nu)); here a = 1.
+fn kelvinlet(x: Vec3, f: Vec3, eps: f32, nu: f32) Vec3 {
+  let a = 1.f;
+  let b = a / (4. * (1. - nu));
+  let re2 = x.lengthSquared() + eps * eps;
+  let re = re2.sqrt();
+  let re3 = re2 * re;
+  f * ((a - b) / re + a * eps * eps / (2. * re3)) + x * (x.dot(f) * (b / re3))
+}
+
+// The biscale form (the same paper, section 6): the difference of two
+// Kelvinlets of radii eps1 < eps2, which falls off as the cube of the
+// distance rather than the first power, so a brush of a given radius has
+// compact influence. Scaled so the point of the force moves by exactly 'move'
+// (the field there is isotropic, (1.5 a - b)(1/eps) f), and faded to nothing
+// at ElasticReach radii so there is no cut.
+pub fn kelvinBiscale(x: Vec3, move: Vec3, radius: f32, nu: f32) Vec3 {
+  let eps1 = 0.5 * radius;
+  let eps2 = 1.5 * radius;
+  let a = 1.f;
+  let b = a / (4. * (1. - nu));
+  let at0 = (1.5 * a - b) * (1. / eps1 - 1. / eps2);
+  let field = kelvinlet(x, move, eps1, nu) - kelvinlet(x, move, eps2, nu);
+  let reach = ElasticReach * radius;
+  let q = x.length() / reach;
+  let fade = if q >= 1. {0.} else {(1. - q * q) * (1. - q * q)};
+  field * (fade / at0)
+}

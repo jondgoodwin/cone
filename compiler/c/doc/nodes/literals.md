@@ -1,13 +1,13 @@
 Seven literal forms across three source pairs: `nil`, `null`, integer, float and
 string in `literal.c`; the array literal in `arraylit.c`, which **shares its node with the
 array type**; and the type literal in `typelit.c`, which **shares its node with
-a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
+a call**. A struct's value is constructed `Point(1, 2)`, and a construction
 its implicit field-wise init takes is lowered into a type literal; so is a
 number's conversion, `u64.from(count)`. An enum's variant writes its literal with
 parentheses, `Some(x)`, and an empty one by its name alone, `None`; either is lowered here
 from a call or a name (`fnCallVariantCall`, `fnCallVariantTermNameRes`), and the variant's
 literal in brackets, `Some[x]`, is refused (`ErrorVariantBracket`), as a struct's is. An allocation,
-`new Rc[mut, Node](1)`, constructs its value the same way, in the region.
+`Rc[mut, Node](1)`, constructs its value the same way, in the region.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, decides that `[…]` is an array literal, and
@@ -30,12 +30,19 @@ constants where it can.
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each; `nsizes`, a type's written sizes or a literal's scalar levels (below) |
-| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
+| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value, or a vector's: the one value a vector or an array is converted from, or a mask's select's three ([vector](vector.md)); `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
-**`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
-suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
-concretely, and the lexer refuses a float literal past its type's range
-(`ErrorFloatRange`; [Parse](../phases/parse.md)).
+**`FlagUnkType`** is set by `newULitNode` and by `newFLitNode`, only when the lexer gave
+no type suffix (it passes `unknownType`): the node is built an `i32` or an `f64`, the
+default of its kind, and may be given another number type by where it is written (below).
+The lexer refuses a float literal past `f64`'s range, and one past the range of the type its
+suffix gives it (`ErrorFloatRange`; [Parse](../phases/parse.md)); a literal with no suffix
+that is given `f32` and holds more than `f32` does is refused where it is given
+(`litAdoptNumberType`).
+
+**`FlagLitFolded`** marks an integer literal no digits were written for: the value an
+expression of untyped literals came to (`litFoldUntyped`, below). Its `srcp` is the
+expression's, so `litCheckRange` quotes the value instead.
 
 **`FlagLitNeg`** says `uintlit` is the negation of the digits written. It is set
 only by `parsePrefix`'s fold (see Parse), and toggled, so a minus applied twice
@@ -44,10 +51,10 @@ clears it.
 **The array node serves both a type and a literal.** The list form `[a,b,c]`
 has empty `dimens`; the fill form, one value stored into every element, has
 `dimens` `[3]` and `elems` `[7]`, and is built only by an array's contents
-repeating a constant, `new Array[i32, 3] <- fill 7` ([fncall](fncall.md), "The
+repeating a constant, `Array[i32, 3]() <- fill 7` ([fncall](fncall.md), "The
 list after `<-`"): the source spelling `[3; 7]` is retired. A list form an
 array's contents build may carry `repeats`, the one place an element stands
-for several: `new Array[i32, 100] <- fill f()` is `elems` `[f(), f()]` with
+for several: `Array[i32, 100]() <- fill f()` is `elems` `[f(), f()]` with
 `repeats` `[1, 99]`, the second copy filling every element after the first.
 `elems` then counts fewer than the array's size, which is its type's. The array type,
 written `Array[i32, 3]`, is the same node tagged
@@ -63,7 +70,7 @@ contents are the scalars (`u8`, row-major) rather than the rows
 ([fncall](fncall.md), "The list after `<-`"). A generic's type argument loses
 it at substitution (`arrayTypeUnshaped`), since one instance serves both
 spellings. On a literal, `nsizes` is how many levels of its type its elements
-are the scalars of: `new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6` is a list form
+are the scalars of: `Array[i32, 2, 3]() <- 1, 2, 3, 4, 5, 6` is a list form
 of six `i32`s typed `Array[i32, 2, 3]`, `nsizes` 2, and its fill form's
 `dimens` counts scalars. Such a literal arrives typed, and
 `arrayLitTypeCheck` and `arrayLitCoerce` leave it alone, since its count of
@@ -80,10 +87,13 @@ comma-separated expressions, and **if a `;` follows, swaps** — what it gathere
 becomes `dimens` and a fresh list is gathered into `elems` — only so that name
 resolution can refuse `[n; x]` in both its meanings (below).
 
-A type literal is not built as one. A construction, `new Point(1, 2)`, is an
-`FnCallNode` flagged `FlagNew` (`parseNew`): its `objfn` the type -- a name, a
-path, type arguments in brackets -- and its `args` what is in the parentheses,
-none when they are left off. A bracketed form is an `FnCallNode` with
+A type literal is not built as one. A construction, `Point(1, 2)`, is the
+`FnCallNode` of a call, its `objfn` the type -- a name, a path, type arguments
+in brackets -- and its `args` what is in the parentheses; name resolution marks it
+`FlagNew` once it knows the callee is a type (`fnCallConstructNameRes`). One in a
+dynamic region, `new a[Node](1)`, is flagged `FlagNew` by the parser (`parseNew`),
+its `objfn` the region and the type in brackets, and its `args` none when they
+are left off. A bracketed form is an `FnCallNode` with
 `FlagIndex` from `parseSuffix`, and whether `Some[x]` is an index or an
 instantiation is type check's (a variant's literal is `Some(x)`). `parseArg` wraps
 `name: value` in a `NamedValNode` in every argument list, so refusing the
@@ -112,7 +122,7 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 is refused either way: with a type for x, `[3; i32]`, it is the old spelling of
 an array type (`ErrorArrayTypeOld`, naming `Array[T, n]`), and stays the
 `ArrayTag` it spells, so nothing after reports it again; with a value it is the
-retired fill literal (`ErrorFillLiteral`, naming `new Array[T, n] <- fill x`).
+retired fill literal (`ErrorFillLiteral`, naming `Array[T, n]() <- fill x`).
 A list of one type, `[i32]`, stays an `ArrayTag` with no size, which type check
 refuses. In a generic's template `[2; T]` is neither until `cloneArrayNode`
 decides again on the substituted element ([generic](generic.md)), and refuses it
@@ -123,12 +133,15 @@ bound, because it is matched against a field by symbol later.
 
 ## Type check
 
-**An untyped integer literal takes the number type it is wanted as, wherever it
+**An untyped number literal takes the number type it is wanted as, wherever it
 meets it, and no other literal is context-typed but `null` (below).** `litAdoptNumberType` is the
 one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
 type and drops the flag; against a float type it is replaced by an `FLitNode`
 holding the full 64-bit magnitude written, negated when `FlagLitNeg` says so,
-rounded once at the target's own precision. `litTypeCheck` applies it when `expectType` is a number type, and
+rounded once at the target's own precision. An `FLitTag` carrying `FlagUnkType` against
+a float type takes it and drops the flag, its value rounded to the `float` an `f32` is (a
+value that overflows one is `ErrorFloatRange`); against any other type it is left, and
+the mismatch is judged by the coercion that follows. `litTypeCheck` applies it when `expectType` is a number type, and
 `iexpCoerce` applies it to a literal that reaches coercion still untyped — an
 argument to an overload set, a generic or an operator, which is type checked
 before its callee is chosen. Every other literal is typed by
@@ -141,7 +154,7 @@ coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
 "Coercion", which makes any non-zero value true. `litAdoptNumberType` returns 0
 for it, so both of its callers fall through to that coercion and every position
 agrees. `typemgmt_success` pins all of them — initializer, assignment, argument,
-return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
+return value, struct-literal field, `if`, `!`, `&&` and `||` — each with a
 value whose low bit is 0, because `1` and `-1` read the same either way.
 `true` and `false` are built carrying `bool`, never `FlagUnkType`, so the rule
 never reaches them. `char` is refused too: an integer is no code point until it
@@ -170,7 +183,7 @@ position a literal meets a type: initializer, assignment, argument, return value
 and struct field, for `i64`, `u64`, `f32` and `f64`.
 
 **A float literal widened to a wider float type is widened in place.** A float
-literal is not context-typed: `0.5` is an `f32` wherever it is written, and it
+literal with an `f` or `f32` suffix is an `f32` wherever it is written, and it
 reaches an `f64` by the implicit widening every `f32` value has. When
 `iexpCoerce` finds that widening (`ConvSubtype`) and the value is a float
 literal, `litWidenFloat` replaces it with an `FLitNode` of the wider type
@@ -178,8 +191,8 @@ holding the `f32` value widened, rather than wrapping it in a conversion node.
 The value is exactly what the conversion generated, so no position's value
 moves; what moves is that the result is still a literal, which the global,
 static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
-so `imm g f64 = 0.5` is accepted as it is in a function body. It is still the
-`f32` value: `imm g f64 = 0.1` holds `0.100000001490116…`, as a local, an
+so `let g: f64 = 0.5` is accepted as it is in a function body. It is still the
+`f32` value: `let g: f64 = 0.1f` holds `0.100000001490116…`, as a local, an
 argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.
@@ -192,33 +205,80 @@ constant, `litWidenConst` follows the constant, and a constant whose value names
 another, to its literal and replaces the use with a literal of the wider type,
 leaving the constant's own literal for its other uses. An integer is
 sign-extended from a signed type and zero-extended from an unsigned one, as the
-conversion would, so `const B i8 = -128` reaches an `i64` as `-128` and
-`const U u8 = -1` a `u32` as `255`; a float goes through `litWidenFloat`. A
+conversion would, so `const B: i8 = -128` reaches an `i64` as `-128` and
+`const U: u8 = -1` a `u32` as `255`; a float goes through `litWidenFloat`. A
 widening holds every value of the narrower type, so nothing is range checked at
 the wider one. The one value not yet checked is an untyped integer's `i32`
 default, which generation checks (below): a constant whose value does not fit it
 is not folded, so its use keeps the conversion and generation still refuses it
-at the constant. Only widening folds: `const K = 300` then `imm b u8 = K` is a
+at the constant. Only widening folds: `const K = 300` then `let b: u8 = K` is a
 type mismatch, as `i32` does not coerce to `u8`. `typemgmt_success` pins a
 global, a static, a parameter default and a typed constant initialized from a
 widened constant, with the edge values above.
 
 **`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
-an untyped integer literal against any number type. `iexpCoerce` adopts before
+an untyped integer literal against any number type, and for an untyped float literal
+against any float type. `iexpCoerce` adopts before
 it asks, so this answers only the callers that ask without coercing: overload
 resolution, struct field matching and the branch meet. It deliberately ignores
-subtype direction "for user convenience".
+subtype direction "for user convenience". Overload resolution has no ranking, so an
+untyped literal that two candidates of different kinds take is ambiguous
+(`print <- 5`, `ErrorAmbigCandidate`), and so is an expression made of them
+(`print <- 2 * 3`); a float literal meets `print <- 2.0 * 3.0` as an `f64`, which one
+candidate takes exactly.
+
+**A literal beside a binary operator takes the other operand's type.** An operator
+application is a method call on its left operand, so an untyped literal there would
+decide the type by its default. `fnCallLowerMethodOn` asks `litAdoptBesideOperand` first:
+when the receiver is an untyped number literal and the argument is an expression of a
+number type (a borrow of a number is read through, as an operator reads it), the
+literal adopts that type, and `0.5 - s`, `1 - n`, `0 < u` and `2.0 * x` are the
+operations on `s`, `n`, `u` and `x`. A literal on the right is the argument and is
+matched by `iexpMatches`. Two untyped literals keep their defaults. An `if` or `match`
+that is the other operand is wanted as the number's type: as the argument, the receiver
+is checked first and the `if` given it (`numericif`, `fnCallOperandNumber`); as the
+receiver, it is given the argument's, which is checked first (`rcvexpect`). A range's
+first bound is the same operand: `each i in 0 ..< n` holds the bound in a hidden
+variable, and when the end is not a literal the end is checked first and gives the
+bound its type (`eachRangeFirstFollowsEnd`, `eachRangeFirstAdopt`; the same question
+the parallel range answers with `parallelEachBoundsFirst`).
+
+**An expression made only of untyped number literals is one literal.** Once a call's
+operands are checked, `fnCallTypeCheckNode` asks `litFoldUntyped`: a sum, difference,
+product, quotient, remainder or negation of two untyped literals, or of one, becomes a single
+untyped literal holding what it comes to, and the call's memory is made that literal in
+place (an `FnCallNode` is larger than a literal and shares its header; nothing yet points
+into its operands). Integers are computed exactly in 64 bits, a division truncating toward
+zero; a float is computed as an `f64`, so it is rounded once to the `f32` a place may ask
+for; an integer beside a float is that number as a float, the kind of each subexpression
+deciding its own (`7 / 2 + 0.5` is `3.5`). A result that is no finite number, a division
+by zero or an overflow of 64 bits is not folded, and is judged as it has been. The
+literal then takes its place's type as any untyped literal does (`let a: f32 = 2.0 * 3.0`,
+`let b: u8 = 200 + 50`), or the default of its kind: `2147483647 + 1` is the `i32` default's
+value past its range, refused at generation like any such literal. Folding is on the
+operator's own operands, so `x * (1.0 / 3.0)` has an untyped literal for its argument,
+and `(2.0).sqrt()` is a call on an `f64`: a method call has no place to ask.
+
+**A branch or an element that is a literal follows the others.** `if` and `match` arms
+that are untyped number literals wait for the others (`ifLiteralArmsFollow`): when the arms
+that are not literals met at one number type they take it (`if c {0.} else {d}` with an
+`f32` `d` is an `f32`, and `if c {0} else {u}` with a `u8` `u` a `u8`, which was a mismatch),
+and when there are none they are joined as ever and are the default of their kind. A float
+literal beside integer arms, or a type that is no number, is joined as before, and refused
+as before. An array literal does the same for its elements (`arrayLitSettle`), so
+`[0.1f, 0.2]` is an array of `f32`. Both apply where no place names the type: where one
+does, `expectType` reaches the literal first.
 
 **A literal nothing typed keeps its `i32` default, and must fit it.** Some
 literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
-the branches of an `if` or a block passed as an operand, or as an argument to
-an overload set or a generic, which get no type because theirs chooses the
+the value of a block passed as an operand, or the branches of an `if` given to an overload
+set, which get no type because theirs chooses the
 callee, and every literal whose type comes from nothing but itself — a
 variable, global or constant declared without a type, an array literal's
 elements. Such a literal still carries `FlagUnkType` when it is
 generated, so the `i32` is final, and `litCheckDefaultRange`, called from
 `genlExpr`, refuses one whose value does not fit it (`ErrorLitRange`) rather than
-materializing it at 32 bits — `x + if v {5000000000;} else {1;}` would add
+materializing it at 32 bits — `x - {5000000000}` would subtract
 `705032704`. It is checked there because generation is the one place every such
 literal is reached, in a body, a global's initializer and a constant's value
 alike, after everything that could have typed it has run.
@@ -227,7 +287,7 @@ alike, after everything that could have typed it has run.
 **A literal must fit the type it is given.** `litCheckRange` refuses an integer
 literal whose value its integer type cannot hold (`ErrorLitRange`) rather than
 materializing it at that width, which silently dropped every bit above it:
-`300u8` and `mut n u8 = 300` stored `44`. It runs where the type is decided —
+`300u8` and `var n: u8 = 300` stored `44`. It runs where the type is decided —
 `litTypeCheck` for a literal whose suffix gave it one, `litAdoptNumberType` for
 one taking the type it is wanted as — and at generation for the `i32` default.
 It measures the magnitude written, recovered through `FlagLitNeg`: a signed
@@ -269,10 +329,10 @@ the literal's own business but each decided from its tag:
   generation is the constant array of the text, no NUL counted. Any other length
   or element type is the ordinary mismatch.
 - A literal wanted as an owner of `str`, in any region (`slitIsStrOwner`): the
-  node becomes the `AllocateTag` node `new R[str](lit)` builds, typed as the owner
+  node becomes the `AllocateTag` node `R[str](lit)` builds, typed as the owner
   type wanted, its region and permission that type's. Only the literal node
   itself is taken this way; a variable or a call of type `&str` is not, and
-  needs `new`.
+  is constructed as the owner is.
 - A literal wanted as a struct that declares a static function
   `fromLiteral(text &str) Self` (`slitFromLiteralFn`): the node becomes the call
   of it on the literal, built lowered (`newFnCallLower`, `fnCallFinalizeArgs`)
@@ -302,7 +362,7 @@ the literal's own business but each decided from its tag:
   the type check state (its scope, the extension), which a coercion does not
   carry, so it is made one level up, by `iexpCoerceIn`, where the state is at
   hand: a call's arguments (`fnCallFinalizeArgs`), an init's arguments in
-  `new T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
+  `T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
   (initializer, assignment, ...), and only in a function's body (scope 2
   and up). A bare `iexpCoerce` meets it as no match (`iexpCoerceShape`), so every
   other place -- a global, a constant, a field's default, a
@@ -327,7 +387,7 @@ the literal's own business but each decided from its tag:
   literal, so a candidate that takes the literal as the `&str` it is is never
   ambiguous with a `&T` one (a dictionary's `&K` and `&str` indexes). Two
   candidates that need the conversion are ambiguous as any two are. The
-  selection of a declared init in `new T(...)` falls back the same way
+  selection of a declared init in `T(...)` falls back the same way
   (`typeLitNewChecked`: only when neither a declared init nor the implicit one
   took the arguments), with the same refusals. The implicit init and the
   compiler-declared operators on pointers do not offer it.
@@ -380,7 +440,7 @@ one constant dimension, forced to `usize`, and exactly one value.
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[new Fin(1), new Fin(2)]` moves exactly as `Array[Fin, 2]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin(1), Fin(2)]` moves exactly as `Array[Fin, 2]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 
@@ -395,7 +455,7 @@ construction of its value type or a finished value of it
 (a variable, or a field reached through one, with the type in the brackets and a
 `mut` before it if one is written), is an allocation in an arena
 (`typeLitNewInRegion`): the construction is rewritten, before anything of it is
-checked, to the call `a.alloc(new Node(1))` and checked as that, so it answers
+checked, to the call `a.alloc(Node(1))` and checked as that, so it answers
 what that arena's `alloc` answers (a `&mut Node`, or a key for a `DynArena`)
 and is held to the rules that call is. Any other permission, a permission with no
 type, a third argument and a `trynew` are `ErrorRegionNew`. The head is checked
@@ -407,7 +467,7 @@ rule is; an actor's
 state has one, generated for every actor,
 [parse](../phases/parse.md), "Actors"), and the head becomes the call
 `x.allocRegion()`, checked the same way on a copy and so asked to be a region
-value; `new self[T](...)` is `self.allocRegion().alloc(new T(...))` so. (A type
+value; `new self[T](...)` is `self.allocRegion().alloc(T(...))` so. (A type
 that gets its memory from a region is handed the head's region, which is read from
 a copy of the head, so a head that is a call is made twice.) The allocation the construction
 is rewritten to is that region's `alloc`, as a region ref's is, so a region
@@ -417,14 +477,15 @@ first field, in place of the heap's ([struct](struct.md), "CarriesRegion"). An a
 contents, after `<-`, which `contentsLower` takes before this is reached, so
 one here has none (`ErrorArrayContents`); so is an allocation of an array
 with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Otherwise its type must be a struct
-(`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
+(`ErrorNewType` otherwise: a number converts with `from`, except that `i32()` with
+no arguments is its zero literal, core's `Default` grant for numbers and `bool`; an enum's variant
 keeps its brackets). One positional argument whose type is the struct itself
 is a finished value, which needs no construction (`ErrorNewFinished`); an
 allocation takes one as its value instead. A generic
-struct named bare, `new Box(5i64)`, has its type arguments inferred from the
+struct named bare, `Box(5i64)`, has its type arguments inferred from the
 values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
-set, each `fn init(self &new, ...)`. With none declared, the arguments are
+set, each `fn init(self: &new, ...)`. With none declared, the arguments are
 checked against the fields they fill, as a literal's are; otherwise with no
 expectation, as an overload set's are. Viability is counted as
 `fnSigViableCall` counts it -- the count, the defaults, each argument passable
@@ -445,7 +506,7 @@ field a value in the literal.
 
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
-naming `new Point(...)`, unless it came of a construction (`FlagNew`), is a
+naming `Point(...)`, unless it came of a construction (`FlagNew`), is a
 refused `+` allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`,
 which refuses the allocation itself, `ErrorPlusAlloc`, naming the `new` form),
 or is a
@@ -460,7 +521,8 @@ number (and for `bool` a reference or pointer, as `typeLitConvertsToBool` says),
 and retags the call `TypeLitTag` with the number as its type, so it never passes
 through `typeLitTypeCheck`. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
-into position; a missing field takes its default; a field flagged `IsTagField`
+into position; a missing field takes its default (a struct declaring `Default` gives a field
+with none its type's `T()`, `typeLitFieldFill`); a field flagged `IsTagField`
 gets the variant's `tagnbr` **inserted** — which is how a variant's discriminant is
 materialized, and why a constructor never writes one. Inserted where the field
 sits, so an enum that placed its discriminant itself is served by the same walk. A
@@ -476,19 +538,19 @@ slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
-what makes `imm g i32 = K` legal. It accepts a borrow (`BorrowTag` or
+what makes `let g: i32 = K` legal. It accepts a borrow (`BorrowTag` or
 `ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
 reference to it, or a slice of it (its address and its length), is known before
 anything runs. The literal itself, which is that address and length, is a literal
-too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `imm g &Array[u8] = "text"`
+too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `let g: &Array[u8] = "text"`
 and a struct literal holding one as a field are literal initializers;
 generation's `genlExpr` builds the `{ptr, usize}` with instructions the builder
 folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
-terms, so `imm g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
-constant holding either (`borrowIsConstLit`), so `imm g = &K` is one too. It accepts a value
+terms, so `let g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
+constant holding either (`borrowIsConstLit`), so `let g = &K` is one too. It accepts a value
 tuple whose values all satisfy it (`vtupleIsLiteral`), so
-`mut g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
+`var g: (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
 it by `insertvalue` of constants, which the builder folds to a constant struct,
 as it does a struct literal of constants.
 
@@ -510,16 +572,22 @@ has not been generated yet.
 **A payload-less variant standing as its enum is a constant**
 (`litIsEnumVariant`): `Kind.Os` wanted as a `Kind` is type check's plain recast
 of the variant's type literal, which holds only the tag, to the enum. It is
-accepted only when every variant of the enum holds nothing but the tag
-(`IsTagField`): an enum with a field in common, or with a variant that holds a
-value, is padded wider than the variant, so the two are not one LLVM layout and
-`None` of an `Option` is not a constant. Where the two are one layout,
-`genlRecast` of a constant struct in a global's initializer (no function, so no
-stack slot) re-types the constant's fields as the enum's (`LLVMConstNamedStruct`);
-inside a function it keeps the store and load it always had, so no generated
-code there changed. This is what lets the variant be a named constant's, a
-global's, a parameter's or a field's default, and an element of an array or
-struct literal in those, wherever `litIsLiteral` is asked.
+accepted when the variant named holds nothing but the tag (`IsTagField`), whatever
+the enum's other variants hold, so `None` of an `Option` is a constant; a
+variant with a field of its own, or any variant of an enum with a field in
+common (the common field is in every variant), is not. `genlRecast` of a
+constant in a global's initializer (no function, so no stack slot to
+reinterpret through) makes the enum's constant three ways: where the variant and
+the enum are one layout, it re-types the constant's fields as the enum's
+(`LLVMConstNamedStruct`); where the enum is wider (padded out to its largest
+variant) it is the enum's own layout, every field zero but the tag at the
+enum's tag index; and where the enum is a nullable pointer or a reference with
+no tag (`NullablePtr`), `None` is already the null constant of the enum's LLVM
+type and is returned as is. Inside a function the recast keeps the store and
+load it always had, so no generated code there changed (its padding stays
+undefined, a global's is zero). This is what lets the variant be a named
+constant's, a global's, a parameter's or a field's default, and an element of an
+array or struct literal in those, wherever `litIsLiteral` is asked.
 
 **A borrowed constant array literal is a constant, as a borrowed string literal
 is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
@@ -541,11 +609,11 @@ lets the match run again. Only a borrow of a literal written in place is
 retyped; a named array is not coerced.
 
 **A named constant is borrowed as its literal would be.** A use of a constant is
-its value (refterm, "Named constants"), so `borrowIsConstLit` follows a
+its value (mod-globals.html#const, "Named constants"), so `borrowIsConstLit` follows a
 `ConstDclTag` use to the literal it holds: `&K` for `const K = [1, 2, 3]` is
 `&[1, 2, 3]`, `imm`, the program's lifetime, and placed in a constant global
 (`genlAddr` recurses into the value, [vardcl](vardcl.md), "Shape"). Not
-retyped, as a named array is not: `const K Array[u32, 3]` borrows as an `&Array[u32, 3]`.
+retyped, as a named array is not: `const K: Array[u32, 3]` borrows as an `&Array[u32, 3]`.
 Any other constant, or a field or element of one (`&K.x`, `&K[1].y`, and a
 method taking a borrowed `self` on one), is the borrow of a temporary, as its
 literal's would be: `borrowRefusesConst` reports it once (`ErrorBadLval`) and the
@@ -572,9 +640,9 @@ expression in a function body is generated as written, and LLVM folds it.
 constants (followed through any constant naming another):
 - a call of a number type's operator method whose body is an intrinsic
   (`litFoldOp`): `+ - * / %`, `& | ^ << >>`, unary `-` and `~`, the six
-  comparisons (a `bool`), and the `isTrue` a coercion to `bool` injects; the
-  operators on `bool` itself among them;
-- `not`, `and` and `or` over `bool` constants;
+  comparisons (a `bool`), the three-way `<=>` (an `i32`), and the `isTrue` a
+  coercion to `bool` injects; the operators on `bool` itself among them;
+- `!`, `&&` and `||` over `bool` constants;
 - a number's conversion, `T.from(x)` (a `TypeLitTag` of a number type) and the
   `FlagConvert` cast a coercion's widening injects, by `litFoldConvert`, which
   does what `genlConvert` generates;
@@ -611,8 +679,12 @@ leaves an out-of-range literal) so nothing folded from it reports again:
   exact result the integer type cannot hold, the smallest value divided by or
   taken the remainder of by -1 (LLVM's `sdiv` and `srem` both have no value
   there), a float result past the type's finite range, a float converted to an
-  integer that cannot hold its truncated value (`fptosi`/`fptoui` poison), and
-  an `f64` converted to an `f32` past its range. The bitwise operators cannot
+  integer that cannot hold its truncated value (the run time saturates it, but a
+  constant is refused rather than folded to that; `fnCallNumberFrom` folds a
+  float-to-integer or number-to-`char` conversion of constants in any
+  expression, not only where a constant is required), and
+  an `f64` converted to an `f32` past its range. `ErrorConstChar` (1600) is the
+  same for a number converted to a `char` that is no code point. The bitwise operators cannot
   overflow, and `-` on an unsigned constant is negation in its own width, as on
   an unsigned literal;
 - `ErrorConstDivZero`: a division or remainder by zero, integer or float;
@@ -721,18 +793,18 @@ reads to it.
 **An owner of `str` keeps a NUL after its bytes too.** The allocation that copies a
 `&str` into a region (`genlAllocate`, a body whose reference carries its length)
 asks the region for the header, the bytes and one more byte, and stores a zero
-there after the copy, in every region, so `So[str]`, `Rc[str]` and the rest are as
+there after the copy, in every region, so `Uni[str]`, `Rc[str]` and the rest are as
 much a C string as the literal they may have been copied from (`s.cstr()` on a
-`So[str]`, which calls `cstr.fromOwned`).
+`Uni[str]`, which calls `cstr.fromOwned`).
 The count leaves the byte out. A `String` keeps its own (collections), and
-`freeze` carries it into the `So[str]` it makes.
+`freeze` carries it into the `Uni[str]` it makes.
 
 **So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
-terminating zero after the text, uncounted — `mut g Array[u8, 5] = "hello"` is an
+terminating zero after the text, uncounted — `var g: Array[u8, 5] = "hello"` is an
 `Array[u8, 5]` stored in a `[6 x i8]`, and a `static` in a function body the
 same (`genlGloVarHasNul` asks that the literal has been taken as an array). A
-global given a literal as it is, `imm g = "hello"`, holds the `&imm str`, the
+global given a literal as it is, `let g = "hello"`, holds the `&imm str`, the
 `{ptr, usize}` of the literal's own global, and is refused on a GPU target
 as any global holding a reference is. `genlGloVarName` creates the longer
 global and keeps in `llvmvar` its address recast to a pointer to the
@@ -756,7 +828,16 @@ is its type exactly and has no terminator.
 - **An `f32` literal's `floatlit` is the double written, not the `f32`.** It is
   rounded when generated, so anything that computes with it rounds it first
   (`(double)(float)`), as `litWidenFloat` and the fold's `litNbrRead` do; read
-  raw, `f64.from(0.1f32)` folded to the double 0.1.
+  raw, `f64.from(0.1f32)` folded to the double 0.1. One adopted from an untyped
+  literal is already rounded (`litAdoptNumberType`).
+- **A float with no suffix that nothing types is an `f64` where it was an `f32`, and
+  nothing says so.** `var amax = 0.` compared with `f32` values was an `f32` and is now an
+  `f64`, which `amax > x` and the next use of it as an `f32` refuse, but `let total = 0.`
+  summed from `f32` values, or `fold(0.0, ...)` over an `f32` list, is accepted as an
+  `f64` and computes in it. A program whose meaning is its `f32` rounding says `f`.
+- **`litFoldUntyped` retags the call in place.** The node keeps its header and its
+  address, so a pointer held to the call (`fnCallExpectNode`) still reaches a node; its
+  `objfn`, `methfld` and `args` are gone, so nothing may read them after the fold.
 - **The fold computes floats with the host's C arithmetic.** That is the
   target's IEEE result only where the host rounds each `float` and `double`
   operation once, as x64's SSE does; a `conec` built for x87's extended
@@ -798,4 +879,4 @@ is its type exactly and has no terminator.
 - An array's contents, and the list after `<-` they are written with: [fncall](fncall.md), "The list after `<-`"
 - The nullable-pointer enum: [struct](struct.md) and [Generation](../phases/generation.md)
 - Where a type literal is retagged from a call, and a construction by a declared init: [fncall](fncall.md)
-- What a declared init may do with its `self &new`: [Flow Analysis](../phases/flow.md), "An init's self"
+- What a declared init may do with its `self: &new`: [Flow Analysis](../phases/flow.md), "An init's self"

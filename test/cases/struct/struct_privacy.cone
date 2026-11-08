@@ -1,5 +1,5 @@
 // A member not marked 'pub' is private to the module that declares its type,
-// not to the type and not to one value of it (refstruct.html, refmodule.html):
+// not to the type and not to one value of it (guide-structs.html, mod-namespaces.html):
 // all of the module's code reaches it through any value of the type, as the
 // type's own methods do through 'self'. A local, a parameter, a borrow written
 // out, a by-value call, a field read and a field written are each done, since
@@ -20,7 +20,7 @@ mod struct_privacy;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
@@ -28,120 +28,120 @@ fn show(label &str, n i64) {
 }
 
 struct Counter {
-  n i32;
-  fn bump(self &mut) { n = n + 1; }
-  fn get(self) i32 { n; }
+  n: i32;
+  fn bump(self: &mut) { n = n + 1; }
+  fn get(self) i32 { n }
 
   // A static function: a private method called on a local, borrowed for it and
   // borrowed written out
   pub fn make() Counter {
-    mut c = new Counter(10);
+    var c = Counter(10);
     c.bump();
     (&mut c).bump();
-    c;
+    c
   }
 
   // A private method taking 'self' by value, called on a local
   pub fn peek() i32 {
-    imm c = new Counter(7);
-    c.get();
+    let c = Counter(7);
+    c.get()
   }
 
   // A private field written through a parameter, in a static function
-  pub fn reset(o &mut Counter, to i32) {
+  pub fn reset(o: &mut Counter, to: i32) {
     o.n = to;
   }
 
   // A method: a private method called on a parameter, and a private field of
   // that parameter read
-  pub fn absorb(self &mut, o &mut Counter) {
+  pub fn absorb(self: &mut, o: &mut Counter) {
     o.bump();
     n = n + o.n;
   }
 
-  pub fn total(self &) i32 { n; }
+  pub fn total(self: &) i32 { n }
 }
 
 // A method reaching another value's private field
 struct Meter {
-  scale i32;
-  pub fn make(s i32) Meter { new Meter(s); }
-  pub fn same(self &, other &Meter) i32 {
-    scale * 100 + other.scale;
+  scale: i32;
+  pub fn make(s: i32) Meter { Meter(s) }
+  pub fn same(self: &, other: &Meter) i32 {
+    scale * 100 + other.scale
   }
 }
 
 // A generic type's instance, reaching another value of itself
 struct Cell[T] {
-  v T;
-  fn peek(self &) T { v; }
-  pub fn make(v T) Cell[T] { new Cell[T](v); }
-  pub fn plus(self &, o &Cell[T]) T { v + o.v + o.peek(); }
+  v: T;
+  fn peek(self: &) T { v }
+  pub fn make(v: T) Cell[T] { Cell[T](v) }
+  pub fn plus(self: &, o: &Cell[T]) T { v + o.v + o.peek() }
 }
 
 // -------- the rest of the module --------
 
 struct Vault {
-  pub id i32;
-  secret i32 = 1;
-  fn peek(self &) i32 { secret * 2; }
+  pub id: i32;
+  secret: i32 = 1;
+  fn peek(self: &) i32 { secret * 2 }
 }
 
 // Another type's method: a private method and a private field of a parameter
 struct Teller {
-  scale i32;
-  pub fn make(s i32) Teller { new Teller(s); }
-  pub fn audit(self &, v &Vault) i32 { scale * v.peek() + v.secret; }
+  scale: i32;
+  pub fn make(s: i32) Teller { Teller(s) }
+  pub fn audit(self: &, v: &Vault) i32 { scale * v.peek() + v.secret }
 }
 
 // A private init, called by a construction elsewhere in the module
 struct Sealed {
-  pub n i32;
-  fn init(self &new, a i32, b i32) { *self = new Sealed(n: a * b); }
+  pub n: i32;
+  fn init(self: &new, a: i32, b: i32) { *self = Sealed(n: a * b); }
 }
 
 // A field's default constructing a type with a private field, which is
 // checked with the holding type around it rather than a function
 struct Safe {
-  pub v Vault = new Vault(7, 8);
+  pub v: Vault = Vault(7, 8);
 }
 
 // A function of the module, reading and writing a private field
-fn openVault(v &Vault) i32 { v.secret; }
-fn rekey(v &mut Vault, k i32) { v.secret = k; }
+fn openVault(v: &Vault) i32 { v.secret }
+fn rekey(v: &mut Vault, k: i32) { v.secret = k; }
 
 fn main() {
-  mut a = Counter.make();
+  var a = Counter.make();
   show("private-method-on-a-local", a.total());    // 10, bumped twice: 12
   show("by-value-private-method", Counter.peek());  // 7
 
-  mut b = Counter.make();                           // 12
+  var b = Counter.make();                           // 12
   Counter.reset(&mut b, 3);
   show("private-field-written", b.total());         // 3
   a.absorb(&mut b);                                 // b 4, a 12 + 4
   show("private-method-on-a-parameter", b.total()); // 4
   show("private-field-of-a-parameter", a.total());  // 16
 
-  imm m = Meter.make(2);
-  imm o = Meter.make(5);
+  let m = Meter.make(2);
+  let o = Meter.make(5);
   show("another-value-s-private-field", m.same(&o)); // 205
 
-  imm c = Cell[i32].make(3);
-  imm d = Cell[i32].make(4);
+  let c = Cell[i32].make(3);
+  let d = Cell[i32].make(4);
   show("same-instance-s-private", c.plus(&d));      // 3 + 4 + 4 = 11
 
-  mut v = new Vault(1, 5);
+  var v = Vault(1, 5);
   show("module-fn-reads-private", i64.from(openVault(&v)));        // 5
   show("module-fn-calls-private", i64.from(v.peek()));             // 10
-  imm t = Teller.make(3);
+  let t = Teller.make(3);
   show("other-type-reaches-private", i64.from(t.audit(&v)));       // 3 * 10 + 5 = 35
   rekey(&mut v, 9);
   show("module-fn-writes-private", i64.from(v.secret));            // 9
-  imm w = new Vault(id: 2, secret: 6);
+  let w = Vault(id: 2, secret: 6);
   show("private-field-by-name", i64.from(w.secret));               // 6
-  show("private-init", i64.from(new Sealed(3, 4).n));              // 12
-  imm s = new Safe();
+  show("private-init", i64.from(Sealed(3, 4).n));              // 12
+  let s = Safe();
   show("default-with-private", i64.from(s.v.secret));              // 8
-  imm f = &fn(x &Vault) i32 {x.secret + x.peek();};
+  let f = &fn(x: &Vault) i32 {x.secret + x.peek()};
   show("anonymous-fn-reaches-private", i64.from(f(&w)));           // 6 + 12 = 18
 }

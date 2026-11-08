@@ -21,55 +21,55 @@ import collections use *;
 import actors;
 
 actor Holder {
-  items List[u64];
-  grid Array[u64, 4];
-  total Atomic[u64];
+  items: List[u64];
+  grid: Array[u64, 4];
+  total: Atomic[u64];
 
-  fn init(self &new) {
-    *self = new Self(items: new List[u64], grid: [1u64, 2u64, 3u64, 4u64], total: Atomic[u64].of(0u64));
+  fn init(self: &new) {
+    *self = Self(items: List[u64](), grid: [1u64, 2u64, 3u64, 4u64], total: Atomic[u64].of(0u64));
   }
 
   // An array in a local
-  pub async do localArray(self) {
-    imm xs = [1u64, 2u64, 3u64];
+  pub async fn localArray(self) {
+    let xs = [1u64, 2u64, 3u64];
     parallel each x in xs {                        //~ ErrorParFrame "the array it walks lies in the behaviour's own frame"
       total.add(*x);
     }
   }
 
   // An array made for the loop
-  pub async do madeArray(self) {
+  pub async fn madeArray(self) {
     parallel each x in [4u64, 5u64] {              //~ ErrorParFrame "the array it walks lies in the behaviour's own frame"
       total.add(*x);
     }
   }
 
   // A slice held in a variable
-  pub async do heldSlice(self) {
-    imm s = &grid[0usize..<2usize];
+  pub async fn heldSlice(self) {
+    let s = &grid[0usize..<2usize];
     parallel each x in s {                         //~ ErrorParFrame "the slice it walks lies in the behaviour's own frame"
       total.add(*x);
     }
   }
 
   // A borrow held in a variable, read in the body
-  pub async do heldBorrow(self) {
-    imm t = &total;
+  pub async fn heldBorrow(self) {
+    let t = &total;
     parallel each x in 0usize ..< 4usize {
       t.add(1u64);                                 //~ ErrorParFrame "t holds a borrow"
     }
   }
 
   // Allowed: a field array through 'self', a list in a local, a number in a local
-  pub async do fine(self, n u64) {
-    imm k = n + 1u64;
-    parallel each x in grid {
+  pub async fn fine(self, n: u64) {
+    let k = n + 1u64;
+    parallel each x in &grid {
       total.add(*x + k);
     }
-    mut l = new List[u64];
+    var l = List[u64]();
     l.push(1u64);
     l.push(2u64);
-    parallel each x in l {
+    parallel each x in &l {
       total.add(*x + k);
     }
     parallel each x in grid.mutItems() {
@@ -78,12 +78,12 @@ actor Holder {
   }
 
   // A synchronous method is not cut: its frame outlives the loop
-  fn sync(self &) u64 {
-    imm xs = [1u64, 2u64, 3u64];
-    imm t = &total;
-    parallel each x in xs {
+  fn sync(self: &) u64 {
+    let xs = [1u64, 2u64, 3u64];
+    let t = &total;
+    parallel each x in &xs {
       t.add(*x);
     }
-    total.load();
+    total.load()
   }
 }

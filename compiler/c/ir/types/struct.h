@@ -51,6 +51,8 @@ typedef struct StructNode {
     int64_t tagnbr;         // If a tagged struct, the number in the tag field, read as 'tagstate' says
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
+    uint8_t carriesending;  // itypeCarriesEndingBorrow's remembered answer (CarriesBorrow*), once the type is checked
+    uint8_t carrieswritable; // itypeCarriesWritableBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t shapeinf;       // Whether the compiler finds it shape-changing (ShapeInfer), for a type that declares none of the three (shapeinfer.h)
@@ -59,8 +61,11 @@ typedef struct StructNode {
     uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
-    uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self &mut', else 'self &'
+    uint8_t reflect;        // Declared '@reflect' (placeholder spelling): '#fields' lists its private fields to code outside its module too (fields.h)
+    uint8_t mustuse;       // Declared '@mustUse': a statement that drops a value of it is warned (discard.h)
+    uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
+    struct GenericLateWhere *latewhere;  // An instance's members whose 'where' waits on an argument's layout, not yet decided (genericLateWhere); NULL once they are, and for every other type
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
@@ -165,6 +170,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node);
 // 'copy' of the same name, for the clones made while the map is in force
 void structCloneMapMembers(StructNode *original, StructNode *copy);
 
+// Bind each alias a generic module's instance re-made for an enrichment
+// (CloneState.enrichfix) to the member of the same name in the instance's copy
+// of the base, once every declaration of the instance is copied
+void structCloneEnrichFix(Nodes *fix);
+
 // Add a field node to a struct type
 void structAddField(StructNode *type, FieldDclNode *node);
 
@@ -195,13 +205,21 @@ Name *structLentVia(StructNode *type);
 void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INode *lexnode);
 
 // Is this a method of an enum, with a body, whose receiver names the enum
-// ('self &Lamp', 'self &mut Lamp', 'self Lamp')? Such a method is one function
+// ('self: &Lamp', 'self: &mut Lamp', 'self Lamp')? Such a method is one function
 // over the whole enum, not a default copied into each variant: a receiver written
-// 'self &' or 'self &Self' is the variant's.
+// 'self: &' or 'self: &Self' is the variant's.
 int structIsWholeEnumMethod(INode *meth);
+
+// Is this a method with a body that takes 'self' by value ('self', 'var self')?
+// An enum's such method is copied into each variant and requires nothing of it.
+int structTakesSelfByValue(INode *meth);
 
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
+
+// The enum a type is a variant of, or NULL where the type is not a variant of an
+// enum (an enum itself, a trait, a plain struct, anything that is not a struct)
+StructNode *structVariantEnum(INode *typedcl);
 
 // Does this type's 'is' list name this trait (once it has been taken in)?
 int structDeclaresTrait(StructNode *node, StructNode *trait);
@@ -221,6 +239,16 @@ StructNode *structExtendsRoot(StructNode *node);
 // Do two type declarations substitute for each other because one enriches the
 // other, or because both enrich one base? Nothing else answers yes.
 int structExtendsEquiv(INode *type1, INode *type2);
+
+// Would handing a value of 'fromtype' on as 'totype', by value, skip a finalizer?
+// Answers the enrichment whose 'final' would not run, or NULL, and sets *basep to
+// the type that would drop it instead. True where the two
+// are an enrichment and its base (or two enrichments of one base) and the source
+// has a 'final' the target lacks: the value is then dropped as the target, which
+// runs none. An owning reference (Uni, Rc) of the one handed on as one of the
+// other is the same handoff, and is answered through its pointee. A borrowed
+// reference never is: the owner keeps its own type and its own drop.
+StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep);
 
 // The enum an 'extends' on an enum adds variants to, or NULL for anything else.
 // The two are distinct types that do not substitute for each other in either
@@ -252,6 +280,10 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 // value: because it is written in the module that declares the type, or in an
 // extension of its enum (structEnumSeesPrivate)?
 int structSeesPrivate(TypeCheckState *pstate, INode *type);
+// Does the type say, in its own declaration, that it complies with the trait: by
+// 'is', directly or through a trait that names it, or as a variant of the trait?
+// 'depth' is 0 from outside.
+int structDeclaresTraitTree(StructNode *strnode, StructNode *trait, int depth);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
@@ -259,6 +291,9 @@ StructNode *structGetBaseTrait(StructNode *node);
 // Type check a struct type: its layout. Its members are checked once no layout
 // is in flight.
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+// The value `T()` gives a field of a struct declaring core's Default that names none
+// and whose declaration gave no `= value`, or NULL (structFieldDefault)
+INode *structFieldDefault(StructNode *node, FieldDclNode *field);
 
 // An array type checked as a reference's target waits for its element's
 // layout before it asks the element's size and takes its move and thread
@@ -370,6 +405,21 @@ void structMakeVtable(StructNode *node);
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
 TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode);
+// After structVirtRefMatches answered yes: does the type fill a slot of the trait
+// with a member private to its module that the code being checked cannot count?
+int structVirtRefHidden(StructNode *trait, StructNode *strnode);
+// Words for a fit refused for privacy alone: the first member of the type that
+// would meet the trait's requirement but is private to its module, into 'buf',
+// leading space included. Answer 1 with the words, 0 and an empty 'buf' if the
+// refusal has another cause. The second spelling takes a reference to each.
+int structPrivateWhy(char *buf, size_t size, StructNode *trait, StructNode *strnode);
+int structPrivateRefWhy(char *buf, size_t size, INode *fromtype, INode *totype);
+
+// The first field 'trait' requires that 'strnode' (or, for a trait or enum, one of its
+// implementers or variants, returned in 'offender' when given) holds under a different
+// type than the trait gives it, or NULL when every field has exactly that type. A
+// writable virtual reference needs NULL: it is invariant in its fields' types.
+FieldDclNode *structVirtRefFieldVariant(StructNode *trait, StructNode *strnode, StructNode **offender);
 
 // Will from-type coerce to to-struct (we know they are not the same)
 // We can only do this for a same-sized trait supertype

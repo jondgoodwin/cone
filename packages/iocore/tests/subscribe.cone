@@ -14,34 +14,33 @@ import iobuf use *;
 import iocore use *;
 import diag;
 
-mut @threadlocal records = 0u64;
-mut @threadlocal timers = 0u64;
-mut @threadlocal cancelled = 0u64;
-mut @threadlocal bytes = 0u64;
-mut @threadlocal ordered = true;
-mut @threadlocal lastLoop = 0u64;
+var @threadlocal records = 0u64;
+var @threadlocal timers = 0u64;
+var @threadlocal cancelled = 0u64;
+var @threadlocal bytes = 0u64;
+var @threadlocal ordered = true;
+var @threadlocal lastLoop = 0u64;
 
-fn keep(r &diag.OpRecord) {
+fn keep(r: &diag.OpRecord) {
   records = records + 1u64;
   if r.kind == diag.kindTimer {timers = timers + 1u64;}
   if r.outcome == diag.outcomeCancelled {cancelled = cancelled + 1u64;}
   bytes = bytes + r.bytes;
-  if r.submitted > r.dequeued or r.dequeued > r.delivered {ordered = false;}
+  if r.submitted > r.dequeued || r.dequeued > r.delivered {ordered = false;}
   lastLoop = r.loop;
 }
 
-fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
-  while out.len() < n and Instant.now() < limit {
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
     lp.poll(limit, out);
   }
 }
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
+    var lp = Loop.mustMake();
+    var out = List[Completion]();
 
     // No subscriber: nothing printed, nothing kept
     lp.after(Instant.now(), Target.Here(1u64));
@@ -51,14 +50,14 @@ fn main() i32 {
 
     lp.subscribe(&keep);
     lp.after(Instant.now() + Duration.fromMillis(1i64), Target.Here(2u64));
-    imm doomed = lp.after(Instant.now() + Duration.fromSeconds(5i64), Target.Here(3u64));
+    let doomed = lp.after(Instant.now() + Duration.fromSeconds(5i64), Target.Here(3u64));
     lp.cancel(doomed);
-    mut fh = Handle.none();
+    var fh = Handle.none();
     match lp.openFile("subscribe.tmp", Access.Create) {
-      case imm r Ok {fh = r;}
-      case imm e Error {}
+      case let Ok(r) {fh = r;}
+      case let Err(e) {}
     }
-    mut b = pool.mustTake(100usize);
+    var b = IoBuf(100usize);
     b.append("twelve bytes");
     lp.submit(Op.WriteAt(fh, 0u64, b), Target.Here(4u64));
     waitFor(&mut lp, &mut out, 3usize);
@@ -71,5 +70,5 @@ fn main() i32 {
     expectUInt(lastLoop, lp.id(), "each names its loop");
     expectUInt(lp.counters().delivered, 4u64, "four delivered in all, the first unrecorded");
   }
-  done();
+  done()
 }

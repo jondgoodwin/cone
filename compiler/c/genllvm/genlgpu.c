@@ -138,7 +138,8 @@ static LLVMValueRef genlGpuWord(GenState *gen, LLVMValueRef val) {
 void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value) {
     size_t filelen;
     char *file = genlSrcFileName(site, &filelen);
-    int gpukind = kind == PanicIndex ? GpuFailIndex : kind == PanicSlice ? GpuFailSlice : GpuFailAlloc;
+    int gpukind = kind == PanicIndex ? GpuFailIndex : kind == PanicSlice ? GpuFailSlice
+        : kind == PanicDivide ? GpuFailPanic : GpuFailAlloc;
     LLVMValueRef args[4] = {
         genlI32Const(gen, gpukind),
         genlSrcFileText(gen, file, filelen),
@@ -447,7 +448,7 @@ void genlComputeEntry(GenState *gen, FnDclNode *fnnode) {
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, kernel, "entry"));
     // A debug build gives the kernel a subprogram too, so that what is
     // inlined into it keeps its lines
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef difile = genlDiFile(gen, (INode*)fnnode);
         LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
         LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,

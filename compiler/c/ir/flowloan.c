@@ -16,7 +16,7 @@
 // How a loan restricts its source, from the borrow's permission and from the
 // path the source is reached by. Cone's 'mut' is shared: other references may
 // read and change the value too, so only a source reached as 'uni' (a local,
-// or through 'uni' references) can be frozen against them. The refperm.html
+// or through 'uni' references) can be frozen against them. The mem-permissions.html
 // manual page, "From 'uni'", is the rule; flow.md, "The loan walk", the note.
 enum LoanKind {
     LoanShared,     // read-only: 'ro' or 'imm' of a 'uni' source; '&imm' of a shared one
@@ -40,6 +40,7 @@ typedef struct {
     INode *shapecont;   // a borrow into a shape-changing value through a shared path: its struct, else NULL
     INode *shapeowner;  // then, the struct that holds that value as one of its fields, where the borrow was taken
                         // through that field ('x.label.view()': x's struct), else NULL (loanShapeOwnerSet)
+    uint8_t shapeownerval;  // and the value sits in that struct (or its list's block), not behind a reference the field holds
     uint32_t source;    // a reference narrowed into an enum's variant, read from a hidden variable that holds one
                         // borrow: that borrow's loan, which says where the enum is (loanShapeSource), else 0
     uint8_t uniq;       // a 'mut' borrow of a place reached as 'uni', held as an alias loan: others (the source by
@@ -50,7 +51,7 @@ typedef struct {
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
     uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
-    uint8_t globalview; // a shape loan's collection is a 'mut' global, or reached from one: any call may write it
+    uint8_t globalview; // a shape loan's collection is a 'var' global, or reached from one: any call may write it
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
 } Loan;
 
@@ -89,12 +90,7 @@ static uint32_t *maypool = NULL;
 static uint32_t nmaypool = 0;
 static uint32_t maypoolcap = 0;
 
-// Holders whose loans were widened to all of them, by a loop that would not settle
 static uint32_t nflights;
-
-static uint32_t *saturated = NULL;
-static uint32_t nsaturated = 0;
-static uint32_t saturatedcap = 0;
 
 // The stand-in for the borrows a generator's 'yield' handed to its caller
 // (loanYieldHolder), or 0
@@ -216,7 +212,6 @@ void loanWalkBegin() {
     nloans = 1;         // loan 0 is "none"
     npendings = 1;
     nmaypool = 0;
-    nsaturated = 0;
     nflights = 0;
     nshapeloans = 0;
     nshapenotes = 0;
@@ -283,6 +278,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->part = 0;
     loan->shapecont = NULL;
     loan->shapeowner = NULL;
+    loan->shapeownerval = 0;
     loan->source = 0;
     loan->uniq = loan->kind == LoanAlias && !pl->shared;
     // Another name for the source met by the access that made this borrow: it is one of several
@@ -330,6 +326,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->part = (uint8_t)part;
     loan->shapecont = NULL;
     loan->shapeowner = NULL;
+    loan->shapeownerval = 0;
     loan->source = 0;
     loan->uniq = 0;
     loan->aliased = 0;
@@ -362,6 +359,10 @@ static int loanVarIsGlobal(VarDclNode *var) {
     return var->scope == 0 || (var->flags & FlagStatic);
 }
 
+int loanOfGlobal(uint32_t id) {
+    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var);
+}
+
 int loanIsLocal(uint32_t id) {
     Loan *loan = &loans[id];
     return loan->kind != LoanCaller && !loan->place.deref
@@ -369,13 +370,6 @@ int loanIsLocal(uint32_t id) {
 }
 
 uint32_t loanLocalIn(PathSet *set) {
-    if (set == &pathSetAll) {
-        for (uint32_t id = 1; id < nloans; ++id) {
-            if (loanIsLocal(id))
-                return id;
-        }
-        return 0;
-    }
     if (set == NULL)
         return 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
@@ -426,7 +420,7 @@ static int loanMayBePointee(Loan *loan, INode *referent) {
 }
 
 int loanMayPointOut(PathSet *refholds, INode *referent, int beyond) {
-    if (refholds == NULL || refholds == &pathSetAll)
+    if (refholds == NULL)
         return 1;
     int local = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
@@ -458,9 +452,9 @@ static VarDclNode *loanParm(uint32_t id) {
 uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted) {
     if (set == NULL)
         return 0;
-    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
-    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+    uint32_t n = set->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = loanOf(set->ids[i]);
         if (loans[id].kind == LoanCaller && !lifePartFlows(sig, loanParm(id)->vtype, loans[id].part, wanted))
             return id;
     }
@@ -481,14 +475,160 @@ static INode *loanCallerPlace(uint32_t id) {
     return loans[id].part == LifePartHeld ? lifePointee(held) : held;
 }
 
+uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
+    if (refholds == NULL || stored == NULL)
+        return 0;
+    uint32_t n = refholds->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = refholds->ids[i];
+        if ((id & LoanFar) && !beyond)
+            continue;
+        id = loanOf(id);
+        INode *place = loans[id].kind == LoanCaller ? loanCallerPlace(id) : NULL;
+        if (place == NULL || !itypeCarriesBorrow(place) || itypeCarriesEndingBorrow(place))
+            continue;
+        uint32_t nstored = stored->cnt;
+        for (uint32_t k = 0; k < nstored; ++k) {
+            uint32_t sid = loanOf(stored->ids[k]);
+            if (loans[sid].kind == LoanCaller) {
+                *through = loanParm(id);
+                return sid;
+            }
+        }
+    }
+    return 0;
+}
+
+// Whether the loans an arena reference holds are to be checked. One holding no
+// loan but what was stored through it was made by a route the walk does not
+// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena):
+// that, and only that, is trusted, as every such cast is. Any other is
+// checked, whether the walk can place it or not.
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
+    for (uint32_t i = 0; arenaholds && i < arenaholds->cnt; ++i) {
+        uint32_t hid = loanOf(arenaholds->ids[i]);
+        if (!pathSetHasLoan(stored, hid)
+            || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+            return 1;
+    }
+    return 0;
+}
+
+// Does a value of this type hold a plain arena, through a reference or
+// pointer or by value, in a field (depth-limited)?
+static int loanFieldReachesArena(INode *type, int depth) {
+    if (type == NULL || depth > 6)
+        return 0;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    switch (dcl->tag) {
+    case RefTag:
+    case PtrTag:
+        return loanFieldReachesArena(((RefNode *)dcl)->vtexp, depth + 1);
+    case StructTag: {
+        if (itypeIsArena(dcl))
+            return depth > 0 && !lifeSlotted(dcl);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)dcl)->fields, cnt, nodesp)) {
+            if (loanFieldReachesArena(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
+// that a caller may keep past this function, by a route that tells the body
+// nothing of what else the caller lent: the arena a parameter points at, where
+// the function names no lifetime; or an arena reached through a struct's field
+// whose root a caller lent, named lifetimes or not. That route is seen two
+// ways: the pin an arena's method made of its receiver's place in this body
+// (viafield), or, where a helper made the node or the reference and left no
+// pin here, a far loan of a parameter whose type holds an arena in a field
+// (heldfield). The second is not asked of a reference reached from a
+// parameter that is not assignable ('let') by field steps and dereferences
+// alone ('byparm'): it can land only in a place the parameter's type shows,
+// which a caller's own check sees. The arena hides a node only from a
+// reference that came out of a call, held in a local or in a 'var' parameter
+// given one; so a local copy of a parameter (let s2 = s;) is refused too,
+// though it shows no more than the parameter does. The arena's
+// finalizers may read what is stored, so such a store takes only what the
+// arena was lent.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
+    if (refholds == NULL)
+        return 0;
+    int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
+    for (uint32_t i = 0; i < refholds->cnt; ++i) {
+        uint32_t id = loanOf(refholds->ids[i]);
+        if (loans[id].kind == LoanCaller) {
+            caller = 1;
+            INode *place = lifePointee(loanParm(id)->vtype);
+            if (itypeIsArena(place) && !lifeSlotted(place))
+                arenaparm = 1;
+            else if (!byparm && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
+                heldfield = 1;
+        }
+        else if (loans[id].kind == LoanPin && loans[id].site->tag == FnCallTag) {
+            // The pin an arena's method makes of its receiver's place: the
+            // arena is a field of a struct (a step), or a reference read from
+            // one (far)
+            FnCallNode *call = (FnCallNode *)loans[id].site;
+            INode *recvtype = call->args && call->args->used ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+            INode *place = recvtype && recvtype->tag == RefTag ? ((RefNode *)recvtype)->vtexp : NULL;
+            if (place && itypeIsArena(place) && !lifeSlotted(place)
+                    && (loans[id].place.nsteps > 0 || loans[id].place.far))
+                viafield = 1;
+        }
+    }
+    return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
+}
+
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
+    if (stored == NULL)
+        return 0;
+    uint32_t nstored = stored->cnt;
+    if (!loanArenaChecked(stored, arenaholds))
+        return 0;
+    for (uint32_t k = 0; k < nstored; ++k) {
+        uint32_t sid = loanOf(stored->ids[k]);
+        if (loans[sid].kind != LoanCaller)
+            continue;
+        // Bug 48's exception: what the parameter the arena was reached by
+        // lent the caller belongs to that arena
+        int owned = 0;
+        if (arenaholds != NULL) {
+            for (uint32_t i = 0; i < arenaholds->cnt; ++i) {
+                uint32_t hid = loanOf(arenaholds->ids[i]);
+                if (loans[hid].kind == LoanCaller && loanParm(hid) == loanParm(sid)
+                        && itypeIsArena(lifePointee(loanParm(hid)->vtype))) {
+                    owned = 1;
+                    break;
+                }
+            }
+        }
+        if (!owned) {
+            *through = arenaholds && arenaholds->cnt
+                ? loanParm(loanOf(arenaholds->ids[0])) : loanParm(sid);
+            return sid;
+        }
+    }
+    return 0;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
         return 0;
-    uint32_t n = refholds == &pathSetAll ? nloans : refholds->cnt;
-    uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
-    for (uint32_t i = refholds == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = refholds == &pathSetAll ? i : refholds->ids[i];
+    uint32_t n = refholds->cnt;
+    uint32_t nstored = stored->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = refholds->ids[i];
         if ((id & LoanFar) && !beyond)
             continue;
         id = loanOf(id);
@@ -496,16 +636,36 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
             continue;
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
+        // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
+        // takes none, so nothing stored can land in it; as loanStoredStatic
+        // skips one holding no borrow
+        if (itypeHoldsNoBorrow(place))
+            continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
         // parameter's own reference points at
         uint32_t slots = loans[id].part == LifePartOwn && !beyond ? landing : 0;
-        for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
-            uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
+        for (uint32_t k = 0; k < nstored; ++k) {
+            uint32_t sid = loanOf(stored->ids[k]);
             if (loans[sid].kind != LoanCaller)
                 continue;
             VarDclNode *sparm = loanParm(sid);
             uint32_t spart = loans[sid].part;
+            // What belongs to the arena a parameter points at is no foreign
+            // borrow to it: the stored loan and the place come from the same
+            // parameter, which points at a 'NoLoanMut' container (Bug 48's
+            // exception). A borrow from another parameter, a second arena's
+            // included, still goes through the order below.
+            if (sparm == parm && itypeIsArena(place))
+                continue;
+            // A node reached through 'ar: &'a mut Arena' takes what is named
+            // 'a as well. The arena's finalizers may reach the node, so the
+            // caller answers for it: each such call counts as a store into
+            // the arena (pwCallStores)
+            if (itypeIsArena(place) && !lifeSlotted(place) && parm->vtype->tag == RefTag
+                    && ((RefNode *)parm->vtype)->lifename
+                    && lifePartFlows(sig, sparm->vtype, spart, parm->vtype))
+                continue;
             int flows;
             if (slotted && slots)
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, slots, 0);
@@ -528,9 +688,9 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
 uint32_t loanNotGlobalIn(PathSet *set) {
     if (set == NULL)
         return 0;
-    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
-    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+    uint32_t n = set->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = loanOf(set->ids[i]);
         if (loans[id].kind == LoanCaller || loanIsLocal(id))
             return id;
     }
@@ -542,7 +702,7 @@ int loanIsGlobal(uint32_t id) {
 }
 
 uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
         if (!(set->ids[i] & LoanFar))
@@ -559,9 +719,9 @@ uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound) {
 uint32_t loanNotStaticIn(FnSigNode *sig, PathSet *set) {
     if (set == NULL)
         return 0;
-    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
-    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+    uint32_t n = set->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = loanOf(set->ids[i]);
         if (loanIsLocal(id))
             return id;
         if (loans[id].kind == LoanCaller
@@ -572,7 +732,7 @@ uint32_t loanNotStaticIn(FnSigNode *sig, PathSet *set) {
 }
 
 uint32_t loanNotGlobalInAs(PathSet *set, int near, int far) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return near || far ? loanNotGlobalIn(set) : 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
         if ((set->ids[i] & LoanFar) ? !far : !near)
@@ -585,16 +745,6 @@ uint32_t loanNotGlobalInAs(PathSet *set, int near, int far) {
 }
 
 void loanHeldBy(uint32_t var, PathSet *holds) {
-    if (holds == &pathSetAll) {
-        for (uint32_t i = 0; i < nsaturated; ++i) {
-            if (saturated[i] == var)
-                return;
-        }
-        if (nsaturated == saturatedcap)
-            saturated = (uint32_t *)pathGrow(saturated, &saturatedcap, sizeof(uint32_t));
-        saturated[nsaturated++] = var;
-        return;
-    }
     for (uint32_t i = 0; i < holds->cnt; ++i) {
         Loan *loan = &loans[loanOf(holds->ids[i])];
         uint16_t k;
@@ -705,8 +855,6 @@ static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
 // Is any holder holding this loan now?
 static int loanHeldByHolder(uint32_t id) {
     Loan *loan = &loans[id];
-    if (nsaturated)
-        return 1;
     for (uint16_t k = 0; k < loan->nmay; ++k) {
         if (pathSetHasLoan(pathVars[maypool[loan->mayhold + k]].holds, id))
             return 1;
@@ -779,16 +927,12 @@ void loanAccess(Place *pl, int access, INode *node) {
             continue;
         for (uint16_t k = 0; k < loan->nmay; ++k)
             loanPend(node, access, id, maypool[loan->mayhold + k]);
-        for (uint32_t k = 0; k < nsaturated; ++k)
-            loanPend(node, access, id, saturated[k]);
     }
 }
 
 uint32_t loanSeamEnds(PathSet *holds) {
     if (loanNotGlobalIn(holds) == 0)
         return 0;
-    if (holds == &pathSetAll)
-        return loanNotGlobalIn(holds);
     // The borrow the holder was given is the one to name: a near loan, which
     // is where it points -- one of this function's own storage, else a
     // reborrow through a reference, whose own loans end with it
@@ -827,9 +971,9 @@ int loanIsGenOwn(uint32_t id) {
 uint32_t loanGenOwnIn(PathSet *set) {
     if (set == NULL)
         return 0;
-    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
-    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+    uint32_t n = set->cnt;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = loanOf(set->ids[i]);
         if (loanIsGenOwn(id))
             return id;
     }
@@ -892,8 +1036,6 @@ int loanLockStillLive(uint32_t id) {
 int loanSetRootedAt(PathSet *set, uint32_t root) {
     if (set == NULL)
         return 0;
-    if (set == &pathSetAll)
-        return 1;
     for (uint32_t i = 0; i < set->cnt; ++i) {
         if (loans[loanOf(set->ids[i])].place.var == root)
             return 1;
@@ -990,7 +1132,9 @@ void loanEscape(INode *node, uint32_t loan, int how) {
         else
             errorMsgNode(node, how == LoanEscapeStore ? ErrorEscape : ErrorCallEscape,
                 "%s where it may outlive this function, a value carries a borrow of a temporary (made %s), which %s.",
-                how == LoanEscapeStore ? "Stored" : "Handed to a call that could store it", where,
+                how == LoanEscapeStore ? "Stored" : how == LoanEscapeJoin
+                    ? "Joined in one value with a borrow that reaches beyond this function, so that it could be stored there"
+                    : "Handed to a call that could store it", where,
                 loanTempEnds(temp));
         return;
     }
@@ -1007,6 +1151,11 @@ void loanEscape(INode *node, uint32_t loan, int how) {
             "Stored where it may outlive this function, the value carries a borrow of '%s' (made %s), which belongs to this function.%s",
             srcname, where, advice);
         break;
+    case LoanEscapeJoin:
+        errorMsgNode(node, ErrorCallEscape,
+            "Borrowed references that share one lifetime are made one value here, and one could be stored where it would outlive the value it points to: a part carries a borrow of '%s' (made %s), and another part reaches beyond this function.%s",
+            srcname, where, advice);
+        break;
     default:
         errorMsgNode(node, ErrorCallEscape,
             "Call could store a borrowed reference where it would outlive the value it points to: an argument carries a borrow of '%s' (made %s), and another reaches beyond this function.%s",
@@ -1016,7 +1165,7 @@ void loanEscape(INode *node, uint32_t loan, int how) {
 }
 
 uint32_t loanNamedThroughIn(PathSet *set, uint32_t var) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
         // Not a place reached through a borrowed reference the value holds in a
@@ -1056,7 +1205,8 @@ void loanSelfStore(INode *node, uint32_t loan, Place *target, int how) {
     loanWhere(&loans[loan], where, sizeof(where));
     errorMsgNode(node, ErrorSelfStore,
         "%s '%s', the value carries a borrow of '%s' (made %s). Both are parts of the one value the caller lent, which the caller may change or move while the borrow is still held: a value may not keep a borrow of its own storage after the call. Store an index or offset into '%s' instead, or hold the buffer somewhere else and borrow it from there.",
-        how == LoanEscapeStore ? "Stored into" : "Handed to a call that could store it into",
+        how == LoanEscapeStore ? "Stored into" : how == LoanEscapeJoin
+            ? "Joined in one value with a borrow that could be stored into" : "Handed to a call that could store it into",
         stored, borrowed, where, borrowed);
 }
 
@@ -1093,10 +1243,15 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
             "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             &through->namesym->namestr, lent);
         break;
+    case LoanEscapeJoin:
+        errorMsgNode(node, ErrorCallEscape,
+            "Borrowed references that share one lifetime are made one value here, and one could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
+            lent, &through->namesym->namestr);
+        break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
-            lent, &through->namesym->namestr);
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated. If the value is a call's result, name which parameter it comes from: the same lifetime on that parameter and on the result.",
+            lent,&through->namesym->namestr);
         break;
     }
 }
@@ -1153,6 +1308,38 @@ void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
             why, srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
+void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char what[200];
+    char hint[300];
+    hint[0] = '\0';
+    if (field) {
+        snprintf(what, sizeof(what), "The field '%s' holds only ''static' borrows", &field->namestr);
+        // The spelling for a struct holding a borrow that ends: a lifetime
+        // it declares, which a value of it is held to
+        snprintf(hint, sizeof(hint),
+            " A struct that holds a borrow of a local or of what a caller lent declares a lifetime for it: 'struct %s['a] { %s: &'a ...; }'.",
+            strname ? &strname->namestr : "H", &field->namestr);
+    }
+    else
+        snprintf(what, sizeof(what), "This place's type holds only ''static' borrows");
+    if (loans[loan].kind == LoanCaller) {
+        errorMsgNode(node, ErrorEscape,
+            "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries the borrow the caller lent through '%s'.%s",
+            what, &loanParm(loan)->namesym->namestr, hint);
+        return;
+    }
+    char srcname[128];
+    char where[160];
+    char advice[400];
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    errorMsgNode(node, ErrorEscape,
+        "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries a borrow of '%s' (made %s).%s%s",
+        what, srcname, loanWhere(&loans[loan], where, sizeof(where)), hint, loanCaptureAdvice(loan, advice, sizeof(advice)));
+}
+
 void loanNotBound(INode *node, uint32_t loan, Name *bound) {
     if (mapGet(node, 0, 1))
         return;
@@ -1183,14 +1370,14 @@ void loanNotBoxable(INode *node, uint32_t loan) {
     if (loans[loan].kind == LoanCaller) {
         char lent[160];
         errorMsgNode(node, ErrorLifetimeBound,
-            "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds the borrow the caller lent through %s, which is not ordered to last ''static'.",
+            "An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds the borrow the caller lent through %s, which is not ordered to last ''static'.",
             loanLentThrough(loan, lent, sizeof(lent)));
         return;
     }
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     char advice[400];
     errorMsgNode(node, ErrorLifetimeBound,
-        "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.%s",
+        "An owning virtual reference ('Uni[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.%s",
         srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
@@ -1275,7 +1462,7 @@ static void loanReport(Pending *pend, INode *usenode) {
     int temp = loanTempKind(&loan->place);
     if (pend->kind == AccessEnd && temp == LoanTempStatement) {
         errorMsgNode(pend->access, ErrorFrozen,
-            "The temporary made here ends with its statement while '%s' still holds a borrow of it (made %s), used again %s. A temporary lasts to the end of its block only where a variable's initializer borrows it ('imm r = &make();'); keep it in a variable first.",
+            "The temporary made here ends with its statement while '%s' still holds a borrow of it (made %s), used again %s. A temporary lasts to the end of its block only where a variable's initializer borrows it ('let r = &make();'); keep it in a variable first.",
             &holder->namesym->namestr, where, used);
         return;
     }
@@ -1334,6 +1521,10 @@ void loanUse(uint32_t var, INode *usenode) {
             continue;
         }
         pend->fired = 1;
+        // A candidate for its variable's last use is not, with a borrow of the
+        // variable used after it: it stays a copy (flowpath.c, pwCandidate)
+        if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+            continue;
         // One error per access, however many borrows it conflicts with
         if (mapGet(pend->access, 0, 1))
             continue;
@@ -1391,7 +1582,7 @@ uint32_t loanFlightMark() {
 }
 
 void loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand) {
-    if (carried == NULL || carried == &pathSetAll)
+    if (carried == NULL)
         return;
     if (nflights == flightcap)
         flights = (Flight *)pathGrow(flights, &flightcap, sizeof(Flight));
@@ -1478,6 +1669,10 @@ void loanFlightAccess(Place *pl, int access, INode *node) {
                 met = 1;
                 continue;
             }
+            // A candidate for its variable's last use is not, with a borrow of the
+            // variable carried by a call or value still being made: it stays a copy
+            if (access == AccessMove && pathCandFailAccess(node))
+                return;
             if (!loanReportOnce(node))
                 return;
             char srcname[128];
@@ -1605,7 +1800,7 @@ static uint32_t loanNearNotIn(PathSet *a, PathSet *b) {
 
 // Any near loan of 'set', or 0
 static uint32_t loanNearAny(PathSet *set) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
         if (!(set->ids[i] & LoanFar))
@@ -1615,12 +1810,6 @@ static uint32_t loanNearAny(PathSet *set) {
 }
 
 int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb) {
-    // Widened to every loan by a loop that would not settle: not known to agree
-    if (a == &pathSetAll || b == &pathSetAll) {
-        *la = loanNearAny(a);
-        *lb = loanNearAny(b);
-        return a != b;
-    }
     uint32_t x = loanNearNotIn(a, b);
     uint32_t y = loanNearNotIn(b, a);
     if (x == 0 && y == 0)
@@ -1672,17 +1861,69 @@ static char *loanOrigin(uint32_t id, char *buf, size_t size) {
     return buf;
 }
 
+// A refusal is held until code generation, which says what a kernel reaches
+// (genlGpuCalls): the rule is for GPU code, the functions a kernel calls, and
+// nothing is special about whose they are. It is reported at the choice's own
+// line, before any backend runs. A compile that fails before generation reports
+// what is not core's own (loanGpuHeldFlush with no walk).
+typedef struct {
+    FnDclNode *fn;
+    INode *node;
+    int code;
+    char *msg;
+} LoanGpuHeld;
+static LoanGpuHeld *loanGpuHeld = NULL;
+static uint32_t loanGpuHeldCnt = 0;
+static uint32_t loanGpuHeldCap = 0;
+
+static void loanGpuRefuse(INode *node, int code, const char *msg) {
+    FnDclNode *fn = flowPathCurrentFn();
+    if (fn == NULL) {
+        errorMsgNode(node, code, "%s", msg);
+        return;
+    }
+    if (loanGpuHeldCnt == loanGpuHeldCap) {
+        loanGpuHeldCap = loanGpuHeldCap ? loanGpuHeldCap * 2 : 16;
+        LoanGpuHeld *grown = (LoanGpuHeld *)memAllocBlk(loanGpuHeldCap * sizeof(LoanGpuHeld));
+        if (loanGpuHeldCnt)
+            memcpy(grown, loanGpuHeld, loanGpuHeldCnt * sizeof(LoanGpuHeld));
+        loanGpuHeld = grown;
+    }
+    size_t len = strlen(msg) + 1;
+    char *copy = (char *)memAllocBlk(len);
+    memcpy(copy, msg, len);
+    LoanGpuHeld *held = &loanGpuHeld[loanGpuHeldCnt++];
+    held->fn = fn;
+    held->node = node;
+    held->code = code;
+    held->msg = copy;
+}
+
+void loanGpuHeldFlush(int (*reached)(void *ctx, FnDclNode *fn), void *ctx) {
+    for (uint32_t i = 0; i < loanGpuHeldCnt; ++i) {
+        LoanGpuHeld *held = &loanGpuHeld[i];
+        // With no walk to ask (the compile failed before generation), what is
+        // not core's own is reported: nothing is lost to the failure, and core's
+        // is not blamed on a program that has other errors
+        if (reached ? reached(ctx, held->fn) : flowGpuRefuses(held->node))
+            errorMsgNode(held->node, held->code, "%s", held->msg);
+    }
+    loanGpuHeldCnt = 0;
+}
+
 static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb) {
     if (!loanReportOnce(node))
         return;
     char a[320];
     char b[320];
+    char msg[1400];
     int ka = loanMemory(la);
     int kb = loanMemory(lb);
-    errorMsgNode(node, ErrorGpuRefChoice,
+    snprintf(msg, sizeof(msg),
         "On a GPU target a reference may not be chosen at run time, but %s may point at %s or at %s.%s Choose the index instead ('&buf[if c {i;} else {j;}]'), or the value ('if c {a;} else {b;}').",
         what, loanOrigin(la, a, sizeof(a)), loanOrigin(lb, b, sizeof(b)),
         ka && kb && ka != kb ? " These are two kinds of GPU memory, a local's and a global's, which no one pointer can reach." : "");
+    loanGpuRefuse(node, ErrorGpuRefChoice, msg);
 }
 
 void loanChosen(INode *node, uint32_t la, uint32_t lb) {
@@ -1692,7 +1933,7 @@ void loanChosen(INode *node, uint32_t la, uint32_t lb) {
 void loanIndexedRefs(INode *node) {
     if (!loanReportOnce(node))
         return;
-    errorMsgNode(node, ErrorGpuRefIndexed,
+    loanGpuRefuse(node, ErrorGpuRefIndexed,
         "On a GPU target an array whose elements hold references may be indexed only by a literal or a constant: a pointer cannot be kept in GPU memory, so the array must break into separate values. Index an array of the values instead.");
 }
 
@@ -1782,7 +2023,7 @@ int loanIsAliased(uint32_t loan) {
 
 // Does a holder holding this set hold a 'mut' borrow of a 'uni' source?
 int loanHoldsUniqAlias(PathSet *holds) {
-    if (holds == NULL || holds == &pathSetAll)
+    if (holds == NULL)
         return 0;
     for (uint32_t i = 0; i < holds->cnt; ++i) {
         if (loanUniqAlias(loanOf(holds->ids[i])))
@@ -1813,12 +2054,12 @@ static int loanRootsHas(Loan *l, uint32_t var) {
     return 0;
 }
 
-// A global that can be written: an 'imm' one cannot change, so a borrow into it stays good across any call
+// A global that can be written: a 'let' one cannot change, so a borrow into it stays good across any call
 static int loanVarIsMutGlobal(VarDclNode *var) {
     return loanVarIsGlobal(var) && var->perm && (permGetFlags(var->perm) & MayWrite);
 }
 
-// Is this place in a 'mut' global, or in something reached from one: by the global's own name, or
+// Is this place in a 'var' global, or in something reached from one: by the global's own name, or
 // through a reference whose loans say it came from one? Which globals a call writes is not
 // followed, so a borrow into such a place is asked of every call (reshapeCall's 'globalview')
 int loanPlaceInGlobal(Place *p) {
@@ -1827,7 +2068,7 @@ int loanPlaceInGlobal(Place *p) {
     if (!p->deref)
         return 0;
     PathSet *held = pathVars[p->var].holds;
-    if (held == NULL || held == &pathSetAll)
+    if (held == NULL)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
         if (held->ids[i] & LoanFar)
@@ -1866,7 +2107,7 @@ static void loanRootsNote(uint32_t id) {
         return;
     }
     PathSet *holds = pathVars[p->var].holds;
-    if (holds == NULL || holds == &pathSetAll) {
+    if (holds == NULL) {
         l->rootsext = 1;
         return;
     }
@@ -1921,7 +2162,7 @@ int loanShapeGlobalView(uint32_t loan) {
     if (loans[loan].globalview)
         return 1;
     // Storage the function does not own (reached through a reference a caller lent) of a type some
-    // 'mut' global reaches: the reference may be that global, which a callee cannot tell
+    // 'var' global reaches: the reference may be that global, which a callee cannot tell
     if (loans[loan].rootsext && reshapeMutGlobalsReach(loans[loan].shapecont))
         return 2;
     return 0;
@@ -1961,10 +2202,6 @@ void loanReachRoot(LoanReach *r, uint32_t var) {
 void loanReachAdd(LoanReach *r, PathSet *set) {
     if (set == NULL)
         return;
-    if (set == &pathSetAll) {
-        r->all = 1;
-        return;
-    }
     for (uint32_t i = 0; i < set->cnt; ++i) {
         Loan *l = &loans[loanOf(set->ids[i])];
         if (l->kind == LoanCaller || l->place.owned || l->place.far) {
@@ -2008,8 +2245,13 @@ INode *loanShapeContainer(uint32_t loan) {
     return loans[loan].shapecont;
 }
 
-void loanShapeOwnerSet(uint32_t loan, INode *owner) {
+void loanShapeOwnerSet(uint32_t loan, INode *owner, int byvalue) {
     loans[loan].shapeowner = owner;
+    loans[loan].shapeownerval = owner != NULL && byvalue;
+}
+
+int loanShapeOwnerByValue(uint32_t loan) {
+    return loans[loan].shapeownerval;
 }
 
 INode *loanShapeOwner(uint32_t loan) {
@@ -2046,11 +2288,11 @@ static char *loanShapeReason(ShapeNote *note, char *cont, int sum, char *buf, si
             snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);
         break;
     case ReshapeGlobalView:
-        snprintf(buf, size, "the borrow points into a 'mut' global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+        snprintf(buf, size, "the borrow points into a 'var' global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
             name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeGlobalMaybe:
-        snprintf(buf, size, "a 'mut' global reaches a %s and this borrow was lent by a caller, so it may point into that global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
+        snprintf(buf, size, "a 'var' global reaches a %s and this borrow was lent by a caller, so it may point into that global, and '%s' may %s it by its name: its body is not visible here, or it, or something it calls, does so through a global or runs code the compiler cannot see (a virtual call, a function value)",
             cont, name, sum ? "store over" : "change the shape of");
         break;
     case ReshapeUnseen:
@@ -2093,13 +2335,11 @@ static int loanShapeIsOwner(uint32_t loan) {
 
 static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
     if (loanShapeIsOwner(loan)) {
-        // An owner: its region and what it points at, as written ('So[Item]')
-        RefNode *ref = (RefNode *)loans[loan].shapecont;
-        INode *region = ref->region ? itypeGetTypeDcl(ref->region) : NULL;
-        INode *pointee = ref->vtexp ? itypeGetTypeDcl(ref->vtexp) : NULL;
-        Name *rname = region ? inodeGetName(region) : NULL;
-        Name *pname = pointee ? inodeGetName(pointee) : NULL;
-        snprintf(buf, size, "'%s[%s]'", rname ? &rname->namestr : "owner", pname ? &pname->namestr : "..");
+        // An owner as the type printer spells it: its permission left out where it is the
+        // default ('Uni[Item]'), written otherwise ('Rc[mut, Item]')
+        char spelled[100] = "";
+        itypeSpellCat(spelled, sizeof(spelled), loans[loan].shapecont, 0);
+        snprintf(buf, size, "'%s'", spelled);
         return;
     }
     StructNode *st = (StructNode *)loans[loan].shapecont;
@@ -2211,8 +2451,8 @@ void loanShapePend(INode *call, uint32_t loan, int why, Name *callee) {
     Loan *l = &loans[loan];
     uint32_t note = 0;
     int have = 0;
-    for (uint32_t k = 0; k < (uint32_t)l->nmay + nsaturated; ++k) {
-        uint32_t holder = k < l->nmay ? maypool[l->mayhold + k] : saturated[k - l->nmay];
+    for (uint32_t k = 0; k < l->nmay; ++k) {
+        uint32_t holder = maypool[l->mayhold + k];
         PathVar *hv = &pathVars[holder];
         if (!pathSetHasLoan(hv->holds, loan))
             continue;
@@ -2271,7 +2511,7 @@ static Place *loanShapePlace(Loan *l) {
 // a parameter is no borrow of a place of this function), the enum is that borrow's
 // place, which tells the enum apart from another of the same type
 void loanShapeSource(uint32_t loan, PathSet *holds) {
-    if (holds == NULL || holds == &pathSetAll)
+    if (holds == NULL)
         return;
     uint32_t src = 0;
     for (uint32_t i = 0; i < holds->cnt; ++i) {

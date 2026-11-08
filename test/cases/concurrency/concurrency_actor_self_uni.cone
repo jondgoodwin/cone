@@ -1,0 +1,95 @@
+// A method's bare 'self' is the actor's state borrowed '&uni': the method has it
+// alone while it runs, so it may lend a part of it on as '&uni' to a helper
+// ('addTo(&uni self.tally, k)'), and the behaviour's state parameter carries
+// 'noalias' (pinned in cases.toml). An explicit permission is taken as written:
+// '&', '&mut', '&imm', '&opaq' and '&uni' on a behaviour, each run below. A
+// behaviour that awaits uses 'self' afresh after the 'await', the state lent
+// again for the rest of it.
+//
+// Every value is worked out by hand: the actor's messages are run in the order
+// sent, one at a time.
+//   add(5)     total 5, tally 5
+//   add(7)     total 12, tally 12
+//   viaMut(1)  total 13
+//   viaUni(2)  total 15
+//   viaImm      reads total: 15
+//   viaRead     reads tally: 12
+//   viaOpaq     touches no field: prints a line
+//   afresh(10): before the await total 15 is read; 'bump' adds 10 (total 25) and
+//     replies 25 after it; after the await 'self' is lent afresh: total 25 + 100
+//     = 125, tally 12 + 100 = 112
+//   the finalizer, after the last message: total 125, tally 112
+
+mod concurrency_actor_self_uni;
+
+import stdio use *;
+import actors;
+
+struct Tally {
+  pub n: u64;
+}
+
+fn addTo(t: &uni Tally, k: u64) {
+  t.n = t.n + k;
+}
+
+fn addInto(c: &uni u64, k: u64) {
+  *c = *c + k;
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Ledger {
+  total: u64;
+  tally: Tally;
+
+  fn init(self: &new) {
+    *self = Self(total: 0u64, tally: Tally(n: 0u64));
+  }
+
+  pub async fn add(self, k: u64) {                // bare: '&uni'
+    addInto(&uni self.total, k);
+    addTo(&uni self.tally, k);
+  }
+
+  pub async fn viaMut(self: &mut, k: u64) { total = total + k; }
+  pub async fn viaUni(self: &uni, k: u64) { addInto(&uni self.total, k); }
+  pub async fn viaImm(self: &imm) { say("imm", total); }
+  pub async fn viaRead(self: &) { say("read", tally.n); }
+  pub async fn viaOpaq(self: &opaq) { printStr("opaq\n"); }
+
+  pub async fn bump(self, k: u64) u64 {
+    total = total + k;
+    total
+  }
+
+  pub async fn afresh(self, k: u64) {
+    say("before", total);
+    let r = await self.bump(k);
+    say("replied", r);
+    addInto(&uni self.total, 100u64);             // the state, lent afresh
+    addTo(&uni self.tally, 100u64);
+    say("after", total);
+  }
+
+  fn final(self: &uni) {
+    say("total", total);
+    say("tally", tally.n);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let l = Ledger();
+    l.add(5u64);
+    l.add(7u64);
+    l.viaMut(1u64);
+    l.viaUni(2u64);
+    l.viaImm();
+    l.viaRead();
+    l.viaOpaq();
+    l.afresh(10u64);
+  }
+  finalAll();
+}

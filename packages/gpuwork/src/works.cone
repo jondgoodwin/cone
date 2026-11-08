@@ -2,12 +2,12 @@
 
 // A submitted job, plain data: the number its Completion carries
 pub struct Ticket {
-  pub id u64;
+  pub id: u64;
 
-  pub fn none() Ticket { new Ticket(0u64); }
-  pub fn isNone(self) bool { id == 0u64; }
-  pub fn `==`(self, o Ticket) bool { id == o.id; }
-  pub fn `!=`(self, o Ticket) bool { id != o.id; }
+  pub fn none() Ticket { Ticket(0u64) }
+  pub fn isNone(self) bool { id == 0u64 }
+  pub fn `==`(self, o: Ticket) bool { id == o.id }
+  pub fn `!=`(self, o: Ticket) bool { id != o.id }
 }
 
 // Where a job's one Completion goes, and the token it carries back, which
@@ -20,36 +20,63 @@ pub struct Ticket {
 // job's does (see the package's header, DELIVERY INTO AN IOCORE LOOP). An
 // actor is a later target; adding one changes only this.
 pub enum Target {
-  pub token u64;
+  pub token: u64;
   pub struct Here {}
-  pub struct Loop {pub completer iocore.Completer;}
+  pub struct Loop {pub completer: iocore.Completer;}
 }
 
 // A Target delivering into iocore Loop 'lp': an external operation there
 // whose answer goes to 'to', 'token' the gpuwork Completion's
-pub fn onLoop(lp &mut iocore.Loop, to iocore.Target, token u64 = 0u64) Target {
-  Target.Loop(token, lp.external(to, IoBuf.empty()));
+pub fn onLoop(lp: &mut iocore.Loop, to: iocore.Target, token: u64 = 0u64) Target {
+  Target.Loop(token, lp.external(to, IoBuf()))
 }
 
 // The same, the operation in cancel group 'group' and answered TimedOut at
 // 'deadline' (iocore.forever() for the group's alone)
-pub fn onLoopIn(lp &mut iocore.Loop, to iocore.Target, group iocore.CancelGroup, deadline Instant,
-    token u64 = 0u64) Target {
-  Target.Loop(token, lp.externalIn(to, IoBuf.empty(), group, deadline));
+pub fn onLoopIn(lp: &mut iocore.Loop, to: iocore.Target, group: iocore.CancelGroup, deadline: Instant,
+    token: u64 = 0u64) Target {
+  Target.Loop(token, lp.externalIn(to, IoBuf(), group, deadline))
 }
 
-// The Windows error number of a Loop job's iocore answer, Failed, for a job
-// something was refused in (or submitted in a later frame), which did not
-// run: ERROR_INVALID_PARAMETER
-pub const ERROR_JOB_REFUSED = 87u32;
+// Why a Loop job's iocore answer is Failed. 'kind()' is the portable kind
+// 'c.error().kind()' gives for it, the same on every system; the
+// system's own number kept in the answer is the one of that kind (Windows'
+// ERROR_INVALID_PARAMETER, GEN_FAILURE, PROCESS_ABORTED; Linux's EINVAL,
+// ENODEV, EIO), and 'faultOf' reads it back
+pub enum JobFault {
+  Refused,        // something was refused in the job (or it was submitted in a later frame): it did not run
+  Lost,           // the watcher could not wait for the job's fence (the device lost)
+  KernelFailed;   // it ran, and a Cone kernel failed on the GPU (its Completion's 'failures' say how)
 
-// ...and for a job whose fence the watcher could not wait for (the device
-// lost): ERROR_GEN_FAILURE
-pub const ERROR_JOB_LOST = 31u32;
+  // InvalidInput for a refused job (the answer is a bad argument), Other for
+  // the others (the GPU's own failure, which no kind names)
+  pub fn kind(self: JobFault) IoErrorKind {
+    match self {
+      case Refused {IoErrorKind.InvalidInput}
+      case Lost {IoErrorKind.Other}
+      case KernelFailed {IoErrorKind.Other}
+    }
+  }
+}
 
-// ...and for a job that ran, in which a Cone kernel failed on the GPU (its
-// Completion's 'failures' say how): ERROR_PROCESS_ABORTED
-pub const ERROR_KERNEL_FAILED = 1067u32;
+// The system's own number that stands for a fault in a Failed answer
+fn faultCode(f: JobFault) u32 {
+  match f {
+    case Refused {#if #os == .windows {87u32} #else {22u32}}          // ERROR_INVALID_PARAMETER, EINVAL
+    case Lost {#if #os == .windows {31u32} #else {19u32}}             // ERROR_GEN_FAILURE, ENODEV
+    case KernelFailed {#if #os == .windows {1067u32} #else {5u32}}    // ERROR_PROCESS_ABORTED, EIO
+  }
+}
+
+// The fault a Loop job's answer carries: None for an answer that is not
+// Failed, or whose number is not one of the three
+pub fn faultOf(c: &iocore.Completion) Option[JobFault] {
+  if c.status != diag.outcomeFailed { return None; }
+  if c.code == faultCode(JobFault.Refused) { return Some[JobFault](JobFault.Refused); }
+  if c.code == faultCode(JobFault.Lost) { return Some[JobFault](JobFault.Lost); }
+  if c.code == faultCode(JobFault.KernelFailed) { return Some[JobFault](JobFault.KernelFailed); }
+  None
+}
 
 // A job's one answer: its ticket and token; whether it ran and every
 // invocation of it succeeded ('ok': false for a job something was refused
@@ -59,94 +86,172 @@ pub const ERROR_KERNEL_FAILED = 1067u32;
 // failures of its Cone kernels' dispatches, one for each that failed, in
 // the order dispatched (each also printed and counted, 'kernelFailures()')
 pub struct Completion {
-  pub ticket Ticket;
-  pub token u64;
-  pub ok bool;
-  pub buffers List[Buffer];
-  pub frame u64;
-  pub submitted Instant;
-  pub completed Instant;
-  pub failures List[KernelFailure];
+  pub ticket: Ticket;
+  pub token: u64;
+  pub ok: bool;
+  pub buffers: List[Buffer];
+  pub frame: u64;
+  pub submitted: Instant;
+  pub completed: Instant;
+  pub failures: List[KernelFailure];
+  line: Lineage;                // what the job kept for the one after it (a job made with 'Job.makeReusable')
 
   // How many buffers it holds
-  pub fn count(self &) u32 { u32.from(buffers.len()); }
+  pub fn count(self: &) u32 { u32.from(buffers.len()) }
 
-  // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
-  // and given for a slot it does not have)
-  pub fn take(self &mut, slot u32) Buffer {
-    mut b = Buffer.none();
-    imm s = usize.from(slot);
-    if s < buffers.len() {
-      imm r = &mut buffers[s];
-      b <=> *r;
+  // How many dispatches of the job used a bind group made for the job before it
+  pub fn reusedGroups(self: &) u32 { line.reused }
+
+  // A new job over the first 'keep' buffers of this Completion, which it takes (moved into the same slots;
+  // the others are dropped), that keeps its bind groups for the next as the job this
+  // came from did. A dispatch of it with the same kernel and bindings as the one in its place in
+  // the job before uses that one's bind group, made already. So a job run again and again over the
+  // same resident buffers, a model's layers one token after another, makes its bind groups once. If a
+  // dispatch differs (a different kernel, other slots, offsets or sizes), a new bind group is made
+  // for it and kept in place of the old. The parameter slab ('job.slab') carries over, empty.
+  // The jobs run one after another, each this Completion's job's successor: the groups of the job
+  // before are not touched while it is in flight (they are in this Completion only once it is done).
+  pub fn again(self, device: &mut Device, keep: u32) Job {
+    var job = Job.make(device);
+    var buffers, line = self.(buffers, line);
+    var i = 0u32;
+    {
+      each b in buffers.drain() {
+        if i < keep { job.give(b); i = i + 1u32; }
+      }
     }
-    b;
+    let tape, hasSlab, slabSlot, slabCap, slabWords = line.(tape, hasSlab, slabSlot, slabCap, slabWords);
+    job.line.keep = true;
+    job.line.tape = tape;
+    if hasSlab && slabSlot < i {
+      job.line.hasSlab = true;
+      job.line.slabSlot = slabSlot;
+      job.line.slabCap = slabCap;
+      job.line.slabUsed = 0u64;
+      job.line.slabWords = slabWords;
+    }
+    job
+  }
+
+  // Take it apart, once (what it read back is read first, 'words'): the
+  // buffers in the slots 'slots', by value, in that order; the others are
+  // dropped with it. Buffer.none() is given for a slot it does not have, and
+  // for a slot named a second time.
+  pub fn buffersIn(self, slots: &Array[u32]) List[Buffer] {
+    var buffers = self.(buffers);
+    var picked = List[Option[Buffer]].withCapacity(slots.len);
+    var taken = List[bool].withCapacity(slots.len);
+    var j = 0usize;
+    while j < slots.len {
+      picked.push(None);
+      taken.push(false);
+      j = j + 1usize;
+    }
+    var s = 0u32;
+    var next = 0usize;        // where the slot after the last found is looked for first: slots asked for in order
+    {
+      each b in buffers.drain() {
+        j = next;
+        if j >= slots.len || slots[j] != s || *taken[j] {
+          j = 0usize;
+          while j < slots.len && (slots[j] != s || *taken[j]) { j = j + 1usize; }
+        }
+        if j < slots.len {
+          picked.set(j, Some[Buffer](b));
+          taken.set(j, true);
+          next = j + 1usize;
+        }
+        s = s + 1u32;
+      }
+    }
+    var out = List[Buffer].withCapacity(slots.len);
+    {
+      each o in picked.drain() {
+        match o {
+          case var Some(b) { out.push(b); }
+          case is None { out.push(Buffer.none()); }
+        }
+      }
+    }
+    out
+  }
+
+  // The same for one buffer: the one in slot 'slot' (Buffer.none() for a
+  // slot it does not have)
+  pub fn bufferIn(self, slot: u32) Buffer {
+    var one = self.buffersIn(&[slot]);
+    one.pop() || Buffer.none()
   }
 
   // The words of the buffer in slot 'slot', one the job read back
   // ('job.readback'); none for a slot it does not have, or a buffer that
   // was not read back
-  pub fn words(self &, slot u32) List[u32] {
-    if usize.from(slot) >= buffers.len() { return List[u32].empty(); }
-    wordsOf(buffers[usize.from(slot)]);
+  pub fn words(self: &, slot: u32) List[u32] {
+    if usize.from(slot) >= buffers.len() { return List[u32](); }
+    wordsOf(&buffers[usize.from(slot)])
   }
 }
 
 // A job in flight: what its Completion will be made of
 struct InFlight {
-  ticket Ticket;
-  token u64;
-  frame u64;
-  ok bool;
-  submitted Instant;
-  buffers List[Buffer];
-  groups List[BindGroup];
-  live bool;
-  watched bool;      // a Loop job: done once the watcher has seen its fence
-  seq u64;           // ...the watcher's count of jobs then
-  checks List[ErrorCheck];   // its Cone kernels' error buffers
+  ticket: Ticket;
+  token: u64;
+  frame: u64;
+  ok: bool;
+  submitted: Instant;
+  buffers: List[Buffer];
+  groups: List[BindGroup];
+  watched: bool;      // a Loop job: done once the watcher has seen its fence
+  seq: u64;           // ...the watcher's count of jobs then
+  checks: List[ErrorCheck];   // its Cone kernels' error buffers
+  line: Lineage;              // what it kept for the job after it
+
+  // Whether the GPU has finished it
+  fn isDone(self: &, device: &Device, state: &Arc[imm, WatchState]) bool {
+    if watched { seq < state.watched.load() } else { device.frameDone(frame) }
+  }
 }
 
 // ---- The watcher: the thread that waits on Loop jobs' fences ----
 
 // What the watcher counts, shared with its Works
 struct WatchState {
-  watched Atomic[u64];   // Loop jobs whose fences it has seen signalled, in submission order
-  tick Atomic[u32];      // moved on with each, the futex word 'waitFor' sleeps on
-  stopped Atomic[u32];   // 1 once it has ended, every fence given it waited for
+  watched: Atomic[u64];   // Loop jobs whose fences it has seen signalled, in submission order
+  tick: Atomic[u32];      // moved on with each, the futex word 'waitFor' sleeps on
+  stopped: Atomic[u32];   // 1 once it has ended, every fence given it waited for
 }
 
 // A Loop job handed to the watcher: its own fence, its target (holding the
 // Completer), its ticket, and whether it was submitted to run; or, 'stop',
 // the Works' end
 struct Watch {
-  fence Option[Fence];
-  to Target;
-  ticket u64;
-  ran bool;
-  stop bool;
-  errorWords List[usize];   // where its Cone kernels' error words are read
+  fence: Option[Fence];
+  to: Target;
+  ticket: u64;
+  ran: bool;
+  stop: bool;
+  errorWords: List[usize];   // where its Cone kernels' error words are read
 }
 
 struct WatchArgs {
-  rx Receiver[Watch];
-  state Arc[imm, WatchState];
+  rx: Receiver[Watch];
+  state: Arc[imm, WatchState];
 }
 
 // The watcher's thread: each Loop job, in the order submitted, waited for
 // on its own fence, counted done, and its iocore operation ended; until the
 // Works ends. Answers how many it saw.
-fn watch(args WatchArgs) u32 {
-  mut a = args;
-  mut seen = 0u32;
-  mut more = true;
+fn watch(args: WatchArgs) u32 {
+  var a = args;
+  var seen = 0u32;
+  var more = true;
   while more {
     match a.rx.recv() {
-      case mut m Some {
+      case var Some(m) {
         if m.stop {
           more = false;
         } else {
-          settle(&mut m, a.state);
+          settle(m, a.state);
           seen = seen + 1u32;
         }
       }
@@ -155,7 +260,7 @@ fn watch(args WatchArgs) u32 {
   }
   a.state.stopped.store(1u32);
   sync.futexWakeAll(&a.state.stopped);
-  seen;
+  seen
 }
 
 // Wait for one Loop job's fence, count it done (before its answer, so that
@@ -165,22 +270,19 @@ fn watch(args WatchArgs) u32 {
 // Failed for a job that did not run or whose fence could not be waited for,
 // or in which a Cone kernel failed (its error words, read here before the
 // job is counted done, after which 'poll' may drop their buffer)
-fn settle(w &mut Watch, state Arc[imm, WatchState]) {
-  mut fence Option[Fence] = None;
-  fence <=> w.fence;
-  mut to Target = Target.Here(0u64);
-  to <=> w.to;
-  mut signalled = false;
+fn settle(w: Watch, state: Arc[imm, WatchState]) {
+  var fence, to, ticket, ran, errorWords = w.(fence, to, ticket, ran, errorWords);
+  var signalled = false;
   match &fence {
-    case imm f &Some[Fence] { signalled = (*f).waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
+    case let &Some[Fence](f) { signalled = (*f).waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
     else {}
   }
   // Read before it is counted done: until then 'poll' keeps the buffers
-  mut kernelFailed = false;
-  if signalled and w.ran {
-    mut k = 0usize;
-    while k < w.errorWords.len() {
-      if errorsAt(*w.errorWords[k]) { kernelFailed = true; }
+  var kernelFailed = false;
+  if signalled && ran {
+    var k = 0usize;
+    while k < errorWords.len() {
+      if errorsAt(*errorWords[k]) { kernelFailed = true; }
       k = k + 1usize;
     }
   }
@@ -188,17 +290,17 @@ fn settle(w &mut Watch, state Arc[imm, WatchState]) {
   state.tick.add(1u32);
   sync.futexWakeAll(&state.tick);
   match &mut to {
-    case mut l &mut Loop {
-      if !w.ran {
-        l.completer.fail(ERROR_JOB_REFUSED);
-      } elif !signalled {
-        l.completer.fail(ERROR_JOB_LOST);
-      } elif kernelFailed {
-        l.completer.fail(ERROR_KERNEL_FAILED);
-      } elif l.completer.isCancelRequested() {
+    case var &mut Loop(l) {
+      if !ran {
+        l.completer.fail(faultCode(JobFault.Refused));
+      } else if !signalled {
+        l.completer.fail(faultCode(JobFault.Lost));
+      } else if kernelFailed {
+        l.completer.fail(faultCode(JobFault.KernelFailed));
+      } else if l.completer.isCancelRequested() {
         l.completer.cancelled();
       } else {
-        l.completer.done(usize.from(w.ticket));
+        l.completer.done(usize.from(ticket));
       }
     }
     else {}
@@ -212,31 +314,26 @@ fn settle(w &mut Watch, state Arc[imm, WatchState]) {
 // waits for the watcher to have seen every fence and ended every operation,
 // and must come before its Device's, as its buffers' ends must.
 pub struct Works {
-  jobs List[InFlight];
-  retired List[List[BindGroup]];   // of jobs complete, ended once nothing is in flight
-  lastId u64;
-  tx Sender[Watch];                // to the watcher
-  rx Receiver[Watch];              // the watcher's, until it is started
-  state Arc[imm, WatchState];
-  watcher Option[thread.Thread[u32]];
-  started bool;
-  watcherId u32;                   // its OS thread id, 0 until it is started
-  sent u64;                        // Loop jobs handed to the watcher
+  jobs: List[InFlight];
+  retired: List[List[BindGroup]];   // of jobs complete, ended once nothing is in flight
+  lastId: u64;
+  tx: Option[Sender[Watch]];        // to the watcher, once it is started (the channel is made then)
+  state: Arc[imm, WatchState];
+  watcher: Option[thread.Thread[u32]];
+  watcherId: u32;                   // its OS thread id, 0 until it is started
+  sent: u64;                        // Loop jobs handed to the watcher
 
   pub fn make() Works {
-    mut tx Sender[Watch];
-    mut rx Receiver[Watch];
-    tx, rx = Channel[Watch].make();
-    new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
-      new Arc[imm, WatchState](new WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
-      None, false, 0u32, 0u64);
+    Works(List[InFlight](), List[List[BindGroup]](), 0u64, None,
+      Arc[imm, WatchState](WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
+      None, 0u32, 0u64)
   }
 
   // How many jobs are submitted whose Completion is still to come
-  pub fn inFlight(self &) usize { jobs.len(); }
+  pub fn inFlight(self: &) usize { jobs.len() }
 
   // The watcher's OS thread id, 0 while it is not started: diagnostics
-  pub fn watcherThread(self &) u32 { watcherId; }
+  pub fn watcherThread(self: &) u32 { watcherId }
 
   // Submit 'job': its commands go to the device's queue, and its buffers
   // with it, until its Completion hands them back to the target 'to'. A job
@@ -249,78 +346,79 @@ pub struct Works {
   // when the GPU has finished it, with no wait for its frame to end; one
   // whose iocore operation was answered already (its group cancelled, its
   // deadline past) is not run either.
-  pub fn submit(self &mut, device &mut Device, job Job, to Target) Ticket {
-    mut j = job;
+  pub fn submit(self: &mut, device: &mut Device, job: Job, to: Target) Ticket {
+    var j = job;
     lastId = lastId + 1u64;
-    imm ticket = new Ticket(lastId);
-    mut ok = !j.failed;
-    if ok and j.frame != device.frameNumber {
+    let ticket = Ticket(lastId);
+    var ok = !j.failed;
+    if ok && j.frame != device.frameNumber {
       fail("submit: the job was recorded in an earlier frame");
       ok = false;
     }
-    imm token = to.token;
-    mut isLoop = false;
-    mut answered = false;
+    // The parameter slab's bytes go to the GPU ahead of the job; the bind groups kept from the job
+    // before that this one had no dispatch for are freed
+    j.endPass();
+    if ok { j.flushSlab(device); }
+    j.endTape();
+    let token = to.token;
+    var isLoop = false;
+    var answered = false;
     match &to {
-      case imm l &Loop {
+      case let &Loop(l) {
         isLoop = true;
         answered = !l.completer.isLive();
       }
       else {}
     }
-    mut seq = 0u64;
+    var seq = 0u64;
     if isLoop {
       if answered { ok = false; }
-      mut fence = device.createFence();
+      var fence = device.createFence();
       if ok { ok = device.queue.submitSignalling(j.encoder.finish(), &mut fence); }
       // Not run: the fence still waits for its frame's uploads so far
       if !ok { device.queue.signal(&mut fence); }
       seq = sent;
       sent = sent + 1u64;
-      self.startWatcher();
-      mut errorWords = List[usize].empty();
-      mut k = 0usize;
+      var errorWords = List[usize]();
+      var k = 0usize;
       while k < j.checks.len() {
-        errorWords.push(errorWordsAt(j.checks[k]));
+        errorWords.push(errorWordsAt(&j.checks[k]));
         k = k + 1usize;
       }
-      tx.send(new Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
-    } elif ok {
+      self.toWatcher(Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
+    } else if ok {
       ok = device.queue.submit(j.encoder.finish());
     }
-    mut buffers = List[Buffer].empty();
-    buffers <=> j.buffers;
-    mut groups = List[BindGroup].empty();
-    groups <=> j.groups;
-    mut checks = List[ErrorCheck].empty();
-    checks <=> j.checks;
-    jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
-    ticket;
+    let buffers, groups, checks, frame, line = j.(buffers, groups, checks, frame, line);
+    jobs.push(InFlight(ticket, token, frame, ok, Instant.now(), buffers, groups, isLoop, seq, checks, line));
+    ticket
   }
 
-  // Start the watcher, if it is not
-  fn startWatcher(self &mut) {
-    if started { return; }
-    started = true;
-    mut spareTx Sender[Watch];
-    mut spareRx Receiver[Watch];
-    spareTx, spareRx = Channel[Watch].make();
-    spareRx <=> rx;
-    imm t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
-      new WatchArgs(spareRx, state), &watch);
+  // Hand 'w' to the watcher, starting it (and making its channel) with the
+  // first
+  fn toWatcher(self: &mut, w: Watch) {
+    match &tx {
+      case let &Some[Sender[Watch]](s) {
+        (*s).send(w);
+        return;
+      }
+      else {}
+    }
+    var newTx: Sender[Watch];
+    var newRx: Receiver[Watch];
+    newTx, newRx = Channel[Watch].make();
+    let t = thread.startWith[WatchArgs, u32](thread.Options(name: "gpuwork watcher"),
+      WatchArgs(newRx, state), &watch);
     watcherId = t.id();
     watcher = Some[thread.Thread[u32]](t);
-  }
-
-  // Whether the GPU has finished job 'e'
-  fn isDone(self &, device &Device, k usize) bool {
-    if jobs[k].watched { jobs[k].seq < state.watched.load(); } else { device.frameDone(jobs[k].frame); }
+    newTx.send(w);
+    tx = Some[Sender[Watch]](newTx);
   }
 
   // Wait until the watcher has seen the Loop job numbered 'seq'
-  fn waitWatched(self &, seq u64) {
+  fn waitWatched(self: &, seq: u64) {
     while true {
-      imm t = state.tick.load();
+      let t = state.tick.load();
       if seq < state.watched.load() { return; }
       sync.futexWait(&state.tick, t);
     }
@@ -330,10 +428,10 @@ pub struct Works {
   // Here job) was recorded in it, so that the GPU finishes it: for a
   // program with no swapchain, whose frames nothing else ends. (A program
   // that presents leaves this to 'present'; a Loop job needs no frame end.)
-  pub fn flush(self &mut, device &mut Device) {
-    mut k = 0usize;
+  pub fn flush(self: &mut, device: &mut Device) {
+    var k = 0usize;
     while k < jobs.len() {
-      if !jobs[k].watched and jobs[k].frame == device.frameNumber {
+      if !jobs[k].watched && jobs[k].frame == device.frameNumber {
         device.endFrame();
         return;
       }
@@ -344,86 +442,72 @@ pub struct Works {
   // Append to 'out' the Completion of every job the GPU has finished, in
   // the order submitted, and answer how many. Never waits: for a frame loop,
   // once a frame (and when a Loop job's iocore answer wakes it).
-  pub fn poll(self &mut, device &Device, out &mut List[Completion]) usize {
-    imm now = Instant.now();
-    mut n = 0usize;
-    mut k = 0usize;
-    while k < jobs.len() {
-      if self.isDone(device, k) {
-        imm e = &mut jobs[k];
-        mut buffers = List[Buffer].empty();
-        buffers <=> e.buffers;
-        mut groups = List[BindGroup].empty();
-        groups <=> e.groups;
-        retired.push(groups);
-        // Its Cone kernels' error buffers, read now that the GPU is done
-        mut failures = List[KernelFailure].empty();
-        if e.ok {
-          mut c = 0usize;
-          while c < e.checks.len() {
-            readFailure(e.checks[c], &mut failures);
-            c = c + 1usize;
+  pub fn poll(self: &mut, device: &Device, out: &mut List[Completion]) usize {
+    let now = Instant.now();
+    var n = 0usize;
+    // The jobs not finished, in the order submitted, become the jobs in flight
+    var kept = List[InFlight]();
+    {
+      each e in jobs.drain() {
+        if e.isDone(device, &state) {
+          let ticket, token, frame, ok, submitted, buffers, groups, var checks, line =
+            e.(ticket, token, frame, ok, submitted, buffers, groups, checks, line);
+          retired.push(groups);
+          // Its Cone kernels' error buffers, read now that the GPU is done
+          var failures = List[KernelFailure]();
+          if ok {
+            var c = 0usize;
+            while c < checks.len() {
+              readFailure(&checks[c], &mut failures);
+              c = c + 1usize;
+            }
           }
+          checks.clear();
+          out.push(Completion(ticket, token, ok && failures.len() == 0usize, buffers, frame,
+            submitted, now, failures, line));
+          n = n + 1usize;
+        } else {
+          kept.push(e);
         }
-        e.checks.clear();
-        out.push(new Completion(e.ticket, e.token, e.ok and failures.len() == 0usize, buffers, e.frame,
-          e.submitted, now, failures));
-        e.live = false;
-        n = n + 1usize;
       }
-      k = k + 1usize;
     }
-    if n > 0usize { self.compact(); }
+    jobs = kept;
     // A bind group's end waits for the device to be idle: only when no job
     // of ours is in flight
     if jobs.len() == 0usize { retired.clear(); }
-    n;
+    n
   }
 
   // Wait until the GPU has finished the job 'ticket' (ending its frame if it
   // was recorded in the current one and waits for it), then poll: append to
   // 'out' every Completion ready, its own among them, and answer how many.
   // For tools and tests; a frame loop polls.
-  pub fn waitFor(self &mut, device &mut Device, ticket Ticket, out &mut List[Completion]) usize {
-    mut k = 0usize;
+  pub fn waitFor(self: &mut, device: &mut Device, ticket: Ticket, out: &mut List[Completion]) usize {
+    var k = 0usize;
     while k < jobs.len() {
       if jobs[k].ticket == ticket {
         if jobs[k].watched {
           self.waitWatched(jobs[k].seq);
         } else {
-          imm frame = jobs[k].frame;
+          let frame = jobs[k].frame;
           if frame == device.frameNumber { device.endFrame(); }
           device.waitFrame(frame);
         }
       }
       k = k + 1usize;
     }
-    self.poll(device, out);
+    self.poll(device, out)
   }
 
   // Wait until every job in flight is finished, and poll
-  pub fn waitAll(self &mut, device &mut Device, out &mut List[Completion]) usize {
+  pub fn waitAll(self: &mut, device: &mut Device, out: &mut List[Completion]) usize {
     self.flush(device);
-    mut k = 0usize;
+    var k = 0usize;
     while k < jobs.len() {
       if jobs[k].watched { self.waitWatched(jobs[k].seq); } else { device.waitFrame(jobs[k].frame); }
       k = k + 1usize;
     }
-    self.poll(device, out);
-  }
-
-  // Drop the jobs delivered, keeping the order of the rest
-  fn compact(self &mut) {
-    mut to = 0usize;
-    mut k = 0usize;
-    while k < jobs.len() {
-      if jobs[k].live {
-        if to != k { jobs.swap(to, k); }
-        to = to + 1usize;
-      }
-      k = k + 1usize;
-    }
-    while jobs.len() > to { jobs.pop(); }
+    self.poll(device, out)
   }
 
   // Its end: the watcher, if started, is told to stop once it has seen
@@ -431,9 +515,13 @@ pub struct Works {
   // and ended every operation, and is waited for; its thread is joined as
   // its handle dies. A Loop job's Completion still in flight dies here, its
   // buffers with it.
-  fn final(self &uni) {
-    if !started { return; }
-    tx.send(new Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
-    while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
+  fn final(self: &uni) {
+    match &tx {
+      case let &Some[Sender[Watch]](s) {
+        (*s).send(Watch(None, Target.Here(0u64), 0u64, false, true, List[usize]()));
+        while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
+      }
+      else {}
+    }
   }
 }

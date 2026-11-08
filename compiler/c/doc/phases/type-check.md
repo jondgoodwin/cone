@@ -156,6 +156,7 @@ A name use analyzes the declaration it names, then reads what it needs:
 | `fnCallLowerMethod` | every candidate a member name declares, before selection compares signatures (`fnCallDemandCandidates`) |
 | `fnCallLowerOverloadFn` | every candidate an overload name declares, a type's or a module's, the same way |
 | `structCheckTraitReqs` | each method a mixed-in trait requires, before the type's own is compared with it |
+| `structMapVtableImpl` | each method of a type that fills a trait's slot, before signatures are compared: a type declared in a later file has not checked its members when an earlier file's method makes it a trait object (Bug 28) |
 | `itypeTypeCheck` | any type named in a signature or a declared type |
 
 **A member name is a use too.** A type checks its methods in order, so from
@@ -193,8 +194,37 @@ may name a global declared below it — including one whose type comes from its 
 initial value, which is the case nothing else can serve.
 
 **Locals are not part of this.** They are hooked and unhooked during the walk, in
-source order, and `mut a = a` inside a function fails at name resolution because
+source order, and `var a = a` inside a function fails at name resolution because
 the name is not yet in scope.
+
+**A trial does not own what it reaches.** Three checks run on a copy to learn
+whether it checks, with the copy's diagnostics counted and thrown away (`ErrorTrial`,
+`shared/error.h`): a closure's body under a guess at its permissions
+(`closureTry`), the head of `new a[T](...)` (`typeLitNewInRegion`), and a macro's
+`lazy` argument against its parameter's type (`macroArgTrial`). The copy's
+names are the program's declarations, and demand checks a declaration the first time
+anything reaches it, trial included. That declaration is checked once, so what it
+reports must not go with the trial: `inodeTypeCheck` opens a loud window
+(`errorLoudBegin`) around any declaration with an owner that is first reached while a
+trial is open and that the trial did not make (`closureTrialOwns`: a closure's hidden
+struct and `()`, an anonymous function, and an instance of a generic made with one,
+all made since the outermost trial began, are the trial's). In the window
+diagnostics print and are kept when the trial ends; the trial's own verdict counts
+the rest. A closure's body uses `errorsOwn`, which leaves the window's out, to tell
+its own failure from another declaration's.
+
+**What a trial makes is not generated.** Checking a copy builds what the copy
+holds: a closure's hidden struct and its `()`, an anonymous function, a holder
+for a plain function, and an instance of a generic made with one of those. They
+are the trial's, made to be checked and dropped, so they never reach generation:
+a closure, holder or anonymous function built while a trial is open
+(`errorSilent`, outside a loud window) does not join the module (`closureBuild`,
+`closureFnHolder`, `closureTypeCheck`), and an instance whose type arguments name
+one (`closureTrialArgs`) is memoized while the trial runs, so the trial's own
+check finds it again, and taken out of its generic's `memonodes` once no trial
+is open (`genericTrialPurge`, called as each trial closes). So a closure written
+inside another closure's body, or inside a macro's lazy argument, is generated
+once, as written.
 
 ### Layout before members
 
@@ -214,8 +244,9 @@ written in. So demanding a type lays it out and nothing more; its members wait.
   and `structLayoutEnd`, which also keep those types on a stack, outermost
   first: what a by-value cycle is named from (section 6). A reference answers
   its own size and a function signature has none, so neither counts there; a
-  function declaration's signature is held as one by `fnDclTypeCheck`, for
-  another reason (below).
+  function declaration's signature, a variable's declared type and a type
+  alias's target are each held as one, by `fnDclTypeCheck`, `varDclTypeCheck`
+  and `aliasDclTypeCheck`, for another reason (below).
 - `structTypeCheck` lays the type out, sets `TypeChecked`, settles its drop
   function, and puts the type in the **members queue**. An enum then lays out
   each of its variants not yet begun, an extension's copies of its base's
@@ -243,7 +274,13 @@ a generic type's instance returning `Option[T]`, where that signature was the
 first to name `Option[i64]`, had its caller checked mid-signature; the call's
 type was still the unchecked `Option[T]`, and a `match` on it refused `Some`
 as a bare generic — unless a field had named `Option[i64]` first
-(`generic_signature_first`). So
+(`generic_signature_first`). A variable's declared type is held the same way
+(`varDclTypeCheck`), and so is a type alias's target (`aliasDclTypeCheck`): a
+global declared `g: Box[Svc]` above Svc lays `Box[Svc]` and Svc out, and Svc's
+method, worked from the queue, reads `g`, which must already have the instance
+rather than the generic call it was written as, or `g.post[J]` finds no generic
+method and `g.at` no field (`generic_global_method`, `generic_global_field`,
+`generic_global_module`, `generic_alias_instance`). So
 when a use that demanded a type from a function body gets control back, that
 type's members are checked — unless they were already waiting behind the ones
 being checked, which is the same state a type in flight was always in. The
@@ -253,7 +290,7 @@ out on demand, and its members are checked before the walk moves on.
 **What it fixed.** Before, `structTypeCheck` laid a type out and then checked its
 members in the same call, so a type demanded from inside another's layout had its
 members checked while the demander was in flight. Measured on `2f3225cb`:
-`struct S { t T; }` above `struct T { fn g(self &, s S) }` was `ErrorNoSize` on
+`struct S { t: T; }` above `struct T { fn g(self: &, s: S) }` was `ErrorNoSize` on
 `s`, while the other order compiled; and an enum, which the module walk reaches
 first through its first variant, had its own members checked inside that
 variant's layout, so a by-value `self`, a static function taking the enum, a
@@ -273,7 +310,7 @@ size question (section 6): one of its types is always asked while in flight.
 **Only by-value containment lays a type out.** A struct's field, an array's
 element, a tuple's element and a variant's payload hold a value of their type,
 so each asks that type its size, which is read from its layout. A reference of
-any kind — `&T`, `*T`, `&Array[T]`, `&<Trait`, an owning one (`So[T]`, `Rc[perm, T]`,
+any kind — `&T`, `*T`, `&Array[T]`, `&<Trait`, an owning one (`Uni[T]`, `Rc[perm, T]`,
 `Arc[perm, T]`, a traced region's, with or without a lock permission), a
 function reference — is one or two pointers whatever it points at, and an
 `Option` of one is still one pointer, its null the `None`. So laying a
@@ -289,6 +326,28 @@ but a struct reached there that has not begun is not laid out. It waits
 generic enum made there, with its variants (`genericEnumInstanceLayout`).
 Outside any layout — a function's body — a target is laid out at once, as
 before: nothing in flight can meet it there.
+
+**A generic type's type arguments are named, not held.** `struct Node { kids
+List[Option[Node]]; }` holds `Option[Node]` through the List's pointer as `List[Node]`
+holds `Node`, so an argument that is itself an instance of a generic
+(`fnCallTypeCheckNode`, `argsnamed`) is checked in target mode while a layout is
+in flight: the `Option[Node]` is made and its layout waits
+(`genericEnumInstanceLayout`). So is an argument written as the name of a
+struct or an enum (`namesnamed`), when the generic's instances hold values by
+value: `struct VL { items: List[V]; }` above `enum V { N(i64); L(VL); }` names V,
+which a plain check would lay out inside VL's layout, finding VL in flight
+through V's variant, though a List holds its elements behind a pointer; written
+below the enum it always compiled. A trait's argument is still checked as it was,
+since a trait's own members may ask what the named type is
+(`Iterator[StrCharIndex]`), and so is a name that is an alias. The waiting
+argument is not laid out to decide a member's `where` either
+(`genericArgWaiting`; `genericLateWhere` settles it). Whatever holds the argument by value still demands
+its layout when it asks for its size (`structTypeSettle`), so `Wrap[Option[Node]]`
+as a field of Node, a `Result[Option[Node], E]`, an array or a tuple of it are
+refused as before. A `where` that reads the argument's layout cannot wait for it:
+a condition on the generic, its enum or an `is` entry still lays out the
+argument it reads first (`genericTypeReadsArg`), so it is refused at the cycle
+it would close.
 
 **Every check that reads a target's layout waits too**, and runs once no
 layout is in flight (`structWorkQueues`), after the waiting layouts and before
@@ -310,14 +369,19 @@ is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
 target mode suspended (`genericConditioned`). An argument that is in flight
 cannot be laid out first, and a type that holds an instance of a generic by value
 is that argument when the instance is made from its own layout, as in `struct
-Node { kids List[Node]; }`, so a **member's** clause is not decided then: the
-member is kept, and `genericLateWhere` decides it as a check that reads layouts,
-once none is in flight (nodes/generic.md). An `is` entry's condition is part of
+Node { kids List[Node]; }`, so a **member's** clause that asks what an argument
+is — a trait, a signature — is not decided then: the member is kept, and
+`genericLateWhere` decides it as a check that reads layouts, once none is in
+flight, or sooner, when something reads the instance's members
+(`genericLateWhereNow`), since a body can be checked inside a layout (a type
+fitting a bound structurally has its methods checked there). A clause naming a
+type, `K is String`, reads no layout and is decided at once (nodes/generic.md).
+An `is` entry's condition is part of
 the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
 is (`genericSendableNote`), so it lays nothing out. That is what lets an
-actor's handle, `Arc[opaq, actors.Mailbox[M]]` with `Mailbox[M Sendable]`, come
+actor's handle, `Arc[opaq, actors.Mailbox[M]]` with `Mailbox[M: Sendable]`, come
 before the message enum holding the handle by value
 (`concurrency_actors_declared_last`). **The reference's own
 region and permission** — a region ref, a permission, which lock fits which
@@ -339,7 +403,7 @@ was copyable (`struct_typecheck_layout_reference`).
 **A layout left waiting keeps its expansion depth.** A generic instance made as
 a target is laid out later, outside the instantiation that made it, so the job
 carries `genericInstantiateDepth` and restores it while it runs: an expansion
-through references, `next *Box[Box[T]]`, is still refused at `ErrorInstDepth`.
+through references, `next: *Box[Box[T]]`, is still refused at `ErrorInstDepth`.
 
 **A function's signature is not inside a layout.** `fnDclTypeCheck` holds its
 signature as a layout for the members queue's sake (above), but it holds nothing
@@ -350,9 +414,9 @@ signature's lifetimes read it, as it always did.
 **What it fixed.** Measured on `877be3a1`, each refused as `ErrorNoSize` "still
 being laid out" in one declaration order and compiled in the other: `B_state`
 holding `Option[A]` written above `A_state` holding `Option[A]` and `B`, each
-held through `So[...]` (two actors holding each other's handles) — `Option[A]`
+held through `Uni[...]` (two actors holding each other's handles) — `Option[A]`
 lays out `Some[A]`, which holds A, whose owning reference laid `A_state` out,
-which found `Option[A]`'s `Some` in flight; a variant's `&W` or `So[W]` with `W`,
+which found `Option[A]`'s `Some` in flight; a variant's `&W` or `Uni[W]` with `W`,
 holding the enum, written below it; three such states in a ring; and an
 actor's message enum, holding the handle by value, written after the handle or
 its state (`concurrency_actors_declared_last`). Refused in
@@ -370,8 +434,8 @@ type before analyzing anything that could refer back to it, so the type is
 already on the node. This is what makes mutual recursion work:
 
 ```cone
-fn even(n i64) i64 { if n == 0 { 1 } else { odd(n - 1) } }
-fn odd(n i64) i64 { if n == 0 { 0 } else { even(n - 1) } }
+fn even(n: i64) i64 { if n == 0 { 1 } else { odd(n - 1) } }
+fn odd(n: i64) i64 { if n == 0 { 0 } else { even(n - 1) } }
 ```
 
 `even` reaches `odd`, which reaches `even` — whose signature is filled in, and a
@@ -389,7 +453,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | Cause | Where it comes from | Remedy the message names |
 | --- | --- | --- |
 | declared `@opaque` | the `@opaque` marker, `parsetype.c` | hold it through a reference |
-| a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `So[str]`, `&Array[T]` or `So[Array[T]]` |
+| a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `Uni[str]`, `&Array[T]` or `Uni[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
 | a struct with an unsized field, or a tuple with an unsized element | `structTypeCheck`, infectiously | fix that field or element — the cause is further down |
@@ -413,10 +477,10 @@ a pointer whatever it points at. That single rule settles every recursion case
 without the field having to know which case it is in:
 
 ```cone
-struct S { v i64; next &S }      // legal — S never asks itself
-struct A { b B }  struct B { a &A }   // legal — B completes, so A gets its size
-struct A { b &B } struct B { a &A }   // legal — neither asks the other
-struct A { b B }  struct B { a A }    // error — A asks B, which asks A mid-layout
+struct S { v: i64; next: &S }      // legal — S never asks itself
+struct A { b: B }  struct B { a: &A }   // legal — B completes, so A gets its size
+struct A { b: &B } struct B { a: &A }   // legal — neither asks the other
+struct A { b: B }  struct B { a: A }    // error — A asks B, which asks A mid-layout
 ```
 
 There is deliberately no recursion check. An unfinished struct has no size, a
@@ -437,7 +501,7 @@ Error 1069: Field p cannot be held by value: P contains Q contains R contains P 
 An array or a tuple on the stack is part of the type holding it and is not
 named. A tuple holds each element by value as a struct holds a field, so the
 walk crosses a tuple to its first element with no size (`itypeNoSizeElem`) as it
-crosses a field, with no hop recorded for the tuple: `struct N { k (i32, N) }`,
+crosses a field, with no hop recorded for the tuple: `struct N { k: (i32, N) }`,
 the same with the tuple nested or inside an array, and a tuple of an enum whose
 variant holds the struct are refused as the type held directly is. Were the type not on the stack, which no measured case reaches, the
 message would be the old one, "is still being laid out, so it would have to
@@ -448,7 +512,7 @@ cycle through the layouts outside it; no such case is in the corpus.
 "Unfinished" is read only of a type whose size depends on what it holds. A
 reference, pointer or array reference can itself be in flight — `alias QRef =
 &Quad` written above `Quad` checks the reference first, which demands `Quad`
-from inside it, and `fn get(self QRef)` in `Quad` then reaches the same
+from inside it, and `fn get(self: QRef)` in `Quad` then reaches the same
 reference mid-check. `itypeNoSizeOwnCause` answers a reference before the
 in-flight test, as the rule above says it must; reading the mark first made an
 alias above its type refused as a cycle and the same alias below it accepted,
@@ -493,7 +557,7 @@ answer to give.
 ```cone
 const A = B
 const B = A       // error: A is defined in terms of itself
-mut a = a         // the same shape, for an inferred global
+var a = a         // the same shape, for an inferred global
 ```
 
 Detected without a new flag, since it is exactly "asked for a type, and the type
@@ -502,7 +566,7 @@ is not a variant of `ErrorNoSize`: "this type cannot tell you its size, hold it 
 reference" and "this definition depends on itself" are not the same advice.
 
 **A constant with a declared type has its type, but not yet its value.**
-`const A u32 = B` then `const B u32 = A | 1u32` passes the type question, and
+`const A: u32 = B` then `const B: u32 = A | 1u32` passes the type question, and
 it is the value that recurses. A constant's value is folded into its literal
 before its check ends (`litFoldConst`, [literals](../nodes/literals.md),
 "Folding a constant expression"), so a chain of constant uses reaching a
@@ -518,7 +582,12 @@ A generic is not analyzed; it is a template. `structTypeCheck` and
 `fnDclTypeCheck` both return early when `genericinfo` is set. Only *instances*
 are analyzed — each a fresh clone that `genericInstantiate` checks as it builds,
 memoized on `genericinfo->memonodes`. Macros expand by the same clone-and-check
-path. So instantiation is demand-driven, and rules 1 to 6 apply to instances
+path, the expansion a block binding each plain parameter's argument in a `let`
+ahead of the cloned body, so the argument is checked as that `let`'s
+initializer ([generic](../nodes/generic.md), "Macros differ from generics"). What
+an argument is before the expansion — a `lazy` argument's type, the type
+arguments a use leaves off — is asked of a copy checked as a trial, so the
+argument itself is still checked once, where the expansion puts it. So instantiation is demand-driven, and rules 1 to 6 apply to instances
 rather than templates. A generic's constraints are evaluated against the type
 arguments before an instance is cloned: an unmet requirement refuses the
 instance where it is asked for, and an unmet condition on a generic type's
@@ -530,14 +599,14 @@ node, and a generic instantiating itself at ever-larger arguments never does —
 every instance is a new node with new arguments:
 
 ```cone
-fn recur[T](x T) T { recur[Box[T]](new Box[T](x)).v }
+fn recur[T](x: T) T { recur[Box[T]](Box[T](x)).v }
 ```
 
 Depth is the only thing that distinguishes an expansion that terminates from one
 that does not, so `genericInstantiateEnter` counts it and refuses past
 `TypeCheckLoopMax` (256) with `ErrorInstDepth`. All three macro expansion paths
 — a parameterless name standing for its body, a call substituting arguments, and
-a macro method called on a receiver — go through `macroExpand` and are bounded
+a macro method called on a receiver or reached by an operator — go through `macroExpand` and are bounded
 the same way. Past the limit it is the C stack that gives out, with no
 diagnostic at all: measured, the generic form reaches depth ~702 and the macro
 form ~2282 before it does, while the deepest legitimate expansion in the test
@@ -740,7 +809,7 @@ which the rules of section 2 together forbid.
    slice or a struct by value, at most seven of the last two (`ErrorComputeSig`);
    and what each buffer holds 32-bit numbers and structs and fixed arrays of
    them, walked field by field (`ErrorComputeData`), on every target, so the CPU
-   and the GPU agree on one source ([GPU Compute](../../../../doc/reference/refgpu.html)).
+   and the GPU agree on one source ([GPU Compute](../../../../doc/manual/conc-gpu.html)).
    These do not stop the body's check.
 4. If it is an intrinsic declared in core, with its meaning from the registry,
    **→** analyze the type it acts on (its instance's type argument), which must
@@ -762,13 +831,16 @@ elsewhere, whichever walk arrived at it.
 
 ### 10.4 Variable, field and constant
 
-1. **→** Analyze the permission, then the declared type.
+1. **→** Analyze the permission, then the declared type, held as a layout in
+   flight so that the members queue it may fill is worked only once the type is
+   on the node (rule 3; section 4, "Layout before members").
 2. If there is no initializer, the type must have been declared.
 3. **→** Analyze the initializer, coercing it to the declared type; if no type was
    declared, **the type becomes the initializer's**; a declared borrowed-reference
    type is replaced by a copy carrying the initializer's lifetime. For this shape, steps 1 and
    3 are the same step, which is what section 7 is about.
-4. A global or parameter requires a literal initializer; so does a field default.
+4. A global or parameter requires a literal initializer; so does a field default. A `let` global's
+   other value is a setup its module runs before its `init` (`modAddSetup`).
 5. The type must have a size — rule 4's report site.
 
 ### 10.5 Module and program
@@ -788,6 +860,7 @@ elsewhere, whichever walk arrived at it.
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message |
 | `ErrorSizeMarkerUse` (1296) | a type declares `Sized` or `DynSized`, which the compiler grants from the type's size |
 | `ErrorImmutableWrite` (1297) | `mut`, `mut1` or a lock permission written on a reference to a type declaring `Immutable` (`refImmutableBan`, from `refTypeCheck` and `borrowTypeCheck`) |
+| `ErrorSoleOwnerMut` (1507) | `mut` written on an owner of a region declaring `Move` (`refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck`) |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 
@@ -813,6 +886,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. The members queue needs no mark either: a type joins it once, where its layout settles. |
 | Is layout-before-members two passes over the module? | No. A type is laid out on demand, as before, and its members wait in a queue that is worked whenever no layout is in flight. Two passes would still need demand for a layout reached across modules or from a generic instance, and would check a type's members far from the declaration that reached it. |
 | Should a size question have five codes? | No. One code, cause in the message. |
+| How does `await x` find what to wait on for a library type (`awaitMethod`, `ir/exp/await.c`)? | The order is fixed: a behaviour's call (`awaitMessage`), then an `Awaitable[R]` (`awaitOperation`), then a `Future[T]` (`awaitFuture`), the last two known by type identity; only when none matched is the operand's type searched for a method named `await` (`iNsTypeFindFnField`, the lookup other convention methods use; C#'s `GetAwaiter`). The method takes only `self`; the operand is rewritten to the call `x.await()` (marked `FlagRcvChecked` so the operand is not checked twice) and goes through `awaitOperation` or `awaitFuture` on the call's type, so the IR of every existing await is unchanged and the reply protocol knows nothing of the type. A behaviour's call is always the behaviour's call: an `await` method on its result type does not apply to it. A method taking more than `self`, giving neither ground type, or overloaded is `ErrorAwaitMethod`; a type with no such method is still `ErrorAwaitNotFuture`. |
+| Why a method, rather than a third identity case for each library type, or a typed reply? | The two ground cases differ only in how the wait starts (an operation is started at the seam with the envelope, a future parks it as a waiter), which the returned type already says. A library type then builds its answer with `Awaitable[R].make` or `.of`, which carry the exactly-once contract, so a `FutureSet` is awaitable (`await set`) with no compiler knowledge of it, and no reply-protocol change or typed `Reply` is needed. |
 | Should a repeated diagnostic be suppressed? | Not for now. It needs a `Failed` state per declaration plus a test at every reporting site. |
 
 ## 13. Hazards
@@ -829,6 +904,18 @@ Kept so that reopening one is a decision rather than a rediscovery.
   target may not be laid out yet: a check reading its fields, its flags, whether
   it holds a borrow or its vtable goes through `structDeferCheck`, as each of
   section 4's table does, or reads a half-made answer that nothing reports.
+- **A body can be checked inside a layout in flight.** Layout before members
+  keeps the members queue from running while one is, but demand does not wait:
+  deciding a bound a type fits structurally checks the type's methods, bodies
+  included (`genericDemandMatch`), wherever the instance is made — a field's
+  type, a signature, a global's held declared type. So such a body can meet
+  what the queue has not reached yet. An instance's members whose `where`
+  waited are decided when something reads them (`genericLateWhereNow`), unless
+  an argument is itself in flight, when they stay undecided until the queue
+  (`generic_global_where_member`). A global read in a method its own declared
+  type's bound checks still has the generic call it was written as, since the
+  instance is stored only once its check returns: `g.at` in Svc's method, with
+  `g: Host[Svc]` and `S: Hosted`, is `ErrorNoMeth`.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the
@@ -856,14 +943,14 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | File | Function | Purpose |
 | --- | --- | --- |
 | `conec.c` | `doAnalysis` | runs name resolution, gates on errors, then walks the program for type check, then judges where traced references are held (`regionTracedCheckAll`), what crosses threads where it was not settled (`genericSendableCheckAll`), and what an actor's messages and initializers carry (`actorCheckAll`, `ir/types/actor.c`), each of which needs every type laid out |
-| `ir/types/actor.c` | `actorCheckAll`, `actorStateMember`, `actorIsState`, `actorOfState`, `actorOfBehaviour`, `actorMessageOfSend`, `actorMessageNamed` | an actor's crossing parameters, and its behaviours' returned types, refused where not Sendable; a traced reference made or held in an actor's state, parameters or method bodies (`actorRefuseGc`, a stopgap); the member of an actor's state a use through its handle names, reported as private (`fnCallLowerMethod`'s missing member); whether a struct is an actor's state, whose behaviours its dispatcher runs, whether a method is a behaviour, and what the parser generated for it (`ActorInfo`); which message a handle's method sends, and which a name on the state names |
-| `ir/exp/await.c` | `awaitTypeCheck` | an `await` stands in a behaviour (`ErrorAwaitPlace` anywhere else, an actor's `fn` among them: its `init`, its `final`, a helper, the message saying to await at the top of a behaviour and push the synchronous work down); its value is its operand's, unless the operand sends a behaviour: one returning nothing is refused (`ErrorAwaitVoid`), and for one returning a value the call is made the handle's method sending it awaited, its last argument the reply's envelope (`AwaitReplyNode`), and the `await`'s value is what the behaviour returns (`awaitMessage`); or the operand is an operation, an instance of the actors package's `Awaitable[R]` (`actorAwaitableResult`), and the `await`'s value is its `R`, an `await` whose value is unwanted -- its own statement, or the last of a behaviour returning nothing -- warned (`WarnAwaitUnused`, `awaitOperation`), and compiled, the answer dropped; or the operand is a future, an instance of the actors package's `Future[T]` (`actorFutureResult`), and the `await`'s value is its `T` (`awaitFuture`). Its operand is checked as `actorAwaitOperand`, so that a behaviour's call there is sent awaited, not made a future's. An `await` on anything else is refused once flow has walked it (`ErrorAwaitNotFuture`, `awaitSplitOrReport`). What its seam does is flow's ([Flow](flow.md), "A seam") |
+| `ir/types/actor.c` | `actorCheckAll`, `actorStateMember`, `actorIsState`, `actorOfState`, `actorOfBehaviour`, `actorMessageOfSend`, `actorMessageNamed`, `actorTraitWanted`, `actorTraitCoerce`, `actorTraitMeets`, `actorMessageReturns` | an actor's crossing parameters, and its behaviours' returned types, refused where not Sendable; a traced reference made or held in an actor's state, parameters or method bodies (`actorRefuseGc`, a stopgap); the member of an actor's state a use through its handle names, reported as private (`fnCallLowerMethod`'s missing member); whether a struct is an actor's state, whose behaviours its dispatcher runs, whether a method is a behaviour, and what the parser generated for it (`ActorInfo`; a generic actor's is registered in its type parameters, and each instance of its handle gets an info of its own the first time one is asked for (`actorInstance`): the instance's counterpart of each node, found by the names and the place among those so named, a field by its name, the state's instance being the type of the instance dispatcher's first parameter, so asking for it instances the state; `actorCheckAll` judges each instance, naming it, and `actorIsMessage` has the thread check take a generic actor's message enum at its word, as a plain actor's is, since the parameters it carries are what is judged); which message a handle's method sends, and which a name on the state names; an actor trait's handle, wanted where an actor's handle is given, converted by the language (`iexpMatches` answers `ConvByMeth`, `iexpCoerce` calls `actorTraitCoerce`): the actor is checked to have each of the trait's behaviours, `pub`, with the same parameter and returned types (`ErrorActorTraitConform`, naming each it lacks), and the value becomes a call of the trait's generated `wrap` on a borrow of the handle, the borrow's coercion to the trait's virtual reference being what makes the (actor, trait) vtable; for an instance of a generic trait's handle what the trait asks is read off the instance's own methods, and an `await` on one gives what its future holds; and a bound naming an actor trait (`[S: ChunkSink]`) is met by an actor that conforms (`actorTraitMeets`, `genericConditionValue`), the generic body then calling the actor directly |
+| `ir/exp/await.c` | `awaitTypeCheck` | an `await` stands in a behaviour (`ErrorAwaitPlace` anywhere else, an actor's `fn` among them: its `init`, its `final`, a helper, the message saying to await at the top of a behaviour and push the synchronous work down); its value is its operand's, unless the operand sends a behaviour: one returning nothing is refused (`ErrorAwaitVoid`), and for one returning a value the call is made the handle's method sending it awaited, its last argument the reply's envelope (`AwaitReplyNode`), and the `await`'s value is what the behaviour returns (`awaitMessage`); or the operand is an operation, an instance of the actors package's `Awaitable[R]` (`actorAwaitableResult`), and the `await`'s value is its `R`, an `await` whose value is unwanted -- its own statement, or the last of a behaviour returning nothing -- warned by the block that drops it (`WarnDiscard`, `discardCheck`), and compiled, the answer dropped; or the operand is a future, an instance of the actors package's `Future[T]` (`actorFutureResult`), and the `await`'s value is its `T` (`awaitFuture`). Its operand is checked as `actorAwaitOperand`, so that a behaviour's call there is sent awaited, not made a future's. Or the operand's type has a method named `await` taking only `self` (the convention; C#'s `GetAwaiter`): the operand becomes the call `x.await()`, which must give an `Awaitable[R]` or a `Future[T]`, and the `await` is that case (`awaitMethod`; a method taking more, or giving neither, is `ErrorAwaitMethod`), so the reply protocol knows nothing of the type. An `await` on anything else is refused once flow has walked it (`ErrorAwaitNotFuture`, `awaitSplitOrReport`). What its seam does is flow's ([Flow](flow.md), "A seam") |
 | `ir/exp/yield.c` | `yieldTypeCheck` | a `yield` stands in a generator's `next` (`ErrorYieldPlace` anywhere else); its value, the `Some(value)` call the parser wrote, or a sub-generator's own result, is coerced to the type `next` gives (`ErrorInvType`, worded for the generator) and checked as a `return`'s is for a borrow of its own storage ([Flow](flow.md), "A yield") |
 | | `selfActorTypeCheck` | `selfactor` stands in an actor's method but its `final` (`ErrorSelfActorPlace`), its `init` included, lowered to a call of the actor's generated `<Actor>.self'` on the method's `self`, which flow walks as a use through an init's `self` (`fnCallFlow`), refused before the state is filled |
 | | `selfActorSend` | from `fnCallLowerMethod`: a call of one of an actor's behaviours on its state, anywhere but its dispatch function, is a send: the receiver becomes the handle, `<Actor>.self'` on the method's `self`, and the handle's method sending it is selected. In the `init` it is a send like any other: the init runs on the state in the actor's block (`parseactor.c`). In the `final`, outside the actor's methods, or through a state that is not the method's own `self`, it is `ErrorBehaviourSend` |
 | `ir/exp/typelit.c` | `typeLitNewChecked` | an actor's state constructed, by its fields' names or by an init it declares, anywhere but its handle's initializer and its init's fill of its `self` (`typeLitSelfFill`, set by `assignTypeCheck`) is `ErrorActorStateInit`: it would be a state in no actor, from which `selfactor` makes a handle to nothing. The state is also a move type whatever its fields (`structTypeCheck`), so it is never copied out through a method's borrow (`ErrorMoveOut`) |
 | `ir/inode.c`, `ir/types/actor.c` | `inodeTypeCheck`, `actorFutureCall` | a call of a handle's method sending a behaviour, whose value is kept (its expected type neither don't-care nor void, and it is not an `await`'s operand): for a behaviour returning a value it is made a call of the handle's method that makes and sends for a future, and its value is the `actors.Future[T]`; for one returning nothing it is refused (`ErrorFutureVoid`). As a statement of its own it stays the send, fire and forget |
-| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight |
+| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight; and the loud window of a declaration first reached inside a trial that the trial did not make (section 4, "A trial does not own what it reaches") |
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the six causes of section 6, and the hop-by-hop trace |
@@ -882,7 +969,10 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/stmt/intrinsic.c` | `invocationIsCore` | whether a type is core's `Invocation`, known by its name and its package |
 | `ir/stmt/intrinsic.c` | `intrinsicDclTypeCheck` | step 4 of section 10.3: a declared intrinsic's type argument must have a size |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
-| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — and last `modLifecycle` |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — then, for a `main` returning a Result, the function the entry calls in its stead (`propagateMainResult`, `ir/exp/propagate.h`), and last `modLifecycle` |
+| `ir/exp/discard.c` | `discardCheck` | a statement that throws a value away: warned (`WarnDiscard`) when the value is of a `@mustUse` type (core's `Result` is one; an `Option` is not) or is an awaited operation's answer; asked by `blockStmtTypeCheck` and by `blockTypeCheck` for a last line that ends in `;`. `_ = f();` is an assignment and is not one |
+| `ir/exp/propagate.c` | `propagateLower` | `x?`: the block the parser made, finished once `x` is checked — the test, the binding of what `Ok` or `Some` holds, and the early return of the failure, its error converted to the function's ([Block](../nodes/block.md), "Type check"); or, inside a `try` block of the same function, a `break` aimed at the block |
+| | `propagateTryEnter`, `propagateTryFinish` | a `try` block: its last value held and wrapped as the success, its type the context's or read off its `?`s, and the values of the breaks its `?`s leave by ([Block](../nodes/block.md), "Type check") |
 | `ir/stmt/module.c` | `modLifecycle`, `modGiveDrop` | once every global's type is settled: the module's `init` and `final` checked as `fn @initpure init()` and `fn final()` (`ErrorModLifecycle`), each global without a value reported where the module has no `init` (`ErrorGlobalUninit`), and the module given a pre-lowered `drop` — its `final`, then each finalizing global's drop — where a global needs it; a thread-local global is never in it, and one whose type needs finalizing is `ErrorThreadLocalFinal`. [module](../nodes/module.md), "Init and final" |
 | `ir/stmt/modtrait.c` | `modTraitCheck`, `modTraitTypeCheck` | what a conforming module has for each member of its module trait against the member's shape — one candidate of exactly the signature, or a global of the type and permission — each difference `ErrorModTraitMismatch` at the `is`; the trait's own members' signatures and globals, never a default's body, which each copy checks. [module](../nodes/module.md), "Module traits" |
 | `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |

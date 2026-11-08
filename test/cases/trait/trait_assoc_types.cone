@@ -1,0 +1,206 @@
+// A trait's associated type, 'type Cursor: Iterator[T];': a type the type
+// meeting the trait chooses, said by the shape of the method that mentions it or
+// outright by an alias, and named in generic code through the type parameter,
+// 'C.Cursor', which each instance resolves.
+//
+// Seq[T] is met by three types: Bag and Climb by the shape of their 'iter' (a Down
+// and an Up), Shelf outright, 'alias Cursor = Up;', and by declaring it, which
+// gives it Seq's default naming Cursor, as Shelf's Up; and the generic Many[T]
+// outright in its own parameter, 'alias Cursor = Rep[T];'. 'total'
+// names C.Cursor as a local's type, 'firstOf' as its own result's, 'viaCount' as a
+// type argument and 'Walker' as a field's type; T is read off the cursor's 'next'
+// through Cursor's bound wherever the call leaves it out. Holder has no written
+// parameter, only Item, and is written bare; Halves' Piece has no bound and is
+// read off a tuple. A where clause names the bound as the inline form does.
+//
+// Verdict: run. Basis: doc/manual/mod-substitution.html, "Associated types".
+
+mod trait_assoc_types;
+
+import stdio use *;
+
+trait Seq[T] {
+  type Cursor: Iterator[T];
+  pub fn iter(self: &) Cursor;
+  // A default naming it: in a type declaring the trait, that type's Cursor
+  pub fn first(self: &) Option[T] {
+    var c: Cursor = self.iter();
+    c.next()
+  }
+}
+
+struct Down is Iterator[i64] {
+  pub n: i64;
+  pub fn next(self: &mut) Option[i64] {
+    if n == 0 { None } else { n = n - 1; Some(n + 1) }
+  }
+}
+
+struct Up is Iterator[i64] {
+  pub n: i64;
+  pub top: i64;
+  pub fn next(self: &mut) Option[i64] {
+    if n >= top { None } else { n = n + 1; Some(n) }
+  }
+}
+
+// By the shape of iter: a Down
+struct Bag {
+  pub n: i64;
+  pub fn iter(self: &) Down { Down(n) }
+}
+
+// By the shape of iter: an Up
+struct Climb {
+  pub n: i64;
+  pub fn iter(self: &) Up { Up(0, n) }
+}
+
+// Outright, by an alias, and declared
+struct Shelf is Seq[i64] {
+  alias Cursor = Up;
+  pub n: i64;
+  pub fn iter(self: &) Up { Up(10, 10 + n) }
+}
+
+// A generic type saying it outright, in its own parameter
+struct Rep[T] is Iterator[T] {
+  pub v: T;
+  pub left: i64;
+  pub fn next(self: &mut) Option[T] {
+    if left == 0 { None } else { left = left - 1; Some[T](v) }
+  }
+}
+
+struct Many[T] is Seq[T] {
+  alias Cursor = Rep[T];
+  pub v: T;
+  pub n: i64;
+  pub fn iter(self: &) Rep[T] { Rep[T](v, n) }
+}
+
+fn count[T, I: Iterator[T]](it: &mut I) i64 {
+  var k = 0i64;
+  while true {
+    match it.next() {
+      case let Some(v) { k = k + 1; }
+      case is None { break; }
+    }
+  }
+  k
+}
+
+// C.Cursor as a local's type
+fn total[C: Seq[i64]](c: &C) i64 {
+  var it: C.Cursor = c.iter();
+  var sum = 0i64;
+  while true {
+    match it.next() {
+      case let Some(v) { sum = sum + v; }
+      case is None { break; }
+    }
+  }
+  sum
+}
+
+// T inferred through Cursor's bound; C.Cursor in the result
+fn cursorOf[T, C: Seq[T]](c: &C) C.Cursor {
+  c.iter()
+}
+
+// C.Cursor as a type argument, the bound written in a where clause
+fn viaCount[T, C](c: &C) i64 where C is Seq[T] {
+  var it = c.iter();
+  count[T, C.Cursor](&mut it)
+}
+
+// C.Cursor as a field's type
+struct Walker[C: Seq[i64]] {
+  pub cur: C.Cursor;
+  pub steps: i64;
+
+  pub fn step(self: &mut) Option[i64] {
+    steps = steps + 1;
+    cur.next()
+  }
+}
+
+// A trait whose only parameter is associated, written bare
+trait Holder {
+  type Item;
+  pub fn get(self: &) Item;
+}
+
+struct Num {
+  pub n: i64;
+  pub fn get(self: &) i64 { n }
+}
+
+struct Letter is Holder {
+  alias Item = u8;
+  pub c: u8;
+  pub fn get(self: &) u8 { c }
+}
+
+fn held[H: Holder](h: &H) H.Item {
+  h.get()
+}
+
+// An unbounded associated type, read off a tuple
+trait Halves[T] {
+  type Piece;
+  pub fn len(self: &) usize;
+  pub fn split(self: &, at: usize) (Piece, Piece);
+}
+
+struct Span {
+  pub lo: i64;
+  pub hi: i64;
+  pub fn len(self: &) usize { usize.from(hi - lo) }
+  pub fn split(self: &, at: usize) (Span, Span) {
+    let mid = lo + i64.from(at);
+    (Span(lo, mid), Span(mid, hi))
+  }
+}
+
+fn halves[T, S: Halves[T]](s: &S) (S.Piece, S.Piece) {
+  s.split(s.len() / 2usize)
+}
+
+fn main() {
+  let b = Bag(3);
+  let c = Climb(4);
+  let s = Shelf(2);
+  print <- "total ", total(&b), " ", total(&c), " ", total(&s), "\n";     // 6 10 23
+  let m = Many[i64](7, 3);
+  let mf = Many[f64](1.5, 2);
+  print <- "generic ", total(&m), " ", viaCount(&mf), "\n";               // 21 2
+
+  var down = cursorOf(&b);
+  var up = cursorOf(&s);
+  print <- "first ", down.n, " ", up.n, "\n";                             // 3 10
+
+  print <- "count ", viaCount(&b), " ", viaCount(&c), " ", viaCount(&s), "\n";  // 3 4 2
+
+  match s.first() {
+    case let Some(v) { print <- "default ", v, "\n"; }                      // 11
+    case is None { print <- "default none\n"; }
+  }
+
+  var w = Walker[Climb](c.iter(), 0);
+  w.step();
+  match w.step() {
+    case let Some(v) { print <- "walker ", v, " after ", w.steps, "\n"; }   // 2 after 2
+    case is None { print <- "walker none\n"; }
+  }
+
+  let n = Num(21);
+  let l = Letter(65u8);
+  print <- "held ", held(&n), " ", u32.from(held(&l)), "\n";              // 21 65
+
+  let sp = Span(0, 10);
+  let h = halves[i64, Span](&sp);
+  let left = h.0;
+  let right = h.1;
+  print <- "halves ", left.lo, "..", left.hi, " ", right.lo, "..", right.hi, "\n";  // 0..5 5..10
+}

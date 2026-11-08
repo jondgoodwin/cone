@@ -13,12 +13,12 @@
 //   struct Npc { pub hp i64; pub target Ref[Npc]; }
 //
 //   fn play() {
-//     mut world = Pool[Npc].empty();
-//     imm orc = world.add(new Npc(10, Ref[Npc].none()));
-//     imm elf = world.add(new Npc(8, orc));     // the elf targets the orc
+//     mut world = Pool[Npc]();
+//     imm orc = world.add(Npc(10, Ref[Npc].none()));
+//     imm elf = world.add(Npc(8, orc));     // the elf targets the orc
 //     world.remove(orc);                        // the orc dies
 //     match world.get(world[elf].target) {
-//       case imm s Some { ...s.value.hp... }
+//       case imm s Some { ...s.hp... }
 //       case is None { ... }                    // here: its target is gone
 //     }
 //   }   // 'world' dies: the elf's death, then the block
@@ -123,17 +123,17 @@ import libc;
 // One slot of a pool's block. 'gen' is odd while the slot holds a value and
 // even while it does not; 'next' is the next free slot while it is free.
 struct Slot[T] {
-  pub gen u32;
-  pub next u32;
-  pub value T;
+  pub gen: u32;
+  pub next: u32;
+  pub value: T;
 }
 
 // A block a re-entrant grow replaced while a value in it was being finalized,
 // kept until no finalizer is running
 struct Stale {
-  pub prev *Stale;
-  pub block *u8;
-  pub bytes usize;    // how long the block is, to give it back to the pool's region
+  pub prev: *Stale;
+  pub block: *u8;
+  pub bytes: usize;    // how long the block is, to give it back to the pool's region
 }
 
 // The end of the free list, and the slot of Ref.none(): past any slot a pool
@@ -146,99 +146,94 @@ const maxSlots = 4294967294u32;
 // A reference to the value a pool holds in one slot, as the occupant it was
 // when the reference was made
 pub struct Ref[T] is Hash {
-  index u32;
-  gen u32;
+  index: u32;
+  gen: u32;
 
   // A reference to nothing: never alive in any pool
-  pub fn none() Ref[T] { new Ref[T](noSlot, 0u32); }
+  pub fn none() Ref[T] { Ref[T](noSlot, 0u32) }
 
   // A reference naming a slot and a generation directly, as 'slot()' and
   // 'generation()' gave them. A value's generation is always odd, and an even
   // one is taken as the odd one after it, so a Ref made up this way can only
   // ever name a value a pool holds, never a free slot.
-  pub fn of(slot u32, generation u32) Ref[T] { new Ref[T](slot, generation | 1u32); }
+  pub fn of(slot: u32, generation: u32) Ref[T] { Ref[T](slot, generation | 1u32) }
 
   // Whether it is none()
-  pub fn isNone(self) bool { gen == 0u32; }
+  pub fn isNone(self) bool { gen == 0u32 }
 
   // The slot it names, and which occupant of that slot
-  pub fn slot(self) u32 { index; }
-  pub fn generation(self) u32 { gen; }
+  pub fn slot(self) u32 { index }
+  pub fn generation(self) u32 { gen }
 
   // Whether two references name the same occupant of the same slot
-  pub fn `==`(self, other Ref[T]) bool {
-    index == other.slot() and gen == other.generation();
+  pub fn `==`(self, other: Ref[T]) bool {
+    index == other.slot() && gen == other.generation()
   }
 
   // What identifies it, for a table keyed by references: the slot and the
   // generation as one 64-bit word, mixed once rather than a word each
-  pub fn hash(self &, h &mut Hasher) {
+  pub fn hash(self: &, h: &mut Hasher) {
     h.writeU64(u64.from(index) | (u64.from(gen) << 32u64));
   }
 }
 
-pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
-  slots *Slot[T];   // the block, or null before the first value
-  cap u32;          // slots the block has room for
-  high u32;         // slots ever used: each below it has a generation
-  free u32;         // the first free slot to reuse, or noSlot
-  live u32;         // slots holding a value
-  retired u32;      // slots whose generations ran out, never used again
-  lastGen u32;      // the last generation a slot may reach, odd
-  dying u32;        // finalizers running now, nested
-  stale *Stale;     // blocks replaced while one ran, or null
-  region *MemRegion;   // where the block comes from and goes back to
+pub struct Pool[T] is Default, ShapeChanging, CarriesRegion, GcTraceElements {
+  slots: *Slot[T];   // the block, or null before the first value
+  cap: u32;          // slots the block has room for
+  high: u32;         // slots ever used: each below it has a generation
+  free: u32;         // the first free slot to reuse, or noSlot
+  live: u32;         // slots holding a value
+  retired: u32;      // slots whose generations ran out, never used again
+  lastGen: u32;      // the last generation a slot may reach, odd
+  dying: u32;        // finalizers running now, nested
+  stale: *Stale;     // blocks replaced while one ran, or null
+  region: *MemRegion;   // where the block comes from and goes back to
 
-  // An empty pool, 'new Pool[Npc]': no block until the first value arrives. The
+  // An empty pool, 'Pool[Npc]()': no block until the first value arrives. The
   // last argument of every init is the region the block will come from
   // (collections' List has the whole of it), which a construction that names
   // none leaves out and is handed the heap's.
-  pub fn initEmpty overload init(self &new, region *MemRegion) {
-    *self = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
+    *self = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
   }
 
-  // An empty pool whose block has room for n values, 'new Pool[Npc](100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
-    mut p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+  // An empty pool whose block has room for n values, 'Pool[Npc](100)'
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
+    var p = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
     p.reserveSlots(n);
     *self = p;
   }
 
-  // An empty pool: no block until the first value arrives
-  pub fn empty() Pool[T] {
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
-  }
-
   // An empty pool whose block already has room for n values
-  pub fn withCapacity(n usize) Pool[T] {
-    mut p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
+  pub fn withCapacity(n: usize) Pool[T] {
+    var p = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
     p.reserveSlots(n);
-    p;
+    p
   }
 
   // An empty pool whose slots are retired after generation 'last' rather
   // than after 2^32 - 1: for testing what a pool does when a slot's
   // generations run out. An even 'last' is taken as the odd number below it,
   // and 0 as 1.
-  pub fn withLastGeneration(last u32) Pool[T] {
-    imm odd = if last == 0u32 {1u32;} else if (last & 1u32) == 0u32 {last - 1u32;} else {last;};
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null, heapRegion());
+  pub fn withLastGeneration(last: u32) Pool[T] {
+    let odd = if last == 0u32 {1u32} else if (last & 1u32) == 0u32 {last - 1u32} else {last};
+    Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null, heapRegion())
   }
 
   // How many values it holds, how many slots its block has room for, and how
   // many slots have been retired
-  pub fn len(self &) usize { usize.from(live); }
-  pub fn capacity(self &) usize { usize.from(cap); }
-  pub fn retiredSlots(self &) usize { usize.from(retired); }
+  pub fn len(self: &) usize { usize.from(live) }
+  pub fn capacity(self: &) usize { usize.from(cap) }
+  pub fn retiredSlots(self: &) usize { usize.from(retired) }
 
   // How a collector reaches what the pool holds, in its block: a writable
   // reference to the value in each occupied slot (a free or retired slot holds
   // none), in slot order
-  pub fn gcTraceElements(self &mut) PoolGcTraceItems[T] { new PoolGcTraceItems[T](self, 0u32); }
+  pub fn gcTraceElements(self: &mut) PoolGcTraceItems[T] { PoolGcTraceItems[T](self, 0u32) }
 
   // Move value in, and a reference to it there
-  pub fn add(self &mut, value T) Ref[T] {
-    mut i = free;
+  pub fn add(self: &mut, value: T) Ref[T] {
+    var i = free;
     if i != noSlot {
       free = ((slots + usize.from(i)) as &Slot[T]).next;
     }
@@ -248,51 +243,51 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
       high = high + 1u32;
       ((slots + usize.from(i)) as &mut Slot[T]).gen = 0u32;
     }
-    imm s = (slots + usize.from(i)) as &mut Slot[T];
+    let s = (slots + usize.from(i)) as &mut Slot[T];
     s.gen = s.gen + 1u32;
     mem.writeRaw(&mut s.value as *T, value);
     live = live + 1u32;
-    Ref[T].of(i, s.gen);
+    Ref[T].of(i, s.gen)
   }
 
   // Whether r names a value it holds
-  pub fn alive(self &, r Ref[T]) bool {
-    r.slot() < high and ((slots + usize.from(r.slot())) as &Slot[T]).gen == r.generation();
+  pub fn alive(self: &, r: Ref[T]) bool {
+    r.slot() < high && ((slots + usize.from(r.slot())) as &Slot[T]).gen == r.generation()
   }
 
   // Some borrow of the value r names, or None if it has been removed
-  pub fn get(self &, r Ref[T]) Option[&T] {
+  pub fn get(self: &, r: Ref[T]) Option[&T] {
     if !self.alive(r) { return None; }
-    Some[&T](&slots[usize.from(r.slot())].value);
+    Some[&T](&slots[usize.from(r.slot())].value)
   }
 
   // Some mutable borrow of the value r names, or None if it has been removed
-  pub fn getMut(self &mut, r Ref[T]) Option[&mut T] {
+  pub fn getMut(self: &mut, r: Ref[T]) Option[&mut T] {
     if !self.alive(r) { return None; }
-    Some[&mut T](&mut slots[usize.from(r.slot())].value);
+    Some[&mut T](&mut slots[usize.from(r.slot())].value)
   }
 
   // 'pool[r]': a borrow of the value r names; a panic if it has been removed,
   // reported at the line of the caller, which 'file' and 'line' default to
-  pub fn `[]`(self &, r Ref[T], file &Array[u8] = srcFile(), line u32 = srcLine()) &T {
+  pub fn `[]`(self: &, r: Ref[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) &T {
     if !self.alive(r) { deadRef(file, line); }
-    &slots[usize.from(r.slot())].value;
+    &slots[usize.from(r.slot())].value
   }
 
   // '&mut pool[r]': a mutable borrow of the value r names; a panic if it has
   // been removed, as for 'pool[r]'
-  pub fn `&[]`(self &mut, r Ref[T], file &Array[u8] = srcFile(), line u32 = srcLine()) &mut T {
+  pub fn `&[]`(self: &mut, r: Ref[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T {
     if !self.alive(r) { deadRef(file, line); }
-    &mut slots[usize.from(r.slot())].value;
+    &mut slots[usize.from(r.slot())].value
   }
 
   // Remove the value r names, finalizing it where it sits, and answer true;
   // or, if it has been removed already, do nothing and answer false
-  pub fn remove(self &mut, r Ref[T]) bool {
+  pub fn remove(self: &mut, r: Ref[T]) bool {
     if !self.alive(r) { return false; }
-    imm i = r.slot();
-    imm s = (slots + usize.from(i)) as &mut Slot[T];
-    imm retire = s.gen == lastGen;
+    let i = r.slot();
+    let s = (slots + usize.from(i)) as &mut Slot[T];
+    let retire = s.gen == lastGen;
     // Gone from here on, to anything its finalizer asks the pool
     s.gen = s.gen + 1u32;
     live = live - 1u32;
@@ -307,46 +302,46 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
       retired = retired + 1u32;
     }
     else {
-      imm now = (slots + usize.from(i)) as &mut Slot[T];
+      let now = (slots + usize.from(i)) as &mut Slot[T];
       now.next = free;
       free = i;
     }
     if dying == 0u32 { self.freeStale(); }
-    true;
+    true
   }
 
   // A block twice the size, or 4 slots to start. The block may move. While a
   // finalizer is running, the value it is finalizing sits in the old block,
   // so the old block is copied rather than reallocated, and kept until the
   // last finalizer returns.
-  fn grow(self &mut) {
+  fn grow(self: &mut) {
     if cap >= maxSlots { outOfMemory(); }
-    imm want = if cap == 0u32 {4u32;} else if cap > maxSlots / 2u32 {maxSlots;} else {cap * 2u32;};
+    let want = if cap == 0u32 {4u32} else if cap > maxSlots / 2u32 {maxSlots} else {cap * 2u32};
     self.growTo(want);
   }
 
   // Room for n slots at least, made now (a pool made with a starting size)
-  fn reserveSlots(self &mut, n usize) {
+  fn reserveSlots(self: &mut, n: usize) {
     if n <= usize.from(cap) { return; }
-    self.growTo(if n > usize.from(maxSlots) {maxSlots;} else {u32.from(n);});
+    self.growTo(if n > usize.from(maxSlots) {maxSlots} else {u32.from(n)});
   }
 
   // A block of 'want' slots, which is more than the block has now
-  fn growTo(self &mut, want u32) {
-    imm size = mem.sizeof[Slot[T]]();
+  fn growTo(self: &mut, want: u32) {
+    let size = mem.sizeof[Slot[T]]();
     if usize.from(want) > (0usize - 1usize) / size { outOfMemory(); }
-    imm r = region as &MemRegion;
+    let r = region as &MemRegion;
     if dying == 0u32 {
-      imm fresh = r.resize(slots as *u8, usize.from(cap) * size, usize.from(want) * size, mem.alignof[Slot[T]]());
+      let fresh = r.resize(slots as *u8, usize.from(cap) * size, usize.from(want) * size, mem.alignof[Slot[T]]());
       if fresh as usize == 0usize { outOfMemory(); }
       slots = fresh as *Slot[T];
     }
     else {
-      imm fresh = r.allocate(usize.from(want) * size, mem.alignof[Slot[T]]());
-      imm node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
-      if fresh as usize == 0usize or node as usize == 0usize { outOfMemory(); }
+      let fresh = r.allocate(usize.from(want) * size, mem.alignof[Slot[T]]());
+      let node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
+      if fresh as usize == 0usize || node as usize == 0usize { outOfMemory(); }
       libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
-      mem.writeRaw(node, new Stale(stale, slots as *u8, usize.from(cap) * size));
+      mem.writeRaw(node, Stale(stale, slots as *u8, usize.from(cap) * size));
       stale = node;
       slots = fresh as *Slot[T];
     }
@@ -354,9 +349,9 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
   }
 
   // Free the blocks kept for finalizers that have now returned
-  fn freeStale(self &mut) {
+  fn freeStale(self: &mut) {
     while stale as usize != 0usize {
-      imm node = stale;
+      let node = stale;
       stale = (node as &Stale).prev;
       (region as &MemRegion).release((node as &Stale).block, (node as &Stale).bytes);
       libc.free(node as *u8);
@@ -367,13 +362,13 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
   // would; then its blocks. A value a finalizer adds meanwhile is finalized
   // too, before the blocks go. It counts itself as a finalizer running
   // throughout, so no remove frees a replaced block before the sweep ends.
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if mem.needsFinal[T]() {
       dying = dying + 1u32;
       while live > 0u32 {
-        mut i = 0u32;
+        var i = 0u32;
         while i < high {
-          imm gen = ((slots + usize.from(i)) as &Slot[T]).gen;
+          let gen = ((slots + usize.from(i)) as &Slot[T]).gen;
           if (gen & 1u32) == 1u32 {
             self.remove(Ref[T].of(i, gen));
           }
@@ -391,26 +386,26 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
 // them: 'next' gives a writable reference to the value in each occupied slot.
 // It borrows the pool mutably, which may not change while the cursor is used
 pub struct PoolGcTraceItems['a, T] is Iterator[&mut T] {
-  pool &'a mut Pool[T];
-  pos u32;
+  pool: &'a mut Pool[T];
+  pos: u32;
 
-  pub fn next(self &mut) Option[&'a mut T] {
+  pub fn next(self: &mut) Option[&'a mut T] {
     while pos < pool.high {
-      imm s = (pool.slots + usize.from(pos)) as &mut Slot[T];
+      let s = (pool.slots + usize.from(pos)) as &mut Slot[T];
       pos = pos + 1u32;
       if (s.gen & 1u32) == 1u32 {
         return Some[&mut T](&mut s.value);
       }
     }
-    None;
+    None
   }
 }
 
 // The pool's panics: a removed value indexed, reported where 'pool[r]' was;
 // and memory exhausted, reported where the pool found it
-fn deadRef(file &Array[u8], line u32) Never {
-  panic("pool: pool[r] of a reference whose value has been removed", file, line);
+fn deadRef(file: &Array[u8], line: u32) Never {
+  panic("pool: pool[r] of a reference whose value has been removed", file, line)
 }
 fn outOfMemory() Never {
-  panic("pool: out of memory");
+  panic("pool: out of memory")
 }

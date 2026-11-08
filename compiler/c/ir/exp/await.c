@@ -83,7 +83,7 @@ void awaitNameRes(NameResState *pstate, AwaitNode *node) {
 // method of an actor's state, where the state is in the actor: its 'init'
 // too, which runs on the state in the actor's block, the actor real already
 // (parseactor.c), so what it sends waits in the mailbox until the init has
-// returned; but not its 'final', which runs as it dies (refconccomm.html: an
+// returned; but not its 'final', which runs as it dies (conc-sharing.html: an
 // actor's body is fields, an init, behaviours, synchronous methods, a final).
 static char *actorMethodNotPlaced(FnDclNode *fn) {
     if (fn == NULL)
@@ -95,7 +95,7 @@ static char *actorMethodNotPlaced(FnDclNode *fn) {
     return NULL;
 }
 
-// Where may 'await' stand? In a behaviour, a method declared 'async do': a
+// Where may 'await' stand? In a behaviour, a method declared 'async fn': a
 // seam is a return to the actor's dispatcher, which runs a behaviour as a
 // message. Every 'fn' of an actor -- its 'init', its 'final', a helper -- is
 // synchronous, run inside whatever called it, which a seam cannot cut. NULL
@@ -152,9 +152,9 @@ static int awaitDemandRuntime(TypeCheckState *pstate, AwaitNode *node) {
 // declare: an I/O operation's is a Result, success or the system's failure,
 // as a synchronous call that can fail answers. Nothing is added by 'await'
 // itself. That result should be used: an 'await' on an operation whose value
-// is unwanted -- a statement of its own -- is warned (WarnAwaitUnused), and
-// compiles, the answer dropped
-static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
+// is unwanted -- a statement of its own -- is warned by the block that drops
+// it (WarnDiscard, discardCheck), and compiles, the answer dropped
+static void awaitOperation(TypeCheckState *pstate, AwaitNode *node) {
     INode *result = actorAwaitableResult(((IExpNode *)node->exp)->vtype);
     if (result == NULL)
         return;
@@ -164,14 +164,6 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
     }
     node->awaitable = itypeGetTypeDcl(((IExpNode *)node->exp)->vtype);
     node->vtype = result;
-    INode *expected = expectType && expectType != noCareType ? itypeGetTypeDcl(expectType) : NULL;
-    if (expectType == noCareType || (expected && expected->tag == VoidTag)) {
-        char rname[256] = "";
-        itypeSpellCat(rname, sizeof(rname), result, 0);
-        errorMsgNode((INode *)node, WarnAwaitUnused,
-            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.",
-            rname);
-    }
 }
 
 // What is awaited is a behaviour of an actor -- a call of a handle's method
@@ -185,7 +177,7 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
 static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     // Checked again: the call is the awaited one already
     if (node->message) {
-        node->vtype = ((FnSigNode *)node->message->vtype)->rettype;
+        node->vtype = actorMessageReturns(node->message);
         return;
     }
     if (node->exp->tag != FnCallTag)
@@ -210,7 +202,10 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     if (!awaitDemandRuntime(pstate, node))
         return;
     fnCallDemandCandidates((INode *)msg->ask);
-    fnCallDemandCandidates((INode *)msg->method);
+    // The requirement of an instance of a generic trait's handle is the template's,
+    // in its type parameters: its future-giving method stands for it
+    FnDclNode *behaviour = msg->generic ? msg->future : msg->method;
+    fnCallDemandCandidates((INode *)behaviour);
 
     FnSigNode *asksig = (FnSigNode *)msg->ask->vtype;
     NameUseNode *askuse = (NameUseNode *)call->objfn;
@@ -218,8 +213,8 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     askuse->vtype = (INode *)asksig;
     INode *envtype = ((VarDclNode *)nodesGet(asksig->parms, asksig->parms->used - 1))->vtype;
     nodesAdd(&call->args, (INode *)newAwaitReplyNode(node, envtype));
-    node->message = msg->method;
-    node->vtype = ((FnSigNode *)msg->method->vtype)->rettype;
+    node->message = behaviour;
+    node->vtype = actorMessageReturns(behaviour);
 }
 
 // What is awaited is a future, a value of an instance of the actors package's
@@ -237,6 +232,65 @@ static void awaitFuture(TypeCheckState *pstate, AwaitNode *node) {
     }
     node->future = itypeGetTypeDcl(((IExpNode *)node->exp)->vtype);
     node->vtype = result;
+}
+
+// What is awaited is none of the three above, but its type has a method named
+// 'await' (the convention: C#'s GetAwaiter). It takes only 'self' and gives the
+// operation or the future the wait is on, an Awaitable[R] or a Future[T], so
+// 'await x' is 'await x.await()' and the call's type gives the seam its case.
+// A library type builds its answer with Awaitable.make or Awaitable.of, which
+// hand it the envelope and carry the exactly-once contract; nothing in the
+// reply protocol knows of the type. A type without the method is left as it
+// was (refused by the seam's report, ErrorAwaitNotFuture); one whose method
+// takes more than 'self' or gives neither type is ErrorAwaitMethod
+static void awaitMethod(TypeCheckState *pstate, AwaitNode *node) {
+    static Name *awaitName = NULL;
+    if (awaitName == NULL)
+        awaitName = nametblFind("await", 5);
+    INode *type = iexpGetDerefTypeDcl(node->exp);
+    if (type == NULL || !isMethodType(type))
+        return;
+    INode *found = iNsTypeFindFnField((INsTypeNode *)type, awaitName);
+    if (found != NULL && found->tag == FnOverloadDclTag) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s is overloaded, and the convention needs exactly one: it takes only 'self', 'await x' being 'await x.await()'. Keep the one that takes only 'self' and rename the others.",
+            itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+        return;
+    }
+    if (found == NULL || found->tag != FnDclTag)
+        return;
+    FnDclNode *dcl = (FnDclNode *)found;
+    if (dcl->vtype == NULL || dcl->vtype->tag != FnSigTag)
+        return;
+    if (((FnSigNode *)dcl->vtype)->parms->used != 1) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s makes it awaitable, and takes only 'self': it is called for the wait, 'await x' being 'await x.await()', and gives the Awaitable[R] or Future[T] to wait on.",
+            itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+        return;
+    }
+    FnCallNode *call = newFnCallLower(node->exp, node->exp, 1);
+    call->methfld = (INode *)newMemberUseNode(awaitName);
+    inodeLexCopy(call->methfld, node->exp);
+    // The operand was checked above, once: the call's own check must not walk it
+    // again, which would repeat its diagnostics and, for an operand holding an
+    // 'await' of its own, check that one twice at every level of nesting
+    call->flags |= FlagRcvChecked;
+    node->exp = (INode *)call;
+    if (!iexpTypeCheckAny(pstate, &node->exp)) {
+        node->vtype = errorType;
+        return;
+    }
+    awaitOperation(pstate, node);
+    if (node->awaitable == NULL)
+        awaitFuture(pstate, node);
+    if (node->awaitable == NULL && node->future == NULL) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s gives %s, and the wait is on an Awaitable[R], an operation its maker starts at the seam, or a Future[T]: build one with Awaitable.make or Awaitable.of, or return the future to wait on.",
+            itypeName(type), itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+    }
 }
 
 // The seam at the end of a 'parallel each' written in a behaviour: what it
@@ -275,7 +329,7 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     char *where = awaitNotPlaced(pstate->fn, buf, sizeof(buf));
     if (where)
         errorMsgNode((INode *)node, ErrorAwaitPlace,
-            "'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
+            "'await' stands only in an actor's behaviour, declared 'async fn', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
             where);
     // A behaviour's call awaited is sent awaited, never for a future
     INode *svoperand = actorAwaitOperand;
@@ -292,9 +346,11 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     node->vtype = ((IExpNode *)node->exp)->vtype;
     awaitMessage(pstate, node);
     if (node->message == NULL)
-        awaitOperation(pstate, node, expectType);
+        awaitOperation(pstate, node);
     if (node->message == NULL && node->awaitable == NULL)
         awaitFuture(pstate, node);
+    if (node->message == NULL && node->awaitable == NULL && node->future == NULL)
+        awaitMethod(pstate, node);
 }
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
@@ -449,7 +505,7 @@ static void awaitReportSeams(Nodes *awaits, int notfuture) {
                 itypeSpellCat(tname, sizeof(tname), type, 0);
             code = ErrorAwaitNotFuture;
             snprintf(lead, sizeof(lead),
-                "'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, or an operation. This one awaits a %s, which is none of them, so nothing is generated for it.",
+                "'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, an operation, or a value whose type has an 'await' method taking only 'self' that gives one. This one awaits a %s, which is none of them, so nothing is generated for it.",
                 tname);
         }
         char *unbuilt = lead;
@@ -541,7 +597,7 @@ static void awaitSplitAdd(FnDclNode *fn, Nodes *awaits) {
     splitawaits[splitcnt++] = awaits;
 }
 
-// A behaviour: a method of an actor's state declared 'async do', which its
+// A behaviour: a method of an actor's state declared 'async fn', which its
 // dispatcher runs for a message sent to it. An 'await' anywhere else was
 // refused where it stands (awaitTypeCheck), so only a behaviour is split
 static int awaitIsMessage(FnDclNode *fn) {
@@ -752,6 +808,8 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         return awaitWalk(((RefNode *)node)->vtexp, check, bad);
     case NotLogicTag:
         return awaitWalk(((LogicNode *)node)->lexp, check, bad);
+    case DestructTag:
+        return awaitWalk(((DestructNode *)node)->exp, check, bad);
     case OrLogicTag:
     case AndLogicTag:
     {
@@ -837,6 +895,8 @@ static void awaitReportIn(INode *node, char *why, uint32_t *bad) {
         awaitReportIn(((RefNode *)node)->vtexp, why, bad); return;
     case NotLogicTag:
         awaitReportIn(((LogicNode *)node)->lexp, why, bad); return;
+    case DestructTag:
+        awaitReportIn(((DestructNode *)node)->exp, why, bad); return;
     case OrLogicTag: case AndLogicTag:
         awaitReportIn(((LogicNode *)node)->lexp, why, bad);
         awaitReportIn(((LogicNode *)node)->rexp, why, bad);

@@ -1,0 +1,75 @@
+// CONE_TRACE, read when the sink is installed, wins over the program for the
+// targets it names, whether the program set them before the install or after.
+// The program's levels still hold for targets it does not name. Its bare level
+// is the default, winning over the program's default too. A malformed
+// directive in it is skipped, so the program's level for that target holds.
+
+mod envvar;
+
+import testing use *;
+import stdio use *;
+import env;
+import trace use Level, Kind1;
+
+let fetched: Kind1[u64];
+let parsed: Kind1[u64];
+let drawn: Kind1[u64];
+let other: Kind1[u64];
+
+fn @initpure init() {
+  fetched = Kind1[u64].make("fetched", "httpclient", Level.Debug, "bytes");
+  parsed = Kind1[u64].make("parsed", "json", Level.Info, "fields");
+  drawn = Kind1[u64].make("drawn", "app", Level.Debug, "frames");
+  other = Kind1[u64].make("other", "elsewhere", Level.Warn, "n");
+}
+
+struct Names is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {
+    print <- " ", e.kind.name;
+  }
+}
+
+fn emitAll(label: &str) {
+  print <- label, ":";
+  fetched.emit(100);
+  parsed.emit(7);
+  drawn.emit(60);
+  other.emit(1);
+  print <- "\n";
+}
+
+fn main() i32 {
+  env.set("CONE_TRACE", " httpclient=debug , json=loud , error ");
+
+  // Before the install: the program's levels
+  trace.setLevel("httpclient", Level.Off);
+  trace.setLevel("json", Level.Info);
+  trace.setLevel("app", Level.Debug);
+  trace.setDefaultLevel(Level.Trace);
+  expect(trace.levelOf("httpclient") == Level.Off, "before install, the program's level");
+
+  expect(trace.install(Uni[Names](0u64)), "the sink is installed");
+  expect(trace.levelOf("httpclient") == Level.Debug, "CONE_TRACE names httpclient: its level wins over the program's earlier one");
+  expect(trace.levelOf("json") == Level.Info, "its json directive is malformed and skipped: the program's level holds");
+  expect(trace.levelOf("app") == Level.Debug, "a target it does not name keeps the program's level");
+  expect(trace.levelOf("elsewhere") == Level.Error, "its bare level is the default, over the program's");
+  emitAll("installed");
+
+  // After the install: the program changes its levels again
+  trace.setLevel("httpclient", Level.Off);
+  trace.setDefaultLevel(Level.Trace);
+  trace.setLevel("app", Level.Off);
+  expect(trace.levelOf("httpclient") == Level.Debug, "after install, CONE_TRACE still wins for httpclient");
+  expect(trace.levelOf("elsewhere") == Level.Error, "and for the default");
+  expect(trace.levelOf("app") == Level.Off, "the program still sets a target CONE_TRACE does not name");
+  emitAll("the program after");
+
+  // filter replaces the program's levels, under CONE_TRACE's all the same
+  expectUInt(u64.from(trace.filter("httpclient=off,app=debug,trace")), 0u64, "a clean spec");
+  expect(trace.levelOf("httpclient") == Level.Debug, "filter does not undo CONE_TRACE");
+  expect(trace.levelOf("app") == Level.Debug, "filter sets what CONE_TRACE does not name");
+  emitAll("after filter");
+  done()
+}

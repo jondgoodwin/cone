@@ -39,7 +39,7 @@ which failed module verification.
 
 ## Parse
 
-`if` / `elif` / `else` append pairs; `else if` is folded into `elif`.
+`if` / `else if` / `else` append pairs.
 
 **What a match or a bound `if` matches against is decided by its form**
 (`MatchSubject`, `parseMatchSubject`). A *place* -- a name, a field of a place, a
@@ -53,7 +53,7 @@ name use. A reference is such a value: its copy is the reference. A guard's
 binding reads the value before the arm is chosen, so it takes nothing from a place
 or a held value the arms after it test (see [cast](cast.md), "What a binding takes from a place").
 
-**A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
+**A bound pattern match is de-sugared**: `if let Circle(c) = value {…}` becomes the
 `is` condition and a variable bound to a cast inserted at index 0 of the arm. For
 a value that is held, a wrapping block declares the anonymous variable, the
 condition and the cast share one name use of it, and **`parseIf` returns the
@@ -67,49 +67,62 @@ share the pattern's type node, and the variable takes its type from the cast
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`),
-`case imm x T` → a bound pattern, `case v` (a value alone) →
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a && < b` (`case a ..= b` → `>= a && <= b`),
+`case let T(x)` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
-test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
-their conditions; an `if g` after them → `cond and g` (the `and` flagged
-`FlagMatchGuard`, so that a guard is told from the `and` of a range pattern). **A held value is one scrutinee node
-pointer shared by every arm**, so a range's two calls and every `or` alternative hold
+test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `|` → a logical `||` of
+their conditions; an `if g` after them → `cond && g` (the `&&` flagged
+`FlagMatchGuard`, so that a guard is told from the `&&` of a range pattern). **A held value is one scrutinee node
+pointer shared by every arm**, so a range's two calls and every `||` alternative hold
 it too; **a place is a separate copy in each test.** The `IfNode` is marked `FlagIfMatch`.
 
 **`match a, b` has one matchee for each value and one pattern for each in a case.**
 Each matchee is a place or held in a variable of its own (`-match1`, … after the first,
 which keeps the anonymous name), evaluated once each, left to right, in the block before
-the `if`. A case's condition is the patterns of its columns, in order, joined by `and`
-nodes flagged `FlagMatchRow` (left-nested, `(c0 and c1) and c2`), then a guard if there
+the `if`. A case's condition is the patterns of its columns, in order, joined by `&&`
+nodes flagged `FlagMatchRow` (left-nested, `(c0 && c1) && c2`), then a guard if there
 is one. `_` is a column's pattern that takes any value: a literal `true` flagged
 `FlagMatchAny` (`parseMatchWild`), so it type checks and generates as the constant it
 looks like and costs nothing at run time. `_` in a match of one value, a case whose
 patterns are fewer or more than the values, and a column that binds a variable
-(`case imm x Some, …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
+(`case let Some(x), …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
 reported at parse. At most `MatchMaxColumns` values.
+
+**An `if` or `match` whose value has no place to give its type lets the arms that are
+untyped number literals follow the others.** `ifLiteralArmsFollow` runs after the
+arms are joined: they were left out of the join, and take the number type the others met at,
+or are joined as ever when it is none (see [literals](literals.md)).
 
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
-operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison
-operator, `is` or `and` after it makes it a condition (`case n > 3`), and so does
-a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: a value
+operand (`parseOr`); a following `..=` or `..<` makes it a range (a bare `..` is refused, `ErrorRangeBare`, and read as `..=`). A comparison
+operator, `is` or `&&` after it makes it a condition (`case n > 3`), and so does
+a leading `!` (`case !b`). A condition is refused, `ErrorPatBare`: a value
 alone is compared with the matched value, and the comparison without its left side
 (`case >3`) and an `if` guard say a condition. The refused expression is finished
-(`parseSimpleExprFrom`), its own `or` included, so it is reported once. Anything else is a value alone
+(`parseSimpleExprFrom`), its own `||` included, so it is reported once. Anything else is a value alone
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
-case and after an `or`.
+case and after a `|`.
 
-**A binding that outlives an early exit, `imm n Ok = r else {...};`, is the same bound
-pattern declared where it stands** (`parseLetElse`, from the `PermToken` case of
-`parseExprBlock`, when `else` follows a local declaration's initializer). It makes, in the
+**A binding that outlives an early exit, `let Ok(n) = r else {...};`, is the same bound
+pattern declared where it stands** (`parseLetElse`, from `parseLetPattern`, which the `PermToken`
+case of `parseExprBlock` calls when `lexNextOpensPattern` says a variant pattern follows the `let`;
+a function's pattern is read as a plain local and reaches `parseLetElse` when `else` follows its
+initializer). It makes, in the
 enclosing block: the hidden variable that holds a value that is not a place (named
 `-held1`, a name of its own because several of these can stand in one block), an
 `IfNode` flagged `FlagIfLetElse` whose condition is the `is` test, whose block is empty
 and whose `else` is the one written, then the arm's hidden variable (`-arm2`) if the value
 is a place, and the declared variable with the pattern's conversion as its value. Type
-check refuses an `else` that does not jump (`ifBlockJumps`, `ErrorLetElse`); because it
-jumps, the `if`'s path out is the test holding, so the narrowing after it
-([narrow](narrow.md)) is the variant. The hidden names are recognized as a match's own
+check refuses an `else` that can go on (`ifBlockFallsOut`, `ErrorLetElse`): every path
+through it must leave, by ending in a jump (`ifBlockJumps`) or in an `if` or `match` with
+an `else` each of whose blocks leaves, through any plain block a `match` or a bound `if`
+is wrapped in, or written (`else { { return 7; } }`); the error is put at the spot a path
+goes on (an `if` with no `else`, a last statement, a loop, an empty block) and says which.
+Because the `else` leaves, the
+`if`'s path out is the test holding, so the narrowing after it ([narrow](narrow.md)) is the
+variant: an `else` that leaves only through an inner `if` is no path out either, and keeps
+the narrowing kills it made, as a branch that continues a loop does. The hidden names are recognized as a match's own
 (`nameIsMatchHolder`) wherever flow asks whether a variable is one.
 
 **A function's pattern, `using`, is the call of that function with the matched value put in
@@ -118,21 +131,21 @@ call with parentheses; `parseUsingMatchee` inserts the value at index 0 of its a
 comes after the receiver). It is read in three places.
 
 - *A test*, `case using isOdd()`, is a pattern of `parseMatchPattern`: the call is the condition, like any
-  other call a case may hold, so it can be joined by `or`, be a column's pattern and take a guard. A
+  other call a case may hold, so it can be joined by `|`, be a column's pattern and take a guard. A
   call giving an Option is `ErrorUsingForm` (`ifTypeCheck`), not a condition that is not a bool.
-- *A binding in a match*, `case imm rest using prefix("GET ")`, must run the call once and read its result
+- *A binding in a match*, `case let rest using prefix("GET ")`, must run the call once and read its result
   twice (the test and the binding), which one condition of the flat chain cannot do. So the chain goes on
   in the `else` of the cases before it, which holds the call's result in a variable and the cases after, as
-  an `elif imm x Some = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { imm -using1 =
-  prefix(matchee, "GET "); if -using1 is Some { imm rest = [Some]-using1; … } elif … }]`. The cases
+  an `else if let Some(x) = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { let -using1 =
+  prefix(matchee, "GET "); if -using1 is Some { let rest = [Some]-using1; … } else if … }]`. The cases
   after it are an `IfNode` of their own, marked `FlagIfMatchTail`, which `parseMatch` goes on adding to;
   it is not a match for `ifMatchCover`, which judges the first `IfNode`, whose last arm is that `else`. The
   variable is named `-using` and a number, one of a match's own names (`nameIsMatchHolder`).
   `varDclTypeCheck` asks the variable of that name for an Option, `ErrorUsingForm`, and gives it the error
   type otherwise, which `castIsTypeCheck` leaves unreported.
-- *A binding in an `if`, an `elif` and a let-else*, `imm rest using prefix("GET ") = line`, reads the call
+- *A binding in an `if`, an `else if` and a let-else*, `let rest using prefix("GET ") = line`, reads the call
   where a type would stand (`parseBindVarDcl`; `parseVarDcl` with `ParseMayUsing`, and `ParseState.usingdcl`
-  to say it did), and the value after `=` becomes its first argument: `imm rest Some = prefix(line, "GET ")`,
+  to say it did), and the value after `=` becomes its first argument: `let Some(rest) = prefix(line, "GET ")`,
   held and bound as any bound `if` is. A declaration of this kind with no `else` is `ErrorUsingForm`.
 
 The variable takes `Some` (`parseUsingSome`), so the binding is what a variant declared as a type binds: the
@@ -146,15 +159,16 @@ variable, whose initializer becomes the local's contents ([cast](cast.md),
 `castBindProject`). The desugaring here is the same for every variant.
 
 **A bound pattern's guard binds the variable a second time.** The variable is
-declared at the head of the arm, which the condition is outside, so `case imm x
-T if g {…}` becomes the condition `is T and {imm x = [T]v; g}` — a block
+declared at the head of the arm, which the condition is outside, so `case let x
+T if g {…}` becomes the condition `is T and {let x = [T]v; g}` — a block
 declaring its own `x`, from a second conversion that shares the pattern's type
 node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 
 **What counts toward exhaustiveness is decided on a type checked match, by
-`ifMatchCover`** (below): an `is` test of a variant of a closed enum, an `or` of them,
+`ifMatchCover`** (below): an `is` test of a variant of a closed enum, a `|` of them,
 `v == true` and `v == false` on a `bool`, and `_`. A guarded case does not count (the guard
-may fail). Any other value alone is an `==` call that counts for nothing.
+may fail). A number or character alone (`v == 5`) is counted only to find one named twice, never
+to cover the match; any other value alone is an `==` call that counts for nothing.
 
 ## Name resolution
 
@@ -162,17 +176,39 @@ may fail). Any other value alone is an `==` call that counts for nothing.
 `elseCond` is a no-op arm. Nothing is bound or retagged at this level —
 retagging happens inside the arms.
 
+**A `FlagIfHash` `if` is a `#if` on what a type parameter is** (`parsemeta.c`), and is a template's
+node alone. Its conditions are `where`-clause nodes (`IsTag` joined by `!`, `&&`, `||`), resolved by
+`genericHashCondNameRes` (a subject that is no type parameter is `ErrorMetaTypeFact`), and every arm
+is resolved, so a name in any branch must exist. It is never type checked: cloning it for an
+instance (`ifHashClone`, from `cloneIfNode`) clones each condition in turn with the arguments in the
+parameters' place, asks `genericHashCondHolds`, and returns a copy of the first arm that holds (an
+empty block when none does; the arm's one expression when the `if` is `FlagIfHashExpr`), so the
+instance has only that arm. A condition that still names a parameter bound elsewhere (a copy of the
+template made inside another generic) leaves the `if` copied whole. See
+[generic](generic.md), "A `#if` on a type parameter".
+
 ## Type check
 
 **Pass 1**, per pair: check the condition; if it is an `is`, run
-`ifExhaustCheck`; if it is not `elseCond`, coerce it to `bool` — which is where
-an implicit `.isTrue` reaches a conditional. An `elseCond` sets `hasElse`, and
+`ifExhaustCheck`; if it is not `elseCond`, coerce it to `bool` with
+`iexpCoerceCondition` — which is where an implicit `.isTrue` reaches a
+conditional (an Option or a Result through core's, true on `Some` or `Ok`). That
+is the one place, with the operand of `!` (`logicNotTypeCheck`,
+`fnCallNeFromEq`'s derived `!`), where an Option or a Result converts: `iexpMatches`
+refuses them elsewhere (`let b: bool = opt`, an argument, a return) as it did
+before they answered `isTrue`, and `logicTypeCheck` refuses them as the right operand of a bool's
+`||` or `&&` (1561); as the left operand they are the receiver of their own `||` and `&&`
+(`fnCallLogicMethod`, [fncall](fncall.md)). The coercion is given the state of the check under way, which
+lends a temporary receiver (`if f()` on a returned Option) for the statement being checked. A match's case whose condition is an Option or a Result
+— `case using f()` with an `f` giving one — is refused before the coercion, as
+it was before they answered `isTrue`: a case that only tests wants a function
+giving a bool. An `elseCond` sets `hasElse`, and
 must be last. Then check the arm against `expectType` and fold its type into the
 type in common — **unless the arm jumps away** (`ifBlockJumps`: it ends in a
 `return`, `break` or `continue`, a call returning `Never` among them, since
 `blockTypeCheck` makes a `return` of one). Such an arm gives the `if` no value,
-so has no say in its type: `imm x = if c {1} else {return 7}` and
-`imm x = if c {1} else {panic("no")}` are both `i32`.
+so has no say in its type: `let x = if c {1} else {return 7}` and
+`let x = if c {1} else {panic("no")}` are both `i32`.
 
 **After the loop:** a `noCareType` expectation returns immediately, leaving
 `vtype` `unknownType` — the statement-position `if`. No `else` in a
@@ -189,7 +225,8 @@ flow later injects wraps the already-coerced node.
 
 ### `ifExhaustCheck`
 
-Given an `is` condition on a **closed** variant set — an enum with no base of
+An `is` whose left side is no expression (a type, already refused by
+`castIsTypeCheck`) has no variants to ask about, and returns at once. Given an `is` condition on a **closed** variant set — an enum with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
 two name uses of one declaration, or two reads of the same place -- the same variable,
@@ -224,10 +261,10 @@ This is the check of an `if` chain written as an `if`, not of a `match`: a marke
 Runs after the loop of pass 1 on an `IfNode` marked `FlagIfMatch`, unless a condition was
 reported (`condErrors`: the cases are not judged then; an error in an arm's body does not
 stop it). It reads each case as a **row** of cells, one for each value matched, found by
-flattening the `FlagMatchRow` `and`s, with the guard (a `FlagMatchGuard` `and`) taken off and
+flattening the `FlagMatchRow` `&&`s, with the guard (a `FlagMatchGuard` `&&`) taken off and
 noted. A cell (`matchClassify`) is one of:
 
-- **wild** — `_`, or, in an `or`, any alternative that is;
+- **wild** — `_`, or, in a `||`, any alternative that is;
 - **a set** of the values of the column's type, which the first cell that is one gives the
   column: an `is` of a variant of a closed enum (`matchClosedEnum`: the test `ifExhaustCheck`
   used, a trait with no base carrying `HasTagField` or `SameSize`), which is the variant's index
@@ -235,10 +272,14 @@ noted. A cell (`matchClassify`) is one of:
   of the variants that comply (`castIsVariants`), so a trait case after the variants it names,
   or a variant after the trait, is unreachable as a variant named twice is; or `v == true` / `v == false` on a `bool`, the call type check made of
   `case true` and `case ==true` (its callee a use of the `==` it found, the matched value
-  its first argument); an `or` is the union of its alternatives'; a cell of another
-  type than the column's is "other";
-- **other** — a comparison, a range, `==` against anything but a bool literal, a number, a
-  string; anything this logic cannot count.
+  its first argument); or `v == 5` on an integer or `char` with a literal (`matchIntTest`).
+  A column of these counts the literals the cases name (`matchCollectInts`, a pass before the
+  cells are made) plus one more value for every other number, which only `_` or `else` takes;
+  so they find a number named twice but never cover a match, and the message for an uncovered
+  column of numbers is still the one that asks for `else`. A `||` is the union of its
+  alternatives'; a cell of another type than the column's is "other";
+- **other** — a comparison, a range, `==` against anything but a bool, integer or character
+  literal, a string; anything this logic cannot count.
 
 A row with an "other" cell, or with a guard, is not **counted**: it covers nothing and makes
 no later case unreachable. The rows up to the first `else` are all that is read.
@@ -280,12 +321,15 @@ from each arm of `return if … { return a } else { b }`, recursively.
 conditions before it leave, a later condition and each arm one level deeper
 (`flowDepth`). Each arm's changes to *outer* variables' flags are taken and
 rolled back (`flowVarPathTake`, `flowVarRollback`), and the arms that did not
-return, and a missing `else`, are joined (`flowVarJoin`): a flag any of them set
-is set after the `if`, so a value moved in both arms compiles, and one moved in
-one arm may not be used after it. Whether each variable holds its value at its
-releases, where that differs by arm, is the path walk's to decide, and a drop
-flag's at run time ([Flow Analysis](../phases/flow.md), "Drop flags").
-`ifFlow` leaves `FlowState.jumped` set when every arm returned.
+jump away, and a missing `else`, are joined (`flowVarJoin`): a flag any of them
+set is set after the `if`, so a value moved in both arms compiles, and one moved
+in one arm may not be used after it. An arm that ends in a `return`, a `break`
+or a `continue` jumped away: what a `break` or `continue` changed went to its
+loop, which joins it where the loop ends ([Flow Analysis](../phases/flow.md),
+"What ends a path"). Whether each variable holds its value at its releases,
+where that differs by arm, is the path walk's to decide, and a drop flag's at
+run time ([Flow Analysis](../phases/flow.md), "Drop flags"). `ifFlow` leaves
+`FlowState.jumped` set when every arm jumped away.
 
 ## Generation
 
@@ -297,7 +341,7 @@ iteration left the builder at.
 **A temporary a condition makes dies once the condition is computed**, before
 the conditional branch (`genlTempsEnd`): a later condition runs on some paths
 only, so it cannot wait for the statement's end, and a `while`, which arrives
-as `if not cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
+as `if !cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
 "Temporaries").
 
 **A marked `if` (`FlagIfMatch`) whose leading arms test one integer, character or
@@ -305,14 +349,14 @@ enum tag is one LLVM `switch`** (`genlIfSwitch`), made before the chain, so flow
 borrows, narrowing and exhaustiveness have all worked on the `if` nodes as written.
 `genlSwitchTest` reads each arm's condition as it was type checked and
 takes it if it is: a `==` of the matched value with a literal of its type or a named constant
-(the built-in integer `==`); `v >= lo and v <= hi` or `v < hi`, the range pattern, spelled out as a label
+(the built-in integer `==`); `v >= lo && v <= hi` or `v < hi`, the range pattern, spelled out as a label
 for each value (at most `SwitchMaxRange`, 128); an `is` of a variant, or of the variants a
-trait pattern names (`CastNode.variants`), a label for each tag; or an `or` of those. The matched value
+trait pattern names (`CastNode.variants`), a label for each tag; or a `|` of those. The matched value
 is the expression the first test reads, generated once before the `switch`
 (a place is read once instead of once for each test; a call was already held in a variable), and for a tag it
 is the enum's tag field, read through the reference if the matched value is one
 (`genlTagLoad`, which `genlIsVariant` uses too). The plan stops at the first arm that is
-`elseCond`, is not such a test (a guard — the `and` flagged `FlagMatchGuard` —, a `match a, b` row, another
+`elseCond`, is not such a test (a guard — the `&&` flagged `FlagMatchGuard` —, a `match a, b` row, another
 comparison, a call, which a function's pattern is, a string, a float), tests a different kind of value than the first, holds a
 nullable-pointer variant or a virtual reference, or would take the switch past `SwitchMaxLabels` (512) labels;
 fewer than `SwitchMinArms` (2) arms stay a chain. A value an earlier arm already has keeps that arm
@@ -345,7 +389,7 @@ aggregate is merged through a slot").
   condition currently being processed. Anything that made the target a non-final
   slot would corrupt the walk. (`ifMatchCover` rewrites after the walk.)
 - **`ifMatchCover` reads the shape type check leaves a condition in**: an `is` node,
-  `or` and `and` logic nodes, a literal, and the call of the `==` a comparison found
+  `||` and `&&` logic nodes, a literal, and the call of the `==` a comparison found
   (callee a name use of the declaration, the matched value first). A lowering that
   changes one of these makes the cell "other" and the match asks for an `else`; it does
   not mis-cover. A match counted wrongly would be the dangerous failure, so a cell is
@@ -355,10 +399,6 @@ aggregate is merged through a slot").
   coercion or a deref silently breaks detection — and it surfaces as
   `ErrorNoElse`, not as a defect.
 - **`ErrorNoElse` returns with `vtype` still `unknownType`.**
-- **An arm ending in `break` or `continue` is joined**: only a `return` counts
-  as leaving (`jumped`), since the main walk walks a loop once and has no state
-  to hand a jump. So a value moved on an arm that breaks counts as moved after
-  the `if`, as it did before the join.
 - **`ifRemoveReturns` calls `nodesLast` without an emptiness guard.**
 
 ## What lives elsewhere

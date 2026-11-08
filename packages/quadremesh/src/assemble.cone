@@ -1,0 +1,431 @@
+// ======== From the extracted faces to a mesh ========
+//
+// The faces compacted, the larger polygons split with a vertex at their
+// middle, the small holes the fields left filled, then the vertices laid on
+// the source (relaxed along the surface and projected back; creases and guides
+// snapped to their lines) and a PolyMesh built.
+
+struct QMesh is Default {
+  pos: List[Vec3];
+  flag: List[u32];
+  rho: List[f32];
+  fcount: List[u32];
+  fidx: List[u32];
+
+  fn faceCount(self: &) usize { fcount.len() }
+
+  fn addVertex(self: &mut, p: Vec3, fl: u32, r: f32) u32 {
+    pos.push(p); flag.push(fl); rho.push(r);
+    u32.from(pos.len() - 1usize)
+  }
+
+  fn addFace(self: &mut, vs: &List[u32]) {
+    fcount.push(u32.from(vs.len()));
+    var i = 0usize;
+    while i < vs.len() { fidx.push(*vs[i]); i = i + 1usize; }
+  }
+}
+
+// A polygon of n corners vs (counterclockwise) cut into quads round a vertex
+// at its middle (and one triangle if n is odd); 3 and 4 are left whole
+fn addPolygon(qm: &mut QMesh, vs: &List[u32], splits: &mut usize) {
+  let n = vs.len();
+  if n <= 4usize { qm.addFace(vs); return; }
+  var c = zero3();
+  var r = 0.f;
+  var i = 0usize;
+  while i < n {
+    c = c + *qm.pos[usize.from(*vs[i])];
+    r = r + *qm.rho[usize.from(*vs[i])];
+    i = i + 1usize;
+  }
+  let cv = qm.addVertex(c * (1. / f32.from(n)), 0u32, r / f32.from(n));
+  *splits = *splits + 1usize;
+  var face = List[u32]();
+  i = 0usize;
+  while i + 2usize < n || (i + 2usize == n && n % 2usize == 0usize) {
+    face.clear();
+    face.push(cv); face.push(*vs[i]); face.push(*vs[i + 1usize]); face.push(*vs[(i + 2usize) % n]);
+    qm.addFace(&face);
+    i = i + 2usize;
+  }
+  if n % 2usize == 1usize {
+    face.clear();
+    face.push(cv); face.push(*vs[n - 1usize]); face.push(*vs[0usize]);
+    qm.addFace(&face);
+  }
+}
+
+// The faces of the extraction on the vertices they use
+fn assemble(qd: &Quads, splits: &mut usize) QMesh {
+  var qm = QMesh();
+  var remap = List[u32].withCapacity(qd.pos.len());
+  var i = 0usize;
+  while i < qd.pos.len() { remap.push(NoVertex); i = i + 1usize; }
+  i = 0usize;
+  while i < qd.fidx.len() {
+    let v = usize.from(*qd.fidx[i]);
+    if *remap[v] == NoVertex { remap.set(v, qm.addVertex(*qd.pos[v], *qd.flag[v], *qd.rho[v])); }
+    i = i + 1usize;
+  }
+  var at = 0usize;
+  var face = List[u32]();
+  var f = 0usize;
+  while f < qd.fcount.len() {
+    let n = usize.from(*qd.fcount[f]);
+    face.clear();
+    i = 0usize;
+    while i < n { face.push(*remap[usize.from(*qd.fidx[at + i])]); i = i + 1usize; }
+    addPolygon(&mut qm, &face, splits);
+    at = at + n;
+    f = f + 1usize;
+  }
+  qm
+}
+
+// Boundary loops of up to 'maxLoop' corners that lie on the surface (their
+// middle within half a lattice step of it) closed with a face (quads round a
+// vertex at the middle if there are more than four corners). Returns how many.
+fn fillHoles(qm: &mut QMesh, idx: &SurfaceIndex, maxLoop: usize, splits: &mut usize) usize {
+  // Directed edges as the faces have them
+  var keys = List[u64]();
+  var at = 0usize;
+  var f = 0usize;
+  while f < qm.fcount.len() {
+    let n = usize.from(*qm.fcount[f]);
+    var i = 0usize;
+    while i < n {
+      let a = *qm.fidx[at + i];
+      let b = *qm.fidx[at + (i + 1usize) % n];
+      keys.push((u64.from(a) << 32u64) | u64.from(b));
+      i = i + 1usize;
+    }
+    at = at + n;
+    f = f + 1usize;
+  }
+  sortKeys(&mut keys);
+  // The edges without a partner, turned round: the hole's boundary, hole on the left
+  var bt = List[u64]();
+  var i = 0usize;
+  while i < keys.len() {
+    let a = keyLo(*keys[i]);
+    let b = keyHi(*keys[i]);
+    let rev = (u64.from(b) << 32u64) | u64.from(a);
+    if findKey(&keys, rev) == keys.len() { bt.push(rev); }
+    i = i + 1usize;
+  }
+  sortKeys(&mut bt);
+  var used = List[u32]();
+  used.resize(bt.len(), 0u32);
+  var filled = 0usize;
+  var loop = List[u32]();
+  i = 0usize;
+  while i < bt.len() {
+    if *used[i] == 0u32 {
+      loop.clear();
+      var cur = i;
+      var ok = true;
+      while ok {
+        used.set(cur, 1u32);
+        let tail = keyLo(*bt[cur]);
+        let head = keyHi(*bt[cur]);
+        loop.push(tail);
+        if loop.len() > maxLoop { ok = false; break; }
+        // the one boundary edge leaving head
+        let lo = (u64.from(head) << 32u64);
+        let j = lowerBound(&bt, lo);
+        if j >= bt.len() || keyLo(*bt[j]) != head { ok = false; break; }
+        if j + 1usize < bt.len() && keyLo(*bt[j + 1usize]) == head { ok = false; break; }
+        if j == i { break; }
+        if *used[j] == 1u32 { ok = false; break; }
+        cur = j;
+      }
+      if ok && loop.len() >= 3usize {
+        var c = zero3();
+        var r = 0.f;
+        var k = 0usize;
+        while k < loop.len() {
+          c = c + *qm.pos[usize.from(*loop[k])];
+          r = r + *qm.rho[usize.from(*loop[k])];
+          k = k + 1usize;
+        }
+        c = c * (1. / f32.from(loop.len()));
+        r = r / f32.from(loop.len());
+        let hit = idx.nearest(c, 0.);
+        if hit.tri != NoIndex && hit.distance < 0.5 * r {
+          addPolygon(qm, &loop, splits);
+          filled = filled + 1usize;
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+  filled
+}
+
+struct TriEdge {
+  k: u64;
+  f: u32;
+}
+
+fn cornerAngle(a: Vec3, b: Vec3, c: Vec3) f32 {
+  acos(clampf(unit(a - b).dot(unit(c - b)), -1., 1.)) * 57.29578
+}
+
+// Pairs of triangles sharing an edge merged into one quad where all four
+// corners come out between 35 and 145 degrees (as Blender's Tris to Quads),
+// greedily from the first. Returns how many pairs were merged.
+fn pairTriangles(qm: &mut QMesh) usize {
+  var es = List[TriEdge]();
+  var at = 0usize;
+  var starts = List[usize]();
+  var f = 0usize;
+  while f < qm.fcount.len() {
+    starts.push(at);
+    let n = usize.from(*qm.fcount[f]);
+    if n == 3usize {
+      var i = 0usize;
+      while i < 3usize {
+        es.push(TriEdge((u64.from(*qm.fidx[at + i]) << 32u64) | u64.from(*qm.fidx[at + (i + 1usize) % 3usize]), u32.from(f)));
+        i = i + 1usize;
+      }
+    }
+    at = at + n;
+    f = f + 1usize;
+  }
+  es.sortByKey(fn(e: &TriEdge) u64 { e.k });
+  var gone = List[u32]();
+  gone.resize(qm.fcount.len(), 0u32);
+  var quads = List[u32]();   // four vertices each
+  var e = 0usize;
+  while e < es.len() {
+    let f1 = usize.from(es[e].f);
+    if *gone[f1] == 0u32 {
+      let a = keyLo(es[e].k);
+      let b = keyHi(es[e].k);
+      let rev = (u64.from(b) << 32u64) | u64.from(a);
+      // find rev
+      var lo = 0usize;
+      var hi = es.len();
+      while lo < hi {
+        let mid = (lo + hi) / 2usize;
+        if es[mid].k < rev { lo = mid + 1usize; } else { hi = mid; }
+      }
+      if lo < es.len() && es[lo].k == rev {
+        let f2 = usize.from(es[lo].f);
+        if *gone[f2] == 0u32 && f2 != f1 {
+          // c: t1's vertex not on the edge; d: t2's
+          let s1 = *starts[f1];
+          let s2 = *starts[f2];
+          var c = 0u32;
+          var d = 0u32;
+          var i = 0usize;
+          while i < 3usize {
+            let v1 = *qm.fidx[s1 + i];
+            let v2 = *qm.fidx[s2 + i];
+            if v1 != a && v1 != b { c = v1; }
+            if v2 != a && v2 != b { d = v2; }
+            i = i + 1usize;
+          }
+          let pa = *qm.pos[usize.from(a)];
+          let pb = *qm.pos[usize.from(b)];
+          let pc = *qm.pos[usize.from(c)];
+          let pd = *qm.pos[usize.from(d)];
+          // quad a, d, b, c
+          let a0 = cornerAngle(pc, pa, pd);
+          let a1 = cornerAngle(pa, pd, pb);
+          let a2 = cornerAngle(pd, pb, pc);
+          let a3 = cornerAngle(pb, pc, pa);
+          let lo2 = minf(minf(a0, a1), minf(a2, a3));
+          let hi2 = maxf(maxf(a0, a1), maxf(a2, a3));
+          let n1 = (pb - pa).cross(pc - pa);
+          let n2 = (pa - pb).cross(pd - pb);
+          if lo2 > 35. && hi2 < 145. && n1.dot(n2) > 0. {
+            gone.set(f1, 1u32); gone.set(f2, 1u32);
+            quads.push(a); quads.push(d); quads.push(b); quads.push(c);
+          }
+        }
+      }
+    }
+    e = e + 1usize;
+  }
+  if quads.len() == 0usize { return 0usize; }
+  var nc = List[u32]();
+  var ni = List[u32]();
+  f = 0usize;
+  while f < qm.fcount.len() {
+    if *gone[f] == 0u32 {
+      let n = usize.from(*qm.fcount[f]);
+      nc.push(*qm.fcount[f]);
+      var i = 0usize;
+      while i < n { ni.push(*qm.fidx[*starts[f] + i]); i = i + 1usize; }
+    }
+    f = f + 1usize;
+  }
+  var q = 0usize;
+  while q < quads.len() {
+    nc.push(4u32);
+    ni.push(*quads[q]); ni.push(*quads[q + 1usize]); ni.push(*quads[q + 2usize]); ni.push(*quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  qm.fcount = nc;
+  qm.fidx = ni;
+  quads.len() / 4usize
+}
+
+// The first place in a sorted list not below k
+fn lowerBound(keys: &List[u64], k: u64) usize {
+  var lo = 0usize;
+  var hi = keys.len();
+  while lo < hi {
+    let mid = (lo + hi) / 2usize;
+    if *keys[mid] < k { lo = mid + 1usize; } else { hi = mid; }
+  }
+  lo
+}
+
+// ---------------------------------------------------------------- the surface
+
+// The straight pieces of the creases, boundaries and guides, to snap vertices to
+struct Lines {
+  a: List[Vec3];
+  b: List[Vec3];
+  kind: List[u32];
+
+  fn of(w: &Work) Lines {
+    var l = Lines(List[Vec3](), List[Vec3](), List[u32]());
+    var i = 0usize;
+    while i < w.fa.len() {
+      l.a.push(*w.pos[usize.from(*w.fa[i])]);
+      l.b.push(*w.pos[usize.from(*w.fb[i])]);
+      l.kind.push(*w.fk[i]);
+      i = i + 1usize;
+    }
+    l
+  }
+
+  // The point of the lines of the kinds in 'bits' nearest p, and how far
+  fn nearest(self: &, p: Vec3, bits: u32) Vec3 {
+    var best = p;
+    var bd = 3.0e38f;
+    var i = 0usize;
+    while i < a.len() {
+      if (*kind[i] & bits) != 0u32 {
+        let pa = *a[i];
+        let ab = *b[i] - pa;
+        let l2 = ab.lengthSquared();
+        let t = if l2 > 0.0000000001 { clampf((p - pa).dot(ab) / l2, 0., 1.) } else { 0. };
+        let c = pa + ab * t;
+        let d = (c - p).lengthSquared();
+        if d < bd { bd = d; best = c; }
+      }
+      i = i + 1usize;
+    }
+    best
+  }
+}
+
+const SnapBits = 7u32;      // FeatBoundary | FeatCrease | FeatGuide
+
+// Vertices relaxed along the surface and put back on it. A vertex on a line
+// moves along it only (its neighbours on the line averaged) and is snapped to
+// it; a corner stays; the rest move toward their neighbours' mean in the
+// tangent plane and go to the nearest point of the source.
+fn settle(pm: &mut PolyMesh, flag: &List[u32], idx: &SurfaceIndex, lines: &Lines, iters: u32, axis: i32, off: f32, project: bool) {
+  let nv = pm.vertexCount();
+  var stack = List[u32]();
+  var it = 0u32;
+  while it <= iters {
+    let relaxing = it < iters;
+    var np = List[Vec3].withCapacity(nv);
+    var v = 0usize;
+    while v < nv {
+      let p = *pm.positions[v];
+      let fl = *flag[v];
+      var target = p;
+      if relaxing && (fl & FlagCorner) == 0u32 && !pm.isIsolated(u32.from(v)) {
+        let nb = pm.vertexNeighbors(u32.from(v));
+        var acc = zero3();
+        var cnt = 0.f;
+        var k = 0usize;
+        let onLine = (fl & SnapBits) != 0u32;
+        while k < nb.len() {
+          let j = usize.from(*nb[k]);
+          if !onLine || ((*flag[j] & SnapBits & fl) != 0u32) {
+            acc = acc + *pm.positions[j];
+            cnt = cnt + 1.;
+          }
+          k = k + 1usize;
+        }
+        if cnt > 0. && (!onLine || cnt >= 2.) {
+          target = p + (acc * (1. / cnt) - p) * 0.5;
+        }
+      }
+      if (fl & SnapBits) != 0u32 && (fl & FlagCorner) == 0u32 {
+        target = lines.nearest(target, fl & SnapBits);
+      } else if project && (fl & FlagCorner) == 0u32 {
+        let hit = idx.nearestWith(target, 0., &mut stack);
+        if hit.tri != NoIndex { target = hit.point; }
+      }
+      if (fl & FlagOnPlane) != 0u32 && axis >= 0 {
+        if axis == 0 { target = Vec3(off, target.y, target.z); }
+        else if axis == 1 { target = Vec3(target.x, off, target.z); }
+        else { target = Vec3(target.x, target.y, off); }
+      }
+      np.push(target);
+      v = v + 1usize;
+    }
+    v = 0usize;
+    while v < nv { pm.positions.set(v, *np[v]); v = v + 1usize; }
+    it = it + 1u32;
+  }
+}
+
+// The reflection of the mesh in a plane joined to it, vertices on the plane
+// shared, the copy's faces reversed
+fn mirrorJoin(qm: &QMesh, axis: u32, off: f32) QMesh {
+  var out = QMesh();
+  let nv = qm.pos.len();
+  var i = 0usize;
+  while i < nv {
+    out.addVertex(*qm.pos[i], *qm.flag[i], *qm.rho[i]);
+    i = i + 1usize;
+  }
+  var copy = List[u32].withCapacity(nv);
+  i = 0usize;
+  while i < nv {
+    let fl = *qm.flag[i];
+    if (fl & FlagOnPlane) != 0u32 { copy.push(u32.from(i)); }
+    else {
+      let p = *qm.pos[i];
+      let r = if axis == 0u32 { Vec3(2. * off - p.x, p.y, p.z) }
+        else if axis == 1u32 { Vec3(p.x, 2. * off - p.y, p.z) }
+        else { Vec3(p.x, p.y, 2. * off - p.z) };
+      copy.push(out.addVertex(r, fl, *qm.rho[i]));
+    }
+    i = i + 1usize;
+  }
+  out.fcount = copyOf[u32](&qm.fcount);
+  out.fidx = copyOf[u32](&qm.fidx);
+  var at = 0usize;
+  var f = 0usize;
+  var face = List[u32]();
+  while f < qm.fcount.len() {
+    let n = usize.from(*qm.fcount[f]);
+    face.clear();
+    var k = n;
+    while k > 0usize {
+      k = k - 1usize;
+      face.push(*copy[usize.from(*qm.fidx[at + k])]);
+    }
+    out.addFace(&face);
+    at = at + n;
+    f = f + 1usize;
+  }
+  out
+}
+
+// A PolyMesh of it; what could not be added is said
+fn toPoly(qm: &QMesh, problems: &mut List[String]) PolyMesh {
+  PolyMesh.fromPolygons(qm.pos.view(), qm.fcount.view(), qm.fidx.view(), problems)
+}

@@ -86,7 +86,7 @@ That turned out to sit on a wider hole in the fold itself: `structFindSuper` and
 `structRefFindSuper` answered "these two variants share a base trait" and not
 "one of these *is* the base trait the other extends" — which is what a third
 value is asked about, once two have already widened the type in common to their
-trait. So `if a {Circle} elif b {Rect} else {Circle}` failed where two branches
+trait. So `if a {Circle} else if b {Rect} else {Circle}` failed where two branches
 succeeded, in `if` and `break` as much as in an array literal. Both answer both
 shapes now.
 

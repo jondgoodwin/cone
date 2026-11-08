@@ -1,0 +1,331 @@
+// A BodyStream read as events (stream.cone, BodyStream.events): the head first, then the caller's
+// choice 'events()', which attaches the package's EventSink and gives the EventStream. Against a
+// loopback server of the package's own:
+//   1. /events/300: the head, a pause (the body is staged), then events(): 300 events arrive whole
+//      and in order, then the clean end; every buffer is home after;
+//   2. /endless: the head, events(), two events read, the EventStream dropped: the fetch is
+//      cancelled (the server's writes fail) and every buffer is home;
+//   3. /over: an event of 1.5 MiB (past the reader's limit of 1 MiB), then more: the events() reader
+//      is answered a failure at Stage.Limit, the source is stopped (the server's writes fail), every
+//      buffer is home;
+//   4. a body already read from cannot be read as events: 'next' answers a cancel.
+
+mod bodyevents;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import sse;
+import actors;
+import aio;
+import iobuf;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+let stopped: Atomic[u64];       // server writes that failed (the reader left or the fetch was stopped)
+let done: Atomic[u64];          // readers that ran to their end
+
+fn @initpure init() {
+  stopped = Atomic[u64].of(0u64);
+  done = Atomic[u64].of(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while u64.from(iobuf.stats().lentBytes) != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  u64.from(iobuf.stats().lentBytes) == 0u64
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+fn eventText(i: u64) String {
+  var s = String.from("event number ");
+  s.appendUInt(i);
+  s
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    ex.startEvents();
+    if p == "/events/300" {
+      var i = 0u64;
+      while i < 300u64 {
+        let e = sse.Event.message(eventText(i).view());
+        let w = await ex.sendEvent(&e);
+        i = i + 1u64;
+      }
+      let f = await ex.finish();
+    } else if p == "/endless" {
+      var going = true;
+      var i = 0u64;
+      while going {
+        let e = sse.Event.message(eventText(i).view());
+        let w = await ex.sendEvent(&e);
+        match w {
+          case is Ok {i = i + 1u64;}
+          case is Err {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(2i64));
+      }
+      stopped.add(1u64);
+    } else {
+      // an event of 1.5 MiB, then events until a write fails
+      var big = String();
+      var k = 0usize;
+      while k < 1572864usize {big.append("x"); k = k + 1usize;}
+      let e = sse.Event.message(big.view());
+      let w = await ex.sendEvent(&e);
+      var going = true;
+      while going {
+        let e2 = sse.Event.message("after");
+        let w2 = await ex.sendEvent(&e2);
+        match w2 {
+          case is Ok {}
+          case is Err {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(2i64));
+      }
+      stopped.add(1u64);
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// The readers
+// ---------------------------------------------------------------------------
+
+actor Reader {
+  client: Client;
+
+  // 1. the head, a pause, events(): every event whole and in order, then the end
+  pub async fn all(self, u: String) {
+    let r = await client.stream(Request.get(u.view()));
+    match r {
+      case var Ok(bs) {
+        let s = await aio.sleep(Duration.fromMillis(200i64));
+        printStr("the head: status ");
+        printUInt(u64.from(bs.status));
+        printStr(", ok ");
+        printStr(yes(bs.isOk()));
+        printStr("\n");
+        let es = bs.events();
+        var n = 0u64;
+        var inOrder = true;
+        var going = true;
+        var clean = false;
+        while going {
+          let e = await es.next();
+          match e {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  if ev.data.view() != eventText(n).view() {inOrder = false;}
+                  n = n + 1u64;
+                }
+                case is None[sse.Event] {clean = true; going = false;}
+              }
+            }
+            case let Err(er) {going = false;}
+          }
+        }
+        printStr("events read: ");
+        printUInt(n);
+        printStr(", in order ");
+        printStr(yes(inOrder));
+        printStr(", clean end ");
+        printStr(yes(clean));
+        printStr("\n");
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+
+  // 2. two events of an endless stream, then the EventStream is dropped
+  pub async fn leave(self, u: String) {
+    {
+      let r = await client.stream(Request.get(u.view()));
+      match r {
+        case var Ok(bs) {
+          let es = bs.events();
+          var got = 0u64;
+          while got < 2u64 {
+            let e = await es.next();
+            match e {
+              case let Ok(ok) {got = got + 1u64;}
+              case let Err(er) {got = 100u64;}
+            }
+          }
+          printStr("endless: events read before leaving: ");
+          printUInt(got);
+          printStr("\n");
+        }
+        case let Err(er) {printStr("no head\n");}
+      }
+    }
+    done.add(1u64);
+  }
+
+  // 3. an event past the limit
+  pub async fn over(self, u: String) {
+    let r = await client.stream(Request.get(u.view()));
+    match r {
+      case var Ok(bs) {
+        let es = bs.events();
+        let e = await es.next();
+        match e {
+          case let Ok(ok) {printStr("over: an event arrived, NO\n");}
+          case let Err(er) {
+            printStr("over: failed at the limit: ");
+            printStr(yes(er.kind() == actorhttp.FetchErrorKind.Failed && er.failure.stage == httpclient.Stage.Limit));
+            printStr("\n");
+          }
+        }
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+
+  // 4. read from first, then asked for events
+  pub async fn readFirst(self, u: String) {
+    let r = await client.stream(Request.get(u.view()));
+    match r {
+      case var Ok(bs) {
+        let p = await bs.read();
+        let es = bs.events();
+        let e = await es.next();
+        match e {
+          case let Ok(ok) {printStr("read first: events arrived, NO\n");}
+          case let Err(er) {
+            printStr("read first: events() answers a cancel: ");
+            printStr(yes(er.isCancelled()));
+            printStr("\n");
+          }
+        }
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    printStr("the server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.all(url(port, "/events/300"));
+      waitFor(&done, 1u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.leave(url(port, "/endless"));
+      waitFor(&done, 2u64);
+      waitFor(&stopped, 1u64);
+    }
+    printStr("endless: the server's writes failed: ");
+    printStr(yes(stopped.load() == 1u64));
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.over(url(port, "/over"));
+      waitFor(&done, 3u64);
+      waitFor(&stopped, 2u64);
+    }
+    printStr("over: the server's writes failed: ");
+    printStr(yes(stopped.load() == 2u64));
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.readFirst(url(port, "/events/300"));
+      waitFor(&done, 4u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    acceptor.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}

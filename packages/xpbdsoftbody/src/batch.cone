@@ -1,0 +1,205 @@
+// ======== Constraint batches: the colouring that lets a solve run in parallel ========
+//
+// Gauss-Seidel projects one constraint after another, each seeing the last
+// one's result. Constraints that share no particle do not see each other at all,
+// so any set of them may be projected in any order, or at once, with the same
+// answer. Graph colouring finds such sets (Fratarcangeli and Pellacini 2015,
+// "Scalable partitioning for parallel position based dynamics"): a greedy
+// pass gives each constraint the lowest colour no earlier constraint on one of
+// its particles has, and the list is stably reordered by colour. A colour is
+// a batch; the solve projects the batches one after another and a batch's
+// constraints in any split between threads. The result does not depend on how
+// many threads there are.
+//
+// The batches are rebuilt on the first step after constraints are added or
+// removed (the counts differ from the ones they were made for); a program that
+// edits a constraint's particle numbers in place calls 'rebatch'.
+
+// A colouring runs out at 63 colours (a particle with 60 constraints); the rest
+// go in a last batch that must run on one thread
+const MAX_COLOURS = 63usize;
+
+// The lowest colour clear in the mask
+fn lowestClear(mask: u64) usize {
+  var c = 0usize;
+  while c < MAX_COLOURS && ((mask >> u64.from(c)) & 1u64) != 0u64 { c = c + 1usize; }
+  c
+}
+
+// Counting sort of 'colour' (one number a constraint): the order the constraints
+// go in, and the batch starts (colours + 1 numbers)
+fn batchOrder(colour: &Array[u32], order: &mut List[u32], starts: &mut List[u32]) {
+  order.clear();
+  starts.clear();
+  var top = 0usize;
+  var k = 0usize;
+  while k < colour.len {
+    if usize.from(colour[k]) + 1usize > top { top = usize.from(colour[k]) + 1usize; }
+    k = k + 1usize;
+  }
+  var c = 0usize;
+  while c < top {
+    starts.push(u32.from(order.len()));
+    k = 0usize;
+    while k < colour.len {
+      if usize.from(colour[k]) == c { order.push(u32.from(k)); }
+      k = k + 1usize;
+    }
+    c = c + 1usize;
+  }
+  starts.push(u32.from(order.len()));
+}
+
+fn colourDistances(b: &mut SoftBody) {
+  let n = b.dist.len();
+  var used = List[u64]();
+  var i = 0usize;
+  while i < b.pos.len() { used.push(0u64); i = i + 1usize; }
+  var colour = List[u32]();
+  var k = 0usize;
+  while k < n {
+    let c = *b.dist[k];
+    let ia = usize.from(c.a);
+    let ib = usize.from(c.b);
+    let col = lowestClear(*used[ia] | *used[ib]);
+    if col >= MAX_COLOURS { b.batchesSerial = true; }
+    colour.push(u32.from(col));
+    used.set(ia, *used[ia] | (1u64 << u64.from(col)));
+    used.set(ib, *used[ib] | (1u64 << u64.from(col)));
+    k = k + 1usize;
+  }
+  var order = List[u32]();
+  batchOrder(colour.view(), &mut order, &mut b.distBatch);
+  var sorted = List[DistanceC].withCapacity(n);
+  k = 0usize;
+  while k < n {
+    sorted.push(*b.dist[usize.from(*order[k])]);
+    k = k + 1usize;
+  }
+  b.dist = sorted;
+  b.builtDist = n;
+}
+
+fn colourBends(b: &mut SoftBody) {
+  let n = b.bend.len();
+  var used = List[u64]();
+  var i = 0usize;
+  while i < b.pos.len() { used.push(0u64); i = i + 1usize; }
+  var colour = List[u32]();
+  var k = 0usize;
+  while k < n {
+    let c = *b.bend[k];
+    let ia = usize.from(c.a);
+    let ib = usize.from(c.b);
+    let ic = usize.from(c.c);
+    let id = usize.from(c.d);
+    let col = lowestClear(*used[ia] | *used[ib] | *used[ic] | *used[id]);
+    if col >= MAX_COLOURS { b.batchesSerial = true; }
+    colour.push(u32.from(col));
+    let bit = 1u64 << u64.from(col);
+    used.set(ia, *used[ia] | bit);
+    used.set(ib, *used[ib] | bit);
+    used.set(ic, *used[ic] | bit);
+    used.set(id, *used[id] | bit);
+    k = k + 1usize;
+  }
+  var order = List[u32]();
+  batchOrder(colour.view(), &mut order, &mut b.bendBatch);
+  var sorted = List[BendC].withCapacity(n);
+  k = 0usize;
+  while k < n {
+    sorted.push(*b.bend[usize.from(*order[k])]);
+    k = k + 1usize;
+  }
+  b.bend = sorted;
+  b.builtBend = n;
+}
+
+fn colourCurves(b: &mut SoftBody) {
+  let n = b.curves.len();
+  var used = List[u64]();
+  var i = 0usize;
+  while i < b.pos.len() { used.push(0u64); i = i + 1usize; }
+  var colour = List[u32]();
+  var k = 0usize;
+  while k < n {
+    let c = *b.curves[k];
+    let ia = usize.from(c.a);
+    let ib = usize.from(c.b);
+    let ic = usize.from(c.c);
+    let col = lowestClear(*used[ia] | *used[ib] | *used[ic]);
+    if col >= MAX_COLOURS { b.batchesSerial = true; }
+    colour.push(u32.from(col));
+    let bit = 1u64 << u64.from(col);
+    used.set(ia, *used[ia] | bit);
+    used.set(ib, *used[ib] | bit);
+    used.set(ic, *used[ic] | bit);
+    k = k + 1usize;
+  }
+  var order = List[u32]();
+  batchOrder(colour.view(), &mut order, &mut b.curveBatch);
+  var sorted = List[CurveC].withCapacity(n);
+  k = 0usize;
+  while k < n {
+    sorted.push(*b.curves[usize.from(*order[k])]);
+    k = k + 1usize;
+  }
+  b.curves = sorted;
+  b.builtCurve = n;
+}
+
+// The triangles around each particle, in compressed rows: adjStart[i] to
+// adjStart[i + 1] in adjList, in triangle order. The wind gathers its forces by it.
+fn buildAdjacency(b: &mut SoftBody) {
+  let n = b.pos.len();
+  b.adjStart.clear();
+  b.adjList.clear();
+  b.triForce.clear();
+  var count = List[u32]();
+  var i = 0usize;
+  while i <= n { count.push(0u32); i = i + 1usize; }
+  var t = 0usize;
+  while t < b.tris.len() {
+    let p = usize.from(*b.tris[t]) + 1usize;
+    count.set(p, *count[p] + 1u32);
+    t = t + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    count.set(i + 1usize, *count[i + 1usize] + *count[i]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i <= n { b.adjStart.push(*count[i]); i = i + 1usize; }
+  // a vertex that appears twice in a triangle is not expected; fill by cursors
+  var cursor = List[u32]();
+  i = 0usize;
+  while i < n { cursor.push(*count[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < usize.from(*count[n]) { b.adjList.push(0u32); i = i + 1usize; }
+  t = 0usize;
+  while t < b.tris.len() {
+    let p = usize.from(*b.tris[t]);
+    let at = usize.from(*cursor[p]);
+    b.adjList.set(at, u32.from(t / 3usize));
+    cursor.set(p, *cursor[p] + 1u32);
+    t = t + 1usize;
+  }
+  i = 0usize;
+  while i < b.tris.len() / 3usize { b.triForce.push(Vec3(0., 0., 0.)); i = i + 1usize; }
+  b.builtTris = b.tris.len();
+}
+
+// Rebuild what is out of date; called at the top of a step
+fn ensureBatches(b: &mut SoftBody) {
+  let stale = b.builtDist != b.dist.len() || b.distBatch.len() == 0usize
+    || b.builtBend != b.bend.len() || b.bendBatch.len() == 0usize
+    || b.builtCurve != b.curves.len() || b.curveBatch.len() == 0usize;
+  if stale {
+    b.batchesSerial = false;
+    colourDistances(b);
+    colourBends(b);
+    colourCurves(b);
+  }
+  if b.builtTris != b.tris.len() || b.adjStart.len() != b.pos.len() + 1usize { buildAdjacency(b); }
+}

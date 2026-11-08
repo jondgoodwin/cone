@@ -11,13 +11,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// TEMPORARY, a provisional mechanism whose final design is open: a constant
-// named on the command line, '-D NAME' (1) or '-D NAME=123', which core's
-// isDefined and definedInt answer (ir/stmt/intrinsic.c, intrinsicBuildConst)
+// A constant named on the command line, '-D NAME' (1) or '-D NAME=123', which
+// '#defined' and '#define' answer (parser/parsemeta.c)
 typedef struct ConeDefine {
     char *name;
     int64_t value;
 } ConeDefine;
+
+// The size gate's default, for --private-instances
+#define DefaultPrivateInstances 64
 
 // Compiler options
 typedef struct ConeOptions {
@@ -52,6 +54,7 @@ typedef struct ConeOptions {
     int vulkan;      // 1=SPIR-V's Vulkan form, the one with compute entry points (genSetup decides it)
     int release;    // 0=debug (no optimizations). 1=release (default)
     int library;    // 1=generate a C-API compatible static library
+    int privateinst; // A release program's generic instance this small (LLVM instructions, before optimisation) is its own, not shared; 0=none (genlFn)
     int described;  // 1=a build description names the package: one object of several linked together
     int runtimebc;    // Compile with the LLVM bitcode file for the runtime
     int pic;        // Compile using position independent code
@@ -60,16 +63,22 @@ typedef struct ConeOptions {
     int verify;        // Verify LLVM IR
     int extfun;        // Set function default linkage to external
     int simple_builtin;    // Use a minimal builtin package
-    int strip_debug;    // Strip debug info
+    int strip_debug;    // --strip: no debug info, in a release build or a debug one
+    int debuginfo;      // 1=emit debug info: function entries and line locations (genSetup decides it)
     int print_filenames;    // Print source file names as each is processed
     int print_ir;        // Print out IR
     int print_asm;        // Print out assembly file
     int print_llvmir;    // Print out LLVM IR
     int check_tree;        // Verify IR well-formedness
+    int report_trust;      // List the unconstrained operations after type checking, generating nothing
     int print_spans;       // Print the root module's declaration spans after parse
+    int print_meta;        // --meta-ir: write the passes of each '#each' as the parser expanded them
+    int meta_steps;        // --meta-steps: the passes one outermost '#each' may run, with those of the '#each's inside it
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
+    int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
+    int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private

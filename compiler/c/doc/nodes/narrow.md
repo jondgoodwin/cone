@@ -27,12 +27,12 @@ order, and the environment follows.
 | Where | What it does |
 | --- | --- |
 | `ifTypeCheck` | each condition is checked knowing the earlier ones were false; its block knows it was true (`narrowAssume`); the blocks that do not leave (`ifBlockJumps`), and the path that went by every condition when there is no `else`, are joined after the `if` (`narrowJoin`); a block that leaves takes its changes with it unless it continues a loop |
-| `logicTypeCheck` | the right operand of `and` knows the left was true, of `or` that it was false; afterwards either path may hold (`narrowAssumeLocal`) |
+| `logicTypeCheck` | the right operand of a bool's `&&` knows the left was true, of `||` that it was false; afterwards either path may hold (`narrowAssumeLocal`). A left operand that is not a bool is a method call, which narrows nothing |
 | `blockTypeCheck` | a loop block is a frame (`narrowLoopEnter`, `narrowLoopExit`) |
 | `fnDclTypeCheck` | a function body starts with nothing known and gives back what it was given (`narrowFnBegin`); a closure's `()` is its own function |
 | `assignTypeCheck`, `swapTypeCheck` | `narrowAssigned`: the name is changed; a variant stored over a name held by value is a narrowing to it (`state = State.Run(2)`) |
 | `borrowMutRef`, `borrowTypeCheck`, `borrowDerefOf` | `narrowBorrowed`: a writable borrow of the whole enum, or of what a reference variable points at, is a change |
-| `varDclTypeCheck` | `narrowDeclared`: a local declared with a variant of its enum (`mut s Shape = Shape.Circle(1)`) is narrowed to it |
+| `varDclTypeCheck` | `narrowDeclared`: a local declared with a variant of its enum (`var s: Shape = Shape.Circle(1)`) is narrowed to it |
 
 A set that comes out empty (a test that contradicts what was believed) is a branch that cannot
 run, and is taken as no knowledge rather than refused. A test in this pass of a loop makes a
@@ -42,7 +42,7 @@ narrowing of this pass (`NarrowFact.depth`).
 starts with `-`, or is `_`), of a closed enum (`narrowClosedEnum`: a trait with no base that has
 a tag or is `SameSize`, at most 64 variants), held by value or through a borrowed reference.
 Not a field, an element, a dereference, a global or a static; not a value reached through an
-owner (`Rc`, `So`), whose referent others reach; not a value already typed as a variant.
+owner (`Rc`, `Uni`), whose referent others reach; not a value already typed as a variant.
 
 ## Reading it
 

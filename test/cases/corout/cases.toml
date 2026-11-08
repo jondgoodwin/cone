@@ -4,7 +4,7 @@
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
-# What is built is the one-way generator of refcorout.html: 'yield' hands a
+# What is built is the one-way generator of rec-generators.html: 'yield' hands a
 # value out and waits to be resumed, 'yield each' hands on a sub-generator's,
 # the value a call gives is walked by its 'next' and complies with core's
 # Iterator[T] by having it. A generator may be a method and may be generic. A
@@ -34,6 +34,11 @@ category = "run"
 description = "Generators walked by 'next': counting, 'return', loops and arms, borrows of a lent parameter, 'yield each' joined and recursive, passed to generic code bounded by Iterator"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.corout_parameter_names]
+category = "run"
+description = "A generator's parameters are held under names no source can spell: one generator for each Iterator method name as its parameter (next, map, filter, take, skip, fold, any, all, zip, indexed, count, find, sum, min, max) and for final, walked, summed and counted; the generated struct's own names as parameters; Iterator names as locals across a yield; a local shadowing a parameter; a default, a closure, a 'yield each', a generic and a method using such parameters"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
 [scenario.corout_yield_borrow_free]
 category = "reject"
 description = "A borrow a yield handed out that a free function made, or a sub-generator handed on by 'yield each', of what the generator was lent: the list grown afterwards, a buffer refilled through a call in a loop"
@@ -58,6 +63,11 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 [scenario.corout_methods]
 category = "run"
 description = "Generator methods: 'self' the receiver held by the generator, borrowed, mutably borrowed or by value, a recursive walk of a tree through 'yield each', 'Self', a type's function with no receiver"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.corout_lifetime_methods]
+category = "run"
+description = "Generator methods of a type that declares lifetimes: one lifetime with a receiver lent for reading, lent mutably or taken by value, a borrow handed out, a borrow parameter beside the receiver; two ordered lifetimes; a lifetime with a type parameter; a recursive walk through 'yield each'; a type whose one lifetime is declared by its field"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.corout_generic]
@@ -88,6 +98,16 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 link = ["package/grids.conebuild"]
 include = ["include/grids.cone"]
 
+# The same with a package whose generators are methods of a type that declares a
+# lifetime: the include file carries them whole and the importer makes their
+# structs again with the type's lifetime in them.
+[scenario.corout_library_lifetimes]
+category = "run"
+description = "A package whose generators are 'pub' methods of a type that declares a lifetime, one lent the receiver and one taking it by value, walked by a program linked with it"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+link = ["package/lens.conebuild"]
+include = ["include/lens.cone"]
+
 # Private generators in a package: the golden include file (include/vault.cone)
 # carries a private generator only where an importer can reach it, that is, one a
 # public generator names, with what it names, and leaves out the rest and what only
@@ -107,11 +127,17 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # -------- parse stage --------
 
+[scenario.corout_parameter_names_parse]
+category = "reject"
+description = "A generator's parameter named twice is refused by the generator's declaration, where parameters named as Iterator methods are accepted"
+tags = ["parse"]
+diagnostics = 1
+
 [scenario.corout_parse]
 category = "reject"
 description = "Declarations a generator may not be, and a 'yield' where none stands, refused as they are read"
 tags = ["parse"]
-diagnostics = 18
+diagnostics = 19
 
 # -------- name resolution stage --------
 
@@ -150,11 +176,23 @@ description = "A borrow of the body's own ground across a yield, a local's borro
 tags = ["flow"]
 diagnostics = 5
 
+[scenario.corout_parameter_names_flow]
+category = "reject"
+description = "A diagnostic about a parameter named as an Iterator method reads as the author wrote it: a borrow of 'count' across a seam, 'map' moved out of the generator"
+tags = ["flow"]
+diagnostics = 2
+
 [scenario.corout_methods_flow]
 category = "reject"
 description = "A generator method's receiver stays lent while the generator lives: a receiver lent for reading changed, the receiver dying first, a receiver taken by value moved out (one lent mutably is an alias loan: corout_methods)"
 tags = ["flow"]
 diagnostics = 3
+
+[scenario.corout_lifetime_methods_flow]
+category = "reject"
+description = "A generator method of a type that declares lifetimes holds the receiver and what the receiver borrows: the receiver dying first, the borrowed value dying first, the borrowed value and the receiver changed while the generator lives, and both changed once it is gone"
+tags = ["flow"]
+diagnostics = 4
 
 [scenario.corout_yield_borrow]
 category = "reject"

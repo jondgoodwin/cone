@@ -62,6 +62,7 @@ as that group's own subject requires.
 | 1 | `struct` | Structs, method definition, operator methods, initializers and finalizers, delegated inheritance |
 | 1 | `enum` | Enums in both size varieties, `Option`, `Result`, pattern matching |
 | 1 | `array` | Arrays |
+| 1 | `vector` | SIMD vectors, `Vector[T, N]`: the type, its operators, lanes (picked, named and joined), masks, reductions, conversions and loads and stores of slices, and the arrays and numbers they meet |
 | 1 | `closure` | Closures |
 | 1 | `ref` | Borrowed references, static permissions, lifetime annotations, function references |
 | 1 | `move` | Move types and semantics |
@@ -92,11 +93,11 @@ Two of the rows above have no group directory, and the reasons differ.
 feature, nothing to test yet; its row stays and the group appears when the
 feature does. `concurrency` has a group for what the compiler knows of it,
 atomic values (the `AtomicValue` marker's rules, and core's `Atomic[T]`, which
-declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `refmeta.html` is
-unimplemented down to the token, and the only metaprogramming that *is*
-implemented — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
-above, which the manual agrees with by nesting `refmacro.html` under
-`refgeneric.html`. **The `meta` row is reserved for `refmeta.html`'s `#`
+declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `mod-generativity.html#meta` is built
+only as far as `#if` on the facts of the build, and the metaprogramming that is
+older — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
+above, which the manual agrees with by describing macros (`mod-generativity.html#macros`)
+on its generics page. **The `meta` row is reserved for `mod-generativity.html#meta`'s `#`
 language.** Do not resolve the apparent overlap by moving macros out of
 `generic`.
 
@@ -308,9 +309,10 @@ whose assertion is "this takes twenty seconds" asserts nothing worth having.
 ## 3. Write the source
 
 **Braces and semicolons.** A block is delimited by braces and every statement
-that does not end in a block ends with `;`, the last one before a `}`
-included. The language has no other way to write either, so a scenario that
-omits a `;` is asserting `ErrorNoSemi`.
+that does not end in a block ends with `;`, except the last line of a block
+whose value is used, which leaves it off; a block whose value is not used keeps
+it (`core_parse_tailvalue` pins both). The language has no other way to write
+either, so a scenario that omits a `;` elsewhere is asserting `ErrorNoSemi`.
 
 **The header.** A file the compiler builds as a module — a flat scenario, a
 support module, a folder's designated file, a one-file module — opens, after its
@@ -365,6 +367,10 @@ what the package generated, and a change to the generator shows as a diff of
 the golden file. `--bless` records a generated file that differs as its golden
 file, and nothing else in that pass (`module_include_roundtrip`).
 
+`link_options` gives the options the `link` packages are built with where they
+are not the run's own, so a package built with one set of facts and a program
+importing it with another can be tested (`meta_if_include_facts`).
+
 ## 4. Assert
 
 Every scenario declares a **category** in `cases.toml`. It tells the runner what
@@ -390,11 +396,11 @@ Mark anything not yet implemented `xfail`: it reports as an expected failure and
 ### Located diagnostics: annotate the line
 
 ```cone
-fn scale(v f32) f32 { v * 2. }
+fn scale(v: f32) f32 { v * 2. }
 
 fn main() {
-  imm a = scale(1, 2)      //~ ErrorManyArgs:17
-  imm b = add(pt, 3)       //~ ErrorNoCandidate:11 "accepts the call's arguments"
+  let a = scale(1, 2)      //~ ErrorManyArgs:17
+  let b = add(pt, 3)       //~ ErrorNoCandidate:11 "accepts the call's arguments"
                            //~^ ErrorInvType:11 follow-on
 }
 ```
@@ -477,6 +483,24 @@ Some facts belong to the file rather than a line:
   is written `<masked>` before it is compared with the `.err` file, which
   writes `<masked>` in its place (a thread's identity in a panic's report,
   `exception_thread`).
+- **Lines under a diagnostic that are no diagnostic**, `notes`, a list of strings for a `reject`
+  scenario: each must appear in the compiler's output. An error in a pass of a `#each` is followed by
+  `... in pass 2 of 3 of this '#each', where #x is 2.5`, a line that an annotation cannot pin
+  (`meta_each_reject_check`).
+- **A longer limit for a scenario that needs one**, `timeout = <seconds>`, a
+  positive finite number (an integer or a float), for a scenario of any
+  category. The runner gives every process it starts 20 seconds (`--timeout`
+  changes that); a program that is slow when the machine is busy would
+  otherwise read as a failure, so the scenario states what it needs. The key
+  applies to every process the scenario starts: the compile of each package it
+  `link`s, the C compiler for a `.c` it links, its own compile, the link and the
+  program. It replaces the default. An explicit `--timeout` replaces the
+  default as well, and where a scenario has a key too the larger of the two
+  applies, so `--timeout 90` lengthens a scenario that asked for 60 and
+  `--timeout 5` leaves it at 60. A boolean, a string, 0, a negative number,
+  `inf` and `nan` are refused, with a message naming the scenario. Say why on
+  the same line: a raised limit hides a slowdown, so the key is for a cost
+  that varies with the machine's load, not for one that has grown.
 
 ### Two choices, for lowering and codegen defects
 
@@ -542,6 +566,12 @@ parameters stored to allocas of their own — and are read out of the dump
 rather than chosen. The same rule about symbol bytes
 applies.
 
+#### `meta`
+
+Matches against what `--meta-ir` wrote, `<name>.meta`: each outermost `#each` and the IR of every pass
+the parser made of it, before name resolution (`meta_each_dump`). For a `compile` or `run` scenario;
+the runner adds the option.
+
 #### `asm`
 
 Matches against what `--asm` wrote, the target's own assembly: `<name>.spvasm`
@@ -577,7 +607,7 @@ Each line is, in order, separated by single spaces:
    `linkonce_odr` — `define linkonce_odr q.larger[i64] comdat any`;
 3. the **demangled name**: the symbol read back through the scheme in
    `doc/design/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
-   `Holder[i64].tally`, `pick[So[mut, i32]]`, `Vec.+`, a vtable as
+   `Holder[i64].tally`, `pick[Uni[imm, i32]]`, `Vec.+`, a vtable as
    `Gauge as Meter (vtable)`, a vtable list as `Meter (vtable list)`, a name
    Cone source could only write in backticks in its backticks. A symbol the
    scheme does not spell — `main`, a root `fn`, a C name, `string`, `anon` — is
@@ -606,7 +636,10 @@ The demangler lives in `test/run.py`, and every run begins by reading the
 scheme's worked examples through it (`--selftest` does only that). A grammar
 change that broke a reading therefore stops the run as one fault, and the
 scenarios then check conec's encoder against the demangler on the symbols it
-actually emits; `struct_methods` is where a punycoded name does so.
+actually emits; `struct_methods` is where a punycoded name does so. The same
+start-up check covers the `timeout` key (`timeout_selftest`): what is accepted,
+each refusal, the limit chosen against `--timeout`, and the key read through a
+`cases.toml` for every category.
 
 ### `cases.toml` keys
 
@@ -629,6 +662,10 @@ xfail       = false          # omit unless true
 category     = "run"
 program_exit = "abort"       # the program's own status; "abort" for a panic
 stderr_mask  = ['(?<=panic in thread )\d+']  # each match compared as '<masked>'
+
+[scenario.concurrency_actors_fanin]
+category = "run"
+timeout  = 60                # seconds per process, where the default 20 is too few under load
 
 [scenario.module_build_link]
 category    = "run"
@@ -666,6 +703,11 @@ dump — `q.preir`, from `q/q.conebuild` — in place of the scenario's own; the
 runner then compiles that entry with `--llvmir`. It is how a scenario that
 links two objects asserts on both: that a symbol both define has the same
 linkage in each, say.
+
+The `trust` target (a `compile` or `run` scenario) is the output of a second run
+of the same source with `--report-trust`, which generates no code; its lines are
+`<kind> <file>:<line> <function> [<what>]`, so a check names a site by kind, line
+and function (`doc/design/safety.md` says what the kinds are).
 
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a

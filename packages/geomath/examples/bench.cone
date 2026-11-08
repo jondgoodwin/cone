@@ -25,21 +25,21 @@ import time use Duration, Instant;
 import geomath use *;
 
 // FNV-1a over 32-bit words: a value's bits folded in, so any change shows
-fn mix(h u32, bits u32) u32 {(h ^ bits) * 16777619u32;}
+fn mix(h: u32, bits: u32) u32 {(h ^ bits) * 16777619u32}
 
 // A slice of n values of T, from the C allocator, never given back
-fn block[T](n usize) &mut Array[T] {
-  mem.sliceFromPartsMut(libc.malloc(n * mem.sizeof[T]()) as *T, n);
+fn block[T](n: usize) &mut Array[T] {
+  mem.sliceFromPartsMut(libc.malloc(n * mem.sizeof[T]()) as *T, n)
 }
 
-fn report(what &str, took Duration, n u64) {
+fn report(what: &str, took: Duration, n: u64) {
   printStr(what);
   printFloat(f64.from(took.nanos()) / f64.from(n));
   printStr(" ns each\n");
 }
 
-fn scale(s &mut Array[f32], k f32) {
-  mut i = 0usize;
+fn scale(s: &mut Array[f32], k: f32) {
+  var i = 0usize;
   while i < s.len {
     s[i] = s[i] * k;
     i = i + 1usize;
@@ -47,22 +47,22 @@ fn scale(s &mut Array[f32], k f32) {
 }
 
 fn main() i32 {
-  imm axis = new Vec3(1., 2., 3.).normalize();
-  imm rot4 = Mat4.fromQuat(Quat.angleAxis(0.001, axis));
-  imm rot3 = Mat3.fromQuat(Quat.angleAxis(0.001, axis));
-  mut h = 2166136261u32;
+  let axis = Vec3(1., 2., 3.).normalize();
+  let rot4 = Mat4.fromQuat(Quat.angleAxis(0.001, axis));
+  let rot3 = Mat3.fromQuat(Quat.angleAxis(0.001, axis));
+  var h = 2166136261u32;
 
   // A slice scaled in place
   {
-    imm n = 16384usize;
-    imm s = block[f32](n);
-    mut i = 0usize;
+    let n = 16384usize;
+    let s = block[f32](n);
+    var i = 0usize;
     while i < n {
       s[i] = f32.from(i % 1000usize) * 0.001;
       i = i + 1usize;
     }
-    imm t0 = Instant.now();
-    mut pass = 0u64;
+    let t0 = Instant.now();
+    var pass = 0u64;
     while pass < 12800u64 {
       scale(s, 0.9999);
       pass = pass + 1u64;
@@ -70,24 +70,24 @@ fn main() i32 {
     report("scale, per element:    ", t0.elapsed(), 12800u64 * u64.from(n));
     i = 0usize;
     while i < n {
-      h = mix(h, s[i] as u32);
+      h = mix(h, s[i].bits());
       i = i + 1usize;
     }
   }
 
   // Mat4 * Mat4
   {
-    imm n = 1000usize;
-    imm mats = block[Mat4](n);
-    imm out = block[Mat4](n);
-    mut i = 0usize;
+    let n = 1000usize;
+    let mats = block[Mat4](n);
+    let out = block[Mat4](n);
+    var i = 0usize;
     while i < n {
-      imm a = f32.from(i) * 0.01;
-      mats[i] = Mat4.fromTrs(new Vec3(a, 1. - a, 2. * a), Quat.angleAxis(a, axis), new Vec3(1., 1. + a, 1.));
+      let a = f32.from(i) * 0.01;
+      mats[i] = Mat4.fromTrs(Vec3(a, 1. - a, 2. * a), Quat.angleAxis(a, axis), Vec3(1., 1. + a, 1.));
       i = i + 1usize;
     }
-    imm t0 = Instant.now();
-    mut pass = 0u64;
+    let t0 = Instant.now();
+    var pass = 0u64;
     while pass < 1000u64 {
       i = 0usize;
       while i < n {
@@ -104,9 +104,9 @@ fn main() i32 {
     report("Mat4 * Mat4:           ", t0.elapsed(), 1000u64 * u64.from(n));
     i = 0usize;
     while i < n {
-      mut k = 0usize;
+      var k = 0usize;
       while k < 16usize {
-        h = mix(h, out[i].m[k] as u32);
+        h = mix(h, out[i].m[k].bits());
         k = k + 1usize;
       }
       i = i + 1usize;
@@ -115,22 +115,22 @@ fn main() i32 {
 
   // Mat4 * Vec4, and Mat4 * point
   {
-    imm n = 100000usize;
-    imm v4 = block[Vec4](n);
-    imm o4 = block[Vec4](n);
-    imm p3 = block[Vec3](n);
-    imm o3 = block[Vec3](n);
-    mut i = 0usize;
+    let n = 100000usize;
+    let v4 = block[Vec4](n);
+    let o4 = block[Vec4](n);
+    let p3 = block[Vec3](n);
+    let o3 = block[Vec3](n);
+    var i = 0usize;
     while i < n {
-      imm a = f32.from(i % 977usize) * 0.01;
-      v4[i] = new Vec4(a, 1. - a, 2. * a, 1.);
-      p3[i] = new Vec3(a, 1. - a, 2. * a);
+      let a = f32.from(i % 977usize) * 0.01;
+      v4[i] = Vec4(a, 1. - a, 2. * a, 1.);
+      p3[i] = Vec3(a, 1. - a, 2. * a);
       i = i + 1usize;
     }
-    imm m = Mat4.fromTrs(new Vec3(1., 2., 3.), Quat.angleAxis(0.5, axis), new Vec3(2., 1., 0.5));
+    let m = Mat4.fromTrs(Vec3(1., 2., 3.), Quat.angleAxis(0.5, axis), Vec3(2., 1., 0.5));
 
-    mut t0 = Instant.now();
-    mut pass = 0u64;
+    var t0 = Instant.now();
+    var pass = 0u64;
     while pass < 100u64 {
       i = 0usize;
       while i < n {
@@ -155,30 +155,30 @@ fn main() i32 {
 
     i = 0usize;
     while i < n {
-      h = mix(h, o4[i].x as u32);
-      h = mix(h, o4[i].y as u32);
-      h = mix(h, o4[i].z as u32);
-      h = mix(h, o4[i].w as u32);
-      h = mix(h, o3[i].x as u32);
-      h = mix(h, o3[i].y as u32);
-      h = mix(h, o3[i].z as u32);
+      h = mix(h, o4[i].x.bits());
+      h = mix(h, o4[i].y.bits());
+      h = mix(h, o4[i].z.bits());
+      h = mix(h, o4[i].w.bits());
+      h = mix(h, o3[i].x.bits());
+      h = mix(h, o3[i].y.bits());
+      h = mix(h, o3[i].z.bits());
       i = i + 1usize;
     }
   }
 
   // Mat3 * Mat3
   {
-    imm n = 1000usize;
-    imm mats = block[Mat3](n);
-    imm out = block[Mat3](n);
-    mut i = 0usize;
+    let n = 1000usize;
+    let mats = block[Mat3](n);
+    let out = block[Mat3](n);
+    var i = 0usize;
     while i < n {
-      imm a = f32.from(i) * 0.01;
+      let a = f32.from(i) * 0.01;
       mats[i] = Mat3.fromQuat(Quat.angleAxis(a, axis));
       i = i + 1usize;
     }
-    imm t0 = Instant.now();
-    mut pass = 0u64;
+    let t0 = Instant.now();
+    var pass = 0u64;
     while pass < 1000u64 {
       i = 0usize;
       while i < n {
@@ -195,9 +195,9 @@ fn main() i32 {
     report("Mat3 * Mat3:           ", t0.elapsed(), 1000u64 * u64.from(n));
     i = 0usize;
     while i < n {
-      mut k = 0usize;
+      var k = 0usize;
       while k < 9usize {
-        h = mix(h, out[i].m[k] as u32);
+        h = mix(h, out[i].m[k].bits());
         k = k + 1usize;
       }
       i = i + 1usize;
@@ -207,5 +207,5 @@ fn main() i32 {
   printStr("hash of every result: ");
   printInt(i64.from(h));
   printStr("\n");
-  0;
+  0
 }

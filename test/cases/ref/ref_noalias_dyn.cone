@@ -1,0 +1,64 @@
+// A method filling a vtable slot, and a function called through a reference to it ('&fn'), carry the
+// attributes their permissions give (ref_noalias): the caller does not see them, so a call through
+// a virtual reference or a function reference must behave as a direct one. Values are worked out
+// in the comments.
+
+mod ref_noalias_dyn;
+
+import stdio use *;
+
+trait Tally {
+  pub fn add(self: &uni, k: i64);
+  pub fn total(self: &imm) i64;
+}
+
+struct Sum is Tally {
+  pub n: i64;
+  pub fn add(self: &uni, k: i64) { n = n + k; }
+  pub fn total(self: &imm) i64 { n }
+}
+
+struct Dbl is Tally {
+  pub n: i64;
+  pub fn add(self: &uni, k: i64) { n = n + k * 2; }
+  pub fn total(self: &imm) i64 { n }
+}
+
+fn feed(t: &<uni Tally, k: i64) {
+  t.add(k);
+}
+
+fn read(t: &<imm Tally) i64 {
+  t.total() + t.total()
+}
+
+fn bumpSum(c: &uni Sum, k: i64) {
+  c.n = c.n + k;
+}
+
+fn apply(f: &fn(c: &uni Sum, k: i64), c: &uni Sum, k: i64) {
+  f(&uni *c, k);
+  c.n = c.n * 10;
+  f(c, k);
+}
+
+fn main() {
+  var s = Sum(0);
+  var d = Dbl(0);
+  feed(&uni s, 3);
+  feed(&uni d, 3);
+  feed(&uni s, 3);
+  feed(&uni d, 3);
+  // Sum: 3 + 3.  Dbl: 6 + 6
+  print <- "feed ", s.n, " ", d.n, "\n";
+
+  let fs = Sum(5);
+  let fd = Dbl(7);
+  // 5 + 5, 7 + 7
+  print <- "read ", read(&imm fs), " ", read(&imm fd), "\n";
+
+  var c = Sum(1);
+  apply(&bumpSum, &uni c, 2);
+  // 1 + 2 = 3, times 10 = 30, + 2 = 32
+  print <- "apply ", c.n, "\n";
+}

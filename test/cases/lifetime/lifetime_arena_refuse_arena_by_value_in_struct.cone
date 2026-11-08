@@ -1,0 +1,28 @@
+// Bug 55: the arena is held by value in a struct the function is handed. The function stores a borrow of another
+// parameter in a node of that arena; the node's finalizer reads it when the struct dies, after the caller's local
+// (declared later) is gone. Refuse.
+mod lifetime_arena_refuse_arena_by_value_in_struct;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F {
+  pub p: Option[&mut T];
+  fn final(self: &uni) {
+    match self.p {
+      case let Some(r) { print <- "finalizer reads ", r.v, "\n"; }
+      case None { print <- "none\n"; }
+    }
+  }
+}
+struct Hd { pub ar: Arena; }
+fn stash(h: &mut Hd, x: &mut T) {
+  let f = h.ar.alloc(F(None));
+  f.p = Some(x);  //~ ErrorEscape
+}
+fn main() {
+  var h = Hd(Arena());
+  {
+    var t = T(7);
+    stash(&mut h, &mut t);
+  }
+}

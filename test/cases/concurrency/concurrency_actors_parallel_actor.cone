@@ -34,75 +34,75 @@ import actors;
 const runs = 4u64;
 const summers = 2u64;
 
-fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+fn mix(i: u64, n: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
   }
-  x;
+  x
 }
 
-fn unevenWork(i u64) u64 {
-  (i * i) % 97u64 * 40u64;
+fn unevenWork(i: u64) u64 {
+  (i * i) % 97u64 * 40u64
 }
 
 struct Results {
-  pub handled Atomic[u64];     // behaviours finished: 16 runs and pokes' worth
-  pub overlaps Atomic[u64];    // a behaviour that began inside another's loop
-  pub resultsWrong Atomic[u64];
-  pub pokesEarly Atomic[u64];  // a poke handled before its run had returned
-  pub pokesLate Atomic[u64];   // handled after
-  pub sentMidLoop Atomic[u64]; // loops whose poke was sent before the last item ran
-  pub inOrder Atomic[u64];     // actors whose runs finished in the order sent
-  pub spread Atomic[u64];      // loops run on more than one thread
+  pub handled: Atomic[u64];     // behaviours finished: 16 runs and pokes' worth
+  pub overlaps: Atomic[u64];    // a behaviour that began inside another's loop
+  pub resultsWrong: Atomic[u64];
+  pub pokesEarly: Atomic[u64];  // a poke handled before its run had returned
+  pub pokesLate: Atomic[u64];   // handled after
+  pub sentMidLoop: Atomic[u64]; // loops whose poke was sent before the last item ran
+  pub inOrder: Atomic[u64];     // actors whose runs finished in the order sent
+  pub spread: Atomic[u64];      // loops run on more than one thread
 }
 
-imm results Results;
+let results: Results;
 
 fn @initpure init() {
-  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64));
 }
 
-fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+fn bits(v: u64) u64 {
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
   }
-  n;
+  n
 }
 
 // What the pieces of one loop share
 struct Pass {
-  pub cells *u64;
-  pub done Atomic[u64];        // items run
-  pub poked Atomic[u64];       // 1 once the poke was sent
-  pub sentAt Atomic[u64];      // items run when the poke was sent
-  pub ran Atomic[u64];         // bit i: worker i ran a piece
-  pub whole u64;               // the loop's length
-  pub who Summer;              // the actor, to send it the poke
+  pub cells: *u64;
+  pub done: Atomic[u64];        // items run
+  pub poked: Atomic[u64];       // 1 once the poke was sent
+  pub sentAt: Atomic[u64];      // items run when the poke was sent
+  pub ran: Atomic[u64];         // bit i: worker i ran a piece
+  pub whole: u64;               // the loop's length
+  pub who: Summer;              // the actor, to send it the poke
 }
 
-fn bodyFill(p *Pass, lo usize, hi usize) {
-  imm w = actors.workerIndex();
+fn bodyFill(p: *Pass, lo: usize, hi: usize) {
+  let w = actors.workerIndex();
   (*p).ran.bitOr(1u64 << u64.from(w));
   if (*p).poked.swap(1u64) == 0u64 {
     (*p).sentAt.store((*p).done.load());
     (*p).who.poke();
     // With other pieces to be run, hold this one until a second thread has
     // run a piece, or three seconds pass
-    mut waited = 0u64;
-    while u64.from(hi - lo) < (*p).whole and bits((*p).ran.load()) < 2u64 and waited < 3000u64 {
+    var waited = 0u64;
+    while u64.from(hi - lo) < (*p).whole && bits((*p).ran.load()) < 2u64 && waited < 3000u64 {
       thread.sleep(time.Duration.fromMillis(1));
       waited = waited + 1u64;
     }
   }
-  mut i = lo;
+  var i = lo;
   while i < hi {
     *((*p).cells + i) = mix(u64.from(i), unevenWork(u64.from(i)));
     i = i + 1usize;
@@ -111,23 +111,23 @@ fn bodyFill(p *Pass, lo usize, hi usize) {
 }
 
 actor Summer {
-  phase u64 = 0u64;            // 1 while a 'run' is inside its loop, 2 after the first has returned
-  finished u64 = 0u64;         // runs finished
-  order Array[u64, 4] = [0u64, 0u64, 0u64, 0u64];
+  phase: u64 = 0u64;            // 1 while a 'run' is inside its loop, 2 after the first has returned
+  finished: u64 = 0u64;         // runs finished
+  order: Array[u64, 4] = [0u64, 0u64, 0u64, 0u64];
 
-  pub async do run(self, n u64) {
+  pub async fn run(self, n: u64) {
     if phase == 1u64 {
       results.overlaps.add(1u64);
     }
     phase = 1u64;
-    imm cells = libc.calloc(usize.from(n), 8usize) as *u64;
-    mut p = new Pass(cells, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    let cells = libc.calloc(usize.from(n), 8usize) as *u64;
+    var p = Pass(cells, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
       Atomic[u64].of(0u64), n, selfactor);
-    imm pp = &mut p as *Pass;
-    actors.parallelRange(0usize, usize.from(n), 8usize, fn(lo usize, hi usize) [pp] { bodyFill(pp, lo, hi); });
+    let pp = &mut p as *Pass;
+    actors.parallelRange(0usize, usize.from(n), 8usize, fn(lo: usize, hi: usize) [pp] { bodyFill(pp, lo, hi); });
     // the loop has finished: all items ran, and their results are here
-    mut ok = p.done.load() == n;
-    mut i = 0u64;
+    var ok = p.done.load() == n;
+    var i = 0u64;
     while i < n {
       if *(cells + usize.from(i)) != mix(i, unevenWork(i)) {
         ok = false;
@@ -152,7 +152,7 @@ actor Summer {
 
   // Sent by a piece of the loop of a 'run' that has not returned: handled
   // after it, with the actor outside any loop
-  pub async do poke(self) {
+  pub async fn poke(self) {
     if phase == 1u64 {
       results.overlaps.add(1u64);
       results.pokesEarly.add(1u64);
@@ -162,8 +162,8 @@ actor Summer {
     results.handled.add(1u64);
   }
 
-  pub async do report(self) {
-    if order[0] == 3000u64 and order[1] == 500u64 and order[2] == 10u64 and order[3] == 5u64 {
+  pub async fn report(self) {
+    if order[0] == 3000u64 && order[1] == 500u64 && order[2] == 10u64 && order[3] == 5u64 {
       results.inOrder.add(1u64);
     }
     results.handled.add(1u64);
@@ -172,10 +172,10 @@ actor Summer {
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm a = new Summer();
-    imm b = new Summer();
+    let a = Summer();
+    let b = Summer();
     a.run(3000u64);
     b.run(3000u64);
     a.run(500u64);
@@ -191,13 +191,13 @@ fn main() {
   while results.handled.load() < summers * (runs + runs + 1u64) {
     thread.sleep(time.Duration.fromMillis(1));
   }
-  imm total = summers * runs;
+  let total = summers * runs;
   printStr("behaviours handled "); printUInt(results.handled.load()); printStr("\n");
-  printStr("no behaviour began inside another's loop: "); printStr(if results.overlaps.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("loop results as the plain loop's: "); printStr(if results.resultsWrong.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("every poke handled after its run returned: "); printStr(if results.pokesEarly.load() == 0u64 and results.pokesLate.load() == total {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("the poke was sent while the loop was running: "); printStr(if results.sentMidLoop.load() == total {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("runs finished in the order sent: "); printStr(if results.inOrder.load() == summers {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("the largest loops ran on more than one thread: "); printStr(if results.spread.load() >= summers {"ok";} else {"FAILED";}); printStr("\n");
+  printStr("no behaviour began inside another's loop: "); printStr(if results.overlaps.load() == 0u64 {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("loop results as the plain loop's: "); printStr(if results.resultsWrong.load() == 0u64 {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("every poke handled after its run returned: "); printStr(if results.pokesEarly.load() == 0u64 && results.pokesLate.load() == total {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("the poke was sent while the loop was running: "); printStr(if results.sentMidLoop.load() == total {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("runs finished in the order sent: "); printStr(if results.inOrder.load() == summers {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("the largest loops ran on more than one thread: "); printStr(if results.spread.load() >= summers {"ok"} else {"FAILED"}); printStr("\n");
   finalAll();
 }

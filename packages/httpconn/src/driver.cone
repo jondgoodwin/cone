@@ -22,14 +22,34 @@
 // request: so each request is answered once, by construction (I1). Every
 // connection ends in 'closeNow', which answers what is left on it, sends
 // its one Closed, and frees it.
+//
+// HTTP/2. 'decide' chooses the core once the layer is open; until then the
+// core is neither fed nor polled and no request starts. An HTTP/1.1
+// connection keeps its one request under way in 'current'; an HTTP/2
+// connection keeps each request by its stream ('streams'), starts waiting
+// ones while the peer allows ('startStreams'), and reads its core's events
+// ('events2'), each naming a stream. A server's request answered and read
+// whole is done once the send that carried its last frame is: when a
+// transmit took everything the core and the layer had ('allTaken') after the
+// stream's sending ended (http2's 'sendEnded'), its last byte is in the
+// sends submitted so far, so it is done when that many are ('flushAt'
+// against 'sentSeq'; sends on one socket complete in order). An HTTP/1.1
+// server's waits for its connection's whole queue, as before ('flushed').
 
 // A token: the driver's mark (the top bit, and its number in the next ten:
 // no two live drivers have the same), the operation's kind (five bits: the
-// layer above's, 'upperToken', has the top one set), the record's
-// generation and index
+// layer above's, 'upperToken', has the top one set), the driver's
+// generation on its loop (eight bits: a later driver that took a dead
+// one's number has another, so it does not claim the dead one's late
+// completions), the record's generation (sixteen bits) and index (twenty-four).
+// An upper token has the driver's generation too, and the layer above's own
+// forty bits where the record's generation and index are
 const tokTop = 0x8000000000000000u64;
 const numberShift = 53u64;           // the mark's number: bits 53 to 62
 const kindShift = 48u64;
+const dgenShift = 40u64;             // the driver's generation: bits 40 to 47
+const dgenMask = 0xFFu64;
+const upperMask = 0xFFFFFFFFFFu64;   // the layer above's own part of an upper token: bits 0 to 39
 const upperKind = 16u64;             // the kind bit that is the layer above's
 const kRecv = 1u64;
 const kReady = 2u64;
@@ -40,7 +60,14 @@ const kAccept = 6u64;
 const kTimer = 7u64;
 const kWatch = 8u64;
 const kCall = 9u64;          // a layer's work on the blocking pool
-const genMask = 0xFFFFFFu32;
+const genMask = 0xFFFFu32;           // a record's generation: bits 24 to 39
+const indexMask = 0xFFFFFFu32;
+
+// One gathered send's bounds (transmit): its segments, as many as one Linux
+// sendmsg takes, and its bytes, the core's default write watermark; past
+// either the next buffers go in the next send
+const gatherSegments = 64usize;
+const gatherBytes = 262144usize;
 
 // A connection's state
 const cFree = 0u32;
@@ -62,141 +89,162 @@ const endCancelled = 2u32;
 const endTimedOut = 3u32;
 
 const recsPerBlock = 64u32;
+const feedRecord = 16384usize;        // the most plaintext one TLS record carries: 'feed' needs this much credit for a buffer
 const lingerSize = 4096usize;        // a closing connection's receive, read and dropped
 const resolveSize = 4096usize;       // a lookup's buffer: room for 128 addresses
-const heldRetryNs = 1000000i64;      // events held for a full channel are tried again after this
 
-fn nextGen(g u32) u32 {if g >= genMask {1u32;} else {g + 1u32;};}
+fn nextGen(g: u32) u32 {if g >= genMask {1u32} else {g + 1u32}}
 
 // A connection: its socket, its protocol core and layer, and where it is
 struct Conn {
-  gen u32;
-  state u32;
-  nextFree u32;
-  server bool;
-  listener ListenerId;
-  sock Handle;
-  core http1.Connection;
-  layer So[Layer];
-  sink Sink;
-  addrs List[SocketAddr];   // a client's addresses to try, in order
-  nextAddr usize;
-  connOp OpId;              // the lookup or connect in flight
-  callOp OpId;              // the layer's work on the blocking pool, in flight
-  connectBy Instant;
-  peer SocketAddr;
-  recvOut bool;             // a receive is in flight
-  readyOut bool;            // a zero-byte receive is in flight
-  readyHit bool;            // ...and has said data is there: the next receive takes it
-  sendsOut u32;
-  eof bool;                 // the socket's receiving side has ended, or failed
-  eofFed bool;              // ...and the core has been told
-  shut bool;                // its sending side is shut
-  closeAsked bool;          // 'close': end once what was asked of it is done
-  timer OpId;               // the core's deadline, or the linger, on the loop's timers
-  timerAt Instant;
-  current u32;              // the request under way, or noEntry
-  waiting List[u32];        // a client's requests waiting their turn
-  flushing List[u32];       // a server's requests answered whole, their bytes going out
-  failed bool;
-  failure Failure;
-  dirty bool;
-  held u32;                 // its events held for a full channel
-  inAtStart u64;            // the core's bytes received when the current request started
+  gen: u32;
+  state: u32;
+  nextFree: u32;
+  server: bool;
+  listener: ListenerId;
+  sock: Handle;
+  core: http1.Connection;    // HTTP/1.1's: the protocol until one is chosen, and after, unless HTTP/2 is
+  h2: Option[Uni[http2.Connection]];  // HTTP/2's, once chosen (see core.cone)
+  isH2: bool;                // the protocol chosen is HTTP/2
+  decided: bool;             // the protocol is chosen: the layer has opened
+  cleartext: bool;           // its layer has no handshake (Plain): no ALPN, prior knowledge decides
+  layer: Uni[Layer];
+  sink: Sink;
+  addrs: List[SocketAddr];   // a client's addresses to try, in order
+  nextAddr: usize;
+  connOp: OpId;              // the lookup or connect in flight
+  callOp: OpId;              // the layer's work on the blocking pool, in flight
+  connectBy: Instant;
+  peer: SocketAddr;
+  recvOut: bool;             // a receive is in flight
+  recvOp: OpId;              // ...its id, for the cancel below
+  recvReading: bool;         // ...a buffered one, submitted while a message was being read
+  recvAsked: bool;           // ...and it has been asked to end (its answer, Done or Cancelled, is to come)
+  readyOut: bool;            // a zero-byte receive is in flight
+  readyHit: bool;            // ...and has said data is there: the next receive takes it
+  sendsOut: u32;
+  eof: bool;                 // the socket's receiving side has ended, or failed
+  eofFed: bool;              // ...and the core has been told
+  feedHeld: bool;            // 'feed' stopped for the core's credit: the layer may still hold bytes
+  shut: bool;                // its sending side is shut
+  closeAsked: bool;          // 'close': end once what was asked of it is done
+  timer: OpId;               // the core's deadline, or the linger, on the loop's timers
+  timerAt: Instant;
+  current: u32;              // the request under way, or noEntry
+  waiting: Deque[Waiting];   // a client's requests waiting their turn, each with its head
+  flushing: List[u32];       // a server's requests answered whole, their bytes going out
+  failure: Option[Failure];  // why it failed, once it has
+  openBy: Instant;           // its layer's handshake ends by then (handshakeTimeout), or the connection does
+  dirty: bool;
+  inAtStart: u64;            // the core's bytes received when the current request started
+  sendSeq: u64;              // sends submitted
+  sentSeq: u64;              // ...and done
+  allTaken: bool;            // the last transmit took all the core and the layer had
+  // HTTP/2
+  streams: Dict[u32, u32];   // each stream's request
+  writers: List[u32];        // requests to tell when they may send again (Writable)
+  goAway: bool;              // the peer's GOAWAY came: no new streams
+  shutAsked: bool;           // ours has been asked for (close, or the idle timeout)
+  lastActive: Instant;       // a stream last began or ended (the idle timeout runs from it)
 }
 
 // A request
 struct Req {
-  gen u32;
-  state u32;
-  nextFree u32;
-  conn u32;
-  connGen u32;
-  server bool;
-  sink Sink;
-  head RequestHead;         // a client's, until it starts
-  body BodyLength;
-  isHead bool;              // a HEAD request: its response has no body
-  watch OpId;               // the timer for its deadline and group, or none
-  wrote bool;               // a byte of it has gone to the kernel
-  responded bool;           // a server's response has begun
-  finished bool;            // what it sends is whole
-  readDone bool;            // what it reads is whole
-  gotResponse bool;         // a client's response head (or an interim one) has come
-  wantWritable bool;        // tell it when it may send again
-  timing Timing;
+  gen: u32;
+  state: u32;
+  nextFree: u32;
+  conn: u32;
+  connGen: u32;
+  server: bool;
+  sink: Sink;
+  body: BodyLength;
+  isHead: bool;              // a HEAD request: its response has no body
+  watch: OpId;               // the timer for its deadline and group, or none
+  wrote: bool;               // a byte of it has gone to the kernel
+  responded: bool;           // a server's response has begun
+  finished: bool;            // what it sends is whole
+  readDone: bool;            // what it reads is whole
+  gotResponse: bool;         // a client's response head (or an interim one) has come
+  wantWritable: bool;        // tell it when it may send again
+  timing: Timing;
+  // HTTP/2
+  stream: u32;               // its stream, once it has one; 0 on HTTP/1.1
+  txAt: u64;                 // its connection's sends submitted when it started
+  marked: bool;              // a server's, answered and read whole: 'flushAt' known
+  flushAt: u64;              // ...done once that many of its connection's sends are
+}
+
+// A client's request waiting its turn on a connection: its record, and the
+// head it sends when it starts
+struct Waiting {
+  req: u32;
+  head: RequestHead;
 }
 
 // A listening socket
 struct Lst {
-  gen u32;
-  open bool;
-  sock Handle;
-  sink Sink;
-  make So[LayerMaker + ShapeKeeping];
-  acceptsOut u32;
+  gen: u32;
+  open: bool;
+  sock: Handle;
+  sink: Sink;
+  make: Uni[LayerMaker + ShapeKeeping];
+  acceptsOut: u32;
 }
 
-// The driver of HTTP/1.1 connections on one Loop (see the package's header,
+// The driver of HTTP/1.1 and HTTP/2 connections on one Loop (see the package's header,
 // THE DRIVER)
 pub struct Driver {
-  cfg Config;
-  pool Pool;
-  tokBase u64;
-  connBlocks List[*Conn];
-  connCount u32;
-  freeConn u32;
-  liveConns u32;
-  reqBlocks List[*Req];
-  reqCount u32;
-  freeReq u32;
-  listeners List[Lst];
-  acceptsOut u32;
-  rearm bool;
-  dirty List[u32];
-  work List[u32];
-  ready List[Event];        // events for this thread, until pump hands them over
-  heldE List[Event];        // events held for a full channel, in order...
-  heldS List[Sink];         // ...where each goes,
-  heldC List[u32];          // ...its connection and generation,
-  heldG List[u32];
-  heldN List[usize];        // ...and the body bytes it releases once taken
-  comps List[Completion];
-  st DriverStats;
+  cfg: Config;
+  tokBase: u64;
+  connBlocks: List[*Conn];
+  connCount: u32;
+  freeConn: u32;
+  liveConns: u32;
+  reqBlocks: List[*Req];
+  reqCount: u32;
+  freeReq: u32;
+  listeners: List[Lst];
+  acceptsOut: u32;
+  rearm: bool;
+  dirty: List[u32];
+  work: List[u32];
+  ready: List[Event];        // events for this thread, until pump hands them over
+  comps: List[Completion];
+  st: DriverStats;
 
   // A driver whose connections take cfg's bounds and buffers from pool
-  pub fn make(cfg Config, pool Pool, file &Array[u8] = srcFile(), line u32 = srcLine()) Driver {
-    imm number = u64.from(takeNumber(file, line));
-    new Driver(cfg: cfg, pool: pool, tokBase: tokTop | (number << numberShift),
-      connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
-      reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
-      listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
-      dirty: List[u32].empty(), work: List[u32].empty(), ready: List[Event].empty(),
-      heldE: List[Event].empty(), heldS: List[Sink].empty(), heldC: List[u32].empty(),
-      heldG: List[u32].empty(), heldN: List[usize].empty(), comps: List[Completion].empty(),
-      st: DriverStats.zero());
+  pub fn make(cfg: Config, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Driver {
+    let number = u64.from(takeNumber(file, line));
+    Driver(cfg: cfg, tokBase: tokTop | (number << numberShift),
+      connBlocks: List[*Conn](), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
+      reqBlocks: List[*Req](), reqCount: 0u32, freeReq: noEntry,
+      listeners: List[Lst](), acceptsOut: 0u32, rearm: false,
+      dirty: List[u32](), work: List[u32](), ready: List[Event](),
+      comps: List[Completion](), st: DriverStats.zero())
   }
 
   // Its counters, as they are now
-  pub fn stats(self &) DriverStats {st;}
+  pub fn stats(self: &) DriverStats {st}
 
   // Connections open or being made
-  pub fn live(self &) u32 {liveConns;}
-
-  // Events held for full channels, still to be delivered. A driver with any
-  // must go on being driven (poll or pump) even once every connection has
-  // closed: a channel's events may be held behind a Closed that went to
-  // another sink
-  pub fn held(self &) usize {heldE.len();}
+  pub fn live(self: &) u32 {liveConns}
 
   // Its configuration
-  pub fn config(self &) Config {cfg;}
+  pub fn config(self: &) Config {cfg}
 
   // Whether a token is one of this driver's operations
-  pub fn owns(self &, token u64) bool {(token >> numberShift) == (tokBase >> numberShift);}
+  pub fn owns(self: &, token: u64) bool {(token >> numberShift) == (tokBase >> numberShift)}
 
-  fn tok(self &, kind u64, index u32, gen u32) u64 {
-    tokBase | (kind << kindShift) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
+  fn tok(self: &, kind: u64, index: u32, gen: u32) u64 {
+    tokBase | (kind << kindShift) | (u64.from(gen & genMask) << 24u64) | u64.from(index & indexMask)
+  }
+
+  // Take the driver's generation from its loop, at its first operation
+  // (a connect or a listen); later ones keep it
+  fn stamp(self: &mut, lp: &mut Loop) {
+    if ((tokBase >> dgenShift) & dgenMask) == 0u64 {
+      tokBase = tokBase | (lp.nextDriverGen() << dgenShift);
+    }
   }
 
   // A token in this driver's space for the layer above it, to submit its
@@ -204,77 +252,90 @@ pub struct Driver {
   // groups): its kind has the top of its five bits set, which no operation
   // of the driver's has, so 'complete' leaves its completion (false) and
   // 'owns' is true of it. 'kind' is the layer's own, 0 to 15 (a larger one
-  // is a panic); 'n' is the layer's own, its low 48 bits kept
-  pub fn upperToken(self &, kind u8, n u64, file &Array[u8] = srcFile(), line u32 = srcLine()) u64 {
+  // is a panic); 'n' is the layer's own, its low 40 bits kept: the driver's
+  // generation takes the eight above them. The generation is taken from
+  // 'lp', the loop the token goes to, if the driver has none yet (as a
+  // connect or a listen takes it)
+  pub fn upperToken(self: &mut, lp: &mut Loop, kind: u8, n: u64, file: &Array[u8] = srcFile(), line: u32 = srcLine()) u64 {
     if kind >= 16u8 {panic("httpconn: an upper token's kind is 0 to 15", file, line);}
-    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & 0xFFFFFFFFFFFFu64);
+    self.stamp(lp);
+    tokBase | ((u64.from(kind) | upperKind) << kindShift) | (n & upperMask)
   }
 
-  // Whether a token is one 'upperToken' made, and its kind and n
-  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> kindShift) & upperKind) != 0u64;}
+  // Whether a token is one this driver's 'upperToken' made: its number and
+  // its generation are this driver's (a dead driver's with the same number
+  // had another)
+  pub fn isUpperToken(self: &, token: u64) bool {
+    self.owns(token) && ((token >> kindShift) & upperKind) != 0u64
+      && ((token >> dgenShift) & dgenMask) == ((tokBase >> dgenShift) & dgenMask)
+  }
 
   // ---------------------------------------------------------------------------
   // The tables
   // ---------------------------------------------------------------------------
 
-  fn connAt(self &, i u32) *Conn {
-    *connBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  fn connAt(self: &, i: u32) *Conn {
+    *connBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock)
   }
 
-  fn reqAt(self &, i u32) *Req {
-    *reqBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  fn reqAt(self: &, i: u32) *Req {
+    *reqBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock)
   }
 
   // The live connection id names, or noEntry
-  fn connIndex(self &, id ConnId) u32 {
-    if id.isNone() or id.index >= connCount {return noEntry;}
-    imm c = self.connAt(id.index) as &Conn;
-    if c.gen != id.gen or c.state == cFree {return noEntry;}
-    id.index;
+  fn connIndex(self: &, id: ConnId) u32 {
+    if id.isNone() || id.index >= connCount {return noEntry;}
+    let c = self.connAt(id.index) as &Conn;
+    if c.gen != id.gen || c.state == cFree {return noEntry;}
+    id.index
   }
 
   // The live request id names, or noEntry
-  fn reqIndex(self &, id ReqId) u32 {
-    if id.isNone() or id.index >= reqCount {return noEntry;}
-    imm r = self.reqAt(id.index) as &Req;
-    if r.gen != id.gen or r.state == rFree {return noEntry;}
-    id.index;
+  fn reqIndex(self: &, id: ReqId) u32 {
+    if id.isNone() || id.index >= reqCount {return noEntry;}
+    let r = self.reqAt(id.index) as &Req;
+    if r.gen != id.gen || r.state == rFree {return noEntry;}
+    id.index
   }
 
-  fn connIdOf(self &, i u32) ConnId {new ConnId(i, (self.connAt(i) as &Conn).gen);}
+  fn connIdOf(self: &, i: u32) ConnId {ConnId(i, (self.connAt(i) as &Conn).gen)}
 
-  fn reqIdOf(self &, ri u32) ReqId {
-    imm r = self.reqAt(ri) as &Req;
-    new ReqId(new ConnId(r.conn, r.connGen), ri, r.gen);
+  fn reqIdOf(self: &, ri: u32) ReqId {
+    let r = self.reqAt(ri) as &Req;
+    ReqId(ConnId(r.conn, r.connGen), ri, r.gen)
   }
 
-  fn blankConn(self &, next u32) Conn {
-    new Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
-      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, new Instant()),
-      layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
-      connOp: OpId.none(), callOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
-      recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
-      shut: false, closeAsked: false, timer: OpId.none(), timerAt: new Instant(), current: noEntry,
-      waiting: List[u32].empty(), flushing: List[u32].empty(), failed: false, failure: Failure.none(),
-      dirty: false, held: 0u32, inAtStart: 0u64);
+  fn blankConn(self: &, next: u32) Conn {
+    Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
+      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, Instant()), h2: None, isH2: false,
+      decided: false, cleartext: false,
+      layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr](), nextAddr: 0usize,
+      connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
+      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false, feedHeld: false,
+      shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
+      waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
+      dirty: false, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
+      streams: Dict[u32, u32](), writers: List[u32](), goAway: false, shutAsked: false,
+      lastActive: Instant())
   }
 
-  fn blankReq(self &, next u32) Req {
-    new Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
-      sink: Sink.Here(0u64), head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
+  fn blankReq(self: &, next: u32) Req {
+    Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
+      sink: Sink.Here(0u64), body: BodyLength(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
-      gotResponse: false, wantWritable: false, timing: Timing.zero());
+      gotResponse: false, wantWritable: false, timing: Timing.zero(),
+      stream: 0u32, txAt: 0u64, marked: false, flushAt: 0u64)
   }
 
   // A new connection, its core in its role, its layer and sink given
-  fn newConn(self &mut, server bool, layer So[Layer], sink Sink, now Instant) u32 {
+  fn newConn(self: &mut, server: bool, layer: Uni[Layer], sink: Sink, now: Instant) u32 {
     if freeConn == noEntry {
-      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Conn]()) as *Conn;
+      let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Conn]()) as *Conn;
       if block as usize == 0usize {panic("httpconn: out of memory for the connection table");}
-      imm base = connCount;
-      mut j = 0u32;
+      let base = connCount;
+      var j = 0u32;
       while j < recsPerBlock {
-        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        let next = if j + 1u32 < recsPerBlock {base + j + 1u32} else {noEntry};
         mem.writeRaw[Conn](block + usize.from(j), self.blankConn(next));
         j = j + 1u32;
       }
@@ -282,71 +343,89 @@ pub struct Driver {
       connCount = connCount + recsPerBlock;
       freeConn = base;
     }
-    imm i = freeConn;
-    imm c = self.connAt(i) as &mut Conn;
+    let i = freeConn;
+    let c = self.connAt(i) as &mut Conn;
     freeConn = c.nextFree;
     liveConns = liveConns + 1u32;
     c.nextFree = noEntry;
     c.server = server;
     c.listener = ListenerId.none();
     c.sock = Handle.none();
-    c.core = if server {http1.Connection.server(cfg.protocol, pool, now);}
-      else {http1.Connection.client(cfg.protocol, pool, now);};
-    mut l = layer;
-    c.layer <=> l;
-    mut s = sink;
-    c.sink <=> s;
+    c.core = if server {http1.Connection.server(cfg.protocol, now)}
+      else {http1.Connection.client(cfg.protocol, now)};
+    c.h2 = None;
+    c.isH2 = false;
+    c.decided = false;
+    // A layer open from the start has no handshake, so no ALPN: cleartext
+    c.cleartext = layer.isOpen();
+    c.layer = layer;
+    c.sink = sink;
     c.addrs.clear();
     c.nextAddr = 0usize;
     c.connOp = OpId.none();
     c.callOp = OpId.none();
     c.recvOut = false;
+    c.recvOp = OpId.none();
+    c.recvReading = false;
+    c.recvAsked = false;
     c.readyOut = false;
     c.readyHit = false;
     c.sendsOut = 0u32;
     c.eof = false;
     c.eofFed = false;
+    c.feedHeld = false;
     c.shut = false;
     c.closeAsked = false;
     c.timer = OpId.none();
     c.current = noEntry;
     c.waiting.clear();
     c.flushing.clear();
-    c.failed = false;
-    c.failure = Failure.none();
+    c.failure = None;
+    c.openBy = forever();
     c.dirty = false;
-    c.held = 0u32;
     c.inAtStart = 0u64;
+    c.sendSeq = 0u64;
+    c.sentSeq = 0u64;
+    c.allTaken = false;
+    c.streams.clear();
+    c.writers.clear();
+    c.goAway = false;
+    c.shutAsked = false;
+    c.lastActive = now;
     c.state = cOpen;
-    i;
+    i
   }
 
   // The connection has closed: its record is free, and what it held goes
-  fn freeConnRec(self &mut, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
+  fn freeConnRec(self: &mut, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
     c.state = cFree;
     c.gen = nextGen(c.gen);
-    c.core = http1.Connection.client(cfg.protocol, pool, new Instant());
+    c.core = http1.Connection.client(cfg.protocol, Instant());
+    c.h2 = None;
+    c.isH2 = false;
     c.layer = plainLayer();
     c.sink = Sink.Here(0u64);
     c.addrs.clear();
     c.waiting.clear();
     c.flushing.clear();
-    c.failure = Failure.none();
+    c.streams.clear();
+    c.writers.clear();
+    c.failure = None;
     c.nextFree = freeConn;
     freeConn = i;
     liveConns = liveConns - 1u32;
     rearm = true;
   }
 
-  fn newReq(self &mut) u32 {
+  fn newReq(self: &mut) u32 {
     if freeReq == noEntry {
-      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Req]()) as *Req;
+      let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Req]()) as *Req;
       if block as usize == 0usize {panic("httpconn: out of memory for the request table");}
-      imm base = reqCount;
-      mut j = 0u32;
+      let base = reqCount;
+      var j = 0u32;
       while j < recsPerBlock {
-        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        let next = if j + 1u32 < recsPerBlock {base + j + 1u32} else {noEntry};
         mem.writeRaw[Req](block + usize.from(j), self.blankReq(next));
         j = j + 1u32;
       }
@@ -354,8 +433,8 @@ pub struct Driver {
       reqCount = reqCount + recsPerBlock;
       freeReq = base;
     }
-    imm ri = freeReq;
-    imm r = self.reqAt(ri) as &mut Req;
+    let ri = freeReq;
+    let r = self.reqAt(ri) as &mut Req;
     freeReq = r.nextFree;
     r.nextFree = noEntry;
     r.state = rActive;
@@ -367,24 +446,27 @@ pub struct Driver {
     r.gotResponse = false;
     r.wantWritable = false;
     r.isHead = false;
-    r.body = BodyLength.empty();
+    r.body = BodyLength();
     r.timing = Timing.zero();
-    ri;
+    r.stream = 0u32;
+    r.txAt = 0u64;
+    r.marked = false;
+    r.flushAt = 0u64;
+    ri
   }
 
-  fn freeReqRec(self &mut, ri u32) {
-    imm r = self.reqAt(ri) as &mut Req;
+  fn freeReqRec(self: &mut, ri: u32) {
+    let r = self.reqAt(ri) as &mut Req;
     r.state = rFree;
     r.gen = nextGen(r.gen);
     r.sink = Sink.Here(0u64);
-    r.head = RequestHead.empty();
     r.nextFree = freeReq;
     freeReq = ri;
   }
 
-  fn markDirty(self &mut, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    if not c.dirty {
+  fn markDirty(self: &mut, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    if !c.dirty {
       c.dirty = true;
       dirty.push(i);
     }
@@ -394,139 +476,23 @@ pub struct Driver {
   // Events to sinks
   // ---------------------------------------------------------------------------
 
-  // Hand e to its sink. 'conn' and 'gen' name the connection whose events
-  // keep their order behind a held one (noEntry for none); 'credit' is the
-  // body bytes a Data event releases once a channel takes it
-  fn emit(self &mut, sink &mut Sink, conn u32, gen u32, credit usize, e Event) {
+  // Hand e to its sink: the events for this thread, until pump hands them over
+  fn emit(self: &mut, e: Event) {
     st.events = st.events + 1u64;
-    if not isChan(sink) {
-      ready.push(e);
-      return;
-    }
-    if conn != noEntry {
-      imm c = self.connAt(conn) as &mut Conn;
-      if c.gen == gen and c.held > 0u32 {
-        self.hold(sink, conn, gen, credit, e);
-        return;
-      }
-    }
-    mut s Sink = Sink.Here(0u64);
-    s <=> *sink;
-    mut back = blankEvent();
-    mut sent = sinkTaken;
-    s, sent = trySink(s, e, &mut back);
-    *sink <=> s;
-    if sent == sinkFull {
-      self.hold(sink, conn, gen, credit, back);
-      return;
-    }
-    if sent == sinkGone {st.dropped = st.dropped + 1u64;}
-    self.releaseTo(conn, gen, credit);
-  }
-
-  fn hold(self &mut, sink &mut Sink, conn u32, gen u32, credit usize, e Event) {
-    st.held = st.held + 1u64;
-    heldE.push(e);
-    heldS.push(copySink(sink));
-    heldC.push(conn);
-    heldG.push(gen);
-    heldN.push(credit);
-    if conn != noEntry {
-      imm c = self.connAt(conn) as &mut Conn;
-      if c.gen == gen {c.held = c.held + 1u32;}
-    }
-  }
-
-  // Body bytes a channel has taken (or dropped) go back to the core as credit
-  fn releaseTo(self &mut, conn u32, gen u32, n usize) {
-    if n == 0usize or conn == noEntry {return;}
-    imm c = self.connAt(conn) as &mut Conn;
-    if c.gen != gen or c.state == cFree {return;}
-    c.core.release(n);
-    self.markDirty(conn);
-  }
-
-  // Try again the events held for full channels, in order: a connection's
-  // later events stay behind its first still held
-  fn retryHeld(self &mut) {
-    if heldE.len() == 0usize {return;}
-    mut ke = List[Event].empty();
-    mut ks = List[Sink].empty();
-    mut kc = List[u32].empty();
-    mut kg = List[u32].empty();
-    mut kn = List[usize].empty();
-    mut blocked = List[u64].empty();
-    mut k = 0usize;
-    while k < heldE.len() {
-      mut e = blankEvent();
-      imm es = &mut heldE[k];
-      e <=> *es;
-      mut s Sink = Sink.Here(0u64);
-      imm ss = &mut heldS[k];
-      s <=> *ss;
-      imm conn = *heldC[k];
-      imm gen = *heldG[k];
-      imm n = *heldN[k];
-      k = k + 1usize;
-      imm key = (u64.from(gen) << 32u64) | u64.from(conn);
-      mut stay = false;
-      mut j = 0usize;
-      while j < blocked.len() {
-        if *blocked[j] == key {stay = true;}
-        j = j + 1usize;
-      }
-      if not stay {
-        // Tried: e goes into the channel, or comes back in e2
-        mut e2 = blankEvent();
-        mut sent = sinkTaken;
-        s, sent = trySink(s, e, &mut e2);
-        if sent == sinkGone {st.dropped = st.dropped + 1u64;}
-        if sent != sinkFull {
-          if conn != noEntry {
-            imm c = self.connAt(conn) as &mut Conn;
-            if c.gen == gen and c.held > 0u32 {
-              c.held = c.held - 1u32;
-              self.markDirty(conn);
-            }
-          }
-          self.releaseTo(conn, gen, n);
-          continue;
-        }
-        blocked.push(key);
-        ke.push(e2);
-      } else {
-        ke.push(e);
-      }
-      ks.push(s);
-      kc.push(conn);
-      kg.push(gen);
-      kn.push(n);
-    }
-    heldE <=> ke;
-    heldS <=> ks;
-    heldC <=> kc;
-    heldG <=> kg;
-    heldN <=> kn;
+    ready.push(e);
   }
 
   // Events for this thread, moved to out: how many
-  fn handOver(self &mut, out &mut List[Event]) usize {
-    imm n = ready.len();
+  fn handOver(self: &mut, out: &uni List[Event]) usize {
+    let n = ready.len();
     if n == 0usize {return 0usize;}
     if out.len() == 0usize {
-      *out <=> ready;
+      // The two lists change places: out's emptiness is ready's next
+      *out <-> ready;
       return n;
     }
-    mut k = 0usize;
-    while k < n {
-      mut e = blankEvent();
-      imm slot = &mut ready[k];
-      e <=> *slot;
-      out.push(e);
-      k = k + 1usize;
-    }
-    ready.clear();
-    n;
+    each e in ready.drain() {out.push(e);}
+    n
   }
 
   // ---------------------------------------------------------------------------
@@ -535,47 +501,46 @@ pub struct Driver {
 
   // The latest a poll of the loop may wait to (see the package's header,
   // THE DRIVER)
-  pub fn wakeAt(self &) Instant {
-    if dirty.len() > 0usize or ready.len() > 0usize {return new Instant();}
-    if heldE.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
-    forever();
+  pub fn wakeAt(self: &) Instant {
+    if dirty.len() > 0usize || ready.len() > 0usize {return Instant();}
+    forever()
   }
 
   // Poll the loop, at most until 'until' and not at all while events are
   // ready; hand the driver what completed; drive what it touched; append the
   // events for this thread to out: how many. A completion that is not the
-  // driver's is dropped (counted: stats().unclaimed)
-  pub fn poll(self &mut, lp &mut Loop, until Instant, out &mut List[Event]) usize {
-    mut n = self.pump(lp, out);
-    mut limit = until;
-    imm w = self.wakeAt();
+  // driver's is dropped (counted: stats().unclaimed). Nor does it wait when
+  // its first pump delivered events
+  pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &uni List[Event]) usize {
+    var n = self.pump(lp, out);
+    var limit = until;
+    let w = self.wakeAt();
     if w < limit {limit = w;}
-    if n > 0usize {limit = new Instant();}
-    mut cs = List[Completion].empty();
-    cs <=> comps;
+    if n > 0usize {limit = Instant();}
+    var cs = List[Completion]();
+    cs <-> comps;
     lp.poll(limit, &mut cs);
-    mut k = 0usize;
+    var k = 0usize;
     while k < cs.len() {
-      imm c = &mut cs[k];
-      if not self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
+      let c = &mut cs[k];
+      if !self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
       k = k + 1usize;
     }
     cs.clear();
-    comps <=> cs;
-    n + self.pump(lp, out);
+    comps <-> cs;
+    n + self.pump(lp, out)
   }
 
   // Drive every connection a completion or a call has touched, and append
   // the events for this thread to out: how many
-  pub fn pump(self &mut, lp &mut Loop, out &mut List[Event]) usize {
-    self.retryHeld();
+  pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
     if rearm {self.rearmAccepts(lp);}
     while dirty.len() > 0usize {
-      work <=> dirty;
-      mut k = 0usize;
+      work <-> dirty;
+      var k = 0usize;
       while k < work.len() {
-        imm i = *work[k];
-        imm c = self.connAt(i) as &mut Conn;
+        let i = *work[k];
+        let c = self.connAt(i) as &mut Conn;
         c.dirty = false;
         if c.state != cFree {self.drive(lp, i);}
         k = k + 1usize;
@@ -583,72 +548,152 @@ pub struct Driver {
       work.clear();
     }
     if rearm {self.rearmAccepts(lp);}
-    self.handOver(out);
+    self.handOver(out)
   }
 
   // Move connection i as far as it can go now
-  fn drive(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    imm now = Instant.now();
+  fn drive(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let now = Instant.now();
     if c.state == cClosing {
       self.lingerRecv(lp, i);
       return;
     }
     if c.state != cOpen {return;}
+    self.decide(lp, i, now);
+    if c.state != cOpen {return;}
     self.feed(lp, i, now);
     if c.state != cOpen {return;}
-    self.startNext(i, now);
-    self.events(lp, i, now);
-    if c.state != cOpen {return;}
-    self.startNext(i, now);
+    if c.decided {
+      if c.isH2 {
+        self.startStreams(lp, i, now);
+        self.events2(lp, i, now);
+        if c.state != cOpen {return;}
+        self.startStreams(lp, i, now);
+      } else {
+        self.startNext(i, now);
+        self.events(lp, i, now);
+        if c.state != cOpen {return;}
+        self.startNext(i, now);
+      }
+    }
     self.transmit(lp, i, now);
+    // Credit that has grown while this drive ran (the core used its input) lets
+    // 'feed' go on with what the layer holds; and a layer that failed in
+    // 'transmit' (a pool refusal) is read at once
+    if (c.feedHeld && coreCredit(c) >= self.feedNeed(c)) || c.layer.failed() {self.markDirty(i);}
     self.layerCall(lp, i);
-    self.flushDone(lp, i);
-    self.writable(i);
+    if c.isH2 {
+      self.flushDone2(lp, i);
+      self.writable2(i);
+      self.idle2(i, now);
+    } else {
+      self.flushDone(lp, i);
+      self.writable(i);
+    }
     self.armTimer(lp, i);
     self.receive(lp, i);
     self.maybeClose(lp, i, now);
   }
 
-  // The bytes the layer has for the core, and the end of the stream
-  fn feed(self &mut, lp &mut Loop, i u32, now Instant) {
-    imm c = self.connAt(i) as &mut Conn;
-    while true {
-      imm b = c.layer.plainOut();
-      if b.len() == 0usize {break;}
-      c.core.handleInput(b, now);
+  // The protocol, chosen once the layer is open: what its handshake chose
+  // by ALPN ("h2" is HTTP/2; "http/1.1", or none, HTTP/1.1), or, for a layer
+  // with no handshake, HTTP/2 by prior knowledge when the config says so.
+  // Until then the core is not fed or asked anything, and no request starts
+  fn decide(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.decided || !c.layer.isOpen() {return;}
+    c.decided = true;
+    let p = c.layer.alpn();
+    var h2 = p.view() == "h2";
+    if p.len() == 0usize && c.cleartext {h2 = cfg.h2PriorKnowledge;}
+    if !h2 && p.len() > 0usize && p.view() != "http/1.1" {
+      var why = String.from("ALPN chose a protocol the driver does not speak: ");
+      why.append(p.view());
+      c.failure = Some[Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, why.view()));
+      self.closeNow(lp, i, true, false);
+      return;
     }
-    if c.layer.peerEnded() and not c.eofFed {
+    if h2 {
+      let made = if c.server {http2.Connection.server(cfg.h2, now)} else {http2.Connection.client(cfg.h2, now)};
+      c.h2 = Some[Uni[http2.Connection]](Uni[http2.Connection](made));
+      c.isH2 = true;
+      c.lastActive = now;
+    }
+  }
+
+  // The bytes the layer has for the core, and the end of the stream
+  //
+  // It takes a buffer from the layer only while the core's credit holds the
+  // largest one a layer gives, a TLS record's plaintext (the threshold 'receive'
+  // asks for too): the core panics when handed more than its credit, and a layer
+  // cannot say a buffer's size before it is read out. What it leaves stays in the
+  // layer, and 'drive' runs it again when the credit has grown (the program's
+  // release, or the core's own use of its input). The peer's end follows the
+  // loop and needs no check of its own for a stop: a layer's 'peerEnded' is
+  // false while it holds a record unread (the Layer's contract: every byte was
+  // taken), so the end is never fed ahead of a record the credit stopped
+  fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    let need = self.feedNeed(c);
+    c.feedHeld = false;
+    while c.decided {
+      // A core that has ended takes and drops what it is given, so it never holds
+      if coreCredit(c) < need && !coreClosed(c) {
+        c.feedHeld = true;
+        break;
+      }
+      let b = c.layer.plainOut();
+      if b.len() == 0usize {break;}
+      coreInput(c, b, now);
+    }
+    if c.layer.peerEnded() && !c.eofFed {
       c.eofFed = true;
-      c.core.handleInput(IoBuf.empty(), now);
+      coreInput(c, IoBuf(), now);
     }
     if c.layer.failed() {
-      c.failed = true;
-      imm text = c.layer.failureText();
-      c.failure = Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view());
-      self.closeNow(lp, i, true, false);
+      self.layerFailed(lp, i);
     }
+  }
+
+  // The most credit a layer's one buffer needs: what 'receive' waits for, and,
+  // for a layer that gives records (a TLS session's), at least a record's
+  // plaintext. A Plain layer's buffers are at most 'recvSize', so a plain
+  // connection with a small 'maxBuffered' is not made to wait for more credit
+  // than it can ever have
+  fn feedNeed(self: &, c: &Conn) usize {
+    if cfg.recvSize > feedRecord || !c.layer.givesRecords() {cfg.recvSize} else {feedRecord}
+  }
+
+  // The layer has failed: its text is the reason, a pool refusal (the layer's
+  // 'overloaded') being Overloaded and the rest Closed
+  fn layerFailed(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let text = c.layer.failureText();
+    let kind = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), kind, text.view()));
+    self.closeNow(lp, i, true, false);
   }
 
   // The layer's work for the blocking pool, one at a time (a TLS session's
   // certificate check by the OS): its answer comes back to the layer
-  fn layerCall(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    if not c.callOp.isNone() or not c.layer.wantsCall() {return;}
+  fn layerCall(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    if !c.callOp.isNone() || !c.layer.wantsCall() {return;}
     c.callOp = lp.submit(c.layer.takeCall(), Target.Here(self.tok(kCall, i, c.gen)));
   }
 
   // A client's next waiting request, when the connection is free for it
-  fn startNext(self &mut, i u32, now Instant) {
-    imm c = self.connAt(i) as &mut Conn;
-    if c.server or c.current != noEntry or c.waiting.len() == 0usize or c.failed {return;}
-    if not c.core.canSendRequest() {return;}
-    imm ri = *c.waiting[0usize];
-    removeAt(&mut c.waiting, 0usize);
-    imm r = self.reqAt(ri) as &mut Req;
-    mut h = RequestHead.empty();
-    h <=> r.head;
-    c.core.sendRequest(h, r.body);
+  fn startNext(self: &mut, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.server || c.current != noEntry || c.waiting.len() == 0usize || c.failure is Some {return;}
+    if !c.core.canSendRequest() {return;}
+    let ri, head = match c.waiting.popFront() {
+      case var Some(w) {w.(req, head)}
+      else {return;}
+    };
+    let r = self.reqAt(ri) as &mut Req;
+    c.core.sendRequest(head, r.body);
     r.state = rActive;
     r.timing.started = now;
     c.current = ri;
@@ -661,90 +706,88 @@ pub struct Driver {
   }
 
   // The core's events, to their sinks
-  fn events(self &mut, lp &mut Loop, i u32, now Instant) {
-    imm c = self.connAt(i) as &mut Conn;
-    while c.held == 0u32 and c.state == cOpen {
+  fn events(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    while c.state == cOpen {
       match c.core.pollEvent() {
         case is NeedData {return;}
         case is Paused {return;}
         case is Closed {return;}
-        case mut q Request {
+        case let Request(q) {
           // A server's request: its record, and the program told
+          let head, body = q.(head, body);
           if c.current != noEntry {self.toFlushing(i, c.current);}
-          imm ri = self.newReq();
-          imm r = self.reqAt(ri) as &mut Req;
+          let ri = self.newReq();
+          let r = self.reqAt(ri) as &mut Req;
           r.server = true;
           r.conn = i;
           r.connGen = c.gen;
           r.sink = copySink(&mut c.sink);
-          r.isHead = q.head.method == Method.Head;
-          r.body = q.body;
+          r.isHead = head.method == Method.Head;
+          r.body = body;
           r.timing.submitted = now;
           r.timing.started = now;
           c.current = ri;
           st.requests = st.requests + 1u64;
-          mut ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-          ev.request <=> q.head;
-          ev.body = q.body;
-          self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+          var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+          ev.request = head;
+          ev.body = body;
+          self.emit(ev);
         }
-        case mut p Response {
+        case let Response(p) {
           if c.current != noEntry {
-            imm r = self.reqAt(c.current) as &mut Req;
+            let head, body = p.(head, body);
+            let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
             r.timing.firstByte = now;
-            mut ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <=> p.head;
-            ev.body = p.body;
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.response = head;
+            ev.body = body;
+            self.emit(ev);
           }
         }
-        case mut p Interim {
+        case let Interim(p) {
           if c.current != noEntry {
-            imm r = self.reqAt(c.current) as &mut Req;
+            let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
-            mut ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <=> p.head;
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.response = p.(head);
+            self.emit(ev);
           }
         }
-        case mut d Data {
-          imm n = d.buf.len();
+        case let Data(d) {
+          let n = d.buf.len();
           if c.current != noEntry {
-            imm r = self.reqAt(c.current) as &mut Req;
-            imm credit = if isChan(&mut r.sink) {n;} else {0usize;};
-            mut ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.buf <=> d.buf;
-            self.emit(&mut r.sink, i, c.gen, credit, ev);
+            let r = self.reqAt(c.current) as &mut Req;
+            var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.buf = d.(buf);
+            self.emit(ev);
           } else {
             c.core.release(n);
           }
         }
-        case mut e End {
+        case let End(e) {
           if c.current != noEntry {
-            imm ri = c.current;
-            imm r = self.reqAt(ri) as &mut Req;
+            let ri = c.current;
+            let r = self.reqAt(ri) as &mut Req;
             r.readDone = true;
-            mut ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-            ev.trailers <=> e.trailers;
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
-            if not c.server {
+            var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.trailers = e.(trailers);
+            self.emit(ev);
+            if !c.server {
               c.current = noEntry;
-              self.finishReq(lp, ri, endDone, Failure.none());
-            } elif r.finished {
+              self.finishReq(lp, ri, endDone, None);
+            } else if r.finished {
               self.toFlushing(i, ri);
             }
           }
         }
-        case mut f Failed {
+        case let Failed(f) {
           // The core refused what came, or a deadline of its passed: every
           // request on the connection is answered now; the connection
           // sends what the core still has (a server's error status), then
           // closes
-          mut e = HttpError.empty();
-          e <=> f.error;
-          c.failed = true;
-          c.failure = new Failure(Stage.Http, 0u32, e, false);
+          c.failure = Some[Failure](Failure(Stage.Http, 0u32, f.(error), false));
           self.answerAll(lp, i, false);
         }
       }
@@ -753,76 +796,402 @@ pub struct Driver {
 
   // A server's request answered whole and read whole: done once its bytes
   // have gone
-  fn toFlushing(self &mut, i u32, ri u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    imm r = self.reqAt(ri) as &mut Req;
+  fn toFlushing(self: &mut, i: u32, ri: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let r = self.reqAt(ri) as &mut Req;
     r.state = rFlushing;
     c.flushing.push(ri);
     if c.current == ri {c.current = noEntry;}
   }
 
-  // What the core has to send, through the layer, to the kernel
-  fn transmit(self &mut, lp &mut Loop, i u32, now Instant) {
-    imm c = self.connAt(i) as &mut Conn;
-    if c.shut {return;}
-    while c.sendsOut < cfg.sendDepth {
-      mut b = c.layer.wireOut(now);
-      if b.len() == 0usize {
-        imm p = c.core.pollTransmit(now);
-        if p.len() == 0usize {break;}
-        c.layer.plainIn(p);
+  // ---------------------------------------------------------------------------
+  // HTTP/2: streams
+  // ---------------------------------------------------------------------------
+
+  // The request on a stream of connection i, or noEntry
+  fn reqOfStream(self: &, i: u32, stream: u32) u32 {
+    let c = self.connAt(i) as &Conn;
+    c.streams.getCopy(&stream) || noEntry
+  }
+
+  // A client's waiting requests go on as streams while the peer allows more
+  // (its MAX_CONCURRENT_STREAMS); the rest wait in the driver's queue, which
+  // h2MaxWaiting bounds, never in the core's
+  fn startStreams(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.server {return;}
+    while c.waiting.len() > 0usize && c.failure is None && !c.goAway && !c.shutAsked && room2(c) > 0usize {
+      let ri, var head = match c.waiting.popFront() {
+        case var Some(w) {w.(req, head)}
+        else {return;}
+      };
+      let r = self.reqAt(ri) as &mut Req;
+      if head.scheme.isEmpty() {head.scheme = String.from(if c.cleartext {"http"} else {"https"});}
+      stripForH2(&mut head.headers);
+      var stream = 0u32;
+      match &mut c.h2 {
+        case var &mut Some(h) {stream = h.sendRequest(head, r.body);}
+        else {}
+      }
+      r.stream = stream;
+      r.state = rActive;
+      r.timing.started = now;
+      r.txAt = c.sendSeq;
+      let was = c.streams.insert(stream, ri);
+      c.lastActive = now;
+      if r.body.isEmpty() || (r.body.isSized() && r.body.length == 0u64) {
+        r.finished = true;
+      } else {
+        r.wantWritable = true;
+        c.writers.push(ri);
+      }
+    }
+  }
+
+  // The HTTP/2 core's events, to their sinks: each names its stream, whose
+  // request the event is about (0: the whole connection)
+  fn events2(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    while c.state == cOpen {
+      let ev2 = match &mut c.h2 {
+        case var &mut Some(h) {h.pollEvent()}
+        else {return;}
+      };
+      match ev2 {
+        case is NeedData {return;}
+        case is Closed {return;}
+        case let Request(q) {
+          // A server's request: its record, and the program told
+          let stream, head, body = q.(stream, head, body);
+          let ri = self.newReq();
+          let r = self.reqAt(ri) as &mut Req;
+          r.server = true;
+          r.conn = i;
+          r.connGen = c.gen;
+          r.sink = copySink(&mut c.sink);
+          r.isHead = head.method == Method.Head;
+          r.body = body;
+          r.stream = stream;
+          r.txAt = c.sendSeq;
+          r.timing.submitted = now;
+          r.timing.started = now;
+          let was = c.streams.insert(stream, ri);
+          c.lastActive = now;
+          st.requests = st.requests + 1u64;
+          var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+          ev.stream = stream;
+          ev.request = head;
+          ev.body = body;
+          self.emit(ev);
+        }
+        case let Response(p) {
+          let stream, head, body = p.(stream, head, body);
+          let ri = self.reqOfStream(i, stream);
+          if ri != noEntry {
+            let r = self.reqAt(ri) as &mut Req;
+            r.gotResponse = true;
+            r.timing.firstByte = now;
+            var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.stream = stream;
+            ev.response = head;
+            ev.body = body;
+            self.emit(ev);
+          }
+        }
+        case let Interim(p) {
+          let stream, head = p.(stream, head);
+          let ri = self.reqOfStream(i, stream);
+          if ri != noEntry {
+            let r = self.reqAt(ri) as &mut Req;
+            r.gotResponse = true;
+            var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.stream = stream;
+            ev.response = head;
+            self.emit(ev);
+          }
+        }
+        case let Data(d) {
+          let stream, buf = d.(stream, buf);
+          let n = buf.len();
+          let ri = self.reqOfStream(i, stream);
+          if ri != noEntry {
+            let r = self.reqAt(ri) as &mut Req;
+            var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.stream = stream;
+            ev.buf = buf;
+            self.emit(ev);
+          } else {
+            coreRelease(c, stream, n);
+          }
+        }
+        case let End(e) {
+          let stream, trailers = e.(stream, trailers);
+          let ri = self.reqOfStream(i, stream);
+          if ri != noEntry {
+            let r = self.reqAt(ri) as &mut Req;
+            r.readDone = true;
+            var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.stream = stream;
+            ev.trailers = trailers;
+            self.emit(ev);
+            if !c.server {
+              // The response is whole. A body still being sent is not
+              // wanted: its stream is reset (CANCEL), as HTTP/1.1 would
+              // close the connection
+              if !r.finished {
+                cancel2(c, stream);
+              }
+              self.finishReq(lp, ri, endDone, None);
+            } else if r.finished {
+              self.toFlushing(i, ri);
+            }
+          }
+        }
+        case let Reset(x) {
+          // One stream ended: its request alone fails (Reset; Refused when
+          // the peer did not process it -- REFUSED_STREAM before a response,
+          // or above a GOAWAY's last stream -- which is safe to retry)
+          let stream, error = x.(stream, error);
+          let ri = self.reqOfStream(i, stream);
+          if ri != noEntry {
+            let r = self.reqAt(ri) as &Req;
+            var f = Failure(Stage.Http, 0u32, error, false);
+            f.unsent = !(r.wrote || c.sendSeq > r.txAt);
+            self.finishReq(lp, ri, endFailed, Some[Failure](f));
+          }
+        }
+        case let GoAway(g) {
+          // No new streams on this connection: those above the GOAWAY's last
+          // stream were refused by the core (Reset events, above); the
+          // requests still in the driver's queue are refused too, never sent
+          c.goAway = true;
+          self.refuseWaiting2(lp, i, u64.from(g.code.value()));
+        }
+        case let Pong(p) {}
+        case let Failed(f) {
+          // A connection error: the core told each stream (Reset events,
+          // above); what is left is answered, and the connection closes
+          // once the core's GOAWAY has gone
+          c.failure = Some[Failure](Failure(Stage.Http, 0u32, f.(error), false));
+          self.answerAll(lp, i, false);
+        }
+      }
+    }
+  }
+
+  // The requests still in an HTTP/2 connection's queue, refused: never sent,
+  // safe to send again elsewhere
+  fn refuseWaiting2(self: &mut, lp: &mut Loop, i: u32, code: u64) {
+    let c = self.connAt(i) as &mut Conn;
+    while true {
+      let ri = match c.waiting.popFront() {
+        case var Some(w) {w.req}
+        else {break;}
+      };
+      var f = Failure(Stage.Closed, 0u32,
+        HttpError.coded(ErrorKind.Refused, code, ErrorScope.Connection, "the peer sent GOAWAY before the request was sent"), true);
+      f.error.noResponse = true;
+      self.finishReq(lp, ri, endFailed, Some[Failure](f));
+    }
+  }
+
+  // A server's requests answered and read whole are done once the send
+  // that carried their last frame is: when a transmit took everything the
+  // core had after a request's stream ended its sending, that request's
+  // last bytes are in the sends submitted so far ('flushAt')
+  fn flushDone2(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    var k = 0usize;
+    while k < c.flushing.len() {
+      let ri = *c.flushing[k];
+      let r = self.reqAt(ri) as &mut Req;
+      if !r.marked && c.allTaken {
+        if sendEnded2(c, r.stream) {
+          r.marked = true;
+          r.flushAt = c.sendSeq;
+        }
+      }
+      if r.marked && c.sentSeq >= r.flushAt {
+        // finishReq takes it off the list
+        self.finishReq(lp, ri, endDone, None);
+      } else {
+        k = k + 1usize;
+      }
+    }
+  }
+
+  // Requests waiting to send a body hear when their stream may again
+  fn writable2(self: &mut, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    var k = 0usize;
+    while k < c.writers.len() {
+      let ri = *c.writers[k];
+      let r = self.reqAt(ri) as &mut Req;
+      if !r.wantWritable || r.finished {
+        removeAt(&mut c.writers, k);
         continue;
       }
-      lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));
+      if writeRoom2(c, r.stream) < cfg.h2.writeWatermark / 2usize {
+        k = k + 1usize;
+        continue;
+      }
+      r.wantWritable = false;
+      removeAt(&mut c.writers, k);
+      var ev = Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+      ev.stream = r.stream;
+      self.emit(ev);
+    }
+  }
+
+  // Whether an HTTP/2 connection has nothing under way or waiting
+  fn isIdle2(self: &, i: u32) bool {
+    let c = self.connAt(i) as &Conn;
+    c.streams.len() == 0usize && c.waiting.len() == 0usize && c.flushing.len() == 0usize
+  }
+
+  // An HTTP/2 connection idle for h2IdleTimeout is shut down
+  fn idle2(self: &mut, i: u32, now: Instant) {
+    let c = self.connAt(i) as &Conn;
+    if self.isIdle2(i) && now >= c.lastActive + cfg.h2IdleTimeout {self.shutdown2(i);}
+  }
+
+  // Our GOAWAY (once): no new streams; the core ends once those in flight
+  // have, a server's after its GOAWAY's round trip
+  fn shutdown2(self: &mut, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.shutAsked {return;}
+    c.shutAsked = true;
+    goAway2(c);
+    self.markDirty(i);
+  }
+
+  // Answer every request on an HTTP/2 connection i (see answerAll): a
+  // server's whose last bytes have gone is Done
+  fn answerAll2(self: &mut, lp: &mut Loop, i: u32, cancelAll: bool) {
+    let c = self.connAt(i) as &mut Conn;
+    var all = List[u32]();
+    {
+      each ri in c.streams.values() {all.push(*ri);}
+    }
+    var k = 0usize;
+    while k < all.len() {
+      let ri = *all[k];
+      let r = self.reqAt(ri) as &Req;
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else if r.marked && c.sentSeq >= r.flushAt {self.finishReq(lp, ri, endDone, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
+      k = k + 1usize;
+    }
+    while true {
+      let ri = match c.waiting.popFront() {
+        case var Some(w) {w.req}
+        else {break;}
+      };
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, true)));}
+    }
+  }
+
+  // What the core has to send, through the layer, to the kernel: everything
+  // the core has ready goes into the layer at once (pollTransmit), and the
+  // layer's wire buffers go out gathered, as many as 'gatherSegments' and
+  // 'gatherBytes' allow in one send (SendChain), a lone buffer as a plain Send
+  // (allTaken: the core and the layer gave all they had, so every byte the
+  // core had written is in a send submitted). Until the protocol is chosen
+  // only the layer's own bytes go
+  fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
+    c.allTaken = false;
+    if c.shut {return;}
+    while c.sendsOut < cfg.sendDepth {
+      c.allTaken = false;
+      var wire = Chain.make(noBound);
+      while wire.segments() < gatherSegments && wire.len() < gatherBytes {
+        let b = c.layer.wireOut(now);
+        if b.len() == 0usize {
+          if !c.decided {
+            c.allTaken = true;
+            break;
+          }
+          var plain = coreTransmit(c, now);
+          if plain.isEmpty() {
+            c.allTaken = true;
+            break;
+          }
+          while true {
+            match plain.popFront() {
+              case var Some(p) {c.layer.plainIn(p);}
+              else {break;}
+            }
+          }
+          continue;
+        }
+        _ = wire.push(b);
+      }
+      if wire.isEmpty() {break;}
+      c.sendSeq = c.sendSeq + 1u64;
+      if wire.segments() == 1usize {
+        match wire.popFront() {
+          case var Some(b) {lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));}
+          else {}
+        }
+      } else {
+        lp.submit(Op.SendChain(c.sock, wire), Target.Here(self.tok(kSend, i, c.gen)));
+      }
       c.sendsOut = c.sendsOut + 1u32;
       // A layer's own bytes (a TLS handshake's) are not the request's
-      if c.current != noEntry and c.layer.isOpen() {(self.reqAt(c.current) as &mut Req).wrote = true;}
+      if c.current != noEntry && c.layer.isOpen() {(self.reqAt(c.current) as &mut Req).wrote = true;}
     }
   }
 
   // Everything sent and taken by the kernel: a server's answered requests
   // are done
-  fn flushDone(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    if c.flushing.len() == 0usize or not self.flushed(i) {return;}
+  fn flushDone(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.flushing.len() == 0usize || !self.flushed(i) {return;}
     while c.flushing.len() > 0usize {
-      imm ri = *c.flushing[0usize];
+      let ri = *c.flushing[0usize];
       removeAt(&mut c.flushing, 0usize);
-      self.finishReq(lp, ri, endDone, Failure.none());
+      self.finishReq(lp, ri, endDone, None);
     }
   }
 
-  fn flushed(self &, i u32) bool {
-    imm c = self.connAt(i) as &Conn;
-    c.sendsOut == 0u32 and c.core.queued() == 0usize and c.layer.pending() == 0usize;
+  // (HTTP/1.1: HTTP/2's requests are done by their own marks, flushDone2)
+  fn flushed(self: &, i: u32) bool {
+    let c = self.connAt(i) as &Conn;
+    c.sendsOut == 0u32 && c.core.queued() == 0usize && c.layer.pending() == 0usize
   }
 
   // A request waiting to send its body hears when it may
-  fn writable(self &mut, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
+  fn writable(self: &mut, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
     if c.current == noEntry {return;}
-    imm r = self.reqAt(c.current) as &mut Req;
-    if not r.wantWritable or r.finished {return;}
+    let r = self.reqAt(c.current) as &mut Req;
+    if !r.wantWritable || r.finished {return;}
     if c.core.writeRoom() < cfg.protocol.writeWatermark / 2usize {return;}
     r.wantWritable = false;
-    self.emit(&mut r.sink, i, c.gen, 0usize,
+    self.emit(
       Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
   }
 
   // The core's deadline on the loop's timers. A timer armed earlier than
   // needed is left to fire (the core finds nothing due, and the next is
   // armed then), so a deadline pushed back by every arrival costs nothing
-  fn armTimer(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    match c.core.pollTimeout() {
-      case imm t Some {
-        if c.timer.isNone() or t < c.timerAt {
-          if not c.timer.isNone() {lp.cancel(c.timer);}
-          c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
-          c.timerAt = t;
-        }
-      }
+  fn armTimer(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    var t = if c.layer.isOpen() {forever()} else {c.openBy};
+    match coreTimeout(c) {
+      case let Some(at) {if at < t {t = at;}}
       case is None[Instant] {}
+    }
+    if c.isH2 && self.isIdle2(i) {
+      let at = c.lastActive + cfg.h2IdleTimeout;
+      if at < t {t = at;}
+    }
+    if t < forever() && (c.timer.isNone() || t < c.timerAt) {
+      if !c.timer.isNone() {lp.cancel(c.timer);}
+      c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
+      c.timerAt = t;
     }
   }
 
@@ -831,43 +1200,64 @@ pub struct Driver {
   // or bytes are known to be waiting; otherwise a zero-byte one, which pins
   // no buffer and says when bytes (a next request, the end of the stream, a
   // reset) come
-  fn receive(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    if c.recvOut or c.readyOut or c.eof or c.shut {return;}
-    if c.core.readCredit() < cfg.recvSize or c.layer.wireRoom() < cfg.recvSize {return;}
-    imm reading = c.current != noEntry and not (self.reqAt(c.current) as &Req).readDone;
-    if not reading and cfg.idleRecvReady and not c.readyHit {
+  fn receive(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let reading = if c.isH2 {c.streams.len() > 0usize}
+      else {c.current != noEntry && !(self.reqAt(c.current) as &Req).readDone};
+    // A buffered receive left over when nothing is being read any more (a
+    // cancel took the last stream, or a server's response finished): ask it
+    // to end, so its buffer goes home. It answers Cancelled and the
+    // connection is driven again, which then waits with a zero-byte receive.
+    // If it finishes first it answers Done with its bytes (a next request's,
+    // say), and they are fed to the core like any other. Client and server
+    // connections alike: an idle one pins no buffer
+    if c.recvOut && c.recvReading && !c.recvAsked && !reading && cfg.idleRecvReady &&
+        c.state == cOpen && !c.eof && !c.shut {
+      c.recvAsked = true;
+      lp.cancel(c.recvOp);
+      return;
+    }
+    if c.recvOut || c.readyOut || c.eof || c.shut {return;}
+    if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
+    if !reading && cfg.idleRecvReady && !c.readyHit {
       lp.submit(Op.RecvReady(c.sock), Target.Here(self.tok(kReady, i, c.gen)));
       c.readyOut = true;
       return;
     }
     c.readyHit = false;
-    mut b = IoBuf.empty();
-    match pool.take(cfg.recvSize) {
-      case mut s Some {b <=> s;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {
-      c.failed = true;
-      c.failure = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a receive buffer");
-      self.closeNow(lp, i, true, false);
-      return;
-    }
-    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
+    let b = match IoBuf.tryMake(cfg.recvSize) {
+      case var Some(got) {got}
+      else {
+        // The pool is within its reserve of maxBytes: this connection ends, its
+        // credit and buffers with it, rather than a later construction panicking
+        self.failConn(lp, i, Stage.Read, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for a receive");
+        return;
+      }
+    };
+    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
+    c.recvReading = reading;
+    c.recvAsked = false;
   }
 
   // Close the connection once the core says it is over and all it sent has
   // gone: its sending side shut, then what the peer still sends read and
   // dropped until it closes too, or the linger passes
-  fn maybeClose(self &mut, lp &mut Loop, i u32, now Instant) {
-    imm c = self.connAt(i) as &mut Conn;
+  fn maybeClose(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    let c = self.connAt(i) as &mut Conn;
     if c.state != cOpen {return;}
-    imm idle = c.current == noEntry and c.waiting.len() == 0usize and c.flushing.len() == 0usize;
-    if c.closeAsked and idle and not c.core.isClosed() {c.core.abort();}
-    if not c.core.shouldClose() {return;}
-    if c.sendsOut > 0u32 or c.layer.pending() > 0usize {return;}
-    if not c.shut {
+    if c.isH2 {
+      // HTTP/2 closes gracefully: GOAWAY once the driver's queue has gone
+      // on as streams, then the core ends once the streams in flight have (a
+      // server's after its GOAWAY's round trip)
+      if c.closeAsked && c.waiting.len() == 0usize {self.shutdown2(i);}
+    } else {
+      let idle = c.current == noEntry && c.waiting.len() == 0usize && c.flushing.len() == 0usize;
+      if c.closeAsked && idle && !c.core.isClosed() {c.core.abort();}
+    }
+    if !coreShouldClose(c) {return;}
+    if c.sendsOut > 0u32 || c.layer.pending() > 0usize {return;}
+    if !c.shut {
       c.layer.closeSend();
       if c.layer.pending() > 0usize {
         self.transmit(lp, i, now);
@@ -883,27 +1273,29 @@ pub struct Driver {
     c.state = cClosing;
     c.shut = true;
     lp.shutdown(c.sock);
-    if not c.timer.isNone() {lp.cancel(c.timer);}
+    if !c.timer.isNone() {lp.cancel(c.timer);}
     c.timer = lp.after(now + cfg.lingerTimeout, Target.Here(self.tok(kTimer, i, c.gen)));
     c.timerAt = now + cfg.lingerTimeout;
     self.lingerRecv(lp, i);
   }
 
   // A closing connection reads what still comes, and drops it
-  fn lingerRecv(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    if c.eof or c.recvOut or c.readyOut {return;}
-    mut b = IoBuf.empty();
-    match pool.take(lingerSize) {
-      case mut s Some {b <=> s;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {
-      self.closeNow(lp, i, false, false);
-      return;
-    }
-    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
+  fn lingerRecv(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.eof || c.recvOut || c.readyOut {return;}
+    let b = match IoBuf.tryMake(lingerSize) {
+      case var Some(got) {got}
+      else {
+        // The linger reads are only to be dropped: a refusal ends the linger
+        c.eof = true;
+        self.closeNow(lp, i, false, false);
+        return;
+      }
+    };
+    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
+    c.recvReading = false;
+    c.recvAsked = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -911,123 +1303,154 @@ pub struct Driver {
   // ---------------------------------------------------------------------------
 
   // Request ri's one final answer: sent to its sink, and the request freed
-  fn finishReq(self &mut, lp &mut Loop, ri u32, how u32, f Failure) {
-    imm r = self.reqAt(ri) as &mut Req;
+  fn finishReq(self: &mut, lp: &mut Loop, ri: u32, how: u32, failure: Option[Failure]) {
+    let r = self.reqAt(ri) as &mut Req;
     if r.state == rFree {return;}
-    if not r.watch.isNone() {
+    if !r.watch.isNone() {
       lp.cancel(r.watch);
       r.watch = OpId.none();
     }
     r.timing.ended = Instant.now();
-    imm id = self.reqIdOf(ri);
-    mut k EventKind = EventKind.Done;
+    let id = self.reqIdOf(ri);
+    var k: EventKind = EventKind.Done;
     if how == endDone {
       st.done = st.done + 1u64;
-    } elif how == endFailed {
+    } else if how == endFailed {
       st.failed = st.failed + 1u64;
       k = EventKind.Failed;
-    } elif how == endCancelled {
+    } else if how == endCancelled {
       st.cancelled = st.cancelled + 1u64;
       k = EventKind.Cancelled;
     } else {
       st.timedOut = st.timedOut + 1u64;
       k = EventKind.TimedOut;
     }
-    mut ev = Event.make(k, r.sink.token, id.conn, id);
+    var ev = Event.make(k, r.sink.token, id.conn, id);
+    ev.stream = r.stream;
     ev.timing = r.timing;
-    if how == endFailed {ev.failure = f;}
-    self.emit(&mut r.sink, r.conn, r.connGen, 0usize, ev);
+    match failure {
+      case var Some(f) {ev.failure = f;}
+      else {}
+    }
+    // An HTTP/2 request leaves its connection's tables
+    if r.stream != 0u32 {
+      let c = self.connAt(r.conn) as &mut Conn;
+      if c.gen == r.connGen && c.state != cFree {
+        let gone = c.streams.remove(&r.stream);
+        removeValue(&mut c.writers, ri);
+        removeValue(&mut c.flushing, ri);
+        c.lastActive = r.timing.ended;
+      }
+    }
+    self.emit(ev);
     self.freeReqRec(ri);
   }
 
   // Why request ri failed when its connection did, or closed under it
-  fn failureFor(self &, i u32, ri u32, waiting bool) Failure {
-    imm c = self.connAt(i) as &Conn;
-    imm r = self.reqAt(ri) as &Req;
-    mut f = Failure.none();
-    imm opened = c.failed and c.failure.stage != Stage.Resolve and c.failure.stage != Stage.Connect and
-      c.failure.stage != Stage.Limit;
-    if c.failed and not (waiting and opened) {
-      f = c.failure.copy();
-    } elif waiting {
-      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent");
-    } else {
-      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended");
+  fn failureFor(self: &, i: u32, ri: u32, waiting: bool) Failure {
+    let c = self.connAt(i) as &Conn;
+    let r = self.reqAt(ri) as &Req;
+    // The connection's own failure, unless it had opened and this request
+    // never started on it
+    var own: Option[Failure] = None;
+    match &c.failure {
+      case let &Some(cf) {
+        // (a connection whose layer never opened failed before its protocol
+        // was chosen: its waiting requests take its failure)
+        let opened = cf.stage != Stage.Resolve && cf.stage != Stage.Connect && cf.stage != Stage.Limit && c.decided;
+        if !(waiting && opened) {own = Some[Failure](cf.clone());}
+      }
+      else {}
     }
-    f.unsent = waiting or not r.wrote;
-    if f.stage != Stage.Http or waiting {
-      f.error.noResponse = waiting or (not r.gotResponse and c.core.bytesReceived() == c.inAtStart);
+    var f = own || if waiting {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent")}
+      else {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended")};
+    // HTTP/2: a send after the request went to the core carried its HEADERS
+    let wrote = r.wrote || (r.stream != 0u32 && c.sendSeq > r.txAt);
+    f.unsent = waiting || !wrote;
+    if f.stage != Stage.Http || waiting {
+      let none = if r.stream != 0u32 {!r.gotResponse} else {!r.gotResponse && c.core.bytesReceived() == c.inAtStart};
+      f.error.noResponse = waiting || none;
     }
-    f;
+    f
   }
 
   // Answer every request on connection i: Cancelled when cancelAll; else a
   // server's answered and sent whole is Done, any other Failed
-  fn answerAll(self &mut, lp &mut Loop, i u32, cancelAll bool) {
-    imm c = self.connAt(i) as &mut Conn;
-    imm sent = self.flushed(i);
+  fn answerAll(self: &mut, lp: &mut Loop, i: u32, cancelAll: bool) {
+    let c = self.connAt(i) as &mut Conn;
+    if c.isH2 {
+      self.answerAll2(lp, i, cancelAll);
+      return;
+    }
+    let sent = self.flushed(i);
     while c.flushing.len() > 0usize {
-      imm ri = *c.flushing[0usize];
+      let ri = *c.flushing[0usize];
       removeAt(&mut c.flushing, 0usize);
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      elif sent {self.finishReq(lp, ri, endDone, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else if sent {self.finishReq(lp, ri, endDone, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
     }
     if c.current != noEntry {
-      imm ri = c.current;
+      let ri = c.current;
       c.current = noEntry;
-      imm r = self.reqAt(ri) as &Req;
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      elif r.server and r.finished and sent {self.finishReq(lp, ri, endDone, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+      let r = self.reqAt(ri) as &Req;
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else if r.server && r.finished && sent {self.finishReq(lp, ri, endDone, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
     }
-    while c.waiting.len() > 0usize {
-      imm ri = *c.waiting[0usize];
-      removeAt(&mut c.waiting, 0usize);
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, true));}
+    while true {
+      // A waiting request's head goes unsent, with its place in the queue
+      let ri = match c.waiting.popFront() {
+        case var Some(w) {w.req}
+        else {break;}
+      };
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, true)));}
     }
   }
 
   // Connection i ends now: its socket closed (reset, when 'reset'), what is
   // left on it answered, its one Closed sent, its record freed
-  fn closeNow(self &mut, lp &mut Loop, i u32, reset bool, cancelAll bool) {
-    imm c = self.connAt(i) as &mut Conn;
+  fn closeNow(self: &mut, lp: &mut Loop, i: u32, reset: bool, cancelAll: bool) {
+    let c = self.connAt(i) as &mut Conn;
     if c.state == cFree {return;}
-    if not c.connOp.isNone() {
+    if !c.connOp.isNone() {
       lp.cancel(c.connOp);
       c.connOp = OpId.none();
     }
     // Work on the pool ends when it returns; its answer is dropped then
-    if not c.callOp.isNone() {
+    if !c.callOp.isNone() {
       lp.cancel(c.callOp);
       c.callOp = OpId.none();
     }
-    if not c.sock.isNone() {
+    if !c.sock.isNone() {
       if reset {lp.reset(c.sock);} else {lp.close(c.sock);}
       c.sock = Handle.none();
     }
-    if not c.timer.isNone() {
+    if !c.timer.isNone() {
       lp.cancel(c.timer);
       c.timer = OpId.none();
     }
-    c.core.abort();
+    coreAbort(c);
     self.answerAll(lp, i, cancelAll);
-    imm clean = not c.failed;
+    let clean = c.failure is None;
     st.closed = st.closed + 1u64;
     if clean {st.cleanCloses = st.cleanCloses + 1u64;}
-    mut ev = Event.make(EventKind.Closed, c.sink.token, self.connIdOf(i), ReqId.none());
+    var ev = Event.make(EventKind.Closed, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.clean = clean;
-    if not clean {ev.failure = c.failure.copy();}
+    match &c.failure {
+      case let &Some(f) {ev.failure = f.clone();}
+      else {}
+    }
     ev.peer = c.peer;
-    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.emit(ev);
     self.freeConnRec(i);
   }
 
   // A connection that could not be made, or broke: every request on it
   // answered, and it ends
-  fn failConn(self &mut, lp &mut Loop, i u32, stage Stage, code u32, kind ErrorKind, detail &str) {
-    imm c = self.connAt(i) as &mut Conn;
+  fn failConn(self: &mut, lp: &mut Loop, i: u32, stage: Stage, code: u32, kind: ErrorKind, detail: &str) {
+    let c = self.connAt(i) as &mut Conn;
     if c.state == cFree {return;}
     if c.state == cClosing {
       // It was closing anyway: the peer's reset or close ends the linger
@@ -1035,8 +1458,16 @@ pub struct Driver {
       self.closeNow(lp, i, false, false);
       return;
     }
-    c.failed = true;
-    c.failure = Failure.make(stage, code, kind, detail);
+    // A layer that has failed on its own (a refused certificate) is the
+    // reason: the peer's reset after its alert can be handled before the
+    // layer's failure is read (feed), and must not hide it
+    if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
+      let text = c.layer.failureText();
+      let lk = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), lk, text.view()));
+    } else {
+      c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
+    }
     self.closeNow(lp, i, false, false);
   }
 
@@ -1047,29 +1478,32 @@ pub struct Driver {
   // A completion from the loop: true if it was this driver's, which takes
   // what it needs from it (its buffer); false if it was not (see the
   // package's header, THE DRIVER)
-  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
-    imm token = comp.token;
-    if not self.owns(token) {return false;}
-    imm kind = (token >> kindShift) & 31u64;
+  pub fn complete(self: &mut, lp: &mut Loop, comp: &mut Completion) bool {
+    let token = comp.token;
+    if !self.owns(token) {return false;}
+    let kind = (token >> kindShift) & 31u64;
     if kind >= upperKind {return false;}  // the layer above's (upperToken)
-    imm index = u32.from(token & u64.from(genMask));
-    imm gen = u32.from((token >> 24u64) & u64.from(genMask));
-    imm now = Instant.now();
+    // A dead driver's number comes round again: its late completion has
+    // that driver's generation, not this one's, and is not this driver's
+    if ((token >> dgenShift) & dgenMask) != ((tokBase >> dgenShift) & dgenMask) {return false;}
+    let index = u32.from(token & u64.from(indexMask));
+    let gen = u32.from((token >> 24u64) & u64.from(genMask));
+    let now = Instant.now();
     if kind == kAccept {
       self.accepted(lp, index, gen, comp, now);
       return true;
     }
     if kind == kWatch {
       if index >= reqCount {return true;}
-      imm r = self.reqAt(index) as &mut Req;
-      if r.gen != gen or r.state == rFree or r.watch != comp.id {return true;}
+      let r = self.reqAt(index) as &mut Req;
+      if r.gen != gen || r.state == rFree || r.watch != comp.id {return true;}
       r.watch = OpId.none();
       self.cancelReq(lp, index, comp.status == diag.outcomeDone);
       return true;
     }
     if index >= connCount {return true;}
-    imm c = self.connAt(index) as &mut Conn;
-    if c.gen != gen or c.state == cFree {return true;}
+    let c = self.connAt(index) as &mut Conn;
+    if c.gen != gen || c.state == cFree {return true;}
     if kind == kCall {
       if comp.id != c.callOp {return true;}
       c.callOp = OpId.none();
@@ -1079,6 +1513,15 @@ pub struct Driver {
     }
     if kind == kRecv {
       c.recvOut = false;
+      c.recvOp = OpId.none();
+      let asked = c.recvAsked;
+      c.recvAsked = false;
+      if asked && comp.status == diag.outcomeCancelled {
+        // Ended by receive()'s ask: nothing was read; arm again (a closing
+        // connection's drive arms lingerRecv)
+        self.markDirty(index);
+        return true;
+      }
       if c.state == cClosing {
         if comp.count() > 0usize {
           self.markDirty(index);
@@ -1089,86 +1532,93 @@ pub struct Driver {
         return true;
       }
       if comp.isDone() {
-        imm n = comp.count();
+        let n = comp.count();
         st.bytesIn = st.bytesIn + u64.from(n);
         if n == 0usize {
           c.eof = true;
-          c.layer.wireIn(IoBuf.empty(), now);
+          c.layer.wireIn(IoBuf(), now);
         } else {
-          mut b = IoBuf.empty();
-          b <=> comp.buf;
+          var b = IoBuf();
+          b <-> comp.buf;
           c.layer.wireIn(b, now);
         }
         self.markDirty(index);
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         c.eof = true;
         self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
-    } elif kind == kReady {
+    } else if kind == kReady {
       c.readyOut = false;
       if comp.isDone() {
         c.readyHit = true;
         self.markDirty(index);
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         c.eof = true;
         self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
-    } elif kind == kSend {
+    } else if kind == kSend {
       c.sendsOut = c.sendsOut - 1u32;
-      if comp.isDone() and comp.n == comp.buf.len() {
+      if comp.isDone() && comp.n == comp.bufLen() {
         st.bytesOut = st.bytesOut + u64.from(comp.n);
+        c.sentSeq = c.sentSeq + 1u64;
         self.markDirty(index);
-      } elif comp.status != diag.outcomeCancelled {
+      } else if comp.status != diag.outcomeCancelled {
         self.failConn(lp, index, Stage.Write, comp.code, ErrorKind.Closed, "a send failed: the connection was reset, or broke");
       }
-    } elif kind == kTimer {
+    } else if kind == kTimer {
       if comp.id != c.timer {return true;}
       c.timer = OpId.none();
-      if not comp.isDone() {return true;}
+      if !comp.isDone() {return true;}
       if c.state == cClosing {
         // The linger is over
         self.closeNow(lp, index, false, false);
-      } elif c.state == cOpen {
-        c.core.handleTimeout(now);
+      } else if c.state == cOpen {
+        if !c.layer.isOpen() && now >= c.openBy {
+          self.failConn(lp, index, Stage.Tls, 0u32, ErrorKind.TimedOut, "no handshake within handshakeTimeout");
+          return true;
+        }
+        coreHandleTimeout(c, now);
         self.markDirty(index);
       }
-    } elif kind == kResolve {
+    } else if kind == kResolve {
       c.connOp = OpId.none();
       if c.state != cResolving {return true;}
       if comp.isDone() {
         c.addrs = addressesIn(&comp.buf);
         if c.addrs.len() == 0usize {
-          self.failConn(lp, index, Stage.Resolve, 11001u32, ErrorKind.Closed, "the name has no address");
+          self.failConn(lp, index, Stage.Resolve, noAddress(), ErrorKind.Closed, "the name has no address");
         } else {
           self.connectNext(lp, index);
         }
-      } elif comp.status == diag.outcomeTimedOut {
+      } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Resolve, 0u32, ErrorKind.TimedOut, "no address within connectTimeout");
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         self.failConn(lp, index, Stage.Resolve, comp.code, ErrorKind.Closed, "the name could not be looked up");
       }
-    } elif kind == kConnect {
+    } else if kind == kConnect {
       c.connOp = OpId.none();
       if c.state != cConnecting {return true;}
       if comp.isDone() {
         c.sock = comp.handle;
         c.state = cOpen;
+        c.openBy = now + cfg.handshakeTimeout;
+        lp.setKeepAlive(c.sock, cfg.keepAlive);
         st.connected = st.connected + 1u64;
-        mut ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
+        var ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
         ev.peer = c.peer;
-        self.emit(&mut c.sink, index, c.gen, 0usize, ev);
+        self.emit(ev);
         self.markDirty(index);
-      } elif comp.status == diag.outcomeTimedOut {
+      } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Connect, 0u32, ErrorKind.TimedOut, "no connection within connectTimeout");
-      } elif comp.status == diag.outcomeFailed {
-        if c.nextAddr < c.addrs.len() and now < c.connectBy {
+      } else if comp.status == diag.outcomeFailed {
+        if c.nextAddr < c.addrs.len() && now < c.connectBy {
           self.connectNext(lp, index);
         } else {
           self.failConn(lp, index, Stage.Connect, comp.code, ErrorKind.Closed, "the connection could not be made");
         }
       }
     }
-    true;
+    true
   }
 
   // ---------------------------------------------------------------------------
@@ -1177,56 +1627,64 @@ pub struct Driver {
 
   // A client connection to host:port, its life told to sink (see the
   // package's header, CONNECTIONS)
-  pub fn connect(self &mut, lp &mut Loop, host &str, port u16, sink Sink) ConnId {
-    self.connectWith(lp, host, port, plainLayer(), sink);
+  pub fn connect(self: &mut, lp: &mut Loop, host: &str, port: u16, sink: Sink) ConnId {
+    self.connectWith(lp, host, port, plainLayer(), sink)
   }
 
   // A client connection whose bytes pass through layer (see LAYERS)
-  pub fn connectWith(self &mut, lp &mut Loop, host &str, port u16, layer So[Layer], sink Sink) ConnId {
-    imm now = Instant.now();
-    imm i = self.openClient(lp, layer, sink, now);
-    imm c = self.connAt(i) as &mut Conn;
-    imm id = self.connIdOf(i);
+  pub fn connectWith(self: &mut, lp: &mut Loop, host: &str, port: u16, layer: Uni[Layer], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) ConnId {
+    self.checkRecords(layer.givesRecords(), file, line);
+    let now = Instant.now();
+    self.stamp(lp);
+    let i = self.openClient(lp, layer, sink, now);
+    let c = self.connAt(i) as &mut Conn;
+    let id = self.connIdOf(i);
     if c.state == cFree {return id;}
     match parseV4(host, port) {
-      case imm a Some {
+      case let Some(a) {
         c.addrs.push(a);
         self.connectNext(lp, i);
       }
       case is None[SocketAddr] {
-        mut b = IoBuf.empty();
-        match pool.take(resolveSize) {
-          case mut s Some {b <=> s;}
-          case is None[IoBuf] {}
-        }
-        if b.capacity() == 0usize {
-          self.failConn(lp, i, Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a lookup's buffer");
-          return id;
-        }
+        let b = IoBuf(resolveSize);
         c.state = cResolving;
         c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here(self.tok(kResolve, i, c.gen)), c.connectBy);
       }
     }
-    id;
+    id
   }
 
   // A client connection to an address, with no lookup
-  pub fn connectAddr(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) ConnId {
-    imm i = self.openClient(lp, plainLayer(), sink, Instant.now());
-    imm c = self.connAt(i) as &mut Conn;
-    imm id = self.connIdOf(i);
+  pub fn connectAddr(self: &mut, lp: &mut Loop, addr: SocketAddr, sink: Sink) ConnId {
+    self.stamp(lp);
+    let i = self.openClient(lp, plainLayer(), sink, Instant.now());
+    let c = self.connAt(i) as &mut Conn;
+    let id = self.connIdOf(i);
     if c.state == cFree {return id;}
     c.addrs.push(addr);
     self.connectNext(lp, i);
-    id;
+    id
+  }
+
+  // A layer that gives records (TLS) needs the core to be able to hold a whole
+  // record (feed waits for that much credit): a smaller http1 'maxBuffered'
+  // could never take one and the connection would hang, so it is refused at
+  // start-up, as http1 refuses a 'maxBuffered' smaller than a head. (http2's
+  // 'maxBuffered' must hold a frame header and a frame, at least 16 KiB, so it
+  // cannot sit under a record)
+  fn checkRecords(self: &, records: bool, file: &Array[u8], line: u32) {
+    if records && cfg.protocol.maxBuffered < feedRecord {
+      panic("httpconn: a layer that gives records (TLS) needs http1 Config.maxBuffered of at least 16 KiB", file, line);
+    }
   }
 
   // A client connection's record; one past maxConnections is refused at
   // once, its Closed saying so
-  fn openClient(self &mut, lp &mut Loop, layer So[Layer], sink Sink, now Instant) u32 {
-    imm full = liveConns >= cfg.maxConnections;
-    imm i = self.newConn(false, layer, sink, now);
-    imm c = self.connAt(i) as &mut Conn;
+  fn openClient(self: &mut, lp: &mut Loop, layer: Uni[Layer], sink: Sink, now: Instant) u32 {
+    let full = liveConns >= cfg.maxConnections;
+    let i = self.newConn(false, layer, sink, now);
+    let c = self.connAt(i) as &mut Conn;
     c.connectBy = now + cfg.connectTimeout;
     c.state = cConnecting;
     st.connects = st.connects + 1u64;
@@ -1234,13 +1692,13 @@ pub struct Driver {
       // Its Closed goes to its sink like any connection's
       self.failConn(lp, i, Stage.Limit, 0u32, ErrorKind.TooLarge, "the driver holds maxConnections connections");
     }
-    i;
+    i
   }
 
   // Connect to the next address to try
-  fn connectNext(self &mut, lp &mut Loop, i u32) {
-    imm c = self.connAt(i) as &mut Conn;
-    imm a = *c.addrs[c.nextAddr];
+  fn connectNext(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let a = *c.addrs[c.nextAddr];
     c.nextAddr = c.nextAddr + 1usize;
     c.state = cConnecting;
     c.peer = a;
@@ -1249,96 +1707,109 @@ pub struct Driver {
 
   // A request on a client connection, its events to sink (see the package's
   // header, REQUESTS)
-  pub fn request(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, None, forever(), file, line);
+  pub fn request(self: &mut, lp: &mut Loop, conn: ConnId, head: RequestHead, body: BodyLength, sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, None, forever(), file, line)
   }
 
   // A request answered TimedOut if it has not ended by deadline
-  pub fn requestBy(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, None, deadline, file, line);
+  pub fn requestBy(self: &mut, lp: &mut Loop, conn: ConnId, head: RequestHead, body: BodyLength, sink: Sink,
+      deadline: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, None, deadline, file, line)
   }
 
   // A request in a cancel group: the group's cancel cancels it, and its
   // deadline is the tighter of 'deadline' and the group's
-  pub fn requestIn(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      group CancelGroup, deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
-    self.ask(lp, conn, head, body, sink, Some[CancelGroup](group), deadline, file, line);
+  pub fn requestIn(self: &mut, lp: &mut Loop, conn: ConnId, head: RequestHead, body: BodyLength, sink: Sink,
+      group: CancelGroup, deadline: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, Some[CancelGroup](group), deadline, file, line)
   }
 
-  fn ask(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      group Option[CancelGroup], deadline Instant, file &Array[u8], line u32) ReqId {
+  fn ask(self: &mut, lp: &mut Loop, conn: ConnId, head: RequestHead, body: BodyLength, sink: Sink,
+      group: Option[CancelGroup], deadline: Instant, file: &Array[u8], line: u32) ReqId {
     checkHead(&head, file, line);
-    imm now = Instant.now();
-    imm ri = self.newReq();
-    imm r = self.reqAt(ri) as &mut Req;
-    mut s = sink;
-    r.sink <=> s;
-    mut h = head;
-    r.head <=> h;
+    let now = Instant.now();
+    let ri = self.newReq();
+    let r = self.reqAt(ri) as &mut Req;
+    r.sink = sink;
     r.body = body;
     r.server = false;
-    r.isHead = r.head.method == Method.Head;
+    r.isHead = head.method == Method.Head;
     r.conn = conn.index;
     r.connGen = conn.gen;
     r.timing.submitted = now;
     r.state = rWaiting;
     st.requests = st.requests + 1u64;
-    imm id = self.reqIdOf(ri);
-    imm ci = self.connIndex(conn);
+    let id = self.reqIdOf(ri);
+    let ci = self.connIndex(conn);
     if ci == noEntry {
       self.refuse(lp, ri, Stage.Closed, "the connection is closed, or names nothing");
       return id;
     }
-    imm c = self.connAt(ci) as &mut Conn;
+    let c = self.connAt(ci) as &mut Conn;
     if c.server {panic("httpconn: request on a server's connection", file, line);}
-    if c.state == cClosing or c.failed or c.closeAsked {
+    if c.goAway || c.shutAsked {
+      // HTTP/2's GOAWAY: no new stream on it, safe to send elsewhere
+      var f = Failure(Stage.Closed, 0u32, HttpError.make(ErrorKind.Refused, 0u16, "the connection is going away (GOAWAY)"), true);
+      f.error.noResponse = true;
+      self.finishReq(lp, ri, endFailed, Some[Failure](f));
+      return id;
+    }
+    if c.state == cClosing || c.failure is Some || c.closeAsked {
       self.refuse(lp, ri, Stage.Closed, "the connection is closing");
       return id;
     }
-    imm busy = c.state != cOpen or c.current != noEntry or c.waiting.len() > 0usize;
-    if busy and c.waiting.len() >= usize.from(cfg.maxWaiting) {
+    let h2 = c.isH2 || (!c.decided && c.cleartext && cfg.h2PriorKnowledge);
+    if h2 {
+      // HTTP/2: past the streams the peer allows, h2MaxWaiting more wait
+      let room = if c.decided {room2(c)} else {usize.from(cfg.h2.assumedPeerStreams)};
+      if c.waiting.len() >= room + usize.from(cfg.h2MaxWaiting) {
+        self.refuse(lp, ri, Stage.Limit, "h2MaxWaiting requests already wait past the peer's stream limit");
+        return id;
+      }
+    }
+    let busy = c.state != cOpen || c.current != noEntry || c.waiting.len() > 0usize;
+    if !h2 && busy && c.waiting.len() >= usize.from(cfg.maxWaiting) {
       self.refuse(lp, ri, Stage.Limit, "maxWaiting requests already wait on the connection");
       return id;
     }
-    mut dl = deadline;
-    mut cancelled = false;
+    var dl = deadline;
+    var cancelled = false;
     match group {
-      case imm g Some {
+      case let Some(g) {
         if g.isCancelled() {cancelled = true;}
         if g.deadline() < dl {dl = g.deadline();}
       }
       else {}
     }
     if cancelled {
-      self.finishReq(lp, ri, endCancelled, Failure.none());
+      self.finishReq(lp, ri, endCancelled, None);
       return id;
     }
     if dl <= now {
-      self.finishReq(lp, ri, endTimedOut, Failure.none());
+      self.finishReq(lp, ri, endTimedOut, None);
       return id;
     }
     match group {
-      case imm g Some {
-        imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
+      case let Some(g) {
+        let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
         r.watch = lp.afterIn(at, Target.Here(self.tok(kWatch, ri, r.gen)), g);
       }
       else {
         if dl < forever() {r.watch = lp.after(dl, Target.Here(self.tok(kWatch, ri, r.gen)));}
       }
     }
-    c.waiting.push(ri);
+    c.waiting.push(Waiting(ri, head));
     self.markDirty(ci);
-    id;
+    id
   }
 
   // A request that cannot be made is answered Failed at once, never sent
-  fn refuse(self &mut, lp &mut Loop, ri u32, stage Stage, detail &str) {
-    mut f = Failure.make(stage, 0u32, if stage == Stage.Limit {ErrorKind.TooLarge;} else {ErrorKind.Closed;}, detail);
+  fn refuse(self: &mut, lp: &mut Loop, ri: u32, stage: Stage, detail: &str) {
+    var f = Failure.make(stage, 0u32, if stage == Stage.Limit {ErrorKind.TooLarge} else {ErrorKind.Closed}, detail);
     f.unsent = true;
     f.error.noResponse = true;
-    self.finishReq(lp, ri, endFailed, f);
+    self.finishReq(lp, ri, endFailed, Some[Failure](f));
   }
 
   // ---------------------------------------------------------------------------
@@ -1347,57 +1818,58 @@ pub struct Driver {
 
   // Listen at addr: each connection accepted is a server connection, its
   // life and its requests told to sink (see the package's header, SERVING)
-  pub fn listen(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) Result[ListenerId, IoError] {
-    self.listenWith(lp, addr, new So[PlainMaker](PlainMaker.start()), sink);
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, sink: Sink) Result[ListenerId, IoError] {
+    self.listenWith(lp, addr, Uni[PlainMaker](PlainMaker.start()), sink)
   }
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
-  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make So[LayerMaker + ShapeKeeping], sink Sink) Result[ListenerId, IoError] {
-    mut h = Handle.none();
-    match lp.listen(addr) {
-      case imm r Ok {h = r;}
-      case imm e Error {return Error[ListenerId, IoError](e);}
-    }
-    imm k = u32.from(listeners.len());
-    listeners.push(new Lst(1u32, true, h, sink, make, 0u32));
+  pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, var make: Uni[LayerMaker + ShapeKeeping], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) Result[ListenerId, IoError] {
+    // No layer exists yet: one is made, asked, and dropped
+    let probe = make.make();
+    self.checkRecords(probe.givesRecords(), file, line);
+    self.stamp(lp);
+    let h = lp.listen(addr)?;
+    let k = u32.from(listeners.len());
+    listeners.push(Lst(1u32, true, h, sink, make, 0u32));
     self.armAccepts(lp, k);
-    Ok[ListenerId, IoError](new ListenerId(k, 1u32));
+    Ok[ListenerId, IoError](ListenerId(k, 1u32))
   }
 
   // The address a listener is bound to (its port, when it asked for 0)
-  pub fn localAddr(self &, lp &Loop, l ListenerId) Result[SocketAddr, IoError] {
-    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError](new IoError(6u32));}
-    lp.localAddr(listeners[usize.from(l.index)].sock);
+  pub fn localAddr(self: &, lp: &Loop, l: ListenerId) Result[SocketAddr, IoError] {
+    if l.index >= u32.from(listeners.len()) {return Err[SocketAddr, IoError](IoError.ofKind(IoErrorKind.InvalidInput));}
+    lp.localAddr(listeners[usize.from(l.index)].sock)
   }
 
   // Stop accepting: the connections it made go on
-  pub fn stopListening(self &mut, lp &mut Loop, l ListenerId) bool {
+  pub fn stopListening(self: &mut, lp: &mut Loop, l: ListenerId) bool {
     if l.index >= u32.from(listeners.len()) {return false;}
-    imm e = &mut listeners[usize.from(l.index)];
-    if e.gen != l.gen or not e.open {return false;}
+    let e = &mut listeners[usize.from(l.index)];
+    if e.gen != l.gen || !e.open {return false;}
     e.open = false;
     lp.close(e.sock);
-    true;
+    true
   }
 
   // Keep a listener's accepts outstanding, within maxConnections
-  fn armAccepts(self &mut, lp &mut Loop, k u32) {
-    imm gen = listeners[usize.from(k)].gen;
-    imm t = self.tok(kAccept, k, gen);
+  fn armAccepts(self: &mut, lp: &mut Loop, k: u32) {
+    let gen = listeners[usize.from(k)].gen;
+    let t = self.tok(kAccept, k, gen);
     while true {
-      imm e = &mut listeners[usize.from(k)];
-      if not e.open or e.acceptsOut >= cfg.acceptDepth or liveConns + acceptsOut >= cfg.maxConnections {break;}
-      imm sock = e.sock;
+      let e = &mut listeners[usize.from(k)];
+      if !e.open || e.acceptsOut >= cfg.acceptDepth || liveConns + acceptsOut >= cfg.maxConnections {break;}
+      let sock = e.sock;
       lp.submit(Op.Accept(sock), Target.Here(t));
       listeners[usize.from(k)].acceptsOut = listeners[usize.from(k)].acceptsOut + 1u32;
       acceptsOut = acceptsOut + 1u32;
     }
   }
 
-  fn rearmAccepts(self &mut, lp &mut Loop) {
+  fn rearmAccepts(self: &mut, lp: &mut Loop) {
     rearm = false;
-    mut k = 0u32;
+    var k = 0u32;
     while k < u32.from(listeners.len()) {
       self.armAccepts(lp, k);
       k = k + 1u32;
@@ -1405,71 +1877,74 @@ pub struct Driver {
   }
 
   // An accept completed
-  fn accepted(self &mut, lp &mut Loop, k u32, gen u32, comp &mut Completion, now Instant) {
+  fn accepted(self: &mut, lp: &mut Loop, k: u32, gen: u32, comp: &mut Completion, now: Instant) {
     if k >= u32.from(listeners.len()) {return;}
-    imm e = &mut listeners[usize.from(k)];
+    let e = &mut listeners[usize.from(k)];
     e.acceptsOut = e.acceptsOut - 1u32;
     acceptsOut = acceptsOut - 1u32;
     rearm = true;
-    if not comp.isDone() {return;}
-    if e.gen != gen or not e.open or liveConns >= cfg.maxConnections {
+    if !comp.isDone() {return;}
+    if e.gen != gen || !e.open || liveConns >= cfg.maxConnections {
       lp.close(comp.handle);
       st.refused = st.refused + 1u64;
       return;
     }
-    imm layer = e.make.make();
-    imm sink = copySink(&mut e.sink);
-    imm i = self.newConn(true, layer, sink, now);
-    imm c = self.connAt(i) as &mut Conn;
+    let layer = e.make.make();
+    let sink = copySink(&mut e.sink);
+    let i = self.newConn(true, layer, sink, now);
+    let c = self.connAt(i) as &mut Conn;
     c.sock = comp.handle;
-    c.listener = new ListenerId(k, gen);
+    c.openBy = now + cfg.handshakeTimeout;
+    lp.setKeepAlive(c.sock, cfg.keepAlive);
+    c.listener = ListenerId(k, gen);
     match lp.peerAddr(c.sock) {
-      case imm a Ok {c.peer = a;}
-      case imm x Error {}
+      case let Ok(a) {c.peer = a;}
+      case let Err(x) {}
     }
     st.accepted = st.accepted + 1u64;
-    mut ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
+    var ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.listener = c.listener;
     ev.peer = c.peer;
-    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.emit(ev);
     self.markDirty(i);
   }
 
   // A server's response to request req (see the package's header,
   // SERVING): its body, if any, by sendData and finish. False if the
   // request has ended (its connection closed)
-  pub fn respond(self &mut, req ReqId, head ResponseHead, body BodyLength,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
-    imm ri = self.reqIndex(req);
+  pub fn respond(self: &mut, req: ReqId, head: ResponseHead, body: BodyLength,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    let ri = self.reqIndex(req);
     if ri == noEntry {return false;}
-    imm r = self.reqAt(ri) as &mut Req;
-    if not r.server {panic("httpconn: respond to a client's request", file, line);}
+    let r = self.reqAt(ri) as &mut Req;
+    if !r.server {panic("httpconn: respond to a client's request", file, line);}
     if r.responded {panic("httpconn: respond twice to one request", file, line);}
-    imm c = self.connAt(r.conn) as &mut Conn;
-    imm status = head.status;
-    c.core.sendResponse(head, body, file, line);
+    let c = self.connAt(r.conn) as &mut Conn;
+    let status = head.status;
+    coreRespond(c, r.stream, head, body, file, line);
     r.responded = true;
-    if r.isHead or status == 204u16 or status == 304u16 or body.isEmpty() or (body.isSized() and body.length == 0u64) {
+    if r.isHead || status == 204u16 || status == 304u16 || body.isEmpty() || (body.isSized() && body.length == 0u64) {
       self.finished(ri);
     }
     self.markDirty(r.conn);
-    true;
+    true
   }
 
   // A server's interim response, a 1xx other than 101, before its final one
-  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
-    imm ri = self.reqIndex(req);
+  pub fn sendInterim(self: &mut, req: ReqId, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    let ri = self.reqIndex(req);
     if ri == noEntry {return false;}
-    imm r = self.reqAt(ri) as &Req;
-    if not r.server {panic("httpconn: sendInterim on a client's request", file, line);}
-    (self.connAt(r.conn) as &mut Conn).core.sendInterim(head, file, line);
+    let r = self.reqAt(ri) as &Req;
+    if !r.server {panic("httpconn: sendInterim on a client's request", file, line);}
+    let c = self.connAt(r.conn) as &mut Conn;
+    coreInterim(c, r.stream, head, file, line);
     self.markDirty(r.conn);
-    true;
+    true
   }
 
   // '100 Continue': the server wants the request's body
-  pub fn sendContinue(self &mut, req ReqId, file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
-    self.sendInterim(req, ResponseHead.make(100u16), file, line);
+  pub fn sendContinue(self: &mut, req: ReqId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    self.sendInterim(req, ResponseHead.make(100u16), file, line)
   }
 
   // ---------------------------------------------------------------------------
@@ -1481,21 +1956,21 @@ pub struct Driver {
   // Some(buf) back, refused, when the connection's send queue is at its
   // watermark or the request has not started -- Writable says when to try
   // again (see the package's header, CREDIT)
-  pub fn sendData(self &mut, req ReqId, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
-    imm ri = self.reqIndex(req);
+  pub fn sendData(self: &mut, req: ReqId, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    let ri = self.reqIndex(req);
     if ri == noEntry {return None;}
-    imm r = self.reqAt(ri) as &mut Req;
+    let r = self.reqAt(ri) as &mut Req;
     if r.state == rWaiting {
       r.wantWritable = true;
       return Some[IoBuf](buf);
     }
     if r.finished {panic("httpconn: sendData after the body was finished", file, line);}
-    imm c = self.connAt(r.conn) as &mut Conn;
-    mut back = IoBuf.empty();
-    mut refused = false;
-    match c.core.sendData(buf, file, line) {
-      case mut s Some {
-        back <=> s;
+    let c = self.connAt(r.conn) as &mut Conn;
+    var back = IoBuf();
+    var refused = false;
+    match coreSendData(c, r.stream, buf, file, line) {
+      case let Some(s) {
+        back = s;
         refused = true;
       }
       case is None[IoBuf] {}
@@ -1503,158 +1978,223 @@ pub struct Driver {
     self.markDirty(r.conn);
     if refused {
       r.wantWritable = true;
+      if c.isH2 && !hasU32(&c.writers, ri) {c.writers.push(ri);}
       return Some[IoBuf](back);
     }
-    None;
+    None
   }
 
   // The body is whole
-  pub fn finish(self &mut, req ReqId, file &Array[u8] = srcFile(), line u32 = srcLine()) {
-    self.finishWith(req, Headers.empty(), file, line);
+  pub fn finish(self: &mut, req: ReqId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.finishWith(req, Headers(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body)
-  pub fn finishWith(self &mut, req ReqId, trailers Headers, file &Array[u8] = srcFile(), line u32 = srcLine()) {
-    imm ri = self.reqIndex(req);
+  pub fn finishWith(self: &mut, req: ReqId, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let ri = self.reqIndex(req);
     if ri == noEntry {return;}
-    imm r = self.reqAt(ri) as &mut Req;
+    let r = self.reqAt(ri) as &mut Req;
     if r.state == rWaiting {panic("httpconn: finish before the request has started (wait for Writable)", file, line);}
     if r.finished {return;}
-    imm c = self.connAt(r.conn) as &mut Conn;
-    c.core.finishWith(trailers, file, line);
+    let c = self.connAt(r.conn) as &mut Conn;
+    coreFinish(c, r.stream, trailers, file, line);
     self.finished(ri);
     self.markDirty(r.conn);
   }
 
-  fn finished(self &mut, ri u32) {
-    imm r = self.reqAt(ri) as &mut Req;
+  fn finished(self: &mut, ri: u32) {
+    let r = self.reqAt(ri) as &mut Req;
     r.finished = true;
     r.wantWritable = false;
-    if r.server and r.readDone {self.toFlushing(r.conn, ri);}
+    if r.server && r.readDone {self.toFlushing(r.conn, ri);}
   }
 
   // The program is done with n bytes of body that Data events to this
-  // thread handed it: credit back to the connection, which reads again
-  pub fn release(self &mut, req ReqId, n usize) {
-    imm ci = self.connIndex(req.conn);
-    if ci == noEntry or n == 0usize {return;}
-    (self.connAt(ci) as &mut Conn).core.release(n);
+  // thread handed it: credit back to the connection (HTTP/1.1), which reads
+  // again, or to the request's stream alone (HTTP/2), whose peer sends again;
+  // a stream that has ended is owed nothing
+  pub fn release(self: &mut, req: ReqId, n: usize) {
+    let ci = self.connIndex(req.conn);
+    if ci == noEntry || n == 0usize {return;}
+    let c = self.connAt(ci) as &mut Conn;
+    if c.isH2 {
+      let ri = self.reqIndex(req);
+      if ri == noEntry {return;}
+      coreRelease(c, (self.reqAt(ri) as &Req).stream, n);
+    } else {
+      c.core.release(n);
+    }
     self.markDirty(ci);
   }
 
   // Ask a request to end (see the package's header, CANCEL AND DEADLINES):
   // true while its answer is still to come
-  pub fn cancel(self &mut, lp &mut Loop, req ReqId) bool {
-    imm ri = self.reqIndex(req);
+  pub fn cancel(self: &mut, lp: &mut Loop, req: ReqId) bool {
+    let ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     self.cancelReq(lp, ri, false);
-    true;
+    true
   }
 
   // Request ri is cancelled, or its deadline has come
-  fn cancelReq(self &mut, lp &mut Loop, ri u32, timedOut bool) {
-    imm r = self.reqAt(ri) as &mut Req;
+  fn cancelReq(self: &mut, lp: &mut Loop, ri: u32, timedOut: bool) {
+    let r = self.reqAt(ri) as &mut Req;
     if r.state == rFree {return;}
-    imm how = if timedOut {endTimedOut;} else {endCancelled;};
-    imm ci = r.conn;
-    imm c = self.connAt(ci) as &mut Conn;
-    if c.gen != r.connGen or c.state == cFree {
-      self.finishReq(lp, ri, how, Failure.none());
+    let how = if timedOut {endTimedOut} else {endCancelled};
+    let ci = r.conn;
+    let c = self.connAt(ci) as &mut Conn;
+    if c.gen != r.connGen || c.state == cFree {
+      self.finishReq(lp, ri, how, None);
       return;
     }
     if r.state == rWaiting {
-      removeValue(&mut c.waiting, ri);
-      self.finishReq(lp, ri, how, Failure.none());
+      // The first request on a connection whose layer's handshake is under
+      // way is the one HTTP/1.1, which ALPN may yet choose, would have
+      // started: as before the protocol was chosen at the handshake's end,
+      // its cancel or deadline ends the connection (and the handshake's work)
+      let first = c.state == cOpen && !c.decided && c.current == noEntry && c.waiting.len() > 0usize &&
+        c.waiting[0usize].req == ri;
+      dropWaiting(&mut c.waiting, ri);
+      if !first {
+        self.finishReq(lp, ri, how, None);
+        self.markDirty(ci);
+        return;
+      }
+      self.finishReq(lp, ri, how, None);
+      c.failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way"));
+      self.closeNow(lp, ci, true, false);
+      return;
+    }
+    // Under way: HTTP/2 resets its stream alone (RST_STREAM CANCEL)
+    if c.isH2 {
+      let stream = r.stream;
+      cancel2(c, stream);
+      self.finishReq(lp, ri, how, None);
       self.markDirty(ci);
       return;
     }
-    // Under way: HTTP/1.1 stops an exchange only by ending its connection
+    // HTTP/1.1 stops an exchange only by ending its connection
     if c.current == ri {c.current = noEntry;}
     removeValue(&mut c.flushing, ri);
-    self.finishReq(lp, ri, how, Failure.none());
-    c.failed = true;
-    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way");
+    self.finishReq(lp, ri, how, None);
+    c.failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way"));
     self.closeNow(lp, ci, true, false);
   }
 
   // Close a connection once what was asked of it is done (see the
   // package's header, CONNECTIONS): false if it names none
-  pub fn close(self &mut, lp &mut Loop, conn ConnId) bool {
-    imm ci = self.connIndex(conn);
+  pub fn close(self: &mut, lp: &mut Loop, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     (self.connAt(ci) as &mut Conn).closeAsked = true;
     self.markDirty(ci);
-    true;
+    true
   }
 
   // Reset a connection now: every request on it answered Cancelled
-  pub fn abort(self &mut, lp &mut Loop, conn ConnId) bool {
-    imm ci = self.connIndex(conn);
+  pub fn abort(self: &mut, lp: &mut Loop, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
     if ci == noEntry {return false;}
-    imm c = self.connAt(ci) as &mut Conn;
-    c.failed = true;
-    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted");
+    let c = self.connAt(ci) as &mut Conn;
+    c.failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted"));
     self.closeNow(lp, ci, true, true);
-    true;
+    true
   }
 
   // Abort every connection and stop every listener
-  pub fn abortAll(self &mut, lp &mut Loop) {
-    mut k = 0u32;
+  pub fn abortAll(self: &mut, lp: &mut Loop) {
+    var k = 0u32;
     while k < u32.from(listeners.len()) {
-      imm g = listeners[usize.from(k)].gen;
-      self.stopListening(lp, new ListenerId(k, g));
+      let g = listeners[usize.from(k)].gen;
+      self.stopListening(lp, ListenerId(k, g));
       k = k + 1u32;
     }
-    mut i = 0u32;
+    var i = 0u32;
     while i < connCount {
-      imm c = self.connAt(i) as &Conn;
-      if c.state != cFree {self.abort(lp, new ConnId(i, c.gen));}
+      let c = self.connAt(i) as &Conn;
+      if c.state != cFree {self.abort(lp, ConnId(i, c.gen));}
       i = i + 1u32;
     }
   }
 
   // Whether a connection is open: connected (or accepted), not yet closing
-  pub fn isOpen(self &, conn ConnId) bool {
-    imm ci = self.connIndex(conn);
-    ci != noEntry and (self.connAt(ci) as &Conn).state == cOpen;
+  pub fn isOpen(self: &, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
+    ci != noEntry && (self.connAt(ci) as &Conn).state == cOpen
   }
 
   // Whether a client connection is open and free: a request on it starts at once
-  pub fn isIdle(self &, conn ConnId) bool {
-    imm ci = self.connIndex(conn);
+  pub fn isIdle(self: &, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
     if ci == noEntry {return false;}
-    imm c = self.connAt(ci) as &Conn;
-    c.state == cOpen and not c.server and c.current == noEntry and c.waiting.len() == 0usize and
-      not c.failed and not c.closeAsked and c.core.canSendRequest();
+    let c = self.connAt(ci) as &Conn;
+    if c.isH2 {
+      // HTTP/2: the peer allows another stream
+      return c.state == cOpen && !c.server && c.failure is None && !c.closeAsked && !c.goAway &&
+        !c.shutAsked && room2(c) > c.waiting.len();
+    }
+    c.state == cOpen && !c.server && c.current == noEntry && c.waiting.len() == 0usize &&
+      c.failure is None && !c.closeAsked && c.core.canSendRequest()
+  }
+
+  // Whether a client connection still takes new requests, now or once it is
+  // free: being made or open, not closing or failed, and on HTTP/2 no GOAWAY
+  // sent or received. An HTTP/2 connection whose streams are all in use is
+  // not idle but still takes them; one going away takes none. False for an id
+  // that names none
+  pub fn takesRequests(self: &, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return false;}
+    let c = self.connAt(ci) as &Conn;
+    !c.server && c.state != cClosing && c.failure is None && !c.closeAsked && !c.goAway && !c.shutAsked
+  }
+
+  // The protocol a connection speaks: Http11 or Http2, once it is chosen
+  // (at its layer's opening: the TLS handshake's ALPN, or at once for a
+  // connection with no handshake); None before, or for an id that names none
+  pub fn protocol(self: &, conn: ConnId) Option[Version] {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return None;}
+    let c = self.connAt(ci) as &Conn;
+    if !c.decided {return None;}
+    Some[Version](if c.isH2 {Version.Http2} else {Version.Http11})
   }
 
   // What a connection's layer says of itself, for diagnostics: 'plain', or a
   // TLS session's version, cipher, ALPN and handshake time; empty when the
   // connection names none
-  pub fn layerInfo(self &, conn ConnId) String {
-    imm ci = self.connIndex(conn);
-    if ci == noEntry {return String.empty();}
-    (self.connAt(ci) as &Conn).layer.describe();
+  pub fn layerInfo(self: &, conn: ConnId) String {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return String();}
+    (self.connAt(ci) as &Conn).layer.describe()
   }
 
   // The address a connection is connected to (the one being tried, while
   // it connects)
-  pub fn peer(self &, conn ConnId) SocketAddr {
-    imm ci = self.connIndex(conn);
+  pub fn peer(self: &, conn: ConnId) SocketAddr {
+    let ci = self.connIndex(conn);
     if ci == noEntry {return SocketAddr.localhost(0u16);}
-    (self.connAt(ci) as &Conn).peer;
+    (self.connAt(ci) as &Conn).peer
+  }
+
+  // A connection's TCP keepalive as the OS reads it back (diagnostics: the
+  // driver sets its Config's 'keepAlive' on every socket once connected or
+  // accepted)
+  pub fn keepAliveOf(self: &, lp: &Loop, conn: ConnId) Result[KeepAlive, IoError] {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return Err[KeepAlive, IoError](IoError.ofKind(IoErrorKind.InvalidInput));}
+    lp.keepAlive((self.connAt(ci) as &Conn).sock)
   }
 
   // Its death: the tables' blocks, every record's values with them. The
   // sockets are the loop's, which closes them when it dies; 'abortAll'
   // first closes them now
-  fn final(self &uni) {
+  fn final(self: &uni) {
     giveNumber(u32.from((tokBase >> numberShift) & 1023u64));
-    mut b = 0usize;
+    var b = 0usize;
     while b < connBlocks.len() {
-      imm block = *connBlocks[b];
-      mut j = 0u32;
+      let block = *connBlocks[b];
+      var j = 0u32;
       while j < recsPerBlock {
         mem.finalize[Conn](block + usize.from(j));
         j = j + 1u32;
@@ -1664,8 +2204,8 @@ pub struct Driver {
     }
     b = 0usize;
     while b < reqBlocks.len() {
-      imm block = *reqBlocks[b];
-      mut j = 0u32;
+      let block = *reqBlocks[b];
+      var j = 0u32;
       while j < recsPerBlock {
         mem.finalize[Req](block + usize.from(j));
         j = j + 1u32;
@@ -1680,41 +2220,31 @@ pub struct Driver {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// An event holding nothing, to swap one out of where it is held
-fn blankEvent() Event {Event.make(EventKind.Writable, 0u64, ConnId.none(), ReqId.none());}
-
-// What a channel sink did with an event
-const sinkTaken = 0u32;
-const sinkFull = 1u32;      // full: the event is handed back
-const sinkGone = 2u32;      // its receiver has gone: the event is dropped
-
-// Send e on a channel sink, never waiting; the sink is moved in and handed
-// back, so that it is a local here, to be matched (error 1034 otherwise).
-// A full channel hands e back in 'back'
-fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
-  mut here = s;
-  mut how = sinkTaken;
-  match &here {
-    case imm ch &Chan {
-      match ch.tx.trySend(e) {
-        case mut r Some {
-          if ch.tx.isClosed() {
-            how = sinkGone;
-          } else {
-            *back <=> r;
-            how = sinkFull;
-          }
-        }
-        else {}
-      }
-    }
-    else {}
+// Whether v is in l
+fn hasU32(l: &List[u32], v: u32) bool {
+  var j = 0usize;
+  while j < l.len() {
+    if *l[j] == v {return true;}
+    j = j + 1usize;
   }
-  here, how;
+  false
 }
 
-fn removeAt(l &mut List[u32], k usize) {
-  mut j = k;
+// Request ri taken out of a connection's waiting queue, its head dropped;
+// the others keep their order
+fn dropWaiting(q: &mut Deque[Waiting], ri: u32) {
+  var n = q.len();
+  while n > 0usize {
+    match q.popFront() {
+      case var Some(w) {if w.req != ri {q.push(w);}}
+      else {}
+    }
+    n = n - 1usize;
+  }
+}
+
+fn removeAt(l: &mut List[u32], k: usize) {
+  var j = k;
   while j + 1usize < l.len() {
     l.swap(j, j + 1usize);
     j = j + 1usize;
@@ -1722,8 +2252,8 @@ fn removeAt(l &mut List[u32], k usize) {
   l.pop();
 }
 
-fn removeValue(l &mut List[u32], v u32) {
-  mut k = 0usize;
+fn removeValue(l: &mut List[u32], v: u32) {
+  var k = 0usize;
   while k < l.len() {
     if *l[k] == v {
       removeAt(l, k);
@@ -1734,20 +2264,20 @@ fn removeValue(l &mut List[u32], v u32) {
 }
 
 // host as an IPv4 address written as one ('127.0.0.1'), with port
-fn parseV4(host &str, port u16) Option[SocketAddr] {
-  mut parts = new Array[u8, 4] <- fill 0u8;
-  mut part = 0usize;
-  mut v = 0u32;
-  mut digits = 0u32;
-  mut k = 0usize;
+fn parseV4(host: &str, port: u16) Option[SocketAddr] {
+  var parts = Array[u8, 4]() <- fill 0u8;
+  var part = 0usize;
+  var v = 0u32;
+  var digits = 0u32;
+  var k = 0usize;
   while k <= host.len() {
-    if k == host.len() or host[k] == '.' {
-      if digits == 0u32 or v > 255u32 or part >= 4usize {return None;}
+    if k == host.len() || host[k] == '.' {
+      if digits == 0u32 || v > 255u32 || part >= 4usize {return None;}
       parts[part] = u8.from(v);
       part = part + 1usize;
       v = 0u32;
       digits = 0u32;
-    } elif host[k] >= '0' and host[k] <= '9' {
+    } else if host[k] >= '0' && host[k] <= '9' {
       v = v * 10u32 + u32.from(host[k] - '0');
       digits = digits + 1u32;
       if digits > 3u32 {return None;}
@@ -1757,28 +2287,28 @@ fn parseV4(host &str, port u16) Option[SocketAddr] {
     k = k + 1usize;
   }
   if part != 4usize {return None;}
-  Some[SocketAddr](SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port));
+  Some[SocketAddr](SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port))
 }
 
 // A request head's program errors, reported at the caller's line (the core
 // checks them again where it writes the head)
-fn checkHead(head &RequestHead, file &Array[u8], line u32) {
-  if not isToken(head.methodName()) {panic("httpconn: the request's method is not a token", file, line);}
+fn checkHead(head: &RequestHead, file: &Array[u8], line: u32) {
+  if !isToken(head.methodName()) {panic("httpconn: the request's method is not a token", file, line);}
   if head.method == Method.Connect {panic("httpconn: CONNECT is not supported", file, line);}
-  if not isVisible(head.target.view()) {panic("httpconn: the request's target is empty or holds a space or a control character", file, line);}
-  if not isVisible(head.authority.view()) {panic("httpconn: a request needs an authority, written as Host, without spaces", file, line);}
+  if !isVisible(head.target.view()) {panic("httpconn: the request's target is empty or holds a space or a control character", file, line);}
+  if !isVisible(head.authority.view()) {panic("httpconn: a request needs an authority, written as Host, without spaces", file, line);}
   if head.headers.has("Host") {panic("httpconn: Host is written from the head's authority, not its fields", file, line);}
-  if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+  if head.headers.has("Content-Length") || head.headers.has("Transfer-Encoding") {
     panic("httpconn: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
   }
 }
 
-fn isVisible(s &Array[u8]) bool {
+fn isVisible(s: &Array[u8]) bool {
   if s.len == 0usize {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len {
-    if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
+    if s[i] <= 0x20u8 || s[i] >= 0x7Fu8 {return false;}
     i = i + 1usize;
   }
-  true;
+  true
 }

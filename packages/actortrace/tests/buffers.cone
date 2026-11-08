@@ -1,0 +1,90 @@
+// Way B, a buffer for each worker moved whole to the logger: the same ring and
+// token as the logger test, with 3 workers, traced at high. Every record is in
+// the file (the buffers are far from full: they are written at finish()), the
+// reader matches every run to its send, the causes chain, and no record is
+// dropped. A second part fills the buffers on purpose (forceFull: every
+// buffer full, no spare) and records 50 more events, which are all dropped
+// and counted.
+
+mod buffers;
+
+import testing use *;
+import libc;
+import actors;
+import actortrace;
+
+actor Node {
+  next: Option[Node];
+
+  fn init(self: &new) {
+    *self = Self(None[Node]);
+  }
+
+  pub async fn link(self, n: Node) {
+    next = Some[Node](n);
+  }
+
+  pub async fn token(self, hops: u64) {
+    if hops > 0u64 {
+      match next {
+        case let Some(p) {p.token(hops - 1u64);}
+        case is None[Node] {}
+      }
+    }
+  }
+
+  pub async fn unlink(self) {
+    next = None;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 3u32));
+  let path = cstr.fromLiteral("actortrace_buffers_test.trc");
+  expect(actortrace.start(actortrace.methodBuffers, path, actortrace.Options(spare: 4u32)), "the file is created");
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+  {
+    let a = Node();
+    let b = Node();
+    let c = Node();
+    a.link(b);
+    b.link(c);
+    c.link(a);
+    a.token(200u64);
+    actors.waitUntilIdle();
+    a.unlink();
+    b.unlink();
+    c.unlink();
+    actors.waitUntilIdle();
+    actortrace.forceFull();
+    var i = 0u64;
+    while i < 50u64 {
+      a.token(0u64);
+      i = i + 1u64;
+    }
+  }
+  actors.waitUntilIdle();
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  let t = actortrace.finish();
+  expectUInt(t.events, 3u64 * 257u64, "three events for each of the 207 + 50 messages");
+  expectUInt(t.records, 3u64 * 207u64, "the first 207 messages' events written");
+  expectUInt(t.dropped, 3u64 * 50u64, "the 50 after forceFull dropped, all their events");
+  expectUInt(t.bytes, 32u64 * 3u64 * 207u64 + 288u64, "the file: a header and 32 bytes a record");
+
+  var size = 0usize;
+  let p = actortrace.loadFile(path, &mut size);
+  require(p as usize != 0usize, "the file reads back");
+  let s = actortrace.summarize(p, size, false, true);
+  expect(s.ok, "it is a trace file");
+  expectUInt(s.sends, 207u64, "207 sends");
+  expectUInt(s.runs, 207u64, "207 run starts");
+  expectUInt(s.ends, 207u64, "207 run ends");
+  expectUInt(s.unmatched, 0u64, "every run has its send");
+  expectUInt(s.rootSends, 7u64, "the sends main made have no cause");
+  expectUInt(s.badParents, 0u64, "every other send names a message that ran");
+  libc.free(p);
+  libc.remove(path);
+  finalAll();
+  done()
+}

@@ -1,0 +1,133 @@
+// 'encoder.blitTexture' on a real GPU with no window: a box of one texture
+// scaled into all of another, with the channels carried across formats (the
+// way a headset's RGBA eye image is put into a window's BGRA swapchain). Only a
+// failure prints.
+//
+// The source is a 4 x 4 rgba8unorm texture, written with 'queue.writeTexture',
+// whose texel (x, y) is (x * 50 + 10, y * 50 + 10, 200, 255). The destination is
+// a 2 x 2 bgra8unorm texture, so a texel is held as bytes blue, green, red,
+// alpha.
+//
+// 1. The 2 x 2 box at (1, 1) into the 2 x 2 destination: one texel to one, so
+//    exactly: the destination's texel (i, j) is the source's (1 + i, 1 + j),
+//    its bytes in the destination's order (200, y, x, 255). Were the box's
+//    corner ignored, the texels would be (0, 0) and the rest; were the
+//    channels copied as bytes, red and blue would be swapped.
+// 2. The whole source into the same destination: each destination texel is the
+//    mean of a 2 x 2 block of the source, as linear filtering at half size
+//    gives: red 35 or 135 by column, green 35 or 135 by row, blue 200; each is
+//    checked to 2.
+// 3. The source is left as it was (its layout is the one it rests in): the blit
+//    of the box again gives the same bytes as the first.
+// 4. No Vulkan call failed and the validation layer, where installed, said
+//    nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan); no
+// window, no display of its own, and no Vulkan SDK (with it, validation and
+// synchronization validation are on, and must say nothing).
+
+mod blit;
+
+import testing use *;
+import gpu use *;
+
+// The texel (x, y) of the source, as rgba bytes
+fn sourceByte(x: usize, y: usize, c: usize) u8 {
+  if c == 0usize { return u8.from(x * 50usize + 10usize); }
+  if c == 1usize { return u8.from(y * 50usize + 10usize); }
+  if c == 2usize { return 200u8; }
+  255u8
+}
+
+// A destination byte of texel (i, j), as the destination holds it: blue, green, red, alpha
+fn destByte(p: *u8, i: usize, j: usize, c: usize) i64 { i64.from(*(p + (j * 2usize + i) * 4usize + c)) }
+
+fn near(got: i64, want: i64, slack: i64) bool { got >= want - slack && got <= want + slack }
+
+// Blit the box (x, y, w, h) of 'source' into 'destination' and read the destination back
+fn blitAndRead(device: &mut Device, source: &Texture, x: u32, y: u32, w: u32, h: u32, destination: &Texture, readback: &Buffer) {
+  var encoder = device.createCommandEncoder();
+  encoder.blitTexture(source, x, y, w, h, destination);
+  encoder.copyTextureToBuffer(destination, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn main() i32 {
+  var instance = Instance.create("blit");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  let sourceDesc = TextureDescriptor(4u32, 4u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST | TEXTURE_USAGE_COPY_SRC);
+  var source = device.createTexture(&sourceDesc);
+  let destDesc = TextureDescriptor(2u32, 2u32, TEXTURE_FORMAT_BGRA8_UNORM,
+    TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST | TEXTURE_USAGE_COPY_SRC);
+  var destination = device.createTexture(&destDesc);
+  require(source.isValid() && destination.isValid(), "a source and a destination texture");
+  var readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
+  require((p as usize) != 0usize, "the readback is mapped");
+
+  // The source's texels
+  var texels = Array[u8, 64]() <- fill 0u8;
+  var y = 0usize;
+  while y < 4usize {
+    var x = 0usize;
+    while x < 4usize {
+      var c = 0usize;
+      while c < 4usize {
+        texels[(y * 4usize + x) * 4usize + c] = sourceByte(x, y, c);
+        c = c + 1usize;
+      }
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  device.queue.writeTexture(&source, &texels as *u8, 16u32);
+
+  // ---- 1. A box, one texel to one ----
+  blitAndRead(&mut device, &source, 1u32, 1u32, 2u32, 2u32, &destination, &readback);
+  var j = 0usize;
+  while j < 2usize {
+    var i = 0usize;
+    while i < 2usize {
+      let x = i + 1usize;
+      let yy = j + 1usize;
+      expectInt(destByte(p, i, j, 0usize), 200i64, "the box: blue is the source's blue");
+      expectInt(destByte(p, i, j, 1usize), i64.from(sourceByte(x, yy, 1usize)), "the box: green is the source's green, by its row");
+      expectInt(destByte(p, i, j, 2usize), i64.from(sourceByte(x, yy, 0usize)), "the box: red is the source's red, by its column");
+      expectInt(destByte(p, i, j, 3usize), 255i64, "the box: alpha");
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+
+  // ---- 2. The whole source, halved ----
+  blitAndRead(&mut device, &source, 0u32, 0u32, 4u32, 4u32, &destination, &readback);
+  j = 0usize;
+  while j < 2usize {
+    var i = 0usize;
+    while i < 2usize {
+      expect(near(destByte(p, i, j, 2usize), if i == 0usize { 35i64 } else { 135i64 }, 2i64), "halved: red is the mean of its block's columns");
+      expect(near(destByte(p, i, j, 1usize), if j == 0usize { 35i64 } else { 135i64 }, 2i64), "halved: green is the mean of its block's rows");
+      expect(near(destByte(p, i, j, 0usize), 200i64, 2i64), "halved: blue");
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+
+  // ---- 3. The source as it was ----
+  blitAndRead(&mut device, &source, 1u32, 1u32, 2u32, 2u32, &destination, &readback);
+  expectInt(destByte(p, 0usize, 0usize, 2usize), 60i64, "again: the source is unchanged (red of texel (1, 1))");
+  expectInt(destByte(p, 1usize, 1usize, 1usize), 110i64, "again: and green of texel (2, 2)");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}

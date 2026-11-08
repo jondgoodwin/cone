@@ -1,0 +1,139 @@
+// The neighbours move_undef_unvalued must not refuse, and what '= undef' drops:
+// a variable declared '= undef' is dropped at its scope's end only when it was
+// given a value, once, and its first assignment releases no earlier value. A
+// counting 'final' prints each drop, so a drop of a never-written value (a
+// 'final' run on garbage, a free of a garbage pointer) would show.
+
+mod move_undef_unvalued_ok;
+
+import stdio use *;
+
+struct Noisy {
+  pub n: i64;
+  fn final(self: &uni) { printStr("  final "); printInt(n); printStr("\n"); }
+}
+
+struct Counter {
+  pub n: i64;
+  pub fn bump(self: &mut) { n = n + 1; }
+}
+
+enum Dir {
+  Up, Down
+}
+
+fn say(s: &str) { printStr(s); printStr("\n"); }
+
+// Never given a value: nothing is dropped, not even for an owner
+fn neverGiven() {
+  var s: Noisy = undef;
+  var b: Uni[Noisy] = undef;
+  say("never given: scope ends");
+}
+
+// Given a value once: dropped once, at the scope's end, and the first assignment
+// released nothing before it
+fn givenOnce() {
+  var s: Noisy = undef;
+  s = Noisy(7);
+  say("given once: assigned");
+}
+
+// Given a value, then another: the first is dropped at the second's assignment
+fn givenTwice() {
+  var s: Noisy = undef;
+  s = Noisy(1);
+  s = Noisy(2);
+  say("given twice: assigned");
+}
+
+// Given an owner once
+fn ownerGiven() {
+  var b: Uni[Noisy] = undef;
+  b = Uni[Noisy](Noisy(5));
+  say("owner: assigned");
+}
+
+// Given a value in both arms of an 'if', then read and borrowed
+fn bothArms(k: bool) i64 {
+  var c: Counter = undef;
+  if k { c = Counter(1); } else { c = Counter(2); }
+  c.bump();
+  c.n
+}
+
+// Given a value in every arm of a 'match'
+fn everyArm(d: Dir) i64 {
+  var n: i64 = undef;
+  match d {
+    case is Up { n = 10; }
+    case is Down { n = 20; }
+  }
+  n
+}
+
+// Given a value in one arm where the other returns
+fn oneArmReturns(k: bool) i64 {
+  var n: i64 = undef;
+  if k { n = 3; } else { return 4; }
+  n
+}
+
+// Given a value in an arm only: dropped only where the arm ran
+fn oneArmOnly(k: bool) {
+  var s: Noisy = undef;
+  if k { s = Noisy(9); }
+  say("one arm only: scope ends");
+}
+
+// Given a value before a loop that reads it
+fn beforeLoop() i64 {
+  var n: i64 = undef;
+  n = 0;
+  var i = 0;
+  while i < 3 {
+    n = n + i + 1;
+    i = i + 1;
+  }
+  n
+}
+
+// Given a value in each pass of a loop before it is read: each pass's value is
+// dropped at the end of the pass that made it
+fn eachPass() {
+  var i = 0;
+  while i < 2 {
+    var s: Noisy = undef;
+    s = Noisy(100 + i);
+    say("each pass: assigned");
+    i = i + 1;
+  }
+}
+
+// Filled through a borrow after a value is given
+fn fillAfter() i64 {
+  var c: Counter = undef;
+  c = Counter(0);
+  let r = &mut c;
+  r.bump();
+  c.n
+}
+
+fn main() i32 {
+  neverGiven();
+  givenOnce();
+  givenTwice();
+  ownerGiven();
+  printInt(bothArms(true)); printStr("\n");
+  printInt(bothArms(false)); printStr("\n");
+  printInt(everyArm(Dir.Up)); printStr("\n");
+  printInt(everyArm(Dir.Down)); printStr("\n");
+  printInt(oneArmReturns(true)); printStr("\n");
+  printInt(oneArmReturns(false)); printStr("\n");
+  oneArmOnly(true);
+  oneArmOnly(false);
+  printInt(beforeLoop()); printStr("\n");
+  eachPass();
+  printInt(fillAfter()); printStr("\n");
+  0
+}

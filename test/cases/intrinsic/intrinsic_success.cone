@@ -19,20 +19,20 @@ mod intrinsic_success;
 
 import stdio use *;
 
-fn show(label &str, n usize) {
+fn show(label: &str, n: usize) {
   printStr(label);
   printInt(i64.from(n));
   printStr("\n");
 }
 
-fn yes(label &str, b bool) {
+fn yes(label: &str, b: bool) {
   printStr(label);
   if b {printStr(" yes\n");} else {printStr(" no\n");}
 }
 
-fn showAll(label &str, p *i64, n usize) {
+fn showAll(label: &str, p: *i64, n: usize) {
   printStr(label);
-  mut i = 0usize;
+  var i = 0usize;
   while i < n {
     printStr(" ");
     printInt(*(p + i));
@@ -42,19 +42,19 @@ fn showAll(label &str, p *i64, n usize) {
 }
 
 struct Fin {
-  pub v i32;
-  fn final(self &uni) { printStr("final "); printInt(i64.from(v)); printStr("\n"); }
+  pub v: i32;
+  fn final(self: &uni) { printStr("final "); printInt(i64.from(v)); printStr("\n"); }
 }
 
 struct Pad {
-  pub a u8;
-  pub b i64;
-  pub c u8;
+  pub a: u8;
+  pub b: i64;
+  pub c: u8;
 }
 
 struct Pair {
-  pub a u8;
-  pub b u16;
+  pub a: u8;
+  pub b: u16;
 }
 
 struct Empty {
@@ -62,20 +62,20 @@ struct Empty {
 
 // No final of its own: its finalizing field gives it a drop
 struct Plain {
-  pub f Fin;
+  pub f: Fin;
 }
 
 // No final and no finalizing field, but an owner to release
 struct Owns {
-  pub r So[Pad];
+  pub r: Uni[Pad];
 }
 
 // Its own final, a finalizing field and an owning field
 struct Holder {
-  pub f Fin;
-  pub r So[Fin];
-  pub n i32;
-  fn final(self &uni) { printStr("holder final "); printInt(i64.from(n)); printStr("\n"); }
+  pub f: Fin;
+  pub r: Uni[Fin];
+  pub n: i32;
+  fn final(self: &uni) { printStr("holder final "); printInt(i64.from(n)); printStr("\n"); }
 }
 
 fn sizes() {
@@ -88,7 +88,7 @@ fn sizes() {
   show("sizeof Empty ", mem.sizeof[Empty]());
   show("sizeof *u8 ", mem.sizeof[*u8]());
   show("sizeof &Array[u8] ", mem.sizeof[&Array[u8]]());
-  show("sizeof So[Fin] ", mem.sizeof[So[Fin]]());
+  show("sizeof Uni[Fin] ", mem.sizeof[Uni[Fin]]());
   show("alignof u8 ", mem.alignof[u8]());
   show("alignof i64 ", mem.alignof[i64]());
   show("alignof Pad ", mem.alignof[Pad]());
@@ -108,106 +108,108 @@ fn needs() {
   yes("Plain", mem.needsFinal[Plain]());
   yes("Owns", mem.needsFinal[Owns]());
   yes("Holder", mem.needsFinal[Holder]());
-  yes("So[Fin]", mem.needsFinal[So[Fin]]());
+  yes("Uni[Fin]", mem.needsFinal[Uni[Fin]]());
 }
 
 fn finals() {
   printStr("-- finalize a value with a final\n");
-  imm p = malloc(mem.sizeof[Fin]()) as *Fin;
-  mem.writeRaw[Fin](p, new Fin(1i32));
+  let p = malloc(mem.sizeof[Fin]()) as *Fin;
+  mem.writeRaw[Fin](p, Fin(1i32));
   mem.finalize[Fin](p);
 
   printStr("-- finalize its own final, a finalizing field, an owning field\n");
-  imm h = malloc(mem.sizeof[Holder]()) as *Holder;
-  mem.writeRaw[Holder](h, new Holder(new Fin(2i32), new So[Fin](3i32), 4i32));
+  let h = malloc(mem.sizeof[Holder]()) as *Holder;
+  mem.writeRaw[Holder](h, Holder(Fin(2i32), Uni[Fin](3i32), 4i32));
   mem.finalize[Holder](h);
 
   printStr("-- finalize a drop with no final of its own\n");
-  imm q = malloc(mem.sizeof[Plain]()) as *Plain;
-  mem.writeRaw[Plain](q, new Plain(new Fin(5i32)));
+  let q = malloc(mem.sizeof[Plain]()) as *Plain;
+  mem.writeRaw[Plain](q, Plain(Fin(5i32)));
   mem.finalize[Plain](q);
 
   printStr("-- finalize an owning reference: its value dies\n");
-  imm r = malloc(mem.sizeof[So[Fin]]()) as *(So[Fin]);
-  mem.writeRaw[So[Fin]](r, new So[Fin](6i32));
-  mem.finalize[So[Fin]](r);
+  let r = malloc(mem.sizeof[Uni[Fin]]()) as *(Uni[Fin]);
+  mem.writeRaw[Uni[Fin]](r, Uni[Fin](6i32));
+  mem.finalize[Uni[Fin]](r);
 
   printStr("-- finalize one of two Rc owners: nothing dies yet\n");
   {
-    imm a = new Rc[imm, Fin](7i32);
-    imm c = malloc(mem.sizeof[Rc[imm, Fin]]()) as *(Rc[imm, Fin]);
+    let a = Rc[imm, Fin](7i32);
+    let c = malloc(mem.sizeof[Rc[imm, Fin]]()) as *(Rc[imm, Fin]);
     mem.writeRaw[Rc[imm, Fin]](c, a);
     mem.finalize[Rc[imm, Fin]](c);
     printStr("the other owner is still here\n");
+    // 'a' is read again, so 'writeRaw(c, a)' is a copy: the last read of a counted local is a move
+    let again = &a;
   }
 
   printStr("-- finalize a type with nothing to finalize\n");
-  imm z = malloc(mem.sizeof[Pad]()) as *Pad;
-  mem.writeRaw[Pad](z, new Pad(1u8, 2i64, 3u8));
+  let z = malloc(mem.sizeof[Pad]()) as *Pad;
+  mem.writeRaw[Pad](z, Pad(1u8, 2i64, 3u8));
   mem.finalize[Pad](z);
   printStr("nothing happened\n");
 }
 
 fn slices() {
   printStr("-- sliceFromParts\n");
-  imm p = malloc(mem.sizeof[i64]() * 4usize) as *i64;
+  let p = malloc(mem.sizeof[i64]() * 4usize) as *i64;
   mem.writeRaw[i64](p, 10i64);
   mem.writeRaw[i64](p + 1usize, 20i64);
   mem.writeRaw[i64](p + 2usize, 30i64);
   mem.writeRaw[i64](p + 3usize, 40i64);
-  imm s = mem.sliceFromParts[i64](p, 4usize);
+  let s = mem.sliceFromParts[i64](p, 4usize);
   show("len ", s.len);
   printStr("third ");
   printInt(s[2]);
   printStr("\n");
-  imm empty = mem.sliceFromParts[i64](p, 0usize);
+  let empty = mem.sliceFromParts[i64](p, 0usize);
   show("empty len ", empty.len);
 
   printStr("-- sliceFromPartsMut writes through\n");
-  imm m = mem.sliceFromPartsMut[i64](p, 4usize);
+  let m = mem.sliceFromPartsMut[i64](p, 4usize);
   m[1] = 25i64;
   showAll("block", p, 4usize);
 
   printStr("-- sliceFromPartsUni writes through\n");
-  imm u = mem.sliceFromPartsUni[i64](p, 4usize);
+  let u = mem.sliceFromPartsUni[i64](p, 4usize);
   u[2] = 35i64;
   showAll("block", p, 4usize);
 }
 
 fn raws() {
   printStr("-- writeRaw over a live value finalizes nothing\n");
-  imm p = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
-  mem.writeRaw[Fin](p, new Fin(21i32));
-  mem.writeRaw[Fin](p, new Fin(22i32));
+  let p = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  mem.writeRaw[Fin](p, Fin(21i32));
+  mem.writeRaw[Fin](p, Fin(22i32));
   printStr("written twice\n");
 
   printStr("-- a local written raw is moved, not finalized at its scope's end\n");
   {
-    imm held = new Fin(23i32);
+    let held = Fin(23i32);
     mem.writeRaw[Fin](p + 1usize, held);
     printStr("scope ends\n");
   }
 
   printStr("-- readRaw moves each out, and the pointer stays usable\n");
   {
-    imm first = mem.readRaw[Fin](p);
-    imm second = mem.readRaw[Fin](p + 1usize);
+    let first = mem.readRaw[Fin](p);
+    let second = mem.readRaw[Fin](p + 1usize);
     printInt(i64.from(first.v + second.v));
     printStr("\n");
   }
 
   printStr("-- writeRaw into uninitialized memory releases nothing there\n");
-  imm r = malloc(mem.sizeof[So[Fin]]()) as *(So[Fin]);
-  mem.writeRaw[So[Fin]](r, new So[Fin](24i32));
-  imm back = mem.readRaw[So[Fin]](r);
+  let r = malloc(mem.sizeof[Uni[Fin]]()) as *(Uni[Fin]);
+  mem.writeRaw[Uni[Fin]](r, Uni[Fin](24i32));
+  let back = mem.readRaw[Uni[Fin]](r);
   printInt(i64.from(back.v));
   printStr("\n");
 }
 
 fn moves() {
   printStr("-- moveRaw\n");
-  imm p = malloc(mem.sizeof[i64]() * 5usize) as *i64;
-  mut i = 0usize;
+  let p = malloc(mem.sizeof[i64]() * 5usize) as *i64;
+  var i = 0usize;
   while i < 5usize {
     mem.writeRaw[i64](p + i, i64.from(i) + 1i64);
     i = i + 1usize;
@@ -221,21 +223,35 @@ fn moves() {
   showAll("none moved", p, 5usize);
 
   printStr("-- moveRaw finalizes nothing, and each value dies once\n");
-  imm a = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
-  imm b = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
-  mem.writeRaw[Fin](a, new Fin(31i32));
-  mem.writeRaw[Fin](a + 1usize, new Fin(32i32));
+  let a = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  let b = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  mem.writeRaw[Fin](a, Fin(31i32));
+  mem.writeRaw[Fin](a + 1usize, Fin(32i32));
   mem.moveRaw[Fin](b, a, 2usize);
   printStr("moved\n");
   mem.finalize[Fin](b);
   mem.finalize[Fin](b + 1usize);
+
+  printStr("-- moveRawInto moves as moveRaw does\n");
+  let q = malloc(mem.sizeof[i64]() * 3usize) as *i64;
+  mem.moveRawInto[i64](q, p + 1usize, 3usize);
+  showAll("into", q, 3usize);
+  mem.moveRawInto[i64](q, p, 0usize);
+  showAll("none moved", q, 3usize);
+  let c = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  mem.writeRaw[Fin](a, Fin(41i32));
+  mem.writeRaw[Fin](a + 1usize, Fin(42i32));
+  mem.moveRawInto[Fin](c, a, 2usize);
+  printStr("moved into\n");
+  mem.finalize[Fin](c);
+  mem.finalize[Fin](c + 1usize);
 }
 
 // The intrinsics' own names are this module's to use: core folds only 'mem'
 // into it, not each intrinsic in it
-fn sizeof(label &str) usize {
+fn sizeof(label: &str) usize {
   printStr(label);
-  3usize;
+  3usize
 }
 fn finalize() {
   printStr("my own finalize\n");

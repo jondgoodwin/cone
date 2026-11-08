@@ -113,6 +113,30 @@ struct enrichment wears for the same mistake. One question — is this
 relationship declared correctly — with the cause in the
 message.
 
+`ErrorMove` (1048) is a variable used where it holds no value, whatever the cause
+and the use: its value moved out, or never given on every path (a loop's earlier
+pass included), met by a read, a move, or a borrow — `&c`, `&mut c`, a method's
+receiver, a borrow of a field of it — and a field or an element stored into a
+variable that holds no value on every path, or whose whole value was moved out
+on some. The remedy is one edit, to give the
+variable its whole value first; the message says which use and whether it is
+every path or some ("has not been initialized", "may not have been given a
+value", "stored only into a variable that holds a value", "not stored into a
+variable whose value has been moved out", "moved out").
+A method cannot fill in a variable it borrows before it holds a value.
+
+`ErrorMoveRawPtr` is a value that finalizes or owns moved out through a raw pointer, which owns
+nothing: `*p` handed back, bound, passed or built in, an element `p[i]`, what a `*Uni[T]` points
+at, and a field list `(*p).(a)`, which moves `*p` whole. Whatever holds the place still finalizes
+it, so the value would be finalized twice. It is not `ErrorMoveOut`, the move through a borrowed
+or a shared owning reference, because the remedy differs: the message names `mem.readRaw(p)`, which
+moves the value out and leaves the place holding nothing, the caller's promise. Reported by flow
+(`flowRefuseMoveThrough`) at the dereference or the index; a field reached through the pointer,
+`(*p).d`, is `ErrorMoveField` first, as any field is. The body of an `@intrinsic` function, which
+only core declares, is not refused: `readRaw`'s fallback is `{*p}`. A copy read through `*p` never
+is. Reading one place twice with `readRaw`, and what a raw pointer may point at in general, are not
+checked: they belong to `trust`, which is not built.
+
 `ErrorTypeVariant` is a variant declared as a type (`Ok(i32);`) used where it has
 nothing to give: written in an enum that has fields in common, whose variants all
 name what they hold (parse), or bound through a reference into a managed value, whose
@@ -122,6 +146,85 @@ what to write.
 `ErrorPatManaged` is a match pattern written as a managed reference, `+Rc-mut
 Circle`: a pattern names only the variant, and the matched value supplies the
 reference, its region and its permission (parse).
+
+`ErrorDclWord` is `imm` or `mut` where a declaration's word belongs (parse): a
+declaration starts with `let` or `var`, and the two are the permissions of a
+reference. One code for every position that takes the word -- a global, a field, a
+static, a parameter, `self`, a closure's parameter and its state entry, a local,
+the binding of an `if` or a `case` -- because the remedy is the same edit, and the
+message names the word that replaces the one written. The old word is read as that
+replacement, so the declaration parses and checks as it would have and nothing
+after it is reported twice. A permission that is neither (`ro`, `uni`, `opaq`,
+`mut1`) stays `ErrorInvType`, and `let` or `var` where a name belongs is
+`ErrorNoName` on a function and `ErrorNoIdent` on a variable.
+
+`ErrorTailSemi` and `ErrorTailOpen` are the two ways a block's last line, an expression, can
+have the wrong end (parse). A `;` delimits statements, so a block that ends in one ends in an
+empty statement, which has no value: the `;` is left off where the block's value is used and
+kept everywhere else. `ErrorTailSemi` is a `;` where the value is used (after an expression, or
+after an `if`, `match`, loop or block, which delimit themselves but are followed by an empty
+statement all the same) and is pointed at the `;` to remove; `ErrorTailOpen` is no `;` where it is not used and is pointed at
+the line. Neither looks at the type of the line, so a line that gives no value is refused with
+the same code. They are the parser's, one code each for every kind of block (a function's body, an `if` or `match`
+arm, a block that is an operand, a macro, a loop's `else`, a loop's body), and a closure that
+is given its type, which type check judges (`closureContextTail`).
+
+`ErrorRadixDigit` and `ErrorRadixFloat` are the two ways a binary (`0b`) or octal (`0o`)
+literal can be malformed (lexer). `ErrorRadixDigit` is no digit after the prefix (`0b`, `0o`,
+`0b_`), pointed at the prefix's letter, or a digit the radix does not have (`0b2`, `0o8`),
+pointed at that digit. `ErrorRadixFloat` is a fraction, an exponent or a float suffix on
+such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`, or the
+`f`: the literal is a whole number. Each literal is reported once, and a reported one is
+read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
+these rules (`0x` is read as 0).
+
+The three pattern-binding codes are the shape of a name bound inside a variant, after the `let` or
+`var` that is in front of the whole pattern, `case let Some(n)` (`parseBindVarDcl`).
+`ErrorPatBindCount` is a variant whose parentheses hold no name or several (`Some()`,
+`Response(head, body)`): a variant takes exactly one name and is never read by position.
+`ErrorPatBindNested` is anything else in the parentheses (`Some(Ok(x))`, `Some(3)`,
+`Wrapper(f(x))`): patterns do not nest, and a value does not go in them. `ErrorPatBindForm` is a
+binding that is neither a variant with its name inside nor a function's pattern: a name written
+before the variant, a variant with no parentheses, an `=` or an `else` missing from a binding
+that needs one, or a declaration of a name followed by `else`. Without the `let` or `var`, a call
+shaped pattern is a value compared by equality and none of these applies.
+
+`ErrorRangeBare` is a range written with a bare `..` before an end, in an index (`a..b`, `..b`),
+a case pattern or an `each` (`case 'a' .. 'z'`, `each i in 0 .. n`). A bare `..` does not
+say whether the end is in the range, so it is refused with the two spellings that do: `..=`
+includes the end and `..<` stops before it. Pointed at the `..`, and read on as `..=` so the rest
+of the range is checked. It is not reported where no end follows (`s[a..]` runs to the end, `s[..]` is the whole): there is no end to include or leave out.
+
+`ErrorTargetCount` is two or more targets given a number of values that is not theirs, in a
+declaration (`let q, r = f();`) or an assignment (`a, b = 1, 2, 3`), more or fewer, from a
+call or from a list. Each target takes exactly one value; a target for a value the code does not
+want is `_`. `ErrorOneTarget` is one target that is not a tuple given a list of values (`x = 1,
+2, 3` for an `i32` `x`): a single target takes the whole of what it is given. `ErrorDestructForm`
+is a declaration of several names that is not `let a, b = values;`: no `=` after the names, or a
+type written on `_`, which takes a value and drops it. The values are type checked all the same.
+
+`ErrorNewNotRegion` is `new` written before a type, `new Point(1, 2)`, `new List[i32]()`, `new
+Rc[mut, Node](1)`. A construction is a type's name with parentheses, whatever region it is
+allocated in; `new` is written only before a dynamic region, a region whose state is a value,
+`new a[Node](1)` (a variable or a path of fields followed by brackets, which
+`typeLitNewNamesRegionValue` tells from a type once names are resolved). Reported by name
+resolution (`fnCallConstructNameRes`), once, at the `new`, so a program refused for it is
+checked no further; the word is taken as not written, and the construction goes on as the
+call of the type it is. `trynew` is not refused.
+
+The five field-list codes are about `x.(a, b)`, which names the fields of a struct, or the
+numbered elements of a tuple, `t.(0, 2)` ([destruct](../nodes/destruct.md)). `ErrorFldListForm`
+is a list that holds something that is no name or number (the parser: `x.()`, `x.(a + 1)`,
+`x.(f(1))`), mixes names and numbers, or names a tuple's element or numbers a struct's field
+(type check). `ErrorFldListDup` is a field named twice. `ErrorFldListUnknown` is a name the
+struct has not (the message lists its fields), a field it holds only through another by a `use`
+fold, or a tuple element past the end. `ErrorFldListFinal` is a struct, or a variant whose enum,
+declaring a `final`: its finalizer needs the whole value, so it is not taken apart, whether the
+list is written in the type's module or outside it. `ErrorFldListType` is a list on a value with
+no fields, a number, an array or a function; a generic's body is checked for the type it is
+made for, so a type parameter instantiated with one is refused here. A private field named
+outside its module is `ErrorNotPublic`, as for any field, and a move-type field taken through a
+borrow is `ErrorMoveField`, as `x.a` gives it.
 
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
@@ -141,7 +244,7 @@ whose function gives an Option). A binding in a column of `match a, b` is still 
 
 `ErrorRegionMark`, `ErrorRegionNew` and `ErrorRegionHead` are about a type's memory region. A
 type declaring `CarriesRegion` that declares no init, or an init whose last parameter is not
-`region *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,
+`region: *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,
 `new a[T](...)`, written with a `trynew`, a permission other than `mut`, a permission and
 no type, or more than a permission and a type in its brackets is `ErrorRegionNew` (type
 check). One whose head `a` is a value that is not a region (a struct whose first field is a
@@ -152,12 +255,12 @@ a region value, as an actor's state has) is `ErrorRegionHead`.
 declaring `ActorLocal` that is not a traced region ref is `ErrorActorLocalUse`
 (`regionActorLocalUseCheck`). An allocation in an actor-local region from the body of a
 `parallel each` (a call of the actor's `allocRegion`, which `new self[T]` is, or a direct
-`new ActorGc[...]`) is `ErrorActorGcPiece` (`gcPieceVisit`, from the loop's body check and
+`ActorGc[...]()`) is `ErrorActorGcPiece` (`gcPieceVisit`, from the loop's body check and
 again from `actorCheckAll`).
 
 `ErrorGcTraceElementsShape`, `ErrorTraceRoot` and `ErrorTraceKey` are about what a collector
 can reach. A type declaring `GcTraceElements` whose `gcTraceElements` is not `fn
-gcTraceElements(self &mut) I`, `I` a cursor declaring `is Iterator[&mut E]` with `E` a sized
+gcTraceElements(self: &mut) I`, `I` a cursor declaring `is Iterator[&mut E]` with `E` a sized
 type, is `ErrorGcTraceElementsShape` (type check). A local, a parameter, or a value of a traced
 region, whose type needs tracing and cannot be traced (it holds a raw pointer to a value that
 needs tracing, with no `GcTraceElements`, or an owner a trace cannot pass through) is
@@ -189,7 +292,11 @@ type's method) or on what is not a function or global; the remedy is to write
 the body, or the declaration, without it. A `@c` that is well formed and says
 nothing — a bare one on a function its C-named module already names — is kept
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
-that the module already said it.
+that the module already said it. A `@c` whose final name is well formed as a
+string but is LLVM's name for an intrinsic (it begins `llvm.`) is
+`ErrorLlvmName`: not a malformed marker, so not `ErrorCAttr`, and the remedy is
+a different name. It is judged on the final name, so a module's prefix `llvm.`
+is reported at each declaration it would give such a name, saying the name built.
 
 One C name declared by two declarations of one compile is one symbol, and what
 can be wrong with that takes two codes, because the remedies differ.
@@ -230,7 +337,7 @@ the others, so it wears this code, and `ErrorModExtends` keeps what an
 shape Congo's has for the same loop, so a direct `conec` run and a Congo build
 say one thing.
 
-A module's `init` and `final` take two codes, split where the remedy is.
+A module's `init` and `final` take three codes, split where the remedy is.
 `ErrorModLifecycle` is a declaration under either name that is not the one the
 program's stitched init and final call — `fn @initpure init()` or
 `fn final()`: one taking parameters, returning a value, generic, `inline` or
@@ -244,17 +351,23 @@ declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
 give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
-second assignment of an `imm` one `ErrorNoMut`.
+second assignment of a `let` one `ErrorNoMut`. `ErrorLifecycleNamed` is a use of
+either function in an expression — a call, a borrow (`&extra.final`), the bare name
+inside its own module, or a path from any module — whether it is `pub` or not: the
+program runs each once, so the remedy is to delete the use, and no visibility
+makes it right (`ErrorNotPublic` would send the author to make it `pub`).
+It is pointed at the name (`nameUseLifecycleNamed`). A fold naming one — a list
+item, or a `but` after a star, which passes both over unasked — is `ErrorBadFold`,
+as it is for `final` and `clone`.
 
 A generic module takes three codes, split where the remedy is.
 `ErrorGenModBare` is the generic named without type arguments where only an
 instance has members — a path through it, a standalone `use`, an import's `use`
 clause, `extends`, a default fold on its own `mod` line; the remedy is to name
 an instance, `stack[i64].push`, or to stop folding. `ErrorGenModBody` is what a
-generic module holds that an instance is not yet built for — a generic function
-or type, a trait or an enum, a macro, a module trait, a global's `use` clause,
-a submodule; the remedy is in the generic module, and the code retires piece
-by piece as the clone learns each. `ErrorGenModRoot` is an executable's root
+generic module holds that an instance is not yet built for — a module trait, a
+generic submodule; the remedy is in the generic module, and the code retires piece by
+piece as the clone learns each. `ErrorGenModRoot` is an executable's root
 declared generic; the remedy is to move the generic module under a root. What an
 instance is given that is not a type, or the wrong number of arguments, wears
 `ErrorNotType` and `ErrorArgCount`, as for a generic type, and a member an
@@ -274,22 +387,23 @@ declaration the module already has, or one a file may not make.
 
 A thread-local global takes four codes, one per rule, since each remedy is a
 different edit. `ErrorThreadLocalPlace` is `@threadlocal` anywhere but after a
-module global's permission — on a local, a function's or a type's static, a
+module global's `let` or `var` — on a local, a function's or a type's static, a
 parameter, a field, a module trait's global, after `fn` or a type's keyword, or
-before the permission — one code for every position, because the remedy is the
-same for each: drop it, or move it to a global at module scope, after `mut`.
-`ErrorThreadLocalImm` is one on an `imm` global, where a copy per thread of a
-value no thread changes buys nothing; the remedy is `mut`, or no attribute.
+before the `let` or `var` — one code for every position, because the remedy is the
+same for each: drop it, or move it to a global at module scope, after `var`.
+`ErrorThreadLocalImm` is one on a `let` global, where a copy per thread of a
+value no thread changes buys nothing; the remedy is `var`, or no attribute.
 `ErrorThreadLocalInit` is one with no initial value and not `extern`, which a
 module's `init` would assign on its own thread alone; the remedy is a literal
 value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
 nothing yet finalizes a thread's copy as its thread ends. An initial value that
-is not a literal wears `ErrorNotLit`, as on any global.
+is not a literal wears `ErrorNotLit`, as on any global (a `let` global of a Cone-named module is the exception: its
+other values are setups, `ErrorSetupCycle`).
 
 A `@workgroup` global takes four codes on the same plan. `ErrorWorkgroupPlace`
 is `@workgroup` anywhere `@threadlocal` would be misplaced, and also beside
 `@threadlocal`, since a global has one storage; `ErrorWorkgroupImm` is one on
-an `imm` global, which nothing would ever write; `ErrorWorkgroupInit` is one
+a `let` global, which nothing would ever write; `ErrorWorkgroupInit` is one
 with an initial value, zero among them, since a workgroup's copy starts
 undefined; `ErrorWorkgroupData` is what it holds, held to a kernel's buffer's
 rule (32-bit numbers, their atomics, structs and fixed arrays of them) or a
@@ -308,7 +422,19 @@ generic's instance such as `Atomic[f64]`, at the outermost place the program
 named it; the remedy is the type argument. `ErrorAtomicValueConst` is a `const`
 whose type holds an atomic value anywhere inline, whose remedy is a global.
 `is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
-moves and says Copy.
+moves and says Copy. `ErrorAtomicPlainWrite` is an assignment or swap over a
+place holding an atomic value, reached through a reference that is not `uni`
+(a `&mut`, an `Rc[mut, T]`): it is reported at the place, and the remedy is the
+atomic's own `store` or a unique path. A lock guard's `&mut` is refused on
+purpose (design chat, 2 Nov): the lock excludes only other lock holders, and an
+atomic is read without the lock, so a plain write could tear under a lock-free
+reader.
+
+`ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
+return, a field, an owning `Uni`/`Rc`, or an array) of an enrichment declaring its own `final`
+into a type that has none, or a different one: the value would be dropped as the target and the `final`
+never run. It is reported at the value converted, naming both types; the remedy is
+to keep the value typed as the enrichment or lend it as a `&` reference.
 
 Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
 `Hash` with no `==`, whose remedy is to write one, reported on the type.
@@ -318,6 +444,33 @@ itself and whose -0 equals 0, so that no hash of its bits agrees with its `==`,
 and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
+
+Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
+writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
+declaring none), reported at the field. The remedy is an `==` of the struct's own,
+or an `==` for the field's type.
+
+Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
+`Clone` and writes no `clone` whose type is neither Copy nor Clone (a struct that
+moves and has no `clone`, a unique owner, a `&mut`), reported at the field.
+The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
+
+Core's `Default` takes one. `ErrorDefaultField` is a field of a struct that declares
+`Default` and writes no `init` that has neither a declared `= value` nor a type that
+is `Default` (a number, `bool`, or a type declaring it), reported at the field. The
+remedy is a `= value` on the field, an `init` of the struct's own, or declaring the
+field's type `Default`.
+`ErrorDefaultInit` is a struct that declares `Default` and writes an `init`, none of
+whose inits can be called with no arguments (the region of a CarriesRegion type, and
+parameters with defaults, may be left out), reported at the struct. The remedy is an
+init that needs none, or not declaring `Default`.
+
+`ErrorNoText` is a value sent as text to a text receiver (a String, a writer, the
+console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)`,
+reported at the value, naming its type and the method. A type's own `toText` is
+the remedy; `print <- x` of a raw pointer, a list, a tuple or an enum without
+one is this. (A receiver's own `<-` is tried first, so a `List` receiving a
+point still appends it and is never this.)
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
@@ -333,21 +486,59 @@ an instance of a generic function or type whose arguments do not meet a
 requirement, reported where the program asks for it, whose remedy is the
 argument; `ErrorWhereAbsent` is a method or function an instance of a generic
 type does not have, its `where` clause unmet there, whose remedy is not to call
-it on that instance. A clause joined by `or` fails either way as a whole, under
+it on that instance. A clause joined by `||` fails either way as a whole, under
 the same two codes. Four are the clause's own form: `ErrorWhereForm`, a shape
-not built (a relation, a type expression, `not`) or an unclosed parenthesis,
+not built (a relation, a type expression, `!`) or an unclosed parenthesis,
 refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
 in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
-for a parameter annotated in a way that is not built, as a macro's parameter
-given one is. A value parameter, `[N usize]`, has four codes of its own:
+for a parameter annotated in a way that is not built, as a macro's type
+parameter given one is, and a generic module's. A macro's value parameter typed
+by a trait, `[a: Ordered]`, is the same refusal as its type parameter
+constrained by one, `[T: Ordered]`: what either would accept waits for generics
+(an enum, and a reference to a trait, `&Ordered`, are types it may have). A macro's value parameter has
+four codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
+type or `lazy`, whose remedy is to remove it; `ErrorMacroParmAssign`, a body
+changing a plain parameter, which is evaluated once into a variable nothing may
+change, whose remedy is to make it `lazy`; and `ErrorMacroArgType`, an argument
+whose type does not fit its parameter's, named in the message. `ErrorMacroParmAssign`
+is reported at the change: where the macro is declared when no type is in
+question (the parameter itself, or a part of it reached through no reference),
+otherwise in each expansion by the store or borrow refusal that finds it (an
+assignment, a swap, a mutable borrow, an operator or method changing it), in
+place of `ErrorNoMut` or `ErrorBadPerm`. `ErrorMacroArgType` is reported at the
+argument: a `lazy` one checked at expansion before it is substituted, a plain
+one by its binding, in place of `ErrorInvType`. Type arguments given to a macro
+that declares none are `ErrorMacroTypeArgs`; the wrong number of them is
+`ErrorArgCount`, as for a generic; type arguments a use leaves off are
+inferred from its plain arguments, then its lazy ones, and one that cannot be,
+or is inferred two ways, is `ErrorInvType` with a generic function's wording.
+One that only a `lazy` argument whose type is a closure's could fix is
+`ErrorMacroLazyInfer`, its own code because its remedy is the macro's: the lazy
+argument is checked as a copy, whose closure is its own, so the type arguments
+are written out or the parameter made plain.
+A generic's value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);
 `ErrorGenValueArg`, an argument that is no non-negative integer literal the
 parameter's type holds; `ErrorGenValueClash`, a number inferred two ways; and
-`ErrorGenValueArith`, arithmetic over one in an array's size; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
+`ErrorGenValueArith`, arithmetic over one in an array's size; `||` there, `[T: A || B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
+
+A trait's associated type, `type Cursor: Iterator[T];`, takes two codes of its
+own, each a form not built: `ErrorAssocUnsaid`, the trait named where no type
+meeting it says what its associated types are — a virtual reference to it,
+borrowed or owning (`&<Iterable[i64]`, `Uni[Iterable[i64]]`) — reported at the
+trait's instance; and `ErrorAssocEquality`, one fixed by name in a constraint
+(`C: Iterable[i64, Cursor = u8]`, Rust's equality constraint), reported by the
+parser at the `=`. The rest reuse a code of the same meaning: the associated type
+given as one of the trait's arguments, `Iterable[i64, u8]`, is `ErrorArgCount`;
+`C.Nope`, a name no bound of `C` declares, and `C.Cursor` where two bounds each
+declare one, are `ErrorUnkName`, as `Bag.Nope` is; a type that does not say it,
+or says what its bound refuses, fails the bound as `ErrorWhereUnmet`, or, where
+it declares the trait with `is`, `ErrorInvType`, as an unmet requirement there is.
 
 A condition on one entry of a type's `is` list, `is Move if T is Move`, is written
 as a `where` clause's is, so its form and its clauses are refused under the same
@@ -377,7 +568,10 @@ whichever operation produced it — an integer operation past its range, a float
 one past its finite range, a float converted to an integer that cannot hold it
 or to an `f32` past its range — since the remedy is the same: a wider type or
 smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
-`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+`ErrorConstShift` a shift by the width or more. `ErrorConstChar` (1600) is a
+constant converted to a `char` that is no code point (the run time gives
+U+FFFD); `T.from(constant)` is refused so in any expression, a float into an
+integer included (`fnCallNumberFrom`). None is `ErrorLitRange`, which
 is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
@@ -393,7 +587,7 @@ none in a struct that declares lifetimes, or a `where` clause ordering one its
 declaration does not have; the remedy is to declare it, or to fix the
 spelling. A use naming a struct's lifetimes otherwise than it declares them —
 too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
-the use's own mistake. A lifetime comparison under `or` or `not` in a `where`
+the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
 clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
 clause reads, and refused for what it would mean. A named lifetime that is
 checked and broken is none of these: returned or stored where its lifetime
@@ -422,7 +616,7 @@ parameter bounded by `'static`, or for a parameter `&<Trait + 'static`,
 carrying a borrow that is not global; a value returned or stored through a
 parameter as a virtual reference bounded by `'a` holding a borrow not known to
 last `'a`; a value holding a borrow that is not global made an owning
-virtual reference (`So[Trait]`), whose bound, unwritten, is `'static`; a
+virtual reference (`Uni[Trait]`), whose bound, unwritten, is `'static`; a
 bound on a generic type's parameter, or on a reference that is not virtual.
 A bound of a callee's own lifetime is not checked by name at a call: the call carries the argument wherever the bound's lifetime flows, and
 a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
@@ -435,7 +629,7 @@ share, is refused only if something could reshape the value while it is still to
 be used, and the something names the code. A call that could reshape a collection (a
 list, a string) is `ErrorShapeReshape`; a store through another name that could, the
 whole collection or an element that owns something replaced, `ErrorShapeStore` (an
-owning reference, `So` or `Rc`, is asked the same of a borrow into what it owns: the owner
+owning reference, `Uni` or `Rc`, is asked the same of a borrow into what it owns: the owner
 stored over frees it, so a call whose body stores over one is `ErrorShapeReshape` and
 a store over one `ErrorShapeStore`); and
 anything that could change which variant an enum holds under a reference narrowed
@@ -446,16 +640,22 @@ change. A collection's are reported at the change, naming where the borrow is us
 `ErrorVariantReshape` is reported where the narrowed reference or name is used again,
 naming the change, as the narrowing errors below are.
 
+One call's arguments meet the two codes by order. An argument whose value is a borrow
+into a collection (`both(s.view(), &mut s)`) freezes it through the later arguments as a
+`let` holding it would, so a later `&mut` of it is `ErrorFrozen`, at that argument, with
+the message a `let` gets (`... for a call or value still being made, which uses that
+borrow`); the `&mut` written first (`both2(&mut s, s.view())`) is an alias loan the view
+meets without conflict, and the call is the shape check's `ErrorShapeReshape`.
+
 `ErrorNarrowStale`, `ErrorNarrowLoop` and `ErrorLetElse` are about a name narrowed by a test
 (flow typing, [narrow](../nodes/narrow.md)) and the binding that outlives an early exit. A
 member only one variant has, named on a name that was narrowed to it and has since been
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `imm n Ok = r else {...};` that falls through to the binding
-is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
-change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
-would sit at another offset in its allocation (generation).
+`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that can fall through to the
+binding is `ErrorLetElse`, reported at the spot inside the `else` where a path goes on and
+saying what it lacks. The first two are reported at the use and name the change.
 
 A `parallel each` over a zip of cursors that lend from the same buffer, where the loop
 changes what they lend, is `ErrorParSources` (type check, `pareach.c`): two passes could
@@ -480,7 +680,7 @@ virtual reference, an owner of permission `mut`), is `ErrorUniShared` (type chec
 name for what holds the field or element could reach the one reference that promised to be unique
 ([references](../nodes/references.md), "A `&uni` field or element is seen only through `uni` references").
 Where the place is in code a generic use instantiated (a `List[&uni App]`, whose methods reach
-their elements through `self &mut`), the error is reported once, at the outermost use, with a
+their elements through `self: &mut`), the error is reported once, at the outermost use, with a
 message naming the type argument ("A `&uni` cannot be the type argument of this use: the generic
 code it instantiates reaches it, as an element, through a `&mut` reference..."), and not inside the
 generic; `fnCallUniUses` remembers the uses already reported.
@@ -491,9 +691,16 @@ check, `castRefPermCheck` in `cast.c`): between references `as` is only a legal 
 question an implicit coercion asks of the permissions (`permMatches`), and the message names both
 permissions and says the cast needs `trust`, which is not built yet ([cast](../nodes/cast.md),
 "`castTypeCheck`"). A `&` made the `imm` a type declaring `Immutable` defaults to, with no permission written
-(`bytes as &str`, `p as So[str]`), is let through for now; the same permission written out
+(`bytes as &str`, `p as Uni[str]`), is let through for now; the same permission written out
 (`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
 made a pointer, are not asked.
+
+An `as` onto a struct, an enum or a `char` from anything that is not a coercion to it
+(a type as itself and a variant as its enum are the coercions) is `ErrorAsTarget` (type check,
+`castRecastTargetCheck` in `cast.c`): these values are more than their bits. The message names the
+fix, `char.from(x)` for a `char`, a pattern for an enum read as a variant, a constructor or a method
+otherwise, and says the cast needs `trust`, which is not built yet. A generic `x as T` is refused at
+the instance where `T` is one of these ([cast](../nodes/cast.md), "`castTypeCheck`").
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
@@ -501,18 +708,23 @@ is no variant's). A trait pattern that binds needs a borrowed reference to build
 from, and is written as the trait or `&<Trait`: a matched value, an owner, or a pattern written as a
 plain reference `&Trait` is `ErrorPatTraitBind`. Where the matched value is not an enum (a virtual
 reference to an open trait, a tagged trait), a trait named as a pattern is `ErrorPatTrait`: only a
-closed family can say which of its values comply.
+closed family can say which of its values comply, and a test of one trait value against another trait
+is not built. A downcast of a virtual reference to an open trait names a concrete type that meets the
+trait; one that does not, or a type that is no struct (`n is i64`), is `ErrorInvType` with a message
+saying the value is never one, not that a tag is missing ([cast](../nodes/cast.md), "`castIsTypeCheck`").
 
-An actor's declaration has five codes of its own and borrows two. What its
+An actor's declaration has five codes of its own and borrows three. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
-macro, `extern`, a `self` of another kind, a generic actor, one naming an
-abstraction), is `ErrorActorMember`; a module declaring one without importing
-the `actors` package is `ErrorActorRuntime`; `async` or `do` without the other,
-or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
-of its own because the two words are one keyword and neither alone is
-anything; and `self.m()` on one of the actor's behaviours where there is no
+macro, `extern`, a `self` of another kind, an actor with a lifetime parameter, one with a base to
+`extends` or an `is` on a condition, an `is` naming something that is not an actor
+trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`);
+an actor that says it `is` an actor trait and does not conform is
+`ErrorActorTraitConform`, listing what it lacks as a conversion's refusal does; a module declaring one without importing
+the `actors` package is `ErrorActorRuntime`; `async` without `fn`,
+or `async fn` outside an actor's body, is `ErrorBehaviourWords`, a parse code
+of its own because `async` is a keyword that means nothing alone; and `self.m()` on one of the actor's behaviours where there is no
 actor to send it to -- the `final`, a state that is not the method's own
 `self` -- is `ErrorBehaviourSend`; and the state constructed anywhere but where
 the actor is made -- the handle's initializer, and the state's `init` filling
@@ -537,6 +749,22 @@ is told which variable it borrows or holds); copying one stays `ErrorParCopy`. I
 that writes through its source, naming an outside variable whose type could point at
 a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
+An actor trait's declaration has two codes of its own and borrows two. What
+its body may not hold, or a form of it not built (a field, a `fn`, a behaviour
+with a body, a behaviour that is not `pub` or has no `self`, a generic
+one, a static, a macro, a lifetime among its type parameters, an `is`
+or a base), is `ErrorActorTraitMember`; an actor's handle converted to the
+trait's (an instance's, of a generic trait) where the
+actor lacks a behaviour, declares it without `pub` or with other parameter or
+returned types is `ErrorActorTraitConform`, naming each. An actor that does not
+conform, given to a type parameter bounded by the trait, is `ErrorWhereUnmet`,
+as for any bound. A module declaring a
+trait without importing `actors` is `ErrorActorRuntime`, and a parameter or a
+returned type that cannot cross threads is `ErrorNotSendable`, as an actor's
+behaviour's is. The vtable the conversion needs is an ordinary trait's, so an
+actor that passes the check and still fails it (a signature the check does not
+compare) is that machinery's own diagnostic.
+
 A closure literal ([closure](../nodes/closure.md)) has five: a parameter written
 without a type where no signature gives one, or a signature the parameters do not
 fit, is `ErrorClosureParm`; paths that give different types where the return type
@@ -557,10 +785,10 @@ written, an actor, a `parallel each`, an `await`, and a call of a function
 defined elsewhere that is not the C library's math.
 
 A callable behind a reference or an owner has three more: a callable refused for the
-permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
+permission its `()` takes or the borrow lent (a `()` taking `self: &mut` given to a
 `&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
 generic's `&F` given one that changes) is `ErrorCallablePerm`;
-an owner `So[fn(sig)]` made of a value that is no callable of its signature (no `()`
+an owner `Uni[fn(sig)]` made of a value that is no callable of its signature (no `()`
 of it, or a function of another signature) is `ErrorCallableUse`; and a closure literal
 given where a trait is wanted that has not exactly one required method (a method
 with a body is a default, and comes with the literal) and no field is
@@ -571,6 +799,15 @@ A reference to a C-named function (`&fn @c (...)`) and one to a Cone function
 (an initializer, an assignment, an argument, a returned value, a struct's field),
 a C-named function's reference given where a callable `&<fn` is wanted, and `@c`
 written on a callable are all `ErrorFnRefConv`; the message says which side is which.
+A callable given where a signature is wanted whose parameter or result, held by value,
+is not one layout with the wanted one's (a variant for its enum, or the reverse) is
+`ErrorFnRefByValue`, on every route a callable meets a signature by (`fnSigMeets`'
+cause, `fnSigLayoutDiff`): a function reference, a callable `&<fn`, an owner `Uni[fn(sig)]`,
+a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic
+bound, `is`) and a module trait's function. The message names the position and both
+types, each route in its own words, and says to write a wrapper function (or, for a
+method, to write it with the trait's types). A reference to either type recasts, and
+is not refused.
 
 The built-in marker `Shareable` has two: an unmet `T is Shareable`, or a value made a
 virtual reference marked `+ Shareable` that is not, is `ErrorNotShareable` (the
@@ -597,38 +834,44 @@ asked of a parallel view held in a variable are `ErrorParReduce` ([fncall](../no
 parallel reductions").
 
 A borrow of part of what a reference parameter points at, stored into what that
-same reference points at (`held = buf.view()` in a method taking `self &mut`, or
+same reference points at (`held = buf.view()` in a method taking `self: &mut`, or
 into a list there through a call), is `ErrorSelfStore`: the value would hold a
 borrow of its own storage, which its owner may change or move after the call
 ([flow](../phases/flow.md), "Stores through a reference"). A store into a place
 of the function's own, or of another parameter, is the other stores' business.
 
-A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose
-method takes a stronger `self` than the trait's method declares (`self &mut` for
-`self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
-that changes state, which needs `self &mut`, given where a trait is wanted whose
-method says `self &` (under any holder, a generic's `[S Trait]` included). An owner held in a
+A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose
+method takes a stronger `self` than the trait's method declares (`self: &mut` for
+`self: &`, `self: &uni` for `self: &mut`) is `ErrorVtableSelf`; so is a closure literal
+that changes state, which needs `self: &mut`, given where a trait is wanted whose
+method says `self: &` (under any holder, a generic's `[S: Trait]` included). A struct viewed
+as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`)
+whose field has a narrower type than the trait gives it (`Shape.Circle` for `Shape`;
+for an enum, any variant's) is `ErrorVtableField`: a store through the trait would leave
+a value of another type in the field, so a view that writes sees each field at exactly
+the trait's type, and a read-only `&<` still takes the narrower one. An owner held in a
 place reached through a reference that only reads, lent as a `&mut` or `&uni`
-(a receiver, an argument, an initializer, a `So[fn]` called), is `ErrorBadPerm`,
+(a receiver, an argument, an initializer, a `Uni[fn]` called), is `ErrorBadPerm`,
 as a written `&mut` of the same place is; so is a `&mut` or `&uni` borrowed
 reference held in such a place, used where one that may writes is wanted
-(`car.owner.birthday()` through a `car &Car` holding `owner &mut Person`), and a
+(`car.owner.birthday()` through a `car: &Car` holding `owner: &mut Person`), and a
 write through it is `ErrorNoMut`.
 
-`await` has five error codes and a warning. Where it may not stand -- anywhere
+`await` has five error codes. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a
 borrow or a place written to its left in the same statement, which the rest of
 the statement uses after the seam, that a call or a temporary made rather than
 a plain path is `ErrorAwaitLeftCall`, also a rule, its message naming the fix
-(bind it to a local first); an `await` on an operation (an `actors.Awaitable`,
-an I/O operation) whose answer nothing uses, a statement of its own, is the
-warning `WarnAwaitUnused` (3005): the answer is a result saying whether the
-operation worked, and the program compiles with it dropped. It was the error
-1280, `ErrorAwaitUnused`, now a hole: a thrown-away result is to be warned on
-any statement, not refused, and this is the `await` part of that. An `await`
-on anything but a behaviour's reply, a future or an operation, which waits for
-no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
+(bind it to a local first). An `await` on an operation (an `actors.Awaitable`,
+an I/O operation) whose answer nothing uses, a statement of its own, is
+warned by the rule for every dropped value, `WarnDiscard` (below); 1280 and 3005
+are holds. An `await`
+on anything but a behaviour's reply, a future, an operation or a value whose type
+has an `await` method, which waits for
+no answer, is `ErrorAwaitNotFuture`, a rule; a type's `await` method that takes
+more than `self` or gives neither an `Awaitable[R]` nor a `Future[T]` is
+`ErrorAwaitMethod`, also a rule. `ErrorAwaitNotFuture`'s message also says what the
 seam's continuation would carry, which is how the seam's rules are pinned on a
 plain function's call; where it stands and is not built is
 `ErrorUnbuiltAwait`, whose message says why: in a construct the split does not
@@ -643,7 +886,7 @@ value made before it would have to be kept across the seam, is `ErrorYieldPlace`
 a generator's `return` that takes a value, `ErrorYieldReturn`; a generator of a
 form not built -- `inline`, with a `where` clause, without a body, anonymous, with
 type parameters that name lifetimes, a method of a trait, of an enum, of an actor
-or of a type that declares lifetimes -- `ErrorGenForm`, its message saying
+or of a type that declares an invariant lifetime -- `ErrorGenForm`, its message saying
 which; a bare method name in a generator method's body, which only `self`
 reaches, `ErrorBareMbr`; a lock's guard or a traced reference that would stay in its frame across a
 `yield`, or a `yield` standing where a temporary of an enclosing statement is
@@ -687,6 +930,50 @@ kernel, an element reached by pointer arithmetic from something that is
 neither a buffer parameter nor a fixed array is `ErrorGpuSliceOrigin`,
 generation's once everything is inlined (`genlGpuFold`), at the index that
 made it.
+
+`?` takes four codes, one per thing to fix, each reported at the `?` by type check
+(`propagateLower`): a value that is neither a Result nor an Option, a reference to one
+included, is `ErrorQuesOperand`; a function with nowhere for the failure to go (it returns
+no Result for a Result or no Option for an Option, the message naming what it returns; a
+closure whose return type is read off its returns; a generator, refused by the parser) is
+`ErrorQuesReturn`; an error the function's error type cannot take, with no `from` and no
+variant holding it, is `ErrorQuesConvert`; and one two variants hold, with no `from` to
+choose, is `ErrorQuesAmbiguous`, naming two of them. They are apart because the remedies
+are: a different value, a different function, a conversion to declare, and a choice to
+make. The `from` that converts is an `overload from` or a plain method named `from` (a
+generic one too), and `ErrorQuesConvert` says so, except where the destination has a `from`
+and the error is bound to its thread: then it says the error is not Sendable, and why
+(AnyError's `from` takes only Sendable errors). A `main` returning a Result prints its
+error through core's `Error` where the type meets it, else with its `report()` where that
+gives text; a type with neither is `ErrorMainResult`, at the return type (`propagateMainResult`).
+
+A `try` block adds two (`propagateTryFinish`, `propagateTrySite`): one wanted as no Result
+or Option whose type cannot be read off it, its `?`s failing with different error types
+or no `?` in it at all, is `ErrorTryType`, at the `try`, the message asking for the type;
+a `?` taking an Option where the block's other `?`s or its wanted type are a Result, or
+the reverse, is `ErrorTryMix`, at the `?`, naming `okOr` and `ok()`. A `?` in a try block
+whose error the block's error type cannot take, or two of its variants hold, is
+`ErrorQuesConvert` or `ErrorQuesAmbiguous`, as in a function, the message naming the try
+block.
+
+A dropped value is the one warning that is about use rather than form (`WarnDiscard`,
+`discardCheck`, `ir/exp/discard.c`). It is raised at a statement whose value is of a
+struct, enum or variant declared `@mustUse` (an enum's marking covers its variants; an
+instance of a marked generic struct is marked), or is the answer of an `await` on an
+operation (any type but `void`). Core's `Result` is marked in `core.cone`, so it warns
+through the attribute, with its own words for a failure unread; an `Option` is not
+marked, because a `pop`, `insert` or `remove` that finds nothing is not a failure
+unread. The statement is a call, an `await`, a block (a `try`, a loop with a
+`break` value) or an `if`; `_ = f();` is an assignment and so none of them, which is
+how the reader says the drop is meant. Two places ask: `blockStmtTypeCheck` for every
+statement but the last, and `blockTypeCheck` for the last when the block's parser flag
+`FlagTailSemi` says it ends in `;` (the parser makes no empty statement of that `;`;
+a last line without it is the block's value, and `ErrorTailOpen` refuses one that
+nothing uses). A generic's body is checked once for each instance, so a site warns
+once (`discardAlreadySaid`), naming the first instance that reached it. A bare
+construction (`Ok(9);`, `Token(2);`) is not a call that dropped an answer and is not
+warned. It never fails a build: the suite's `compile` and `run` scenarios do fail on
+any warning, which is how a new one is noticed.
 
 ## The one code with no scenario
 
@@ -754,3 +1041,127 @@ complaint from every enclosing node.
 - Finding out what the compiler actually reports: [Measuring](measuring.md)
 - The three type sentinels and `newErrorNode`: [IR Nodes](../nodes/_index.md)
 - Which codes each phase owns: the "Diagnostics" section of each phase note
+
+`ErrorMetaIf` and `ErrorMetaFact` are the meta layer's `#if` on the facts of the build.
+`ErrorMetaIf` is the chain's shape: an `#elif` or `#else` with no `#if` or `#elif`
+before it (including one after an `#else`), a `#if` that gives a value with no
+`#else`, and a condition's own punctuation missing (`#defined("NAME"`). A block
+missing its `{` is `ErrorNoLCurly`, and a branch missing a `;` the ordinary
+`ErrorNoSemi`. `ErrorMetaFact` is the condition: a fact outside the closed
+vocabulary used as a name or a call, a `.member` the fact lacks (naming the
+members it has), a comparison of unlike kinds, `#defined` or `#define` of
+something that is not a string literal, `!`, `&&` or `||` of what is not a
+bool, a condition that is not a bool, and a fact met outside a condition. A
+misspelt `#` word is `ErrorReserved`, from the lexer. Each is reported at the
+word it is about, and the rest of the condition is read past so that nothing
+follows it.
+
+`ErrorMetaTypeFact` is the `#if` that asks what a type parameter is (`T is Float`,
+`T == i32`) where it cannot be decided: in a struct with no type parameters, at a
+module's level, in an `extern` block, in an enum's or a trait's braces, around a
+static, macro or alias in a generic struct's braces (parser), and about a name that
+is no type parameter of the generic it stands in (name resolution, so `#if i32 is
+Integer` in an ordinary function). A condition of that kind that names a trait or
+a name that does not exist is the ordinary lookup error, and one that is no clause
+(`#if T {`) is `ErrorMetaFact`.
+
+`ErrorLitFieldType` is a struct or variant literal's value, given by position or by name,
+whose type does not convert to its field's (type check, `typeLitStructCheck`). An actor made
+in place converts to an actor trait there as a variable's would (a temporary holds it), but a
+string literal is not lent as a temporary to a field, so it is refused; a count of values that does not match the fields is
+`ErrorBadArray`.
+`ErrorMetaEach`, `ErrorMetaEachPlace`, `ErrorMetaQuota` and `ErrorMetaVar` are `#each` and the meta
+variables. `ErrorMetaEach` is the header: no `#name` to bind, no `in`, no list after it (`[..]` of values,
+`(..)` of types, or a meta variable that holds one), a list not closed, no block. `ErrorMetaEachPlace` is
+a `#each` where this is not built: a module's level, a type's braces, an `extern` block, an expression.
+`ErrorMetaQuota` is the pass that went over the step quota, naming its loop. `ErrorMetaVar` is a meta
+variable misused: a `let` or a `#each` variable given a new value, a list used as a value, a number built
+from something else, a division by zero, a declaration with no value. An error inside a pass is followed
+by an uncounted line naming the pass (`... in pass 2 of 3 of this '#each', where #x is 2.5`).
+
+`ErrorMetaFields` and `ErrorMetaFieldsType` are `#each #f in #fields(T)`. `ErrorMetaFields` is the loop or a
+description misused where it is read or name-resolved: a header without `(T)`, a `T` that is no type parameter of
+the generic it stands in, a bare `#f` (a description is asked `#f.name`/`.type`/`.region`/`.perm`/`.pub` or
+spliced `value.#f`), a property that is none, `#f.attrs` (field attributes are not built). `ErrorMetaFieldsType`
+is the clone for an instance: `T` is no struct (a number, a reference, an enum, a trait), or `#f.perm` /
+`#f.region` is asked of a field with none written. `ErrorMetaFieldsPrivate` is a type with a private field the
+reflecting code cannot see and no `@reflect`: refused, naming the type, the field and the opt-in, because a list
+without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
+loop, with the call that made the instance after it. `ErrorMetaLayout` is a layout fact (`#size(T)`, `#align(T)`,
+`#f.offset`, `#f.type is Copy` or `is Move`) asked of a type whose layout is still in flight; it names the
+by-value cycle where there is one, type by type from the asked type back to it. A `#size` or `#align` without its `(T)` is
+`ErrorMetaFields`. `ErrorMetaLayoutConst` is a `#size`, `#align` or `#f.offset` where the front end needs the number
+itself, which only the code generator has: the condition of a `#if` (`metaCond`), an array length
+(`arrayTypeCheck`) or a `const` initializer (`constDclTypeCheck`); each is refused at that place (`sizeofConstRefused`)
+rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
+(`#size(T) * 2`) still falls to `ErrorNotLit`.
+
+`ErrorMetaEachArg` and `ErrorMetaEachArgName` are a `#each #f in #fields(T)` among a call's arguments
+(`parseHashEachArg`), read at parse: `ErrorMetaEachArg` is a block that is not exactly one `#f: value` (nothing
+named, `#f` alone, a second argument, a value that did not read); `ErrorMetaEachArgName` is an argument named by a
+written name, which every pass would give. A list loop there is `ErrorMetaEachPlace`. What the loop makes is
+checked as written arguments are; a failed expansion marks the call (`FlagEachFailed`) so its missing arguments
+are not a second error.
+
+`ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
+include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
+or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
+the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
+(`module_generic_pkguse_unspelled`.)
+`ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
+a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
+the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
+named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+
+`ErrorSetupCycle` (1605) and `ErrorSetupReadsInit` (1606) refuse a module's setups (a `let` global given a value that is
+not a constant; `module.md`, "Setups"). The first is setups that read one another round a cycle, directly or through the
+module's own functions, reported at the global the round comes back to, with the round spelled out; the second is a
+setup that reads a global the module's `init` sets, which holds nothing when the setups run, reported at the setup's
+global naming the global read and the function that reads it. `modSetupOrder` reports every one it finds before it
+gives up, and the setups' function is built only when none is found.
+
+`ErrorLoopTangled` (1607) is a loop the loan walk would have to walk more than `PathLoopCap` (24) times before the facts
+at its head stop changing: one more walk than the longest chain of references copied from one variable to the next, so
+a rotation of 24 reference variables. It is reported at the loop by `pwLoopRefuse` and ends the function's loan walk
+(`pwRefused`), so no later check judges half-walked state; a loop in a generic function names the instantiation as any
+error does. No holder is ever widened to an unknown set, so every check that reads a holder's loans sees the loans it
+holds (`lifetime_loop_rotation_*`, `lifetime_loop_rotation_cap_refused`).
+
+`ErrorNotLit` (1015) has one wording for each place a value must be a constant: a global, static or parameter
+("Variable may only be initialized with a literal value"), a `const` ("Named constants must be assigned to a constant
+value"), a field default ("Field default must be a constant value"), and the local of a block that gives a global its
+value (`let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that local at scope 1 with no function round it
+(a parameter's scope 1 is checked at scope 0), and it is no global, so no setup can lift it; the report says "a block
+that gives a global its value cannot declare a local that is computed at run time" and that a function can declare
+locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
+constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
+reports nothing for the hidden variable holding its operand (`FlagQuesHeld`), since `propagateLower` always refuses that `?`.
+A `try` block with no function around it is `ErrorNotLit` at the `try`, once, whatever it holds ("A try block cannot give a
+global its value", `blockTypeCheck`): the block holds its value in a local of its own and no setup lifts it, so it takes
+the error type and nothing in it is checked.
+
+`ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
+method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
+(`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
+(reached from `fnSigConvRefusal`, so at an argument, an initializer, a `return` and any other refused coercion) names
+the method and says `self: &` makes the variants comply. The rule of what complies is unchanged; only the message is. A requirement with no slot (a private one, or a
+default `structMakeVtable` passes by) is met by a whole-enum method, so it is skipped, and a conversion refused for
+another reason keeps that reason's message. `fnSigRefusalMsg` reports it at the user's own line, where the outermost
+instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not the library body's.
+
+`ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
+statement or a value) that rests on a fact of the build in one place and on a type in
+another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
+however the build folds it. The include file keeps such a chain whole and each importer
+reads the build's facts again for its own build, so a field or method could exist in a
+package's object and not in its importer, or a body choose another branch and share a
+`static` of another type with it. A type question alone, and a build question in a `#if` of its own around
+or inside the chain, are allowed. Pointed at the first type question.
+
+`ErrorInterpBrace` is a brace that breaks the rule of an interpolated string `$"..."`: an open brace
+that no close brace closes, a close brace with no open one before it, or braces with nothing between them. A
+brace in the text is written `{{` or `}}`. Pointed at the brace.
+
+`ErrorInterpExpr` is the text between an interpolation's braces that is not one expression: something
+is left over after the expression (`{a; b}`). Pointed at the first token the expression does not take.

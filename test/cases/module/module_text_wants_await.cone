@@ -1,0 +1,49 @@
+// An 'await' among the pieces of a guarded send: the guard goes first, so a declining
+// receiver runs none of the awaits ('[get]' is printed by each one that runs), and an
+// accepting one makes the awaited pieces first, then sends the record whole.
+
+mod module_text_wants_await;
+
+import stdio use *;
+import actors;
+
+struct Gated {
+  pub var on: bool;
+  pub fn wants(self: &) bool { self.on }
+  pub fn record(self: &) TextOut { print.record() }
+  pub fn append overload `<-`(self: &, s: &str) { print <- s; }
+}
+
+let off = Gated(false);
+let on = Gated(true);
+
+actor Counter {
+  total: u64;
+
+  fn init(self: &new, start: u64) {
+    *self = Self(total: start);
+  }
+
+  pub async fn get(self) u64 {
+    print <- "[get]";
+    total
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, c: Counter) {
+    off <- "off ", await c.get(), "\n";
+    on <- "on ", await c.get(), " and ", await c.get(), "\n";
+    on <- $"on {await c.get()}\n";
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Counter(40u64);
+    let reporter = Reporter();
+    reporter.report(c);
+  }
+  finalAll();
+}

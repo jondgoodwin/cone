@@ -1,0 +1,63 @@
+// Cloning a generic function's body that holds a '!' node. A '!' (parseNotLogic), the
+// 'not' a 'while' loop's condition becomes (parsefnflow.c), and the 'not' of a '!='
+// derived from a type's '==' are each a LogicNode with a left operand and no right
+// one; the clone of a LogicNode read the right operand all the same, which the node
+// constructor never set. The compiler's arena is not zeroed, so the clone read a
+// stale pointer whenever the arena's memory was reused (an intermittent crash of
+// conec on Linux). Each body is cloned once per instance below. The deterministic
+// check is `MALLOC_PERTURB_=165 conec` (Linux) or conec built with AddressSanitizer;
+// this scenario is what they run. Each printed value was checked by hand.
+
+mod generic_not_clone;
+
+import stdio use *;
+
+struct Id is Eq {
+  n: i32;
+  pub fn `==`(self: &, o: &Id) bool { n == o.n }
+}
+
+// '!x' on a bool, in an 'if' and as a value
+fn flip[T](x: bool, a: T, b: T) T {
+  if !x { a } else { b }
+}
+
+// A 'while' loop: its condition is wrapped in a 'not' to make the exit test
+fn countTo[T](limit: i32, v: T) i32 {
+  var n = 0i32;
+  while n < limit {
+    n = n + 1i32;
+  }
+  n
+}
+
+// A '!=' derived from '=='
+fn differ[T: Eq](a: &T, b: &T) bool { a != b }
+
+// '!' over a derived '!=', and over '&&'
+fn both[T: Eq](a: &T, b: &T, c: &T) bool { !(a != b) && !(b != c) }
+
+fn show(b: bool) { if b { printStr("true\n"); } else { printStr("false\n"); } }
+
+fn main() {
+  // flip: !true is false, so b; !false is true, so a
+  printInt(flip[i32](true, 1i32, 2i32)); printStr("\n");    // 2
+  printInt(flip[i32](false, 1i32, 2i32)); printStr("\n");   // 1
+  printInt(flip[i64](true, 10i64, 20i64)); printStr("\n");  // 20
+  printInt(i32.from(flip[u8](false, 3u8, 4u8))); printStr("\n");  // 3
+  // countTo: counts up to the limit whatever the instance
+  printInt(countTo[i32](5i32, 0i32)); printStr("\n");       // 5
+  printInt(countTo[bool](3i32, true)); printStr("\n");      // 3
+  printInt(countTo[f64](0i32, 1.5)); printStr("\n");        // 0
+  // differ
+  show(differ[i32](&1i32, &2i32));                          // true
+  show(differ[i32](&2i32, &2i32));                          // false
+  show(differ[Id](&Id(n: 1i32), &Id(n: 1i32)));             // false
+  show(differ[Id](&Id(n: 1i32), &Id(n: 2i32)));             // true
+  show(differ[i64](&5i64, &6i64));                          // true
+  // both: equal all round, or not
+  show(both[i32](&4i32, &4i32, &4i32));                     // true
+  show(both[i32](&4i32, &4i32, &5i32));                     // false
+  show(both[Id](&Id(n: 7i32), &Id(n: 7i32), &Id(n: 7i32))); // true
+  show(both[Id](&Id(n: 7i32), &Id(n: 8i32), &Id(n: 7i32))); // false
+}

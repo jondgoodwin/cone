@@ -21,6 +21,10 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->fold = NULL;
     fldnode->hop = NULL;
     fldnode->via = NULL;
+    fldnode->via2 = NULL;
+    fldnode->via3 = NULL;
+    fldnode->hashcond = NULL;
+    fldnode->gen = NULL;
     fldnode->index = 0;
     fldnode->lifeslots = 0;
     fldnode->lifeknown = 0;
@@ -51,6 +55,7 @@ INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
+    newnode->hashcond = node->hashcond ? cloneNode(cstate, node->hashcond) : NULL;
     // The clone's clause is expanded afresh, into the clone's own namespace:
     // the copies and aliases the original's expansion made are the original's.
     // A listed item keeps its position; a star clause makes its items over.
@@ -160,6 +165,9 @@ static StructNode *fieldDclPrivateType(INode *type) {
 
 // Enable name resolution of field declarations
 void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
+    // A field made for each field of a type parameter: the type it describes (fields.h)
+    if (name->gen)
+        fieldEachSubjectNameRes(pstate, name->gen->fe);
     inodeNameRes(pstate, (INode**)&name->perm);
     inodeNameRes(pstate, &name->vtype);
 
@@ -180,6 +188,11 @@ void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
 
     if (name->value)
         inodeNameRes(pstate, &name->value);
+
+    // A field under a '#if' on a type parameter: its condition names the type's parameters,
+    // which are hooked while the type's members are resolved
+    if (name->hashcond)
+        genericHashCondNameRes(pstate, name->hashcond);
 }
 
 // Type check field declaration against its initial value
@@ -207,13 +220,18 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
         else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             iexpMismatchMsg(name->value, name->vtype, ErrorInvType, "Initialization value's type does not match variable's declared type");
         // The constant is judged after type check, as a const's value is: it is
-        // type check that makes a construction, 'new E(1, 2)', or an array's
+        // type check that makes a construction, 'E(1, 2)', or an array's
         // fill the literal it is, and type check that an expression of
         // constants is folded into the one it computes (litFoldConst)
         else if (!litFoldConst(&name->value))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
-        else if (name->vtype == unknownType)
+        else if (name->vtype == unknownType) {
             name->vtype = ((IExpNode *)name->value)->vtype;
+            // A 'var' one that starts as a variant holds its enum, so another variant can follow
+            INode *enumtype = iexpMutDclEnum(name->perm, &name->value);
+            if (enumtype)
+                name->vtype = enumtype;
+        }
     }
 
     // A field holds its type by value, so that type has to be able to say how

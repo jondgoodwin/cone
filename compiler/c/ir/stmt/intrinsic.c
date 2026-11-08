@@ -36,7 +36,7 @@ INode *cloneIntrinsicNode(CloneState *cstate, IntrinsicNode *node) {
 // what the name means in Cone's terms: its signature, whether a call is unsafe,
 // whether a Cone fallback body may be written, where in the compiler it is
 // answered, and whether this back end lowers it itself. The reference manual
-// (refintrinsic.html) states each one's meaning and edge cases in words, and the
+// (safe-intrinsics.html) states each one's meaning and edge cases in words, and the
 // 'intrinsic' test group pins them. An LLVM name appears nowhere here: the LLVM
 // instructions that implement an entry live in genlDeclaredIntrinsic, as one
 // implementation of it [Jon 26 Sep: capabilities we would be proud to build in
@@ -68,12 +68,14 @@ typedef enum {
     ClassSized = 0,     // any type with a size (intrinsicDclTypeCheck)
     ClassInt = 1,       // an integer type of 8 to 64 bits, usize and isize among them
     ClassBool = 2,      // bool
-    ClassPtr = 4        // a raw pointer, to anything
+    ClassPtr = 4,       // a raw pointer, to anything
+    ClassFloat = 8,     // f32 or f64
+    ClassSigned = 16    // a signed integer type of 8 to 64 bits (also ClassInt)
 } IntrinsicClass;
 
 // Where the compiler answers an intrinsic: every one built so far is answered
 // or expanded before a back end would need an instruction of its own for it,
-// except moveRaw, a block move, and the atomic operations
+// except moveRaw and moveRawInto, block moves, and the atomic operations
 typedef enum {
     PhaseConstant,      // a constant for the target, from the type alone or the build
     PhaseExpansion,     // expanded at the call into operations every back end has
@@ -103,52 +105,56 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 0, {0}, ShapeUsize, 0, 0, PhaseConstant, 1},
     {"needsFinal", NeedsFinalIntrinsic, "needsFinal[T]() bool",
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"finalize", FinalizeIntrinsic, "finalize[T](p *T)",
+    {"finalize", FinalizeIntrinsic, "finalize[T](p: *T)",
         1, 1, {ShapePtrT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
-    {"sliceFromParts", SliceFromPartsIntrinsic, "sliceFromParts[T](p *T, len usize) &Array[T]",
+    {"sliceFromParts", SliceFromPartsIntrinsic, "sliceFromParts[T](p: *T, len: usize) &Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceT, 1, 0, PhaseExpansion, 1},
-    {"sliceFromPartsMut", SliceFromPartsMutIntrinsic, "sliceFromPartsMut[T](p *T, len usize) &mut Array[T]",
+    {"sliceFromPartsMut", SliceFromPartsMutIntrinsic, "sliceFromPartsMut[T](p: *T, len: usize) &mut Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceMutT, 1, 0, PhaseExpansion, 1},
-    {"sliceFromPartsUni", SliceFromPartsUniIntrinsic, "sliceFromPartsUni[T](p *T, len usize) &uni Array[T]",
+    {"sliceFromPartsUni", SliceFromPartsUniIntrinsic, "sliceFromPartsUni[T](p: *T, len: usize) &uni Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceUniT, 1, 0, PhaseExpansion, 1},
-    {"readRaw", ReadRawIntrinsic, "readRaw[T](p *T) T",
+    {"readRaw", ReadRawIntrinsic, "readRaw[T](p: *T) T",
         1, 1, {ShapePtrT}, ShapeT, 1, 1, PhaseExpansion, 1},
-    {"writeRaw", WriteRawIntrinsic, "writeRaw[T](p *T, value T)",
+    {"writeRaw", WriteRawIntrinsic, "writeRaw[T](p: *T, value: T)",
         1, 2, {ShapePtrT, ShapeT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
-    {"moveRaw", MoveRawIntrinsic, "moveRaw[T](to *T, from *T, count usize)",
+    {"moveRaw", MoveRawIntrinsic, "moveRaw[T](to: *T, from: *T, count: usize)",
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    {"moveRawInto", MoveRawIntoIntrinsic, "moveRawInto[T](to: *T, from: *T, count: usize)",
+        1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    {"forget", ForgetIntrinsic, "forget[T](value: T)",
+        1, 1, {ShapeT}, ShapeVoid, 0, 0, PhaseExpansion, 1},
     {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",
         1, 0, {0}, ShapePtrTypeRecord, 0, 0, PhaseConstant, 1},
     {"holdsTraced", HoldsTracedIntrinsic, "holdsTraced[T]() bool",
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"trace", TraceIntrinsic, "trace[T](p *T, mode u32)",
+    {"trace", TraceIntrinsic, "trace[T](p: *T, mode: u32)",
         1, 2, {ShapePtrT, ShapeU32}, ShapeVoid, 1, 0, PhaseExpansion, 1},
-    {"traceRoots", TraceRootsIntrinsic, "traceRoots(mode u32)",
+    {"traceRoots", TraceRootsIntrinsic, "traceRoots(mode: u32)",
         0, 1, {ShapeU32}, ShapeVoid, 0, 0, PhaseExpansion, 1},
     // The atomic operations, an instruction each: T is held to what a target
     // does indivisibly without a lock
-    {"atomicLoad", AtomicLoadIntrinsic, "atomicLoad[T](p *T, order MemOrder) T",
+    {"atomicLoad", AtomicLoadIntrinsic, "atomicLoad[T](p: *T, order: MemOrder) T",
         1, 2, {ShapePtrT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
-    {"atomicStore", AtomicStoreIntrinsic, "atomicStore[T](p *T, value T, order MemOrder)",
+    {"atomicStore", AtomicStoreIntrinsic, "atomicStore[T](p: *T, value: T, order: MemOrder)",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeVoid, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
-    {"atomicSwap", AtomicSwapIntrinsic, "atomicSwap[T](p *T, value T, order MemOrder) T",
+    {"atomicSwap", AtomicSwapIntrinsic, "atomicSwap[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
-    {"atomicAdd", AtomicAddIntrinsic, "atomicAdd[T](p *T, value T, order MemOrder) T",
+    {"atomicAdd", AtomicAddIntrinsic, "atomicAdd[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
-    {"atomicSub", AtomicSubIntrinsic, "atomicSub[T](p *T, value T, order MemOrder) T",
+    {"atomicSub", AtomicSubIntrinsic, "atomicSub[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
-    {"atomicAnd", AtomicAndIntrinsic, "atomicAnd[T](p *T, value T, order MemOrder) T",
+    {"atomicAnd", AtomicAndIntrinsic, "atomicAnd[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
-    {"atomicOr", AtomicOrIntrinsic, "atomicOr[T](p *T, value T, order MemOrder) T",
+    {"atomicOr", AtomicOrIntrinsic, "atomicOr[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
-    {"atomicXor", AtomicXorIntrinsic, "atomicXor[T](p *T, value T, order MemOrder) T",
+    {"atomicXor", AtomicXorIntrinsic, "atomicXor[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
-    {"atomicMin", AtomicMinIntrinsic, "atomicMin[T](p *T, value T, order MemOrder) T",
+    {"atomicMin", AtomicMinIntrinsic, "atomicMin[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
-    {"atomicMax", AtomicMaxIntrinsic, "atomicMax[T](p *T, value T, order MemOrder) T",
+    {"atomicMax", AtomicMaxIntrinsic, "atomicMax[T](p: *T, value: T, order: MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
     {"atomicCompareSwap", AtomicCompareSwapIntrinsic,
-        "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, bool",
+        "atomicCompareSwap[T](p: *T, expected: T, desired: T, success: MemOrder, failure: MemOrder) T, bool",
         1, 5, {ShapePtrT, ShapeT, ShapeT, ShapeOrder, ShapeOrder}, ShapeTBool, 1, 1, PhaseOperation, 1,
         ClassInt | ClassBool | ClassPtr},
     // Where the call is: a constant at each call, and for a default value at
@@ -157,39 +163,21 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeStr, 0, 0, PhaseExpansion, 1},
     {"srcLine", SrcLineIntrinsic, "srcLine() u32",
         0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
-    // Whether the compile is a debug build: a constant each compile
-    {"isDebugBuild", IsDebugBuildIntrinsic, "isDebugBuild() bool",
-        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    // TEMPORARY, a provisional mechanism whose final design is open: the
-    // target's OS, from its triple, and what '-D' defined, constants each
-    // compile as isDebugBuild is (intrinsicBuildConst)
-    {"isWindows", IsWindowsIntrinsic, "isWindows() bool",
-        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isLinux", IsLinuxIntrinsic, "isLinux() bool",
-        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isMacOS", IsMacOSIntrinsic, "isMacOS() bool",
-        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isWasm", IsWasmIntrinsic, "isWasm() bool",
-        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isDefined", IsDefinedIntrinsic, "isDefined(name &Array[u8]) bool",
-        0, 1, {ShapeSliceU8}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"definedInt", DefinedIntIntrinsic, "definedInt(name &Array[u8]) i64",
-        0, 1, {ShapeSliceU8}, ShapeI64, 0, 0, PhaseConstant, 1},
     // An integer's bits, each also a method of every integer type. A count is
     // defined for 0, as the width; an amount is taken modulo the width
-    {"countOnes", CountOnesIntrinsic, "countOnes[T](x T) u32",
+    {"countOnes", CountOnesIntrinsic, "countOnes[T](x: T) u32",
         1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
-    {"leadingZeros", LeadingZerosIntrinsic, "leadingZeros[T](x T) u32",
+    {"leadingZeros", LeadingZerosIntrinsic, "leadingZeros[T](x: T) u32",
         1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
-    {"trailingZeros", TrailingZerosIntrinsic, "trailingZeros[T](x T) u32",
+    {"trailingZeros", TrailingZerosIntrinsic, "trailingZeros[T](x: T) u32",
         1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
-    {"rotateLeft", RotateLeftIntrinsic, "rotateLeft[T](x T, n u32) T",
+    {"rotateLeft", RotateLeftIntrinsic, "rotateLeft[T](x: T, n: u32) T",
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
-    {"rotateRight", RotateRightIntrinsic, "rotateRight[T](x T, n u32) T",
+    {"rotateRight", RotateRightIntrinsic, "rotateRight[T](x: T, n: u32) T",
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
-    {"shlMasked", ShlMaskedIntrinsic, "shlMasked[T](x T, n u32) T",
+    {"shlMasked", ShlMaskedIntrinsic, "shlMasked[T](x: T, n: u32) T",
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
-    {"shrMasked", ShrMaskedIntrinsic, "shrMasked[T](x T, n u32) T",
+    {"shrMasked", ShrMaskedIntrinsic, "shrMasked[T](x: T, n: u32) T",
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
     // A GPU workgroup's barriers, an instruction each there and nothing on the
     // CPU, which runs one invocation at a time: the empty fallback
@@ -199,8 +187,26 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
     // The full 128-bit product of a and b, its high and low halves xored: wyhash's
     // mixing step. The fallback body works in 32-bit halves
-    {"mulFold", MulFoldIntrinsic, "mulFold(a u64, b u64) u64",
+    {"mulFold", MulFoldIntrinsic, "mulFold(a: u64, b: u64) u64",
         0, 2, {ShapeU64, ShapeU64}, ShapeU64, 0, 1, PhaseOperation, 1},
+    // A number's, each also a method of the number types it applies to and, lane
+    // by lane, of a vector of them. No fallback body: nothing in Cone rounds a float
+    {"abs", AbsIntrinsic, "abs[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassSigned | ClassFloat},
+    {"min", MinIntrinsic, "min[T](a: T, b: T) T",
+        1, 2, {ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
+    {"max", MaxIntrinsic, "max[T](a: T, b: T) T",
+        1, 2, {ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
+    {"floor", FloorIntrinsic, "floor[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"ceil", CeilIntrinsic, "ceil[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"round", RoundIntrinsic, "round[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"fma", FmaIntrinsic, "fma[T](x: T, y: T, z: T) T",
+        1, 3, {ShapeT, ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"clamp", ClampIntrinsic, "clamp[T](x: T, lo: T, hi: T) T",
+        1, 3, {ShapeT, ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -219,6 +225,13 @@ static IntrinsicSpec *intrinsicFindKind(int16_t intrinsicFn) {
             return &intrinsicRegistry[i];
     }
     return NULL;
+}
+
+char *intrinsicTrustName(FnDclNode *fndcl) {
+    if (fndcl->value == NULL || fndcl->value->tag != IntrinsicTag)
+        return NULL;
+    IntrinsicSpec *spec = intrinsicFindKind(((IntrinsicNode *)fndcl->value)->intrinsicFn);
+    return spec && spec->trust ? spec->name : NULL;
 }
 
 // Serialize an intrinsic node
@@ -342,7 +355,7 @@ static int intrinsicSigMatches(FnDclNode *fndcl, IntrinsicSpec *spec) {
 // or a submodule of it at any depth, or a function (not a method: it takes no
 // 'self') of a plain struct one of them declares. The struct is how core names
 // its intrinsics through one name, 'mem', while a submodule of core cannot be
-// reached from outside it (refintrinsic.html). A generic type's or a trait's is
+// reached from outside it (safe-intrinsics.html). A generic type's or a trait's is
 // refused: it would be cloned into each instance or implementer. The root is
 // the module with no owner, as an imported package's and a compile's root are
 static int intrinsicModuleIsCore(INode *owner) {
@@ -416,6 +429,36 @@ int coreIsHashTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+// Core's Eq trait, known as Hash is
+int coreIsEqTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == eqTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's Default trait, known the same way
+int coreIsDefaultTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == defaultTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's Clone trait, known as Hash is
+int coreIsCloneTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == cloneTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 INode *coreIteratorTrait = NULL;
 
 int coreIsIteratorTrait(INode *dcl) {
@@ -478,7 +521,7 @@ StructNode *typeRecordStruct(void) {
 // they are, by its name and its package, and held to its one signature so that
 // the call the compiler builds is sure to fit it
 static FnDclNode *sliceEqCore = NULL;
-static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &Array[T], b &Array[T]) bool",
+static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a: &Array[T], b: &Array[T]) bool",
     1, 2, {ShapeSliceT, ShapeSliceT}, ShapeBool, 0, 1, PhaseExpansion, 0};
 
 void sliceEqDclNameRes(FnDclNode *fndcl) {
@@ -496,6 +539,30 @@ void sliceEqDclNameRes(FnDclNode *fndcl) {
 
 FnDclNode *sliceEqFn(void) {
     return sliceEqCore;
+}
+
+// Core's 'mem.tupleEq2' to 'mem.tupleEq4', what '==' on two tuples calls
+// (fnCallLowerTupleCompare): generic functions with bodies, known by name and
+// package as sliceEq is, one for each count of elements
+static FnDclNode *tupleEqCore[5] = {NULL, NULL, NULL, NULL, NULL};
+
+void tupleEqDclNameRes(FnDclNode *fndcl) {
+    if (fndcl->namesym == NULL || strncmp(&fndcl->namesym->namestr, "tupleEq", 7) != 0)
+        return;
+    int arity = (&fndcl->namesym->namestr)[7] - '0';
+    if (arity < 2 || arity > 4 || (&fndcl->namesym->namestr)[8] != '\0'
+        || (fndcl->dclinfo.facts & DclIntrinsic) || !intrinsicInCore(fndcl))
+        return;
+    if (fndcl->value == NULL || fndcl->genericinfo == NULL) {
+        errorMsgNode((INode *)fndcl, ErrorIntrinsicSig,
+            "'==' on two tuples calls core's generic 'fn tupleEq%d', with a body, and this declaration says something else.", arity);
+        return;
+    }
+    tupleEqCore[arity] = fndcl;
+}
+
+FnDclNode *tupleEqFn(uint32_t arity) {
+    return arity < 5 ? tupleEqCore[arity] : NULL;
 }
 
 // Core's 'MemRegion', the header every region at run time begins with and the type
@@ -631,7 +698,9 @@ static int intrinsicClassOf(INode *type) {
         return ClassBool;
     if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && dcl != (INode *)charType
         && ((NbrNode *)dcl)->bits >= 8 && ((NbrNode *)dcl)->bits <= 64)
-        return ClassInt;
+        return dcl->tag == IntNbrTag ? ClassInt | ClassSigned : ClassInt;
+    if (dcl->tag == FloatNbrTag)
+        return ClassFloat;
     if (dcl->tag == PtrTag)
         return ClassPtr;
     return 0;
@@ -642,6 +711,9 @@ static char *intrinsicClassWords(int tclass) {
     case ClassInt:                          return "an integer type of 8 to 64 bits";
     case ClassInt | ClassBool:              return "an integer type of 8 to 64 bits or bool";
     case ClassInt | ClassBool | ClassPtr:   return "an integer type of 8 to 64 bits, bool or a raw pointer";
+    case ClassInt | ClassFloat:             return "an integer type of 8 to 64 bits or a float";
+    case ClassSigned | ClassFloat:          return "a signed integer type of 8 to 64 bits or a float";
+    case ClassFloat:                        return "a float type";
     default:                                return "of another class";
     }
 }
@@ -694,7 +766,7 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
 // Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
 // bool or a raw pointer? What an atomic value may hold (structAtomicValueCheck)
 int intrinsicIsAtomicType(INode *type) {
-    return intrinsicClassOf(type) != 0;
+    return (intrinsicClassOf(type) & (ClassInt | ClassBool | ClassPtr)) != 0;
 }
 
 static char *memOrderNames[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};
@@ -736,24 +808,11 @@ static int memOrderLoadRank(MemOrderKind order) {
     }
 }
 
-static SLitNode *intrinsicDefineName(INode *arg);
-
 void intrinsicCallCheck(FnCallNode *call, FnDclNode *fndcl) {
     IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
     if (spec == NULL || call->args == NULL || call->args->used != spec->nparms)
         return;
     char *name = &fndcl->namesym->namestr;
-    // TEMPORARY, a provisional mechanism whose final design is open: the name
-    // a '-D' gave is looked up as the program is compiled, so it is written
-    // as a string literal
-    if (spec->intrinsicFn == IsDefinedIntrinsic || spec->intrinsicFn == DefinedIntIntrinsic) {
-        INode *arg = nodesGet(call->args, 0);
-        if (intrinsicDefineName(arg) == NULL)
-            errorMsgNode(arg, ErrorDefineName,
-                "%s is given the name of a '-D' constant as a string literal, \"NAME\": the compiler looks it up as it compiles.",
-                name);
-        return;
-    }
     MemOrderKind orders[2];
     int norders = 0;
     for (uint32_t i = 0; i < spec->nparms; ++i) {
@@ -863,114 +922,32 @@ INode *intrinsicSrcCallAt(INode *call, INode *site) {
     return (INode *)copy;
 }
 
-// ---- Constants of the build -------------------------------------------------
-//
-// TEMPORARY, a provisional mechanism whose final design is open. Each is a
-// constant of one compile: whether it is a debug build, the target's OS as its
-// triple names it (no flag), and what '-D' defined on conec's command line.
-// Both sides of an 'if' on them are name resolved, type checked and flow
-// analysed; generation generates only the side the build takes (genlIf).
-
-static ConeOptions *intrinsicBuildOpt = NULL;
-
-void intrinsicBuildSetup(ConeOptions *opt) {
-    intrinsicBuildOpt = opt;
-}
-
-// The string literal a '-D' name is written as, under the borrow and the
-// coercion that make it a '&Array[u8]', or NULL
-static SLitNode *intrinsicDefineName(INode *arg) {
-    while (arg) {
-        if (arg->tag == BorrowTag || arg->tag == ArrayBorrowTag)
-            arg = ((RefNode *)arg)->vtexp;
-        else if (arg->tag == CastTag)
-            arg = ((CastNode *)arg)->exp;
-        else
-            break;
-    }
-    return arg && arg->tag == StringLitTag ? (SLitNode *)arg : NULL;
-}
-
-// The '-D' that defined a name, or NULL
-static ConeDefine *intrinsicDefineFind(SLitNode *name) {
-    for (int i = 0; i < intrinsicBuildOpt->ndefines; ++i) {
-        ConeDefine *def = &intrinsicBuildOpt->defines[i];
-        if (strlen(def->name) == name->strlen && memcmp(def->name, name->strlit, name->strlen) == 0)
-            return def;
-    }
-    return NULL;
-}
-
-// Whether the target triple names the OS: its third part (x86_64-pc-windows-msvc,
-// x86_64-unknown-linux-gnu, aarch64-apple-darwin, wasm32-unknown-unknown)
-static int intrinsicTripleHas(char *word) {
-    char *triple = intrinsicBuildOpt->triple;
-    return triple != NULL && strstr(triple, word) != NULL;
-}
-
-int intrinsicBuildConst(INode *node, int64_t *value) {
-    if (node == NULL || intrinsicBuildOpt == NULL)
-        return 0;
-    if (node->tag == NotLogicTag) {
-        if (!intrinsicBuildConst(((LogicNode *)node)->lexp, value))
-            return 0;
-        *value = !*value;
-        return 1;
-    }
-    if (node->tag == AndLogicTag || node->tag == OrLogicTag) {
-        int64_t left, right;
-        if (!intrinsicBuildConst(((LogicNode *)node)->lexp, &left)
-            || !intrinsicBuildConst(((LogicNode *)node)->rexp, &right))
-            return 0;
-        *value = node->tag == AndLogicTag ? (left && right) : (left || right);
-        return 1;
-    }
-    if (node->tag != FnCallTag)
-        return 0;
-    FnCallNode *call = (FnCallNode *)node;
-    INode *callee = call->objfn;
-    if (callee && isNameUseNode(callee))
-        callee = ((NameUseNode *)callee)->dclnode;
-    if (callee == NULL || callee->tag != FnDclTag || !intrinsicIsDeclared((FnDclNode *)callee))
-        return 0;
-    switch (((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn) {
-    case IsDebugBuildIntrinsic:
-        *value = !intrinsicBuildOpt->release;
-        return 1;
-    case IsWindowsIntrinsic:
-        *value = intrinsicTripleHas("windows") || intrinsicTripleHas("win32");
-        return 1;
-    case IsLinuxIntrinsic:
-        *value = intrinsicTripleHas("linux");
-        return 1;
-    case IsMacOSIntrinsic:
-        *value = intrinsicTripleHas("darwin") || intrinsicTripleHas("macos");
-        return 1;
-    case IsWasmIntrinsic:
-        *value = strncmp(intrinsicBuildOpt->triple ? intrinsicBuildOpt->triple : "", "wasm", 4) == 0;
-        return 1;
-    case IsDefinedIntrinsic:
-    case DefinedIntIntrinsic: {
-        SLitNode *name = call->args && call->args->used == 1 ? intrinsicDefineName(nodesGet(call->args, 0)) : NULL;
-        if (name == NULL)
-            return 0;
-        ConeDefine *def = intrinsicDefineFind(name);
-        // Undefined is 0, C's convention for '#if'
-        if (((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn == IsDefinedIntrinsic)
-            *value = def != NULL;
-        else
-            *value = def ? def->value : 0;
-        return 1;
-    }
-    default:
-        return 0;
-    }
-}
-
 void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders) {
     IntrinsicSpec *spec = intrinsicFindKind(((IntrinsicNode *)fndcl->value)->intrinsicFn);
     for (uint32_t i = 0; i < spec->nparms; ++i) {
         if (spec->parms[i] == ShapeOrder && !intrinsicOrderOf(nodesGet(call->args, i), orders++))
             errorUnreachable((INode *)call, "an atomic intrinsic's ordering that type check found constant is not");
     }
+}
+
+// Core's marker trait DebugText: a text sink that declares it takes its values in the
+// debug form (contents.c, textSendDebug)
+int coreIsDebugText(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "DebugText") == 0
+        && strnode->genericinfo == NULL && (strnode->flags & TraitType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's TextOut, the writer a value's text is written into, known by its name
+// and its package as the Hasher is (contents.c, the text sends)
+int coreIsTextOut(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "TextOut") == 0
+        && strnode->genericinfo == NULL && !(strnode->flags & (TraitType | EnumType))
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }

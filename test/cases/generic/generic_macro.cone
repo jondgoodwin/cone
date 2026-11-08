@@ -8,10 +8,13 @@
 // about it can be asserted against the generated LLVM IR. What can be asserted
 // is what expansion produces, which is what this program prints.
 //
-// The distinction that matters most is substitution versus evaluation: a macro
-// argument is a piece of source cloned in wherever the parameter appears, so an
-// argument used twice runs twice. That is only visible through a side effect,
-// so the argument here is a call that counts itself.
+// Every value parameter is typed, 'p: i64'. The distinction that matters most is
+// substitution versus evaluation: a 'lazy' parameter's argument is a piece of
+// source cloned in wherever the parameter appears, so an argument used twice
+// runs twice. That is only visible through a side effect, so the argument here
+// is a call that counts itself. A plain parameter's argument is evaluated once
+// instead, which generic_macro_once pins. A type is given through the macro's own type
+// parameters, in a first bracket list: 'macro three[T][]', used 'three[i64]()'.
 //
 // i64 throughout, so a printed value needs no conversion.
 
@@ -19,7 +22,7 @@ mod generic_macro;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
@@ -30,46 +33,69 @@ fn show(label &str, n i64) {
 
 // No parameters: the body is simply the expansion.
 macro four {
-  4i64;
+  4i64
 }
 
 // One parameter, appearing once in the body.
-macro one[p] {
-  p;
+macro one[p: i64] {
+  p
 }
 
-// One parameter, appearing twice, which is what makes substitution and
+// One 'lazy' parameter, appearing twice, which is what makes substitution and
 // evaluation tell themselves apart.
-macro twice[p] {
-  p + p;
+macro twice[p: lazy i64] {
+  p + p
 }
 
-// A parameter used where a type is expected, rather than where a value is.
-macro three[T] {
-  imm z T = 3;
-  z;
+// A type parameter, used where a type is expected rather than where a value
+// is, and no value parameters: the second brackets are empty.
+macro three[T][] {
+  let z: T = 3;
+  z
+}
+
+// A type parameter naming a value parameter's type, given at the use
+macro sumOf[T][a: T, b: T] {
+  a + b
+}
+
+// 'lazy void': a block run for its effect, wherever the body places it
+macro afterward[first: i64, then: lazy void] {
+  let v = first;
+  then;
+  v
 }
 
 // A macro body's names are resolved where the macro is declared, so this 'base'
 // is the global one below however the use site spells its own names.
-imm base = 5i64;
+let base = 5i64;
 
 macro fromBase {
-  base;
+  base
 }
 
-mut @threadlocal counter = 0i64;
+// A parameter's type is written as any type is: a reference, a slice, an
+// array, a tuple, a function reference, a generic type's instance
+macro fromForms[r: &i64, s: &Array[i64], arr: Array[i64, 2], pair: (i64, i64), f: &fn(x: i64) i64, o: Option[i64]] {
+  *r + s[1] + arr[1] + pair.1 + f(1i64)
+}
+
+fn plusTen(x: i64) i64 {
+  x + 10i64
+}
+
+var @threadlocal counter = 0i64;
 
 fn bump() i64 {
   counter = counter + 1i64;
-  counter;
+  counter
 }
 
 // A parameterless macro's name expands wherever a value is expected, so these
 // two are the same function written two ways: the block hands back the name's
 // value either way.
 fn asFinalStatement() i64 {
-  four;
+  four
 }
 
 fn asExplicitReturn() i64 {
@@ -78,7 +104,7 @@ fn asExplicitReturn() i64 {
 
 fn takesNoParameters() {
   // A parameterless macro expands where a value is expected
-  imm z = four;
+  let z = four;
   show("macro-no-parameters", z);
 }
 
@@ -98,8 +124,8 @@ fn everyValuePosition() {
   show("macro-name-final-statement", asFinalStatement());
 
   // A branch's value is a value position too, and it took the same fix
-  mut pick = 1i64;
-  show("macro-name-as-branch-value", if pick == 1i64 {four;} else {40i64;});
+  var pick = 1i64;
+  show("macro-name-as-branch-value", if pick == 1i64 {four} else {40i64});
 }
 
 fn takesAnExpression() {
@@ -110,8 +136,8 @@ fn takesABlock() {
   // The argument is a whole block expression rather than a simple one, so this
   // is what establishes that a macro argument is a piece of source and not a
   // value the caller has already reduced
-  mut x = 1i64;
-  show("macro-block-argument", one[if x == 0i64 {5i64;} else {6i64;}]);
+  var x = 1i64;
+  show("macro-block-argument", one[if x == 0i64 {5i64} else {6i64}]);
 }
 
 fn substitutesRatherThanEvaluates() {
@@ -122,21 +148,42 @@ fn substitutesRatherThanEvaluates() {
 }
 
 fn takesAType() {
-  show("macro-type-argument", three[i64]);
+  // The brackets fill the type parameters; the empty parentheses, the empty
+  // value list, may be written or left off
+  show("macro-type-argument", three[i64]());
+  show("macro-type-argument-bare", three[i64]);
+  show("macro-type-parameter-typing-values", sumOf[i64](2i64, 3i64));
+}
+
+fn takesEveryTypeForm() {
+  let n = 1i64;
+  let xs = [10i64, 20i64];
+  let ys = [100i64, 200i64];
+  let p = (1000i64, 2000i64);
+  // 1 + 20 + 200 + 2000 + 11
+  show("macro-parameter-type-forms", fromForms(&n, &xs, ys, p, &plusTen, Some(5i64)));
+}
+
+fn takesALazyVoidBlock() {
+  // 'first' is read before the block runs, so it sees trace at 1
+  var trace = 1i64;
+  let v = afterward(trace * 10i64, {trace = trace + 1i64});
+  show("macro-lazy-void-first", v);
+  show("macro-lazy-void-ran", trace);
 }
 
 fn resolvesAtDeclaration() {
   // A local of the same name does not capture the macro body's reference
-  imm base = 9i64;
-  imm z = fromBase;
+  let base = 9i64;
+  let z = fromBase;
   show("macro-resolved-at-declaration", z);
   show("local-of-the-same-name-untouched", base);
 }
 
 // -------- a macro whose argument instantiates a generic --------
 
-fn max[T](x T, y T) T {
-  if x > y {x;} else {y;}
+fn max[T](x: T, y: T) T {
+  if x > y {x} else {y}
 }
 
 fn macroArgumentInstantiatesGeneric() {
@@ -149,21 +196,23 @@ fn macroArgumentInstantiatesGeneric() {
 
 // A macro declared inside a type is a member of it. As with a function, it is
 // a method when its first parameter is 'self': the receiver of 'x.name(args)'
-// is substituted for that parameter, the arguments for the rest, and the body
-// expands where the call was written. Everything true of a macro stays true.
+// is substituted for that parameter, the arguments go to the rest as any
+// macro's do, and the body expands where the call was written. Everything true of a macro stays true.
 // The receiver is a piece of source substituted wherever 'self' appears, so a
-// body naming it twice evaluates it twice, and the call is written with
-// parentheses, since brackets after a member index what it names.
+// body naming it twice evaluates it twice; 'self' is written bare, the
+// receiver expression as it is. The call is written with parentheses, since
+// brackets after a member index what it names, unless the macro declares type
+// parameters: then the brackets give them, as a generic method's do.
 
 struct Tally {
-  pub n i64;
-  hidden i64 = 40i64;
+  pub n: i64;
+  hidden: i64 = 40i64;
 
-  fn tenfold(self &) i64 {
-    self.n * 10i64;
+  fn tenfold(self: &) i64 {
+    self.n * 10i64
   }
 
-  fn bump(self &mut) {
+  fn bump(self: &mut) {
     self.n = self.n + 1i64;
   }
 
@@ -172,73 +221,87 @@ struct Tally {
   // way a static function is. Recorded as accepted-but-never-expanded, which
   // measuring found untrue.
   macro WIDTH {
-    7i64;
+    7i64
   }
 
   // One parameter beyond self
-  macro plus[self, k] {
-    self.n + k;
+  macro plus[self, k: i64] {
+    self.n + k
+  }
+
+  // A type parameter on a macro method: 'self' stays bare and first among the
+  // value parameters, in the second brackets
+  macro plusAs[T][self, k: T] {
+    let extra: T = k;
+    self.n + extra
   }
 
   // No parameter beyond self: the name alone is the use, as for a
   // parameterless macro, and an empty argument list means the same thing
   macro doubled[self] {
-    self.n * 2i64;
+    self.n * 2i64
   }
 
   // 'self' twice, so the receiver is evaluated twice
   macro twiceSelf[self] {
-    self.n + self.n;
+    self.n + self.n
   }
 
   // A member reached through self is reached as the method would reach it: a
   // private field and a private method are in reach, wherever the expansion
   // lands
   macro secret[self] {
-    self.hidden + self.tenfold();
+    self.hidden + self.tenfold()
   }
 
   // Calls a method through self, then reads a field: two statements, one value
   macro bumped[self] {
     self.bump();
-    self.n;
+    self.n
   }
 
   // Inside a method, a bare macro method name means 'self.name', as a bare
   // method name does, with and without arguments
-  pub fn viaBareNames(self &) i64 {
-    plus(100i64) + doubled;
+  pub fn viaBareNames(self: &) i64 {
+    plus(100i64) + doubled
+  }
+
+  // ... and given its type arguments
+  pub fn viaBareTypeArgs(self: &) i64 {
+    plusAs[i64](200i64)
   }
 
   // A macro with no 'self' is reached by its bare name here too, but it is the
   // type's rather than the receiver's: nothing is substituted into it
-  pub fn viaStaticMacro(self &) i64 {
-    self.n + WIDTH;
+  pub fn viaStaticMacro(self: &) i64 {
+    self.n + WIDTH
   }
 }
 
-mut @threadlocal tallies = 0i64;
+var @threadlocal tallies = 0i64;
 
 fn newTally() Tally {
   tallies = tallies + 1i64;
-  new Tally(n: tallies);
+  Tally(n: tallies)
 }
 
 fn macroMethodWithArgument() {
-  mut t = new Tally(n: 3i64);
+  var t = Tally(n: 3i64);
   show("macro-method-argument", t.plus(4i64));
+  show("macro-method-type-argument", t.plusAs[i64](6i64));
+  show("macro-method-type-argument-bare-in-method", (&t).viaBareTypeArgs());
 }
 
 // A macro of the type, not of a value: qualified from outside, bare inside a
 // method. Neither use has a receiver to substitute.
 fn staticMacroOfAType() {
-  mut t = new Tally(n: 5i64);
+  var t = Tally(n: 5i64);
   show("static-macro-qualified", Tally.WIDTH);
   show("static-macro-bare-in-method", (&t).viaStaticMacro());
 }
 
 fn macroMethodWithoutArguments() {
-  mut t = new Tally(n: 3i64);
+  var t = Tally(n: 3i64);
   show("macro-method-name-alone", t.doubled);
   show("macro-method-empty-arguments", t.doubled());
 }
@@ -250,23 +313,23 @@ fn macroMethodReceiverSubstituted() {
 }
 
 fn macroMethodReachesPrivateMembers() {
-  mut t = new Tally(n: 3i64);
+  var t = Tally(n: 3i64);
   show("macro-method-private-members", (&t).secret);
 }
 
 fn macroMethodCallsAMethod() {
-  mut t = new Tally(n: 3i64);
+  var t = Tally(n: 3i64);
   show("macro-method-calls-a-method", (&mut t).bumped);
 }
 
 fn macroMethodNamedBareInsideMethod() {
-  mut t = new Tally(n: 3i64);
+  var t = Tally(n: 3i64);
   show("macro-method-bare-inside-method", (&t).viaBareNames());
 }
 
 fn macroMethodThroughReference() {
-  mut t = new Tally(n: 3i64);
-  imm r = &t;
+  var t = Tally(n: 3i64);
+  let r = &t;
   show("macro-method-through-reference", r.plus(1i64));
 }
 
@@ -274,23 +337,25 @@ fn macroMethodThroughReference() {
 // with the type argument substituted in the body, so each instance's macro
 // names the instance's type
 struct Cell[T] {
-  pub v T;
+  pub v: T;
 
   macro get[self] {
-    self.v;
+    self.v
   }
 
-  macro put[self, x] {
-    self.v = x;
+  // The parameter's type names the type's own parameter, so each instance's
+  // copy takes that instance's type: an i64 in Cell[i64], an f64 in Cell[f64]
+  macro put[self, x: T] {
+    self.v = x
   }
 }
 
 fn macroMethodOnAGenericType() {
-  mut c = new Cell[i64](5i64);
+  var c = Cell[i64](5i64);
   show("macro-method-generic-instance", c.get);
   c.put(9i64);
   show("macro-method-generic-instance-assigns", c.get);
-  mut f = new Cell[f64](2.5);
+  var f = Cell[f64](2.5);
   f.put(1.5);
   show("macro-method-generic-second-instance", i64.from(f.get * 2.0));
 }
@@ -299,24 +364,25 @@ fn macroMethodOnAGenericType() {
 // copied into each variant as a method is -- so a match on the receiver inside
 // it sees the enum and is exhaustive. The receiver is captured first, as the
 // reference page advises for any macro parameter used more than once. It is an
-// '&imm' reference, since the bindings are references into the variant.
+// '&imm' reference, since the bindings are references into the variant. The
+// default is 'lazy': substituted into the one arm that uses it.
 enum Maybe {
   struct Nothing {}
-  pub struct Just {pub value i64;}
+  pub struct Just {pub value: i64;}
 
-  macro orElse[self, dflt] {
-    imm s = self;
+  macro orElse[self, dflt: lazy i64] {
+    let s = self;
     match s {
-      case imm j &Just {j.value;}
-      case imm n &Nothing {dflt;}
+      case let &Just(j) {j.value}
+      case let &Nothing(n) {dflt}
     }
   }
 }
 
 fn macroMethodOnAnEnum() {
-  imm m Maybe = Maybe.Just(11i64);
+  let m: Maybe = Maybe.Just(11i64);
   show("macro-method-enum-variant", (&imm m).orElse(0i64));
-  imm n Maybe = Maybe.Nothing;
+  let n: Maybe = Maybe.Nothing;
   show("macro-method-enum-empty-variant", (&imm n).orElse(-1i64));
 }
 
@@ -327,6 +393,8 @@ fn main() i32 {
   takesABlock();
   substitutesRatherThanEvaluates();
   takesAType();
+  takesALazyVoidBlock();
+  takesEveryTypeForm();
   resolvesAtDeclaration();
   macroArgumentInstantiatesGeneric();
   macroMethodWithArgument();
@@ -339,5 +407,5 @@ fn main() i32 {
   macroMethodThroughReference();
   macroMethodOnAGenericType();
   macroMethodOnAnEnum();
-  0i32;
+  0i32
 }

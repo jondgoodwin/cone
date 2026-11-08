@@ -25,63 +25,63 @@ import collections use List;
 import geomath use *;
 import rigidcollide use *;
 import rigiddynamics use *;
-import bonepose use * but absf, clampf;
+import bonepose use * but clampf;
 import ragdollrig use *;
 
-fn near(got f32, want f32, within f32, label &Array[u8]) bool {
-  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label)
 }
 
-fn twistAbout(q0 Quat) f32 {
-  imm sg = if q0.w < 0. { -1.; } else { 1.; };
-  wrapAngle(2. * atan2(q0.x * sg, q0.w * sg));
+fn twistAbout(q0: Quat) f32 {
+  let sg = if q0.w < 0. { -1.f } else { 1. };
+  wrapAngle(2. * atan2(q0.x * sg, q0.w * sg))
 }
 
-fn dropRun(tuned bool) {
-  imm skel = humanoid(1.75);
-  imm spec = humanoidSpec(&skel, 1.75, 70.);
-  mut w = World.make();
+fn dropRun(tuned: bool) {
+  let skel = humanoid(1.75);
+  let spec = humanoidSpec(&skel, 1.75, 70.);
+  var w = World.make();
   if tuned { tuneWorld(&mut w); }
-  imm ground = w.addShape(Shape.single(Prim.box(new Vec3(20., 1., 20.))));
-  w.createBody(BodyDef.staticAt(ground, new Vec3(0., -1., 0.)));
-  mut rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(new Vec3(0., 2., 0.)), 1u32);
+  let ground = w.addShape(Shape.single(Prim.box(Vec3(20., 1., 20.))));
+  w.createBody(BodyDef.staticAt(ground, Vec3(0., -1., 0.)));
+  var rig = Ragdoll.make(&mut w, &skel, &spec, Rigid.at(Vec3(0., 2., 0.)), 1u32);
   rig.blend = 0.;
-  mut worstAnchor = 0.;
-  mut worstHinge = 0.;
-  mut worstCone = 0.;
-  mut worstTwist = 0.;
-  mut worstEllipse = 0.;
-  mut deepest = 0.;
-  mut finite = true;
-  mut fastest = 0.;
-  mut firstImpact = -1;
-  mut settledAt = -1;
-  mut i = 0;
+  var worstAnchor = 0.f;
+  var worstHinge = 0.f;
+  var worstCone = 0.f;
+  var worstTwist = 0.f;
+  var worstEllipse = 0.f;
+  var deepest = 0.f;
+  var finite = true;
+  var fastest = 0.f;
+  var firstImpact = -1;
+  var settledAt = -1;
+  var i = 0;
   while i < 360 {
-    imm before = comVelocity(&rig, &w);
+    let before = comVelocity(&rig, &w);
     if firstImpact < 0 { fastest = maxf(fastest, -before.y); }
     stepRagdoll(&mut rig, &mut w, 1. / 60.);
-    if firstImpact < 0 and lastImpactSpeed(&rig) > 0. { firstImpact = i; }
-    if settledAt < 0 and rig.settled { settledAt = i; }
+    if firstImpact < 0 && lastImpactSpeed(&rig) > 0. { firstImpact = i; }
+    if settledAt < 0 && rig.settled { settledAt = i; }
     deepest = minf(deepest, rig.lowestPoint(&w, &spec));
-    mut k = 0usize;
+    var k = 0usize;
     while k < rig.links.len() {
-      imm l = rig.links[k];
-      imm p = w.positionOf(l.body);
-      if not (p.x < 1000. and p.x > -1000. and p.y < 1000. and p.y > -1000.) { finite = false; }
+      let l = rig.links[k];
+      let p = w.positionOf(l.body);
+      if !(p.x < 1000. && p.x > -1000. && p.y < 1000. && p.y > -1000.) { finite = false; }
       if l.joint != NoBody {
-        imm j = w.joints[usize.from(l.joint)];
+        let j = w.joints[usize.from(l.joint)];
         worstAnchor = maxf(worstAnchor, w.jointError(l.joint));
         if l.kind == JOINT_HINGE {
-          imm a = w.hingeAngleOf(l.joint);
+          let a = w.hingeAngleOf(l.joint);
           worstHinge = maxf(worstHinge, maxf(l.lo - a, a - l.hi));
         } else {
-          imm pl = rig.links[usize.from(l.parent)];
-          imm fa = (w.rotationOf(pl.body) * j.fa).normalize();
-          imm fb = (w.rotationOf(l.body) * j.fb).normalize();
-          imm swing = acos(clampf((fa * new Vec3(1., 0., 0.)).dot(fb * new Vec3(1., 0., 0.)), -1., 1.));
+          let pl = rig.links[usize.from(l.parent)];
+          let fa = (w.rotationOf(pl.body) * j.fa).normalize();
+          let fb = (w.rotationOf(l.body) * j.fb).normalize();
+          let swing = acos(clampf((fa * Vec3(1., 0., 0.)).dot(fb * Vec3(1., 0., 0.)), -1., 1.));
           worstCone = maxf(worstCone, swing - l.cone);
-          imm tw = twistAbout((fa.conjugate() * fb).normalize());
+          let tw = twistAbout((fa.conjugate() * fb).normalize());
           worstTwist = maxf(worstTwist, maxf(l.lo - tw, tw - l.hi));
           worstEllipse = maxf(worstEllipse, swingMeasure(&rig, &w, k));
         }
@@ -96,13 +96,13 @@ fn dropRun(tuned bool) {
   expectBool(worstCone < 0.1, true, "no cone-twist is ever 0.1 rad past its cone");
   expectBool(worstTwist < 0.1, true, "no cone-twist is ever 0.1 rad past its twist range");
   expectBool(worstEllipse < 1.15, true, "no swing is ever 15% beyond its elliptical range (measure 1.05)");
-  expectBool(deepest > (if tuned { -0.01; } else { -0.045; }), true, "nothing sinks more than 1 cm into the ground tuned, 4.5 cm default (0.4 and 3.2 measured)");
+  expectBool(deepest > (if tuned { -0.01 } else { -0.045 }), true, "nothing sinks more than 1 cm into the ground tuned, 4.5 cm default (0.4 and 3.2 measured)");
   // the impact
-  expectBool(firstImpact > 30 and firstImpact < 50, true, "the first contact is at about 0.65 s (step 39)");
+  expectBool(firstImpact > 30 && firstImpact < 50, true, "the first contact is at about 0.65 s (step 39)");
   near(fastest, 6.1, 0.5, "the fall's speed before the first contact is about sqrt(2 g h), less damping");
-  expectBool(rig.peak > 0.8 * fastest and rig.peak < 1.35 * fastest, true, "the landing the events report is about the speed it fell at");
+  expectBool(rig.peak > 0.8 * fastest && rig.peak < 1.35 * fastest, true, "the landing the events report is about the speed it fell at");
   // the rest
-  expectBool(settledAt > 0 and settledAt < 240, true, "it is settled within 4 s");
+  expectBool(settledAt > 0 && settledAt < 240, true, "it is settled within 4 s");
   expectBool(rig.settled, true, "and is still settled at 6 s");
   expectBool(w.positionOf(rig.bodyOfBone(PELVIS)).y < 0.3, true, "it ends lying, the pelvis under 0.3 m");
 }
@@ -110,5 +110,5 @@ fn dropRun(tuned bool) {
 fn main() i32 {
   dropRun(true);
   dropRun(false);
-  done();
+  done()
 }

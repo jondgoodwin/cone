@@ -3,23 +3,17 @@
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
-# The chapter is doc/reference/refintrinsic.html; each intrinsic's meaning and
+# The chapter is doc/manual/safe-intrinsics.html; each intrinsic's meaning and
 # edge cases are stated there, and intrinsic_success pins them.
 #
 # Core declares its intrinsics in 'mem', so a program calls 'mem.sizeof[T]()',
 # and the intrinsics' own names are free for any module to declare
 # (intrinsic_success declares a 'sizeof' and a 'finalize' of its own). The
-# three that are not, 'srcFile', 'srcLine' and 'isDebugBuild', are called
-# bare: the first two since they are written as parameters' default values
-# (intrinsic_srcloc), the third since core's 'assertDebug' macro calls it, and
-# a program may. isDebugBuild's two builds are run by the exception group
-# (exception_assertdebug_release and exception_assertdebug_debug), with the IR
-# check that a release build generates nothing of a branch on it it does not
-# take. The TEMPORARY constants of the build beside it (a provisional
-# mechanism; its final design is open) are called bare too: isWindows,
-# isLinux, isMacOS and isWasm (intrinsic_buildconst_os on a Windows or a Linux
-# build, intrinsic_buildconst_triple on every triple), and isDefined and definedInt,
-# which read conec's '-D' (intrinsic_define).
+# two that are not, 'srcFile' and 'srcLine', are called bare: they are
+# written as parameters' default values (intrinsic_srcloc), and a program may.
+# The facts of the build ('#os', '#arch', '#debug', '#defined', '#define') are
+# not intrinsics: the parser reads them (the meta group, and the exception
+# group's exception_assertdebug_release and exception_assertdebug_debug).
 #
 # '@intrinsic' is allowed only in the core package, so the scenarios about the
 # declaration itself -- intrinsic_parse_form and intrinsic_nameres_registry --
@@ -43,6 +37,11 @@
 support = ["intrinsicpkgs", "intrinsicsub"]
 
 # -------- success --------
+
+[scenario.intrinsic_forget]
+category = "run"
+description = "mem.forget ends a value without finalizing it: no final runs for a value forgotten directly, through a generic function, or as a call's result; a value not forgotten is finalized once"
+tags = ["flow", "genllvm", "runtime"]
 
 # One .out for two runs: the lowering and the Cone fallback bodies agree
 [scenario.intrinsic_success]
@@ -110,6 +109,49 @@ options = []
 name = "fallback"
 options = ["--intrinsic-fallback", "--debug"]
 
+# A number's methods, abs, min, max, floor, ceil, round and fma, and core's mem
+# ones that are the same intrinsics. They have no fallback body (nothing in Cone
+# rounds a float), so there is no fallback run; release and debug are the two
+# optimization levels. Every value is worked by hand in the source's header.
+[scenario.intrinsic_numbers]
+category = "run"
+description = "abs, min, max, floor, ceil, round and fma of the integers and floats as methods and as mem's: an integer's smallest value wrapping under abs, unsigned min and max, a NaN losing to a number in min and max, round half away from zero at 0.5, 2.5 and -2.5, ceil of -0.5 keeping its sign, and an fma whose fused answer differs from x * y + z; on literals too"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.intrinsic_numbers.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_numbers.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.intrinsic_typecheck_numbers]
+category = "reject"
+description = "abs of an unsigned integer, floor, ceil, round and fma of an integer, min of a bool and max of a char, which have no such method, a method given the wrong arguments, and core's mem versions called at a type outside their class"
+tags = ["typecheck"]
+
+[scenario.intrinsic_genllvm_numbers]
+category = "compile"
+description = "Each number method is the LLVM intrinsic that means it: abs of a float llvm.fabs, of an integer llvm.abs with the smallest value not poison; min and max llvm.minimum and llvm.maximum for floats (a NaN wins) and llvm.smin, llvm.umin and the like for integers by signedness; clamp the maximum with lo then the minimum with hi; floor, ceil, round and fma their own, round and not roundeven; no call to a function of their own"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_numbers.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.intrinsic_genllvm_numbers.check]]
+name = "each-is-llvms-intrinsic"
+target = "preir"
+contains = [
+  "@llvm.fabs.f64(", "@llvm.abs.i32(i32 %", ", i1 false)",
+  "@llvm.minimum.f32(", "@llvm.maximum.f64(",
+  "@llvm.smin.i64(", "@llvm.smax.i8(", "@llvm.umin.i32(","@llvm.umax.i16(",
+  "@llvm.maximum.f32(", "@llvm.umax.i8(", "@llvm.umin.i8(",
+  "@llvm.floor.f64(", "@llvm.ceil.f32(", "@llvm.round.f64(", "@llvm.fma.f32(",
+]
+excludes = ["roundeven", "call double @abs", "call double @mem", "minnum", "maxnum"]
+
 # The two have no fallback body, and no type parameter: each is a constant of
 # the call it is. What a panic reports is built on them (exception_caller)
 [scenario.intrinsic_srcloc]
@@ -154,68 +196,6 @@ options = []
 name = "fallback"
 options = ["--intrinsic-fallback"]
 
-# Constants of the build (TEMPORARY, a provisional mechanism; its final design
-# is open). Each side of an 'if' on one that the build does not take calls a
-# function declared 'extern' and defined nowhere: the program links only because
-# generation never emits those calls, in a debug build too, where no optimizer
-# would remove them. The preir checks say the same of what generation wrote.
-# The scenario runs on Windows and on Linux and prints the same on both, so the
-# sides that call what is defined nowhere are macOS's and WebAssembly's, which
-# neither host is
-[scenario.intrinsic_buildconst_os]
-category = "run"
-description = "On a Windows or a Linux build isMacOS and isWasm do not hold; only the side of an 'if' on them the build takes is generated (a chain, '!', 'and', 'or', a true constant ending a chain, an 'if' giving a value, a constant after a test known only at run time), so calls to functions defined nowhere on the other sides link"
-tags = ["typecheck", "genllvm", "runtime"]
-
-[[scenario.intrinsic_buildconst_os.run]]
-name = "release"
-options = []
-
-[[scenario.intrinsic_buildconst_os.run]]
-name = "debug"
-options = ["--debug"]
-
-[[scenario.intrinsic_buildconst_os.check]]
-name = "the-untaken-sides-are-not-generated"
-target = "preir"
-contains = ["icmp sgt i32"]
-excludes = [
-  "call %void @macDefinedNowhere(",
-  "call %void @wasmDefinedNowhere(",
-  "call i32 @otherDefinedNowhere(",
-]
-
-# What only the untaken side of such an 'if' calls is not emitted either: a
-# function nothing live reaches is dropped, in a debug build as in a release
-# one. The macOS-only functions below call 'extern' functions defined nowhere,
-# and are reached only on the side macOS takes, through a chain of calls,
-# through an address taken there, or from nowhere; the program links only
-# because none of them is in the object
-[scenario.intrinsic_buildconst_reach]
-category = "run"
-description = "A function only the untaken side of an 'if' on a constant of the build reaches (a helper, a helper of a helper, one whose address is taken there, one nothing calls) is not emitted, so its calls to functions defined nowhere link, in a debug build as in a release one; the helper of the side taken is"
-tags = ["genllvm", "runtime"]
-
-[[scenario.intrinsic_buildconst_reach.run]]
-name = "release"
-options = []
-
-[[scenario.intrinsic_buildconst_reach.run]]
-name = "debug"
-options = ["--debug"]
-
-# Generation writes the functions that only dead code reaches (the pre-IR has
-# them); the object does not have them
-[[scenario.intrinsic_buildconst_reach.check]]
-name = "generation-wrote-the-helpers"
-target = "preir"
-contains = ["@takenHelper(", "@macHelper(", "@macDeep(", "@macCallback(", "@macUnused("]
-
-[[scenario.intrinsic_buildconst_reach.check]]
-name = "the-object-has-none-of-them"
-target = "llvmir"
-excludes = ["macHelper", "macDeep", "macCallback", "macUnused", "macDefinedNowhere", "macValueDefinedNowhere"]
-
 # The other half of the rule: what a library exports is live, whatever calls it.
 # A debug build, whose object keeps what the optimizer would inline
 [scenario.intrinsic_buildconst_reach_lib]
@@ -232,54 +212,6 @@ name = "what-the-library-exports-is-emitted"
 target = "llvmir"
 contains = ["@exportedCall(", "@macDefinedNowhere(", "@exportedUser(", "@liveHelper(", "@exportedChoice("]
 excludes = ["@deadHelper", "@unusedHelper"]
-
-# One source, a run per triple: '-D' tells each what OS to expect, so one pair
-# of checks holds for every run
-[scenario.intrinsic_buildconst_triple]
-category = "compile"
-description = "isWindows, isLinux, isMacOS and isWasm read the target triple: x86_64-pc-windows-msvc is Windows, x86_64-unknown-linux-gnu Linux, x86_64-apple-macosx14.0 macOS and --wasm WebAssembly, each the only one that holds"
-tags = ["genllvm"]
-
-[[scenario.intrinsic_buildconst_triple.run]]
-name = "windows"
-options = ["--triple=x86_64-pc-windows-msvc", "-D", "EXPECT_WINDOWS"]
-
-[[scenario.intrinsic_buildconst_triple.run]]
-name = "linux"
-options = ["--triple=x86_64-unknown-linux-gnu", "-D", "EXPECT_LINUX"]
-
-[[scenario.intrinsic_buildconst_triple.run]]
-name = "macos"
-options = ["--triple=x86_64-apple-macosx14.0", "-D", "EXPECT_MACOS"]
-
-[[scenario.intrinsic_buildconst_triple.run]]
-name = "wasm"
-options = ["--wasm", "-D", "EXPECT_WASM"]
-
-[[scenario.intrinsic_buildconst_triple.check]]
-name = "the-expected-os-alone-holds"
-target = "preir"
-contains = ["call %void @matched("]
-excludes = ["call %void @mismatched("]
-
-# Every spelling of the option, in a release and a debug build alike
-[scenario.intrinsic_define]
-category = "run"
-description = "'-D NAME' defines 1 and '-D NAME=v' the integer v (decimal, negative, 0x hex, 0), the last of a name given twice; isDefined and definedInt answer them, false and 0 for a name never defined; the untaken side of an 'if' on isDefined is not generated"
-tags = ["typecheck", "genllvm", "runtime"]
-
-[[scenario.intrinsic_define.run]]
-name = "release"
-options = ["-D", "FAST", "-DLEVEL=42", "--define=NEG=-7", "-D", "HEX=0x10", "-D", "ZERO=0", "-D", "TWICE=1", "-DTWICE=2"]
-
-[[scenario.intrinsic_define.run]]
-name = "debug"
-options = ["--debug", "-D", "FAST", "-DLEVEL=42", "--define=NEG=-7", "-D", "HEX=0x10", "-D", "ZERO=0", "-D", "TWICE=1", "-DTWICE=2"]
-
-[[scenario.intrinsic_define.check]]
-name = "the-undefined-side-is-not-generated"
-target = "preir"
-excludes = ["call %void @slowDefinedNowhere("]
 
 # -------- generation --------
 
@@ -433,14 +365,20 @@ options = []
 name = "fallback"
 options = ["--intrinsic-fallback"]
 
-# TEMPORARY, a provisional mechanism whose final design is open
-[scenario.intrinsic_typecheck_define]
-category = "reject"
-description = "isDefined and definedInt given a name that is not a string literal: a parameter, a local, a call's result"
-tags = ["typecheck"]
-
 # The file name is text
 [scenario.intrinsic_srcfile_text]
 category = "run"
 description = "srcFile is a '&str': bound as one, and as a slice of bytes; as the default of a '&str' parameter and of an '&Array[u8]' one, each call its own line; replaced by an explicit argument"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# A pointer to a nullable-pointer enum is stepped by the enum's size, not by what it points at
+[scenario.intrinsic_pointer_to_nullable_enum]
+category = "run"
+description = "A List of an Option of a Uni, an Rc (mutable and immutable), an Arc, a reference and an Rc of the type holding the List: pushed and walked, so '+' steps a pointer to a nullable-pointer enum"
+tags = ["genllvm", "runtime"]
+
+# The shape the benchmark's richards program met
+[scenario.intrinsic_pointer_to_nullable_enum_trait]
+category = "run"
+description = "A struct holding a List of an Option of an Rc of a struct that holds an Rc of a trait and the Option of an Rc of itself: constructed and a trait method called through it"
+tags = ["genllvm", "runtime"]

@@ -13,7 +13,7 @@
 // marked FlagEach, whose statements are
 //
 //   mut <hidden> = src;
-//   loop { imm x; ...body... }          // the reader's variables, declared without a value
+//   loop { let x; ...body... }          // the reader's variables, declared without a value
 //
 // and type check finishes it (eachLower, from blockTypeCheck, which has checked
 // the first statement) once it knows what 'src' is: how the loop walks it is
@@ -21,7 +21,9 @@
 //
 // - an array or a slice, or a type that lends an array (a list lends its
 //   slice, 'view'), is walked by a counted loop over its length, each variable a
-//   borrow of an element: no cursor is made;
+//   copy of an element, or a borrow of it for a source written as a borrow, or the
+//   element itself where it moves, which consumes the list (its 'drain' is walked): see
+//   'A plain source' in compiler/c/doc/nodes/block.md;
 // - a type with a 'next' method is a cursor, and is used as it is (a place is
 //   advanced in place, a value is held in a variable of the loop's);
 // - a type with an 'iter' method gives one, and the loop walks what it gives.
@@ -29,17 +31,30 @@
 // A cursor's 'next' answers an Option, and every pass takes it apart in the
 // initializer of the pass's variable, which leaves the loop when there is none:
 //
-//   imm x = match cursor.next() { case imm s Some { s; } case is None { break; } };
+//   let x = match cursor.next() { case let Some(s) { s; } case is None { break; } };
 //
 // A pass's variable is a new, unchangeable variable (not one that the loop
-// steps): two or more of them unpack a tuple item, 'imm -item = ...; imm k =
-// -item.0; imm v = -item.1'.
+// steps): two or more of them unpack a tuple item, 'let -item = ...; let k =
+// -item.0; let v = -item.1'.
 //
 // A header filter ('each x in src if cond') is the statement 'if !cond {continue}'
 // after the variables, built by the parser (parseEachFilterStmt). A loop's 'else'
 // is the first statement of the loop, a block flagged FlagLoopElse, which this
 // takes out and makes the block the loop leaves through when it has run out.
 void eachLower(TypeCheckState *pstate, BlockNode *outer);
+
+// The permission a source written as a borrow lends its items with, 'mut' or 'uni'
+// ('each x in &mut l'); NULL for any other source, one that reads. A reference that
+// is only a name is no written borrow. 'type' is the source's checked type.
+INode *eachWrittenPerm(INode *src, INode *type);
+
+// Did an 'each' consume this variable (its items move, so the loop took the whole value)?
+int eachMovedVar(INode *dcl);
+
+// The refusals of an 'each' (or 'parallel each') whose items move behind a borrow, and the
+// kind of source a 'parallel each' has (see each.c)
+void eachBehindError(INode *src, INode *base, int refish);
+int eachParallelKind(INode *src, INode *type, INode *base, int refish, int isslice, int isarray, int islent);
 
 // The step of a numeric range ('each x in a ..< b by s') is advanced by the
 // parser's own call, on the loop's hidden counter, of this private name
@@ -55,5 +70,14 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer);
 extern Name *eachRangeStepName;
 void eachRangeNames();
 int eachRangeStepLower(TypeCheckState *pstate, FnCallNode **nodep);
+
+// A number range whose first bound is a literal with no suffix and whose end is
+// not a literal ('each i in 0 ..< n'): the end is held in a variable of the loop,
+// and the first bound takes its type, as a literal beside an operator takes
+// its other operand's. eachRangeFirstFollowsEnd says whether this block is
+// one, and eachRangeFirstAdopt, once the end's variable has been checked, gives
+// the first bound that variable's type when it is a number type.
+int eachRangeFirstFollowsEnd(BlockNode *outer);
+void eachRangeFirstAdopt(BlockNode *outer);
 
 #endif

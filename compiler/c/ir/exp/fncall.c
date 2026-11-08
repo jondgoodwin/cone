@@ -85,8 +85,12 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
         && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
         newnode->flags |= FlagSelfRecv;
     newnode->objfn = cloneNode(cstate, node->objfn);
-    if (node->args)
-        newnode->args = cloneNodes(cstate, node->args);
+    if (node->args) {
+        int errs = errors;
+        newnode->args = cloneFieldEachArgs(cstate, node->args);
+        if (errors != errs)
+            newnode->flags |= FlagEachFailed;
+    }
     newnode->methfld = cloneNode(cstate, node->methfld);
 
     // Inside a generic type's braces its bare name is the instance being cloned,
@@ -94,10 +98,13 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     // it is the generic again: 'Box[i32]' inside 'Box[T]' is another instance,
     // and 'Box[T]' is this one, both reached through the memo. A bare use with a
     // value list -- 'Mb.No[]', 'Box[v]' -- stays mapped: it builds this instance.
+    // A generic module's instance maps a generic type it declares to the
+    // instance's copy, which is still generic and is what its instances are
+    // made from (cloneStructNode), so that use stays mapped too.
     if (isNameUseNode(node->objfn) && isNameUseNode(newnode->objfn)) {
         INode *generic = ((NameUseNode*)node->objfn)->dclnode;
         if (generic && generic != ((NameUseNode*)newnode->objfn)->dclnode
-            && ((generic->tag == StructTag && ((StructNode*)generic)->genericinfo)
+            && ((generic->tag == StructTag && ((StructNode*)generic)->genericinfo && !cstate->modinst)
                 || (generic->tag == ModuleTag && ((ModuleNode*)generic)->genericinfo))
             && fnCallHasTypeArgs(newnode))
             ((NameUseNode*)newnode->objfn)->dclnode = generic;
@@ -115,7 +122,7 @@ int fnCallHasTypeArgs(FnCallNode *node) {
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
-        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag)))
+        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag) || genericAssocPathIs(*argsp)))
             return 1;
     }
     return 0;
@@ -125,7 +132,7 @@ int fnCallHasTypeArgs(FnCallNode *node) {
 void fnCallPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
-    // A construction, 'new Point(1, 2)', names its type until type check
+    // A construction, 'Point(1, 2)', names its type until type check
     // lowers it to its declared 'init''s call, whose type it then has
     // 'trynew' holds the bound 'Option' in its methfld until type check
     if (node->flags & FlagNew) {
@@ -152,7 +159,7 @@ void fnCallPrint(FnCallNode *node) {
 }
 
 // Whether a declaration is a method, or an overload name one of whose
-// candidates is. An enum's method over the whole enum ('self &Lamp') is a
+// candidates is. An enum's method over the whole enum ('self: &Lamp') is a
 // function of its own, not a template, so naming it is naming a function
 static int fnCallNamesTemplateMethod(INode *dcl, int wholeenum) {
     if (dcl->tag == FnDclTag)
@@ -173,6 +180,15 @@ static int fnCallNamesMethod(INode *dcl) {
 }
 
 static void fnCallVariantReceiver(FnCallNode *node);
+
+// Whether 'mod' is 'outer' or a submodule within it, at any depth
+static int fnCallInsideModule(ModuleNode *mod, ModuleNode *outer) {
+    for (INode *node = (INode*)mod; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (node == (INode*)outer)
+            return 1;
+    }
+    return 0;
+}
 
 // A '.' whose left side names a namespace is a path through it, not an access
 // to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
@@ -214,9 +230,10 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // 'stack[i64].push' -- which is collapsed at type check, once it exists
     // (fnCallModuleInstancePath). Inside its own body its bare name means the
     // instance being defined, as a generic type's does, and the clone points
-    // the member at the instance's
+    // the member at the instance's -- in the body of a submodule of it too,
+    // which is instantiated with it
     if (basedcl->tag == ModuleTag && ((ModuleNode*)basedcl)->genericinfo
-        && (ModuleNode*)basedcl != pstate->mod) {
+        && !fnCallInsideModule(pstate->mod, (ModuleNode*)basedcl)) {
         errorMsgNode(node->objfn, ErrorGenModBare,
             "%s is a generic module: its members belong to each instance, named with type arguments as %s[...].%s.",
             &inodeGetName(basedcl)->namestr, &inodeGetName(basedcl)->namestr,
@@ -261,7 +278,7 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
 
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what
-    // refmodule.html says, and is also the only answer generation can honour:
+    // mod-namespaces.html says, and is also the only answer generation can honour:
     // it emits no symbol for a private declaration of a module whose bodies
     // this compile does not generate, so the call site would otherwise be left
     // with nothing to call. A private candidate selected through a *public*
@@ -274,7 +291,11 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // program asked for, and leaving the use unresolved would only hand the
     // next pass a null to trip over.
     ModuleNode *qualmod = dclInfoGetModule(basedcl);
-    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+    // A module's init and final are run by the program, once, whatever their
+    // visibility and whichever module names them, its own included. That answer
+    // comes first: a private one's remedy is not to make it public
+    int lifecycle = basedcl->tag == ModuleTag && nameUseLifecycleNamed(member);
+    if (!lifecycle && qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
@@ -309,6 +330,113 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     return 0;
 }
 
+static StructNode *fnCallVariantNamed(INode *node);
+
+// 'stack[i64].make': what a member named through an instance of a generic
+// module is, as the generic declares it -- each instance holds a copy of every
+// declaration of its generic -- or NULL when 'node' names no member that way
+static INode *fnCallGenModMember(INode *path) {
+    if (path == NULL || path->tag != FnCallTag)
+        return NULL;
+    FnCallNode *node = (FnCallNode*)path;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || node->args != NULL
+        || (node->flags & (FlagIndex | FlagOperator)) || node->objfn == NULL || node->objfn->tag != FnCallTag)
+        return NULL;
+    FnCallNode *inst = (FnCallNode*)node->objfn;
+    if (!(inst->flags & FlagIndex) || inst->methfld != NULL || !isNameUseNode(inst->objfn))
+        return NULL;
+    INode *generic = nameUseGetDcl((NameUseNode*)inst->objfn);
+    if (generic == NULL || generic->tag != ModuleTag || ((ModuleNode*)generic)->genericinfo == NULL)
+        return NULL;
+    return namespaceFind(&((ModuleNode*)generic)->namespace, ((NameUseNode*)node->methfld)->namesym);
+}
+
+// Is this a call of a type, 'Point(1, 2)', 'List[i32](100)', 'Rc[mut, Node](1)': a
+// construction, which the type's name with parentheses is for every type? A call
+// with no member and not an index or an operator, whose callee is a type: a
+// struct, an alias of a type, a generic struct with or without its type
+// arguments, an owner of a region. A variant's construction is a call of a type
+// too, and is its own (fnCallVariantCall). Not met at name resolution, where a
+// generic parameter's use is not yet a type, 'T(1)' says so at type check.
+int fnCallIsTypeCall(FnCallNode *node) {
+    if (node->tag != FnCallTag || node->methfld != NULL || node->args == NULL
+        || (node->flags & (FlagIndex | FlagOperator | FlagNew)))
+        return 0;
+    INode *callee = node->objfn;
+    if (callee == NULL)
+        return 0;
+    // 'Some[i32](5)': a generic variant given its type arguments
+    INode *head = callee;
+    if (callee->tag == FnCallTag && (callee->flags & FlagIndex) && ((FnCallNode*)callee)->methfld == NULL
+        && !(callee->flags & FlagRange))
+        head = ((FnCallNode*)callee)->objfn;
+    if (fnCallVariantNamed(head))
+        return 0;
+    return isTypeNode(callee);
+}
+
+// Mark a call of a type as the construction it is. It stands at the type's name,
+// where 'new' stood, so what is reported of the construction is reported there
+// (a call is otherwise at its parenthesis).
+void fnCallMarkConstruction(FnCallNode *node) {
+    INode *start = node->objfn;
+    while (start->tag == FnCallTag && ((FnCallNode*)start)->objfn != NULL)
+        start = ((FnCallNode*)start)->objfn;
+    inodeLexCopy((INode*)node, start);
+    node->flags |= FlagNew;
+}
+
+// The contents of a '<-' after a call of a type are lowered as a construction's
+// are (contentsLower), blocks nesting the entries' scopes once more than for a
+// receiver that is no construction. The parser guessed from the shape alone
+// (parseIsConstruction); the callee says.
+static void fnCallAppendNestNameRes(FnCallNode *node) {
+    if (!(node->flags & FlagOpAssgn) || node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lessDashName || node->args == NULL || node->args->used != 1
+        || node->objfn->tag != FnCallTag || (node->objfn->flags & (FlagNew | FlagIndex | FlagOperator)))
+        return;
+    FnCallNode *recv = (FnCallNode*)node->objfn;
+    if (recv->methfld != NULL || recv->args == NULL)
+        return;
+    // A generic parameter called, 'T() <- ...', is a construction once it is a type.
+    // A macro parameter is the same node kind and is counted the same way, which is
+    // right: 'mk() <- ...' is valid only where 'mk' stands for a type (a construction,
+    // 'build(List[i32])'); for a function or a value the call's result is no lval and
+    // '<-' is refused exactly as when written without the macro, so the nesting never
+    // reaches generation for it
+    uint16_t nest = nameUseNames(recv->objfn, GenVarDclTag) ? 2 : 1;
+    INode *entries = nodesGet(node->args, 0);
+    if (entries->tag == EachEntryTag)
+        ((EntryNode*)entries)->nest = nest;
+    else if (entries->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)entries)->elems, cnt, elemp))
+            if ((*elemp)->tag == EachEntryTag)
+                ((EntryNode*)*elemp)->nest = nest;
+    }
+}
+
+// A construction is a type's name with parentheses, wherever the type is
+// allocated: the call of a type is marked here as the construction it is
+// (FlagNew), for everything between here and generation to ask the one question.
+// 'new' is written only before a DYNAMIC region, a region whose state is a value,
+// 'new a[Node](1)' (typeLitNewNamesRegionValue); before a type it is refused, and
+// the word is then taken as not written, so the call goes on as the construction
+// it names and the program reports nothing more of it. 'trynew' is a
+// construction of its own.
+static void fnCallConstructNameRes(FnCallNode *node) {
+    if (node->flags & FlagNew) {
+        if ((node->flags & FlagTryNew) || typeLitNewNamesRegionValue(node->objfn))
+            return;
+        errorMsgNode((INode*)node, ErrorNewNotRegion,
+            "'new' takes a dynamic region, a value such as an arena: 'new a[Node](1)'. This is a type.");
+        node->flags &= ~FlagNew;
+    }
+    if (fnCallIsTypeCall(node))
+        fnCallMarkConstruction(node);
+}
+
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking --
@@ -326,17 +454,40 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
 
+    // 'C.Cursor': an associated type that a bound of the type parameter C
+    // declares, resolved in each instance (generic.c)
+    if (genericAssocPathNameRes(pstate, nodep))
+        return;
+
     // A '.' through a module or a type is a path, and collapses here
     if (fnCallNameResPath(pstate, nodep))
         return;
     node = *nodep;
 
+    // A call of a type is a construction; 'new' is written before a dynamic region only
+    fnCallConstructNameRes(node);
+    fnCallAppendNestNameRes(node);
+
     // What stands in brackets after a type or a generic is type arguments, so a
     // name there is never an empty variant's construction, 'Array[Lamp.Red, 4]';
-    // after a value it is an index, and one is, 'counts[Lamp.Red]'
+    // after a value it is an index, and one is, 'counts[Lamp.Red]'. A member
+    // named through an instance of a generic module, 'stack[i64].make[f64]', is
+    // collapsed only at type check, and is read here as its generic declares it.
+    INode *instmember = node->args && (node->flags & FlagIndex) && node->methfld == NULL
+        ? fnCallGenModMember(node->objfn) : NULL;
+    if (instmember && (instmember->tag == StructTag || genericGetInfo(instmember) != NULL
+            || (instmember->tag == MacroDclTag && macroSetTypeParms((MacroDclNode*)instmember)))) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            if ((*argsp)->tag == NameUseTag)
+                (*argsp)->flags &= ~FlagValueTermName;
+            else if ((*argsp)->tag == FnCallTag)
+                (*argsp)->flags &= ~FlagValueTermCall;
+        }
+    }
     if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
         INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
-        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL)) {
+        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL
+                || (calleedcl->tag == MacroDclTag && macroSetTypeParms((MacroDclNode*)calleedcl)))) {
             for (nodesFor(node->args, cnt, argsp)) {
                 if ((*argsp)->tag == NameUseTag)
                     (*argsp)->flags &= ~FlagValueTermName;
@@ -351,6 +502,9 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
     }
+    // In a macro's body, '+=' or '<-' on a plain parameter is refused here
+    if (node->flags & FlagOpAssgn)
+        macroChangeNameRes(node->objfn, node->objfn, MacroChangeInPlace);
 
     if (reduction) {
         parallelReduceNameRes(pstate, nodep);
@@ -371,6 +525,11 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         && !(arrayTypeDcl->genericinfo != NULL && !(node->flags & FlagRange)
             && node->args != NULL && node->args->used == 1))
         arrayTypeLower(pstate, (INode**)nodep);
+
+    // 'Vector[f32, 4]' is the SIMD vector type, lowered here for the same reason
+    else if ((node->flags & FlagIndex) && node->methfld == NULL
+        && isNameUseNode(node->objfn) && nameUseGetDcl((NameUseNode*)node->objfn) == (INode*)vectorTypeDcl)
+        vectorTypeLower(pstate, (INode**)nodep);
 
     // 'None[i32]' standing as a value term constructs that empty variant
     if ((*nodep)->tag == FnCallTag && ((*nodep)->flags & FlagValueTermCall))
@@ -406,7 +565,7 @@ static int fnCallRangeReceiver(INode *objtype) {
 // A place -- a field, an array element, a tuple element -- whose type is a
 // '&uni' reference is seen -- read, lent or written -- only where every
 // reference on the way to it is 'uni' too, or what holds it is held by value
-// (refperm.html, "Viewpoint Adaptation"): through a '&' or a '&mut' there may
+// (mem-permissions.html#view, "Viewpoint Adaptation"): through a '&' or a '&mut' there may
 // be another name for the same holder, and the one reference that promised to
 // be unique would be reached by both. The access 'access', of type 'placetype'
 // and naming the field 'fldname' (NULL for an element), is refused otherwise.
@@ -480,7 +639,7 @@ void fnCallArrIndex(FnCallNode *node) {
     }
 
     // A range, 'x[a..<b]', is a slice of part of the array only when borrowed.
-    // Unborrowed it would copy or fill a segment (refarrayref.html, "Copy or
+    // Unborrowed it would copy or fill a segment (lib-collections.html, "Copy or
     // Fill Elements"), which is not implemented.
     if ((node->flags & FlagRange) && !(node->flags & FlagBorrow)) {
         errorMsgNode((INode *)node, ErrorBadIndex,
@@ -530,6 +689,10 @@ void fnCallArrIndex(FnCallNode *node) {
     case ArrayTag:
         node->vtype = arrayElemType(objtype);
         break;
+    case VectorTag:
+        if (!vectorIndex(node))
+            return;
+        break;
     case RefTag: {
         // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
         // this call was an index at all. Reading the tag off the unresolved
@@ -539,6 +702,10 @@ void fnCallArrIndex(FnCallNode *node) {
         INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
         if (vtype->tag == ArrayTag)
             node->vtype = arrayElemType(vtype);
+        else if (vtype->tag == VectorTag) {
+            if (!vectorIndex(node))
+                return;
+        }
         else if (vtype->tag == ArrayDerefTag)
             node->vtype = ((RefNode*)vtype)->vtexp;
         else {
@@ -647,7 +814,7 @@ FnCallNode *fnCallSetIndexRoot(INode *lval) {
 // Every borrowed reference in a signature written without a lifetime shares
 // one, and every one written with a name shares it with the others written
 // with that name, and with those its 'where' clause orders shorter, and with
-// nothing else (doc/reference/reflifefn.html): so 'wanted' may hold the borrows
+// nothing else (doc/manual/mem-lifetimes.html): so 'wanted' may hold the borrows
 // of an argument whose parameter's own lifetime flows to it (lifeCarry), or,
 // where only what that points at holds one that does, the borrows held there,
 // and the only lifetime those have in common is the shortest. What a borrowed
@@ -751,24 +918,39 @@ int fnCallIsNever(INode *node) {
     return node->tag == FnCallTag && itypeIsNever(((FnCallNode *)node)->vtype);
 }
 
-// A virtual dispatch's receiver that is an owning virtual reference ('So[Trait]',
+// A virtual dispatch's receiver that is an owning virtual reference ('Uni[Trait]',
 // Trait an open trait) is lent to the method as a borrowed one, with the permission the
-// method declares for 'self', as a plain owner is lent to a 'self &' or 'self
+// method declares for 'self', as a plain owner is lent to a 'self: &' or 'self
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
 // points at (pwOwnedLent), so the owner stays, frozen while the call uses it.
-// Passed as it is, the owner was moved into the call. A 'self &uni' method
-// is lent nothing: the recast to a move type would still move the owner.
+// Passed as it is, the owner was moved into the call. A 'self: &uni' method
+// is lent by a borrow of what the owner points at (borrowOwnerLend), for a recast
+// to a move type would move the owner. A '&<uni' receiver held in a place is
+// reborrowed (borrowUniReborrow), and so is not used up by its first call.
 static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
     RefNode *owner = (RefNode*)iexpGetTypeDcl(*selfp);
     RefNode *parm = (RefNode*)itypeGetTypeDcl(parmtype);
-    if (owner->tag != VirtRefTag || itypeGetTypeDcl(owner->region) == borrowRef || parm->tag != RefTag)
+    if (owner->tag != VirtRefTag || parm->tag != RefTag)
         return;
     RefNode *lent = newRefNodeFull(VirtRefTag, *selfp, borrowRef, parm->perm, owner->vtexp);
     // The owner's markers are the lent borrow's: a call through an owner marked
     // '+ ShapeKeeping' keeps the caller's borrows
     lent->marks = owner->marks;
-    if (itypeIsMove((INode*)lent))
+    // A '&<uni' held in a place is reborrowed, not used up, by a call through
+    // it, as a '&uni' is by one of its methods: the method gets a borrow of the
+    // place, with the permission 'self' declares
+    if (itypeGetTypeDcl(owner->region) == borrowRef) {
+        if (borrowUniReborrows(*selfp, (INode*)lent))
+            borrowUniReborrow(selfp, (INode*)lent);
         return;
+    }
+    // A 'self: &uni' method is lent the owner as a '&<uni', a move type that
+    // would move it: lend it by a borrow of what it owns, so that it stays
+    if (itypeIsMove((INode*)lent)) {
+        if (iexpIsLval(*selfp))
+            borrowOwnerLend(selfp, (INode*)lent);
+        return;
+    }
     iexpCoerce(selfp, (INode*)lent);
 }
 
@@ -790,7 +972,7 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
     if (initdcl && initdcl->tag == FnDclTag && fnDclIsInit((FnDclNode*)initdcl)) {
         INode *owner = inodeGetOwner(initdcl);
         errorMsgNode((INode*)node, ErrorInitCall,
-            "An init runs only in a construction, which gives it memory to fill: 'new %s(...)'.",
+            "An init runs only in a construction, which gives it memory to fill: '%s(...)'.",
             owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "T");
     }
 
@@ -862,10 +1044,14 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
             else {
                 int whycode;
                 char *why = fnSigCallRefusal(argtype, parmtype, &whycode);
+                char privwhy[400];
                 if (why)
-                    errorMsgNode(*argsp, whycode, "%s", why);
+                    fnSigRefusalMsg(*argsp, whycode, why);
+                else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
+                    errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
                 else
-                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
+                        iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
             }
         }
         parmp++;
@@ -1042,10 +1228,80 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
     }
 }
 
+// Answer whether every '[]' a type declares lends a borrow: returns a borrowed
+// reference, as Rust's 'Index' does, so that 'x[i]' names a place the borrow
+// reaches. A '[]' returning a value (String's byte) names no place.
+static int fnCallIndexLends(INode *held) {
+    while (held->tag == RefTag)
+        held = itypeGetTypeDcl(((RefNode*)held)->vtexp);
+    if (held->tag != StructTag)
+        return 0;
+    INode *index = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)held, indexName));
+    INode **candp;
+    uint32_t ncand;
+    if (index == NULL)
+        return 0;
+    if (index->tag == FnDclTag) {
+        candp = &index;
+        ncand = 1;
+    }
+    else if (index->tag == FnOverloadDclTag) {
+        Nodes *overloads = ((FnOverloadDclNode*)index)->overloads;
+        candp = &nodesGet(overloads, 0);
+        ncand = overloads->used;
+    }
+    else
+        return 0;
+    for (uint32_t i = 0; i < ncand; ++i) {
+        INode *sig = ((FnDclNode*)candp[i])->vtype;
+        if (sig == NULL || sig->tag != FnSigTag)
+            return 0;
+        INode *ret = ((FnSigNode*)sig)->rettype;
+        // A generic '[]' (an arena's, '`[]`[T]') keeps its signature as written
+        // until an instance is made: a written '&T' is still the borrow node
+        if (((FnDclNode*)candp[i])->genericinfo && ret->tag == BorrowTag)
+            continue;
+        ret = itypeGetTypeDcl(ret);
+        if ((ret->tag != RefTag && ret->tag != ArrayRefTag && ret->tag != VirtRefTag)
+            || itypeGetTypeDcl(((RefNode*)ret)->region) != borrowRef)
+            return 0;
+    }
+    return 1;
+}
+
+// The method an index or a call that names none calls: '()' for a call; for an
+// index '[]', or '&[]' where the element is wanted as a place that may be
+// written. '&x[i]' with no permission written is the read-only borrow of the
+// place '[]' lends ('Index'), as '&*x.`[]`(i)'; '&mut x[i]', '&uni x[i]',
+// '&imm x[i]' and an index in set position ('x[i] = v', fnCallIsSetIndex)
+// borrow through '&[]' ('IndexMut'). Where the type's '[]' gives a value, it
+// names no place, and '&x[i]' keeps '&[]', which such a type refuses as before.
+static Name *fnCallImplicitName(FnCallNode *node, INode *objtype) {
+    if (!(node->flags & FlagIndex))
+        return parensName;
+    if (!(node->flags & FlagBorrow))
+        return indexName;
+    if (node->objfn->tag == BorrowTag && ((RefNode*)node->objfn)->perm == unknownType
+        && fnCallIndexLends(objtype))
+        return indexName;
+    // '&a[i][j]': the receiver is the inner link of the same borrow, '(&a)[i]',
+    // already lowered; where it lent read-only through '[]', so does this link
+    INode *inner = node->objfn;
+    if (inner->tag == FnCallTag && (inner->flags & FlagIndex) && (inner->flags & FlagBorrow)) {
+        INode *innertype = iexpGetTypeDcl(inner);
+        if (innertype->tag == RefTag && !(permGetFlags(((RefNode*)innertype)->perm) & MayWrite)
+            && fnCallIndexLends(objtype))
+            return indexName;
+    }
+    return refIndexName;
+}
+
 // '&x[i]' hands the type's '&[]' a read-only borrow of 'x' as its receiver,
-// which a '&[]' declaring 'self &mut' refuses. That refusal is the rule; what
+// which a '&[]' declaring 'self: &mut' refuses. That refusal is the rule; what
 // this adds is the reason and the spellings that work, reported in place of the
 // bare no-candidate message where a '&mut' receiver would have been accepted.
+// A plain '&x[i]' reaches '&[]' only where the type's '[]' gives a value, not
+// a place (fnCallImplicitName), and '&imm x[i]' always does.
 // The probe alters nothing. Answer whether it reported.
 static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *methsym, enum OverloadMatch status) {
     if (status != OverloadNone || methsym != refIndexName || !(callnode->flags & FlagIndex))
@@ -1058,7 +1314,7 @@ static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *
     if (iNsTypeFindMethod(foundnode, &mutrecvr, callnode->args, &mutstatus) == NULL)
         return 0;
     errorMsgNode((INode*)callnode, ErrorNoCandidate,
-        "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self &mut`. "
+        "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self: &mut`. "
         "Write `x[i]` to read the element, or `&mut x[i]` to borrow it through a mutable receiver.");
     return 1;
 }
@@ -1101,7 +1357,7 @@ static void fnCallUniFieldSeen(FnCallNode *access, FieldDclNode *fld, INode *lex
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
 // method declared 'self' by value; a receiver held as a value is borrowed where it
-// declared 'self &' or 'self &mut'; and an operator written on a pointer does not
+// declared 'self: &' or 'self: &mut'; and an operator written on a pointer does not
 // reach through at all.
 // The access reaching field 'fld' on 'obj', positioned on 'lexnode'. For a
 // declared field that is one field access; for a folded copy it is an access
@@ -1174,20 +1430,20 @@ void fnCallDemandCandidates(INode *binding) {
 
 static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 
-// A receiver held as a value -- 'v.push(x)' for a 'mut v List[i64]' -- reaches
-// a method that declared 'self &' or 'self &mut' by being borrowed, as though
+// A receiver held as a value -- 'v.push(x)' for a 'var v: List[i64]' -- reaches
+// a method that declared 'self: &' or 'self: &mut' by being borrowed, as though
 // '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
-// transform 'self' to a mutable borrowed reference" (doc/reference/
-// reftypesafe.html, "Implicit Coercion of 'self'"), as lval operators already
+// transform 'self' to a mutable borrowed reference" (doc/manual/
+// safe-types.html#self, "Coercing a method's self"), as lval operators already
 // do. Asked only when no candidate accepts the receiver as it is, so a method
 // taking 'self' by value is always preferred, and never of a receiver that is
 // already a reference or a pointer: a pointer is not borrowed from.
 //
-// The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self &'
+// The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self: &'
 // method borrows for reading even from a mutable variable, then 'mut', then
-// 'uni' (a 'self &uni' method, which a local lends as '&uni' does). The
+// 'uni' (a 'self: &uni' method, which a local lends as '&uni' does). The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
-// hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
+// hand-written '&mut v' gets: a 'self: &mut' method on an immutable variable is
 // ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
 // lives to the end of its statement (borrowTempRef).
 // Returns the selected method, with the borrow now the receiver, or NULL.
@@ -1196,7 +1452,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     // A reference is passed as it is, but for an owner (not a borrow) of the type: a
-    // method declaring 'self &So[str]' (fnDclTypeCheck) takes the borrow of the owner
+    // method declaring 'self: &Uni[str]' (fnDclTypeCheck) takes the borrow of the owner
     INode *ownerof = objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != borrowRef
         ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : NULL;
     if (ownerof ? !isMethodType(ownerof)
@@ -1206,12 +1462,12 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     // borrow would be '&mut *p', a reference made from a pointer
     if (obj->tag == DerefTag && iexpGetTypeDcl(((StarNode*)obj)->vtexp)->tag == PtrTag)
         return NULL;
-    // A type declaring Immutable has 'self &' as 'self &imm', which a 'ro'
+    // A type declaring Immutable has 'self: &' as 'self: &imm', which a 'ro'
     // borrow is not accepted as, so 'imm' is tried between the two
-    // A method declaring 'self &uni' is reached last: a local is unique, so
+    // A method declaring 'self: &uni' is reached last: a local is unique, so
     // lending it 'uni' is the one borrow left, and the borrow keeps every other
-    // name from reaching it while the call runs (doc/reference/refperm.html,
-    // "From 'uni'")
+    // name from reaching it while the call runs (doc/manual/mem-permissions.html#fromuni,
+    // "From uni, for a while")
     PermNode *perms[4];
     int nperms = 0;
     perms[nperms++] = roPerm;
@@ -1243,11 +1499,68 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
             }
             borrowMutRef(&callnode->objfn, objtype, perm);
         }
+        // A temporary lives to the end of the statement being checked. The isTrue a
+        // coercion to bool injects is lowered with the state of the check under way
+        // (iexpCoerceCondition), and Option's and Result's borrow their receiver by it
         else
             borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
     }
     return NULL;
+}
+
+// The borrow a '<-' list takes of its receiver, once, for every entry
+// (contentsLowerEntries). Each entry is then applied through that borrow and
+// takes from it what its own method's 'self' declares, as one '<-' on a value
+// does (fnCallBorrowReceiver), so the borrow need only be as strong as the
+// strongest 'self' among the type's '<-' methods, and never stronger than
+// the receiver permits:
+// - every '<-' takes 'self: &mut': mutable, as it always was (an immutable
+//   receiver is refused by the borrow itself);
+// - none does: read-only ('imm' for a type declaring Immutable, which a 'ro'
+//   borrow is not accepted as), so an immutable receiver is appended to
+//   through a method that only reads it;
+// - some do: mutable where the receiver may be written, read-only otherwise,
+//   so an entry whose method needs the write is the one refused.
+// A '<-' whose signature is not a method's of known 'self' counts as mutable.
+PermNode *fnCallAppendBorrowPerm(INode *lval, INode *colltype) {
+    INode *found = isMethodType(colltype) ? iNsTypeFindFnField((INsTypeNode*)colltype, lessDashName) : NULL;
+    if (found)
+        found = aliasDclResolve(found);
+    if (found == NULL || !iexpIsLval(lval))
+        return mutPerm;
+    INode **candp = &found;
+    uint32_t ncand = 1;
+    if (found->tag == FnOverloadDclTag) {
+        candp = &nodesGet(((FnOverloadDclNode*)found)->overloads, 0);
+        ncand = ((FnOverloadDclNode*)found)->overloads->used;
+    }
+    else if (found->tag != FnDclTag)
+        return mutPerm;
+    int wantsmut = 0, wantsro = 0;
+    while (ncand--) {
+        FnDclNode *cand = (FnDclNode*)*candp++;
+        int mut = 1;
+        if (cand->vtype->tag == FnSigTag && ((FnSigNode*)cand->vtype)->parms->used > 0) {
+            INode *selftype = ((IExpNode*)nodesGet(((FnSigNode*)cand->vtype)->parms, 0))->vtype;
+            if (selftype->tag == RefTag)
+                mut = (permGetFlags(((RefNode*)selftype)->perm) & MayWrite) != 0;
+        }
+        if (mut)
+            wantsmut = 1;
+        else
+            wantsro = 1;
+    }
+    if (wantsmut && !wantsro)
+        return mutPerm;
+    if (wantsmut) {
+        INode *lvalperm = (INode*)immPerm;
+        uint16_t scope;
+        iexpGetLvalInfo(lval, &lvalperm, &scope);
+        if (permGetFlags(lvalperm) & MayWrite)
+            return mutPerm;
+    }
+    return itypeIsImmutable(colltype) ? immPerm : roPerm;
 }
 
 // An operand of an enum's '==' is lent to the comparison, read-only, where it
@@ -1286,7 +1599,9 @@ static INode *fnCallTagTest = NULL;
 // '==' on an enum where either operand is statically an empty variant of it
 // ('x == None', 'event == Lamp.Off'): the other operand is that variant or
 // is not, so the comparison asks the tag alone, whatever the other variants
-// carry, as 'x is &None' does of a borrow. Two variants that both carry fields
+// carry, as 'x is &None' does of a borrow. The other operand is the enum or one of
+// its variants (a variable holding the first 'let s = Size.Large; s == Size.Large'),
+// a value or a borrow of it. Two operands that both carry fields
 // are not asked this way (fnCallLowerEnumEq). Lowers the call to the test, left
 // for fnCallTypeCheck to put in its place, and answers 1; answers 0, touching
 // nothing, where the comparison is not of that shape.
@@ -1307,9 +1622,9 @@ static int fnCallLowerEnumTagTest(TypeCheckState *pstate, FnCallNode *callnode, 
         return 0;
     // The tested operand is the enum itself, a value or a borrow of it
     INode *ttype = iexpGetTypeDcl(tested);
-    int isenum = ttype == (INode*)enumnode
-        || (ttype->tag == RefTag && itypeGetTypeDcl(((RefNode*)ttype)->region) == borrowRef
-            && itypeGetTypeDcl(((RefNode*)ttype)->vtexp) == (INode*)enumnode);
+    INode *theld = ttype->tag == RefTag && itypeGetTypeDcl(((RefNode*)ttype)->region) == borrowRef
+        ? itypeGetTypeDcl(((RefNode*)ttype)->vtexp) : ttype;
+    int isenum = theld == (INode*)enumnode || structVariantEnum(theld) == enumnode;
     if (!isenum)
         return 0;
     fnCallLendEnumOperand(pstate, &tested);
@@ -1327,7 +1642,7 @@ static int fnCallLowerEnumTagTest(TypeCheckState *pstate, FnCallNode *callnode, 
 }
 
 // '==' on an enum where a variant carries fields: tags first, then the variant's
-// own '==' on the two payloads (doc/reference/refenum.html, "Comparing"). The
+// own '==' on the two payloads (doc/manual/guide-enums.html#compare, "Comparing enum values"). The
 // comparison is a function the compiler gave the enum (structSetEnumEqFn), made
 // when every variant that carries fields declares a '==', and the call becomes a
 // call of it on the two operands lent. Where one does not, the call is refused
@@ -1532,6 +1847,60 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
     return (FnDclNode*)write;
 }
 
+// A number's, bool's or char's 'toText(self, out &uni TextOut)' (corenumber.c,
+// nbrAddTextMethods). It is no function: the call becomes the TextOut method that
+// writes that kind of value, 'out.putI64(i64.from(x))' for a signed integer,
+// putU64 for an unsigned, putF32 and putF64, putBool and putChar, the value
+// converted to the type the method takes. The receiver is the value, already
+// selected, and the one argument is the writer. Answers the method the call is
+// now to, or NULL after reporting that core's TextOut lacks it.
+static FnDclNode *fnCallTextNumber(FnCallNode *callnode, FnDclNode *selected) {
+    FnSigNode *sig = (FnSigNode*)selected->vtype;
+    VarDclNode *oparm = (VarDclNode*)nodesGet(sig->parms, 1);
+    INode *textout = itypeGetTypeDcl(((RefNode*)itypeGetTypeDcl(oparm->vtype))->vtexp);
+    INode *valtype = iexpGetTypeDcl(callnode->objfn);
+    while (valtype->tag == RefTag)
+        valtype = itypeGetTypeDcl(((RefNode*)valtype)->vtexp);
+    const char *method = "putBool";
+    INode *to = NULL;
+    if (valtype == (INode*)boolType)
+        method = "putBool";
+    else if (valtype == (INode*)charType)
+        method = "putChar";
+    else if (valtype == (INode*)f32Type)
+        method = "putF32";
+    else if (valtype == (INode*)f64Type)
+        method = "putF64";
+    else if (valtype->tag == IntNbrTag) {
+        method = "putI64";
+        to = (INode*)i64Type;
+    }
+    else {
+        method = "putU64";
+        to = (INode*)u64Type;
+    }
+    INode *write = textout->tag == StructTag ? iNsTypeFindFnField((INsTypeNode*)textout, nametblFind((char*)method, strlen(method))) : NULL;
+    if (write == NULL || write->tag != FnDclTag) {
+        errorMsgNode((INode*)callnode, ErrorNoMbr,
+            "core's TextOut has no `%s`, which a number's `toText` writes its text through.", method);
+        callnode->vtype = errorType;
+        return NULL;
+    }
+    fnCallDemandCandidates(write);
+    INode *val = callnode->objfn;
+    // The number itself, read through any borrow of it
+    while (iexpGetTypeDcl(val)->tag == RefTag && derefInject(&val))
+        ;
+    if (to != NULL && valtype != to) {
+        val = (INode*)newConvCastNode(val, to);
+        inodeLexCopy(val, callnode->objfn);
+    }
+    callnode->objfn = nodesGet(callnode->args, 0);
+    callnode->args = newNodes(1);
+    nodesAdd(&callnode->args, val);
+    return (FnDclNode*)write;
+}
+
 // The body 'Array[T]' of an element type T: an instance of the generic struct
 // core declares, whose methods (core.cone) an array, a reference to one and a
 // slice call. NULL if core has not declared it or it could not be made.
@@ -1575,6 +1944,7 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
 
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
 static void fnCallReadThroughRefs(FnCallNode *node);
+int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype);
 
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
@@ -1600,18 +1970,32 @@ static int fnCallCopiesFreely(INode *type) {
 
 // Is this type a borrow of a value that copies freely, so that an operator
 // wanting the value may read through an operand of it? Only a borrow: an owner
-// (So, Rc), a key and a lock-managed reference reach their value in ways of their own.
+// (Uni, Rc), a key and a lock-managed reference reach their value in ways of their own.
 static int fnCallBorrowTypeReadsThrough(INode *type) {
     if (type->tag != RefTag)
         return 0;
     RefNode *ref = (RefNode*)type;
     if (itypeGetTypeDcl(ref->region) != borrowRef || permIsLock(ref->perm) || lifeIsKey(type) || refIsFat(ref))
         return 0;
+    // A borrow of a borrow reads through every level to the value, so long as
+    // every level is itself a borrow that reads through ('&&i64')
+    INode *held = itypeGetTypeDcl(ref->vtexp);
+    if (held->tag == RefTag)
+        return fnCallBorrowTypeReadsThrough(held);
     return fnCallCopiesFreely(ref->vtexp);
 }
 
 static int fnCallBorrowReadsThrough(INode *operand) {
     return fnCallBorrowTypeReadsThrough(iexpGetTypeDcl(operand));
+}
+
+// Read an operand that fnCallBorrowReadsThrough accepted through every level of
+// borrow, to the value. Answers whether it read through any.
+static int fnCallReadThroughAll(INode **operandp) {
+    int read = 0;
+    while (iexpGetTypeDcl(*operandp)->tag == RefTag && derefInject(operandp))
+        read = 1;
+    return read;
 }
 
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
@@ -1623,10 +2007,29 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
 // The same, finding the method in 'bodytype' where that is not NULL, the type
 // whose methods a receiver that has none of its own (an array) reaches
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype) {
+    // A number beside a vector in an operator is broadcast to a vector of its
+    // lane type, on whichever side it is, so both are vectors from here on
+    if (bodytype == NULL && vectorBroadcastOperand(pstate, callnode))
+        return -1;
     INode *obj = callnode->objfn;
     // An ASCII character literal beside a byte is that byte, whichever side it is on
     if (callnode->flags & FlagOperator)
         litAdoptCharBesideByte(&callnode->objfn, callnode->args);
+    // A number literal with no suffix, on the left of an operator whose other operand
+    // has a number type, is that type: '0.5 - s' for an f64 's', '1 - n' for an i64
+    // 'n'. Written on the right it takes the type by being the argument.
+    if ((callnode->flags & FlagOperator) && callnode->args && callnode->args->used == 1
+        && litIsUntypedNumber(callnode->objfn)) {
+        INode *arg = nodesGet(callnode->args, 0);
+        if (isExpNode(arg) && !litIsUntypedNumber(arg)) {
+            INode *argtype = iexpGetTypeDcl(arg);
+            // An operator reads through a borrow of a number: its number is the operand's type
+            while (argtype->tag == RefTag && fnCallBorrowTypeReadsThrough(argtype))
+                argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+            if (litAdoptBesideOperand(&callnode->objfn, argtype))
+                obj = callnode->objfn;
+        }
+    }
     assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
@@ -1634,6 +2037,19 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     INode *objdereftype = bodytype ? bodytype : iexpGetDerefTypeDcl(obj);
     if (!isMethodType(objdereftype)) {
         return 0;
+    }
+
+    // 'mask.select(a, b)' chooses between two vectors of any lane type, which
+    // no signature can say
+    if (objdereftype->tag == VectorTag && methsym == selectName) {
+        vectorSelectLower(pstate, callnode);
+        return callnode->vtype == errorType ? -1 : 1;
+    }
+
+    // 'a.join(b)' lays two vectors end to end, a vector of twice the lanes
+    if (objdereftype->tag == VectorTag && methsym == joinName) {
+        vectorJoinLower(pstate, callnode);
+        return callnode->vtype == errorType ? -1 : 1;
     }
 
     // 'self.m()', m one of an actor's behaviours, is a send: its receiver
@@ -1666,7 +2082,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (foundnode && foundnode->tag == StructTag)
         foundnode = NULL;
     // A value of a variant reaches a method of its enum that takes the whole enum
-    // ('self &Lamp'): the variant has no copy of it, and its receiver is widened to
+    // ('self: &Lamp'): the variant has no copy of it, and its receiver is widened to
     // the enum. A method the variant declares or was given is its own, and is
     // found above.
     if (foundnode == NULL && objdereftype->tag == StructTag) {
@@ -1680,6 +2096,14 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
         && !structSeesPrivate(pstate, objdereftype);
+    // A generic's body calls through its bound: a type that declares the bound's
+    // trait with 'is' has asserted the fit, and meets it from every module, its
+    // private member of that name included (the bound itself was decided so,
+    // structMemberHidden)
+    if (notpublic && objdereftype->tag == StructTag
+        && (genericBoundReachesMember((INode*)callnode, (StructNode*)objdereftype, methsym)
+            || (pstate && pstate->fn && genericBoundReachesMember((INode*)pstate->fn, (StructNode*)objdereftype, methsym))))
+        notpublic = 0;
     if (notpublic)
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     // A method the type holds by folding is bound to an alias; the visibility
@@ -1706,7 +2130,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                     &methsym->namestr, &actorname->namestr);
             else
                 errorMsgNode((INode*)callnode, ErrorNotPublic,
-                    "`%s` is a synchronous method of actor %s's, run only inside the actor: its handle sends the actor's behaviours, declared 'async do', and nothing else.",
+                    "`%s` is a synchronous method of actor %s's, run only inside the actor: its handle sends the actor's behaviours, declared 'async fn', and nothing else.",
                     &methsym->namestr, &actorname->namestr);
             return -1;
         }
@@ -1742,12 +2166,14 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             && structIsTypeVariant((StructNode*)objdereftype)) {
             StructNode *variant = (StructNode*)objdereftype;
             errorMsgNode((INode*)callnode, ErrorNoMbr,
-                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case imm n %s', gives the %s.",
+                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case let %s(n)', gives the %s.",
                 &methsym->namestr, &variant->namesym->namestr, &variant->namesym->namestr,
                 &variant->namesym->namestr, itypeName(structTypeVariantField(variant)->vtype));
             return -1;
         }
         if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
+            return -1;
+        if (foundnode == NULL && objdereftype->tag == VectorTag && vectorMissingMember(callnode, objdereftype, methsym))
             return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
@@ -1803,6 +2229,28 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         }
     }
 
+    // A sink of the debug form takes each value piece as its toDebug, before any '<-'
+    int debugsend = (methsym == lessDashName && (callnode->flags & FlagOpAssgn))
+        ? textSendDebug(pstate, callnode, obj) : 0;
+    if (debugsend) {
+        if (callnode->vtype == errorType)
+            return -1;
+        // A toDebug the compiler writes is made now (debugfn.c), the call checked once with it
+        // A built-in scalar's (number, bool, char: all Nbr types) is made by the hook; a
+        // piece no overload of 'value' takes, such as a borrow of one, comes here as debugsend 1
+        INode *dbgval = debugsend == 1 && callnode->objfn && isExpNode(callnode->objfn)
+            ? iexpGetDerefTypeDcl(callnode->objfn) : NULL;
+        if (debugsend == 2 || (dbgval && isNbr(dbgval))) {
+            FnCallNode *dbg = callnode;
+            if (fnCallDebugLower(pstate, &dbg, debugsend == 1)) {
+                if (dbg != callnode)
+                    *callnode = *dbg;
+                return callnode->vtype == errorType ? -1 : 1;
+            }
+        }
+        return fnCallLowerMethodOn(pstate, callnode, NULL);
+    }
+
     // Test every candidate the name declares, without altering the call
     fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
@@ -1845,7 +2293,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (objread)
             selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
         if (selected == NULL && status == OverloadNone && argp) {
-            derefInject(argp);
+            fnCallReadThroughAll(argp);
             selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
             if (selected == NULL && status == OverloadNone && objread) {
                 callnode->objfn = obj;
@@ -1858,10 +2306,48 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             callnode->objfn = obj;  // a failed retry leaves the call as it was found
     }
 
-    // A receiver held as a value reaches a method declaring 'self &' or
-    // 'self &mut' by being borrowed (fnCallBorrowReceiver)
+    // A receiver held as a value reaches a method declaring 'self: &' or
+    // 'self: &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
         selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+
+    // An operator's argument that is a borrow of a value that copies freely is
+    // read through for a receiver that has to be borrowed as well, 'print <- n'
+    // for an 'n' borrowed by 'each': the read-through retry above ran with the
+    // receiver as it is, which a method declaring 'self: &' does not accept, so
+    // it is tried again here against the borrowed receiver. Reached only when
+    // nothing accepted the arguments as written.
+    if (selected == NULL && status == OverloadNone && !opOnPointer && (callnode->flags & FlagOperator)
+        && callnode->args && callnode->args->used == 1 && fnCallBorrowReadsThrough(nodesGet(callnode->args, 0))) {
+        INode **argp = &nodesGet(callnode->args, 0);
+        INode *arg = *argp;
+        if (fnCallReadThroughAll(argp)) {
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                *argp = arg;
+        }
+    }
+
+    // A comparison whose '==' (or ordering) takes its other operand by '&' lends it:
+    // 'a == b' is '&a == &b' for a type that wrote its comparison against '&Self'
+    // (the receiver was lent just above). Read-only, where the operand lies; a
+    // temporary lasts to the end of its statement. Only the comparison operators,
+    // and only after the operands as written found no candidate, so a comparison
+    // declared for values or written with its borrows is selected as before.
+    if (selected == NULL && status == OverloadNone && (callnode->flags & FlagOperator)
+        && (methsym == eqName || methsym == ltName || methsym == leName || methsym == gtName
+            || methsym == geName)
+        && callnode->args && callnode->args->used == 1 && isExpNode(nodesGet(callnode->args, 0))) {
+        INode **argp = &nodesGet(callnode->args, 0);
+        INode *arg = *argp;
+        // (a struct: a number has its own comparison, which a borrow cannot cure)
+        if (iexpGetTypeDcl(arg)->tag == StructTag) {
+            fnCallLendEnumOperand(pstate, argp);
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                *argp = arg;
+        }
+    }
 
     // 'x[i].m()' where no 'm' takes the element's read-only borrow: the index
     // is in set position, so a type declaring '&[]' lends its mutable borrow
@@ -1871,7 +2357,47 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
     }
 
+    // A call on a reference that does not permit what the method's 'self' borrows
+    // is refused as '(*r).m(x)' is, and as a '<-' on it, one entry or several
+    // (contentsLowerEntries), is: the method exists and only the permission is
+    // wrong, so the call gets the permission's error (ErrorInvType), not the
+    // 'no candidate' of a method that is not there. The receiver is read through
+    // and borrowed as a value is (fnCallBorrowReceiver), which finds a method only
+    // where one by that name takes the arguments, so a call that fails for
+    // another reason still reports it. The index '&x[i]' of a read-only receiver
+    // keeps its own explanation (fnCallRefIndexWantsMut), which says what to write.
+    if (selected == NULL && status == OverloadNone
+        && !(methsym == refIndexName && (callnode->flags & FlagIndex))) {
+        INode *refobjtype = iexpGetTypeDcl(obj);
+        INode *derefobj = obj;
+        if (refobjtype->tag == RefTag && !permIsLock(((RefNode*)refobjtype)->perm) && derefInject(&derefobj)) {
+            int errsbefore = errors;
+            callnode->objfn = derefobj;
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                callnode->objfn = obj;
+            else if (errors != errsbefore) {
+                // The borrow said what the permission refuses (an owner behind a
+                // '&'), as the same call on '*r' does: that is the report
+                callnode->vtype = errorType;
+                return -1;
+            }
+        }
+    }
+
+    if (selected == NULL && status == OverloadNone && textValueFallback(pstate, callnode))
+        return fnCallLowerMethodOn(pstate, callnode, NULL);
+
     if (selected == NULL) {
+        // A text receiver's '<-' that no candidate took (a writer, a String, the
+        // console) is the piece's own toText written into the writer the receiver
+        // is or lends (textSendFallback)
+        if (methsym == lessDashName && (callnode->flags & FlagOpAssgn) && status == OverloadNone
+            && textSendFallback(pstate, callnode, obj)) {
+            if (callnode->vtype == errorType)
+                return -1;
+            return fnCallLowerMethodOn(pstate, callnode, NULL);
+        }
         // A lock-managed reference reaches its value through a borrow only,
         // which a method's receiver is not made of
         INode *objtype = iexpGetTypeDcl(obj);
@@ -1879,7 +2405,9 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             permLockRefused(obj, ((RefNode*)objtype)->perm, "call a method on the value");
         }
         else if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
-            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
+            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status)
+            && !(objdereftype->tag == VectorTag && status == OverloadNone
+                && vectorNoCandidate(callnode, objdereftype, methsym)))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         // Every path here has reported: the call is a bad value from now on, so
         // what takes it as an argument or an initializer says nothing more of it
@@ -1906,6 +2434,12 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (selected == NULL)
             return -1;
     }
+    else if (selected->value && selected->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)selected->value)->intrinsicFn == TextNbrIntrinsic) {
+        selected = fnCallTextNumber(callnode, selected);
+        if (selected == NULL)
+            return -1;
+    }
 
     // An enum's equality reads its discriminant, which is the whole of the value
     // only where every variant is empty. Where a variant carries fields, the call
@@ -1919,22 +2453,39 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
 
     // An enum's method belongs to its variants: each has a clone of it, and the
     // enum's own is never generated. Called through a reference, the tag selects
-    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum --
-    // which only a method taking 'self' by value can be -- the tag would have to
-    // select it too, and dispatch on a value is not built, so it is refused here
-    // rather than left as a call to a function that does not exist. An intrinsic,
-    // such as a payload-free enum's '==', is no function and is not refused. On a
-    // variant's value the receiver's type is the variant, whose clone is selected.
-    // A method whose receiver names the enum ('self &Lamp') is one function over
-    // the whole enum and is called as it is: nothing is read from the tag.
+    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum for a
+    // reference receiver ('self: &'), the value was borrowed for it
+    // (fnCallBorrowReceiver), so the call is the one through that borrow,
+    // '(&k).name()', and is dispatched the same way. Called on a value for a
+    // method taking 'self' by value, the tag would have to select it too, and
+    // dispatch on a value is not built, so it is refused here rather than left as
+    // a call to a function that does not exist. An intrinsic, such as a
+    // payload-free enum's '==', is no function and is not refused. On a variant's
+    // value the receiver's type is the variant, whose clone is selected. A method
+    // whose receiver names the enum ('self: &Lamp') is one function over the
+    // whole enum and is called as it is: nothing is read from the tag.
     if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
         && !structIsWholeEnumMethod((INode*)selected)
         && (selected->value == NULL || selected->value->tag != IntrinsicTag)) {
         INode *owner = inodeGetOwner((INode*)selected);
+        if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)
+            && callnode->objfn != obj && iexpGetTypeDcl(callnode->objfn)->tag == RefTag
+            && iexpGetTypeDcl(obj)->tag != RefTag
+            && fnCallLowerTraitMethod(pstate, callnode, owner))
+            return 1;
+        // The refusal names the two receivers that do work on a value: a
+        // reference, dispatched on the tag, and for an enum one naming it, which
+        // is one function over the whole enum
         if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
-            errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
-                "`%s` runs the variant's own, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the method with a reference receiver, which dispatches on the tag.",
-                &methsym->namestr, &((StructNode*)owner)->namesym->namestr);
+            Name *ownername = ((StructNode*)owner)->namesym;
+            if (owner->flags & EnumType)
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too), or 'self: %s', one function over the whole enum.",
+                    &methsym->namestr, &ownername->namestr, &ownername->namestr);
+            else
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too).",
+                    &methsym->namestr, &ownername->namestr);
             callnode->vtype = errorType;
             return 1;
         }
@@ -2037,9 +2588,10 @@ static Name *fnCallOperatorName(FnCallNode *node) {
 }
 
 // Is this one of the comparisons a reference reads through to its referent for:
-// '==', '!=' and the four orderings?
+// '==', '!=', the four orderings and the three-way '<=>'?
 static int fnCallIsValueCompare(Name *op) {
-    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName;
+    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName
+        || op == threeWayName;
 }
 
 // Does a value of this type have a place that '===' can ask about?
@@ -2141,9 +2693,9 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
     return NULL;
 }
 
-// '==' on two slices compares their elements (doc/reference/refarrayref.html,
+// '==' on two slices compares their elements (doc/manual/lib-collections.html,
 // "Comparison"): equal when the counts are and each element is '==' to its
-// partner. '!=' arrives here as '==' under a 'not' (fnCallNeFromEq) unless the
+// partner. '!=' arrives here as '==' under a '!' (fnCallNeFromEq) unless the
 // elements have no '==', which is reported under the '!=' that was written. A
 // slice has no order, so an ordering is refused.
 //
@@ -2203,6 +2755,65 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// '==' on two tuples of the same types, from two to four elements, compares them
+// element by element: core's 'mem.tupleEq2' to 'tupleEq4' (tupleEqFn), generic
+// functions whose bodies are the comparison '&a.0 == &b.0 && ...', instantiated at
+// the element types. As for a slice's comparison the instance is then checked as
+// any call is, so an element with no '==' is refused inside it, naming the
+// element's type. Both operands are lent read-only where they lie (a value that is
+// not a place, to the end of its statement), so nothing is copied or moved in.
+// '!=' arrives as '==' under a '!' (fnCallNeFromEq).
+static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    TupleNode *tuple = (TupleNode*)iexpGetTypeDcl(node->objfn);
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two tuples is refused: a tuple has no order. Compare their elements one by one.", &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    if (op == neName) {
+        errorUnreachable((INode*)node, "a tuple's '!=' not derived from its '=='");
+        node->vtype = errorType;
+        return;
+    }
+    uint32_t arity = tuple->elems->used;
+    FnDclNode *tupleeq = arity >= 2 && arity <= 4 ? tupleEqFn(arity) : NULL;
+    if (tupleeq == NULL) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            arity >= 2 && arity <= 4
+                ? "`==` on two tuples calls the core package's 'mem.tupleEq%d', and the core package found declares none."
+                : "`==` compares tuples of two to four elements, and this one has %d. Compare their elements one by one.",
+            (int)arity);
+        node->vtype = errorType;
+        return;
+    }
+    if (node->args == NULL || node->args->used != 1 || !isExpNode(nodesGet(node->args, 0))
+        || !itypeIsSame((INode*)tuple, iexpGetTypeDcl(nodesGet(node->args, 0)))) {
+        errorMsgNode((INode*)node, ErrorInvType,
+            "A tuple is compared with a tuple of the same element types, and this one is not.");
+        node->vtype = errorType;
+        return;
+    }
+    Nodes *typeargs = newNodes(arity);
+    INode **elemp;
+    uint32_t cnt;
+    for (nodesFor(tuple->elems, cnt, elemp))
+        nodesAdd(&typeargs, *elemp);
+    FnDclNode *instance = genericMethodInstance(pstate, node, tupleeq, typeargs, unknownType);
+    if (instance == NULL) {
+        node->vtype = errorType;
+        return;
+    }
+    fnCallLendEnumOperand(pstate, &node->objfn);
+    fnCallLendEnumOperand(pstate, &nodesGet(node->args, 0));
+    nodesInsert(&node->args, node->objfn, 0);
+    node->objfn = (INode*)newNameUseFromDclNode((INode*)instance, (INode*)node);
+    node->methfld = NULL;
+    node->vtype = ((FnSigNode*)instance->vtype)->rettype;
+    fnCallFinalizeArgs(pstate, node);
+}
+
 // An array, a reference to one, or a '&str' (a string literal is one), compared
 // with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
@@ -2236,7 +2847,7 @@ static int fnCallArrayAsSlice(TypeCheckState *pstate, FnCallNode *node) {
 // such borrow through. Any other is refused rather than read through on one
 // side only, so 'r == v' never says something '*r == v' does not.
 //
-// A referent type that declares the operator for references ('self &', 'other &T')
+// A referent type that declares the operator for references ('self: &', 'other &T')
 // takes the operands as they are. Otherwise both are dereferenced and the value's
 // operator selected, exactly as for '*a == *b'. A reference to a pointer, to
 // another reference or to a slice reads through to that, which then compares as
@@ -2264,11 +2875,11 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
 
-    // Text through an owner, '&So[str]' or '&Rc[str]', against text one level
+    // Text through an owner, '&Uni[str]' or '&Rc[str]', against text one level
     // shallower, '&str': only the owner's side is read through, as '&str ==
-    // &So[str]' already reads through the owner when it takes its other side, so
+    // &Uni[str]' already reads through the owner when it takes its other side, so
     // the comparison does not depend on operand order
-    if (referent->tag == RefTag) {
+    if (referent->tag == RefTag && iexpGetTypeDcl(*argp)->tag == RefTag) {
         INode *otherreferent = itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp);
         if (otherreferent->tag != RefTag && otherreferent->tag != PtrTag && otherreferent->tag != ArrayRefTag
             && fnCallTextOf(iexpGetTypeDcl(node->objfn)) != NULL && fnCallTextOf(iexpGetTypeDcl(*argp)) != NULL) {
@@ -2279,13 +2890,28 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
     if (referent->tag == PtrTag || referent->tag == RefTag || referent->tag == ArrayRefTag) {
         fnCallDerefOperand(&node->objfn, node);
-        fnCallDerefOperand(argp, node);
+        // The other side is a value where a borrow of a borrow was read through
+        // against it (fnCallBorrowReadsThrough): nothing there to read
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
         if (referent->tag == RefTag)
             fnCallLowerRefCompare(pstate, node);
         else if (referent->tag == ArrayRefTag)
             fnCallLowerSliceCompare(pstate, node);
         else
             fnCallLowerPtrMethod(node, ptrType);
+        return;
+    }
+    // An enum against an empty variant of it asks the tag alone, whoever wrote its '=='
+    if (op == eqName && referent->tag == StructTag && (referent->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)referent))
+        return;
+    // Tuples are compared as the values they refer to (fnCallLowerTupleCompare)
+    if (referent->tag == TTupleTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
+        fnCallLowerTupleCompare(pstate, node);
         return;
     }
     if (!isMethodType(referent)) {
@@ -2392,7 +3018,7 @@ static StructNode *fnCallTextOf(INode *objtype) {
     return NULL;
 }
 
-// A range borrowed from text, '&s[a..<b]', '&s[a..]' or '&s[a...b]', is a call
+// A range borrowed from text, '&s[a..<b]', '&s[a..]' or '&s[a..=b]', is a call
 // of the text's 'slice', 'sliceFrom' or 'sliceThrough' on what is being
 // indexed: the method checks the bounds fall between characters and gives a
 // '&str' that keeps the text borrowed, as any method's borrow does. Answers 0,
@@ -2466,7 +3092,7 @@ static void fnCallLentOperands(TypeCheckState *pstate, FnCallNode *node) {
 // is what left the call naming a declaration with no symbol, and generation
 // dereferenced that null.
 //
-// The route is the one doc/reference/reftraitvar.html describes -- the tag says which
+// The route is the one doc/manual/mod-substitution.html#traitvar describes -- the tag says which
 // variant, that selects the vtable, and the vtable holds the method -- and it is
 // already built as the coercion from '&Trait' to '&<Trait'. So this coerces and
 // then dispatches virtually, which is what a caller otherwise has to write by
@@ -2571,9 +3197,12 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     // reference, which is taken as it is. Either way the rest of this works on
     // a reference to the method-declaring type: the operator is looked up on
     // that type, and the rewrite below dereferences the reference to reach it.
+    // A '<-' on a value is the exception: it borrows its receiver with what
+    // the method it selects declares for 'self' (fnCallBorrowReceiver, as a
+    // named method does), because the selection depends on the entry appended.
     if (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
-    else
+    else if (methsym != lessDashName)
         borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
 
     // Lower to op-assign, if method supported by type
@@ -2608,7 +3237,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
         nodesGet(callnode->args, 0) = (INode *)opname;
     }
 
-    // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
+    // Let's try rewriting to: {let tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     inodeLexCopy((INode*)tmpvar, (INode*)callnode);
     NameUseNode *tmpname = newNameUseNode(tempName);
@@ -2643,7 +3272,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
 }
 
 // A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
-// (doc/reference/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// (doc/manual/rec-methods.html#compare, "Comparison Operator Methods"). Asked of a struct
 // receiver's own type, or of the struct a reference refers to, through any
 // number of references, since '!=' on references compares the values
 // (fnCallLowerRefCompare). A type that declares its own '!=' keeps it, an
@@ -2676,6 +3305,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    // a tuple's, from the '==' that compares its elements (fnCallLowerTupleCompare)
+    if (objtype->tag == TTupleTag)
+        return 1;
     if (objtype->tag == ArrayRefTag) {
         char buf[256];
         return fnCallSliceElemNoEq(((RefNode*)objtype)->vtexp, buf, sizeof(buf)) == NULL;
@@ -2693,8 +3325,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
 // module, and the hop disappears: with no arguments the node becomes the bound
 // name, and with arguments the callee. Returns 1 when the node was replaced
 // outright (and checked), so the caller stops.
-static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
+// The member a path through an instance of a generic module names, bound in
+// the instance's namespace, or NULL when it names nothing there (reported)
+static NameUseNode *fnCallInstanceMember(TypeCheckState *pstate, FnCallNode *node) {
     ModuleNode *mod = (ModuleNode*)nameUseGetDcl((NameUseNode*)node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     member->dclnode = namespaceFind(&mod->namespace, member->namesym);
@@ -2702,9 +3335,7 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
         errorMsgNode((INode*)member, ErrorUnkName,
             "The name %s does not refer to a declared name of module %s",
             &member->namesym->namestr, &mod->namesym->namestr);
-        node->vtype = errorType;
-        *((INode**)nodep) = (INode*)newErrorNode((INode*)node);
-        return 1;
+        return NULL;
     }
     member->flags |= FlagQualified;
     ModuleNode *asker = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
@@ -2712,6 +3343,17 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
+    return member;
+}
+
+static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    NameUseNode *member = fnCallInstanceMember(pstate, node);
+    if (member == NULL) {
+        node->vtype = errorType;
+        *((INode**)nodep) = (INode*)newErrorNode((INode*)node);
+        return 1;
+    }
     if (node->args == NULL) {
         *((INode**)nodep) = (INode*)member;
         inodeTypeCheckAny(pstate, (INode**)nodep);
@@ -2839,7 +3481,111 @@ static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
 
     node->methfld = NULL;
     node->tag = TypeLitTag;
-    typeLitNbrFromCheck(node, nbrtype);
+    if (!typeLitNbrFromCheck(node, nbrtype))
+        return 1;
+    // A float into an integer, or a number into a char, takes a value for every
+    // input at run time (saturating; U+FFFD). A constant with no such value is
+    // refused here, in any expression, as a 'const' is, rather than left to the
+    // run time's answer (Bug 43). One that has a value stays what it is.
+    INode *srctype = itypeGetTypeDcl(((IExpNode*)nodesGet(node->args, 0))->vtype);
+    if ((nbrtype == (INode*)charType && srctype != (INode*)charType)
+        || (srctype->tag == FloatNbrTag && nbrtype != (INode*)boolType && (nbrtype->tag == IntNbrTag || nbrtype->tag == UintNbrTag)))
+        litFoldConst((INode**)nodep);
+    return 1;
+}
+
+// Core's struct of this name, or NULL. Core's module is reached through its
+// 'str', which the compiler adopts from it.
+static INode *fnCallCoreStruct(char *name) {
+    ModuleNode *mod = dclInfoGetModule((INode*)strTypeDcl);
+    if (mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    INode *found = namespaceFind(&mod->namespace, nametblFind(name, strlen(name)));
+    return found && found->tag == StructTag ? found : NULL;
+}
+
+// Is this a number type that reads text and converts checked: any of them but
+// bool and char, which are no quantities?
+static int fnCallIsQuantity(INode *type) {
+    return (type->tag == IntNbrTag || type->tag == FloatNbrTag
+        || (type->tag == UintNbrTag && type != (INode*)boolType && type != (INode*)charType));
+}
+
+// 'i32.parse(text)' and 'u8.tryFrom(x)': a number type's reading of text and its
+// checked conversion. A number type's methods are built in and hold no body
+// written in Cone, so the call is rewritten, once the receiver is known to be a
+// number type -- named directly, through an alias, or as the argument a type
+// parameter has in an instance -- to the same static function of core's
+// 'NumberConv[T]': 'NumberConv[i32].parse(text)', 'NumberConv[u8].tryFrom(x)'.
+// That is an ordinary path through an instance of a generic struct, and the
+// source type of a tryFrom is inferred by the call from its argument as any
+// generic function's type parameter is. The argument is not checked here, so it
+// is checked once. Returns 1 when the node was handled, lowered or refused, so
+// the caller stops.
+static int fnCallNumberConvert(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!isTypeNode(node->objfn) || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return 0;
+    Name *method = ((NameUseNode*)node->methfld)->namesym;
+    int isparse = method == parseName;
+    if (!isparse && method != tryFromName)
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (!fnCallIsQuantity(nbrtype))
+        return 0;
+    Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : ((NbrNode*)nbrtype)->namesym;
+    // Whatever goes wrong below, the expression has no type to give
+    node->vtype = errorType;
+
+    if (node->args == NULL || node->args->used != 1) {
+        errorMsgNode(node->args == NULL ? node->methfld : (INode*)node,
+            isparse ? ErrorNbrParse : ErrorNbrTryFrom,
+            isparse ? "%s.parse reads one text: %s.parse(text)" : "%s.tryFrom converts one number: %s.tryFrom(value)",
+            &written->namestr, &written->namestr);
+        return 1;
+    }
+    if (namedValRefuseArgs(node->args, "a call"))
+        return 1;
+    INode *target = fnCallCoreStruct("NumberConv");
+    if (target == NULL) {
+        errorMsgNode((INode*)node, ErrorNoMbr,
+            "core has no `NumberConv`, which a number's `%s` is made through.", &method->namestr);
+        return 1;
+    }
+
+    // 'NumberConv[i32]': the generic struct given the number type
+    NameUseNode *structuse = newNameUseNode(((StructNode*)target)->namesym);
+    inodeLexCopy((INode*)structuse, node->objfn);
+    structuse->dclnode = target;
+    FnCallNode *inst = newFnCallNode((INode*)structuse, 1);
+    inodeLexCopy((INode*)inst, node->objfn);
+    inst->flags |= FlagIndex;
+    nodesAdd(&inst->args, nbrtype);
+    node->objfn = (INode*)inst;
+    node->vtype = unknownType;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// 'f32.fromBits(b)': a static function the compiler declares on a number type
+// other than 'from'. The path is collapsed to the function as one through a
+// struct is (fnCallNameResPath), and the call goes on as any call of a function.
+// A name the type does not declare as a static function is left as it was, and
+// diagnosed as a path this does not collapse. Returns 1 when collapsed.
+static int fnCallNumberStatic(FnCallNode *node) {
+    if (!isTypeNode(node->objfn))
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)nbrtype, member->namesym);
+    if (found == NULL || found->tag != FnDclTag || (found->flags & FlagMethFld))
+        return 0;
+    member->dclnode = found;
+    member->flags |= FlagQualified;
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
     return 1;
 }
 
@@ -2917,6 +3663,20 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         || !genericHasValueParm(((FnDclNode*)found)->genericinfo))) {
         member->flags |= FlagRcvChecked;
         return 0;
+    }
+    // 'x.m[i32](y)': a macro method given its type arguments, declared in the
+    // receiver's type itself (one folded in from a field is not reached this way)
+    if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)
+        && iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym) == found) {
+        Nodes *macrotypeargs = index->args;
+        inodeLexCopy((INode*)node, (INode*)member);
+        node->objfn = member->objfn;
+        node->methfld = (INode*)methfld;
+        if (node == index)
+            node->args = NULL;
+        node->flags &= ~FlagIndex;
+        macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, macrotypeargs);
+        return 1;
     }
     if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
         || ((FnDclNode*)found)->genericinfo == NULL) {
@@ -3033,7 +3793,7 @@ int fnCallRefusePermArg(FnCallNode **nodep) {
 }
 
 // The markers written after a type in a reference type's brackets,
-// 'So[Shape + Sendable + Shareable]' (the parser joins them with '+', as
+// 'Uni[Shape + Sendable + Shareable]' (the parser joins them with '+', as
 // any sum): the type they follow is returned and the markers, RefMark bits, are
 // put in *marks. A '+' joining anything but a marker is reported, and the
 // operands that are not markers are left in place.
@@ -3067,7 +3827,7 @@ static INode *fnCallMarkSplit(INode *arg, uint8_t *marks) {
 // brackets hold an optional permission, 'uni' when it is left out, then the
 // value type. The reference is virtual exactly when the value type is an open
 // trait: an enum is a trait to the compiler too, and a reference to one is thin.
-// A virtual one may say what the value behind it is, 'So[fn() + Sendable]'.
+// A virtual one may say what the value behind it is, 'Uni[fn() + Sendable]'.
 // From here on nothing downstream sees how the type was written.
 static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
@@ -3118,7 +3878,7 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
         INode *vdcl = itypeGetTypeDcl(vtype);
         if (vdcl->tag == StructTag && (vdcl->flags & TraitType) && !(vdcl->flags & HasTagField))
             tag = VirtRefTag;
-        // 'So[fn(i32) i32]': an owner of anything callable with that signature
+        // 'Uni[fn(i32) i32]': an owner of anything callable with that signature
         else if (vdcl->tag == FnSigTag)
             tag = VirtRefTag;
     }
@@ -3181,7 +3941,7 @@ static FnSigNode *fnCallCallableParm(FnDclNode *cand, uint32_t pos) {
 }
 
 // Can a value of this type be called: a function reference, a reference or owner
-// of a callable ('&<fn(...)', 'So[fn(...)]'), or a struct with a '()'?
+// of a callable ('&<fn(...)', 'Uni[fn(...)]'), or a struct with a '()'?
 static int fnCallTypeCallable(INode *type) {
     if (type == NULL || type == unknownType || !isTypeNode(type))
         return 1;
@@ -3206,7 +3966,7 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
         char held[200] = "";
         itypeSpellCat(held, sizeof(held), fld->vtype, 0);
         errorMsgNode((INode*)node, ErrorFldArgs,
-            "`%s` is a field of %s holding %s, which is not callable, so it takes no arguments. A field is called when it holds a function reference, a `&<fn(...)`, a `So[fn(...)]` or `Rc[fn(...)]`, or a struct with a `()` method.",
+            "`%s` is a field of %s holding %s, which is not callable, so it takes no arguments. A field is called when it holds a function reference, a `&<fn(...)`, a `Uni[fn(...)]` or `Rc[fn(...)]`, or a struct with a `()` method.",
             &fld->namesym->namestr, itypeName(rcvtype), held);
         node->vtype = errorType;
         return 0;
@@ -3219,7 +3979,7 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
     return 1;
 }
 
-// A parameter that takes a borrowed callable, '&<fn(x i32) i32' or '&<mut fn(...)':
+// A parameter that takes a borrowed callable, '&<fn(x: i32) i32' or '&<mut fn(...)':
 // the signature a closure literal given to it is to fit, and the permission it
 // is lent with. A parameter that takes a borrowed trait with one method,
 // '&<Shape', is the same: the literal fills the method, whose name is in
@@ -3375,7 +4135,7 @@ static FnDclNode *fnCallClosureOverload(TypeCheckState *pstate, FnCallNode *node
         snprintf(names + used, sizeof(names) - used, "%s%s", i ? ", " : "", &viable[i]->namesym->namestr);
     }
     errorMsgNode((INode*)clo, ErrorClosureOverload,
-        "This closure could be given to more than one overload of %s (%s). Write the parameter's types, as in 'fn (p Vec3) { ... }', to say which.",
+        "This closure could be given to more than one overload of %s (%s). Write the parameter's types, as in 'fn (p: Vec3) { ... }', to say which.",
         &written->namestr, names);
     return NULL;
 }
@@ -3456,7 +4216,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 
 // A field, a method or an index reached through a reference to a reference, to
 // an owner of one, to a slice or to a virtual reference ('&&Pt', '&&&Pt',
-// '&mut &Pt', '&So[&Pt]') reads through every reference but the last: the
+// '&mut &Pt', '&Uni[&Pt]') reads through every reference but the last: the
 // receiver becomes '*r', '**r', ... as though the dereferences were written, so
 // everything after sees a receiver of one reference level. Only a '.name' or an
 // index reads through, never an operator: the outer reference's own operators
@@ -3469,8 +4229,12 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 // reached through a step that cannot write lends only what that step lets
 // (borrowOwnerLendRefused: a '&' lends only '&' of an owner), so the dereference
 // that reaches it is typed with the permission of that step, and every use
-// after it -- a field written, a method wanting 'self &mut' -- is held to it.
+// after it -- a field written, a method wanting 'self: &mut' -- is held to it.
 static void fnCallReadThroughRefs(FnCallNode *node) {
+    // An index place as a receiver is reached through its borrow (as at the
+    // dispatch), before the levels below it are read through
+    if (node->objfn && derefIsIndexPlace(node->objfn))
+        node->objfn = ((StarNode*)node->objfn)->vtexp;
     if (!isExpNode(node->objfn) || (node->flags & FlagOperator))
         return;
     // A borrowed or ranged index has the borrow the parser put round its receiver
@@ -3486,6 +4250,14 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
         RefNode *step = (RefNode*)type;
         RefNode *held = (RefNode*)itypeGetTypeDcl(step->vtexp);
         if (held->tag != RefTag && held->tag != ArrayRefTag && held->tag != VirtRefTag)
+            return;
+        // 'clone' takes '&Self': on a borrow of a read-only borrow, Self is that
+        // inner borrow, which copies (core's Clone, genericTypeIs), so the call
+        // stops at the outer level instead of reading through it
+        if (node->methfld && isNameUseNode(node->methfld)
+            && ((NameUseNode*)node->methfld)->namesym == cloneName
+            && (node->args == NULL || node->args->used == 0)
+            && refIsCopyBorrow((INode*)held))
             return;
         if (clamp == NULL && !(permGetFlags(step->perm) & MayWrite))
             clamp = step->perm;
@@ -3547,6 +4319,10 @@ static INode *fnCallArgAgreed(INode *set, uint32_t firstparm, uint32_t argi, uin
         INode *ptype = ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype;
         if (ptype == NULL)
             return NULL;
+        // A text receiver's '<-' takes a text, and a value of any other type goes in
+        // by its own toText: the text is no type to expect of the value
+        if (firstparm == 1 && sig->parms->used > 0 && textIsReceiver(((VarDclNode*)nodesGet(sig->parms, 0))->vtype))
+            return NULL;
         if (agreed == NULL)
             agreed = ptype;
         else if (!itypeIsSame(agreed, ptype))
@@ -3593,6 +4369,84 @@ static int fnCallIsEmptyVariantName(INode *node) {
 // an empty variant's bare name is by then (fnCallVariantTermNameRes)
 static int fnCallArgMayInfer(INode *arg) {
     return arg->tag == FnCallTag;
+}
+
+// A number operator that wants both operands the one number type: a sum, difference,
+// product, quotient or remainder, or an ordering comparison, three-way included
+static int fnCallIsNumericOp(Name *op) {
+    return op == plusName || op == minusName || op == multName || op == divName || op == remName
+        || op == ltName || op == leName || op == gtName || op == geName || op == threeWayName;
+}
+
+// The number type of an operand, when it is a plain number (not a pointer or a reference
+// to one, nor a bool or a char), else NULL
+static INode *fnCallOperandNumber(INode *operand) {
+    if (!isExpNode(operand) || inodeIsError(operand) || litIsUntypedNumber(operand))
+        return NULL;
+    INode *type = iexpGetTypeDcl(operand);
+    if ((type->tag == IntNbrTag || type->tag == UintNbrTag || type->tag == FloatNbrTag)
+        && type != (INode*)boolType && type != (INode*)charType)
+        return type;
+    return NULL;
+}
+
+// A variant of a generic enum constructed with its type arguments left to be
+// inferred ('Some(5)', 'None', 'Some(None)'): what the generic it is given to
+// wants of it may fix them ('Some(5)' wanted as an 'Option[i64]' holds an i64).
+// Such an argument is checked after the others, wanted as the type its parameter
+// has by then (genericFnArgExpect). Only a construction, never a function call:
+// the order a call's arguments are checked in is what narrowing sees
+// (narrowCallMade).
+// A variant of a non-generic enum, 'Fault.SoldOut' or 'Fault.Short(3)', is one
+// too when no call is among its values: given to a generic ('Err(Fault.SoldOut)')
+// it names no type parameter of its own, so where it goes may say it is the enum,
+// 'Fault', which it is then coerced to as a variant passed to an enum parameter is.
+static int fnCallArgIsCtor(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return 0;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL)
+        return 0;
+    if (variant->genericinfo != NULL)
+        return 1;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if ((*argp)->tag == FnCallTag && !fnCallArgIsCtor(*argp))
+                return 0;
+    return 1;
+}
+
+// Is this a construction only where it goes can type: a variant of a generic enum
+// that has a type parameter none of its values names, with its type arguments not
+// written ('None'), or one holding such a construction ('Some(None)')? As the
+// receiver of '==', it is typed as the other side is.
+static int fnCallArgNeedsExpected(INode *arg) {
+    if (arg->tag == NamedValTag)
+        arg = ((NamedValNode*)arg)->val;
+    if (arg->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)arg;
+    if (call->methfld != NULL || (call->flags & FlagOperator))
+        return 0;
+    StructNode *variant = fnCallVariantNamed(call->objfn);
+    if (variant == NULL || variant->genericinfo == NULL)
+        return 0;
+    if (genericVariantParmUnnamed(variant))
+        return 1;
+    INode **argp;
+    uint32_t cnt;
+    if (call->args)
+        for (nodesFor(call->args, cnt, argp))
+            if (fnCallArgNeedsExpected(*argp))
+                return 1;
+    return 0;
 }
 
 // A name that stands as a value term (the parser's mark) and names an empty
@@ -3720,14 +4574,39 @@ static int fnCallVariantCall(TypeCheckState *pstate, FnCallNode *node) {
 // alone (fnCallExpectFor) and the checks of the arguments, which run inside, put it back.
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
+// A plain index, 'x[i]', lowered to a call of the type's '[]' that lends a
+// borrow, is the place that borrow reaches, '*x.`[]`(i)', as an array's element
+// is (Rust's 'Index': 'a[i]' is '*a.index(i)'): read, it copies; a non-copyable
+// element is not moved out of it (flowMoveSource); '&x[i]' is the borrow
+// (fnCallImplicitName). An index in set position took '&[]' (FlagBorrow) and is
+// stored through where it is written; a '[]' returning a value is a value.
+static void fnCallIndexPlace(INode **nodep) {
+    FnCallNode *call = (FnCallNode*)*nodep;
+    if (call->tag != FnCallTag || !(call->flags & FlagIndex) || (call->flags & FlagBorrow)
+        || !isNameUseNode(call->objfn) || call->vtype == NULL || call->vtype == errorType)
+        return;
+    INode *rettype = iexpGetTypeDcl((INode*)call);
+    if (rettype->tag != RefTag || itypeGetTypeDcl(((RefNode*)rettype)->region) != borrowRef)
+        return;
+    if (derefInject(nodep))
+        (*nodep)->flags |= FlagIndexPlace;
+}
+
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *savednode = fnCallExpectNode;
     INode *savedtype = fnCallExpectType;
     fnCallExpectNode = *nodep;
     fnCallExpectType = expectType;
+    int savedstated = genericExpectStated;
+    genericExpectStated = expectType != NULL && expectType == genericStatedType;
+    int plainindex = ((*nodep)->flags & FlagIndex) && (*nodep)->methfld == NULL
+        && !((*nodep)->flags & (FlagBorrow | FlagRange));
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    genericExpectStated = savedstated;
+    if (plainindex)
+        fnCallIndexPlace((INode**)nodep);
     // A call may store another variant over an enum reached through a reference others
     // may share (narrow.h). A field, an element and a number's operator cannot.
     INode *done = *(INode**)nodep;
@@ -3749,10 +4628,382 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     }
 }
 
+// The macro method a type's member by an operator's name is, or NULL: a function,
+// a field or nothing. A macro a type holds by folding is reached through its alias.
+static MacroDclNode *fnCallMemberMacro(INode *found) {
+    INode *member = found && found->tag == AliasDclTag ? aliasDclResolve(found) : found;
+    return member && member->tag == MacroDclTag && (member->flags & FlagMethFld) ? (MacroDclNode*)member : NULL;
+}
+
+// Expand the macro method an operator reached, its receiver standing in for
+// 'self' and its operands for the parameters after it, as 'x.m(y)' expands a
+// macro method named on a receiver (macroMethodTypeCheck). An operator has as
+// many operands as it is written with, so a macro declaring another number of
+// parameters after 'self' is refused here, naming the operator.
+static void fnCallOperatorExpand(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, int folded,
+        StructNode *rcvtype, Name *name) {
+    FnCallNode *node = *nodep;
+    uint32_t operands = node->args ? node->args->used : 0;
+    uint32_t parms = macro->parms ? macro->parms->used - 1 : 0;
+    // A set's candidates each declare their own count: the selection judges them
+    if (operands != parms && macro->more == NULL) {
+        errorMsgNode((INode*)node, ErrorArgCount,
+            "`%s` is written here with %u operand%s besides its receiver, and %s's macro method `%s` declares %u parameter%s after self.",
+            &name->namestr, operands, operands == 1 ? "" : "s", &rcvtype->namesym->namestr,
+            &macro->namesym->namestr, parms, parms == 1 ? "" : "s");
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+    // A folded macro method expands with the field it was folded through as
+    // its self, as a folded method runs with it
+    if (folded)
+        structFoldReceiver(pstate, rcvtype, name, &node->objfn, (INode*)node);
+    macroMethodTypeCheck(pstate, nodep, macro, NULL);
+}
+
+// 'x += y' where the type declares no '+=' and its '+' is a macro method: the
+// rewrite fnCallOpAssgn makes for a '+' that is a function, '{let tmp = &mut x;
+// *tmp = *tmp + y}', with the '+' expanded. The sum is stored back, so it must
+// be what the place holds.
+static void fnCallOpAssgnMacro(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, int folded,
+        StructNode *rcvtype, Name *basesym) {
+    FnCallNode *callnode = *nodep;
+    Name *opsym = ((NameUseNode*)callnode->methfld)->namesym;
+    // 'x += await f()' made first: a function '+' has its operand taken out into a
+    // local before the seam (fnCallOpAssgn), which an expansion, with the operand
+    // substituted where the body uses it, cannot do. Refused rather than cut wrongly.
+    if (callnode->args && callnode->args->used == 1 && awaitWithin(nodesGet(callnode->args, 0))) {
+        errorMsgNode(nodesGet(callnode->args, 0), ErrorMacroAwait,
+            "`%s` through %s's macro method `%s` cannot take an `await` in its operand yet: the operand is substituted into the macro's body, where the wait cannot be cut. Await into a local first, `let v = await ...; x %s v`.",
+            &opsym->namestr, &rcvtype->namesym->namestr, &basesym->namestr, &opsym->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)callnode);
+        return;
+    }
+    INode *objtype = iexpGetTypeDcl(callnode->objfn);
+    if (objtype->tag != RefTag)
+        borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    inodeLexCopy((INode*)tmpvar, (INode*)callnode);
+    // Built checked, as its initializer is: the expansion's 'self' is a use of
+    // it, and checking that use must not check the declaration again
+    tmpvar->flags |= TypeChecked;
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->dclnode = (INode *)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)callnode);
+    INode *derefvar = (INode *)tmpname;
+    derefInject(&derefvar);
+    inodeLexCopy(derefvar, (INode*)callnode);
+    callnode->objfn = derefvar;
+    ((NameUseNode*)callnode->methfld)->namesym = basesym;
+    callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    INode *sum = (INode*)callnode;
+    fnCallOperatorExpand(pstate, (FnCallNode**)&sum, macro, folded, rcvtype, basesym);
+    if (inodeIsError(sum) || !isExpNode(sum) || ((IExpNode*)sum)->vtype == errorType) {
+        *((INode**)nodep) = sum;
+        return;
+    }
+    INode *dereflval = (INode *)tmpname;
+    derefInject(&dereflval);
+    inodeLexCopy(dereflval, (INode*)callnode);
+    if (!iexpCoerce(&sum, ((IExpNode*)dereflval)->vtype)) {
+        errorMsgNode((INode*)callnode, ErrorInvType,
+            "`%s` stores what %s's macro method `%s` gives back into the place it changes, and `%s` gives %s, not the place's %s.",
+            &opsym->namestr, &rcvtype->namesym->namestr, &basesym->namestr, &basesym->namestr,
+            itypeName(((IExpNode*)sum)->vtype), itypeName(((IExpNode*)dereflval)->vtype));
+        *((INode**)nodep) = newErrorNode((INode*)callnode);
+        return;
+    }
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, sum);
+    inodeLexCopy((INode*)tmpassgn, (INode*)callnode);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)callnode);
+    blk->vtype = ((IExpNode*)sum)->vtype;
+    blk->flags |= FlagKeepTemps;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, (INode*)tmpassgn);
+    *((INode**)nodep) = (INode*)blk;
+}
+
+// An operator whose method is a macro method of its receiver's type expands
+// that macro. The receiver is checked first, so the operands stay unchecked
+// until they are substituted, as a macro's arguments must. The method is the
+// one the operator reaches: its own name ('+', '<', '-x', '++', '+=', '<-',
+// 'x[i]'), or, where the type declares none by that name, the method the
+// operator is lowered through when that is a function -- '==' for '!='
+// (fnCallNeFromEq), '+' for '+=' (fnCallOpAssgn). Only an operator whose name,
+// or the name it is lowered through, some type declares a macro method by
+// (macroMethodNamed) is checked receiver first, so where no type does every
+// operator is checked as it always was. A receiver that its operand types,
+// 'None == x' or '(if c {1.} else {2.}) * x', a literal, or a name that is not
+// a value's, is left to the order it has. A pointer's operators are the
+// pointer's own, so they reach no macro.
+// Answers 1 where the operator expanded, or was refused; 0 to go on with it as a
+// call, with '*checked' set where its receiver has been checked.
+static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *checked) {
+    FnCallNode *node = *nodep;
+    Name *opname = NULL;
+    if ((node->flags & FlagOperator) && node->methfld && isNameUseNode(node->methfld))
+        opname = ((NameUseNode*)node->methfld)->namesym;
+    else if (node->methfld == NULL && (node->flags & FlagIndex)
+        && !(node->flags & (FlagBorrow | FlagRange | FlagCtorParen | FlagNew)) && !fnCallIsSetIndex(node))
+        opname = indexName;
+    if (opname == NULL || node->objfn == NULL)
+        return 0;
+    Name *basesym = (node->flags & FlagOpAssgn) ? fnCallOpEqMethod(opname) : NULL;
+    if (!macroMethodNamed(opname) && !(basesym && macroMethodNamed(basesym))
+        && !(opname == neName && macroMethodNamed(eqName)))
+        return 0;
+    INode *rcv = node->objfn;
+    if (rcv->tag == IfTag || rcv->tag == ULitTag || rcv->tag == FLitTag || rcv->tag == StringLitTag
+        || rcv->tag == NullLitTag || rcv->tag == NilLitTag || rcv->tag == NamedValTag
+        || fnCallArgNeedsExpected(rcv))
+        return 0;
+    // A bare field name inside a method is 'self.field', which checking it makes
+    // of it: the operator is the field's, as it is written through 'self'
+    int barefield = isNameUseNode(rcv) && nameUseNames(rcv, FieldDclTag)
+        && (nameUseGetDcl((NameUseNode*)rcv)->flags & FlagMethFld) && !(rcv->flags & FlagQualified);
+    if (isNameUseNode(rcv) && !nameUseNames(rcv, VarDclTag) && !nameUseNames(rcv, ConstDclTag) && !barefield)
+        return 0;
+    // An index's receiver is a value's name or a member of one: 'x[i]', 'p.items[i]'
+    if (opname == indexName && !isNameUseNode(rcv)
+        && !(rcv->tag == FnCallTag && ((FnCallNode*)rcv)->methfld != NULL && !(rcv->flags & FlagIndex)))
+        return 0;
+
+    inodeTypeCheckAny(pstate, &node->objfn);
+    *checked = 1;
+    if (inodeIsError(node->objfn) || !isExpNode(node->objfn))
+        return 0;
+    INode *rcvtype = iexpGetTypeDcl(node->objfn);
+    if (rcvtype->tag == RefTag)
+        rcvtype = itypeGetTypeDcl(((RefNode*)rcvtype)->vtexp);
+    if (rcvtype->tag != StructTag)
+        return 0;
+    StructNode *strtype = (StructNode*)rcvtype;
+
+    INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, opname);
+    MacroDclNode *macro = fnCallMemberMacro(found);
+    if (macro) {
+        fnCallOperatorExpand(pstate, nodep, macro, found->tag == AliasDclTag, strtype, opname);
+        return 1;
+    }
+    if (found != NULL)
+        return 0;
+
+    // 'a != b' where the type declares no '!=' is 'not (a == b)'
+    if (opname == neName) {
+        INode *eq = iNsTypeFindFnField((INsTypeNode*)rcvtype, eqName);
+        macro = fnCallMemberMacro(eq);
+        if (macro == NULL)
+            return 0;
+        ((NameUseNode*)node->methfld)->namesym = eqName;
+        LogicNode *derivedne = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)derivedne, (INode*)node);
+        derivedne->lexp = (INode*)node;
+        *((INode**)nodep) = (INode*)derivedne;
+        fnCallOperatorExpand(pstate, (FnCallNode**)&derivedne->lexp, macro, eq->tag == AliasDclTag, strtype, eqName);
+        if (inodeIsError(derivedne->lexp) || !isExpNode(derivedne->lexp)
+            || ((IExpNode*)derivedne->lexp)->vtype == errorType)
+            derivedne->vtype = errorType;
+        else if (!iexpCoerceCondition(pstate, &derivedne->lexp))
+            errorMsgNode(derivedne->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+        return 1;
+    }
+
+    // 'x += y' where the type declares no '+=': through its '+'
+    if (basesym) {
+        INode *base = iNsTypeFindFnField((INsTypeNode*)rcvtype, basesym);
+        macro = fnCallMemberMacro(base);
+        if (macro == NULL)
+            return 0;
+        fnCallOpAssgnMacro(pstate, nodep, macro, base->tag == AliasDclTag, strtype, basesym);
+        return 1;
+    }
+    return 0;
+}
+
+// '||' and '&&' are methods of the left operand's type. A bool's are the primitives declared
+// on bool (corenumber.c), whose body is the logic node itself: answer 0 and the node goes on
+// as it always has. Any other type needs the method: a macro method expands in the node's
+// place, the left operand standing for 'self' and the right for the parameter after it, as
+// for any operator macro; a function method is called, the right operand evaluated first as
+// for any call. A type with neither is refused (ErrorNoLogicMethod).
+int fnCallLogicMethod(TypeCheckState *pstate, LogicNode **nodep) {
+    LogicNode *node = *nodep;
+    INode *left = node->lexp;
+    if (inodeIsError(left) || !isExpNode(left))
+        return 0;
+    INode *lefttype = iexpGetTypeDcl(left);
+    // A left operand that failed to check has been reported
+    if (lefttype == errorType || lefttype == unknownType || lefttype == noCareType)
+        return 0;
+    if (lefttype->tag == RefTag)
+        lefttype = itypeGetTypeDcl(((RefNode*)lefttype)->vtexp);
+    if (lefttype == (INode*)boolType)
+        return 0;
+    Name *opname = node->tag == AndLogicTag ? logicAndName : logicOrName;
+    INode *found = NULL;
+    if (lefttype->tag == PtrTag)
+        found = iNsTypeFindFnField(ptrType, opname);
+    else if (isMethodType(lefttype)) {
+        found = iNsTypeFindFnField((INsTypeNode*)lefttype, opname);
+        // A value of a variant reaches the methods of its enum
+        StructNode *enumdcl;
+        if (found == NULL && (enumdcl = structVariantEnum(lefttype)) != NULL)
+            found = iNsTypeFindFnField((INsTypeNode*)enumdcl, opname);
+    }
+    INode *member = found && found->tag == AliasDclTag ? aliasDclResolve(found) : found;
+    if (member == NULL) {
+        const char *spelled = itypeName(iexpGetTypeDcl(left));
+        errorMsgNode(left, ErrorNoLogicMethod,
+            "`%s` is a method of its left operand's type, and %s declares none. bool, Option and Result have `||` and `&&`; test this value first, as in `n != 0 && ...`, `p != null || ...` or `x is Some && ...`.",
+            &opname->namestr, spelled);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return 1;
+    }
+    // A bool's primitive: the logic node is its body
+    if (member->tag == FnDclTag && ((FnDclNode*)member)->value && ((FnDclNode*)member)->value->tag == IntrinsicTag
+        && (((IntrinsicNode*)((FnDclNode*)member)->value)->intrinsicFn == LogicAndIntrinsic
+            || ((IntrinsicNode*)((FnDclNode*)member)->value)->intrinsicFn == LogicOrIntrinsic))
+        return 0;
+    // The right operand of a macro method is substituted into the body, where a wait cannot be cut
+    MacroDclNode *macro = fnCallMemberMacro(found);
+    if (macro && awaitWithin(node->rexp)) {
+        errorMsgNode(node->rexp, ErrorMacroAwait,
+            "`%s` through %s's macro method cannot take an `await` in its right operand yet: the operand is substituted into the macro's body, where the wait cannot be cut. Await into a local first, `let v = await ...; x %s v`.",
+            &opname->namestr, itypeName(lefttype), &opname->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return 1;
+    }
+    // The left operand is checked, and a checked tree is not checked again (a call in it is
+    // already lowered). It is held in a variable, once, and the method is used on that:
+    // '{let tmp = left; tmp.||(right)}'. The right operand is not checked, and so a macro's
+    // 'lazy' parameter takes it whole
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)left)->vtype, (INode*)immPerm, left);
+    inodeLexCopy((INode*)tmpvar, (INode*)node);
+    tmpvar->flags |= TypeChecked;
+    tmpvar->scope = (uint16_t)(pstate->scope + 1);
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->dclnode = (INode*)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)node);
+    FnCallNode *call = newFnCallOpnameLower((INode*)node, (INode*)tmpname, opname, 1);
+    nodesAdd(&call->args, node->rexp);
+    INode *callnode = (INode*)call;
+    // The block the variable is held in is a level in
+    ++pstate->scope;
+    if (macro) {
+        StructNode *strtype = (StructNode*)lefttype;
+        if (strtype->tag != StructTag) {
+            StructNode *enumdcl = structVariantEnum(lefttype);
+            strtype = enumdcl ? enumdcl : strtype;
+        }
+        fnCallOperatorExpand(pstate, (FnCallNode**)&callnode, macro, found->tag == AliasDclTag, strtype, opname);
+    }
+    // A function method: an ordinary call
+    else
+        inodeTypeCheckAny(pstate, &callnode);
+    --pstate->scope;
+    if (inodeIsError(callnode) || !isExpNode(callnode)) {
+        *((INode**)nodep) = callnode;
+        return 1;
+    }
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)node);
+    blk->vtype = ((IExpNode*)callnode)->vtype;
+    blk->flags |= FlagKeepTemps;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, callnode);
+    *((INode**)nodep) = (INode*)blk;
+    return 1;
+}
+
+// 'x.clone()' on a Copy type that declares no 'clone' of its own is the value:
+// every Copy type is core's Clone by the compiler's grant (genericTypeIs), and
+// this is the method it grants. The call becomes the receiver, read through its
+// borrow when it is one, so a copy is made as any read of a Copy value makes it.
+// A type that has a 'clone' (written, derived, or core's for Option) keeps it, and
+// a type that moves and has none is not asked: the call is refused as any missing
+// method is. Answers 1 when the node was replaced.
+static int fnCallCloneCopy(FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != cloneName
+        || node->args == NULL || node->args->used != 0
+        || (node->flags & (FlagIndex | FlagLvalOp | FlagOperator | FlagBorrow | FlagRange)))
+        return 0;
+    INode *recvtype = iexpGetTypeDcl(node->objfn);
+    INode *valtype = recvtype;
+    if (recvtype->tag == RefTag) {
+        if (itypeGetTypeDcl(((RefNode*)recvtype)->region) != borrowRef)
+            return 0;
+        valtype = itypeGetTypeDcl(((RefNode*)recvtype)->vtexp);
+    }
+    switch (valtype->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        // A read-only borrow held behind a borrow ('a' of 'Option[&T]'s Some(a)):
+        // its clone is the same borrow, genericTypeIs. Reached only through the
+        // outer borrow, since a borrow named directly clones to what it points at.
+        if (recvtype->tag != RefTag || !refIsCopyBorrow(valtype))
+            return 0;
+        break;
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case VectorTag:
+    case TTupleTag:
+    case ArrayTag:
+    case PtrTag:
+    case VoidTag:
+        break;
+    case StructTag:
+        if ((valtype->flags & TraitType) && !(valtype->flags & EnumType))
+            return 0;
+        if (iNsTypeFindFnField((INsTypeNode*)valtype, cloneName) != NULL)
+            return 0;
+        break;
+    default:
+        return 0;
+    }
+    if (itypeIsMove(valtype))
+        return 0;
+    if (recvtype->tag == RefTag)
+        derefInject(&node->objfn);
+    *nodep = (FnCallNode*)node->objfn;
+    return 1;
+}
+
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
-    // 'new Point(1, 2)': a construction, which selects one of the type's 'init's
+    // A '#each' among the arguments failed in the clone and said why; the arguments it would have
+    // made are missing, which is not another error to report
+    if (node->flags & FlagEachFailed) {
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
+    // 'C.Cursor' in an instance: the type C's argument says its bound's
+    // associated type is, which stands in its place (genericAssocPathNameRes)
+    if (genericAssocPathTypeCheck(pstate, (INode**)nodep))
+        return;
+
+    // '?a' over a parameter that a value was substituted for: not the Option type
+    // name resolution could not yet tell it from, so the refusal it deferred
+    if ((node->flags & FlagQuesProvisional) && node->methfld == NULL && node->args && node->args->used == 1
+        && !isTypeNode(nodesGet(node->args, 0)) && !inodeIsProvisionalType(nodesGet(node->args, 0))) {
+        errorMsgNode((INode*)node, ErrorInvType, "'?' is not valid here.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
+    // 'T(1)': a call of a type that only a generic's substitution made one
+    if (fnCallIsTypeCall(node))
+        fnCallMarkConstruction(node);
+
+    // 'Point(1, 2)': a construction, which selects one of the type's 'init's
     if (node->flags & FlagNew) {
         typeLitNewCheck(pstate, nodep, expectType);
         return;
@@ -3797,6 +5048,23 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if ((node->flags & FlagLvalOp) && node->objfn)
         fnCallSetPlace(node->objfn);
 
+    // 'stack[i64].make[f64]', 'stack[i64].twice[3]': a member named through an
+    // instance of a generic module, given type arguments or a macro's. The path
+    // is collapsed first, once the instance is made, and the member is left
+    // unchecked (fnCallInstanceMember), so the brackets follow the instance's
+    // member named directly, as they follow 'm.make' in 'm.make[f64]'.
+    if ((node->flags & FlagIndex) && node->methfld == NULL && fnCallGenModMember(node->objfn)) {
+        FnCallNode *path = (FnCallNode*)node->objfn;
+        inodeTypeCheckAny(pstate, &path->objfn);
+        NameUseNode *member = inodeIsError(path->objfn) || !nameUseNames(path->objfn, ModuleTag)
+            ? NULL : fnCallInstanceMember(pstate, path);
+        if (member == NULL) {
+            node->vtype = errorType;
+            return;
+        }
+        node->objfn = (INode*)member;
+    }
+
     // 'h.pick[i32](6)': a generic method given its type arguments
     if (fnCallMethodTypeArgs(pstate, nodep))
         return;
@@ -3814,11 +5082,22 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         macroCallTypeCheck(pstate, nodep);
         return;
     }
+    // 'm[i32](x)': a macro given its type arguments in brackets, then its
+    // value arguments in parentheses
+    if (node->methfld == NULL && !(node->flags & (FlagIndex | FlagOperator)) && node->objfn->tag == FnCallTag
+        && (node->objfn->flags & FlagIndex) && !(node->objfn->flags & FlagRange)
+        && ((FnCallNode*)node->objfn)->methfld == NULL
+        && nameUseNames(((FnCallNode*)node->objfn)->objfn, MacroDclTag)) {
+        macroCallTypeArgsTypeCheck(pstate, nodep);
+        return;
+    }
 
     // '<-' given a list of entries, entries other than plain values, or the
     // contents of a construction becomes the applications they stand for
     // (contents.c). Ahead of the arguments below, because the list is taken
     // apart rather than checked as an argument in its own right.
+    if (textSendLower(pstate, nodep))
+        return;
     if (contentsIsAppend(node)) {
         contentsLower(pstate, nodep);
         return;
@@ -3834,6 +5113,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         return;
     }
     if (fnCallRefusePermArg(nodep))
+        return;
+
+    // 'Vector[f32, 4].load(s, at)': the vector type's function, named directly
+    // from here on, so it is called as any function is
+    if (vectorStaticCall(pstate, node))
         return;
 
     // An overload name has no value of its own, so it is only legal here, naming what
@@ -3864,6 +5148,18 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     INode *overloadset = NULL;
     if (calleeIsOverload && node->methfld == NULL && !(node->flags & FlagIndex))
         overloadset = nameUseGetDcl((NameUseNode*)node->objfn);
+    // An operator whose method is a macro expands it, its operands unchecked
+    // (fnCallOperatorMacro). One that is not goes on with its receiver checked.
+    int opchecked = 0;
+    if (!calleeIsOverload && fnCallOperatorMacro(pstate, nodep, &opchecked))
+        return;
+    if (opchecked) {
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+    }
     if (node->methfld && isNameUseNode(node->methfld)
         && !(node->flags & FlagOperator) && !calleeIsOverload) {
         if (node->flags & FlagRcvChecked)
@@ -3898,9 +5194,20 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
             }
         }
+        // 'Vector[f32, 4].from(a)': a vector's conversion, from an array or a vector
+        else if (vectorFromCall(pstate, nodep))
+            return;
         // 'u64.from(count)': a number type's conversion
         else if (fnCallNumberFrom(pstate, nodep))
             return;
+        // 'i32.parse(text)', 'u8.tryFrom(x)': made through core's generic functions
+        else if (fnCallNumberConvert(pstate, nodep))
+            return;
+        // 'f32.fromBits(b)': a static function of a number type
+        else if (fnCallNumberStatic(node)) {
+            objfnChecked = 0;
+            calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+        }
         else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
@@ -3926,7 +5233,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                     // folded through as its self, as a folded method runs with it
                     if (folded)
                         structFoldReceiver(pstate, (StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
-                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, NULL);
                     return;
                 }
                 // One method, not generic: its parameters after 'self' are
@@ -3980,6 +5287,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         if (littype->tag == StructTag)
             litstruct = (StructNode*)littype;
     }
+    // A generic variant constructed, 'Some(None)': its values are wanted as the
+    // type its fields have once the other values and where it goes say what
+    // its type parameters are, so a construction among them waits for those
+    StructNode *genlit = NULL;
+    if (node->methfld == NULL && (node->flags & FlagIndex) && (node->flags & FlagCtorParen) && node->args
+        && fnCallVariantNamed(node->objfn) && fnCallVariantNamed(node->objfn)->genericinfo)
+        genlit = fnCallVariantNamed(node->objfn);
 
     // An operator whose one argument is a call, 'x == None' or 'xs <- make()',
     // is checked receiver first, as a method call is, so the argument can be
@@ -3987,17 +5301,25 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // type the receiver's '<-' takes for an append. Any other operand keeps
     // the order it always had, the argument first, since a macro method's
     // argument is not checked until the macro has expanded.
+    //
+    // An 'if' or 'match' as the argument of an arithmetic or comparison operator
+    // is wanted as the receiver's number type too: its branches that are literals
+    // are that type, as a literal there is ('x * (if c {1.25} else {0.8})').
     INode *opexpect = NULL;
     Name *argopname = fnCallOperatorName(node);
-    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName)
-        && node->args && node->args->used == 1 && fnCallArgMayInfer(nodesGet(node->args, 0))
-        && !objfnChecked && !calleeIsOverload
+    int numericif = argopname && node->args && node->args->used == 1 && nodesGet(node->args, 0)->tag == IfTag
+        && fnCallIsNumericOp(argopname);
+    if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName || numericif)
+        && node->args && node->args->used == 1 && (numericif || fnCallArgMayInfer(nodesGet(node->args, 0)))
+        && (!objfnChecked || opchecked) && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
-        inodeTypeCheckAny(pstate, &node->objfn);
-        objfnChecked = 1;
-        if (inodeIsError(node->objfn)) {
-            node->vtype = errorType;
-            return;
+        if (!objfnChecked) {
+            inodeTypeCheckAny(pstate, &node->objfn);
+            objfnChecked = 1;
+            if (inodeIsError(node->objfn)) {
+                node->vtype = errorType;
+                return;
+            }
         }
         if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
@@ -4005,6 +5327,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 INode *found = isMethodType(rcvtype) ? iNsTypeFindFnField((INsTypeNode*)rcvtype, argopname) : NULL;
                 if (found)
                     opexpect = fnCallArgAgreed(found, 1, 0, 1);
+            }
+            else if (numericif) {
+                // (a receiver that is an untyped literal is no type to want: it takes the argument's;
+                // nor is a pointer or a reference to a number)
+                opexpect = fnCallOperandNumber(node->objfn);
             }
             else
                 opexpect = rcvtype;
@@ -4021,6 +5348,21 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // declares there when they all agree on one.
     INode **argsp;
     uint32_t cnt;
+    // A generic type's written type arguments are named, not held: whatever
+    // holds one by value lays it out itself (structTypeSettle), so while a
+    // layout is in flight an argument that is itself an instance is checked as
+    // a reference's target is (refTargetTypeCheck). 'List[Option[Node]]' in a
+    // field of Node makes the 'Option[Node]' without laying it out, as
+    // 'List[Node]' makes 'Node'.
+    int argsnamed = structValueInFlight() && node->methfld == NULL && node->args
+        && (node->flags & FlagIndex) && !(node->flags & (FlagCtorParen | FlagNew))
+        && isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL;
+    // The same for an argument written as a plain type's name, but when the
+    // generic's instances hold values by value: a struct or an enum, not a trait
+    // (whose argument is checked when the trait is used)
+    int namesnamed = argsnamed && (!(nameUseGetDcl((NameUseNode*)node->objfn)->flags & TraitType)
+        || (nameUseGetDcl((NameUseNode*)node->objfn)->flags & (HasTagField | SameSize)));
     if (node->args) {
         uint32_t argi = 0;
         uint32_t ovfirst = firstparm;
@@ -4050,11 +5392,39 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 ++argi;
                 continue;
             }
+            // So does a construction only its place can type ('None'), given to a
+            // generic function or variant: the other arguments, and where the call's
+            // value goes, may say what its type parameters are
+            if ((gengeneric || genlit) && fnCallArgIsCtor(*argsp)) {
+                ++argi;
+                continue;
+            }
             if ((*argsp)->tag == ClosureTag)
                 fnCallCheckClosureArg(pstate, argsp, expect);
+            else if (argsnamed && ((*argsp)->tag == FnCallTag || (namesnamed && nameUseNames(*argsp, StructTag)))) {
+                structTargetEnter();
+                inodeTypeCheck(pstate, argsp, expect);
+                structTargetExit();
+            }
             else
                 inodeTypeCheck(pstate, argsp, expect);
             ++argi;
+        }
+        if (gengeneric || genlit) {
+            argi = 0;
+            for (nodesFor(node->args, cnt, argsp)) {
+                if (fnCallArgIsCtor(*argsp)) {
+                    INode *wanted = gengeneric
+                        ? genericFnArgExpect(pstate, gengeneric, node->args, argi, firstparm, expectType)
+                        : genericStructArgExpect(pstate, genlit, node->args, argi, expectType);
+                    inodeTypeCheck(pstate, argsp, wanted ? wanted : unknownType);
+                    // Its type is the enum its parameter takes, not the variant it
+                    // is: the call reads its type parameters off the arguments
+                    if (wanted && isExpNode(*argsp) && !inodeIsError(*argsp))
+                        iexpCoerceIn(pstate, argsp, wanted);
+                }
+                ++argi;
+            }
         }
         if (gengeneric || overloadset) {
             if (!fnCallClosureArgs(pstate, node, gengeneric, overloadset, firstparm)) {
@@ -4068,7 +5438,27 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if (genericSubstitute(pstate, nodep, expectType))
         return;
 
-    if (!calleeIsOverload && !objfnChecked)
+    // 'None == x': a construction only its place can type, as the receiver of a
+    // comparison, is typed as the other side is, which is checked by now
+    INode *rcvexpect = NULL;
+    if (!calleeIsOverload && !objfnChecked && argopname && (argopname == eqName || argopname == neName)
+        && node->args && node->args->used == 1 && fnCallArgNeedsExpected(node->objfn)) {
+        INode *other = nodesGet(node->args, 0);
+        if (isExpNode(other) && !inodeIsError(other) && ((IExpNode*)other)->vtype != unknownType
+            && ((IExpNode*)other)->vtype != NULL)
+            rcvexpect = iexpGetDerefTypeDcl(other);
+    }
+    // An 'if' as the receiver of a number operator, '(if c {1.} else {2.}) * x': its
+    // branches that are literals are the other operand's number type, as it is for the
+    // 'if' on the right (numericif above)
+    if (!rcvexpect && !calleeIsOverload && !objfnChecked && argopname && fnCallIsNumericOp(argopname)
+        && node->args && node->args->used == 1 && node->objfn->tag == IfTag)
+        rcvexpect = fnCallOperandNumber(nodesGet(node->args, 0));
+    if (rcvexpect) {
+        inodeTypeCheck(pstate, &node->objfn, rcvexpect);
+        objfnChecked = 1;
+    }
+    else if (!calleeIsOverload && !objfnChecked)
         inodeTypeCheckAny(pstate, &node->objfn);
 
     // A callee already reported as bad -- a generic that could not be
@@ -4105,6 +5495,16 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         return;
     }
 
+    // An expression made only of untyped number literals is one such literal, as
+    // its place may type it (litFoldUntyped)
+    if ((node->flags & FlagOperator) && litFoldUntyped(node)) {
+        INode *folded = (INode*)node;
+        if (expectType != NULL && expectType != unknownType && expectType != noCareType)
+            litAdoptNumberType(&folded, expectType);
+        *(INode**)nodep = folded;
+        return;
+    }
+
     // If objfn is a type: a literal in brackets, or the type called
     if (isTypeNode(node->objfn)) {
         // A literal in brackets: a variant's (built from 'Some(x)' or the bare name, marked
@@ -4129,15 +5529,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             node->vtype = errorType;
             return;
         }
-        // A type is not called: a value of it is constructed with 'new', which
-        // runs one of its 'init's (typeLitNewCheck)
-        INode *typedcl = itypeGetTypeDcl(node->objfn);
-        Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym
-            : typedcl->tag == StructTag ? ((StructNode*)typedcl)->namesym : NULL;
-        errorMsgNode((INode*)node, ErrorInitCall,
-            "A type is not called: its value is constructed with 'new', 'new %s(...)'.",
-            written ? &written->namestr : "T");
-        node->vtype = errorType;
+        // A type called is a construction, which runs one of its 'init's
+        // (typeLitNewCheck). Name resolution marks the calls whose callee was
+        // a type then; this one is a type only now that its callee is checked
+        fnCallMarkConstruction(node);
+        typeLitNewArgsChecked(pstate, nodep);
         return;
     }
     
@@ -4211,6 +5607,25 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // Text of different kinds compared: a lending operand is its borrow
     fnCallLentOperands(pstate, node);
 
+    // A receiver that is an index place, 'x[i].m()', 'x[i].f', 'x[i] + 1' or
+    // 'x[i][j]', is reached through the borrow '[]' lent, as any receiver
+    // held by reference is: the method, field or operator selected and the
+    // relowering of a receiver that must write (fnCallIndexAsMut) see the call
+    if (derefIsIndexPlace(node->objfn))
+        node->objfn = ((StarNode*)node->objfn)->vtexp;
+
+    // 'v.x': a vector's lane named x, y, z or w is the index 'v[0]' ... 'v[3]'
+    if (vectorLaneName(node) && node->vtype == errorType)
+        return;
+
+    // 'x.clone()' of a Copy type with no 'clone' is the value
+    if (fnCallCloneCopy(nodep))
+        return;
+
+    // 'x.toDebug(out)' of a type that declares none: generated when asked (debugfn.c)
+    if (fnCallDebugLower(pstate, nodep, 0))
+        return;
+
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
@@ -4244,7 +5659,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     }
 
     // A derived '!=': this node becomes the '==' application, lowered below like
-    // any other, and a 'not' takes its place in the tree
+    // any other, and a '!' takes its place in the tree
     LogicNode *derivedne = NULL;
     if (fnCallNeFromEq(node, objtype)) {
         ((NameUseNode*)node->methfld)->namesym = eqName;
@@ -4270,6 +5685,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         }
         goto tagtested;
     }
+
+    // An enum against an empty variant of it, 'x == None', asks the tag alone, whether
+    // the enum's '==' is the compiler's or one written (Option's and Result's are
+    // written, where their payload is Eq, against another of the enum)
+    if (opname == eqName && objtype->tag == StructTag && (objtype->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)objtype))
+        goto tagtested;
 
     // An owner of 'Array[T]' indexed is indexed as the slice it lends
     int lent = fnCallBodyAsSlice(pstate, node);
@@ -4333,8 +5755,7 @@ dispatch:
     case FloatNbrTag:
         // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
         if (node->methfld == NULL)
-            node->methfld = (INode*)newMemberUseNode(
-                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
+            node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objtype));
         // Lower to a field access or function call
         if (fnCallLowerMethod(pstate, node) == 0) {
             errorMsgNode((INode*)node, ErrorNoMeth,
@@ -4343,9 +5764,25 @@ dispatch:
         }
         break;
 
+    // SIMD vector type: indexed for a lane, else its operators and methods
+    case VectorTag:
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else {
+            if (node->methfld == NULL)
+                node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objtype));
+            if (fnCallLowerMethod(pstate, node) == 0)
+                errorMsgNode((INode*)node, ErrorNoMeth,
+                    "No method/field named %s found that matches the call's arguments.",
+                    &((NameUseNode*)node->methfld)->namesym->namestr);
+        }
+        break;
+
     // Tuple type
     case TTupleTag:
-        if (fnCallLowerIntField(node) == 0)
+        if (fnCallIsValueCompare(opname) && node->args && node->args->used == 1)
+            fnCallLowerTupleCompare(pstate, node);
+        else if (fnCallLowerIntField(node) == 0)
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid expression on a tuple");
         break;
 
@@ -4396,16 +5833,15 @@ dispatch:
         }
 
         // Handle indexing an array
-        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
+        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag
+            || objdereftype->tag == VectorTag))
             fnCallArrIndex(node);
 
         // Handle method call to some other type
         else {
             // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
-            if (node->methfld == NULL) {
-                Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
-                node->methfld = (INode*)newMemberUseNode(methname);
-            }
+            if (node->methfld == NULL)
+                node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objdereftype));
             if (fnCallIsValueCompare(opname))
                 fnCallLowerRefCompare(pstate, node);
             else if (fnCallLowerPtrMethod(node, refType) == 0) {
@@ -4420,7 +5856,7 @@ dispatch:
                     fnCallLowerPtrMethod(node, ptrType);
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
-                // A borrow of an owner ('self &So[Node]', a method's receiver form) is
+                // A borrow of an owner ('self: &Uni[Node]', a method's receiver form) is
                 // read through to the owner, whose value's fields and methods these are
                 else if (!ownerread && objdereftype->tag == RefTag
                     && itypeGetTypeDcl(((RefNode*)objdereftype)->region) != borrowRef
@@ -4428,6 +5864,15 @@ dispatch:
                     derefInject(&node->objfn);
                     objtype = iexpGetTypeDcl(node->objfn);
                     ownerread = 1;
+                    goto dispatch;
+                }
+                // An operator on a borrow of a borrow of a value that copies freely
+                // ('&&i64'): read through a level, as the comparisons are, and
+                // dispatched again on the borrow it leaves
+                else if ((node->flags & FlagOperator) && objdereftype->tag == RefTag
+                    && fnCallBorrowReadsThrough(node->objfn)) {
+                    derefInject(&node->objfn);
+                    objtype = iexpGetTypeDcl(node->objfn);
                     goto dispatch;
                 }
                 else
@@ -4477,12 +5922,15 @@ dispatch:
     }
 
     default:
-        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        // A type that was refused where it was written (a generic named with
+        // no arguments) has said so; its uses do not say it again
+        if (objtype != errorType)
+            errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
     }
 
     // A comparison with an empty variant is the test of its tag
-    // (fnCallLowerEnumTagTest), standing where the call, or the 'not' of it, stood
+    // (fnCallLowerEnumTagTest), standing where the call, or the '!' of it, stood
 tagtested:
     if (fnCallTagTestFor == node) {
         if (derivedne)
@@ -4493,13 +5941,13 @@ tagtested:
         fnCallTagTest = NULL;
     }
 
-    // 'not' takes a bool, which a '==' returning anything else reaches through
-    // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
+    // '!' takes a bool, which a '==' returning anything else reaches through
+    // isTrue. A '==' that selected nothing has been reported, and the '!' carries
     // that on rather than earning a second diagnostic.
     if (derivedne) {
         if (node->vtype == unknownType || node->vtype == errorType)
             derivedne->vtype = errorType;
-        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+        else if (!iexpCoerceCondition(pstate, &derivedne->lexp))
             errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     }
 }
@@ -4511,6 +5959,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
     // A call type check gave up on without a diagnostic of its own, because what
     // it reads failed elsewhere -- a field of a value returned by a function
     // whose signature failed -- passes this function's flow gate but was never
@@ -4529,16 +5978,20 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if (callee && callee->tag == VarDclTag)
         nameuseFlow(fstate, (NameUseNode**)&node->objfn);
     for (nodesFor(node->args, cnt, argsp)) {
+        flowGateOperandNext(fstate, *argsp);
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);
         else
             flowLoadValue(fstate, argsp);
-        flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
+        flowHandleMoveOrCopyLast(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }
-    flowGateOperandsEnd(fstate, inflight);
+    flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
+    // Where this walk is a module's 'init', what a function of the module it
+    // calls reads counts as read here
+    modInitCall(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value
     // global, which no type of it shows: what it carries is the loan walk's
     // to check (pwStaticArgs)

@@ -1,0 +1,152 @@
+// A macro whose body changes a plain parameter, refused where it is declared.
+//
+// A plain parameter is evaluated once: the expansion binds its argument to a
+// variable nothing may change, so an argument the macro assigns to must be
+// 'lazy'. Which parameter a change names is known when the body's names are
+// resolved, and where no type is in question that is enough: an assignment,
+// a swap, a '&mut' of the parameter itself, or of a part of it reached
+// through no reference, and an operator changing a number or struct value in
+// place. These are refused here whether or not the macro is ever used, and
+// none of these macros is.
+//
+// Where the answer waits on a type -- a step of the path that is a reference,
+// a type parameter, or a method -- nothing is said here; the change is judged
+// where the macro is used (generic_typecheck_macro_once,
+// generic_flow_macro_once). Nor is anything refused through a reference, on a
+// 'lazy' parameter, or on a local that shadows a parameter.
+
+mod generic_nameres_macro_once;
+
+struct Pair {
+  pub a: i64;
+  pub b: i64;
+}
+
+struct Holder {
+  pub p: Pair;
+  pub r: &mut Pair;
+  pub row: Array[i64, 2];
+}
+
+struct Tally {
+  pub n: i64;
+  pub fn bump(self: &mut) { n = n + 1; }
+}
+
+// -------- refused: the parameter itself --------
+
+macro reset[a: i64] {
+  a = 0i64;             //~ ErrorMacroParmAssign:3 "must be lazy"
+  a
+}
+
+macro swapLeft[a: i64, b: lazy i64] {
+  a <-> b;              //~ ErrorMacroParmAssign:3 "must be lazy"
+  b
+}
+
+macro swapRight[a: lazy i64, b: i64] {
+  a <-> b;              //~ ErrorMacroParmAssign:9 "must be lazy"
+  a
+}
+
+macro lendIt[a: i64] {
+  let r = &mut a;       //~ ErrorMacroParmAssign:11 "must be lazy"
+  *r
+}
+
+macro addTo[a: i64] {
+  a += 1i64;            //~ ErrorMacroParmAssign:3 "must be lazy"
+  a
+}
+
+// A type parameter's value is the binding too, whatever it turns out to be
+macro resetAny[T][a: T, v: T] {
+  a = v;                //~ ErrorMacroParmAssign:3 "must be lazy"
+  a
+}
+
+// -------- refused: a part of it, reached through no reference --------
+
+macro resetField[p: Pair] {
+  p.a = 0i64;           //~ ErrorMacroParmAssign:4 "must be lazy"
+  p.a
+}
+
+macro resetNested[h: Holder] {
+  h.p.b = 0i64;         //~ ErrorMacroParmAssign:6 "must be lazy"
+  h.p.b
+}
+
+macro resetElement[h: Holder] {
+  h.row[0] = 0i64;      //~ ErrorMacroParmAssign:8 "must be lazy"
+  h.row[1]
+}
+
+// The reference field itself is part of the binding, though what it refers to is not
+macro repoint[h: Holder, q: &mut Pair] {
+  h.r = q;              //~ ErrorMacroParmAssign:4 "must be lazy"
+  0i64
+}
+
+macro lendField[t: Tally] {
+  let r = &mut t.n;     //~ ErrorMacroParmAssign:11 "must be lazy"
+  *r
+}
+
+macro addToField[t: Tally] {
+  t.n += 1i64;          //~ ErrorMacroParmAssign:4 "must be lazy"
+  t.n
+}
+
+// -------- nothing said here --------
+
+// Through a reference: changed in the caller's place, as written
+macro resetThrough[r: &mut i64] {
+  *r = 0i64;
+  *r += 1i64;
+  *r
+}
+
+macro resetFieldThrough[p: &mut Pair] {
+  p.a = 0i64;
+  p.a += 1i64;
+  p.a
+}
+
+macro resetHeldThrough[h: Holder] {
+  h.r.a = 0i64;
+  h.r.a += 1i64;
+  h.r.a
+}
+
+// A type parameter's part, and a method: each waits on a type, and is
+// judged where the macro is used
+macro resetPartAny[T][p: T] {
+  p.a = 0i64;
+  p.a
+}
+
+macro bumped[t: Tally] {
+  t.bump();
+  t.n
+}
+
+// Lazy: substituted whole, and changed as written
+macro resetLazy[a: lazy i64] {
+  a = 0i64;
+  a += 1i64;
+  a
+}
+
+macro swapLazy[a: lazy i64, b: lazy i64] {
+  a <-> b;
+  a
+}
+
+// A local of the same name is the body's own
+macro shadowed[a: i64] {
+  var a = a + 1i64;
+  a = a * 2i64;
+  a
+}

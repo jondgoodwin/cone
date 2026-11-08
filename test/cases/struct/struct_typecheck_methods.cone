@@ -17,54 +17,54 @@
 mod struct_typecheck_methods;
 
 struct Point {
-  pub x i32;
-  secret i32 = 0;
+  pub x: i32;
+  secret: i32 = 0;
 
   fn fee(self) i32 {
-    1;
+    1
   }
 
   fn isTrue(self) bool {
-    true;
+    true
   }
 
-  pub fn borrowed(self &) i32 {
-    x;
+  pub fn borrowed(self: &) i32 {
+    x
   }
 
-  pub fn changed(self &mut) {
+  pub fn changed(self: &mut) {
     x = 2i32;
   }
 
   pub fn addValue overload add(self) i32 {
-    x;
+    x
   }
 
-  pub fn addOther overload add(self, other Point) i32 {
-    x + other.x;
+  pub fn addOther overload add(self, other: Point) i32 {
+    x + other.x
   }
 
-  pub fn `<-`(self &mut, n i32) {
+  pub fn `<-`(self: &mut, n: i32) {
     x = x + n;
   }
 }
 
 fn missingMethod() {
-  imm p = new Point(1);
+  let p = Point(1);
   p.nosuch();           //~ ErrorNoMbr:4 "Method or field `nosuch` not found"
   return;
 }
 
 // A struct only answers '()' if it declares that operator method
 fn noCallOperator() {
-  imm p = new Point(1);
+  let p = Point(1);
   p();                  //~ ErrorNoMbr:4 "Method or field `()` not found"
   return;
 }
 
 // ... and only answers indexing if it declares '[]'
 fn noIndexOperator() {
-  imm p = new Point(1);
+  let p = Point(1);
   p[0usize];            //~ ErrorNoMbr:4 "Method or field `[]` not found"
   return;
 }
@@ -74,12 +74,12 @@ fn noIndexOperator() {
 // be rewritten to, so it is missing under its own name. A number type is asked
 // the same way, whether the append is a statement or its value is used.
 fn noAppendOperator() {
-  mut b = new ByRef(1);
+  var b = ByRef(1);
   b <- 2i32;            //~ ErrorNoMbr:5 "Method or field `<-` not found"
-  imm r = &mut b;
+  let r = &mut b;
   r <- 2i32;            //~ ErrorNoMbr:5 "Method or field `<-` not found"
-  mut n = 1i64;
-  imm old = n <- 10;    //~ ErrorNoMbr:15 "Method or field `<-` not found"
+  var n = 1i64;
+  let old = n <- 10;    //~ ErrorNoMbr:15 "Method or field `<-` not found"
   return;
 }
 
@@ -87,18 +87,18 @@ fn noAppendOperator() {
 // arguments. This is the method form of the failure; core covers the function
 // form, and the two are reported from different places.
 fn noCandidate() {
-  imm p = new Point(1);
+  let p = Point(1);
   p.add(2i32, 3i32, 4i32);   //~ ErrorNoCandidate:4 "No method declared by `add` accepts the call's arguments"
   return;
 }
 
-// A value receiver is borrowed for a method declaring 'self &' or 'self &mut',
+// A value receiver is borrowed for a method declaring 'self: &' or 'self: &mut',
 // as '&p' written out would be, and refused where that would be: an immutable
 // variable lends no '&mut', refused once, in the borrow's own words, rather
 // than as a call nothing accepts. A temporary receiver is borrowed where it is,
 // to its statement's end, as '&' of it is (lifetime_mix_temp_borrowed_argument).
 fn mutReceiverOnImmutable() {
-  imm p = new Point(1);
+  let p = Point(1);
   p.changed();          //~ ErrorBadPerm:3 "Cannot borrow a mutable reference to `p`"
   return;
 }
@@ -106,37 +106,37 @@ fn mutReceiverOnImmutable() {
 // '!=' is derived from '==' only where the type declares '=='. Point declares
 // neither, so '!=' is missing under its own name.
 fn noInequality() {
-  imm p = new Point(1);
-  imm b = p != new Point(2);  //~ ErrorNoMbr:13 "Method or field `!=` not found"
+  let p = Point(1);
+  let b = p != Point(2);  //~ ErrorNoMbr:13 "Method or field `!=` not found"
   return;
 }
 
-// A derived '!=' is the '==' application, so it is refused where '==' is and in
-// the same words: here the '==' wants references, which a value does not reach.
-// The 'if' it is tested in adds nothing to the refusal.
+// A derived '!=' is the '==' application, so it lends its operands where '=='
+// wants references, as '==' does: 'a != b' compiles for ByRef.
 struct ByRef {
-  pub x i32;
-  pub fn `==`(self &, other &ByRef) bool {
-    x == other.x;
+  pub x: i32;
+  pub fn `==`(self: &, other: &ByRef) bool {
+    x == other.x
   }
 }
 
-fn derivedInequalityRefused() {
-  imm a = new ByRef(1);
-  imm b = new ByRef(2);
-  if a != b { return; }    //~ ErrorNoCandidate:8 "No method declared by `==` accepts the call's arguments"
+fn derivedInequalityLent() {
+  let a = ByRef(1);
+  let b = ByRef(2);
+  if a != b { return; }
   return;
 }
 
 // An operator that needs a mutable receiver takes a receiver that is already a
-// reference as it is, so a '&' reference is refused the way a named call
-// refuses it: no candidate accepts it. That the binding holding the reference
-// is immutable is not what is wrong -- it would be just as immutable holding
-// a '&mut', which is accepted.
+// reference as it is, so a '&' reference is refused. A '<-' is refused as
+// '*r <- x' is, and as each entry of a list is (ErrorInvType); the other
+// operators, as a named call is, with no candidate accepting it. That the
+// binding holding the reference is immutable is not what is wrong -- it would be
+// just as immutable holding a '&mut', which is accepted.
 fn appendThroughImmRef() {
-  mut p = new Point(1);
-  imm r = &p;
-  r <- 2;               //~ ErrorNoCandidate:5 "No method declared by `<-` accepts the call's arguments"
+  var p = Point(1);
+  let r = &p;
+  r <- 2;               //~ ErrorInvType:3 "does not match declared parameter"
   return;
 }
 
@@ -145,41 +145,41 @@ fn appendThroughImmRef() {
 // value, and none of these is refused. Code outside the module is
 // (module_privacy_typecheck); struct_privacy runs what is reached.
 fn privateMethod() {
-  imm p = new Point(1);
+  let p = Point(1);
   p.fee();
   return;
 }
 
 fn privateField() {
-  imm p = new Point(1);
-  imm s = p.secret;
+  let p = Point(1);
+  let s = p.secret;
   return;
 }
 
 // Another type's code is the module's too, a method or a static function
 struct Other {
-  pub fn peek(self &, p &Point) i32 {
-    p.secret;
+  pub fn peek(self: &, p: &Point) i32 {
+    p.secret
   }
-  pub fn call(p Point) i32 {
-    p.fee();
+  pub fn call(p: Point) i32 {
+    p.fee()
   }
 }
 
 // And so is every instance of a generic type: Box[i32]'s code sees into a
 // Box[i64]
 struct Box[T] {
-  v T;
-  pub fn make(v T) Box[T] { new Box[T](v); }
-  pub fn cross(self &, o &Box[i64]) i64 {
-    o.v;
+  v: T;
+  pub fn make(v: T) Box[T] { Box[T](v) }
+  pub fn cross(self: &, o: &Box[i64]) i64 {
+    o.v
   }
 }
 
 fn crossInstances() i64 {
-  imm a = Box[i32].make(1);
-  imm b = Box[i64].make(2);
-  a.cross(&b);
+  let a = Box[i32].make(1);
+  let b = Box[i64].make(2);
+  a.cross(&b)
 }
 
 // An enrichment is inside its base's boundary, so what comes across keeps the
@@ -189,72 +189,71 @@ fn crossInstances() i64 {
 // neither.
 struct Enriched extends Point {
   pub fn viaOwnMethod(self) i32 {
-    secret;
+    secret
   }
 }
 
 fn privateOfTheBaseThroughAnEnrichment() {
-  imm e Enriched = new Point(1);
-  imm s = e.secret;
+  let e: Enriched = Point(1);
+  let s = e.secret;
   e.fee();
   return;
 }
 
-// A private 'isTrue' called by name is reached as any private method is. One a
-// coercion to bool injects is checked with no function around it, so only a
-// value named 'self' reaches it, and every other is refused, in the module
-// too. The injected call is positioned on the operand it wraps, so each of
-// these reports on the value being tested rather than at the end of the file.
+// A private 'isTrue' called by name is reached as any private method is, and so is
+// one a coercion to bool injects: the call is checked in the function that holds the
+// condition, so it is reached from the module that declares it and refused from any
+// other. These uses are all in that module, and are accepted, as the explicit call is.
 fn privateIsTrueExplicit() {
-  imm p = new Point(1);
-  imm b = p.isTrue();
+  let p = Point(1);
+  let b = p.isTrue();
   return;
 }
 
 fn privateIsTrueInIf() {
-  imm p = new Point(1);
-  if p { return; }      //~ ErrorNotPublic:6 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  if p { return; }
   return;
 }
 
 fn privateIsTrueInWhile() {
-  imm p = new Point(1);
-  mut n = 0;
-  while p { n = 1; }    //~ ErrorNotPublic:9 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  var n = 0;
+  while p { n = 1; }
   return;
 }
 
 fn privateIsTrueInAnd() {
-  imm p = new Point(1);
-  imm b = p and true;   //~ ErrorNotPublic:11 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  let b = true && p;
   return;
 }
 
 fn privateIsTrueInOr() {
-  imm q = new Point(2);
-  imm b = false or q;   //~ ErrorNotPublic:20 "May not access the private method/field `isTrue`."
+  let q = Point(2);
+  let b = false || q;
   return;
 }
 
 fn privateIsTrueInNot() {
-  imm p = new Point(1);
-  imm b = not p;        //~ ErrorNotPublic:15 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  let b = !p;
   return;
 }
 
-fn takesBool(b bool) {
+fn takesBool(b: bool) {
   return;
 }
 
 fn privateIsTrueAsArgument() {
-  imm p = new Point(1);
-  takesBool(p);         //~ ErrorNotPublic:13 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  takesBool(p);
   return;
 }
 
 fn privateIsTrueAsInitializer() {
-  imm p = new Point(1);
-  imm b bool = p;       //~ ErrorNotPublic:16 "May not access the private method/field `isTrue`."
+  let p = Point(1);
+  let b: bool = p;
   return;
 }
 
@@ -263,23 +262,23 @@ fn privateIsTrueAsInitializer() {
 // argument list can be passed to. This has its own code because it is not an
 // arity complaint: no count of arguments would make it right.
 fn argumentsToAField() {
-  imm p = new Point(1);
-  imm n = p.x(3);       //~ ErrorFldArgs "`x` is a field of Point holding i32, which is not callable, so it takes no arguments"
+  let p = Point(1);
+  let n = p.x(3);       //~ ErrorFldArgs "`x` is a field of Point holding i32, which is not callable, so it takes no arguments"
   return;
 }
 
 // A static is the type's, not any value's: it is reached as Type.name, and
 // a value has no member by that name
 struct Counted {
-  pub static mut made = 0;
+  pub static var made = 0;
   pub fn madeSoFar(self) {
-    imm n = self.made;  //~ ErrorNoMbr:17 "Method or field `made` not found"
+    let n = self.made;  //~ ErrorNoMbr:17 "Method or field `made` not found"
     return;
   }
 }
 
 fn staticThroughAValue() {
-  imm c = new Counted();
-  imm n = c.made;       //~ ErrorNoMbr:12 "Method or field `made` not found"
+  let c = Counted();
+  let n = c.made;       //~ ErrorNoMbr:12 "Method or field `made` not found"
   return;
 }

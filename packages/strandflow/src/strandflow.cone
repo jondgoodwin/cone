@@ -1,0 +1,62 @@
+// The strandflow package: strands in a flow. A program reaches it with 'import strandflow'.
+//
+// A STRAND is a thin flexible thing fixed at one end: a lock of hair, a strand of a mane or a tail, a tassel's cord, a sea
+// anemone's tentacle, a blade of kelp, a fringe, a whisker. It moves in the air or the water round it: a wind that gusts and
+// swirls, a current that surges to and fro with the waves. It is pushed out of the shapes it meets: a head, a shoulder, a
+// rock. And it is drawn as cards (flat ribbons with a cut-out texture of fibres, the way every game draws hair) or as
+// tapered tubes (a tentacle). Hair is ONE USE of this. The same mechanism, by a different style and a different medium,
+// makes all the others, and that is the point of the package: nothing in the simulation or the drawing knows what a strand is
+// of.
+//
+// THE MECHANISM, in four pieces.
+//
+// 1. DATA. A strand starts at a ROOT (a place and a direction in the frame of the thing it grows from: a head bone, a neck
+//    bone, a rock) and is made from a STYLE: its length, how stiffly it keeps its first direction before it turns to hang
+//    (or, in water, to float), a waviness, its mass and thickness, its stiffness, how wide a card it makes. A GROUP is the
+//    strands of one style that ride one frame (a head's hair, one bone's stretch of mane). The frame is moved by the
+//    program each step.
+// 2. THE SOLVER is xpbdsoftbody's rope. A strand is a rope: particles joined by stretch constraints, a curvature constraint
+//    on each three (the strand resists bending), solved by extended position based dynamics in substeps. What strandflow adds
+//    to the rope: (a) a GHOST particle beneath the root, fixed to the frame, which the curvature constraint at the root
+//    pulls the first segment straight along (so a strand leaves the scalp the way it was grown); (b) a STYLE SPRING that pulls
+//    every particle to where it sits in the root's frame in the styled shape, softer toward the tip (so hair keeps its style
+//    and a mane its fall, and a strand sags and swings about its shape); (c) DRAG by relaxation, not by force: a
+//    particle's velocity across the strand relaxes towards the fluid's by 1 - exp(-kappa h), where kappa is half the fluid's
+//    density times the drag coefficient times the strand's width times the segment's length times the relative speed, over
+//    the particle's mass (and the fluid it drags along, the added mass of a cylinder: its own displaced fluid). This is
+//    stable at any step, and at the density of water; xpbdsoftbody's own rope wind is an explicit force once a step, which
+//    is not (at a water's density it asks for a time step of a millisecond). (d) BUOYANCY by the apparent weight, gravity
+//    times 1 - fluid density / strand density: a strand lighter than the water floats up.
+// 3. THE MEDIUM is plain data: a density, a gravity, a clothrope WindField (a mean flow with gusts, advected with the flow
+//    (Taylor's frozen turbulence), and a divergence-free curl-noise swirl) and a SURGE (an oscillating current: waves). It
+//    is sampled on a small lattice over each group once a step and read by trilinear interpolation, as xpbdsoftbody's own
+//    wind grid is. Air and water are one structure with different numbers.
+// 4. THE DRAWING. CARDS: each strand is a ribbon that follows its particles, its width tapering to the tip, its face kept
+//    turned out of the thing it grows from by parallel transport of the root's normal along the strand (so a card does not
+//    twist as the strand moves), with the normals bent across its width to read as round, drawn from both sides, with a
+//    texture of fibres (alpha cut-out) that mips to a share of coverage. TUBES: six-sided, tapered. Both are written into a
+//    render Mesh each frame, for render's dynamic meshes.
+//
+// HOW IT RELATES TO CLOTHROPE AND GARMENTDRAPE. clothrope is the rope's and cloth's coupling to RIGID BODIES and its WindField;
+// strandflow USES its WindField and does not couple to rigid bodies (a strand pushes nothing but is pushed by colliders given
+// as data, which is all a head or a rock needs). garmentdrape's loose cloth hangs from the body by a looseness weight, a
+// clamp to reach and a follow pull; strandflow's style spring is the same follow pull per particle, softer toward the free end
+// (garmentdrape's looseness map and a strand's stiffness profile are one idea, a weight per particle between skinned and
+// simulated). Both use xpbdsoftbody, and strandflow leaves it alone: every number it needs is a field or a call that was
+// there. Where the rope did not fit it says so above.
+//
+//   style.cone     StrandStyle, StrandRoot, the styled curve, root generators (a disc, a path, a mesh's surface)
+//   sim.cone       Medium, StrandSim: groups, the step, drag, buoyancy, the style spring, colliders
+//   cards.cone     the ribbons and the tubes, written to a Mesh
+//   texture.cone   a texture of fibres for the cards, painted from rules
+//
+// Conventions are geomath's: right-handed, y up, metres, kilograms, seconds, f32.
+
+mod strandflow;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import xpbdsoftbody use *;
+import clothrope use WindField;

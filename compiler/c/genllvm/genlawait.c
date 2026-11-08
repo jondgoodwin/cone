@@ -235,6 +235,23 @@ static int genlSeamIsSelf(SeamVar *sv) {
     return (sv->flags & SeamParm) && sv->var->namesym == selfName;
 }
 
+// Does the record carry this variable on its own account: it holds its value
+// at the seam and is used after it or does something as it dies (flow's list),
+// but for 'self', which is lent afresh, and a lock's guard, given back?
+static int genlSeamCarries(SeamVar *sv) {
+    return !genlSeamIsSelf(sv) && !(sv->flags & (SeamTemp | SeamGuard)) && (sv->flags & SeamOpen)
+        && (sv->flags & (SeamLive | SeamDies));
+}
+
+// The seam's entry for a variable, or NULL if it has none
+static SeamVar *genlSeamOfVar(AwaitNode *node, VarDclNode *var) {
+    for (uint32_t i = 0; i < node->nseamvars; ++i) {
+        if (node->seamvars[i].var == var)
+            return &node->seamvars[i];
+    }
+    return NULL;
+}
+
 // ---- The seam ----------------------------------------------------------------
 
 // The method's 'self', its first parameter
@@ -330,7 +347,7 @@ static LLVMValueRef genlSeamFn(GenState *gen, char *symbol, LLVMTypeRef fntype, 
     LLVMValueRef fn = LLVMAddFunction(gen->module, symbol, fntype);
     LLVMSetLinkage(fn, LLVMInternalLinkage);
     genlComdat(gen, fn);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         char *fnname = &gen->fndcl->namesym->namestr;
         LLVMMetadataRef difile = genlDiFile(gen, (INode*)node);
         LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
@@ -393,14 +410,37 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     // whose value differs by path brings its drop flag
     for (uint32_t i = node->nseamvars; i > 0; --i) {
         SeamVar *sv = &node->seamvars[i - 1];
-        if (genlSeamIsSelf(sv) || (sv->flags & (SeamTemp | SeamGuard)) || !(sv->flags & SeamOpen)
-            || !(sv->flags & (SeamLive | SeamDies)))
+        if (!genlSeamCarries(sv))
             continue;
+        VarDclNode *carried = sv->var;
+        // A match's binding by value names the matched value's own storage
+        // (flowMatchInPlace), and the variable owning that value is what holds
+        // and finalizes it: the record carries that storage once, as its owner
+        // (flow's list counts the binding open whatever the owner's state is,
+        // for the binding is tracked by no state of its own). A binding that
+        // took the whole payload leaves its owner empty, which carries nothing
+        if (flowMatchInPlace(carried)) {
+            VarDclNode *owner = flowDropOwner(carried);
+            SeamVar *osv = genlSeamOfVar(node, owner);
+            if (osv != NULL && !(osv->flags & (SeamTemp | SeamGuard | SeamParm))) {
+                if (!(osv->flags & SeamOpen) || genlSeamCarries(osv))
+                    continue;
+                // An owner that is open but neither used after the seam nor
+                // dying with something to do, while the binding is, stands for
+                // the binding: its storage is carried, once
+                int have = 0;
+                for (uint32_t f = 0; f < cnt; ++f)
+                    have |= fields[f].kind == GenSeamVar && fields[f].var == owner;
+                if (have)
+                    continue;
+                carried = owner;
+            }
+        }
         field.kind = GenSeamVar;
-        field.var = sv->var;
-        field.type = sv->var->vtype;
+        field.var = carried;
+        field.type = carried->vtype;
         genlSeamField(&fields, &cnt, &max, &field);
-        if (sv->var->flowtempflags & VarDropFlag) {
+        if (carried->flowtempflags & VarDropFlag) {
             field.kind = GenSeamFlag;
             field.type = NULL;
             genlSeamField(&fields, &cnt, &max, &field);
@@ -972,7 +1012,7 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 
@@ -1065,7 +1105,7 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 
@@ -1131,7 +1171,7 @@ static void genlSeamTrace(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 

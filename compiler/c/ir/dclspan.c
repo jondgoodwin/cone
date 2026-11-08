@@ -42,6 +42,29 @@ DclSpan *dclSpanAdd(DclSpans **listp, INode *node, Lexer *lexer, char *start, ch
     return span;
 }
 
+static DclCut *cuts = NULL;
+static uint32_t ncuts = 0, availcuts = 0;
+
+void dclCutAdd(Lexer *lexer, char *from, char *to, char *text) {
+    if (ncuts == availcuts) {
+        availcuts = availcuts ? availcuts * 2 : 64;
+        DclCut *grown = (DclCut*)memAllocBlk(availcuts * sizeof(DclCut));
+        if (ncuts)
+            memcpy(grown, cuts, ncuts * sizeof(DclCut));
+        cuts = grown;
+    }
+    cuts[ncuts].lexer = lexer;
+    cuts[ncuts].from = from;
+    cuts[ncuts].to = to;
+    cuts[ncuts].text = text;
+    ++ncuts;
+}
+
+DclCut *dclCuts(uint32_t *count) {
+    *count = ncuts;
+    return cuts;
+}
+
 // The 1-based line and column of a position in a span's file
 void dclSpanLineCol(Lexer *lexer, char *pos, uint32_t *line, uint32_t *col) {
     uint32_t ln = 1;

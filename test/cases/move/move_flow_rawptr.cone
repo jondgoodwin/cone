@@ -1,0 +1,73 @@
+// A move value may not be moved out through a raw pointer.
+//
+// A raw pointer owns nothing: the place it points at still belongs to whatever
+// holds it -- a variable, a collection's slot -- which finalizes it in its
+// turn. Moving the value out through the pointer would leave two holders of
+// it, and both would finalize it: a 'Buf' whose final frees its memory frees it
+// twice. So every way a value can leave through '*p' is refused, '*p' itself,
+// a field list taking it apart, an element 'p[i]', and what a pointer to an
+// owning reference points at. The way to move a value out of raw memory for
+// good is 'mem.readRaw(p)', which leaves the place holding nothing
+// (move_flow_rawptr_ok runs it, and a copy read through a pointer).
+//
+// A field moved out through a pointer is refused as a field, before the
+// pointer is asked about (ErrorMoveField, as in move_flow_field).
+//
+// One refusal per function, so that each is reported whatever flow analysis
+// does after the first error in a function.
+
+mod move_flow_rawptr;
+
+import libc;
+
+struct Reply is Move { id: u32; }
+struct Noisy is Move {
+  v: i32;
+  fn final(self: &uni) {}
+}
+struct Wait { reply: Reply; d: Noisy; }
+
+// An owner of malloc'd memory whose final frees it
+struct Buf is Move {
+  p: *u8;
+  fn final(self: &uni) { libc.free(self.p); }
+}
+struct Holder { b: Buf; n: i32; }
+
+fn fieldList(p: *Wait) Reply {
+  (*p).(reply)                     //~ ErrorMoveRawPtr:4 "through a raw pointer"
+}
+
+fn returned(p: *Wait) Wait {
+  *p                               //~ ErrorMoveRawPtr:3 "Use 'mem.readRaw(p)'"
+}
+
+fn ownsMemory(p: *Holder) Holder {
+  *p                               //~ ErrorMoveRawPtr:3 "through a raw pointer"
+}
+
+fn bound(p: *Noisy) i32 {
+  let n = *p;                      //~ ErrorMoveRawPtr:11 "through a raw pointer"
+  n.v
+}
+
+fn take(n: Noisy) {}
+
+fn passed(p: *Noisy) {
+  take(*p);                        //~ ErrorMoveRawPtr:8 "through a raw pointer"
+}
+
+fn element(p: *Noisy) Noisy {
+  p[1usize]                        //~ ErrorMoveRawPtr:4 "through a raw pointer"
+}
+
+fn pointerToOwner(p: *Uni[Noisy]) Uni[Noisy] {
+  *p                               //~ ErrorMoveRawPtr:3 "through a raw pointer"
+}
+
+fn field(p: *Wait) Noisy {
+  (*p).d                           //~ ErrorMoveField:7 "May not move field 'd'"
+}
+
+fn main() {
+}

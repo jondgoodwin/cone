@@ -9,7 +9,7 @@
 //   an adder keeps in its state -- has gone. Adder k adds k a hundred times,
 //   for k from 1 to 3, and main adds 1000, so the total is
 //   100 * (1 + 2 + 3) + 1000 = 1600.
-// - A 'So' owner, which moves: main moves five parcels into a Keeper actor,
+// - A 'Uni' owner, which moves: main moves five parcels into a Keeper actor,
 //   which keeps them in its state, a list; each parcel is finalized once,
 //   when the keeper dies and its state with it, and none before.
 //
@@ -24,45 +24,45 @@ import collections use List;
 import actors;
 
 struct Results {
-  pub tallyFinals Atomic[u64];
-  pub tallySeen Atomic[u64];
-  pub parcelFinals Atomic[u64];
-  pub parcelSum Atomic[u64];
-  pub keeperHeld Atomic[u64];
+  pub tallyFinals: Atomic[u64];
+  pub tallySeen: Atomic[u64];
+  pub parcelFinals: Atomic[u64];
+  pub parcelSum: Atomic[u64];
+  pub keeperHeld: Atomic[u64];
 }
 
-imm results Results;
+let results: Results;
 
 fn @initpure init() {
-  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 struct Tally {
-  pub n u64;
-  fn final(self &uni) {
+  pub n: u64;
+  fn final(self: &uni) {
     results.tallySeen.store(n);
     results.tallyFinals.add(1u64);
   }
 }
 
 struct Parcel {
-  pub weight u64;
-  fn final(self &uni) {
+  pub weight: u64;
+  fn final(self: &uni) {
     results.parcelSum.add(weight);
     results.parcelFinals.add(1u64);
   }
 }
 
 actor Adder {
-  kept Option[Arc[Mutex, Tally]];
+  kept: Option[Arc[Mutex, Tally]];
 
-  fn init(self &new) {
-    *self = new Self(None[Arc[Mutex, Tally]]);
+  fn init(self: &new) {
+    *self = Self(None[Arc[Mutex, Tally]]);
   }
 
-  pub async do add(self, t Arc[Mutex, Tally], k u64, times u64) {
-    mut i = 0u64;
+  pub async fn add(self, t: Arc[Mutex, Tally], k: u64, times: u64) {
+    var i = 0u64;
     while i < times {
       (&mut *t).n += k;
       i = i + 1u64;
@@ -72,38 +72,38 @@ actor Adder {
 }
 
 actor Keeper {
-  parcels List[So[Parcel]];
+  parcels: List[Uni[Parcel]];
 
-  fn init(self &new) {
-    *self = new Self(List[So[Parcel]].empty());
+  fn init(self: &new) {
+    *self = Self(List[Uni[Parcel]]());
   }
 
-  pub async do keep(self, p So[Parcel]) {
+  pub async fn keep(self, p: Uni[Parcel]) {
     parcels.push(p);
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     results.keeperHeld.store(u64.from(parcels.len()));
   }
 }
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm tally = new Arc[Mutex, Tally](0u64);
-    mut k = 1u64;
+    let tally = Arc[Mutex, Tally](0u64);
+    var k = 1u64;
     while k <= 3u64 {
-      imm a = new Adder();
+      let a = Adder();
       a.add(tally, k, 100u64);
       k = k + 1u64;
     }
     (&mut *tally).n += 1000u64;
 
-    imm keeper = new Keeper();
-    mut w = 1u64;
+    let keeper = Keeper();
+    var w = 1u64;
     while w <= 5u64 {
-      keeper.keep(new So[Parcel](w * 10u64));
+      keeper.keep(Uni[Parcel](w * 10u64));
       w = w + 1u64;
     }
     printStr("parcels finalized while the keeper lives "); printUInt(results.parcelFinals.load()); printStr("\n");

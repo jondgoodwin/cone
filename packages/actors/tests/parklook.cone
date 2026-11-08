@@ -1,0 +1,93 @@
+// The park's look after counting itself a sleeper (THE SPIN, NO WAKE IS
+// LOST, in the package's header), forced rather than raced. One worker, so no
+// other sleeper or spinner is there to be woken. Twenty times:
+//
+// - the test hook is armed (holdNextPark), and a message from main wakes the
+//   worker; it runs the message, spins, finds nothing, and is held on its way
+//   to park: after the spin's last look, before it counts itself a sleeper
+//   (or, when it was on its way to park already as the hook was armed, it is
+//   held before it runs the first message, which then waits with the second);
+// - main sends a second message: its push finds no sleeper and no spinner, so
+//   it wakes nobody, and the message waits (checked: nothing more handled
+//   while the worker is held);
+// - the worker is released: it counts itself a sleeper, looks, finds the
+//   message and runs it, within 2 s.
+//
+// Without that look the worker would sleep with the message queued: the
+// check that it is handled within 2 s stops the test there (no finalAll,
+// which would wait for it for ever).
+
+mod parklook;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const rounds = 20u64;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+}
+
+actor Counter {
+  pub async fn bump(self) {
+    handled.add(1u64);
+  }
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+// Wait until 'handled' reaches n, for at most 2 s: whether it did
+fn handledBy(n: u64) bool {
+  let deadline = nowNs() + 2000000000u64;
+  while handled.load() < n && nowNs() < deadline {
+    thread.yieldNow();
+  }
+  handled.load() >= n
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  {
+    let c = Counter();
+    actors.waitUntilIdle();
+    var held = 0u64;
+    var waited = 0u64;
+    var taken = 0u64;
+    var k = 0u64;
+    while k < rounds {
+      let before = handled.load();
+      actors.holdNextPark();
+      c.bump();
+      let deadline = nowNs() + 2000000000u64;
+      while !actors.parkHeld() && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      require(actors.parkHeld(), "the worker is held on its way to park, within 2 s");
+      held = held + 1u64;
+      // Held before or after it ran the first message (the worker may have
+      // been on its way to park already when the hook was armed)
+      let atHold = handled.load();
+      c.bump();
+      // The held worker cannot run it, and nobody was woken for it
+      thread.sleep(time.Duration.fromMillis(2i64));
+      if handled.load() == atHold {
+        waited = waited + 1u64;
+      }
+      actors.releasePark();
+      require(handledBy(before + 2u64), "the message pushed while the worker was held is handled within 2 s of its release: the park's look took it");
+      taken = taken + 1u64;
+      k = k + 1u64;
+    }
+    expectUInt(held, rounds, "every round held the worker");
+    expectUInt(waited, rounds, "every round's second message waited, unhandled, while the worker was held");
+    expectUInt(taken, rounds, "every round's second message handled after the release");
+  }
+  finalAll();
+  expectUInt(handled.load(), 2u64 * rounds, "every message handled");
+  done()
+}

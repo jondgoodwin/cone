@@ -1,0 +1,137 @@
+// A write far larger than the socket takes at once, to a reader that waits
+// before it reads and then reads slowly: every byte arrives, once, in order.
+// The write is issued on its worker (iocore's WORKER-SIDE ISSUE): on Linux its
+// send moves part of the bytes and would block, and the I/O thread goes on from
+// where it stopped, never from the start; on Windows it is in flight and the
+// I/O thread links it.
+
+mod bigsend;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+const total = 4194304usize;
+
+let sent: Atomic[u64];        // what the write answered it sent
+let received: Atomic[u64];    // bytes the reader took
+let wrongAt: Atomic[u64];     // 1 + the first byte that was not the one sent there, or 0
+
+fn @initpure init() {
+  sent = Atomic[u64].of(0u64);
+  received = Atomic[u64].of(0u64);
+  wrongAt = Atomic[u64].of(0u64);
+}
+
+// The byte at position i of the stream
+fn pattern(i: usize) u8 {u8.from(i % 251usize)}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+actor Writer {
+  pub async fn go(self, s: Socket, done: OneshotSender[u64]) {
+    var b = IoBuf(total);
+    let p = b.base();
+    var i = 0usize;
+    while i < total {
+      *(p + i) = pattern(i);
+      i = i + 1usize;
+    }
+    b.setLen(total);
+    let w = await s.write(b);
+    match w {
+      case let Ok(n) {sent.store(u64.from(n));}
+      else {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Reader {
+  pub async fn go(self, s: Socket, done: OneshotSender[u64]) {
+    // The write fills the socket before anything is read
+    let z = await aio.sleep(Duration.fromMillis(100i64));
+    var at = 0usize;
+    var more = true;
+    var reads = 0u64;
+    while more && at < total {
+      let r = await s.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {more = false;} else {
+            let q = b.base();
+            var k = 0usize;
+            while k < b.len() {
+              if *(q + k) != pattern(at + k) && wrongAt.load() == 0u64 {
+                wrongAt.store(u64.from(at + k) + 1u64);
+              }
+              k = k + 1usize;
+            }
+            at = at + b.len();
+          }
+        }
+        case is Err {more = false;}
+      }
+      reads = reads + 1u64;
+      if reads % 8u64 == 0u64 {
+        let y = await aio.sleep(Duration.fromMillis(1i64));
+      }
+    }
+    received.store(u64.from(at));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+actor Setup {
+  pub async fn go(self, wtx: OneshotSender[u64], rtx: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let ac = await ls.accept();
+    let w = Writer();
+    w.go(socketOf(c), wtx);
+    let r = Reader();
+    r.go(socketOf(ac), rtx);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var wtx: OneshotSender[u64];
+  var wrx: OneshotReceiver[u64];
+  wtx, wrx = Oneshot[u64].make();
+  var rtx: OneshotSender[u64];
+  var rrx: OneshotReceiver[u64];
+  rtx, rrx = Oneshot[u64].make();
+  {
+    let s = Setup();
+    s.go(wtx, rtx);
+  }
+  wrx.recv();
+  rrx.recv();
+  finalAll();
+  expectUInt(sent.load(), u64.from(total), "the write answered every byte sent");
+  expectUInt(received.load(), u64.from(total), "the reader took every byte");
+  expectUInt(wrongAt.load(), 0u64, "each in its place: none lost, none sent twice");
+  done()
+}

@@ -13,54 +13,54 @@ import testing use *;
 import actors;
 
 struct Sums {
-  pub got Atomic[u64];
-  pub drops Atomic[u64];
+  pub got: Atomic[u64];
+  pub drops: Atomic[u64];
 }
 
-imm sums Sums;
+let sums: Sums;
 
 fn @initpure init() {
-  sums = new Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  sums = Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 struct Token is Move {
-  pub n u64;
-  fn final(self &uni) {sums.drops.add(n);}
+  pub n: u64;
+  fn final(self: &uni) {sums.drops.add(n);}
 }
 
 actor Worker {
-  pub async do square(self, n u64) u64 {n * n;}
-  pub async do token(self, n u64) Token {new Token(n);}
+  pub async fn square(self, n: u64) u64 {n * n}
+  pub async fn token(self, n: u64) Token {Token(n)}
 }
 
 actor Taker {
-  pub async do take(self, f actors.Future[u64]) u64 {
-    imm v = await f;
+  pub async fn take(self, f: actors.Future[u64]) u64 {
+    let v = await f;
     sums.got.add(v);
-    v;
+    v
   }
 }
 
 actor Asker {
-  w Worker;
-  t Taker;
+  w: Worker;
+  t: Taker;
 
-  pub async do half(self, n u64) u64 {n / 2u64;}
+  pub async fn half(self, n: u64) u64 {n / 2u64}
 
   fn lose(self) {
-    imm lost = w.token(1000u64);
+    let lost = w.token(1000u64);
   }
 
-  pub async do go(self) {
-    imm own = selfactor.half(20u64);
+  pub async fn go(self) {
+    let own = selfactor.half(20u64);
     sums.got.add(await own);                  // 10
-    imm early = w.square(3u64);
-    imm later = await w.square(4u64);
+    let early = w.square(3u64);
+    let later = await w.square(4u64);
     sums.got.add(await early + later);        // 9 + 16
-    imm c = w.square(5u64);
+    let c = w.square(5u64);
     sums.got.add(await c + await c);          // 25 + 25
-    imm m = w.token(7u64);
-    imm tok = await m;
+    let m = w.token(7u64);
+    let tok = await m;
     sums.got.add(tok.n);                      // 7
     sums.got.add(await t.take(w.square(6u64)));   // 36, and 36 by take
     self.lose();
@@ -70,7 +70,7 @@ actor Asker {
 fn main() i32 {
   initAll();
   {
-    imm a = new Asker(new Worker(), new Taker());
+    let a = Asker(Worker(), Taker());
     a.go();
   }
   finalAll();
@@ -79,5 +79,5 @@ fn main() i32 {
   // tok, 7, dies with go; the token never awaited, 1000, with its future
   expectUInt(sums.drops.load(), 1007u64, "each move value finalized once");
   expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
-  done();
+  done()
 }

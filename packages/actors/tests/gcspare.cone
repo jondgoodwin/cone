@@ -1,0 +1,117 @@
+// The old chunks of a collection are kept on a spare list, up to twice the bytes
+// that survived it, and reused by the next chunks the region needs; what is
+// over the bound is freed, so a region that shrank gives memory back. With
+// stress on (a collection after every message, so each 'report' sees the state
+// after the message before it). A node is 48 bytes (header 24, an i64 and a
+// reference, rounded to 16); a chunk has a 32-byte header, the first is 4096
+// bytes, the next 8192. Every number is worked out by hand:
+//
+//   keep 10        480 survive, one 4096 chunk; the old chunk is over the bound 960: spare 0
+//   keep 50        60 nodes, 2880 survive; the old 4096 chunk is within 5760: spare 4096
+//   churn 1        the junk node dies; the new chunk is the spare one, the old one is spare again: 4096
+//   keep 100       160 nodes, 7680 survive: 84 fill the first chunk, 76 a second of 8192;
+//                  both old chunks (4096 + 8192) are within 15360: spare 12288, chunks 2
+//   churn 1        the two new chunks are the two spare ones, the old two spare again: 12288
+//   dropAll        nothing survives: bound 0, so every old chunk is freed: spare 0, chunks 0
+//
+// A reused chunk's old contents are never read as objects: the sum and count of
+// the list are right after every collection, and 'objects' is the live count.
+
+mod gcspare;
+
+import actors;
+import stdio use *;
+
+struct Node {
+  pub n: i64;
+  pub next: Option[ActorGc[mut, Node]];
+}
+alias NodeRef = ActorGc[mut, Node];
+
+fn line(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn nextOf(r: Option[NodeRef]) Option[NodeRef] {
+  match r {
+    case let Some[NodeRef](s) { s.next }
+    else { None }
+  }
+}
+fn valueOf(r: Option[NodeRef]) i64 {
+  match r {
+    case let Some[NodeRef](s) { s.n }
+    else { 0 }
+  }
+}
+fn present(r: Option[NodeRef]) bool {
+  match r {
+    case let Some[NodeRef](s) { true }
+    else { false }
+  }
+}
+
+actor Keeper {
+  head: Option[NodeRef];
+
+  fn init(self: &new) {
+    *self = Self(None[NodeRef]);
+  }
+
+  pub async fn keep(self, count: i64) {
+    var i = 0i64;
+    while i < count {
+      head = Some[NodeRef](new self[Node](i, head));
+      i = i + 1;
+    }
+  }
+
+  pub async fn churn(self) {
+    let junk = new self[Node](0, None[NodeRef]);
+  }
+
+  pub async fn dropAll(self) {
+    head = None;
+  }
+
+  pub async fn report(self, tag: i64) {
+    var sum = 0i64;
+    var count = 0i64;
+    var at = head;
+    while present(at) {
+      sum = sum + valueOf(at);
+      count = count + 1;
+      at = nextOf(at);
+    }
+    let st = self.allocRegion().stats();
+    line("report", tag);
+    line("  nodes", count);
+    line("  sum", sum);
+    line("  objects", i64.from(st.objects));
+    line("  chunks", i64.from(st.chunks));
+    line("  bytes", i64.from(st.bytes));
+    line("  spare", i64.from(st.spare));
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    let k = Keeper();
+    k.keep(10i64);
+    k.report(1i64);
+    k.keep(50i64);
+    k.report(2i64);
+    k.churn();
+    k.report(3i64);
+    k.keep(100i64);
+    k.report(4i64);
+    k.churn();
+    k.report(5i64);
+    k.dropAll();
+    k.report(6i64);
+  }
+}

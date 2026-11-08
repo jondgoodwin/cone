@@ -3,7 +3,7 @@
  *
  * The existing flow walk (flow.c) keeps one running summary per function. This
  * walk keeps state per program point and per path: it forks at each 'if' arm and
- * each 'and'/'or' right operand, joins the arms by taking the union of what each
+ * each '&&'/'||' right operand, joins the arms by taking the union of what each
  * changed, deposits the state at a 'break' or 'continue' with the block it names,
  * and walks a loop body again until the state at its head stops growing. It is
  * read-only: it injects nothing and changes no node, so it may walk a loop body
@@ -27,12 +27,11 @@ typedef struct BlockNode BlockNode;
 
 // A set of ids -- loans, or pending conflicts -- kept sorted and never changed
 // once built, so that a path's state and the undo log can share one. NULL is the
-// empty set; pathSetAll is every loan (a loop that would not settle, 3.3).
+// empty set.
 typedef struct PathSet {
     uint32_t cnt;
     uint32_t ids[];
 } PathSet;
-extern PathSet pathSetAll;
 
 PathSet *pathSetAdd(PathSet *set, uint32_t id);
 PathSet *pathSetUnion(PathSet *a, PathSet *b);
@@ -66,7 +65,7 @@ typedef struct {
                         // the variable points (flowloan.h, LoanFar)
     uintptr_t steps[PlaceMaxSteps];
     INode *use;         // the name use of the root variable, where a use of it is reported
-    INode *ownertype;   // the type of the last owning reference ('So', 'Rc', ...) a step dereferenced on the way,
+    INode *ownertype;   // the type of the last owning reference ('Uni', 'Rc', ...) a step dereferenced on the way,
                         // whose value the place is in; NULL where none was. A borrow of the place is into
                         // what that owner frees when it is stored over (reshape.h, reshapeOwnerCont)
     INode *referent;    // deref: the type the root variable, read itself as the reference, points
@@ -129,6 +128,8 @@ typedef struct {
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
     uint8_t initing;    // its initializer is being walked: it holds no value yet
+    uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
+    void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
 } PathVar;
 
@@ -171,5 +172,13 @@ void flowPathPrint();
 // stored over whole: what it holds there is needed past the seam (flowloan.c,
 // a seam's live mark fired)
 void pathSeamLive(INode *seam, uint32_t var);
+
+// A candidate for a counted variable's last use (RefCountNode.cand) fails: a
+// read of the variable meets the state its move left (pathCandFail), or a live
+// borrow of it conflicts with the move (pathCandFailAccess). True when that
+// settles the matter, and the walk is made again without it
+int pathCandFail(uint32_t var, uint8_t state);
+int pathCandFailAccess(INode *access);
+extern uint32_t pathCandNew;
 
 #endif

@@ -39,8 +39,15 @@ support = []
 
 [scenario.each_success]
 category = "run"
-description = "Range iteration: '..' and '..<' up and down, 'by', loop variable scope, 'break' and 'continue'"
+description = "Range iteration: '..=' and '..<' up and down, 'by', loop variable scope, 'break' and 'continue'"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# A run because the claim is the value each function returns: a 'return'
+# ending a plain block in the body was dropped, and the loop ran on
+[scenario.each_jump_nested_block]
+category = "run"
+description = "A 'return' ending a plain block in an 'each' body ends the path, in an 'if' in the body and as its last statement, beside a loop that runs out and one never entered"
+tags = ["genllvm", "runtime"]
 
 [scenario.each_ranges]
 category = "run"
@@ -138,7 +145,12 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.each_mut_source_ok]
 category = "run"
-description = "What stays allowed beside the refused '&mut src' source: 'each x in &src' reads, 'src.mutItems()' changes a list, an array and a slice in place, and an entry of '<-' copies from a '&' borrow"
+description = "What stays allowed beside the written borrows: 'each x in &src' reads, 'src.mutItems()' changes a list, an array and a slice in place, and an entry of '<-' copies from a '&' borrow"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.each_borrow_written]
+category = "run"
+description = "An 'each' source written as a borrow with a permission lends its items with it: '&l' reads, '&mut l' and '&uni l' change, over a list, an array, a subslice and a field, through a reference as '&mut *r' and '&uni *r', in 'parallel each' and in an entry of '<-'; '&' reads a Deque, a Set and a Dict"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 # -------- parse stage --------
@@ -155,11 +167,11 @@ description = "The comparison forms of 'each' ('0 < n', '0 <= n', 'n > 0', 'n >=
 tags = ["parse"]
 diagnostics = 7
 
-[scenario.each_mut_source]
+[scenario.each_range_bare]
 category = "reject"
-description = "An 'each' over a source written '&mut src', for a list, an array, a slice, a field, in a statement, in a 'parallel each' and in an entry of '<-': refused with the message to write 'src.mutItems()'"
+description = "An 'each' over a range written with a bare '..' between its start and its end, with and without a step and in a drain, refused with the two forms that say whether the end is included"
 tags = ["parse"]
-diagnostics = 7
+diagnostics = 4
 
 # -------- name resolution stage --------
 
@@ -171,6 +183,12 @@ diagnostics = 2
 
 # -------- type check stage --------
 
+[scenario.each_borrow_written_refused]
+category = "reject"
+description = "A permission written on an 'each' source that cannot be given: '&mut' and '&uni' over a Set; a write through the item of '&l'; a write through a Dict key of '&mut d'; '&uni' over a Deque and a Dict, which have a '&mut' cursor and none for '&uni'"
+tags = ["typecheck"]
+diagnostics = 6
+
 [scenario.each_typecheck]
 category = "reject"
 description = "Range bounds, element types and 'by' steps that do not agree, and a write to the loop variable"
@@ -179,9 +197,9 @@ diagnostics = 6
 
 [scenario.each_source]
 category = "reject"
-description = "What an 'each' cannot walk and what its variables cannot be given: a source with no items, a 'next' that answers no Option, an 'iter' with no cursor, variables that do not unpack the item, an item that moves unpacked into several variables, a write to a pass's variable, a cursor that cannot be advanced"
+description = "What an 'each' cannot walk and what its variables cannot be given: a source with no items, a 'next' that answers no Option, an 'iter' with no cursor, variables that do not unpack the item, a write to a pass's variable, a cursor that cannot be advanced"
 tags = ["typecheck"]
-diagnostics = 14
+diagnostics = 13
 
 # -------- flow stage --------
 
@@ -231,6 +249,20 @@ category = "reject"
 description = "What an operator still refuses to read through a borrow: a String or a struct that moves, an operator taking its other operand by value, two number types that differ"
 tags = ["typecheck"]
 diagnostics = 7
+
+# The same read-through at every level of borrow: each's item (one level) and the
+# closure of a filter over the borrowed items (two), where the manual reads a copy
+# type through for any operator.
+[scenario.each_operand_readthrough_levels]
+category = "run"
+description = "An operator reads through a borrow of a number, bool, char or plain struct at one level and two: the comparisons against a value (each's item, a filter's closure) for i64, f64, bool and char, arithmetic on a borrow of a borrow, and 'print <- n' and a struct's own '<-' handed a borrowed item, a borrow-taking overload still preferred where there is one"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.each_operand_readthrough_levels_typecheck]
+category = "reject"
+description = "A borrow of a struct that moves is still not read through at one level or two: compared with a value, or handed to a '<-' that takes the value"
+tags = ["typecheck"]
+diagnostics = 3
 
 [scenario.each_adapters]
 category = "run"
@@ -288,3 +320,59 @@ category = "reject"
 description = "What the zip method refuses: a collection where a cursor is wanted (xs.iter().zip(ys)), and a struct with a next that does not declare is Iterator[T] (the message says to)"
 tags = ["typecheck"]
 diagnostics = 3
+
+[scenario.each_indexed_shared]
+category = "run"
+description = "The shared indexed() every cursor declaring is Iterator[T] has, for the cursors with no indexed of their own: its item is a tuple of the position and the cursor's item, unpacked by each i, x. A lending cursor, a generator of numbers and one of borrows, chains (map and filter, skip and take, indexed before filter), the terminals count and fold, a lending cursor through a filter, a cursor of one's own, a deque's, a break value and an else value, and a numbered cursor kept in a variable carrying on from where each left it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.each_indexed_shared_refused]
+category = "reject"
+description = "The shared indexed() on a cursor that lends keeps the item's borrow of the cursor inside the tuple: a list built from the numbered items, a map that keeps the item, and two items held at once from a numbered cursor in a variable are refused as they are without the numbering"
+tags = ["flow"]
+diagnostics = 5
+
+[scenario.each_indexed_shared_typecheck]
+category = "reject"
+description = "A struct with next that does not declare is Iterator[T] has no shared indexed()"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.each_slice_deref]
+category = "run"
+description = "'&*s', '&mut *s' and '&uni *s' on a slice reference borrow what it points at with the permission written: an 'each' source over a slice parameter of each permission, a subslice, and a 'parallel each'"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.each_slice_deref_refused]
+category = "reject"
+description = "A slice borrowed again with more permission than its reference has ('&mut *s' from '&', '&uni *s' from '&mut' or '&'), and a '*s' that is not the operand of a borrow"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.each_consume]
+category = "run"
+description = "A plain 'each' hands out each item as 'let x = item' would: items that copy are copied and the source stays, items that move are taken out and consume a List, a Deque, a Set, a Dict and an OrderedDict ('each k, v' moves the key and the value out of each pair), and a 'break' finalizes what the loop did not reach"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.each_consume_panic]
+category = "run"
+description = "A panic inside an 'each' that consumes its source ends the program: what was printed is kept and no finalizer runs"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.each_consume_typecheck]
+category = "reject"
+description = "A plain 'each' over items that move behind a borrow (a reference, a field of one, a slice, a Deque or a Dict reference) is refused naming the borrow to write; a fixed array of items that move has no cursor; a 'parallel each' does not consume"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.each_consume_flow]
+category = "reject"
+description = "A collection of items that move is consumed by a plain 'each', and a later use says to write '&name'; a collection of items that copy stays"
+tags = ["flow"]
+diagnostics = 2
+
+[scenario.each_by]
+category = "run"
+description = "minBy, maxBy, minByKey and maxByKey on a cursor: an order or a key puts an item first or last, answered as an Option; ties go as Rust's do (the first of the least, the last of the greatest); over a cursor that lends and one of numbers, by a closure and by a function, a reversed order, an f64 key, and no items and one item"
+tags = ["typecheck", "genllvm", "runtime"]

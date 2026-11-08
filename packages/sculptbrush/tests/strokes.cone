@@ -1,0 +1,455 @@
+// sculptbrush's stroke engine: the paths and their methods, the curves along a
+// stroke, symmetry, the gates (mask, face set, front faces), alphas, the
+// report, and that a recipe gives the same bits twice; checked with the
+// testing package, only a failure printing, so strokes.out holds the summary.
+//
+// The plate is a square grid facing +y; a stroke along x at spacing 0.1 of a
+// radius 0.3 is a dab every 0.03: a stroke of length 1.2 has 1.2 / 0.03 + 1 = 41
+// dabs (the sum may lose or gain the last by rounding, so the check allows one).
+
+mod strokes;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import sculptbrush use *;
+
+let near = 0.00001;
+
+
+fn cp(src: &List[Vec3]) List[Vec3] {
+  var out = List[Vec3]();
+  var i = 0usize;
+  while i < src.len() { out.push(*src[i]); i = i + 1usize; }
+  out
+}
+
+fn plate(n: u32, size: f32) PolyMesh {
+  var pos = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      pos.push(Vec3((f32.from(i) / f32.from(n) - 0.5) * size, 0., (f32.from(j) / f32.from(n) - 0.5) * size));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = j * (n + 1u32) + i;
+      counts.push(4u32);
+      idx.push(a);
+      idx.push(a + n + 1u32);
+      idx.push(a + n + 2u32);
+      idx.push(a + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn line(x0: f32, x1: f32, z: f32) List[Vec3] {
+  var pts = List[Vec3]();
+  pts.push(Vec3(x0, 0., z));
+  pts.push(Vec3(x1, 0., z));
+  pts
+}
+
+fn dabsOf(p: &PolyMesh, st: &Stroke) u32 {
+  var s = Sculptor.of(p);
+  s.stroke(st).dabs
+}
+
+fn sameBits(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.positions.len() != b.positions.len() { return false; }
+  var v = 0usize;
+  while v < a.positions.len() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    v = v + 1usize;
+  }
+  true
+}
+
+fn methods() {
+  let p = plate(40u32, 2.);
+  // Space: a dab every 0.03 along 1.2
+  var st = Stroke.make(Brush.of(BrushDraw), line(-0.6, 0.6, 0.), 0.3, 1.);
+  st.project = false;
+  let n = dabsOf(&p, &st);
+  expect(n >= 40u32 && n <= 42u32, "space: a dab every spacing x radius along the path");
+  // A wider spacing, fewer dabs
+  var wide = Stroke.make(Brush.of(BrushDraw), line(-0.6, 0.6, 0.), 0.3, 1.);
+  wide.project = false;
+  wide.spacing = 0.5;
+  let nw = dabsOf(&p, &wide);
+  expect(nw >= 8u32 && nw <= 10u32, "space: at spacing 0.5, one dab every 0.15");
+  // Dots: one at each point
+  var pts = line(-0.6, 0.6, 0.);
+  pts.push(Vec3(0., 0., 0.4));
+  var dots = Stroke.make(Brush.of(BrushDraw), cp(&pts), 0.3, 1.);
+  dots.project = false;
+  dots.method = StrokeDots;
+  expectInt(i64.from(dabsOf(&p, &dots)), 3i64, "dots: one dab at each point");
+  // Anchored: one dab, radius the drag
+  var anch = Stroke.make(Brush.of(BrushDraw), line(0., 0.4, 0.), 0.1, 1.);
+  anch.project = false;
+  anch.method = StrokeAnchored;
+  let qa = sculptStroke(&p, &anch);
+  var far = 0.f;
+  var v = 0usize;
+  while v < p.positions.len() {
+    if (*qa.positions[v] - *p.positions[v]).lengthSquared() > 0. {
+      let d = (*p.positions[v] - Vec3(0., 0., 0.)).length();
+      if d > far { far = d; }
+    }
+    v = v + 1usize;
+  }
+  expect(far > 0.3 && far < 0.4, "anchored: the radius is the length of the drag (0.4), not the stroke's 0.1");
+  expectInt(i64.from(dabsOf(&p, &anch)), 1i64, "anchored: one dab");
+  // Line: the straight run from the first to the last point, ignoring the points between
+  var mid = line(-0.6, 0.6, 0.);
+  mid.push(Vec3(0.6, 0., 0.6));
+  var ln = Stroke.make(Brush.of(BrushDraw), cp(&mid), 0.3, 1.);
+  ln.project = false;
+  ln.method = StrokeLine;
+  let qln = sculptStroke(&p, &ln);
+  var anyZ = false;
+  v = 0usize;
+  while v < p.positions.len() {
+    if (*qln.positions[v] - *p.positions[v]).lengthSquared() > 0. && (*p.positions[v]).z < -0.31 { anyZ = true; }
+    v = v + 1usize;
+  }
+  expect(!anyZ, "line: the straight run from the first point to the last");
+  // Curve: a spline through three points bows towards the middle one
+  var cpts = List[Vec3]();
+  cpts.push(Vec3(-0.6, 0., 0.));
+  cpts.push(Vec3(0., 0., 0.4));
+  cpts.push(Vec3(0.6, 0., 0.));
+  var cv = Stroke.make(Brush.of(BrushDraw), cp(&cpts), 0.15, 1.);
+  cv.project = false;
+  cv.method = StrokeCurve;
+  let qc = sculptStroke(&p, &cv);
+  let top = nearestY(&p, &qc, Vec3(0., 0., 0.4));
+  expect(top > 0.0001, "curve: the path passes through the middle point");
+  // Space with the same three points is a polyline: the vertex half way between the first and middle points
+  var sp = Stroke.make(Brush.of(BrushDraw), cp(&cpts), 0.15, 1.);
+  sp.project = false;
+  let qs = sculptStroke(&p, &sp);
+  let midV = nearestY(&p, &qs, Vec3(-0.3, 0., 0.2));
+  let midC = nearestY(&p, &qc, Vec3(-0.3, 0., 0.2));
+  expect(midV > 0.0001 && midC != midV, "curve: the spline's bend differs from the polyline's");
+  // The bezier helper is cubic and passes through its ends
+  let bz = bezierPoints(Vec3(0., 0., 0.), Vec3(1., 0., 0.), Vec3(1., 1., 0.), Vec3(0., 1., 0.), 8u32);
+  expectInt(i64.from(bz.len()), 9i64, "bezier: n + 1 points");
+  expectFloat(f64.from((*bz[8usize]).y), 1., near, "bezier: ends at the last control point");
+  expectFloat(f64.from((*bz[4usize]).x), 0.75, near, "bezier: its midpoint (3/8 + 3/8 of the middle points' x)");
+}
+
+// The height of the nearest vertex's change
+fn nearestY(a: &PolyMesh, b: &PolyMesh, at: Vec3) f32 {
+  var best = 0usize;
+  var bd = 3.0e38f;
+  var v = 0usize;
+  while v < a.positions.len() {
+    let d = (*a.positions[v] - at).lengthSquared();
+    if d < bd { bd = d; best = v; }
+    v = v + 1usize;
+  }
+  (*b.positions[best]).y - (*a.positions[best]).y
+}
+
+fn curves() {
+  let p = plate(60u32, 2.);
+  // A radius ramp from 0.2 to 1 along the stroke: the start is narrow
+  var st = Stroke.make(Brush.of(BrushDraw), line(-0.6, 0.6, 0.), 0.3, 1.);
+  st.project = false;
+  st.radiusCurve = rampCurve(0.2, 1.);
+  let q = sculptStroke(&p, &st);
+  var widthStart = 0.f;
+  var widthEnd = 0.f;
+  var v = 0usize;
+  while v < p.positions.len() {
+    if (*q.positions[v] - *p.positions[v]).lengthSquared() > 0. {
+      let x = (*p.positions[v]).x;
+      let z = (*p.positions[v]).z.abs();
+      if x < -0.5 && z > widthStart { widthStart = z; }
+      if x > 0.5 && z > widthEnd { widthEnd = z; }
+    }
+    v = v + 1usize;
+  }
+  expect(widthStart < 0.3 * 0.4 && widthEnd > 0.3 * 0.7, "radius curve: narrow where the stroke starts, wide where it ends");
+  // A strength ramp: the start is lighter
+  var st2 = Stroke.make(Brush.of(BrushDraw), line(-0.6, 0.6, 0.), 0.3, 1.);
+  st2.project = false;
+  st2.strengthCurve = rampCurve(0.1, 1.);
+  let q2 = sculptStroke(&p, &st2);
+  let h0 = nearestY(&p, &q2, Vec3(-0.5, 0., 0.));
+  let h1 = nearestY(&p, &q2, Vec3(0.5, 0., 0.));
+  expect(h0 < h1 * 0.7, "strength curve: lighter where the stroke starts");
+  // A pressure curve: lighter at both ends than in the middle
+  var st3 = Stroke.make(Brush.of(BrushDraw), line(-0.6, 0.6, 0.), 0.3, 1.);
+  st3.project = false;
+  st3.strengthCurve = pressureCurve(0.2);
+  let q3 = sculptStroke(&p, &st3);
+  let e0 = nearestY(&p, &q3, Vec3(-0.5, 0., 0.));
+  let m0 = nearestY(&p, &q3, Vec3(0., 0., 0.));
+  expect(e0 < m0 * 0.7, "pressure curve: lighter at the ends");
+}
+
+fn symmetry() {
+  let p = plate(40u32, 2.);
+  var st = Stroke.dab(Brush.of(BrushDraw), Vec3(0.4, 0., 0.2), 0.3, 1.);
+  st.mirrorAcross(Vec3(0., 0., 0.), Vec3(1., 0., 0.));
+  let q = sculptStroke(&p, &st);
+  let map = mirrorMap(&p, Vec3(0., 0., 0.), Vec3(1., 0., 0.), 0.0001);
+  var ok = true;
+  var any = 0;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let m = *map[v];
+    if m != NoIndex {
+      let a = *q.positions[v];
+      let b = *q.positions[usize.from(m)];
+      if (a.y - b.y).abs() > 0.00001 || (a.z - b.z).abs() > 0.00001 || (a.x + b.x).abs() > 0.00001 { ok = false; }
+      if a.y > 0.0001 { any = any + 1; }
+    }
+    v = v + 1usize;
+  }
+  expect(ok && any > 10, "symmetry: a dab and its mirror image: the result is its own reflection");
+  expectInt(i64.from(dabsOf(&p, &st)), 2i64, "symmetry: one plane makes two dabs");
+  // Two planes make four
+  var st2 = Stroke.dab(Brush.of(BrushDraw), Vec3(0.4, 0., 0.2), 0.3, 1.);
+  st2.mirrorAcross(Vec3(0., 0., 0.), Vec3(1., 0., 0.));
+  st2.mirrorAcross(Vec3(0., 0., 0.), Vec3(0., 0., 1.));
+  expectInt(i64.from(dabsOf(&p, &st2)), 4i64, "symmetry: two planes make four dabs");
+  // A grab is mirrored too, its move reflected
+  var pts = List[Vec3]();
+  pts.push(Vec3(0.5, 0., 0.));
+  pts.push(Vec3(0.6, 0.2, 0.));
+  var g = Stroke.make(Brush.of(BrushGrab), pts, 0.3, 1.);
+  g.mirrorAcross(Vec3(0., 0., 0.), Vec3(1., 0., 0.));
+  let qg = sculptStroke(&p, &g);
+  let right = nearestY(&p, &qg, Vec3(0.5, 0., 0.));
+  let left = nearestY(&p, &qg, Vec3(-0.5, 0., 0.));
+  expectFloat(f64.from(right), f64.from(left), near, "symmetry: a grab's mirror lifts the other side the same");
+  let dxr = (*qg.positions[nearestVertexIndex(&p, Vec3(0.5, 0., 0.))] - *p.positions[nearestVertexIndex(&p, Vec3(0.5, 0., 0.))]).x;
+  let dxl = (*qg.positions[nearestVertexIndex(&p, Vec3(-0.5, 0., 0.))] - *p.positions[nearestVertexIndex(&p, Vec3(-0.5, 0., 0.))]).x;
+  expectFloat(f64.from(dxr), -f64.from(dxl), near, "symmetry: and the sideways move is reflected");
+}
+
+fn nearestVertexIndex(m: &PolyMesh, p: Vec3) usize {
+  var best = 0usize;
+  var bd = 3.0e38f;
+  var v = 0usize;
+  while v < m.positions.len() {
+    let d = (*m.positions[v] - p).lengthSquared();
+    if d < bd { bd = d; best = v; }
+    v = v + 1usize;
+  }
+  best
+}
+
+fn gates() {
+  let p = plate(40u32, 2.);
+  // A mask of 1 on half the plate: x > 0 does not move
+  var half = List[f32]();
+  var v = 0usize;
+  while v < p.positions.len() {
+    half.push(if (*p.positions[v]).x > 0. {1.} else {0.});
+    v = v + 1usize;
+  }
+  let masked = withMaskValues(&p, &half);
+  var st = Stroke.make(Brush.of(BrushDraw), line(-0.5, 0.5, 0.), 0.3, 1.);
+  st.project = false;
+  let q = sculptStroke(&masked, &st);
+  var leaked = 0;
+  var moved = 0;
+  v = 0usize;
+  while v < p.positions.len() {
+    if (*q.positions[v] - *p.positions[v]).lengthSquared() > 0. {
+      if (*p.positions[v]).x > 0. { leaked = leaked + 1; } else { moved = moved + 1; }
+    }
+    v = v + 1usize;
+  }
+  expect(leaked == 0 && moved > 10, "mask: masked vertices stay, the rest move");
+  // A face set limit: assign set 1 to the faces with x < 0, stroke limited to set 1
+  var faces = List[u32]();
+  var f = 0usize;
+  while f < p.faceCount() {
+    if p.faceCentroid(u32.from(f)).x < 0. { faces.push(u32.from(f)); }
+    f = f + 1usize;
+  }
+  let withSets = faceSetAssign(&p, &faces, 2u32);
+  var lim = Stroke.make(Brush.of(BrushDraw), line(-0.5, 0.5, 0.), 0.3, 1.);
+  lim.project = false;
+  lim.faceSet = 2u32;
+  let ql = sculptStroke(&withSets, &lim);
+  var outside = 0;
+  var inside = 0;
+  v = 0usize;
+  while v < p.positions.len() {
+    if (*ql.positions[v] - *p.positions[v]).lengthSquared() > 0. {
+      if (*p.positions[v]).x > 0.001 { outside = outside + 1; } else { inside = inside + 1; }
+    }
+    v = v + 1usize;
+  }
+  expect(outside == 0 && inside > 10, "face set: a stroke limited to a face set leaves the rest");
+  // Front faces only: a thin flattened sphere, a dab on top does not reach the underside
+  let s0 = subdivide(&PolyMesh.cube(1.), 3u32);
+  let thin = deform(&s0, q2 => Vec3(q2.x, q2.y * 0.1, q2.z));
+  let topV = nearestVertexIndex(&thin, Vec3(0., 0.1, 0.));
+  let topP = *thin.positions[topV];
+  var both = Stroke.dab(Brush.of(BrushInflate), topP, 0.5, 1.);
+  both.project = false;
+  let qb = sculptStroke(&thin, &both);
+  var front = Stroke.dab(Brush.of(BrushInflate), topP, 0.5, 1.);
+  front.project = false;
+  front.frontOnly = true;
+  let qf = sculptStroke(&thin, &front);
+  var underBoth = 0;
+  var underFront = 0;
+  v = 0usize;
+  while v < thin.positions.len() {
+    if (*thin.positions[v]).y < 0. {
+      if (*qb.positions[v] - *thin.positions[v]).lengthSquared() > 0. { underBoth = underBoth + 1; }
+      if (*qf.positions[v] - *thin.positions[v]).lengthSquared() > 0. { underFront = underFront + 1; }
+    }
+    v = v + 1usize;
+  }
+  expect(underBoth > 0 && underFront == 0, "front faces only: the underside of a thin shape is not reached");
+}
+
+fn halfAlpha() Alpha {
+  var half = Alpha();
+  half.w = 2u32;
+  half.h = 2u32;
+  half.values.push(1.);
+  half.values.push(0.);
+  half.values.push(1.);
+  half.values.push(0.);
+  half.followStroke = false;
+  half
+}
+
+fn alphas() {
+  let p = plate(60u32, 2.);
+  // An alpha of 1 in its left half and 0 in its right: stamps only half a dab (not following the stroke)
+  let a = alphaFrom(8u32, (u, v) => u * v);
+  expect(a.w == 8u32 && a.h == 8u32, "alpha: size x size samples");
+  let half = halfAlpha();
+  var st = Stroke.dab(Brush.of(BrushDraw), Vec3(0., 0., 0.), 0.4, 1.);
+  st.project = false;
+  st.setAlpha(half);
+  let q = sculptStroke(&p, &st);
+  // The fixed frame on a plate facing +y has its first axis along x: the alpha runs from 1 at
+  // x = -radius to 0 at x = +radius, so the dab is taller on the left than the right
+  var left = 0.;
+  var right = 0.;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let x = (*p.positions[v]).x;
+    let z = (*p.positions[v]).z;
+    let dy = (*q.positions[v]).y - (*p.positions[v]).y;
+    if z.abs() < 0.02 && x < -0.12 && x > -0.2 { left = left + dy; }
+    if z.abs() < 0.02 && x > 0.12 && x < 0.2 { right = right + dy; }
+    v = v + 1usize;
+  }
+  expect(left > 0. && right > 0. && left > right * 2., "alpha: the stamp's texture shapes the dab: heavy on its 1 side, light on its 0 side");
+  let probe = halfAlpha();
+  expectFloat(f64.from(probe.sample(0., 0.)), 1., near, "alpha sample: at a 1 texel");
+  expectFloat(f64.from(probe.sample(1., 0.)), 0., near, "alpha sample: at a 0 texel");
+  expectFloat(f64.from(probe.sample(0.5, 0.)), 0.5, near, "alpha sample: bilinear between");
+  expectFloat(f64.from(probe.sample(1.2, 0.)), 0., near, "alpha sample: nothing outside");
+}
+
+fn reports() {
+  let p = plate(40u32, 2.);
+  var s = Sculptor.of(&p);
+  let st = Stroke.dab(Brush.of(BrushDraw), Vec3(0., 0., 0.), 0.5, 1.);
+  let r = s.stroke(&st);
+  expectInt(i64.from(r.dabs), 1i64, "report: one dab");
+  expect(r.touched > 10u32, "report: counts the vertices moved");
+  expectFloat(f64.from(r.maxMove), 0.006, 0.0001, "report: the farthest any vertex moved");
+  expect(!r.needsDensity, "report: a gentle draw needs no density");
+  // The report on an empty stroke
+  var none = Stroke.make(Brush.of(BrushDraw), List[Vec3](), 0.5, 1.);
+  none.project = false;
+  let r2 = s.stroke(&none);
+  expectInt(i64.from(r2.dabs), 0i64, "report: a stroke with no points makes no dabs");
+  // A zero radius does nothing
+  let z = Stroke.dab(Brush.of(BrushDraw), Vec3(0., 0., 0.), 0., 1.);
+  expectInt(i64.from(s.stroke(&z).dabs), 0i64, "report: a zero radius makes no dabs");
+}
+
+fn recipe() {
+  let s0 = subdivide(&PolyMesh.cube(1.), 3u32);
+  var strokes = List[Stroke]();
+  var k = 0;
+  while k < 12 {
+    let ang = f32.from(k) * 0.5;
+    var b = Brush.of(if k % 3 == 0 {BrushDraw} else if k % 3 == 1 {BrushCrease} else {BrushSmooth});
+    var pts = List[Vec3]();
+    pts.push(Vec3(ang * 0.1, 0.8, 0.));
+    pts.push(Vec3(ang * 0.1 + 0.3, 0.8, 0.2));
+    strokes.push(Stroke.make(b, pts, 0.25, 0.8));
+    k = k + 1;
+  }
+  let a = sculptStrokes(&s0, &strokes);
+  let b = sculptStrokes(&s0, &strokes);
+  expect(sameBits(&a, &b), "determinism: the same recipe twice gives the same bits");
+  expect(!sameBits(&a, &s0), "determinism: and the recipe did something");
+  // Splitting the recipe over two Sculptors changes nothing
+  var sc = Sculptor.of(&s0);
+  k = 0;
+  while k < 12 { sc.stroke(&*strokes[usize.from(u32.from(k))]); k = k + 1; }
+  expect(sameBits(&a, &sc.finish()), "determinism: strokes one at a time are the recipe in one call");
+  // The grid kept across strokes (and moved with the vertices) gives what a fresh one would:
+  // radii from 0.1 to 0.5 (some reuse the grid, some rebuild it), grabs and snake hooks
+  // that carry vertices across cells, one Sculptor reusing, one made to rebuild every stroke
+  var mixed = List[Stroke]();
+  k = 0;
+  while k < 16 {
+    let ang = f32.from(k) * 0.7;
+    let kind = if k % 4 == 0 {BrushDraw} else if k % 4 == 1 {BrushGrab} else if k % 4 == 2 {BrushSnakeHook} else {BrushCrease};
+    var pts = List[Vec3]();
+    pts.push(Vec3(0.3 * ang.cos(), 0.8, 0.3 * ang.sin()));
+    pts.push(Vec3(0.3 * ang.cos() + 0.2, 0.9, 0.3 * ang.sin() + 0.1));
+    let rad = 0.1 + 0.4 * f32.from(k % 5) / 4.;
+    mixed.push(Stroke.make(Brush.of(kind), pts, rad, 0.9));
+    k = k + 1;
+  }
+  var kept = Sculptor.of(&s0);
+  var fresh = Sculptor.of(&s0);
+  k = 0;
+  while k < 16 {
+    kept.stroke(&*mixed[usize.from(u32.from(k))]);
+    fresh.cell = 0.;
+    fresh.stroke(&*mixed[usize.from(u32.from(k))]);
+    k = k + 1;
+  }
+  let ka = kept.finish();
+  expect(sameBits(&ka, &fresh.finish()), "determinism: a grid kept across strokes gives the bits a fresh one does");
+  expect(!sameBits(&ka, &s0), "determinism: and the mixed recipe did something");
+}
+
+fn main() i32 {
+  methods();
+  curves();
+  symmetry();
+  gates();
+  alphas();
+  reports();
+  recipe();
+  done()
+}

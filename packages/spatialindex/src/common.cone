@@ -10,98 +10,97 @@
 pub const NONE = 4294967295u32;
 
 // The largest f32, the stand-in for "no limit" on a ray's reach
-pub const FAR = 3.4028235e38;
+pub const FAR = 3.4028235e38f;
 
 // What an index gives back when an item goes in: the item's slot and which
 // occupant of that slot it is. A Proxy owns nothing and is copied freely;
 // once the item is removed the Proxy reaches nothing (the slot's generation
 // has moved on, even after another item takes the slot).
 pub struct Proxy {
-  pub slot u32;
-  pub gen u32;
+  pub slot: u32;
+  pub gen: u32;
 
-  pub fn none() Proxy {new Proxy(NONE, 0u32);}
-  pub fn isNone(self) bool {slot == NONE;}
-  pub fn `==`(self, o Proxy) bool {slot == o.slot and gen == o.gen;}
+  pub fn none() Proxy {Proxy(NONE, 0u32)}
+  pub fn isNone(self) bool {slot == NONE}
+  pub fn `==`(self, o: Proxy) bool {slot == o.slot && gen == o.gen}
 }
 
 // A ray hit on an item's box: the handle, the proxy, and the multiple of the
 // ray's direction at which the ray enters the box (0 if it starts inside)
-pub struct Hit[T Copy] {
-  pub handle T;
-  pub proxy Proxy;
-  pub t f32;
+pub struct Hit[T: Copy] {
+  pub handle: T;
+  pub proxy: Proxy;
+  pub t: f32;
 }
 
 // An item found by a nearest-neighbour query, with its squared distance from
 // the query point to its box (0 if the point is inside)
-pub struct Neighbor[T Copy] {
-  pub handle T;
-  pub proxy Proxy;
-  pub distSq f32;
+pub struct Neighbor[T: Copy] {
+  pub handle: T;
+  pub proxy: Proxy;
+  pub distSq: f32;
 }
 
 // Two items whose boxes overlap, in the order of their slots
-pub struct Pair[T Copy] {
-  pub a T;
-  pub b T;
-  pub pa Proxy;
-  pub pb Proxy;
+pub struct Pair[T: Copy] {
+  pub a: T;
+  pub b: T;
+  pub pa: Proxy;
+  pub pb: Proxy;
 }
 
 // What changed in the set of overlapping pairs since the last update
-pub struct PairEvents[T Copy] {
-  pub added List[Pair[T]];
-  pub removed List[Pair[T]];
+pub struct PairEvents[T: Copy] {
+  pub added: List[Pair[T]];
+  pub removed: List[Pair[T]];
 
-  pub fn create() PairEvents[T] {new PairEvents[T](List[Pair[T]].empty(), List[Pair[T]].empty());}
-  pub fn clear(self &mut) {
+  pub fn create() PairEvents[T] {PairEvents[T](List[Pair[T]](), List[Pair[T]]())}
+  pub fn clear(self: &mut) {
     added.clear();
     removed.clear();
   }
 }
 
 // The last u32 of a list, taken off it (NONE for an empty one)
-fn popU32(l &mut List[u32]) u32 {
-  mut r = NONE;
+fn popU32(l: &mut List[u32]) u32 {
+  var r = NONE;
   match l.pop() {
-    case imm s Some { r = s; }
+    case let Some(s) { r = s; }
     case is None { }
   }
-  r;
+  r
 }
 
 // -------- small numeric helpers (geomath keeps its own private) --------
 
-fn minf(a f32, b f32) f32 inline {if a < b {a;} else {b;};}
-fn maxf(a f32, b f32) f32 inline {if a > b {a;} else {b;};}
-fn absf(a f32) f32 inline {if a < 0. {-a;} else {a;};}
+fn minf(a: f32, b: f32) f32 inline {if a < b {a} else {b}}
+fn maxf(a: f32, b: f32) f32 inline {if a > b {a} else {b}}
 
 // The cell an f32 coordinate falls in on a grid of 'size' from 'origin'
 // (kept within 21 bits either side of zero, so a key can pack three of them)
-fn cellOf(x f32, origin f32, invSize f32) i32 inline {
-  imm f = libc.floorf((x - origin) * invSize);
-  imm c = if f < -1048576. {-1048576.;} else if f > 1048575. {1048575.;} else {f;};
-  i32.from(c);
+fn cellOf(x: f32, origin: f32, invSize: f32) i32 inline {
+  let f = libc.floorf((x - origin) * invSize);
+  let c = if f < -1048576. {-1048576.} else if f > 1048575. {1048575.} else {f};
+  i32.from(c)
 }
 
 // The surface area of a box: the cost measure of the surface area heuristic
-fn area(b Aabb3) f32 inline {
-  imm d = b.max - b.min;
-  2. * (d.x * d.y + d.y * d.z + d.z * d.x);
+fn area(b: Aabb3) f32 inline {
+  let d = b.max - b.min;
+  2. * (d.x * d.y + d.y * d.z + d.z * d.x)
 }
 
 // Squared distance from a point to a box (0 inside)
-fn distSqPointBox(p Vec3, b Aabb3) f32 inline {
-  imm dx = maxf(maxf(b.min.x - p.x, p.x - b.max.x), 0.);
-  imm dy = maxf(maxf(b.min.y - p.y, p.y - b.max.y), 0.);
-  imm dz = maxf(maxf(b.min.z - p.z, p.z - b.max.z), 0.);
-  dx * dx + dy * dy + dz * dz;
+fn distSqPointBox(p: Vec3, b: Aabb3) f32 inline {
+  let dx = maxf(b.min.x - p.x, p.x - b.max.x).max(0.);
+  let dy = maxf(b.min.y - p.y, p.y - b.max.y).max(0.);
+  let dz = maxf(b.min.z - p.z, p.z - b.max.z).max(0.);
+  dx * dx + dy * dy + dz * dz
 }
 
-fn containsBox(outer Aabb3, inner Aabb3) bool inline {
-  outer.min.x <= inner.min.x and outer.min.y <= inner.min.y and outer.min.z <= inner.min.z
-    and outer.max.x >= inner.max.x and outer.max.y >= inner.max.y and outer.max.z >= inner.max.z;
+fn containsBox(outer: Aabb3, inner: Aabb3) bool inline {
+  outer.min.x <= inner.min.x && outer.min.y <= inner.min.y && outer.min.z <= inner.min.z
+    && outer.max.x >= inner.max.x && outer.max.y >= inner.max.y && outer.max.z >= inner.max.z
 }
 
 // -------- frustum culling with plane masks --------
@@ -116,26 +115,26 @@ pub const ALL_PLANES = 63u32;
 // answer: the plane-coherency optimisation of Assarsson and Moller, "Optimized
 // View Frustum Culling Algorithms for Bounding Boxes" (2000). The answers
 // agree with Frustum.testAabb: NONE is Outside, 0 is Inside, else Intersecting.
-fn cullMask(f &Frustum, b &Aabb3, mask u32) u32 {
-  mut out = 0u32;
-  mut i = 0usize;
+fn cullMask(f: &Frustum, b: &Aabb3, mask: u32) u32 {
+  var out = 0u32;
+  var i = 0usize;
   while i < 6usize {
-    imm bit = 1u32 << u32.from(i);
+    let bit = 1u32 << u32.from(i);
     if (mask & bit) != 0u32 {
-      imm n = f.planes[i].normal;
-      imm d = f.planes[i].d;
-      imm px = if n.x >= 0. {b.max.x;} else {b.min.x;};
-      imm py = if n.y >= 0. {b.max.y;} else {b.min.y;};
-      imm pz = if n.z >= 0. {b.max.z;} else {b.min.z;};
+      let n = f.planes[i].normal;
+      let d = f.planes[i].d;
+      let px = if n.x >= 0. {b.max.x} else {b.min.x};
+      let py = if n.y >= 0. {b.max.y} else {b.min.y};
+      let pz = if n.z >= 0. {b.max.z} else {b.min.z};
       if n.x * px + n.y * py + n.z * pz + d < 0. {return NONE;}
-      imm qx = if n.x >= 0. {b.min.x;} else {b.max.x;};
-      imm qy = if n.y >= 0. {b.min.y;} else {b.max.y;};
-      imm qz = if n.z >= 0. {b.min.z;} else {b.max.z;};
+      let qx = if n.x >= 0. {b.min.x} else {b.max.x};
+      let qy = if n.y >= 0. {b.min.y} else {b.max.y};
+      let qz = if n.z >= 0. {b.min.z} else {b.max.z};
       if n.x * qx + n.y * qy + n.z * qz + d < 0. {out = out | bit;}
     }
     i = i + 1usize;
   }
-  out;
+  out
 }
 
 // -------- rays against boxes --------
@@ -144,46 +143,46 @@ fn cullMask(f &Frustum, b &Aabb3, mask u32) u32 {
 // as it is and handled by a branch in the test (the origin must then lie
 // between that axis's faces), so no infinity or NaN arises from 0 * inf.
 pub struct RayQ {
-  pub o Vec3;
-  pub d Vec3;
-  pub inv Vec3;
+  pub o: Vec3;
+  pub d: Vec3;
+  pub inv: Vec3;
 
-  pub fn from(r Ray3) RayQ {
-    imm inv = new Vec3(if r.direction.x != 0. {1. / r.direction.x;} else {0.;},
-      if r.direction.y != 0. {1. / r.direction.y;} else {0.;},
-      if r.direction.z != 0. {1. / r.direction.z;} else {0.;});
-    new RayQ(r.origin, r.direction, inv);
+  pub fn from(r: Ray3) RayQ {
+    let inv = Vec3(if r.direction.x != 0. {1. / r.direction.x} else {0.},
+      if r.direction.y != 0. {1. / r.direction.y} else {0.},
+      if r.direction.z != 0. {1. / r.direction.z} else {0.});
+    RayQ(r.origin, r.direction, inv)
   }
 }
 
 // Where the ray enters the box (slab method; Kay and Kajiya 1986), as a
 // multiple of the direction; 0 if it starts inside; -1 if it misses or the
 // entry is beyond 'maxT'. The box is closed: touching counts.
-fn rayBox(r &RayQ, b &Aabb3, maxT f32) f32 {
-  mut tNear = 0.;
-  mut tFar = maxT;
+fn rayBox(r: &RayQ, b: &Aabb3, maxT: f32) f32 {
+  var tNear = 0.f;
+  var tFar = maxT;
   if r.d.x != 0. {
-    imm t1 = (b.min.x - r.o.x) * r.inv.x;
-    imm t2 = (b.max.x - r.o.x) * r.inv.x;
+    let t1 = (b.min.x - r.o.x) * r.inv.x;
+    let t2 = (b.max.x - r.o.x) * r.inv.x;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
-  else if r.o.x < b.min.x or r.o.x > b.max.x {return -1.;}
+  else if r.o.x < b.min.x || r.o.x > b.max.x {return -1.;}
   if r.d.y != 0. {
-    imm t1 = (b.min.y - r.o.y) * r.inv.y;
-    imm t2 = (b.max.y - r.o.y) * r.inv.y;
+    let t1 = (b.min.y - r.o.y) * r.inv.y;
+    let t2 = (b.max.y - r.o.y) * r.inv.y;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
-  else if r.o.y < b.min.y or r.o.y > b.max.y {return -1.;}
+  else if r.o.y < b.min.y || r.o.y > b.max.y {return -1.;}
   if r.d.z != 0. {
-    imm t1 = (b.min.z - r.o.z) * r.inv.z;
-    imm t2 = (b.max.z - r.o.z) * r.inv.z;
+    let t1 = (b.min.z - r.o.z) * r.inv.z;
+    let t2 = (b.max.z - r.o.z) * r.inv.z;
     tNear = maxf(tNear, minf(t1, t2));
     tFar = minf(tFar, maxf(t1, t2));
   }
-  else if r.o.z < b.min.z or r.o.z > b.max.z {return -1.;}
-  if tNear <= tFar {tNear;} else {-1.;};
+  else if r.o.z < b.min.z || r.o.z > b.max.z {return -1.;}
+  if tNear <= tFar {tNear} else {-1.}
 }
 
 // -------- a min-heap for best-first search --------
@@ -192,69 +191,45 @@ fn rayBox(r &RayQ, b &Aabb3, maxT f32) f32 {
 // with its lower-bound distance 'key'. 'c' and 'h' carry a node's cell
 // (the octree's centre and half-size); the BVH ignores them.
 struct HeapEntry {
-  key f32;
-  id u32;
-  isItem bool;
-  c Vec3;
-  h f32;
+  key: f32;
+  id: u32;
+  isItem: bool;
+  c: Vec3;
+  h: f32;
 }
 
 struct MinHeap {
-  a List[HeapEntry];
+  q: PriorityQueue[f32, HeapEntry];
 
-  fn create() MinHeap {new MinHeap(List[HeapEntry].withCapacity(256usize));}
-  fn len(self &) usize {a.len();}
+  fn create() MinHeap {MinHeap(PriorityQueue[f32, HeapEntry](256usize))}
+  fn len(self: &) usize {q.len()}
 
-  fn push(self &mut, e HeapEntry) {
-    a.push(e);
-    mut i = a.len() - 1usize;
-    while i > 0usize {
-      imm p = (i - 1usize) / 2usize;
-      if a[p].key <= a[i].key {break;}
-      a.swap(p, i);
-      i = p;
-    }
-  }
+  fn push(self: &mut, e: HeapEntry) { q.push(e.key, e); }
 
-  fn pop(self &mut) HeapEntry {
-    imm last = a.len() - 1usize;
-    a.swap(0usize, last);
-    mut top = new HeapEntry(0., 0u32, false, new Vec3(0., 0., 0.), 0.);
-    match a.pop() {
-      case imm s Some { top = s; }
-      case is None { }
+  // The nearest entry, removed; the heap is not empty
+  fn pop(self: &mut) HeapEntry {
+    match q.pop() {
+      case let Some(pair) { let k, e = pair; e }
+      case is None { HeapEntry(0., 0u32, false, Vec3(0., 0., 0.), 0.) }
     }
-    mut i = 0usize;
-    imm n = a.len();
-    while true {
-      imm l = 2usize * i + 1usize;
-      if l >= n {break;}
-      imm r = l + 1usize;
-      mut m = l;
-      if r < n and a[r].key < a[l].key {m = r;}
-      if a[i].key <= a[m].key {break;}
-      a.swap(i, m);
-      i = m;
-    }
-    top;
   }
 }
 
 // -------- a set of slots seen --------
 
 struct Seen {
-  bits List[u64];
+  bits: List[u64];
 
-  fn create() Seen {new Seen(List[u64].empty());}
+  fn create() Seen {Seen(List[u64]())}
 
   // Marks a slot; true if it was not marked before
-  fn mark(self &mut, slot u32) bool {
-    imm w = usize.from(slot >> 6u32);
+  fn mark(self: &mut, slot: u32) bool {
+    let w = usize.from(slot >> 6u32);
     while self.bits.len() <= w {self.bits.push(0u64);}
-    imm bit = 1u64 << u64.from(slot & 63u32);
-    imm cur = *bits[w];
+    let bit = 1u64 << u64.from(slot & 63u32);
+    let cur = *bits[w];
     if (cur & bit) != 0u64 {return false;}
     bits.set(w, cur | bit);
-    true;
+    true
   }
 }

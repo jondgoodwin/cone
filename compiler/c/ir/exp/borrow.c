@@ -32,7 +32,7 @@ INode *newBorrowMutRef(INode *node, INode* type, INode *perm) {
 
 // Refuse a borrow of a place within a named constant's own value, reporting it
 // once, where the whole constant array or string (borrowIsConstLit) was not
-// what was borrowed. A constant is its literal wherever it is used (refterm.html,
+// what was borrowed. A constant is its literal wherever it is used (mod-globals.html#const,
 // "Named constants"), so '&K' for 'const K = 5' is '&5', a temporary, and so is
 // a borrow of a field or element of any constant. A place reached through a
 // reference the constant holds is where that reference points, and is not
@@ -58,7 +58,7 @@ static int borrowRefusesConst(INode *place) {
 // through a borrow that only reads ('car.owner' for a 'car &Car' holding
 // 'owner &mut Person'), used where one that may write is wanted -- a receiver, an
 // argument, an initializer -- is refused: through a '&' it is a '&', the
-// permissions being the intersection of all gone through (refperm.html,
+// permissions being the intersection of all gone through (mem-permissions.html#view,
 // "Viewpoint Adaptation"). 'perm' is the permission the use asks for. Reports
 // it and answers 1 when refused.
 static int borrowHeldRefLendRefused(INode *held, INode *perm) {
@@ -72,16 +72,16 @@ static int borrowHeldRefLendRefused(INode *held, INode *perm) {
         || !iexpPathThroughBorrow(held) || iexpReachWrites(held))
         return 0;
     errorMsgNode(held, ErrorBadPerm,
-        "Borrowed reference cannot obtain this permission: it is held in a place reached through a reference that only reads, and a `&` lends only `&` of the references it holds, `&mut` ones included. To change what it points at, reach it through a `&mut` (a method takes `self &mut`).");
+        "Borrowed reference cannot obtain this permission: it is held in a place reached through a reference that only reads, and a `&` lends only `&` of the references it holds, `&mut` ones included. To change what it points at, reach it through a `&mut` (a method takes `self: &mut`).");
     return 1;
 }
 
 // An owning reference held in a place reached through a borrow that only reads
-// ('h.app' for a 'h &Holder' holding 'app So[App]'), lent as a borrow that may
+// ('h.app' for a 'h &Holder' holding 'app Uni[App]'), lent as a borrow that may
 // write, is refused: a '&' lends only '&' of what it holds, owners included.
 // So is one reached through a borrow that others share ('h &mut Holder'), lent
-// as a '&uni' or a '&imm': a '&mut' lends only '&mut' (refborref.html, "Freezing
-// access to the source of a borrow"); the shared path may replace the owner and
+// as a '&uni' or a '&imm': a '&mut' lends only '&mut' (mem-borrowing.html#freezing, "What a borrow leaves its source free to do");
+// the shared path may replace the owner and
 // end what was lent. 'perm' is the permission the lend asks for. Reports it and
 // answers 1 when refused.
 int borrowOwnerLendRefused(INode *owner, INode *perm) {
@@ -160,7 +160,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         refused = 1;
     }
     // A local lends 'uni' as a written '&uni' does (borrowTypeCheck), which a
-    // method declaring 'self &uni' is handed (fnCallBorrowReceiver)
+    // method declaring 'self: &uni' is handed (fnCallBorrowReceiver)
     if (!refused && !permMatches(perm, lvalperm) && !borrowLocalLendsUni(node, lvalperm, scope, perm)) {
         // A '&uni' that cannot be lent says what the written '&uni' says
         if (itypeGetTypeDcl(perm) == (INode *)uniPerm)
@@ -168,6 +168,8 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused((INode *)node, (VarDclNode *)lvalvar);
         else if (lvalvar && lvalvar->tag == VarDclTag)
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
@@ -220,14 +222,15 @@ void borrowAuto(INode **from, INode *totypedcl) {
 // '&uni'? Handing it over borrows from it, a fresh and shorter loan, rather than
 // handing over the reference itself: "a uni can be borrowed as mut or imm. After
 // the borrowed references' last use, you once again have the original uni
-// reference" (refperm.html, "Borrowed reference recovery"). That holds for a
-// '&uni' wanted as a '&uni' too (refborref.html, "Reference Handling"). An
+// reference" (mem-permissions.html#recovery, "Getting a permission back"). That holds for a
+// '&uni' wanted as a '&uni' too (mem-borrowing.html#handle, "Passing a borrow on"). An
 // owning reference is not part of this: it is not a borrowed one.
 // Note: totypedcl has already done GetTypeDcl
 int borrowUniReborrows(INode *from, INode *totypedcl) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
     RefNode *totype = (RefNode*)totypedcl;
-    return (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag) && fromtype->region == borrowRef
+    return (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag || fromtype->tag == VirtRefTag)
+        && fromtype->region == borrowRef
         && itypeGetTypeDcl(fromtype->perm) == (INode*)uniPerm
         && totype->tag == fromtype->tag && totype->region == borrowRef
         && iexpIsLval(from);
@@ -241,6 +244,7 @@ int borrowUniReborrows(INode *from, INode *totypedcl) {
 static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(*from);
     int slice = fromtype->tag == ArrayRefTag;
+    int virt = fromtype->tag == VirtRefTag;
     StarNode *deref = newStarNode(DerefTag);
     inodeLexCopy((INode*)deref, *from);
     deref->vtexp = *from;
@@ -250,10 +254,13 @@ static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     uint16_t scope = 0;
     iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
 
-    if (!slice)
+    if (!slice && !virt)
         narrowBorrowed((INode*)deref, perm, vtexp);
-    RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : RefTag, *from, borrowRef, perm, vtexp);
+    RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : virt ? VirtRefTag : RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
+    // A virtual reference keeps its markers ('+ ShapeKeeping') through a reborrow
+    if (virt)
+        reftype->marks = fromtype->marks;
     RefNode *borrownode = newRefNodeFull(slice ? ArrayBorrowTag : BorrowTag, *from, borrowRef, perm, (INode*)deref);
     borrownode->vtype = (INode*)reftype;
     *from = (INode*)borrownode;
@@ -270,22 +277,23 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
     borrowDerefOf(from, totype->perm, totype->vtexp);
 }
 
-// Is 'from' an owning reference that is the only holder of its value (a 'So',
+// Is 'from' an owning reference that is the only holder of its value (a 'Uni',
 // a 'Rc' still 'uni'), held in a place, wanted as a borrowed reference that
 // may not be shared ('&uni')? An owning reference coerced to a borrowed one is
 // borrowed from, whatever the borrow's permission: the owner stays, frozen
 // while the borrow is used, and still ends its value at its own scope's end
-// (refborref.html, "Borrowing from another reference"; refperm.html, "From
-// 'uni'"). A coercion to '&' or '&mut' is a recast that flow analysis already
+// (mem-borrowing.html#handle, "Passing a borrow on"; mem-permissions.html#fromuni, "From uni, for a while").
+// A coercion to '&' or '&mut' is a recast that flow analysis already
 // sees as that borrow (pwOwnedLent); one to a '&uni' is a move type, which would
 // move the owner into a reference that ends nothing. Note: totypedcl has
 // already done GetTypeDcl
 int borrowOwnerLendsUni(INode *from, INode *totypedcl) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
     RefNode *totype = (RefNode*)totypedcl;
-    return fromtype->tag == RefTag && itypeGetTypeDcl(fromtype->region) != borrowRef
+    return (fromtype->tag == RefTag || fromtype->tag == VirtRefTag)
+        && itypeGetTypeDcl(fromtype->region) != borrowRef
         && itypeIsMove((INode*)fromtype)
-        && totype->tag == RefTag && totype->region == borrowRef && itypeIsMove(totypedcl)
+        && totype->tag == fromtype->tag && totype->region == borrowRef && itypeIsMove(totypedcl)
         && iexpIsLval(from);
 }
 
@@ -387,7 +395,7 @@ static int borrowReassocIndex(RefNode *node) {
 // ('&[1, 2, 3]'). Generation places either in a constant global, so it is
 // borrowed as a global constant is: for as long as the program runs, and
 // immutably. An array literal with a computed element has no such place. A
-// named constant is its literal wherever it is used (refterm.html, "Named
+// named constant is its literal wherever it is used (mod-globals.html#const, "Named
 // constants"), so '&K' is borrowed as its literal would be.
 int borrowIsConstLit(INode *node) {
     while (nameUseNames(node, ConstDclTag))
@@ -543,17 +551,20 @@ static int borrowLockPlace(TypeCheckState *pstate, RefNode *node) {
 }
 
 uint16_t borrowTempScope(TypeCheckState *pstate) {
-    return (uint16_t)pstate->scope;
+    // A global's value is type checked at scope 0, but one that is not a
+    // constant is run by a function (a setup, modAddSetup), whose temporaries
+    // die with its block: the main block's scope, as in 'init'
+    return (uint16_t)(pstate->scope == 0 ? 2 : pstate->scope);
 }
 
-// A 'mut' local variable, or a part of one held by value, lends '&uni': a source
-// reached as 'uni' is what a local variable is (refperm.html, "From 'uni'"). The
+// A 'var' local variable, or a part of one held by value, lends '&uni': a source
+// reached as 'uni' is what a local variable is (mem-permissions.html#fromuni, "From uni, for a while"). The
 // stack alone owns it, so nothing else can name it, and the loan walk freezes it
-// against reading and changing until the borrow's last use (refborref.html,
-// "Freezing access to the source of a borrow"). Nothing is reached through a
+// against reading and changing until the borrow's last use (mem-borrowing.html#freezing,
+// "What a borrow leaves its source free to do"). Nothing is reached through a
 // reference that is not 'uni' on the way (iexpPathNonUniLink), and the variable
-// is not a global, which others may name. An 'imm' local promises no change and
-// lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'mut');
+// is not a global, which others may name. A 'let' local promises no change and
+// lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'var');
 // 'refperm' the permission asked.
 static int borrowLocalLendsUni(INode *lval, INode *lvalperm, uint16_t scope, INode *refperm) {
     if (itypeGetTypeDcl(refperm) != (INode *)uniPerm || itypeGetTypeDcl(lvalperm) != (INode *)mutPerm || scope == 0)
@@ -594,7 +605,14 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
             writes = ((FnCallNode*)writes)->objfn;
     }
     uint32_t setmark = writes ? fnCallSetPlace(writes) : 0;
+    // '&*s' over a slice reference borrows what it points at, as a slice again
+    if (node->tag == BorrowTag && node->vtexp->tag == DerefTag && !(node->flags & FlagSuffix))
+        derefSliceBorrowed = (StarNode*)node->vtexp;
     int placed = iexpTypeCheckAny(pstate, &node->vtexp);
+    derefSliceBorrowed = NULL;
+    if (placed && node->tag == BorrowTag && node->vtexp->tag == DerefTag && !(node->flags & FlagSuffix)
+        && ((IExpNode*)node->vtexp)->vtype->tag == ArrayDerefTag)
+        node->tag = ArrayBorrowTag;
     if (writes)
         fnCallSetPlaceEnd(setmark);
     if (placed == 0)
@@ -648,7 +666,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // A GPU has no pointers to code: every call is inlined into the kernel
     else if (flowGpu && nameUseNames(node->vtexp, FnDclTag)) {
         errorMsgNode(node->vtexp, ErrorGpuUnavailable,
-            "In GPU code a function cannot be borrowed as a reference to it, '&%s': a GPU has no pointers to code. Call it, or give it to a function generic over its signature, '[F fn(...)]', which is inlined.",
+            "In GPU code a function cannot be borrowed as a reference to it, '&%s': a GPU has no pointers to code. Call it, or give it to a function generic over its signature, '[F: fn(...)]', which is inlined.",
             &((NameUseNode*)node->vtexp)->namesym->namestr);
     }
 
@@ -682,6 +700,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *lvalperm = (INode*)immPerm;
     scope = 0;  // Global
     int refused = 0;
+    INode *lvalvar = NULL;
     if (!borrowIsConstLit(lval)) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
@@ -694,7 +713,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // borrow ('uni', unless an owner or a field on the way says less), and
         // lives no longer than the block it is made in (borrowTempScope).
         lvalperm = (INode*)uniPerm;
-        INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
+        lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
         // So is a lock's guard (borrowLockPlace) where no declaration
         // extended it: it dies at the statement's end, giving the lock back,
         // and the loan walk refuses the borrow used after that
@@ -730,7 +749,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (refperm == unknownType) {
         refperm = newPermUseNode(itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
         // Immutable's rule one: 'imm', where the place allows it. A place that
-        // does not (a 'mut' variable, a 'ro' borrow) keeps the ordinary default,
+        // does not (a 'var' variable, a 'ro' borrow) keeps the ordinary default,
         // so that a borrow of what is already held stays possible
         INode *immperm = tag == RefTag ? refImmutableDefaultPerm(refvtype) : NULL;
         if (immperm && permMatches(immperm, lvalperm) != NoMatch)
@@ -741,8 +760,12 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         refused = 1;
         refperm = newPermUseNode(immPerm);
     }
-    if (!refused && !permMatches(refperm, lvalperm) && !borrowLocalLendsUni(lval, lvalperm, scope, refperm))
-        errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    if (!refused && !permMatches(refperm, lvalperm) && !borrowLocalLendsUni(lval, lvalperm, scope, refperm)) {
+        if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused((INode *)node, (VarDclNode *)lvalvar);
+        else
+            errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    }
 
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
     reftype->scope = scope;

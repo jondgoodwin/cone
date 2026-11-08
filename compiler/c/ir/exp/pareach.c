@@ -184,7 +184,7 @@ static uint32_t parVarCount(BlockNode *loop) {
     while (n < loop->stmts->used) {
         INode *stmt = nodesGet(loop->stmts, n);
         if (stmt->tag != VarDclTag || ((VarDclNode*)stmt)->value != NULL
-            || ((VarDclNode*)stmt)->vtype != unknownType)
+            || ((VarDclNode*)stmt)->vtype != unknownType || (stmt->flags & FlagDestructDcl))
             break;
         ++n;
     }
@@ -257,6 +257,8 @@ static void parWalk(INode *node, ParVisit visit, void *ctx) {
         parWalk(((RefNode*)node)->vtexp, visit, ctx); break;
     case NotLogicTag:
         parWalk(((LogicNode*)node)->lexp, visit, ctx); break;
+    case DestructTag:
+        parWalk(((DestructNode*)node)->exp, visit, ctx); break;
     case OrLogicTag:
     case AndLogicTag:
         parWalk(((LogicNode*)node)->lexp, visit, ctx);
@@ -683,7 +685,7 @@ static const char *parNotExclusive(INode *node, VarDclNode **root) {
             if (var->namesym == selfName && parSelfIsBehaviour)
                 return NULL;
             // A cursor held in a variable lends from what it was made from: a variable declared
-            // 'imm' with its value is that value; any other cursor (a 'mut' one, which may be
+            // 'let' with its value is that value; any other cursor (a 'var' one, which may be
             // assigned, a parameter, a field) has an origin the loop cannot follow
             if (var->vtype != NULL && parIsCursorType(var->vtype)) {
                 if (var->value == NULL || var->perm == NULL || (permGetFlags(var->perm) & MayWrite)
@@ -880,7 +882,7 @@ static int parCheckLentArgs(INode *node, void *ctxp) {
 
 // ---- A visible helper that writes a global ----------------------------------------
 //
-// The body may not write a 'mut' global by name (parCheckWrites), and a call it makes is no
+// The body may not write a 'var' global by name (parCheckWrites), and a call it makes is no
 // different: 'bump()' that does it, or a helper that calls one, writes it from every pass
 // at once. Outside variables are read-only for the loop, and a global is the most outside
 // of them. Type check notes each call the body makes of a function whose body the compiler
@@ -971,7 +973,7 @@ static int parReachedAdd(FnDclNode *fn, uint32_t nreached) {
     return 1;
 }
 
-// Is this a 'mut' global that every thread shares: a module-level variable (or a static)
+// Is this a 'var' global that every thread shares: a module-level variable (or a static)
 // that can be written, and is neither one copy a thread nor one a workgroup?
 static int parIsSharedMutGlobal(VarDclNode *var) {
     if (var == NULL || !(var->scope == 0 || (var->flags & FlagStatic)))
@@ -1047,7 +1049,7 @@ static int parWalkGlobalWrites(INode *node, void *wp) {
     }
 }
 
-// Does this function, or one it calls whose body is here, write a shared 'mut' global?
+// Does this function, or one it calls whose body is here, write a shared 'var' global?
 static int parFnWritesGlobal(FnDclNode *fn, ParGlobalWalk *w) {
     ++parReachedGen;
     memset(w, 0, sizeof(*w));
@@ -1103,7 +1105,7 @@ void parallelHelperGlobalsCheckAll(void) {
 // A traced reference (Gc) is counted as one: it has no count, but a copy of it
 // held in a local is a root the function links into the collector's one chain
 // of frames (conestd's roots.cone, single threaded), written without atomics.
-// A move owner (So) cannot be copied. (Only what the body itself copies is
+// A move owner (Uni) cannot be copied. (Only what the body itself copies is
 // seen: a function it calls that copies a borrow it was handed is kept out by
 // the reach rule below, which refuses the body naming what it could copy.
 // A traced reference the pass makes itself is refused too, below.)
@@ -1229,7 +1231,7 @@ static int parCheckCopies(INode *node, void *ctxp) {
         && !parSetHas(&ctx->reported, node)) {
         parSetAdd(&ctx->reported, node);
         errorMsgNode(node, ErrorParCopy,
-            "A 'parallel each' body may not copy a value of type %s, which is not the pass's own: its passes run at the same time, and a copy writes state that every copy shares without an atomic operation (an Rc's count, or the roots of the collector's traced references), which two passes cannot do together. Borrow its contents before the loop ('imm mesh = &*shared;') and use the borrow, or use an Arc, whose count is atomic.",
+            "A 'parallel each' body may not copy a value of type %s, which is not the pass's own: its passes run at the same time, and a copy writes state that every copy shares without an atomic operation (an Rc's count, or the roots of the collector's traced references), which two passes cannot do together. Borrow its contents before the loop ('let mesh = &*shared;') and use the borrow, or use an Arc, whose count is atomic.",
             itypeName(type));
     }
     parWalkIndexArgs(node, parCheckCopies, ctx);
@@ -1368,7 +1370,7 @@ static int parCheckReach(INode *node, void *ctxp) {
         itypeSpellCat(culpritname, sizeof(culpritname), culprit, 0);
         genericNotShareableReason(culprit, 0, reason, sizeof(reason));
         errorMsgNode(node, ErrorParReach,
-            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a %s%s%s%s: %s. Its passes run at the same time, and naming it at all gives each of them a path to write through. Copy what the loop needs into a local before it ('imm n = %s.n;') and use the local in the body.",
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a %s%s%s%s: %s. Its passes run at the same time, and naming it at all gives each of them a path to write through. Copy what the loop needs into a local before it ('let n = %s.n;') and use the local in the body.",
             &var->namesym->namestr, typename, culpritname, path[0] ? " (" : "", path, path[0] ? ")" : "", reason,
             &var->namesym->namestr);
     }
@@ -1378,11 +1380,11 @@ static int parCheckReach(INode *node, void *ctxp) {
             &var->namesym->namestr, typename);
     else if (!parIsCountedItself(var->vtype))
         errorMsgNode(node, ErrorParReach,
-            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example), in a field, an element or a type argument: its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Naming it at all counts, even for a number beside the owner. Copy what the loop needs into a local before it ('imm n = %s.n;') and use the local in the body, or hold the owner in an Arc.",
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example), in a field, an element or a type argument: its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Naming it at all counts, even for a number beside the owner. Copy what the loop needs into a local before it ('let n = %s.n;') and use the local in the body, or hold the owner in an Arc.",
             &var->namesym->namestr, typename, &var->namesym->namestr);
     else
         errorMsgNode(node, ErrorParReach,
-            "This 'parallel each' reaches '%s', a %s declared outside the loop, which is or holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Reading through it, lending it and passing it count too. Borrow what the body needs before the loop ('imm mesh = &*%s;') and use 'mesh' in the body, or hold it in an Arc.",
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which is or holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Reading through it, lending it and passing it count too. Borrow what the body needs before the loop ('let mesh = &*%s;') and use 'mesh' in the body, or hold it in an Arc.",
             &var->namesym->namestr, typename, &var->namesym->namestr);
     return 1;
 }
@@ -1763,7 +1765,7 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
         uint32_t nseen2 = 0;
         if (!parReachesWritten(cap->dcl->vtype, 0, 0, ctx, seen2, &nseen2))
             errorMsgNode(node, ErrorParAlias,
-                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could point at one of them: reading it while a pass writes would race. Copy it into the closure, where it is a value of its own: write it in the state list, '[%s]', as in 'fn(x i32, y i32) [%s] T { ... }'.",
+                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could point at one of them: reading it while a pass writes would race. Copy it into the closure, where it is a value of its own: write it in the state list, '[%s]', as in 'fn(x: i32, y: i32) [%s] T { ... }'.",
                 ctx->source, elemname, name, capname, captype, capname, capname);
         else
             errorMsgNode(node, ErrorParAlias,
@@ -1773,7 +1775,7 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
         return 0;
     }
     errorMsgNode(node, ErrorParAlias,
-        "This 'parallel each' writes the items of %s (%s), and what this reads through '%s' could be one of them: reading it while a pass writes would race. Copy what you need before the loop ('imm f = *%s;', 'imm n = %s.n;') and use the copy in the body.",
+        "This 'parallel each' writes the items of %s (%s), and what this reads through '%s' could be one of them: reading it while a pass writes would race. Copy what you need before the loop ('let f = *%s;', 'let n = %s.n;') and use the copy in the body.",
         ctx->source, elemname, name, name, name);
     parWalkIndexArgs(node, parCheckOuterAlias, ctx);
     return 0;
@@ -1836,7 +1838,7 @@ void gcStopgapCheckDcl(INode *node, INode *type, const char *where) {
 // A 'parallel each' body reads an actor-local reference but allocates none:
 // its passes run at the same time and hold no writable path to the actor's
 // region (the actor's state is a shared borrow there), and nothing may allocate
-// in it while they run. An allocation in the region, 'new ActorGc[...]', and a
+// in it while they run. An allocation in the region, 'ActorGc[...]()', and a
 // call of the actor's allocator, which 'new self[T](...)' is, are refused.
 static ParSet gcPieceReported;
 
@@ -2004,12 +2006,12 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
                 char *rootname = rootvar == NULL || rootvar->namesym == anonName ? "a value" : &rootvar->namesym->namestr;
                 if (why == parCursorWhy) {
                     errorMsgNode(((VarDclNode*)stmt)->value, ErrorParRoot,
-                        "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is a cursor held in '%s', a variable (or field) the loop cannot trace to the place it was made from: it could lend from a list with another name while the passes run. Make the cursor in the loop's header ('parallel each x in list.mutItems()', or in a zip written there), or in an 'imm' variable whose value is that call.",
+                        "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is a cursor held in '%s', a variable (or field) the loop cannot trace to the place it was made from: it could lend from a list with another name while the passes run. Make the cursor in the loop's header ('parallel each x in list.mutItems()', or in a zip written there), or in an 'let' variable whose value is that call.",
                         rootname);
                     break;
                 }
                 errorMsgNode(((VarDclNode*)stmt)->value, ErrorParRoot,
-                    "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is reached through %s (%s): the list could have another name while the passes run (a caller may pass it under two names, or a zip may read it beside the writer), and then a pass could read or write an item another pass is writing. Take the list as a '&uni' parameter ('%s &uni List[...]', or 'self &uni'), which no other name can reach, or lend from a local, or a field of one held by value.",
+                    "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is reached through %s (%s): the list could have another name while the passes run (a caller may pass it under two names, or a zip may read it beside the writer), and then a pass could read or write an item another pass is writing. Take the list as a '&uni' parameter ('%s: &uni List[...]', or 'self: &uni'), which no other name can reach, or lend from a local, or a field of one held by value.",
                     why, rootname, rootname);
             }
 
@@ -2419,10 +2421,10 @@ static void parSourceError(INode *src, INode *type) {
 // pieces cannot append to that one list at the same time, so each gets a list of
 // its own, and the lists are joined in the order of the passes after the loop:
 //
-//   mut bag = (*recv).pieceBag();                    // the caller's, before k
-//   mut k = lo;                                      // from here, the piece's:
-//   mut list = (*recv).emptyPiece();                 //   a list of its own
-//   imm piece = &mut list;                           //   which the yield appends through
+//   var bag = (*recv).pieceBag();                    // the caller's, before k
+//   var k = lo;                                      // from here, the piece's:
+//   var list = (*recv).emptyPiece();                 //   a list of its own
+//   let piece = &mut list;                           //   which the yield appends through
 //   loop { if k >= hi { (*recv).depositPiece(&mut bag, lo, list); break }; ...; *piece <- v }
 //   (*recv).joinPieces(&mut bag)                     // after the loop, the caller's
 //
@@ -2573,7 +2575,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         lo = parVar(parLoName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
         // The count is worked out where the loop is generated, from the bounds
         hi = parVar(parHiName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
-        // imm x = first + (k as T)
+        // let x = first + (k as T)
         FnCallNode *sum = newFnCallOpnameLower(lexnode, parUse(srcdcl, lexnode), plusName, 1);
         k = parVar(parKName, mutPerm, parUse(lo, lexnode), scope, lexnode);
         // ... where k is converted by the number type's own 'from'
@@ -2645,6 +2647,20 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         }
         int place = parRecheckable(src);
 
+        // A plain 'parallel each' hands each pass its item as 'let x = item' would: a copy
+        // where it copies. Items that move are not taken out in parallel: the loop borrows them
+        int pcopy = ischunks ? 0 : eachParallelKind(src, type, base, isref || isslice, isslice, isarray, islent);
+        if (pcopy == 3) {
+            eachBehindError(src, base, isref || isslice);
+            return;
+        }
+        if (pcopy == 2) {
+            errorMsgNode(src, ErrorEachBehindBorrow,
+                "A 'parallel each' over %s would take its items out, and these items move: its passes borrow them. Write 'parallel each x in &' before the source.",
+                itypeName(base));
+            return;
+        }
+
         // Cut at its end, the pieces walk the source after the behaviour has
         // returned: an array or slice must lie in the actor or on the heap, not in
         // the behaviour's own frame (a list's block is on the heap)
@@ -2657,11 +2673,12 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
 
         // A mutable slice as the source itself lends each item mutably, as 'each'
         // does; any other lends it to be read. A cursor lends what its type says
+        INode *writtenperm = ischunks ? NULL : eachWrittenPerm(src, type);
         int mutlend = ischunks ? cursor.mut
-            : isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
+            : writtenperm != NULL || (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm));
         Name *slicename = mutlend ? parSliceMutName : parSliceName;
 
-        // imm s = [the slice]
+        // let s = [the slice]
         VarDclNode *slicedcl = srcdcl;
         if (isslice || ischunks)
             slicedcl->namesym = slicename;
@@ -2672,7 +2689,10 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 nodesAdd(&outer->stmts, (INode*)srcdcl);
                 owner = parUse(srcdcl, lexnode);
             }
-            slicedcl = parVar(slicename, immPerm, (INode*)parCall(owner, lentvia, lexnode), scope, lexnode);
+            Name *lender = lentvia;
+            if (writtenperm != NULL && lentvia == nametblFind("view", 4))
+                lender = writtenperm == (INode*)uniPerm ? nametblFind("viewUni", 7) : nametblFind("viewMut", 7);
+            slicedcl = parVar(slicename, immPerm, (INode*)parCall(owner, lender, lexnode), scope, lexnode);
         }
         else if (isarray) {
             INode *array = src;
@@ -2687,7 +2707,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 array = (INode*)deref;
             }
             slicedcl = parVar(slicename, immPerm, NULL, scope, lexnode);
-            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, unknownType, array);
+            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, writtenperm != NULL ? writtenperm : unknownType, array);
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
         lo = parVar(parLoName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
@@ -2700,25 +2720,26 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         nodesAdd(&outer->stmts, (INode*)k);
 
         if (ischunks) {
-            // imm x = s.at(k): item number k (a chunk is a slice of its own); over
+            // let x = s.at(k): item number k (a chunk is a slice of its own); over
             // an indexed cursor, the tuple of its position and the item
             FnCallNode *chunk = parCall(parUse(slicedcl, lexnode), nametblFind("at", 2), lexnode);
             nodesAdd(&chunk->args, parUse(k, lexnode));
             elem = (INode*)chunk;
         }
         else {
-            // imm x = &s[k]
+            // let x = &s[k]
             FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
             at->flags |= FlagIndex;
             nodesAdd(&at->args, parUse(k, lexnode));
-            elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
+            elem = pcopy == 1 ? (INode*)at : (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef,
+                writtenperm != NULL ? writtenperm : mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         }
         outer->flags |= FlagParallel;
         elemindexed = cursor.vars >= 2;
     }
 
-    // loop { if k >= hi {break}; imm x = ...; k++; ...body... }
-    // (over an indexed cursor: imm -pair = s.at(k); imm i = -pair.0; imm x = -pair.1; k++)
+    // loop { if k >= hi {break}; let x = ...; k++; ...body... }
+    // (over an indexed cursor: let -pair = s.at(k); let i = -pair.0; let x = -pair.1; k++)
     uint32_t stepat = nvars;
     if (elemindexed) {
         VarDclNode *pair = parVar(parPairName, immPerm, elem, (uint16_t)(scope + 1), lexnode);

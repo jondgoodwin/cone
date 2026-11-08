@@ -1,0 +1,139 @@
+// A burst of work, then rest, leaves no worker spinning (THE SPIN, in the
+// package's header: a spin ends by its bound, a few microseconds, once no work
+// comes). Eight workers, so four may spin at once. A ring of twelve actors
+// each runs a chain of 2,000 messages, each message sending the next to
+// itself and every tenth also one to the next actor in the ring, so that the
+// workers take each other's actors, go idle and come back. Once the program
+// is idle, and 50 ms after (thousands of bounds), the stats say:
+//
+// - no worker is spinning: every spin begun has ended, by seeing work or by
+//   its bound (spins = spinsFound + spinsOut);
+// - the workers are parked, not looking: in a further 100 ms of rest, no spin
+//   is begun and no park is made (a worker that woke would make one or both);
+// - the spins did run: some were begun, and some ran to their bound.
+//
+// A second burst after the rest is handled whole (the parked workers were
+// woken for it), and leaves the workers at rest again in the same way.
+
+mod spinrest;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const ring = 12u64;
+const depth = 2000u64;
+
+let handled: Atomic[u64];
+let side: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+  side = Atomic[u64].of(0u64);
+}
+
+actor Link {
+  next: Option[Link];
+
+  fn init(self: &new) {
+    *self = Self(None[Link]);
+  }
+
+  pub async fn meet(self, n: Link) {
+    next = Some[Link](n);
+  }
+
+  // Begin this link's chain, and pass the start on round the ring, 'more'
+  // links further
+  pub async fn fire(self, more: u64) {
+    selfactor.step(depth - 1u64);
+    if more > 0u64 {
+      match next {
+        case let Some(n) {n.fire(more - 1u64);}
+        case is None[Link] {}
+      }
+    }
+  }
+
+  pub async fn step(self, left: u64) {
+    handled.add(1u64);
+    if left > 0u64 {
+      selfactor.step(left - 1u64);
+      if left % 10u64 == 0u64 {
+        match next {
+          case let Some(n) {n.poke();}
+          case is None[Link] {}
+        }
+      }
+    }
+  }
+
+  pub async fn poke(self) {
+    side.add(1u64);
+  }
+
+  // Let go of the next link, and pass it on round the ring
+  pub async fn leave(self, more: u64) {
+    if more > 0u64 {
+      match next {
+        case let Some(n) {n.leave(more - 1u64);}
+        case is None[Link] {}
+      }
+    }
+    next = None;
+  }
+}
+
+fn pause(ms: i64) {
+  thread.sleep(time.Duration.fromMillis(ms));
+}
+
+// At rest: no worker spinning, and none waking in 100 ms more
+fn atRest(what: &str) {
+  let a = actors.stats();
+  expectUInt(a.spins, a.spinsFound + a.spinsOut, what);
+  pause(100i64);
+  let b = actors.stats();
+  expectUInt(b.spins, a.spins, "...and no spin begun in 100 ms more of rest");
+  expectUInt(b.parks, a.parks, "...and no park made in 100 ms more of rest: the workers sleep");
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 8u32));
+  {
+    let first = Link();
+    var prev = first;
+    var i = 1u64;
+    while i < ring {
+      let l = Link();
+      prev.meet(l);
+      prev = l;
+      i = i + 1u64;
+    }
+    prev.meet(first);
+    actors.waitUntilIdle();
+
+    first.fire(ring - 1u64);
+    actors.waitUntilIdle();
+    pause(50i64);
+    expectUInt(handled.load(), ring * depth, "the first burst: every message of every chain handled");
+    expectUInt(side.load(), ring * ((depth - 1u64) / 10u64), "the first burst: every side message handled");
+    atRest("after the first burst and 50 ms of rest, no worker is spinning");
+    let st = actors.stats();
+    expect(st.spins > 0u64, "the burst's idle workers spun");
+    expect(st.spinsOut > 0u64, "some spins ran to their bound");
+    expect(st.parks > 0u64, "the workers parked");
+
+    first.fire(ring - 1u64);
+    actors.waitUntilIdle();
+    pause(50i64);
+    expectUInt(handled.load(), 2u64 * ring * depth, "the second burst, after rest: every message handled");
+    atRest("after the second burst and 50 ms of rest, no worker is spinning");
+
+    first.leave(ring - 1u64);
+  }
+  finalAll();
+  done()
+}

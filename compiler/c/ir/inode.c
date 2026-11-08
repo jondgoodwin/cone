@@ -133,6 +133,8 @@ void inodePrintNode(INode *node) {
         awaitPrint((AwaitNode *)node); break;
     case YieldTag:
         yieldPrint((YieldNode *)node); break;
+    case DestructTag:
+        destructPrint((DestructNode *)node); break;
     case AwaitReplyTag:
         inodeFprint("(reply)"); break;
     case SelfActorTag:
@@ -168,6 +170,8 @@ void inodePrintNode(INode *node) {
     case ArrayTag:
     case ArrayLitTag:
         arrayPrint((ArrayNode *)node); break;
+    case VectorTag:
+        vectorPrint((VectorNode *)node); break;
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
         nbrTypePrint((NbrNode *)node); break;
     case PermTag:
@@ -315,6 +319,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         awaitNameRes(pstate, (AwaitNode *)*node); break;
     case YieldTag:
         yieldNameRes(pstate, (YieldNode *)*node); break;
+    case DestructTag:
+        destructNameRes(pstate, (DestructNode *)*node); break;
     // 'selfactor' names nothing: type check finds the actor it is in
     case SelfActorTag:
         break;
@@ -348,6 +354,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         enumNameRes(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayNameRes(pstate, (ArrayNode *)*node); break;
+    case VectorTag:
+        vectorNameRes(pstate, (VectorNode *)*node); break;
     case TupleTag:
         ttupleNameRes(pstate, (TupleNode *)*node); break;
     case QuesTag:
@@ -380,7 +388,39 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
+static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType);
+
+// The state of the type check in progress, for a question that cannot be handed
+// it: a type comparison asks which code wants the answer, since a member private
+// to a module counts for the code inside it and not for the code outside
+// (structMemberHidden). NULL outside a type check.
+TypeCheckState *inodeCheckState = NULL;
+
 void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
+    TypeCheckState *svState = inodeCheckState;
+    inodeCheckState = pstate;
+    inodeTypeCheckWalk(pstate, node, expectType);
+    inodeCheckState = svState;
+}
+
+static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *expectType);
+
+// A declaration is checked once, so a trial (error.h, "A trial") that reaches one
+// before the program does would take its diagnostics with it, and leave it marked
+// checked with nothing said. The declarations a trial did not make are checked
+// loud: what they report is the program's.
+static void inodeTypeCheckWalk(TypeCheckState *pstate, INode **node, INode *expectType) {
+    if (errorSilent && !((*node)->flags & (TypeChecked | TypeChecking))
+        && inodeGetOwner(*node) != NULL && !closureTrialOwns(*node)) {
+        int saved = errorLoudBegin();
+        inodeTypeCheckWalkNode(pstate, node, expectType);
+        errorLoudEnd(saved);
+        return;
+    }
+    inodeTypeCheckWalkNode(pstate, node, expectType);
+}
+
+static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     // A declaration is type checked once, however many places reach it. This
     // pass lowers and replaces nodes, so a second walk of one corrupts it; the
@@ -497,6 +537,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // it into the body, is checked as part of that body.
     case FldAccessTag:
     case ArrIndexTag:
+    // So is a type literal ('V(x: 1)'), which only a check makes of a call
+    case TypeLitTag:
         break;
     case VTupleTag:
         vtupleTypeCheck(pstate, (TupleNode *)*node); break;
@@ -526,11 +568,13 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case NotLogicTag:
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
-        logicTypeCheck(pstate, (LogicNode *)*node); break;
+        logicTypeCheck(pstate, (LogicNode **)node); break;
     case AwaitTag:
         awaitTypeCheck(pstate, (AwaitNode *)*node, expectType); break;
     case YieldTag:
         yieldTypeCheck(pstate, (YieldNode *)*node); break;
+    case DestructTag:
+        destructTypeCheck(pstate, node); break;
     case AwaitReplyTag:
         break;
     case SelfActorTag:
@@ -570,6 +614,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         enumTypeCheck(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
+    case VectorTag:
+        vectorTypeCheck(pstate, (VectorNode *)*node); break;
     case TTupleTag:
         ttupleTypeCheck(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
@@ -656,6 +702,10 @@ Name *inodeGetName(INode *node) {
         return ((PermNode*)node)->namesym;
     case EnumTag:
         return ((EnumNode*)node)->namesym;
+    // A vector is no declaration, but a type that supports methods, and
+    // is called by the name it is written with
+    case VectorTag:
+        return nametblFind("Vector", 6);
     default:
         errorUnreachable(node, "a request for the name of a node that has none");
         return NULL;
@@ -820,6 +870,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [YieldEntryTag] = {ExpGroup, 0, 0},
     [AwaitTag] = {ExpGroup, 0, 0},
     [YieldTag] = {ExpGroup, 0, 0},
+    [DestructTag] = {ExpGroup, 0, 0},
     [AwaitReplyTag] = {ExpGroup, 0, 0},
     [SelfActorTag] = {ExpGroup, 0, 0},
     [ClosureTag] = {ExpGroup, 0, 0},
@@ -827,6 +878,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
 
     [FnSigTag] = {TypeGroup, 0, 0},
     [ArrayTag] = {TypeGroup, 0, 0},
+    [VectorTag] = {TypeGroup, 0, 1},
     [RefTag] = {TypeGroup, 0, 0},
     [ArrayRefTag] = {TypeGroup, 0, 0},
     [VirtRefTag] = {TypeGroup, 0, 0},
@@ -869,7 +921,8 @@ int inodeIsExp(INode *node) {
 // check replaces it with the instance it names, and is a type all the while;
 // so is a managed reference type, 'Rc[mut, Node]', until type check lowers it
 int inodeIsType(INode *node) {
-    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node) || itypeIsManagedRefType(node);
+    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node) || itypeIsManagedRefType(node)
+        || genericAssocPathIsType(node);
 }
 
 int inodeIsMeta(INode *node) {
@@ -910,6 +963,9 @@ int inodeIsProvisionalType(INode *node) {
     // 'R[mut, T]', is a type once R is substituted
     case FnCallTag: {
         FnCallNode *call = (FnCallNode*)node;
+        // 'C.Cursor', an associated type named through a type parameter
+        if (genericAssocPathIs(node))
+            return 1;
         if (!(call->flags & FlagIndex) || call->methfld != NULL || call->args == NULL
             || call->args->used == 0 || !nameUseNames(call->objfn, GenVarDclTag))
             return 0;

@@ -21,6 +21,49 @@
 #include <string.h>
 #include <assert.h>
 
+// The enum 'vtype' is a variant of, or NULL for any other type
+static StructNode *genlVariantEnum(INode *vtype) {
+    INode *dcl = itypeGetTypeDcl(vtype);
+    if (dcl->tag != StructTag)
+        return NULL;
+    INode *base = ((StructNode *)dcl)->basetrait ? itypeGetTypeDcl(((StructNode *)dcl)->basetrait) : NULL;
+    return (base && base->tag == StructTag && (base->flags & EnumType)) ? (StructNode *)base : NULL;
+}
+
+// The alignment a value of 'vtype' has in an allocation, and in its type record.
+// A variant is placed at its enum's alignment, which is never less than its own:
+// the value then sits at one offset in the block however the reference reached it
+// (as the variant, as the enum, or through a virtual reference whose vtable names
+// the variant by the tag), since all the header part has to know is the type's
+// enum. A variant laid out alone is padded, a little, to get there.
+static unsigned genlAllocAlign(GenState *gen, INode *vtype) {
+    unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, vtype));
+    StructNode *enumnode = genlVariantEnum(vtype);
+    if (enumnode) {
+        unsigned enumalign = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, (INode *)enumnode));
+        if (enumalign > align)
+            align = enumalign;
+    }
+    return align;
+}
+
+// The type of an allocation's value field. A variant whose enum is more strictly
+// aligned than it is gets a zero-length array of the enum before it, which raises
+// the field's alignment to the enum's (genlAllocAlign) and so where it starts.
+static LLVMTypeRef genlAllocValueType(GenState *gen, INode *vtype) {
+    LLVMTypeRef valtype = genlType(gen, vtype);
+    StructNode *enumnode = genlVariantEnum(vtype);
+    if (enumnode == NULL)
+        return valtype;
+    LLVMTypeRef enumtype = genlType(gen, (INode *)enumnode);
+    if (LLVMABIAlignmentOfType(gen->datalayout, enumtype) <= LLVMABIAlignmentOfType(gen->datalayout, valtype))
+        return valtype;
+    LLVMTypeRef parts[2];
+    parts[0] = LLVMArrayType(enumtype, 0);
+    parts[1] = valtype;
+    return LLVMStructTypeInContext(gen->context, parts, 2, 0);
+}
+
 // Build an owning reference's allocation layout, the first time it is asked
 // for. Only an allocation and a region header read it; generating the
 // reference's own type does not, since that would generate its pointee there.
@@ -40,7 +83,7 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     *fieldtypep++ = genlType(gen, reftype->region);
     *fieldtypep++ = genlType(gen, reftype->perm);
     INode *elemtype = itypeLenBodyElem(reftype->vtexp);
-    *fieldtypep = genlType(gen, elemtype ? elemtype : reftype->vtexp);
+    *fieldtypep = genlAllocValueType(gen, elemtype ? elemtype : reftype->vtexp);
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
     LLVMStructSetBody(structype, field_types, 3, 0);
     refinfo->structype = structype;
@@ -225,7 +268,7 @@ static void genlStructDrop(GenState *gen, FnDclNode *fnnode) {
 // verification in debug).
 void genlTypeDrop(GenState *gen, FnDclNode *fnnode) {
     StructNode *owner = (StructNode*)fnnode->dclinfo.owner;
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context,
             fnnode->linenbr, (unsigned)(fnnode->srcp - fnnode->linep), LLVMGetSubprogram(gen->fn), NULL);
         LLVMSetCurrentDebugLocation(gen->builder, LLVMMetadataAsValue(gen->context, loc));
@@ -344,18 +387,26 @@ static LLVMValueRef genlTraceFnOf(GenState *gen, INode *vtype, LLVMTypeRef *fnty
 }
 
 // A trace reaches an owning reference of a region that is not traced ('Rc',
-// 'So'), whose value holds a traced reference: it passes through to the value,
+// 'Uni'), whose value holds a traced reference: it passes through to the value,
 // once per collection where the region has several owners and says so ('visit',
 // called with the trace's mode, the collection's epoch), by the value's type's
 // own trace. A null reference is passed over.
 static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "ownedref");
+    // An owner of an array body carries its count: the elements are walked one by one
+    LLVMValueRef count = NULL;
+    if (refIsFat(refnode)) {
+        count = LLVMBuildExtractValue(gen->builder, ref, 1, "ownedcount");
+        ref = LLVMBuildExtractValue(gen->builder, ref, 0, "ownedptr");
+    }
     LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "passed");
     LLVMBasicBlockRef passblk = genlInsertBlock(gen, "pass");
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), passblk, doneblk);
     LLVMPositionBuilderAtEnd(gen->builder, passblk);
     FnDclNode *visitmeth = regionMethod(refnode->region, visitMethodName);
-    if (visitmeth) {
+    // (A barrier's walk is of an owner of an array body only, a store of the owner
+    // handing over each element; there is no visit to make for it.)
+    if (visitmeth && !genlTraceBarrier) {
         LLVMValueRef vargs[2];
         vargs[0] = genlRegionHeader(gen, ref, refnode);
         vargs[1] = genlTraceMode;
@@ -365,6 +416,14 @@ static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnod
         LLVMBasicBlockRef valueblk = genlInsertBlock(gen, "passvalue");
         LLVMBuildCondBr(gen->builder, first, valueblk, doneblk);
         LLVMPositionBuilderAtEnd(gen->builder, valueblk);
+    }
+    if (count != NULL) {
+        INode *elemtype = itypeLenBodyElem(refnode->vtexp);
+        if (genlTraceWants(elemtype))
+            genlEachElem(gen, ref, count, elemtype, genlTraceElem, 0);
+        LLVMBuildBr(gen->builder, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+        return;
     }
     LLVMTypeRef fntype;
     LLVMValueRef tracefn = genlTraceFnOf(gen, refnode->vtexp, &fntype);
@@ -517,8 +576,14 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         // (ErrorTracedRefKind), so a traced reference is a single one
         if (regionIsTraced(((RefNode *)typedcl)->region))
             genlTraceRef(gen, valptr, (RefNode *)typedcl);
-        // Any other owning reference to a value holding one is passed through
-        else if (!genlTraceBarrier && itypeHoldsTraced(typedcl) && !refIsFat((RefNode *)typedcl))
+        // Any other owning reference to a value holding one is passed through. A barrier's
+        // walk passes through only an owner of an array body: the owner stored carries the
+        // count, so every element is handed over (a store of the whole owner puts them all
+        // where the collector cannot see). Any other owner holding a barriered reference is
+        // refused (itypeCannotTrace), since a store of it could not be heard.
+        else if (itypeHoldsTraced(typedcl)
+            && (!genlTraceBarrier || (refIsFat((RefNode *)typedcl) && itypeIsArrayBody(((RefNode *)typedcl)->vtexp)))
+            && (!refIsFat((RefNode *)typedcl) || itypeIsArrayBody(((RefNode *)typedcl)->vtexp)))
             genlTraceThrough(gen, valptr, (RefNode *)typedcl);
         return;
     case TTupleTag:
@@ -566,7 +631,10 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         // The values a type declaring GcTraceElements holds where it points are
         // reached by its gcTraceElements
         INode *traceelem = structGcTraceElementsElem(strnode);
-        if (traceelem && genlTraceWants(traceelem))
+        // Array[T]'s are reached through a slice, which carries the count a thin
+        // address lacks: whatever holds the slice traces them (a List, by its own
+        // gcTraceElements); the body is never walked as a value
+        if (traceelem && genlTraceWants(traceelem) && strnode->namesym != arrayTypeDcl->namesym)
             genlTraceElements(gen, valptr, strnode, traceelem);
         return;
     }
@@ -631,7 +699,7 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     // A call it makes to an inlinable function needs a location in a debug
     // build, so the function has a subprogram, placed at the type
     INode *typedcl = itypeGetTypeDcl(vtype);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef difile = genlDiFile(gen, typedcl);
         LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
         LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
@@ -640,7 +708,7 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     }
     gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         unsigned col = typedcl->srcp && typedcl->linep ? (unsigned)(typedcl->srcp - typedcl->linep) : 0;
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, typedcl->linenbr, col, LLVMGetSubprogram(fn), NULL);
         LLVMSetCurrentDebugLocation2(gen->builder, loc);
@@ -700,7 +768,7 @@ static int genlTypeRecLayoutOk(GenState *gen, LLVMTypeRef rectype, LLVMTypeRef f
 }
 
 // The function type a record's finalize or trace slot points at: 'fn(p *u8)',
-// or 'fn(p *u8, mode u32)', read from core's declaration of the slot, so a
+// or 'fn(p: *u8, mode: u32)', read from core's declaration of the slot, so a
 // call through it is typed as the slot is
 static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, unsigned index) {
     if (recnode->fields.used != TypeRecFieldCount)
@@ -715,7 +783,8 @@ static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, uns
 // The type record of 'vtype': a private constant of core's TypeRecord, what a
 // region's 'alloc(size usize, ty *TypeRecord)' is handed and what
 // 'mem.typeRecord[T]()' is the address of. Its size and alignment are the
-// target's (as mem.sizeof and mem.alignof); its finalizer is the value's death
+// target's (as mem.sizeof and mem.alignof, but a variant's alignment is its
+// enum's: genlAllocAlign); its finalizer is the value's death
 // in place (genlTypeRecFinalBody), or the shared do-nothing function where
 // finalizing does nothing, which its flags say too; its trace hands each
 // traced reference the value holds to its region's 'mark' (genlTypeRecTraceBody),
@@ -741,7 +810,7 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode) 
     LLVMTypeRef tracetype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
     if (!genlTypeRecLayoutOk(gen, rectype, finaltype, tracetype))
         errorExit(ExitGen, "Internal error: core's TypeRecord is not laid out as the compiler fills it: "
-            "'size usize; align usize; finalize &fn(p *u8); trace &fn(p *u8, mode u32); flags u32;'");
+            "'size: usize; align: usize; finalize: &fn(p: *u8); trace: &fn(p: *u8, mode: u32); flags: u32;'");
 
     // The record is remembered before its finalizer and trace are generated,
     // which may ask for records of their own, this one among them
@@ -773,7 +842,7 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode) 
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef fields[TypeRecFieldCount];
     fields[TypeRecSize] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, valtype), 0);
-    fields[TypeRecAlign] = LLVMConstInt(usize, LLVMABIAlignmentOfType(gen->datalayout, valtype), 0);
+    fields[TypeRecAlign] = LLVMConstInt(usize, genlAllocAlign(gen, vtype), 0);
     if (needsfinal) {
         sprintf(name, "cone.tyrec.final.%u", index);
         fields[TypeRecFinalize] = genlTypeRecFn(gen, vtype, finaltype, name, genlTypeRecFinalBody);
@@ -998,7 +1067,7 @@ static LLVMValueRef genlVirtRecord(GenState *gen, LLVMValueRef ref, RefNode *ref
 // type, so the value sits at the region and permission's size rounded up to
 // its own alignment. The first part is the reference type's; the alignment is
 // the concrete type's, read from its record at run time, and only where the
-// header is not empty (a 'So' allocation's value is its start).
+// header is not empty (a 'Uni' allocation's value is its start).
 static LLVMValueRef genlVirtHeader(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
     LLVMTypeRef hdrtypes[2];
     hdrtypes[0] = genlType(gen, refnode->region);
@@ -1118,6 +1187,78 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
         genlRegionCall(gen, freemeth, genlOwnerHeader(gen, ref, valptr, refnode));
 }
 
+// The fast path of a counted reference's release. In a release build the
+// decrement stays in line at every release (the region's 'dealiasRef'), and the
+// rest -- the value's finalizing and the region's 'free' -- is one cold function
+// for each type and region, called only when the count reaches zero. So a drop
+// of a type that holds such a reference is a few instructions however large the
+// pointee's own drop is, and small enough for LLVM to inline even where its
+// instance is shared. Only a plain thin reference whole: a fat or virtual one,
+// a guard, and a release of a value moved out of in part, keep the death in line.
+static int genlDropSlowApplies(GenState *gen, RefNode *refnode, MovedPath *paths) {
+    return gen->opt->release && !gen->opt->gpu && paths == NULL && refnode->tag == RefTag
+        && !refIsFat(refnode) && !permHeldKind(refnode->perm);
+}
+
+static LLVMValueRef genlDropSlow(GenState *gen, RefNode *refnode) {
+    for (GenDropSlow *known = gen->dropslow; known; known = known->next) {
+        if (known->region == refnode->region && itypeIsSame(known->vtexp, refnode->vtexp))
+            return known->fn;
+    }
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(gen->context, 0);
+    LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &ptrtype, 1, 0);
+    char symbol[64];
+    snprintf(symbol, sizeof(symbol), "cone.dropslow.%u", gen->dropslowcnt++);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, symbol, fntype);
+    genlLinkage(fn, NULL, GenlDefined);
+    genlComdat(gen, fn);
+    genlFnAttr(gen, fn, "noinline");
+    genlFnAttr(gen, fn, "cold");
+    GenDropSlow *made = memAllocBlk(sizeof(GenDropSlow));
+    made->vtexp = refnode->vtexp;
+    made->region = refnode->region;
+    made->fn = fn;
+    made->next = gen->dropslow;
+    gen->dropslow = made;
+
+    // Generated as a function of its own, set aside from the one being built
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    uint32_t svtempbase = gen->tempbase;
+    gen->tempbase = gen->tempcnt;
+    gen->fn = fn;
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    // The terms of the death it generates are placed in a subprogram (genlTerm),
+    // so it has one, at the reference
+    if (gen->opt->debuginfo) {
+        INode *typedcl = (INode*)refnode;
+        LLVMMetadataRef difile = genlDiFile(gen, typedcl);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            symbol, strlen(symbol), symbol, strlen(symbol), difile, typedcl->linenbr, sptype, 1, 1,
+            typedcl->linenbr, LLVMDIFlagPrivate, 0);
+        LLVMSetSubprogram(fn, sp);
+        LLVMSetCurrentDebugLocation2(gen->builder,
+            LLVMDIBuilderCreateDebugLocation(gen->context, typedcl->linenbr, 0, sp, NULL));
+    }
+    LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+    gen->allocaPoint = allocaPoint;
+    LLVMValueRef ref = LLVMGetParam(fn, 0);
+    genlRegionDeath(gen, ref, ref, refnode, NULL, 0, 0);
+    LLVMBuildRetVoid(gen->builder);
+    if (LLVMGetInstructionParent(allocaPoint))
+        LLVMInstructionEraseFromParent(allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    return fn;
+}
+
 // One owner of an owning reference goes away. A region with 'dealiasRef' is asked
 // whether it was the last, and the value dies only if so. Without one, a 'Move'
 // region's owner is the only one, and its going is the value's death; any
@@ -1143,7 +1284,10 @@ static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refn
     LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
     LLVMBuildCondBr(gen->builder, last, dofree, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, dofree);
-    genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
+    if (genlDropSlowApplies(gen, refnode, paths))
+        LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(genlDropSlow(gen, refnode)), genlDropSlow(gen, refnode), &ref, 1, "");
+    else
+        genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
     LLVMBuildBr(gen->builder, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, nofree);
 }
@@ -1354,8 +1498,8 @@ static LLVMValueRef genlFatRef(GenState *gen, LLVMTypeRef fattype, LLVMValueRef 
     return LLVMBuildInsertValue(gen->builder, ref, count, 1, "fatcount");
 }
 
-// An allocation, 'new Rc[mut, Node](1)', or of a finished value moved in,
-// 'new Rc[i32](5)': a reference to the value made in its region's memory,
+// An allocation, 'Rc[mut, Node](1)', or of a finished value moved in,
+// 'Rc[i32](5)': a reference to the value made in its region's memory,
 // or, for 'trynew', null (None) when that memory could not be had. In order:
 //
 //   args = the value init's arguments, evaluated   (or the finished value)
@@ -1404,7 +1548,9 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     genlRefTypeSetup(gen, reftype);
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
-    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(reftype->typeinfo->structype, ValueField);
+    // The value's own type, not its field's (which may carry padding before a variant)
+    INode *bodyelem = itypeLenBodyElem(reftype->vtexp);
+    LLVMTypeRef valuetypllvm = genlType(gen, bodyelem ? bodyelem : reftype->vtexp);
     LLVMTypeRef valueptrtyp = LLVMPointerType(valuetypllvm, 0);
 
     // Calculate how much memory space we need to allocate
@@ -1425,7 +1571,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // The arguments first, in every region: a declared init's (filled in place
     // below), or the value itself, the implicit init's literal or a finished
-    // value moved in, 'new Rc[i32](5)', stored below
+    // value moved in, 'Rc[i32](5)', stored below
     // An array's contents are not evaluated here but filled in place below
     INode *valnode = allocatenode->vtexp;
     FnCallNode *declinit = valnode->tag == FnCallTag && (valnode->flags & FlagNew) ? (FnCallNode*)valnode : NULL;
@@ -1443,7 +1589,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         count = LLVMBuildExtractValue(gen->builder, value, 1, "count");
         // One byte more than the elements: the NUL that text always keeps after
         // its bytes. An 'Array[T]' keeps nothing there, so it takes only what
-        // its elements take, except that an empty one with no header (a 'So')
+        // its elements take, except that an empty one with no header (a 'Uni')
         // would ask its region for no memory at all
         spare = itypeIsArrayBody(reftype->vtexp) && header > 0 ? 0 : 1;
         sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + spare, 0),
@@ -1510,7 +1656,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     int traced = regionIsTraced(region);
     LLVMValueRef fillroot = NULL;
-    if (traced && gen->fn) {
+    if (traced && gen->fn && itypeHoldsRooted((INode*)reftype)) {
         fillroot = genlAlloca(gen, reftypellvm, "filling");
         genlRootNote(gen, fillroot, (INode*)reftype);
         LLVMBuildStore(gen->builder, fat ? genlFatRef(gen, reftypellvm, valuep, count) : valuep, fillroot);

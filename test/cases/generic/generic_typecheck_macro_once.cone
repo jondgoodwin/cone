@@ -1,0 +1,66 @@
+// A macro whose body changes a plain parameter, found at type check, where
+// the macro is used.
+//
+// A plain parameter is evaluated once: the expansion binds its argument to a
+// variable nothing may change, so an argument the macro assigns to must be
+// 'lazy'. A change whose refusal needs no type is refused where the macro is
+// declared (generic_nameres_macro_once). What is left waits on a type, and
+// type check refuses it in each expansion, where the body writes it: a method
+// that takes 'self: &mut', and a mutable borrow of, or an operator changing in
+// place, a part of a parameter typed by a type parameter, or the parameter
+// itself when the operator could reach through a reference it holds. A store
+// is refused by flow analysis, generic_flow_macro_once.
+//
+// None of it is refused where the change is through a reference the argument
+// is, or where the parameter is 'lazy'.
+
+mod generic_typecheck_macro_once;
+
+struct Tally {
+  pub n: i64;
+  pub fn bump(self: &mut) { n = n + 1; }
+}
+
+macro bumped[t: Tally] {
+  t.bump();             //~ ErrorMacroParmAssign:3 "must be lazy"
+  t.n
+}
+
+macro lendPart[T][t: T] {
+  let r = &mut t.n;     //~ ErrorMacroParmAssign:11 "must be lazy"
+  *r
+}
+
+macro addTo[T][a: T] {
+  a += 1i64;            //~ ErrorMacroParmAssign:3 "must be lazy"
+  a
+}
+
+macro addToPart[T][t: T] {
+  t.n += 1i64;          //~ ErrorMacroParmAssign:4 "must be lazy"
+  t.n
+}
+
+// Through a reference, and lazy: changed in the caller's place, as written
+macro addThrough[r: &mut i64] {
+  *r += 1i64;
+  *r
+}
+
+macro bumpedThrough[t: &mut Tally] {
+  t.bump();
+  t.n
+}
+
+macro bumpedLazy[t: lazy Tally] {
+  t.bump();
+  t.n
+}
+
+fn uses() i64 {
+  var x = 1i64;
+  var t = Tally(n: 0);
+  bumped(t) + lendPart(t) + addTo(x) + addToPart(t)
+    + addThrough(&mut x) + bumpedThrough(&mut t) + bumpedLazy(t)
+    + lendPart(&mut t) + addToPart(&mut t)
+}

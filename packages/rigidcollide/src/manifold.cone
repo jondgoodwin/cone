@@ -20,9 +20,9 @@
 // One point of contact: where it is on each surface (world space) and how
 // far the surfaces are inside each other there (negative: apart by that much)
 pub struct ContactPoint {
-  pub onA Vec3;
-  pub onB Vec3;
-  pub depth f32;
+  pub onA: Vec3;
+  pub onB: Vec3;
+  pub depth: f32;
 }
 
 // The contacts of one pair of convex pieces. 'normal' points from A to B and
@@ -30,49 +30,49 @@ pub struct ContactPoint {
 // a plain shape); 'subA'/'subB' the mesh triangle or heightfield cell
 // triangle (0xffffffff for a convex piece).
 pub struct Manifold {
-  pub normal Vec3;
-  pub count usize;
-  pub points Array[ContactPoint, 4];
-  pub partA u32;
-  pub partB u32;
-  pub subA u32;
-  pub subB u32;
+  pub normal: Vec3;
+  pub count: usize;
+  pub points: Array[ContactPoint, 4];
+  pub partA: u32;
+  pub partB: u32;
+  pub subA: u32;
+  pub subB: u32;
 
-  pub fn deepest(self &) f32 {
-    mut d = -bigNumber;
-    mut i = 0usize;
+  pub fn deepest(self: &) f32 {
+    var d = -bigNumber;
+    var i = 0usize;
     while i < count { d = maxf(d, points[i].depth); i = i + 1usize; }
-    d;
+    d
   }
 }
 
 pub const NoSub = 0xffffffffu32;
 
-fn zeroPoint() ContactPoint { new ContactPoint(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0.); }
+fn zeroPoint() ContactPoint { ContactPoint(Vec3(0., 0., 0.), Vec3(0., 0., 0.), 0.) }
 
 pub fn emptyManifold() Manifold {
-  new Manifold(new Vec3(0., 1., 0.), 0usize, [zeroPoint(), zeroPoint(), zeroPoint(), zeroPoint()], 0u32, 0u32, NoSub, NoSub);
+  Manifold(Vec3(0., 1., 0.), 0usize, [zeroPoint(), zeroPoint(), zeroPoint(), zeroPoint()], 0u32, 0u32, NoSub, NoSub)
 }
 
-fn singleContact(n Vec3, onA Vec3, onB Vec3, depth f32) Manifold {
-  mut m = emptyManifold();
+fn singleContact(n: Vec3, onA: Vec3, onB: Vec3, depth: f32) Manifold {
+  var m = emptyManifold();
   m.normal = n;
   m.count = 1usize;
-  m.points[0usize] = new ContactPoint(onA, onB, depth);
-  m;
+  m.points[0usize] = ContactPoint(onA, onB, depth);
+  m
 }
 
 // Swap the roles of A and B in a manifold
-fn flipManifold(m Manifold) Manifold {
-  mut o = m;
+fn flipManifold(m: Manifold) Manifold {
+  var o = m;
   o.normal = -m.normal;
-  mut i = 0usize;
+  var i = 0usize;
   while i < m.count {
-    o.points[i] = new ContactPoint(m.points[i].onB, m.points[i].onA, m.points[i].depth);
+    o.points[i] = ContactPoint(m.points[i].onB, m.points[i].onA, m.points[i].depth);
     i = i + 1usize;
   }
   o.partA = m.partB; o.partB = m.partA; o.subA = m.subB; o.subB = m.subA;
-  o;
+  o
 }
 
 // ---------------------------------------------------------------------------
@@ -86,40 +86,40 @@ fn flipManifold(m Manifold) Manifold {
 pub const PolyMax = 16usize;
 
 pub struct Poly {
-  pub n usize;
-  pub p Array[Vec3, 16];
+  pub n: usize;
+  pub p: Array[Vec3, 16];
 
-  pub fn add(self &mut, v Vec3) {
+  pub fn add(self: &mut, v: Vec3) {
     if n < 16usize { p[n] = v; n = n + 1usize; }
   }
 }
 
 pub fn newPoly() Poly {
-  new Poly(0usize, new Array[Vec3, 16] <- fill new Vec3(0., 0., 0.));
+  Poly(0usize, Array[Vec3, 16]() <- fill Vec3(0., 0., 0.))
 }
 
 // The polygon, edge or point of the shape that faces along dir (world space),
 // as a list of 1, 2 or more points. A face counts only if dir is close enough
 // to its normal (a box edge pointing at the other shape is a point).
-pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
-  mut out = newPoly();
-  imm ld = x.unrotate(dir);
+pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
+  var out = newPoly();
+  let ld = x.unrotate(dir);
   if p.kind == KBox {
-    mut ax = 0usize;
-    if absf(ld.y) > absf(vecGet(ld, ax)) { ax = 1usize; }
-    if absf(ld.z) > absf(vecGet(ld, ax)) { ax = 2usize; }
-    imm sgn = if vecGet(ld, ax) < 0. { -1.; } else { 1.; };
-    imm u = (ax + 1usize) % 3usize;
-    imm v = (ax + 2usize) % 3usize;
-    imm hu = vecGet(p.half, u);
-    imm hv = vecGet(p.half, v);
-    imm hn = vecGet(p.half, ax) * sgn;
+    var ax = 0usize;
+    if ld.y.abs() > vecGet(ld, ax).abs() { ax = 1usize; }
+    if ld.z.abs() > vecGet(ld, ax).abs() { ax = 2usize; }
+    let sgn = if vecGet(ld, ax) < 0. { -1.f } else { 1. };
+    let u = (ax + 1usize) % 3usize;
+    let v = (ax + 2usize) % 3usize;
+    let hu = vecGet(p.half, u);
+    let hv = vecGet(p.half, v);
+    let hn = vecGet(p.half, ax) * sgn;
     // counterclockwise seen from outside: u then v form a right-handed frame with the axis
-    mut k = 0usize;
+    var k = 0usize;
     while k < 4usize {
-      imm su = if k == 0usize or k == 3usize { -hu; } else { hu; };
-      imm sv = if k == 0usize or k == 1usize { -hv; } else { hv; };
-      mut q = new Vec3(0., 0., 0.);
+      let su = if k == 0usize || k == 3usize { -hu } else { hu };
+      let sv = if k == 0usize || k == 1usize { -hv } else { hv };
+      var q = Vec3(0., 0., 0.);
       q = vecSet(q, ax, hn);
       q = vecSet(q, u, su);
       q = vecSet(q, v, sv);
@@ -134,34 +134,34 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
     // distance of the other shape, so a hull resting on an edge or on a corner gives its edge or its corner. A
     // cutoff on the angle (this was 0.9) gave a corner instead of an edge once the face tilted past 25 degrees,
     // and which of the edge's two corners came out was decided by noise, a different one every step.
-    mut sv = 0usize;
-    mut sd = -bigNumber;
-    mut vi = 0usize;
+    var sv = 0usize;
+    var sd = -bigNumber;
+    var vi = 0usize;
     while vi < p.verts.len() {
-      imm d = (*p.verts[vi]).dot(ld);
+      let d = (*p.verts[vi]).dot(ld);
       if d > sd { sd = d; sv = vi; }
       vi = vi + 1usize;
     }
-    mut best = 0usize;
-    mut bd = -bigNumber;
-    mut i = 0usize;
+    var best = 0usize;
+    var bd = -bigNumber;
+    var i = 0usize;
     while i < p.faces.len() {
-      imm f = p.faces[i];
-      mut has = false;
-      mut k = 0usize;
+      let f = p.faces[i];
+      var has = false;
+      var k = 0usize;
       while k < usize.from(f.count) {
         if usize.from(*p.faceIdx[usize.from(f.start) + k]) == sv { has = true; }
         k = k + 1usize;
       }
       if has {
-        imm d = f.normal.dot(ld);
+        let d = f.normal.dot(ld);
         if d > bd { bd = d; best = i; }
       }
       i = i + 1usize;
     }
-    if p.faces.len() > 0usize and bd > -bigNumber {
-      imm f = p.faces[best];
-      mut k = 0usize;
+    if p.faces.len() > 0usize && bd > -bigNumber {
+      let f = p.faces[best];
+      var k = 0usize;
       while k < usize.from(f.count) {
         out.add(x.apply(*p.verts[usize.from(*p.faceIdx[usize.from(f.start) + k])]));
         k = k + 1usize;
@@ -170,95 +170,95 @@ pub fn supportingFace(p &Prim, x Rigid, dir Vec3) Poly {
     }
   }
   if p.kind == KTriangle {
-    imm tn = (p.b - p.a).cross(p.c - p.a).normalize();
-    if absf(tn.dot(ld)) > 0.9 * ld.length() {
+    let tn = (p.b - p.a).cross(p.c - p.a).normalize();
+    if tn.dot(ld).abs() > 0.9 * ld.length() {
       out.add(x.apply(p.a)); out.add(x.apply(p.b)); out.add(x.apply(p.c));
       return out;
     }
   }
   if p.kind == KCapsule {
-    if absf(ld.y) < 0.15 * ld.length() {
+    if ld.y.abs() < 0.15 * ld.length() {
       // each end's own deepest point along dir (the cap's surface point, tilt included), not the point on the
       // cylinder's side line: the side line is up to radius * (1 - cos tilt) too high or low at a tilt of 8 degrees
-      imm lp = ld.normalize();
-      imm off = lp * p.radius;
-      out.add(x.apply(new Vec3(0., p.half.y, 0.) + off));
-      out.add(x.apply(new Vec3(0., -p.half.y, 0.) + off));
+      let lp = ld.normalize();
+      let off = lp * p.radius;
+      out.add(x.apply(Vec3(0., p.half.y, 0.) + off));
+      out.add(x.apply(Vec3(0., -p.half.y, 0.) + off));
       return out;
     }
   }
   if p.kind == KCylinder {
-    imm l = ld.length();
-    if absf(ld.y) > 0.9 * l {
-      imm y = if ld.y < 0. { -p.half.y; } else { p.half.y; };
-      mut k = 0usize;
+    let l = ld.length();
+    if ld.y.abs() > 0.9 * l {
+      let y = if ld.y < 0. { -p.half.y } else { p.half.y };
+      var k = 0usize;
       while k < 12usize {
-        imm ang = f32.from(k) * (2. * pi / 12.) * (if ld.y < 0. { -1.; } else { 1.; });
-        out.add(x.apply(new Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
+        let ang = f32.from(k) * (2. * pi / 12.) * (if ld.y < 0. { -1. } else { 1. });
+        out.add(x.apply(Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
         k = k + 1usize;
       }
       return out;
     }
-    if absf(ld.y) < 0.1 * l {
-      imm h = (ld.x * ld.x + ld.z * ld.z).sqrt();
-      imm ux = ld.x / h * p.radius;
-      imm uz = ld.z / h * p.radius;
-      out.add(x.apply(new Vec3(ux, p.half.y, uz)));
-      out.add(x.apply(new Vec3(ux, -p.half.y, uz)));
+    if ld.y.abs() < 0.1 * l {
+      let h = (ld.x * ld.x + ld.z * ld.z).sqrt();
+      let ux = ld.x / h * p.radius;
+      let uz = ld.z / h * p.radius;
+      out.add(x.apply(Vec3(ux, p.half.y, uz)));
+      out.add(x.apply(Vec3(ux, -p.half.y, uz)));
       return out;
     }
   }
   out.add(x.apply(p.support(ld)));
-  out;
+  out
 }
 
 // ---------------------------------------------------------------------------
 // Clipping
 
-fn polyCentroid(poly &Poly) Vec3 {
-  mut c = new Vec3(0., 0., 0.);
-  mut i = 0usize;
+fn polyCentroid(poly: &Poly) Vec3 {
+  var c = Vec3(0., 0., 0.);
+  var i = 0usize;
   while i < poly.n { c = c + poly.p[i]; i = i + 1usize; }
-  c * (1. / f32.from(poly.n));
+  c * (1. / f32.from(poly.n))
 }
 
 // Sutherland-Hodgman: 'poly' (3 or more points) cut by the side planes of
 // 'ref' (the planes through each edge of ref, parallel to n); a segment
 // (2 points) is cut parametrically
-fn clipToSides(poly &Poly, ref &Poly, n Vec3) Poly {
-  mut cur = *poly;
-  mut next = newPoly();
-  imm centre = polyCentroid(ref);
-  mut e = 0usize;
+fn clipToSides(poly: &Poly, ref: &Poly, n: Vec3) Poly {
+  var cur = *poly;
+  var next = newPoly();
+  let centre = polyCentroid(ref);
+  var e = 0usize;
   while e < ref.n {
-    imm r0 = ref.p[e];
-    imm r1 = ref.p[(e + 1usize) % ref.n];
-    mut side = (r1 - r0).cross(n);
+    let r0 = ref.p[e];
+    let r1 = ref.p[(e + 1usize) % ref.n];
+    var side = (r1 - r0).cross(n);
     if side.lengthSquared() < 1.0e-14 { e = e + 1usize; continue; }
     side = side.normalize();
     if side.dot(centre - r0) > 0. { side = -side; }   // outward
     next.n = 0usize;
     if cur.n == 2usize {
-      imm d0 = side.dot(cur.p[0usize] - r0);
-      imm d1 = side.dot(cur.p[1usize] - r0);
-      if d0 <= 0. and d1 <= 0. {
+      let d0 = side.dot(cur.p[0usize] - r0);
+      let d1 = side.dot(cur.p[1usize] - r0);
+      if d0 <= 0. && d1 <= 0. {
         next.add(cur.p[0usize]); next.add(cur.p[1usize]);
-      } else if d0 > 0. and d1 > 0. {
+      } else if d0 > 0. && d1 > 0. {
         // gone
       } else {
-        imm t = d0 / (d0 - d1);
-        imm hit = cur.p[0usize].lerp(cur.p[1usize], t);
+        let t = d0 / (d0 - d1);
+        let hit = cur.p[0usize].lerp(cur.p[1usize], t);
         if d0 <= 0. { next.add(cur.p[0usize]); next.add(hit); } else { next.add(hit); next.add(cur.p[1usize]); }
       }
     } else {
-      mut k = 0usize;
+      var k = 0usize;
       while k < cur.n {
-        imm a = cur.p[k];
-        imm b = cur.p[(k + 1usize) % cur.n];
-        imm da = side.dot(a - r0);
-        imm db = side.dot(b - r0);
+        let a = cur.p[k];
+        let b = cur.p[(k + 1usize) % cur.n];
+        let da = side.dot(a - r0);
+        let db = side.dot(b - r0);
         if da <= 0. { next.add(a); }
-        if (da < 0. and db > 0.) or (da > 0. and db < 0.) {
+        if (da < 0. && db > 0.) || (da > 0. && db < 0.) {
           next.add(a.lerp(b, da / (da - db)));
         }
         k = k + 1usize;
@@ -268,77 +268,77 @@ fn clipToSides(poly &Poly, ref &Poly, n Vec3) Poly {
     if cur.n == 0usize { return cur; }
     e = e + 1usize;
   }
-  cur;
+  cur
 }
 
 // A few contact points held inline (a clip of two faces leaves at most PolyMax)
 struct PointBuf {
-  n usize;
-  c Array[ContactPoint, 16];
+  n: usize;
+  c: Array[ContactPoint, 16];
 
-  fn add(self &mut, v ContactPoint) {
+  fn add(self: &mut, v: ContactPoint) {
     if n < 16usize { c[n] = v; n = n + 1usize; }
   }
 }
 
 fn newPointBuf() PointBuf {
-  new PointBuf(0usize, new Array[ContactPoint, 16] <- fill zeroPoint());
+  PointBuf(0usize, Array[ContactPoint, 16]() <- fill zeroPoint())
 }
 
 // Cut a set of contact points to four (Jolt's PruneContactPoints)
-fn reducePoints(pts &PointBuf, n Vec3) Manifold {
-  mut m = emptyManifold();
+fn reducePoints(pts: &PointBuf, n: Vec3) Manifold {
+  var m = emptyManifold();
   m.normal = n;
-  imm cnt = pts.n;
+  let cnt = pts.n;
   if cnt <= 4usize {
-    mut i = 0usize;
+    var i = 0usize;
     while i < cnt { m.points[i] = pts.c[i]; i = i + 1usize; }
     m.count = cnt;
     return m;
   }
-  mut used = new Array[bool, 16] <- fill false;
-  mut i = 0usize;
+  var used = Array[bool, 16]() <- fill false;
+  var i = 0usize;
   // 1: the deepest
-  mut i1 = 0usize;
+  var i1 = 0usize;
   i = 1usize;
   while i < cnt { if pts.c[i].depth > pts.c[i1].depth { i1 = i; } i = i + 1usize; }
   used[i1] = true;
-  imm p1 = pts.c[i1].onA;
+  let p1 = pts.c[i1].onA;
   // 2: the farthest from it
-  mut i2 = i1;
-  mut bd = -1.;
+  var i2 = i1;
+  var bd = -1.f;
   i = 0usize;
   while i < cnt {
-    imm d = (pts.c[i].onA - p1).lengthSquared();
-    if not used[i] and d > bd { bd = d; i2 = i; }
+    let d = (pts.c[i].onA - p1).lengthSquared();
+    if !used[i] && d > bd { bd = d; i2 = i; }
     i = i + 1usize;
   }
   used[i2] = true;
-  imm p2 = pts.c[i2].onA;
+  let p2 = pts.c[i2].onA;
   // 3: the largest triangle with them
-  mut i3 = i2;
+  var i3 = i2;
   bd = -1.;
   i = 0usize;
   while i < cnt {
-    imm ar = absf((p2 - p1).cross(pts.c[i].onA - p1).dot(n));
-    if not used[i] and ar > bd { bd = ar; i3 = i; }
+    let ar = (p2 - p1).cross(pts.c[i].onA - p1).dot(n).abs();
+    if !used[i] && ar > bd { bd = ar; i3 = i; }
     i = i + 1usize;
   }
   used[i3] = true;
-  imm p3 = pts.c[i3].onA;
+  let p3 = pts.c[i3].onA;
   // 4: the one that adds most area on the outside of the triangle
-  imm orient = (p2 - p1).cross(p3 - p1).dot(n);
-  imm sgn = if orient < 0. { -1.; } else { 1.; };
-  mut i4 = i3;
+  let orient = (p2 - p1).cross(p3 - p1).dot(n);
+  let sgn = if orient < 0. { -1.f } else { 1. };
+  var i4 = i3;
   bd = -bigNumber;
   i = 0usize;
   while i < cnt {
-    if not used[i] {
-      imm q = pts.c[i].onA;
-      imm g1 = maxf(0., -sgn * (p2 - p1).cross(q - p1).dot(n));
-      imm g2 = maxf(0., -sgn * (p3 - p2).cross(q - p2).dot(n));
-      imm g3 = maxf(0., -sgn * (p1 - p3).cross(q - p3).dot(n));
-      imm gain = g1 + g2 + g3;
+    if !used[i] {
+      let q = pts.c[i].onA;
+      let g1 = maxf(0., -sgn * (p2 - p1).cross(q - p1).dot(n));
+      let g2 = maxf(0., -sgn * (p3 - p2).cross(q - p2).dot(n));
+      let g3 = maxf(0., -sgn * (p1 - p3).cross(q - p3).dot(n));
+      let gain = g1 + g2 + g3;
       if gain > bd { bd = gain; i4 = i; }
     }
     i = i + 1usize;
@@ -348,56 +348,56 @@ fn reducePoints(pts &PointBuf, n Vec3) Manifold {
   m.points[2usize] = pts.c[i3];
   m.points[3usize] = pts.c[i4];
   m.count = 4usize;
-  m;
+  m
 }
 
 // The manifold for two supporting faces whose contact normal is n (A to B):
 // the face with three or more points is the reference, the other is clipped
 // to it. Points more than 'margin' apart along n are dropped. Returns a
 // manifold with no points if nothing is left.
-pub fn clipFaces(faceA &Poly, faceB &Poly, n Vec3, margin f32) Manifold {
+pub fn clipFaces(faceA: &Poly, faceB: &Poly, n: Vec3, margin: f32) Manifold {
   // Of two polygons, the one whose plane is the more nearly square to the normal is the reference (the other,
   // clipped to its sides, is the incident face)
-  if faceA.n >= 3usize and faceB.n >= 3usize {
-    imm ca = absf(polyNormal(faceA).dot(n));
-    imm cb = absf(polyNormal(faceB).dot(n));
+  if faceA.n >= 3usize && faceB.n >= 3usize {
+    let ca = polyNormal(faceA).dot(n).abs();
+    let cb = polyNormal(faceB).dot(n).abs();
     return clipFacesRef(faceA, faceB, n, margin, ca >= cb);
   }
-  clipFacesRef(faceA, faceB, n, margin, faceA.n >= 3usize);
+  clipFacesRef(faceA, faceB, n, margin, faceA.n >= 3usize)
 }
 
 // The unit normal of a polygon of three or more points (zero if it has none)
-fn polyNormal(f &Poly) Vec3 {
-  imm c = (f.p[1usize] - f.p[0usize]).cross(f.p[2usize] - f.p[0usize]);
-  imm l = c.length();
-  if l > 0.0000001 { c * (1. / l); } else { new Vec3(0., 0., 0.); }
+fn polyNormal(f: &Poly) Vec3 {
+  let c = (f.p[1usize] - f.p[0usize]).cross(f.p[2usize] - f.p[0usize]);
+  let l = c.length();
+  if l > 0.0000001 { c * (1. / l) } else { Vec3(0., 0., 0.) }
 }
 
 // The same with the reference face chosen by the caller (the face whose plane
 // the contact normal belongs to: a box face for a face axis, the triangle for
 // the triangle's normal)
-pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) Manifold {
+pub fn clipFacesRef(faceA: &Poly, faceB: &Poly, n0: Vec3, margin: f32, refIsA: bool) Manifold {
   // The normal GJK/EPA (or a SAT axis) gives is correct to about 1e-5 radians, and the depths here are measured
   // from the reference face's plane through one of its corners: a tilt of 1e-5 over a 20 m floor is 0.2 mm, a
   // different error at every pose, and a body resting on it bobs by it. When the normal is within 2.5 degrees of
   // the reference face's own, the face's normal is the contact normal (Jolt does the same for a face contact).
-  mut n = n0;
-  mut fUnit = new Vec3(0., 0., 0.);
-  imm refFace = if refIsA and faceA.n >= 3usize { faceA; } else { faceB; };
+  var n = n0;
+  var fUnit = Vec3(0., 0., 0.);
+  let refFace = if refIsA && faceA.n >= 3usize { faceA } else { faceB };
   if refFace.n >= 3usize {
     fUnit = polyNormal(refFace);
-    imm fnorm = (refFace.p[1usize] - refFace.p[0usize]).cross(refFace.p[2usize] - refFace.p[0usize]);
-    imm fl = fnorm.length();
+    let fnorm = (refFace.p[1usize] - refFace.p[0usize]).cross(refFace.p[2usize] - refFace.p[0usize]);
+    let fl = fnorm.length();
     if fl > 0.0000001 {
-      imm s = fnorm.dot(n0) / fl;
+      let s = fnorm.dot(n0) / fl;
       if s > 0.999 { n = fnorm * (1. / fl); }
       else if s < -0.999 { n = fnorm * (-1. / fl); }
     }
   }
-  mut clipped = newPoly();
-  mut r0 = new Vec3(0., 0., 0.);
-  mut aRef = false;
-  if refIsA and faceA.n >= 3usize {
+  var clipped = newPoly();
+  var r0 = Vec3(0., 0., 0.);
+  var aRef = false;
+  if refIsA && faceA.n >= 3usize {
     clipped = clipToSides(faceB, faceA, n);
     r0 = faceA.p[0usize];
     aRef = true;
@@ -409,12 +409,12 @@ pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) 
   }
   // Up to four points go straight into the manifold; only a clip of more (a long polygon
   // reference) goes through the pruning buffer
-  mut m = emptyManifold();
+  var m = emptyManifold();
   m.normal = n;
-  mut kept = 0usize;
-  mut i = 0usize;
+  var kept = 0usize;
+  var i = 0usize;
   while i < clipped.n {
-    imm cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
+    let cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
     if cp.depth >= -margin {
       if kept < 4usize { m.points[kept] = cp; }
       kept = kept + 1usize;
@@ -422,28 +422,28 @@ pub fn clipFacesRef(faceA &Poly, faceB &Poly, n0 Vec3, margin f32, refIsA bool) 
     i = i + 1usize;
   }
   if kept <= 4usize { m.count = kept; return m; }
-  mut buf = newPointBuf();
+  var buf = newPointBuf();
   i = 0usize;
   while i < clipped.n {
-    imm cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
+    let cp = facePoint(clipped.p[i], r0, n, fUnit, aRef);
     if cp.depth >= -margin { buf.add(cp); }
     i = i + 1usize;
   }
-  reducePoints(&buf, n);
+  reducePoints(&buf, n)
 }
 
 // The contact of a clipped corner q against the reference plane through r0, whose unit normal is fn: q's distance
 // along the contact normal n to that plane. For a face contact n is fn and this is the plane's own distance. For
 // a tilted one (an edge or a corner met by a face) it is the distance to the face's real plane; a plane square to
 // n through r0 is wrong by the tilt times the distance from r0, and r0 may be metres away on a floor.
-fn facePoint(q Vec3, r0 Vec3, n Vec3, fu Vec3, refIsA bool) ContactPoint {
-  imm c = fu.dot(n);
+fn facePoint(q: Vec3, r0: Vec3, n: Vec3, fu: Vec3, refIsA: bool) ContactPoint {
+  let c = fu.dot(n);
   if refIsA {
-    imm depth = if absf(c) > 0.2 { fu.dot(r0 - q) / c; } else { n.dot(r0 - q); };
-    return new ContactPoint(q + n * depth, q, depth);
+    let depth = if c.abs() > 0.2 { fu.dot(r0 - q) / c } else { n.dot(r0 - q) };
+    return ContactPoint(q + n * depth, q, depth);
   }
-  imm depth = if absf(c) > 0.2 { fu.dot(q - r0) / c; } else { n.dot(q - r0); };
-  new ContactPoint(q, q - n * depth, depth);
+  let depth = if c.abs() > 0.2 { fu.dot(q - r0) / c } else { n.dot(q - r0) };
+  ContactPoint(q, q - n * depth, depth)
 }
 
 // ---------------------------------------------------------------------------
@@ -451,128 +451,128 @@ fn facePoint(q Vec3, r0 Vec3, n Vec3, fu Vec3, refIsA bool) ContactPoint {
 
 // Any convex pair: GJK/EPA for the normal and the deepest point, then the
 // faces for the rest
-fn collideGeneric(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
-  imm p = convexPenetration(a, xa, b, xb, margin);
-  if not p.hit { return emptyManifold(); }
-  imm fa = supportingFace(a, xa, p.normal);
-  imm fb = supportingFace(b, xb, -p.normal);
-  if fa.n >= 3usize or fb.n >= 3usize {
-    imm m = clipFaces(&fa, &fb, p.normal, margin);
+fn collideGeneric(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) Manifold {
+  let p = convexPenetration(a, xa, b, xb, margin);
+  if !p.hit { return emptyManifold(); }
+  let fa = supportingFace(a, xa, p.normal);
+  let fb = supportingFace(b, xb, -p.normal);
+  if fa.n >= 3usize || fb.n >= 3usize {
+    let m = clipFaces(&fa, &fb, p.normal, margin);
     if m.count > 0usize { return m; }
   }
-  singleContact(p.normal, p.pointA, p.pointB, p.depth);
+  singleContact(p.normal, p.pointA, p.pointB, p.depth)
 }
 
-fn collideSphereSphere(ra f32, pa Vec3, rb f32, pb Vec3, margin f32) Manifold {
-  imm d = pb - pa;
-  imm l = d.length();
+fn collideSphereSphere(ra: f32, pa: Vec3, rb: f32, pb: Vec3, margin: f32) Manifold {
+  let d = pb - pa;
+  let l = d.length();
   if l > ra + rb + margin { return emptyManifold(); }
-  imm n = if l > 1.0e-7 { d * (1. / l); } else { new Vec3(0., 1., 0.); };
-  singleContact(n, pa + n * ra, pb - n * rb, ra + rb - l);
+  let n = if l > 1.0e-7 { d * (1. / l) } else { Vec3(0., 1., 0.) };
+  singleContact(n, pa + n * ra, pb - n * rb, ra + rb - l)
 }
 
 // The point of segment (a, b) nearest p
-fn nearestOnSegment(p Vec3, a Vec3, b Vec3) Vec3 {
-  imm ab = b - a;
-  imm l2 = ab.dot(ab);
+fn nearestOnSegment(p: Vec3, a: Vec3, b: Vec3) Vec3 {
+  let ab = b - a;
+  let l2 = ab.dot(ab);
   if l2 < 1.0e-20 { return a; }
-  a + ab * clampf((p - a).dot(ab) / l2, 0., 1.);
+  a + ab * clampf((p - a).dot(ab) / l2, 0., 1.)
 }
 
 // Ericson 5.1.9: the nearest points of two segments, as parameters
 pub struct SegPoints {
-  pub s f32;
-  pub t f32;
-  pub c1 Vec3;
-  pub c2 Vec3;
+  pub s: f32;
+  pub t: f32;
+  pub c1: Vec3;
+  pub c2: Vec3;
 }
 
-pub fn closestSegments(p1 Vec3, q1 Vec3, p2 Vec3, q2 Vec3) SegPoints {
-  imm d1 = q1 - p1;
-  imm d2 = q2 - p2;
-  imm r = p1 - p2;
-  imm a = d1.dot(d1);
-  imm e = d2.dot(d2);
-  imm f = d2.dot(r);
-  mut s = 0.;
-  mut t = 0.;
-  if a <= 1.0e-12 and e <= 1.0e-12 {
+pub fn closestSegments(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) SegPoints {
+  let d1 = q1 - p1;
+  let d2 = q2 - p2;
+  let r = p1 - p2;
+  let a = d1.dot(d1);
+  let e = d2.dot(d2);
+  let f = d2.dot(r);
+  var s = 0.f;
+  var t = 0.f;
+  if a <= 1.0e-12 && e <= 1.0e-12 {
     s = 0.;
   } else if a <= 1.0e-12 {
     t = clampf(f / e, 0., 1.);
   } else {
-    imm c = d1.dot(r);
+    let c = d1.dot(r);
     if e <= 1.0e-12 {
       s = clampf(-c / a, 0., 1.);
     } else {
-      imm b = d1.dot(d2);
-      imm denom = a * e - b * b;
+      let b = d1.dot(d2);
+      let denom = a * e - b * b;
       if denom > 1.0e-12 * a * e { s = clampf((b * f - c * e) / denom, 0., 1.); }
       t = (b * s + f) / e;
       if t < 0. { t = 0.; s = clampf(-c / a, 0., 1.); }
       else if t > 1. { t = 1.; s = clampf((b - c) / a, 0., 1.); }
     }
   }
-  new SegPoints(s, t, p1 + d1 * s, p2 + d2 * t);
+  SegPoints(s, t, p1 + d1 * s, p2 + d2 * t)
 }
 
-fn capsuleEnds(p &Prim, x Rigid) Array[Vec3, 2] {
-  [x.apply(new Vec3(0., p.half.y, 0.)), x.apply(new Vec3(0., -p.half.y, 0.))];
+fn capsuleEnds(p: &Prim, x: Rigid) Array[Vec3, 2] {
+  [x.apply(Vec3(0., p.half.y, 0.)), x.apply(Vec3(0., -p.half.y, 0.))]
 }
 
-fn collideSphereCapsule(s &Prim, xs Rigid, c &Prim, xc Rigid, margin f32) Manifold {
-  imm e = capsuleEnds(c, xc);
-  imm q = nearestOnSegment(xs.pos, e[0usize], e[1usize]);
-  collideSphereSphere(s.radius, xs.pos, c.radius, q, margin);
+fn collideSphereCapsule(s: &Prim, xs: Rigid, c: &Prim, xc: Rigid, margin: f32) Manifold {
+  let e = capsuleEnds(c, xc);
+  let q = nearestOnSegment(xs.pos, e[0usize], e[1usize]);
+  collideSphereSphere(s.radius, xs.pos, c.radius, q, margin)
 }
 
-fn collideCapsuleCapsule(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
-  imm ea = capsuleEnds(a, xa);
-  imm eb = capsuleEnds(b, xb);
-  imm sp = closestSegments(ea[0usize], ea[1usize], eb[0usize], eb[1usize]);
-  imm ra = a.radius;
-  imm rb = b.radius;
-  imm d = sp.c2 - sp.c1;
-  imm l = d.length();
+fn collideCapsuleCapsule(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) Manifold {
+  let ea = capsuleEnds(a, xa);
+  let eb = capsuleEnds(b, xb);
+  let sp = closestSegments(ea[0usize], ea[1usize], eb[0usize], eb[1usize]);
+  let ra = a.radius;
+  let rb = b.radius;
+  let d = sp.c2 - sp.c1;
+  let l = d.length();
   if l > ra + rb + margin { return emptyManifold(); }
-  mut n = new Vec3(0., 1., 0.);
+  var n = Vec3(0., 1., 0.);
   if l > 1.0e-6 {
     n = d * (1. / l);
   } else {
-    imm cr = (ea[1usize] - ea[0usize]).cross(eb[1usize] - eb[0usize]);
+    let cr = (ea[1usize] - ea[0usize]).cross(eb[1usize] - eb[0usize]);
     if cr.lengthSquared() > 1.0e-12 { n = cr.normalize(); } else { n = perpendicular((ea[1usize] - ea[0usize]).normalize()); }
   }
   // Parallel axes touch along a stretch, not at a point: two contacts at the
   // ends of the overlap of the two segments along the axis
-  imm da = ea[1usize] - ea[0usize];
-  imm db = eb[1usize] - eb[0usize];
-  imm la = da.length();
-  imm lb = db.length();
-  if la > 1.0e-6 and lb > 1.0e-6 and da.cross(db).length() < 0.02 * la * lb {
-    imm ax = da * (1. / la);
-    imm sb0 = (eb[0usize] - ea[0usize]).dot(ax);
-    imm sb1 = (eb[1usize] - ea[0usize]).dot(ax);
-    imm lo = maxf(0., minf(sb0, sb1));
-    imm hi = minf(la, maxf(sb0, sb1));
+  let da = ea[1usize] - ea[0usize];
+  let db = eb[1usize] - eb[0usize];
+  let la = da.length();
+  let lb = db.length();
+  if la > 1.0e-6 && lb > 1.0e-6 && da.cross(db).length() < 0.02 * la * lb {
+    let ax = da * (1. / la);
+    let sb0 = (eb[0usize] - ea[0usize]).dot(ax);
+    let sb1 = (eb[1usize] - ea[0usize]).dot(ax);
+    let lo = maxf(0., minf(sb0, sb1));
+    let hi = minf(la, maxf(sb0, sb1));
     if hi - lo > 1.0e-4 {
-      mut m = emptyManifold();
+      var m = emptyManifold();
       m.normal = n;
-      mut k = 0usize;
+      var k = 0usize;
       while k < 2usize {
-        imm sa = if k == 0usize { lo; } else { hi; };
-        imm pa = ea[0usize] + ax * sa;
+        let sa = if k == 0usize { lo } else { hi };
+        let pa = ea[0usize] + ax * sa;
         // the point of b's axis at the same station
-        imm tb = if absf(sb1 - sb0) > 1.0e-6 { (sa - sb0) / (sb1 - sb0); } else { 0.; };
-        imm pb = eb[0usize].lerp(eb[1usize], tb);
-        imm depth = ra + rb - n.dot(pb - pa);
-        m.points[k] = new ContactPoint(pa + n * ra, pb - n * rb, depth);
+        let tb = if (sb1 - sb0).abs() > 1.0e-6 { (sa - sb0) / (sb1 - sb0) } else { 0. };
+        let pb = eb[0usize].lerp(eb[1usize], tb);
+        let depth = ra + rb - n.dot(pb - pa);
+        m.points[k] = ContactPoint(pa + n * ra, pb - n * rb, depth);
         k = k + 1usize;
       }
       m.count = 2usize;
       return m;
     }
   }
-  singleContact(n, sp.c1 + n * ra, sp.c2 - n * rb, ra + rb - l);
+  singleContact(n, sp.c1 + n * ra, sp.c2 - n * rb, ra + rb - l)
 }
 
 // ---------------------------------------------------------------------------
@@ -580,76 +580,76 @@ fn collideCapsuleCapsule(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manif
 // "OBBTree" 1996; Ericson 4.4.1), keeping the axis of least penetration
 
 struct SatResult {
-  hit bool;
-  n Vec3;       // from a to b
-  sep f32;      // signed gap along n (negative: overlap)
-  edge bool;
-  ia usize;
-  ib usize;
+  hit: bool;
+  n: Vec3;       // from a to b
+  sep: f32;      // signed gap along n (negative: overlap)
+  edge: bool;
+  ia: usize;
+  ib: usize;
 }
 
-fn boxAxes(x Rigid) Array[Vec3, 3] {
-  [x.rot * new Vec3(1., 0., 0.), x.rot * new Vec3(0., 1., 0.), x.rot * new Vec3(0., 0., 1.)];
+fn boxAxes(x: Rigid) Array[Vec3, 3] {
+  [x.rot * Vec3(1., 0., 0.), x.rot * Vec3(0., 1., 0.), x.rot * Vec3(0., 0., 1.)]
 }
 
-fn satBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) SatResult {
-  imm ax = boxAxes(xa);
-  imm bx = boxAxes(xb);
-  imm ha = [a.half.x, a.half.y, a.half.z];
-  imm hb = [b.half.x, b.half.y, b.half.z];
-  imm tw = xb.pos - xa.pos;
-  mut absR = [[0., 0., 0.], [0., 0., 0.], [0., 0., 0.]];
-  mut i = 0usize;
+fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
+  let ax = boxAxes(xa);
+  let bx = boxAxes(xb);
+  let ha = [a.half.x, a.half.y, a.half.z];
+  let hb = [b.half.x, b.half.y, b.half.z];
+  let tw = xb.pos - xa.pos;
+  var absR = [[0.f, 0., 0.], [0.f, 0., 0.], [0.f, 0., 0.]];
+  var i = 0usize;
   while i < 3usize {
-    mut j = 0usize;
-    while j < 3usize { absR[i][j] = absf(ax[i].dot(bx[j])) + 1.0e-6; j = j + 1usize; }
+    var j = 0usize;
+    while j < 3usize { absR[i][j] = ax[i].dot(bx[j]).abs() + 1.0e-6; j = j + 1usize; }
     i = i + 1usize;
   }
-  mut bestFace = -bigNumber;
-  mut faceAxis = ax[0usize];
-  mut faceI = 0usize;
-  mut faceIsB = false;
+  var bestFace = -bigNumber;
+  var faceAxis = ax[0usize];
+  var faceI = 0usize;
+  var faceIsB = false;
   i = 0usize;
   while i < 3usize {
-    imm ra = ha[i];
-    imm rb = hb[0usize] * absR[i][0usize] + hb[1usize] * absR[i][1usize] + hb[2usize] * absR[i][2usize];
-    imm s = absf(tw.dot(ax[i])) - ra - rb;
-    if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+    let ra = ha[i];
+    let rb = hb[0usize] * absR[i][0usize] + hb[1usize] * absR[i][1usize] + hb[2usize] * absR[i][2usize];
+    let s = tw.dot(ax[i]).abs() - ra - rb;
+    if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
     if s > bestFace { bestFace = s; faceAxis = ax[i]; faceI = i; faceIsB = false; }
     i = i + 1usize;
   }
   i = 0usize;
   while i < 3usize {
-    imm ra = ha[0usize] * absR[0usize][i] + ha[1usize] * absR[1usize][i] + ha[2usize] * absR[2usize][i];
-    imm rb = hb[i];
-    imm s = absf(tw.dot(bx[i])) - ra - rb;
-    if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+    let ra = ha[0usize] * absR[0usize][i] + ha[1usize] * absR[1usize][i] + ha[2usize] * absR[2usize][i];
+    let rb = hb[i];
+    let s = tw.dot(bx[i]).abs() - ra - rb;
+    if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
     if s > bestFace { bestFace = s; faceAxis = bx[i]; faceI = i; faceIsB = true; }
     i = i + 1usize;
   }
-  mut bestEdge = -bigNumber;
-  mut edgeAxis = ax[0usize];
-  mut ei = 0usize;
-  mut ej = 0usize;
+  var bestEdge = -bigNumber;
+  var edgeAxis = ax[0usize];
+  var ei = 0usize;
+  var ej = 0usize;
   i = 0usize;
   while i < 3usize {
-    mut j = 0usize;
+    var j = 0usize;
     while j < 3usize {
-      imm cr = ax[i].cross(bx[j]);
-      imm l2 = cr.lengthSquared();
+      let cr = ax[i].cross(bx[j]);
+      let l2 = cr.lengthSquared();
       if l2 > 1.0e-6 {
-        imm l = l2.sqrt();
-        imm axis = cr * (1. / l);
-        mut ra = 0.;
-        mut rb = 0.;
-        mut k = 0usize;
+        let l = l2.sqrt();
+        let axis = cr * (1. / l);
+        var ra = 0.f;
+        var rb = 0.f;
+        var k = 0usize;
         while k < 3usize {
-          if k != i { ra = ra + ha[k] * absf(ax[k].dot(axis)); }
-          if k != j { rb = rb + hb[k] * absf(bx[k].dot(axis)); }
+          if k != i { ra = ra + ha[k] * ax[k].dot(axis).abs(); }
+          if k != j { rb = rb + hb[k] * bx[k].dot(axis).abs(); }
           k = k + 1usize;
         }
-        imm s = absf(tw.dot(axis)) - ra - rb;
-        if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+        let s = tw.dot(axis).abs() - ra - rb;
+        if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
         if s > bestEdge { bestEdge = s; edgeAxis = axis; ei = i; ej = j; }
       }
       j = j + 1usize;
@@ -657,63 +657,63 @@ fn satBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) SatResult {
     i = i + 1usize;
   }
   // Faces win unless an edge axis is clearly less penetrating
-  if bestEdge > bestFace + 0.002 + 0.02 * absf(bestFace) {
-    imm n = if edgeAxis.dot(tw) < 0. { -edgeAxis; } else { edgeAxis; };
-    return new SatResult(true, n, bestEdge, true, ei, ej);
+  if bestEdge > bestFace + 0.002 + 0.02 * bestFace.abs() {
+    let n = if edgeAxis.dot(tw) < 0. { -edgeAxis } else { edgeAxis };
+    return SatResult(true, n, bestEdge, true, ei, ej);
   }
-  imm n = if faceAxis.dot(tw) < 0. { -faceAxis; } else { faceAxis; };
-  new SatResult(true, n, bestFace, false, faceI, if faceIsB { 1usize; } else { 0usize; });
+  let n = if faceAxis.dot(tw) < 0. { -faceAxis } else { faceAxis };
+  SatResult(true, n, bestFace, false, faceI, if faceIsB { 1usize } else { 0usize })
 }
 
-fn collideBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
-  imm r = satBoxBox(a, xa, b, xb, margin);
-  if not r.hit { return emptyManifold(); }
-  if not r.edge {
-    imm fa = supportingFace(a, xa, r.n);
-    imm fb = supportingFace(b, xb, -r.n);
-    imm m = clipFaces(&fa, &fb, r.n, margin);
+fn collideBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) Manifold {
+  let r = satBoxBox(a, xa, b, xb, margin);
+  if !r.hit { return emptyManifold(); }
+  if !r.edge {
+    let fa = supportingFace(a, xa, r.n);
+    let fb = supportingFace(b, xb, -r.n);
+    let m = clipFaces(&fa, &fb, r.n, margin);
     if m.count > 0usize { return m; }
   }
   // Edge against edge: the nearest points of the two edges that face each other
-  imm ax = boxAxes(xa);
-  imm bx = boxAxes(xb);
-  mut pa = xa.pos;
-  mut pb = xb.pos;
-  mut k = 0usize;
+  let ax = boxAxes(xa);
+  let bx = boxAxes(xb);
+  var pa = xa.pos;
+  var pb = xb.pos;
+  var k = 0usize;
   while k < 3usize {
-    imm ha = vecGet(a.half, k);
-    imm hb = vecGet(b.half, k);
-    if k != r.ia { pa = pa + ax[k] * (if ax[k].dot(r.n) > 0. { ha; } else { -ha; }); }
-    if k != r.ib { pb = pb + bx[k] * (if bx[k].dot(r.n) < 0. { hb; } else { -hb; }); }
+    let ha = vecGet(a.half, k);
+    let hb = vecGet(b.half, k);
+    if k != r.ia { pa = pa + ax[k] * (if ax[k].dot(r.n) > 0. { ha } else { -ha }); }
+    if k != r.ib { pb = pb + bx[k] * (if bx[k].dot(r.n) < 0. { hb } else { -hb }); }
     k = k + 1usize;
   }
-  if not r.edge {
+  if !r.edge {
     // The clip left nothing within reach of the reference face (a box tilted on it): the other
     // box's deepest corner, against the reference face's plane
-    imm depth = -r.sep;
+    let depth = -r.sep;
     if r.ib == 0usize {
-      imm pb = xb.apply(b.supportCore(xb.unrotate(-r.n)));
+      let pb = xb.apply(b.supportCore(xb.unrotate(-r.n)));
       return singleContact(r.n, pb + r.n * depth, pb, depth);
     }
-    imm pa = xa.apply(a.supportCore(xa.unrotate(r.n)));
+    let pa = xa.apply(a.supportCore(xa.unrotate(r.n)));
     return singleContact(r.n, pa, pa - r.n * depth, depth);
   }
-  imm ea = ax[r.ia];
-  imm eb = bx[r.ib];
+  let ea = ax[r.ia];
+  let eb = bx[r.ib];
   // nearest points of the two infinite lines
-  imm w = pa - pb;
-  imm aa = ea.dot(ea);
-  imm bb = ea.dot(eb);
-  imm cc = eb.dot(eb);
-  imm dd = ea.dot(w);
-  imm ee = eb.dot(w);
-  imm den = aa * cc - bb * bb;
-  mut s = 0.;
-  mut t = 0.;
-  if absf(den) > 1.0e-9 { s = (bb * ee - cc * dd) / den; t = (aa * ee - bb * dd) / den; }
-  imm c1 = pa + ea * s;
-  imm c2 = pb + eb * t;
-  singleContact(r.n, c1, c2, -r.sep);
+  let w = pa - pb;
+  let aa = ea.dot(ea);
+  let bb = ea.dot(eb);
+  let cc = eb.dot(eb);
+  let dd = ea.dot(w);
+  let ee = eb.dot(w);
+  let den = aa * cc - bb * bb;
+  var s = 0.f;
+  var t = 0.f;
+  if den.abs() > 1.0e-9 { s = (bb * ee - cc * dd) / den; t = (aa * ee - bb * dd) / den; }
+  let c1 = pa + ea * s;
+  let c2 = pb + eb * t;
+  singleContact(r.n, c1, c2, -r.sep)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,77 +726,77 @@ fn collideBoxBox(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
 // partner gets the exact answer instead.
 
 struct TriSat {
-  hit bool;
-  n Vec3;       // from the box to the triangle
-  sep f32;      // signed gap along n (negative: overlap)
-  kind i32;     // 0: the triangle's face, 1: a box face, 2: an edge pair
-  ia usize;     // box axis (face or edge)
-  ib usize;     // triangle edge
+  hit: bool;
+  n: Vec3;       // from the box to the triangle
+  sep: f32;      // signed gap along n (negative: overlap)
+  kind: i32;     // 0: the triangle's face, 1: a box face, 2: an edge pair
+  ia: usize;     // box axis (face or edge)
+  ib: usize;     // triangle edge
 }
 
 // The gap along a unit axis between the box (radius r about the origin) and a
 // triangle whose corners project to p0, p1, p2; the axis is turned to point at the triangle
 struct AxisGap {
-  gap f32;
-  flip bool;
+  gap: f32;
+  flip: bool;
 }
 
-fn axisGap(r f32, p0 f32, p1 f32, p2 f32) AxisGap {
-  imm lo = minf(p0, minf(p1, p2));
-  imm hi = maxf(p0, maxf(p1, p2));
-  if lo + hi >= 0. { return new AxisGap(lo - r, false); }
-  new AxisGap(-hi - r, true);
+fn axisGap(r: f32, p0: f32, p1: f32, p2: f32) AxisGap {
+  let lo = minf(p0, minf(p1, p2));
+  let hi = maxf(p0, maxf(p1, p2));
+  if lo + hi >= 0. { return AxisGap(lo - r, false); }
+  AxisGap(-hi - r, true)
 }
 
-fn satBoxTriangle(bx &Prim, xb Rigid, a Vec3, b Vec3, c Vec3, margin f32) TriSat {
-  imm none = new TriSat(false, new Vec3(0., 1., 0.), 0., 0, 0usize, 0usize);
-  imm ax = boxAxes(xb);
-  imm h = [bx.half.x, bx.half.y, bx.half.z];
-  imm v0 = a - xb.pos;
-  imm v1 = b - xb.pos;
-  imm v2 = c - xb.pos;
-  imm ed = [v1 - v0, v2 - v1, v0 - v2];
-  imm tc = ed[0usize].cross(ed[1usize]);
-  imm tl = tc.length();
+fn satBoxTriangle(bx: &Prim, xb: Rigid, a: Vec3, b: Vec3, c: Vec3, margin: f32) TriSat {
+  let none = TriSat(false, Vec3(0., 1., 0.), 0., 0, 0usize, 0usize);
+  let ax = boxAxes(xb);
+  let h = [bx.half.x, bx.half.y, bx.half.z];
+  let v0 = a - xb.pos;
+  let v1 = b - xb.pos;
+  let v2 = c - xb.pos;
+  let ed = [v1 - v0, v2 - v1, v0 - v2];
+  let tc = ed[0usize].cross(ed[1usize]);
+  let tl = tc.length();
   if tl < 1.0e-12 { return none; }
-  imm tn = tc * (1. / tl);
+  let tn = tc * (1. / tl);
   // the triangle's face
-  mut rt = 0.;
-  mut k = 0usize;
-  while k < 3usize { rt = rt + h[k] * absf(ax[k].dot(tn)); k = k + 1usize; }
-  imm gt = axisGap(rt, v0.dot(tn), v1.dot(tn), v2.dot(tn));
+  var rt = 0.f;
+  var k = 0usize;
+  while k < 3usize { rt = rt + h[k] * ax[k].dot(tn).abs(); k = k + 1usize; }
+  let gt = axisGap(rt, v0.dot(tn), v1.dot(tn), v2.dot(tn));
   if gt.gap > margin { return none; }
-  imm tAxis = if gt.flip { -tn; } else { tn; };
+  let tAxis = if gt.flip { -tn } else { tn };
   // the box's faces
-  mut bestFace = -bigNumber;
-  mut faceAxis = ax[0usize];
-  mut faceI = 0usize;
+  var bestFace = -bigNumber;
+  var faceAxis = ax[0usize];
+  var faceI = 0usize;
   k = 0usize;
   while k < 3usize {
-    imm g = axisGap(h[k], v0.dot(ax[k]), v1.dot(ax[k]), v2.dot(ax[k]));
+    let g = axisGap(h[k], v0.dot(ax[k]), v1.dot(ax[k]), v2.dot(ax[k]));
     if g.gap > margin { return none; }
-    if g.gap > bestFace { bestFace = g.gap; faceAxis = if g.flip { -ax[k]; } else { ax[k]; }; faceI = k; }
+    if g.gap > bestFace { bestFace = g.gap; faceAxis = if g.flip { -ax[k] } else { ax[k] }; faceI = k; }
     k = k + 1usize;
   }
   // the edge pairs
-  mut bestEdge = -bigNumber;
-  mut edgeAxis = ax[0usize];
-  mut ei = 0usize;
-  mut ej = 0usize;
-  mut i = 0usize;
+  var bestEdge = -bigNumber;
+  var edgeAxis = ax[0usize];
+  var ei = 0usize;
+  var ej = 0usize;
+  var i = 0usize;
   while i < 3usize {
-    mut j = 0usize;
+    var j = 0usize;
     while j < 3usize {
-      imm cr = ax[i].cross(ed[j]);
-      imm l2 = cr.lengthSquared();
+      let cr = ax[i].cross(ed[j]);
+      let l2 = cr.lengthSquared();
       if l2 > 1.0e-10 * ed[j].lengthSquared() {
-        imm axis = cr * (1. / l2.sqrt());
-        mut r = 0.;
+        let axis = cr * (1. / l2.sqrt());
+        var r = 0.f;
         k = 0usize;
-        while k < 3usize { if k != i { r = r + h[k] * absf(ax[k].dot(axis)); } k = k + 1usize; }
-        imm g = axisGap(r, v0.dot(axis), v1.dot(axis), v2.dot(axis));
+        while k < 3usize { if k != i { r = r + h[k] * ax[k].dot(axis).abs(); } k = k + 1usize; }
+        let g = axisGap(r, v0.dot(axis), v1.dot(axis), v2.dot(axis));
         if g.gap > margin { return none; }
-        if g.gap > bestEdge { bestEdge = g.gap; edgeAxis = if g.flip { -axis; } else { axis; }; ei = i; ej = j; }
+        if g.gap > bestEdge { bestEdge = g.gap; edgeAxis = if g.flip { -axis } else { axis }; ei = i; ej = j; }
       }
       j = j + 1usize;
     }
@@ -804,45 +804,51 @@ fn satBoxTriangle(bx &Prim, xb Rigid, a Vec3, b Vec3, c Vec3, margin f32) TriSat
   }
   // The triangle's own normal wins a near tie (a flat mesh gives the same normal to every contact)
   // and faces win unless an edge axis is clearly less penetrating
-  imm bestFaceAll = maxf(gt.gap, bestFace);
-  if bestEdge > bestFaceAll + 0.002 + 0.02 * absf(bestFaceAll) {
-    return new TriSat(true, edgeAxis, bestEdge, 2, ei, ej);
+  let bestFaceAll = maxf(gt.gap, bestFace);
+  if bestEdge > bestFaceAll + 0.002 + 0.02 * bestFaceAll.abs() {
+    return TriSat(true, edgeAxis, bestEdge, 2, ei, ej);
   }
-  if gt.gap >= bestFace - 0.0005 { return new TriSat(true, tAxis, gt.gap, 0, 0usize, 0usize); }
-  new TriSat(true, faceAxis, bestFace, 1, faceI, 0usize);
+  if gt.gap >= bestFace - 0.0005 { return TriSat(true, tAxis, gt.gap, 0, 0usize, 0usize); }
+  TriSat(true, faceAxis, bestFace, 1, faceI, 0usize)
 }
 
 // The box is A and the triangle B (the normal runs from the box to the triangle)
-fn collideBoxTriangle(bx &Prim, xb Rigid, tr &Prim, xt Rigid, margin f32) Manifold {
-  imm a = xt.apply(tr.a);
-  imm b = xt.apply(tr.b);
-  imm c = xt.apply(tr.c);
-  imm r = satBoxTriangle(bx, xb, a, b, c, margin);
-  if not r.hit { return emptyManifold(); }
-  imm depth = -r.sep;
+fn collideBoxTriangle(bx: &Prim, xb: Rigid, tr: &Prim, xt: Rigid, margin: f32) Manifold {
+  let a = xt.apply(tr.a);
+  let b = xt.apply(tr.b);
+  let c = xt.apply(tr.c);
+  let r = satBoxTriangle(bx, xb, a, b, c, margin);
+  if !r.hit { return emptyManifold(); }
+  // Apart (a speculative contact), the best axis of the box's faces or edges is only a lower bound on the
+  // distance: a triangle beneath the box and ahead of it is "a gap of 0.17 m along the box's front face" there,
+  // though it is 0.23 m away by the nearest points, and a normal along that face is a wall the box meets
+  // head-on at speed. The nearest points give the true normal and distance (the triangle's own face keeps
+  // the exact answer: a floor).
+  if r.sep > 0. && r.kind != 0 { return collideGeneric(bx, xb, tr, xt, margin); }
+  let depth = -r.sep;
   if r.kind != 2 {
-    imm fa = supportingFace(bx, xb, r.n);
-    mut fb = newPoly();
+    let fa = supportingFace(bx, xb, r.n);
+    var fb = newPoly();
     fb.add(a); fb.add(b); fb.add(c);
-    imm m = clipFacesRef(&fa, &fb, r.n, margin, r.kind == 1);
+    let m = clipFacesRef(&fa, &fb, r.n, margin, r.kind == 1);
     if m.count > 0usize { return m; }
     // nothing within reach of the reference face: the box's deepest corner
-    imm pa = xb.apply(bx.supportCore(xb.unrotate(r.n)));
+    let pa = xb.apply(bx.supportCore(xb.unrotate(r.n)));
     return singleContact(r.n, pa, pa - r.n * depth, depth);
   }
   // edge against edge: the box edge that faces the triangle, the triangle edge j
-  imm ax = boxAxes(xb);
-  mut base = xb.pos;
-  mut k = 0usize;
+  let ax = boxAxes(xb);
+  var base = xb.pos;
+  var k = 0usize;
   while k < 3usize {
-    if k != r.ia { base = base + ax[k] * (if ax[k].dot(r.n) > 0. { vecGet(bx.half, k); } else { -vecGet(bx.half, k); }); }
+    if k != r.ia { base = base + ax[k] * (if ax[k].dot(r.n) > 0. { vecGet(bx.half, k) } else { -vecGet(bx.half, k) }); }
     k = k + 1usize;
   }
-  imm hl = vecGet(bx.half, r.ia);
-  imm t0 = if r.ib == 0usize { a; } else if r.ib == 1usize { b; } else { c; };
-  imm t1 = if r.ib == 0usize { b; } else if r.ib == 1usize { c; } else { a; };
-  imm sp = closestSegments(base - ax[r.ia] * hl, base + ax[r.ia] * hl, t0, t1);
-  singleContact(r.n, sp.c1, sp.c2, depth);
+  let hl = vecGet(bx.half, r.ia);
+  let t0 = if r.ib == 0usize { a } else if r.ib == 1usize { b } else { c };
+  let t1 = if r.ib == 0usize { b } else if r.ib == 1usize { c } else { a };
+  let sp = closestSegments(base - ax[r.ia] * hl, base + ax[r.ia] * hl, t0, t1);
+  singleContact(r.n, sp.c1, sp.c2, depth)
 }
 
 // ---------------------------------------------------------------------------
@@ -850,30 +856,30 @@ fn collideBoxTriangle(bx &Prim, xb Rigid, tr &Prim, xt Rigid, margin f32) Manifo
 
 // Two convex prims: a manifold with count 0 if they are further apart than
 // 'margin' (or only touch where nothing can be said)
-pub fn collideConvex(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32) Manifold {
-  imm ka = a.kind;
-  imm kb = b.kind;
-  if ka == KSphere and kb == KSphere { return collideSphereSphere(a.radius, xa.pos, b.radius, xb.pos, margin); }
-  if ka == KSphere and kb == KCapsule { return collideSphereCapsule(a, xa, b, xb, margin); }
-  if ka == KCapsule and kb == KSphere { return flipManifold(collideSphereCapsule(b, xb, a, xa, margin)); }
-  if ka == KCapsule and kb == KCapsule { return collideCapsuleCapsule(a, xa, b, xb, margin); }
-  if ka == KBox and kb == KBox { return collideBoxBox(a, xa, b, xb, margin); }
-  if ka == KBox and kb == KTriangle { return collideBoxTriangle(a, xa, b, xb, margin); }
-  if ka == KTriangle and kb == KBox { return flipManifold(collideBoxTriangle(b, xb, a, xa, margin)); }
-  collideGeneric(a, xa, b, xb, margin);
+pub fn collideConvex(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) Manifold {
+  let ka = a.kind;
+  let kb = b.kind;
+  if ka == KSphere && kb == KSphere { return collideSphereSphere(a.radius, xa.pos, b.radius, xb.pos, margin); }
+  if ka == KSphere && kb == KCapsule { return collideSphereCapsule(a, xa, b, xb, margin); }
+  if ka == KCapsule && kb == KSphere { return flipManifold(collideSphereCapsule(b, xb, a, xa, margin)); }
+  if ka == KCapsule && kb == KCapsule { return collideCapsuleCapsule(a, xa, b, xb, margin); }
+  if ka == KBox && kb == KBox { return collideBoxBox(a, xa, b, xb, margin); }
+  if ka == KBox && kb == KTriangle { return collideBoxTriangle(a, xa, b, xb, margin); }
+  if ka == KTriangle && kb == KBox { return flipManifold(collideBoxTriangle(b, xb, a, xa, margin)); }
+  collideGeneric(a, xa, b, xb, margin)
 }
 
 // A prim against a prim, either of which may be a mesh or heightfield. The
 // pieces of a mesh in reach of the convex shape are tried one at a time.
-pub fn collidePrims(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32, partA u32, partB u32, out &mut List[Manifold]) {
-  if a.isConvex() and b.isConvex() {
-    mut m = collideConvex(a, xa, b, xb, margin);
+pub fn collidePrims(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32, partA: u32, partB: u32, out: &mut List[Manifold]) {
+  if a.isConvex() && b.isConvex() {
+    var m = collideConvex(a, xa, b, xb, margin);
     if m.count > 0usize { m.partA = partA; m.partB = partB; out.push(m); }
     return;
   }
-  if not a.isConvex() and not b.isConvex() { return; }
+  if !a.isConvex() && !b.isConvex() { return; }
   // One concave piece 'cv', one convex piece
-  imm swap = not b.isConvex();
+  let swap = !b.isConvex();
   if swap {
     collideConcave(b, xb, a, xa, margin, partB, partA, out, true);
   } else {
@@ -883,29 +889,29 @@ pub fn collidePrims(a &Prim, xa Rigid, b &Prim, xb Rigid, margin f32, partA u32,
 
 // 'conc' is the mesh or heightfield, 'cvx' the convex shape. 'swapped': conc was
 // the caller's second shape, so manifolds are flipped to put the caller's first first
-fn collideConcave(conc &Prim, xc Rigid, cvx &Prim, xv Rigid, margin f32, partC u32, partV u32,
-    out &mut List[Manifold], swapped bool) {
+fn collideConcave(conc: &Prim, xc: Rigid, cvx: &Prim, xv: Rigid, margin: f32, partC: u32, partV: u32,
+    out: &mut List[Manifold], swapped: bool) {
   // The convex shape's box, in the concave shape's space
-  imm inv = xc.inverse();
-  imm wb = cvx.bounds(xv).expand(margin);
-  imm lb = boundsOf(wb, inv);
-  mut ids = List[u32].empty();
-  mut tris = List[Tri].empty();
-  mut flags = List[u8].empty();
+  let inv = xc.inverse();
+  let wb = cvx.bounds(xv).expand(margin);
+  let lb = boundsOf(wb, inv);
+  var ids = List[u32]();
+  var tris = List[Tri]();
+  var flags = List[u8]();
   concaveTriangles(conc, lb, &mut ids, &mut tris, &mut flags);
-  imm firstNew = out.len();
-  mut i = 0usize;
+  let firstNew = out.len();
+  var i = 0usize;
   while i < tris.len() {
-    imm t = tris[i];
-    imm tp = Prim.triangle(t.a, t.b, t.c);
-    mut m = emptyManifold();
+    let t = tris[i];
+    let tp = Prim.triangle(t.a, t.b, t.c);
+    var m = emptyManifold();
     if swapped {
       m = collideConvex(cvx, xv, &tp, xc, margin);
     } else {
       m = collideConvex(&tp, xc, cvx, xv, margin);
     }
     if m.count > 0usize {
-      dropGhostPoints(&mut m, xc.apply(t.a), xc.apply(t.b), xc.apply(t.c), *flags[i], not swapped);
+      dropGhostPoints(&mut m, xc.apply(t.a), xc.apply(t.b), xc.apply(t.c), *flags[i], !swapped);
     }
     if m.count > 0usize {
       snapToFaceNormal(&mut m, xc.rotate((t.b - t.a).cross(t.c - t.a).normalize()));
@@ -927,15 +933,15 @@ fn collideConcave(conc &Prim, xc Rigid, cvx &Prim, xv Rigid, margin f32, partC u
 // manifold on a flat patch, which is what lets the two be one (Jolt's way: contacts with
 // the face of a mesh triangle report the face normal, and the manifolds of one body pair
 // whose normals agree are merged into a single manifold of at most four points).
-const FaceSnapCos = 0.99;
+const FaceSnapCos = 0.99f;
 
 // Contacts within about 8 degrees of the triangle's normal take it (each depth measured
 // again along it); the others, edge and vertex contacts, keep what the narrow phase found
-fn snapToFaceNormal(m &mut Manifold, faceNormal Vec3) {
-  imm aligned = if faceNormal.dot(m.normal) >= 0. { faceNormal; } else { -faceNormal; };
+fn snapToFaceNormal(m: &mut Manifold, faceNormal: Vec3) {
+  let aligned = if faceNormal.dot(m.normal) >= 0. { faceNormal } else { -faceNormal };
   if aligned.dot(m.normal) < FaceSnapCos { return; }
   m.normal = aligned;
-  mut k = 0usize;
+  var k = 0usize;
   while k < m.count {
     m.points[k].depth = (m.points[k].onA - m.points[k].onB).dot(aligned);
     k = k + 1usize;
@@ -946,39 +952,39 @@ fn snapToFaceNormal(m &mut Manifold, faceNormal Vec3) {
 // mesh or heightfield (same compound parts, normals within 2 degrees) become one: the
 // points of all of them, a point two triangles both report once, cut to the four that
 // span the patch. The merged manifold keeps the first one's triangle.
-fn mergeFlatPatches(out &mut List[Manifold], first usize) {
+fn mergeFlatPatches(out: &mut List[Manifold], first: usize) {
   if out.len() < first + 2usize { return; }
-  mut w = first;
-  mut r = first;
+  var w = first;
+  var r = first;
   while r < out.len() {
-    imm m = *out[r];
-    mut g = first;
-    mut found = false;
+    let m = *out[r];
+    var g = first;
+    var found = false;
     while g < w {
-      imm acc = out[g];
-      if acc.partA == m.partA and acc.partB == m.partB and acc.normal.dot(m.normal) > 0.9994 { found = true; break; }
+      let acc = out[g];
+      if acc.partA == m.partA && acc.partB == m.partB && acc.normal.dot(m.normal) > 0.9994 { found = true; break; }
       g = g + 1usize;
     }
-    if not found {
+    if !found {
       out.set(w, m);
       w = w + 1usize;
     } else {
-      mut acc = *out[g];
-      mut pts = newPointBuf();
-      mut q = 0usize;
+      var acc = *out[g];
+      var pts = newPointBuf();
+      var q = 0usize;
       while q < acc.count { pts.add(acc.points[q]); q = q + 1usize; }
       q = 0usize;
       while q < m.count {
-        mut dup = false;
-        mut e = 0usize;
+        var dup = false;
+        var e = 0usize;
         while e < acc.count {
           if acc.points[e].onA.distance(m.points[q].onA) < 0.002 { dup = true; }
           e = e + 1usize;
         }
-        if not dup { pts.add(m.points[q]); }
+        if !dup { pts.add(m.points[q]); }
         q = q + 1usize;
       }
-      imm merged = reducePoints(&pts, acc.normal);
+      let merged = reducePoints(&pts, acc.normal);
       acc.points = merged.points;
       acc.count = merged.count;
       out.set(g, acc);
@@ -988,31 +994,31 @@ fn mergeFlatPatches(out &mut List[Manifold], first usize) {
   out.truncate(w);
 }
 
-fn distToSegment(p Vec3, a Vec3, b Vec3) f32 { p.distance(nearestOnSegment(p, a, b)); }
+fn distToSegment(p: Vec3, a: Vec3, b: Vec3) f32 { p.distance(nearestOnSegment(p, a, b)) }
 
 // Jolt's active edges: a contact whose normal is not along the triangle's, at
 // a point on a flat (inactive) edge and on no active one, belongs to the
 // neighbouring triangle and is dropped here
-fn dropGhostPoints(m &mut Manifold, a Vec3, b Vec3, c Vec3, flags u8, triIsA bool) {
-  imm tn = (b - a).cross(c - a).normalize();
-  if absf(m.normal.dot(tn)) >= 0.996 { return; }
-  mut kept = 0usize;
-  mut i = 0usize;
+fn dropGhostPoints(m: &mut Manifold, a: Vec3, b: Vec3, c: Vec3, flags: u8, triIsA: bool) {
+  let tn = (b - a).cross(c - a).normalize();
+  if m.normal.dot(tn).abs() >= 0.996 { return; }
+  var kept = 0usize;
+  var i = 0usize;
   while i < m.count {
-    imm pt = m.points[i];
-    imm q = if triIsA { pt.onA; } else { pt.onB; };
-    mut onActive = false;
-    mut onInactive = false;
-    mut e = 0usize;
+    let pt = m.points[i];
+    let q = if triIsA { pt.onA } else { pt.onB };
+    var onActive = false;
+    var onInactive = false;
+    var e = 0usize;
     while e < 3usize {
-      imm e0 = if e == 0usize { a; } else if e == 1usize { b; } else { c; };
-      imm e1 = if e == 0usize { b; } else if e == 1usize { c; } else { a; };
+      let e0 = if e == 0usize { a } else if e == 1usize { b } else { c };
+      let e1 = if e == 0usize { b } else if e == 1usize { c } else { a };
       if distToSegment(q, e0, e1) < 0.002 {
         if (flags & u8.from(1usize << e)) != 0u8 { onActive = true; } else { onInactive = true; }
       }
       e = e + 1usize;
     }
-    if not (onInactive and not onActive) {
+    if !(onInactive && !onActive) {
       m.points[kept] = pt;
       kept = kept + 1usize;
     }
@@ -1024,27 +1030,27 @@ fn dropGhostPoints(m &mut Manifold, a Vec3, b Vec3, c Vec3, flags u8, triIsA boo
 // Neighbouring triangles on a flat surface report the same contact twice
 // where they meet: later manifolds lose a point that an earlier one has
 // (same normal, within a millimetre)
-fn dropDuplicatePoints(out &mut List[Manifold], first usize) {
-  mut j = first + 1usize;
+fn dropDuplicatePoints(out: &mut List[Manifold], first: usize) {
+  var j = first + 1usize;
   while j < out.len() {
-    mut m = *out[j];
-    mut kept = 0usize;
-    mut k = 0usize;
+    var m = *out[j];
+    var kept = 0usize;
+    var k = 0usize;
     while k < m.count {
-      mut dup = false;
-      mut i = first;
+      var dup = false;
+      var i = first;
       while i < j {
-        imm o = out[i];
+        let o = out[i];
         if o.normal.dot(m.normal) > 0.9995 {
-          mut q = 0usize;
+          var q = 0usize;
           while q < o.count {
-            if o.points[q].onA.distance(m.points[k].onA) < 0.001 and o.points[q].onB.distance(m.points[k].onB) < 0.001 { dup = true; }
+            if o.points[q].onA.distance(m.points[k].onA) < 0.001 && o.points[q].onB.distance(m.points[k].onB) < 0.001 { dup = true; }
             q = q + 1usize;
           }
         }
         i = i + 1usize;
       }
-      if not dup { m.points[kept] = m.points[k]; kept = kept + 1usize; }
+      if !dup { m.points[kept] = m.points[k]; kept = kept + 1usize; }
       k = k + 1usize;
     }
     m.count = kept;
@@ -1052,10 +1058,10 @@ fn dropDuplicatePoints(out &mut List[Manifold], first usize) {
     j = j + 1usize;
   }
   // remove the emptied ones
-  mut w = first;
-  mut r = first;
+  var w = first;
+  var r = first;
   while r < out.len() {
-    imm m = *out[r];
+    let m = *out[r];
     if m.count > 0usize { out.set(w, m); w = w + 1usize; }
     r = r + 1usize;
   }
@@ -1065,20 +1071,20 @@ fn dropDuplicatePoints(out &mut List[Manifold], first usize) {
 // Shape against shape (each a prim or a compound): every contact in
 // 'out'. 'margin' is the speculative distance: pairs that are apart by less
 // are reported with a negative depth.
-pub fn collide(a &Shape, xa Rigid, b &Shape, xb Rigid, margin f32, out &mut List[Manifold]) {
-  if a.leaves.len() == 0usize and b.leaves.len() == 0usize {
+pub fn collide(a: &Shape, xa: Rigid, b: &Shape, xb: Rigid, margin: f32, out: &mut List[Manifold]) {
+  if a.leaves.len() == 0usize && b.leaves.len() == 0usize {
     collidePrims(&a.prim, xa, &b.prim, xb, margin, 0u32, 0u32, out);
     return;
   }
-  imm na = a.partCount();
-  imm nb = b.partCount();
-  mut i = 0usize;
+  let na = a.partCount();
+  let nb = b.partCount();
+  var i = 0usize;
   while i < na {
-    mut j = 0usize;
+    var j = 0usize;
     while j < nb {
-      imm xai = if a.leaves.len() > 0usize { xa * a.leaves[i].xf; } else { xa; };
-      imm xbj = if b.leaves.len() > 0usize { xb * b.leaves[j].xf; } else { xb; };
-      if a.leaves.len() > 0usize and b.leaves.len() > 0usize {
+      let xai = if a.leaves.len() > 0usize { xa * a.leaves[i].xf } else { xa };
+      let xbj = if b.leaves.len() > 0usize { xb * b.leaves[j].xf } else { xb };
+      if a.leaves.len() > 0usize && b.leaves.len() > 0usize {
         collidePrims(&a.leaves[i].prim, xai, &b.leaves[j].prim, xbj, margin, u32.from(i), u32.from(j), out);
       } else if a.leaves.len() > 0usize {
         collidePrims(&a.leaves[i].prim, xai, &b.prim, xbj, margin, u32.from(i), 0u32, out);

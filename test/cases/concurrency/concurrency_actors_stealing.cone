@@ -13,7 +13,7 @@
 // much varies from run to run. (What a full run queue does is
 // concurrency_actors_overflow's, on one worker, where nothing is stolen.)
 //
-// The actors are declared. A target has no 'init': 'new Target()' is its
+// The actors are declared. A target has no 'init': 'Target()' is its
 // state's implicit initializer, its one field taking its default.
 
 mod concurrency_actors_stealing;
@@ -28,26 +28,26 @@ const targets = 64u64;
 const spin = 2000000u64;
 
 struct Results {
-  pub ranOn Atomic[u64];       // bit i: some target ran on worker i
-  pub spreaderOn Atomic[u64];  // the spreader's worker, as a bit
-  pub done Atomic[u64];
-  pub check Atomic[u64];
+  pub ranOn: Atomic[u64];       // bit i: some target ran on worker i
+  pub spreaderOn: Atomic[u64];  // the spreader's worker, as a bit
+  pub done: Atomic[u64];
+  pub check: Atomic[u64];
 }
 
-imm results Results;
+let results: Results;
 
 fn @initpure init() {
-  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 // ---- Target: does some work when asked ----
 
 actor Target {
-  runs u64 = 0u64;
+  runs: u64 = 0u64;
 
-  pub async do work(self, n u64) {
-    mut x = 1u64;
-    mut i = 0u64;
+  pub async fn work(self, n: u64) {
+    var x = 1u64;
+    var i = 0u64;
     while i < n {
       x = x * 6364136223846793005u64 + i;
       i = i + 1u64;
@@ -62,19 +62,19 @@ actor Target {
 // ---- Spreader: sends every target it holds one message ----
 
 actor Spreader {
-  held List[Target];
+  held: List[Target];
 
-  fn init(self &new) {
-    *self = new Self(List[Target].empty());
+  fn init(self: &new) {
+    *self = Self(List[Target]());
   }
 
-  pub async do add(self, t Target) {
+  pub async fn add(self, t: Target) {
     held.push(t);
   }
 
-  pub async do go(self, n u64) {
+  pub async fn go(self, n: u64) {
     results.spreaderOn.bitOr(1u64 << u64.from(actors.workerIndex()));
-    mut i = 0usize;
+    var i = 0usize;
     while i < held.len() {
       held[i].work(n);
       i = i + 1usize;
@@ -83,24 +83,24 @@ actor Spreader {
 }
 
 // How many bits are set
-fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+fn bits(v: u64) u64 {
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
   }
-  n;
+  n
 }
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm s = new Spreader();
-    mut i = 0u64;
+    let s = Spreader();
+    var i = 0u64;
     while i < targets {
-      s.add(new Target());
+      s.add(Target());
       i = i + 1u64;
     }
     s.go(spin);
@@ -108,13 +108,13 @@ fn main() {
   while results.done.load() < targets {
     thread.sleep(time.Duration.fromMillis(1));
   }
-  imm st = actors.stats();
-  imm ranOn = results.ranOn.load();
-  imm elsewhere = ranOn & ~results.spreaderOn.load();
+  let st = actors.stats();
+  let ranOn = results.ranOn.load();
+  let elsewhere = ranOn & ~results.spreaderOn.load();
   printStr("targets run "); printUInt(results.done.load()); printStr("\n");
-  printStr("run on more than one worker "); printStr(if bits(ranOn) > 1u64 {"true";} else {"false";}); printStr("\n");
-  printStr("run on a worker other than the spreader's "); printStr(if elsewhere != 0u64 {"true";} else {"false";}); printStr("\n");
-  printStr("steals counted "); printStr(if st.steals > 0u64 {"true";} else {"false";}); printStr("\n");
+  printStr("run on more than one worker "); printStr(if bits(ranOn) > 1u64 {"true"} else {"false"}); printStr("\n");
+  printStr("run on a worker other than the spreader's "); printStr(if elsewhere != 0u64 {"true"} else {"false"}); printStr("\n");
+  printStr("steals counted "); printStr(if st.steals > 0u64 {"true"} else {"false"}); printStr("\n");
   printStr("workers "); printUInt(u64.from(st.workers)); printStr("\n");
   finalAll();
 }

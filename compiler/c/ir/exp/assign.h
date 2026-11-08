@@ -33,8 +33,11 @@ void assignPrint(AssignNode *node);
 void assignNameRes(NameResState *pstate, AssignNode *node);
 
 // Is this one tuple-typed lval given a value tuple, which it receives whole?
-// Otherwise one lval given a value tuple receives its first value.
+// (One target of any other type given a list of values is refused.)
 int assignOneTakesTuple(AssignNode *node);
+
+// Is this target '_', which takes a value and drops it at the end of the statement?
+int assignIsAnon(INode *node);
 
 // Type check for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);
@@ -45,5 +48,10 @@ void assignFlow(FlowState *fstate, AssignNode **node);
 // Refuse storing a borrowed reference of type 'rtype' into an lval living at
 // 'lvalscope' that would outlive it (assignment, and each direction of a swap)
 void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype);
+
+// Refuse a plain store into a place holding an atomic value unless every
+// reference on the way to it is 'uni' (assignment, and each side of a swap).
+// Answers 0 where refused.
+int assignAtomicStoreCheck(INode *lval);
 
 #endif

@@ -1,0 +1,180 @@
+// Streams made by Python's zlib module (the reference implementation, used
+// only to make tests/data/zoo.bin; "python make_zoo.py > zoo.bin" there
+// regenerates it): 70 DEFLATE, zlib and gzip streams, each with what it
+// inflates to (its length, its CRC-32 as Python worked it out, and the bytes
+// themselves when there are 4096 or fewer). Every stream is inflated
+//   - in one call;
+//   - fed whole, then in pieces of 4096, 997 and 1 bytes (the last only
+//     for the small ones), with the output taken in pieces of 65536, 1000
+//     and 1 bytes;
+// and every way must give exactly the bytes the reference says. (gzip.cone
+// reads the members with header fields and the several-member file from the
+// same data file and checks the fields and the member count.)
+
+mod zoo;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+fn formatOf(code: u8) Format {
+  if code == 0u8 { return Format.Raw; }
+  if code == 1u8 { return Format.Zlib; }
+  Format.Gzip
+}
+
+// Inflates 's' in pieces of 'chunk' input bytes, taking 'maxPull' output
+// bytes at a time. 0 when it ends Done, else which way it went wrong.
+fn run(inf: &mut Inflater, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
+  var pos = 0usize;
+  var piece = List[u8]();
+  var guard = 0usize;
+  while true {
+    guard += 1usize;
+    if guard > 20000000usize { return 9; }
+    if pos < s.len {
+      let n = if s.len - pos < chunk {s.len - pos} else {chunk};
+      inf.feed(&s[pos..<pos + n]);
+      pos += n;
+      if pos == s.len { inf.finish(); }
+    }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = pullN(inf, &mut piece, maxPull);
+      var k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+      if piece.len() > maxPull { return 8; }
+    }
+    if st == Status.Done { return 0; }
+    if st == Status.Failed { return 1; }
+    // NeedInput with everything fed and finished: stuck
+    if pos >= s.len { return 2; }
+  }
+  3
+}
+
+fn main() i32 {
+  let path = Path.from("../../../../tests/data/zoo.bin");
+  var file = String();
+  match fs.readFile(&path) {
+    case var Ok(ok) { file <-> ok; }
+    case let Err(e) { expect(false, "the data file is there"); return done(); }
+  }
+  let count = le32(&file, 0usize);
+  expectInt(i64.from(count), 70i64, "streams in the file");
+  var at = 4usize;
+  var oneShotWrong = 0usize;
+  var streamWrong = 0usize;
+  var streamed = 0usize;
+  var r = 0usize;
+  var names = String();
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 1usize + nameLen;
+    let fmt = formatOf(file[at]);
+    let streamLen = le32(&file, at + 1usize);
+    at += 5usize;
+    let stream = &file.view().bytes()[at..<at + streamLen];
+    at += streamLen;
+    let wantLen = le32(&file, at);
+    let wantCrc = u32.from(le32(&file, at + 4usize));
+    at += 8usize;
+    let have = wantLen <= 4096usize;
+    let wantBytes = &file.view().bytes()[at..<at + (if have {wantLen} else {0usize})];
+    if have { at += wantLen; }
+
+    // One call
+    var one = List[u8]();
+    var oneOk = false;
+    match fmt {
+      case is Raw {
+        var used = 0usize;
+        match inflate(stream, 0usize, 0usize, &mut used) {
+          case var Ok(ok) { one <-> ok; oneOk = used == streamLen; }
+          case let Err(e) { oneOk = false; }
+        }
+      }
+      case is Zlib {
+        match zlibDecompress(stream, 0usize) {
+          case var Ok(ok) { one <-> ok; oneOk = true; }
+          case let Err(e) { oneOk = false; }
+        }
+      }
+      case is Gzip {
+        match gzipDecompress(stream, 0usize) {
+          case var Ok(ok) { one <-> ok; oneOk = true; }
+          case let Err(e) { oneOk = false; }
+        }
+      }
+    }
+    if !oneOk || one.len() != wantLen || crc32(one.view()) != wantCrc || (have && one.view() != wantBytes) {
+      oneShotWrong += 1usize;
+      names.append(name.view());
+      names.append(" ");
+    }
+
+    // The same stream through every chunking and every output piece size
+    var c = 0usize;
+    while c < 4usize {
+      let chunk = if c == 0usize {stream.len + 1usize} else if c == 1usize {4096usize} else if c == 2usize {997usize} else {1usize};
+      var p = 0usize;
+      while p < 3usize {
+        let pull = if p == 0usize {65536usize} else if p == 1usize {1000usize} else {1usize};
+        // The slowest combinations only for the small streams
+        if (c == 3usize && stream.len > 700usize) || (p == 2usize && wantLen > 5000usize) {
+          p += 1usize;
+          continue;
+        }
+        var inf = Inflater.make(fmt);
+        var out = List[u8]();
+        let code = run(&mut inf, stream, chunk, pull, &mut out);
+        streamed += 1usize;
+        if code != 0 || out.len() != wantLen || crc32(out.view()) != wantCrc || out.view() != one.view() {
+          streamWrong += 1usize;
+          names.append(name.view());
+          names.append("/");
+          names.appendInt(i64.from(chunk));
+          names.append("/");
+          names.appendInt(i64.from(pull));
+          names.append(" ");
+        }
+        p += 1usize;
+      }
+      c += 1usize;
+    }
+    r += 1usize;
+  }
+  if names.len() > 0usize { expectStr(names.view(), "", "streams that went wrong"); }
+  expectInt(i64.from(oneShotWrong), 0i64, "one-shot inflates that differ from the reference");
+  expectInt(i64.from(streamWrong), 0i64, "streamed inflates that differ from the reference");
+  expect(streamed > 500usize, "many streamed runs");
+  done()
+}

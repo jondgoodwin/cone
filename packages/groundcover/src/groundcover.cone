@@ -1,0 +1,60 @@
+// The groundcover package: lush, lived-in ground from rules. A program
+// reaches it with 'import groundcover', and gets (full account: types.cone's
+// header, and Design\groundcover.md):
+//
+// - CoverType (types.cone), a description of one kind of cover as DATA: what
+//   it is drawn as (grass tufts that bend in the wind, flowers, ground-hugging
+//   patches such as moss, fallen leaves, or any registered mesh: ferns, pebbles,
+//   fallen branches, shrubs), how dense, which ground it likes (a window on each
+//   of eight signals), how it clumps, its size, colour and wind, how far it is
+//   drawn and how it thins with distance, and which other types it gives way to.
+// - GroundMaps (maps.cone), the eight signals over a patch of ground (height,
+//   slope, moisture, sun exposure, distance to a path, to water, canopy, distance to
+//   an object), with helpers that derive slope, exposure and moisture and rasterise
+//   paths, streams, boulders and tree crowns into them.
+// - The rules on the CPU (place.cone): the score of a type at a point, the
+//   instances of a cell, a ring, and the far-field colour baked from the same rules.
+//   cover.slang holds the same arithmetic for the GPU.
+// - CoverRenderer (renderer.cone), which places the cover the camera needs by
+//   compute shaders every frame (generate.slang) and draws it with indirect draws
+//   (draw.slang) into render's HDR frame after the opaque scene.
+//
+// A frame, with render's Renderer (keeping its depth: 'renderer.keepDepth = true'):
+//
+//   mut cover = CoverRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+//   imm fern = cover.addMesh(&fernMesh);                                  // once, before 'build'
+//   cover.build(&mut device, &types, &maps);                              // once, or when the ground changes
+//   ...
+//   renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+//   cover.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &environment);
+//   post.apply(&mut encoder, &target);
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   types.cone      CoverType, Window, Interaction, the signals, validation
+//   maps.cone       GroundMaps, the derivations and rasterisers
+//   place.cone      the rules on the CPU, the far field
+//   renderer.cone   CoverRenderer; generate.slang's and draw.slang's SPIR-V
+//
+// and its shaders, Slang: generate (the placement kernels), draw (every kind's
+// geometry and light) and the module cover (the rules) they import, which imports
+// the noise package's.
+//
+// DETERMINISM. Where cover stands is a pure function of the types, the maps and
+// the lattice cell (hashes of integers, the noise package's PCG): the same
+// ground gives the same meadow, and a cell is placed the same whichever way the
+// camera came. The hashes and counts are integers, the same everywhere; positions
+// use sin, cos, log and square roots, which a GPU computes to looser bounds than
+// the CPU, so the GPU's instance is close to the CPU's, not identical (the
+// parity test measures how close).
+
+mod groundcover;
+
+import libc;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise use pcg, pcg4d, toUnit, UVec4;
+import gpu use *;
+import render use Camera, Light;

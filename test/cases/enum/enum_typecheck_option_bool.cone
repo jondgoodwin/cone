@@ -1,0 +1,41 @@
+// An Option or a Result converts to bool in a condition ('if', 'while') and
+// under '!', and nowhere else.
+//
+// As the LEFT operand of '||' or '&&' it is the receiver of Option's or Result's
+// own method of that name, which takes an Option (or a Result) or a plain value of
+// the payload's type on the right: 'opt || flag' with an i64 payload fits neither.
+// As the RIGHT operand of a bool's '||' or '&&' it is refused, with a pointer to
+// 'x is Some' ('x is Ok'), which says what the test is.
+//
+// Where a bool is wanted otherwise -- a 'let' of type bool, a bool argument, a
+// return -- it is refused as it was before Option and Result had an isTrue.
+
+mod enum_typecheck_option_bool;
+
+fn takes(b: bool) bool { b }
+
+fn half(n: i64) Option[i64] {
+  if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn viaReturn(o: Option[i64]) bool {  //~ ErrorInvType:30 "declared function's return type"
+  o                               //~ ErrorInvType:3
+}
+
+fn main() {
+  let opt: Option[i64] = Some(1);
+  let res: Result[i64, i64] = Ok(1);
+  let flag = true;
+
+  let l = opt || flag;               //~ ErrorNoCandidate:15 "No macro declared by `||` accepts these arguments"
+  let r = flag && res;               //~ ErrorOptionLogic:19 "x is Ok"
+  let c = takes(half(2));            //~ ErrorInvType:21
+  let b: bool = opt;                 //~ ErrorInvType:17
+
+  // Refused in a condition too: Option's '&&' takes an Option on its right
+  if opt && flag {}                  //~ ErrorMacroArgType:13 "other"
+
+  // Allowed: a condition, and '!'
+  if opt {}
+  let n = !res;
+}

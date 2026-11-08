@@ -27,53 +27,53 @@ import stdio use *;
 import libc;
 
 struct One is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { malloc(size); }
-  fn free(self &uni One) inline { printStr("free "); libc.free(self as *u8); }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn free(self: &uni One) inline { printStr("free "); libc.free(self as *u8); }
 }
 
 struct Fin {
-  pub n i64;
-  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+  pub n: i64;
+  fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
 }
 
-struct Plain { pub a u8; pub b i64; }
+struct Plain { pub a: u8; pub b: i64; }
 struct Holder {
-  pub id i64;
-  pub o One[Fin];
-  fn final(self &uni) { printStr("Holder "); }
+  pub id: i64;
+  pub o: One[Fin];
+  fn final(self: &uni) { printStr("Holder "); }
 }
-struct Box[T] { pub v T; }
+struct Box[T] { pub v: T; }
 
 enum Shape {
-  struct Round { pub f Fin; }
-  struct Flat { pub k i64; }
+  struct Round { pub f: Fin; }
+  struct Flat { pub k: i64; }
 }
 
-fn yes(b bool) { if b {printStr("yes");} else {printStr("no");} }
+fn yes(b: bool) { if b {printStr("yes");} else {printStr("no");} }
 
 // T's record against what the other intrinsics say of T
-fn describe[T](label &str) {
-  imm rec = mem.typeRecord[T]() as &TypeRecord;
-  imm plain = mem.typeRecord[u8]() as &TypeRecord;
+fn describe[T](label: &str) {
+  let rec = mem.typeRecord[T]() as &TypeRecord;
+  let plain = mem.typeRecord[u8]() as &TypeRecord;
   printStr(label);
   printStr(": size "); printInt(i64.from(rec.size));
   printStr(", align "); printInt(i64.from(rec.align));
   printStr(", flags "); printInt(i64.from(rec.flags));
   printStr(", agrees ");
-  yes(rec.size == mem.sizeof[T]() and rec.align == mem.alignof[T]()
-    and (rec.flags & 1u32 == 1u32) == mem.needsFinal[T]() and rec.flags & 2u32 == 0u32
-    and !mem.holdsTraced[T]() and rec.trace as *u8 == plain.trace as *u8);
+  yes(rec.size == mem.sizeof[T]() && rec.align == mem.alignof[T]()
+    && (rec.flags & 1u32 == 1u32) == mem.needsFinal[T]() && rec.flags & 2u32 == 0u32
+    && !mem.holdsTraced[T]() && rec.trace as *u8 == plain.trace as *u8);
   printStr(", finalizer is the do-nothing one ");
   yes(rec.finalize as *u8 == plain.finalize as *u8);
   printStr("\n");
 }
 
 // Move v into raw memory, then run its record's finalizer on it there
-fn dies[T](label &str, v T) {
-  imm p = malloc(mem.sizeof[T]());
+fn dies[T](label: &str, v: T) {
+  let p = malloc(mem.sizeof[T]());
   mem.writeRaw(p as *T, v);
   printStr(label); printStr(": ");
-  imm fin = (mem.typeRecord[T]() as &TypeRecord).finalize;
+  let fin = (mem.typeRecord[T]() as &TypeRecord).finalize;
   fin(p);
   printStr("|\n");
   libc.free(p);
@@ -96,23 +96,23 @@ fn main() i32 {
   describe[&Fin]("&Fin");
 
   dies("i32", 5i32);
-  dies("Fin", new Fin(1));
-  dies("Holder", new Holder(2, new One[Fin](3)));
-  dies("tuple", (new Fin(4), new Fin(5)));
-  dies("array", [new Fin(6), new Fin(7), new Fin(8)]);
-  dies("Box[Fin]", new Box[Fin](new Fin(9)));
-  dies("Shape.Round", Shape.Round(new Fin(10)));
+  dies("Fin", Fin(1));
+  dies("Holder", Holder(2, One[Fin](3)));
+  dies("tuple", (Fin(4), Fin(5)));
+  dies("array", [Fin(6), Fin(7), Fin(8)]);
+  dies("Box[Fin]", Box[Fin](Fin(9)));
+  dies("Shape.Round", Shape.Round(Fin(10)));
   dies("Shape.Flat", Shape.Flat(11));
-  dies("Some", Some[One[Fin]](new One[Fin](12)));
+  dies("Some", Some[One[Fin]](One[Fin](12)));
   dies("None", None[One[Fin]]);
-  imm shared = new Rc[imm, Fin](13);
+  let shared = Rc[imm, Fin](13);
   dies("an Rc owner of two", shared);
   printStr("the other owner still reads F"); printInt(shared.n); printStr("\n");
 
   // The same record whichever way it is asked for
   printStr("one record per type ");
   yes(mem.typeRecord[Box[Fin]]() == mem.typeRecord[Box[Fin]]()
-    and mem.typeRecord[Fin]() != mem.typeRecord[Box[Fin]]());
+    && mem.typeRecord[Fin]() != mem.typeRecord[Box[Fin]]());
   printStr("\n");
-  0;
+  0
 }

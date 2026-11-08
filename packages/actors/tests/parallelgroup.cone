@@ -1,0 +1,191 @@
+// A 'parallel each' begun in a cancel group runs in a CHILD group of its own
+// (actors.cone, THE GROUP TRAVELS; parallel.cone): its pieces see the child as
+// their current group, whatever worker runs them, so a cancel of the caller's
+// group reaches them and a cancel by a piece stops this loop alone. The loop
+// skips the pieces not yet begun once its group is cancelled. The rest of a
+// behaviour after the loop, and the messages the loop's pieces send, are in the
+// caller's own group.
+//
+// 1. From main inside actors.withGroup(g, ...): every piece of a 4,000-piece loop
+//    sees a group that is not g (its child); with no group, the process's own.
+// 2. A cancel of g from outside is seen by running pieces: main cancels g while
+//    the pieces of a loop in a behaviour spin on isCancelled(); every piece
+//    sees it, and the rest of the behaviour is in the cancelled g.
+// 3. A search that finds early cancels its own group and not its parent's: piece
+//    0 cancels its current group; the pieces not yet begun are skipped (fewer than
+//    all run), the behaviour's group is not cancelled, and the next loop in the
+//    same behaviour runs every piece.
+// 4. The loop's gathered sends are handled in the caller's group g.
+
+mod parallelgroup;
+
+import testing use *;
+import collections use *;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub bad: Atomic[u64];          // pieces in the wrong group
+  pub pieces: Atomic[u64];
+  pub started: Atomic[u64];
+  pub sawCancel: Atomic[u64];
+  pub afterId: Atomic[u64];      // the rest of the behaviour's group
+  pub afterCancelled: Atomic[u64];
+  pub loop2Ran: Atomic[u64];
+  pub sinkBad: Atomic[u64];
+  pub sinkGot: Atomic[u64];
+  pub parentCancelled: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+actor Sink {
+  pub async fn note(self, want: u64) {
+    seen.sinkGot.add(1u64);
+    if actors.currentGroup().id() != want {seen.sinkBad.add(1u64);}
+  }
+}
+
+actor Worker {
+  // a loop whose pieces check they are not in the behaviour's own group, then the rest of the behaviour
+  pub async fn scan(self, want: u64) {
+    parallel each i in 0usize ..< 3000usize {
+      seen.pieces.add(1u64);
+      if actors.currentGroup().id() == want {seen.bad.add(1u64);}
+    }
+    seen.afterId.store(actors.currentGroup().id());
+  }
+
+  // pieces that run until their group is cancelled (or, so that a failure ends, two seconds)
+  pub async fn spin(self) {
+    parallel each i in 0usize ..< 64usize {
+      seen.started.add(1u64);
+      let limit = bounded(2000i64);
+      while !actors.isCancelled() && Instant.now() < limit {thread.yieldNow();}
+      if actors.isCancelled() {seen.sawCancel.add(1u64);}
+    }
+    seen.afterCancelled.store(if actors.isCancelled() {1u64} else {0u64});
+  }
+
+  // a search: piece 0 cancels the loop's group; the other pieces are slow, so the
+  // ones not yet begun are skipped. Then a second loop, in the behaviour's own group
+  pub async fn search(self) {
+    parallel each i in 0usize ..< 4096usize {
+      seen.pieces.add(1u64);
+      if i == 0usize {
+        actors.currentGroup().cancel();
+      } else {
+        let until = Instant.now() + Duration.fromMillis(1i64);
+        while Instant.now() < until {thread.yieldNow();}
+      }
+    }
+    seen.parentCancelled.store(if actors.isCancelled() {1u64} else {0u64});
+    parallel each j in 0usize ..< 500usize {
+      seen.loop2Ran.add(1u64);
+    }
+  }
+
+  // each piece sends the sink a message, to be handled in the caller's group
+  pub async fn sends(self, sink: Sink, want: u64) {
+    parallel each i in 0usize ..< 400usize {
+      sink.note(want + (u64.from(i) & 0u64));
+    }
+  }
+}
+
+fn reset() {
+  seen.bad.store(0u64);
+  seen.pieces.store(0u64);
+  seen.started.store(0u64);
+  seen.sawCancel.store(0u64);
+  seen.afterId.store(0u64);
+  seen.afterCancelled.store(0u64);
+  seen.loop2Ran.store(0u64);
+  seen.sinkBad.store(0u64);
+  seen.sinkGot.store(0u64);
+  seen.parentCancelled.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let rootId = actors.currentGroup().id();
+  let w = Worker();
+
+  // 1. a loop begun by main in a group, and in none
+  let g = CancelGroup.make();
+  let gid = g.id();
+  reset();
+  actors.withGroup(&g, fn() [gid] {
+    parallel each i in 0usize ..< 4000usize {
+      seen.pieces.add(1u64);
+      if actors.currentGroup().id() == gid {seen.bad.add(1u64);}
+    }
+    expectUInt(actors.currentGroup().id(), gid, "1: after the loop main is in g again");
+  });
+  expectUInt(seen.pieces.load(), 4000u64, "1: main's loop ran its 4,000 pieces");
+  expectUInt(seen.bad.load(), 0u64, "1: every piece was in a group of its own, a child of g");
+  expect(!g.isCancelled(), "1: g is not cancelled");
+  reset();
+  parallel each i in 0usize ..< 4000usize {
+    seen.pieces.add(1u64);
+    if actors.currentGroup().id() != rootId {seen.bad.add(1u64);}
+  }
+  expectUInt(seen.bad.load(), 0u64, "1: with no group, every piece saw the process's own");
+
+  // a behaviour's loop, in a group and in none
+  reset();
+  actors.withGroup(&g, fn() [w, gid] { w.scan(gid); });
+  actors.waitQuiet();
+  expectUInt(seen.pieces.load(), 3000u64, "1: a behaviour's loop ran its pieces");
+  expectUInt(seen.bad.load(), 0u64, "1: ... each in a child of the group the behaviour's message was sent in");
+  expectUInt(seen.afterId.load(), gid, "1: ... and the rest of the behaviour is in that group itself");
+  reset();
+  w.scan(0u64);
+  actors.waitQuiet();
+  expectUInt(seen.bad.load(), 0u64, "1: a behaviour sent in no group: no piece in any group but the process's own");
+  expectUInt(seen.afterId.load(), rootId, "1: ... and its rest");
+
+  // 2. cancel of the caller's group from outside, seen by running pieces
+  reset();
+  let g2 = CancelGroup.make();
+  actors.withGroup(&g2, fn() [w] { w.spin(); });
+  let limit = bounded(5000i64);
+  while seen.started.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+  expect(seen.started.load() > 0u64, "2: the pieces are running");
+  expectUInt(seen.sawCancel.load(), 0u64, "2: ... and have seen no cancel");
+  g2.cancel();
+  actors.waitQuiet();
+  expectUInt(seen.started.load(), 64u64, "2: all 64 pieces ran");
+  expectUInt(seen.sawCancel.load(), 64u64, "2: every piece saw the cancel made outside, through its child group");
+  expectUInt(seen.afterCancelled.load(), 1u64, "2: and the rest of the behaviour is in the cancelled group");
+
+  // 3. a search cancels its own group, not its parent's
+  reset();
+  let g3 = CancelGroup.make();
+  actors.withGroup(&g3, fn() [w] { w.search(); });
+  actors.waitQuiet();
+  expect(!g3.isCancelled(), "3: the behaviour's group is not cancelled by a piece's cancel");
+  expectUInt(seen.parentCancelled.load(), 0u64, "3: nor does the behaviour see it cancelled after the loop");
+  expect(seen.pieces.load() >= 1u64 && seen.pieces.load() < 4096u64, "3: the pieces not yet begun were skipped");
+  expectUInt(seen.loop2Ran.load(), 500u64, "3: the next loop, in the behaviour's own group, ran every piece");
+
+  // 4. the loop's gathered sends are in the caller's group
+  reset();
+  let sink = Sink();
+  actors.withGroup(&g, fn() [w, sink, gid] { w.sends(sink, gid); });
+  actors.waitQuiet();
+  expectUInt(seen.sinkGot.load(), 400u64, "4: all 400 gathered messages were handled");
+  expectUInt(seen.sinkBad.load(), 0u64, "4: each in the caller's group");
+  done()
+}

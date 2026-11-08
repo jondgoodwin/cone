@@ -11,9 +11,19 @@
 typedef struct MacroDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;
-    Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
+    // The type parameters, 'macro m[T, U][a: T, b: U]': the first of two bracket
+    // lists, NULL when only one is written. A use gives their arguments in its
+    // brackets, 'm[i32, f64](1, 2.)', or they are inferred from its arguments.
+    Nodes *typeparms;
+    // The value parameters (GenVarDcl), each typed: 'a: T', 'a: lazy T' (its
+    // 'valtype' and FlagLazy), except a macro method's 'self', which is bare
+    Nodes *parms;
     INode *body;             // The body of the generic
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
+    // The next macro declared under this name in the same scope (a module, or
+    // one type), forming the name's overload set. Only the first is bound to
+    // the name; a use picks among the chain (macroSelect). NULL for the last.
+    struct MacroDclNode *more;
 } MacroDclNode;
 
 // Create a new macro declaraction node
@@ -36,7 +46,48 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 // Expand a macro called by name, substituting the arguments for its parameters
 void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
 
-// Expand a macro method called on a receiver, which stands in for 'self'
-void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro);
+// Expand a macro called with its type arguments in brackets and its value
+// arguments in parentheses, 'm[i32](x)': the call's callee is the bracketed use
+void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
+// Expand a macro method called on a receiver, which stands in for 'self'.
+// 'typeargs' are what brackets after its name gave its type parameters, or NULL.
+void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, Nodes *typeargs);
+
+// Refuse, at 'at', a change to the variable a macro's expansion bound a plain
+// parameter to (FlagMacroBind): an argument the macro assigns to must be 'lazy'
+void macroParmAssignRefused(INode *at, VarDclNode *var);
+
+// How a body changes a place, for macroChangeNameRes: stores to it, swaps it or
+// borrows it '&mut', or changes it in place by an operator such as '+='
+typedef enum {
+    MacroChangePlace,
+    MacroChangeInPlace
+} MacroChange;
+
+// Name resolution of a change to 'place' (reported at 'at'): inside a macro's
+// body, a change to a plain parameter's own storage is refused where the macro
+// is declared, wherever no type is in question
+void macroChangeNameRes(INode *at, INode *place, MacroChange how);
+
+// Refuse an argument whose type does not fit its parameter's, naming it
+void macroArgTypeRefused(INode *arg, Name *parm, int lazy, INode *parmtype);
+
+// A macro declared under a name another macro already holds in that scope joins
+// its set: appended after 'first' (macroSetAdd). Whether any macro of the set
+// declares type parameters (a bracket list's meaning depends on it).
+void macroSetAdd(MacroDclNode *first, MacroDclNode *more);
+int macroSetTypeParms(MacroDclNode *first);
+
+// Refuse a macro and a function declared under one name in one scope: a set of
+// same-named declarations holds all macros or all functions
+void macroMixedRefused(INode *later, INode *earlier);
+
+// Note that some type declares a macro method by this name (iNsTypeAddMacro).
+// An operator is checked receiver first only where its method's name is one
+// of these (fnCallOperatorMacro), so a program that declares no operator as a
+// macro checks every operator in the order it always did.
+void macroMethodNameNote(Name *name);
+int macroMethodNamed(Name *name);
 
 #endif

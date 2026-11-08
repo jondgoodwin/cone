@@ -7,46 +7,49 @@
 // weak reference moved away is not there to ask. What it may do is run by the
 // package's own tests (packages/rcweak/tests).
 //
-// A unique 'Rcw' owner is accepted by 'Weak[T].of', which takes its owner by
-// value: the unique owner moves in and is given up, which is what makes the
-// weak reference safe to make from it, and using the owner afterwards is
-// refused as any moved value is.
+// 'Weak[T].of' only observes its owner and takes it lent ('of(&owner)'), so a
+// unique 'Rcw' owner, which is lent as a unique reference and not as a shared
+// owner, does not fit it.
 
 mod region_flow_rcweak_refuse;
 
 import rcweak use *;
 
-struct Pt { pub x i64; }
+struct Pt { pub x: i64; }
 
 fn fromImm() {
-  imm r = new Rcw[imm, Pt](1);
-  imm w = Weak[Pt].of(r);         //~ ErrorInvType
+  let r = Rcw[imm, Pt](1);
+  let w = Weak[Pt].of(&r);         //~ ErrorInvType
 }
 
 fn readThrough() i64 {
-  imm r = new Rcw[mut, Pt](2);
-  imm w = Weak[Pt].of(r);
-  (*w).x;                         //~ ErrorNotPtr
+  let r = Rcw[mut, Pt](2);
+  let w = Weak[Pt].of(&r);
+  (*w).x                         //~ ErrorNotPtr
                                   //~^ ErrorNoMeth follow-on
 }
 
 fn header() {
-  imm r = new Rcw[mut, Pt](3);
-  imm w = Weak[Pt].of(r);
-  imm h = w.hdr;                  //~ ErrorNotPublic
+  let r = Rcw[mut, Pt](3);
+  let w = Weak[Pt].of(&r);
+  let h = w.hdr;                  //~ ErrorNotPublic
 }
 
 fn movedAway() bool {
-  imm r = new Rcw[mut, Pt](4);
-  imm w = Weak[Pt].of(r);
-  imm w2 = w;
-  w.alive();                      //~ ErrorMove
+  let r = Rcw[mut, Pt](4);
+  let w = Weak[Pt].of(&r);
+  let w2 = w;
+  w.alive()                      //~ ErrorMove
 }
 
+// ErrorInvType on 'of(&r)' is intended, not a gap: upgrade() can make a second
+// strong owner from a weak reference, so a unique owner that stayed unique while
+// lent to 'of' would be unsound. The sanctioned path moves it into an
+// 'Rcw[mut, T]' first (packages/rcweak/tests/counts.cone, uniqueGivenUp).
 fn uniGivenUp() i64 {
-  imm r = new Rcw[Pt](5);
-  imm w = Weak[Pt].of(r);
-  r.x;                            //~ ErrorMove
+  let r = Rcw[Pt](5);
+  let w = Weak[Pt].of(&r);       //~ ErrorInvType
+  r.x
 }
 
 fn main() {

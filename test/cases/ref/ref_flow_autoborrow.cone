@@ -12,7 +12,7 @@
 // borrowTypeCheck does, and dereferencing a borrow expression yields that
 // borrow's scope, so every form below is refused with the diagnostic the
 // written borrow gets. A value receiver borrowed for a method declaring
-// 'self &' is made by borrowMutRef too, and is here for that reason.
+// 'self: &' is made by borrowMutRef too, and is here for that reason.
 //
 // Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
 // own within a function, so the stores share one function; each returning case
@@ -20,39 +20,39 @@
 
 mod ref_flow_autoborrow;
 
-fn sameSlice(s &Array[i32]) &Array[i32] { s; }
-mut @threadlocal GARR Array[i32, 2] = [1, 2];
-mut @threadlocal G i32 = 7;
+fn sameSlice(s: &Array[i32]) &Array[i32] { s }
+var @threadlocal GARR: Array[i32, 2] = [1, 2];
+var @threadlocal G: i32 = 7;
 
 struct Vec {
-  pub x i32;
-  pub fn `+=`(self &mut, n i32) &i32 { x = x + n; &self.x; }
-  pub fn `<-`(self &mut, n i32) &i32 { x = x + n; &self.x; }
+  pub x: i32;
+  pub fn `+=`(self: &mut, n: i32) &i32 { x = x + n; &self.x }
+  pub fn `<-`(self: &mut, n: i32) &i32 { x = x + n; &self.x }
 }
 struct Engine {
-  pub fuel i32;
-  pub fn cell(self &) &i32 { &self.fuel; }
+  pub fuel: i32;
+  pub fn cell(self: &) &i32 { &self.fuel }
 }
 struct Car {
-  pub engine Engine use cell;
+  pub engine: Engine use cell;
 }
 
 // Each result is kept in an outer variable past the block its source lives
 // in, and used there: the source may not end while it is still held.
 fn storesAutoBorrows() i32 {
-  imm outerArr Array[i32, 2] = [0, 0];
-  mut slice &Array[i32] = &[]outerArr;
-  mut r &i32 = &G;
-  mut seen = 0;
+  let outerArr: Array[i32, 2] = [0, 0];
+  var slice: &Array[i32] = &[]outerArr;
+  var r: &i32 = &G;
+  var seen = 0;
 
   // An array auto-borrowed to a slice argument, beside the borrow written out
   {
-    imm innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
+    let innerArr: Array[i32, 2] = [1, 2]; //~ ErrorFrozen
     slice = sameSlice(innerArr);
   }
   seen = seen + slice[0];
   {
-    imm innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
+    let innerArr: Array[i32, 2] = [1, 2]; //~ ErrorFrozen
     slice = sameSlice(&[]innerArr);
   }
   seen = seen + slice[0];
@@ -60,17 +60,17 @@ fn storesAutoBorrows() i32 {
   // The '&mut' receiver an operator method is handed: op-assign, append, and
   // append of a tuple, which borrows the receiver once into a temporary
   {
-    mut v = new Vec(0);             //~ ErrorFrozen
+    var v = Vec(0);             //~ ErrorFrozen
     r = (v += 1);
   }
   seen = seen + *r;
   {
-    mut v = new Vec(0);             //~ ErrorFrozen
+    var v = Vec(0);             //~ ErrorFrozen
     r = (v <- 1);
   }
   seen = seen + *r;
   {
-    mut v = new Vec(0);             //~ ErrorFrozen
+    var v = Vec(0);             //~ ErrorFrozen
     r = (v <- (1, 2));
   }
   seen = seen + *r;
@@ -78,26 +78,26 @@ fn storesAutoBorrows() i32 {
   // The field reborrowed for a folded method, whether the receiver is a
   // borrow expression or a variable holding one
   {
-    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    var car = Car(Engine(5)); //~ ErrorFrozen
     r = (&car).cell();
   }
   seen = seen + *r;
   {
-    mut car = new Car(new Engine(5)); //~ ErrorFrozen
-    imm c = &car;
+    var car = Car(Engine(5)); //~ ErrorFrozen
+    let c = &car;
     r = c.cell();
   }
   seen = seen + *r;
 
-  // The receiver borrowed from a value for a method declaring 'self &', on
+  // The receiver borrowed from a value for a method declaring 'self: &', on
   // a folded method and a type's own, as '(&car).cell()' written out is
   {
-    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    var car = Car(Engine(5)); //~ ErrorFrozen
     r = car.cell();
   }
   seen = seen + *r;
   {
-    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    var car = Car(Engine(5)); //~ ErrorFrozen
     r = car.engine.cell();
   }
   seen = seen + *r;
@@ -107,38 +107,38 @@ fn storesAutoBorrows() i32 {
   // global lifetime, and the result held inside the block it was borrowed
   // in is fine
   {
-    imm innerArr Array[i32, 2] = [1, 2];
-    mut car = new Car(new Engine(5));
-    imm c = &car;
+    let innerArr: Array[i32, 2] = [1, 2];
+    var car = Car(Engine(5));
+    let c = &car;
     slice = sameSlice(GARR);
-    imm kept = sameSlice(innerArr);
-    imm keptCell = c.cell();
+    let kept = sameSlice(innerArr);
+    let keptCell = c.cell();
     seen = seen + kept[0] + *keptCell;
   }
-  seen + slice[0] + *r;
+  seen + slice[0] + *r
 }
 
 // Returning the result meets returnFlowEscape, as returning the written borrow
 // would
 fn returnsAutoSlice() &Array[i32] {
-  imm a Array[i32, 2] = [1, 2];
-  sameSlice(a);                     //~ ErrorEscape:12 "Returned borrowed reference outlives the local value it points to"
+  let a: Array[i32, 2] = [1, 2];
+  sameSlice(a)                     //~ ErrorEscape:12 "Returned borrowed reference outlives the local value it points to"
 }
 fn returnsOpAssign() &i32 {
-  mut v = new Vec(0);
-  v += 1;                           //~ ErrorEscape:5 "Returned borrowed reference outlives the local value it points to"
+  var v = Vec(0);
+  v += 1                           //~ ErrorEscape:5 "Returned borrowed reference outlives the local value it points to"
 }
 fn returnsFoldedField() &i32 {
-  mut car = new Car(new Engine(5));
-  (&car).cell();                    //~ ErrorEscape:9 "Returned borrowed reference outlives the local value it points to"
+  var car = Car(Engine(5));
+  (&car).cell()                    //~ ErrorEscape:9 "Returned borrowed reference outlives the local value it points to"
 }
 fn returnsBorrowedReceiver() &i32 {
-  imm e = new Engine(5);
-  e.cell();                         //~ ErrorEscape:4 "Returned borrowed reference outlives the local value it points to"
+  let e = Engine(5);
+  e.cell()                         //~ ErrorEscape:4 "Returned borrowed reference outlives the local value it points to"
 }
 
 // The other half: a parameter's borrow reaches the folded field with the
 // parameter's scope, so the result stays returnable, and a global array's
 // auto-borrow is global
-fn returnsParameterFold(c &Car) &i32 { c.cell(); }
-fn returnsGlobalSlice() &Array[i32] { sameSlice(GARR); }
+fn returnsParameterFold(c: &Car) &i32 { c.cell() }
+fn returnsGlobalSlice() &Array[i32] { sameSlice(GARR) }

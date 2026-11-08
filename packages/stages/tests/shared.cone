@@ -1,0 +1,281 @@
+// Stages that share a ChunkPool, and a pipeline that has a pool of its own by default.
+//
+// Two pipelines run at once, each memory -> TransformStage[Deflater] -> TransformStage[Inflater] ->
+// HashStage[Sha256] -> a counting sink. Both draw ALL their buffers (the sources',
+// and each stage's output) from ONE ChunkPool of 512 KiB, with a window of 128 KiB a
+// stream: TransformStage[T](down, t, pool, window). A third pipeline, which names no
+// pool (TransformStage[T](down, t), as every caller before the pool did), has one of its
+// own. Every pipeline ends in a counting sink with a ChunkInbox; pipeline 2's AWAITS
+// now and then, so the chunks that arrive meanwhile queue (the stage's output
+// window fills, and the stage waits for chunks to come back) and the end waits
+// behind them: the bytes counted when the end is handled are all of them.
+// Checked: every pipeline's bytes arrive and its digest is the sha256 of the
+// data made in memory; the shared pool never lent more than its cap (apart from
+// the one buffer a link with nothing in flight is always lent, counted as
+// 'floored', of which each lend is at most 64 KiB); it has nothing lent at the end,
+// and neither has the buffer pool.
+
+mod shared;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import time use Duration;
+import aio;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+fn total() usize { #if #debug {2097152usize} #else {8388608usize} }
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+struct Seen {
+  pub bytes: Atomic[u64];
+  pub finished: Atomic[u64];
+  pub failed: Atomic[u64];
+  pub digests: Atomic[u64];
+  pub digestOk: Atomic[u64];
+  pub bytesAtEnd: Atomic[u64];    // bytes counted when the end was handled
+  pub queued: Atomic[u64];        // chunks that had to queue at the sink
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let seen2: Seen;
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  seen2 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else {&seen2}
+}
+
+// Counts what arrives, with a ChunkInbox. Pipeline 2's sink also AWAITS (a 1 ms
+// wait in every seventh chunk, as a write that takes a while would), so the
+// chunks that arrive meanwhile queue and the end waits behind them; the other
+// two never wait and their ChunkInbox never queues anything.
+actor Counting is ChunkSink {
+  slot: usize;
+  rx: ChunkInbox;
+  n: u64;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, rx: ChunkInbox.make(), n: 0u64, done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    rx.attach(source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    var turn = rx.arrive(c);
+    var more = true;
+    while more {
+      match turn {
+        case let Chunk(b) {
+          n = n + 1u64;
+          if slot == 2usize && n % 7u64 == 0u64 {
+            let r = await aio.sleep(Duration.fromMillis(1i64));
+          }
+          s.bytes.add(u64.from(b.len()));
+          turn = rx.finished(b);
+        }
+        case let End(how) {
+          self.over(how);
+          turn = Turn.Wait;
+          more = false;
+        }
+        case is Wait { more = false; }
+      }
+    }
+    s.queued.store(rx.waits());
+  }
+
+  pub async fn end(self, how: Ending) {
+    match rx.arriveEnd(how) {
+      case let End(h) { self.over(h); }
+      else {}
+    }
+  }
+
+  fn over(self, how: Ending) {
+    let s = seenOf(slot);
+    s.bytesAtEnd.store(s.bytes.load());
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) { s.failed.add(1u64); }
+    }
+    done.send(1u64);
+  }
+}
+
+actor Checker is DigestSink[Array[u8, 32]] {
+  slot: usize;
+  want: List[u8];
+
+  pub fn init(self: &new, slot: usize, want: List[u8]) {
+    *self = Self(slot: slot, want: want);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    let s = seenOf(slot);
+    s.digests.add(1u64);
+    match r {
+      case let Ok(d) { if &d == want.view() { s.digestOk.add(1u64); } }
+      case let Err(e) {}
+    }
+  }
+}
+
+// Sends a list of bytes in chunks of 64 KiB through a link on the pool
+actor MemorySource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  at: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], pool: ChunkPool, window: usize) {
+    *self = Self(down: down, link: ChunkWindow.make(window, pool), data: data, at: 0usize, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if at >= data.len() {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(65536usize) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
+            buf.append(&data.view()[at ..< at + n]);
+            at = at + n;
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn dup(a: &List[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len());
+  out.appendSlice(a.view());
+  out
+}
+
+fn digestOf(a: &Array[u8]) List[u8] {
+  var out = List[u8]();
+  out.appendSlice(a);
+  out
+}
+
+fn check(slot: usize, size: u64, what: &str) {
+  let s = seenOf(slot);
+  expectUInt(s.bytes.load(), size, what);
+  expectUInt(s.finished.load(), 1u64, what);
+  expectUInt(s.failed.load(), 0u64, what);
+  expectUInt(s.digests.load(), 1u64, what);
+  expectUInt(s.digestOk.load(), 1u64, what);
+  expectUInt(s.bytesAtEnd.load(), size, what);
+}
+
+fn main() i32 {
+  initAll();
+  let original = corpus(total());
+  let size = u64.from(original.len());
+  let sha256 = digestOf(&cryptohash.sha256(original.view()));
+  let pool = ChunkPool.make(524288usize);
+  let window = 131072usize;
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  {
+    // 0 and 1: memory -> deflate -> inflate -> sha256 -> count, all on one pool
+    let count0 = Counting(0usize, tx0);
+    let hash0 = HashStage[cryptohash.Sha256](count0, cryptohash.Sha256.make(), Checker(0usize, dup(&sha256)));
+    let inf0 = TransformStage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
+    let def0 = TransformStage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
+    let src0 = MemorySource(def0, dup(&original), pool, window);
+
+    let count1 = Counting(1usize, tx1);
+    let hash1 = HashStage[cryptohash.Sha256](count1, cryptohash.Sha256.make(), Checker(1usize, dup(&sha256)));
+    let inf1 = TransformStage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
+    let def1 = TransformStage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
+    let src1 = MemorySource(def1, dup(&original), pool, window);
+
+    // 2: the same, naming no pool: each stage has one of its own
+    let count2 = Counting(2usize, tx2);
+    let hash2 = HashStage[cryptohash.Sha256](count2, cryptohash.Sha256.make(), Checker(2usize, dup(&sha256)));
+    let inf2 = TransformStage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
+    let def2 = TransformStage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let src2 = MemorySource(def2, dup(&original), ChunkPool.make(262144usize), 262144usize);
+
+    src0.start();
+    src1.start();
+    src2.start();
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  finalAll();
+
+  check(0usize, size, "pipeline 0 on the shared pool");
+  check(1usize, size, "pipeline 1 on the shared pool");
+  check(2usize, size, "pipeline 2 on pools of its own, ending in a sink that awaits");
+  expect(seen2.queued.load() > 0u64, "pipeline 2: its awaiting sink queued chunks, so its end waited behind them");
+  expectUInt(seen0.queued.load(), 0u64, "pipeline 0: a sink that never awaits queues nothing");
+  expectUInt(seen1.queued.load(), 0u64, "pipeline 1: nor this one");
+  expect(pool.lends() > 0u64, "the shared pool lent the buffers");
+  expect(pool.peak() <= pool.cap() + pool.floored() * 65536usize, "it never lent past its cap, but for the buffers a link with nothing out is owed");
+  expectUInt(u64.from(pool.lent()), 0u64, "the shared pool has nothing lent at the end");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in the buffer pool");
+  done()
+}

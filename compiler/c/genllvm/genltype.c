@@ -104,8 +104,95 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
     return fn;
 }
 
+// The function that fills a slot with an 'inline' method. An inline method has no
+// symbol of its own, since each caller expands its body, but a slot holds an
+// address. So the slot gets a function of its own whose body is that expansion:
+// it takes the slot's parameters, expands the method over them as a call
+// would, and returns what the expansion gives. Like a thunk, it is a function
+// in everything but name, and generated as one nested in whatever is being
+// generated, so the generator's state for that is set aside around it.
+static LLVMValueRef genlVtableInlineFn(GenState *gen, Vtable *vtable, VtableImpl *impl, unsigned int pos,
+        FnDclNode *meth) {
+    char symbol[2048];
+    FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, pos);
+    LLVMTypeRef fntype = genlVtableSlotFnType(gen, slot);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, nameVtableThunk(symbol, impl->structdcl, vtable->trait, slot->namesym), fntype);
+    genlLinkage(fn, NULL, GenlDefined);
+    genlComdat(gen, fn);
+
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    INode *svfnblock = gen->fnblock;
+    FnDclNode *svfndcl = gen->fndcl;
+    int svexitzero = gen->exitzero;
+    uint32_t svtempbase = gen->tempbase;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
+    Nodes *svseams = gen->seams;
+    gen->seams = NULL;
+    gen->tempbase = gen->tempcnt;
+    gen->fn = fn;
+    // Not the method's own block: its returns are breaks out of the expansion
+    gen->fnblock = NULL;
+    gen->fndcl = meth;
+    gen->exitzero = 0;
+
+    if (gen->opt->debuginfo) {
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)meth);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            symbol, strlen(symbol), symbol, strlen(symbol), difile, meth->linenbr, sptype, 1, 1, meth->linenbr, 0, 0);
+        LLVMSetSubprogram(fn, sp);
+    }
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    if (gen->opt->debuginfo) {
+        unsigned col = meth->srcp && meth->linep ? (unsigned)(meth->srcp - meth->linep) : 0;
+        LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, meth->linenbr, col, LLVMGetSubprogram(fn), NULL);
+        LLVMSetCurrentDebugLocation2(gen->builder, loc);
+    }
+    gen->allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+
+    unsigned int argcnt = LLVMCountParams(fn);
+    LLVMValueRef *args = (LLVMValueRef *)memAllocBlk((argcnt ? argcnt : 1) * sizeof(LLVMValueRef));
+    for (unsigned int argi = 0; argi < argcnt; ++argi)
+        args[argi] = LLVMGetParam(fn, argi);
+    LLVMValueRef ret = genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, argcnt, args, NULL);
+    if (LLVMGetTypeKind(LLVMGetReturnType(fntype)) == LLVMVoidTypeKind)
+        LLVMBuildRetVoid(gen->builder);
+    else if (ret == NULL)
+        LLVMBuildRet(gen->builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
+    else
+        LLVMBuildRet(gen->builder, ret);
+    genlRootFrame(gen);
+
+    if (LLVMGetInstructionParent(gen->allocaPoint))
+        LLVMInstructionEraseFromParent(gen->allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->fnblock = svfnblock;
+    gen->fndcl = svfndcl;
+    gen->exitzero = svexitzero;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    gen->seams = svseams;
+    genlRootsRestore(gen, &svroots);
+    return fn;
+}
+
 // Generate a specific vtable value for some struct
-void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef vtableRef) {
+static void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef vtableRef) {
+    if (impl->llvmvtablep)
+        return;
+    // The global is published before its contents are worked out: building the
+    // type record may generate a finalizer that coerces to this same trait,
+    // and that coercion is answered with this global rather than a second one
+    char symbol[2048];
+    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
+
     // Ensure the struct has been "built", as we need to point to its fields and methods
     LLVMTypeRef structRef = genlType(gen, impl->structdcl);
 
@@ -132,7 +219,7 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
             // implementer declared later in the file has no symbol yet. Asking
             // is idempotent, so a method already declared is untouched.
             FnDclNode *meth = (FnDclNode *)*nodesp;
-            if (meth->llvmvar == NULL)
+            if (meth->llvmvar == NULL && !(meth->flags & FlagInline))
                 genlGloFnName(gen, meth);
             LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
             // A slot a folded method fills holds a thunk that shifts the
@@ -140,6 +227,8 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
             Nodes *path = impl->foldpaths ? (Nodes*)nodesGet(impl->foldpaths, pos) : NULL;
             if (path)
                 val = genlVtableThunk(gen, vtable, impl, pos, meth, path);
+            else if (meth->flags & FlagInline)
+                val = genlVtableInlineFn(gen, vtable, impl, pos, meth);
             else
                 val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
         }
@@ -155,9 +244,7 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
         : LLVMConstNull(LLVMStructGetTypeAtIndex(vtableRef, pos));
     implRef = LLVMBuildInsertValue(gen->builder, implRef, rec, pos, "vtable record");
 
-    // Create and initialize global variable to hold vtable info
-    char symbol[2048];
-    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
+    // Initialize the global variable holding vtable info
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
     // Every object that coerces this type to the trait builds this vtable, and
     // pattern matching compares its address: shared in a described build, so
@@ -233,11 +320,84 @@ LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth) {
     return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 }
 
-// Generate a vtable type
+// How deeply type generation is nested (genlType)
+static uint32_t genlTypeDepth = 0;
+// The vtables whose implementers' globals wait for the outermost type (genlVtable)
+static Nodes *genlVtablesLater = NULL;
+
+// Build the globals that implement a vtable: one per implementer, and the list
+// of them. Each measures its implementer: the field offsets it holds, and the
+// size and alignment in the implementer's type record.
+static void genlVtableImpls(GenState *gen, Vtable *vtable) {
+    if (vtable->llvmvtables)
+        return;
+    LLVMTypeRef vtableRef = vtable->llvmvtable;
+    LLVMValueRef *vtables = (LLVMValueRef *)memAllocBlk(vtable->impl->used * sizeof(LLVMValueRef *));
+    LLVMValueRef *vtablesp = vtables;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(vtable->impl, cnt, nodesp)) {
+        genlVtableImpl(gen, vtable, (VtableImpl*)*nodesp, vtableRef);
+        *vtablesp++ = ((VtableImpl*)*nodesp)->llvmvtablep;
+    }
+    // An implementer's type record may have built the list already, through a
+    // finalizer that needed this vtable whole
+    if (vtable->llvmvtables)
+        return;
+    LLVMValueRef vtablelist = LLVMConstArray(LLVMPointerType(vtableRef, 0), vtables, vtable->impl->used);
+    char listsymbol[2048];
+    vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), nameVtableList(listsymbol, vtable->trait));
+    LLVMSetGlobalConstant(vtable->llvmvtables, 1);
+    // The list holds the implementers this compile saw, so it is one per
+    // compilation unit and internal in a package compile too
+    genlLinkage(vtable->llvmvtables, NULL, GenlDefined);
+    genlComdat(gen, vtable->llvmvtables);
+    LLVMSetInitializer(vtable->llvmvtables, vtablelist);
+}
+
+static void genlVtableType(GenState *gen, Vtable *vtable);
+
+// Generate a vtable: its type, the virtual reference's, and the globals of its
+// implementers. Asked again, it finishes whatever is not yet built.
+//
+// The globals wait while a type is being generated. A trait is reached from the
+// middle of a struct's fields when the struct holds a virtual reference, and the
+// struct may be one of the trait's own implementers ('struct One is Show {first:
+// Uni[Show]}'), whose LLVM body is still unset there. Measured then it has size
+// 0, and LLVM keeps that layout for the struct for good: every later allocation
+// of it is too small. So genlType builds them once its outermost type is done.
 void genlVtable(GenState *gen, Vtable *vtable) {
+    if (vtable->llvmvtable == NULL)
+        genlVtableType(gen, vtable);
+    if (vtable->llvmvtables)
+        return;
+    if (genlTypeDepth > 0) {
+        if (genlVtablesLater == NULL)
+            genlVtablesLater = newNodes(8);
+        nodesAdd(&genlVtablesLater, (INode*)vtable);
+    }
+    else
+        genlVtableImpls(gen, vtable);
+}
+
+// Build the vtables whose globals waited for type generation to finish. One
+// built here may generate types, which queue further vtables onto this list.
+static void genlVtablesNow(GenState *gen) {
+    static int draining = 0;
+    if (draining || genlVtablesLater == NULL)
+        return;
+    draining = 1;
+    for (uint32_t i = 0; i < genlVtablesLater->used; ++i)
+        genlVtableImpls(gen, (Vtable*)nodesGet(genlVtablesLater, i));
+    genlVtablesLater->used = 0;
+    draining = 0;
+}
+
+// Generate a vtable type and the virtual reference's
+static void genlVtableType(GenState *gen, Vtable *vtable) {
     // Name the vtable and the virtual reference type, and publish both, before
     // any slot is typed. A slot's type comes from its method's signature, which
-    // may name a virtual reference to this same trait ('fn cmp(self &, o &<Self)'),
+    // may name a virtual reference to this same trait ('fn cmp(self: &, o: &<Self)'),
     // and that is the type being built here. Published, it is answered with a
     // named struct whose body is filled in below, as a struct that points to
     // itself is; unpublished, it would start this vtable again without end.
@@ -278,24 +438,6 @@ void genlVtable(GenState *gen, Vtable *vtable) {
 
     // Fill in the vtable type's body
     LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
-
-    // Build all the vtable globals that implement the vtable
-    // as well as an array pointing to all these vtables
-    LLVMValueRef *vtables = (LLVMValueRef *)memAllocBlk(vtable->impl->used * sizeof(LLVMValueRef *));
-    LLVMValueRef *vtablesp = vtables;
-    for (nodesFor(vtable->impl, cnt, nodesp)) {
-        genlVtableImpl(gen, vtable, (VtableImpl*)*nodesp, vtableRef);
-        *vtablesp++ = ((VtableImpl*)*nodesp)->llvmvtablep;
-    }
-    LLVMValueRef vtablelist = LLVMConstArray(LLVMPointerType(vtableRef, 0), vtables, vtable->impl->used);
-    char listsymbol[2048];
-    vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), nameVtableList(listsymbol, vtable->trait));
-    LLVMSetGlobalConstant(vtable->llvmvtables, 1);
-    // The list holds the implementers this compile saw, so it is one per
-    // compilation unit and internal in a package compile too
-    genlLinkage(vtable->llvmvtables, NULL, GenlDefined);
-    genlComdat(gen, vtable->llvmvtables);
-    LLVMSetInitializer(vtable->llvmvtables, vtablelist);
 }
 
 // Generate the fields for a struct and optionally add padding bytes
@@ -610,9 +752,8 @@ LLVMTypeRef genlEmptyStruct(GenState* gen) {
     return structype;
 }
 
-// How deeply type generation is nested, and the pointees it reached, which
-// genlType generates when the outermost type is done
-static uint32_t genlTypeDepth = 0;
+// The pointees type generation reached, which genlType generates when the
+// outermost type is done
 static Nodes *genlPointees = NULL;
 
 static void genlPointeeLater(INode *pointee) {
@@ -765,6 +906,12 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return LLVMStructTypeInContext(gen->context, typerefs, propcount, 0);
     }
 
+    // A vector is LLVM's <N x T>. Its size and alignment are LLVM's: a vector
+    // is aligned as its whole is (16 bytes for four floats), and one whose
+    // lane count is not a power of two is padded up (three floats take 16)
+    case VectorTag:
+        return LLVMVectorType(genlType(gen, vectorElemType(typ)), (unsigned)vectorLanes(typ));
+
     // Build out (potentially) multi-dimensional array type
     case ArrayTag:
     {
@@ -818,7 +965,7 @@ static LLVMTypeRef genlTypeNow(GenState *gen, INode *typ) {
 //
 // A pointer's pointee is generated once the outermost type asked for is done,
 // not in the middle of it. Generated there, a type that reaches itself through a
-// reference -- A holds 'So[AState]', AState holds 'Option[A]' -- would reach
+// reference -- A holds 'Uni[AState]', AState holds 'Option[A]' -- would reach
 // A's struct while its body is still empty, and the enum sized there would
 // measure its variant holding A as holding nothing. Every pointee is still
 // generated before this returns to anything but type generation, which is what
@@ -833,7 +980,10 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
             genlTypeNow(gen, nodesGet(genlPointees, i));
         genlPointees->used = 0;
     }
-    --genlTypeDepth;
+    // Then the vtables, which measure their implementers (genlVtable): every
+    // struct body is filled in by now
+    if (--genlTypeDepth == 0)
+        genlVtablesNow(gen);
     return typeref;
 }
 

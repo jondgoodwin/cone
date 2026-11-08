@@ -45,4 +45,26 @@ int contentsIsAppend(FnCallNode *node);
 // Lower such a '<-' into the appends it stands for, and type check them
 void contentsLower(TypeCheckState *pstate, FnCallNode **nodep);
 
+// Lower a '<-' of a list to a text receiver (a TextOut, a type with 'record' or
+// 'textOut') into sends of its pieces: 1 when it replaced the send, 0 when
+// the send is not a text list's
+int textSendLower(TypeCheckState *pstate, FnCallNode **nodep);
+
+// A single piece that none of a text receiver's '<-' took, 'recv <- piece', is
+// rewritten in place to 'piece.toText(&uni writer)', the writer the receiver is,
+// lends or makes. 1 when it rewrote the call (or reported that the piece has no
+// toText), 0 when the receiver is not a text receiver
+int textValueFallback(TypeCheckState *pstate, FnCallNode *callnode);
+int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv);
+
+// The same for a receiver whose type declares core's DebugText and a piece that is
+// not a literal: 'piece.toDebug(&uni writer)', before any '<-' is tried (a literal
+// text is never quoted; a value takes the sink's form). 0 when the receiver is not
+// such a sink or the piece is a literal; 2 when the piece's toDebug is one the
+// compiler writes (debugfn.c), whose writer is then left unchecked for that call
+int textSendDebug(TypeCheckState *pstate, FnCallNode *callnode, INode *recv);
+
+// Is this type (a method's declared 'self') a text receiver, or a borrow of one?
+int textIsReceiver(INode *type);
+
 #endif

@@ -7,12 +7,14 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `MulFoldIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `ClampIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
-| Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
+| Reference page | none: the number and pointer methods | `doc/manual/safe-intrinsics.html` |
 
 The kinds built in C are left as they are until the number types are rebuilt
-over generics; nothing new is to be added to them. **A new intrinsic is declared
+over generics; nothing new is to be added to them. The one exception is the
+`Vec*` kinds (`VecSum` … `VecAll`, with `VecLoad` and `VecStore`, which take a slice), built in C because `Vector` has no Cone
+declaration to hang a declared intrinsic on (`vector.md`). **A new intrinsic is declared
 in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`**
 — or, for one whose meaning depends on its call as well as its instance, as the
 atomic operations' orderings do, in `genlAtomicIntrinsic`, which `genlFnCall`
@@ -31,6 +33,32 @@ cannot yet add a method to a number type; they keep the lowering under
 `--intrinsic-fallback`, which is what lets `intrinsic_bits` check each fallback
 body against it in one run.
 
+**A number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`, `round` and `fma` are declared the
+same way and are methods the same way.** They are in core's `mem`, in the registry (with
+classes `ClassSigned | ClassFloat` for `abs`, `ClassInt | ClassFloat` for `min`, `max` and
+`clamp`, `ClassFloat` for the rest) and have one arm each in `genlDeclaredIntrinsic`,
+which all go to `genlNumberIntrinsic`. `nbrMathMethods` (`corenumber.c`) gives every
+number type the ones that apply to it (no `abs` on an unsigned integer, no rounding or
+`fma` on an integer), the node's `typearg` the type; `vectorMethods` (`vector.c`,
+`vecAddLanewise`) gives a vector the same kinds with the *vector type* as the `typearg`.
+So one lowering serves a scalar and a vector: `genlNumberIntrinsic` reads the lane type
+from the Cone type (the element type of a vector, else the type itself), and LLVM's
+`llvm.fabs`, `llvm.abs`, `llvm.minimum`, `llvm.smin`, `llvm.floor`, `llvm.fma` and the
+rest are overloaded on a whole vector as on a number. This is the house rule kept: the
+meaning is the Cone type's, never an LLVM type kind. They carry no fallback body (the
+registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them. A
+type outside the class is refused for `mem.abs[T]` and the rest by `intrinsicClassCheck`
+as for the bit operations; a method asked of a type that lacks it is `ErrorNoMbr`.
+
+**A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`
+(`corenumber.c`) declares both on `bool` alone, valued `LogicAndIntrinsic` and
+`LogicOrIntrinsic` (kinds built in C, below `FirstDeclaredIntrinsic`). They are never
+generated and never called: `fnCallLogicMethod` finds them on the left operand's type and
+leaves the `LogicNode` as it is, whose code the operators have always been, so narrowing,
+folding and generation do not change. They exist so that the operators are methods of the
+left operand's type for every type, bool's included. ⚑ They move to the library, as macros
+like Option's and Result's, when the number types' operators do.
+
 **An integer's and bool's `hash` is a method with no function behind it.**
 `nbrAddHashMethods` (`corenumber.c`), called when name resolution reaches core's
 `Hasher`, gives `bool` and every integer type `hash(self, h &mut Hasher)`, the
@@ -42,6 +70,19 @@ the Hasher's own `writeU64` of the value converted to a `u64`
 reaches something for a `K` that is a number; the grant that makes `u32 is Hash`
 true is in `genericTypeIs` ([generic](generic.md), "Constraints").
 
+**A number's, bool's and char's 	oText is a method with no function behind it,
+too.** 
+brAddTextMethods (corenumber.c), called when name resolution reaches
+core's TextOut, gives ool, char and every number type
+	oText(self, out &uni TextOut), whose value is a TextNbrIntrinsic node. It is
+never generated: type check, once the method is selected, rewrites the call to the
+TextOut method that writes that kind of value, putI64 or putU64 of the value
+converted, putF64, putF32, putBool or putChar (nCallTextNumber; a borrow
+of the number is read through first). It exists so that x.toText(out), which the
+compiler writes for every value sent as text (	extSendFallback, contents.c) and
+which a generic function or a type's own 	oText may write, reaches something for
+a number.
+
 *Provenance: read from source and measured, September 2026.*
 
 ## Principles — [derived]
@@ -49,12 +90,13 @@ true is in `genericTypeIs` ([generic](generic.md), "Constraints").
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
 over the one type parameter `T` (or over none: `traceRoots`, `srcFile`,
-`srcLine`, `isDebugBuild` and the provisional constants of the build beside it are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
+`srcLine` are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
 atomic operations take an integer of 8 to 64 bits, `bool` or a raw pointer, or
-part of that, and an integer's bit operations an integer). No LLVM name appears in
+part of that, an integer's bit operations an integer, and a number's math a float,
+a signed integer or an integer as each says). No LLVM name appears in
 it. ▸ **Forbids** passing an LLVM intrinsic name through (`@intrinsic("llvm.…")`)
 and deciding a new intrinsic's meaning from an LLVM type: the LLVM instructions
 in `genlDeclaredIntrinsic` are one implementation of the entry, which a native
@@ -134,7 +176,7 @@ type while each call gives its own orderings.
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. A call of
-   `writeRaw` or `moveRaw` is also noted, where it is made (`regionTracedRawCall`,
+   `writeRaw`, `moveRaw` or `moveRawInto` is also noted, where it is made (`regionTracedRawCall`,
    from `fnCallFinalizeArgs`), for the rule that no traced reference is placed in
    raw memory unless the method making the call belongs to a type declaring `GcTraceElements`
    (`ErrorTracedRaw`), judged once type check has finished and reported at the
@@ -151,7 +193,10 @@ type while each call gives its own orderings.
    stronger than its success ordering. Every call to a function carrying
    `DclIntrinsic` is asked, lowered or not.
 6. **Flow** sees an ordinary call: an argument passed by value is moved into it,
-   as `writeRaw`'s value is.
+   as `writeRaw`'s value is. A fallback body is walked as any function's, but
+   its walk lets a move out through a raw pointer through (`FlowState.intrinsic`):
+   `readRaw`'s `{*p}` is the one place a value is moved out of raw memory, which
+   is refused anywhere else (`ErrorMoveRawPtr`).
 7. **Generation** (`genlDeclaredIntrinsic`), dispatched by kind before the C-built
    kinds' LLVM-type switch. An atomic operation is caught earlier, in
    `genlFnCall` (`intrinsicAtomicCallee`), where the call's arguments are still
@@ -169,10 +214,12 @@ type while each call gives its own orderings.
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
-| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
+| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
-| `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `new T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
-| `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
+| `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
+| `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes; no write barrier, for moves inside one container |
+| `moveRawInto[T]` | operation | the same `LLVMBuildMemMove`, then, only where `itypeHoldsBarriered(T)`, a loop over `count` calling `genlBarrierAt` on each value now at `to`; for any other `T` it is `moveRaw` exactly. For moves from one container into another (`appendList`, `appendSlice`, the piece join) |
+| `forget[T]` | expansion | nothing: the value is moved into the call, which has no body to finalize it; no code |
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
 | `trace[T]` | expansion | `genlTraceAt`: each traced reference the value holds, loaded and, where not null, handed to its region's `mark` with its permission and `mode` where `mark` takes them |
@@ -183,27 +230,20 @@ type while each call gives its own orderings.
 | `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple. On a GPU target each atomic is settled after the pipeline, its scope its memory's, and a `cmpxchg` made LLVM's `llvm.spv.cmpxchg` ([Generation](../phases/generation.md), "What invocations share") |
 | `workgroupBarrier`, `storageBarrier` | operation | on a GPU target a call to `llvm.spv.group.memory.barrier.with.group.sync` or `llvm.spv.device.memory.barrier.with.group.sync` (`genlGpuBarrier`); on a native target a load of conestd's thread-local `cone_barrierHook` and, where it is not null, a call of it with `cone_barrierCtx` and the kind, 0 or 1 (`genlCpuBarrier`; [Generation](../phases/generation.md), "Barriers on the CPU"); on WebAssembly nothing. Declared at core's top level with an empty fallback body, beside `setBarrierHook` and `clearBarrierHook`, which are conestd's |
 | `srcFile`, `srcLine` | expansion | constants of where the call is, the source file's name without its folders, as `&str` (`ShapeStr`; a private constant, one per file per module, laid out as the slice it shares a layout with) and the line, `genlFnCall`. Declared at core's top level rather than in `mem`. Each may be a parameter's default value, the one default that is not a literal (`varDclTypeCheck`); a `srcFile()` default under the cast that makes the text the `&Array[u8]` a parameter declares counts as one (`intrinsicIsSrcDefault`). `fnCallFinalizeArgs` appends a copy placed at the call taking the default (`intrinsicSrcCallAt`, which copies that cast too), so each call answers its own place. Written in a macro's body, each answers where the macro is used: `macroExpand` sets `CloneState.srcsite` to the outermost use (`macroSrcSite`), and `cloneFnCallNode` places a call to either there, while an argument keeps its own place ([generic](generic.md), "Macros") |
-| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), answered in `genlFnCall` by `intrinsicBuildConst` before any argument is generated. A constant of the build, not of a type: `genlIf` generates only the side of an `if` on it that the build takes (below). Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
-| `isWindows`, `isLinux`, `isMacOS`, `isWasm` | constant | TEMPORARY, a provisional mechanism whose final design is open. An `i1` read from `opt->triple` (filled in with the host's by `genlCreateMachine` before parse): `windows` or `win32`, `linux`, `darwin` or `macos` in it, or a `wasm` architecture. Answered and branched on as `isDebugBuild` is |
-| `isDefined(name)`, `definedInt(name)` | constant | TEMPORARY, as above. Whether `-D` defined `name`, an `i1`, and its integer, an `i64`, 0 when it was not (`opt->defines`, parsed by `coneOptDefine`). `name` must be a string literal under its borrow and coercion (`intrinsicCallCheck`, `ErrorDefineName`); the literal is read, never generated |
 | `countOnes[T]`, `leadingZeros[T]`, `trailingZeros[T]` | operation | `llvm.ctpop`, and `llvm.ctlz` and `llvm.cttz` told 0 is not poison (`is_zero_poison` false), so 0 counts as the width; the count resized to an `i32`, `genlBitIntrinsic`. `T` an integer of 8 to 64 bits (`ClassInt`) |
 | `rotateLeft[T]`, `rotateRight[T]` | operation | `llvm.fshl` and `llvm.fshr` with `x` as both halves, the `u32` amount resized to `T`; the funnel shifts take it modulo the width themselves |
 | `shlMasked[T]`, `shrMasked[T]` | operation | the amount resized to `T` and anded with width - 1 (the width a power of two, so that is modulo the width), then `shl`, or `ashr` for a signed `T` and `lshr` for an unsigned one |
+| `abs[T]` | operation | a float's `llvm.fabs`; an integer's `llvm.abs` with `is_int_min_poison` false, so the smallest value wraps to itself as `-x` does. `T` a signed integer of 8 to 64 bits or a float (`ClassSigned \| ClassFloat`); `genlNumberIntrinsic` |
+| `min[T]`, `max[T]` | operation | a float's `llvm.minimum` and `llvm.maximum` (a NaN in either gives a NaN, and `-0.0` is below `0.0`, as the vector reductions `fminimum` and `fmaximum` are), an integer's `llvm.smin`/`smax` or `llvm.umin`/`umax` by signedness. `T` an integer or a float |
+| `clamp[T]` | operation | `max(x, lo)` then `min(_, hi)`, each as `min` and `max` above, so a NaN in any of the three gives a NaN and `lo > hi` gives `hi`. `T` an integer or a float. A kernel's float `min`, `max` and `clamp` keep SPIR-V's `NMin` and `NMax`, a stated exception to the NaN answer (generation.md, the SPIR-V section) |
+| `floor[T]`, `ceil[T]`, `round[T]`, `fma[T]` | operation | `llvm.floor`, `llvm.ceil`, `llvm.round` (half away from zero, never `roundeven`) and `llvm.fma`. `T` a float (`ClassFloat`) |
 | `mulFold` | operation | both `u64`s zero-extended to `i128`, one `mul`, the product's high half `lshr` 64, and the two halves `trunc`ated and xored (`genlDeclaredIntrinsic`): one multiply on a 64-bit target. Declared in `mem` with a fallback body that forms the product from 32-bit halves, which `intrinsic_mulfold` checks against the lowering. The mixing step of core's `Hasher` ([struct](struct.md), "Hash") |
 
-**Constants of the build drop the untaken side at generation.**
-`intrinsicBuildConst` answers whether a node is one of the constants above, or
-`!`, `and` or `or` of them, and its value. `genlIf` asks it of each condition:
-a false one's block is not generated at all, and a true one's is generated as
-an `else` would be, with nothing after it. So no call on the untaken side, and
-no reference to its symbol, reaches the object, in a debug build as in a
-release one: a call to an `extern` only another platform defines links. Name
-resolution, type check and flow analysis still see both sides, so every name on
-either side must resolve on every target. Generic instances and functions
-reached only from the untaken side are generated and then dropped with the
-rest of what no live symbol reaches ([Generation](../phases/generation.md),
-"Only what live code reaches is emitted"), so a helper holding another
-platform's calls links as the calls themselves do.
+**Facts of the build are not intrinsics.** `isDebugBuild`, `isWindows`,
+`isLinux`, `isMacOS`, `isWasm`, `isDefined` and `definedInt`, and
+`intrinsicBuildConst` with them, are gone; the parser reads `#os`, `#arch`,
+`#debug`, `#defined` and `#define` in an `#if` (`parser/parsemeta.c`) and drops
+the untaken branches, so generation has no build-constant path.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
@@ -224,7 +264,7 @@ builds. The record's finalizer is `finalize`'s expansion made a function of
 its own, and its trace `trace`'s; what the record holds, and why each slot is
 never null, is
 [Generation](../phases/generation.md), "The allocation header". The same record
-is what a region whose `alloc` takes `ty *TypeRecord` is handed
+is what a region whose `alloc` takes `ty: *TypeRecord` is handed
 ([What a region is](module.md)). Accepting core's `typeRecord` declaration
 also remembers the struct its result points at (`typeRecordStruct`), which is
 how generation builds a root map's records, where no declaration names the
@@ -236,7 +276,10 @@ comparison of two slices compares their elements"). Its body is its
 implementation, compiled as any generic function's, and it has no registry
 entry; the compiler knows it the way it knows `TypeRecord`, by its name and its
 package, and `sliceEqDclNameRes` holds the declaration to that one signature
-(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`).
+(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`). So are
+`tupleEq2[A, B]`, `tupleEq3` and `tupleEq4`, what `==` on two tuples calls
+([fncall](fncall.md), "A comparison of two tuples compares their elements"):
+`tupleEqDclNameRes` remembers each generic declaration with a body (`tupleEqFn`).
 
 ## Hazards
 
@@ -277,6 +320,9 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded`; `fncall.c` `fnCallFinalizeArgs` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
 | generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlBitIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
+| a number's math methods | `corenumber.c` `nbrMathMethods`; a vector's, `vector.c` `vecAddLanewise`; `genlexpr.c` `genlNumberIntrinsic` |
 | an integer's bit methods | `corenumber.c` `nbrBitMethods`; its `hash`, `nbrAddHashMethods` and `fncall.c` `fnCallHashNumber` |
+| a number's `toText` | `corenumber.c` `nbrAddTextMethods` and `fncall.c` `fnCallTextNumber` |
+| a float's encoding (`bits`, `exponent`, `mantissa`, `signBit`, and the static `f32.fromBits`) | `corenumber.c` `nbrFloatBitMethods` (kinds `FloatBitsIntrinsic` to `FloatSignBitIntrinsic`, built in C, no registry entry, no Cone declaration since the integer type follows the width); `genlexpr.c` `genlFloatBits`; the static path `fncall.c` `fnCallNumberStatic`. The `fromBits` declaration is marked `TypeChecked` because a call by name demands the declaration's check and a number type has no struct or module to check it under |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |

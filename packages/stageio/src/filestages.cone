@@ -1,0 +1,316 @@
+// ======== Layer 3, the file end: FileSink writes a stream to a file, FileSource reads a file into one ========
+//
+// Two actors over package aio's File, each a stage's end of a pipeline:
+//
+//   FileSink(name, done)      a ChunkSink: the file 'name' is created (or emptied) when the first chunk
+//                             arrives, and each chunk is written after the one before it. 'done' is told
+//                             once how it went: Ok(bytes written), or Err(why) if the stream failed, was
+//                             cancelled, or the file could not be opened or written
+//   FileSource(down, name)    a ChunkSource: 'start()' opens the file 'name' and reads it through, 64 KiB at
+//                             a time, into a window of 256 KiB (linkWindow, linkBytes); the stream ends
+//                             Finished at the end of the file, or Failed if it cannot be opened or read
+//
+//   var tx: OneshotSender[Result[u64, AnyError]];
+//   var rx: OneshotReceiver[Result[u64, AnyError]];
+//   tx, rx = Oneshot[Result[u64, AnyError]].make();
+//   let sink = FileSink(String.from("out.bin"), tx);
+//   let inf  = TransformStage[deflate.Inflater](sink, deflate.Inflater.make(deflate.Format.Gzip));
+//   let src  = FileSource(inf, String.from("in.gz"));
+//   src.start();
+//   rx.recv();                      // Some(Ok(n)): n inflated bytes are in out.bin
+//
+// FileSink awaits inside 'accept', so it keeps a ChunkInbox: chunks are written in the order sent, and a
+// chunk goes back to the source only once it is written. A write takes the buffer it is given, so each
+// chunk is copied once into a buffer for the write (the chunk itself goes back after). An empty stream
+// leaves an empty file.
+//
+// WHEN IT FAILS. A file that cannot be opened or written ends the sink's stream: the chunk in hand and
+// each chunk queued go back to the source, chunks that still arrive go back unhandled, the file is closed,
+// and 'done' gets the error. The source is told to stop (ChunkSource.stop, with the error as text), once, so
+// the work feeding the sink ends at once; buffers still lent keep arriving and go back unhandled, and the
+// sink lets go of the source at the source's end.
+//
+// CANCELLATION. Both work in the cancel group of the message they handle, as a stage does. A FileSink that
+// finds its group cancelled stops as it would for a failed write ('done' gets "streams: cancelled"); a
+// FileSource that finds it cancelled (on a buffer given back) ends its stream Failed and closes the file.
+// A partly written file is left as it is.
+
+// An error's text as an error of its own (an AnyError cannot be copied)
+fn textOf(e: &AnyError) AnyError {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  AnyError.msg(text.view())
+}
+
+// Writes the chunks to a file in the order they arrive
+pub actor FileSink is ChunkSink {
+  rx: ChunkInbox;
+  name: String;
+  file: File;
+  opened: bool;
+  at: u64;
+  reported: bool;
+  done: OneshotSender[Result[u64, AnyError]];
+  up: Option[ChunkSource];      // a second handle, to stop the source on a failure; let go at the source's end
+
+  pub fn init(self: &new, name: String, done: OneshotSender[Result[u64, AnyError]]) {
+    *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, at: 0u64,
+      reported: false, done: done, up: None[ChunkSource]);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source.clone());
+    rx.attach(source);
+  }
+
+  // The sink failed: the source is told to stop (ChunkSource.stop) with the error as text, since
+  // 'done' takes the error itself. Buffers still lent come back through 'accept' and go back unhandled.
+  fn stopUp(self, reason: AnyError) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Failed(reason)); }
+      case is None {}
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    var turn = rx.arrive(c);
+    var more = true;
+    while more {
+      match turn {
+        case let Chunk(b) {
+          var good = true;
+          var why = None[AnyError];
+          if actors.isCancelled() {
+            good = false;
+            why = Some[AnyError](AnyError.msg("streams: cancelled"));
+          }
+          if good && !opened {
+            opened = true;
+            let r = await aio.openFile(&Path.from(name.view()), Access.Create);
+            match r {
+              case let Ok(f) { file = f; }
+              case let Err(e) { good = false; why = Some[AnyError](AnyError.from(e)); }
+            }
+          }
+          var cur = b;
+          if good && cur.len() > 0usize {
+            // the write takes the chunk itself, no copy, and answers with it: it goes back to the
+            // source when the write is done. A failed write loses the buffer, so the source's
+            // credit is given back with an empty one of the same capacity. It must be the same:
+            // ChunkWindow.give subtracts the buffer's capacity from what the link lent, and
+            // panics on a capacity above 'held'. The lost block is already home in the pool
+            // (the failed answer dropped it before it reached here), so IoBuf(cap) is served
+            // from it; it can fail only if the OS refuses memory for a class the pool has none of
+            let n = cur.len();
+            let cap = cur.capacity();
+            let w = await file.writeAt(at, cur);
+            match w {
+              case let Ok(back) { cur = back; at = at + u64.from(n); }
+              case let Err(e) { cur = IoBuf(cap); good = false; why = Some[AnyError](AnyError.from(e)); }
+            }
+          }
+          if good {
+            turn = rx.finished(cur);
+          } else {
+            rx.fail(cur);
+            self.shut();
+            var reason = AnyError.msg("streams: the file sink failed");
+            match &why {
+              case let &Some(e) { reason = textOf(e); }
+              case is None {}
+            }
+            self.stopUp(reason);
+            self.fault(why);
+            turn = Turn.Wait;
+            more = false;
+          }
+        }
+        case let End(how) {
+          self.over(how);
+          turn = Turn.Wait;
+          more = false;
+        }
+        case is Wait { more = false; }
+      }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    match rx.arriveEnd(how) {
+      case let End(h) {
+        // an empty stream that finished still leaves its file
+        var why = None[AnyError];
+        var ended = false;
+        match &h {
+          case is Finished { ended = true; }
+          else {}
+        }
+        if ended && !opened && !actors.isCancelled() {
+          opened = true;
+          let r = await aio.openFile(&Path.from(name.view()), Access.Create);
+          match r {
+            case let Ok(f) { file = f; }
+            case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
+          }
+        }
+        match why {
+          case let Some(e) { self.report(Err[u64, AnyError](e)); }
+          case is None { self.over(h); }
+        }
+      }
+      else {}
+    }
+  }
+
+  // The file is closed: its handle goes to a local, which is dropped at once
+  fn shut(self) {
+    var old = File.none();
+    old <-> file;
+  }
+
+  // The stream's end, handled: the file is closed and 'done' told
+  fn over(self, how: Ending) {
+    self.shut();
+    match how {
+      case is Finished { self.report(Ok[u64, AnyError](at)); }
+      case let Failed(e) { self.report(Err[u64, AnyError](e)); }
+    }
+  }
+
+  fn fault(self, why: Option[AnyError]) {
+    match why {
+      case let Some(e) { self.report(Err[u64, AnyError](e)); }
+      case is None { self.report(Err[u64, AnyError](AnyError.msg("streams: the file sink failed"))); }
+    }
+  }
+
+  // The one answer to 'done'
+  fn report(self, r: Result[u64, AnyError]) {
+    if reported { return; }
+    reported = true;
+    done.send(r);
+  }
+}
+
+// Reads a file through aio, 64 KiB at a time, into a window of 256 KiB
+pub actor FileSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  name: String;
+  file: File;
+  at: u64;
+  pumping: bool;
+  over: bool;
+  halt: bool;                   // cancelled or stopped while a read was in flight
+  why: Option[Ending];          // the stop's reason, kept for the end when a read was in flight
+
+  pub fn init(self: &new, down: ChunkSink, name: String) {
+    *self = Self(down: down, link: ChunkWindow.own(linkWindow), name: name, file: File.none(),
+      at: 0u64, pumping: false, over: false, halt: false, why: None[Ending]);
+    down.attach(selfactor);
+  }
+
+  // Opens the file and reads it through
+  pub async fn start(self) {
+    let r = await aio.openFile(&Path.from(name.view()), Access.Read);
+    match r {
+      case let Ok(f) {
+        file = f;
+        selfactor.pump();
+      }
+      case let Err(e) {
+        over = true;
+        down.end(Ending.Failed(AnyError.from(e)));
+      }
+    }
+  }
+
+  // Reads while there is a buffer to read into
+  pub async fn pump(self) {
+    if pumping || over { return; }
+    pumping = true;
+    var more = true;
+    while more {
+      if halt || actors.isCancelled() {
+        self.finishHalted();
+        more = false;
+      } else {
+        match link.take(linkBytes) {
+          case is None { more = false; }
+          case let Some(b) {
+            let r = await file.readAt(at, b);
+            match r {
+              case let Ok(buf) {
+                if halt {
+                  link.give(buf);
+                  self.finishHalted();
+                  more = false;
+                } else if buf.isEmpty() {
+                  link.give(buf);
+                  self.finish(Ending.Finished);
+                  more = false;
+                } else {
+                  at = at + u64.from(buf.len());
+                  down <- buf;
+                }
+              }
+              case let Err(e) {
+                self.finish(Ending.Failed(AnyError.from(e)));
+                more = false;
+              }
+            }
+          }
+        }
+      }
+    }
+    pumping = false;
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if over { return; }
+    if actors.isCancelled() {
+      // a read in flight is let finish: the pump sees 'halt' when it resumes
+      if pumping { halt = true; } else { self.finishHalted(); }
+    } else if !pumping {
+      selfactor.pump();
+    }
+  }
+
+  // The consumer wants no more (ChunkSource.stop): a read in flight finishes and
+  // then the file is closed and the sink gets its one end, Failed(why). After the
+  // end, or a second stop, nothing happens. Buffers still out come back through giveBack.
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    if pumping {
+      halt = true;
+      why = Some[Ending](reason);
+    } else {
+      self.finish(reason);
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
+  // The stream is over: the file is closed and the sink told
+  fn finish(self, how: Ending) {
+    over = true;
+    var old = File.none();
+    old <-> file;
+    down.end(how);
+  }
+}

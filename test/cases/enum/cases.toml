@@ -73,7 +73,7 @@
 #
 # Left out, with reasons:
 #
-# - The match patterns refmatch.html still marks as not implemented: partial and
+# - The match patterns guide-conditionals.html still marks as not implemented: partial and
 #   first-class patterns. A condition as a pattern ('not b', 'n > 3') is refused,
 #   and enum_parse_patterns holds its refusal.
 
@@ -83,7 +83,7 @@ support = []
 
 [scenario.enum_success]
 category = "run"
-description = "Enum declaration in both forms, variant construction, common members, a generic enum's static function, equivalence, every form of match built -- a value alone (a literal, a constant, a bool, a field, a string against a slice, a variant named bare), comparison, range and 'or' patterns and 'if' guards among them -- a variant named through its enum or folded in with 'use', a variant bare in a pattern, looked up in the matched value's enum, and every name of an enum bare inside its braces, a variant's body included -- a generic enum's variant and an extension's copy among them, and a generic enum's own name and its variants' names meaning this instance's"
+description = "Enum declaration in both forms, variant construction, common members, a generic enum's static function, equivalence, every form of match built -- a value alone (a literal, a constant, a bool, a field, a string against a slice, a variant named bare), comparison, range and '|' patterns and 'if' guards among them -- a variant named through its enum or folded in with 'use', a variant bare in a pattern, looked up in the matched value's enum, and every name of an enum bare inside its braces, a variant's body included -- a generic enum's variant and an extension's copy among them, and a generic enum's own name and its variants' names meaning this instance's"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # Debug too: a variant literal passed by value is built in a temporary, and
@@ -223,7 +223,7 @@ excludes = ["%Tok =", "%Word =", "%Nums =", "%Have =", "%Held =", "%Has ="]
 # read back through them is what the short layout corrupted.
 [scenario.enum_layout_cycle]
 category = "run"
-description = "An enum instance laid out whole when its variant holds a struct reaching the enum back through an owning reference: Option[A], A holding 'So[AState]', AState holding Option[A]"
+description = "An enum instance laid out whole when its variant holds a struct reaching the enum back through an owning reference: Option[A], A holding 'Uni[AState]', AState holding Option[A]"
 tags = ["genllvm", "runtime"]
 
 # An enum's payload is laid out in the scalars its variants agree on, bytes where
@@ -351,6 +351,11 @@ contains = [
 ]
 excludes = ["3GenlEu11_drop", "6OptionR0"]
 
+[scenario.enum_match_move_assign]
+category = "run"
+description = "A match binding moved and then assigned over, moved on one path only and then assigned over, or only assigned over, finalizes its values exactly as often as it holds them: two each where the arm ends holding a value, one where the move leaves it nothing"
+tags = ["flow", "genllvm", "runtime"]
+
 [scenario.enum_match_form]
 category = "run"
 description = "The matchee's form decides what a match takes: a place is tested where it stands and only the arm that binds takes from it (a move of an owner, a copy of a copy type that 'mut' changes without touching the original), a borrow binds a reference into it, a call is a temporary the match owns, a bound guard takes nothing from a place; and a pattern names only the variant, taking the reference kind of the matched value ('&imm', an 'Rc', a value), a variant named through its enum alone is an 'is', and '&Circle' stays a check"
@@ -358,12 +363,12 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_flow_typing]
 category = "run"
-description = "Flow typing: a name tested for a variant is that variant where the test holds -- in the branch, joined by 'and', in the branch of a failed 'not', in the arm of a match, in the other branch of a two-variant test, after a branch that leaves, in a loop's pass -- so its fields are read by name; assigning a known variant narrows to it, and writing a field of the variant is no change of it"
+description = "Flow typing: a name tested for a variant is that variant where the test holds -- in the branch, joined by '&&', in the branch of a failed '!', in the arm of a match, in the other branch of a two-variant test, after a branch that leaves, in a loop's pass -- so its fields are read by name; assigning a known variant narrows to it, and writing a field of the variant is no change of it"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.enum_match_bind_final]
 category = "run"
-description = "A 'mut' variable bound by a match arm behaves as a plain 'mut' local: moved on every path or some and then assigned over, or assigned over without a move, it finalizes what it held (if anything) and the value assigned is finalized with the matched value"
+description = "A 'var' variable bound by a match arm behaves as a plain 'var' local: moved on every path or some and then assigned over, or assigned over without a move, it finalizes what it held (if anything) and the value assigned is finalized with the matched value"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_match_keeps_place]
@@ -373,12 +378,37 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_match_guard_held]
 category = "run"
-description = "A guard on a binding of a payload that moves, where the matched value is a call's answer held in the match's own hidden variable: the guard takes nothing, so a failing guard leaves the payload whole for the cases after it (a second guard, an 'else', the arm that binds it), and the arm that binds takes it and finalizes it as the arm ends; a 'mut' binding, a payload passed on, a named local and a copy payload alike"
+description = "A guard on a binding of a payload that moves, where the matched value is a call's answer held in the match's own hidden variable: the guard takes nothing, so a failing guard leaves the payload whole for the cases after it (a second guard, an 'else', the arm that binds it), and the arm that binds takes it and finalizes it as the arm ends; a 'var' binding, a payload passed on, a named local and a copy payload alike"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# A run because the claim is the value each function returns: a 'return'
+# ending a plain block in an arm was dropped, and the function fell through
+[scenario.enum_match_jump_nested_block]
+category = "run"
+description = "A 'return' ending a plain block in a match arm ends the path: a 'switch' on an integer and on an enum's tag, an arm that binds and one with a guard, a match whose value is bound, a match on a place"
+tags = ["genllvm", "runtime"]
 
 [scenario.enum_let_else]
 category = "run"
-description = "let-else, 'imm n Ok = r else {...};': the binding of 'if imm n Ok = r' declared where it stands, whose 'else' leaves ('return', 'break', 'continue'); it takes what a binding takes (a copy of plain data that leaves the place whole, a move of an owner, a reference into a borrowed value) and may be 'mut'"
+description = "let-else, 'let Ok(n) = r else {...};': the binding of 'if let Ok(n) = r' declared where it stands, whose 'else' leaves on every path ('return', 'break', 'continue', 'panic', or an 'if' or 'match' each of whose paths leaves, the finalizers showing the binding is not reached); it takes what a binding takes (a copy of plain data that leaves the place whole, a move of an owner, a reference into a borrowed value) and may be 'var'"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_let_else]
+category = "reject"
+description = "A let-else whose 'else' can go on, refused (ErrorLetElse) at the spot where a path goes on, saying what it lacks: an empty block, a last statement that is no jump, an 'if' or 'else if' chain with no 'else', one branch that goes on, a match arm that goes on, a loop"
+tags = ["typecheck"]
+diagnostics = 7
+
+# A run because the claim is that the binding after the 'else' is not reached,
+# which only the values the functions return show
+[scenario.enum_let_else_block]
+category = "run"
+description = "A let-else whose 'else' leaves through a plain block ending in 'return', one or two blocks deep, with locals of the block and of the function finalized once as it leaves: the 'else''s value when the variant is missing, the binding's when it is there"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_variant_binding]
+category = "run"
+description = "A pattern binds one name inside the variant, after the 'let' or 'var' in front of the pattern: 'case let Circle(c)' with a guard, through its enum ('Shape.Circle(c)'), with type arguments ('Some[i32](n)'), 'case var Some(n)' changing the arm's copy, the same in 'if let', 'else if let', 'if var' and 'let Some(n) = x else {...};', 'case var &mut Ok(n)' writing through a reference, and a function's pattern and a call-shaped value told from it"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_owner_narrow]
@@ -388,7 +418,7 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_flow_typing_refs]
 category = "run"
-description = "Flow typing through a reference parameter: an 'imm' or 'uni' reference is narrowed as it stands, a '&' or '&mut' one through a reference the compiler declares where the test was made; fields read, written and methods of the variant called by name, in a branch, joined by 'and', after a branch that leaves, by elimination, in a match arm, across a call that cannot reach the enum, and again after the enum is stored over"
+description = "Flow typing through a reference parameter: an 'imm' or 'uni' reference is narrowed as it stands, a '&' or '&mut' one through a reference the compiler declares where the test was made; fields read, written and methods of the variant called by name, in a branch, joined by '&&', after a branch that leaves, by elimination, in a match arm, across a call that cannot reach the enum, and again after the enum is stored over"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_typecheck_flow_typing]
@@ -408,15 +438,25 @@ description = "A reference name others may share, narrowed to a variant by a tes
 tags = ["flow"]
 diagnostics = 7
 
+[scenario.enum_match_bar_join]
+category = "run"
+description = "A case joins patterns with '|': numbers, ranges, comparisons, variants, 'is', a guard and the columns of 'match a, b'; a bitwise or meant as a value is parenthesized, and '^' and '&' bind inside a value"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
 [scenario.enum_match_cover]
 category = "run"
-description = "A match that names every variant of an enum or both values of a bool needs no 'else', statement or value, an 'or' naming several at once, and 'match a, b' matches several values with a pattern for each and '_' for any: the combinations covered, a column of numbers needing the 'else', a guarded case not counting, the values evaluated once each in the order written"
+description = "A match that names every variant of an enum or both values of a bool needs no 'else', statement or value, a '|' naming several at once, and 'match a, b' matches several values with a pattern for each and '_' for any: the combinations covered, a column of numbers needing the 'else', a guarded case not counting, the values evaluated once each in the order written"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_match_using]
 category = "run"
-description = "A function's pattern: 'case imm rest using prefix(\"GET \")' binds the Option the function gives back and 'case using isOdd()' tests with its bool, a method's after 'self' (the matched value is the first argument); cases are tried top to bottom and the function is called once, only when its case is reached, with cases of other kinds before and after it, a guard, tests joined by 'or', a matched value that is a call made once, a bound value that owns something finalized as its arm ends; and the same binding in an 'if', an 'elif' and a let-else with the matched value after '='"
+description = "A function's pattern: 'case imm rest using prefix(\"GET \")' binds the Option the function gives back and 'case using isOdd()' tests with its bool, a method's after 'self' (the matched value is the first argument); cases are tried top to bottom and the function is called once, only when its case is reached, with cases of other kinds before and after it, a guard, tests joined by '|', a matched value that is a call made once, a bound value that owns something finalized as its arm ends; and the same binding in an 'if', an 'else if' and a let-else with the matched value after '='"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.enum_match_using.run]]
+name = "default"
+options = ["--strip"]
 
 # The cases before the first function's pattern are one switch; from that case on, the chain, the
 # function called when its case is reached and the cases after it tested in order
@@ -436,7 +476,7 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_match_switch]
 category = "run"
-description = "A match on one integer, character or enum tag is an LLVM switch in every build: its leading cases that test constants (named ones too), ranges up to 128 values, 'or's and variants (a trait pattern's, through a reference, a binding in the case) are the labels, a value an earlier case took keeps that case, and the chain from the first guard, wider range or 'else' is the default, so each case still yields what the chain gave it"
+description = "A match on one integer, character or enum tag is an LLVM switch in every build: its leading cases that test constants (named ones too), ranges up to 128 values, '|' joins and variants (a trait pattern's, through a reference, a binding in the case) are the labels, a value an earlier case took keeps that case, and the chain from the first guard, wider range or 'else' is the default, so each case still yields what the chain gave it"
 tags = ["genllvm", "runtime"]
 
 [[scenario.enum_match_switch.run]]
@@ -478,9 +518,9 @@ diagnostics = 4
 
 [scenario.enum_typecheck_match_cover]
 category = "reject"
-description = "What a match must cover: a statement or value match leaving out a variant, a numbers-only match, one bool value, a guarded case, an 'or' or a combination of columns not covered, a match with no cases, and what may not repeat: a variant, a bool value or a combination named twice, an 'else' after the cases cover everything"
+description = "What a match must cover: a statement or value match leaving out a variant, a numbers-only match, one bool value, a guarded case, a '|' or a combination of columns not covered, a match with no cases, and what may not repeat: a variant, a bool value, a number or character or a combination named twice, an 'else' after the cases cover everything"
 tags = ["typecheck"]
-diagnostics = 21
+diagnostics = 28
 
 [scenario.enum_parse_match_using]
 category = "reject"
@@ -488,11 +528,17 @@ description = "A function's pattern written wrongly: a match with a 'using' case
 tags = ["parse"]
 diagnostics = 5
 
+[scenario.enum_typecheck_option_bool]
+category = "reject"
+description = "An Option or a Result converts to bool only in a condition and under '!': as the right operand of a bool's '||' or '&&' it is refused with a pointer to 'x is Some' ('x is Ok'), and as the left operand its own '||' and '&&' take an Option or a payload on the right and nothing else; where a bool is wanted otherwise (a 'let' of type bool, a bool argument, a return) it stays refused"
+tags = ["typecheck"]
+diagnostics = 7
+
 [scenario.enum_typecheck_match_using]
 category = "reject"
-description = "What a function's pattern gives back: a binding by a function giving a bool or nothing (in a match and in an 'if'), a test by a function giving an Option, a call with too few arguments after the matched value"
+description = "What a function's pattern gives back: a binding by a function giving a bool or nothing (in a match and in an 'if'), a test by a function giving an Option or a Result (both answer isTrue in an 'if', and a case's test still wants a bool), a call with too few arguments after the matched value"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 6
 
 [scenario.enum_extends]
 category = "run"
@@ -583,6 +629,16 @@ category = "reject"
 description = "An enum declaration's head: 'enum trait', '@unsized' where nothing pads, an empty enum, and variants inside a trait"
 tags = ["parse"]
 
+[scenario.enum_parse_nametype]
+category = "reject"
+description = "An enum and its integer type written with no ':' between them are refused"
+tags = ["parse"]
+
+[scenario.enum_parse_nametype_fields]
+category = "reject"
+description = "An enum's common field and the place its tag is laid out take a ':' before their type, the old spelling is refused, and a ':' after the enum's name with no integer type is refused"
+tags = ["parse"]
+
 [scenario.enum_parse_variant_forms]
 category = "reject"
 description = "A variant declared as a type in an enum that has fields every variant shares, wherever the field is written; the same variant, with every form of variant beside it, accepted where there is none; and a name with a type, in either case or with a tuple type, always a field"
@@ -594,6 +650,23 @@ category = "reject"
 description = "Reading the contents of a variant declared as a type by a field name it does not have, and binding them through a managed reference, which cannot lend them yet"
 tags = ["typecheck"]
 diagnostics = 2
+
+# Where a body's declarations end. ';' delimits them and the last needs none, so a
+# variant list is written 'A, B(i32), C' with the '}' ending it, and an empty
+# declaration is harmless. One run program holds what is accepted (the plain list,
+# the old ';' spelling, a payload on any variant of a list, a struct variant
+# delimiting itself, empty declarations); enum_parse_delimiters holds what is still
+# refused, each with the position its fix goes at.
+[scenario.enum_body_delimiters]
+category = "run"
+description = "A body whose last declaration has no ';' (a plain list, a list with a payload on any variant, a common field with a struct variant last), the old ';' spelling, and empty declarations"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.enum_parse_delimiters]
+category = "reject"
+description = "What a body's delimiting ';' still requires: one between two declarations that do not end in a block, a name after a variant list's comma, and a list that is not the comma kind"
+tags = ["parse"]
+diagnostics = 7
 
 [scenario.enum_parse_blocks]
 category = "reject"
@@ -611,11 +684,23 @@ description = "A module's 'use' of an enum written 'use pub', or with a '*' the 
 tags = ["parse"]
 diagnostics = 2
 
+[scenario.enum_parse_range_bare]
+category = "reject"
+description = "A range pattern written with a bare '..' between its bounds, characters and numbers, spaced and not, refused with the two forms that say whether the upper bound is included"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.enum_parse_variant_binding]
+category = "reject"
+description = "A pattern binds one name inside the variant: none or several names (ErrorPatBindCount), a value, a call or another pattern inside it (ErrorPatBindNested), the name before the variant, a variant with no parentheses, a declaration of one name or of several with an 'else' and a let-else with the name before the variant (ErrorPatBindForm), and 'var' inside the parentheses"
+tags = ["parse"]
+diagnostics = 15
+
 [scenario.enum_parse_patterns]
 category = "reject"
-description = "Pattern bindings missing a permission, a name, a type, or a value to match, a pattern spelled as a managed reference, a condition where a case or an 'or' expects a pattern, and a range written '...'"
+description = "Pattern bindings with a permission that is no declaration word, a variant with no parentheses or no variant, a missing value to match, a pattern spelled as a managed reference, a condition where a case or a '|' expects a pattern, and a range written '...'"
 tags = ["parse"]
-diagnostics = 13
+diagnostics = 12
 
 [scenario.enum_parse_pattern_typearg]
 category = "reject"
@@ -679,6 +764,12 @@ description = "Matches that are not exhaustive, a guarded arm not counting towar
 tags = ["typecheck"]
 diagnostics = 17
 
+[scenario.enum_typecheck_is_type]
+category = "reject"
+description = "An 'is' test with a type to its left, in an 'if', an 'else if' and a statement: refused once, as a test needing a typed expression there, and the 'if' checked no further"
+tags = ["typecheck"]
+diagnostics = 4
+
 [scenario.enum_tag_equality]
 category = "run"
 description = "'==' and '!=' against an empty variant ask the tag alone, on either side, whatever the other variants carry and declare: core's Option, and enums whose variants carry a type or fields and declare no '==' -- equal, unequal, a variant of another tag, held in a variable, a call's result, and a reference"
@@ -694,9 +785,9 @@ options = ["--debug"]
 
 [scenario.enum_typecheck_payload_eq]
 category = "reject"
-description = "'==' and '!=' on an enum with a variant that carries fields and declares no '==': the first such variant is named with what it carries, however many others have one, a field in common counting as carried, for core's Option and Result instances, through references, and a '==' of a variant that takes something other than another of the variant reported where it is declared"
+description = "'==' and '!=' on an enum with a variant that carries fields and declares no '==': the first such variant is named with what it carries, however many others have one, a field in common counting as carried, through references, and a '==' of a variant that takes something other than another of the variant reported where it is declared"
 tags = ["typecheck"]
-diagnostics = 8
+diagnostics = 6
 
 [scenario.enum_typecheck_narrow]
 category = "reject"
@@ -770,6 +861,19 @@ description = "A bare None where nothing says which Option it is, as the last st
 tags = ["typecheck"]
 diagnostics = 3
 
+[scenario.enum_variant_align]
+category = "run"
+description = "An enum whose variants differ in alignment (a u8 pair and an f64 pair): a variant widened to its enum as a function's result, as an argument, and into the elements of an array, then read back through a match; the reinterpreting slot is aligned for the enum, the more aligned of the two types"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.enum_variant_align.run]]
+name = "release"
+options = []
+
+[[scenario.enum_variant_align.run]]
+name = "debug"
+options = ["--debug"]
+
 [scenario.enum_construction]
 category = "run"
 description = "A variant constructed with parentheses and no 'new' (qualified, bare after 'use', a payload variant, a struct variant), an empty one by its name alone, and a generic one taking its type arguments from where it goes or written in brackets before the values ('Some[i64](8)', 'None[i64]'), as a function's last value, an argument and a variable; compared by its tag"
@@ -777,9 +881,9 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.enum_typecheck_construction]
 category = "reject"
-description = "The old spelling refused at its bracket, a variant with values, an empty one, a generic one with its type arguments written, naming the new one; an empty variant called, a variant holding values named alone, a struct called and a variant given 'new'"
+description = "The old spelling refused at its bracket, a variant with values, an empty one, a generic one with its type arguments written, naming the new one; an empty variant called, a variant holding values named alone"
 tags = ["parse", "nameres", "typecheck"]
-diagnostics = 12
+diagnostics = 10
 
 [scenario.enum_variant_receiver]
 category = "run"
@@ -803,11 +907,53 @@ category = "run"
 description = "An enum's method whose receiver names the enum ('self &Lamp', '&mut Lamp', by value 'self Lamp') is one function over the whole enum, where 'match self' and 'self is Red' work, called on an enum value and on a variant's value; 'self &' and 'self &Self' are still copied into each variant; a variant's own method of the same name is what a variant-typed value calls"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
+[scenario.enum_method_receiver_generic]
+category = "run"
+description = "A generic enum's method whose receiver names the enum with its type arguments ('self: Opt[T]', '&Opt[T]', '&mut Opt[T]', and the bare '&Opt') is one function over the whole enum, not inline, called on an enum's value and a variant's; an enum with two parameters the same; a generic method whose receiver names the enum is one function too, reached from a variant's value, in a generic enum and a plain one"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_method_receiver_generic]
+category = "reject"
+description = "A generic enum's method whose receiver names another instance of the enum ('self: &Opt[i32]' in 'Opt[bool]') is refused once, as not the method's type"
+tags = ["typecheck"]
+
+[scenario.enum_method_value_dispatch]
+category = "run"
+description = "A reference-receiver method ('self: &', '&mut') called on a value of the enum is borrowed and dispatched on the tag, as through a reference: a fieldless enum answering a '&'static str' (ioerror's shape) on a local, a parameter, a field and a temporary; an enum with payloads, the '&mut' mutation seen after; a generic enum"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_value_dispatch]
+category = "reject"
+description = "A by-value receiver on a value typed as the enum is still refused, 1150's whole text pinned; a '&mut' receiver on a value that is not mutable is refused for the borrow alone"
+tags = ["typecheck"]
+
 [scenario.enum_typecheck_method_receiver]
 category = "reject"
 description = "A value typed as one variant calling a method that takes '&mut' of the whole enum, refused as the method could store another variant in it; the value declared as the enum is accepted"
 tags = ["typecheck"]
 diagnostics = 1
+
+[scenario.enum_byvalue_self_copy]
+category = "run"
+description = "An enum's method with a body that takes 'self' by value, untyped, is copied into each variant with 'Self' the variant, and the enum requires nothing of the copy: it may return Self (the call on an A gives an A, its own field intact), take Self, or return something else; a variant's own method of the name replaces it and, with the enum's signature (Self read as the variant), is accepted; a reference-receiver copy still dispatches on the tag; a generic enum and an extension copy the same way"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.enum_byvalue_self_whole]
+category = "run"
+description = "A by-value receiver that names the enum ('mut self E') is one function over the whole enum: it chains on a variant's value widened to the enum, and is called on a value typed as the enum; unchanged beside the untyped by-value copy"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_byvalue_override]
+category = "reject"
+description = "A variant's own method that replaces an enum's by-value copy must have the enum's signature with Self read as the variant: a different result or parameter is refused naming the enum's signature, and so is the enum returned where Self, the variant, is; the same signature is accepted"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.enum_typecheck_byvalue_self_on_enum]
+category = "reject"
+description = "A by-value-receiver method of an enum called on a value typed as a variant is accepted, and on a value typed as the enum is still refused (the variant's copy would be read from the tag, not built for a value receiver)"
+tags = ["typecheck"]
+diagnostics = 2
 
 [scenario.enum_parse_extern_method]
 category = "reject"
@@ -824,19 +970,19 @@ include = ["include/q.cone"]
 
 [scenario.enum_trait_pattern]
 category = "run"
-description = "A trait pattern on an enum, 'case imm m Measured': it matches every variant that complies with the trait, counts toward exhaustiveness, and binds a virtual reference built from the variant, called through its vtable; a '&mut' matched gives a writable one; with a guard, 'or', in a bound 'if', let-else and by elimination; a test with no binding on a value; a marker trait is nominal; pinned tag values; an enum that names the trait itself"
+description = "A trait pattern on an enum, 'case imm m Measured': it matches every variant that complies with the trait, counts toward exhaustiveness, and binds a virtual reference built from the variant, called through its vtable; a '&mut' matched gives a writable one; with a guard, '|', in a bound 'if', let-else and by elimination; a test with no binding on a value; a marker trait is nominal; pinned tag values; an enum that names the trait itself"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_trait_pattern_forms]
 category = "run"
-description = "Trait patterns beyond a plain enum: an enum that extends another, a generic enum, a generic trait's instance, a pattern written as the virtual reference, a 'mut' binding, an 'if' chain written with 'is' (a test naming several variants narrows as they do, and by elimination), a loop, a macro's expansion, and an owner or an enum laid out as a pointer, which a trait pattern can test but not bind"
+description = "Trait patterns beyond a plain enum: an enum that extends another, a generic enum, a generic trait's instance, a pattern written as the virtual reference, a 'var' binding, an 'if' chain written with 'is' (a test naming several variants narrows as they do, and by elimination), a loop, a macro's expansion, and an owner or an enum laid out as a pointer, which a trait pattern can test but not bind"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.enum_typecheck_trait_pattern]
 category = "reject"
 description = "What a trait pattern on an enum refuses: a variant after the trait that names it, a trait after its variants, the same trait twice, an 'else' after everything is covered, the variants a trait leaves out uncovered; a trait no variant complies with (a method over the whole enum is no variant's); a trait pattern that binds where the matched value is a value, an owner, or the pattern is written as a plain reference; a read-only matched reference calling what writes; an open trait"
 tags = ["typecheck"]
-diagnostics = 18
+diagnostics = 17
 
 [scenario.enum_flow_trait_pattern]
 category = "reject"
@@ -850,3 +996,204 @@ description = "Trait patterns on an enum declared in a package compiled on its o
 tags = ["genllvm", "runtime"]
 link = ["q/q.conebuild"]
 include = ["include/q.cone"]
+
+[scenario.enum_mut_infers_enum]
+category = "run"
+description = "A 'var' variable, field or global whose type is inferred from a variant holds the variant's enum: another variant stored in it, lent as '&mut' of the enum, matched and tested with 'is'; an 'imm' keeps the variant and its fields; '==' and '!=' between a variant-typed value and its enum or another variant-typed value of it ask the tag, either way round"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.enum_mut_infers_enum.run]]
+name = "release"
+options = []
+
+[[scenario.enum_mut_infers_enum.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.enum_typecheck_mut_infers_enum]
+category = "reject"
+description = "What the enum inference of a 'var' declaration leaves as it was: a 'var' pattern binding stays its variant, so do a variable of an '@unsized' enum and a global, a generic variant whose type arguments nothing fixes is still refused, and two variables each holding a variant that carries fields are not compared by tag"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.enum_propagate]
+category = "run"
+description = "'?' on a Result unwraps Ok or returns the Error converted to the function's error type (the same type as it is, an 'overload from', or auto-wrap into the one variant holding it, generic instances included); on an Option unwraps Some or returns None; it is a term suffix ('-a?', 'f()?[2]', a member as '(r?).id'), in a statement, a condition, a match's scrutinee, a closure with its return type written, a value typed as a variant; an early return drops the locals before it, and what '?' takes out of a value that moves is dropped where it would be"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_propagate]
+category = "reject"
+description = "What '?' refuses: a value that is neither a Result nor an Option, a reference to one, a function returning no Result for a Result or no Option for an Option (and a mix of the two), a closure whose return type is not written, an error the function's error type cannot take, and one two variants of it hold"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.enum_parse_propagate]
+category = "reject"
+description = "'?' in a generator, which has no Result or Option of its own for a failure to go to"
+tags = ["parse"]
+diagnostics = 1
+
+[scenario.enum_main_result]
+category = "run"
+description = "A 'main' returning a Result that fails: its early return drops what it held, 'Error: ' and the error's text (a typed error meeting Error) go to stderr, and the exit status is 1"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = 1
+
+[scenario.enum_main_result_ok]
+category = "run"
+description = "A 'main' taking C's two arguments and returning a Result that succeeds: what its Ok holds is dropped, and the exit status is 0; its error is a typed error meeting Error"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_main_result]
+category = "reject"
+description = "A 'main' returning a Result whose error type is not an Error and has no 'report()' to print it with"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.enum_try]
+category = "run"
+description = "A try block: a '?' inside leaves the block with the first failure, not the function, and the last value is wrapped Ok or Some; its type read off its '?'s (all Options, or all Results with one error type) or taken from a typed 'let', an argument and a 'return', each '?' converting its error by 'from' or auto-wrap; what follows a failure does not run; no '?' just wraps; a body ending in ';' succeeds with nil; the innermost try takes its '?', a closure's '?' is the closure's and a generator's in a try leaves the try; 'return', 'break' (labelled too) and 'continue' act on the function and loops, and a loop's break value inside stays the loop's; a failure drops what the block made so far"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_try_macro]
+category = "run"
+description = "A '?' in a macro expanded inside a try block is captured by that block, as one written there is: a function that returns no Result still compiles, a failure leaves the block with its error and what follows does not run, over a Result, an Option and a macro using another macro; the same macro outside a try block returns from the function"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.enum_typecheck_try]
+category = "reject"
+description = "What a try block refuses: with no type wanted, '?'s whose errors differ or no '?' at all (the type is asked for); an Option's '?' beside a Result's, or against a wanted type of the other kind (okOr and ok() named); an error the wanted Result cannot take, and one two of its variants hold; a '?' refused inside says nothing more of the block"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.enum_parse_try]
+category = "reject"
+description = "'?.' stays reserved inside a try block"
+tags = ["parse"]
+diagnostics = 1
+
+[scenario.enum_discard_warn]
+category = "warn"
+description = "A statement that throws a value away is warned, WarnDiscard, when the value is a Result (core marks it '@mustUse'), a value of a '@mustUse' struct, enum or generic struct, or a try block's: from a function, a method, a generic function whose T became a Result, the last line of a body and a line in a loop or an 'if' arm; the program still compiles"
+tags = ["typecheck"]
+
+[scenario.enum_discard_silent]
+category = "run"
+description = "What WarnDiscard leaves quiet: '_ = f();' for a Result and a '@mustUse' struct, enum and generic struct (a generic call whose T is one too), a value bound, matched, passed on or tried, an Option dropped (a plain function's, a list's pop, a dict's insert and remove), a number, a struct nobody marked, a reference handed back for chaining, a call returning nothing, and a try block bound to a name; a run scenario takes no warning, so compiling is the assertion"
+tags = ["typecheck", "runtime"]
+
+[scenario.enum_main_result_report]
+category = "run"
+description = "A 'main' returning a Result prints its error with the error type's 'report()' where it has one (the Error trait's default in core: the text and each cause under it, INTERIM text): a typed error with two causes, converted by '?' into an AnyError with a line of context, prints as a chain to stderr and the exit status is 1"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = 1
+
+[scenario.enum_main_result_typed]
+category = "run"
+description = "A 'main' returning a Result whose error is a typed error meeting core's Error, not an AnyError, with a cause under it: 'Error: ', its text and 'caused by:' its cause go to stderr as one record, the exit status is 1"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = 1
+
+[scenario.enum_error_core]
+category = "run"
+description = "core's Error: types that write their text into a TextOut meet it; a send of one prints its line, 'String() <- e' makes a String of it, source() answers a '&<Error' that is called through, report writes the chain, and '?' converts a core-only error into an AnyError that holds it under two lines of context (holds, downcastRef, report)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_propagate_from_plain]
+category = "run"
+description = "'?' converts through a method of the destination named 'from' that is not an 'overload from': a plain one, and a plain generic one bounded by a trait (as AnyError's is), each selected by the error '?' was given"
+tags = ["typecheck", "runtime"]
+
+[scenario.enum_propagate_static_str]
+category = "run"
+description = "A borrow written &'static to immutable data is Sendable (as Rust's &'static str is Send): an error holding one '?' converts into an AnyError, and meets a Sendable bound"
+tags = ["typecheck", "runtime"]
+
+[scenario.enum_typecheck_anyerror]
+category = "reject"
+description = "AnyError's refusals: a '?' of an error that is not an Error, whose ErrorQuesConvert names the plain 'from' too; the explicit AnyError.from of one; an Error that is not Sendable, which no 'from' takes; 'is Error' without a message(self: &) String"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.enum_option_condition]
+category = "run"
+description = "An Option or a Result as a condition through core's isTrue, true when Some or Ok: 'if' on Some, None, Ok and Err, 'while' running while Some and while Ok, a call's value, a variant's value, a payload that moves still held after the test, Some(false) and Ok(false) true, and '!' over them"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_option_logic]
+category = "run"
+description = "'||' and '&&' on an Option and a Result, methods of the left operand's type with a lazy right side: same type gives the first that is true ('||') or false ('&&'), a plain value on the right unwraps ('opt || 0', 'parse(s) || 0'), the right side runs only where it is the answer, a bool's own '||' and '&&' still short-circuit, a test joined by '&&' still narrows the right side, and Options join in a condition"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# An empty slice is 'Some', never 'None': the Option's niche is a null pointer word,
+# so no way of making a slice may give a zero-length one a null pointer
+[scenario.enum_nullable_empty_slice]
+category = "run"
+description = "An empty slice put in an Option[&Array[u8]] reads as Some of length 0, never None, for every way of making one: a null pointer with length 0 through mem.sliceFromParts, an unallocated List's view in each permission, a cleared List, an empty String, a sub-slice of an empty slice, and a zero-length array; None beside each still reads None"
+tags = ["genllvm", "runtime"]
+
+# The optimizer could fold a null test it knows the answer to: both runs agree
+[[scenario.enum_nullable_empty_slice.run]]
+name = "release"
+options = []
+
+[[scenario.enum_nullable_empty_slice.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.enum_error_text_virtual]
+category = "run"
+description = "a '&<Error' and a 'Uni[Error + Sendable]' are written as text through the vtable's toText: 'print <- e' and 'String() <- e'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_error_debug_virtual]
+category = "run"
+description = "a '&<Error' has a display form through the vtable's toText and a debug form that is the trait's name; a trait declaring its own toDebug is called through the vtable on a DebugText sink"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_error_interp]
+category = "run"
+description = "An interpolated string holding an error, $\"{e}\", is that error's own toText line (not its causes), sent directly, made into a String, and through a '&<Error'"
+tags = ["typecheck", "runtime"]
+
+# Read before optimization: after it an unused internal function is gone and the
+# exclude would pass for the wrong reason.
+[scenario.enum_error_unused]
+category = "compile"
+description = "A program that never meets core's Error carries no body for the failure printer 'Error.reportFailure'"
+tags = ["genllvm"]
+
+[[scenario.enum_error_unused.check]]
+name = "no-failure-printer"
+target = "preir"
+excludes = ["reportFailure", "call %void @cone_mainErrorRecord(", "define internal %void @_CNvC4core"]
+
+[scenario.enum_error_used]
+category = "compile"
+description = "The control for enum_error_unused: a 'main' returning an error is given the failure printer's body"
+tags = ["genllvm"]
+
+[[scenario.enum_error_used.check]]
+name = "failure-printer-present"
+target = "preir"
+contains = ["call %void @cone_mainErrorRecord("]
+
+[scenario.enum_selfref_toText]
+category = "run"
+description = "an enum whose 'self: &' toText calls a whole-enum helper, sent as text"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_selfref_toText_generic]
+category = "run"
+description = "the same on a generic enum"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_selfref_error_virtual]
+category = "run"
+description = "an enum's (generic or not) and a struct's inline 'self: &' toText fills Error's slot: written as text through '&<Error' and through an AnyError"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_inline_toText_direct]
+category = "run"
+description = "an inline toText of a plain and a generic enum called directly with a writer, on a variant and on the whole enum"
+tags = ["typecheck", "genllvm", "runtime"]

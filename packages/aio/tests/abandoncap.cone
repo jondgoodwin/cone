@@ -1,0 +1,60 @@
+// The round cap on abandoning at the end. A Looper parks on a long sleep
+// holding a Note whose final starts the Looper's next hold, which parks a new
+// Note: every round of the end's abandoning finds a new parked record, which
+// without a cap would never finish. finalAll must return. The cap is 64
+// rounds, each of which drops one Note (a final runs): 64 finals run, and the
+// record parked by the last of them is freed without its final.
+
+mod abandoncap;
+
+import stdio use *;
+import time use Duration, Instant;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import aio;
+
+let dropped: Atomic[u64];
+
+fn @initpure init() {
+  dropped = Atomic[u64].of(0u64);
+}
+
+actor Looper {
+  pub async fn start(self, again: Looper, ready: OneshotSender[u64]) {
+    var r = ready;
+    r.send(1u64);
+    let keep = Note(again);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+
+  pub async fn hold(self, again: Looper) {
+    let keep = Note(again);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+}
+
+struct Note {
+  pub next: Looper;
+  fn final(self: &uni) {
+    dropped.add(1u64);
+    next.hold(next);
+  }
+}
+
+fn main() {
+  initAll();
+  var t: OneshotSender[u64];
+  var r: OneshotReceiver[u64];
+  t, r = Oneshot[u64].make();
+  let l = Looper();
+  l.start(l, t);
+  r.recv();
+  let began = Instant.now();
+  finalAll();
+  let ms = began.elapsed().millis();
+  printStr("finalAll returned (fast: "); printStr(if ms < 10000i64 {"yes"} else {"no"}); printStr(")\n");
+  printStr("finals run: "); printUInt(dropped.load()); printStr("\n");
+  let pb = actors.parkBlocks();
+  printStr("park blocks not given back: "); printUInt(pb.taken - pb.given); printStr("\n");
+  printStr("end\n");
+}

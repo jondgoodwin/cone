@@ -19,6 +19,7 @@ INode *elseCond;
 INode *borrowRef;
 INode *neverType;
 StructNode *arrayTypeDcl;
+StructNode *vectorTypeDcl;
 StructNode *strTypeDcl;
 static int strTypeAdopted;
 static int arrayTypeAdopted;
@@ -71,7 +72,7 @@ void stdPermInit() {
     newPerm = newPermDclNode(nametblFind("new", 3), MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
 }
 
-// What core declares in Cone -- Option, Result, and the 'So' and 'Rc' regions --
+// What core declares in Cone -- Option, Result, and the 'Uni' and 'Rc' regions --
 // is the core package's source, packages/core/src/core.cone, not this file's.
 
 FnDclNode *initAllFn;
@@ -103,6 +104,10 @@ StructNode *carriesRegionTrait;
 StructNode *gcTraceElementsTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
+StructNode *floatTrait;
+StructNode *signedTrait;
+StructNode *unsignedTrait;
+StructNode *numericTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
 StructNode *shareableTrait;
@@ -181,6 +186,8 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
+        || node == (INode*)floatTrait || node == (INode*)signedTrait
+        || node == (INode*)unsignedTrait || node == (INode*)numericTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
         || node == (INode*)shareableTrait || node == (INode*)shapeKeepingTrait
         || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
@@ -240,9 +247,17 @@ void stdlibInit(int ptrsize) {
     arrayTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
     arrayTypeDcl->namesym->node = (INode*)arrayTypeDcl;
 
+    // 'Vector', which names the SIMD vector type: 'Vector[f32, 4]'. Like
+    // 'Array' it looks generic and is the compiler's: a bracketed use is
+    // lowered into the vector type node (vectorTypeLower), and any other use
+    // is refused (nameUseTypeCheckType). A name every module reaches.
+    vectorTypeDcl = newStructNode(nametblFind("Vector", 6));
+    vectorTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
+    vectorTypeDcl->namesym->node = (INode*)vectorTypeDcl;
+
     // 'str', the dynamically sized body of bytes. It has no fields and no size
     // of its own, so it is held only through a reference, which carries the
-    // count of bytes: '&str', 'So[str]', 'Rc[str]'. A name every module
+    // count of bytes: '&str', 'Uni[str]', 'Rc[str]'. A name every module
     // reaches, as 'Array' is, and a module may not declare it itself.
     strTypeDcl = newStructNode(strTypeName);
     strTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
@@ -329,8 +344,8 @@ void stdlibInit(int ptrsize) {
     // not seen: refusing every element borrow through a shared path would
     // break common collection code -- reading a 'List[String]' element
     // through a '&List' parameter -- whose alternatives (a '&uni' borrowed
-    // from, so a 'self &uni' method may be called twice) are writable now.
-    // That is a documented hole (refborref.html).
+    // from, so a 'self: &uni' method may be called twice) are writable now.
+    // That is a documented hole (mem-borrowing.html).
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
@@ -346,7 +361,7 @@ void stdlibInit(int ptrsize) {
     // 'GcTraceElements' [PROVISIONAL name]: a type that holds values in memory it
     // points to (a collection's block, a pool's slots, an arena's allocations)
     // says how a garbage collector reaches them, by declaring the trait and a
-    // method 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is
+    // method 'fn gcTraceElements(self: &mut) I', I a cursor declaring 'is
     // Iterator[&mut E]'. The compiler traces each reference the cursor yields as
     // a value of E is traced (structGcTraceElementsCheck); a type with a raw
     // pointer to a value that may need tracing cannot be traced until its author
@@ -366,6 +381,15 @@ void stdlibInit(int ptrsize) {
     // and asked only by a constraint, 'where T is Integer'; any other type
     // is one only by declaring it.
     integerTrait = newBuiltinTrait(integerTraitName);
+    // 'Float', 'Signed', 'Unsigned' and 'Numeric': the number markers, granted
+    // by the compiler as 'Integer' is (genericTypeIs) and asked only by a
+    // constraint. 'Float' is f32 and f64; 'Signed' the signed integers and the
+    // floats; 'Unsigned' the unsigned integers (not bool or char); 'Numeric'
+    // every integer and float. Any other type is one only by declaring it.
+    floatTrait = newBuiltinTrait(floatTraitName);
+    signedTrait = newBuiltinTrait(signedTraitName);
+    unsignedTrait = newBuiltinTrait(unsignedTraitName);
+    numericTrait = newBuiltinTrait(numericTraitName);
     // 'Pointer' [Jon 27 Sep]: the raw pointer types, '*T' whatever T is and
     // whatever its permission, granted by the compiler (genericTypeIs) and
     // asked only by a constraint, 'where T is Pointer'. A reference is not
@@ -395,7 +419,7 @@ void stdlibInit(int ptrsize) {
     // the value holding it). A type may declare it, a promise taken on trust
     // for what the compiler cannot see, except that an instance of a generic
     // one is Shareable only where its type arguments are. Never by names. It
-    // is how a callable states what it may do beside others: '[F fn() +
+    // is how a callable states what it may do beside others: '[F: fn() +
     // Shareable]', '&<fn() + Shareable', and it is what a 'parallel each'
     // body is held to for what it names from outside.
     shareableTrait = newBuiltinTrait(shareableTraitName);
@@ -405,7 +429,8 @@ void stdlibInit(int ptrsize) {
     // reaches through a shared mutable path, its parameters and its captures
     // alike (shapeKeepsVia, checked where the value becomes the reference).
     // Inferred, never declared (ErrorShapeKeepingDeclared), and written only
-    // after a '+' in a virtual reference's type.
+    // after a '+' in a virtual reference's type; a package's generated include
+    // file records it on its types (shapeKeepRecordable).
     shapeKeepingTrait = newBuiltinTrait(shapeKeepingTraitName);
     // 'Sized' and 'DynSized' [Jon 6 Oct]: what a type's size is. 'Sized': the
     // size is known at compile time, so a value may be held, and a reference

@@ -17,7 +17,7 @@ typedef struct IfNode {
 // An 'if' that a 'match' was de-sugared into: the arms are the cases of one match,
 // so type check asks that they cover every value (ifMatchCover)
 #define FlagIfMatch   0x0001        // If
-// The 'if' that 'imm n Ok = r else {...};' is de-sugared into: its 'else' must leave,
+// The 'if' that 'let Ok(n) = r else {...};' is de-sugared into: its 'else' must leave,
 // since the binding that follows it takes the variant the test found
 #define FlagIfLetElse 0x0002        // If
 // The cases of a match after one that binds with a function's pattern (parseBoundMatch): the
@@ -27,10 +27,18 @@ typedef struct IfNode {
 // A match with a case that uses a function's pattern, which is required to end in 'else'
 // whether or not its other cases cover every value, so an 'else' that cannot run is no error
 #define FlagIfMatchUsing 0x0008     // If
+// A '#if' chain whose conditions ask what a type parameter is (parsemeta.c): in a generic's
+// template it is name resolved only, and cloning the template for its arguments decides it
+// (ifHashClone) and copies the one branch taken. Its conditions are 'is' clauses joined by
+// '!', '&&' and '||', as a 'where' clause's are; the blocks are the branches.
+#define FlagIfHash    0x0010        // If
+// ... and it stands where a value is read (a '#if' giving a value), so the branch taken, if it
+// is one expression, is that expression: a constant can be made from it
+#define FlagIfHashExpr 0x0020       // If
 #define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
-// The logic nodes of a match's conditions: the 'and' that joins the patterns of one
-// row of 'match a, b' (one per column), and the 'and' that adds an 'if' guard to the
-// pattern before it. An 'and' of neither kind is a range pattern.
+// The logic nodes of a match's conditions: the '&&' that joins the patterns of one
+// row of 'match a, b' (one per column), and the '&&' that adds an 'if' guard to the
+// pattern before it. A '&&' of neither kind is a range pattern.
 #define FlagMatchRow  0x0001        // Logic: joins the columns of a row
 #define FlagMatchGuard 0x0002       // Logic: a guard after the pattern
 // A literal 'true' that stands for '_', a column's pattern that matches any value

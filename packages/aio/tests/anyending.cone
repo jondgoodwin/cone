@@ -1,0 +1,72 @@
+// The program ends with an actor paused on a read that is never answered:
+// Talker listens, connects to itself (the connection waits in the listener's
+// backlog, never accepted), tells main, and awaits a read on a connection
+// whose peer never sends. finalAll() ends the I/O: the read is cancelled and
+// its answer not delivered, so the paused behaviour is abandoned. The record
+// holds the connected socket, the listening one, and two notes, which die as
+// the behaviour's one scope says: the last declared first. The read's buffer
+// goes home to its pool; nothing after the 'await' runs. The read is one with
+// no buffer, 'conn.read()', waiting with a zero-byte receive: the state that
+// holds its reply is dropped with the I/O thread, and the paused behaviour is
+// abandoned all the same.
+
+mod anyending;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+actor Talker {
+
+  pub async fn talk(self, ready: OneshotSender[u64]) {
+    let first = Note(1u64);
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let conn = socketOf(c);
+    let second = Note(2u64);
+    printStr("connected\n");
+    var r = ready;
+    r.send(1u64);
+    let got = await conn.read();
+    printStr("read\n");
+  }
+}
+
+fn main() {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let t = Talker();
+    t.talk(tx);
+  }
+  rx.recv();
+  finalAll();
+  printStr("end\n");
+}

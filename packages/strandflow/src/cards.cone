@@ -1,0 +1,181 @@
+// Drawing strands: ribbons ("cards") and tubes, written into a Mesh.
+//
+// CARDS. The industry's way to draw a head of hair at a game's cost: each strand (a guide, a lock) is a ribbon that follows its
+// particles, textured with fibres and cut out by its alpha. The ribbon's face is kept turned out of the thing it grows from by
+// PARALLEL TRANSPORT of the root's normal along the strand (the normal is projected off each segment's tangent in turn: no
+// twist however the strand moves, which a frame built from a fixed up vector would give), and its side is the tangent crossed
+// with it. The normals across the width are bent outward by 35 degrees at the edges, so a flat card shades as the round
+// lock it stands for. Drawn from both sides (two sets of vertices, the second reversed, since render culls back faces).
+// The width tapers from the root to the tip, and each strand's a little different, from its seed.
+// TUBES. A tapered cylinder of 'sides' sides round the strand, the same transport for its frame: a tentacle.
+//
+// A card's texture is an atlas of 'columns' variants across, each strand taking one from its seed, v running along the strand
+// from 0 at the root to 'vScale' at the tip.
+
+fn norm(v: Vec3) Vec3 { v.normalize() }
+
+// The vertices and indices the cards of the whole simulation take
+pub fn cardCounts(sim: &StrandSim) (usize, usize) {
+  var vs = 0usize;
+  var idx = 0usize;
+  var g = 0usize;
+  while g < sim.groups.len() {
+    var s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      let c = sim.groups[g].strands[s].count - 1usize;      // the ghost is not drawn
+      vs = vs + c * 4usize;
+      idx = idx + (c - 1usize) * 12usize;
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+  (vs, idx)
+}
+
+// The tangent of strand particle j (j from 1) from its neighbours
+fn tangentAt(sim: &StrandSim, g: usize, first: usize, count: usize, j: usize) Vec3 {
+  let b = &sim.groups[g].body;
+  let prev = *b.pos[first + (if j > 1usize { j - 1usize } else { j })];
+  let next = *b.pos[first + (if j + 1usize < count { j + 1usize } else { j })];
+  let d = next - prev;
+  if d.length() < 0.000001 { return Vec3(0., -1., 0.); }
+  d.normalize()
+}
+
+// Write every strand as a card into 'out', which is cleared first. 'columns' texture variants across the atlas; 'vScale'
+// repeats of the texture along a strand.
+pub fn writeCards(sim: &StrandSim, out: &mut Mesh, columns: u32, vScale: f32) {
+  out.positions.clear();
+  out.normals.clear();
+  out.uvs.clear();
+  out.indices.clear();
+  let bend = 0.61f;       // 35 degrees
+  let cb = cos(bend);
+  let sb = sin(bend);
+  var g = 0usize;
+  while g < sim.groups.len() {
+    let style = sim.groups[g].style;
+    let rot = sim.groups[g].frame.rotation;
+    let b = &sim.groups[g].body;
+    var s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      let st = sim.groups[g].strands[s];
+      let n = st.count - 2usize;
+      let col = st.seed % columns;
+      let u0 = f32.from(col) / f32.from(columns);
+      let u1 = f32.from(col + 1u32) / f32.from(columns);
+      var nrm = rot * st.normal;
+      var j = 1usize;
+      let base = out.positions.len();
+      while j < st.count {
+        let p = *b.pos[st.first + j];
+        let t = tangentAt(sim, g, st.first, st.count, j);
+        // transport the card's facing: off the tangent, kept unit
+        var nn = nrm - t * t.dot(nrm);
+        if nn.length() < 0.001 { nn = perpendicularTo(t); }
+        nn = nn.normalize();
+        nrm = nn;
+        let side = t.cross(nn).normalize();
+        let f = f32.from(j - 1usize) / f32.from(n);
+        let w = (style.cardWidth + (style.cardTipWidth - style.cardWidth) * f) * st.widthScale * 0.5;
+        let l = p - side * w;
+        let r = p + side * w;
+        let v = f * vScale;
+        out.positions.push(l); out.normals.push(norm(nn * cb - side * sb)); out.uvs.push(Vec2(u0, v));
+        out.positions.push(r); out.normals.push(norm(nn * cb + side * sb)); out.uvs.push(Vec2(u1, v));
+        out.positions.push(l); out.normals.push(norm(nn * (-cb) - side * sb)); out.uvs.push(Vec2(u0, v));
+        out.positions.push(r); out.normals.push(norm(nn * (-cb) + side * sb)); out.uvs.push(Vec2(u1, v));
+        j = j + 1usize;
+      }
+      var k = 0usize;
+      while k + 1usize < st.count - 1usize {
+        let a = u32.from(base + k * 4usize);
+        let c = a + 4u32;
+        // front: (L, R, L next), (R, R next, L next)
+        out.indices.push(a); out.indices.push(a + 1u32); out.indices.push(c);
+        out.indices.push(a + 1u32); out.indices.push(c + 1u32); out.indices.push(c);
+        // back, reversed
+        out.indices.push(a + 2u32); out.indices.push(c + 2u32); out.indices.push(a + 3u32);
+        out.indices.push(a + 3u32); out.indices.push(c + 2u32); out.indices.push(c + 3u32);
+        k = k + 1usize;
+      }
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+}
+
+// The vertices and indices the tubes take, with 'sides' sides
+pub fn tubeCounts(sim: &StrandSim, sides: usize) (usize, usize) {
+  var vs = 0usize;
+  var idx = 0usize;
+  var g = 0usize;
+  while g < sim.groups.len() {
+    var s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      let c = sim.groups[g].strands[s].count - 1usize;
+      vs = vs + c * (sides + 1usize);
+      idx = idx + (c - 1usize) * sides * 6usize;
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+  (vs, idx)
+}
+
+// Write every strand as a tapered tube into 'out' (cleared first)
+pub fn writeTubes(sim: &StrandSim, out: &mut Mesh, sides: usize) {
+  out.positions.clear();
+  out.normals.clear();
+  out.uvs.clear();
+  out.indices.clear();
+  var g = 0usize;
+  while g < sim.groups.len() {
+    let style = sim.groups[g].style;
+    let rot = sim.groups[g].frame.rotation;
+    let b = &sim.groups[g].body;
+    var s = 0usize;
+    while s < sim.groups[g].strands.len() {
+      let st = sim.groups[g].strands[s];
+      let n = st.count - 2usize;
+      var e1 = rot * st.normal;
+      let base = out.positions.len();
+      var j = 1usize;
+      while j < st.count {
+        let p = *b.pos[st.first + j];
+        let t = tangentAt(sim, g, st.first, st.count, j);
+        var a1 = e1 - t * t.dot(e1);
+        if a1.length() < 0.001 { a1 = perpendicularTo(t); }
+        a1 = a1.normalize();
+        e1 = a1;
+        let a2 = t.cross(a1);
+        let f = f32.from(j - 1usize) / f32.from(n);
+        let rad = (style.tubeRadius + (style.tubeTipRadius - style.tubeRadius) * f) * st.widthScale;
+        var i = 0usize;
+        while i <= sides {
+          let phi = 2. * pi * f32.from(i % sides) / f32.from(sides);
+          let dir = a1 * cos(phi) + a2 * sin(phi);
+          out.positions.push(p + dir * rad);
+          out.normals.push(dir);
+          out.uvs.push(Vec2(f32.from(i) / f32.from(sides), f));
+          i = i + 1usize;
+        }
+        j = j + 1usize;
+      }
+      var k = 0usize;
+      while k + 1usize < st.count - 1usize {
+        var i = 0usize;
+        while i < sides {
+          let a = u32.from(base + k * (sides + 1usize) + i);
+          let c = a + u32.from(sides + 1usize);
+          out.indices.push(a); out.indices.push(a + 1u32); out.indices.push(c);
+          out.indices.push(a + 1u32); out.indices.push(c + 1u32); out.indices.push(c);
+          i = i + 1usize;
+        }
+        k = k + 1usize;
+      }
+      s = s + 1usize;
+    }
+    g = g + 1usize;
+  }
+}

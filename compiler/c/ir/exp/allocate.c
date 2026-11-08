@@ -46,7 +46,10 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
         // In a generic's template '?T' asks of a generic parameter, which is
         // not a type until substituted. Leave it the Option[T] type: the
         // instance's clone substitutes the argument, and the clone of a '&T'
-        // or '(T, T)' argument decides that one again.
+        // or '(T, T)' argument decides that one again. A value substituted
+        // for a macro's parameter is refused then (fnCallTypeCheck).
+        assert(quesNode->methfld == NULL && "FlagQuesProvisional shares FlagRcvChecked's bit, which only a node with a methfld carries");
+        quesNode->flags |= FlagQuesProvisional;
     }
     else {
         errorMsgNode((INode*)quesNode, ErrorInvType, "'?' is not valid here.");
@@ -80,9 +83,9 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     int named = vtag != ArrayTag && vtag != TTupleTag && vtag != FnSigTag && vtag != RefTag
         && vtag != VirtRefTag && vtag != ArrayRefTag && vtag != PtrTag;
     errorMsgNode((INode*)node, ErrorPlusAlloc, typeLitIsConstruction(node->vtexp)
-        ? "An allocation is written '%s %s[%s%s%s](...)', the init's arguments in the parentheses%s%s."
-        : "An allocation is written '%s %s[%s%s%s](value)', the value in the parentheses%s%s.",
-        (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region),
+        ? "An allocation is written '%s%s[%s%s%s](...)', the init's arguments in the parentheses%s%s."
+        : "An allocation is written '%s%s[%s%s%s](value)', the value in the parentheses%s%s.",
+        (node->flags & FlagQues) ? "trynew " : "", itypeName(node->region),
         uni ? "" : perm, uni ? "" : ", ", named ? itypeName(vtype) : "T",
         named ? "" : ", T ", named ? "" : itypeName(vtype));
     allocateValueCheck(pstate, nodep);
@@ -102,8 +105,8 @@ void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
     // reports again.
     if (flowGpu)
         errorMsgNode((INode*)node, ErrorGpuUnavailable,
-            "In GPU code nothing is allocated, '%s %s[...]': a GPU has no allocator. Keep the value in a local, or in a buffer the kernel is bound.",
-            (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region));
+            "In GPU code nothing is allocated, '%s%s[...](...)': a GPU has no allocator. Keep the value in a local, or in a buffer the kernel is bound.",
+            (node->flags & FlagQues) ? "trynew " : "", itypeName(node->region));
 
     // The default permission type is 'uni', or 'imm' for a type declaring
     // Immutable
@@ -136,5 +139,5 @@ void allocateFlow(FlowState *fstate, RefNode **nodep) {
     RefNode *node = *nodep;
     // For an allocated reference, we need to handle the copied value
     flowLoadValue(fstate, &node->vtexp);
-    flowHandleMoveOrCopy(&node->vtexp);
+    flowHandleMoveOrCopyLast(&node->vtexp);
 }

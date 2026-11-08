@@ -1,0 +1,53 @@
+// A value whose type holds only ''static' borrows borrows nothing of the
+// caller's, so a function naming no lifetimes may not put a borrow the caller
+// lent into one: not in a result of such a type, nor where a '&mut'
+// parameter to such a type points. Its callers take the value to carry no
+// argument's loans (lifetime_band_static_holder_result), which only this
+// keeps true. Nor may a local's borrow go into one ('built'), though it would
+// not escape: a ''static' field takes only a global's borrow
+// (lifetime_band_static_field_given_local). '&v' is not a '&'static i64': the
+// message gives the spelling for a struct holding a local's borrow,
+// 'struct H['a] { r: &'a i64; }'.
+//
+// Verdict: refuse: ErrorEscape at each return and store of a caller's borrow,
+// and at the local's borrow given to the ''static' field.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a borrow the
+// caller lent may not be returned as ''static').
+// Master c85d9fa99: all four accepted (the result and what 'h' points at
+// were taken to hold the caller's borrows, as unnamed ones would).
+
+mod lifetime_band_static_holder_given_caller_borrow;
+
+struct H {
+  r: &'static i64;
+}
+
+struct Box {
+  x: i64;
+}
+
+fn mk(a: &i64) H {
+  H(a)                      //~ ErrorEscape "the borrow the caller lent through 'a'"
+}
+
+fn mkField(b: &Box) H {
+  H(&b.x)                   //~ ErrorEscape "the borrow the caller lent through 'b'"
+}
+
+fn put(h: &mut H, a: &i64) {
+  h.r = a;                  //~ ErrorEscape "Stored where 'h' points"
+}
+
+fn putField(h: &mut H, b: &Box) {
+  h.r = &b.x;               //~ ErrorEscape "Stored where 'h' points"
+}
+
+fn built() i64 {
+  let v = 5i64;
+  let h = H(&v);            //~ ErrorEscape "A struct that holds a borrow of a local or of what a caller lent declares a lifetime for it: 'struct H['a] { r: &'a ...; }'"
+  *h.r
+}
+
+fn main() {
+  built();
+}

@@ -63,7 +63,8 @@ Push and pop sites: `modFoldNames` and `modNameRes` (via `modHook`, the whole mo
 `structNameRes` (generic parms, then the whole type namespace, then each
 inherited member as it lands), `structNameResDemand` (another module's
 namespace, via `modHook`), `fnDclNameRes`
-(generic parms, then value parms), `macroNameRes` (parms), `blockNameRes`
+(generic parms, then value parms), `macroNameRes` (type parms, then each value
+parm after its type is resolved), `blockNameRes`
 (locals, accumulated one at a time as they are reached), and
 `clonePushState`/`clonePopState` — **which run during type check**, for generic
 substitution.
@@ -140,7 +141,7 @@ pass be a source-order walk with no forward-reference machinery: binding
 a name needs the declaration to *exist*, not to be analyzed, and the parser
 guarantees that. Locals are the exception and are deliberately order-dependent —
 `varDclNameRes` resolves the initializer **before** hooking the name, so
-`imm x = x` binds the outer `x` or fails.
+`let x = x` binds the outer `x` or fails.
 
 **Inherited and folded members are the other exception, and they are why the
 pass has one use of demand.** A type's dictionary is built whole before any of
@@ -194,6 +195,9 @@ functions included.
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 | `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
+| `FnCallTag` indexing `Vector` | the SIMD vector type, `VectorTag`, from a lane type and a number of lanes (`ErrorVectorArgs` for any other bracketing) | `vectorTypeLower` |
+| `FnCallTag` that calls a type, `Point(1, 2)`, `List[i32](100)`, `Rc[mut, Node](1)`, an alias of one (its callee is a type and not a variant: `isTypeNode`) | the same node marked `FlagNew` and positioned at the type's name, the construction `new` marked before. A written `new` is kept only before a dynamic region (`typeLitNewNamesRegionValue`: a variable or a path of fields, then brackets); before a type it is `ErrorNewNotRegion`, once, and taken as not written. A generic parameter's call, `T(1)`, is not a type here: type check marks it once substituted | `fnCallConstructNameRes` |
+| the entries of a `<-` whose receiver is such a call | nested as a receiver that is no construction has them (the parser guessed from the shape: a call is taken for a construction); a call of a generic parameter keeps the construction's nesting | `fnCallAppendNestNameRes` |
 | a name use, or a path or `Name[type arguments]`, that the parser marked as a value term (`FlagValueTermName`, `FlagValueTermCall`) and that names an empty variant | the literal that variant's construction is, a `FnCallTag` with no values, `FlagIndex` and `FlagCtorParen`: `None`, `Lamp.Red`, `None[i32]` | `fnCallVariantTermNameRes` |
 | a call of a method through an empty variant's name, `Lamp.Red.get()`, `Red.get()`, `Pending.Waiting[i64].key()` (the method is found in the variant's namespace or its enum's, and takes `self`; the enum of a variant from an imported package, `q.Lamp.Red.get()`, is the one it was written inside, since its base name is bound only when that package is name resolved) | the receiver, `Lamp.Red`, wrapped in the same construction literal; the call is then an ordinary method call on a value. A function with no `self`, a name the variant lacks, and a variant that holds values keep the path reading | `fnCallVariantReceiver` (called from `fnCallNameResPath`) |
 
@@ -238,7 +242,7 @@ side is an error, let such an operand abstain (`inodeIsProvisionalType`) —
 **A reference in a pattern stays a reference type** whatever its referent's
 name means for now: `refNameRes` asks `castPatternPending` too, because a
 pattern's bare root is bound at type check and may be unbound, or mean a value
-lexically, until then. `case imm c &Circle` is a narrowing, never a borrow.
+lexically, until then. `case let &Circle(c)` is a narrowing, never a borrow.
 
 **Two sites rewrite a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
 into the allocation node with `FlagQues` set, and `fnCallNameResPath` replaces
@@ -309,7 +313,10 @@ is the contract; there is never a second name resolution pass.
   `DclInfo` to mark. **A parameter's default value counts as an expanded body of
   its function** (`NameResState.sigfn`, set by `fnDclNameRes` round the
   signature, read by `fnSigNameRes`), since an importer evaluates it where it
-  calls. The include-file generator follows the record, so what a body it copies
+  calls. **So do a macro's parameter types**, which `macroNameRes` resolves inside
+  the expander's window: the importer resolves the macro's declaration, so a
+  type only a parameter names is declared beside it (`module_include_roundtrip`,
+  `weigh`). The include-file generator follows the record, so what a body it copies
   names is declared beside it, in whichever of the package's modules it sits
   ([module](../nodes/module.md), "Generating the include file").
 - **Nothing is typed.** No `vtype` is established, and no type check mark is
@@ -341,7 +348,7 @@ a path's member in `fnCallNameResPath`; never for a pattern's bare root, which
 type check reports),
 `ErrorNotPublic` (a private name through a qualifier; a private field or member
 in a fold), `ErrorPubFieldPrivType` (a `pub` field of a `pub` type naming a type
-private to the module, `fieldDclNameRes`), `ErrorDupName` (duplicate local, duplicate lifetime label,
+private to the module, `fieldDclNameRes`), `ErrorDupName` (duplicate local, a function's parameter named twice, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
 declares, a folded name already taken), `ErrorCircular` (two types that each
 extend or name the other in an `is`, or a type folding from a field of a type not yet
@@ -352,8 +359,12 @@ depending on its parent — raised by `pgmModuleOrder` before any fold runs,
 [module](../nodes/module.md), "The module order"), `ErrorNoMbr` (a fold naming a member the field's type lacks),
 `ErrorBadFold` (a fold admitting what cannot fold: a static, a macro without
 `self`, the value's own `final` or `clone`, or a source that is not a struct),
-`ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
-`ErrorInvType`.
+`ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm`,
+`ErrorInvType`, and `ErrorMacroParmAssign` (a macro's body changing a plain
+parameter where no type is in question, `macroChangeNameRes`, called from the
+name resolution of an assignment, a swap, a `&mut` borrow and an
+operator-assign; [generic](../nodes/generic.md), "A plain (not `lazy`)
+parameter is evaluated once").
 
 **A failed lookup does not un-resolve a successful one.** On the private
 qualified-name path the declaration stays attached after the diagnostic: it is
@@ -394,14 +405,16 @@ next pass a null to trip over.
   reason; resolving one beforehand leaks it into the enclosing scope, where the
   matching pop never reaches it. A function's and a type's list goes through
   `genericParmsNameRes`, which hooks every parameter before it resolves what
-  follows any (a bound, `[S Stack[T], T]`), so a bound sees the parameters
+  follows any (a bound, `[S: Stack[T], T]`), so a bound sees the parameters
   declared after it.
 - **`pstate->typenode` is read once** in this phase: `fnDclIsExpanded` asks
   whether a method's type is a trait or a generic, whose every method an
   importer expands. `structNameRes` saves and restores it.
 - **`fnSigNameRes` forces `scope = 0`** so that a signature reached as a *type*
   does not leak its parameter names. `fnDclNameRes` hooks the same parameters
-  itself, at scope 1, only when there is a body.
+  itself, at scope 1, only when there is a body. Two parameters of one name are
+  `ErrorDupName` at the second, found by a loop in `fnDclNameRes` that runs
+  with or without a body (a function *type* is not asked).
 - **Resolve before hooking, in both senses.** A variable's value before its
   name; a struct's base trait before any type member.
 
@@ -425,8 +438,8 @@ next pass a null to trip over.
 | `ir/stmt/module.c` | `modFoldNames` | one module's folds for the current pass, dependency-first — what it extends, its imports, then its globals' `use` clauses, then its standalone `use` statements — before any module's body resolves, so load order decides nothing. A global's fold and a standalone `use` whose source is not bound yet wait (`modFoldAwaits`); a global's fold and an enum's `use` are made once, and a submodule's `use` runs in every pass, as an import's clause does |
 | `ir/stmt/module.c` | `modFoldCollisionAt` | where a fold's collision is reported: at the fold a single pass would have met it at, whichever pass met it |
 | `ir/stmt/fold.c` | `foldModUseExpand` | a module's standalone `use`: the source it names resolved; an enum's variants each bound as an alias in the module's namespace, private unless `pub use`; a submodule's names folded by an `ImportNode` marked `isuse`, through `importNameRes` (`foldModUseModule`), which refuses a module reached through an import (`ErrorUseImported`) and any module that is not a submodule (`ErrorModReach`) |
-| `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks. A generic module's type parameters are hooked over its own names for the walk, and what it holds that an instance is not built for is refused (`modGenericCheckBody`, `ErrorGenModBody`). [module](../nodes/module.md), "Generic modules" |
-| `ir/stmt/program.c` | `pgmGenericModulesCheck` | where a generic module may not stand: an executable's root (`ErrorGenModRoot`), a parent of submodules (`ErrorGenModBody`), a `mod` line with a default fold (`ErrorGenModBare`) |
+| `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks. A generic module's type parameters are hooked over its own names for the walk, and over a submodule's of it (`modHookTemplateParms`), and what it holds that an instance is not built for is refused (`modGenericCheckBody`, `ErrorGenModBody`). [module](../nodes/module.md), "Generic modules" |
+| `ir/stmt/program.c` | `pgmGenericModulesCheck` | where a generic module may not stand: an executable's root (`ErrorGenModRoot`), inside another generic module (`ErrorGenModBody`), a `mod` line with a default fold (`ErrorGenModBare`) |
 | `ir/stmt/import.c` | `importNameRes`, `importBindModule`, `importBoundName`, `importRenaming` | the module's own binding — under the import's `as` name where it has one, the module's own name then bound to nothing — and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold — except to a module that extends it, which takes every declaration and fold with the base's own visibility, but not the base's own import bindings (`FlagImportName`, left out by `importStarAdmits`). Run in every fold pass: a star clause reads its module afresh (`importFoldStar`, which marks what it makes `FlagUnlisted`), and a listed item not yet made tries again, waiting rather than reporting until the pass that reports |
 | `ir/stmt/import.c` | `importBindName` | a submodule's import of a name of its parent [Jon 23 Sep] — a loop through containment, refused by `pgmModuleOrder`, and bound all the same so the loop is what is reported — bound in the fold passes after the parent's folds (`modFoldNames`): an alias to the parent's own binding, written and `FlagImportName`, public where the import is; a name not there or private waits, then is `ErrorUnkName` or `ErrorNotPublic` in the pass that reports. A module answer becomes the import's `module`, so its `use` clause folds as any import's does; a clause on anything else is `ErrorBadFold`. A bare name a file answered at parse is checked in the pass that reports against what the parent binds under it (`ErrorDupName`) |
 | `ir/stmt/module.c` | `modFoldBind` | every fold's binding into a module's namespace — an import's, an `extends`, a global's clause, an enum's `use` — where the same declaration by the same route, one of the two brought by a star clause (`FlagUnlisted`), is the binding the name has already, public if either route is, a fold if either route is one (it clears `FlagImportName`); the same declaration written twice, and a different declaration, collide [Jon 23 Sep] |
@@ -444,6 +457,7 @@ next pass a null to trip over.
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
 | `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing `[n; x]`, the old spelling of a type and the retired fill literal; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl`, refusing a size that is arithmetic over a generic's value parameter (`ErrorGenValueArith`) |
+| `ir/types/vector.c` | `vectorNameRes`, `vectorTypeLower` | the vector type `Vector[T, N]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `vectorTypeDcl`, refusing a call that is not a lane type and a count (`ErrorVectorArgs`) and a count that is arithmetic over a generic's value parameter ([vector](../nodes/vector.md)) |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
 | `ir/exp/closure.c` | `closureNameRes`, `closureNoteUse` | a closure literal: its state's values and parameters' types read in the code around it, then its own names hooked over that for the body; each local of the code around that a bound name reaches, and the `self` a bare member is reached through, is noted as one it borrows ([closure](../nodes/closure.md)) |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |

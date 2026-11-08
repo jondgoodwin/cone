@@ -55,7 +55,7 @@ int regionAllocTakesRecord(INode *region);
 int regionIsTraced(INode *region);
 
 // Does the traced region's 'mark' take each reference's permission and the
-// trace's mode, 'fn mark(self &uni R, slot *usize, perm u32, mode u32)'?
+// trace's mode, 'fn mark(self: &uni R, slot *usize, perm u32, mode u32)'?
 int regionMarkTakesContext(INode *region);
 
 // Whether any struct of this compile declares 'Traced', noted as each struct is
@@ -63,6 +63,11 @@ int regionMarkTakesContext(INode *region);
 // traced, and an erased value (core's Erased) holds nothing a trace need find.
 void regionTracedSeen(void);
 int regionTracedAnywhere(void);
+
+// The same, for a traced struct not declaring 'ActorLocal': noted beside
+// regionTracedSeen. Until one does, nothing needs a root frame.
+void regionCollectedSeen(void);
+int regionCollectedAnywhere(void);
 
 // May a trace pass through an owning reference into this region, to the value it
 // holds: it is single-owner (Move), or declares 'visit'?

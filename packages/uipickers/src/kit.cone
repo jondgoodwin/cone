@@ -1,0 +1,850 @@
+// ======== The controls: drag-number, colour picker, dropdown ========
+//
+// Each control is a HOSTED node of uilayout (see hosted.cone there): the Ui lays it out, finds it under the
+// pointer, focuses it and clips it; this file takes the events queued for it, changes its state, and gives
+// the Ui the draw commands that show it. All of them live in a PickerKit, in one table per kind (the
+// package's way of holding what uilayout's node table holds for its own widgets), named by index, and
+// the kit's 'pump' runs them all once a frame, AFTER the Ui's layout (the draw commands are made in the
+// node's laid-out rectangle).
+//
+// WHAT COMES OUT. A control never calls back. It appends PickEvents to 'kit.out': the kind, the control's
+// index, whether the gesture is still going (live), the new value and the value the gesture began with.
+
+pub const PK_NUMBER = 1u32;
+pub const PK_COLOR = 2u32;
+pub const PK_DROPDOWN = 3u32;
+
+// One thing a control did
+pub struct PickEvent {
+  pub kind: u32;
+  pub index: usize;
+  pub live: bool;
+  pub a: f32;                 // the new value: a number, a colour's red, a dropdown's selected index
+  pub b: f32;                 // a colour's green
+  pub c: f32;                 // a colour's blue
+  pub d: f32;                 // a colour's alpha
+  pub pa: f32;                // the same four as they were when the gesture began
+  pub pb: f32;
+  pub pc: f32;
+  pub pd: f32;
+}
+
+pub struct PickStyle {
+  pub field: u32 = 0x262930ffu32;        // a control's background
+  pub header: u32 = 0x31353fffu32;       // a dropdown's and a picker header's background
+  pub border: u32 = 0x464b56ffu32;
+  pub text: u32 = 0xe1e4ebffu32;
+  pub dim: u32 = 0x8c929effu32;
+  pub accent: u32 = 0x5a96ffffu32;       // the border of a control being used, the selected option
+  pub fill: u32 = 0x5a96ff55u32;         // a slider's filled part
+  pub font: u32 = 0u32;
+  pub size: f32 = 14.;
+  pub radius: f32 = 4.;
+  pub rowH: f32 = 26.;
+
+  pub fn dark() PickStyle {PickStyle()}
+}
+
+const MODE_IDLE = 0u32;
+const MODE_PRESSED = 1u32;
+const MODE_DRAGGING = 2u32;
+const MODE_TYPING = 3u32;
+const MODE_SV = 4u32;
+const MODE_HUE = 5u32;
+
+// ---- a drag-number or number slider ----
+pub struct DragNumber {
+  pub label: String;              // a letter or short name at the left ("X"), or empty
+  pub suffix: String;             // after the number ("deg"), or empty
+  typed: String;
+  pub node: usize = 0usize;
+  pub value: f32 = 0.;
+  pub min: f32 = -1000000.;
+  pub max: f32 = 1000000.;
+  pub step: f32 = 0.;             // 0: any value; else values are multiples of it
+  pub speed: f32 = 0.01;          // value change per pixel dragged
+  pub decimals: u32 = 2u32;
+  pub fill: bool = false;         // drawn and set as a slider over min..max
+  pub labelColor: u32 = 0x8c929effu32;
+  mode: u32 = 0u32;
+  downX: f32 = 0.;
+  lastX: f32 = 0.;
+  acc: f32 = 0.;
+  startValue: f32 = 0.;
+  fresh: bool = false;
+  dirty: bool = true;
+  rx: f32 = -1.;
+  ry: f32 = -1.;
+  rw: f32 = -1.;
+  rh: f32 = -1.;
+}
+
+// ---- a colour picker ----
+pub struct ColorPicker {
+  hex: String;
+  pub node: usize = 0usize;
+  pub h: f32 = 0.;
+  pub s: f32 = 0.;
+  pub v: f32 = 1.;
+  pub a: f32 = 1.;
+  pub collapsible: bool = false;  // a header row (swatch and hex) that opens and closes the picker
+  pub open: bool = true;
+  pub prefW: f32 = 240.;
+  mode: u32 = 0u32;
+  r0: f32 = 0.;
+  g0: f32 = 0.;
+  b0: f32 = 0.;
+  fresh: bool = false;
+  dirty: bool = true;
+  rx: f32 = -1.;
+  ry: f32 = -1.;
+  rw: f32 = -1.;
+  rh: f32 = -1.;
+}
+
+// ---- a dropdown ----
+pub struct Dropdown {
+  pub options: List[String];
+  pub node: usize = 0usize;
+  pub selected: i32 = 0i32;
+  pub open: bool = false;
+  pub prefW: f32 = 160.;
+  dirty: bool = true;
+  rx: f32 = -1.;
+  ry: f32 = -1.;
+  rw: f32 = -1.;
+  rh: f32 = -1.;
+}
+
+// A node's laid-out box, copied out (so no borrow of the Ui's table is held)
+struct Box {
+  x: f32;
+  y: f32;
+  w: f32;
+  h: f32;
+}
+
+fn boxOf(ui: &Ui, node: usize) Box {
+  Box(ui.nodes[node].gx, ui.nodes[node].gy, ui.nodes[node].w, ui.nodes[node].h)
+}
+
+// The picker's geometry, from its width, relative to the top left of its node
+const HEADER_H = 26.f;
+const SV_H = 110.f;
+const BODY_H = 154.f;
+
+pub struct PickerKit {
+  pub style: PickStyle;
+  pub numbers: List[DragNumber];
+  pub colors: List[ColorPicker];
+  pub drops: List[Dropdown];
+  pub out: List[PickEvent];
+
+  pub fn make() PickerKit {
+    PickerKit(PickStyle.dark(), List[DragNumber](), List[ColorPicker](), List[Dropdown](), List[PickEvent]())
+  }
+
+  // ---- making them ----
+
+  // A drag-number under 'parent'. A range with 'fill' makes it a slider. Answers its index
+  pub fn addNumber(self: &mut, ui: &mut Ui, parent: usize, value: f32, min: f32, max: f32, speed: f32, decimals: u32, fill: bool) usize {
+    let node = hostedNode(ui, parent);
+    ui.setSize(node, 120., style.rowH);
+    ui.setMinSize(node, 40., style.rowH);
+    var d = DragNumber(String(), String(), String());
+    d.node = node;
+    d.value = value;
+    d.min = min;
+    d.max = max;
+    d.speed = speed;
+    d.decimals = decimals;
+    d.fill = fill;
+    numbers.push(d);
+    numbers.len() - 1usize
+  }
+
+  pub fn addColor(self: &mut, ui: &mut Ui, parent: usize, r: f32, g: f32, b: f32, collapsible: bool) usize {
+    let node = hostedNode(ui, parent);
+    var c = ColorPicker(String());
+    c.node = node;
+    c.collapsible = collapsible;
+    c.open = !collapsible;
+    let hsv = rgbToHsv(r, g, b);
+    c.h = hsv.x;
+    c.s = hsv.y;
+    c.v = hsv.z;
+    c.r0 = r;
+    c.g0 = g;
+    c.b0 = b;
+    ui.setSize(node, c.prefW, colorHeight(c.collapsible, c.open));
+    colors.push(c);
+    colors.len() - 1usize
+  }
+
+  pub fn addDropdown(self: &mut, ui: &mut Ui, parent: usize, options: &List[String], selected: i32) usize {
+    let node = hostedNode(ui, parent);
+    var copy = List[String]();
+    var i = 0usize;
+    while i < options.len() {
+      copy.push(String.from((*options[i]).view()));
+      i = i + 1usize;
+    }
+    var d = Dropdown(copy);
+    d.node = node;
+    d.selected = selected;
+    ui.setSize(node, d.prefW, style.rowH);
+    ui.setMinSize(node, 60., style.rowH);
+    drops.push(d);
+    drops.len() - 1usize
+  }
+
+  // ---- setting them from outside (no event comes of it) ----
+
+  pub fn setNumber(self: &mut, i: usize, v: f32) {
+    if numbers[i].mode == MODE_DRAGGING || numbers[i].mode == MODE_TYPING {return;}
+    if numbers[i].value != v {
+      numbers[i].value = v;
+      numbers[i].dirty = true;
+    }
+  }
+
+  pub fn setColor(self: &mut, i: usize, r: f32, g: f32, b: f32, a: f32) {
+    if colors[i].mode != MODE_IDLE {return;}
+    // a grey or black colour keeps the hue and saturation the user was at
+    let hsv = rgbToHsv(r, g, b);
+    let cur = hsvToRgb(colors[i].h, colors[i].s, colors[i].v);
+    if (cur.x - r).abs() > 0.002 || (cur.y - g).abs() > 0.002 || (cur.z - b).abs() > 0.002 {
+      colors[i].h = if hsv.y > 0.001 && hsv.z > 0.001 {hsv.x} else {colors[i].h};
+      colors[i].s = if hsv.z > 0.001 {hsv.y} else {colors[i].s};
+      colors[i].v = hsv.z;
+      colors[i].dirty = true;
+    }
+    colors[i].a = a;
+    colors[i].r0 = r;
+    colors[i].g0 = g;
+    colors[i].b0 = b;
+  }
+
+  pub fn setSelected(self: &mut, i: usize, sel: i32) {
+    if drops[i].selected != sel {
+      drops[i].selected = sel;
+      drops[i].dirty = true;
+    }
+  }
+
+  pub fn colorOf(self: &, i: usize) Vec3 {hsvToRgb(colors[i].h, colors[i].s, colors[i].v)}
+
+  // ---- the frame ----
+
+  // Takes the events queued for every control, changes them, and gives the Ui their draw commands. After
+  // 'layout'
+  pub fn pump(self: &mut, ui: &mut Ui) {
+    var i = 0usize;
+    while i < numbers.len() {
+      let evs = takeHostEvents(ui, numbers[i].node);
+      var e = 0usize;
+      while e < evs.len() {
+        numberEvent(ui, i, *evs[e]);
+        e = e + 1usize;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < colors.len() {
+      let evs = takeHostEvents(ui, colors[i].node);
+      var e = 0usize;
+      while e < evs.len() {
+        colorEvent(ui, i, *evs[e]);
+        e = e + 1usize;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < drops.len() {
+      let evs = takeHostEvents(ui, drops[i].node);
+      var e = 0usize;
+      while e < evs.len() {
+        dropEvent(ui, i, *evs[e]);
+        e = e + 1usize;
+      }
+      i = i + 1usize;
+    }
+    refresh(ui);
+  }
+
+  // The events out, taken
+  pub fn takeEvents(self: &mut) List[PickEvent] {
+    var r = List[PickEvent]();
+    out <-> r;
+    r
+  }
+
+  fn refresh(self: &mut, ui: &mut Ui) {
+    var list = DrawList.make();
+    var i = 0usize;
+    while i < numbers.len() {
+      let n = boxOf(ui, numbers[i].node);
+      if numbers[i].dirty || n.x != numbers[i].rx || n.y != numbers[i].ry || n.w != numbers[i].rw || n.h != numbers[i].rh {
+        list.clear();
+        drawNumber(ui, i, &mut list);
+        hostedSetDraw(ui, numbers[i].node, &list);
+        numbers[i].dirty = false;
+        numbers[i].rx = n.x;
+        numbers[i].ry = n.y;
+        numbers[i].rw = n.w;
+        numbers[i].rh = n.h;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < colors.len() {
+      let n = boxOf(ui, colors[i].node);
+      if colors[i].dirty || n.x != colors[i].rx || n.y != colors[i].ry || n.w != colors[i].rw || n.h != colors[i].rh {
+        list.clear();
+        drawColor(ui, i, &mut list);
+        hostedSetDraw(ui, colors[i].node, &list);
+        colors[i].dirty = false;
+        colors[i].rx = n.x;
+        colors[i].ry = n.y;
+        colors[i].rw = n.w;
+        colors[i].rh = n.h;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < drops.len() {
+      let n = boxOf(ui, drops[i].node);
+      if drops[i].dirty || n.x != drops[i].rx || n.y != drops[i].ry || n.w != drops[i].rw || n.h != drops[i].rh {
+        list.clear();
+        drawDrop(ui, i, &mut list);
+        hostedSetDraw(ui, drops[i].node, &list);
+        drops[i].dirty = false;
+        drops[i].rx = n.x;
+        drops[i].ry = n.y;
+        drops[i].rw = n.w;
+        drops[i].rh = n.h;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // ======== the drag-number ========
+
+  fn quantise(self: &, i: usize, v: f32) f32 {
+    var x = v;
+    if numbers[i].min < numbers[i].max {
+      if x < numbers[i].min {x = numbers[i].min;}
+      if x > numbers[i].max {x = numbers[i].max;}
+    }
+    if numbers[i].step > 0. {
+      let q = x / numbers[i].step;
+      x = libc.floorf(q + 0.5) * numbers[i].step;
+      if numbers[i].min < numbers[i].max {
+        if x < numbers[i].min {x = numbers[i].min;}
+        if x > numbers[i].max {x = numbers[i].max;}
+      }
+    }
+    x
+  }
+
+  fn emitNumber(self: &mut, i: usize, live: bool) {
+    out.push(PickEvent(PK_NUMBER, i, live, numbers[i].value, 0., 0., 0., numbers[i].startValue, 0., 0., 0.));
+  }
+
+  fn setFromX(self: &mut, ui: &mut Ui, i: usize, x: f32) {
+    let n = ui.nodes[numbers[i].node];
+    let lo = numbers[i].min;
+    let hi = numbers[i].max;
+    let f = clampf((x - n.gx) / n.w.max(1.), 0., 1.);
+    let v = quantise(i, lo + (hi - lo) * f);
+    if v != numbers[i].value {
+      numbers[i].value = v;
+      numbers[i].dirty = true;
+      emitNumber(i, true);
+    }
+  }
+
+  fn startTyping(self: &mut, i: usize) {
+    numbers[i].mode = MODE_TYPING;
+    numbers[i].typed = fixedString(numbers[i].value, numbers[i].decimals);
+    numbers[i].fresh = true;
+    numbers[i].dirty = true;
+  }
+
+  fn finishTyping(self: &mut, i: usize, accept: bool) {
+    if numbers[i].mode != MODE_TYPING {return;}
+    numbers[i].mode = MODE_IDLE;
+    numbers[i].dirty = true;
+    if !accept {return;}
+    var ok = false;
+    let v = parseNumber(numbers[i].typed.view(), &mut ok);
+    if ok {
+      let q = quantise(i, v);
+      numbers[i].startValue = numbers[i].value;
+      if q != numbers[i].value {
+        numbers[i].value = q;
+        emitNumber(i, false);
+      }
+    }
+  }
+
+  fn numberEvent(self: &mut, ui: &mut Ui, i: usize, ev: Ev) {
+    let k = ev.kind;
+    let mode = numbers[i].mode;
+    if k == EK_FOCUS_OUT {
+      if mode == MODE_TYPING {finishTyping(i, true);}
+      numbers[i].dirty = true;
+      return;
+    }
+    if k == EK_FOCUS_IN {numbers[i].dirty = true; return;}
+    if mode == MODE_TYPING {
+      if k == EK_TEXT {
+        let c = ev.code;
+        if c == 45u32 || c == 43u32 || c == 46u32 || c == 101u32 || c == 69u32 || (c >= 48u32 && c <= 57u32) {
+          if numbers[i].fresh {numbers[i].typed.clear(); numbers[i].fresh = false;}
+          numbers[i].typed.appendByte(u8.from(c));
+          numbers[i].dirty = true;
+        }
+      } else if k == EK_KEY_DOWN {
+        if ev.code == KEY_ENTER {finishTyping(i, true);}
+        else if ev.code == KEY_ESCAPE {finishTyping(i, false);}
+        else if ev.code == KEY_BACKSPACE {
+          if numbers[i].fresh {numbers[i].typed.clear(); numbers[i].fresh = false;}
+          else if numbers[i].typed.len() > 0usize {numbers[i].typed.truncate(numbers[i].typed.len() - 1usize);}
+          numbers[i].dirty = true;
+        }
+      }
+      return;
+    }
+    if k == EK_DOWN && ev.button == BTN_LEFT {
+      numbers[i].startValue = numbers[i].value;
+      numbers[i].downX = ev.x;
+      numbers[i].lastX = ev.x;
+      numbers[i].acc = numbers[i].value;
+      if numbers[i].fill {
+        if (ev.mods & MOD_CTRL) != 0u32 {startTyping(i); return;}
+        numbers[i].mode = MODE_DRAGGING;
+        setFromX(ui, i, ev.x);
+      } else {
+        numbers[i].mode = MODE_PRESSED;
+      }
+      numbers[i].dirty = true;
+      return;
+    }
+    if k == EK_MOVE {
+      if numbers[i].mode == MODE_PRESSED && (ev.x - numbers[i].downX).abs() > 3. {
+        numbers[i].mode = MODE_DRAGGING;
+      }
+      if numbers[i].mode == MODE_DRAGGING {
+        if numbers[i].fill {
+          setFromX(ui, i, ev.x);
+        } else {
+          let fine = if (ev.mods & MOD_SHIFT) != 0u32 {0.1f} else if (ev.mods & MOD_CTRL) != 0u32 {10.} else {1.};
+          numbers[i].acc = numbers[i].acc + (ev.x - numbers[i].lastX) * numbers[i].speed * fine;
+          let v = quantise(i, numbers[i].acc);
+          if v != numbers[i].value {
+            numbers[i].value = v;
+            numbers[i].dirty = true;
+            emitNumber(i, true);
+          }
+        }
+        numbers[i].lastX = ev.x;
+      }
+      return;
+    }
+    if k == EK_UP {
+      if numbers[i].mode == MODE_PRESSED {
+        startTyping(i);
+      } else if numbers[i].mode == MODE_DRAGGING {
+        numbers[i].mode = MODE_IDLE;
+        numbers[i].dirty = true;
+        if numbers[i].value != numbers[i].startValue {emitNumber(i, false);}
+      }
+      return;
+    }
+    if k == EK_DBLCLICK && numbers[i].fill {
+      startTyping(i);
+      return;
+    }
+    if k == EK_KEY_DOWN && (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
+      let stepBy = if numbers[i].step > 0. {numbers[i].step} else {numbers[i].speed * 10.};
+      let dir = if ev.code == KEY_LEFT {-1.f} else {1.};
+      numbers[i].startValue = numbers[i].value;
+      let v = quantise(i, numbers[i].value + dir * stepBy);
+      if v != numbers[i].value {
+        numbers[i].value = v;
+        numbers[i].dirty = true;
+        emitNumber(i, false);
+      }
+    }
+  }
+
+  fn drawNumber(self: &, ui: &Ui, i: usize, out: &mut DrawList) {
+    let d = &numbers[i];
+    let n = ui.nodes[d.node];
+    let x = n.gx;
+    let y = n.gy;
+    let focused = ui.hasState(d.node, ST_FOCUSED);
+    out.rect(x, y, n.w, n.h, style.field, style.radius, d.node);
+    if d.fill && d.max > d.min {
+      let f = clampf((d.value - d.min) / (d.max - d.min), 0., 1.);
+      out.clipPush(x, y, n.w, n.h);
+      out.rect(x, y, n.w * f, n.h, style.fill, 0., d.node);
+      out.clipPop();
+    }
+    var left = x;
+    if d.label.len() > 0usize {
+      let lw = n.h * 0.9;
+      out.rect(x + 1., y + 1., lw, n.h - 2., style.header, style.radius - 1., d.node);
+      out.text(x + 1., y + 1., lw, n.h - 2., d.label.view(), style.font, style.size - 1., d.labelColor, TA_CENTER, d.node);
+      left = x + lw + 2.;
+    }
+    var shown = String();
+    if d.mode == MODE_TYPING {
+      shown = String.from(d.typed.view());
+      shown.append("|");
+    } else {
+      shown = fixedString(d.value, d.decimals);
+      if d.suffix.len() > 0usize {
+        shown.append(" ");
+        shown.append(d.suffix.view());
+      }
+    }
+    out.text(left, y, x + n.w - left, n.h, shown.view(), style.font, style.size, style.text, TA_CENTER, d.node);
+    let hot = d.mode == MODE_DRAGGING || d.mode == MODE_TYPING || d.mode == MODE_PRESSED;
+    out.border(x, y, n.w, n.h, if hot || focused {style.accent} else {style.border}, style.radius, 1., d.node);
+  }
+
+  // ======== the colour picker ========
+
+  fn colorHeight(collapsible: bool, open: bool) f32 {
+    if collapsible {
+      if open {HEADER_H + 4. + BODY_H} else {HEADER_H}
+    } else {BODY_H}
+  }
+
+  fn applyColorSize(self: &mut, ui: &mut Ui, i: usize) {
+    ui.setSize(colors[i].node, colors[i].prefW, colorHeight(colors[i].collapsible, colors[i].open));
+  }
+
+  fn emitColor(self: &mut, i: usize, live: bool) {
+    let c = hsvToRgb(colors[i].h, colors[i].s, colors[i].v);
+    out.push(PickEvent(PK_COLOR, i, live, c.x, c.y, c.z, colors[i].a, colors[i].r0, colors[i].g0, colors[i].b0, colors[i].a));
+  }
+
+  // The picker's body rectangles relative to its node's top left: (x, y, w, h) of the square, the hue bar, the preview,
+  // the hex field
+  fn svRect(collapsible: bool, w: f32) Vec4 {
+    let top = if collapsible {HEADER_H + 4.} else {0.};
+    Vec4(6., top + 6., w - 12. - 52., SV_H)
+  }
+  fn hueRect(collapsible: bool, w: f32) Vec4 {
+    let sv = svRect(collapsible, w);
+    Vec4(sv.x + sv.z + 8., sv.y, 18., SV_H)
+  }
+  fn previewRect(collapsible: bool, w: f32) Vec4 {
+    let hr = hueRect(collapsible, w);
+    Vec4(hr.x + hr.z + 8., hr.y, 18., SV_H)
+  }
+  fn hexRect(collapsible: bool, w: f32) Vec4 {
+    let sv = svRect(collapsible, w);
+    Vec4(sv.x, sv.y + SV_H + 8., 96., 24.)
+  }
+
+  fn inRect(r: Vec4, x: f32, y: f32) bool {
+    x >= r.x && x < r.x + r.z && y >= r.y && y < r.y + r.w
+  }
+
+  fn setSvAt(self: &mut, i: usize, lx: f32, ly: f32, w: f32) {
+    let r = svRect(colors[i].collapsible, w);
+    colors[i].s = clampf((lx - r.x) / r.z, 0., 1.);
+    colors[i].v = 1. - clampf((ly - r.y) / r.w, 0., 1.);
+    colors[i].dirty = true;
+    emitColor(i, true);
+  }
+
+  fn setHueAt(self: &mut, i: usize, ly: f32, w: f32) {
+    let r = hueRect(colors[i].collapsible, w);
+    colors[i].h = clampf((ly - r.y) / r.w, 0., 0.9999);
+    colors[i].dirty = true;
+    emitColor(i, true);
+  }
+
+  fn colorEvent(self: &mut, ui: &mut Ui, i: usize, ev: Ev) {
+    let k = ev.kind;
+    let n = ui.nodes[colors[i].node];
+    let lx = ev.x - n.gx;
+    let ly = ev.y - n.gy;
+    if k == EK_FOCUS_OUT {
+      if colors[i].mode == MODE_TYPING {
+        colors[i].mode = MODE_IDLE;
+        colors[i].dirty = true;
+      }
+      return;
+    }
+    if colors[i].mode == MODE_TYPING {
+      if k == EK_TEXT {
+        let c = ev.code;
+        if c == 35u32 || (c >= 48u32 && c <= 57u32) || (c >= 65u32 && c <= 70u32) || (c >= 97u32 && c <= 102u32) {
+          if colors[i].fresh {colors[i].hex.clear(); colors[i].fresh = false;}
+          if colors[i].hex.len() < 7usize {colors[i].hex.appendByte(u8.from(c));}
+          colors[i].dirty = true;
+        }
+      } else if k == EK_KEY_DOWN {
+        if ev.code == KEY_ENTER {
+          var ok = false;
+          let rgbv = parseHex(colors[i].hex.view(), &mut ok);
+          colors[i].mode = MODE_IDLE;
+          colors[i].dirty = true;
+          if ok {
+            let before = hsvToRgb(colors[i].h, colors[i].s, colors[i].v);
+            colors[i].r0 = before.x;
+            colors[i].g0 = before.y;
+            colors[i].b0 = before.z;
+            let hsv = rgbToHsv(rgbv.x, rgbv.y, rgbv.z);
+            colors[i].h = if hsv.y > 0.001 && hsv.z > 0.001 {hsv.x} else {colors[i].h};
+            colors[i].s = hsv.y;
+            colors[i].v = hsv.z;
+            emitColor(i, false);
+          }
+        }
+        else if ev.code == KEY_ESCAPE {colors[i].mode = MODE_IDLE; colors[i].dirty = true;}
+        else if ev.code == KEY_BACKSPACE {
+          if colors[i].fresh {colors[i].hex.clear(); colors[i].fresh = false;}
+          else if colors[i].hex.len() > 0usize {colors[i].hex.truncate(colors[i].hex.len() - 1usize);}
+          colors[i].dirty = true;
+        }
+      }
+      return;
+    }
+    if k == EK_DOWN && ev.button == BTN_LEFT {
+      if colors[i].collapsible && ly < HEADER_H {
+        colors[i].open = !colors[i].open;
+        applyColorSize(ui, i);
+        colors[i].dirty = true;
+        return;
+      }
+      if !colors[i].open {return;}
+      let cur = hsvToRgb(colors[i].h, colors[i].s, colors[i].v);
+      if inRect(svRect(colors[i].collapsible, n.w), lx, ly) {
+        colors[i].r0 = cur.x;
+        colors[i].g0 = cur.y;
+        colors[i].b0 = cur.z;
+        colors[i].mode = MODE_SV;
+        setSvAt(i, lx, ly, n.w);
+      } else if inRect(hueRect(colors[i].collapsible, n.w), lx, ly) {
+        colors[i].r0 = cur.x;
+        colors[i].g0 = cur.y;
+        colors[i].b0 = cur.z;
+        colors[i].mode = MODE_HUE;
+        setHueAt(i, ly, n.w);
+      } else if inRect(hexRect(colors[i].collapsible, n.w), lx, ly) {
+        colors[i].mode = MODE_TYPING;
+        colors[i].hex = hexOf(cur.x, cur.y, cur.z);
+        colors[i].fresh = true;
+        colors[i].dirty = true;
+      }
+      return;
+    }
+    if k == EK_MOVE {
+      if colors[i].mode == MODE_SV {setSvAt(i, lx, ly, n.w);}
+      else if colors[i].mode == MODE_HUE {setHueAt(i, ly, n.w);}
+      return;
+    }
+    if k == EK_UP {
+      if colors[i].mode == MODE_SV || colors[i].mode == MODE_HUE {
+        colors[i].mode = MODE_IDLE;
+        colors[i].dirty = true;
+        let now = hsvToRgb(colors[i].h, colors[i].s, colors[i].v);
+        if (now.x - colors[i].r0).abs() > 0.0005 || (now.y - colors[i].g0).abs() > 0.0005 || (now.z - colors[i].b0).abs() > 0.0005 {
+          emitColor(i, false);
+        }
+      }
+    }
+  }
+
+  fn drawColor(self: &, ui: &Ui, i: usize, out: &mut DrawList) {
+    let c = &colors[i];
+    let n = ui.nodes[c.node];
+    let x = n.gx;
+    let y = n.gy;
+    let cur = hsvToRgb(c.h, c.s, c.v);
+    out.rect(x, y, n.w, n.h, style.field, style.radius, c.node);
+    if c.collapsible {
+      out.rect(x + 1., y + 1., n.w - 2., HEADER_H - 2., style.header, style.radius - 1., c.node);
+      out.rect(x + 5., y + 5., 40., HEADER_H - 10., packRgb(cur.x, cur.y, cur.z, 1.), 3., c.node);
+      out.border(x + 5., y + 5., 40., HEADER_H - 10., style.border, 3., 1., c.node);
+      out.text(x + 54., y, n.w - 60., HEADER_H, hexOf(cur.x, cur.y, cur.z).view(), style.font, style.size, style.text, TA_LEFT, c.node);
+      // the open / closed mark: a little triangle
+      let tx = x + n.w - 16.;
+      let ty = y + HEADER_H * 0.5;
+      if c.open {
+        out.line(tx - 4., ty - 2., tx, ty + 3., style.dim, 1.5, c.node);
+        out.line(tx, ty + 3., tx + 4., ty - 2., style.dim, 1.5, c.node);
+      } else {
+        out.line(tx - 2., ty - 4., tx + 3., ty, style.dim, 1.5, c.node);
+        out.line(tx + 3., ty, tx - 2., ty + 4., style.dim, 1.5, c.node);
+      }
+    }
+    if c.open {
+      let sv = svRect(c.collapsible, n.w);
+      let hr = hueRect(c.collapsible, n.w);
+      let pr = previewRect(c.collapsible, n.w);
+      let hx = hexRect(c.collapsible, n.w);
+      // the square: cells of saturation across and value down, each a flat rectangle (a gradient the draw
+      // list has no command for), a hair larger than its place so none shows a seam
+      let cols = 28;
+      let rows = 16;
+      let cw = sv.z / f32.from(cols);
+      let ch = sv.w / f32.from(rows);
+      var cy = 0;
+      while cy < rows {
+        var cx = 0;
+        while cx < cols {
+          let s = (f32.from(cx) + 0.5) / f32.from(cols);
+          let v = 1. - (f32.from(cy) + 0.5) / f32.from(rows);
+          let rgbv = hsvToRgb(c.h, s, v);
+          out.rect(x + sv.x + f32.from(cx) * cw, y + sv.y + f32.from(cy) * ch, cw + 0.6, ch + 0.6, packRgb(rgbv.x, rgbv.y, rgbv.z, 1.), 0., c.node);
+          cx = cx + 1;
+        }
+        cy = cy + 1;
+      }
+      // the hue bar
+      let hrows = 24;
+      var hy = 0;
+      while hy < hrows {
+        let rgbv = hsvToRgb((f32.from(hy) + 0.5) / f32.from(hrows), 1., 1.);
+        let hh = hr.w / f32.from(hrows);
+        out.rect(x + hr.x, y + hr.y + f32.from(hy) * hh, hr.z, hh + 0.6, packRgb(rgbv.x, rgbv.y, rgbv.z, 1.), 0., c.node);
+        hy = hy + 1;
+      }
+      // the markers
+      let mx = x + sv.x + c.s * sv.z;
+      let my = y + sv.y + (1. - c.v) * sv.w;
+      out.border(mx - 6., my - 6., 12., 12., 0x000000ffu32, 6., 2.5, c.node);
+      out.border(mx - 5., my - 5., 10., 10., 0xffffffffu32, 5., 1.5, c.node);
+      let hmy = y + hr.y + c.h * hr.w;
+      out.rect(x + hr.x - 2., hmy - 2.5, hr.z + 4., 5., 0x000000ffu32, 2., c.node);
+      out.rect(x + hr.x - 1., hmy - 1.5, hr.z + 2., 3., 0xffffffffu32, 1., c.node);
+      // the new colour above, the one the gesture began with below
+      out.rect(x + pr.x, y + pr.y, pr.z, pr.w * 0.5, packRgb(cur.x, cur.y, cur.z, 1.), 3., c.node);
+      let old = if c.mode == MODE_SV || c.mode == MODE_HUE {packRgb(c.r0, c.g0, c.b0, 1.)} else {packRgb(cur.x, cur.y, cur.z, 1.)};
+      out.rect(x + pr.x, y + pr.y + pr.w * 0.5, pr.z, pr.w * 0.5, old, 3., c.node);
+      out.border(x + pr.x, y + pr.y, pr.z, pr.w, style.border, 3., 1., c.node);
+      // the hex field and the three numbers
+      out.rect(x + hx.x, y + hx.y, hx.z, hx.w, style.header, style.radius, c.node);
+      var shown = String();
+      if c.mode == MODE_TYPING {
+        shown = String.from(c.hex.view());
+        shown.append("|");
+      } else {
+        shown = hexOf(cur.x, cur.y, cur.z);
+      }
+      out.text(x + hx.x, y + hx.y, hx.z, hx.w, shown.view(), style.font, style.size, style.text, TA_CENTER, c.node);
+      out.border(x + hx.x, y + hx.y, hx.z, hx.w, if c.mode == MODE_TYPING {style.accent} else {style.border}, style.radius, 1., c.node);
+      let rx = x + hx.x + hx.z + 8.;
+      let rw = (x + n.w - 6. - rx) / 3.;
+      var ch2 = 0u32;
+      while ch2 < 3u32 {
+        let v = if ch2 == 0u32 {cur.x} else if ch2 == 1u32 {cur.y} else {cur.z};
+        var t = String();
+        t.append(if ch2 == 0u32 {"R "} else if ch2 == 1u32 {"G "} else {"B "});
+        t.appendInt(i64.from(libc.floorf(v * 255. + 0.5)));
+        out.text(rx + rw * f32.from(ch2), y + hx.y, rw, hx.w, t.view(), style.font, style.size - 2., style.dim, TA_LEFT, c.node);
+        ch2 = ch2 + 1u32;
+      }
+    }
+    out.border(x, y, n.w, n.h, if c.mode != MODE_IDLE {style.accent} else {style.border}, style.radius, 1., c.node);
+  }
+
+  // ======== the dropdown ========
+
+  fn applyDropSize(self: &mut, ui: &mut Ui, i: usize) {
+    let rows = if drops[i].open {f32.from(i32.from(drops[i].options.len()))} else {0.};
+    ui.setSize(drops[i].node, drops[i].prefW, style.rowH + rows * style.rowH);
+  }
+
+  fn emitDrop(self: &mut, i: usize, before: i32) {
+    out.push(PickEvent(PK_DROPDOWN, i, false, f32.from(drops[i].selected), 0., 0., 0., f32.from(before), 0., 0., 0.));
+  }
+
+  fn dropEvent(self: &mut, ui: &mut Ui, i: usize, ev: Ev) {
+    let k = ev.kind;
+    let n = ui.nodes[drops[i].node];
+    if k == EK_FOCUS_OUT {
+      if drops[i].open {
+        drops[i].open = false;
+        applyDropSize(ui, i);
+        drops[i].dirty = true;
+      }
+      return;
+    }
+    if k == EK_DOWN && ev.button == BTN_LEFT {
+      let ly = ev.y - n.gy;
+      if ly < style.rowH || !drops[i].open {
+        drops[i].open = !drops[i].open;
+        applyDropSize(ui, i);
+      } else {
+        let row = i32.from(libc.floorf((ly - style.rowH) / style.rowH));
+        let before = drops[i].selected;
+        if row >= 0i32 && usize.from(row) < drops[i].options.len() {
+          drops[i].selected = row;
+          if row != before {emitDrop(i, before);}
+        }
+        drops[i].open = false;
+        applyDropSize(ui, i);
+      }
+      drops[i].dirty = true;
+      return;
+    }
+    if k == EK_KEY_DOWN {
+      if ev.code == KEY_ESCAPE && drops[i].open {
+        drops[i].open = false;
+        applyDropSize(ui, i);
+        drops[i].dirty = true;
+      } else if ev.code == KEY_UP || ev.code == KEY_DOWN {
+        let before = drops[i].selected;
+        let count = i32.from(drops[i].options.len());
+        var next = before + if ev.code == KEY_DOWN {1i32} else {-1i32};
+        if next < 0i32 {next = 0i32;}
+        if next >= count {next = count - 1i32;}
+        if next != before {
+          drops[i].selected = next;
+          drops[i].dirty = true;
+          emitDrop(i, before);
+        }
+      }
+    }
+    if k == EK_FOCUS_IN {drops[i].dirty = true;}
+  }
+
+  fn drawDrop(self: &, ui: &Ui, i: usize, out: &mut DrawList) {
+    let d = &drops[i];
+    let n = ui.nodes[d.node];
+    let x = n.gx;
+    let y = n.gy;
+    out.rect(x, y, n.w, n.h, style.field, style.radius, d.node);
+    out.rect(x + 1., y + 1., n.w - 2., style.rowH - 2., style.header, style.radius - 1., d.node);
+    let cur = if d.selected >= 0i32 && usize.from(d.selected) < d.options.len() {d.options[usize.from(d.selected)].view()} else {""};
+    out.text(x + 8., y, n.w - 28., style.rowH, cur, style.font, style.size, style.text, TA_LEFT, d.node);
+    let tx = x + n.w - 14.;
+    let ty = y + style.rowH * 0.5;
+    if d.open {
+      out.line(tx - 4., ty + 2., tx, ty - 3., style.dim, 1.5, d.node);
+      out.line(tx, ty - 3., tx + 4., ty + 2., style.dim, 1.5, d.node);
+    } else {
+      out.line(tx - 4., ty - 2., tx, ty + 3., style.dim, 1.5, d.node);
+      out.line(tx, ty + 3., tx + 4., ty - 2., style.dim, 1.5, d.node);
+    }
+    if d.open {
+      var r = 0usize;
+      while r < d.options.len() {
+        let ry = y + style.rowH * f32.from(i32.from(r) + 1i32);
+        if i32.from(r) == d.selected {out.rect(x + 2., ry, n.w - 4., style.rowH, style.fill, 2., d.node);}
+        out.text(x + 8., ry, n.w - 12., style.rowH, d.options[r].view(), style.font, style.size, style.text, TA_LEFT, d.node);
+        r = r + 1usize;
+      }
+    }
+    out.border(x, y, n.w, n.h, if d.open || ui.hasState(d.node, ST_FOCUSED) {style.accent} else {style.border}, style.radius, 1., d.node);
+  }
+}

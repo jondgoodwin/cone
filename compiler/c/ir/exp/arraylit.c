@@ -148,6 +148,39 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
     arrayLitTypeCheckElems(pstate, arrlit);
 }
 
+// Join the types of the elements of a list literal that are number literals with no
+// suffix ('literals' set) or that are not, into 'matchtype': they meet at a common
+// supertype, and an element that has none is refused. 'metatsuper' is set when
+// one met at a supertype rather than agreeing outright.
+static void arrayLitJoin(ArrayNode *arrlit, int literals, INode **matchtype, int *metatsuper) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        // An element that is not an expression was reported by its check
+        if (!isExpNode(*nodesp))
+            continue;
+        if ((litIsUntypedNumber(*nodesp) != 0) != literals)
+            continue;
+        // An element already reported as bad contributes no type of its own,
+        // and must not be compared against the ones that are still good
+        if (iexpGetTypeDcl(*nodesp) == errorType)
+            continue;
+        if (*matchtype == unknownType) {
+            *matchtype = ((IExpNode*)*nodesp)->vtype;
+            continue;
+        }
+        if (itypeIsSame(((IExpNode*)*nodesp)->vtype, *matchtype))
+            continue;
+        INode *super = itypeFindSuper(*matchtype, ((IExpNode*)*nodesp)->vtype);
+        if (super == NULL)
+            errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
+        else {
+            *matchtype = super;
+            *metatsuper = 1;
+        }
+    }
+}
+
 // Settle a list literal's element type from its elements, already type checked:
 // every element must agree, meeting at a common supertype where they differ.
 // That is the same question 'if' asks across its branches, and itypeFindSuper
@@ -155,33 +188,32 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectT
 // exactly made an array literal the one construct that refused a variant where
 // its union was wanted -- a variable initializer, a struct literal's field and
 // an 'if' all accept that.
+//
+// An element that is a number literal with no suffix takes the number type the
+// elements that are not literals meet at, as a literal beside an operator takes
+// its other operand's: '[0.5f, 1.5]' is an array of f32. Where that is no number
+// type, or a float literal is among integers, or every element is a literal, they
+// are joined as ever, and an untyped literal has its default type.
 static void arrayLitSettle(ArrayNode *arrlit) {
     INode *matchtype = unknownType;
     int metatsuper = 0;   // some element met at a supertype, so all must coerce
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(arrlit->elems, cnt, nodesp)) {
-        // An element that is not an expression was reported by its check
-        if (!isExpNode(*nodesp))
-            continue;
-        // An element already reported as bad contributes no type of its own,
-        // and must not be compared against the ones that are still good
-        if (iexpGetTypeDcl(*nodesp) == errorType)
-            continue;
-        if (matchtype == unknownType) {
-            matchtype = ((IExpNode*)*nodesp)->vtype;
-            continue;
-        }
-        if (itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
-            continue;
-        INode *super = itypeFindSuper(matchtype, ((IExpNode*)*nodesp)->vtype);
-        if (super == NULL)
-            errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
-        else {
-            matchtype = super;
-            metatsuper = 1;
-        }
+    arrayLitJoin(arrlit, 0, &matchtype, &metatsuper);
+    INode *common = matchtype == unknownType ? NULL : itypeGetTypeDcl(matchtype);
+    int follows = common != NULL
+        && (common->tag == IntNbrTag || common->tag == UintNbrTag || common->tag == FloatNbrTag)
+        && common != (INode*)boolType && common != (INode*)charType;
+    for (nodesFor(arrlit->elems, cnt, nodesp))
+        if (follows && litIsUntypedNumber(*nodesp) && (*nodesp)->tag == FLitTag && common->tag != FloatNbrTag)
+            follows = 0;
+    if (follows) {
+        for (nodesFor(arrlit->elems, cnt, nodesp))
+            if (litIsUntypedNumber(*nodesp))
+                litAdoptNumberType(nodesp, common);
     }
+    else
+        arrayLitJoin(arrlit, 1, &matchtype, &metatsuper);
     // No element typed successfully, so there is no element type to build on
     if (matchtype == unknownType) {
         arrlit->vtype = errorType;
@@ -228,7 +260,7 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
 //
 // The list form '[a, b]' gives every element a holder of its own, so each value
 // is moved or copied exactly as a function call's argument is. An array's
-// contents that repeat a value, 'new Array[Handle, 2] <- fill new Handle(9)',
+// contents that repeat a value, 'Array[Handle, 2]() <- fill Handle(9)',
 // are this form, the value's expression copied into each element
 // (contentsLowerArray), so a move value is moved once per element, and a
 // variable moved by one is gone for the next, by the ordinary move rule. An
@@ -242,16 +274,19 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
     ArrayNode *arrlit = *nodep;
     INode **elemsp;
     uint32_t cnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
 
     // List form: each element is its own holder
     if (arrlit->dimens->used == 0) {
         uint16_t inflight = fstate->inflightcnt;
         for (nodesFor(arrlit->elems, cnt, elemsp)) {
+            flowGateOperandNext(fstate, *elemsp);
             flowLoadValue(fstate, elemsp);
             flowHandleMoveOrCopy(elemsp);
             flowGateOperand(fstate, *elemsp);
         }
-        flowGateOperandsEnd(fstate, inflight);
+        flowGateJoin(fstate, arrlit->elems);
+        flowGateOperandsEnd(fstate, inflight, keep);
         return;
     }
 

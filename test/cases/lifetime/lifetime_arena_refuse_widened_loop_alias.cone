@@ -1,0 +1,11 @@
+mod lifetime_arena_refuse_widened_loop_alias;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct HR['a] { pub ar: &'a mut Arena; }
+struct Hd { pub ar: &mut Arena; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+fn stash(a: &mut Hd, x: &mut T) { let ar = a.ar; var f1 = ar.alloc(F(None)); var f2 = ar.alloc(F(None)); var f3 = ar.alloc(F(None)); var f4 = ar.alloc(F(None)); var f5 = ar.alloc(F(None)); var f6 = ar.alloc(F(None)); var i = 0; while i < 10 { f1 = f2; f2 = f3; f3 = f4; f4 = f5; f5 = f6; f6 = ar.alloc(F(None)); i += 1; } f1.p = Some(x); }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Hd(q); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }

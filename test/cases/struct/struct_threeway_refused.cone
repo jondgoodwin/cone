@@ -1,0 +1,70 @@
+// What '<=>' refuses. It is an operator method like '==': a type has it where it
+// declares it, and a swap spelled with it is no longer a swap, so two places of
+// a type with no '<=>' meet the ordinary refusal for a missing operator, with no
+// word about swapping. Declaring '<=>' gives no '<', '<=', '>' or '>=' (each is
+// its own method), and a bool, a slice and a reference to a type with no '<=>'
+// have none either. A '<=>' declared for references is not reached by values,
+// as a '==' declared for references is not (struct_typecheck_methods).
+
+mod struct_threeway_refused;
+
+struct Plain {
+  pub n: i32;
+}
+
+struct ByRef {
+  pub n: i32;
+  pub fn `<=>`(self: &, other: &ByRef) i32 {
+    n <=> other.n
+  }
+}
+
+fn valuesMeetRefOperator() {
+  let a = ByRef(1);
+  let b = ByRef(2);
+  let r = a <=> b;     //~ ErrorNoCandidate:13 "No method declared by `<=>` accepts the call's arguments"
+  return;
+}
+
+struct Version {
+  pub major: i32;
+  pub fn `<=>`(self, other: Version) i32 {
+    major <=> other.major
+  }
+}
+
+fn missing() {
+  let a = Plain(1);
+  let b = Plain(2);
+  let r = a <=> b;     //~ ErrorNoMbr:13 "Method or field `<=>` not found"
+  return;
+}
+
+fn swapSpelling() {
+  var a = Plain(1);
+  var b = Plain(2);
+  a <=> b;             //~ ErrorNoMbr:5 "Method or field `<=>` not found"
+  return;
+}
+
+fn notDerived() {
+  let a = Version(1);
+  let b = Version(2);
+  let r = a < b;       //~ ErrorNoMbr:13 "Method or field `<` not found"
+  return;
+}
+
+fn throughReferences(a: &Plain, b: &Plain) {
+  let r = a <=> b;     //~ ErrorRefNoCompare:13 "the type they refer to declares no such operator"
+  return;
+}
+
+fn sliceOrder(a: &Array[i32], b: &Array[i32]) {
+  let r = a <=> b;     //~ ErrorRefNoCompare:13 "a slice has no order"
+  return;
+}
+
+fn boolOrder() {
+  let r = true <=> false;   //~ ErrorNoMbr:16 "Method or field `<=>` not found"
+  return;
+}

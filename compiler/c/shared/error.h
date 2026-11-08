@@ -8,6 +8,8 @@
 #ifndef error_h
 #define error_h
 
+#include <stdint.h>
+
 typedef struct INode INode;    // ../ast/ast.h
 
 // Exit error codes
@@ -77,6 +79,7 @@ enum ErrorCode {
     ErrorBadMeth = 1043,   // Methods/fields not supported
     ErrorNotTyped = 1044,  // Expected a value that has a type
     ErrorBadIndex = 1045,  // Bad index/slice on array/ref
+    ErrorRefIndexAlone = 1550, // A type declaring `&[]` (the mutable borrow of an element, Rust's `IndexMut`) and no `[]` (its read, `Index`): `x[i]` read and `&x[i]` call `[]`. Pointed at the `&[]`
     ErrorBadArray = 1046,  // Bad array
     // 1047 was ErrorBadSlice; borrowing a slice of a non-array is a one-element
     // slice by design (borrow.c), so there is no bad-slice-type condition
@@ -101,7 +104,15 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
-    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a macro's or generic module's, any
+    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a generic module's, any; on a macro's type parameter, any; and a macro's value parameter typed by a trait (`[a: Ordered]`), whose meaning waits for generics as a constraint's does
+    ErrorMacroParmType = 1533,  // A macro's value parameter written without a type (`macro twice[a]`): a macro parameter is always typed, `a: T` or `a: lazy T`. Only `self`, first in a macro declared in a type, is written bare. Pointed at the parameter
+    ErrorMacroSelfType = 1534,  // A macro method's `self` written with a type or `lazy` (`macro m[self: &Point]`): `self` is the receiver expression as it is, so it takes neither. Pointed at the type
+    ErrorMacroTypeArgs = 1535,  // A macro use giving type arguments to a macro that declares none (`m[i32](x)`). Pointed at the use
+    ErrorMacroParmAssign = 1538, // A macro's body changing a plain (not `lazy`) parameter: assigning to it or to a part of it, swapping it, or borrowing it mutably. A plain parameter is evaluated once, bound as a `let`, so an argument the macro assigns to must be `lazy`. Reported where the macro is declared when its body says so with no type in question (the parameter itself, or a part of it reached through no reference), else where it is used; pointed at the change in the body
+    ErrorMacroArgType = 1548,   // A macro's argument whose type does not fit its parameter's (`m("x")` for `macro m[a: lazy i64]`): a `lazy` one checked when the macro is expanded, before it is substituted, and a plain one as its binding. Pointed at the argument, naming the parameter
+    ErrorMacroLazyInfer = 1549, // A macro use leaving off a type parameter that only a `lazy` argument whose type is a closure's (or an instance made with one) could fix (`callIt(fn (y: i64) i64 {y})` for `macro callIt[F][f: lazy F]`): a lazy argument is checked as a copy, and a copy's closure is its own. Pointed at the use; the remedy is to write the type arguments, `m[T](...)`, or make the parameter plain
+    ErrorAssocUnsaid = 1546,    // A trait with an associated type named where no type says what it is: a virtual reference to it (`&<Iterable[i64]`, `Uni[Iterable[i64]]`), which is not built yet, or any other place but a bound or an 'is' entry, where the type meeting it says it. Pointed at the trait's instance
+    ErrorAssocEquality = 1547,  // An associated type fixed in a constraint, an equality constraint (`C: Iterable[i64, Cursor = u8]`, Rust's `Item = u8`), which is not built yet: the type meeting the trait says what it is. Pointed at the '='
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'
@@ -153,7 +164,7 @@ enum ErrorCode {
     // Traced regions: a region ref declaring 'Traced', and where its references may be held (ir/types/region.c)
     ErrorTracedUse = 1169,      // 'Traced' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
     ErrorTracedMark = 1170,     // A region declaring 'Traced' with no 'mark' method for its trace to call
-    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: 'Rc[T]', 'So[T]' with T holding one
+    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: 'Rc[T]', 'Uni[T]' with T holding one
     ErrorTracedGlobal = 1172,   // A global or static whose type holds a traced reference, which no collector finds
     ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
     ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)
@@ -197,6 +208,7 @@ enum ErrorCode {
     // Virtual dispatch
     ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold
     ErrorPrivateVtable = 1258,  // A trait's private method or field reached through a virtual reference: the vtable holds public members only
+    ErrorPrivateMatch = 1505,   // A type that meets a trait's requirement only with a member private to its module, wanted as that trait from another module: as a reference to it, or as a generic's argument
 
     // The closed family: 'enum'
     ErrorEnumAbstract = 1088,   // 'enum trait': an enum's variant set is its identity, so no abstraction corresponds to one
@@ -215,7 +227,7 @@ enum ErrorCode {
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
-    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', 'actor trait'. Also the retired in-file 'mod name { }' block, recognised only to refuse it
+    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build. Also the retired in-file 'mod name { }' block, recognised only to refuse it
 
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
@@ -258,8 +270,8 @@ enum ErrorCode {
     // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
     ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'; likewise a second standalone 'use' of one submodule
 
-    // A match's patterns: values alone, 'is', comparison and range patterns joined by 'or'
-    ErrorPatBare = 1117,        // A condition where a match expects a pattern, 'not b' or 'n > 3': a value alone is compared with the matched value, and whether a condition may stand for a pattern is not decided
+    // A match's patterns: values alone, 'is', comparison and range patterns joined by '|'
+    ErrorPatBare = 1117,        // A condition where a match expects a pattern, '!b' or 'n > 3': a value alone is compared with the matched value, and whether a condition may stand for a pattern is not decided
 
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
@@ -269,6 +281,7 @@ enum ErrorCode {
 
     // Moves: what a move-typed value may be moved out of
     ErrorMoveOut = 1120,        // A move-typed value moved out through a reference that does not solely own it: a borrowed one, or a shared (aliasable) owning one
+    ErrorMoveRawPtr = 1539,     // A move-typed value (one that finalizes or owns) moved out through a raw pointer, which owns nothing (`*p`, `(*p).(a)`, `p[i]`, a function handing back `*p`): what holds the place still finalizes it. `mem.readRaw(p)` moves it out, leaving the place holding nothing; only an '@intrinsic' body (readRaw's fallback) is let through. A copy through `*p` is not refused
 
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)
@@ -293,7 +306,8 @@ enum ErrorCode {
     ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, an intrinsic, a trait's method, a generic module, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, an intrinsic, a trait's or a generic type's method -- or on something not a fn or a global
-    ErrorCNameConflict = 1152,  // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
+    ErrorLlvmName = 1541,       // A function or global whose final C name (its own '@c("...")', or its C-named module's prefix and its name) begins 'llvm.': LLVM's names for its intrinsics, which are no symbol to link and which the code generator cannot select. Pointed at the declaration
+    ErrorCNameConflict = 1152, // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
     ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 
     // A module trait, and a module conforming to one with 'is'
@@ -311,7 +325,7 @@ enum ErrorCode {
 
     // A generic module, 'mod stack[T];'
     ErrorGenModBare = 1142,     // A generic module named without type arguments where only an instance has members: a path through it, an import's 'use' clause or default fold of it, 'extends' or a standalone 'use' naming it
-    ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a submodule, a generic function or type, a trait or an enum, a module trait
+    ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a generic submodule, a module trait
     ErrorGenModRoot = 1144,     // An executable's root module declared generic: nothing can instantiate the program
 
     // A file's header: its 'mod' line, then its imports
@@ -331,7 +345,7 @@ enum ErrorCode {
 
     // Moving out of a field
     ErrorMoveField = 1166,      // A move-typed value moved out of a field -- a struct's or a tuple's, or what an owning reference held in one points at -- which would leave the struct with a hole in it
-    ErrorMoveElem = 1121,       // A move-typed value moved out of an indexed element of an array held by value -- a variable's, a parameter's or a temporary's -- which would leave the array with a hole in it
+    ErrorMoveElem = 1121,       // A move-typed value moved out of an indexed element: of an array held by value -- a variable's, a parameter's or a temporary's -- which would leave the array with a hole in it; of a slice or an array reached through a borrow; or of a type's `[]` place (`let s = l[0]` on a `List[String]`). The message names `&x[i]`, `<->` / `swap` and `remove`
 
     // The built-in traits 'Move' and 'Copy'
     ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
@@ -341,8 +355,8 @@ enum ErrorCode {
     ErrorAtomicOrder = 1178,    // An ordering the operation forbids: a load's Release or AcqRel, a store's Acquire or AcqRel, a compareSwap failure's Release or AcqRel or one stronger than its success
 
     // '@threadlocal' globals
-    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's permission: on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the permission
-    ErrorThreadLocalImm = 1180, // '@threadlocal' on an 'imm' global: a copy per thread of a value no thread can change is the same as one copy
+    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's 'let' or 'var': on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the word
+    ErrorThreadLocalImm = 1180, // '@threadlocal' on a 'let' global: a copy per thread of a value no thread can change is the same as one copy
     ErrorThreadLocalInit = 1181, // A '@threadlocal' global, not 'extern', with no initial value: every thread's copy starts from it, and a module's 'init' runs on one thread
     ErrorThreadLocalFinal = 1182, // A '@threadlocal' global whose type needs finalizing: nothing yet runs a finalizer as a thread ends
 
@@ -351,14 +365,14 @@ enum ErrorCode {
     ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a bool or a raw pointer
     ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
 
-    // Generic constraints: 'where T is Name and ... or ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
+    // Generic constraints: 'where T is Name && ... || ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
     ErrorWhereUnmet = 1186,     // An instance of a generic function or type whose type arguments do not meet one of its constraints
     ErrorWhereAbsent = 1187,    // A method or function of a generic type's instance that does not exist there, its 'where' clause unmet
-    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or', grouped by parentheses
+    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by '&&' and '||', grouped by parentheses
     ErrorWhereSubject = 1189,   // A 'where' clause's subject that is not a type parameter of the generic or of the generic type it is a member of
     ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a generic type, or a generic trait given no type arguments
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
-    ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
+    ErrorGenParmOr = 1192,      // '||' after a type parameter's traits, '[T A || B]': those are all required, and a choice is written in a 'where' clause
 
     // The built-in marker 'ThreadSafe' (ir/types/region.c, regionThreadSafeUseCheck)
     ErrorThreadSafeUse = 1193,  // 'ThreadSafe' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
@@ -392,23 +406,25 @@ enum ErrorCode {
 
     // A number's conversion, 'u64.from(count)' (ir/exp/fncall.c, ir/exp/typelit.c)
     ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
-    ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
+    ErrorNbrParse = 1597,       // A number type's 'parse' given other than one value, or named without a call: 'i32.parse(text)' reads one text
+    ErrorNbrTryFrom = 1598,     // A number type's 'tryFrom' given other than one value or a value that is not a number: 'u8.tryFrom(x)' converts one number
+    ErrorNbrFrom = 1208,       // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
 
-    // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
-    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant is constructed without 'new' (ErrorVariantBracket)
-    ErrorNewType = 1210,        // 'new' given what it cannot construct: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
+    // Construction, 'Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
+    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'Point(1, 2)'; an enum's variant likewise, 'Some(5)' (ErrorVariantBracket)
+    ErrorNewType = 1210,        // A construction of what cannot be constructed: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
     ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several the struct declares do: one it declares is preferred to the implicit field-wise one
-    ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
+    ErrorInitCall = 1212,       // An 'init' called by name, 'self.init(1)': an init runs only in a construction, 'Point(1, 2)'
     ErrorPermNew = 1213,        // '&new' other than as the 'self' of a method that returns nothing: it is an initializer's reference to memory not yet filled
-    ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self &new' first, or returns a value: an init fills its value in place
+    ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self: &new' first, or returns a value: an init fills its value in place
     ErrorInitSelf = 1215,       // In an init, 'self' used before '*self = value' fills it on every path, used other than through '*self', a field or a method call, or not filled when it returns
 
-    // Allocation, 'new Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
-    ErrorPlusAlloc = 1216,      // An allocation written with '+', '+Rc 5', '+Rc-mut Node[1]', '?+Rc 5' or '+<Rc-mut Rect[3]': an allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)', one that may fail 'trynew Rc[i32](5)'
-    ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed with 'new'
+    // Allocation, 'Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
+    ErrorPlusAlloc = 1216,      // An allocation written with '+', '+Rc 5', '+Rc-mut Node[1]', '?+Rc 5' or '+<Rc-mut Rect[3]': an allocation is written 'Rc[i32](5)' or 'Rc[mut, Node](1)', one that may fail 'trynew Rc[i32](5)'
+    ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed by its name, 'Point(1, 2)'
 
     // Contents after '<-': listed values, 'n of x', 'fill x' and 'k: v' (parser/parseexpr.c, ir/exp/contents.c, ir/types/array.c)
-    ErrorFillLiteral = 1218,    // The fill literal '[n; x]': an array of n copies is constructed with its contents, 'new Array[T, n] <- fill x'
+    ErrorFillLiteral = 1218,    // The fill literal '[n; x]': an array of n copies is constructed with its contents, 'Array[T, n]() <- fill x'
     ErrorRepeatCount = 1219,    // The count of 'n of x' out of 0 through 4294967295, or, in an array's contents, not a constant
     ErrorArrayContents = 1220,  // An array constructed without contents, with init arguments, or with contents that do not fill it exactly
     ErrorFillSize = 1221,       // 'fill x' on a collection that does not say how full it is: it declares no 'len()' or no 'capacity()'
@@ -416,14 +432,14 @@ enum ErrorCode {
     ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
     // The retired 'into' operator (parser/parseexpr.c)
-    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'
+    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'
 
     // Construction, continued (ir/exp/assign.c)
-    ErrorInitRecurse = 1225,    // In a declared init, '*self = new T(...)' whose construction selects that same init: self is filled by the fields' names, 'new Point(x: 1, y: 2)'
+    ErrorInitRecurse = 1225,    // In a declared init, '*self = T(...)' whose construction selects that same init: self is filled by the fields' names, 'Point(x: 1, y: 2)'
 
     // Allocation, continued (ir/exp/typelit.c)
-    ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'new Rc[i32](5)'
-    ErrorNewFinished = 1227,    // 'new Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'new Rc[Point](p)'
+    ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'Rc[i32](5)'
+    ErrorNewFinished = 1227,    // 'Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'Rc[Point](p)'
     ErrorTryNewContents = 1228, // Contents after '<-' on a 'trynew' that is not an array's allocation: allocate, then append on Some (ir/exp/contents.c)
 
     // Constant expressions, folded where a constant is required (ir/exp/literal.c, litFoldConst)
@@ -435,7 +451,7 @@ enum ErrorCode {
     ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature or a struct's fields, on a borrow, in a function's brackets, or ''static' inside a parameter's reference
     ErrorLifetimeUndeclared = 1233, // A lifetime a struct's fields or a 'where' clause name that is not declared: a struct's second undeclared name, a borrow of none in a struct declaring lifetimes, a name no type of the signature holds
     ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
-    ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
+    ErrorLifetimeOr = 1235,     // A lifetime comparison under '||' or '!' in a 'where' clause: lifetimes are never instanced, so only '&&' joins one
 
     // A type's members (ir/stmt/fielddcl.c)
     ErrorPubFieldPrivType = 1236, // A 'pub' field whose type names a type private to its module: code outside the module would reach into a type it cannot name
@@ -445,8 +461,7 @@ enum ErrorCode {
     ErrorBoolNotNbr = 1238,     // A bool where a number is wanted: a bool converts to a number only explicitly, 'T.from(b)'
     ErrorPtrSizedAs = 1257,     // 'as' between usize or isize and a fixed-width number: a pointer's width differs by target, so it converts, 'T.from(x)'
 
-    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
-    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+    // 1239 was ErrorDefineName (isDefined, definedInt), retired with them
 
     // Invariant lifetimes (ir/types/lifetime.h)
     ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained
@@ -458,17 +473,17 @@ enum ErrorCode {
     // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
     ErrorNotLockPerm = 1245,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
     ErrorLockPermShape = 1246,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
-    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('Uni'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
     ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
-    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
+    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('Uni[Trait]', bounded by ''static'), a bound on a generic type's parameter
 
     // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
     // behaviour's argument that is not Sendable is ErrorNotSendable; the state
     // reached through a handle is ErrorNotPublic
     // 1250 was ErrorActorReturn; a behaviour may return a value, which a reply carries back to an 'await'
-    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a 'pub fn' method other than 'init', a behaviour without 'self' or named 'init' or 'final', a generic behaviour, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
+    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a 'pub fn' method other than 'init', a behaviour without 'self' or named 'init' or 'final', a generic behaviour, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor that names a lifetime among its type parameters, its 'is', 'extends' or an attribute
     ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
 
     // GPU targets: what a SPIR-V module cannot hold, refused where it is
@@ -489,8 +504,8 @@ enum ErrorCode {
 
     // What a GPU's invocations share: '@workgroup' globals (parser/parsetype.c,
     // ir/stmt/vardcl.c) and atomics (genllvm/genlgpusync.c)
-    ErrorWorkgroupPlace = 1265, // '@workgroup' anywhere but after a module global's permission, or beside '@threadlocal'
-    ErrorWorkgroupImm = 1266,   // '@workgroup' on an 'imm' global: a workgroup's copy is there for its invocations to change
+    ErrorWorkgroupPlace = 1265, // '@workgroup' anywhere but after a module global's 'let' or 'var', or beside '@threadlocal'
+    ErrorWorkgroupImm = 1266,   // '@workgroup' on a 'let' global: a workgroup's copy is there for its invocations to change
     ErrorWorkgroupInit = 1267,  // A '@workgroup' global given an initial value: a workgroup's copy starts undefined, and nothing writes a value into it
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
@@ -503,7 +518,7 @@ enum ErrorCode {
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
     ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'final'
-    ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
+    ErrorBehaviourWords = 1273, // 'async' without 'fn', or 'async fn' anywhere but in an actor's body: the two words together declare an actor's behaviour, and 'async' means nothing alone
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
     ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 
@@ -514,14 +529,15 @@ enum ErrorCode {
 
     ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
 
-    // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnAwaitUnused
+    // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnDiscard
 
     // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
-    ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = new Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
+    ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
 
     // Futures: a behaviour's value stored and awaited later (actors.Future[T])
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
     ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
+    ErrorAwaitMethod = 1283,    // A type's 'await' method, which makes it awaitable, that takes more than 'self' or returns neither an actors.Awaitable[R] nor an actors.Future[T]
 
     // 'Sized' and 'DynSized', granted by the compiler from a type's size (ir/types/struct.c)
     ErrorSizeMarkerUse = 1296,  // 'Sized' or 'DynSized' declared by a type: both are granted, by whether the type's size is known at compile time or carried by a reference to it, and a declaration could only contradict that
@@ -551,7 +567,7 @@ enum ErrorCode {
 
     // Shape-changing types (ir/shapeinfer.c, ir/reshape.c)
     ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
-    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string, an owner such as a 'So', whose replacing frees what it owns) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
+    ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string, an owner such as a 'Uni', whose replacing frees what it owns) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
 
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
@@ -569,7 +585,6 @@ enum ErrorCode {
     // 'each' inside '<-' (parser/parseexpr.c, ir/exp/contents.c)
     ErrorEachEntry = 1370,      // An 'each' entry of '<-' written wrongly: with variables and no 'yield', a body in braces, or a 'yield' of nothing
     ErrorDrainItem = 1371,      // 'xs <- each src' over a source whose items come borrowed and move: a borrow cannot be copied out of
-    ErrorEachMutSource = 1372,  // An 'each' (or 'parallel each') over a source written '&mut src': 'each' reads, and the items are changed through 'src.mutItems()'
 
     // 'parallel each' (ir/exp/pareach.c)
     ErrorParSource = 1380,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
@@ -598,15 +613,15 @@ enum ErrorCode {
     ErrorParAlias = 1396,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) reads, by a path or as a whole, an outside variable that could reach a written element behind a reference: a read while a pass writes would race
 
     // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
-    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
-    ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'Uni[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
+    ErrorCallableUse = 1398,    // A value made into a 'Uni[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
     ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one required method (and no field) for it to fill
 
     // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c, ir/types/reference.c, ir/exp/fncall.c, ir/exp/pareach.c, ir/exp/await.c, parser/parseactor.c)
-    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('new So[T]', 'new Rc[T]', ...), an owning reference type written ('So[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
+    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('Uni[T]()', 'Rc[T]()', ...), an owning reference type written ('Uni[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
 
     // A virtual reference's trait method met by a stronger 'self' (ir/types/fnsig.c)
-    ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `So[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
+    ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
 
     // Value parameters of a generic, '[N usize]' (ir/meta/generic.c, ir/types/array.c)
     ErrorGenValueParm = 1402,   // A value parameter, '[N usize]', that is not built: its annotation is not an integer type, it has another annotation beside it, it is on a generic type, or a 'where' clause asks about it
@@ -616,7 +631,7 @@ enum ErrorCode {
 
     // The share check: the built-in marker 'Shareable' and markers after a '+' in a reference type (ir/itype.c, ir/meta/generic.c, ir/types/reference.c)
     ErrorNotShareable = 1406,   // An instance whose 'T is Shareable' is unmet, or a value made a reference marked '+ Shareable' (or '+ Sendable') that is not: the type holds a counted owner whose count is not atomic, a traced reference, or a reference that writes through a shared path ('&mut')
-    ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'So[fn() + Sendable]')
+    ErrorMarkUse = 1407,        // A '+' in a reference type followed by something but Sendable or Shareable, or marking a reference that is not virtual ('&<Trait + Shareable', 'Uni[fn() + Sendable]')
 
     // A string literal where a cstr is wanted (ir/exp/literal.c)
     ErrorCStrNul = 1408,        // A string literal holding a NUL byte ('"ab\x00cd"') where a cstr is wanted: C would read it as 'ab', cutting the text short
@@ -627,9 +642,9 @@ enum ErrorCode {
     // Parallel reductions: 'xs.parallel().sum()' (ir/exp/pareach.c, ir/exp/fncall.c)
     ErrorParReduce = 1410,      // A reduction ('sum', 'fold', 'findFirst') in a module that does not import the actors package its blocks run on; 'parallel()' asked of a source that cannot be cut (an iterator chain, a generator, a file, a channel) or of a number range; or a reduction asked of a parallel view held in a variable
 
-    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..' runs through its end, '..<' stops before it
-    ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
-    ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
+    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..=' runs through its end, '..<' stops before it
+    ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a ..= b' runs through b, 'a ..< b' stops before it
+    ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 ..= n', 'by -1' to count down)
 
     // Variants declared as a type (parser/parsetype.c, exp/cast.c)
     ErrorTypeVariant = 1413,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
@@ -646,7 +661,7 @@ enum ErrorCode {
     ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
     ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
     ErrorMatchUsing = 1423,         // A match with a 'using' pattern that does not end in 'else': what a function's pattern matches only running says, so the writer says the rest
-    ErrorUsingForm = 1424,          // A 'using' pattern written other than 'case imm x using f(args)', 'case using f(args)' or 'imm x using f(args) = value' (not a call, a binding in a column, a binding outside 'if' and let-else with no 'else'), or whose function gives neither an Option to bind nor a bool to test
+    ErrorUsingForm = 1424,          // A 'using' pattern written other than 'case let x using f(args)', 'case using f(args)' or 'let x using f(args) = value' (not a call, a binding in a column, a binding outside 'if' and let-else with no 'else'), or whose function gives neither an Option to bind nor a bool to test
 
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
     ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
@@ -655,10 +670,10 @@ enum ErrorCode {
 
     // An enum under the collection rule (ir/reshape.c, ir/flowpath.c, ir/flowloan.c)
     ErrorVariantReshape = 1425,     // A call, or a store through another name, that could change which variant an enum holds while a reference narrowed into one of its variants, through a path other references share, is still to be used
-    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'So'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
+    ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'Uni'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
 
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
-    ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
+    ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self: &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced
     ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a GcTraceElements type whose gcTraceElements does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
 
@@ -669,8 +684,7 @@ enum ErrorCode {
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
-    ErrorLetElse = 1462,        // The 'else' of 'imm n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
-    ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
+    ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' can fall through to the binding: every path through it must leave, by 'return', 'break', 'continue', a call that does not return, or an 'if' or 'match' with an 'else' each of whose blocks leaves. Pointed at where a path goes on
 
     // Trait patterns on a closed family (ir/exp/cast.c)
     ErrorPatTrait = 1470,       // A trait named as a pattern where the matched value is not an enum: an open trait cannot say which values comply with another trait, so only a concrete type can be narrowed to
@@ -694,23 +708,175 @@ enum ErrorCode {
     // The calling convention of a function reference (ir/types/fnsig.c)
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
 
+    // A callable's by-value parameter or result (ir/types/fnsig.c)
+    ErrorFnRefByValue = 1506,   // A callable given where a signature is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n: i32) Shape`, `&area` taking `Shape` as `&fn(s: Shape.Circle) i32`) or the reverse. The same on every route a callable meets a signature by: a function reference, a callable `&<fn`, `Uni[fn(sig)]`, a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic bound, `is`) and a module trait's function. A call through the wanted signature would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
+
+    // A virtual reference that may write sees each field at exactly the trait's type (ir/types/fnsig.c, ir/types/reference.c)
+    ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
+
+    // 'mut' on an owner of a region with one owner per value (ir/types/permission.c)
+    ErrorSoleOwnerMut = 1507,   // 'mut' written on a reference of a region declaring 'Move' (`Uni[mut, T]`, `Uni[mut, T](...)`, a `Uni[mut, Trait]`): 'mut' is shared mutable, and a region whose values have one owner shares nothing, so the permission means nothing on it. `Uni[T]` is the normal spelling; `imm` stays legal as a promise the value never changes
+
+    ErrorDclWord = 1508,        // 'imm' or 'mut' where a declaration's word is expected (`imm n = 3;`, `mut n i32;`, `pub imm id i32`, `fn f(mut self)`, `case imm x Some`): they are the permissions of a reference, and a declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value). The word is read as the one that replaces it, so the declaration is checked as written
+
+    // 1509 was ErrorAndAnd, '&&' refused between two operands; '&&' is now the logical and
+
+    // A block's last line and its value (parser/parsefnflow.c parseTailCheck; ir/exp/closure.c closureContextTail)
+    ErrorTailSemi = 1510,       // A block whose value is used (a function that returns a value, a block after '=', as an argument or operand or after 'return', the last line of a block whose own value is used, an 'if' or 'match' arm in such a place) ends its last line, an expression or a statement that ends in a block, in ';'. A ';' delimits statements, so the block ends in an empty statement, which has no value: the ';' is left off where the value is used. The ';' is not the author's to keep whatever the line's type is, so a line that gives no value is refused as well. Pointed at the ';'
+    ErrorTailOpen = 1511,       // A block whose value is not used (a function that returns nothing, an 'if' or 'match' used as a statement, a loop body, a closure's that returns nothing) ends its last line, an expression, with no ';'. The ';' is kept wherever the value is not used, whatever the line's type is: `print <- "hi"` ending a function that returns nothing is refused. The rule depends on where the block stands and never on the last line's type. Pointed at the line
+
+    // A binary or octal literal that is malformed (parser/lexer.c lexScanNumber)
+    ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
+    ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
+
+    // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
+    ErrorRangeBare = 1515,      // `a .. b` or `..b` in an index, `a .. b` in a case pattern or an `each`: '..' before an end does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end, `s[..]` is the whole), since there is no end to include or leave out
+
+    // Several targets and the values they take apart (ir/exp/assign.c, parser/parsefnflow.c)
+    ErrorTargetCount = 1516,    // Two or more targets given a number of values that is not theirs: `a, b = 1, 2, 3`, `let q, r = f()` where `f` gives three values, `a, b, c = 1, 2`. Each target takes exactly one value, and a target for a value the code does not want is written `_`. Pointed at the values
+    ErrorOneTarget = 1517,      // One target that is not a tuple given a list of values: `x = 1, 2, 3` where `x` is an `i32`. A single target takes the whole value it is given, so it is refused unless its type is that tuple; the values are taken apart with a target for each (`a, b, c = 1, 2, 3`), `_` for each unwanted one. Pointed at the values
+    ErrorDestructForm = 1518,   // A declaration of several names that is not written `let a, b = values;`: no `=` after the names (`let a, b;`), a type written on `_` (`let _: i32, b = f()`), or the names followed by `else` or `using`. The names take their values apart from what follows the `=`. Pointed at the names
+
+    // A construction is a type's name with parentheses (ir/exp/fncall.c)
+    ErrorNewNotRegion = 1519,   // `new` written before a type, `Point(1, 2)`, `List[i32]()`, `Rc[mut, Node](1)`: `new` takes a dynamic region, a value such as an arena, `new a[Node](1)`. A type's value is made by writing its name with parentheses, `Point(1, 2)`, whatever region it is allocated in. Pointed at the `new`
+
+    // A pattern that binds names the variant and puts one name in its parentheses, after 'let' or 'var' (parser/parsefnflow.c parseBindVarDcl)
+    ErrorPatBindCount = 1520,   // A variant pattern whose parentheses hold no name or several (`case let Some()`, `case let Response(head, body)`, `if let Pair(a, b) = p`): a variant takes exactly one binding name and is never read by position. To take a struct variant apart, bind it whole and name its fields. Pointed at the variant
+    ErrorPatBindNested = 1521,  // A variant pattern whose parentheses hold something other than one name (`case let Some(Ok(x))`, `case let Some(3)`, `case let Wrapper(f(x))`): patterns do not nest, and a value does not go in the parentheses. Pointed at what is written in them
+    ErrorPatBindForm = 1522,    // A binding in a pattern, after `case let`, `if let`, `else if let` or a statement `let`, that is neither a variant with its one name in parentheses (`Some(n)`) nor a function's pattern (`rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses, or a `let` that declares a name, or several (`let a, b = f() else`), and then has an `else`. Pointed at what is written
+    ErrorFldListForm = 1523,    // A field list, `x.(a, b)`, holding something that is not a field's name or a tuple element's number (`x.(a + 1)`, `x.()`), mixing names and numbers, or naming a tuple's element by name or a struct's field by number. Pointed at the entry
+    ErrorFldListDup = 1524,     // A field list naming the same field twice (`x.(a, a)`): each field is taken once. Pointed at the second
+    ErrorFldListUnknown = 1525, // A field list naming something the value has not: a name that is not a field of the struct (the message lists the fields), a field the struct holds through another, or a tuple element past the end. Pointed at the entry
+    ErrorFldListFinal = 1526,   // A field list taking apart a value whose type has a finalizer: the finalizer needs all of the value, so it cannot be taken apart, in or outside the type's module. Its fields are read through a borrow, or the whole value moved. Pointed at the list
+    ErrorFldListType = 1527,    // A field list on a value that has no fields to name (a number, an array, a function), which includes a generic's body instantiated with such a type. Pointed at the list
+    ErrorQuesOperand = 1528,    // `x?` where `x` is neither a Result nor an Option (a reference to one included: `?` takes the value). Pointed at the '?'
+    ErrorQuesReturn = 1529,     // `x?` in a function that returns no Result (for a Result) or no Option (for an Option) for the failure to go to, the message naming what it returns; in a closure whose return type is not written; in a generator. `x.unwrap()` or `x.expect("why")` trusts the value instead. Pointed at the '?'
+    ErrorQuesConvert = 1530,    // `x?` on a Result whose error type the function's error type cannot take: they are not the same, the destination declares no `from` taking it, and no variant of the destination holds it. Pointed at the '?'
+    ErrorQuesAmbiguous = 1531,  // `x?` on a Result whose error the function's error enum could wrap in two or more variants that each hold that type, and no `from` takes it: which is meant is the programmer's to say, with an `overload from`. The message names two of them. Pointed at the '?'
+    ErrorMainResult = 1532,     // A `main` returning `Result[T, E]` that does not meet core's `Error` and has no `report()` giving text for the program to print the error with when `main` fails. Pointed at the return type
+    ErrorTryType = 1536,        // A `try` block wanted as no Result or Option whose type cannot be read off it: its `?`s fail with different error types, or it has no `?`, so neither the error type nor the kind is known. The message asks for the type, `let r: Result[i32, E] = try {...}`. Pointed at the `try`
+    ErrorTryMix = 1537,         // A `?` in a `try` block taking an Option where another `?` of the block, or the type the block is wanted as, is a Result, or the reverse. The message names `okOr(error)` and `ok()`, which convert one into the other. Pointed at the '?'
+    ErrorLifecycleNamed = 1540, // A module's `init` or `final` named in an expression, by its bare name in its own module or by a path from another: called, borrowed or otherwise used. The program runs each once, so a use would run it a second time. Folding one is ErrorBadFold. Pointed at the name
+
+    // SIMD vectors, Vector[T, N]
+    ErrorVectorArgs = 1552,     // `Vector` written without its lane type and number of lanes, or with others: it is `Vector[T, N]`. Pointed at the type
+    ErrorVectorElem = 1553,     // A vector's lane type that is no integer, float or bool type (a struct, a char, a reference). Pointed at the lane type
+    ErrorVectorLanes = 1554,    // A vector's number of lanes that is no integer literal from 1 through 64. Pointed at the count
+    ErrorVectorMixed = 1555,    // Lanes of different types or counts in one operation, or a number of another type beside a vector, with no `.from` to convert them. The message names the conversion. Pointed at the operation
+    ErrorVectorMask = 1556,     // A mask (`Vector[bool, N]`) used as numbers: arithmetic or an ordering on it, or beside a vector of numbers. Pointed at the operation
+    ErrorVectorIndex = 1557,    // A lane of a vector borrowed or sliced, or a mask's lane written (a mask's lane is read, not a place). Pointed at the index
+    ErrorVectorFrom = 1558,     // `.from`, a vector's contents or `select` given a value of a type they do not convert or take. Pointed at the value
+    ErrorVectorPick = 1559,     // A vector's lane picked that it has not: a position past its last lane (`v.(5)` of four), a lane name it has not (`v.w` of three lanes, `v.x` of a vector over four lanes, a name that is not x, y, z or w), or a pick or `join` whose result would be wider than 64 lanes. Pointed at the position or name
+    ErrorVectorSlice = 1560,    // A vector `load` or `store` of a mask, which has no memory form; a mask is loaded as numbers and compared. Pointed at the call
+    ErrorOptionLogic = 1561,    // An Option or Result as the RIGHT operand of a bool's `||` or `&&`: a bool's operators take a bool, and an Option or Result converts to bool only in a condition and under `!`. Pointed at the operand
+    ErrorMacroAwait = 1562,     // A compound assignment through a macro method, `x += await f()`, or the right operand of a macro method's `||` or `&&`, `opt || await f()`, that holds an `await`: the operand is substituted into the macro's body, where the wait cannot be cut. Pointed at the operand
+    ErrorMacroMixedSet = 1563,  // A macro and a function declared under one name in one scope or one type: a set of same-named declarations holds all macros or all functions. Pointed at the later declaration, and again at the earlier
+    ErrorNoLogicMethod = 1564,  // `||` or `&&` written with a left operand whose type declares no `||`/`&&` (a number, a pointer, a struct without them): they are methods of the left operand's type, and bool, Option and Result have them. Pointed at the left operand
+    ErrorEachBorrowPerm = 1566, // An 'each' source written '&mut src' or '&uni src' whose type walks through an 'iter' that lends '&' only (a Deque, a Set, a Dict): there are no items to change in place, so the permission written cannot be given. Pointed at the source
+    ErrorEachBehindBorrow = 1567, // An 'each' over a source reached through a borrow (a reference, a field of one, a slice) whose items move: a plain 'each' hands out each item as `let x = item` would, which a borrow cannot give up. Names the borrow to write, `&l` or `&*r`. Pointed at the source
+    ErrorEachNoDrain = 1568,    // An 'each' over an owned array whose items move: no cursor consumes a fixed array yet. Pointed at the source
+    ErrorActorTraitMember = 1569, // What an 'actor trait' may not hold, or a form of it not built: a field, a 'fn', a behaviour with a body, a behaviour that is not 'pub' or has no 'self', a static, a macro, an 'is' or 'extends', a type parameter. Pointed at the member
+    ErrorActorTraitConform = 1570, // An actor handle converted to an actor trait's handle where the actor does not conform: a behaviour of the trait it lacks, declares without 'pub' or with other parameter or return types. Names each. Pointed at the value converted
+    ErrorAtomicPlainWrite = 1571, // A plain write (assignment or swap) of an atomic value, or of a value holding one inline, through a reference that is not 'uni' ('&mut', 'Rc[mut, T]', a borrow of any other permission): another thread may be changing it atomically. Pointed at the place written
+    ErrorEnrichFinalSkipped = 1572, // A value of an enrichment (a type that 'extends' a base) declaring its own 'final', handed on by value as its base or as a sibling without that 'final': a copy, a move or an owning reference (Uni, Rc) converted would be dropped as the target, so the 'final' would never run. Names the enrichment and the target. A borrowed reference is not refused. Pointed at the value converted
+    ErrorMetaIf = 1573,         // A '#if' chain malformed or misplaced: an '#elif' or '#else' with no '#if' before it, an '#elif' after the '#else', a second '#else', a '#if' giving a value with no '#else', or a condition's own punctuation missing ('#defined("NAME"' with no ')', a '(' never closed). Pointed at the word
+    ErrorMetaFact = 1574,       // A '#if' condition that names a fact outside the closed vocabulary (#os, #arch, #debug, #defined, #define), or uses one wrongly: a member the fact has not ('#os == .window'), a member of another fact, a comparison of unlike kinds, '#defined' of something that is not a string literal, a fact read outside a '#if' condition, a condition that is not a bool. Pointed at the word
+    ErrorDefaultField = 1575,   // A struct declaring Default and writing no 'init' has a field with no declared default ('= value') whose type is not Default, so the compiler has nothing to construct it with in 'T()'. Pointed at the field
+    ErrorDefaultInit = 1578,    // A struct declaring Default and writing an 'init' has none that can be called with no arguments, so 'T()' is not a construction. Pointed at the struct
+    ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
+    ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
+    ErrorNoText = 1579,        // A value sent as text to a text receiver (a String, a writer, the console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)` to write itself with. Names the type and the method. Pointed at the value
+    ErrorLitFieldType = 1588,  // A struct or variant literal's value (by position or by name) whose type does not convert to its field's (an actor made in place converts to an actor trait there; a string literal is not lent as a temporary)
+    ErrorMetaMixFact = 1581,   // A '#if' chain in a generic type's braces or a generic function's body that asks about a fact of the build in one condition and about a type in another (or in the same): the include file keeps such a chain whole and each importer reads the build's facts again, so a field or method could exist in a package's object and not in its importer. Pointed at the first condition that asks about a type
+    ErrorInterpBrace = 1586,   // A brace of an interpolated string `$"..."` that breaks its rule: an open brace no close brace closes, a close brace with no open one before it, or braces with nothing between them. A brace in the text is `{{` or `}}`. Pointed at the brace
+    ErrorInterpExpr = 1587,    // The text between an interpolation's braces is not one expression: something is left over after it (`{a; b}`). Pointed at the first token the expression does not take
+    ErrorMetaTypeFact = 1580,   // A '#if' that asks what a type is (T is Float, T == i32) where it cannot be decided: outside a generic function or type or about a name that is no type parameter, at a module's level or in an 'extern' block, or around anything in a generic type's body but fields and methods. Pointed at the condition or the member
+    ErrorMetaEach = 1582,       // A '#each' header malformed: no '#name' to bind, no 'in', or no list after it (a '[' list of values, a '(' list of types, or a meta constant); a list item that cannot be read; a body that is no block. Pointed at the word
+    ErrorMetaEachPlace = 1583,  // A '#each' where this step does not build it: at a module's level, in a type's braces, in an 'extern' block or in expression position. It repeats statements in a function body; generating declarations waits for generated names. Pointed at the word
+    ErrorMetaQuota = 1584,      // A '#each' (with the '#each's it holds) that would run more passes than the step quota allows (--meta-steps, 10000 by default). Names the loop whose pass went over, and the pass. Pointed at the loop
+    ErrorMetaVar = 1585,        // A meta variable misused: '#name' not declared where it stands, a 'let' given a new value, a '#each' variable assigned, an integer expected of something else, a list used as a value or a value as a list, a meta declaration outside a function body. Pointed at the word
+    ErrorMetaFields = 1589,   // A '#each #f in #fields(T)' or a description of '#f' misused: the header malformed, the type named not a generic's type parameter, '#f' used bare rather than as '#f.name', '#f.type', '#f.region', '#f.perm', '#f.pub', '#f.offset' or the splice 'val.#f', a property that is not one, or '#f.attrs' (field attributes are not built); or a '#size' or '#align' not written '#size(T)'. Pointed at the word
+    ErrorInstanceUnrecorded = 1599, // A generic module's instance the package's include file cannot record (no bare spelling in '__uses', or made in a submodule's file) where the generic declares an 'init' or 'final': refused, since its setup would never run in a program that does not name it. Pointed at the instance
+    ErrorMetaLayoutConst = 1593, // A '#size(T)' or '#align(T)' used where the front end needs the number itself: the condition of a '#if', an array length, a 'const' initializer. They are the code generator's constants, so the use is refused until the front end computes layouts. Pointed at the question
+    ErrorMetaLayout = 1592,   // A layout fact ('#size(T)', '#align(T)', or '#f.type is Copy' or 'is Move') asked of a type whose layout is still in flight: refused rather than answered by the order the declarations are laid out in, naming the by-value cycle where there is one. Pointed at the question
+    ErrorMetaFieldsPrivate = 1591, // A '#fields(T)' of a type with a private field the reflecting code cannot see and the type has not opted in with '@reflect': refused, not listed without it. Pointed at the loop, inside the generic's instance
+    ErrorMetaGenName = 1595,    // A generated member's name misused: '#name(...)' malformed (a string literal and the loop's '#f', one of each, in either order), a '#f' or '#name' naming a member outside a '#each #f in #fields(T)' in a generic struct's braces, or a generated member where this step does not build one (a nested loop, a '#if' on a type inside the loop, a static, a macro or an alias). Pointed at the word
+    ErrorMetaEachArg = 1602,    // A '#each #f in #fields(T)' among a call's arguments whose block is not exactly one named argument '#f: value' (nothing named, a second argument, a missing value). Pointed at the word that breaks it
+    ErrorMetaEachArgName = 1603, // A '#each #f in #fields(T)' among a call's arguments whose argument is named by a written name instead of the loop's '#f': that one name would be given once for every field. Pointed at the name
+    ErrorMetaGenClash = 1596,  // Two members of an instance with one name, at least one generated by a '#each #f in #fields(T)' in a generic struct's braces (two fields whose names join to one word, or a generated member and a written one). Pointed at the loop, naming the name
+    ErrorAsTarget = 1594,       // 'as' onto a struct, an enum or a char from a type that is not a coercion to it (a variant as its enum is one): reinterpreting a value as such a type could forge a private field, a reference, a variant or a code point, so it needs 'trust', which is not built yet
+    ErrorConstChar = 1600,      // A constant converted to a char that is no code point: above 0x10FFFF, a surrogate, a negative, a float that cuts to none, or a NaN. At run time such a conversion gives U+FFFD, the replacement character; a constant is refused rather than folded to it. Pointed at the conversion
+    ErrorSetupCycle = 1605,     // A module's setups (a 'let' global given a value that is not a constant) read one another round a cycle, so no order sets each before the one that reads it. The message names the globals round the cycle
+    ErrorLoopTangled = 1607,    // A loop whose references rotate through more variables than the flow check can follow: the facts at its head were still changing after the check's limit of walks. The message says to keep fewer references rotating through the loop. The function's flow check stops at the loop
+    ErrorSetupReadsInit = 1606, // A setup reads, directly or through the module's own functions, a global that the module's 'init' sets: setups run before 'init', so it holds nothing yet. The message names the global and the function that reads it
+    ErrorWholeEnumMeth = 1604,  // An enum's variant (or the enum) viewed as a trait behind a virtual reference (`&<Trait`, `AnyError.from`, `?`) where the enum writes a method the trait requires over the whole enum (`self: &Two`): no variant has a copy of it, so none complies. The message names the method and says `self: &` makes the variants comply
+    ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
     // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
-    WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
+    // 3003 was WarnCopy, never raised; a value that owns something moves, and a duplicate of it is its .clone()
     WarnLoop = 3004,       // Infinite loop with no break
-    WarnAwaitUnused = 3005, // The result an awaited operation (actors.Awaitable: an I/O operation) answers with, a failure among what it may say, is thrown away
+    // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
+    WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
+    WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
+    WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     // Uncounted
     Uncounted = 9000,
 };
 
+// What ErrorTailSemi and ErrorTailOpen say, wherever they are reported
+#define TailSemiMsg "This block gives no value because its last line ends in ';'. Remove the ';' to give the value."
+#define TailOpenMsg "End this line with ';': nothing uses this block's value."
+
 extern int errors;
 extern int warnings;
-// Non-zero while a closure's body is tried under a guess at its permissions:
-// a diagnostic is counted and not printed
+// Non-zero while code is checked as a trial (below): a diagnostic is counted and
+// not printed
 extern int errorSilent;
+
+// A trial: code checked on a copy, to learn whether it checks, with its own
+// diagnostics counted, not printed, and not kept (a closure's body under a guess
+// at its permissions; the head of a region allocation). A declaration the trial
+// reaches first is not the trial's: it exists whether or not the trial does, and
+// is checked only once, so what it reports is the program's. The check opens a
+// loud window (errorLoudBegin) around such a declaration, which prints and keeps
+// what it reports.
+typedef struct ErrorTrial {
+    int errors, warnings;           // The counts at the start
+    int loudErrors, loudWarnings;   // The loud ones counted before the start
+    uint32_t mark, svmark;          // What the caller gave, and the mark outside
+} ErrorTrial;
+
+// Open a trial. 'mark' is the caller's tick of its own counter (errorTrialMark
+// reads it back), so that it can tell what the trial itself made.
+void errorTrialBegin(ErrorTrial *trial, uint32_t mark);
+// Close it: the counts are what they were, plus what was reported loud. Answers
+// whether the trial itself reported no error.
+int errorTrialEnd(ErrorTrial *trial);
+// The mark of the outermost trial open, meaningful only while errorSilent
+extern uint32_t errorTrialMark;
+// Open a loud window inside a trial; give what it answers to errorLoudEnd
+int errorLoudBegin(void);
+void errorLoudEnd(int saved);
+// The errors counted, less those a loud window reported inside a trial: a count
+// for a question about the code being checked alone
+int errorsOwn(void);
+
+// One pass of a '#each' (compiler/c/doc/phases/parse.md, "The meta layer"): the code of a pass is
+// the loop's body read again with the loop's variable bound to one item, so an error in it reads like
+// an error in the others. While a pass is being read, or its block is name-resolved, type checked or
+// flow analysed, 'errorEachPass' is set, and each error says which pass of which loop it was in
+typedef struct EachPass {
+    struct EachPass *outer;     // The pass this loop is itself inside, or NULL
+    struct INode *loop;         // A node positioned at the '#each' word
+    uint32_t pass, npasses;     // This pass, counted from 1, of this many
+    char *var;                  // The loop variable, '#x'
+    char *item;                 // The item it stands for, as written
+} EachPass;
+extern EachPass *errorEachPass;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);

@@ -1,0 +1,35 @@
+// What a 'let' global's setup refuses. Setups are ordered by what each reads,
+// so a cycle has no order: two setups reading each other, one reaching the
+// other through a function of the module, and one reading itself, each refused
+// (ErrorSetupCycle) at the global the round comes back to. A setup runs before
+// the module's 'init', so one that reads a global 'init' sets, directly or
+// through a function of the module, would read nothing: refused
+// (ErrorSetupReadsInit). And the lifting is for 'let' globals only: a 'var'
+// global and a static are still refused a value that is not a constant.
+
+mod module_setup_reject;
+
+fn one() i64 { 1i64 }
+
+let ca: i64 = cb + one();        //~ ErrorSetupCycle "round a cycle (ca -> cb -> ca)"
+let cb: i64 = ca + one();
+
+let da: i64 = viaFn();           //~ ErrorSetupCycle "round a cycle (da -> db -> da)"
+let db: i64 = da + one();
+fn viaFn() i64 { db }
+
+let selfish: i64 = selfish + one();  //~ ErrorSetupCycle "round a cycle (selfish -> selfish)"
+
+let fromInit: i64;
+let fromInitDeep: i64;
+let direct: i64 = fromInit + one();   //~ ErrorSetupReadsInit "reads global fromInit, which the module's 'init' sets"
+let deep: i64 = readsDeep();          //~ ErrorSetupReadsInit "reads global fromInitDeep, which the module's 'init' sets: setups run before 'init', so it holds no value yet, in readsDeep"
+fn readsDeep() i64 { fromInitDeep }
+
+var plainVar: i64 = one();       //~ ErrorNotLit "literal value"
+static let inFn: i64 = one();    //~ ErrorNotLit "literal value"
+
+fn @initpure init() {
+  fromInit = 5i64;
+  fromInitDeep = 6i64;
+}

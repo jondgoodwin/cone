@@ -1,7 +1,8 @@
-// The capability traits: Collection, Indexed, Stack, Queue and Map.
-// A type fits a trait by having its methods; none of these collections
-// declares one, and the little Pile below, written here, fits Stack the same
-// way. The main way to ask for one is a static bound, '[S Stack[i64]]' or
+// The collections' shared method names meet traits a program declares for
+// itself: Collection, Indexed, Stack, Queue and Map, declared below (the package
+// declares none). A type fits a trait by having its methods; none of these
+// collections declares one, and the little Pile below, written here, fits Stack
+// the same way. The main way to ask for one is a static bound, '[S: Stack[i64]]' or
 // 'where S is Stack[T]', decided where the function is called and compiled to
 // the type's own methods. The sections below use the bound in its spellings;
 // the last section, "the dynamic form", takes the same traits as virtual
@@ -13,27 +14,62 @@ mod traits;
 import testing use *;
 import collections use *;
 
+// -------- the traits, declared here --------
+
+// Anything that holds a number of values. The methods are 'pub' so that the
+// dynamic form below has a vtable slot for each.
+trait Collection {
+  pub fn len(self: &) usize;
+  pub fn isEmpty(self: &) bool;
+}
+
+// Values reached by their position, counted from the front (List, Deque)
+trait Indexed[T] {
+  pub fn get(self: &, index: usize) Option[&T];
+}
+
+// Values pushed and popped at one end (List, Deque, at the back)
+trait Stack[T] {
+  pub fn push(self: &mut, value: T);
+  pub fn pop(self: &mut) Option[T];
+  pub fn peek(self: &) Option[&T];
+}
+
+// Values pushed at the back and popped from the front (Deque)
+trait Queue[T] {
+  pub fn push(self: &mut, value: T);
+  pub fn popFront(self: &mut) Option[T];
+}
+
+// Values found by a key (Dict, OrderedDict)
+trait Map[K, V] {
+  pub fn get(self: &, key: &K) Option[&V];
+  pub fn insert(self: &mut, key: K, value: V) Option[V];
+  pub fn remove(self: &mut, key: &K) Option[V];
+  pub fn contains(self: &, key: &K) bool;
+}
+
 // -------- Collection: a bound with no type argument to give --------
 
-fn countOf[C Collection](c &C) usize { c.len(); }
-fn emptyOf[C Collection](c &C) bool { c.isEmpty(); }
-fn countWhere[C](c &C) usize where C is Collection { c.len(); }
+fn countOf[C: Collection](c: &C) usize { c.len() }
+fn emptyOf[C: Collection](c: &C) bool { c.isEmpty() }
+fn countWhere[C](c: &C) usize where C is Collection { c.len() }
 
 fn collectionTrait() {
-  mut l = List[i64].empty();
+  var l = List[i64]();
   l.push(1i64);
   l.push(2i64);
   l.push(3i64);
-  mut d = Deque[i64].empty();
+  var d = Deque[i64]();
   d.push(1i64);
   d.push(2i64);
-  imm s = String.from("four");
-  mut m = new Dict[u64, i64];
+  let s = String.from("four");
+  var m = Dict[u64, i64]();
   m.insert(1u64, 10i64);
-  mut o = new OrderedDict[u64, i64];
+  var o = OrderedDict[u64, i64]();
   o.insert(1u64, 10i64);
   o.insert(2u64, 20i64);
-  mut st = new Set[u64];
+  var st = Set[u64]();
   st.insert(7u64);
   st.insert(8u64);
   st.insert(9u64);
@@ -43,71 +79,71 @@ fn collectionTrait() {
   expectUInt(u64.from(countOf(&m)), 1, "Dict is");
   expectUInt(u64.from(countOf(&o)), 2, "OrderedDict is");
   expectUInt(u64.from(countOf(&st)), 3, "Set is");
-  expect(not emptyOf(&l), "a List of three is not empty");
-  expect(emptyOf(&Deque[i64].empty()), "an empty Deque is");
+  expect(!emptyOf(&l), "a List of three is not empty");
+  expect(emptyOf(&Deque[i64]()), "an empty Deque is");
   expectUInt(u64.from(countWhere(&st)), 3, "the same bound as a where clause");
 }
 
 // -------- Stack: List and Deque, and a type of this file's --------
 
 // The element type given outright
-fn sumByPopping[S Stack[i64]](s &mut S) i64 {
-  mut total = 0i64;
+fn sumByPopping[S: Stack[i64]](s: &mut S) i64 {
+  var total = 0i64;
   while true {
     match s.pop() {
-      case imm v Some {total = total * 10i64 + v;}
+      case let Some(v) {total = total * 10i64 + v;}
       case is None {break;}
     }
   }
-  total;
+  total
 }
 
 // The element type a parameter of its own, named before the bound
-fn pushThree[T, S Stack[T]](s &mut S, a T, b T, c T) {
+fn pushThree[T, S: Stack[T]](s: &mut S, a: T, b: T, c: T) {
   s.push(a);
   s.push(b);
   s.push(c);
 }
 
 // The bound written as a where clause
-fn topOf[S](s &S) i64 where S is Stack[i64] {
+fn topOf[S](s: &S) i64 where S is Stack[i64] {
   match s.peek() {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
 // A bound may name a parameter that comes after it. T is decided by the stack
 // ('i64' for a List[i64]) before an unsuffixed literal takes a type of its own
-fn pushOne[S Stack[T], T](s &mut S, v T) { s.push(v); }
+fn pushOne[S: Stack[T], T](s: &mut S, v: T) { s.push(v); }
 
 // T read off the stack's own methods: no argument names it
-fn popOne[T, S](s &mut S) Option[T] where S is Stack[T] { s.pop(); }
+fn popOne[T, S](s: &mut S) Option[T] where S is Stack[T] { s.pop() }
 
 // Strings do not copy: a Stack[String] moves them in and out
-fn pushNames[S Stack[String]](s &mut S) {
+fn pushNames[S: Stack[String]](s: &mut S) {
   s.push(String.from("a"));
   s.push(String.from("bc"));
 }
 
-fn popLength[S Stack[String]](s &mut S) usize {
+fn popLength[S: Stack[String]](s: &mut S) usize {
   match s.pop() {
-    case imm v Some {v.len();}
-    case is None {0usize;}
+    case let Some(v) {v.len()}
+    case is None {0usize}
   }
 }
 
 // A type with the three methods and no declaration
 struct Pile {
-  pub items List[i64];
-  pub fn push(self &mut, value i64) { items.push(value); }
-  pub fn pop(self &mut) Option[i64] { items.pop(); }
-  pub fn peek(self &) Option[&i64] { items.peek(); }
+  pub items: List[i64];
+  pub fn push(self: &mut, value: i64) { items.push(value); }
+  pub fn pop(self: &mut) Option[i64] { items.pop() }
+  pub fn peek(self: &) Option[&i64] { items.peek() }
 }
 
 fn stacks() {
-  mut l = List[i64].empty();
-  mut d = Deque[i64].empty();
+  var l = List[i64]();
+  var d = Deque[i64]();
   pushThree(&mut l, 1i64, 2i64, 3i64);
   pushThree(&mut d, 1i64, 2i64, 3i64);
   expectInt(topOf(&l), 3, "List peek is the last pushed");
@@ -117,7 +153,7 @@ fn stacks() {
   expectInt(topOf(&l), -1, "peek of nothing");
   expectUInt(u64.from(l.len()), 0, "emptied");
 
-  mut p = new Pile(List[i64].empty());
+  var p = Pile(List[i64]());
   pushThree(&mut p, 1i64, 2i64, 3i64);
   expectInt(topOf(&p), 3, "a Pile peeks");
   expectInt(sumByPopping(&mut p), 321, "and pops");
@@ -128,16 +164,16 @@ fn stacks() {
   expectInt(topOf(&l), 7, "a literal pushed through [S Stack[T], T] is an i64 for a List[i64]");
   expectInt(sumByPopping(&mut d), 7, "and for a Deque[i64]");
   match popOne(&mut l) {
-    case imm v Some {expectInt(v, 7, "popOne finds T from the List's pop");}
+    case let Some(v) {expectInt(v, 7, "popOne finds T from the List's pop");}
     case is None {expect(false, "the List held a 7");}
   }
   match popOne(&mut l) {
-    case imm v Some {expect(false, "nothing was left");}
+    case let Some(v) {expect(false, "nothing was left");}
     case is None {expect(true, "and a List with nothing left answers None");}
   }
 
-  mut ls = List[String].empty();
-  mut ds = Deque[String].empty();
+  var ls = List[String]();
+  var ds = Deque[String]();
   pushNames(&mut ls);
   pushNames(&mut ds);
   expectUInt(u64.from(popLength(&mut ls)), 2, "List[String] gives the last back");
@@ -146,24 +182,24 @@ fn stacks() {
 
 // -------- Queue: Deque --------
 
-fn enqueue[Q Queue[i64]](q &mut Q, n i64) {
-  mut i = 1i64;
+fn enqueue[Q: Queue[i64]](q: &mut Q, n: i64) {
+  var i = 1i64;
   while i <= n { q.push(i); i = i + 1i64; }
 }
 
-fn dequeueAll[Q Queue[i64]](q &mut Q) i64 {
-  mut order = 0i64;
+fn dequeueAll[Q: Queue[i64]](q: &mut Q) i64 {
+  var order = 0i64;
   while true {
     match q.popFront() {
-      case imm v Some {order = order * 10i64 + v;}
+      case let Some(v) {order = order * 10i64 + v;}
       case is None {break;}
     }
   }
-  order;
+  order
 }
 
 fn queues() {
-  mut d = Deque[i64].empty();
+  var d = Deque[i64]();
   enqueue(&mut d, 4i64);
   expectInt(dequeueAll(&mut d), 1234, "first in, first out");
   expect(d.isEmpty(), "then empty");
@@ -176,16 +212,16 @@ fn queues() {
 
 // -------- Indexed: List and Deque --------
 
-fn at[X Indexed[i64]](x &X, i usize) i64 {
+fn at[X: Indexed[i64]](x: &X, i: usize) i64 {
   match x.get(i) {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
 fn indexed() {
-  imm l = new List[i64] <- 5, 6, 7;
-  mut d = new Deque[i64] <- 6, 7;
+  let l = List[i64]() <- 5, 6, 7;
+  var d = Deque[i64]() <- 6, 7;
   d.pushFront(5);
   expectInt(at(&l, 0usize), 5, "List get 0");
   expectInt(at(&l, 2usize), 7, "List get 2");
@@ -197,68 +233,60 @@ fn indexed() {
 
 // -------- Map: Dict and OrderedDict --------
 
-fn fill[M Map[u64, i64]](m &mut M) {
+fn fill[M: Map[u64, i64]](m: &mut M) {
   m.insert(1u64, 10i64);
   m.insert(2u64, 20i64);
 }
 
 // The old value comes back, moved out, or -1 for a key that was new
-fn replaced[M Map[u64, i64]](m &mut M) i64 {
-  match m.insert(2u64, 21i64) {
-    case imm v Some {v;}
-    case is None {-1i64;}
-  }
-}
+fn replaced[M: Map[u64, i64]](m: &mut M) i64 { m.insert(2u64, 21i64) || -1i64 }
 
-fn lookup[M Map[u64, i64]](m &M, k u64) i64 {
-  imm key = k;
+fn lookup[M: Map[u64, i64]](m: &M, k: u64) i64 {
+  let key = k;
   match m.get(&key) {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
-fn has[M](m &M, k u64) bool where M is Map[u64, i64] {
-  imm key = k;
-  m.contains(&key);
+fn has[M](m: &M, k: u64) bool where M is Map[u64, i64] {
+  let key = k;
+  m.contains(&key)
 }
 
-fn take[M Map[u64, i64]](m &mut M, k u64) i64 {
-  imm key = k;
-  match m.remove(&key) {
-    case imm v Some {v;}
-    case is None {-1i64;}
-  }
+fn take[M: Map[u64, i64]](m: &mut M, k: u64) i64 {
+  let key = k;
+  m.remove(&key) || -1i64
 }
 
 // The key and value types parameters of their own
-fn swapIn[K, V, M Map[K, V]](m &mut M, k K, v V) Option[V] { m.insert(k, v); }
+fn swapIn[K, V, M: Map[K, V]](m: &mut M, k: K, v: V) Option[V] { m.insert(k, v) }
 
 // A map by Strings, which also have the by-bytes forms the trait does not ask for
-fn describe[M Map[String, i64]](m &mut M) i64 {
+fn describe[M: Map[String, i64]](m: &mut M) i64 {
   m.insert(String.from("x"), 5i64);
-  imm key = String.from("x");
+  let key = String.from("x");
   match m.get(&key) {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
 fn maps() {
-  mut d = new Dict[u64, i64];
-  mut o = new OrderedDict[u64, i64];
+  var d = Dict[u64, i64]();
+  var o = OrderedDict[u64, i64]();
   fill(&mut d);
   fill(&mut o);
   expectInt(lookup(&d, 1u64), 10, "Dict get");
   expectInt(lookup(&o, 2u64), 20, "OrderedDict get");
   expectInt(lookup(&d, 3u64), -1, "a key it lacks");
   expect(has(&d, 2u64), "Dict contains");
-  expect(not has(&o, 3u64), "OrderedDict does not contain 3");
+  expect(!has(&o, 3u64), "OrderedDict does not contain 3");
   expectInt(replaced(&mut d), 20, "insert answers the old value for a key it held");
   expectInt(replaced(&mut o), 20, "the same for OrderedDict");
   expectInt(lookup(&o, 2u64), 21, "and the value is replaced");
   expectInt(replaced(&mut d), 21, "a second replacement answers the first");
-  mut fresh = new Dict[u64, i64];
+  var fresh = Dict[u64, i64]();
   expectInt(replaced(&mut fresh), -1, "a key that was new answers None");
   expectInt(take(&mut d, 1u64), 10, "remove moves the value out");
   expectInt(take(&mut o, 1u64), 10, "OrderedDict too");
@@ -267,39 +295,39 @@ fn maps() {
 
   // d holds key 2 -> 21 now
   match swapIn(&mut d, 2u64, 22i64) {
-    case imm v Some {expectInt(v, 21, "swapIn, with K and V parameters, answers the old value");}
+    case let Some(v) {expectInt(v, 21, "swapIn, with K and V parameters, answers the old value");}
     case is None {expect(false, "key 2 was there");}
   }
   expectInt(lookup(&d, 2u64), 22, "and stores the new one");
 
-  mut ds = new Dict[String, i64];
-  mut os = new OrderedDict[String, i64];
+  var ds = Dict[String, i64]();
+  var os = OrderedDict[String, i64]();
   expectInt(describe(&mut ds), 5, "Dict[String, i64] is a Map[String, i64]");
   expectInt(describe(&mut os), 5, "OrderedDict[String, i64] is");
 }
 
 // A value with a finalizer, put in through a Map and replaced: the old one is
 // handed back and dies once, when the caller lets go of it
-mut @threadlocal deaths = 0i64;
+var @threadlocal deaths = 0i64;
 struct Counted {
-  pub n i64;
-  fn final(self &uni) { deaths = deaths + 1i64; }
+  pub n: i64;
+  fn final(self: &uni) { deaths = deaths + 1i64; }
 }
 
-fn putCounted[M Map[u64, Counted]](m &mut M, n i64) i64 {
-  imm before = deaths;
-  match m.insert(1u64, new Counted(n)) {
-    case imm old Some {
+fn putCounted[M: Map[u64, Counted]](m: &mut M, n: i64) i64 {
+  let before = deaths;
+  match m.insert(1u64, Counted(n)) {
+    case let Some(old) {
       expectInt(deaths, before, "the old value is alive in the Option");
-      old.n;
+      old.n
     }
-    case is None {-1i64;}
+    case is None {-1i64}
   }
 }
 
 fn finalizedThroughMap() {
-  mut d = new Dict[u64, Counted];
-  mut o = new OrderedDict[u64, Counted];
+  var d = Dict[u64, Counted]();
+  var o = OrderedDict[u64, Counted]();
   expectInt(putCounted(&mut d, 1i64), -1, "first put, Dict");
   expectInt(putCounted(&mut d, 2i64), 1, "second put answers the first");
   expectInt(deaths, 1, "the first died once, when the answer was dropped");
@@ -317,102 +345,97 @@ fn finalizedThroughMap() {
 // few functions for each trait are enough here; the sections above hold the
 // full checks.
 
-fn countDyn(c &<Collection) usize { c.len(); }
+fn countDyn(c: &<Collection) usize { c.len() }
 
-fn pushThreeDyn(s &<mut Stack[i64]) {
+fn pushThreeDyn(s: &<mut Stack[i64]) {
   s.push(1i64);
   s.push(2i64);
   s.push(3i64);
 }
 
-fn sumDyn(s &<mut Stack[i64]) i64 {
-  mut total = 0i64;
+fn sumDyn(s: &<mut Stack[i64]) i64 {
+  var total = 0i64;
   while true {
     match s.pop() {
-      case imm v Some {total = total * 10i64 + v;}
+      case let Some(v) {total = total * 10i64 + v;}
       case is None {break;}
     }
   }
-  total;
+  total
 }
 
-fn topDyn(s &<Stack[i64]) i64 {
+fn topDyn(s: &<Stack[i64]) i64 {
   match s.peek() {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
-fn pushNamesDyn(s &<mut Stack[String]) {
+fn pushNamesDyn(s: &<mut Stack[String]) {
   s.push(String.from("a"));
   s.push(String.from("bc"));
 }
 
-fn popLengthDyn(s &<mut Stack[String]) usize {
+fn popLengthDyn(s: &<mut Stack[String]) usize {
   match s.pop() {
-    case imm v Some {v.len();}
-    case is None {0usize;}
+    case let Some(v) {v.len()}
+    case is None {0usize}
   }
 }
 
-fn enqueueDyn(q &<mut Queue[i64], n i64) {
-  mut i = 1i64;
+fn enqueueDyn(q: &<mut Queue[i64], n: i64) {
+  var i = 1i64;
   while i <= n { q.push(i); i = i + 1i64; }
 }
 
-fn dequeueDyn(q &<mut Queue[i64]) i64 {
-  mut order = 0i64;
+fn dequeueDyn(q: &<mut Queue[i64]) i64 {
+  var order = 0i64;
   while true {
     match q.popFront() {
-      case imm v Some {order = order * 10i64 + v;}
+      case let Some(v) {order = order * 10i64 + v;}
       case is None {break;}
     }
   }
-  order;
+  order
 }
 
-fn atDyn(x &<Indexed[i64], i usize) i64 {
+fn atDyn(x: &<Indexed[i64], i: usize) i64 {
   match x.get(i) {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
-fn fillDyn(m &<mut Map[u64, i64]) {
+fn fillDyn(m: &<mut Map[u64, i64]) {
   m.insert(1u64, 10i64);
   m.insert(2u64, 20i64);
 }
 
-fn replacedDyn(m &<mut Map[u64, i64]) i64 {
-  match m.insert(2u64, 21i64) {
-    case imm v Some {v;}
-    case is None {-1i64;}
-  }
-}
+fn replacedDyn(m: &<mut Map[u64, i64]) i64 { m.insert(2u64, 21i64) || -1i64 }
 
-fn lookupDyn(m &<Map[u64, i64], k u64) i64 {
-  imm key = k;
+fn lookupDyn(m: &<Map[u64, i64], k: u64) i64 {
+  let key = k;
   match m.get(&key) {
-    case imm v Some {*v;}
-    case is None {-1i64;}
+    case let Some(v) {*v}
+    case is None {-1i64}
   }
 }
 
-fn putCountedDyn(m &<mut Map[u64, Counted], n i64) i64 {
-  imm before = deaths;
-  match m.insert(1u64, new Counted(n)) {
-    case imm old Some {
+fn putCountedDyn(m: &<mut Map[u64, Counted], n: i64) i64 {
+  let before = deaths;
+  match m.insert(1u64, Counted(n)) {
+    case let Some(old) {
       expectInt(deaths, before, "the old value is alive in the Option, through a virtual reference");
-      old.n;
+      old.n
     }
-    case is None {-1i64;}
+    case is None {-1i64}
   }
 }
 
 fn dynamicForm() {
-  mut l = List[i64].empty();
-  mut d = Deque[i64].empty();
-  mut st = new Set[u64];
+  var l = List[i64]();
+  var d = Deque[i64]();
+  var st = Set[u64]();
   st.insert(7u64);
   st.insert(8u64);
   expectUInt(u64.from(countDyn(&l)), 0, "an empty List through a virtual Collection");
@@ -422,7 +445,7 @@ fn dynamicForm() {
   expectUInt(u64.from(countDyn(&d)), 3, "a Deque through one after three pushes");
   expectInt(topDyn(&l), 3, "dynamic Stack peek on a List");
   expectInt(topDyn(&d), 3, "and on a Deque");
-  mut p = new Pile(List[i64].empty());
+  var p = Pile(List[i64]());
   pushThreeDyn(&mut p);
   expectInt(topDyn(&p), 3, "and on a Pile");
   expectInt(sumDyn(&mut l), 321, "dynamic pops last in, first out, List");
@@ -430,8 +453,8 @@ fn dynamicForm() {
   expectInt(sumDyn(&mut p), 321, "Pile");
   expectInt(topDyn(&l), -1, "dynamic peek of nothing");
 
-  mut ls = List[String].empty();
-  mut ds = Deque[String].empty();
+  var ls = List[String]();
+  var ds = Deque[String]();
   pushNamesDyn(&mut ls);
   pushNamesDyn(&mut ds);
   expectUInt(u64.from(popLengthDyn(&mut ls)), 2, "List[String] through a virtual Stack");
@@ -440,14 +463,14 @@ fn dynamicForm() {
   enqueueDyn(&mut d, 4i64);
   expectInt(dequeueDyn(&mut d), 1234, "dynamic Queue: first in, first out");
 
-  imm il = new List[i64] <- 5, 6, 7;
+  let il = List[i64]() <- 5, 6, 7;
   expectInt(atDyn(&il, 2usize), 7, "dynamic Indexed get 2");
   expectInt(atDyn(&il, 3usize), -1, "and past the end");
   d.pushFront(5);
   expectInt(atDyn(&d, 0usize), 5, "a Deque through Indexed, counted from the front");
 
-  mut md = new Dict[u64, i64];
-  mut mo = new OrderedDict[u64, i64];
+  var md = Dict[u64, i64]();
+  var mo = OrderedDict[u64, i64]();
   fillDyn(&mut md);
   fillDyn(&mut mo);
   expectInt(lookupDyn(&md, 1u64), 10, "dynamic Map get, Dict");
@@ -456,8 +479,8 @@ fn dynamicForm() {
   expectInt(replacedDyn(&mut mo), 20, "OrderedDict too");
   expectInt(lookupDyn(&mo, 3u64), -1, "a key it lacks");
 
-  mut cd = new Dict[u64, Counted];
-  imm base = deaths;
+  var cd = Dict[u64, Counted]();
+  let base = deaths;
   expectInt(putCountedDyn(&mut cd, 5i64), -1, "first put, through a virtual Map");
   expectInt(putCountedDyn(&mut cd, 6i64), 5, "second put answers the first");
   expectInt(deaths, base + 1, "the first died once, when the answer was dropped");
@@ -474,5 +497,5 @@ fn main() i32 {
   dynamicForm();
   // The Counted that dynamicForm left in its Dict died with the Dict
   expectInt(deaths, 6, "and so did the one the virtual Map's Dict held");
-  done();
+  done()
 }

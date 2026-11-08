@@ -117,7 +117,24 @@ float4 prepareMain(FullscreenOutput input) : SV_Target {
 
 // The gather: this half-resolution pixel's colour from the taps whose
 // circles reach it, and, in alpha, the largest such circle (what the
-// composite mixes by)
+// composite mixes by).
+//
+// SCATTER AS GATHER, NORMALIZED: each pixel throws its colour over its
+// circle, spread evenly; this pixel's colour is what the pixels whose
+// circles reach it throw, each weighted by how much of it reaches (softly
+// over a pixel) over its circle's area, and the sum divided by the weights'
+// total. The division makes the estimate exact where everything round has one
+// circle (a blurred wall comes out its own colour, whatever share of the taps
+// reach), and keeps a blurred background beside a sharp edge its own colour
+// rather than darker or lighter for the taps the edge took; a small bright
+// circle among large dim ones still outweighs them, which shapes the bokeh.
+// (Not normalized, the sum was a Monte Carlo estimate over the whole disc
+// searched: a small circle was seen by a few taps, which few turning with
+// the per-pixel noise, and the noise's diagonal pattern showed as stripes over
+// a softly blurred wall.) Each tap reads a whole pixel, never a filtered
+// blend, so that a circle is never averaged with its neighbour's: a sharp
+// lamp's small circle and the blurred black's large one would average to a
+// middling one that carried the lamp's light out over the black.
 [shader("fragment")]
 float4 gatherMain(FullscreenOutput input) : SV_Target {
     int2 hp = int2(input.position.xy);
@@ -127,20 +144,13 @@ float4 gatherMain(FullscreenOutput input) : SV_Target {
     float centreSize = abs(centreCoc);
     // The radius of the disc searched, in half-resolution pixels
     float searchRadius = max(dof.maxCoc * 0.25, 1.0);
-    // SCATTER AS GATHER: each pixel throws its colour over its circle, spread
-    // evenly (its colour over the circle's area); this pixel's colour is the
-    // sum of what the pixels whose circles reach it throw. The taps are a
-    // Monte Carlo estimate of that sum over the disc searched (each stands for
-    // its share of the disc's area), so light is conserved: a circle of
-    // radius R seen by taps over its whole disc adds up to its colour.
-    float cell = 3.14159265 * searchRadius * searchRadius / float(dof.taps);
     // The pixel itself, over its own circle (a radius in half-resolution pixels: a quarter of the diameter)
     float centreRadius = centreSize * 0.25;
-    float3 sum = min(centre.rgb, float3(64.0, 64.0, 64.0)) / max(1.0, centreRadius * centreRadius * 3.14159265);
+    float centreWeight = 1.0 / max(1.0, centreRadius * centreRadius * 3.14159265);
+    float3 sum = min(centre.rgb, float3(64.0, 64.0, 64.0)) * centreWeight;
+    float total = centreWeight;
     float covering = centreSize;
     float turn = 6.2831853 * frac(interleavedGradientNoise(float2(hp)) + dof.noise);
-    float3 around = float3(0.0, 0.0, 0.0);
-    float counted = 0.0;
     for (uint i = 0u; i < dof.taps; i++) {
         float r = sqrt((float(i) + 0.5) / float(dof.taps)) * searchRadius;
         float a = float(i) * 2.39996323 + turn;
@@ -150,7 +160,6 @@ float4 gatherMain(FullscreenOutput input) : SV_Target {
         if (q.x == hp.x && q.y == hp.y) {
             continue;
         }
-        counted += 1.0;
         float4 s = halfPrepared.Load(int3(q, 0));
         // The tap's circle's radius in half-resolution pixels: a tap behind
         // the centre is held to the centre's own size
@@ -158,18 +167,16 @@ float4 gatherMain(FullscreenOutput input) : SV_Target {
         if (s.a > centreCoc) {
             sampleRadius = min(sampleRadius, centreRadius);
         }
-        float distance = length(float2(q - hp));
         // Whether its circle reaches the centre, softly over a pixel
-        float reach = saturate(sampleRadius - distance + 0.5);
-        float area = max(1.0, sampleRadius * sampleRadius * 3.14159265);
+        float reach = saturate(sampleRadius - length(float2(q - hp)) + 0.5);
         if (reach > 0.0) {
+            float w = reach / max(1.0, sampleRadius * sampleRadius * 3.14159265);
             covering = max(covering, sampleRadius * 4.0);
-            around += min(s.rgb, float3(64.0, 64.0, 64.0)) * (reach / area * cell);
+            sum += min(s.rgb, float3(64.0, 64.0, 64.0)) * w;
+            total += w;
         }
     }
-    // The taps that fell on the pixel itself stood for part of the disc: the others stand for it
-    sum += around * (float(dof.taps) / max(counted, 1.0));
-    return float4(sum, covering);
+    return float4(sum / total, covering);
 }
 
 // The composite: the sharp frame mixed with the blurred one by the size of the circle

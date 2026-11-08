@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fetch the prebuilt C libraries Cone's packages bind, pinned and verified.
 
-    python tools/deps/fetch.py            fetch every dependency below
-    python tools/deps/fetch.py openssl    only that one
+    python tools/deps/fetch.py                    fetch every dependency below
+    python tools/deps/fetch.py openssl            only that one
+    python tools/deps/fetch.py openssl-headers    OpenSSL's C headers
 
 Each goes in its own folder of the fetched-dependencies folder, deps/ at the
 repository's root (CONE_DEPS names another), which git ignores: the binaries
@@ -13,12 +14,17 @@ OPENSSL 3.5.9, from CPython's own pinned binaries: the cpython-bin-deps
 repository (github.com/python/cpython-bin-deps), tag openssl-bin-3.5.9, folder
 amd64/, MSVC-built, the DLLs signed by the Python Software Foundation,
 Apache-2.0. The DLLs, their import libraries and the licence are fetched,
-about 9 MB; the PDBs and the C headers are not (Cone binds C by hand, and
-compiles no C). They land in deps/openssl/:
+about 9 MB; the PDBs are not. They land in deps/openssl/:
 
     libssl-3.dll  libcrypto-3.dll      the runtime, beside every program
     libssl.lib    libcrypto.lib        the import libraries, for the link
     LICENSE.txt
+
+OPENSSL-HEADERS, the same tag's C headers (amd64/include/openssl/, 172
+files, about 2.7 MB), into deps/openssl/include/openssl/. Cone binds C by
+hand and needs none of them; they are what a C library built against these
+DLLs compiles with (ngtcp2's OpenSSL crypto helper: build_ngtcp2.py). Their
+pins, one line each, are in openssl-3.5.9-headers.txt beside this script.
 
 Each file is downloaded from the tag, checked against its size and SHA-256
 pinned below, and only then put in place; a file already there whose hash is
@@ -59,6 +65,7 @@ class Pinned:
 
 @dataclass(frozen=True)
 class Dependency:
+    name: str           # what the command line calls it
     folder: str         # its folder in deps/
     what: str
     url: str            # the source folder; each file's name is appended
@@ -66,8 +73,20 @@ class Dependency:
     files: tuple[Pinned, ...]
 
 
+def pins_from(listing: str) -> tuple[Pinned, ...]:
+    """The pins a listing beside this script holds: 'sha256 size name' a line,
+    '#' lines being comments."""
+    pins = []
+    for line in (Path(__file__).resolve().parent / listing).read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.startswith("#"):
+            digest, size, name = line.split(" ", 2)
+            pins.append(Pinned(name, int(size), digest))
+    return tuple(pins)
+
+
 DEPENDENCIES = (
     Dependency(
+        "openssl",
         "openssl",
         "OpenSSL 3.5.9 (cpython-bin-deps, tag openssl-bin-3.5.9, amd64)",
         # The tag pointed at commit ddb46a415b4995440723183e644f8d2c346567a2
@@ -86,6 +105,15 @@ DEPENDENCIES = (
             Pinned("LICENSE.txt", 10352,
                    "ed72ce2b51ee58f117e5a021e2e04af158857f40269fbc03491f0b2a99dbcc96"),
         ),
+    ),
+    Dependency(
+        "openssl-headers",
+        "openssl/include/openssl",
+        "OpenSSL 3.5.9's C headers (cpython-bin-deps, tag openssl-bin-3.5.9, amd64/include)",
+        # Pinned on 26 Oct 2026, the tag at the same commit
+        "https://raw.githubusercontent.com/python/cpython-bin-deps/openssl-bin-3.5.9/amd64/include/openssl/",
+        "Python Software Foundation",
+        pins_from("openssl-3.5.9-headers.txt"),
     ),
 )
 
@@ -165,10 +193,15 @@ def fetch(dep: Dependency, root: Path) -> None:
     folder = root / dep.folder
     folder.mkdir(parents=True, exist_ok=True)
     print(f"{dep.what}")
+    # A long set (the headers) is reported in one line, not a line a file
+    quiet = len(dep.files) > 10
+    there = 0
     for pin in dep.files:
         target = folder / pin.name
         if matches(target, pin):
-            print(f"    {pin.name}: already there, verified")
+            there += 1
+            if not quiet:
+                print(f"    {pin.name}: already there, verified")
             continue
         part = folder / (pin.name + ".part")
         download(dep.url + pin.name, part)
@@ -179,8 +212,12 @@ def fetch(dep: Dependency, root: Path) -> None:
                              f" {digest}, but {pin.size} bytes with SHA-256 {pin.sha256} are"
                              f" pinned; nothing was kept")
         os.replace(part, target)
-        print(f"    {pin.name}: downloaded, {size} bytes, SHA-256 verified")
-    if IS_WINDOWS:
+        if not quiet:
+            print(f"    {pin.name}: downloaded, {size} bytes, SHA-256 verified")
+    if quiet:
+        print(f"    {len(dep.files)} files, SHA-256 verified: {len(dep.files) - there} downloaded,"
+              f" {there} already there")
+    if IS_WINDOWS and any(pin.signed for pin in dep.files):
         for pin in dep.files:
             if pin.signed:
                 wrong = check_signature(folder / pin.name, dep.signer)
@@ -195,7 +232,7 @@ def main(argv: list[str]) -> int:
     if sys.version_info < (3, 11):
         print("fetch: needs Python 3.11 or later", file=sys.stderr)
         return 1
-    names = {dep.folder: dep for dep in DEPENDENCIES}
+    names = {dep.name: dep for dep in DEPENDENCIES}
     wanted = argv or list(names)
     for name in wanted:
         if name not in names:

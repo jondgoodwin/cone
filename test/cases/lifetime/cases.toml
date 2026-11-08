@@ -40,7 +40,7 @@
 #                   relied on inside and met by each instantiation's argument;
 #                   'T + 'static'; on a borrowed virtual reference,
 #                   '&<Trait + 'a'; the ''static' an owning virtual
-#                   reference, 'So[Trait]', implies; and an unbounded type
+#                   reference, 'Uni[Trait]', implies; and an unbounded type
 #                   parameter's inferred argument, which carries no band.
 #
 # Every file's header gives the verdict a correct compiler reaches, its basis
@@ -81,7 +81,7 @@
 #
 # Left out deliberately, because the rule depends on something not yet
 # decided: a bound on a generic type's parameter or an owning virtual
-# reference, owner fields reached through a shared 'mut' path, and whether 'new H(...)'
+# reference, owner fields reached through a shared 'mut' path, and whether 'H(...)'
 # extends a temporary the way Rust's struct literal does.
 
 support = []
@@ -178,9 +178,9 @@ category = "reject"
 description = "A borrow of a field of 'self' taken by value may not be returned"
 tags = ["flow"]
 
-[scenario.lifetime_band_return_byvalue_so_owner]
+[scenario.lifetime_band_return_byvalue_uni_owner]
 category = "reject"
-description = "A borrow through a 'So' owner passed by value may not be returned"
+description = "A borrow through a 'Uni' owner passed by value may not be returned"
 tags = ["flow"]
 
 [scenario.lifetime_band_return_byvalue_rc_owner]
@@ -195,7 +195,7 @@ tags = ["flow"]
 
 [scenario.lifetime_band_return_byvalue_owner_method]
 category = "reject"
-description = "A receiver-borrowing method called on a 'So' owner passed by value: the result may not be returned"
+description = "A receiver-borrowing method called on a 'Uni' owner passed by value: the result may not be returned"
 tags = ["flow"]
 
 [scenario.lifetime_band_return_rc_local_borrow]
@@ -205,7 +205,7 @@ tags = ["flow"]
 
 [scenario.lifetime_band_return_owner_as_borrow]
 category = "reject"
-description = "A 'So' parameter handed back where a borrow is declared"
+description = "A 'Uni' parameter handed back where a borrow is declared"
 tags = ["flow"]
 
 [scenario.lifetime_band_return_temp_owner_as_borrow]
@@ -225,7 +225,7 @@ tags = ["flow"]
 
 [scenario.lifetime_band_return_owner_local_as_borrow]
 category = "reject"
-description = "A 'So' local handed back where a borrow is declared"
+description = "A 'Uni' local handed back where a borrow is declared"
 tags = ["flow"]
 
 [scenario.lifetime_band_return_block_local]
@@ -568,6 +568,86 @@ category = "reject"
 description = "A caller's borrow returned as ''static', and a local's handed to a ''static' parameter, are refused"
 tags = ["typecheck", "flow"]
 
+[scenario.lifetime_band_static_holder_result]
+category = "run"
+description = "A struct holding a '&'static str' or '&'static i64', an Option of one, and a generic Option[T] of one, returned by an unannotated function of two references, borrows neither: kept past both"
+tags = ["flow", "generic", "runtime"]
+
+[scenario.lifetime_band_static_holder_result_ending]
+category = "reject"
+description = "The same with a '&'a str' field, an unnamed '&i64' field and Option[T] of the first: each result borrows both arguments, refused as they end"
+tags = ["flow", "generic"]
+
+[scenario.lifetime_band_static_holder_to_mut_self]
+category = "run"
+description = "A method's result holding only a ''static' borrow, from a call on self's field, carries no borrow of it and may be stored into *self by a '&mut self' method"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_static_holder_to_mut_self_ending]
+category = "reject"
+description = "The same with a '&'a str' field: the result carries a borrow of self.reader, whose store into *self is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_holder_deep_call]
+category = "run"
+description = "A '&mut self' call on a service whose field chain is eighteen structs deep and ends in a value holding only a ''static' borrow lends no borrow into it: no error for the lent 'lp', nor for a local lent by 'feed'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_static_holder_deep_call_ending]
+category = "reject"
+description = "The same with a '&'a Loop' field at the end of the chain: a local lent to a service that outlives it could be kept there, refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_holder_deep_job]
+category = "run"
+description = "A generic runHostJob calls a job's 'run' with a loop and a '&mut' to a service eighteen structs deep ending in a value holding only a ''static' borrow: the job body's borrow cannot be kept there"
+tags = ["flow", "generic", "runtime"]
+
+[scenario.lifetime_band_static_holder_deep_job_ending]
+category = "reject"
+description = "The same with a '&'a Bump' field at the end of the chain: the borrow of the local job body could be kept in the service, refused"
+tags = ["flow", "generic"]
+
+[scenario.lifetime_band_static_holder_through_pointer]
+category = "run"
+description = "A record holding an Option of a struct with a '&'static str', reached through the raw pointer a method of self returns, carries no borrow of self: self is reshaped and written while it is used"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_static_holder_through_pointer_ending]
+category = "reject"
+description = "The same with a '&'a str' field: the record carries a borrow of *self, so reshaping or writing self while it is used is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_holder_given_caller_borrow]
+category = "reject"
+description = "An unannotated function may not return a caller's borrow in a value holding only ''static' borrows, nor store one where a '&mut' parameter to such a value points; nor may a local's borrow go into one"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_field_given_local]
+category = "reject"
+description = "A ''static' field takes only a global's borrow wherever it is built: a local's borrow given to one is refused at the construction, though the value goes only to a by-value parameter that stores it in a global, or to a thread"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_field_stored_local]
+category = "reject"
+description = "A ''static' field takes only a global's borrow wherever it is changed: a store of a local's or a caller's borrow into one, in a local, through a local '&mut', or by a swap, is refused at the store"
+tags = ["flow"]
+
+[scenario.lifetime_band_static_field_nested]
+category = "reject"
+description = "A struct holding only ''static' borrows, nested in an Option, an enum's variant or another struct, is refused where a local's borrow goes in; so is a variant's own ''static' field"
+tags = ["flow", "generic"]
+
+[scenario.lifetime_band_static_field_global]
+category = "run"
+description = "A ''static' field given a global's borrow, a literal string, or a borrow already ''static' (another value's field, through a borrowed parameter) is accepted, built, stored and nested"
+tags = ["flow", "generic", "runtime"]
+
+[scenario.lifetime_band_static_holder_global_loan]
+category = "reject"
+description = "A value holding only ''static' borrows, handed back by an unannotated function, still carries a global's loan its argument carried: the global may not be changed while it is used"
+tags = ["flow"]
+
 [scenario.lifetime_band_named_two_params_one_name]
 category = "reject"
 description = "One name on two parameters: the result lives as long as the shorter argument given it"
@@ -842,7 +922,7 @@ tags = ["flow"]
 
 [scenario.lifetime_mix_swap_into_struct_field_reversed]
 category = "reject"
-description = "An inner borrow swapped into an outer struct's field, written 't <=> h.r'"
+description = "An inner borrow swapped into an outer struct's field, written 't <-> h.r'"
 tags = ["flow"]
 
 [scenario.lifetime_mix_swap_into_array_element]
@@ -1167,6 +1247,16 @@ category = "reject"
 description = "A borrow swapped into a struct's field keeps its source frozen while the struct is used"
 tags = ["flow"]
 
+[scenario.lifetime_free_call_copy_before_owner_moves]
+category = "run"
+description = "Arguments in written order: 'takeVal(*r, consume(own))' copies '*r' before the later argument frees its owner, so the call reads the copy; prints 7"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.lifetime_free_call_owner_moves_before_borrow]
+category = "reject"
+description = "The reversed orders: an argument moves the borrow's owner before a later argument reads the borrow ('takeVal2(consume(own), *r)'), or while the borrow is an argument ('takeRef(r, consume(own))') or the receiver ('r.plus(consume(own))'); each refused ErrorFrozen"
+tags = ["flow"]
+
 # Stage 7: lifetimes on structs, and where clauses ordering lifetimes
 
 [scenario.lifetime_band_struct_parser_two_lifetimes]
@@ -1266,12 +1356,12 @@ tags = ["flow"]
 
 [scenario.lifetime_band_where_generic_mixed]
 category = "run"
-description = "A lifetime comparison and a type clause joined by 'and' on a generic function and on a generic type's method"
+description = "A lifetime comparison and a type clause joined by '&&' on a generic function and on a generic type's method"
 tags = ["parse", "typecheck", "flow", "runtime"]
 
 [scenario.lifetime_band_where_or_refused]
 category = "reject"
-description = "A lifetime comparison under 'or' or 'not', or of another form, is refused"
+description = "A lifetime comparison under '||' or '!', or of another form, is refused"
 tags = ["parse"]
 
 [scenario.lifetime_band_where_unknown_name]
@@ -1320,6 +1410,11 @@ tags = ["typecheck", "runtime"]
 category = "run"
 description = "'ar[key]' is the key's pointer: no check at run time, and nothing left of '[]' once inlined"
 tags = ["genllvm", "runtime"]
+
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.lifetime_inv_index_plain_pointer.run]]
+name = "default"
+options = ["--strip"]
 
 [[scenario.lifetime_inv_index_plain_pointer.check]]
 name     = "index-answers-the-key"
@@ -1465,7 +1560,7 @@ tags = ["flow"]
 
 [scenario.lifetime_bound_owning_virt_refused]
 category = "reject"
-description = "A value holding a borrow that is not global made an owning virtual reference ('So[Trait]', 'Rc[Trait]'), which is bounded by ''static', is refused"
+description = "A value holding a borrow that is not global made an owning virtual reference ('Uni[Trait]', 'Rc[Trait]'), which is bounded by ''static', is refused"
 tags = ["flow"]
 
 [scenario.lifetime_bound_owning_virt_accepted]
@@ -1485,7 +1580,7 @@ tags = ["flow"]
 
 [scenario.lifetime_bound_parse_refused]
 category = "reject"
-description = "A bound under 'or', 'T is 'a', an invariant bound, a bound on a plain reference or a generic type's parameter is refused at parse"
+description = "A bound under '||', 'T is 'a', an invariant bound, a bound on a plain reference or a generic type's parameter is refused at parse"
 tags = ["parse"]
 
 [scenario.lifetime_bound_nameres_refused]
@@ -1527,3 +1622,955 @@ tags = ["flow", "generic"]
 category = "run"
 description = "The Peek adapter over a list's cursor, whose items are the list's and outlive its steps: the held item is still the first after the source is pulled twice more; values worked out by hand"
 tags = ["flow", "generic", "runtime"]
+
+[scenario.lifetime_inv_enum_match]
+category = "run"
+description = "A variable a pattern binds out of an enum keeps the invariant lifetime the matched value carries, for a user enum and a generic one"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_enum_match_refused]
+category = "reject"
+description = "A value of one invariant lifetime taken from an enum, handed where another's is wanted, is refused"
+
+[scenario.lifetime_arena_ok_arena_node_in_arena]
+category = "run"
+description = "Bug 48: a node of the arena stored back into the same arena under a named lifetime. Compile."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_enum_ast]
+category = "run"
+description = "Bug 48/51: must compile and run (arena lab jn_a1)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_method_form]
+category = "run"
+description = "Bug 48/51: must compile and run (arena lab e2c_method_form)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_method_ref_fields]
+category = "run"
+description = "Bug 48/51: must compile and run (arena lab e2b_method_with_ref_fields)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_method_returns]
+category = "run"
+description = "Bug 48/51: must compile and run (arena lab e2_method_returns_arena_ref)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_named_cycle]
+category = "run"
+description = "Bug 48/51: the lab parser with a cycle and a type written back into a node (jn_a5), lifetimes named. Its \"owner\" field, a parameter stored in the arena, is gone: a body may store into the arena only what the arena owns (lifetime_arena_refuse_second_param pins that refusal)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_named_parser]
+category = "run"
+description = "Bug 48/51: the lab's recursive parser (jn_g1) with the result's lifetime named: it comes from the arena, not from the"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_recursive_parser]
+category = "run"
+description = "Bug 48/51: arena lab e3_recursive_parser with 'a named on the node type too (Node['a]). Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_same_lifetime_named]
+category = "reject"
+description = "Bug 48/51 (pin): arena lab e3b with 'a on the node type, p and ar both '&'a': the result may come from p, which may die before the arena. Refuse (as lifetime_arena_refuse_named_same)."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_unnamed_param]
+category = "reject"
+description = "Bug 55: a function naming no lifetime stores a borrow of another parameter in a node of the arena it is handed, whose finalizer reads it once the caller's local is gone. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_arena_in_struct]
+category = "reject"
+description = "Bug 55: the same through the '&mut Arena' field of a struct the function is handed, lifetimes named: a node of an arena reached through a struct's field takes nothing from another parameter. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_unnamed_struct]
+category = "reject"
+description = "Bug 55: the same through the '&mut Arena' field of a struct, no lifetime named. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_unnamed_param_caller]
+category = "reject"
+description = "Bug 55: as lifetime_arena_refuse_unnamed_param, the dead local in a block of main. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_arena_in_struct_caller]
+category = "reject"
+description = "Bug 55: as lifetime_arena_refuse_arena_in_struct, the dead local in a block of main. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_local_struct]
+category = "reject"
+description = "Bug 55: a local struct wrapping a '&mut Arena' parameter, no lifetime named: a node of the caller's arena takes no other parameter's borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_arena_by_value_in_struct]
+category = "reject"
+description = "Bug 55: an arena held by value in a struct parameter: a node of it takes no other parameter's borrow, the struct dying with its finalizer reading it. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_own_part]
+category = "reject"
+description = "Bug 55: a part of the struct holding the '&mut Arena', stored in a node of that arena: the struct can die before the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_holder_helpers]
+category = "run"
+description = "Bug 55 (pin): helpers handed a struct holding a '&mut Arena' and another borrow, naming no lifetime, that store none of it in the arena: the caller may pass a local. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_scratch_before]
+category = "run"
+description = "Bug 51: a scratch arena holding a reference to a local declared before it. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_unwrap_push]
+category = "run"
+description = "Bug 48/51: must compile and run (arena lab jn_g2)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_pin_field_after]
+category = "reject"
+description = "Pin: a local's reference written into a caller's arena node after allocation. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_pin_list_grows]
+category = "reject"
+description = "Pin: a reference into a List's block, the List in the arena, the List grown. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_pin_uni_replaced]
+category = "reject"
+description = "Pin: a reference into a Uni's contents stored in an arena node, the Uni replaced. Refuse (ErrorVariantReshape)."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_closure]
+category = "reject"
+description = "Bug 51: the arena captured by a closure, a reference the closure is handed stored through it: the closure's"
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_discarded_plain]
+category = "reject"
+description = "Bug 51/52: as lifetime_arena_refuse_discarded_same with a plain caller. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_discarded_same]
+category = "reject"
+description = "Bug 51/52: a second parameter's reference stored into the arena, result discarded (once a compiler crash). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_field_no_final]
+category = "run"
+description = "Bug 51 (narrowed): the arena reached through a struct field; a parameter's borrow stored in a node whose death reads no borrow (no 'final'). No store: the handle carries the borrow, and the caller's local outlives every use of it."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_field_mutref_no_final]
+category = "run"
+description = "Bug 51 (narrowed): as lifetime_arena_ok_field_no_final, the arena behind a '&mut' field. The node has no 'final', so nothing reads the borrow after the local is gone."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_local_final]
+category = "reject"
+description = "Bug 51: a local's reference in the caller's arena, read by the node's finalizer after the local is gone. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_local_unnamed_no_final]
+category = "run"
+description = "Bug 51 (narrowed): a local's borrow left in the caller's arena, the node not returned. The node has no 'final', so nothing in the arena reads the borrow once the local is gone."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_named_apart_no_final]
+category = "run"
+description = "Bug 51 (narrowed): a parameter's borrow of another lifetime stored in a node with no 'final'. The arena never reads it, so the store is no store."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_named_same]
+category = "reject"
+description = "Bug 51: a parameter's reference stored into the caller's arena under one lifetime name ('a on both). Refuse: the arena may outlive 'a."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_new_no_final]
+category = "run"
+description = "Bug 51 (narrowed): 'new a[H](...)' is 'a.alloc(H(...))'; H has no 'final', so storing a local's borrow in the caller's arena is no store."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_result_carries_no_final]
+category = "run"
+description = "Bug 48 item 4 (narrowed): a result that carries a parameter's loan, stored in the arena in a node with no 'final'. No store, so nothing reads the loan after it ends."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_result_closure_no_final]
+category = "run"
+description = "Bug 48 item 4 (narrowed): a closure-held loan carried by a call's result, stored in a node with no 'final'. No store; the local outlives every use."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_scratch_discarded]
+category = "reject"
+description = "Bug 51: as lifetime_arena_refuse_scratch_kept, result discarded. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_scratch_kept]
+category = "reject"
+description = "Bug 51: a scratch arena holding a reference to a local declared after it, result kept. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_second_arena]
+category = "reject"
+description = "Bug 48: a node of a second arena stored into the first: the second may die first. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_struct_holds_ref_no_final]
+category = "run"
+description = "Bug 48 (narrowed): a node holding what a plain struct keeps, stored in the arena. Node has no 'final', so the store reads no borrow."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_unnamed_cycle_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): the lab's parser with a cycle (jn_a5), no lifetime written. The nodes have no 'final', so storing a result that may come from p or ar back into the arena is no store."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_unnamed_result_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): the lab's recursive parser (jn_g1) with no lifetime written. The nodes have no 'final', so storing leafB's result back into the arena is no store."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_unknown_origin]
+category = "reject"
+description = "Bug 51: an arena reached through a method's result, a local's reference stored in it: where the arena is is unknown, so refused (only a reference made from a raw pointer is trusted). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_alias_call]
+category = "reject"
+description = "Bug 51: the arena reached through a local made by a call on a parameter (the lab's r2). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_unnamed_node_recursive_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): the recursive_parser form with the node type's borrows unnamed. The nodes have no 'final', so storing results back into the arena is no store."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_key_callerT]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_closure]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_deep]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_direct]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_enum]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_field]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_generic]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_instantiate]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_method]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_new]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_key_ref]
+category = "reject"
+description = "Bug 51: the key rule (ErrorKeyBorrow) fires on this route into DynArena.alloc; the promise DynArena.alloc's trusted cast rests on. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_same_path]
+category = "run"
+description = "Bug 48/51: a value and the arena it is stored in reached by one path (teardown's Chain, a reference to the arena kept in it). Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_path_reassigned_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): the path the arena is reached by is reassigned between taking the value and the store. The stored node has no 'final', so no arena reads the stale reference."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_path_reassigned_local_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): as lifetime_arena_ok_path_reassigned_no_final, the stale value held by a local that is the receiver's path's copy. No node has a 'final'."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_two_arenas_one_struct_no_final]
+category = "run"
+description = "Bug 48/51 (narrowed): two arenas reached through one struct: a.alloc(W(b)) keeps b's reference in a, in a node with no 'final' that is never read."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_local_alias]
+category = "run"
+description = "Bug 51: a local '&mut' alias of a local arena stores what a direct a.alloc may, a local declared before the arena. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_local_alias_declared_after]
+category = "run"
+description = "Bug 51 (narrowed): the local declared after the arena dies first, but the node holding its borrow has no 'final' and is read only inside the local's scope."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_brand_pattern_refused]
+category = "reject"
+description = "A generic whose arguments are related, given two different invariant lifetimes where it needs one, directly and through a trait bound, is refused"
+tags = ["typecheck", "generic"]
+
+[scenario.lifetime_inv_brand_pattern]
+category = "run"
+description = "A generic whose arguments are related is instanced at the pattern of equal brands its uses have: each over a list of keys, a branded struct implementing a trait, and a user generic at two patterns; values worked out by hand"
+tags = ["typecheck", "generic", "runtime"]
+
+[scenario.lifetime_inv_infer_declared]
+category = "run"
+description = "An Option inferred from Some(ar.alloc(..)) is the Option a variable declares, assigned directly or through a let: a result-only name not yet bound is no brand of its own when an instance is named; values worked out by hand"
+tags = ["typecheck", "generic", "runtime"]
+
+[scenario.lifetime_inv_infer_declared_refused]
+category = "reject"
+description = "A value carrying one arena's brand handed where the declared type states another's stays refused"
+tags = ["typecheck", "generic"]
+
+[scenario.lifetime_inv_result_name_binds_once_refused]
+category = "reject"
+description = "A result-only name that has bound to one local arena's brand, then meeting a value of another arena's brand, is refused: it binds once"
+tags = ["typecheck", "generic"]
+
+[scenario.lifetime_inv_typed_let_brand]
+category = "run"
+description = "A generic variant under a typed let or an assignment's target takes the brand the type states (Either.L, Either.R); a callee's parameter type adopts nothing; values worked out by hand"
+tags = ["typecheck", "generic", "runtime"]
+
+[scenario.lifetime_inv_two_result_names]
+category = "run"
+description = "Two names only a function's result writes (atlas's '=t and '=r) stay apart from each other: the field's List[&'=r mut Road['=t]] is the instance its constructor writes"
+tags = ["typecheck", "runtime", "generic"]
+
+[scenario.lifetime_inv_two_result_names_refused]
+category = "reject"
+description = "A value of one unresolved result name ('=t) does not reach the other's ('=r) place: List[&'=t mut Road['=t]] is not the field's List[&'=r mut Road['=t]]"
+tags = ["typecheck", "generic"]
+
+[scenario.lifetime_arena_refuse_widened_loop]
+category = "reject"
+description = "Bug 56: six node references rotated in a loop (seven walks); the store into the arena's node still takes only what the arena was lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_widened_loop_named]
+category = "reject"
+description = "Bug 56: the named form of the six-node rotation (lifetimes named on the signature). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_widened_loop_own]
+category = "run"
+description = "Bug 56: a long rotation in a loop storing a node of the same arena into another stays accepted: the arena's own loans are its own."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_widened_loop_list]
+category = "run"
+description = "Bug 56: building a linked list of arena nodes in a loop that takes several walks stays accepted."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_widened_loop_alias]
+category = "reject"
+description = "Bug 56 (design chat probe g1_local_ar_alias): refuse_widened_loop_alias."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_widened_loop_helper]
+category = "reject"
+description = "Bug 56 (design chat probe g2_helper_store): refuse_widened_loop_helper."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_widened_loop_deep]
+category = "reject"
+description = "Bug 56 (design chat probe g3_arena_in_list_param): refuse_widened_loop_deep."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_widened_loop_chain]
+category = "run"
+description = "Bug 56 (design chat probe g4_safe_own_nodes): ok_widened_loop_chain."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_final_reads_local]
+category = "reject"
+description = "Bug 51 (spike): a node whose 'final' reads a borrow of a local, stored in the arena. Refuse: the arena finalizes it after the local is gone."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_owned_by_closure]
+category = "reject"
+description = "Bug 51 (spike): a closure owning a finalizable value that holds a local, stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_generic]
+category = "reject"
+description = "Bug 51 (spike): a generic helper stores a value of its type parameter in the arena; the caller's type has a 'final' reading a local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_late_store]
+category = "reject"
+description = "Bug 51 (spike): a finalizable node filled in late with a borrow of a local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_nested]
+category = "reject"
+description = "Bug 51 (spike): a finalizable value nested a field down in the stored node. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_via_node]
+category = "reject"
+description = "Bug 51 (spike): a plain node holding a local's borrow, then a finalizable node reaching it, stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_handle_outlives]
+category = "reject"
+description = "Bug 51 (spike): the handle alloc returns, which carries the local's borrow, kept past the local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_link_new_in_old]
+category = "reject"
+description = "Bug 51 (spike): an older node made to point at a shorter-lived one. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_link_old]
+category = "reject"
+description = "Bug 51 (spike): an older node made to point at a local that dies first. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_node_returned]
+category = "reject"
+description = "Bug 51 (spike): a node holding a local's borrow returned from the function. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_late_local]
+category = "reject"
+description = "Bug 51 (spike): a finalizable node filled in late with a local of the arena's own function. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_behind_plain_local]
+category = "reject"
+description = "Bug 51 (spike): a local's borrow stored behind a plain node that reaches a finalizable one. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_final_late_param]
+category = "reject"
+description = "Bug 51 (spike): a finalizable node filled in late with a parameter's borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_behind_plain_param]
+category = "reject"
+description = "Bug 51 (spike): a parameter's borrow stored behind a plain node that reaches a finalizable one. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_plain_then_final]
+category = "reject"
+description = "Bug 51 (spike): a plain node first, then a finalizable one reached through it. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_ordered_names]
+category = "reject"
+description = "Bug 51 (spike): lifetimes ordered by a 'where' clause ('b >= 'a'): a borrow stored by the helper into a finalizable node, then the local dies first in the caller. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_node_only_helper]
+category = "reject"
+description = "Bug 51 (spike): a helper fills a node of the caller's arena through a reference ('n: &'a mut S['a]') while a finalizable node reaches it. Refuse at the caller."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_second_arena_reader]
+category = "reject"
+description = "Bug 51 (spike): a node of a second arena kept in a finalizable node of the first, which reads it. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_arena_in_struct_param]
+category = "reject"
+description = "Bug 55 (spike): the arena held by value in a struct parameter ('h.ar'), a parameter's borrow stored in a finalizable node. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_arena_ref_in_struct_param]
+category = "reject"
+description = "Bug 55 (spike): as lifetime_arena_refuse_arena_in_struct_param, the arena behind a reference field. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_returned_node_filled_by_caller]
+category = "reject"
+description = "Bug 51 (spike): a node of the callee's arena returned, the caller fills it with a borrow of a local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_returned_node_filled_by_helper]
+category = "reject"
+description = "Bug 51 (spike): a node returned and filled by a second helper with a borrow of a local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_two_levels_of_helper]
+category = "reject"
+description = "Bug 51 (spike): the store through two levels of helper. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_unnamed_helper]
+category = "reject"
+description = "Bug 55 (spike): a helper naming no lifetime stores another parameter in the arena's node. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_local_declared_after]
+category = "reject"
+description = "Bug 51 (spike): a local declared after the arena, its borrow stored in a finalizable node by a helper naming one lifetime. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_uni_holds_final]
+category = "reject"
+description = "Bug 51 (spike): a unique owner holding a finalizable value, stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_list_of_final]
+category = "reject"
+description = "Bug 51 (spike): a list of finalizable values stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_closure_owns_final]
+category = "reject"
+description = "Bug 51 (spike): a closure owning a finalizable value, stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_enum_variant_final]
+category = "reject"
+description = "Bug 51 (spike): an enum variant holding a finalizable value, stored in the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_inner_block_local]
+category = "run"
+description = "Bug 51 (spike): a node holding a local declared in an inner block, used within that block. Compiles and runs."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_m1]
+category = "run"
+description = "Bug 51 (spike): the arena store rule narrowed (probe m1): a node holding a borrow, whose death reads none. Compiles and runs."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_ok_outer_local]
+category = "run"
+description = "Bug 51 (spike): a local that outlives the arena, borrowed into a finalizable node. Compiles and runs."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_helper_returns_alloc_of_local]
+category = "reject"
+description = "Bug 51 (design chat probe f1): a helper returns the handle of a node holding its parameter's borrow; the caller returns it past the local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_keep_node_in_holder]
+category = "reject"
+description = "Bug 51 (design chat probe f2): a node holding a parameter's borrow is kept in a holder that outlives the local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_handle_kept_past_block]
+category = "reject"
+description = "Bug 51 (design chat probe f3): the handle of a node holding an inner-block local's borrow kept past the block. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_older_node_via_helper]
+category = "reject"
+description = "Bug 51 (design chat probe f4): an older node linked to a newer node holding a local's borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_reassigned_return]
+category = "reject"
+description = "Bug 48/51 (design chat probe f5): the arena's path is reassigned, so a node of b holds the reference to the shorter-lived arena a and is kept past a's block. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_reassigned_final]
+category = "reject"
+description = "Bug 48/51 (design chat probe f6): the arena's path is reassigned, a finalizable node of the other arena holds the stale arena and reads it at its death. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_nested_deep]
+category = "reject"
+description = "Bug 51 (itypeDropReadsBorrow): a finalizable value 19 structs down (past the walk's depth limit of 16), holding a local's borrow, stored in the arena. Refuse: a type the walk cannot see all of answers yes."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_own_nodes_finalizable]
+category = "run"
+description = "Bug 48 exception E1: nodes with a 'final' taken from the arena through a parameter and stored back into other nodes of it, unnamed and named 'a. Needs loanArenaApart's exception (disabled, it is refused 1064/1085)."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_loop_rotation_long]
+category = "run"
+description = "Bugs 57, 58: a rotation of twelve references in a loop settles (the loop is walked until its head stops changing, no holder is widened) and the program runs."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_loop_rotation_cap_ok]
+category = "run"
+description = "Bugs 57, 58: a rotation of 23 references needs 24 walks, the most a loop is given (PathLoopCap): it settles."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_loop_rotation_cap_refused]
+category = "reject"
+description = "Bugs 57, 58: a rotation of 24 references would need 25 walks, one more than a loop is given: ErrorLoopTangled at the loop."
+tags = ["typecheck"]
+
+[scenario.lifetime_loop_refused_stops]
+category = "reject"
+description = "Bugs 57, 58: a refused loop inside another ends the function's flow check there; the two '&mut' of one place after it, which the check would refuse, are not reported."
+tags = ["typecheck"]
+
+[scenario.lifetime_loop_refused_generic]
+category = "reject"
+description = "Bugs 57, 58: a loop in a generic function that rotates 25 references of the made-for type is refused at the loop, naming the instantiation."
+tags = ["typecheck", "generic"]
+
+[scenario.lifetime_loop_rotation_reshape_lent]
+category = "reject"
+description = "Bug 58 (r2853_w2): a borrow into a list through a reference that went round a six-variable rotation, then a call growing it through another name: the loop settles and the shape check refuses (ErrorShapeReshape)."
+tags = ["typecheck"]
+
+[scenario.lifetime_loop_rotation_reshape_unique]
+category = "reject"
+description = "Bug 58 (r1950_w2): '&mut a[0]' through a reference that went round a six-variable rotation, then a call growing the list through its own name: ErrorShapeReshape."
+tags = ["typecheck"]
+
+[scenario.lifetime_loop_rotation_bound]
+category = "reject"
+description = "Bug 57 (r670_w): a virtual reference holding a borrow of a local goes round a six-variable rotation, then is passed where the bound is 'static: ErrorLifetimeBound."
+tags = ["typecheck"]
+
+[scenario.lifetime_loop_rotation_await]
+category = "reject"
+description = "Bug 57 (r1555_w2): a borrow made by a call left of an 'await', after a six-variable rotation: ErrorAwaitLeftCall."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_field_arena_alias]
+category = "reject"
+description = "The store of lifetime_arena_refuse_widened_loop_alias with no loop (the arena reached through a field of a caller-lent struct, copied to a local): it compiled on master and the finalizer read a dead local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_field_arena_deep]
+category = "reject"
+description = "The store of lifetime_arena_refuse_widened_loop_deep with no loop (the arena reached through a struct inside the caller-lent struct). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_method_result]
+category = "reject"
+description = "Bug 61: a node stored through, the arena reached through a struct a caller lent by a helper's result. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_alias_of_alias]
+category = "reject"
+description = "Bug 61: the arena reached through a struct a caller lent, by a local copied from a local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_two_levels]
+category = "reject"
+description = "Bug 61: the arena reached through a struct inside a struct a caller lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_node_helper]
+category = "reject"
+description = "Bug 61: a helper makes the arena node, so the storing function holds no pin of the arena. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_held_alias]
+category = "run"
+description = "Bug 61: a local alias of a lent struct's arena allocates a number from it and stores no borrow of the other parameter in it. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_held_helper_deep]
+category = "reject"
+description = "Bug 61: a node made by a helper two calls deep, stored through with no pin of the arena: the arena was reached through a struct a caller lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_helper_option]
+category = "reject"
+description = "Bug 61: a node a helper returns inside an Option, stored through after a match: the arena was reached through a struct a caller lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_helper_field]
+category = "reject"
+description = "Bug 61: a node from a helper held in a struct's field, stored through it: the arena was reached through a struct a caller lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_helper_levels]
+category = "reject"
+description = "Bug 61: a helper makes the node of an arena two struct levels down in what a caller lent. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_caller_holder]
+category = "reject"
+description = "Bug 61: a store through a node a struct holds beside its arena is seen at the caller, which lent the node's arena: the body names no helper. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_caller_box]
+category = "reject"
+description = "Bug 61: a store through a node a struct field holds, the struct itself holding no arena: the caller's check refuses it. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_caller_node]
+category = "reject"
+description = "Bug 61: a store through an arena node passed as a parameter: the caller's check refuses it. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_caller_deep]
+category = "reject"
+description = "Bug 61: the same two calls deep, the node reaching the storing function through a struct: refused at the call in the middle. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_ok_held_setter]
+category = "run"
+description = "Bug 61: a parameter's field that holds an arena is set from another parameter: a store into the struct, not into an arena node. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_arena_refuse_held_var_parm]
+category = "reject"
+description = "Bug 61: a 'var' parameter is given a helper's result, then stored through: the node is of an arena a caller lent through a struct, and the caller's local lies before the holder. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_var_holder]
+category = "reject"
+description = "Bug 61: the same with the holder itself a 'var' parameter (it holds the arena and is given a helper's node). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_field_swapped]
+category = "reject"
+description = "Bug 61: a parameter's field is given a helper's node, then stored through. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_arena_refuse_held_field_swapped_helper]
+category = "reject"
+description = "Bug 61: a helper gives a parameter's field a node of the arena, then it is stored through. Refuse."
+tags = ["typecheck"]
+
+# Bug 62: borrows that share one lifetime and are made one value (a literal, a closure's captures, a field assigned on a local aggregate) are asked what a call's arguments are asked. Each refuse case names what master did with it.
+
+[scenario.lifetime_join_refuse_construct_then_put]
+category = "reject"
+description = "Bug 62: a struct built from a caller's holder and a younger local, then stored through by a one-argument 'put'. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_construct_inner_block]
+category = "reject"
+description = "Bug 62: the same with the holder an older local of main and the younger local in an inner block. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_construct_ref_of_ref]
+category = "reject"
+description = "Bug 62: a struct whose fields are references to references. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_field_assigned_x]
+category = "reject"
+description = "Bug 62: a younger borrow assigned to a field of a local struct that already holds the caller's holder. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_field_assigned_h]
+category = "reject"
+description = "Bug 62: the caller's holder assigned to a field of a local struct that already holds a younger borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_swap_field]
+category = "reject"
+description = "Bug 62: a younger borrow swapped ('<->') into a field of a local struct. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_swap_whole]
+category = "reject"
+description = "Bug 62: two structs swapped whole after one was built with a younger borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_tuple]
+category = "reject"
+description = "Bug 62: a tuple of the holder and a younger borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_array]
+category = "reject"
+description = "Bug 62: an array whose element holds the holder and a younger borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_generic_pair]
+category = "reject"
+description = "Bug 62: a generic pair instanced with both. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_struct_in_struct]
+category = "reject"
+description = "Bug 62: a struct holding the struct that holds both. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_method]
+category = "reject"
+description = "Bug 62: a method of the struct doing the store. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_enum_payload_struct]
+category = "reject"
+description = "Bug 62: an enum variant whose payload is the struct holding both. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_enum_payload_tuple]
+category = "reject"
+description = "Bug 62: an enum variant whose payload is a tuple of both. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_option_some]
+category = "reject"
+description = "Bug 62: 'Some(C(h, &mut t))', put through a '&mut Option'. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_generic_holder]
+category = "reject"
+description = "Bug 62: a generic holder instanced with a borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_pattern_binding]
+category = "reject"
+description = "Bug 62: the struct matched out of a 'Some' and stored through. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_collection_accumulator]
+category = "reject"
+description = "Bug 62: a '&mut List[&mut T]' accumulator and a younger borrow in one struct, pushed to. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_let_ref_put]
+category = "reject"
+description = "Bug 62: 'let r = &mut c; put(r)'. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_final_holder]
+category = "reject"
+description = "Bug 62: a 'final' on the struct doing the store. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_block_returns_holder]
+category = "reject"
+description = "Bug 62: the struct returned from a block. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_if_returns_holder]
+category = "reject"
+description = "Bug 62: the struct returned from one arm of an 'if'. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_default_field_none]
+category = "reject"
+description = "Bug 62: a field with a default 'None' assigned a younger borrow after the struct is built. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_temp_argument]
+category = "reject"
+description = "Bug 62: the struct made as a temporary in the argument of 'put'. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_store]
+category = "reject"
+description = "Bug 62: a closure that stores a younger local into a captured '&mut' holder. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_reads_only]
+category = "reject"
+description = "Bug 62: a closure that only reads the younger local while it writes through the captured holder (the rule's cost: refused). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_struct_reads_only]
+category = "reject"
+description = "Bug 62: a struct whose method only reads the younger borrow while it writes through the holder (the rule's cost: refused). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_parameter]
+category = "reject"
+description = "Bug 62: a closure parameter stored into a captured holder, called with a younger local. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_parameter_two_captures]
+category = "reject"
+description = "Bug 62: the same closure capturing a second borrow. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_two_names]
+category = "reject"
+description = "Bug 62: a closure storing a caller's borrow under one name into a caller's holder under another (no younger local, no arena). Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_arena_node]
+category = "reject"
+description = "Bug 62: a closure storing a caller's borrow into an arena node reached through another parameter. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_refuse_closure_arena_var]
+category = "reject"
+description = "Bug 62: a closure giving a 'var' parameter an arena node, the borrow stored into it after. Refuse."
+tags = ["typecheck"]
+
+[scenario.lifetime_join_ok_older_borrow]
+category = "run"
+description = "Bug 62 control: a struct built from the caller's holder and the caller's own older borrow, stored through. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_older_in_scope]
+category = "run"
+description = "Bug 62 control: the same built inside a function from two of its parameters. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_unholdable]
+category = "run"
+description = "Bug 62 control: a holder beside a younger borrow its type cannot hold (a 'Q' beside an 'H' that holds only '&mut T'). Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_counter]
+category = "run"
+description = "Bug 62 control: 'D(&mut counter, &mut t)' where 'counter' holds no borrows, beside a younger borrow. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_ro_ref_mut_field]
+category = "run"
+description = "Bug 62 control: a plain '&ro &mut H' field beside a younger borrow: a read-only borrow is no way through (the look-through is for a closure's capture only). Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_ro_ref_mut_local]
+category = "run"
+description = "Bug 62 control: the same with the younger borrow held in a local reference. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_closure_one_capture]
+category = "run"
+description = "Bug 62 control: a closure capturing one local, which it only reads. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_ok_closure_two_read_captures]
+category = "run"
+description = "Bug 62 control: a closure capturing two locals it only reads. Compile and run."
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_join_refuse_closure_arena_store]
+category = "reject"
+description = "Bug 65, open: a closure giving a var parameter an arena node and storing a third parameter in it compiles on master and with Bug 62's join. Refuse."
+tags = ["typecheck"]
+xfail = true
+
+[scenario.lifetime_arena_refuse_final_in_option_field]
+category = "reject"
+description = "Bug 62: a node with no final holds, by value in an Option, a part whose final reads a borrow. Refuse."
+tags = ["typecheck"]

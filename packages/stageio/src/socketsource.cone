@@ -1,0 +1,152 @@
+// ======== Layer 3, the socket end: SocketSource reads a connection into a stream ========
+//
+// A ChunkSource over package aio's Socket, the edge where iocore's Op.Recv moves an IoBuf: each read is
+// into a buffer the window lends, so the bytes arrive where the stage will use them, with no copy.
+//
+//   SocketSource(down)        made with the sink after it, as every source is
+//   src.start(addr)           connects to addr, then reads
+//   src.startOn(conn)         reads a connection the program already has (an accepted one, say)
+//
+// It reads 64 KiB at a time (linkBytes) into a window of 256 KiB (linkWindow), and reads on only while a
+// buffer is free: a slow consumer holds the connection back. The stream ends Finished when the peer closes
+// its end, or Failed with the connect's or the read's error. The connection is closed when the stream ends.
+//
+//   let src = SocketSource(inf);          // inf: the stage after it
+//   src.start(SocketAddr.localhost(port));
+//
+// CANCELLATION. Its reads are limited by the cancel group it works in, so a read in flight ends when the
+// group is cancelled and the stream ends Failed (aio's CANCEL AND DEADLINES); a buffer given back in a
+// cancelled group does the same, as a stage does.
+
+// Reads a connected socket, 64 KiB at a time, into a window of 256 KiB
+pub actor SocketSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  conn: Socket;
+  pumping: bool;
+  over: bool;
+  halt: bool;                   // cancelled or stopped while a read was in flight
+  why: Option[Ending];          // the stop's reason, kept for the end when a read was in flight
+  reading: Option[CancelGroup]; // the read in flight's own child group, which a stop cancels
+
+  pub fn init(self: &new, down: ChunkSink) {
+    *self = Self(down: down, link: ChunkWindow.own(linkWindow), conn: Socket.none(), pumping: false,
+      over: false, halt: false, why: None[Ending], reading: None[CancelGroup]);
+    down.attach(selfactor);
+  }
+
+  // Connects to addr and reads the stream
+  pub async fn start(self, addr: SocketAddr) {
+    let r = await aio.connectIn(addr, IoLimits.within(actors.currentGroup()));
+    match r {
+      case let Ok(s) {
+        conn = s;
+        selfactor.pump();
+      }
+      case let Err(e) {
+        over = true;
+        down.end(Ending.Failed(AnyError.from(e)));
+      }
+    }
+  }
+
+  // Reads the stream of a connection that is already made
+  pub async fn startOn(self, s: Socket) {
+    conn = s;
+    selfactor.pump();
+  }
+
+  // Reads while there is a buffer to read into
+  pub async fn pump(self) {
+    if pumping || over { return; }
+    pumping = true;
+    var more = true;
+    while more {
+      if halt || actors.isCancelled() {
+        self.finishHalted();
+        more = false;
+      } else {
+        match link.take(linkBytes) {
+          case is None { more = false; }
+          case let Some(b) {
+            // the read runs in a child group of ours, so a stop can end it
+            let g = actors.currentGroup().child();
+            reading = Some[CancelGroup](g);
+            let r = await conn.readIn(b, IoLimits.within(g));
+            reading = None[CancelGroup];
+            match r {
+              case let Ok(buf) {
+                if halt {
+                  link.give(buf);
+                  self.finishHalted();
+                  more = false;
+                } else if buf.isEmpty() {
+                  link.give(buf);
+                  self.finish(Ending.Finished);
+                  more = false;
+                } else {
+                  down <- buf;
+                }
+              }
+              case let Err(e) {
+                if halt { self.finishHalted(); }
+                else { self.finish(Ending.Failed(AnyError.from(e))); }
+                more = false;
+              }
+            }
+          }
+        }
+      }
+    }
+    pumping = false;
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if over { return; }
+    if actors.isCancelled() {
+      // a read in flight ends by its group's cancel: the pump sees 'halt' when it resumes
+      if pumping { halt = true; } else { self.finishHalted(); }
+    } else if !pumping {
+      selfactor.pump();
+    }
+  }
+
+  // The consumer wants no more (ChunkSource.stop): a read in flight is cancelled
+  // (its own child group), then the connection is closed and the sink gets its one
+  // end, Failed(reason). After the end, or a second stop, nothing happens. Buffers
+  // still out come back through giveBack.
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    if pumping {
+      halt = true;
+      why = Some[Ending](reason);
+      match &reading {
+        case let &Some(g) { g.cancel(); }
+        case is None {}
+      }
+    } else {
+      self.finish(reason);
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
+  // The stream is over: the connection is closed and the sink told
+  fn finish(self, how: Ending) {
+    over = true;
+    var old = Socket.none();
+    old <-> conn;
+    down.end(how);
+  }
+}

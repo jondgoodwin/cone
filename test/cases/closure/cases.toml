@@ -54,6 +54,22 @@ target = "symbols"
 contains = ["define internal anon comdat nodeduplicate"]
 excludes = ["define internal 0 ", "define internal 1 "]
 
+# The closure written inside another's body is built once, not once more for
+# each copy of the outer one closureTry checks. Each struct is numbered by the
+# compiler's serial, the trials' copies taking the numbers between, so the two
+# written are #4 and #6 and none of the others is in the IR; nor is an
+# instance of 'apply' for a trial's struct.
+[scenario.closure_trial_nested]
+category = "run"
+description = "A closure written inside another closure's body: the structs and generic instances the outer one's trial copies make are the trials', and only the two written, and one instance of the generic it is given to, are generated"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.closure_trial_nested.check]]
+name = "one-struct-per-closure-written"
+target = "preir"
+contains = ['%"closure#4" = type', '%"closure#6" = type', "_closure6_"]
+excludes = ['%"closure#1"', '%"closure#2"', '%"closure#3"', '%"closure#5"', '%"closure#7"', "_closure3_", "_closure5_"]
+
 # Inside a list a function type's return type ends at the comma; outside every
 # list a comma adds a return type. Each signature is called through, since one
 # misread as another signature can still compile and run.
@@ -64,13 +80,18 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 [scenario.closure_dynamic]
 category = "run"
-description = "A callable used dynamically: a closure, a struct and a plain function to one '&<fn(sig)', '&<mut fn' changing state, a literal lent for the statement, 'So[fn(sig)]' and 'Rc[fn(sig)]' owners and what they finalize"
+description = "A callable used dynamically: a closure, a struct and a plain function to one '&<fn(sig)', '&<mut fn' changing state, a literal lent for the statement, 'Uni[fn(sig)]' and 'Rc[fn(sig)]' owners and what they finalize"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.closure_field_call]
 category = "run"
 description = "A callable field called by its name, 'b.onClick(3)': a function reference, '&<fn', '&<mut fn', an owner, a counted owner and a struct with a '()', on the value and through '&' and '&mut'"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.closure_fnref_through_ref]
+category = "run"
+description = "A function reference reached through a reference to it, '&&fn', called as '(*g)(n)': '*g' is loaded and called through. Bound by 'case let &Some(g)' and 'if let &Some(g)' from an '&Option[&fn]' (and an '&&Option' matched through '*m'), a parameter, a local and a field; beside them '(**g)(n)' and '(*f)(n)' on a plain '&fn'"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.closure_trait]
 category = "run"
@@ -84,12 +105,12 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.closure_shareable]
 category = "run"
-description = "Shareable beside Sendable, and '+' after a callable or a trait in a reference: Flock (a closure listing an Arc[imm, Grid], held as So[fn(f32, f32) f32 + Sendable], moved to a thread while main reads the Grid), the markers granted to numbers, structs, Arc[imm, T] and Arc[Mutex, T], a List, an Atomic, a plain borrow and a struct declaring Shareable, '[F fn(..) + Sendable + Shareable]', '&<fn(..) + Shareable' lent and dropped to a plain '&<fn', a closure that borrows only a number"
+description = "Shareable beside Sendable, and '+' after a callable or a trait in a reference: Flock (a closure listing an Arc[imm, Grid], held as Uni[fn(f32, f32) f32 + Sendable], moved to a thread while main reads the Grid), the markers granted to numbers, structs, Arc[imm, T] and Arc[Mutex, T], a List, an Atomic, a plain borrow and a struct declaring Shareable, '[F fn(..) + Sendable + Shareable]', '&<fn(..) + Shareable' lent and dropped to a plain '&<fn', a closure that borrows only a number"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.closure_typecheck_shareable]
 category = "reject"
-description = "What Shareable and Sendable refuse in a closure or a struct: a closure naming an Rc[imm, Grid] or a '&mut' (its '()' reading through it, taking 'self &') asked for '[F fn() + Shareable]', '[F fn() + Sendable]', '&<fn() + Shareable', 'So[fn() + Sendable]' made from it, and handed to a parallel each, each naming the captured variable and what to list; a hand-written struct with a '&mut' field; markers after a '+' that are neither, or on a reference to a type that is known"
+description = "What Shareable and Sendable refuse in a closure or a struct: a closure naming an Rc[imm, Grid] or a '&mut' (its '()' reading through it, taking 'self &') asked for '[F fn() + Shareable]', '[F fn() + Sendable]', '&<fn() + Shareable', 'Uni[fn() + Sendable]' made from it, and handed to a parallel each, each naming the captured variable and what to list; a hand-written struct with a '&mut' field; markers after a '+' that are neither, or on a reference to a type that is known"
 tags = ["parse", "typecheck", "flow"]
 
 [scenario.closure_typecheck_lifetimes]
@@ -108,6 +129,12 @@ category = "reject"
 description = "A closure that fails as an argument of a generic call is reported once, without the compiler defect that followed"
 tags = ["typecheck"]
 diagnostics = 2
+
+[scenario.closure_typecheck_trial_dcl]
+category = "reject"
+description = "A function first reached while a closure is tried is not the trial's: its own error is reported once where it is, through a generic's bound, an overload set, a trait's method, a nested closure, a generic function's instance and a type's static function"
+tags = ["typecheck"]
+diagnostics = 6
 
 [scenario.closure_typecheck_cascade_imm]
 category = "reject"
@@ -138,6 +165,11 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 [scenario.closure_overload]
 category = "run"
 description = "A closure literal meeting overloaded callees: a number's overload never takes it, then its parameter count, then its written types"
+tags = ["typecheck", "runtime"]
+
+[scenario.closure_trial_dcl]
+category = "run"
+description = "Functions first reached while a closure is tried are checked there and called: through a generic's bound, an overload set, a trait's method, a nested closure, a generic function's instance and a type's static function"
 tags = ["typecheck", "runtime"]
 
 [scenario.closure_generic_overload]
@@ -223,6 +255,12 @@ description = "Closure literals refused: a return type the paths disagree on, a 
 tags = ["typecheck"]
 diagnostics = 7
 
+[scenario.closure_typecheck_tailvalue]
+category = "reject"
+description = "A closure that writes no return type, given a signature: the last line's ';' left off where it says a value and kept where it says nothing"
+tags = ["parse", "typecheck"]
+diagnostics = 3
+
 [scenario.closure_typecheck_generic_overload]
 category = "reject"
 description = "Generics in an overload set that cannot choose: two bound by one signature, a number no candidate takes, a signature none is bound by"
@@ -289,3 +327,36 @@ diagnostics = 3
 category = "run"
 description = "A closure given to a generic callable whose signature names a result type nothing else settles ('F fn(x T) U'): its parameters are typed from T, its body gives U, for a free function, a method of a generic struct, two parameters, a bool, a float and a closure that changes a variable"
 tags = ["typecheck", "genllvm", "runtime"]
+
+# A plain function standing as a callable ('&<fn') meets the callable's signature as
+# a subtype of it, by a recast alone (a parameter asking for less permission, a
+# result promising more, a reference to the enum for one to the variant and the
+# reverse, a result holding fewer borrows): the rule a struct's method meets a
+# trait's by and a function reference's signature gets. closure_fnref_variance
+# runs what the stub passes; closure_typecheck_fnref_variance holds what needs a
+# conversion, refused.
+[scenario.closure_fnref_variance]
+category = "run"
+description = "A plain function as a callable by a contravariant parameter and a covariant result: permission, enum for variant and variant for enum by reference, and fewer borrows held"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.closure_typecheck_fnref_variance]
+category = "reject"
+description = "A plain function as a callable whose signature is not a recast of it: more permission asked, less promised, a wider number, a value made an Option, a variant or an enum by value, a value behind '&mut', a narrower parameter, more borrows held, a C-named function"
+tags = ["typecheck"]
+diagnostics = 13
+
+# An owner of a callable made from a plain function ('Uni[fn(sig)](&f)') meets
+# the signature by the same rule (fnSigMeets) as a callable reference does.
+# closure_callable_owner_variance runs what it accepts; the typecheck scenario holds
+# the refusals, a value held by value that is not one layout under its own code.
+[scenario.closure_callable_owner_variance]
+category = "run"
+description = "An owner of a callable made from a plain function by a contravariant parameter and a covariant result: permission, enum for variant and variant for enum by reference, and fewer borrows held"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.closure_typecheck_callable_owner_variance]
+category = "reject"
+description = "An owner of a callable made from a plain function that is not a recast of the signature: a variant or an enum by value, a wider number, a value made an Option, more permission asked, less promised, more borrows held, a C-named function"
+tags = ["typecheck"]
+diagnostics = 10

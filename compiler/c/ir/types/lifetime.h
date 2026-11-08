@@ -27,7 +27,7 @@
  * Two names are unordered unless the signature's 'where' clause orders them
  * ('where 'a >= 'b': ''a' lasts at least as long as ''b'), or the 'where' clause
  * of a struct a parameter or the result uses does, or a type in it implies it:
- * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self &'
+ * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self: &'
  * of a struct declaring ''b') cannot outlast them, so each lasts at least as
  * long as the borrow's own (Rust's implied bounds), the unnamed lifetime a
  * name like any other there. '>=' is transitive, and nothing else is
@@ -141,7 +141,9 @@ Name *lifeSlotName(INode *use, uint32_t k);
 
 // What a parameter of this type holds beyond its own reference: what a
 // borrowed reference points at, or the value itself; NULL where that holds no
-// borrow
+// borrow of a lifetime that ends (itypeCarriesEndingBorrow): a value holding
+// only ''static' borrows lends nothing of the caller's, as the lifetimes
+// gathered of a type here pass them too
 INode *lifeHeld(INode *parmtype);
 
 // Is this a borrowed reference whose own lifetime a caller lends: no
@@ -221,7 +223,11 @@ void lifeSigCheck(struct FnSigNode *sig);
 // or in neither: those are all a call is checked against. Where their
 // parameters lend different parts (a trait's 'Self' and a struct's declaring
 // lifetimes), each parameter is compared whole.
-int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
+//
+// 'recv' says the first parameter of each is the receiver, and 'b''s is the
+// implementor 'a''s is: a trait spells it as the trait, naming none of the
+// implementor's brands, so 'b''s receiver is read as 'a''s.
+int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b, int recv);
 
 // Does the implementation 'impl' promise at least what the requirement 'req'
 // does, so that a call checked against 'req' is safe with 'impl'? Each part
@@ -229,7 +235,7 @@ int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 // where it may in 'req'; a parameter is ''static' only where 'req''s is; a
 // struct's slots are named apart wherever they are in 'req'. As
 // lifeSigsAgree, a parameter lending different parts in each is compared whole.
-int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req);
+int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req, int recv);
 
 // Spell what a signature promises about lifetimes into a type's symbol name
 // (nameType), where it differs from what the signature promises unannotated:
@@ -266,7 +272,7 @@ char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
 // (lifeVirtOutlives). A parameter '&<Trait + 'static' takes only a value
 // holding global borrows.
 //
-// An owning virtual reference, 'So[Trait]', takes no bound: it names no
+// An owning virtual reference, 'Uni[Trait]', takes no bound: it names no
 // lifetime and carries no borrow, so it is bounded by ''static' (Rust's
 // 'Box<dyn Trait>'), and a value made one, wherever the conversion is, may
 // hold only global borrows (loanNotStaticIn, the loan walk's conversion).
@@ -430,6 +436,11 @@ void lifeCanonBrands(Nodes *args);
 
 // Do two types carry the very same brands, name for name?
 int lifeBrandsEqual(INode *a, INode *b);
+
+// An argument inferred from a value, and the declared type's for the same
+// place, differing only in brands a call minted: do the declared one's brands,
+// put in the value's, make the types the same?
+int lifeBrandsAdopt(INode *inferred, INode *declared);
 
 // Is every invariant lifetime a body's type writes one the function's
 // signature names? Reports at 'at' those it does not, and answers 0.

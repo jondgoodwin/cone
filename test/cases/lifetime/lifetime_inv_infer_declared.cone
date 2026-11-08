@@ -1,0 +1,71 @@
+// An Option inferred from `Some(ar.alloc(..))` is the Option a variable declares, directly and through a `let`:
+// the brand the call mints and the result's `'=a`, a name nothing has bound yet, are one pattern, and brand
+// agreement binds `'=a` to the brand the body gives it.
+//
+// Verdict: accept; prints "10 3", "10".
+// Basis: a result-only name not yet bound is unresolved, so it is no brand of its own when an instance is named;
+// it binds once (lifetime_inv_result_name_binds_once_refused), and two different brands never match
+// (lifetime_inv_infer_declared_refused).
+
+mod lifetime_inv_infer_declared;
+
+import stdio use *;
+import arena use *;
+
+struct Node['=a] {
+  pub val: i64;
+  pub next: Option[&'=a mut Node['=a]];
+}
+
+struct Chain['=a] {
+  pub ar: DynArena['=a];
+  pub first: Option[&'=a mut Node['=a]];
+
+  pub fn total(self: &) i64 {
+    var sum = 0i64;
+    var at = first;
+    while {
+      match at {
+        case let Some[&'=a mut Node['=a]](s) {
+          sum = sum + ar[s].val;
+          at = ar[s].next;
+        }
+        else { break; }
+      }
+    }
+    sum
+  }
+}
+
+fn build(n: i64) Chain['=a] {
+  var ar = DynArena.empty();
+  var head: Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+  var i = 0i64;
+  while i < n {
+    head = Some(ar.alloc(Node(i, head)));
+    i = i + 1;
+  }
+  Chain(ar, head)
+}
+
+// No declared type on the Option: it is inferred, then used where `head`'s is wanted
+fn buildLet(n: i64) Chain['=a] {
+  var ar = DynArena.empty();
+  var head: Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+  var i = 0i64;
+  while i < n {
+    let x = Some(ar.alloc(Node(i, head)));
+    head = x;
+    i = i + 1;
+  }
+  Chain(ar, head)
+}
+
+fn main() {
+  printInt(build(5).total());
+  printStr(" ");
+  printInt(build(3).total());
+  printStr("\n");
+  printInt(buildLet(5).total());
+  printStr("\n");
+}

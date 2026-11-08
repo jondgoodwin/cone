@@ -1,0 +1,62 @@
+// What '#if' refuses, each with one diagnostic and nothing after it. The
+// vocabulary is closed -- #os, #arch, #debug, #defined and #define, compared with
+// '==' and '!=' and joined with '!', '&&' and '||' -- so a misspelling is an error and
+// never code that is quietly deleted. A branch the build does not take is read
+// for its syntax, so what is malformed in it is refused too.
+
+mod meta_if_reject_parse;
+
+// ---- a branch not taken is still read: its syntax errors are reported
+fn untaken() i32 {
+  #if #os == .macos {
+    let x = 1                                    //~ ErrorNoSemi:14 "Expected ';'"
+  }
+  1
+}
+
+// ---- the closed vocabulary
+#if #os == .window { }                           //~ ErrorMetaFact:13 "'#os' has no member '.window'"
+#if #os == .x64 { }                              //~ ErrorMetaFact:13 "'#os' has no member '.x64'"
+#if #arch == .windows { }                        //~ ErrorMetaFact:15 "'#arch' has no member '.windows'"
+#if #os == #arch { }                             //~ ErrorMetaFact:18 "compares an '#os' member with an '#arch' member"
+#if #os == 3 { }                                 //~ ErrorMetaFact:14 "compares an '#os' member with a number"
+#if #debug == 1 { }                              //~ ErrorMetaFact:17 "compares a bool with a number"
+#if #defined(NAME) { }                           //~ ErrorMetaFact:14 "'#defined' takes a string literal"
+#if #defined("NAME" { }                          //~ ErrorMetaIf:21 "is closed by a ')'"
+#if #os { }                                      //~ ErrorMetaFact:9 "condition is a bool, and this is an '#os' member"
+#if #define("NAME") { }                          //~ ErrorMetaFact:21 "condition is a bool, and this is a number"
+#if !#os { }                                     //~ ErrorMetaFact:10 "'!' takes a bool"
+#if #os == .windows && 3 { }                     //~ ErrorMetaFact:26 "'&&' joins two bools"
+#if isWindows() { }                              //~ ErrorMetaFact:5 "built from the build's facts"
+#if -x { }                                       //~ ErrorMetaFact:6 "signs a number"
+#if #oss == .windows { }                         //~ ErrorReserved:5 "'#oss'"
+
+// ---- a fact is read in a condition, and nowhere else
+fn outside() i32 {
+  let a = #os;                                   //~ ErrorMetaFact:11 "'#os' is a fact of the build"
+  let b = #debug && true;                        //~ ErrorMetaFact:11 "'#debug' is a fact of the build"
+  1
+}
+
+// ---- the shape of a chain
+#else { }                                        //~ ErrorMetaIf:1 "'#else' ends a '#if' chain and has nothing to end here"
+#elif #debug { }                                 //~ ErrorMetaIf:1 "'#elif' continues a '#if'"
+#if #debug { } #else { } #else { }               //~ ErrorMetaIf:26 "'#else' ends a '#if' chain"
+#if #debug { } #else { } #elif #os == .linux { } //~ ErrorMetaIf:26 "'#elif' continues a '#if'"
+#if #debug fn noBrace() { }                      //~ ErrorNoLCurly:12 "Expected '{'"
+
+// ---- a branch is a list of statements: one ending in an expression with no ';' is the
+// block's value only where the block ends there. The branch is read whether or not
+// the build takes it, so the mistake is on every build
+fn openBranches() {
+  #if #debug { foo() }                           //~ ErrorNoSemi:23 "Expected ';'"
+  bar();
+  #if #os == .macos { foo() }                    //~ ErrorNoSemi:30 "Expected ';'"
+  bar();
+}
+
+// ---- a '#if' that gives a value ends in an '#else'
+fn value() i32 {
+  let n = #if #debug {1};                        //~ ErrorMetaIf:25 "ends in an '#else'"
+  n
+}

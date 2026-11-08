@@ -1,0 +1,79 @@
+// An actor that says what it is and is not. The 'is' list is an assertion the
+// compiler checks once types are known, and what an actor lacks is listed in the
+// words the conversion's refusal uses (concurrency_actor_trait_conform): every
+// behaviour at once, at the actor.
+//
+// - Lacks has neither behaviour of ChunkSink;
+// - Narrow has Subscriber's 'hear' for another event than Subscriber[Click]'s;
+// - Half is ChunkSink and Subscriber[Click] and is only the first: the second is
+//   refused alone;
+// - the list names actor traits only: a struct, and an ordinary trait, are each
+//   refused once, saying so (a base to extend is refused at parse:
+//   concurrency_actor_parse).
+
+mod concurrency_actor_trait_is_refused;
+
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+struct Click is Sendable {
+  pub x: u64;
+}
+
+struct Key is Sendable {
+  pub code: u64;
+}
+
+trait Shape {
+  fn area(self: &) u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Lacks is ChunkSink {                         //~ ErrorActorTraitConform "Actor Lacks does not conform to actor trait ChunkSink, which it says it is: It has no behaviour 'pub async fn accept(c: Chunk)'. It has no behaviour 'pub async fn total() u64'"
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn other(self) {sum = sum + 1u64;}
+}
+
+actor Narrow is Subscriber[Click] {                //~ ErrorActorTraitConform "Actor Narrow does not conform to actor trait Subscriber[Click], which it says it is: Its behaviour hear(e: Key) does not take and return what the trait's hear(e: Click) does"
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn hear(self, e: Key) {sum = sum + e.code;}
+}
+
+actor Half is ChunkSink, Subscriber[Click] {       //~ ErrorActorTraitConform "Actor Half does not conform to actor trait Subscriber[Click], which it says it is: It has no behaviour 'pub async fn hear(e: Click)'"
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn accept(self, c: Chunk) {sum = sum + c.n;}
+  pub async fn total(self) u64 {sum}
+}
+
+actor Round is Shape {                             //~ ErrorActorMember "Actor Round says it is Shape, which is not an actor trait"
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn grow(self) {sum = sum + 1u64;}
+}
+
+actor Plain is Chunk {                             //~ ErrorActorMember "Actor Plain says it is Chunk, which is not an actor trait"
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn grow(self) {sum = sum + 1u64;}
+}
+
+actor Fine is ChunkSink {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn accept(self, c: Chunk) {sum = sum + c.n;}
+  pub async fn total(self) u64 {sum}
+}

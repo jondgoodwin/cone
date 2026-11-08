@@ -1,0 +1,90 @@
+// A lend names one lender for each permission a folded method's receiver may ask:
+// 'use Block via view, viewMut, viewUni' reaches a '&' method through 'view', a
+// '&mut' method through 'viewMut' and a '&uni' method through 'viewUni'. Which
+// permission a lender gives is read from the borrow it returns, not from its name.
+//
+// - 'total' reads, 'bump' changes in place, 'claim' wants the only way to the
+//   block: each is called on a Holder as if it were the Holder's own.
+// - 'but' leaves a name out of the fold, with all three lenders as with one.
+// - A List reaches core's Array[T] methods the same way: 'reverse' asks for '&mut',
+//   so 'xs.reverse()' is 'xs.viewMut().reverse()'.
+//
+// Each printed value was checked by hand against the source.
+
+mod struct_use_lend_perm;
+
+import stdio use *;
+import collections use *;
+
+struct Block {
+  pub n: i32;
+
+  pub fn total(self: &) i32 { n }
+  pub fn bump(self: &mut) { n = n + 1i32; }
+  pub fn claim(self: &uni) i32 { n * 10i32 }
+  pub fn hidden(self: &) i32 { 99i32 }
+}
+
+struct Holder {
+  pub blk: Block;
+
+  pub fn view(self: &) &Block { &blk }
+  pub fn viewMut(self: &mut) &mut Block { &mut blk }
+  pub fn viewUni(self: &uni) &uni Block { &uni blk }
+
+  // Its own, so the body's is left out
+  pub fn hidden(self: &) i32 { 7i32 }
+
+  use Block via view, viewMut, viewUni but n, hidden;
+}
+
+// The lenders in another order: the permission each gives is what places it
+struct Shuffled {
+  pub blk: Block;
+
+  pub fn viewUni(self: &uni) &uni Block { &uni blk }
+  pub fn view(self: &) &Block { &blk }
+  pub fn viewMut(self: &mut) &mut Block { &mut blk }
+
+  use Block via viewUni, view, viewMut but n, hidden;
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  var h = Holder(Block(4i32));
+  show("total", i64.from(h.total()));
+  h.bump();
+  h.bump();
+  show("bumped", i64.from(h.total()));
+  show("claim", i64.from((&uni h).claim()));
+  show("own hidden", i64.from(h.hidden()));
+
+  var s = Shuffled(Block(1i32));
+  s.bump();
+  show("shuffled total", i64.from(s.total()));
+  show("shuffled claim", i64.from((&uni s).claim()));
+
+  // 'reverse' on a List of five, then of four, then of none and of one
+  var xs = List[i32]();
+  xs.push(1i32); xs.push(2i32); xs.push(3i32); xs.push(4i32); xs.push(5i32);
+  xs.reverse();
+  show("five first", i64.from(xs[0usize]));
+  show("five mid", i64.from(xs[2usize]));
+  show("five last", i64.from(xs[4usize]));
+  xs.pop();
+  xs.reverse();
+  show("four first", i64.from(xs[0usize]));
+  show("four last", i64.from(xs[3usize]));
+  var none = List[f64]();
+  none.reverse();
+  show("none", i64.from(none.len()));
+  none.push(2.5);
+  none.reverse();
+  show("one", i64.from(none.len()));
+}

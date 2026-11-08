@@ -70,7 +70,7 @@ static void arrayRefuseFillSpelling(INode *node) {
 // is constructed with its contents, as any collection's are
 static void arrayRefuseFillLiteral(INode *node) {
     errorMsgNode(node, ErrorFillLiteral,
-        "'[n; x]' is no longer written: an array of n values is constructed with its contents, 'new Array[T, n] <- fill x' (or '<- n of x').");
+        "'[n; x]' is no longer written: an array of n values is constructed with its contents, 'Array[T, n]() <- fill x' (or '<- n of x').");
 }
 
 // Clone array
@@ -254,7 +254,21 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(node->dimens, cnt, nodesp)) {
-            if ((*nodesp)->tag != ULitTag)
+            // A size may name a constant (of type usize, or an untyped integer
+            // one), or a chain of them: the size is the literal it comes to
+            if (nameUseNames(*nodesp, ConstDclTag)) {
+                ConstDclNode *cdcl = (ConstDclNode*)((NameUseNode*)*nodesp)->dclnode;
+                INode *val = cdcl->value;
+                while (val && nameUseNames(val, ConstDclTag))
+                    val = ((ConstDclNode*)((NameUseNode*)val)->dclnode)->value;
+                INode *ctype = cdcl->vtype;
+                if (val && val->tag == ULitTag && (ctype == (INode*)usizeType
+                    || ((ULitNode*)val)->vtype == (INode*)usizeType || litIsUntypedNumber(val)))
+                    *nodesp = (INode*)newULitNode(((ULitNode*)val)->uintlit, (INode*)u64Type);
+            }
+            if (sizeofConstRefused(*nodesp, "an array length"))
+                ;
+            else if ((*nodesp)->tag != ULitTag)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size must be an integer literal");
             else if (((*nodesp)->flags & FlagLitNeg) && ((ULitNode*)*nodesp)->uintlit != 0)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size may not be negative");
@@ -270,8 +284,13 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         errorMsgNode((INode*)node, ErrorBadArray, "Exactly one element type must be specified");
     }
     INode **elemtypep = &nodesGet(node->elems, 0);
+    // An element that is no type has usually been refused while it was checked,
+    // in words of its own (a generic with no arguments, a value, a module): the
+    // array adds its message only when checking the element said nothing
+    int errorsBefore = errors;
     if (itypeTypeCheck(pstate, elemtypep) == 0) {
-        errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
+        if (errors == errorsBefore)
+            errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
         return;
     }
     // A reference's target does not wait on its layout, and neither does an

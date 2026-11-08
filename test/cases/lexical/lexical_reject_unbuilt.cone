@@ -1,10 +1,11 @@
 // Spellings the lexer knows and no feature reads, each refused with one
 // diagnostic and nothing after it.
 //
-// '?.' is held for None propagation (refoption.html). It is reported and read
-// as '.', so the member it reaches parses as it was meant and adds nothing.
+// '?.' is held (syntax-lexical.html#held): a member of what '?' gives is reached as
+// '(a?).b'. It is reported and read as '.', so the member it reaches parses as it
+// was meant and adds nothing.
 //
-// '#' is held for metaprogramming (refmeta.html). A '#' word is reported and
+// '#' is held for metaprogramming (mod-generativity.html#meta). A '#' word is reported and
 // dropped with the rest of its line, so the condition written after '#if' does
 // not become a second error.
 //
@@ -20,14 +21,14 @@
 
 mod lexical_reject_unbuilt;
 
-struct Point { pub x i32; }
+struct Point { pub x: i32; }
 
-fn member(p &Point) i32 {
-  p?.x;                        //~ ErrorReserved:4 "'?.' is reserved for None propagation"
+fn member(p: &Point) i32 {
+  p?.x                        //~ ErrorReserved:4 "'?.' is reserved. To reach a member of what '?' gives, write '(a?).b'"
 }
 
 struct @move Handle {          //~ ErrorUnkAttr:8 "'@move' is not an attribute: a type that moves declares the trait, 'struct Name is Move'"
-  pub id i32;
+  pub id: i32;
 }
 
 enum @samesize Shape {         //~ ErrorUnkAttr:6 "an enum is same-size by default, and '@unsized' declines it"
@@ -40,9 +41,14 @@ enum @packed Signal {          //~ ErrorUnkAttr:6 "'@packed' is not a Cone attri
   struct Off {}
 }
 
-#if windows                    //~ ErrorReserved:1 "'#' is reserved for metaprogramming"
+#splice windows                //~ ErrorReserved:1 "'#' is reserved for metaprogramming"
 
 fn body() i32 {
-  #if debug                    //~ ErrorReserved:3 "'#' is reserved for metaprogramming"
-  1;
+  #layout debug              //~ ErrorReserved:3 "'#' is reserved for metaprogramming"
+  1
 }
+
+// '#if' and the rest of the closed vocabulary are built (test/cases/meta); any other '#' word is
+// still held, and a misspelling of one of them is no exception: it is never read as a '#if'
+// that deletes code
+#iff #os == .windows           //~ ErrorReserved:1 "'#iff': '#' is reserved for metaprogramming"

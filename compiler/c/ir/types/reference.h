@@ -31,7 +31,7 @@ typedef struct {
     uint16_t scope;   // Lifetime: its band, 0 global, 1 the caller's, 2+ a block
     Name *lifename;   // The lifetime a signature names on it, or NULL (lifetime.h)
     Name *bound;      // A virtual reference's bound, '&<Trait + 'a': what the referenced value's borrows outlive, or NULL (lifetime.h)
-    // A virtual reference's markers, '&<Trait + Shareable', 'So[fn() + Sendable]':
+    // A virtual reference's markers, '&<Trait + Shareable', 'Uni[fn() + Sendable]':
     // what the value behind it is promised to be, since its type is hidden. A
     // value is made one only if its type is each (refvirtMatchesRef), and one
     // with fewer markers is a reference with more, never the other way
@@ -46,7 +46,7 @@ typedef struct {
     // reference type it is refused (refTypeCheck), and as a match pattern's root
     // at parse (castPatternMark, ErrorPatManaged). A managed reference type is
     // written 'R[perm, T]' (fnCallLowerManagedRef), and allocated
-    // 'new R[perm, T](...)' (typeLitNewAllocate).
+    // 'R[perm, T](...)' (typeLitNewAllocate).
     uint16_t plusSpelled;
     // Written '&[]' (parseAmper), the retired spelling of a slice, '&Array[T]':
     // refused where name resolution settles that it is a type (arrayRefNameRes,
@@ -54,7 +54,7 @@ typedef struct {
     uint16_t bracketSpelled;
     // The permission was written nowhere and is 'imm' because the type referred
     // to declares Immutable (refTypeCheck, refImmutableDefaultPerm): '&str',
-    // 'So[str]'. The one reference `as` may make from a 'ro' one while 'trust' is
+    // 'Uni[str]'. The one reference `as` may make from a 'ro' one while 'trust' is
     // not built (castRefPermCheck); a written '&imm str' is not
     uint8_t permImmDefault;
 } RefNode;
@@ -103,6 +103,12 @@ int refIsFat(RefNode *ref);
 INode *refImmutableDefaultPerm(INode *target);
 int refImmutableBan(INode *lexnode, INode *perm, INode *target);
 
+// Is this owning reference's permission the one written when none is written?
+// Answers 0 for a borrow, whose permission a message always spells. A
+// diagnostic leaves the default out, 'Uni[T]' and 'Rc[T]', and writes any other
+// ('Uni[imm, T]', 'Rc[mut, T]'), so that what it prints reads back as the same type.
+int refOwnerPermIsDefault(RefNode *ref);
+
 // Allocate normalized reference type info
 void *refTypeInfoAlloc();
 
@@ -117,6 +123,9 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode);
+
+// Is this type a read-only borrow, which copies and so is Clone?
+int refIsCopyBorrow(INode *type);
 
 // Whether a reference may cross to another thread, as far as the reference
 // itself says (refThreadBinds): what it points at is asked separately
@@ -167,6 +176,10 @@ void refRegionCheck(INode **regionp);
 // Judge a managed reference type whose permission is a struct: it must be a
 // lock permission, and its region one the lock fits (ir/types/permission.c)
 void refLockCheck(RefNode *node);
+
+// Refuse 'mut' on an owner of a region declaring 'Move': a single owner is
+// never shared (ir/types/permission.c)
+void refSoleOwnerPermCheck(RefNode *node);
 
 // Check what a reference, pointer or slice points at: resolved, and laid out
 // only where no layout is in flight, since a reference's size is its kind's.

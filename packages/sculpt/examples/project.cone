@@ -1,0 +1,446 @@
+// project: surface queries, shrinkwrap, Project All and data transfer, timed
+// and drawn offscreen by render. Nothing here is in a library: the shapes are
+// this file's.
+//
+// - The TIMING first: a 20,000-vertex target (a lathed sphere, 101 rings of
+//   200) onto a 100,000-triangle source (a lathed, bumpy sphere, 224 x 224),
+//   for the index (the two trees), each shrinkwrap mode, Project All and data
+//   transfer of the source's channels.
+// - Sheet 1, shrinkwrap modes: a coarse lathed vase (target) and a fine open
+//   sleeve (source) round it, then the sleeve shrinkwrapped by nearest surface
+//   point, by projection along its own normals, by nearest vertex (it
+//   clumps onto the vase's few vertices) and by target normal.
+// - Sheet 2, wrap methods: a sheet of 40 x 40 quads hovering over a lumpy
+//   blob, then draped by projection down onto it: on the surface, above it by
+//   0.25 (the smooth normal), tucked 0.25 inside it, and under a weight that
+//   fades from 0 at the left edge to 1 at the right.
+// - Sheet 3, Project All: a lumpy blob of 6,000 quads (the source), a cage
+//   of 96 quads, the cage laid onto the blob, and a cage of 1,536 quads laid
+//   onto it.
+// - Sheet 4, data transfer: a sphere with a vertex channel "bump" (a pattern
+//   of ribs and lobes) shown displaced along its normals by it; the same
+//   channel carried to a coarse sphere by nearest vertex, by interpolation,
+//   and by projection onto a flattened ellipsoid, each shown displaced by the
+//   channel it received.
+//
+//   congo run --release packages/sculpt/examples/project.cone -- --shots C:/src/sculptproject-shots/project
+//
+// '--shots PREFIX' (default 'project') writes PREFIX-1-modes.bmp,
+// PREFIX-2-wraps.bmp, PREFIX-3-projectall.bmp and PREFIX-4-transfer.bmp at
+// 2560 x 1440, then exits. It prints the timings and exits 0 only if every
+// shot was written, nothing was reported, no Vulkan call failed and the
+// validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.lib on LIB to link (Congo
+// copies SDL3.dll from beside it to beside the program); no window and no
+// display.
+
+mod project;
+
+import stdio use *;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use PolyMesh;
+import sculpt use *;
+import gpu use *;
+import render use *;
+import path;
+
+const WIDTH = 2560u32;
+const HEIGHT = 1440u32;
+
+fn v(x: f32, y: f32, z: f32) Vec3 { Vec3(x, y, z) }
+fn up() Vec3 { v(0., 1., 0.) }
+
+fn seconds(from: u64) f64 { f64.from(sdl.GetPerformanceCounter() - from) / f64.from(sdl.GetPerformanceFrequency()) }
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+fn appendCstr(s: &mut String, c: *u8) {
+  var i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix: &String, suffix: &str) String {
+  var s = prefix.clone();
+  s <- suffix;
+  s
+}
+
+fn problemsSaid(problems: &List[String]) bool {
+  var i = 0usize;
+  while i < problems.len() {
+    print <- "  reported: "; printStr(problems[i].view()); print <- "\n";
+    i = i + 1usize;
+  }
+  problems.len() == 0usize
+}
+
+// A sphere lathed from its south pole to its north
+fn sphere(r: f32, rings: u32, steps: u32) PolyMesh {
+  var pts = List[Vec2]();
+  var i = 0u32;
+  while i <= rings {
+    let a = pi * f32.from(i) / f32.from(rings);
+    pts.push(Vec2(r * sin(a), -r * cos(a)));
+    i = i + 1u32;
+  }
+  let prof = Profile.fromPoints(pts.view(), false);
+  lathe(&prof, up(), 2. * pi, steps)
+}
+
+// A sphere with lumps
+fn blob(r: f32, rings: u32, steps: u32, lumps: f32) PolyMesh {
+  let s = sphere(r, rings, steps);
+  deform(&s, p => p * (1. + 0.16 * sin(lumps * p.x + 1.) * sin(lumps * 0.8 * p.y) * sin(lumps * p.z + 0.5)))
+}
+
+// A flat sheet of n x n quads, 'size' across, at height y
+fn sheet(n: u32, size: f32, y: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      pts.push(v(size * (f32.from(i) / f32.from(n) - 0.5), y, size * (f32.from(j) / f32.from(n) - 0.5)));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = j * (n + 1u32) + i;
+      counts.push(4u32);
+      // facing up: counterclockwise seen from +y
+      idx.push(a); idx.push(a + n + 1u32); idx.push(a + n + 2u32); idx.push(a + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+// A copy of a mesh with a vertex channel "w", the weight, from a function of the vertex's x
+fn withWeightByX(m: &PolyMesh, lo: f32, hi: f32) PolyMesh {
+  var r = copyOf(m);
+  let w = r.addFloatChannel(mesh.VertexDomain, "w", 1.);
+  var k = 0usize;
+  while k < r.vertexCount() {
+    let t = (r.positions[k].x - lo) / (hi - lo);
+    r.setFloat(w, u32.from(k), if t < 0. { 0. } else if t > 1. { 1. } else { t });
+    k = k + 1usize;
+  }
+  r
+}
+
+// A copy by rebuilding from polygons (no channels)
+fn copyOf(m: &PolyMesh) PolyMesh {
+  var pts = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var k = 0usize;
+  while k < m.vertexCount() { pts.push(*m.positions[k]); k = k + 1usize; }
+  k = 0usize;
+  while k < m.faceCount() {
+    let vs = m.faceVertices(u32.from(k));
+    counts.push(u32.from(vs.len()));
+    var i = 0usize;
+    while i < vs.len() { idx.push(*vs[i]); i = i + 1usize; }
+    k = k + 1usize;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn scaled(m: &PolyMesh, s: Vec3) PolyMesh {
+  var r = copyOf(m);
+  var k = 0usize;
+  while k < r.vertexCount() {
+    let p = *r.positions[k];
+    r.positions.set(k, v(p.x * s.x, p.y * s.y, p.z * s.z));
+    k = k + 1usize;
+  }
+  r
+}
+
+// A pattern of ribs and lobes on the sphere's vertices, the channel "bump" 0 to 1
+fn withBump(m: &PolyMesh) PolyMesh {
+  var r = copyOf(m);
+  let b = r.addFloatChannel(mesh.VertexDomain, "bump", 0.);
+  var k = 0usize;
+  while k < r.vertexCount() {
+    let p = *r.positions[k];
+    let around = atan2(p.z, p.x);
+    let height = p.y;
+    r.setFloat(b, u32.from(k), 0.5 + 0.5 * sin(7. * around) * sin(5. * height + 1.));
+    k = k + 1usize;
+  }
+  r
+}
+
+// The mesh displaced along its normals by its channel "bump" (0.22 at 1)
+fn embossed(m: &PolyMesh) PolyMesh {
+  displaceAlongNormal(m, "bump", 0.22)
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var shots = String();
+  shots <- "project";
+  var a = 1;
+  while a + 1 < argc {
+    let arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // ---- The timing ----
+  var ok = true;
+  var problems = List[String]();
+  let bigSrc = blob(1., 224u32, 224u32, 6.);
+  let bigDst = sphere(1.3, 100u32, 200u32);
+  print <- "source: "; print <- bigSrc.faceCount() * 2usize; print <- " triangles; target: "; print <- bigDst.vertexCount();
+  print <- " vertices\n";
+  var started = sdl.GetPerformanceCounter();
+  let bigIdx = SurfaceIndex.of(&bigSrc);
+  print <- "  index: "; print <- seconds(started); print <- " s\n";
+  let modes: Array[&str, 4] = ["nearest surface", "project along own normals", "nearest vertex", "target normal"];
+  var s0 = Shrinkwrap.nearestSurface();
+  var s1 = Shrinkwrap.project(v(0., 0., 0.));
+  var s2 = Shrinkwrap.nearestVertex();
+  var s3 = Shrinkwrap.targetNormal();
+  var k = 0usize;
+  while k < 4usize {
+    let sw = if k == 0usize { s0 } else if k == 1usize { s1 } else if k == 2usize { s2 } else { s3 };
+    started = sdl.GetPerformanceCounter();
+    let r = shrinkwrap(&bigDst, &bigIdx, &sw, "");
+    let took = seconds(started);
+    print <- "  shrinkwrap, "; printStr(modes[k]); print <- ": "; print <- took; print <- " s ("; print <- r.vertexCount(); print <- " vertices)\n";
+    k = k + 1usize;
+  }
+  started = sdl.GetPerformanceCounter();
+  let pa = projectAll(&bigDst, &bigSrc, 1.);
+  print <- "  project all (index, rays, "; print <- pa.floats.len() + pa.vec2s.len(); print <- " channels carried): "; print <- seconds(started); print <- " s\n";
+  started = sdl.GetPerformanceCounter();
+  let tmap = TransferMap.all(MapInterpolated);
+  let dt = dataTransfer(&bigDst, &bigSrc, &tmap, &mut problems);
+  print <- "  data transfer, interpolated (index included): "; print <- seconds(started); print <- " s ("; print <- dt.floats.len();
+  print <- " float and "; print <- dt.vec2s.len(); print <- " uv channels)\n";
+  started = sdl.GetPerformanceCounter();
+  let tmap2 = TransferMap.all(MapProjected);
+  let dt2 = dataTransfer(&bigDst, &bigSrc, &tmap2, &mut problems);
+  print <- "  data transfer, projected (index included): "; print <- seconds(started); print <- " s\n";
+  ok = problemsSaid(&problems) && ok;
+
+  // ---- The meshes of the sheets ----
+  // Sheet 1: a coarse vase, a fine sleeve round it, the sleeve wrapped four ways
+  let vasePts: Array[Vec2, 8] = [Vec2(0., 0.), Vec2(0.55, 0.), Vec2(0.75, 0.2), Vec2(0.85, 0.7),
+    Vec2(0.55, 1.25), Vec2(0.4, 1.65), Vec2(0.55, 1.95), Vec2(0., 1.95)];
+  let vaseProfile = Profile.fromPoints(&vasePts, false);
+  let vase = lathe(&vaseProfile, up(), 2. * pi, 14u32);
+  var sleevePts = List[Vec2]();
+  var i = 0u32;
+  while i <= 24u32 {
+    sleevePts.push(Vec2(1.25, -0.15 + 2.3 * f32.from(i) / 24.));
+    i = i + 1u32;
+  }
+  let sleeveProfile = Profile.fromPoints(sleevePts.view(), false);
+  let sleeve = lathe(&sleeveProfile, up(), 2. * pi, 72u32);
+  let vaseIdx = SurfaceIndex.of(&vase);
+  let w0 = shrinkwrap(&sleeve, &vaseIdx, &s0, "");
+  let w1 = shrinkwrap(&sleeve, &vaseIdx, &s1, "");
+  let w2 = shrinkwrap(&sleeve, &vaseIdx, &s2, "");
+  let w3 = shrinkwrap(&sleeve, &vaseIdx, &s3, "");
+
+  // Sheet 2: a sheet hovering over a blob, draped four ways
+  let lump = blob(1.15, 36u32, 48u32, 5.);
+  let lumpIdx = SurfaceIndex.of(&lump);
+  let cloth = sheet(40u32, 1.4, 1.9);
+  let down = Shrinkwrap.project(v(0., -1., 0.));
+  var onSurface = down;
+  onSurface.offset = 0.02;
+  var above = down;
+  above.wrap = WrapAboveSurface;
+  above.offset = 0.25;
+  var inside = down;
+  inside.wrap = WrapInsideSurface;
+  inside.offset = 0.25;
+  let d0 = shrinkwrap(&cloth, &lumpIdx, &onSurface, "");
+  let d1 = shrinkwrap(&cloth, &lumpIdx, &above, "");
+  let d2 = shrinkwrap(&cloth, &lumpIdx, &inside, "");
+  let weighted = withWeightByX(&cloth, -0.7, 0.7);
+  let d3 = shrinkwrap(&weighted, &lumpIdx, &onSurface, "w");
+
+  // Sheet 3: Project All
+  let detail = blob(1.2, 60u32, 100u32, 7.);
+  let cube = PolyMesh.cube(1.0);
+  let cage2 = subdivide(&cube, 2u32);
+  let cage4 = subdivide(&cube, 4u32);
+  let p2 = projectAll(&cage2, &detail, 1.5);
+  let p4 = projectAll(&cage4, &detail, 1.5);
+
+  // Sheet 4: data transfer
+  let fineSphere = sphere(1., 40u32, 64u32);
+  let source = withBump(&fineSphere);
+  let coarse = sphere(1., 16u32, 24u32);
+  let flat = scaled(&coarse, v(1.35, 0.85, 0.75));
+  let tNearest = TransferMap.all(MapNearest);
+  let tInterp = TransferMap.all(MapInterpolated);
+  let tProj = TransferMap.all(MapProjected);
+  let nearestOnto = dataTransfer(&coarse, &source, &tNearest, &mut problems);
+  let interpOnto = dataTransfer(&coarse, &source, &tInterp, &mut problems);
+  let projOnto = dataTransfer(&flat, &source, &tProj, &mut problems);
+  ok = problemsSaid(&problems) && ok;
+  let e0 = embossed(&source);
+  let e1 = embossed(&nearestOnto);
+  let e2 = embossed(&interpOnto);
+  let e3 = embossed(&projOnto);
+
+  // ---- The GPU, no window ----
+  var instance = Instance.create("project");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() || !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  var device = adapter.requestDevice();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var sky = Sky.dusk(radians(35.), radians(320.));
+  sky.zenith = Color(0.10, 0.18, 0.40, 1.);
+  sky.horizon = Color(0.45, 0.50, 0.58, 1.);
+  sky.ground = Color(0.10, 0.10, 0.10, 1.);
+  renderer.setSky(&mut device, &sky);
+  let light = sky.sunLight(Color(3., 2.9, 2.7, 1.), Color(0.25, 0.27, 0.32, 1.));
+
+  let clay = PbrMaterial.standard(Color(0.72, 0.52, 0.40, 1.), 0., 0.6);
+  let clayM = renderer.addPbrMaterial(&mut device, &clay);
+  let stone = PbrMaterial.standard(Color(0.55, 0.56, 0.60, 1.), 0., 0.5);
+  let stoneM = renderer.addPbrMaterial(&mut device, &stone);
+  let sage = PbrMaterial.standard(Color(0.45, 0.62, 0.50, 1.), 0., 0.6);
+  let sageM = renderer.addPbrMaterial(&mut device, &sage);
+  let floor = PbrMaterial.standard(Color(0.20, 0.20, 0.22, 1.), 0., 0.9);
+  let floorM = renderer.addPbrMaterial(&mut device, &floor);
+  let groundMesh = mesh.Mesh.plane(1, 1.);
+  let ground = renderer.addMesh(&mut device, &groundMesh);
+  var list1 = DrawList();
+  var list2 = DrawList();
+  var list3 = DrawList();
+  var list4 = DrawList();
+  list1.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(80., 1., 80.)));
+  list2.add(ground, floorM, Mat4.fromTrs(v(0., -1.3, 0.), Quat.identity(), v(80., 1., 80.)));
+  list3.add(ground, floorM, Mat4.fromTrs(v(0., -1.5, 0.), Quat.identity(), v(80., 1., 80.)));
+  list4.add(ground, floorM, Mat4.fromTrs(v(0., -1.4, 0.), Quat.identity(), v(80., 1., 80.)));
+
+  // Sheet 1: the vase, the sleeve, the four wraps, 3.2 apart
+  let tVase = vase.triangulate(true);
+  let tSleeve = sleeve.triangulate(true);
+  let t0 = w0.triangulate(true);
+  let t1 = w1.triangulate(true);
+  let t2 = w2.triangulate(true);
+  let t3 = w3.triangulate(true);
+  list1.add(renderer.addMesh(&mut device, &tVase), stoneM, Mat4.fromTrs(v(-8., 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list1.add(renderer.addMesh(&mut device, &tSleeve), clayM, Mat4.fromTrs(v(-4.8, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list1.add(renderer.addMesh(&mut device, &t0), clayM, Mat4.fromTrs(v(-1.6, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list1.add(renderer.addMesh(&mut device, &t1), clayM, Mat4.fromTrs(v(1.6, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list1.add(renderer.addMesh(&mut device, &t2), clayM, Mat4.fromTrs(v(4.8, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list1.add(renderer.addMesh(&mut device, &t3), clayM, Mat4.fromTrs(v(8., 0., 0.), Quat.identity(), v(1., 1., 1.)));
+
+  // Sheet 2: the blob under its hovering sheet, then the four draped (the blob not drawn)
+  let tLump = lump.triangulate(true);
+  let tCloth = cloth.triangulate(true);
+  let c0 = d0.triangulate(true);
+  let c1 = d1.triangulate(true);
+  let c2 = d2.triangulate(true);
+  let c3 = d3.triangulate(true);
+  let hLump = renderer.addMesh(&mut device, &tLump);
+  list2.add(hLump, stoneM, Mat4.fromTrs(v(-7.2, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list2.add(renderer.addMesh(&mut device, &tCloth), clayM, Mat4.fromTrs(v(-7.2, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list2.add(renderer.addMesh(&mut device, &c0), clayM, Mat4.fromTrs(v(-3.6, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list2.add(renderer.addMesh(&mut device, &c1), clayM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list2.add(renderer.addMesh(&mut device, &c2), clayM, Mat4.fromTrs(v(3.6, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list2.add(renderer.addMesh(&mut device, &c3), clayM, Mat4.fromTrs(v(7.2, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+
+  // Sheet 3: the source, the cage, the cage projected, the fine cage projected
+  let tDetail = detail.triangulate(true);
+  let tCage2 = cage2.triangulate(true);
+  let tP2 = p2.triangulate(true);
+  let tP4 = p4.triangulate(true);
+  let tCage4 = cage4.triangulate(true);
+  list3.add(renderer.addMesh(&mut device, &tDetail), stoneM, Mat4.fromTrs(v(-7.5, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list3.add(renderer.addMesh(&mut device, &tCage2), sageM, Mat4.fromTrs(v(-2.5, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list3.add(renderer.addMesh(&mut device, &tP2), clayM, Mat4.fromTrs(v(2.5, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list3.add(renderer.addMesh(&mut device, &tP4), clayM, Mat4.fromTrs(v(7.5, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+
+  // Sheet 4: the source embossed, then the three received
+  let tE0 = e0.triangulate(true);
+  let tE1 = e1.triangulate(true);
+  let tE2 = e2.triangulate(true);
+  let tE3 = e3.triangulate(true);
+  list4.add(renderer.addMesh(&mut device, &tE0), stoneM, Mat4.fromTrs(v(-6.6, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list4.add(renderer.addMesh(&mut device, &tE1), clayM, Mat4.fromTrs(v(-2.2, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list4.add(renderer.addMesh(&mut device, &tE2), clayM, Mat4.fromTrs(v(2.2, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list4.add(renderer.addMesh(&mut device, &tE3), clayM, Mat4.fromTrs(v(6.8, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+
+  let targetDesc = TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var target = device.createTexture(&targetDesc);
+  let depthDesc = TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  var readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() || !post.isValid() || !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  var camera = Camera.make();
+  camera.fov = radians(36.);
+  camera.near = 0.05;
+  camera.far = 100.;
+  let names: Array[&str, 4] = ["-1-modes.bmp", "-2-wraps.bmp", "-3-projectall.bmp", "-4-transfer.bmp"];
+  let eyes: Array[Vec3, 4] = [v(0., 3., 20.), v(0., 3., 19.), v(0., 3., 19.5), v(0., 3., 19.)];
+  let targets: Array[Vec3, 4] = [v(0., 0.8, 0.), v(0., 0.5, 0.), v(0., 0., 0.), v(0., 0., 0.)];
+  var s = 0usize;
+  while s < 4usize {
+    camera.lookAt(eyes[s], targets[s], up());
+    var encoder = device.createCommandEncoder();
+    if s == 0usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list1); }
+    else if s == 1usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list2); }
+    else if s == 2usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list3); }
+    else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list4); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    let shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    let name = named(&shots, names[s]);
+    if shot.save(&path.Path.from(name.view())) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok || failures() != 0u32 || validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0
+}

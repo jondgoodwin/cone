@@ -1,0 +1,72 @@
+// A generic actor: 'actor Counter[T]' declares its type parameter, and each type
+// it is made at is an actor of its own kind, with its own state, its own message
+// type and its own handle (the compiler clones them as it clones any generic
+// type), so 'Counter[i32]' and 'Counter[f64]' are two actors that share a
+// declaration and nothing else.
+//
+// - The behaviours take and return T: 'add(x: T)' is a message carrying a T,
+//   'get()' answers a T, which another actor awaits.
+// - 'init' takes a T too, which becomes the state.
+// - The instances are used from a third actor, Reporter, that awaits each.
+//
+// Worked out by hand. The i32 counter starts at 10 and is sent 5, 7 and -3, so
+// it holds 19 after 3 adds; the f64 counter starts at 0.5 and is sent 1.25 and
+// 2.5, so it holds 4.25 after 2 adds. Messages from main to one actor arrive in
+// the order they were sent, and the report is sent after them, so the totals
+// are whole when it asks.
+
+mod concurrency_actor_generic;
+
+import stdio use *;
+import actors;
+
+actor Counter[T] {
+  total: T;
+  count: u64;
+
+  fn init(self: &new, start: T) {
+    *self = Self(total: start, count: 0u64);
+  }
+
+  pub async fn add(self, x: T) {
+    total = total + x;
+    count = count + 1u64;
+  }
+
+  pub async fn get(self) T {
+    total
+  }
+
+  pub async fn seen(self) u64 {
+    count
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, ints: Counter[i32], reals: Counter[f64]) {
+    let a = await ints.get();
+    let na = await ints.seen();
+    let b = await reals.get();
+    let nb = await reals.seen();
+    printStr("i32 counter holds "); printInt(i64.from(a));
+    printStr(" after "); printUInt(na); printStr(" adds\n");
+    printStr("f64 counter holds "); printFloat(b);
+    printStr(" after "); printUInt(nb); printStr(" adds\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let ints = Counter[i32](10i32);
+    let reals = Counter[f64](0.5);
+    ints.add(5i32);
+    ints.add(7i32);
+    reals.add(1.25);
+    ints.add(-3i32);
+    reals.add(2.5);
+    let r = Reporter();
+    r.report(ints, reals);
+  }
+  finalAll();
+}

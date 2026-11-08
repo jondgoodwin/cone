@@ -20,8 +20,8 @@ import sync use *;
 import time use Duration;
 
 // A value whose death is counted, and the gate a detached thread waits at
-imm deaths Atomic[u32];
-imm gate Atomic[u32];
+let deaths: Atomic[u32];
+let gate: Atomic[u32];
 
 fn @initpure init() {
   deaths = Atomic[u32].of(0u32);
@@ -29,44 +29,44 @@ fn @initpure init() {
 }
 
 struct Counted {
-  pub n i64;
-  fn final(self &uni) {
+  pub n: i64;
+  fn final(self: &uni) {
     deaths.add(1u32);
     sync.futexWakeAll(&deaths);
   }
 }
 
 fn deathCount() u32 {
-  deaths.load();
+  deaths.load()
 }
 
 // Wait until 'deaths' reaches n
-fn awaitDeaths(n u32) {
-  mut seen = deathCount();
+fn awaitDeaths(n: u32) {
+  var seen = deathCount();
   while seen < n {
     sync.futexWait(&deaths, seen);
     seen = deathCount();
   }
 }
 
-fn triangle(n i64) i64 {
-  mut sum = 0i64;
-  mut i = 1i64;
+fn triangle(n: i64) i64 {
+  var sum = 0i64;
+  var i = 1i64;
   while i <= n { sum = sum + i; i = i + 1i64; }
-  sum;
+  sum
 }
 
-fn slowCounted(n i64) Counted {
+fn slowCounted(n: i64) Counted {
   thread.sleep(Duration.fromMillis(20));
-  new Counted(n * 2);
+  Counted(n * 2)
 }
 
 // Waits until main opens the gate, then returns a value whose death is counted
-fn gatedCounted(n i64) Counted {
+fn gatedCounted(n: i64) Counted {
   while gate.load() == 0u32 {
     sync.futexWait(&gate, 0u32);
   }
-  new Counted(5);
+  Counted(5)
 }
 
 // A word of main's, handed to a thread. A raw pointer is not Sendable, since
@@ -74,52 +74,52 @@ fn gatedCounted(n i64) Counted {
 // trust: main reads the word only after the thread is joined, and the
 // thread writes it atomically.
 struct Word is Sendable {
-  pub p *u32;
+  pub p: *u32;
 }
 
 // Sleeps, then writes the word it was given
-fn lateWrite(word Word) {
+fn lateWrite(word: Word) {
   thread.sleep(Duration.fromMillis(30));
   mem.atomicStore[u32](word.p, 7u32, MemOrder.SeqCst);
 }
 
 // Takes an owned value: it dies in the thread, when the function ends
-fn consume(owned So[Counted]) i64 {
-  owned.n + 1;
+fn consume(owned: Uni[Counted]) i64 {
+  owned.n + 1
 }
 
 fn main() i32 {
   initAll();
 
   // join returns the result
-  imm t = thread.start(100i64,&triangle);
+  let t = thread.start(100i64,&triangle);
   expectInt(t.join(), 5050, "join returns the sum from 1 to 100");
 
   // A result that finalizes dies once, in main, after a join
   {
-    imm c = thread.start(21i64,&slowCounted);
-    imm got = c.join();
+    let c = thread.start(21i64,&slowCounted);
+    let got = c.join();
     expectInt(got.n, 42, "a struct result");
     expectUInt(u64.from(deathCount()), 0u64, "the joined result has not died yet");
   }
   expectUInt(u64.from(deathCount()), 1u64, "the joined result died once, at its scope's end");
 
   // Dropping an unjoined handle joins it
-  mut word = 0u32;
+  var word = 0u32;
   {
-    imm w = thread.start(new Word(&mut word as *u32), &lateWrite);
+    let w = thread.start(Word(&mut word as *u32), &lateWrite);
   }
   expectUInt(u64.from(mem.atomicLoad[u32](&mut word as *u32, MemOrder.SeqCst)), 7u64,
     "a dropped handle joined: the thread's write is seen after the scope");
 
   // ... and finalizes the result nobody took
   {
-    imm c = thread.start(1i64,&slowCounted);
+    let c = thread.start(1i64,&slowCounted);
   }
   expectUInt(u64.from(deathCount()), 2u64, "a dropped handle's result died in its finalizer");
 
   // detach: the thread runs on, and finalizes its own result
-  imm d = thread.start(0i64, &gatedCounted);
+  let d = thread.start(0i64, &gatedCounted);
   d.detach();
   expectUInt(u64.from(deathCount()), 2u64, "detach does not wait");
   gate.store(1u32);
@@ -128,15 +128,15 @@ fn main() i32 {
   expectUInt(u64.from(deathCount()), 3u64, "the detached thread's result died in the thread");
 
   // An owned argument moves in, and dies in the thread
-  imm o = thread.start(new So[Counted](9), &consume);
+  let o = thread.start(Uni[Counted](9), &consume);
   expectInt(o.join(), 10, "an owned argument reached the thread");
   expectUInt(u64.from(deathCount()), 4u64, "the owned argument died in the thread");
 
   // A thread with nothing to return
-  mut again = 0u32;
-  imm v = thread.start(new Word(&mut again as *u32), &lateWrite);
+  var again = 0u32;
+  let v = thread.start(Word(&mut again as *u32), &lateWrite);
   v.join();
   expectUInt(u64.from(mem.atomicLoad[u32](&mut again as *u32, MemOrder.SeqCst)), 7u64,
     "join waits for a thread returning nothing");
-  done();
+  done()
 }

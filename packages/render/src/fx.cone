@@ -49,33 +49,33 @@
 // vignette and grain are Post's own ('post.finish'), since they need nothing
 // but the tone map; decals are listed each frame.
 pub struct FxSettings {
-  pub aa u32 = AA_NONE;
-  pub taa TaaSettings = new TaaSettings();
-  pub fxaa FxaaSettings = new FxaaSettings();
-  pub exposure ExposureSettings = new ExposureSettings();
-  pub ssao SsaoSettings = new SsaoSettings();
-  pub dof DofSettings = new DofSettings();
-  pub fog FogSettings = new FogSettings();
+  pub aa: u32 = AA_NONE;
+  pub taa: TaaSettings = TaaSettings();
+  pub fxaa: FxaaSettings = FxaaSettings();
+  pub exposure: ExposureSettings = ExposureSettings();
+  pub ssao: SsaoSettings = SsaoSettings();
+  pub dof: DofSettings = DofSettings();
+  pub fog: FogSettings = FogSettings();
 
   // Everything off
-  pub fn off() FxSettings { new FxSettings(); }
+  pub fn off() FxSettings { FxSettings() }
 
   // For a discrete GPU: temporal AA (16 samples, sharpened), auto-exposure
   // and ambient occlusion
   pub fn high() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: new ExposureSettings(enabled: true),
-      ssao: SsaoSettings.high());
+    FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: ExposureSettings(enabled: true),
+      ssao: SsaoSettings.high())
   }
 
   // For a middling GPU: temporal AA of 8 samples, auto-exposure, cheaper AO
   pub fn medium() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: new ExposureSettings(enabled: true, stride: 3u32),
-      ssao: SsaoSettings.medium());
+    FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: ExposureSettings(enabled: true, stride: 3u32),
+      ssao: SsaoSettings.medium())
   }
 
   // For an integrated GPU: FXAA and a cheap auto-exposure
   pub fn low() FxSettings {
-    new FxSettings(aa: AA_FXAA, exposure: new ExposureSettings(enabled: true, stride: 4u32));
+    FxSettings(aa: AA_FXAA, exposure: ExposureSettings(enabled: true, stride: 4u32))
   }
 }
 
@@ -92,113 +92,113 @@ const SOURCE_SHARP = 3u32;
 const SOURCE_DOF = 4u32;
 
 pub struct ImageFx {
-  pub settings FxSettings;
-  pub width u32;
-  pub height u32;
-  pub outputFormat u32;
-  pub depth Texture;               // the scene's depth, kept for the passes (sampled)
-  pub frameBuffer Buffer;          // fxcommon.slang's FxFrame
-  pub taa TaaPass;
-  pub fxaa FxaaPass;
-  pub exposure ExposurePass;
-  pub ssao SsaoPass;
-  pub decalPass DecalPass;
-  pub dof DofPass;
-  pub fog FogPass;
+  pub settings: FxSettings;
+  pub width: u32;
+  pub height: u32;
+  pub outputFormat: u32;
+  pub depth: Texture;               // the scene's depth, kept for the passes (sampled)
+  pub frameBuffer: Buffer;          // fxcommon.slang's FxFrame
+  pub taa: TaaPass;
+  pub fxaa: FxaaPass;
+  pub exposure: ExposurePass;
+  pub ssao: SsaoPass;
+  pub decalPass: DecalPass;
+  pub dof: DofPass;
+  pub fog: FogPass;
   // The decals of this frame (decal.cone): filled by the program, emptied by 'render'
-  pub decals DecalList;
-  pub sources List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
+  pub decals: DecalList;
+  pub sources: List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
   // What is moving this frame (taa.cone): the program fills it after adding
   // the items to the draw list; it is emptied by 'render'
-  pub motion MotionList;
-  pub frameNumber u32;             // frames drawn: the jitter's index
-  pub previousViewProjection Mat4;
-  pub havePrevious bool;
-  pub postRevision u32;
-  pub dirty bool;
-  pub cut bool;                    // the next frame starts afresh (a camera cut): no history
-  pub lastTime f32;
+  pub motion: MotionList;
+  pub frameNumber: u32;             // frames drawn: the jitter's index
+  pub previousViewProjection: Mat4;
+  pub havePrevious: bool;
+  pub postRevision: u32;
+  pub dirty: bool;
+  pub cut: bool;                    // the next frame starts afresh (a camera cut): no history
+  pub lastTime: f32;
   // The seconds a frame lasts, when 'renderer.time' is not kept up to date
-  pub frameTime f32 = 0.016666668;
-  pub jitterPixelsX f32 = 0.;      // the last frame's jitter, in pixels
-  pub jitterPixelsY f32 = 0.;
-  pub velocityDrawn bool = false;  // the last frame had moving objects drawn
+  pub frameTime: f32 = 0.016666668;
+  pub jitterPixelsX: f32 = 0.;      // the last frame's jitter, in pixels
+  pub jitterPixelsY: f32 = 0.;
+  pub velocityDrawn: bool = false;  // the last frame had moving objects drawn
   // What 'renderScene' leaves for 'renderFinish': the seconds the frame lasted, its unjittered
   // view-projection (the next frame's "previous"), and the camera the scene was drawn
   // with (jittered, when temporal AA is on), for anything the program draws into
   // 'post.hdr' between the two (particles: see 'renderScene')
-  pub sceneDt f32 = 0.016666668;
-  pub sceneViewProjection Mat4;
-  pub sceneCamera Camera;
+  pub sceneDt: f32 = 0.016666668;
+  pub sceneViewProjection: Mat4;
+  pub sceneCamera: Camera;
 
   // The passes for frames of 'post''s size, all off. They are made lazily:
   // textures only for what 'configure' turns on.
-  pub fn create(device &mut Device, renderer &Renderer, post &mut Post) ImageFx {
-    mut frameBuffer = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm tinyDepth = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+  pub fn create(device: &mut Device, renderer: &Renderer, post: &mut Post) ImageFx {
+    var frameBuffer = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let tinyDepth = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-    mut depth = device.createTexture(&tinyDepth);
-    mut taa = TaaPass.create(device, &renderer.frameLayout, &renderer.materialLayout, &renderer.pbrMaterialLayout, &frameBuffer);
-    mut fxaa = FxaaPass.create(device, post.outputFormat);
-    mut exposure = ExposurePass.create(device);
-    imm tinyDepthView = depth.createView();
-    mut ssao = SsaoPass.create(device, &frameBuffer, &tinyDepthView);
-    mut decalPass = DecalPass.create(device, &renderer.frameLayout, &renderer.environmentLayout, &frameBuffer, &tinyDepthView);
-    imm tinyHdrView = post.hdr.createView();
-    mut dof = DofPass.create(device, &frameBuffer, &tinyHdrView, &tinyDepthView);
-    mut fog = FogPass.create(device, &renderer.shadow, &frameBuffer, &tinyDepthView);
-    mut fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
-      decalPass, dof, fog, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.,
+    var depth = device.createTexture(&tinyDepth);
+    var taa = TaaPass.create(device, &renderer.frameLayout, &renderer.materialLayout, &renderer.pbrMaterialLayout, &frameBuffer);
+    var fxaa = FxaaPass.create(device, post.outputFormat);
+    var exposure = ExposurePass.create(device);
+    let tinyDepthView = depth.createView();
+    var ssao = SsaoPass.create(device, &frameBuffer, &tinyDepthView);
+    var decalPass = DecalPass.create(device, &renderer.frameLayout, &renderer.environmentLayout, &frameBuffer, &tinyDepthView);
+    let tinyHdrView = post.hdr.createView();
+    var dof = DofPass.create(device, &frameBuffer, &tinyHdrView, &tinyDepthView);
+    var fog = FogPass.create(device, &renderer.shadow, &frameBuffer, &tinyDepthView);
+    var fx = ImageFx(FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
+      decalPass, dof, fog, DecalList(), List[PostSource](), MotionList(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.,
       sceneViewProjection: Mat4.identity(), sceneCamera: Camera.make());
     fx.remake(device, renderer, post);
-    fx;
+    fx
   }
 
-  pub fn isValid(self &) bool {
-    depth.isValid() and frameBuffer.isValid() and taa.isValid() and fxaa.isValid() and exposure.isValid()
-      and ssao.isValid() and decalPass.isValid() and dof.isValid() and fog.isValid();
+  pub fn isValid(self: &) bool {
+    depth.isValid() && frameBuffer.isValid() && taa.isValid() && fxaa.isValid() && exposure.isValid()
+      && ssao.isValid() && decalPass.isValid() && dof.isValid() && fog.isValid()
   }
 
   // Set the passes. Switching a pass on or off, or the antialiasing, makes
   // its textures (waiting for the GPU) at the next frame; the rest of the
   // settings are read every frame and may change at will.
-  pub fn configure(self &mut, s &FxSettings) {
-    imm sharpWas = settings.taa.sharpness > 0.;
-    imm sharpNow = s.taa.sharpness > 0.;
-    if s.aa != settings.aa or s.exposure.enabled != settings.exposure.enabled or sharpWas != sharpNow
-        or s.ssao.enabled != settings.ssao.enabled or s.dof.enabled != settings.dof.enabled
-        or s.fog.enabled != settings.fog.enabled or s.fog.tileSize != settings.fog.tileSize
-        or s.fog.slices != settings.fog.slices {
+  pub fn configure(self: &mut, s: &FxSettings) {
+    let sharpWas = settings.taa.sharpness > 0.;
+    let sharpNow = s.taa.sharpness > 0.;
+    if s.aa != settings.aa || s.exposure.enabled != settings.exposure.enabled || sharpWas != sharpNow
+        || s.ssao.enabled != settings.ssao.enabled || s.dof.enabled != settings.dof.enabled
+        || s.fog.enabled != settings.fog.enabled || s.fog.tileSize != settings.fog.tileSize
+        || s.fog.slices != settings.fog.slices {
       dirty = true;
     }
     settings = *s;
   }
 
   // Forget the history: the next frame is a cut (a teleport, a new scene)
-  pub fn cutHistory(self &mut) { cut = true; }
+  pub fn cutHistory(self: &mut) { cut = true; }
 
   // Make the textures and groups the settings call for, for 'post''s size
-  fn remake(self &mut, device &mut Device, renderer &Renderer, post &mut Post) {
+  fn remake(self: &mut, device: &mut Device, renderer: &Renderer, post: &mut Post) {
     // The textures about to be replaced may be named by commands the frame
     // has recorded and not submitted: submit them first (gpu.md, "Lifetimes")
-    mut flush = device.createCommandEncoder();
+    var flush = device.createCommandEncoder();
     device.queue.submit(flush.finish());
     device.waitIdle();
-    imm w = post.width;
-    imm h = post.height;
+    let w = post.width;
+    let h = post.height;
     width = w;
     height = h;
     outputFormat = post.outputFormat;
-    imm depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     depth = device.createTexture(&depthDesc);
-    imm taaOn = settings.aa == AA_TAA;
-    imm fxaaOn = settings.aa == AA_FXAA;
-    imm hdrView = post.hdr.createView();
-    imm depthView = depth.createView();
-    imm dofOn = settings.dof.enabled;
+    let taaOn = settings.aa == AA_TAA;
+    let fxaaOn = settings.aa == AA_FXAA;
+    let hdrView = post.hdr.createView();
+    let depthView = depth.createView();
+    let dofOn = settings.dof.enabled;
     dof.remake(device, dofOn, w, h, &frameBuffer, &hdrView, &depthView);
-    imm dofView = dof.output.createView();
+    let dofView = dof.output.createView();
     // Temporal AA resolves the frame as the depth of field made it, if it did
     if dofOn {
       taa.remake(device, taaOn, w, h, &dofView, &depthView, &frameBuffer, settings.taa.sharpness);
@@ -210,12 +210,12 @@ pub struct ImageFx {
     decalPass.remake(device, &frameBuffer, &depthView);
     fog.remake(device, settings.fog.enabled, w, h, &settings.fog, &renderer.shadow, &frameBuffer, &depthView);
     // Post's groups for what the passes make, and the exposure's
-    sources = List[PostSource].empty();
-    exposure.groups = List[BindGroup].empty();
+    sources = List[PostSource]();
+    exposure.groups = List[BindGroup]();
     exposure.addSource(device, &hdrView, &post.exposureBuffer);
-    imm h0 = taa.history0.createView();
-    imm h1 = taa.history1.createView();
-    imm sh = taa.sharp.createView();
+    let h0 = taa.history0.createView();
+    let h1 = taa.history1.createView();
+    let sh = taa.sharp.createView();
     sources.push(post.sourceGroups(device, &h0));
     sources.push(post.sourceGroups(device, &h1));
     sources.push(post.sourceGroups(device, &sh));
@@ -233,8 +233,8 @@ pub struct ImageFx {
   // Draw the scene and run the passes the settings turn on, then bloom, tone
   // map and finish into 'target' (of 'post''s output format; the program's
   // 'post' is sized to it). See the head of this file.
-  pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      camera &Camera, light &Light, list &DrawList, target &Texture) {
+  pub fn render(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      camera: &Camera, light: &Light, list: &DrawList, target: &Texture) {
     self.renderScene(device, encoder, renderer, post, camera, light, list);
     self.renderFinish(device, encoder, renderer, post, list, target);
   }
@@ -246,33 +246,33 @@ pub struct ImageFx {
   // (the jittered camera, so that temporal AA resolves them with the scene), then
   // calls 'renderFinish' with the same 'list' and 'post'. Nothing it draws is moving as
   // far as temporal AA knows: its history is clipped away where it changed.
-  pub fn renderScene(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      camera &Camera, light &Light, list &DrawList) {
-    if dirty or width != post.width or height != post.height or postRevision != post.revision {
+  pub fn renderScene(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      camera: &Camera, light: &Light, list: &DrawList) {
+    if dirty || width != post.width || height != post.height || postRevision != post.revision {
       self.remake(device, renderer, post);
     }
-    imm s = settings;
-    imm taaOn = s.aa == AA_TAA;
-    imm fxaaOn = s.aa == AA_FXAA;
-    imm aspect = f32.from(width) / f32.from(height);
+    let s = settings;
+    let taaOn = s.aa == AA_TAA;
+    let fxaaOn = s.aa == AA_FXAA;
+    let aspect = f32.from(width) / f32.from(height);
 
     // The seconds since the last frame
-    mut dt = frameTime;
-    if renderer.time > lastTime and lastTime > 0. { dt = renderer.time - lastTime; }
+    var dt = frameTime;
+    if renderer.time > lastTime && lastTime > 0. { dt = renderer.time - lastTime; }
     if dt > 0.5 { dt = 0.5; }
     lastTime = renderer.time;
 
     // The jitter, and the camera the scene is drawn with: moved by it
-    mut base = *camera;
+    var base = *camera;
     base.jitterX = 0.;
     base.jitterY = 0.;
-    mut jittered = base;
-    imm previousJitterX = jitterPixelsX;
-    imm previousJitterY = jitterPixelsY;
+    var jittered = base;
+    let previousJitterX = jitterPixelsX;
+    let previousJitterY = jitterPixelsY;
     if taaOn {
-      mut jx = 0.;
-      mut jy = 0.;
-      jitterOf(frameNumber, if s.taa.samples < 2u32 { 2u32; } else { s.taa.samples; }, s.taa.jitterScale, &mut jx, &mut jy);
+      var jx = 0.f;
+      var jy = 0.f;
+      jitterOf(frameNumber, if s.taa.samples < 2u32 { 2u32 } else { s.taa.samples }, s.taa.jitterScale, &mut jx, &mut jy);
       jitterPixelsX = jx;
       jitterPixelsY = jy;
       jittered.jitterX = 2. * jitterPixelsX / f32.from(width);
@@ -283,61 +283,14 @@ pub struct ImageFx {
     }
 
     // The frame uniform for the passes: the unjittered camera, now and last frame
-    imm projection = base.projectionMatrix(aspect);
-    imm viewProjection = projection * base.viewMatrix();
-    imm inverse = viewProjection.inverse();
-    imm previous = if havePrevious and !cut { previousViewProjection; } else { viewProjection; };
-    imm place = base.placement();
-    imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
-    imm eye = base.position();
-    imm towards = new Vec3(0., 0., 0.) - light.direction;
-    mut data = new Array[f32, 84] <- fill 0f;
-    mut k = 0usize;
-    while k < 16usize {
-      data[k] = viewProjection.m[k];
-      data[16usize + k] = inverse.m[k];
-      data[32usize + k] = previous.m[k];
-      k = k + 1usize;
-    }
-    data[48] = eye.x;
-    data[49] = eye.y;
-    data[50] = eye.z;
-    data[52] = forward.x;
-    data[53] = forward.y;
-    data[54] = forward.z;
-    data[55] = base.near;
-    data[56] = f32.from(width);
-    data[57] = f32.from(height);
-    data[58] = 1. / f32.from(width);
-    data[59] = 1. / f32.from(height);
-    data[60] = jitterPixelsX;
-    data[61] = jitterPixelsY;
-    data[62] = previousJitterX;
-    data[63] = previousJitterY;
-    data[64] = projection.m[10];
-    data[65] = projection.m[14];
-    data[66] = projection.m[0];
-    data[67] = projection.m[5];
-    data[68] = towards.x;
-    data[69] = towards.y;
-    data[70] = towards.z;
-    data[71] = renderer.exposure;
-    data[72] = light.color.red;
-    data[73] = light.color.green;
-    data[74] = light.color.blue;
-    data[75] = renderer.time;
-    data[76] = light.ambient.red;
-    data[77] = light.ambient.green;
-    data[78] = light.ambient.blue;
-    data[79] = dt;
-    data[80] = f32.from(frameNumber);
-    data[81] = base.far;
-    data[82] = if cut { 1.; } else { 0.; };
-    device.queue.writeBuffer(&frameBuffer, 0u64, &data as *u8, FX_FRAME_BYTES);
+    let viewProjection = writeFxFrame(device, &frameBuffer, &base, aspect, width, height, previousViewProjection,
+      havePrevious && !cut, jitterPixelsX, jitterPixelsY, previousJitterX, previousJitterY, light, renderer.exposure,
+      renderer.time, dt, frameNumber, cut);
+    let eye = base.position();
 
     // The scene, its depth kept for the passes that read it
-    imm decalsOn = decals.len() > 0usize;
-    if taaOn or s.ssao.enabled or decalsOn or s.dof.enabled or s.fog.enabled { renderer.keepDepth = true; }
+    let decalsOn = decals.len() > 0usize;
+    if taaOn || s.ssao.enabled || decalsOn || s.dof.enabled || s.fog.enabled { renderer.keepDepth = true; }
     renderer.render(device, encoder, &post.hdr, &depth, &jittered, light, list);
 
     // Decals, lit by the sun and the environment, before the occlusion
@@ -356,28 +309,28 @@ pub struct ImageFx {
 
   // The second half of 'render': the fog, depth of field, temporal AA, the
   // exposure, and the tone map into 'target' (see 'renderScene')
-  pub fn renderFinish(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      list &DrawList, target &Texture) {
-    imm s = settings;
-    imm taaOn = s.aa == AA_TAA;
-    imm fxaaOn = s.aa == AA_FXAA;
-    imm dt = sceneDt;
+  pub fn renderFinish(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      list: &DrawList, target: &Texture) {
+    let s = settings;
+    let taaOn = s.aa == AA_TAA;
+    let fxaaOn = s.aa == AA_FXAA;
+    let dt = sceneDt;
 
     // Fog: the light scattered along each pixel's ray, over the frame
     if s.fog.enabled {
-      imm depthSample = depth.createView();
+      let depthSample = depth.createView();
       fog.record(device, encoder, &renderer.shadow, &frameBuffer, &depthSample, &post.hdr, &s.fog, frameNumber, !cut);
     }
 
     // Temporal AA: the objects that move, then the resolve
-    mut source = SOURCE_HDR;
+    var source = SOURCE_HDR;
     if s.dof.enabled {
       dof.record(encoder, &s.dof, height, frameNumber, taaOn);
       source = SOURCE_DOF;
     }
     velocityDrawn = false;
     if taaOn {
-      mut moving = false;
+      var moving = false;
       if motion.len() > 0usize { moving = taa.writePrevious(device, &frameBuffer, renderer, list, &motion); }
       if moving {
         taa.recordVelocity(encoder, renderer, list, &depth);
@@ -397,10 +350,10 @@ pub struct ImageFx {
 
     // Bloom, tone map and finish; FXAA reads the result
     if fxaaOn {
-      if source == SOURCE_HDR { post.apply(encoder, &fxaa.ldr); } else { post.applyFrom(encoder, &fxaa.ldr, sources[usize.from(source - 1u32)]); }
+      if source == SOURCE_HDR { post.apply(encoder, &fxaa.ldr); } else { post.applyFrom(encoder, &fxaa.ldr, &sources[usize.from(source - 1u32)]); }
       fxaa.record(encoder, target, &s.fxaa);
     } else {
-      if source == SOURCE_HDR { post.apply(encoder, target); } else { post.applyFrom(encoder, target, sources[usize.from(source - 1u32)]); }
+      if source == SOURCE_HDR { post.apply(encoder, target); } else { post.applyFrom(encoder, target, &sources[usize.from(source - 1u32)]); }
     }
 
     previousViewProjection = sceneViewProjection;
@@ -413,33 +366,33 @@ pub struct ImageFx {
 
   // A decal material of these textures (the renderer's handles; a normal or
   // roughness map may be 'TextureHandle.none()'): its number, for 'Decal.at'
-  pub fn addDecalMaterial(self &mut, device &mut Device, renderer &Renderer, albedo TextureHandle, normal TextureHandle,
-      roughness TextureHandle) u32 {
-    decalPass.addMaterial(device, renderer, albedo, normal, roughness);
+  pub fn addDecalMaterial(self: &mut, device: &mut Device, renderer: &Renderer, albedo: TextureHandle, normal: TextureHandle,
+      roughness: TextureHandle) u32 {
+    decalPass.addMaterial(device, renderer, albedo, normal, roughness)
   }
 }
 
 // A full-screen pipeline: the triangle of 'fullscreenMain', the fragment
 // entry 'fragment', drawing into a target of 'format', its colour replaced or,
 // if 'blend', added over what is there with premultiplied alpha
-fn fxPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, fragment &str, format u32, blend bool)
+fn fxPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModule, fragment: &str, format: u32, blend: bool)
     RenderPipeline {
-  imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  imm buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-  imm desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
+  let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let buffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  let desc = RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: shader, fragmentEntryPoint: fragment, colorFormat: format,
     blendEnabled: blend, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
     alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-  device.createRenderPipeline(&desc);
+  device.createRenderPipeline(&desc)
 }
 
 // One full-screen pass into 'view': cleared first, or, if 'keep', drawn over
 // what it holds; 'group' as group 0, 'size' bytes of immediates from 'data'
-fn fxPass(encoder &mut CommandEncoder, view TextureView, keep bool, pipeline &RenderPipeline, group &BindGroup, data *u8,
-    size u32) {
-  imm attachment = new RenderPassColorAttachment(view: view, loadOp: if keep { LOAD_OP_LOAD; } else { LOAD_OP_CLEAR; },
-    clearValue: new Color(0., 0., 0., 0.));
-  mut pass = encoder.beginRenderPass(&attachment);
+fn fxPass(encoder: &mut CommandEncoder, view: TextureView, keep: bool, pipeline: &RenderPipeline, group: &BindGroup, data: *u8,
+    size: u32) {
+  let attachment = RenderPassColorAttachment(view: view, loadOp: if keep { LOAD_OP_LOAD } else { LOAD_OP_CLEAR },
+    clearValue: Color(0., 0., 0., 0.));
+  var pass = encoder.beginRenderPass(&attachment);
   pass.setPipeline(pipeline);
   pass.setBindGroup(0u32, group);
   if size > 0u32 { pass.setImmediates(0u32, data, size); }
@@ -447,11 +400,78 @@ fn fxPass(encoder &mut CommandEncoder, view TextureView, keep bool, pipeline &Re
   pass.end();
 }
 
+// Write fxcommon.slang's FxFrame for 'camera' (jitter-free: the caller jitters the one it draws with)
+// drawing a target 'width' by 'height' into 'buffer', and return the camera's view-projection.
+// 'previous' is last frame's view-projection, used if 'havePrevious'; the jitters are in pixels. The
+// camera's eye is its position, a reflected camera's reflection, and its forward the way it looks in
+// the world (reflected likewise), which is what the fog and the other passes shade from.
+fn writeFxFrame(device: &mut Device, buffer: &Buffer, camera: &Camera, aspect: f32, width: u32, height: u32, previous: Mat4,
+    havePrevious: bool, jitterX: f32, jitterY: f32, previousJitterX: f32, previousJitterY: f32, light: &Light, exposure: f32,
+    time: f32, dt: f32, frameNumber: u32, cut: bool) Mat4 {
+  let projection = camera.projectionMatrix(aspect);
+  let viewProjection = projection * camera.viewMatrix();
+  let inverse = viewProjection.inverse();
+  let before = if havePrevious { previous } else { viewProjection };
+  let place = camera.placement();
+  var forward = Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  if camera.reflected {
+    let n = Vec3(camera.mirror.x, camera.mirror.y, camera.mirror.z);
+    forward = forward - n * (2. * n.dot(forward));
+  }
+  let eye = camera.position();
+  let towards = Vec3(0., 0., 0.) - light.direction;
+  var data = Array[f32, 84]() <- fill 0f;
+  var k = 0usize;
+  while k < 16usize {
+    data[k] = viewProjection.m[k];
+    data[16usize + k] = inverse.m[k];
+    data[32usize + k] = before.m[k];
+    k = k + 1usize;
+  }
+  data[48] = eye.x;
+  data[49] = eye.y;
+  data[50] = eye.z;
+  data[52] = forward.x;
+  data[53] = forward.y;
+  data[54] = forward.z;
+  data[55] = camera.near;
+  data[56] = f32.from(width);
+  data[57] = f32.from(height);
+  data[58] = 1. / f32.from(width);
+  data[59] = 1. / f32.from(height);
+  data[60] = jitterX;
+  data[61] = jitterY;
+  data[62] = previousJitterX;
+  data[63] = previousJitterY;
+  data[64] = projection.m[10];
+  data[65] = projection.m[14];
+  data[66] = projection.m[0];
+  data[67] = projection.m[5];
+  data[68] = towards.x;
+  data[69] = towards.y;
+  data[70] = towards.z;
+  data[71] = exposure;
+  data[72] = light.color.red;
+  data[73] = light.color.green;
+  data[74] = light.color.blue;
+  data[75] = time;
+  data[76] = light.ambient.red;
+  data[77] = light.ambient.green;
+  data[78] = light.ambient.blue;
+  data[79] = dt;
+  data[80] = f32.from(frameNumber);
+  data[81] = camera.far;
+  data[82] = if cut { 1. } else { 0. };
+  data[83] = if camera.clipped { 1. } else { 0. };
+  device.queue.writeBuffer(buffer, 0u64, &data as *u8, FX_FRAME_BYTES);
+  viewProjection
+}
+
 // A texture cleared to zero now (in a submission of its own)
-fn clearTexture(device &mut Device, texture &Texture) {
-  mut encoder = device.createCommandEncoder();
-  imm attachment = new RenderPassColorAttachment(view: texture.createView(), clearValue: new Color(0., 0., 0., 0.));
-  mut pass = encoder.beginRenderPass(&attachment);
+fn clearTexture(device: &mut Device, texture: &Texture) {
+  var encoder = device.createCommandEncoder();
+  let attachment = RenderPassColorAttachment(view: texture.createView(), clearValue: Color(0., 0., 0., 0.));
+  var pass = encoder.beginRenderPass(&attachment);
   pass.end();
   device.queue.submit(encoder.finish());
 }

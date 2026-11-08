@@ -1,0 +1,221 @@
+// ======== The actors: a Chat that makes calls, a ChatStream that is read ========
+
+// A whole reply put together from the chunks of a streamed one: the first id,
+// model and role seen, every chunk's text in order, the last finish reason and
+// the usage the stream gave
+pub fn absorb(r: &mut ChatReply, d: &Delta) {
+  if r.id.len() == 0usize {r.id = d.id.clone();}
+  if r.model.len() == 0usize {r.model = d.model.clone();}
+  if r.role.len() == 0usize {r.role = d.role.clone();}
+  r.content.append(d.content.view());
+  if d.finishReason.len() > 0usize {r.finishReason = d.finishReason.clone();}
+  match &d.usage {
+    case let Some(u) {r.usage = Some[Usage](Usage(u.promptTokens, u.completionTokens, u.totalTokens));}
+    case is None {}
+  }
+}
+
+// A chat API client an actor awaits (the package's header, CHAT and STREAM):
+// it holds the actorhttp Client its calls go through and the Endpoint they go
+// to. Each behaviour answers a Result
+pub actor Chat {
+  client: actorhttp.Client;
+  endpoint: Endpoint;
+
+  // A Chat over a client (actorhttp.Client.standard() is the usual one; share it with
+  // 'clone' to share its connection pools) for an endpoint
+  pub fn init(self: &new, client: actorhttp.Client, endpoint: Endpoint) {
+    *self = Self(client: client, endpoint: endpoint);
+  }
+
+  // A whole reply: the request is posted and the answer read when it is whole
+  pub async fn complete(self, req: ChatRequest) Result[ChatReply, ChatError] {
+    let hreq = httpRequest(&endpoint, &req, false)?;
+    let resp = await client.send(hreq)?;
+    replyOfResponse(&resp)
+  }
+
+  // The same, ended if lim says so (an aio.IoLimits: a cancel group and a deadline)
+  pub async fn completeIn(self, req: ChatRequest, lim: IoLimits) Result[ChatReply, ChatError] {
+    let hreq = httpRequest(&endpoint, &req, false)?;
+    let resp = await client.sendIn(hreq, lim)?;
+    replyOfResponse(&resp)
+  }
+
+  // A streamed reply: answered when the response's head arrives, with a
+  // ChatStream to read the chunks from, or the error that the status or the
+  // transport gives
+  pub async fn stream(self, req: ChatRequest) Result[ChatStream, ChatError] {
+    let r = await selfactor.streamIn(req, IoLimits.none());
+    r
+  }
+
+  // The same, the whole stream ended if lim says so
+  pub async fn streamIn(self, req: ChatRequest, lim: IoLimits) Result[ChatStream, ChatError] {
+    let hreq = httpRequest(&endpoint, &req, true)?;
+    // (a transport error becomes the ChatError ChatError.from makes of it)
+    let bs = await client.streamIn(hreq, lim)?;
+    if !bs.isOk() {
+      // An error status: the body is the API's error object. Read the first 64 KiB of it, then
+      // let the body go: dropping it cancels the rest of the fetch
+      var body = String();
+      var going = true;
+      while going {
+        let n = await bs.read();
+        match n {
+          case let Ok(ok) {
+            match ok {
+              case let Some(piece) {
+                body.append(piece.view());
+                if body.len() >= 65536usize {going = false;}
+              }
+              case is None[String] {going = false;}
+            }
+          }
+          case let Err(er) {going = false;}
+        }
+      }
+      if body.len() > 65536usize {
+        // cut at a character boundary (a continuation byte is 10xxxxxx)
+        var cut = 65536usize;
+        let bytes = body.view();
+        while cut > 0usize && (bytes[cut] & 0xC0u8) == 0x80u8 {cut = cut - 1usize;}
+        body.truncate(cut);
+      }
+      return Err[ChatStream, ChatError](apiError(bs.status, body.view()));
+    }
+    if !isEventStream(&bs.headers) {
+      return Err[ChatStream, ChatError](ChatError.make(ChatErrorKind.Decode,
+        "the server answered a streamed request with something that is not an event stream"));
+    }
+    // the body goes to actorhttp's event sink: no pump of our own here
+    let cs = ChatStream(bs.events(), 0u64, false, false);
+    Ok[ChatStream, ChatError](cs)
+  }
+}
+
+// Whether a response may be an event stream: its Content-Type says so, or it
+// says nothing (a server that streams without naming the type is read as
+// events; one that names another, as a server that ignored 'stream' does with
+// application/json, is not)
+fn isEventStream(h: &http.Headers) bool {
+  match h.get("Content-Type") {
+    case let Some(v) {
+      let t = String.fromBytes(v);
+      t.view().startsWith("text/event-stream")
+    }
+    case is None[&Array[u8]] {true}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The stream
+// ---------------------------------------------------------------------------
+
+
+// A streamed reply being read (the package's header, STREAM): the response's
+// body goes to actorhttp's event sink (BodyStream.events), which cuts it into
+// events whatever the pieces' boundaries, and each event's data is a chunk of
+// the reply. 'next' awaits the next delta, one at a time: it answers
+// Ok(Some(delta)), Ok(None) once the reply is whole ('[DONE]'), or an error,
+// after which it answers Ok(None). Dropping the last handle drops the
+// EventStream, which cancels the rest of the exchange
+pub actor ChatStream {
+  events: actorhttp.EventStream;
+  chunks: u64;                // chunks read, for the error that names one
+  sawFinish: bool;            // a chunk carried a finish reason
+  over: bool;                 // '[DONE]' or an error was answered: nothing more is read
+
+  // The next delta of the reply
+  pub async fn next(self) Result[Option[Delta], ChatError] {
+    var out: Result[Option[Delta], ChatError] = Ok[Option[Delta], ChatError](None);
+    var going = !over;
+    while going {
+      let n = await events.next();
+      match n {
+        case let Ok(ok) {
+          match ok {
+            case let Some(ev) {
+              let data = ev.data.view().trim();
+              if data.len() == 0usize {continue;}
+              if isDone(data) {
+                over = true;
+                going = false;
+              } else {
+                chunks = chunks + 1u64;
+                match parseChunk(data) {
+                  case let Ok(d) {
+                    if d.finishReason.len() > 0usize {sawFinish = true;}
+                    out = Ok[Option[Delta], ChatError](Some[Delta](d));
+                    going = false;
+                  }
+                  case let Err(e) {
+                    over = true;
+                    var m = e.detail.clone();
+                    m.append(" (chunk ");
+                    m.appendUInt(chunks);
+                    m.append(")");
+                    var c = e.clone();
+                    c.detail = m;
+                    out = Err[Option[Delta], ChatError](c);
+                    going = false;
+                  }
+                }
+              }
+            }
+            case is None[sse.Event] {
+              // the body has ended
+              over = true;
+              going = false;
+              if !sawFinish {
+                out = Err[Option[Delta], ChatError](ChatError.make(ChatErrorKind.Stream,
+                  "the stream ended before the reply was complete"));
+              }
+            }
+          }
+        }
+        case let Err(er) {
+          over = true;
+          going = false;
+          if isLimit(&er) {
+            out = Err[Option[Delta], ChatError](ChatError.make(ChatErrorKind.Stream,
+              "an event of the stream is longer than the limit"));
+          } else {
+            out = Err[Option[Delta], ChatError](transportError(&er));
+          }
+        }
+      }
+    }
+    out
+  }
+
+  // The rest of the stream gathered into a whole reply
+  pub async fn collect(self) Result[ChatReply, ChatError] {
+    var reply = ChatReply();
+    var why = ChatError.make(ChatErrorKind.Stream, "");
+    var failed = false;
+    var going = true;
+    while going {
+      let n = await selfactor.next();
+      match n {
+        case let Ok(ok) {
+          match ok {
+            case let Some(d) {absorb(&mut reply, &d);}
+            case is None[Delta] {going = false;}
+          }
+        }
+        case let Err(e) {
+          why = e.clone();
+          failed = true;
+          going = false;
+        }
+      }
+    }
+    if failed {Err[ChatReply, ChatError](why)} else {Ok[ChatReply, ChatError](reply)}
+  }
+}
+
+// Whether a stream's failure is the event sink's limit on one event
+fn isLimit(e: &actorhttp.FetchError) bool {
+  e.kind() == actorhttp.FetchErrorKind.Failed && e.failure.stage == httpclient.Stage.Limit
+}

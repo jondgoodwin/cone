@@ -1,0 +1,279 @@
+// Two streams through one stage, one stalled, the other at full rate (S4): a
+// stalled stream holds up nothing but itself. A Mux actor serves two streams
+// (an HTTP/2 connection's shape): each has a ChunkInbox of its own, its own
+// producer with a link of its own, and both links draw on ONE shared ChunkPool.
+//
+//   stream 0: 50 chunks of 4 KiB. Its first chunk STALLS: the Mux is parked in
+//             that chunk's 'await' (a write that does not complete) until stream
+//             1 is entirely done. A gate is the only way out, so if the stalled
+//             stream held up the other, stream 1 would never finish and the
+//             stall would run out its 5 s limit (counted as a time-out);
+//   stream 1: 300 chunks of 4 KiB, handled at once, with no wait. Its end is
+//             not handled until the Mux has seen a second chunk of stream 0
+//             arrive (one in hand, one queued behind it), so the checks below
+//             that stream 0 held chunks meanwhile assume no schedule: they do
+//             not depend on stream 0's producer running before stream 1 is
+//             done. The wait is on stream 0's arrivals alone and lets neither
+//             stream through: stream 0 stays stalled until the gate. If stream
+//             0's chunks could not arrive while stream 1 ran (a real hold-up),
+//             the wait runs out its 5 s limit, is counted, and fails the test;
+//             it does not deadlock it.
+//
+// Checked: stream 1 is wholly handled, its end included, while stream 0's first
+// chunk is still in hand and none of stream 0's is finished; stream 0 then
+// finishes, in order, with its end after its last chunk; stream 0's other chunks
+// queued in its ChunkInbox meanwhile and its producer was held to its window (at most
+// 16 chunks in flight); the stall did not time out; the shared pool lent no more
+// than its cap and has nothing lent at the end.
+
+mod mux;
+
+import testing use *;
+import collections use *;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import actors;
+import aio;
+import stages use *;
+import stdio;
+
+fn chunkBytes() usize { 4096usize }
+fn windowBytes() usize { 65536usize }
+fn countOf(k: u32) u64 { if k == 0u32 {50u64} else {300u64} }
+
+struct Seen {
+  pub handled: Atomic[u64];         // chunks begun
+  pub outOfOrder: Atomic[u64];      // of them, those out of the order sent
+  pub finished: Atomic[u64];        // chunks finished
+  pub endHandled: Atomic[u64];      // times the end was handled
+  pub finishedAtEnd: Atomic[u64];   // chunks finished when it was
+  pub peakQueued: Atomic[u64];      // the most queued in the ChunkInbox
+  pub sourcePeak: Atomic[u64];      // the most chunks the producer had in flight
+  pub sourceOut: Atomic[u64];       // buffers its link has out, at its last look
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let gate: Atomic[u64];              // 1 once stream 1 is done: lets the stalled chunk go
+let timedOut: Atomic[u64];          // stalls that ran out of time
+let waitTimedOut: Atomic[u64];      // waits for stream 0's second chunk that ran out of time
+let zeroFinishedAtGate: Atomic[u64];  // stream 0's finished chunks, when stream 1's end was handled
+let zeroHeldAtGate: Atomic[u64];      // chunks of stream 0 that had arrived, when it was
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  gate = Atomic[u64].of(0u64);
+  timedOut = Atomic[u64].of(0u64);
+  waitTimedOut = Atomic[u64].of(0u64);
+  zeroFinishedAtGate = Atomic[u64].of(999u64);
+  zeroHeldAtGate = Atomic[u64].of(999u64);
+}
+
+fn seenOf(k: u32) &Seen { if k == 0u32 {&seen0} else {&seen1} }
+
+actor Mux {
+  boxes: List[ChunkInbox];          // one per stream
+  next: Array[u64, 2];         // the number expected to begin next, per stream
+  arrived0: u64;
+  done0: OneshotSender[u64];
+  done1: OneshotSender[u64];
+
+  pub fn init(self: &new, done0: OneshotSender[u64], done1: OneshotSender[u64]) {
+    var boxes = List[ChunkInbox]();
+    boxes.push(ChunkInbox.make());
+    boxes.push(ChunkInbox.make());
+    *self = Self(boxes: boxes, next: [0u64, 0u64], arrived0: 0u64, done0: done0, done1: done1);
+  }
+
+  pub async fn attach(self, k: u32, source: ChunkSource) {
+    boxes[usize.from(k)].attach(source);
+  }
+
+  pub async fn data(self, k: u32, c: IoBuf) {
+    let s = seenOf(k);
+    let at = usize.from(k);
+    if k == 0u32 { arrived0 = arrived0 + 1u64; }
+    var turn = boxes[at].arrive(c);
+    var more = true;
+    while more {
+      match turn {
+        case let Chunk(b) {
+          let v = b.view();
+          let n = u64.from(v[0usize]) | (u64.from(v[1usize]) << 8u64);
+          if n != next[at] { s.outOfOrder.add(1u64); }
+          next[at] = n + 1u64;
+          s.handled.add(1u64);
+          if k == 0u32 && n == 0u64 {
+            // the stall: parked here until stream 1 is done (or 5 s pass)
+            var waited = 0u32;
+            while gate.load() == 0u64 && waited < 5000u32 {
+              let r = await aio.sleep(Duration.fromMillis(1i64));
+              waited = waited + 1u32;
+            }
+            if gate.load() == 0u64 { timedOut.add(1u64); }
+          }
+          s.finished.add(1u64);
+          turn = boxes[at].finished(b);
+        }
+        case let End(how) {
+          if k == 1u32 {
+            // stream 1's end waits for stream 0's producer to have sent a second chunk
+            var w = 0u32;
+            while arrived0 < 2u64 && w < 5000u32 {
+              let r = await aio.sleep(Duration.fromMillis(1i64));
+              w = w + 1u32;
+            }
+            if arrived0 < 2u64 { waitTimedOut.add(1u64); }
+          }
+          self.over(k, how);
+          turn = Turn.Wait;
+          more = false;
+        }
+        case is Wait { more = false; }
+      }
+    }
+    s.peakQueued.store(u64.from(boxes[at].peakQueued()));
+  }
+
+  pub async fn fin(self, k: u32, how: Ending) {
+    match boxes[usize.from(k)].arriveEnd(how) {
+      case let End(h) {
+        if k == 1u32 {
+          // stream 1's end waits for stream 0's producer to have sent a second chunk
+          var w = 0u32;
+          while arrived0 < 2u64 && w < 5000u32 {
+            let r = await aio.sleep(Duration.fromMillis(1i64));
+            w = w + 1u32;
+          }
+          if arrived0 < 2u64 { waitTimedOut.add(1u64); }
+        }
+        self.over(k, h);
+      }
+      else {}
+    }
+  }
+
+  fn over(self, k: u32, how: Ending) {
+    let s = seenOf(k);
+    s.endHandled.add(1u64);
+    s.finishedAtEnd.store(s.finished.load());
+    if k == 1u32 {
+      zeroFinishedAtGate.store(seen0.finished.load());
+      zeroHeldAtGate.store(arrived0);
+      gate.store(1u64);
+      done1.send(1u64);
+    } else {
+      done0.send(1u64);
+    }
+  }
+}
+
+// Sends its stream's chunks, as many as its window lets it, then its end
+actor Producer is ChunkSource {
+  k: u32;
+  mux: Mux;
+  link: ChunkWindow;
+  made: u64;
+  over: bool;
+
+  pub fn init(self: &new, k: u32, mux: Mux, pool: ChunkPool) {
+    *self = Self(k: k, mux: mux, link: ChunkWindow.make(windowBytes(), pool), made: 0u64, over: false);
+    mux.attach(k, selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    let s = seenOf(k);
+    var more = !over;
+    while more {
+      if made >= countOf(k) {
+        over = true;
+        mux.fin(k, Ending.Finished);
+        more = false;
+      } else {
+        match link.take(chunkBytes()) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let room = buf.spare();
+            room[0usize] = u8.from(made & 255u64);
+            room[1usize] = u8.from((made >> 8u64) & 255u64);
+            buf.setLen(chunkBytes());
+            made = made + 1u64;
+            mux.data(k, buf);
+          }
+        }
+      }
+    }
+    s.sourcePeak.store(u64.from(link.peak()));
+    s.sourceOut.store(u64.from(link.inFlight()));
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  let pool = ChunkPool.make(1048576usize);
+  {
+    let mux = Mux(tx0, tx1);
+    let p0 = Producer(0u32, mux, pool);
+    let p1 = Producer(1u32, mux, pool);
+    p0.start();
+    p1.start();
+  }
+  rx0.recv();
+  rx1.recv();
+  finalAll();
+
+  let a = &seen0;
+  let b = &seen1;
+  expectUInt(timedOut.load(), 0u64, "the stall ended by the gate, not by running out of time");
+  expectUInt(b.handled.load(), 300u64, "stream 1: all 300 chunks handled");
+  expectUInt(b.outOfOrder.load(), 0u64, "stream 1: in order");
+  expectUInt(b.finishedAtEnd.load(), 300u64, "stream 1: its end handled after the last");
+  expectUInt(zeroFinishedAtGate.load(), 0u64, "stream 1 was done while stream 0 had finished nothing (S4)");
+  expectUInt(waitTimedOut.load(), 0u64, "stream 0's producer sent its second chunk, the wait did not run out of time");
+  let heldOk = expect(zeroHeldAtGate.load() >= 1u64 && zeroHeldAtGate.load() <= 16u64, "stream 0 held up to its window's 16 chunks meanwhile");
+  expectUInt(a.handled.load(), 50u64, "stream 0: all 50 chunks handled after the stall");
+  expectUInt(a.outOfOrder.load(), 0u64, "stream 0: in order");
+  expectUInt(a.endHandled.load(), 1u64, "stream 0: its end handled once");
+  expectUInt(a.finishedAtEnd.load(), 50u64, "stream 0: after the last chunk");
+  let queuedOk = expect(a.peakQueued.load() > 0u64, "stream 0: chunks queued in its ChunkInbox behind the stalled one");
+  expect(a.sourcePeak.load() <= 16u64, "stream 0: its producer was held to its 64 KiB window");
+  expectUInt(a.sourceOut.load(), 0u64, "stream 0: every buffer is back");
+  expectUInt(b.sourceOut.load(), 0u64, "stream 1: every buffer is back");
+  expect(pool.peak() <= pool.cap(), "the shared pool lent no more than its cap");
+  expectUInt(pool.floored(), 0u64, "and never had to lend past it");
+  expectUInt(u64.from(pool.lent()), 0u64, "the shared pool has nothing lent at the end");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in the buffer pool");
+  if !(heldOk && queuedOk) {
+    // the values behind the two schedule-sensitive checks, printed only on failure
+    stdio.printStr("zeroHeldAtGate ");
+    stdio.printUInt(zeroHeldAtGate.load());
+    stdio.printStr(", peakQueued ");
+    stdio.printUInt(a.peakQueued.load());
+    stdio.printStr("\n");
+  }
+  done()
+}

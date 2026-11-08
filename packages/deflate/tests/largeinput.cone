@@ -1,0 +1,90 @@
+// A large input fed to the deflater all at once: the window slides over unread
+// input, and the stream must not depend on how the input was cut. A few MiB
+// of text-like data with long repeats is compressed by the one-shot helper
+// (the whole input fed at once) and by feeding 100000 bytes at a time with a
+// pull after each; at levels 0, 1 and 2 the two streams must be the same bytes,
+// and must inflate to the data.
+
+mod largeinput;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
+
+fn text(n: usize) List[u8] {
+  let w: Array[&str, 7] = ["alpha ", "beta, ", "gamma\n", "delta ", "epsilon ", "the quick brown fox ", "zeta."];
+  var d = List[u8]();
+  var s = 11u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let r = s >> 33u64;
+    if r % 50u64 == 0u64 {
+      d.push(u8.from(s >> 56u64));
+    } else {
+      let piece = w[usize.from(r % 7u64)];
+      var i = 0usize;
+      while i < piece.len { d.push(piece[i]); i += 1usize; }
+    }
+  }
+  d.truncate(n);
+  d
+}
+
+fn pieces(data: &Array[u8], level: i32, step: usize) List[u8] {
+  var def = Deflater.make(Format.Raw, level);
+  var out = List[u8]();
+  var pos = 0usize;
+  while pos < data.len {
+    let e = if data.len - pos < step { data.len } else { pos + step };
+    def.feed(&data[pos..<e]);
+    pos = e;
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput { st = pullN(&mut def, &mut out, 18446744073709551615usize); }
+  }
+  def.finish();
+  var st: Status = Status.MoreOutput;
+  while st == Status.MoreOutput { st = pullN(&mut def, &mut out, 18446744073709551615usize); }
+  out
+}
+
+fn checkLevel(data: &Array[u8], level: i32, label: &str) {
+  let whole = rawDeflate(data, level);
+  let cut = pieces(data, level, 100000usize);
+  expect(whole.view() == cut.view(), label);
+  var used = 0usize;
+  match inflate(whole.view(), 0usize, data.len, &mut used) {
+    case let Ok(dec) { expect(dec.view() == data, "round trip"); }
+    case let Err(e) { expect(false, "inflate failed"); }
+  }
+  if level == 1 || level == 2 {
+    expect(whole.len() < data.len / 2usize, "the text compresses");
+  }
+}
+
+fn main() i32 {
+  let data = text(3000000usize);
+  checkLevel(data.view(), 0, "level 0: one-shot equals pieces");
+  checkLevel(data.view(), 1, "level 1: one-shot equals pieces");
+  checkLevel(data.view(), 2, "level 2: one-shot equals pieces");
+  done()
+}

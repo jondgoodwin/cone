@@ -19,98 +19,98 @@ mod collection_flow_freeze_shared;
 import collections use *;
 import pool use *;
 
-struct Pt { pub x i64; pub y i64; }
+struct Pt { pub x: i64; pub y: i64; }
 
 // An element borrowed through a '&mut' parameter, then the list pushed onto
-fn elementThenPush(l &mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
+fn elementThenPush(l: &mut List[Pt], p: Pt) i64 {
+  let e = &l[0usize];
   l.push(p);                    //~ ErrorShapeReshape
-  e.x;
+  e.x
 }
 
 // A mutable element borrow, then the list pushed onto: the element may move
-fn mutElementThenPush(l &mut List[Pt], p Pt) {
-  imm e = &mut l[0usize];
+fn mutElementThenPush(l: &mut List[Pt], p: Pt) {
+  let e = &mut l[0usize];
   l.push(p);                    //~ ErrorShapeReshape:4 "could change the shape of a 'List'"
   e.x = 5;
 }
 
 // The slice 'viewMut' lends, then the list pushed onto: the slice's block moves
-fn viewMutThenPush(l &mut List[i64]) {
-  imm s = l.viewMut();
+fn viewMutThenPush(l: &mut List[i64]) {
+  let s = l.viewMut();
   l.push(2);                    //~ ErrorShapeReshape:4 "could change the shape of a 'List'"
   s[0usize] = 1;
 }
 
 // A cursor over a deque, then the deque pushed onto: the iterator's block moves
-fn cursorThenPush(dq &mut Deque[i64]) {
-  mut it = dq.items();
+fn cursorThenPush(dq: &mut Deque[i64]) {
+  var it = dq.items();
   dq.push(9);                   //~ ErrorShapeReshape
   it.next();
 }
 
 // A String's view, then the String grown
-fn viewThenAppend(s &mut String) usize {
-  imm v = s.view();
+fn viewThenAppend(s: &mut String) usize {
+  let v = s.view();
   s.appendByte('c');            //~ ErrorShapeReshape
-  v.len;
+  v.len
 }
 
 // A pool's value borrowed, then removed
-fn borrowThenRemove(p &mut Pool[Pt], id Ref[Pt]) i64 {
-  imm e = p[id];
+fn borrowThenRemove(p: &mut Pool[Pt], id: Ref[Pt]) i64 {
+  let e = &p[id];
   p.remove(id);                 //~ ErrorShapeReshape
-  e.x;
+  e.x
 }
 
 // Through a shared owner, by the same name
-fn ownerThenPush(p Pt) i64 {
-  imm l = new Rc[mut, List[Pt]](List[Pt].empty());
-  imm e = l[0usize];
+fn ownerThenPush(p: Pt) i64 {
+  let l = Rc[mut, List[Pt]](List[Pt]());
+  let e = &l[0usize];
   l.push(p);                    //~ ErrorShapeReshape
-  e.x;
+  e.x
 }
 
 // Through a field of 'self'
 struct Bag {
-  pub items List[Pt];
-  pub text String;
+  pub items: List[Pt];
+  pub text: String;
 
-  fn growWhileHeld(self &mut, p Pt) i64 {
-    imm e = items[0usize];
+  fn growWhileHeld(self: &mut, p: Pt) i64 {
+    let e = &items[0usize];
     items.push(p);              //~ ErrorShapeReshape
-    e.x;
+    e.x
   }
 
-  fn viewWhileGrowing(self &mut) usize {
-    imm v = text.view();
+  fn viewWhileGrowing(self: &mut) usize {
+    let v = text.view();
     text.appendByte('c');       //~ ErrorShapeReshape
-    v.len;
+    v.len
   }
 
   // The borrow a method on 'self' returns, its own field changed meanwhile
-  fn firstThenPush(self &mut, p Pt) i64 {
-    imm e = self.items[0usize];
+  fn firstThenPush(self: &mut, p: Pt) i64 {
+    let e = &self.items[0usize];
     self.items.push(p);         //~ ErrorShapeReshape
-    e.x;
+    e.x
   }
 }
 
 // Through counted owners of a struct holding a list behind an owner of its own: the
 // list pushed onto through another owner of the struct, or by a call handed one
-struct Item { pub n i64; }
-struct Ship { pub fuel i64; pub vec So[List[Item]]; }
+struct Item { pub n: i64; }
+struct Ship { pub fuel: i64; pub vec: Uni[List[Item]]; }
 
-fn grows(s &mut Ship) { s.vec.push(new Item(9)); }
+fn grows(s: &mut Ship) { s.vec.push(Item(9)); }
 
-fn pushOther(r Rc[mut, Ship], q Rc[mut, Ship]) i64 {
-  imm e = r.vec[0usize];
-  q.vec.push(new Item(1));      //~ ErrorShapeReshape
-  e.n;
+fn pushOther(r: Rc[mut, Ship], q: Rc[mut, Ship]) i64 {
+  let e = &r.vec[0usize];
+  q.vec.push(Item(1));      //~ ErrorShapeReshape
+  e.n
 }
 
-fn callGrows(r Rc[mut, Ship], q Rc[mut, Ship]) i64 {
-  imm e = r.vec[0usize];
+fn callGrows(r: Rc[mut, Ship], q: Rc[mut, Ship]) i64 {
+  let e = &r.vec[0usize];
   grows(&mut *q);               //~ ErrorShapeReshape
-  e.n;
+  e.n
 }

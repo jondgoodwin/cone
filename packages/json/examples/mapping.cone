@@ -1,0 +1,145 @@
+// Mapping a struct to JSON and back by hand, which is all there is until
+// Cone has reflection: one function that reads a Person out of a tree and one
+// that builds the tree for a Person. A member that must be there is asked for
+// with 'requireText' and its kin, which answer a Shape error naming it; one
+// that may be missing is asked for with 'getText' and its kin, which answer
+// None; members the mapping does not know are left alone.
+//
+//   congo run examples/mapping.cone
+
+mod mapping;
+
+import stdio use *;
+import collections use *;
+import json;
+
+struct Address {
+  pub street: String;
+  pub zip: String;
+}
+
+struct Person {
+  pub name: String;
+  pub age: i64;
+  pub email: Option[String];
+  pub tags: List[String];
+  pub address: Address;
+}
+
+// "address: the member "zip" is missing"
+fn within(path: &str, e: &json.JsonError) json.JsonError {
+  var m = String.from(path);
+  m.append(": ");
+  m.append(e.reason.view());
+  json.JsonError.shape(m.view())
+}
+
+fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
+  let street = j.requireText("street")?;
+  let zip = j.requireText("zip")?;
+  Ok[Address, json.JsonError](Address(street, zip))
+}
+
+fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
+  let name = j.requireText("name")?;
+  let age = j.requireI64("age")?;
+  // May be missing, or null: no email
+  var email: Option[String] = None;
+  match j.getText("email") {
+    case let Some(s) { email = Some[String](String.from(s)); }
+    case is None { }
+  }
+  // May be missing; if there, an array of strings
+  var tags = List[String]();
+  match j.get("tags") {
+    case let Some(t) {
+      if !t.isArray() {
+        return Err[Person, json.JsonError](json.JsonError.shape("the member \"tags\" is not an array"));
+      }
+      var i = 0usize;
+      while i < t.len() {
+        match t.at(i) {
+          case let Some(v) {
+            match v.asText() {
+              case let Some(s) { tags.push(String.from(s)); }
+              case is None {
+                var m = String.from("tags[");
+                m.appendUInt(u64.from(i));
+                m.append("] is not a string");
+                return Err[Person, json.JsonError](json.JsonError.shape(m.view()));
+              }
+            }
+          }
+          case is None { }
+        }
+        i = i + 1usize;
+      }
+    }
+    case is None { }
+  }
+  var address = Address(String(), String());
+  let a = j.require("address")?;
+  match addressFrom(a) {
+    case var Ok(ok) { address <-> ok; }
+    case let Err(e) { return Err[Person, json.JsonError](within("address", &e)); }
+  }
+  Ok[Person, json.JsonError](Person(name, age, email, tags, address))
+}
+
+fn personJson(p: &Person) json.Json {
+  var address = json.Json.newObject();
+  address.set("street", json.Json.fromText(p.address.street.view()));
+  address.set("zip", json.Json.fromText(p.address.zip.view()));
+  var tags = json.Json.newArray();
+  each t in &p.tags { tags.push(json.Json.fromText(t.view())); }
+  var o = json.Json.newObject();
+  o.set("name", json.Json.fromText(p.name.view()));
+  o.set("age", json.Json.fromI64(p.age));
+  match &p.email {
+    case let Some(e) { o.set("email", json.Json.fromText(e.view())); }
+    case is None { }
+  }
+  o.set("tags", tags);
+  o.set("address", address);
+  o
+}
+
+fn show(text: &str) {
+  match json.parse(text) {
+    case let Ok(doc) {
+      match personFrom(&doc) {
+        case let Ok(p) {
+          printStr(p.name.view());
+          printStr(" is ");
+          printInt(p.age);
+          printStr(", lives at ");
+          printStr(p.address.street.view());
+          printStr(" and has ");
+          printInt(i64.from(p.tags.len()));
+          printStr(" tags\n");
+          match personJson(&p).encode() {
+            case let Ok(t) { printStr(t.view()); printStr("\n"); }
+            case is Err { printStr("cannot write\n"); }
+          }
+        }
+        case let Err(e) {
+          let m = String() <- e;
+          printStr(m.view());
+          printStr("\n");
+        }
+      }
+    }
+    case let Err(e) {
+      let m = String() <- e;
+      printStr(m.view());
+      printStr("\n");
+    }
+  }
+}
+
+fn main() {
+  show("{\"name\":\"Ada\",\"age\":36,\"tags\":[\"math\",\"engines\"],\"address\":{\"street\":\"1 Byron Rd\",\"zip\":\"W1\"},\"extra\":true}");
+  show("{\"name\":\"Ada\",\"age\":36.5,\"address\":{\"street\":\"1 Byron Rd\",\"zip\":\"W1\"}}");
+  show("{\"name\":\"Ada\",\"age\":36,\"address\":{\"street\":\"1 Byron Rd\"}}");
+  show("{\"name\":\"Ada\",\"age\":}");
+}

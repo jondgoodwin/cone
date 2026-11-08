@@ -1,0 +1,750 @@
+// Streamed replies, against a mock chat-completions server on actorhttp's
+// server (127.0.0.1 only), the stream a ChatStream actor reads. The mock
+// answers by the request's model: 'basic' sends the API's chunks as events
+// (the role, four pieces of text, the finish reason, the usage when the request
+// asked for it, '[DONE]'); 'split' sends the same bytes cut into pieces that end
+// inside a line, inside the JSON, between a CR and its LF, with a pause between
+// them and no Content-Type (read as events all the same); 'keepalive' puts comments and an empty event between the chunks. The
+// failures: a chunk that is not JSON, an error object as a chunk, a stream cut
+// off before the reply was whole, a stream whose last chunk has the finish
+// reason but no '[DONE]' (accepted), a 200 that is no event stream, a 429 and a
+// 401 answered to the streamed request, a stream that goes silent (ended by a
+// deadline), and a reader that leaves an endless stream (the server finds out by
+// a write answering Closed, and every lent buffer comes home). A 500 whose error object is 8 MiB long
+// is read only to its first 64 KiB, and the server finds the reader gone; tiny events read slowly
+// hold no more than the window. 'collect' gathers a whole reply from a stream. The
+// request the mock saw must say "stream":true. No error message holds the key.
+
+mod replies;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr, CancelGroup;
+import http use ResponseHead, BodyLength;
+import json;
+import env;
+import sse;
+import iobuf;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import aio use IoLimits;
+import chatapi use *;
+
+fn theKey() &str {"sk-test-chatapi-0002"}
+
+// ---------------------------------------------------------------------------
+// The mock server
+// ---------------------------------------------------------------------------
+
+fn textOf(j: &json.Json) String {
+  match j.encode() {
+    case var Ok(t) {
+      var s = String();
+      s <-> t;
+      s
+    }
+    case let Err(e) {String.from("(unwritable)")}
+  }
+}
+
+// One chunk of a stream. role and content are left out when empty strings are
+// not meant: hasContent says the delta has a "content" member
+fn chunkJson(role: &str, hasContent: bool, content: &str, finish: &str) String {
+  var delta = json.Json.newObject();
+  if role.len() > 0usize {delta.set("role", json.Json.fromText(role));}
+  if hasContent {delta.set("content", json.Json.fromText(content));}
+  var choice = json.Json.newObject();
+  choice.set("index", json.Json.fromI64(0i64));
+  choice.set("delta", delta);
+  if finish.len() > 0usize {choice.set("finish_reason", json.Json.fromText(finish));}
+  else {choice.set("finish_reason", json.Json.Null);}
+  var choices = json.Json.newArray();
+  choices.push(choice);
+  var o = json.Json.newObject();
+  o.set("id", json.Json.fromText("chatcmpl-s1"));
+  o.set("object", json.Json.fromText("chat.completion.chunk"));
+  o.set("created", json.Json.fromI64(1700000001i64));
+  o.set("model", json.Json.fromText("mock-served"));
+  o.set("choices", choices);
+  textOf(&o)
+}
+
+fn usageChunk() String {
+  let s = "{\"id\":\"chatcmpl-s1\",\"object\":\"chat.completion.chunk\",\"model\":\"mock-served\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4,\"total_tokens\":9}}";
+  String.from(s)
+}
+
+// The chunks of the standard reply 'Hello world', each as the data of an event
+fn standardChunks(withUsage: bool) List[String] {
+  var l = List[String]();
+  l.push(chunkJson("assistant", true, "", ""));
+  l.push(chunkJson("", true, "Hel", ""));
+  l.push(chunkJson("", true, "lo", ""));
+  l.push(chunkJson("", true, " wor", ""));
+  l.push(chunkJson("", true, "ld", ""));
+  l.push(chunkJson("", false, "", "stop"));
+  if withUsage {l.push(usageChunk());}
+  l
+}
+
+fn errorJson(message: &str, code: &str) String {
+  var inner = json.Json.newObject();
+  inner.set("message", json.Json.fromText(message));
+  inner.set("type", json.Json.fromText("invalid_request_error"));
+  inner.set("code", json.Json.fromText(code));
+  var o = json.Json.newObject();
+  o.set("error", inner);
+  textOf(&o)
+}
+
+// The stream as bytes, one event to a block, the line ends as given
+fn streamBytes(chunks: &List[String], eol: &str, done: bool) String {
+  var s = String();
+  each c in &*chunks {
+    s.append("data: ");
+    s.append(c.view());
+    s.append(eol);
+    s.append(eol);
+  }
+  if done {
+    s.append("data: [DONE]");
+    s.append(eol);
+    s.append(eol);
+  }
+  s
+}
+
+// Answers one request
+actor Handler {
+  ex: Exchange;
+  left: Sender[u64];
+
+  fn answer(self, status: u16, body: &str) {
+    var head = ResponseHead.make(status);
+    head.headers.add("Content-Type", "application/json");
+    ex.respond(head, String.from(body));
+  }
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    if path.view() != "/v1/chat/completions" || ex.request.methodName() != "POST" {
+      ex.text(404u16, "no such path");
+      return;
+    }
+    let auth = String.fromBytes(ex.request.header("authorization"));
+    var want = String.from("Bearer ");
+    want.append(theKey());
+    if auth.view() != want.view() {
+      self.answer(401u16, errorJson("Incorrect API key provided.", "invalid_api_key").view());
+      return;
+    }
+    var doc: json.Json = json.Json.Null;
+    match json.parse(ex.request.body.view()) {
+      case var Ok(ok) {doc <-> ok;}
+      case let Err(e) {
+        self.answer(400u16, errorJson("the body is not JSON", "bad_body").view());
+        return;
+      }
+    }
+    if !doc.boolOr("stream", false) {
+      self.answer(400u16, errorJson("this mock streams only", "not_streamed").view());
+      return;
+    }
+    var withUsage = false;
+    match doc.get("stream_options") {
+      case let Some(so) {withUsage = so.boolOr("include_usage", false);}
+      case is None {}
+    }
+    var model = String();
+    match doc.getText("model") {
+      case let Some(s) {model = String.from(s);}
+      case is None {}
+    }
+    let m = model.view();
+    if m == "basic" {
+      let chunks = standardChunks(withUsage);
+      ex.startEvents();
+      var at = 0usize;
+      while at < chunks.len() {
+        let e = sse.Event.message(chunks[at].view());
+        let w = await ex.sendEvent(&e);
+        at = at + 1usize;
+      }
+      let e = sse.Event.message("[DONE]");
+      let w = await ex.sendEvent(&e);
+      let f = await ex.finish();
+    } else if m == "split" {
+      // The same stream with CRLF line ends, in pieces of 37 bytes
+      let all = streamBytes(&standardChunks(withUsage), "\r\n", true);
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      var at = 0usize;
+      while at < all.len() {
+        var end = at + 37usize;
+        if end > all.len() {end = all.len();}
+        let w = await ex.write(all.sub(at, end));
+        thread.sleep(Duration.fromMillis(8i64));
+        at = end;
+      }
+      let f = await ex.finish();
+    } else if m == "keepalive" {
+      ex.startEvents();
+      let c1 = await ex.sendComment("ping");
+      let chunks = standardChunks(false);
+      var k = 0usize;
+      while k < chunks.len() {
+        let e = sse.Event.message(chunks[k].view());
+        let w = await ex.sendEvent(&e);
+        let c2 = await ex.sendComment("ping");
+        let empty = sse.Event.message("");
+        let w2 = await ex.sendEvent(&empty);
+        k = k + 1usize;
+      }
+      let e = sse.Event.message("[DONE]");
+      let w = await ex.sendEvent(&e);
+      let f = await ex.finish();
+    } else if m == "badchunk" {
+      ex.startEvents();
+      let a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      let w1 = await ex.sendEvent(&a);
+      let b = sse.Event.message(chunkJson("", true, "ok", "").view());
+      let w2 = await ex.sendEvent(&b);
+      let bad = sse.Event.message("{this is not json");
+      let w3 = await ex.sendEvent(&bad);
+      let c = sse.Event.message(chunkJson("", true, "never read", "").view());
+      let w4 = await ex.sendEvent(&c);
+      let f = await ex.finish();
+    } else if m == "errorchunk" {
+      ex.startEvents();
+      let a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      let w1 = await ex.sendEvent(&a);
+      let err = sse.Event.message(errorJson("The context length was exceeded", "context_length_exceeded").view());
+      let w2 = await ex.sendEvent(&err);
+      let f = await ex.finish();
+    } else if m == "truncated" {
+      ex.startEvents();
+      let a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      let w1 = await ex.sendEvent(&a);
+      let b = sse.Event.message(chunkJson("", true, "Hel", "").view());
+      let w2 = await ex.sendEvent(&b);
+      let f = await ex.finish();
+    } else if m == "nodone" {
+      ex.startEvents();
+      let a = sse.Event.message(chunkJson("assistant", true, "", "").view());
+      let w1 = await ex.sendEvent(&a);
+      let b = sse.Event.message(chunkJson("", true, "Hi", "").view());
+      let w2 = await ex.sendEvent(&b);
+      let c = sse.Event.message(chunkJson("", false, "", "stop").view());
+      let w3 = await ex.sendEvent(&c);
+      let f = await ex.finish();
+    } else if m == "plainjson" {
+      self.answer(200u16, "{\"choices\":[{\"message\":{\"content\":\"not a stream\"}}]}");
+    } else if m == "ratelimit" {
+      self.answer(429u16, errorJson("Rate limit reached", "rate_limit_exceeded").view());
+    } else if m == "bigerror" {
+      // a 500 whose JSON error object is 8 MiB long, written in 16 KiB pieces until a write fails
+      ex.start(ResponseHead.make(500u16), BodyLength.unsized());
+      var filler = String();
+      var k = 0usize;
+      while k < 16384usize {filler.append("a"); k = k + 1usize;}
+      var n = 0u64;
+      var going = true;
+      while going && n < 512u64 {
+        var piece = String();
+        if n == 0u64 {piece.append("{\"error\":{\"message\":\"");}
+        piece.append(filler.view());
+        let w = await ex.write(piece);
+        match w {
+          case is Ok {n = n + 1u64;}
+          case is Err {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(1i64));
+      }
+      left.send(n);
+    } else if m == "flood" {
+      // tiny events as fast as the connection takes them, until a write fails
+      ex.startEvents();
+      var n = 0u64;
+      var going = true;
+      while going && n < 400000u64 {
+        let c = chunkJson("", true, "x", "");
+        let e = sse.Event.message(c.view());
+        let w = await ex.sendEvent(&e);
+        match w {
+          case is Ok {n = n + 1u64;}
+          case is Err {going = false;}
+        }
+      }
+      left.send(n);
+    } else if m == "endless" {
+      ex.startEvents();
+      var n = 0u64;
+      var going = true;
+      while going {
+        var piece = String.from("event ");
+        piece.appendUInt(n);
+        let c = chunkJson("", true, piece.view(), "");
+        let e = sse.Event.message(c.view());
+        let w = await ex.sendEvent(&e);
+        match w {
+          case let Ok(ok) {n = n + 1u64;}
+          case let Err(er) {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(5i64));
+      }
+      left.send(n);
+    } else {
+      self.answer(400u16, errorJson("unknown model", "model_not_found").view());
+    }
+  }
+}
+
+// A stream that says nothing, kept so it is not dropped
+actor Silent {
+  ex: Exchange;
+
+  pub async fn start(self) {
+    ex.startEvents();
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  left: Sender[u64];
+  held: List[Silent];
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed: "); print <- e; printStr("\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {self.route(ok);}
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+
+  fn route(self, ex: Exchange) {
+    if ex.request.body.view().contains("\"model\":\"silent\"") {
+      let s = Silent(ex);
+      s.start();
+      held.push(s);
+      return;
+    }
+    let h = Handler(ex, left.clone());
+    h.run();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn baseUrl(port: u16) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/v1");
+  u
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// Text on one line: line feeds as '/'
+fn flat(s: &str) String {
+  var out = String();
+  let b = s as &Array[u8];
+  var k = 0usize;
+  while k < b.len {
+    if b[k] == '\n' {out.appendByte('/');}
+    else if b[k] == '\r' {out.append("\\r");}
+    else {out.appendByte(b[k]);}
+    k = k + 1usize;
+  }
+  out
+}
+
+fn showError(e: &ChatError) {
+  printStr("  error ");
+  // The json package's own words, where it says where and why, are not pinned here
+  let text = String() <- e;
+  match text.view().find("json: line") {
+    case let Some(at) {
+      printStr(text.sub(0usize, at + 5usize).view());
+      printStr(" ...");
+      match text.view().find(" (chunk") {
+        case let Some(k) {printStr(text.sub(k, text.len()).view());}
+        case is None {}
+      }
+    }
+    case is None {printStr(text.view());}
+  }
+  if (String() <- e).view().contains(theKey()) {printStr(" (THE KEY LEAKED)");}
+  printStr("\n");
+}
+
+fn showDelta(d: &Delta) {
+  printStr("  delta");
+  if d.role.len() > 0usize {
+    printStr(" role=");
+    printStr(d.role.view());
+  }
+  if d.content.len() > 0usize {
+    printStr(" text=[");
+    printStr(flat(d.content.view()).view());
+    printStr("]");
+  }
+  if d.finishReason.len() > 0usize {
+    printStr(" finish=");
+    printStr(d.finishReason.view());
+  }
+  match &d.usage {
+    case let &Some(u) {
+      printStr(" usage=");
+      printUInt(u.promptTokens);
+      printStr("/");
+      printUInt(u.completionTokens);
+      printStr("/");
+      printUInt(u.totalTokens);
+    }
+    case is &None {}
+  }
+  printStr("\n");
+}
+
+fn request(model: &str, usage: bool) ChatRequest {
+  var r = ChatRequest.make(model);
+  r.addUser("hi");
+  r.includeUsage = usage;
+  r
+}
+
+actor Reader {
+  chat: Chat;
+
+  // Open a stream and print every delta, then how it ended
+  pub async fn read(self, label: String, model: String, usage: bool, ms: i64, done: OneshotSender[u64]) {
+    printStr(label.view());
+    printStr(":\n");
+    var lim = IoLimits.none();
+    if ms > 0i64 {lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));}
+    let opened = await chat.streamIn(request(model.view(), usage), lim);
+    match opened {
+      case let Ok(cs) {
+        var count = 0u64;
+        var going = true;
+        while going {
+          let n = await cs.next();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(d) {
+                  showDelta(&d);
+                  count = count + 1u64;
+                }
+                case is None[Delta] {
+                  printStr("  end of stream\n");
+                  going = false;
+                }
+              }
+            }
+            case let Err(er) {
+              showError(&er);
+              going = false;
+            }
+          }
+        }
+        // After an error or the end, there is nothing more
+        let after = await cs.next();
+        match after {
+          case let Ok(ok) {
+            match ok {
+              case let Some(d) {printStr("  MORE after the end\n");}
+              case is None[Delta] {printStr("  and nothing after\n");}
+            }
+          }
+          case let Err(er) {printStr("  ERROR after the end\n");}
+        }
+      }
+      case let Err(er) {
+        printStr("  open failed:\n");
+        showError(&er);
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // A silent stream, ended by its cancel group's cancel (from main)
+  pub async fn cancelled(self, group: CancelGroup, done: OneshotSender[u64]) {
+    printStr("silent, ended by a cancel:\n");
+    let opened = await chat.streamIn(request("silent", false), IoLimits.within(group));
+    match opened {
+      case let Ok(cs) {
+        let n = await cs.next();
+        match n {
+          case let Ok(ok) {printStr("  something arrived or it ended\n");}
+          case let Err(er) {showError(&er);}
+        }
+      }
+      case let Err(er) {
+        printStr("  open failed:\n");
+        showError(&er);
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // The rest of a stream gathered into one reply
+  pub async fn whole(self, done: OneshotSender[u64]) {
+    printStr("collect:\n");
+    let opened = await chat.stream(request("basic", true));
+    match opened {
+      case let Ok(cs) {
+        let r = await cs.collect();
+        match r {
+          case let Ok(ok) {
+            printStr("  id=");
+            printStr(ok.id.view());
+            printStr(" model=");
+            printStr(ok.model.view());
+            printStr(" role=");
+            printStr(ok.role.view());
+            printStr(" finish=");
+            printStr(ok.finishReason.view());
+            printStr(" text=[");
+            printStr(ok.content.view());
+            printStr("] usage=");
+            match &ok.usage {
+              case let &Some(u) {printUInt(u.totalTokens);}
+              case is &None {printStr("none");}
+            }
+            printStr("\n");
+          }
+          case let Err(er) {showError(&er);}
+        }
+      }
+      case let Err(er) {printStr("  open failed\n");}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // Reads two deltas of an endless stream and goes: the ChatStream is dropped
+  pub async fn leave(self, done: OneshotSender[u64]) {
+    {
+      let opened = await chat.stream(request("endless", false));
+      match opened {
+        case let Ok(cs) {
+          var got = 0u64;
+          while got < 2u64 {
+            let n = await cs.next();
+            match n {
+              case let Ok(ok) {got = got + 1u64;}
+              case let Err(er) {got = 100u64;}
+            }
+          }
+          printStr("endless: deltas read before leaving: ");
+          printUInt(got);
+          printStr("\n");
+        }
+        case let Err(er) {printStr("endless failed\n");}
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // A 500 with an 8 MiB error object: the error is made of the first 64 KiB, which is not
+  // a whole JSON object, and the rest of the body is let go
+  pub async fn bigError(self, done: OneshotSender[u64]) {
+    let opened = await chat.stream(request("bigerror", false));
+    match opened {
+      case let Ok(cs) {printStr("big error: a stream, NO\n");}
+      case let Err(er) {
+        printStr("big error: status ");
+        printUInt(u64.from(er.status));
+        printStr(", made of the part it read: ");
+        printStr(yes(er.detail.view().startsWith("the server answered 500 with no error object: {\"error\"")));
+        printStr("\n");
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // Tiny events, a reader that is slow: what is held stays within the window; then it leaves
+  pub async fn slowFlood(self, done: OneshotSender[u64]) {
+    var peak = 0u64;
+    {
+      let opened = await chat.stream(request("flood", false));
+      match opened {
+        case let Ok(cs) {
+          var got = 0u64;
+          while got < 3u64 {
+            let n = await cs.next();
+            match n {
+              case let Ok(ok) {got = got + 1u64;}
+              case let Err(er) {got = 100u64;}
+            }
+          }
+          var t = 0;
+          while t < 140 {
+            let l = lentNow();
+            if l > peak {peak = l;}
+            thread.sleep(Duration.fromMillis(5i64));
+            t = t + 1;
+          }
+        }
+        case let Err(er) {printStr("flood failed\n");}
+      }
+    }
+    printStr("flood: bytes lent while the reader slept 700 ms stay within 2 MiB (both ends' windows): ");
+    printStr(yes(peak > 0u64 && peak <= 2097152u64));
+    printStr("\n");
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn lentNow() u64 {u64.from(iobuf.stats().lentBytes)}
+
+// Whether the bytes lent come back to 'base' (polled: the service thread gets them back after the drop)
+fn lentHome(base: u64) bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lentNow() > base && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lentNow() <= base
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+fn run1(r: &Reader, label: &str, model: &str, usage: bool, ms: i64) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  r.read(String.from(label), String.from(model), usage, ms, tx);
+  rx.recv();
+}
+
+fn main() i32 {
+  initAll();
+  env.set("CHATAPI_TEST_KEY", theKey());
+  env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var ltx: Sender[u64];
+  var lrx: Receiver[u64];
+  ltx, lrx = Channel[u64].make();
+  {
+    let acceptor = Acceptor(Server.none(), ltx.clone(), List[Silent]());
+    acceptor.open(ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    acceptor.serve();
+    let reader = Reader(Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY")));
+
+    run1(&reader, "basic", "basic", true, 0i64);
+    run1(&reader, "basic, no usage asked", "basic", false, 0i64);
+    run1(&reader, "split", "split", true, 0i64);
+    run1(&reader, "keepalive", "keepalive", false, 0i64);
+    run1(&reader, "bad chunk", "badchunk", false, 0i64);
+    run1(&reader, "error chunk", "errorchunk", false, 0i64);
+    run1(&reader, "truncated", "truncated", false, 0i64);
+    run1(&reader, "no [DONE]", "nodone", false, 0i64);
+    run1(&reader, "plain json", "plainjson", false, 0i64);
+    run1(&reader, "rate limit", "ratelimit", false, 0i64);
+    run1(&reader, "silent, ended by a deadline", "silent", false, 400i64);
+
+    {
+      let group = CancelGroup.make();
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.cancelled(group, tx);
+      thread.sleep(Duration.fromMillis(400i64));
+      group.cancel();
+      rx.recv();
+    }
+
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.whole(tx);
+      rx.recv();
+    }
+
+    // A wrong key
+    {
+      let wrong = Reader(Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY")));
+      run1(&wrong, "wrong key", "basic", false, 0i64);
+    }
+
+    // A reader that leaves: the server finds out by a write answering Closed
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.leave(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case let Some(n) {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
+        case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
+      }
+    }
+    printStr("...every buffer home after the reader left: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
+
+    // An error body far past 64 KiB: only the first 64 KiB is read, the server finds the reader gone
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.bigError(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case let Some(n) {printStr("big error: the server saw its reader leave before the end: "); printStr(yes(n < 512u64)); printStr("\n");}
+        case is None[u64] {printStr("big error: the server never saw its reader leave\n");}
+      }
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
+
+    // Tiny events and a slow reader, then the reader leaves
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.slowFlood(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case let Some(n) {printStr("flood: the server was held back and saw its reader leave: "); printStr(yes(n < 400000u64)); printStr("\n");}
+        case is None[u64] {printStr("flood: the server never saw its reader leave\n");}
+      }
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
+    acceptor.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}

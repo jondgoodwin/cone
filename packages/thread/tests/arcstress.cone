@@ -25,12 +25,12 @@ import thread;
 import sync use *;
 
 // How many times the value was finalized, and how many slots its final saw
-imm finals Atomic[u32];
-imm seen Atomic[u32];
+let finals: Atomic[u32];
+let seen: Atomic[u32];
 
 // Each worker's slot, written as it finishes with a relaxed store, which orders
 // nothing of its own: what makes it visible to the final is the Arc
-imm slots Array[Atomic[u32], 4];
+let slots: Array[Atomic[u32], 4];
 
 fn @initpure init() {
   finals = Atomic[u32].of(0u32);
@@ -39,8 +39,8 @@ fn @initpure init() {
 }
 
 struct SharedValue {
-  pub id u64;
-  fn final(self &uni) {
+  pub id: u64;
+  fn final(self: &uni) {
     seen.store(slots[0].loadOrdered(MemOrder.Relaxed) + slots[1].loadOrdered(MemOrder.Relaxed) + slots[2].loadOrdered(MemOrder.Relaxed) + slots[3].loadOrdered(MemOrder.Relaxed));
     finals.add(1u32);
   }
@@ -48,41 +48,41 @@ struct SharedValue {
 alias Shared = Arc[imm, SharedValue];
 
 // Copy and drop an owner 200000 times, reading through each copy
-fn churn(s Shared) u64 {
-  mut sum = 0u64;
-  mut i = 0u32;
+fn churn(s: Shared) u64 {
+  var sum = 0u64;
+  var i = 0u32;
   while i < 200000u32 {
-    imm c = s;
+    let c = s;
     sum = sum + c.id;
     i = i + 1u32;
   }
-  sum;
+  sum
 }
 
 // A worker's argument: its owner of the value, and its slot
 struct Job {
-  pub s Shared;
-  pub slot usize;
+  pub s: Shared;
+  pub slot: usize;
 }
 
-fn work(j Job) u64 {
-  imm sum = churn(j.s);
+fn work(j: Job) u64 {
+  let sum = churn(j.s);
   slots[j.slot].storeOrdered(1u32, MemOrder.Relaxed);
-  sum;
+  sum
 }   // this thread's owner goes here, with j
 
 fn main() i32 {
   initAll();
-  mut a thread.Thread[u64];
-  mut b thread.Thread[u64];
-  mut c thread.Thread[u64];
-  mut d thread.Thread[u64];
+  var a: thread.Thread[u64];
+  var b: thread.Thread[u64];
+  var c: thread.Thread[u64];
+  var d: thread.Thread[u64];
   {
-    imm s = new Shared(7u64);
-    a = thread.start(new Job(s, 0usize), &work);
-    b = thread.start(new Job(s, 1usize), &work);
-    c = thread.start(new Job(s, 2usize), &work);
-    d = thread.start(new Job(s, 3usize), &work);
+    let s = Shared(7u64);
+    a = thread.start(Job(s, 0usize), &work);
+    b = thread.start(Job(s, 1usize), &work);
+    c = thread.start(Job(s, 2usize), &work);
+    d = thread.start(Job(s, 3usize), &work);
     expectUInt(churn(s), 1400000u64, "main's own copies, among the workers'");
   }   // main's owner goes
   expectUInt(a.join(), 1400000u64, "worker 0 read through every copy");
@@ -91,5 +91,5 @@ fn main() i32 {
   expectUInt(d.join(), 1400000u64, "worker 3 read through every copy");
   expectUInt(u64.from(finals.load()), 1u64, "finalized exactly once");
   expectUInt(u64.from(seen.load()), 4u64, "after every worker had finished");
-  done();
+  done()
 }

@@ -14,15 +14,13 @@
 # they are about rather than by stage: which operations move a value, which types
 # move rather than copy, what a move out of an element or a global costs, that
 # nothing moves out of a field, and that nothing may be moved out through a borrowed reference
-# (move_flow_borrow). They have to be split anyway, because flow analysis runs on a function
+# (move_flow_borrow) or a raw pointer (move_flow_rawptr). They have to be split anyway, because flow analysis runs on a function
 # only when that function's own type check raised nothing, so a scenario's
 # diagnostics all have to come from one function and there is a limit to how
 # many belong in one.
 #
 # Not covered, with reasons:
 #
-# - WarnCopy (3003) is declared in shared/error.h and raised nowhere, so no
-#   source can provoke it. There is no unsafe-copy warning to test.
 # - The ErrorMove site in ir/exp/assign.c is commented out; the two live ones are
 #   both in ir/exp/nameuse.c and both are covered here.
 # - The anonymous variable '_', which the reference manual documents as the way
@@ -56,7 +54,7 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 # that where every path agrees there is none.
 [scenario.move_drop_flags]
 category = "run"
-description = "A value moved, handed on (by a block, an 'if', a loop's 'break', a 'match' or a returned 'if'), or given a value on some paths only -- branches, 'elif', early return, loops with 'break', 'continue' and a move in an earlier pass, the right operand of 'and', a match's binding, a destructuring -- is finalized once, on the path that still holds it; so is a local declared last in a block or an 'if' arm of such a function"
+description = "A value moved, handed on (by a block, an 'if', a loop's 'break', a 'match' or a returned 'if'), or given a value on some paths only -- branches, 'else if', early return, loops with 'break', 'continue' and a move in an earlier pass, the right operand of '&&', a match's binding, a destructuring -- is finalized once, on the path that still holds it; so is a local declared last in a block or an 'if' arm of such a function"
 tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.move_drop_flags.check]]
@@ -82,7 +80,7 @@ diagnostics = 4
 
 [scenario.move_drop_flags_agree]
 category = "compile"
-description = "Where every path agrees what a variable holds at each release -- moved or given a value on every branch, moved on a path that returns, declared in the loop body, reassigned in a loop and never moved -- it has no drop flag"
+description = "Where every path agrees what a variable holds at each release -- moved or given a value on every branch, moved on a path that returns, declared in the loop body (moved on every path, or on a path that continues or breaks), reassigned in a loop and never moved -- it has no drop flag"
 tags = ["flow", "genllvm"]
 
 [[scenario.move_drop_flags_agree.check]]
@@ -94,21 +92,38 @@ excludes = [".held"]
 # per instance: the motivating case is a future, whose fields hold no T
 [scenario.move_conditional]
 category = "run"
-description = "'is Move if <condition>' decided per instance: Fut[T] holding only a shared reference copies for i32 and moves for Handle and for Box[Handle] (Move by its field); a condition on one of two parameters; one joined by 'or' and 'and'; a field that moves winning over a false condition; a flat 'is Move' on a generic unchanged; an enum's entry; a struct holding an instance; and an instance named as a reference's target inside the type it is about"
+description = "'is Move if <condition>' decided per instance: Fut[T] holding only a shared reference copies for i32 and moves for Handle and for Box[Handle] (Move by its field); a condition on one of two parameters; one joined by '||' and '&&'; a field that moves winning over a false condition; a flat 'is Move' on a generic unchanged; an enum's entry; a struct holding an instance; and an instance named as a reference's target inside the type it is about"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.move_conditional_manual]
 category = "run"
-description = "The reference manual's examples of a condition on an 'is' entry, run: refmove.html's Future copied for i32 and moved for Handle, and refgeneric.html's moves, Wrapper and Labelled"
+description = "The reference manual's examples of a condition on an 'is' entry, run: rec-moves.html's Future copied for i32 and moved for Handle, and mod-generativity.html's moves, Wrapper and Labelled"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # -------- type-check stage --------
 
 [scenario.move_typecheck_copy]
 category = "reject"
-description = "'is Copy' refused on a type that moves: one declaring Move too (either order), with a final, with a field that moves (a move struct, an owning 'So' reference), enriching a base that moves, an enum with a variant that moves, by inference or declaring Move, and a generic's instance at a move type argument"
+description = "'is Copy' refused on a type that moves: one declaring Move too (either order), with a final, with a field that moves (a move struct, an owning 'Uni' reference), enriching a base that moves, an enum with a variant that moves, by inference or declaring Move, and a generic's instance at a move type argument"
 tags = ["typecheck"]
 diagnostics = 9
+
+[scenario.move_recursive_option_list]
+category = "run"
+description = "A struct, an enum and two structs holding a List of an Option of themselves, a struct holding an Option of a List of an Option of itself, a Dict of Options of itself and an Option of an owning reference to one, and a struct holding a List of a generic struct holding it: laid out, built, walked and matched"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.move_typecheck_recursive_option_list]
+category = "reject"
+description = "'resize', which List has only where its element is Copy, called on a List of an Option of a struct, of an enum, and of either of two structs holding a List of an Option of the other: absent, the declarations accepted"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.move_recover_recursive_option_value]
+category = "recover"
+description = "A type holding itself by value through an Option is still refused as infinitely sized: held directly, in a generic struct's field, in a Result, in an array, in a tuple, in an Option of an Option, in an enum variant's payload, and in a generic whose own 'where' reads its argument"
+tags = ["typecheck"]
+diagnostics = 8
 
 [scenario.move_typecheck_recursive_list]
 category = "reject"
@@ -145,6 +160,16 @@ category = "reject"
 description = "A value moved, or never given, on some path reaching a use is refused there: moved in each pass of a loop, read or borrowed in a pass after one that moved it, moved out through a sole owner in each pass, and a finalizing variable given a value on one branch only, then read"
 tags = ["flow"]
 
+[scenario.move_flow_jump]
+category = "reject"
+description = "A 'break' or 'continue' ends its path and hands what it moved to where it jumps: moved before a break out of an inner loop and used in the outer loop after it or on its next pass, moved on a branch that continues and used on the next pass, a labelled break out of two loops and a labelled continue of the outer one, moved on a branch that breaks or continues and used after the loop, a loop with no condition whose next pass reaches its break with a value a continue moved, the jump in a match arm and in a let-else, read in the loop's else, an inner loop's continue moving the outer pass's value, and a value given only on a branch that breaks"
+tags = ["flow"]
+
+[scenario.move_flow_jump_ok]
+category = "run"
+description = "A value moved on a branch that ends in 'continue' or 'break' is not moved for the code after the branch, and is finalized once: a pass's own value in an each over a drain, a while, two nested ifs; one declared before the loop, moved on a branch that breaks or moved and given a new value on one that continues or breaks, or in a loop with no condition given a new value at the top of each pass; labelled break and continue; the jump in a match arm, a let-else, both arms of an if, a loop with an else, an each over a range; a sole owner hollowed"
+tags = ["flow", "genllvm", "runtime"]
+
 [scenario.move_flow_maybe_uninit]
 category = "reject"
 description = "A local of any type declared without a value may not be read where some path reaching the read did not give it one: a number, a dereferenced borrowed reference, a struct's field and a raw pointer given a value in one arm of an 'if'; an 'if' with an 'else' assigning in one arm; a 'match' with one arm assigning; a loop that may not run; a 'while true', whose condition still has an exit; and a read before the assignment in source order"
@@ -153,6 +178,26 @@ tags = ["flow"]
 [scenario.move_flow_maybe_uninit_ok]
 category = "run"
 description = "The neighbours that are accepted: a local given a value in both arms of an 'if', before the branch, in every arm of a 'match', in one arm while the other returns, before the 'break' of a loop with no condition, and in each pass of a loop it is declared in -- for a number, a borrowed reference, a struct and a raw pointer"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.move_flow_uninit_borrow]
+category = "reject"
+description = "A local declared without a value may not be borrowed, nor have a field or an element stored into it, where some path reaching that did not give the whole variable one: '&c', '&mut c', a method called on it, a borrow of a field of it, a method called through a field, a borrow of a number; a field or an element stored into it; the same where one branch of an 'if', or an arm of a 'match', gave none; a loop's earlier pass, and a loop that may not run"
+tags = ["flow"]
+
+[scenario.move_flow_uninit_borrow_ok]
+category = "run"
+description = "The neighbours that are accepted: a local given a value before it is borrowed, called through or stored into a field of, on every path -- before the borrow, in both arms of an 'if', in every arm or an 'else' of a 'match', in one arm while the other returns, before a loop that borrows it, and in each pass of a loop before its borrow"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.move_flow_moved_field_store]
+category = "reject"
+description = "A field or an element is not stored into a variable whose whole value was moved out, as Rust's E0382 line: a number field, a finalizing field, a field of a field, a field of a by-value parameter, an element of an array, a field of a match's binding by value; moved on one branch or every arm of a 'match', and in a loop's earlier pass (the path walk: the main walk meets the store before the move)"
+tags = ["flow"]
+
+[scenario.move_flow_moved_field_store_ok]
+category = "run"
+description = "The neighbours that are accepted, each value finalized exactly once: a field or an element stored into a variable moved out and given a whole value again -- a struct, a field of a field, a by-value parameter, an array, a branch that moved it and gave a value again, a loop doing so each pass, both arms of an 'if', a match's binding by value -- a binding by reference, and an owning reference whose value moved out, given a whole value"
 tags = ["flow", "genllvm", "runtime"]
 
 [scenario.move_flow_infection]
@@ -172,7 +217,7 @@ tags = ["flow"]
 
 [scenario.move_flow_elem]
 category = "reject"
-description = "Nothing moves out of an indexed element of an array held by value or by a sole owner: a local, a parameter, a temporary, a nested array, a local or temporary So by index, by a variable index or through the dereference, into a variable, a call or a return; the refusal leaves the array usable; copy elements, a swap, an element's field and a borrow of an element are unaffected"
+description = "Nothing moves out of an indexed element of an array held by value or by a sole owner: a local, a parameter, a temporary, a nested array, a local or temporary Uni by index, by a variable index or through the dereference, into a variable, a call or a return; the refusal leaves the array usable; copy elements, a swap, an element's field and a borrow of an element are unaffected"
 tags = ["flow"]
 
 [scenario.move_flow_field]
@@ -184,6 +229,26 @@ tags = ["flow"]
 category = "reject"
 description = "Moving a value out through a borrowed reference, in each position a value can leave by, is refused"
 tags = ["flow"]
+
+[scenario.move_flow_rawptr]
+category = "reject"
+description = "Moving a value that finalizes or owns out through a raw pointer is refused, naming mem.readRaw: '*p' handed back, bound or passed, a field list '(*p).(a)', an element 'p[i]', a pointer to an owning reference; a field through one stays ErrorMoveField"
+tags = ["flow"]
+
+# One .out for two runs: readRaw lowered, and through its '@intrinsic' fallback
+# body '{*p}', the one body a move through a raw pointer is let through in
+[scenario.move_flow_rawptr_ok]
+category = "run"
+description = "A copy value read through a raw pointer, a number and a plain struct; a Buf whose final frees its memory, moved out of a raw slot with mem.readRaw (directly and from a function handing it back), finalized once"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.move_flow_rawptr_ok.run]]
+name = "lowered"
+options = []
+
+[[scenario.move_flow_rawptr_ok.run]]
+name = "fallback"
+options = ["--intrinsic-fallback"]
 
 [scenario.move_flow_borrowmoved]
 category = "reject"
@@ -204,3 +269,18 @@ tags = ["flow"]
 category = "reject"
 description = "A tuple holding a move value moves rather than copies, and a tuple literal deactivates its move sources"
 tags = ["flow"]
+
+[scenario.move_undef_unvalued]
+category = "reject"
+description = "'= undef' declares a variable with no value, as leaving the initializer off does, so it may not be read, passed, borrowed ('&c', '&mut c', a method, a borrow of a number or of a field) nor have a field or an element stored into it until the whole variable holds a value on every path: refused where one branch of an 'if' gave none, in a loop's earlier pass, and after a loop that may not run"
+tags = ["flow"]
+
+[scenario.move_undef_unvalued_ok]
+category = "run"
+description = "'= undef' drops only a value that was given: nothing at the scope's end of a variable never given one (a struct with a 'final', a 'Uni' owner), once for one given once, the first assignment releasing nothing, the earlier value released by a second assignment, only where the arm ran for a value given in one arm; the accepted neighbours given a value on every path before it is read or borrowed, before a loop, and in each pass of a loop"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.move_discard_temps]
+category = "run"
+description = "'_ = expr;' finishes its statement as a bare expression statement does: a temporary lent to a call ('&T()' in a function call, a method call, nested in an argument expression, two in one call, one lent to a call whose result holds a String) and the discarded value itself, when it owns a finalizer, die at the statement's end, counted by T's finalizer; so do the temporaries of a discard in a loop's every pass"
+tags = ["flow", "genllvm", "runtime"]

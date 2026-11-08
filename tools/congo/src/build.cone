@@ -4,18 +4,18 @@
 //
 // What can go wrong in a build that 'congo test' goes on after -- a source it
 // cannot scan or resolve, a compile or a link that fails, no conec or linker
-// -- is answered as a value, a Result whose Error is congo.py's CongoError
+// -- is answered as a value, a Result whose Err is congo.py's CongoError
 // message. 'congo build' and 'congo run' end on the first, in buildPackage.
 
 // Where a package's build goes: build/<mode>/ in the package's folder; a
 // lone file's under the Congo home
-fn buildFolder(pkg &Package, mode &str) Path {
+fn buildFolder(pkg: &Package, mode: &str) Path {
   if pkg.lone {
-    imm root = loneBuildRoot(&pkg.src);
+    let root = loneBuildRoot(&pkg.src);
     return root.join(mode);
   }
-  imm folder = pkg.root.join("build");
-  folder.join(mode);
+  let folder = pkg.root.join("build");
+  folder.join(mode)
 }
 
 // The compiles of one build folder, and its link. A package is compiled at
@@ -23,85 +23,108 @@ fn buildFolder(pkg &Package, mode &str) Path {
 // program against the objects and include files that build left, compiling
 // only what a test imports that the package does not (stdio, say).
 struct Session {
-  pub repo Path;
-  pub reg Registry;
-  pub out Path;
-  pub mode String;
-  pub objs Dict[String, Path];     // each library compiled into out, by name
-  pub spvs Dict[String, Path];     // each package's kernels compiled into out, by name
-  pub gpuChecked List[String];     // packages whose imports were checked for the GPU
-  pub warned List[String];         // the packages whose hand include file was warned of
-  pub conec Path;                  // found at the first compile; empty before
-  pub hasLinker bool;
-  pub linker Linker;               // found at the first link
+  pub repo: Path;
+  pub reg: Registry;
+  pub out: Path;
+  pub mode: String;
+  pub objs: Dict[String, Path];     // each library compiled into out, by name
+  pub spvs: Dict[String, Path];     // each package's kernels compiled into out, by name
+  pub gpuChecked: List[String];     // packages whose imports were checked for the GPU
+  pub warned: List[String];         // the packages whose hand include file was warned of
+  pub conec: Path;                  // found at the first compile; empty before
+  pub hasLinker: bool;
+  pub linker: Linker;               // found at the first link
   // TEMPORARY, a provisional mechanism whose final design is open: each
   // '-D NAME' or '-D NAME=123' given to build, run or test, passed to every
   // conec compile of the build, the packages it imports included (conec's
-  // isDefined, definedInt)
-  pub defines List[String];
+  // #defined, #define)
+  pub defines: List[String];
+  // Whether a compile whose key is unchanged is skipped: '--no-cache' says
+  // not (cache.cone)
+  pub useCache: bool;
+  // '--strip': conec is passed --strip for every compile of the build, and a
+  // link writes no PDB (congo.py, STRIP_DEBUG)
+  pub strip: bool;
 }
 
-fn newSession(repo &Path, reg Registry, out &Path, mode &str, defines &List[String]) Session {
-  new Session(repo.copy(), reg, out.copy(), String.from(mode), Dict[String, Path].empty(),
-    Dict[String, Path].empty(), List[String].empty(), List[String].empty(), Path.from(""), false, noLinkerYet(),
-    copyStrings(defines));
+fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool) Session {
+  Session(repo.clone(), reg, out.clone(), String.from(mode), Dict[String, Path](),
+    Dict[String, Path](), List[String](), List[String](), Path.from(""), false, noLinkerYet(),
+    copyStrings(defines), useCache, strip)
 }
 
 // Build pkg and everything it imports into its build folder, each package
 // compiled on its own; answer the executable, or for a library its object.
-// A build is whole every time: every description written, every package
-// compiled, nothing kept from a build before. The first failure ends Congo.
-fn buildPackage(repo &Path, pkg Package, mode &str, defines &List[String]) Path {
-  imm folders = registryFolders(repo);
-  imm out = buildFolder(&pkg, mode);
-  mut s = newSession(repo, readRegistry(folders), &out, mode, defines);
-  imm top = s.reg.add(pkg);
+// Every description is written, and every package compiled unless its key is
+// unchanged (cache.cone). The first failure ends Congo.
+fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool, strip: bool) Path {
+  let folders = registryFolders(repo);
+  let out = buildFolder(&pkg, mode);
+  let indexes = registryIndexes();
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
+  let top = s.reg.add(pkg);
   match build(&mut s, top) {
-    case mut ok Ok {
-      mut built Path = "";
-      built <=> ok;
-      built;
+    case var Ok(ok) {
+      var built: Path = "";
+      built <-> ok;
+      built
     }
-    case imm e Error { fail(e.copy()); }
+    case let Err(e) { fail(e.clone()) }
   }
 }
 
 // Build the registry's package top, and everything it imports, in the
 // session; answer the executable, or for a library its object
-fn build(s &mut Session, top usize) Result[Path, String] {
-  imm isLibrary = s.reg.packages[top].output.equals("library");
-  imm name = s.reg.packages[top].name.copy();
-  mut plan = emptyPlan();
-  match buildOrder(&s.reg, top) {
-    case mut ok Ok { plan <=> ok; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+fn build(s: &mut Session, top: usize) Result[Path, String] {
+  let isLibrary = s.reg.packages[top].output.equals("library");
+  let name = s.reg.packages[top].name.clone();
+  match restore(&mut s.reg, top) {
+    case is Ok {}
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  mut objs = List[Path].empty();
+  var plan = emptyPlan();
+  match buildOrder(&s.reg, top) {
+    case var Ok(ok) { plan <-> ok; }
+    case let Err(e) { return Err[Path, String](e.clone()); }
+  }
+  var objs = List[Path]();
   match compile(s, &plan, top, "", true) {
-    case mut ok Ok { objs <=> ok; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case var Ok(ok) { objs <-> ok; }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   if isLibrary {
-    imm obj = objs[objs.len() - 1usize].copy();
-    imm place = shown(&obj);
-    mut finished = cat(s.mode.view(), " library object ", place.view());
+    let obj = objs[objs.len() - 1usize].clone();
+    let place = shown(&obj);
+    var finished = cat(s.mode.view(), " library object ", place.view());
     if s.spvs.contains(name.view()) {
-      imm kernels = shown(s.spvs[name.view()]);
+      let kernels = shown(&s.spvs[name.view()]);
       finished <- " and kernels ", kernels.view();
     }
     say("Finished", finished.view());
     return Ok[Path, String](obj);
   }
-  imm exeName = cat(name.view(), ".exe");
-  imm exe = s.out.join(exeName.view());
+  let exeName = cat(name.view(), ".exe");
+  let exe = s.out.join(exeName.view());
   match link(s, &plan, &objs, &exe, true) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  imm place = shown(&exe);
-  imm finished = cat(s.mode.view(), " ", place.view());
+  let place = shown(&exe);
+  let finished = cat(s.mode.view(), " ", place.view());
   say("Finished", finished.view());
-  Ok[Path, String](exe);
+  Ok[Path, String](exe)
+}
+
+// Does a lone file's module share its name with a package of its build?
+fn programNamedLikeAPackage(plan: &Plan, reg: &Registry, top: usize) bool {
+  if !reg.packages[top].lone { return false; }
+  var i = 0usize;
+  while i < plan.order.len() {
+    let p = plan.units[*plan.order[i]].pkg;
+    if p != top && reg.packages[p].name.equals(reg.packages[top].name.view()) { return true; }
+    i = i + 1usize;
+  }
+  false
 }
 
 // A test or example program, built as a lone file of its own that imports
@@ -110,30 +133,34 @@ fn build(s &mut Session, top usize) Result[Path, String] {
 // imports compiled into the package's build folder (once each, most already
 // there), and the program itself into a folder of its own, dest, then
 // linked. Answers the executable.
-fn buildProgram(s &mut Session, file &Path, dest &Path) Result[Path, String] {
-  mut pkg = emptyPackage();
+fn buildProgram(s: &mut Session, file: &Path, dest: &Path) Result[Path, String] {
+  var pkg = emptyPackage();
   match lonePackage(file) {
-    case mut ok Ok { pkg <=> ok; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case var Ok(ok) { pkg <-> ok; }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  imm exeName = cat(pkg.name.view(), ".exe");
-  imm top = s.reg.add(pkg);
-  mut plan = emptyPlan();
+  let exeName = cat(pkg.name.view(), ".exe");
+  let top = s.reg.add(pkg);
+  match restore(&mut s.reg, top) {
+    case is Ok {}
+    case let Err(e) { return Err[Path, String](e.clone()); }
+  }
+  var plan = emptyPlan();
   match buildOrder(&s.reg, top) {
-    case mut ok Ok { plan <=> ok; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case var Ok(ok) { plan <-> ok; }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  mut objs = List[Path].empty();
+  var objs = List[Path]();
   match compile(s, &plan, top, dest, false) {
-    case mut ok Ok { objs <=> ok; }
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case var Ok(ok) { objs <-> ok; }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  imm exe = dest.join(exeName.view());
+  let exe = dest.join(exeName.view());
   match link(s, &plan, &objs, &exe, false) {
     case is Ok {}
-    case imm e Error { return Error[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  Ok[Path, String](exe);
+  Ok[Path, String](exe)
 }
 
 // A lone file's build goes under the Congo home, not beside the file: the
@@ -141,43 +168,43 @@ fn buildProgram(s &mut Session, file &Path, dest &Path) Result[Path, String] {
 // 'build' folder of its own that 'congo clean' must not delete. Named for the
 // file and the SHA-1 of its absolute path, lower-cased, as congo.py names it
 // (with '\', as pathlib spells the path, so that both Congos agree).
-fn loneBuildRoot(file &Path) Path {
-  imm abs = resolved(file);
-  mut spelled = native(&abs);
+fn loneBuildRoot(file: &Path) Path {
+  let abs = resolved(file);
+  var spelled = native(&abs);
   spelled.lowerAscii();
-  imm digest = sha1Hex(spelled.view());
-  imm home = congoHome();
-  imm lone = home.join("lone");
-  imm short = digest.sub(0usize, 10usize);
-  imm folder = cat(file.stem(), "-", short.view());
-  lone.join(folder.view());
+  let digest = sha1Hex(spelled.view());
+  let home = congoHome();
+  let lone = home.join("lone");
+  let short = digest.sub(0usize, 10usize);
+  let folder = cat(file.stem(), "-", short.view());
+  lone.join(folder.view())
 }
 
 // A lone file with no manifest is a program of one module, named by its
 // 'mod' line. A file with none is named by the file here, and the compiler
 // refuses it for the missing line (ErrorNoModDcl).
-fn lonePackage(given &Path) Result[Package, String] {
-  imm file = resolved(given);
-  imm place = native(&file);
-  if not fs.isFile(&file) { return Error[Package, String](cat("no file ", place.view())); }
-  mut header = noHeader();
+fn lonePackage(given: &Path) Result[Package, String] {
+  let file = resolved(given);
+  let place = native(&file);
+  if !fs.isFile(&file) { return Err[Package, String](cat("no file ", place.view())); }
+  var header = noHeader();
   match scanHeader(&file) {
-    case mut ok Ok { header <=> ok; }
-    case imm e Error { return Error[Package, String](e.copy()); }
+    case var Ok(ok) { header <-> ok; }
+    case let Err(e) { return Err[Package, String](e.clone()); }
   }
-  imm name = if header.hasMod {header.modName.copy();} else {String.from(file.stem());};
-  imm fault = nameFault(name.view());
-  if not header.hasMod and not fault.isEmpty() {
-    return Error[Package, String](cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
+  let name = if header.hasMod {header.modName.clone()} else {String.from(file.stem())};
+  let fault = nameFault(name.view());
+  if !header.hasMod && !fault.isEmpty() {
+    return Err[Package, String](cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
       "; give the file a 'mod' line"));
   }
-  if not fault.isEmpty() {
-    return Error[Package, String](cat(place.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
+  if !fault.isEmpty() {
+    return Err[Package, String](cat(place.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
       "; rename the module, and the file where it is named for it"));
   }
-  imm folder = file.parent();
-  Ok[Package, String](new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
-    List[String].empty(), List[Path].empty(), List[String].empty(), false));
+  let folder = file.parent();
+  Ok[Package, String](Package(name, String(), String.from("executable"), folder, file.clone(), true,
+    List[String](), List[Path](), List[String](), false, List[String]()))
 }
 
 // Write the package's build description into out and compile the package
@@ -188,107 +215,159 @@ fn lonePackage(given &Path) Result[Package, String] {
 // compiled. A library's compile writes its include file beside its object,
 // which is what every package compiled after it that imports it is compiled
 // against.
-fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, includes &Path, mode &str,
-    defines &List[String], top bool, announce bool) Result[Path, String] {
-  imm unit = plan.units[u];
-  imm pkg = reg.packages[unit.pkg];
-  imm output = if top {pkg.output.copy();} else {String.from("library");};
-  imm descName = cat(pkg.name.view(), ".conebuild");
-  imm desc = out.join(descName.view());
-  imm packages = closure(plan, reg, u);
-  imm text = description(reg, unit, mode, output.view(), includes, &packages);
+//
+// The compile is skipped where its key is unchanged (cache.cone). A
+// description with no package line for core (core's own, and those of what
+// core imports) has conec load the prelude from the packages folder
+// CONE_PACKAGES names: what it reads there is part of the key. With no core
+// in the build there is no CONE_PACKAGES, and Congo cannot say what conec
+// reads, so that compile is never skipped. 'hasCore' and 'coreUnit' say
+// whether the build has core, and where.
+fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, includes: &Path, mode: &str,
+    defines: &List[String], strip: bool, top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
+  let unit = &plan.units[u];
+  let pkg = &reg.packages[unit.pkg];
+  let output = if top {pkg.output.clone()} else {String.from("library")};
+  let descName = cat(pkg.name.view(), ".conebuild");
+  let desc = out.join(descName.view());
+  let packages = closure(plan, reg, u);
+  let text = description(reg, unit, mode, output.view(), includes, &packages);
   match fs.writeFile(&desc, text.view()) {
     case is Ok {}
-    case imm e Error {
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
-  // A library's include file is written afresh, so one left by an earlier
-  // build never stands in for it
-  imm incl = includeFor(pkg, out);
-  match fs.removeFile(&incl) {
-    case is Ok {}
-    case imm e Error {
-      if not e.notFound() {
-        fail(fsMessage(&e));
-      }
-    }
+  let incl = includeFor(pkg, out);
+  let objName = cat(pkg.name.view(), ".obj");
+  let obj = out.join(objName.view());
+  let isLibrary = output.equals("library");
+  var outputs = List[Path]();
+  outputs.push(obj.clone());
+  if isLibrary { outputs.push(incl.clone()); }
+  let outText = native(out);
+  let descText = native(&desc);
+  let rest = argList("-o", outText.view(), descText.view());
+  let command = conecCommand(conec, defines, strip, &rest);
+  // What the compile reads: the manifest, the description, every source of
+  // the package, the include file of every package the description names,
+  // and where conec loads the prelude from the packages folder, what it
+  // reads there
+  var files = List[KeyFile]();
+  if !pkg.lone {
+    let manifest = pkg.root.join("congo.toml");
+    files.push(keyFileOf("manifest", &manifest));
   }
+  files.push(keyFileOf("description", &desc));
+  let order = walkOrder(&unit.mods);
+  var imported = copyIndices(&packages);
+  var w = 0usize;
+  while w < order.len() {
+    let m = *order[w];
+    var f = 0usize;
+    while f < unit.mods[m].files.len() {
+      files.push(keyFileOf("source", &unit.mods[m].files[f]));
+      f = f + 1usize;
+    }
+    w = w + 1usize;
+  }
+  w = 0usize;
+  while w < order.len() {
+    let m = *order[w];
+    var l = 0usize;
+    while l < unit.mods[m].lines.len() {
+      let dep = unit.mods[m].lines[l].pkg;
+      if !holds(&imported, dep) { imported.push(dep); }
+      l = l + 1usize;
+    }
+    w = w + 1usize;
+  }
+  var i = 0usize;
+  while i < imported.len() {
+    let theirs = includeFor(&reg.packages[*imported[i]], includes);
+    files.push(keyFileOf("include", &theirs));
+    i = i + 1usize;
+  }
+  var keyable = true;
+  var preludeNamed = false;
+  i = 0usize;
+  while i < packages.len() {
+    if reg.packages[*packages[i]].name.equals("core") { preludeNamed = true; }
+    i = i + 1usize;
+  }
+  if !preludeNamed {
+    if hasCore { searchedSources(&reg.packages[plan.units[coreUnit].pkg], "prelude", &mut files); }
+    else { keyable = false; }
+  }
+  let inputs = keyInputs(&command, &files);
+  let key = keyOf(&inputs);
+  let keyName = cat(pkg.name.view(), ".key");
+  let keyPath = out.join(keyName.view());
+  if keyable && useCache && cacheFresh(&keyPath, key.view(), &outputs) { return Ok[Path, String](obj); }
+  // No key stands while conec runs, so a compile that fails or is killed
+  // leaves none; and a library's include file is written afresh, so one left
+  // by an earlier build never stands in for it
+  removeIfThere(&keyPath);
+  removeIfThere(&incl);
   if announce {
-    imm label = pkg.label();
-    imm root = native(&pkg.root);
-    imm compiling = cat(label.view(), " (", root.view(), ")");
+    let label = pkg.label();
+    let root = native(&pkg.root);
+    let compiling = cat(label.view(), " (", root.view(), ")");
     say("Compiling", compiling.view());
   }
-  imm outText = native(out);
-  imm descText = native(&desc);
-  if not runConec(conec, defines, argList("-o", outText.view(), descText.view())) {
-    return Error[Path, String](cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")"));
+  if !runConec(&command) {
+    return Err[Path, String](cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")"));
   }
-  imm objName = cat(pkg.name.view(), ".obj");
-  imm obj = out.join(objName.view());
-  if not fs.isFile(&obj) {
-    imm place = native(&obj);
-    return Error[Path, String](cat("conec wrote no object at ", place.view()));
+  if !fs.isFile(&obj) {
+    let place = native(&obj);
+    return Err[Path, String](cat("conec wrote no object at ", place.view()));
   }
-  if output.equals("library") and not fs.isFile(&incl) {
-    imm place = native(&incl);
-    return Error[Path, String](cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view()));
+  if isLibrary && !fs.isFile(&incl) {
+    let place = native(&incl);
+    return Err[Path, String](cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view()));
   }
-  Ok[Path, String](obj);
+  if keyable { recordKey(&keyPath, key.view(), &inputs, &outputs); }
+  Ok[Path, String](obj)
 }
 
-// Run conec with the -D defines after it, then rest, and show what it said
+// Run conec as the command line says (conecCommand), and show what it said
 // but its closing 'Compile finished' line; whether it succeeded
-fn runConec(conec &Path, defines &List[String], rest List[String]) bool {
-  imm program = native(conec);
-  mut args = argList(program.view());
-  mut d = 0usize;
-  while d < defines.len() {
-    args.push(String.from("-D"));
-    args.push(defines[d].copy());
-    d = d + 1usize;
-  }
-  mut r = 0usize;
-  while r < rest.len() {
-    args.push(rest[r].copy());
-    r = r + 1usize;
-  }
-  mut chatter = String.empty();
-  mut code = 0u32;
+fn runConec(args: &List[String]) bool {
+  var chatter = String();
+  var code = 0u32;
   match process.run(args.view()) {
-    case imm ok Ok {
+    case let Ok(ok) {
       chatter = utf8Text(ok.stdout.view());
-      imm err = utf8Text(ok.stderr.view());
+      let err = utf8Text(ok.stderr.view());
       chatter <- err.view();
       code = ok.exitCode;
     }
-    case imm e Error {
-      fail(e.message());
+    case let Err(e) {
+      fail(String() <- e);
     }
   }
-  imm lines = splitLines(chatter.view());
-  mut shownLines = List[String].empty();
-  mut i = 0usize;
+  let lines = splitLines(chatter.view());
+  var shownLines = List[String]();
+  var i = 0usize;
   while i < lines.len() {
-    if not isBlank(lines[i].view()) and not lines[i].startsWith("Compile finished") {
-      shownLines.push(lines[i].copy());
+    if !isBlank(lines[i].view()) && !lines[i].startsWith("Compile finished") {
+      shownLines.push(lines[i].clone());
     }
     i = i + 1usize;
   }
   if shownLines.len() > 0usize {
-    imm said = String.join(shownLines.view(), "\n");
+    let said = String.join(shownLines.view(), "\n");
     printStr(said.view());
     printStr("\n");
     printFlush();
   }
-  code == 0u32;
+  code == 0u32
 }
 
-fn makeFolder(folder &Path) {
+fn makeFolder(folder: &Path) {
   match fs.makeDirAll(folder) {
     case is Ok {}
-    case imm e Error {
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
@@ -300,39 +379,41 @@ fn makeFolder(folder &Path) {
 // program's own folder); every other package is a library, into the
 // session's build folder. 'announce' is whether top's compile is announced;
 // every other package's is.
-fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) Result[List[Path], String] {
+fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bool) Result[List[Path], String] {
   // Found at the first compile, after the imports are resolved, so that an
   // error in the source is reported before anything about the machine
   if s.conec.isEmpty() {
     match findConec(&s.repo) {
-      case mut ok Ok { s.conec <=> ok; }
-      case imm e Error { return Error[List[Path], String](e.copy()); }
+      case var Ok(ok) { s.conec <-> ok; }
+      case let Err(e) { return Err[List[Path], String](e.clone()); }
     }
   }
-  imm out = s.out.copy();
+  let out = s.out.clone();
   makeFolder(&out);
-  mut changes = noChanges();
+  var changes = noChanges();
   // Every package after core loads the prelude from core's generated
   // include file, which its package line names. core's own compile has no
   // such line, and loads the prelude from the package search path, which
   // must give the very file core is compiled from, or the two are two
   // modules named core: so the packages folder conec takes it from is the
   // registry folder Congo found core in
-  mut core = 0usize;
-  if plan.unitNamed(&s.reg, "core", &mut core) {
-    imm folder = s.reg.packages[plan.units[core].pkg].root.parent();
-    imm named = native(&folder);
+  var core = 0usize;
+  let hasCoreUnit = plan.unitNamed(&s.reg, "core", &mut core);
+  let coreOfBuild = core;
+  if hasCoreUnit {
+    let folder = s.reg.packages[plan.units[core].pkg].root.parent();
+    let named = native(&folder);
     changes.set("CONE_PACKAGES", named.view());
   }
   // An include file written by hand at a package's root is no longer read:
   // say so, once, so that nobody edits it expecting it to count
-  mut i = 0usize;
+  var i = 0usize;
   while i < plan.order.len() {
-    imm pkg = s.reg.packages[plan.units[*plan.order[i]].pkg];
-    imm hand = pkg.handInclude();
-    if not pkg.lone and fs.isFile(&hand) and not holdsName(&s.warned, pkg.name.view()) {
-      s.warned.push(pkg.name.copy());
-      imm place = native(&hand);
+    let pkg = &s.reg.packages[plan.units[*plan.order[i]].pkg];
+    let hand = pkg.handInclude();
+    if !pkg.lone && fs.isFile(&hand) && !holdsName(&s.warned, pkg.name.view()) {
+      s.warned.push(pkg.name.clone());
+      let place = native(&hand);
       warn(cat("warning: ", place.view(), " is not used: a package's importers compile against the include file its own compile generates, build/<mode>/",
         pkg.name.view(), ".cone"));
     }
@@ -342,45 +423,53 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   // marked package being built, import only packages marked for it
   i = 0usize;
   while i < plan.order.len() {
-    imm u = *plan.order[i];
-    imm pkg = s.reg.packages[plan.units[u].pkg];
-    imm compiledForGpu = plan.units[u].kernels or (plan.units[u].pkg == top and (pkg.gpu or plan.units[u].hasGpu));
-    if compiledForGpu and not holdsName(&s.gpuChecked, pkg.name.view()) {
+    let u = *plan.order[i];
+    let pkg = &s.reg.packages[plan.units[u].pkg];
+    let compiledForGpu = plan.units[u].kernels || (plan.units[u].pkg == top && (pkg.gpu || plan.units[u].hasGpu));
+    let pkgKey = pkg.key();
+    if compiledForGpu && !holdsName(&s.gpuChecked, pkgKey.view()) {
       match checkGpuMarks(plan, &s.reg, u) {
         case is Ok {}
-        case imm e Error {
+        case let Err(e) {
           changes.restore();
-          return Error[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
-      s.gpuChecked.push(pkg.name.copy());
+      s.gpuChecked.push(pkgKey.clone());
     }
     i = i + 1usize;
   }
-  mut objs = List[Path].empty();
+  var objs = List[Path]();
   i = 0usize;
   while i < plan.order.len() {
-    imm u = *plan.order[i];
-    imm isTop = plan.units[u].pkg == top;
-    imm name = s.reg.packages[plan.units[u].pkg].name.copy();
-    if not isTop and s.objs.contains(name.view()) {
-      objs.push(s.objs[name.view()].copy());
+    let u = *plan.order[i];
+    let isTop = plan.units[u].pkg == top;
+    let name = s.reg.packages[plan.units[u].pkg].name.clone();
+    if !isTop && s.objs.contains(name.view()) {
+      objs.push(s.objs[name.view()].clone());
     }
     else {
-      imm own = isTop and not topOut.isEmpty();
-      imm dest = if own {topOut.copy();} else {out.copy();};
+      var own = isTop && !topOut.isEmpty();
+      var dest = if own {topOut.clone()} else {out.clone()};
+      if isTop && !own && programNamedLikeAPackage(plan, &s.reg, top) {
+        // A program named like a package it reaches (Bug 24): the files of
+        // its compile are named for the module, and would be the package's
+        // own, beside which they would otherwise be written
+        own = true;
+        dest = out.join("program");
+      }
       makeFolder(&dest);
-      mut obj Path = "";
-      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
-        announce or not isTop) {
-        case mut ok Ok { obj <=> ok; }
-        case imm e Error {
+      var obj: Path = "";
+      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, s.strip, isTop,
+        announce || !isTop, s.useCache, hasCoreUnit, coreOfBuild) {
+        case var Ok(ok) { obj <-> ok; }
+        case let Err(e) {
           changes.restore();
-          return Error[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
-      if not own and (not isTop or s.reg.packages[top].output.equals("library")) {
-        s.objs.insert(name, obj.copy());
+      if !own && (!isTop || s.reg.packages[top].output.equals("library")) {
+        s.objs.insert(name, obj.clone());
       }
       objs.push(obj);
     }
@@ -388,70 +477,70 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   }
   // Then the kernels of each marked package that has them, once a session,
   // into the build folder, beside its object
-  mut coreUnit = 0usize;
-  imm hasCore = plan.unitNamed(&s.reg, "core", &mut coreUnit);
+  var coreUnit = 0usize;
+  let hasCore = plan.unitNamed(&s.reg, "core", &mut coreUnit);
   i = 0usize;
   while i < plan.order.len() {
-    imm u = *plan.order[i];
-    imm name = s.reg.packages[plan.units[u].pkg].name.copy();
-    if plan.units[u].kernels and hasCore and not s.spvs.contains(name.view()) {
+    let u = *plan.order[i];
+    let name = s.reg.packages[plan.units[u].pkg].key();
+    if plan.units[u].kernels && hasCore && !s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
-        case imm ok Ok { s.spvs.insert(name, ok.copy()); }
-        case imm e Error {
+        case let Ok(ok) { s.spvs.insert(name, ok.clone()); }
+        case let Err(e) {
           changes.restore();
-          return Error[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
     }
     i = i + 1usize;
   }
   changes.restore();
-  Ok[List[Path], String](objs);
+  Ok[List[Path], String](objs)
 }
 
 // Whether list holds name
-fn holdsName(list &List[String], name &str) bool {
-  mut i = 0usize;
+fn holdsName(list: &List[String], name: &str) bool {
+  var i = 0usize;
   while i < list.len() {
     if list[i].equals(name) { return true; }
     i = i + 1usize;
   }
-  false;
+  false
 }
 
 // Whether list holds a path the same as p, as Windows compares them
-fn holdsPath(list &List[Path], p &Path) bool {
-  mut i = 0usize;
+fn holdsPath(list: &List[Path], p: &Path) bool {
+  var i = 0usize;
   while i < list.len() {
-    if samePath(list[i], p) { return true; }
+    if samePath(&list[i], p) { return true; }
     i = i + 1usize;
   }
-  false;
+  false
 }
 
 // Congo building itself, where the executable it links is the one running.
 // Windows will not remove a running program's file, but will rename it: so
 // the running Congo is moved aside, to <exe>.old (one left by a build before
 // removed first), and the new one is linked where any build links it.
-fn moveAsideIfRunning(exe &Path) {
-  mut running Path = "";
+fn moveAsideIfRunning(exe: &Path) {
+  var running: Path = "";
   match process.currentExe() {
-    case mut ok Ok { running <=> ok; }
-    case is Error { return; }
+    case var Ok(ok) { running <-> ok; }
+    case is Err { return; }
   }
-  if not samePath(&running, exe) { return; }
-  imm old = Path.fromString(cat(exe.view(), ".old"));
+  if !samePath(&running, exe) { return; }
+  let old = Path.fromString(cat(exe.view(), ".old"));
   match fs.removeFile(&old) {
     case is Ok {}
-    case imm e Error {
-      if not e.notFound() {
+    case let Err(e) {
+      if !e.notFound() {
         fail(fsMessage(&e));
       }
     }
   }
   match fs.rename(exe, &old) {
     case is Ok {}
-    case imm e Error {
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
@@ -467,23 +556,23 @@ fn moveAsideIfRunning(exe &Path) {
 
 // The fetched-dependencies folder: CONE_DEPS, else deps/ in the repository,
 // which tools/deps/fetch.py fills
-fn depsFolder(repo &Path) Path {
-  imm named = envOr("CONE_DEPS", "");
-  if not named.isEmpty() {
-    imm given = Path.from(named.view());
+fn depsFolder(repo: &Path) Path {
+  let named = envOr("CONE_DEPS", "");
+  if !named.isEmpty() {
+    let given = Path.from(named.view());
     return resolved(&given);
   }
-  repo.join("deps");
+  repo.join("deps")
 }
 
 // The folders an environment variable lists, ';'-separated, onto out
-fn envFolders(name &str, out &mut List[Path]) {
-  imm listed = envOr(name, "");
-  imm entries = splitText(listed.view(), ';');
-  mut i = 0usize;
+fn envFolders(name: &str, out: &mut List[Path]) {
+  let listed = envOr(name, "");
+  let entries = splitText(listed.view(), ';');
+  var i = 0usize;
   while i < entries.len() {
-    if not entries[i].isEmpty() {
-      imm given = Path.from(entries[i].view());
+    if !entries[i].isEmpty() {
+      let given = Path.from(entries[i].view());
       out.push(given.normalize());
     }
     i = i + 1usize;
@@ -495,84 +584,84 @@ fn envFolders(name &str, out &mut List[Path]) {
 // dependencies folder, by name; the folders LIB lists, where an import
 // library's own DLL usually sits beside it (SDL3's development kit); then
 // the folders PATH lists. The first copy found is the one copied.
-fn runtimeFolders(repo &Path, paths &List[Path]) List[Path] {
-  mut folders = copyPaths(paths);
-  imm deps = depsFolder(repo);
+fn runtimeFolders(repo: &Path, paths: &List[Path]) List[Path] {
+  var folders = copyPaths(paths);
+  let deps = depsFolder(repo);
   if fs.isDir(&deps) {
-    mut entries = List[fs.DirEntry].empty();
+    var entries = List[fs.DirEntry]();
     match fs.readDir(&deps) {
-      case mut ok Ok { entries <=> ok; }
-      case is Error {}
+      case var Ok(ok) { entries <-> ok; }
+      case is Err {}
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < entries.len() {
-      if fs.isDir(&entries[i].path) { folders.push(entries[i].path.copy()); }
+      if fs.isDir(&entries[i].path) { folders.push(entries[i].path.clone()); }
       i = i + 1usize;
     }
   }
   envFolders("LIB", &mut folders);
   envFolders("PATH", &mut folders);
-  folders;
+  folders
 }
 
 // The DLL a [link] runtime list names, where runtimeFolders finds it first;
 // one that is nowhere is an error naming it and the package that asked
-fn findRuntime(repo &Path, name &str, pkgName &str, folders &List[Path], paths &List[Path]) Result[Path, String] {
-  imm file = cat(name, ".dll");
-  mut i = 0usize;
+fn findRuntime(repo: &Path, name: &str, pkgName: &str, folders: &List[Path], paths: &List[Path]) Result[Path, String] {
+  let file = cat(name, ".dll");
+  var i = 0usize;
   while i < folders.len() {
-    imm candidate = folders[i].join(file.view());
+    let candidate = folders[i].join(file.view());
     if fs.isFile(&candidate) { return Ok[Path, String](candidate); }
     i = i + 1usize;
   }
-  mut listed = String.from("none");
+  var listed = String.from("none");
   if paths.len() > 0usize { listed = nativeList(paths, ", "); }
-  imm deps = depsFolder(repo);
-  imm depsText = native(&deps);
-  mut m = cat(pkgName, "'s [link] runtime names ", name, ", but ", file.view(), " is in none of the folders Congo looks in: [link] paths (");
+  let deps = depsFolder(repo);
+  let depsText = native(&deps);
+  var m = cat(pkgName, "'s [link] runtime names ", name, ", but ", file.view(), " is in none of the folders Congo looks in: [link] paths (");
   m <- listed.view(), "), then each folder in ", depsText.view(), " (python tools/deps/fetch.py fills it), then the folders LIB lists, then the folders PATH lists";
-  Error[Path, String](m);
+  Err[Path, String](m)
 }
 
 // Copy a runtime DLL into a program's folder, unless the copy there is the
 // same already, byte for byte; whether it copied
-fn copyRuntime(source &Path, folder &Path, name &str) Result[bool, String] {
-  imm file = cat(name, ".dll");
-  imm target = folder.join(file.view());
-  copyIfChanged(source, &target);
+fn copyRuntime(source: &Path, folder: &Path, name: &str) Result[bool, String] {
+  let file = cat(name, ".dll");
+  let target = folder.join(file.view());
+  copyIfChanged(source, &target)
 }
 
 // Copy a file, unless the copy at target is the same already, byte for byte;
 // whether it copied
-fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
-  mut data = String.empty();
+fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
+  var data = String();
   match fs.readFile(source) {
-    case mut ok Ok { data <=> ok; }
-    case imm e Error {
-      imm why = fsMessage(&e);
-      imm from = native(source);
-      imm to = native(target);
-      return Error[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
+    case var Ok(ok) { data <-> ok; }
+    case let Err(e) {
+      let why = fsMessage(&e);
+      let from = native(source);
+      let to = native(target);
+      return Err[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
     }
   }
   if fs.isFile(target) {
-    mut there = String.empty();
+    var there = String();
     match fs.readFile(target) {
-      case mut ok Ok { there <=> ok; }
-      case is Error {}
+      case var Ok(ok) { there <-> ok; }
+      case is Err {}
     }
-    if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String](false); }
+    if there.len() == data.len() && there.equals(data.view()) { return Ok[bool, String](false); }
   }
   match fs.writeFile(target, data.view()) {
     case is Ok {}
-    case imm e Error {
-      imm why = fsMessage(&e);
-      imm from = native(source);
-      imm to = native(target);
-      return Error[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
+    case let Err(e) {
+      let why = fsMessage(&e);
+      let from = native(source);
+      let to = native(target);
+      return Err[bool, String](cat("cannot copy ", from.view(), " to ", to.view(), ": ", why.view()));
     }
   }
-  Ok[bool, String](true);
+  Ok[bool, String](true)
 }
 
 // Link the objects into exe: the program's object first, then the packages
@@ -580,51 +669,51 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
 // in the same order, each once. A C package's own object is linked like any
 // other: it defines nothing (as core's does not), and so needs no case of
 // its own. The linker is found at the session's first link.
-fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) Result[void, String] {
-  if not s.hasLinker {
-    mut conestd Path = "";
+fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: bool) Result[void, String] {
+  if !s.hasLinker {
+    var conestd: Path = "";
     match findConestd(&s.conec) {
-      case mut ok Ok { conestd <=> ok; }
-      case imm e Error { return Error[void, String](e.copy()); }
+      case var Ok(ok) { conestd <-> ok; }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
-    match findLinker(&conestd) {
-      case mut ok Ok { s.linker <=> ok; }
-      case imm e Error { return Error[void, String](e.copy()); }
+    match findLinker(&conestd, s.useCache) {
+      case var Ok(ok) { s.linker <-> ok; }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     s.hasLinker = true;
   }
-  imm reg = &s.reg;
+  let reg = &s.reg;
   // The units, the program's first, then the rest last built first
-  mut units = List[usize].empty();
-  mut objOrder = List[Path].empty();
-  imm n = plan.order.len();
+  var units = List[usize]();
+  var objOrder = List[Path]();
+  let n = plan.order.len();
   units.push(*plan.order[n - 1usize]);
-  objOrder.push(objs[n - 1usize].copy());
-  mut i = n - 1usize;
+  objOrder.push(objs[n - 1usize].clone());
+  var i = n - 1usize;
   while i > 0usize {
     i = i - 1usize;
     units.push(*plan.order[i]);
-    objOrder.push(objs[i].copy());
+    objOrder.push(objs[i].clone());
   }
-  mut libraries = List[String].empty();
-  mut paths = List[Path].empty();
+  var libraries = List[String]();
+  var paths = List[Path]();
   i = 0usize;
   while i < units.len() {
-    imm pkg = reg.packages[plan.units[*units[i]].pkg];
-    mut j = 0usize;
+    let pkg = &reg.packages[plan.units[*units[i]].pkg];
+    var j = 0usize;
     while j < pkg.libraries.len() {
-      mut seen = false;
-      mut k = 0usize;
+      var seen = false;
+      var k = 0usize;
       while k < libraries.len() {
         if libraries[k].equals(pkg.libraries[j].view()) { seen = true; }
         k = k + 1usize;
       }
-      if not seen { libraries.push(pkg.libraries[j].copy()); }
+      if !seen { libraries.push(pkg.libraries[j].clone()); }
       j = j + 1usize;
     }
     j = 0usize;
     while j < pkg.linkPaths.len() {
-      if not holdsPath(&paths, pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].copy()); }
+      if !holdsPath(&paths, &pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].clone()); }
       j = j + 1usize;
     }
     i = i + 1usize;
@@ -632,21 +721,21 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   // The runtime DLLs every one of them names, each once, found before the
   // link: a missing one stops the build with no program linked, an earlier
   // build's removed, as a failed link leaves none
-  mut runtimeNames = List[String].empty();
-  mut runtimeFiles = List[Path].empty();
-  imm folders = runtimeFolders(&s.repo, &paths);
+  var runtimeNames = List[String]();
+  var runtimeFiles = List[Path]();
+  let folders = runtimeFolders(&s.repo, &paths);
   i = 0usize;
   while i < units.len() {
-    imm pkg = reg.packages[plan.units[*units[i]].pkg];
-    mut j = 0usize;
+    let pkg = &reg.packages[plan.units[*units[i]].pkg];
+    var j = 0usize;
     while j < pkg.runtime.len() {
-      imm name = pkg.runtime[j].view();
-      if not holdsName(&runtimeNames, name) {
+      let name = pkg.runtime[j].view();
+      if !holdsName(&runtimeNames, name) {
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
-          case imm ok Ok { runtimeFiles.push(ok.copy()); }
-          case imm e Error {
-            fs.removeFile(exe);
-            return Error[void, String](e.copy());
+          case let Ok(ok) { runtimeFiles.push(ok.clone()); }
+          case let Err(e) {
+            _ = fs.removeFile(exe);
+            return Err[void, String](e.clone());
           }
         }
         runtimeNames.push(String.from(name));
@@ -655,20 +744,123 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     }
     i = i + 1usize;
   }
-  // The link line: the objects, conestd, then the C libraries the packages'
-  // [link] tables name, each searched for first in their [link] paths
-  mut command = List[String].empty();
+  if announce {
+    let place = shown(exe);
+    say("Linking", place.view());
+  }
+  moveAsideIfRunning(exe);
+  match fs.removeFile(exe) {
+    case is Ok {}
+    case let Err(e) {
+      if !e.notFound() {
+        fail(fsMessage(&e));
+      }
+    }
+  }
+  // The PDB of an earlier link is no part of this one's
+  let pdbName = cat(exe.stem(), ".pdb");
+  let pdb = exe.parent().join(pdbName.view());
+  _ = fs.removeFile(&pdb);
+  var attempt = runLink(s, &objOrder, exe, &libraries, &paths);
+  var again = String();
+  // A link that failed the way a stale Visual Studio environment makes one
+  // fail is tried once more, in the environment captured afresh
+  if attempt.code != 0u32 && s.linker.environmental(attempt.said.view(), attempt.code, attempt.ran, &libraries)
+      && s.linker.recapture() {
+    attempt = runLink(s, &objOrder, exe, &libraries, &paths);
+    again = String.from("\n(linked twice: the second time in Visual Studio's environment captured again from vcvars64.bat)");
+  }
+  if attempt.code != 0u32 {
+    var named = String();
+    i = 0usize;
+    while i < units.len() {
+      let pkg = &reg.packages[plan.units[*units[i]].pkg];
+      if pkg.libraries.len() > 0usize {
+        if !named.isEmpty() { named <- "; "; }
+        let libs = String.join(pkg.libraries.view(), ", ");
+        named <- pkg.name.view(), " names ", libs.view();
+      }
+      i = i + 1usize;
+    }
+    let line = String.join(attempt.command.view(), " ");
+    var m = cat("link failed:\n", line.view(), "\n", attempt.said.view());
+    if !named.isEmpty() {
+      m <- "\nC libraries linked (", named.view(),
+        "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
+    }
+    m <- again.view();
+    return Err[void, String](m);
+  }
+  let exeFolder = exe.parent();
+  i = 0usize;
+  while i < runtimeNames.len() {
+    match copyRuntime(&runtimeFiles[i], &exeFolder, runtimeNames[i].view()) {
+      case let Ok(ok) {
+        if ok && announce {
+          let place = shown(&runtimeFiles[i]);
+          say("Copying", place.view());
+        }
+      }
+      case let Err(e) { return Err[void, String](e.clone()); }
+    }
+    i = i + 1usize;
+  }
+  // The kernels of every package of the build, each beside the program as a
+  // runtime DLL is, where gpuwork's readSpirv finds it by its name
+  i = 0usize;
+  while i < units.len() {
+    let name = reg.packages[plan.units[*units[i]].pkg].key();
+    if s.spvs.contains(name.view()) {
+      let spv = s.spvs[name.view()].clone();
+      let spvFolder = spv.parent();
+      if !samePath(&spvFolder, &exeFolder) {
+        let target = exeFolder.join(spv.name());
+        match copyIfChanged(&spv, &target) {
+          case let Ok(ok) {
+            if ok && announce {
+              let place = shown(&spv);
+              say("Copying", place.view());
+            }
+          }
+          case let Err(e) { return Err[void, String](e.clone()); }
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+  succeeded()
+}
+
+// One run of the linker: the line it was given, its exit status, whether it
+// could be started, and what it said
+struct LinkRun {
+  pub command: List[String];
+  pub code: u32;
+  pub ran: bool;
+  pub said: String;
+}
+
+// Run the linker over the objects, in the session's linker environment. The
+// link line: the objects, conestd, then the C libraries the packages' [link]
+// tables name, each searched for first in their [link] paths. The C
+// runtime's own libraries are the toolchain's and stay here; the Windows
+// SDK's import libraries a package calls (sync's synchronization, env's
+// shell32, iocore's ws2_32 and ntdll) are named by that package's
+// [link.windows]. Built each time it is run, since a capture of Visual
+// Studio's environment again may find another link.exe.
+fn runLink(s: &mut Session, objOrder: &List[Path], exe: &Path, libraries: &List[String], paths: &List[Path]) LinkRun {
+  var command = List[String]();
   command.push(native(&s.linker.tool));
   command.push(String.from("/NOLOGO"));
-  i = 0usize;
+  var i = 0usize;
   while i < objOrder.len() {
-    command.push(native(objOrder[i]));
+    command.push(native(&objOrder[i]));
     i = i + 1usize;
   }
   command.push(native(&s.linker.conestd));
   i = 0usize;
   while i < paths.len() {
-    imm place = native(paths[i]);
+    let place = native(&paths[i]);
     command.push(cat("/LIBPATH:", place.view()));
     i = i + 1usize;
   }
@@ -677,100 +869,37 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     command.push(cat(libraries[i].view(), ".lib"));
     i = i + 1usize;
   }
-  imm exeText = native(exe);
+  let exeText = native(exe);
   command.push(cat("/OUT:", exeText.view()));
   command.push(String.from("/SUBSYSTEM:CONSOLE"));
   command.push(String.from("msvcrt.lib"));
   command.push(String.from("legacy_stdio_definitions.lib"));
-  // The C runtime's own libraries are the toolchain's and stay here; the
-  // Windows SDK's import libraries a package calls (sync's synchronization,
-  // process's shell32, iocore's ws2_32 and ntdll) are named by that package's
-  // [link.windows]
-  if announce {
-    imm place = shown(exe);
-    say("Linking", place.view());
+  // A release link folds identical functions: the net under the compiler's size
+  // gate on generic instances (congo.py, Linker.command)
+  if s.mode.equals("release") {
+    command.push(String.from("/OPT:REF,ICF"));
   }
-  moveAsideIfRunning(exe);
-  match fs.removeFile(exe) {
-    case is Ok {}
-    case imm e Error {
-      if not e.notFound() {
-        fail(fsMessage(&e));
-      }
-    }
-  }
-  mut changes = noChanges();
+  // Release or debug, unless stripped, the link writes the objects' debug info into
+  // a PDB beside the program, which a profiler or debugger reads for names and lines
+  if !s.strip { command.push(String.from("/DEBUG")); }
+  var changes = noChanges();
   s.linker.apply(&mut changes);
-  mut code = 0u32;
-  mut said = String.empty();
+  var code = 0u32;
+  var ran = true;
+  var said = String();
   match process.run(command.view()) {
-    case imm ok Ok {
+    case let Ok(ok) {
       code = ok.exitCode;
       said = consoleText(ok.stdout.view());
-      imm err = consoleText(ok.stderr.view());
+      let err = consoleText(ok.stderr.view());
       said <- err.view();
     }
-    case imm e Error {
-      fail(e.message());
+    case let Err(e) {
+      ran = false;
+      let why = String() <- e;
+      said = cat(command[0usize].view(), " could not run: ", why.view(), "\n");
     }
   }
   changes.restore();
-  if code != 0u32 {
-    mut named = String.empty();
-    i = 0usize;
-    while i < units.len() {
-      imm pkg = reg.packages[plan.units[*units[i]].pkg];
-      if pkg.libraries.len() > 0usize {
-        if not named.isEmpty() { named <- "; "; }
-        imm libs = String.join(pkg.libraries.view(), ", ");
-        named <- pkg.name.view(), " names ", libs.view();
-      }
-      i = i + 1usize;
-    }
-    imm line = String.join(command.view(), " ");
-    mut m = cat("link failed:\n", line.view(), "\n", said.view());
-    if not named.isEmpty() {
-      m <- "\nC libraries linked (", named.view(),
-        "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
-    }
-    return Error[void, String](m);
-  }
-  imm exeFolder = exe.parent();
-  i = 0usize;
-  while i < runtimeNames.len() {
-    match copyRuntime(runtimeFiles[i], &exeFolder, runtimeNames[i].view()) {
-      case imm ok Ok {
-        if ok and announce {
-          imm place = shown(runtimeFiles[i]);
-          say("Copying", place.view());
-        }
-      }
-      case imm e Error { return Error[void, String](e.copy()); }
-    }
-    i = i + 1usize;
-  }
-  // The kernels of every package of the build, each beside the program as a
-  // runtime DLL is, where gpuwork's readSpirv finds it by its name
-  i = 0usize;
-  while i < units.len() {
-    imm name = reg.packages[plan.units[*units[i]].pkg].name.view();
-    if s.spvs.contains(name) {
-      imm spv = s.spvs[name].copy();
-      imm spvFolder = spv.parent();
-      if not samePath(&spvFolder, &exeFolder) {
-        imm target = exeFolder.join(spv.name());
-        match copyIfChanged(&spv, &target) {
-          case imm ok Ok {
-            if ok and announce {
-              imm place = shown(&spv);
-              say("Copying", place.view());
-            }
-          }
-          case imm e Error { return Error[void, String](e.copy()); }
-        }
-      }
-    }
-    i = i + 1usize;
-  }
-  succeeded();
+  LinkRun(command, code, ran, said)
 }

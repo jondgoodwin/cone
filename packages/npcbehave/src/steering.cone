@@ -6,12 +6,12 @@
 
 // -------- seek and flee (Millington 3.1.1): full acceleration towards or away --------
 
-pub fn seek(pos Vec2, target Vec2, maxAccel f32) Vec2 {
-  (target - pos).normalize() * maxAccel;
+pub fn seek(pos: Vec2, target: Vec2, maxAccel: f32) Vec2 {
+  (target - pos).normalize() * maxAccel
 }
 
-pub fn flee(pos Vec2, threat Vec2, maxAccel f32) Vec2 {
-  (pos - threat).normalize() * maxAccel;
+pub fn flee(pos: Vec2, threat: Vec2, maxAccel: f32) Vec2 {
+  (pos - threat).normalize() * maxAccel
 }
 
 // -------- arrive (Millington 3.1.4) --------
@@ -22,34 +22,34 @@ pub fn flee(pos Vec2, threat Vec2, maxAccel f32) Vec2 {
 // one in 'timeToTarget' seconds. Inside 'targetRadius' the wanted velocity is
 // zero. (Millington returns no steering there and lets the character coast;
 // this one brakes, so arriving means stopping.)
-pub fn arrive(pos Vec2, vel Vec2, target Vec2, maxAccel f32, maxSpeed f32,
-              targetRadius f32, slowRadius f32, timeToTarget f32) Vec2 {
-  imm d = target - pos;
-  imm dist = d.length();
-  mut speed = maxSpeed;
+pub fn arrive(pos: Vec2, vel: Vec2, target: Vec2, maxAccel: f32, maxSpeed: f32,
+              targetRadius: f32, slowRadius: f32, timeToTarget: f32) Vec2 {
+  let d = target - pos;
+  let dist = d.length();
+  var speed = maxSpeed;
   if dist < targetRadius { speed = 0.; }
-  elif dist < slowRadius { speed = maxSpeed * dist / slowRadius; }
-  imm want = if dist > 0.000001 { d * (speed / dist); } else { new Vec2(0., 0.); };
-  truncate((want - vel) * (1. / timeToTarget), maxAccel);
+  else if dist < slowRadius { speed = maxSpeed * dist / slowRadius; }
+  let want = if dist > 0.000001 { d * (speed / dist) } else { Vec2(0., 0.) };
+  truncate((want - vel) * (1. / timeToTarget), maxAccel)
 }
 
 // -------- pursue and evade (Millington 3.2.1) --------
 //
 // Seek, or flee, the place the target will be: its position plus its velocity
 // times a prediction time of distance / our speed, capped at maxPrediction.
-pub fn predictedPosition(pos Vec2, speed f32, targetPos Vec2, targetVel Vec2, maxPrediction f32) Vec2 {
-  imm dist = (targetPos - pos).length();
-  mut t = maxPrediction;
+pub fn predictedPosition(pos: Vec2, speed: f32, targetPos: Vec2, targetVel: Vec2, maxPrediction: f32) Vec2 {
+  let dist = (targetPos - pos).length();
+  var t = maxPrediction;
   if speed > dist / maxPrediction { t = dist / speed; }
-  targetPos + targetVel * t;
+  targetPos + targetVel * t
 }
 
-pub fn pursue(pos Vec2, vel Vec2, maxAccel f32, targetPos Vec2, targetVel Vec2, maxPrediction f32) Vec2 {
-  seek(pos, predictedPosition(pos, vel.length(), targetPos, targetVel, maxPrediction), maxAccel);
+pub fn pursue(pos: Vec2, vel: Vec2, maxAccel: f32, targetPos: Vec2, targetVel: Vec2, maxPrediction: f32) Vec2 {
+  seek(pos, predictedPosition(pos, vel.length(), targetPos, targetVel, maxPrediction), maxAccel)
 }
 
-pub fn evade(pos Vec2, vel Vec2, maxAccel f32, threatPos Vec2, threatVel Vec2, maxPrediction f32) Vec2 {
-  flee(pos, predictedPosition(pos, vel.length(), threatPos, threatVel, maxPrediction), maxAccel);
+pub fn evade(pos: Vec2, vel: Vec2, maxAccel: f32, threatPos: Vec2, threatVel: Vec2, maxPrediction: f32) Vec2 {
+  flee(pos, predictedPosition(pos, vel.length(), threatPos, threatVel, maxPrediction), maxAccel)
 }
 
 // -------- wander (Reynolds 1999; Millington 3.2.2's "delegated" wander) --------
@@ -59,17 +59,17 @@ pub fn evade(pos Vec2, vel Vec2, maxAccel f32, threatPos Vec2, threatVel Vec2, m
 // of up to 'rate' radians a second. Seek the target. 'heading' is the way
 // the character faces (its velocity's direction, or its last when still).
 pub struct Wander {
-  pub angle f32;       // the target's angle on the circle, radians
-  pub seed u32;
-  pub steps u32;
+  pub angle: f32;       // the target's angle on the circle, radians
+  pub seed: u32;
+  pub steps: u32;
 
-  pub fn make(seed u32) Wander { new Wander(0., seed, 0u32); }
+  pub fn make(seed: u32) Wander { Wander(0., seed, 0u32) }
 
-  pub fn accel(self &mut, pos Vec2, heading Vec2, maxAccel f32, offset f32, radius f32, rate f32, dt f32) Vec2 {
+  pub fn accel(self: &mut, pos: Vec2, heading: Vec2, maxAccel: f32, offset: f32, radius: f32, rate: f32, dt: f32) Vec2 {
     steps = steps + 1u32;
     angle = angle + (unitHash(seed, steps, 77u32) * 2. - 1.) * rate * dt;
-    imm target = pos + heading * offset + Vec2.fromAngle(angle) * radius;
-    seek(pos, target, maxAccel);
+    let target = pos + heading * offset + Vec2.fromAngle(angle) * radius;
+    seek(pos, target, maxAccel)
   }
 }
 
@@ -83,49 +83,49 @@ pub struct Wander {
 // that doubles back is not short-cut. Near the end it arrives instead. 'done'
 // becomes true once the character is within 'arriveRadius' of the last point.
 pub struct PathFollower {
-  pub seg usize;       // the segment last found nearest
-  pub done bool;
+  pub seg: usize;       // the segment last found nearest
+  pub done: bool;
 
-  pub fn make() PathFollower { new PathFollower(0usize, false); }
+  pub fn make() PathFollower { PathFollower(0usize, false) }
 
-  pub fn restart(self &mut) { seg = 0usize; done = false; }
+  pub fn restart(self: &mut) { seg = 0usize; done = false; }
 
-  pub fn accel(self &mut, pos Vec2, vel Vec2, path &Array[Vec2], maxAccel f32, maxSpeed f32,
-               predictTime f32, ahead f32, arriveRadius f32, slowRadius f32) Vec2 {
-    imm n = path.len();
-    if n == 0usize { done = true; return new Vec2(0., 0.); }
-    imm last = path[n - 1usize];
-    if n == 1usize or pos.distance(last) < arriveRadius {
+  pub fn accel(self: &mut, pos: Vec2, vel: Vec2, path: &Array[Vec2], maxAccel: f32, maxSpeed: f32,
+               predictTime: f32, ahead: f32, arriveRadius: f32, slowRadius: f32) Vec2 {
+    let n = path.len();
+    if n == 0usize { done = true; return Vec2(0., 0.); }
+    let last = path[n - 1usize];
+    if n == 1usize || pos.distance(last) < arriveRadius {
       if pos.distance(last) < arriveRadius { done = true; }
       return arrive(pos, vel, last, maxAccel, maxSpeed, arriveRadius, slowRadius, 0.2);
     }
-    imm predicted = pos + vel * predictTime;
-    mut bestSeg = seg;
-    mut bestT = 0.;
-    mut bestD = 1000000000.;
-    mut i = seg;
-    imm hi = if seg + 3usize < n - 1usize { seg + 3usize; } else { n - 1usize; };
+    let predicted = pos + vel * predictTime;
+    var bestSeg = seg;
+    var bestT = 0.f;
+    var bestD = 1000000000.f;
+    var i = seg;
+    let hi = if seg + 3usize < n - 1usize { seg + 3usize } else { n - 1usize };
     while i < hi {
-      imm a = path[i];
-      imm b = path[i + 1usize];
-      imm ab = b - a;
-      imm len2 = ab.lengthSquared();
-      imm t = if len2 > 0. { clampf((predicted - a).dot(ab) / len2, 0., 1.); } else { 0.; };
-      imm d = predicted.distance(a + ab * t);
+      let a = path[i];
+      let b = path[i + 1usize];
+      let ab = b - a;
+      let len2 = ab.lengthSquared();
+      let t = if len2 > 0. { clampf((predicted - a).dot(ab) / len2, 0., 1.) } else { 0. };
+      let d = predicted.distance(a + ab * t);
       if d < bestD { bestD = d; bestSeg = i; bestT = t; }
       i = i + 1usize;
     }
     seg = bestSeg;
     // Walk 'ahead' metres on from the nearest point
-    mut s = bestSeg;
-    imm segA = path[s];
-    imm segB = path[s + 1usize];
-    mut cur = segA + (segB - segA) * bestT;
-    mut left = ahead;
-    mut reachedEnd = false;
-    while left > 0. and not reachedEnd {
-      imm next = path[s + 1usize];
-      imm d = cur.distance(next);
+    var s = bestSeg;
+    let segA = path[s];
+    let segB = path[s + 1usize];
+    var cur = segA + (segB - segA) * bestT;
+    var left = ahead;
+    var reachedEnd = false;
+    while left > 0. && !reachedEnd {
+      let next = path[s + 1usize];
+      let d = cur.distance(next);
       if d >= left {
         cur = cur + (next - cur).normalize() * left;
         left = 0.;
@@ -136,7 +136,7 @@ pub struct PathFollower {
       }
     }
     if reachedEnd { return arrive(pos, vel, last, maxAccel, maxSpeed, arriveRadius, slowRadius, 0.2); }
-    seek(pos, cur, maxAccel);
+    seek(pos, cur, maxAccel)
   }
 }
 
@@ -147,35 +147,35 @@ pub struct PathFollower {
 // enters soonest is the threat. The acceleration is sideways, away from the
 // circle's centre, and grows from 0 at the ray's end to maxAccel at the
 // circle. A character at rest, or with nothing ahead, has none.
-pub fn avoidObstacles(pos Vec2, vel Vec2, radius f32, maxAccel f32, lookahead f32, obstacles &Array[Circle]) Vec2 {
-  imm speed = vel.length();
-  if speed < 0.000001 { return new Vec2(0., 0.); }
-  imm dir = vel * (1. / speed);
-  imm side = dir.perp();
-  mut bestT = 1000000000.;
-  mut bestSide = 1.;
-  mut found = false;
-  mut i = 0usize;
+pub fn avoidObstacles(pos: Vec2, vel: Vec2, radius: f32, maxAccel: f32, lookahead: f32, obstacles: &Array[Circle]) Vec2 {
+  let speed = vel.length();
+  if speed < 0.000001 { return Vec2(0., 0.); }
+  let dir = vel * (1. / speed);
+  let side = dir.perp();
+  var bestT = 1000000000.f;
+  var bestSide = 1.f;
+  var found = false;
+  var i = 0usize;
   while i < obstacles.len() {
-    imm c = obstacles[i];
-    imm rel = c.center - pos;
-    imm along = rel.dot(dir);
-    imm lateral = rel.dot(side);
-    imm reach = c.radius + radius;
-    if along > 0. and along - reach < lookahead and lateral * lateral < reach * reach {
-      imm enter = along - (reach * reach - lateral * lateral).sqrt();
-      imm t = if enter > 0. { enter; } else { 0.; };
+    let c = obstacles[i];
+    let rel = c.center - pos;
+    let along = rel.dot(dir);
+    let lateral = rel.dot(side);
+    let reach = c.radius + radius;
+    if along > 0. && along - reach < lookahead && lateral * lateral < reach * reach {
+      let enter = along - (reach * reach - lateral * lateral).sqrt();
+      let t = if enter > 0. { enter } else { 0. };
       if t < bestT {
         bestT = t;
         found = true;
-        bestSide = if lateral >= 0. { 1.; } else { -1.; };
+        bestSide = if lateral >= 0. { 1. } else { -1. };
       }
     }
     i = i + 1usize;
   }
-  if not found or bestT >= lookahead { return new Vec2(0., 0.); }
+  if !found || bestT >= lookahead { return Vec2(0., 0.); }
   // The obstacle on the left (positive side) is passed on the right
-  side * (-bestSide * maxAccel * (1. - bestT / lookahead));
+  side * (-bestSide * maxAccel * (1. - bestT / lookahead))
 }
 
 // -------- group behaviours (Reynolds 1987; Millington 3.2.5 for separation) --------
@@ -185,56 +185,56 @@ pub fn avoidObstacles(pos Vec2, vel Vec2, radius f32, maxAccel f32, lookahead f3
 
 // Away from each neighbour, by an inverse square law: decay / distance^2,
 // held to maxAccel
-pub fn separation(self usize, others &Array[Body2], radius f32, decay f32, maxAccel f32) Vec2 {
-  imm me = others[self];
-  mut sum = new Vec2(0., 0.);
-  mut i = 0usize;
+pub fn separation(self: usize, others: &Array[Body2], radius: f32, decay: f32, maxAccel: f32) Vec2 {
+  let me = others[self];
+  var sum = Vec2(0., 0.);
+  var i = 0usize;
   while i < others.len() {
     if i != self {
-      imm d = me.pos - others[i].pos;
-      imm d2 = d.lengthSquared();
-      if d2 < radius * radius and d2 > 0.000000001 {
-        imm strength = if decay / d2 < maxAccel { decay / d2; } else { maxAccel; };
+      let d = me.pos - others[i].pos;
+      let d2 = d.lengthSquared();
+      if d2 < radius * radius && d2 > 0.000000001 {
+        let strength = if decay / d2 < maxAccel { decay / d2 } else { maxAccel };
         sum = sum + d.normalize() * strength;
       }
     }
     i = i + 1usize;
   }
-  truncate(sum, maxAccel);
+  truncate(sum, maxAccel)
 }
 
 // Towards the neighbours' mean velocity, reached in 'timeToMatch' seconds
-pub fn alignment(self usize, others &Array[Body2], radius f32, timeToMatch f32, maxAccel f32) Vec2 {
-  imm me = others[self];
-  mut sum = new Vec2(0., 0.);
-  mut count = 0.;
-  mut i = 0usize;
+pub fn alignment(self: usize, others: &Array[Body2], radius: f32, timeToMatch: f32, maxAccel: f32) Vec2 {
+  let me = others[self];
+  var sum = Vec2(0., 0.);
+  var count = 0.f;
+  var i = 0usize;
   while i < others.len() {
-    if i != self and me.pos.distance(others[i].pos) < radius {
+    if i != self && me.pos.distance(others[i].pos) < radius {
       sum = sum + others[i].vel;
       count = count + 1.;
     }
     i = i + 1usize;
   }
-  if count == 0. { return new Vec2(0., 0.); }
-  truncate((sum * (1. / count) - me.vel) * (1. / timeToMatch), maxAccel);
+  if count == 0. { return Vec2(0., 0.); }
+  truncate((sum * (1. / count) - me.vel) * (1. / timeToMatch), maxAccel)
 }
 
 // Seek the neighbours' centre
-pub fn cohesion(self usize, others &Array[Body2], radius f32, maxAccel f32) Vec2 {
-  imm me = others[self];
-  mut sum = new Vec2(0., 0.);
-  mut count = 0.;
-  mut i = 0usize;
+pub fn cohesion(self: usize, others: &Array[Body2], radius: f32, maxAccel: f32) Vec2 {
+  let me = others[self];
+  var sum = Vec2(0., 0.);
+  var count = 0.f;
+  var i = 0usize;
   while i < others.len() {
-    if i != self and me.pos.distance(others[i].pos) < radius {
+    if i != self && me.pos.distance(others[i].pos) < radius {
       sum = sum + others[i].pos;
       count = count + 1.;
     }
     i = i + 1usize;
   }
-  if count == 0. { return new Vec2(0., 0.); }
-  seek(me.pos, sum * (1. / count), maxAccel);
+  if count == 0. { return Vec2(0., 0.); }
+  seek(me.pos, sum * (1. / count), maxAccel)
 }
 
 // -------- blending (Millington 3.4) --------
@@ -248,19 +248,19 @@ pub fn cohesion(self usize, others &Array[Body2], radius f32, maxAccel f32) Vec2
 // whenever it has something to say, and says nothing when the way is clear.)
 // Fixed storage: nothing is allocated.
 pub struct SteeringBlend {
-  prio Array[u32, 16];
-  weight Array[f32, 16];
-  acc Array[Vec2, 16];
-  pub count usize;
+  prio: Array[u32, 16];
+  weight: Array[f32, 16];
+  acc: Array[Vec2, 16];
+  pub count: usize;
 
   pub fn make() SteeringBlend {
-    new SteeringBlend(new Array[u32, 16] <- fill 0u32, new Array[f32, 16] <- fill 0., new Array[Vec2, 16] <- fill new Vec2(0., 0.), 0usize);
+    SteeringBlend(Array[u32, 16]() <- fill 0u32, Array[f32, 16]() <- fill 0., Array[Vec2, 16]() <- fill Vec2(0., 0.), 0usize)
   }
 
-  pub fn clear(self &mut) { count = 0usize; }
+  pub fn clear(self: &mut) { count = 0usize; }
 
   // Entries past sixteen are ignored
-  pub fn add(self &mut, priority u32, w f32, a Vec2) {
+  pub fn add(self: &mut, priority: u32, w: f32, a: Vec2) {
     if count < 16usize {
       prio[count] = priority;
       weight[count] = w;
@@ -269,35 +269,35 @@ pub struct SteeringBlend {
     }
   }
 
-  pub fn weighted(self &, maxAccel f32) Vec2 {
-    mut sum = new Vec2(0., 0.);
-    mut i = 0usize;
+  pub fn weighted(self: &, maxAccel: f32) Vec2 {
+    var sum = Vec2(0., 0.);
+    var i = 0usize;
     while i < count {
       sum = sum + acc[i] * weight[i];
       i = i + 1usize;
     }
-    truncate(sum, maxAccel);
+    truncate(sum, maxAccel)
   }
 
-  pub fn prioritized(self &, maxAccel f32, epsilon f32) Vec2 {
+  pub fn prioritized(self: &, maxAccel: f32, epsilon: f32) Vec2 {
     // Walk the priorities in ascending order without sorting: each round
     // takes the smallest priority above the last one tried
-    mut tried = 0u32;
-    mut first = true;
-    mut result = new Vec2(0., 0.);
-    mut more = true;
+    var tried = 0u32;
+    var first = true;
+    var result = Vec2(0., 0.);
+    var more = true;
     while more {
-      mut p = 0u32;
-      mut have = false;
-      mut i = 0usize;
+      var p = 0u32;
+      var have = false;
+      var i = 0usize;
       while i < count {
-        if (first or prio[i] > tried) and (not have or prio[i] < p) { p = prio[i]; have = true; }
+        if (first || prio[i] > tried) && (!have || prio[i] < p) { p = prio[i]; have = true; }
         i = i + 1usize;
       }
-      if not have {
+      if !have {
         more = false;
       } else {
-        mut sum = new Vec2(0., 0.);
+        var sum = Vec2(0., 0.);
         i = 0usize;
         while i < count {
           if prio[i] == p { sum = sum + acc[i] * weight[i]; }
@@ -309,6 +309,6 @@ pub struct SteeringBlend {
         first = false;
       }
     }
-    result;
+    result
   }
 }

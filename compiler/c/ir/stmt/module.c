@@ -32,6 +32,8 @@ ModuleNode *newModuleNode() {
     mod->traitname = NULL;
     mod->trait = NULL;
     mod->ntaken = 0;
+    mod->setorder = NULL;
+    mod->setups = NULL;
     mod->initfn = NULL;
     mod->finalfn = NULL;
     mod->genericinfo = NULL;
@@ -39,6 +41,7 @@ ModuleNode *newModuleNode() {
     mod->instdeps = NULL;
     mod->spans = NULL;
     mod->holdsexpanded = 0;
+    mod->scratch = 0;
     return mod;
 }
 
@@ -65,6 +68,10 @@ static char *modBuiltinKind(INode *node) {
 // - We remember all public names for later resolution of qualified names
 void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
 
+    // An untaken '#if' branch binds no name, in the global table or anywhere
+    if (mod->scratch)
+        return;
+
     // A word held for a feature not built yet, which a folder or a file named
     // a module after, since no name token reads as one. Reported and released
     // as lexScanIdent reports and releases one it reads, so the rest of the
@@ -73,6 +80,19 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
         errorMsgNode(node, ErrorReserved,
             "'%s' is reserved for a language feature that is not implemented yet. Rename it.", &name->namestr);
         name->node = NULL;
+    }
+
+    // A macro under a name this module already gives a macro joins that name's
+    // overload set; under a name it gives a function, it is refused, as is a
+    // function under a macro's: a set holds all macros or all functions
+    INode *prior = namespaceFind(&mod->namespace, name);
+    if (prior && prior != node && (node->tag == MacroDclTag || prior->tag == MacroDclTag)
+        && (node->tag == MacroDclTag || node->tag == FnDclTag) && (prior->tag == MacroDclTag || prior->tag == FnDclTag)) {
+        if (node->tag == MacroDclTag && prior->tag == MacroDclTag)
+            macroSetAdd((MacroDclNode*)prior, (MacroDclNode*)node);
+        else
+            macroMixedRefused(node, prior);
+        return;
     }
 
     // Hook into global name table (and add to namednodes), if not already there.
@@ -117,6 +137,10 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
 // - We remember all public names for later resolution of qualified names
 void modAddNode(ModuleNode *mod, Name *name, INode *node) {
 
+    // An untaken '#if' branch is read for its syntax and keeps nothing
+    if (mod->scratch)
+        return;
+
     // imports need to be processed, as name folding must be finished
     // before we do name resolution on module's nodes
     if (node->tag == ImportTag) {
@@ -149,6 +173,8 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
 // - An overload name binds separately to its own FnOverloadDclNode, which is also owned
 //     by the module so that it is printed and can be folded in by a wildcard import
 void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
+    if (mod->scratch)
+        return;
     modAddNode(mod, fnnode->namesym, (INode*)fnnode);
 
     if (fnnode->overloadsym == NULL)
@@ -657,6 +683,10 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
         else if (inodeIsPrivate(found))
             errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so it cannot be a default fold.",
                 &name->namestr, &mod->namesym->namestr);
+        // Nor can it list the module's init, finalizer or a clone (importStarAdmits)
+        else if (importIsLifecycleName(name))
+            errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so it cannot be a default fold.",
+                &name->namestr, &mod->namesym->namestr);
     }
     if (fold->excludes == NULL)
         return;
@@ -669,11 +699,44 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
         else if (inodeIsPrivate(found))
             errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
                 &name->namestr, &mod->namesym->namestr);
-        // Nor does it fold the module's finalizer or a clone (importStarAdmits)
-        else if (name == finalName || name == cloneName)
+        // Nor does it fold the module's init, finalizer or a clone (importStarAdmits)
+        else if (importIsLifecycleName(name))
             errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so '*' never folds it; there is nothing to leave out.",
                 &name->namestr, &mod->namesym->namestr);
     }
+}
+
+// Whether a module is a generic module or a submodule inside one (module.h)
+int modIsTemplate(ModuleNode *mod) {
+    for (INode *node = (INode*)mod; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (((ModuleNode*)node)->genericinfo)
+            return 1;
+    }
+    return 0;
+}
+
+// Hook the type parameters of each generic module 'mod' is inside, outermost
+// first, and its own where 'self' asks, over their names, so a body binds a use
+// of one to the parameter -- a generic module's submodule binds its parent's,
+// as a generic type's method binds the type's. Returns whether it pushed a hook
+// level, which the caller pops.
+static int modHookTemplateParms(ModuleNode *mod, int self) {
+    Nodes *chain = newNodes(2);
+    INode *node = self ? (INode*)mod : mod->dclinfo.owner;
+    for (; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (((ModuleNode*)node)->genericinfo)
+            nodesAdd(&chain, node);
+    }
+    if (chain->used == 0)
+        return 0;
+    nametblHookPush();
+    for (uint32_t i = chain->used; i > 0; --i) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((ModuleNode*)nodesGet(chain, i - 1))->genericinfo->parms, cnt, nodesp))
+            nametblHookNode(((GenVarDclNode*)*nodesp)->namesym, *nodesp);
+    }
+    return 1;
 }
 
 // Run one module's folds for the current pass: what it extends first, then its
@@ -730,6 +793,10 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     // the order they were written in. Each such global is resolved here, once,
     // and left out of the walk in modNameRes. Its type named through a binding
     // not there yet waits for a later pass rather than being reported missing.
+    // In a generic module, or a submodule of one, the global's type, and the
+    // type its clause reads, are resolved with the type parameters hooked, as
+    // the rest of its body is (modNameRes).
+    int hookedparms = modHookTemplateParms(mod, 1);
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         if ((*nodesp)->tag != VarDclTag || ((VarDclNode*)*nodesp)->fold == NULL)
             continue;
@@ -744,6 +811,8 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
         inodeNameRes(pstate, nodesp);
         foldGlobalExpand(pstate, mod, global);
     }
+    if (hookedparms)
+        nametblHookPop();
 
     // A standalone 'use' folds an enum's variants or a submodule's public names
     // in as names of this module. Last, so the enum may be named through
@@ -841,10 +910,14 @@ void modFoldAlone(NameResState *pstate, Nodes *modules, Nodes *mods) {
 // generic type's instance is cloned from the type.
 
 // Refuse what a generic module holds that an instance cannot yet be cloned with.
-// Its functions, globals, plain types, overload names and type aliases are
-// cloned; a generic function or type inside it would need its own parameters
-// carried through the clone, and a trait, an enum, a macro, a module trait or a
-// global's 'use' clause each keep bindings the clone does not re-point.
+// What a module declares is cloned into each instance -- its functions and
+// globals, its types, traits and enums, generic or not, its overload names, type
+// aliases and macros, and the aliases a global's 'use' clause folds -- but a
+// module trait. One declared inside a generic module would be each instance's
+// own, as everything else it declares is, and the only modules that could
+// conform to it are outside the instance, which have no spelling yet that names
+// an instance's module trait: 'is' takes one name, and nothing folds from a
+// generic module.
 static void modGenericCheckBody(ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
@@ -853,33 +926,17 @@ static void modGenericCheckBody(ModuleNode *mod) {
         char *what = NULL;
         switch (node->tag) {
         case FnDclTag:
-            if (((FnDclNode*)node)->genericinfo)
-                what = "a generic function";
-            break;
         case VarDclTag:
-            if (((VarDclNode*)node)->fold)
-                what = "a global with a 'use' clause";
-            break;
         case StructTag:
-        {
-            StructNode *strnode = (StructNode*)node;
-            if (strnode->genericinfo)
-                what = "a generic type";
-            else if (strnode->basetrait)
-                continue;   // a variant: its enum or trait is reported
-            else if (node->flags & TraitType)
-                what = "a trait or an enum";
-            break;
-        }
         case FnOverloadDclTag:
         case AliasDclTag:
-            break;
         case MacroDclTag:
-            what = "a macro";
             break;
         case ModTraitTag:
-            what = "a module trait";
-            break;
+            errorMsgNode(node, ErrorGenModBody,
+                "Generic module %s may not hold module trait %s: it would be each instance's own, and a module trait inside a generic module cannot yet be named from outside it.",
+                &mod->namesym->namestr, &((ModTraitNode*)node)->namesym->namestr);
+            continue;
         default:
             what = "this declaration";
             break;
@@ -944,56 +1001,134 @@ static void modTypeArgModules(Nodes **deps, INode *type) {
         nodesAdd(deps, (INode*)mod);
 }
 
-// Make the instance of a generic module for the type arguments 'srcgencall'
-// gives, register it, and type check it (module.h).
-//
-// The instance is a module of its own: named as the generic is, owned where the
-// generic is, and marked with the call that made it (instnode), which is what
-// spells its symbols with the type arguments -- 'stack[i64].push' -- as a
-// generic type's instance is spelled. Its imports are the generic's: they were
-// bound and folded once, and what the generic depends on the instance depends on.
-//
-// Its declarations are cloned the way a generic type's members are
-// (cloneStructNode): a shell for each first, bound in the instance's namespace
-// and mapped from the generic's declaration, and only then each signature, body,
-// type and initial value -- so a body naming another declaration of the module,
-// before or after it, names the instance's. The generic's own name is mapped to
-// the instance too, so 'stack.count' inside the generic means this instance's
-// global; given type arguments it names the generic again (cloneFnCallNode). A
-// use of a type parameter becomes a copy of the argument (cloneNode). Every
-// other name the generic's namespace binds -- what its imports bound and folded
-// -- is bound to the same declaration in the instance's.
-//
-// It is registered on the generic's memonodes BEFORE it is type checked, as a
-// generic type's instance is, so a body naming 'stack[i64]' inside the instance
-// reaches it rather than instantiating it again.
-ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, ModuleNode *generic) {
-    GenericInfo *geninfo = generic->genericinfo;
+// The names a generic module folded in that stand for something of its own: a
+// variant its standalone 'use' of an enum it declares folded in, and a member a
+// global's 'use' clause folded in, reached through the global. Each instance
+// binds them to an alias of its own (modFoldAliasFill), mapped from the
+// generic's before any body is copied, so a body naming one names the
+// instance's (modInstantiate). An alias of anything else -- what an import
+// folded in, a member reached through another module's global -- is bound in
+// the instance as it is in the generic.
+static void modFoldAliasShells(ModuleNode *generic, Nodes **shells) {
+    Namespace *ns = &generic->namespace;
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL || nn->node->tag != AliasDclTag)
+            continue;
+        AliasDclNode *alias = (AliasDclNode*)nn->node;
+        INode *target = alias->target && isNameUseNode(alias->target) ? ((NameUseNode*)alias->target)->dclnode : NULL;
+        int own = alias->through
+            ? alias->through->tag == VarDclTag && cloneDclFix(alias->through) != alias->through
+            : target && cloneDclFix(target) != target;
+        if (!own)
+            continue;
+        AliasDclNode *copy = memAllocBlk(sizeof(AliasDclNode));
+        memcpy(copy, alias, sizeof(AliasDclNode));
+        cloneDclSetMap((INode*)alias, (INode*)copy);
+        nodesAdd(shells, (INode*)alias);
+        nodesAdd(shells, (INode*)copy);
+    }
+}
+
+// Once the instance's declarations are copied, point each of its folded aliases
+// at the instance's own: a folded variant at the instance's copy of it, and a
+// member folded through a global at the instance's copy of the global and the
+// member of that copy's type -- the instance's own copy of the member, where the
+// type is one the module declares (foldGlobalItem bound the generic's)
+static void modFoldAliasFill(Nodes *shells) {
+    for (uint32_t i = 0; i + 1 < shells->used; i += 2) {
+        AliasDclNode *alias = (AliasDclNode*)nodesGet(shells, i);
+        AliasDclNode *copy = (AliasDclNode*)nodesGet(shells, i + 1);
+        NameUseNode *target = (NameUseNode*)alias->target;
+        INode *member = NULL;
+        if (alias->through) {
+            VarDclNode *global = (VarDclNode*)cloneDclFix(alias->through);
+            copy->through = (INode*)global;
+            INode *src = foldSourceDcl(global->vtype);
+            if (src && src->tag == StructTag && target->dclnode) {
+                INode *found = namespaceFind(&((StructNode*)src)->namespace, target->namesym);
+                member = found ? aliasDclResolve(found) : NULL;
+            }
+        }
+        else
+            member = cloneDclFix(target->dclnode);
+        if (member == NULL || member == target->dclnode)
+            continue;
+        NameUseNode *use = memAllocBlk(sizeof(NameUseNode));
+        memcpy(use, target, sizeof(NameUseNode));
+        use->dclnode = member;
+        copy->target = (INode*)use;
+    }
+}
+
+// A module of an instance: named as 'template' is, and owned by 'owner' -- the
+// generic's owner for the instance itself, the instance (or a module of it) for
+// one of its submodules -- and marked with the call that made the instance,
+// which spells the instance's symbols with its type arguments. A submodule shares
+// the call with its owner, so its own component carries none (nameOwnTypeArgs):
+// 'holder[i64].inner.id'. Its imports are the template's: they were bound and
+// folded once, and what the template depends on the instance depends on.
+static ModuleNode *modInstanceShell(ModuleNode *template, INode *owner, FnCallNode *srcgencall) {
     ModuleNode *inst = newModuleNode();
-    inodeLexCopy((INode*)inst, (INode*)generic);
-    inst->namesym = generic->namesym;
-    inst->filesym = generic->filesym;
-    inst->foldersym = generic->foldersym;
-    inst->dclinfo = generic->dclinfo;
-    inst->flags = (generic->flags & (FlagModDcl | FlagPub)) | FlagGenMod | NameResolved;
+    inodeLexCopy((INode*)inst, (INode*)template);
+    inst->namesym = template->namesym;
+    inst->filesym = template->filesym;
+    inst->foldersym = template->foldersym;
+    inst->dclinfo = template->dclinfo;
+    if (owner)
+        inst->dclinfo.owner = owner;
+    inst->flags = (template->flags & (FlagModDcl | FlagPub)) | FlagGenMod | NameResolved;
     inst->instnode = (INode*)srcgencall;
-    inst->generic = generic;
-    inst->imports = generic->imports;
-    inst->traitname = generic->traitname;
-    inst->trait = generic->trait;
-    inst->ntaken = generic->ntaken;
+    inst->generic = template;
+    inst->imports = template->imports;
+    inst->traitname = template->traitname;
+    inst->trait = template->trait;
+    inst->ntaken = template->ntaken;
     inst->instdeps = newNodes(2);
+    return inst;
+}
 
-    CloneState cstate;
-    clonePushState(&cstate, (INode*)srcgencall, NULL, 0, geninfo->parms, srcgencall->args);
-    uint32_t dclpos = cloneDclPush();
-    cloneDclSetMap((INode*)generic, (INode*)inst);
+// The submodules a module holds: each module its namespace binds that it owns
+static void modSubmodules(ModuleNode *mod, Nodes **subs) {
+    Namespace *ns = &mod->namespace;
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL || nn->node->tag != ModuleTag)
+            continue;
+        if (((ModuleNode*)nn->node)->dclinfo.owner == (INode*)mod)
+            nodesAdd(subs, nn->node);
+    }
+}
 
-    // A shell for every declaration, mapped from the generic's, before anything
-    // is copied into any of them
+// Every module of the instance being made: 'template' (the generic, or one of
+// its submodules) and its copy 'inst', then each submodule's, alternating, each
+// template mapped to its copy (cloneDclFix) before anything is copied. A
+// generic module's submodules are instantiated with it, as a generic type's
+// methods are with the type [Jon 23 Sep]: each instance holds its own copy of
+// each, with the parent's type parameters substituted.
+static void modInstanceTree(ModuleNode *template, ModuleNode *inst, FnCallNode *srcgencall, Nodes **pairs) {
+    cloneDclSetMap((INode*)template, (INode*)inst);
+    nodesAdd(pairs, (INode*)template);
+    nodesAdd(pairs, (INode*)inst);
+    Nodes *subs = newNodes(2);
+    modSubmodules(template, &subs);
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(generic->nodes, cnt, nodesp)) {
+    for (nodesFor(subs, cnt, nodesp))
+        modInstanceTree((ModuleNode*)*nodesp, modInstanceShell((ModuleNode*)*nodesp, (INode*)inst, srcgencall),
+            srcgencall, pairs);
+}
+
+// A shell for every declaration of 'template' in 'inst', mapped from the
+// template's, before anything is copied into any of them. An enum extending
+// another holds copies of its base's variants that are no module's nodes
+// (structEnumCopyVariant): each is given a shell too, the original and its
+// shell alternating on 'varshells', so the instance's extension holds copies of
+// the instance's.
+static void modInstanceShells(ModuleNode *template, ModuleNode *inst, FnCallNode *srcgencall, Nodes **varshells) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(template->nodes, cnt, nodesp)) {
         INode *node = *nodesp;
         INode *copy;
         switch (node->tag) {
@@ -1018,6 +1153,10 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
             copy = memAllocBlk(sizeof(AliasDclNode));
             memcpy(copy, node, sizeof(AliasDclNode));
             break;
+        case MacroDclTag:
+            // Filled with the macro's copy (cloneMacroDclNode)
+            copy = memAllocBlk(sizeof(MacroDclNode));
+            break;
         default:
             // modGenericCheckBody refused it, and a compile with errors at
             // name resolution never reaches type check
@@ -1029,22 +1168,41 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
         cloneDclSetMap(node, copy);
         nodesAdd(&inst->nodes, copy);
     }
+    for (nodesFor(template->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != StructTag || ((StructNode*)*nodesp)->derived == NULL)
+            continue;
+        INode **varp;
+        uint32_t varcnt;
+        for (nodesFor(((StructNode*)*nodesp)->derived, varcnt, varp)) {
+            if (cloneDclFix(*varp) != *varp)
+                continue;
+            INode *shell = memAllocBlk(sizeof(StructNode));
+            cloneDclSetMap(*varp, shell);
+            nodesAdd(varshells, *varp);
+            nodesAdd(varshells, shell);
+        }
+    }
+}
 
-    // Now every signature, body, type and initial value, in the same order
+// Copy every signature, body, type and initial value of 'template' into the
+// shells 'inst' holds, in the same order
+static void modInstanceFill(CloneState *cstate, ModuleNode *template, ModuleNode *inst) {
+    INode **nodesp;
+    uint32_t cnt;
     INode **copyp = &nodesGet(inst->nodes, 0);
-    for (nodesFor(generic->nodes, cnt, nodesp)) {
+    for (nodesFor(template->nodes, cnt, nodesp)) {
         INode *node = *nodesp;
         INode *copy = *copyp++;
         switch (node->tag) {
         case FnDclTag:
-            cloneFnDclFill(&cstate, (FnDclNode*)copy, (FnDclNode*)node);
+            cloneFnDclFill(cstate, (FnDclNode*)copy, (FnDclNode*)node);
             break;
         case VarDclTag:
-            cloneVarDclFill(&cstate, (VarDclNode*)copy, (VarDclNode*)node);
+            cloneVarDclFill(cstate, (VarDclNode*)copy, (VarDclNode*)node);
             break;
         case StructTag:
-            cstate.structshell = copy;
-            cloneNode(&cstate, node);
+            cstate->structshell = copy;
+            cloneNode(cstate, node);
             break;
         case FnOverloadDclTag:
         {
@@ -1055,17 +1213,45 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
             break;
         }
         case AliasDclTag:
-            ((AliasDclNode*)copy)->target = cloneNode(&cstate, ((AliasDclNode*)node)->target);
+            ((AliasDclNode*)copy)->target = cloneNode(cstate, ((AliasDclNode*)node)->target);
             break;
+        case MacroDclTag:
+        {
+            INode *macro = cloneNode(cstate, node);
+            memcpy(copy, macro, sizeof(MacroDclNode));
+            // The set it belongs to: the next member's shell, made with the others
+            if (((MacroDclNode*)node)->more)
+                ((MacroDclNode*)copy)->more = (MacroDclNode*)cloneDclFix((INode*)((MacroDclNode*)node)->more);
+            break;
+        }
         }
         DclInfo *dclinfo = inodeGetDclInfo(copy);
         if (dclinfo)
             dclinfo->owner = (INode*)inst;
     }
+}
 
-    // The instance's namespace: its own declarations where the generic has its,
-    // itself under its own name, and every other binding the generic's holds
-    Namespace *ns = &generic->namespace;
+// Once everything of the instance is copied: each enum's copy lists its own
+// variants, the copies made above, in the enum's order, as a generic enum's
+// instance lists its own (genericMemoize); and the instance's namespace binds
+// its own declarations (and submodules) where the template binds its, the names
+// a fold made of the template's own as its own aliases (modFoldAliasShells),
+// and every other binding the template's holds -- what its imports bound and
+// folded -- to the same declaration
+static void modInstanceFinish(ModuleNode *template, ModuleNode *inst) {
+    INode **nodesp;
+    uint32_t cnt;
+    INode **copyp = &nodesGet(inst->nodes, 0);
+    for (nodesFor(template->nodes, cnt, nodesp)) {
+        INode *copy = *copyp++;
+        if ((*nodesp)->tag != StructTag || ((StructNode*)*nodesp)->derived == NULL)
+            continue;
+        INode **varp;
+        uint32_t varcnt;
+        for (nodesFor(((StructNode*)*nodesp)->derived, varcnt, varp))
+            nodesAdd(&((StructNode*)copy)->derived, cloneDclFix(*varp));
+    }
+    Namespace *ns = &template->namespace;
     namespaceInit(&inst->namespace, ns->avail);
     namespaceFor(ns) {
         NameNode *nn = &ns->namenodes[__i];
@@ -1073,22 +1259,81 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
             continue;
         namespaceSet(&inst->namespace, nn->name, cloneDclFix(nn->node));
     }
+}
+
+// Make the instance of a generic module for the type arguments 'srcgencall'
+// gives, register it, and type check it (module.h).
+//
+// The instance is a module of its own (modInstanceShell), and so is its copy of
+// each submodule of the generic (modInstanceTree). Their declarations are cloned
+// the way a generic type's members are (cloneStructNode): a shell for each first,
+// in every module of the instance, bound in its namespace and mapped from the
+// template's declaration, and only then each signature, body, type and initial
+// value -- so a body naming another declaration of the instance, before or after
+// it, in its own module or another of the instance's, names the instance's. The
+// generic's own name is mapped to the instance too, so 'stack.count' inside the
+// generic means this instance's global; given type arguments it names the
+// generic again (cloneFnCallNode). A use of a type parameter becomes a copy of
+// the argument (cloneNode).
+//
+// It is registered on the generic's memonodes BEFORE it is type checked, as a
+// generic type's instance is, so a body naming 'stack[i64]' inside the instance
+// reaches it rather than instantiating it again.
+ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, ModuleNode *generic) {
+    GenericInfo *geninfo = generic->genericinfo;
+    ModuleNode *inst = modInstanceShell(generic, NULL, srcgencall);
+
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)srcgencall, NULL, 0, geninfo->parms, srcgencall->args);
+    cstate.modinst = 1;
+    uint32_t dclpos = cloneDclPush();
+    Nodes *pairs = newNodes(4);
+    modInstanceTree(generic, inst, srcgencall, &pairs);
+
+    Nodes *varshells = newNodes(4);
+    for (uint32_t i = 0; i + 1 < pairs->used; i += 2)
+        modInstanceShells((ModuleNode*)nodesGet(pairs, i), (ModuleNode*)nodesGet(pairs, i + 1), srcgencall, &varshells);
+    Nodes *foldshells = newNodes(4);
+    for (uint32_t i = 0; i + 1 < pairs->used; i += 2)
+        modFoldAliasShells((ModuleNode*)nodesGet(pairs, i), &foldshells);
+
+    for (uint32_t i = 0; i + 1 < pairs->used; i += 2)
+        modInstanceFill(&cstate, (ModuleNode*)nodesGet(pairs, i), (ModuleNode*)nodesGet(pairs, i + 1));
+    for (uint32_t i = 0; i + 1 < varshells->used; i += 2) {
+        StructNode *shell = (StructNode*)nodesGet(varshells, i + 1);
+        cstate.structshell = (INode*)shell;
+        cloneNode(&cstate, nodesGet(varshells, i));
+        shell->instnode = (INode*)srcgencall;
+        shell->dclinfo.owner = cloneDclFix(shell->dclinfo.owner);
+    }
+    // A type extending a base the module declares names the instance's copy of
+    // the base's members (cloneStructNode)
+    structCloneEnrichFix(cstate.enrichfix);
+
+    for (uint32_t i = 0; i + 1 < pairs->used; i += 2)
+        modInstanceFinish((ModuleNode*)nodesGet(pairs, i), (ModuleNode*)nodesGet(pairs, i + 1));
+    modFoldAliasFill(foldshells);
     cloneDclPop(dclpos);
     clonePopState();
 
-    // Remembered before it is checked, as a generic type's instance is
+    // Remembered before it is checked, as a generic type's instance is. Its
+    // submodules join the program's modules with it (pgmTypeCheck), and take
+    // their place in the init order beside it (pgmInstanceOrder)
     if (!geninfo->memonodes)
         geninfo->memonodes = newNodes(2);
     nodesAdd(&geninfo->memonodes, (INode*)srcgencall);
     nodesAdd(&geninfo->memonodes, (INode*)inst);
     if (modInstances == NULL)
         modInstances = newNodes(4);
-    nodesAdd(&modInstances, (INode*)inst);
+    for (uint32_t i = 0; i + 1 < pairs->used; i += 2)
+        nodesAdd(&modInstances, nodesGet(pairs, i + 1));
 
     // Its place in the init order: after the generic, which follows what the
     // generic imports, and after the modules its type arguments come from. An
     // instance made while another instance is checked is one that instance
     // uses, so that one follows it (pgmInstanceOrder)
+    INode **nodesp;
+    uint32_t cnt;
     for (nodesFor(srcgencall->args, cnt, nodesp))
         modTypeArgModules(&inst->instdeps, *nodesp);
     ModuleNode *user = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
@@ -1096,14 +1341,18 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
         nodesAdd(&user->instdeps, (INode*)inst);
 
     // Checked with no function or type around it, as the program's own
-    // modules are, whichever function's body named it
+    // modules are, whichever function's body named it: each submodule before
+    // the module holding it, as a module's submodules come before it in the
+    // init order
     TypeCheckState tstate;
     tstate.typenode = NULL;
     tstate.fn = NULL;
     tstate.scope = 0;
     tstate.extend = NULL;
-    INode *instnode = (INode*)inst;
-    inodeTypeCheckAny(&tstate, &instnode);
+    for (uint32_t i = pairs->used; i >= 2; i -= 2) {
+        INode *instnode = nodesGet(pairs, i - 1);
+        inodeTypeCheckAny(&tstate, &instnode);
+    }
     return inst;
 }
 
@@ -1126,13 +1375,18 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     // A generic module is resolved once, in place, as a generic type is: its
     // type parameters are hooked over its own names, and every use of one in its
     // body binds to the parameter. An instance is never resolved: it is a clone,
-    // which re-points each use at the instance's argument (modInstantiate)
+    // which re-points each use at the instance's argument (modInstantiate). A
+    // submodule of a generic module is resolved in place the same way, its
+    // parent's parameters hooked, as a generic type's methods are with the
+    // type's: it is instantiated with its parent
+    int hookedparms = modHookTemplateParms(mod, 0);
     if (mod->genericinfo) {
         nametblHookPush();
         for (nodesFor(mod->genericinfo->parms, cnt, nodesp))
             inodeNameRes(pstate, nodesp);
-        modGenericCheckBody(mod);
     }
+    if (hookedparms || mod->genericinfo)
+        modGenericCheckBody(mod);
 
     // A type alias names a type expression, and a use of the alias asks what is
     // at the end of that chain. Resolved ahead of the walk for the same reason a
@@ -1164,6 +1418,8 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     mod->flags = (mod->flags & ~NameResolving) | NameResolved;
     if (mod->genericinfo)
         nametblHookPop();
+    if (hookedparms)
+        nametblHookPop();
 
     // Switch name table back to owner module
     modHook(mod, NULL);
@@ -1184,8 +1440,9 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
 
     // A generic module is never checked, as a generic type is not: its body is
     // written against its type parameters, which stand for nothing. Each
-    // instance is checked as it is made (modInstantiate)
-    if (mod->genericinfo)
+    // instance is checked as it is made (modInstantiate), and so is its copy of
+    // each of the generic's submodules
+    if (modIsTemplate(mod))
         return;
 
     // What the module declares for each member of the module trait it
@@ -1212,17 +1469,22 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     for (nodesFor(mod->nodes, cnt, nodesp))
         inodeTypeCheckAny(pstate, nodesp);
 
+    // A 'main' returning a Result is given the function the entry calls in its
+    // stead, which prints its error (propagate.h): added once the loop above is done
+    propagateMainResult(pstate, mod);
+
     // Last, once every global's type is settled: the module's 'init' and 'final',
     // and the 'drop' that finalizes its globals
     modLifecycle(mod);
 }
 
 // A global the module declares without an initial value, which its 'init' must
-// assign. An 'extern' global is defined elsewhere, initial value and all
+// assign. An 'extern' global is defined elsewhere, initial value and all. A setup's
+// global holds no value of its own either, but its module's setups set it (modAddSetup)
 static int modGlobalUninit(INode *node) {
     // A '@workgroup' global has no value until a workgroup's invocations write one
     return node->tag == VarDclTag && ((VarDclNode*)node)->value == NULL
-        && !(((VarDclNode*)node)->dclinfo.facts & (DclExternal | DclWorkgroup));
+        && !(((VarDclNode*)node)->dclinfo.facts & (DclExternal | DclWorkgroup | DclSetup));
 }
 
 ModuleNode *modInitOf(FnDclNode *fnnode) {
@@ -1232,7 +1494,162 @@ ModuleNode *modInitOf(FnDclNode *fnnode) {
     return owner != NULL && owner->tag == ModuleTag ? (ModuleNode*)owner : NULL;
 }
 
-uint16_t *modInitFlowBegin(ModuleNode *mod) {
+// The module whose 'init' the flow pass is walking, or NULL
+static ModuleNode *modInitCur = NULL;
+
+// The flow pass met an assignment to this name: where it is a global of the
+// module whose 'init' is being walked and is not yet in the module's setup
+// order, it is next in it. Text order, so the first order written wins where
+// branches set the same globals in different orders
+void modInitNoteSet(VarDclNode *var) {
+    if (modInitCur == NULL || var->dclinfo.owner != (INode*)modInitCur)
+        return;
+    if (modInitCur->setorder == NULL)
+        modInitCur->setorder = newNodes(4);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(modInitCur->setorder, cnt, nodesp)) {
+        if (*nodesp == (INode*)var)
+            return;
+    }
+    nodesAdd(&modInitCur->setorder, (INode*)var);
+}
+
+// The 'init' function itself, so that only its own flow walk checks its calls
+static FnDclNode *modInitFnCur = NULL;
+
+// What reading a callee's body (and, through it, the bodies of the module's own
+// functions it calls) has to answer: does it read a global of the module that
+// 'init' has not yet set at the call being walked?
+typedef struct {
+    ModuleNode *mod;
+    Nodes *seen;            // The module's functions whose bodies were entered: a cycle among them ends here
+    INode *skip;            // The name an assignment stores to, which is not a read
+    VarDclNode *hit;        // The first global found that 'init' has not set yet, or NULL
+    FnDclNode *hitfn;       // The function whose body reads it
+    FnDclNode *cur;         // The function whose body is being read
+    Nodes *reads;           // Where given, the walk collects instead of judging: every setup global, and every global 'init' sets, of the module that is read (modSetupReads)
+    Nodes *readfns;         // Beside 'reads', the function whose body reads each (NULL for the value itself)
+} ModReadCtx;
+
+static int modReadsVisit(INode *node, void *vctx);
+
+// Does the module declare this function: as one of its own, or as a method of a
+// type it declares? An instance of a generic function or method it declares is
+// owned the same way, being a clone of it
+static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
+    INode *owner = fn->dclinfo.owner;
+    if (owner == (INode*)mod)
+        return 1;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && inodeGetOwner(owner) == (INode*)mod;
+}
+
+// Is this function an instance of a generic, or a method of an instantiated
+// generic type? What instantiated it is recorded on the instance (a generic
+// function's) or on its type's (a method's, cloned with the type)
+static int modIsInstance(FnDclNode *fn) {
+    if (fn->instnode != NULL)
+        return 1;
+    INode *owner = fn->dclinfo.owner;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && owner->instnode != NULL;
+}
+
+// The body of one of the module's own functions, followed wherever the call to
+// it is statically resolved: a function, or a method of a type the module
+// declares, with a body written in Cone, and an instance of a generic of either
+// (the instance's body, whose names are resolved, never the template's). An
+// instance of a generic of another module is followed too, including a method
+// of an instantiated generic type: given this module's type, it can call that
+// type's method, which reads this module's globals (a clone carries its
+// 'instnode'). Not followed: an extern, a generic still uninstantiated, a plain
+// function of another module (it cannot read this module's globals without a
+// cycle, which is refused), and what is not statically resolved -- a virtual
+// call, a closure, a function reference -- which passes until 'trust'
+static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)dcl;
+    if (!(modDeclares(ctx->mod, fn) || modIsInstance(fn)) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
+        || fn->value == NULL || fn->value->tag != BlockTag)
+        return 0;
+    INode **seenp;
+    uint32_t cnt;
+    for (nodesFor(ctx->seen, cnt, seenp)) {
+        if (*seenp == dcl)
+            return 0;
+    }
+    nodesAdd(&ctx->seen, dcl);
+    FnDclNode *svcur = ctx->cur;
+    ctx->cur = fn;
+    int found = siVisit(fn->value, modReadsVisit, ctx);
+    ctx->cur = svcur;
+    return found;
+}
+
+static int modReadsVisit(INode *node, void *vctx) {
+    ModReadCtx *ctx = (ModReadCtx*)vctx;
+    switch (node->tag) {
+    case AssignTag:
+        // 'g = v' stores to g, as 'init' itself may; its other operands are read
+        ctx->skip = ((AssignNode*)node)->lval;
+        return 0;
+    case NameUseTag: {
+        INode *dcl = ((NameUseNode*)node)->dclnode;
+        if (node == ctx->skip || dcl == NULL || dcl->tag != VarDclTag)
+            return 0;
+        VarDclNode *var = (VarDclNode*)dcl;
+        if (ctx->reads) {
+            if (var->dclinfo.owner == (INode*)ctx->mod && ((var->dclinfo.facts & DclSetup) || modGlobalUninit(dcl))) {
+                INode **readp;
+                uint32_t readcnt;
+                for (nodesFor(ctx->reads, readcnt, readp)) {
+                    if (*readp == dcl)
+                        return 0;
+                }
+                nodesAdd(&ctx->reads, dcl);
+                nodesAdd(&ctx->readfns, (INode*)ctx->cur);
+            }
+            return 0;
+        }
+        if (var->dclinfo.owner != (INode*)ctx->mod || !modGlobalUninit(dcl) || (var->flowtempflags & VarInitialized))
+            return 0;
+        ctx->hit = var;
+        ctx->hitfn = ctx->cur;
+        return 1;
+    }
+    case FnCallTag: {
+        INode *objfn = ((FnCallNode*)node)->objfn;
+        if (objfn != NULL && isNameUseNode(objfn) && !(((FnCallNode*)node)->flags & FlagVDisp))
+            return modReadsFollow(ctx, ((NameUseNode*)objfn)->dclnode);
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A call 'init' makes is walked by flow: where it calls one of the module's own
+// functions, what that function reads counts as 'init' reading it at this point,
+// through every function of the module it calls in turn. Positional, as 'init''s
+// own reads are: only a global not yet set where the call stands is refused, and
+// a cycle of helpers ends where it comes back to one already entered
+void modInitCall(FlowState *fstate, FnCallNode *call) {
+    if (modInitCur == NULL || modInitFnCur == NULL || fstate->fnsig != (FnSigNode*)modInitFnCur->vtype)
+        return;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || (call->flags & FlagVDisp))
+        return;
+    ModReadCtx ctx = { modInitCur, newNodes(8), NULL, NULL, NULL, NULL };
+    if (!modReadsFollow(&ctx, ((NameUseNode*)call->objfn)->dclnode))
+        return;
+    errorMsgNode((INode*)call, ErrorMove,
+        "This call reads global %s, in %s, which has not been initialized: 'init' has not set it by this point, so there is no value to use.",
+        &ctx.hit->namesym->namestr, &ctx.hitfn->namesym->namestr);
+}
+
+uint16_t *modInitFlowBegin(ModuleNode *mod, FnDclNode *initfn) {
+    modInitCur = mod;
+    modInitFnCur = initfn;
+    mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
     uint32_t cnt;
@@ -1249,6 +1666,8 @@ uint16_t *modInitFlowBegin(ModuleNode *mod) {
 }
 
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
+    modInitCur = NULL;
+    modInitFnCur = NULL;
     INode **nodesp;
     uint32_t cnt;
     uint32_t pos = 0;
@@ -1324,6 +1743,231 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
     return fn;
 }
 
+// ---- Setups: a 'let' global given a value written where it is declared -------
+//
+// A 'let' global whose value is not a constant (a call, say) is a setup. Type
+// check meets its value as it meets any global's, and modAddSetup takes it out
+// of the declaration -- which then holds no value, as a global 'init' sets does
+// not -- into an assignment of the global, listed in the module's 'setups'.
+// Once the module is checked, modSetupBuild orders the setups by what each
+// reads, as 'init''s use-before-set check reads (the module's own functions
+// followed, modReadsFollow), refusing a cycle; makes them the body of a
+// function of the module; and has the module's 'init' (one is made where the
+// module writes none) call it first. So every setup of a module has run before
+// its 'init' does, and the program's stitched init runs the modules in their
+// order. A setup that panics ends the program at start-up, as any panic does.
+// The module's finalizer takes the setups in this order (modGiveDrop), so the
+// reverse of it is the reverse of the order they ran.
+
+int modAddSetup(VarDclNode *var) {
+    INode *owner = var->dclinfo.owner;
+    // Nothing on a GPU target runs a module's 'init', so nothing would run the setup
+    if (flowGpu || var->scope != 0 || (var->flags & FlagStatic) || owner == NULL || owner->tag != ModuleTag
+        || !permIsSame(var->perm, (INode*)immPerm) || var->value == NULL
+        || (var->dclinfo.facts & (DclCName | DclExternal | DclThreadLocal | DclWorkgroup))
+        || (((ModuleNode*)owner)->dclinfo.facts & DclCName))
+        return 0;
+    ModuleNode *mod = (ModuleNode*)owner;
+    INode *lval = newNameUseFromDclNode((INode*)var, (INode*)var);
+    AssignNode *assign = newAssignNode(NormalAssign, lval, var->value);
+    inodeLexCopy((INode*)assign, (INode*)var);
+    assign->vtype = ((IExpNode*)var->value)->vtype;
+    var->value = NULL;
+    var->dclinfo.facts |= DclSetup;
+    if (mod->setups == NULL)
+        mod->setups = newNodes(4);
+    nodesAdd(&mod->setups, (INode*)assign);
+    return 1;
+}
+
+static VarDclNode *modSetupVar(INode *assign) {
+    return (VarDclNode*)((NameUseNode*)((AssignNode*)assign)->lval)->dclnode;
+}
+
+// The setups, each read through the module's own functions the way init's
+// check reads, in declaration order. 'order' gets the setups in the order they
+// run, or NULL where one is refused
+static Nodes *modSetupOrder(ModuleNode *mod) {
+    Nodes *decl = newNodes(8);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != VarDclTag || !(((VarDclNode*)*nodesp)->dclinfo.facts & DclSetup))
+            continue;
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setups, setcnt, setp)) {
+            if ((INode*)modSetupVar(*setp) == *nodesp)
+                nodesAdd(&decl, *setp);
+        }
+    }
+    uint32_t n = decl->used;
+    Nodes **reads = (Nodes**)memAllocBlk(sizeof(Nodes*) * (n + 1));
+    int refused = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        AssignNode *assign = (AssignNode*)nodesGet(decl, i);
+        ModReadCtx ctx = { mod, newNodes(8), NULL, NULL, NULL, NULL, newNodes(4), newNodes(4) };
+        siVisit(assign->rval, modReadsVisit, &ctx);
+        reads[i] = ctx.reads;
+        // Setups run before 'init': a global it sets holds nothing yet
+        for (uint32_t k = 0; k < ctx.reads->used; ++k) {
+            VarDclNode *read = (VarDclNode*)nodesGet(ctx.reads, k);
+            if (read->dclinfo.facts & DclSetup)
+                continue;
+            FnDclNode *readfn = (FnDclNode*)nodesGet(ctx.readfns, k);
+            errorMsgNode((INode*)modSetupVar((INode*)assign), ErrorSetupReadsInit,
+                "The setup of %s reads global %s, which the module's 'init' sets: setups run before 'init', so it holds no value yet%s%s.",
+                &modSetupVar((INode*)assign)->namesym->namestr, &read->namesym->namestr,
+                readfn ? ", in " : "", readfn ? &readfn->namesym->namestr : "");
+            refused = 1;
+        }
+    }
+
+    // Depth first, in declaration order: each setup after the setups it reads,
+    // and a setup reached again while its own reads are being placed is a cycle
+    uint8_t *state = (uint8_t*)memAllocBlk(n + 1);    // 0 not reached, 1 being placed, 2 placed
+    Nodes *ordered = newNodes(n + 1);
+    int cyclic = refused;
+    uint32_t *stack = (uint32_t*)memAllocBlk(sizeof(uint32_t) * (n + 1));
+    uint32_t *next = (uint32_t*)memAllocBlk(sizeof(uint32_t) * (n + 1));
+    for (uint32_t root = 0; root < n; ++root) {
+        if (state[root])
+            continue;
+        uint32_t depth = 0;
+        stack[0] = root;
+        next[0] = 0;
+        state[root] = 1;
+        while (1) {
+            uint32_t at = stack[depth];
+            uint32_t k = next[depth];
+            if (k < reads[at]->used) {
+                next[depth] = k + 1;
+                uint32_t to = n;
+                for (uint32_t j = 0; j < n; ++j) {
+                    if ((INode*)modSetupVar(nodesGet(decl, j)) == nodesGet(reads[at], k))
+                        to = j;
+                }
+                if (to == n || state[to] == 2)
+                    continue;
+                if (state[to] == 1) {
+                    char chain[400];
+                    chain[0] = '\0';
+                    uint32_t from = 0;
+                    while (stack[from] != to)
+                        ++from;
+                    for (uint32_t d = from; d <= depth; ++d) {
+                        size_t used = strlen(chain);
+                        snprintf(chain + used, sizeof(chain) - used, "%s%s", d > from ? " -> " : "",
+                            &modSetupVar(nodesGet(decl, stack[d]))->namesym->namestr);
+                    }
+                    size_t used = strlen(chain);
+                    snprintf(chain + used, sizeof(chain) - used, " -> %s", &modSetupVar(nodesGet(decl, to))->namesym->namestr);
+                    errorMsgNode((INode*)modSetupVar(nodesGet(decl, to)), ErrorSetupCycle,
+                        "The setups of this module's globals read one another round a cycle (%s), so none can be set before the one that reads it.",
+                        chain);
+                    cyclic = 1;
+                    continue;
+                }
+                state[to] = 1;
+                ++depth;
+                stack[depth] = to;
+                next[depth] = 0;
+                continue;
+            }
+            state[at] = 2;
+            nodesAdd(&ordered, nodesGet(decl, at));
+            if (depth == 0)
+                break;
+            --depth;
+        }
+    }
+    return cyclic ? NULL : ordered;
+}
+
+// Make the module's setups a function of its own, run first by its 'init'
+// (made where the module writes none). Pre-lowered as 'drop' is, its flow pass
+// run here so that what a value moves or copies is judged as it is for any
+// assignment: each setup global holds nothing until its assignment, as an
+// uninitialized local does, so a read of one before its setup is flow's own
+// refusal
+static FnDclNode *modSetupBuild(ModuleNode *mod, FnDclNode *initfn) {
+    int errorsOnEntry = errors;
+    Nodes *ordered = modSetupOrder(mod);
+    if (ordered == NULL || errors != errorsOnEntry)
+        return initfn;
+    mod->setups = ordered;
+
+    FnSigNode *sig = newFnSigNode();
+    sig->rettype = (INode*)newVoidNode();
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)mod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ordered, cnt, nodesp))
+        nodesAdd(&block->stmts, *nodesp);
+    BreakRetNode *retnode = newReturnNode();
+    retnode->exp = (INode*)newNilLitNode();
+    retnode->block = block;
+    nodesAdd(&block->stmts, (INode*)retnode);
+    FnDclNode *setupfn = newFnDclNode(nametblFind("-setups", 7), 0, (INode*)sig, (INode*)block);
+    inodeLexCopy((INode*)setupfn, (INode*)mod);
+    dclInfoJoin((INode*)setupfn, (INode*)mod);
+    modLifecycleCone(setupfn);
+    setupfn->flags |= TypeChecked;
+    setupfn->dclinfo.facts |= DclBodyTyped;
+
+    // Flow: the setups' globals hold nothing until their assignments
+    uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (ordered->used + 1));
+    uint32_t pos = 0;
+    for (nodesFor(ordered, cnt, nodesp)) {
+        VarDclNode *var = modSetupVar(*nodesp);
+        saved[pos++] = var->flowtempflags;
+        var->flowtempflags &= 0xFFFF - (VarInitialized | VarMoved);
+    }
+    FlowState fstate;
+    flowStateInit(&fstate, sig);
+    blockFlow(&fstate, &block);
+    flowCurrent = NULL;
+    // A borrow held in a way only a walk following each path can judge -- a
+    // temporary's, stored into a global -- is walked as any function's is
+    // (fnDclFlow), so a setup's store is judged as the same store in 'init' is
+    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry) {
+        int loans = fstate.gate != 0;
+        if (loans)
+            shapeWalkReady(setupfn, 0);
+        flowPathWalk(setupfn, loans, fstate.dropgate != 0, 0);
+    }
+    pos = 0;
+    for (nodesFor(ordered, cnt, nodesp))
+        modSetupVar(*nodesp)->flowtempflags = saved[pos++];
+    nodesAdd(&mod->nodes, (INode*)setupfn);
+
+    // 'init' runs them first
+    FnCallNode *call = newFnCallLower((INode*)mod, (INode*)setupfn, 1);
+    call->vtype = sig->rettype;
+    if (initfn == NULL) {
+        FnSigNode *initsig = newFnSigNode();
+        initsig->rettype = (INode*)newVoidNode();
+        BlockNode *initblock = newBlockNode();
+        inodeLexCopy((INode*)initblock, (INode*)mod);
+        nodesAdd(&initblock->stmts, (INode*)call);
+        BreakRetNode *initret = newReturnNode();
+        initret->exp = (INode*)newNilLitNode();
+        initret->block = initblock;
+        nodesAdd(&initblock->stmts, (INode*)initret);
+        initfn = newFnDclNode(initName, 0, (INode*)initsig, (INode*)initblock);
+        inodeLexCopy((INode*)initfn, (INode*)mod);
+        dclInfoJoin((INode*)initfn, (INode*)mod);
+        initfn->dclinfo.facts |= DclInitPure | DclLifecycle;
+        modLifecycleCone(initfn);
+        initfn->flags |= TypeChecked;
+        nodesAdd(&mod->nodes, (INode*)initfn);
+    }
+    else
+        nodesInsert(&((BlockNode*)initfn->value)->stmts, (INode*)call, 0);
+    return initfn;
+}
+
 // Whether the module's finalizer finalizes this global: its type has anything
 // to do as it dies (itypeNeedsFinal), and it is not C's storage. A thread-local
 // needing it is refused (modGiveDrop), and a '@workgroup' global may hold only
@@ -1335,9 +1979,9 @@ int modGlobalFinalized(VarDclNode *var) {
 // Give the module a 'drop' where any global it declares needs finalizing
 // (itypeNeedsFinal, the question a local's death asks): a function owned by the
 // module, so its symbol is spelled after it ('q.drop'), that calls the module's
-// own 'final' and then finalizes each such global, in the order the globals are
-// declared -- a type's 'drop' is its 'final' and then its fields', and a
-// module's globals are its fields. It is the return's release list, as a
+// own 'final' and then finalizes each such global, in the reverse of the order
+// the globals were set (the setup list) -- a type's 'drop' is its 'final' and then its
+// fields', and a module's globals are its fields, set in order, ended in reverse. It is the return's release list, as a
 // function's locals are released: a struct or an enum listed as its drop's
 // call, anything else -- an owning reference, a tuple or an array -- listed as
 // the global itself, which generation finalizes in place (genlDealiasNode).
@@ -1350,9 +1994,37 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     Nodes *releases = NULL;
     INode **nodesp;
     uint32_t cnt;
+    // The order the globals are set (rule 6): first those with a constant value,
+    // in declaration order, then the setups in the order they run (modSetupBuild),
+    // then those 'init' assigns, in the order the flow pass first met an
+    // assignment to each
+    Nodes *setup = newNodes(8);
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        if ((*nodesp)->tag != VarDclTag)
+        if ((*nodesp)->tag != VarDclTag || (((VarDclNode*)*nodesp)->dclinfo.facts & DclSetup))
             continue;
+        int assigned = 0;
+        if (mod->setorder) {
+            INode **setp;
+            uint32_t setcnt;
+            for (nodesFor(mod->setorder, setcnt, setp))
+                assigned |= *setp == *nodesp;
+        }
+        if (!assigned)
+            nodesAdd(&setup, *nodesp);
+    }
+    if (mod->setups) {
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setups, setcnt, setp))
+            nodesAdd(&setup, (INode*)modSetupVar(*setp));
+    }
+    if (mod->setorder) {
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setorder, setcnt, setp))
+            nodesAdd(&setup, *setp);
+    }
+    for (nodesFor(setup, cnt, nodesp)) {
         VarDclNode *var = (VarDclNode*)*nodesp;
         // A thread-local is a copy per thread, and each copy would need
         // finalizing as its thread ends, which nothing does yet. So its type
@@ -1406,6 +2078,12 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     if (block == NULL)
         return final;
 
+    // The reverse of the order they were set (the setup list above)
+    for (uint32_t lo = 0, hi = releases->used; lo + 1 < hi; ++lo, --hi) {
+        INode *tmp = nodesGet(releases, lo);
+        nodesGet(releases, lo) = nodesGet(releases, hi - 1);
+        nodesGet(releases, hi - 1) = tmp;
+    }
     BreakRetNode *retnode = newReturnNode();
     retnode->exp = (INode*)newNilLitNode();
     retnode->block = block;
@@ -1427,6 +2105,8 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
 static void modLifecycle(ModuleNode *mod) {
     mod->initfn = modLifecycleFn(mod, initName);
     FnDclNode *final = modLifecycleFn(mod, finalName);
+    if (mod->setups)
+        mod->initfn = modSetupBuild(mod, mod->initfn);
 
     // An 'init' the module declares checks its globals itself, well formed or
     // not: one that is malformed has been reported, and that is the one error

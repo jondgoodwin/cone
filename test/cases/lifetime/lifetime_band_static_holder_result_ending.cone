@@ -1,0 +1,63 @@
+// lifetime_band_static_holder_result with borrows whose lifetimes end: a
+// struct field '&'a str' or an unnamed '&i64', and a generic 'Option[T]' whose
+// 'T' holds one. A result of an unannotated signature holding such a borrow
+// carries every argument's loans, so it may not be kept past the locals it
+// was asked about.
+//
+// Verdict: refuse: ErrorFrozen as each local ends while a result is used
+// (reported once a local, for the first holder).
+// Basis: mem-lifetimes.html (an unannotated signature's borrows share one
+// lifetime: the result borrows every argument).
+// Master c85d9fa99: refused the same.
+
+mod lifetime_band_static_holder_result_ending;
+
+import stdio use *;
+
+struct Fault {
+  code: u32;
+  detail: &'a str;
+}
+
+struct Pinned {
+  at: &i64;
+}
+
+fn check(a: &i64, b: &i64) Fault {
+  Fault(u32.from(*a + *b), "bad")
+}
+
+fn wrap[T](a: &i64, b: &i64, v: T) Option[T] {
+  Some[T](v)
+}
+
+fn pin(a: &i64, b: &i64) Pinned {
+  Pinned(a)
+}
+
+fn main() {
+  var f = Fault(0u32, "");
+  var w = None[Fault];
+  var p = Pinned(&0i64);
+  {
+    let x = 1i64;           //~ ErrorFrozen "goes out of scope while 'f' still holds a borrow of it"
+    let y = 2i64;           //~ ErrorFrozen "goes out of scope while 'f' still holds a borrow of it"
+    f = check(&x, &y);
+  }
+  {
+    let x = 1i64;           //~ ErrorFrozen "goes out of scope while 'w' still holds a borrow of it"
+    let y = 2i64;           //~ ErrorFrozen "goes out of scope while 'w' still holds a borrow of it"
+    w = wrap[Fault](&x, &y, Fault(5u32, "generic"));
+  }
+  {
+    let x = 1i64;           //~ ErrorFrozen "goes out of scope while 'p' still holds a borrow of it"
+    let y = 2i64;           //~ ErrorFrozen "goes out of scope while 'p' still holds a borrow of it"
+    p = pin(&x, &y);
+  }
+  printStr(f.detail);
+  match w {
+    case let Some(e) {printStr(e.detail);}
+    else {printStr("none");}
+  }
+  printInt(*p.at);
+}

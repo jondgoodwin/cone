@@ -110,6 +110,14 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     if (!ischar)
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(istrueName, FlagMethFld | FlagPub,(INode *)istruesig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
 
+    // A bool's '&&' and '||' are compiler primitives declared here: the logic node is their body.
+    // ⚑ LATER: they move to the library with the number types' operators (Jon, 26 Oct), where they
+    // become macros like Option's and Result's
+    if (bits == 1) {
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(logicAndName, FlagMethFld | FlagPub,(INode *)binsig, (INode *)newIntrinsicNode(LogicAndIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(logicOrName, FlagMethFld | FlagPub,(INode *)binsig, (INode *)newIntrinsicNode(LogicOrIntrinsic)));
+    }
+
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;
@@ -325,6 +333,135 @@ static void nbrBitMethods(NbrNode *nbrtype) {
     }
 }
 
+// A signed integer's or float's 'abs', an integer's or float's 'min', 'max' and
+// 'clamp', a float's 'floor', 'ceil', 'round' and 'fma': core's number intrinsics
+// (mem.abs ...), each the instance the generic declaration's would be for this
+// type, as the bit methods are. A vector has the same, lane by lane
+// (vectorMethods), and one lowering serves both (genlNumberIntrinsic). Unsigned
+// integers have no 'abs'; integers have no rounding or 'fma'.
+static void nbrMathMethods(NbrNode *nbrtype) {
+    int isfloat = nbrtype->tag == FloatNbrTag;
+    int issigned = nbrtype->tag == IntNbrTag;
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    Name *self = nametblFind("self", 4);
+
+    FnSigNode *unarysig = newFnSigNode();
+    unarysig->rettype = (INode*)selftype;
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *binarysig = newFnSigNode();
+    binarysig->rettype = (INode*)selftype;
+    nodesAdd(&binarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&binarysig->parms, (INode *)newVarDclFull(nametblFind("other", 5), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *fmasig = newFnSigNode();
+    fmasig->rettype = (INode*)selftype;
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("y", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("z", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *clampsig = newFnSigNode();
+    clampsig->rettype = (INode*)selftype;
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(nametblFind("lo", 2), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(nametblFind("hi", 2), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    static struct { char *name; int16_t kind; int floatonly; int nargs; } mathmeths[] = {
+        {"abs", AbsIntrinsic, 0, 1},
+        {"min", MinIntrinsic, 0, 2},
+        {"max", MaxIntrinsic, 0, 2},
+        {"clamp", ClampIntrinsic, 0, 3},
+        {"floor", FloorIntrinsic, 1, 1},
+        {"ceil", CeilIntrinsic, 1, 1},
+        {"round", RoundIntrinsic, 1, 1},
+        {"fma", FmaIntrinsic, 1, 3},
+    };
+    for (size_t i = 0; i < sizeof(mathmeths) / sizeof(mathmeths[0]); ++i) {
+        if (mathmeths[i].floatonly && !isfloat)
+            continue;
+        if (mathmeths[i].kind == AbsIntrinsic && !isfloat && !issigned)
+            continue;
+        IntrinsicNode *node = newIntrinsicNode(mathmeths[i].kind);
+        node->typearg = (INode*)selftype;
+        Name *name = nametblFind(mathmeths[i].name, strlen(mathmeths[i].name));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(name, FlagMethFld | FlagPub,
+            (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig
+                : mathmeths[i].kind == ClampIntrinsic ? clampsig : fmasig), (INode *)node));
+    }
+}
+
+// A float's encoding: 'x.bits()' (a u32 for f32, a u64 for f64), the static
+// 'f32.fromBits(b)', 'x.exponent()' (an i32), 'x.mantissa()' (the bits type)
+// and 'x.signBit()' (a bool). Each is generated as one bit operation on the
+// value (genlFloatBits), with no Cone body, since the integer type follows the
+// float's width. Made once every number type exists.
+static void nbrFloatBitMethods(NbrNode *nbrtype) {
+    NbrNode *bitstype = nbrtype->bits == 32 ? u32Type : u64Type;
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    NameUseNode *bitsuse = newNameUseNode(bitstype->namesym);
+    bitsuse->dclnode = (INode*)bitstype;
+    Name *self = nametblFind("self", 4);
+
+    static struct { char *name; int16_t kind; int rettype; } meths[] = {
+        {"bits", FloatBitsIntrinsic, 0},
+        {"exponent", FloatExponentIntrinsic, 1},
+        {"mantissa", FloatMantissaIntrinsic, 0},
+        {"signBit", FloatSignBitIntrinsic, 2},
+    };
+    for (size_t i = 0; i < sizeof(meths) / sizeof(meths[0]); ++i) {
+        FnSigNode *sig = newFnSigNode();
+        sig->rettype = meths[i].rettype == 0 ? (INode*)bitsuse
+            : meths[i].rettype == 1 ? (INode*)i32Type : (INode*)boolType;
+        nodesAdd(&sig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        IntrinsicNode *node = newIntrinsicNode(meths[i].kind);
+        node->typearg = (INode*)selftype;
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind(meths[i].name, strlen(meths[i].name)),
+            FlagMethFld | FlagPub, (INode *)sig, (INode *)node));
+    }
+
+    // The static one: the float with the given encoding
+    FnSigNode *fromsig = newFnSigNode();
+    fromsig->rettype = (INode*)selftype;
+    nodesAdd(&fromsig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)bitsuse, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *fromnode = newIntrinsicNode(FloatFromBitsIntrinsic);
+    fromnode->typearg = (INode*)selftype;
+    // Marked checked: type check never walks a number type's members, and a
+    // call by name demands the declaration's check, which has no struct or
+    // module to check it under. The signature is already what it says
+    FnDclNode *fromdcl = newFnDclNode(nametblFind("fromBits", 8), FlagPub | TypeChecked,
+        (INode *)fromsig, (INode *)fromnode);
+    iNsTypeAddFn((INsTypeNode*)nbrtype, fromdcl);
+}
+
+// A number type's three-way comparison, 'a <=> b': an i32 -1, 0 or 1. Made once
+// every number type exists, since the answer is an i32. A bool has none, being
+// no quantity; a char has one, as it has the orderings.
+static void nbrThreeWayMethod(NbrNode *nbrtype) {
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    FnSigNode *sig = newFnSigNode();
+    sig->rettype = (INode*)i32Type;
+    nodesAdd(&sig->parms, (INode *)newVarDclFull(nametblFind("a", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&sig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(threeWayName, FlagMethFld | FlagPub, (INode *)sig,
+        (INode *)newIntrinsicNode(nbrtype->tag == IntNbrTag ? SCmpIntrinsic : CmpIntrinsic)));
+    // The same comparison written as a method, 'a.cmp(&b)': the other number is
+    // read through a reference, which is how a trait writes 'Self' (a trait
+    // cannot hold it by value). A trait requiring 'cmp' with '&Self' (core's
+    // Ordered) is met by this one and by '<=>' (iNsTypeNumberMeets), and a
+    // generic's 'a.cmp(&b)' reaches it when the argument is a number. Code
+    // generation reads the referent (genlexpr.c, CmpIntrinsic).
+    FnSigNode *refsig = newFnSigNode();
+    refsig->rettype = (INode*)i32Type;
+    RefNode *immref = newRefNodeFull(RefTag, NULL, borrowRef, newPermUseNode(roPerm), (INode*)selftype);
+    nodesAdd(&refsig->parms, (INode *)newVarDclFull(nametblFind("a", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&refsig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)immref, newPermUseNode(immPerm), NULL));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind("cmp", 3), FlagMethFld | FlagPub, (INode *)refsig,
+        (INode *)newIntrinsicNode(nbrtype->tag == IntNbrTag ? SCmpIntrinsic : CmpIntrinsic)));
+}
+
 // The 'hash' every integer type and bool has, which core's Hash trait requires
 // of a type: 'x.hash(h)' feeds the value's bits to the hasher. The compiler
 // grants those types Hash (genericTypeIs) and this gives the grant its method,
@@ -356,6 +493,36 @@ void nbrAddHashMethods(StructNode *hasher) {
     }
 }
 
+// The 'toText' every number type, bool and char has: 'x.toText(out)' writes the
+// value's text into a TextOut, so that a generic function, or a type's own
+// toText, reaches a method on a field of any of them. Made once core's TextOut
+// is name resolved, since its signature names it. A call is rewritten to the
+// TextOut method that writes that kind of value at type check (fnCallTextNumber),
+// so the method has no body of its own.
+void nbrAddTextMethods(StructNode *textout) {
+    NbrNode *types[] = {boolType, charType, u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
+    Name *self = nametblFind("self", 4);
+    Name *outname = nametblFind("out", 3);
+    Name *textname = nametblFind("toText", 6);
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
+        NbrNode *nbrtype = types[i];
+        if (iNsTypeFindFnField((INsTypeNode*)nbrtype, textname))
+            return;     // already given: the compile met core's TextOut once
+        NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+        selftype->dclnode = (INode*)nbrtype;
+        NameUseNode *outtype = newNameUseNode(textout->namesym);
+        outtype->dclnode = (INode*)textout;
+        RefNode *uniref = newRefNodeFull(RefTag, NULL, borrowRef, newPermUseNode(uniPerm), (INode*)outtype);
+        FnSigNode *sig = newFnSigNode();
+        sig->rettype = (INode*)newVoidNode();
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(outname, VarDclTag, (INode*)uniref, newPermUseNode(immPerm), NULL));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(textname, FlagMethFld | FlagPub,
+            (INode*)sig, (INode*)newIntrinsicNode(TextNbrIntrinsic)));
+    }
+}
+
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     boolType = newNbrTypeNode("bool", UintNbrTag, 1);
@@ -377,6 +544,17 @@ void stdNbrInit(int ptrsize) {
         i8Type, i16Type, i32Type, i64Type, isizeType};
     for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
         nbrBitMethods(integers[i]);
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
+        nbrMathMethods(integers[i]);
+    nbrMathMethods(f32Type);
+    nbrMathMethods(f64Type);
+    nbrFloatBitMethods(f32Type);
+    nbrFloatBitMethods(f64Type);
+
+    NbrNode *ordered[] = {charType, u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
+    for (size_t i = 0; i < sizeof(ordered) / sizeof(ordered[0]); ++i)
+        nbrThreeWayMethod(ordered[i]);
 
     ptrType = newPtrTypeMethods();
     refType = newRefTypeMethods();

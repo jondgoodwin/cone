@@ -77,14 +77,17 @@ INode *parseArrayLit(ParseState *parse) {
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall);
 Nodes *parseArgs(ParseState *parse);
 
-// Parse a construction, 'new Point(1, 2)': 'new', the type, then in
-// parentheses the arguments the type's 'init' takes, which may be left off
-// when there are none ('new Point' is 'new Point()'). The type is a name, a
-// path through namespaces ('geomath.Vec3') and type arguments in brackets
-// ('Pair[i32, f32]'); every '.' and '[' before the parentheses belongs to it,
-// and the suffixes after them apply to the value constructed. Type check
-// selects the 'init' (typeLitNewCheck). A managed reference type,
-// 'new Rc[mut, Node](1)' or an alias of one, allocates in its region, the
+// Parse a construction written with 'new': 'new a[Node](1)', in the dynamic
+// region a, or 'trynew Rc[mut, Node](1)'. After the word comes a name, a path
+// through namespaces ('geomath.Vec3') and type arguments or the type made in the
+// region in brackets ('Pair[i32, f32]', 'a[Node]'), then in parentheses the
+// arguments the type's 'init' takes, which may be left off when there are none;
+// every '.' and '[' before the parentheses belongs to the name, and the suffixes
+// after them apply to the value constructed. A type's construction is its name
+// with parentheses, 'Point(1, 2)', an ordinary call until name resolution marks
+// it (fnCallConstructNameRes), which also refuses 'new' before a type. Type
+// check selects the 'init' (typeLitNewCheck). A managed reference type,
+// 'Rc[mut, Node](1)' or an alias of one, allocates in its region, the
 // parentheses carrying the value's 'init' arguments.
 //
 // 'trynew Rc[mut, Node](1)' is an allocation that may fail, giving an Option
@@ -103,7 +106,7 @@ INode *parseNew(ParseState *parse) {
     }
     lexNextToken();
     if (!lexIsToken(IdentToken))
-        errorMsgLex(ErrorBadTerm, "Expected the type to construct after 'new': 'new Point(1, 2)'");
+        errorMsgLex(ErrorBadTerm, "Expected the dynamic region after 'new': 'new a[Node](1)'");
     INode *type = parseNameUse(parse);
     while (1) {
         if (lexIsToken(DotToken)) {
@@ -131,7 +134,83 @@ INode *parseNew(ParseState *parse) {
 }
 
 static INode *parseEntries(ParseState *parse);
+static void parseEntryNest(INode *entries, uint16_t nest);
 INode *parseAssignFrom(ParseState *parse, INode *lval);
+
+// The pieces of the interpolated string the lexer is on, `$"moved {n} files"`: its
+// text parts as string literals and each brace's expression, read by the ordinary
+// expression parser with a lexer of its own set over the brace's source (so an
+// error in it points at its real line and column). The lexer is left on the
+// string. A string with nothing in it has the one empty literal.
+static Nodes *parseInterpPieces(ParseState *parse) {
+    InterpLit *lit = lex->val.interp;
+    Nodes *pieces = newNodes(lit->nparts ? lit->nparts : 1);
+    int svparen = parse->entryparen;
+    int svlist = parse->inlist;
+    parse->entryparen = 0;
+    parse->inlist = 0;
+    for (uint32_t i = 0; i < lit->nparts; ++i) {
+        InterpPart *part = &lit->parts[i];
+        if (part->exprp == NULL) {
+            nodesAdd(&pieces, (INode*)newSLitNode(part->text, part->len));
+            continue;
+        }
+        Lexer *sub = (Lexer*)memAllocBlk(sizeof(Lexer));
+        *sub = *lex;
+        sub->srcp = sub->tokp = sub->prevend = part->exprp;
+        sub->linep = sub->prevlinep = part->linep;
+        sub->linenbr = sub->prevlinenbr = part->linenbr;
+        sub->interpstart = part->exprp;
+        sub->interpend = part->exprend;
+        int errs = errors;
+        lexPush(sub);
+        INode *piece = parseSimpleExpr(parse);
+        if (!(lexIsToken(RCurlyToken) && lex->tokp == part->exprend) && errors == errs)
+            errorMsgLex(ErrorInterpExpr, "An interpolation's braces hold one expression, but this does not belong to it. Options (a width, a precision) are wrappers around the value, as in `{fixed(x, 2)}`.");
+        lexPop();
+        nodesAdd(&pieces, piece);
+    }
+    if (pieces->used == 0)
+        nodesAdd(&pieces, (INode*)newSLitNode("", 0));
+    parse->entryparen = svparen;
+    parse->inlist = svlist;
+    return pieces;
+}
+
+// One entry for a list of pieces: the piece, or the pieces as a parenthesized list
+static INode *parseInterpEntry(Nodes *pieces) {
+    if (pieces->used == 1)
+        return nodesGet(pieces, 0);
+    TupleNode *tuple = newTupleNode(pieces->used);
+    INode *first = nodesGet(pieces, 0);
+    if (first)
+        inodeLexCopy((INode*)tuple, first);
+    for (uint32_t i = 0; i < pieces->used; ++i)
+        nodesAdd(&tuple->elems, nodesGet(pieces, i));
+    return (INode*)tuple;
+}
+
+// Is the interpolated string the lexer is on a whole entry of a `<-` list, so
+// its pieces are entries of the list (`sink <- $"a {n}"` is `sink <- "a ", n`)?
+static int parseInterpIsEntry() {
+    return lexIsToken(InterpToken) && lexInterpEndsEntry();
+}
+
+// An interpolated string anywhere else is a String, `String() <- pieces`. The
+// name String is looked up where the string is written: it comes from collections.
+static INode *parseInterpString(ParseState *parse) {
+    Nodes *pieces = parseInterpPieces(parse);
+    NameUseNode *str = newNameUseNode(nametblFind("String", 6));
+    str->flags |= FlagInterpString;
+    FnCallNode *ctor = newFnCallNode((INode*)str, 2);
+    FnCallNode *append = newFnCallOpname((INode*)ctor, lessDashName, 2);
+    append->flags |= FlagOpAssgn | FlagLvalOp;
+    INode *entries = parseInterpEntry(pieces);
+    parseEntryNest(entries, 2);
+    nodesAdd(&append->args, entries);
+    lexNextToken();
+    return (INode*)append;
+}
 
 // The body of a closure written 'x => body': one expression, or a block. An
 // expression is the block's one statement, whose value the closure returns.
@@ -139,14 +218,17 @@ static INode *parseClosureArrowBody(ParseState *parse) {
     int svinlist = parse->inlist;
     GenCtx *svgenctx = parse->genctx;
     int svgenoperand = parse->genoperand;
+    int svtrydepth = parse->trydepth;
     parse->genctx = NULL;
     parse->genoperand = 0;
+    parse->trydepth = 0;
     // One expression, which may be a change ('n => total += n'): a comma
     // after it belongs to the list the closure is written in
     INode *body = parseAssignFrom(parse, parseSimpleExpr(parse));
     parse->inlist = svinlist;
     parse->genctx = svgenctx;
     parse->genoperand = svgenoperand;
+    parse->trydepth = svtrydepth;
     if (body == NULL)
         body = (INode*)newNilLitNode();
     if (body->tag == BlockTag)
@@ -174,7 +256,7 @@ static INode *parseClosureArrow(ParseState *parse, Nodes *names, INode *at) {
         for (nodesFor(names, cnt, namep)) {
             if (!isNameUseNode(*namep)) {
                 errorMsgNode(*namep, ErrorClosureForm,
-                    "The short form of a closure takes parameter names only, 'x => x * 2'. A parameter with a type is written in the full form, 'fn (x i32) i32 { x * 2; }'.");
+                    "The short form of a closure takes parameter names only, 'x => x * 2'. A parameter with a type is written in the full form, 'fn (x: i32) i32 { x * 2; }'.");
                 continue;
             }
             VarDclNode *parm = newVarDclNode(((NameUseNode*)*namep)->namesym, VarDclTag, (INode*)immPerm);
@@ -191,7 +273,7 @@ static INode *parseClosureArrow(ParseState *parse, Nodes *names, INode *at) {
 }
 
 // A closure in the full form, with the lexer on its 'fn':
-//   fn (u f32) [ribs, mut n = 0] f32 { ... }
+//   fn (u f32) [ribs, var n = 0] f32 { ... }
 // Parameters, then an optional state list in brackets (a bracket never starts a
 // type), an optional return type and the block. A parameter's type, and the
 // return type, are left out where the signature the closure is given to
@@ -211,7 +293,7 @@ static INode *parseClosureFn(ParseState *parse) {
         parse->inlist = 1;
         uint16_t parmnbr = 0;
         uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+        while (lexIsDclStart() || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;
             parm->scope = 1;
@@ -236,7 +318,7 @@ static INode *parseClosureFn(ParseState *parse) {
         while (!lexIsToken(RBracketToken) && !lexIsToken(EofToken)) {
             INode *perm = parseDclPerm(immPerm);
             if (!lexIsToken(IdentToken)) {
-                errorMsgLex(ErrorNoIdent, "Expected a name in the closure's state list: '[ribs, mut n = 0]'");
+                errorMsgLex(ErrorNoIdent, "Expected a name in the closure's state list: '[ribs, var n = 0]'");
                 while (!lexIsToken(RBracketToken) && !lexIsToken(LCurlyToken) && !lexIsToken(EofToken))
                     lexNextToken();
                 break;
@@ -269,16 +351,41 @@ static INode *parseClosureFn(ParseState *parse) {
     INode *rettype = parseType(parse);
     parse->inrettype = svinrettype;
     clo->sig->rettype = rettype;
+    clo->sig->retwritten = rettype != unknownType;
 
     // Its body is its own: a generator's seams and the code around do not reach into it
     GenCtx *svgenctx = parse->genctx;
     int svgenoperand = parse->genoperand;
+    int svtrydepth = parse->trydepth;
     parse->genctx = NULL;
     parse->genoperand = 0;
+    parse->trydepth = 0;
     clo->body = parseExprBlock(parse, 0);
+    // A closure that writes its return type is judged as a function is. Without it the type is
+    // read off the body (or the place it is given to), and the last line may go either way
+    parseTailCheck(clo->body, clo->sig->retwritten ? TailUsed : TailFree);
     parse->genctx = svgenctx;
     parse->genoperand = svgenoperand;
+    parse->trydepth = svtrydepth;
     return (INode*)clo;
+}
+
+// 'try { ... }', with the lexer on 'try': a block whose '?' leaves the block with
+// the failure, not the function, and whose value is that failure or the block's
+// own last value wrapped (propagate.h). It is the block, marked FlagTry, its
+// 'breaks' ready for the '?' inside, which type check aims at it. Its last line is
+// read off the body, as a closure's return is: a value without ';', none with one
+// (parseTailCheckBlock).
+static INode *parseTry(ParseState *parse) {
+    INode *at = (INode*)newNilLitNode();    // positioned on 'try'
+    lexNextToken();
+    ++parse->trydepth;
+    BlockNode *blk = (BlockNode*)parseExprBlock(parse, 0);
+    --parse->trydepth;
+    inodeLexCopy((INode*)blk, at);
+    blk->flags |= FlagTry;
+    blk->breaks = newNodes(2);
+    return (INode*)blk;
 }
 
 // Parse a term: literal, identifier, etc.
@@ -348,6 +455,8 @@ INode *parseTerm(ParseState *parse) {
             lexNextToken();
             return (INode *)node;
         }
+    case InterpToken:
+        return parseInterpString(parse);
     case IdentToken:
     {
         INode *name = (INode*)parseNameUse(parse);
@@ -359,10 +468,10 @@ INode *parseTerm(ParseState *parse) {
         }
         return name;
     }
-    // A closure in the full form, a value: 'fn (u f32) [ribs] f32 { ... }'
+    // A closure in the full form, a value: 'fn (u: f32) [ribs] f32 { ... }'
     case FnToken:
         // Where a type is written, 'fn(i32) i32' is a signature: the callable
-        // type of 'So[fn(i32) i32]' and of a type argument
+        // type of 'Uni[fn(i32) i32]' and of a type argument
         if (parse->intype)
             return parseFnBound(parse);
         return parseClosureFn(parse);
@@ -409,10 +518,14 @@ INode *parseTerm(ParseState *parse) {
     case EachToken:
     case LifetimeToken:
     case LCurlyToken:
+    case TryToken:
+    case HashIfToken:
     {
         INode *node;
         ++parse->genoperand;
         switch (lex->toktype) {
+        case HashIfToken: node = parseHashIfExpr(parse); break;
+        case TryToken: node = parseTry(parse); break;
         case IfToken: node = parseIf(parse); break;
         case MatchToken: node = parseMatch(parse); break;
         case WhileToken: node = parseWhile(parse, NULL, 0); break;
@@ -421,25 +534,59 @@ INode *parseTerm(ParseState *parse) {
         default: node = parseExprBlock(parse, 0); break;
         }
         --parse->genoperand;
+        // An operand's value is used
+        parseTailCheck(node, TailUsed);
         return node;
     }
-    // 'async do' declares an actor's behaviour, in an actor's body: reported,
-    // with either word alone, and the declaration passed over
+    // 'async fn' declares an actor's behaviour, in an actor's body: reported,
+    // as 'async' alone is, and the declaration passed over
     case AsyncToken:
-    case DoToken:
         parseBehaviourWords("a function's body");
         return NULL;
+    case HashSizeToken:
+    case HashAlignToken:
+        return parseMetaLayout(parse);
+    // A fact of the build is read in a '#if' condition; a '#elif' or '#else' continues a '#if'
+    case HashOsToken:
+    case HashArchToken:
+    case HashDebugToken:
+    case HashDefinedToken:
+    case HashDefineToken:
+        parseMetaFactStray();
+        return NULL;
+    case HashElifToken:
+    case HashElseToken:
+    case HashEachToken:
+        parseMetaStray(parse);
+        return NULL;
+    // A meta variable stands for what the layer holds of it: a loop's item or a number
+    case MetaVarToken:
+        return parseMetaTerm(parse);
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
-        lexNextToken(); // Avoid infinite loop
+        if (!lexIsToken(SemiToken))
+            lexNextToken(); // Avoid infinite loop
         return NULL;
     }
+}
+
+// The value of a named argument, as parseArg reads it
+INode *parseArgValue(ParseState *parse) {
+    return parseContentsAfter(parse, parseSimpleExpr(parse));
 }
 
 // Parse a function/method call argument
 INode *parseArg(ParseState *parse) {
     INode *arg = parseContentsAfter(parse, parseSimpleExpr(parse));
     if (lexIsToken(ColonToken)) {
+        // The name failed to parse (a keyword, say: parseTerm reported it and
+        // returned NULL). Read the value after the ':' so the argument list
+        // stays in step, and give no node.
+        if (arg == NULL) {
+            lexNextToken();
+            parseContentsAfter(parse, parseSimpleExpr(parse));
+            return NULL;
+        }
         if (arg->tag != NameUseTag)
             errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
         arg = (INode*)newNamedValNode(arg);
@@ -456,11 +603,21 @@ Nodes *parseArgs(ParseState *parse) {
     Nodes *args = newNodes(8);
     int svinlist = parse->inlist;
     parse->inlist = 1;
+    // A '#each' among a call's arguments (not an index's) makes named arguments, one for each field
+    // of a type parameter; the call's clone expands it (cloneFieldEachArgs)
+    int paren = closetok == RParenToken;
     if (!lexIsToken(closetok)) {
-        nodesAdd(&args, parseArg(parse));
-        while (lexIsToken(CommaToken)) {
+        while (1) {
+            if (paren && lexIsToken(HashEachToken)) {
+                INode *loop = parseHashEachArg(parse);
+                if (loop)
+                    nodesAdd(&args, loop);
+            }
+            else
+                nodesAdd(&args, parseArg(parse));
+            if (!lexIsToken(CommaToken))
+                break;
             lexNextToken();
-            nodesAdd(&args, parseArg(parse));
         }
     }
     parse->inlist = svinlist;
@@ -485,11 +642,11 @@ static INode *parseIndexArg(ParseState *parse) {
         lexNextToken();
         return life;
     }
-    // A signature, 'So[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
+    // A signature, 'Uni[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
     // argument. Nothing indexes by a closure.
     if (lexIsToken(FnToken)) {
         INode *sig = parseFnBound(parse);
-        // 'So[fn(i32) i32 + Sendable]': markers of the value, joined as any type
+        // 'Uni[fn(i32) i32 + Sendable]': markers of the value, joined as any type
         // joined to another, by '+' (a sum node type check reads, fnCallMarkSplit)
         while (lexIsToken(PlusToken)) {
             FnCallNode *sum = newFnCallOpname(sig, plusName, 2);
@@ -503,6 +660,24 @@ static INode *parseIndexArg(ParseState *parse) {
             sig = (INode*)sum;
         }
         return sig;
+    }
+    // 'Iterable[i64, Cursor = u8]' in a type: an associated type fixed in a
+    // constraint, an equality constraint, which is not built. Refused at the '=',
+    // and what follows read as the type it would be
+    if (parse->intype && lexIsToken(IdentToken)) {
+        char *p = lex->srcp;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+            ++p;
+        if (*p == '=' && p[1] != '=') {
+            Name *assoc = lex->val.ident;
+            lexNextToken();
+            errorMsgLex(ErrorAssocEquality,
+                "An associated type is said by the type that meets the trait, not fixed in a constraint: '%s = ...' here is an equality constraint (Rust's 'Item = u8'), which is not built.",
+                &assoc->namestr);
+            lexNextToken();
+            parseType(parse);
+            return NULL;
+        }
     }
     return parseArg(parse);
 }
@@ -553,17 +728,43 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
 }
 
 // '...' is no range operator. Said at the token, with the two that are; the
-// caller goes on reading it as '..', so the rest of the range is checked too.
+// caller goes on reading it as '..=', so the rest of the range is checked too.
 void parseRangeEllipsis(void) {
-    errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a .. b' runs through b, and 'a ..< b' stops before b.");
+    errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a ..= b' runs through b, and 'a ..< b' stops before b.");
+}
+
+// A bare '..' before an end does not say whether the end is included, so it is
+// refused at the token. The caller goes on reading it as
+// '..=', which is what '..' once meant, so the rest of the range is checked too.
+void parseRangeBare(void) {
+    errorMsgLex(ErrorRangeBare, "'..' does not say whether the range includes its end: write '..<' to stop before the end, or '..=' to include it.");
+}
+
+// Where a token began, kept to report it after the lexer has moved on
+typedef struct LexSpot {
+    char *tokp;
+    char *linep;
+    uint32_t linenbr;
+} LexSpot;
+
+static void parseRangeBareAt(LexSpot spot) {
+    LexSpot now = {lex->tokp, lex->linep, lex->linenbr};
+    lex->tokp = spot.tokp;
+    lex->linep = spot.linep;
+    lex->linenbr = spot.linenbr;
+    parseRangeBare();
+    lex->tokp = now.tokp;
+    lex->linep = now.linep;
+    lex->linenbr = now.linenbr;
 }
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
-// that a borrow makes a slice of part of an array (doc/reference/
-// refarrayref.html, "Subslices"). 'a..b' includes b and 'a..<b' stops before it; a
-// missing start is 0, and a missing end, 'a..', is the array's end. A range is
+// that a borrow makes a slice of part of an array (doc/manual/
+// lib-collections.html#subslices, "Subslices"). 'a..=b' includes b and 'a..<b' stops before it; a
+// missing start is 0, and a missing end, 'a..', is the array's end. A bare '..'
+// before an end is refused (parseRangeBare). A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
-// to the end, the end; FlagRangeIncl says the end was written with '..'.
+// to the end, the end; FlagRangeIncl says the end was written with '..=' (or '..').
 //
 // The lifetimes a type's use names, 'Cursor['a]', 'Parser['s, 'r]', or
 // 'Cursor['a, T]' beside its type arguments, are taken out of the arguments
@@ -635,25 +836,81 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
         }
     }
 
-    // A range. '..' runs through its end and '..<' stops before it; a range
-    // with no end runs to the array's end, which '..' and '..<' would both reach
+    // A range. '..=' runs through its end and '..<' stops before it; a range
+    // with no end runs to the array's end, which '..=' and '..<' would both reach.
+    // A '..' followed by an end is refused, with a start or without; with no end,
+    // 'a..' runs to the end and '..' is the whole
     fncall->flags |= FlagRange;
     int stopsbefore = lexIsToken(DotDotLessToken);
+    int includes = lexIsToken(DotDotEqToken);
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
+    int bare = lexIsToken(DotDotToken);
+    LexSpot dots = {lex->tokp, lex->linep, lex->linenbr};
     lexNextToken();
     if (start == NULL)
         start = (INode*)newULitNode(0, (INode*)usizeType);
     nodesAdd(&args, start);
     if (!lexIsToken(RBracketToken)) {
+        if (bare)
+            parseRangeBareAt(dots);
         nodesAdd(&args, parseSimpleExpr(parse));
         if (!stopsbefore)
             fncall->flags |= FlagRangeIncl;
     }
     else if (stopsbefore)
         errorMsgLex(ErrorBadIndex, "A range that stops before its end, '..<', must say where it ends; 'a..' runs to the end");
+    else if (includes)
+        errorMsgLex(ErrorBadIndex, "A range that includes its end, '..=', must say where it ends; 'a..' runs to the end");
     parseCloseTok(RBracketToken);
     return args;
+}
+
+// Skip what a field list holds that is no name, to the ')' that closes the list
+// (or the end of the statement), the parentheses inside it paired off
+static void parseFieldListSkip(void) {
+    int depth = 0;
+    while (!lexIsToken(SemiToken) && !lexIsToken(RCurlyToken) && !lexIsToken(EofToken)) {
+        if (lexIsToken(LParenToken))
+            ++depth;
+        else if (lexIsToken(RParenToken) && depth-- == 0)
+            return;
+        lexNextToken();
+    }
+}
+
+// Parse the field list of 'x.(a, b)', the '(' being the token the lexer is at:
+// field names, or for a tuple the numbers of its elements. Type check says which
+// the value's type wants, and whether the names fit it.
+static INode *parseFieldList(ParseState *parse, INode *obj) {
+    DestructNode *list = newDestructNode(obj);
+    lexNextToken();
+    if (lexIsToken(RParenToken))
+        errorMsgLex(ErrorFldListForm, "A field list names the fields it takes, `x.(a, b)`; this one names none.");
+    else while (1) {
+        // Only names and numbers go in a list, one then a comma or the end
+        if (lexIsToken(IdentToken))
+            nodesAdd(&list->names, (INode*)newMemberUseNode(lex->val.ident));
+        else if (lexIsToken(IntLitToken))
+            nodesAdd(&list->names, (INode*)newULitNode(lex->val.uintlit, lex->langtype));
+        else {
+            errorMsgLex(ErrorFldListForm, "Name a field, `x.(a, b)`, or number a tuple's element, `t.(0, 2)`; this is neither.");
+            parseFieldListSkip();
+            break;
+        }
+        lexNextToken();
+        if (lexIsToken(CommaToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (!lexIsToken(RParenToken)) {
+            errorMsgLex(ErrorFldListForm, "Name a field, `x.(a, b)`, or number a tuple's element, `t.(0, 2)`; this is neither.");
+            parseFieldListSkip();
+        }
+        break;
+    }
+    parseCloseTok(RParenToken);
+    return (INode*)list;
 }
 
 // Parse a '.'-based method call/field access
@@ -662,8 +919,16 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     fncall->flags |= flags;
     lexNextToken();
 
-    // Get field/method name
-    if (lexIsToken(IdentToken))
+    // 'x.(a, b)': the named fields of x
+    if (lexIsToken(LParenToken))
+        return parseFieldList(parse, node);
+
+    // Get field/method name. 'await' is a keyword, but no expression follows a
+    // '.', so it may name the convention method a type is awaited by (ir/exp/await.c)
+    if (lexIsToken(IdentToken) || lexIsToken(AwaitToken))
+        fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
+    // Or the splice of a '#each #f in #fields(T)': 'x.#f' is x's field that pass describes
+    else if (lexIsToken(MetaVarToken) && parseMetaIsFieldVar(lex->val.ident))
         fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
     // Or integer constant (for tuple element)
     else if (lexIsToken(IntLitToken)) {
@@ -699,12 +964,45 @@ static void parseMarkValueTerm(ParseState *parse, INode *node) {
     }
 }
 
+// 'x?', with the lexer on the '?': what 'x' holds, or an early return of its
+// failure (propagate.h). The block holds 'x' in a hidden variable, and type
+// check, once it knows whether 'x' is a Result or an Option and what the
+// function returns, builds the test and the return after it (propagateLower).
+// The block is positioned on the '?', which every report about it names.
+static INode *parsePropagate(ParseState *parse, INode *node) {
+    BlockNode *blk = newBlockNode();
+    blk->flags |= FlagPropagate;
+    // A generator hands its caller items through 'yield', and its 'return' ends
+    // the walk: it has no Result or Option of its own for a '?' to return. A
+    // '?' in a 'try' block leaves the block instead
+    if (parse->genctx && parse->trydepth == 0)
+        errorMsgLex(ErrorQuesReturn,
+            "'?' returns a failure from the function it is in, and a generator returns nothing but its items, through 'yield'. Use 'match' or let-else here.");
+    VarDclNode *held = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, node);
+    held->flags |= FlagQuesHeld;
+    inodeLexCopy((INode*)held, node);
+    nodesAdd(&blk->stmts, (INode*)held);
+    lexNextToken();
+    return (INode*)blk;
+}
+
 // This processes all suffix operators successively
 // Returns a node with first suffix inner-most, last is outermost.
-INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
+// 'awaited' stops them before a '?': the term is the operand of an 'await',
+// which the '?' follows (parsePrefix).
+static INode *parseSuffixUntil(ParseState *parse, INode *node, uint16_t flags, int awaited) {
 
     // Process as many suffixes as we have, each applying to the term before
     while (1) {
+        // '?': not where a type is read, whose '?' is an Option's sugar
+        // written before the type, nor ahead of an 'await' still to apply
+        if (lexIsToken(QuesToken) && !parse->intype && !awaited) {
+            // What '?' takes is a value: 'None[i32]?' constructs the variant
+            parseMarkValueTerm(parse, node);
+            node = parsePropagate(parse, node);
+            continue;
+        }
+
         if (lexIsToken(DotToken)) {
             node = parseDotCall(parse, node, flags);
         }
@@ -750,6 +1048,10 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         }
     }
     return node; // we never get here
+}
+
+INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
+    return parseSuffixUntil(parse, node, flags, 0);
 }
 
 // Parse a term wrapped by any suffixes.
@@ -829,7 +1131,7 @@ INode *parseAmper(ParseState *parse) {
     }
 
     // Static permission (optional). In a type, 'new' is the permission of an
-    // initializer's 'self', '&new'; in a value, '&new Point(1, 2)' is a borrow
+    // initializer's 'self', '&new'; in a value, '&Point(1, 2)' is a borrow
     // of a construction.
     if (lexIsToken(NewToken) && parse->intype) {
         anode->perm = newPermUseNode(newPerm);
@@ -893,7 +1195,7 @@ INode *parseAmper(ParseState *parse) {
 
     // A borrow applies to the whole suffixed term, at the same precedence every
     // other prefix operator has: '&x.a' references the field and '&x[4]' the
-    // fifth element, which is what doc/reference/refborref.html documents.
+    // fifth element, which is what doc/manual/mem-borrowing.html documents.
     //
     // This used to consume only the prefixed term and then re-apply the suffixes
     // to the borrow, so '&x.a' was '(&x).a' and reached codegen typed as the
@@ -910,7 +1212,7 @@ INode *parseAmper(ParseState *parse) {
 // '+Rc-mut 5', and of a reference type, '+Rc-mut Node':
 // - Some reference type ('+' or '+<')
 // - Region and permission annotations
-// An allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)'
+// An allocation is written 'Rc[i32](5)' or 'Rc[mut, Node](1)'
 // (parseNew); one spelled with '+' is refused at type check (ErrorPlusAlloc),
 // and '+<' at name resolution. A single or virtual reference TYPE is written
 // 'Rc[mut, Node]', and type check refuses this spelling of one (plusSpelled); at a
@@ -918,7 +1220,7 @@ INode *parseAmper(ParseState *parse) {
 // variant.
 //
 // There is no owning array reference: an owned run-time-sized array is a
-// 'So[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be
+// 'Uni[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be
 // refused, once, at the token, and read through as the thin form so that what
 // follows parses as written. A parse diagnostic ends the compile before name
 // resolution, so what is built for it is never analysed.
@@ -930,7 +1232,7 @@ INode *parsePlus(ParseState *parse) {
         anode = newRefNode(RefTag); break;
     case PlusArrayRefToken:
         errorMsgLex(ErrorOwnedArrayRef,
-            "There is no owning array reference '+[]': an owned run-time-sized array is a 'So[Array[T]]', shared as 'Rc[Array[T]]', and a growable one a List; a borrowed slice is '&Array[T]'.");
+            "There is no owning array reference '+[]': an owned run-time-sized array is a 'Uni[Array[T]]', shared as 'Rc[Array[T]]', and a growable one a List; a borrowed slice is '&Array[T]'.");
         anode = newRefNode(RefTag); break;
     case PlusVirtRefToken:
         anode = newRefNode(VirtRefTag); break;
@@ -974,13 +1276,17 @@ INode *parsePrefix(ParseState *parse) {
     // operator is that operand's
     int entryparen = parse->entryparen;
     parse->entryparen = 0;
+    // The operand of an 'await' is this term alone: a prefix operator here
+    // takes the '?' after its own operand ('await -x?' awaits '-(x?)')
+    int awaited = parse->awaitoperand;
+    parse->awaitoperand = 0;
     switch (lex->toktype) {
 
     // '.' sugar for: this.suffixes
     case DotToken:
     {
         INode *node = parseDotCall(parse, (INode*)newNameUseNode(thisName), 0);
-        return parseSuffix(parse, node, 0);
+        return parseSuffixUntil(parse, node, 0, awaited);
     }
 
     // '*' (dereference or pointer type)
@@ -1025,13 +1331,14 @@ INode *parsePrefix(ParseState *parse) {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
         INode *argnode = parsePrefix(parse);
-        // A char is no quantity, so a minus before one is left to be refused
-        if (argnode->tag == ULitTag && !(argnode->flags & FlagCharLit)) {
+        // A char is no quantity, so a minus before one is left to be refused.
+        // An operand parseTerm refused is NULL, already reported
+        if (argnode && argnode->tag == ULitTag && !(argnode->flags & FlagCharLit)) {
             ((ULitNode*)argnode)->uintlit = 0 - ((ULitNode*)argnode)->uintlit;
             argnode->flags ^= FlagLitNeg;
             return argnode;
         }
-        else if (argnode->tag == FLitTag) {
+        else if (argnode && argnode->tag == FLitTag) {
             ((FLitNode*)argnode)->floatlit = -((FLitNode*)argnode)->floatlit;
             return argnode;
         }
@@ -1069,21 +1376,27 @@ INode *parsePrefix(ParseState *parse) {
     }
 
     // 'await' (a seam in an actor's method): what follows is what is awaited,
-    // a prefix operand, so 'await f.get() + 1' adds to what the wait gives
+    // a prefix operand, so 'await f.get() + 1' adds to what the wait gives.
+    // A '?' after the operand applies to what the wait gives, 'await x?' being
+    // '(await x)?', and so do the suffixes after that '?' ('await x?[0]')
     case AwaitToken:
     {
         AwaitNode *node = newAwaitNode();
         if (parse->dcltexts)
             ++parse->dcltexts->awaits;
         lexNextToken();
+        parse->awaitoperand = 1;
         node->exp = parsePrefix(parse);
+        parse->awaitoperand = 0;
+        if (lexIsToken(QuesToken))
+            return parseSuffix(parse, (INode *)node, 0);
         return (INode *)node;
     }
 
     // No prefix operator: get the term with its suffixes
     default:
         parse->entryparen = entryparen;
-        return parseSuffixTerm(parse);
+        return parseSuffixUntil(parse, parseTerm(parse), 0, awaited);
     }
 }
 
@@ -1094,7 +1407,7 @@ INode *parsePrefix(ParseState *parse) {
 // parses, and the parse error keeps analysis from running.
 static void parseRetiredInto(ParseState *parse) {
     errorMsgLex(ErrorInto,
-        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'.");
+        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'.");
     lexNextToken();
     parseType(parse);
 }
@@ -1111,6 +1424,7 @@ INode *parseCast(ParseState *parse) {
         if (!lexIsToken(AsToken))
             return lhnode;
         CastNode *node = newRecastNode(lhnode, unknownType);
+        node->flags |= FlagWrittenAs;
         lexNextToken();
         node->typ = parseTypeReq(parse, "'as'");
         lhnode = (INode*)node;
@@ -1195,7 +1509,9 @@ INode *parseShift(ParseState *parse) {
 INode *parseAnd(ParseState *parse) {
     INode *lhnode = parseShift(parse);
     while (1) {
-        if (lexIsToken(AmperToken)) {
+        // '&&' after an operand is the logical and, not the bitwise and of a
+        // borrow ('a & &b' is written with a space); parseAndLogicFrom reads it
+        if (lexIsToken(AmperToken) && !lexIsAmpAmp()) {
             FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseShift(parse));
@@ -1245,6 +1561,7 @@ char *parseCmpOp() {
     case NotSameToken: return "!==";
     case LtToken:  return "<";
     case LeToken:  return "<=";
+    case ThreeWayToken: return "<=>";
     case GtToken:  return ">";
     case GeToken:  return ">=";
     default:       return NULL;
@@ -1277,7 +1594,7 @@ INode *parseCmp(ParseState *parse) {
     return parseCmpFrom(parse, parseOr(parse));
 }
 
-// Parse 'not' logical operator
+// Parse '!' logical operator
 INode *parseNotLogic(ParseState *parse) {
     if (lexIsToken(NotToken)) {
         parse->entryparen = 0;
@@ -1289,10 +1606,12 @@ INode *parseNotLogic(ParseState *parse) {
     return parseCmp(parse);
 }
 
-// Parse 'and' logical operator, following a left operand already parsed
+// Parse '&&' logical operator, following a left operand already parsed. The
+// lexer keeps '&&' as two '&' tokens; after an operand they are the logical and.
 static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
-    while (lexIsToken(AndToken)) {
+    while (lexIsAmpAmp()) {
         LogicNode *node = newLogicNode(AndLogicTag);
+        lexNextToken();
         lexNextToken();
         node->lexp = lhnode;
         node->rexp = parseNotLogic(parse);
@@ -1301,14 +1620,14 @@ static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
     return lhnode;
 }
 
-// Parse 'and' logical operator
+// Parse '&&' logical operator
 INode *parseAndLogic(ParseState *parse) {
     return parseAndLogicFrom(parse, parseNotLogic(parse));
 }
 
-// Parse 'or' logical operator, following a left operand already parsed
+// Parse '||' logical operator, following a left operand already parsed
 static INode *parseOrExprFrom(ParseState *parse, INode *lhnode) {
-    while (lexIsToken(OrToken)) {
+    while (lexIsToken(OrOrToken)) {
         LogicNode *node = newLogicNode(OrLogicTag);
         lexNextToken();
         node->lexp = lhnode;
@@ -1318,7 +1637,7 @@ static INode *parseOrExprFrom(ParseState *parse, INode *lhnode) {
     return lhnode;
 }
 
-// Parse 'or' logical operator
+// Parse '||' logical operator
 INode *parseOrExpr(ParseState *parse) {
     return parseOrExprFrom(parse, parseAndLogic(parse));
 }
@@ -1331,7 +1650,7 @@ INode *parseSimpleExpr(ParseState *parse) {
 // Finish parsing a simple expression whose first operand -- everything that
 // binds tighter than a comparison, which parseOr parses -- is already in hand.
 // A match's case reads that much before it can tell a range pattern, whose
-// '..' or '...' follows it, from a condition.
+// '..=' or '..<' follows it, from a condition.
 INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode) {
     return parseOrExprFrom(parse, parseAndLogicFrom(parse, parseCmpFrom(parse, lhnode)));
 }
@@ -1361,9 +1680,18 @@ INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     return (INode*)node;
 }
 
-// Is this a construction, 'new Point(1, 2)', which contents may follow after '<-'?
+// Is this a construction, which contents may follow after '<-': 'new a[Node](1)', or
+// 'List[i32](100)', a type's name with parentheses? The parser cannot tell a type
+// from a function, so any plain call is taken for one here, and name resolution
+// has the callee's say (fnCallAppendNestNameRes): the entries of a call that is
+// no construction are nested as a receiver's are that is none.
 static int parseIsConstruction(INode *node) {
-    return node != NULL && node->tag == FnCallTag && (node->flags & FlagNew);
+    if (node == NULL || node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->flags & FlagNew)
+        return 1;
+    return call->methfld == NULL && call->args != NULL && !(call->flags & (FlagIndex | FlagOperator));
 }
 
 static INode *parseEntry(ParseState *parse);
@@ -1383,8 +1711,15 @@ static INode *parseEntryValue(ParseState *parse) {
 // - 'k: v', a key and its value.
 // An entry that begins with '(' is a parenthesized list of entries
 // (parseTerm), which is how a construction's contents are written inside
-// another comma list: 'draw(new List[i32] <- (1, 2), x)'.
+// another comma list: 'draw(List[i32]() <- (1, 2), x)'.
 static INode *parseEntry(ParseState *parse) {
+    // A whole entry that is an interpolated string, where the list is one entry
+    // (after a construction in an argument list): its pieces, parenthesized
+    if (parseInterpIsEntry()) {
+        INode *entry = parseInterpEntry(parseInterpPieces(parse));
+        lexNextToken();
+        return entry;
+    }
     if (lexIsToken(EachToken))
         return parseEachEntry(parse);
     // 'parallel' is a word only directly before 'each' (as parseExprBlock reads it)
@@ -1409,6 +1744,13 @@ static INode *parseEntry(ParseState *parse) {
         tag = PairEntryTag;
     else
         return first;
+    // The first expression was refused (parseTerm reported it and gave NULL).
+    // Read the value after 'of' or ':' so the list stays in step, and give no node.
+    if (first == NULL) {
+        lexNextToken();
+        parseEntryValue(parse);
+        return NULL;
+    }
     EntryNode *entry = newEntryNode(tag, first);
     inodeLexCopy((INode*)entry, first);
     lexNextToken();
@@ -1421,15 +1763,37 @@ static INode *parseEntry(ParseState *parse) {
 // (contentsLower). The list runs to whatever ends it, the statement's ';'
 // or a ')', across lines.
 static INode *parseEntries(ParseState *parse) {
-    INode *entry = parseEntry(parse);
+    // An interpolated string that is a whole entry stands for its pieces
+    Nodes *pieces = NULL;
+    INode *entry;
+    if (parseInterpIsEntry()) {
+        pieces = parseInterpPieces(parse);
+        entry = parseInterpEntry(pieces);
+        lexNextToken();
+    }
+    else
+        entry = parseEntry(parse);
     if (!lexIsToken(CommaToken))
         return entry;
     TupleNode *tuple = newTupleNode(4);
-    inodeLexCopy((INode*)tuple, entry);
-    nodesAdd(&tuple->elems, entry);
+    if (entry)  // a refused entry is NULL, already reported
+        inodeLexCopy((INode*)tuple, entry);
+    if (pieces) {
+        for (uint32_t i = 0; i < pieces->used; ++i)
+            nodesAdd(&tuple->elems, nodesGet(pieces, i));
+    }
+    else
+        nodesAdd(&tuple->elems, entry);
     while (lexIsToken(CommaToken)) {
         lexNextToken();
-        nodesAdd(&tuple->elems, parseEntry(parse));
+        if (parseInterpIsEntry()) {
+            pieces = parseInterpPieces(parse);
+            for (uint32_t i = 0; i < pieces->used; ++i)
+                nodesAdd(&tuple->elems, nodesGet(pieces, i));
+            lexNextToken();
+        }
+        else
+            nodesAdd(&tuple->elems, parseEntry(parse));
     }
     return (INode*)tuple;
 }
@@ -1439,13 +1803,15 @@ static INode *parseEntries(ParseState *parse) {
 // construction, which is first held in a variable, and one otherwise. Name
 // resolution numbers the scopes of an each's variables as if inside those blocks.
 static void parseEntryNest(INode *entries, uint16_t nest) {
+    if (entries == NULL)  // the entry was refused: parseTerm reported it and gave NULL
+        return;
     if (entries->tag == EachEntryTag)
         ((EntryNode*)entries)->nest = nest;
     else if (entries->tag == VTupleTag) {
         INode **elemp;
         uint32_t cnt;
         for (nodesFor(((TupleNode*)entries)->elems, cnt, elemp)) {
-            if ((*elemp)->tag == EachEntryTag)
+            if (*elemp && (*elemp)->tag == EachEntryTag)
                 ((EntryNode*)*elemp)->nest = nest;
         }
     }
@@ -1453,8 +1819,8 @@ static void parseEntryNest(INode *entries, uint16_t nest) {
 
 // After a construction inside a comma list -- an argument, a named value, an
 // array literal's element, an entry -- '<-' takes one entry, since the comma
-// after it belongs to the list: 'draw(new List[i32] <- (1, 2), x)' parenthesizes
-// several, and 'f(new Array[f32, 4] <- fill 0.0)' needs nothing more.
+// after it belongs to the list: 'draw(List[i32]() <- (1, 2), x)' parenthesizes
+// several, and 'f(Array[f32, 4]() <- fill 0.0)' needs nothing more.
 // Anything else is returned as it is.
 static INode *parseContentsAfter(ParseState *parse, INode *node) {
     if (!lexIsToken(LessDashToken) || !parseIsConstruction(node))

@@ -1,0 +1,111 @@
+// The buffer pool region's four functions, called through core's MemRegion
+// methods as a collection calls them: alloc serves the class that holds the
+// bytes and the size function says which; blocks are page-aligned and aligned
+// to their own class; release finds the block's slab by its address and takes
+// the class from the size (any byte count with the class's answer will do);
+// resize keeps the block within a class and moves, copying, between classes;
+// a request over 1 MiB is a block of its own, counted and given back whole.
+
+mod region;
+
+import testing use *;
+import bufpool use *;
+
+fn pool() &MemRegion {bufferPool() as &MemRegion}
+
+fn fill(p: *u8, n: usize, v: u8) {
+  var i = 0usize;
+  while i < n {
+    *(p + i) = v + u8.from(i % 7usize);
+    i = i + 1usize;
+  }
+}
+
+fn intact(p: *u8, n: usize, v: u8) bool {
+  var i = 0usize;
+  while i < n {
+    if *(p + i) != v + u8.from(i % 7usize) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  let r = pool();
+
+  // The size function: the class's size, whole pages beyond 1 MiB
+  expectUInt(u64.from(r.sizeFor(0usize, 1usize)), 4096u64, "0 bytes: the smallest class");
+  expectUInt(u64.from(r.sizeFor(1usize, 1usize)), 4096u64, "1 byte: 4 KiB");
+  expectUInt(u64.from(r.sizeFor(4096usize, 16usize)), 4096u64, "4096: 4 KiB");
+  expectUInt(u64.from(r.sizeFor(4097usize, 16usize)), 16384u64, "4097: 16 KiB");
+  expectUInt(u64.from(r.sizeFor(65537usize, 1usize)), 262144u64, "65537: 256 KiB");
+  expectUInt(u64.from(r.sizeFor(1048576usize, 1usize)), 1048576u64, "1 MiB: 1 MiB");
+  expectUInt(u64.from(r.sizeFor(1048577usize, 1usize)), 1052672u64, "over 1 MiB: whole pages");
+  var promise = true;
+  var b = 0usize;
+  while b < 1200000usize {
+    let s = r.sizeFor(b, 8usize);
+    if s < b || r.sizeFor(s, 8usize) != s || r.sizeFor(b + 1usize, 8usize) < s {promise = false;}
+    b = b + 977usize;
+  }
+  expect(promise, "the size is at least the bytes, idempotent, and never falls as bytes rise");
+
+  // Blocks of every class: page-aligned, aligned to their class, usable whole
+  var p4 = r.allocate(100usize, 8usize);
+  var p16 = r.allocate(10000usize, 8usize);
+  var p64 = r.allocate(65536usize, 8usize);
+  var p256 = r.allocate(200000usize, 8usize);
+  var p1m = r.allocate(1048576usize, 4096usize);
+  expect((p4 as usize) % 4096usize == 0usize, "4 KiB block page-aligned");
+  expect((p16 as usize) % 16384usize == 0usize, "16 KiB block aligned to 16 KiB");
+  expect((p64 as usize) % 65536usize == 0usize, "64 KiB block aligned to 64 KiB");
+  expect((p256 as usize) % 262144usize == 0usize, "256 KiB block aligned to 256 KiB");
+  expect((p1m as usize) % 1048576usize == 0usize, "1 MiB block aligned to 1 MiB");
+  fill(p4, 4096usize, 1u8);
+  fill(p16, 16384usize, 2u8);
+  fill(p64, 65536usize, 3u8);
+  fill(p256, 262144usize, 4u8);
+  fill(p1m, 1048576usize, 5u8);
+  expect(intact(p4, 4096usize, 1u8) && intact(p16, 16384usize, 2u8) && intact(p64, 65536usize, 3u8)
+    && intact(p256, 262144usize, 4u8) && intact(p1m, 1048576usize, 5u8), "no block disturbs another");
+  expectUInt(blockStats().lent, 5u64, "five lent");
+  expectUInt(osBlocks(), 5u64, "five slabs, one for each class");
+
+  // Resize: the same block within a class, a copy between classes
+  let same = r.resize(p4, 4096usize, 3000usize, 8usize);
+  expect(same as usize == p4 as usize, "shrinking within the class keeps the block");
+  let up = r.resize(p4, 4096usize, 5000usize, 8usize);
+  expect(up as usize != p4 as usize, "growing past the class moves it");
+  expect(intact(up, 4096usize, 1u8), "and copies the bytes");
+  expectUInt(blockStats().lent, 5u64, "the old block went home as the new one came");
+  let down = r.resize(up, 16384usize, 100usize, 8usize);
+  expect(intact(down, 100usize, 1u8), "shrinking to a smaller class copies what fits");
+  p4 = down;
+  let fromNull = r.resize(null, 0usize, 70000usize, 8usize);
+  expect(fromNull as usize != 0usize, "a null block of 0 bytes is an allocation");
+  expectUInt(u64.from(r.sizeFor(70000usize, 8usize)), 262144u64, "(256 KiB)");
+  fill(fromNull, 100usize, 9u8);
+  let moved = r.resize(fromNull, 262144usize, 2000000usize, 8usize);
+  expect(intact(moved, 100usize, 9u8), "growing into oversize copies the bytes");
+  expectUInt(osBlocks(), 6u64, "an oversize block is of its own, from the OS");
+  expectUInt(u64.from(blockStats().heldBytes), 5u64 * 2097152u64 + 2002944u64, "held: the slabs and the oversize block's pages");
+  let keep = r.resize(moved, 2000000usize, 2001000usize, 8usize);
+  expect(keep as usize == moved as usize, "within the same pages the oversize block stays");
+  let small = r.resize(keep, 2001000usize, 5000usize, 8usize);
+  expect(intact(small, 100usize, 9u8), "oversize shrinks to a class, copying");
+
+  // Release: by any byte count with the class's answer, and a null is nothing
+  r.release(small, 16384usize);
+  r.release(null, 4096usize);
+  r.release(p4, 100usize);
+  r.release(p16, 9000usize);
+  r.release(p64, 65536usize);
+  r.release(p256, 200000usize);
+  r.release(p1m, 1048576usize);
+  let st = blockStats();
+  expectUInt(st.lent, 0u64, "every block home");
+  trimStock();
+  expectUInt(osBlocks(), 0u64, "every slab back with the OS");
+  expectUInt(blockStats().osAllocs, blockStats().osFrees, "every allocation from the OS freed");
+  done()
+}

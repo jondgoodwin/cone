@@ -1,0 +1,73 @@
+// ======== Small helpers for a terminal program: arguments, a line from standard input, bytes to standard output ========
+
+extern {
+  fn @c(system) SetConsoleOutputCP(codePage: u32) i32;
+}
+
+// Make a Windows console show UTF-8 (a model's replies are UTF-8); nothing elsewhere
+pub fn utf8Console() {
+  #if #os == .windows { SetConsoleOutputCP(65001u32); }
+}
+
+// The value after `--name`, if the arguments have it
+pub fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].clone()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+// Whether the arguments have the flag `--name`
+pub fn hasFlag(args: &List[String], name: &str) bool {
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == name { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// A line from standard input without its line end, or None at the end of the input
+pub fn readLine() Option[List[u8]] {
+  var line = List[u8]();
+  var got = false;
+  var byte = List[u8].withCapacity(1usize);
+  byte.push(0u8);
+  while true {
+    let n = libc.fread(&mut byte[0usize] as *u8, 1usize, 1usize, libc.stdin());
+    if n == 0usize { break; }
+    got = true;
+    if *byte[0usize] == '\n' { break; }
+    line.push(*byte[0usize]);
+  }
+  if !got { return None; }
+  if line.len() > 0usize && *line[line.len() - 1usize] == '\r' { line.pop(); }
+  Some[List[u8]](line)
+}
+
+// Write the bytes to standard output now
+pub fn writeBytes(b: &Array[u8]) {
+  if b.len == 0usize { return; }
+  // One record of raw bytes through the console, the same writer 'print' uses, so the two stay in
+  // order; nothing is validated or replaced, since a token may end inside a UTF-8 character
+  {
+    var rec = print.record();
+    rec.writeBytes(&b[0usize] as *u8, b.len);
+  }
+  // The record is delivered as the scope ends; flush so the bytes are out now, pipe or terminal
+  print.flush();
+}
+
+// A number with one decimal place: 12.34 is "12.3"
+pub fn oneDecimal(x: f64) String {
+  var s = String();
+  var v = x;
+  if v < 0.0 { s <- "-"; v = 0.0 - v; }
+  let tenths = u64.from(v * 10.0 + 0.5);
+  s <- tenths / 10u64;
+  s <- ".";
+  s <- tenths % 10u64;
+  s
+}

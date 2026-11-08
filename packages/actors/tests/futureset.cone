@@ -1,0 +1,243 @@
+// FutureSet[T] from the package's side: several futures waited on at once.
+// Each case is a behaviour of Asker, run after the one before it; every number
+// recorded was worked out by hand from the source below.
+//
+// - order: a member added first that can only finish after the member added
+//   second (it awaits it), so the results come out second, first; checked by a
+//   number built from the keys and values in the order 'next()' gave them;
+// - empty: 'next()' of a set with nothing in it is None, at once;
+// - all: 'await set' after one 'next()' gives what is left in the order added;
+// - abandoned: a member whose behaviour's actor died while it waited comes out
+//   as an Err, not a panic;
+// - first-of: one 'next()' and the set dropped: the members sent in its group
+//   are cancelled (they see it when they run) and their late replies dropped.
+
+mod futureset;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+struct Sums {
+  pub order: Atomic[u64];
+  pub empty: Atomic[u64];
+  pub rest: Atomic[u64];
+  pub restLen: Atomic[u64];
+  pub gone: Atomic[u64];
+  pub first: Atomic[u64];
+  pub cancelled: Atomic[u64];
+  pub gate: Atomic[u64];
+  pub small: Atomic[u64];
+  pub large: Atomic[u64];
+  pub drained: Atomic[u64];
+}
+
+let sums: Sums;
+
+fn @initpure init() {
+  sums = Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// Awaiting this gives nothing and never will: the envelope is dropped unanswered
+struct Hang {
+  pub n: u64;
+  pub fn await(self) actors.Awaitable[u64] {
+    actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {})
+  }
+}
+
+actor Worker {
+  pub async fn val(self, n: u64) u64 {n}
+  // answers only once another member's arrival has been stored, so the order of arrival is fixed
+  pub async fn held(self, n: u64) u64 {
+    while sums.order.load() == 0u64 {
+      thread.yieldNow();
+    }
+    n
+  }
+  pub async fn stuck(self) u64 {await Hang(1u64)}
+  // holds this worker until the gate opens, so what is queued behind it runs after
+  pub async fn block(self) u64 {
+    while sums.gate.load() == 0u64 {
+      thread.yieldNow();
+    }
+    0u64
+  }
+  pub async fn check(self, n: u64) u64 {
+    if actors.isCancelled() {
+      sums.cancelled.add(n);
+    }
+    n
+  }
+}
+
+actor Asker {
+  w: Worker;
+  v: Worker;
+
+  pub async fn go(self) {
+    // order: member 0 is held (12, once member 1 has been taken), member 1 is 2
+    {
+      var set = actors.FutureSet[u64].make();
+      set <- w.held(12u64);
+      set <- v.val(2u64);
+      var seq = 0u64;
+      while true {
+        match await set.next() {
+          case let Some(p) {
+            var x = 0u64;
+            match p.1 {
+              case let Ok(n) {x = n;}
+              case let Err(e) {x = 999u64;}
+            }
+            seq = seq * 1000u64 + p.0.n * 100u64 + x;
+            sums.order.store(seq);
+          }
+          case is None {break;}
+        }
+      }
+    }
+    // empty
+    {
+      var set = actors.FutureSet[u64].make();
+      match await set.next() {
+        case let Some(p) {sums.empty.store(2u64);}
+        case is None {sums.empty.store(1u64);}
+      }
+    }
+    // all: three members that have arrived, one taken, the others in order added
+    {
+      var set = actors.FutureSet[u64].make();
+      set <- w.val(1u64);
+      set <- w.val(2u64);
+      set <- w.val(3u64);
+      var taken = 0u64;
+      match await set.next() {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {taken = n;}
+            case let Err(e) {}
+          }
+        }
+        case is None {}
+      }
+      let rest = await set;
+      var seq = 0u64;
+      var i = 0usize;
+      while i < rest.len() {
+        match rest[i] {
+          case let Ok(n) {seq = seq * 10u64 + n;}
+          case let Err(e) {seq = seq * 10u64 + 9u64;}
+        }
+        i = i + 1usize;
+      }
+      // which member next() took depends on timing: one that arrived before its
+      // 'add' goes straight to the queue, past one whose arrival is still a message
+      if taken == 1u64 && seq == 23u64 || taken == 2u64 && seq == 13u64 || taken == 3u64 && seq == 12u64 {
+        sums.rest.store(1u64);
+      }
+      sums.restLen.store(u64.from(rest.len()));
+    }
+    // abandoned: the actor holding the member's request is dropped while it waits
+    {
+      var set = actors.FutureSet[u64].make();
+      {
+        let s = Worker();
+        set <- s.stuck();
+      }
+      match await set.next() {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {sums.gone.store(2u64);}
+            case let Err(e) {sums.gone.store(1u64);}
+          }
+        }
+        case is None {sums.gone.store(3u64);}
+      }
+    }
+    // first-of: v answers at once; w is held, with three checks queued behind it,
+    // sent in the set's group
+    {
+      var set = actors.FutureSet[u64].make();
+      set <- w.block();
+      set.start(fn() actors.Future[u64] {w.check(1u64)});
+      set.start(fn() actors.Future[u64] {w.check(10u64)});
+      set <- v.val(7u64);
+      match await set.next() {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {sums.first.store(n);}
+            case let Err(e) {}
+          }
+        }
+        case is None {}
+      }
+    }
+    sums.gate.store(1u64);
+    selfactor.scale(2000u64, 0u64);
+  }
+
+  // n members added and drained by next(): the time taken, in nanoseconds, kept
+  pub async fn scale(self, n: u64, slot: u64) {
+    var set = actors.FutureSet[u64].make();
+    let start = time.Instant.now();
+    var i = 0u64;
+    while i < n {
+      set <- v.val(i);
+      i = i + 1u64;
+    }
+    var got = 0u64;
+    while true {
+      match await set.next() {
+        case let Some(p) {got = got + 1u64;}
+        case is None {break;}
+      }
+    }
+    let took = u64.from(start.elapsed().nanos());
+    if slot == 0u64 {
+      sums.small.store(took);
+      sums.drained.store(got);
+      selfactor.scale(n * 4u64, 1u64);
+    } else {
+      sums.large.store(took);
+      sums.drained.add(got);
+    }
+  }
+}
+
+// 'add' holds an actor's count as Arc[opaq, Mailbox[u8]] (holdHeader), having no
+// message type: sound only if the count's place is the same for every M. An M
+// of 64 bytes, aligned to them, must lay the mailbox out as u8 does: the count
+// sits before the value at an offset set by the value's alignment (Arc)
+fn layoutIsMFree() bool {
+  mem.alignof[Vector[f32, 16]]() == 64usize
+    && mem.sizeof[actors.Mailbox[Vector[f32, 16]]]() == mem.sizeof[actors.Mailbox[u8]]()
+    && mem.alignof[actors.Mailbox[Vector[f32, 16]]]() == mem.alignof[actors.Mailbox[u8]]()
+}
+
+fn main() i32 {
+  initAll();
+  expect(layoutIsMFree(), "a mailbox is laid out the same for every message type, an over-aligned one too");
+  {
+    let a = Asker(Worker(), Worker());
+    a.go();
+  }
+  finalAll();
+  // keys and values in arrival order: (key 1, 2) then (key 0, 12)
+  expectUInt(sums.order.load(), 102012u64, "arrival order differs from add order");
+  expectUInt(sums.empty.load(), 1u64, "an empty set gives None");
+  expectUInt(sums.rest.load(), 1u64, "await set gives what next() left, in order added");
+  expectUInt(sums.restLen.load(), 2u64, "two left after one next()");
+  expectUInt(sums.gone.load(), 1u64, "an abandoned member is an Err");
+  expectUInt(sums.first.load(), 7u64, "first-of gives the member that answered");
+  expectUInt(sums.cancelled.load(), 11u64, "dropping the set cancels the members sent in its group");
+  expectUInt(sums.drained.load(), 10000u64, "2,000 and then 8,000 members all drained by next()");
+  // 4 times the members: linear is about 4 times the time, a rescan of the rest at each wait about 16;
+  // 10 sits between, with room for load
+  expect(sums.large.load() < sums.small.load() * 10u64, "draining by next() takes time linear in the members");
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
+  done()
+}

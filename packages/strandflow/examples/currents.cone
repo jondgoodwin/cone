@@ -1,0 +1,248 @@
+// currents: strands in water, drawn headless on a real GPU. Not hair: sea anemones on rocks and a bed of kelp, in a current
+// that surges to and fro with the waves, by the same mechanism (strandflow) that moves a head of hair in air.
+//
+//   congo run --release packages/strandflow/examples/currents.cone -- --out DIR
+//   GPU_POWER_PREFERENCE=low-power congo run --release packages/strandflow/examples/currents.cone -- --out DIR
+//
+// Three rocks (spheres the tentacles are pushed out of) carry 90 anemone tentacles each, as tapered tubes rooted on a disc of
+// the rock's top; two tufts of kelp stand on the sand. The water is a steady 0.25 m/s current with a little swirl and a surge
+// of 0.4 m/s at 0.2 Hz. Anemone tissue is a little denser than water (apparent weight 3 per cent of its weight), kelp lighter
+// (it floats up). Pictures at four phases of the surge, from the side and from above; the cost of a frame by phase and the
+// GPU's time. Exits 1 if validation speaks, a Vulkan call fails, or a tentacle goes non-finite.
+
+mod currents;
+
+import stdio use *;
+import libc;
+import time use Instant;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+import xpbdsoftbody use Collider;
+import clothrope use WindField;
+import strandflow use *;
+
+const W = 640u32;
+const H = 512u32;
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+fn p50(v: &mut List[i64]) i64 { v.sort(); *v[v.len() / 2usize] }
+
+fn main(argc: i32, argv: **u8) i32 {
+  var outDir = String.from(".");
+  var a = 1;
+  while a < argc {
+    if cstrEquals(*(argv + usize.from(a)), "--out") && a + 1 < argc {
+      outDir = String();
+      var q = 0usize;
+      let s = *(argv + usize.from(a + 1));
+      while *(s + q) != 0u8 { outDir.appendByte(*(s + q)); q = q + 1usize; }
+      a = a + 1;
+    }
+    a = a + 1;
+  }
+  var instance = Instance.create("strandflow currents");
+  if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
+  if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
+  let outDesc = TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let out = device.createTexture(&outDesc);
+  let depthDesc = TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let depth = device.createTexture(&depthDesc);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  let queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  let resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  let tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  // the sky is the water's light: green-blue, the sun a soft pale disc high up
+  var sky = Sky.dusk(radians(75.), radians(200.));
+  sky.zenith = Color(0.05, 0.30, 0.38, 1.);
+  sky.horizon = Color(0.08, 0.34, 0.42, 1.);
+  sky.sunColor = Color(14., 18., 16., 1.);
+  sky.glow = Color(0.10, 0.25, 0.25, 1.);
+  sky.ground = Color(0.04, 0.12, 0.13, 1.);
+  renderer.setSky(&mut device, &sky);
+  let light = sky.sunLight(Color(1.6, 2.0, 1.9, 1.), Color(0.05, 0.12, 0.14, 1.));
+  let settings = ShadowSettings.medium();
+  renderer.setShadows(&mut device, &settings);
+  var sand = PbrMaterial.standard(Color(0.55, 0.50, 0.38, 1.), 0., 0.95);
+  let sandMat = renderer.addPbrMaterial(&mut device, &sand);
+  var rock = PbrMaterial.standard(Color(0.22, 0.24, 0.24, 1.), 0., 0.85);
+  let rockMat = renderer.addPbrMaterial(&mut device, &rock);
+  let cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  let sphere = renderer.addMesh(&mut device, &Mesh.sphere(1., 32));
+  // the tentacles' texture: a gradient along the strand, deep orange at the base to pale pink at the tip
+  var grad = Image(4, 64, 3, List[u8]());
+  var y = 0;
+  while y < 64 {
+    let f = f32.from(y) / 63.;
+    var x = 0;
+    while x < 4 {
+      grad.pixels.push(u8.from(i32.from(255. * (0.85 + 0.15 * f))));
+      grad.pixels.push(u8.from(i32.from(255. * (0.30 + 0.55 * f * f))));
+      grad.pixels.push(u8.from(i32.from(255. * (0.12 + 0.55 * f * f))));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  let gradTex = renderer.addTexture(&mut device, &grad);
+  var tm = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.45);
+  tm.texture = gradTex;
+  let tentacleMat = renderer.addPbrMaterial(&mut device, &tm);
+  var km = PbrMaterial.standard(Color(0.20, 0.34, 0.07, 1.), 0., 0.5);
+  let kelpMat = renderer.addPbrMaterial(&mut device, &km);
+
+  // the water
+  var flow = WindField.steady(Vec3(0.25, 0., 0.05));
+  flow.turbulence = 0.05;
+  flow.turbLength = 0.5;
+  flow.gustiness = 0.3;
+  flow.gustLength = 1.5;
+  var sim = StrandSim.make(Medium.water(flow, Vec3(0.4, 0., 0.05), 0.2, 0.), 1u32);
+  var kelpSim = StrandSim.make(Medium.water(flow, Vec3(0.4, 0., 0.05), 0.2, 0.), 1u32);
+  // three rocks
+  let rockCentre = [Vec3(-0.5, 0.12, 0.), Vec3(0.35, 0.10, -0.25), Vec3(0.05, 0.08, 0.45)];
+  let rockRadius = [0.18f, 0.14, 0.12];
+  var roots = List[StrandRoot]();
+  var shapes = List[Collider]();
+  var r = 0usize;
+  while r < 3usize {
+    let g = sim.addGroup(Transform3.identity(), StrandStyle.anemone());
+    let top = rockCentre[r] + Vec3(0., rockRadius[r] * 0.92, 0.);
+    let rs = rootsOnDisc(g, top, Vec3(0., 1., 0.), 0.01, rockRadius[r] * 0.55, 90usize, 0.45, 31u32 + u32.from(r) * 7u32);
+    var i = 0usize;
+    while i < rs.len() { roots.push(*rs[i]); i = i + 1usize; }
+    shapes.push(Collider.sphere(rockCentre[r], rockRadius[r]));
+    r = r + 1usize;
+  }
+  sim.addStrands(&roots);
+  r = 0usize;
+  while r < 3usize { sim.setColliders(r, &shapes); r = r + 1usize; }
+  var kroots = List[StrandRoot]();
+  let kg0 = kelpSim.addGroup(Transform3.identity(), StrandStyle.kelp());
+  let kg1 = kelpSim.addGroup(Transform3.identity(), StrandStyle.kelp());
+  let k0 = rootsOnDisc(kg0, Vec3(0.9, 0., 0.3), Vec3(0., 1., 0.), 0.02, 0.18, 7usize, 0.3, 2u32);
+  let k1 = rootsOnDisc(kg1, Vec3(-1.0, 0., -0.5), Vec3(0., 1., 0.), 0.02, 0.2, 7usize, 0.3, 3u32);
+  var i = 0usize;
+  while i < k0.len() { kroots.push(*k0[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < k1.len() { kroots.push(*k1[i]); i = i + 1usize; }
+  kelpSim.addStrands(&kroots);
+  let tc = tubeCounts(&sim, 7usize);
+  let kc = cardCounts(&kelpSim);
+  let tentacleMesh = renderer.addDynamicMesh(&mut device, u32.from(tc.0), u32.from(tc.1));
+  let kelpMeshH = renderer.addDynamicMesh(&mut device, u32.from(kc.0), u32.from(kc.1));
+  // kelp blades are drawn as wide cards
+  var kstyle = StrandStyle.kelp();
+  let dt = 1.f / 60.;
+  var tubes = Mesh();
+  var blades = Mesh();
+  var ok = true;
+  var costSim = List[i64]();
+  var costDraw = List[i64]();
+  var gpuSum: f64 = 0.0;
+  var gpuN = 0;
+  var shots = 0;
+  var frame = 0;
+  while frame < 60 * 40 {
+    let c0 = Instant.now();
+    sim.step(dt);
+    kelpSim.step(dt);
+    costSim.push(c0.elapsed().nanos() / 1000i64);
+    let t = f32.from(frame) * dt;
+    // a picture at four phases of the surge (period 5 s), side and top, after the first 20 s
+    let phaseFrame = frame - 60 * 20;
+    let shootNow = phaseFrame >= 0 && phaseFrame % 75 == 0 && phaseFrame < 75 * 4 || frame == 60 * 35;
+    let c1 = Instant.now();
+    tubes.positions.clear();
+    writeTubes(&sim, &mut tubes, 7usize);
+    renderer.writeDynamicMesh(&mut device, tentacleMesh, &tubes);
+    writeCards(&kelpSim, &mut blades, 1u32, 1.);
+    renderer.writeDynamicMesh(&mut device, kelpMeshH, &blades);
+    var list = DrawList();
+    list.add(cube, sandMat, Mat4.fromTrs(Vec3(0., -0.05, 0.), Quat.identity(), Vec3(8., 0.1, 8.)));
+    r = 0usize;
+    while r < 3usize { list.add(sphere, rockMat, Mat4.fromTrs(rockCentre[r], Quat.identity(), Vec3(rockRadius[r], rockRadius[r], rockRadius[r]))); r = r + 1usize; }
+    list.add(tentacleMesh, tentacleMat, Mat4.identity());
+    list.add(kelpMeshH, kelpMat, Mat4.identity());
+    costDraw.push(c1.elapsed().nanos() / 1000i64);
+    var cam = Camera.make();
+    cam.fov = radians(34.);
+    cam.near = 0.05;
+    cam.far = 100.;
+    cam.lookAt(Vec3(0.2, 0.55, 2.0), Vec3(0., 0.3, 0.), Vec3(0., 1., 0.));
+    cam.background = Color(0.05, 0.30, 0.38, 1.);
+    if frame % 4 == 0 || shootNow {
+      var name = String();
+      if shootNow {
+        name = String.from(outDir.view());
+        name <- "/anemone-";
+        name <- i64.from(frame);
+        name <- ".bmp";
+      }
+      var enc = device.createCommandEncoder();
+      enc.writeTimestamp(&queries, 0u32);
+      renderer.render(&mut device, &mut enc, &post.hdr, &depth, &cam, &light, &list);
+      enc.writeTimestamp(&queries, 1u32);
+      post.apply(&mut enc, &out);
+      enc.resolveQuerySet(&queries, 0u32, 2u32, &resolved, 0u64);
+      enc.copyBufferToBuffer(&resolved, 0u64, &tick, 0u64, 16u64);
+      if name.len() > 0usize { enc.copyTextureToBuffer(&out, &shot); }
+      device.queue.submit(enc.finish());
+      device.endFrame();
+      device.waitIdle();
+      let ticks = tick.mappedRange() as *u64;
+      if frame > 120 { gpuSum = gpuSum + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6; gpuN = gpuN + 1; }
+      if name.len() > 0usize {
+        let image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+        image.save(&filepath.Path.from(name.view()));
+        shots = shots + 1;
+      }
+    }
+    // every tentacle must stay finite
+    if frame % 120 == 0 {
+      var g = 0usize;
+      while g < sim.groupCount() {
+        var s = 0usize;
+        while s < sim.groups[g].strands.len() {
+          let p = sim.particle(g, s, sim.groups[g].strands[s].count - 1usize);
+          if p.x != p.x || p.y != p.y || p.z != p.z { ok = false; }
+          s = s + 1usize;
+        }
+        g = g + 1usize;
+      }
+    }
+    frame = frame + 1;
+  }
+  print <- "currents: "; print <- i64.from(shots); print <- " pictures; "; print <- i64.from(sim.strandCount()); print <- " tentacles ("; print <- i64.from(sim.particleCount());
+  print <- " particles) and "; print <- i64.from(kelpSim.strandCount()); print <- " kelp blades ("; print <- i64.from(kelpSim.particleCount()); print <- " particles)\n";
+  print <- "  p50 microseconds a frame: strand steps (anemones and kelp) "; print <- p50(&mut costSim); print <- ", meshes written and uploaded "; print <- p50(&mut costDraw); print <- "\n";
+  print <- "  GPU time of a frame, mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
+  sim.stop();
+  kelpSim.stop();
+  if !ok { print <- "FAIL: a tentacle went non-finite\n"; }
+  if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }
+  if validationMessages() != 0u32 { print <- "FAIL: validation messages\n"; ok = false; }
+  if ok { print <- "ok\n"; return 0i32; }
+  1i32
+}

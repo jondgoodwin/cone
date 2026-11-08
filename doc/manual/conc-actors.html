@@ -1,0 +1,688 @@
+<html>
+  <head>
+	  <title>Actors in depth - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Actors in depth</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
+		not yet on macOS. Not built yet: a queued method on a message type.</i></p>
+
+	<p>The <a href="guide-actors.html">Guide's bakery</a> gave each part of a program an actor of its own, and let them
+		talk. Building something real raises the questions the tour skipped: when is an answer sent back, when does an
+		actor wait, how is one made and when does it die, and what may it hold? This page has the whole of it. Afterwards
+		you can design an actor's behaviours, its start and its end, knowing exactly what each one costs. It begins with
+		the four shapes a behaviour can take, all in one program:</p>
+
+<pre>
+mod shapes;
+
+import stdio use *;
+import actors;
+
+actor Store {
+  total: u64;
+
+  // Fire and forget: no return type, no await
+  pub async fn add(self, k: u64) {
+    total = self.plus(k);
+  }
+
+  // A cheap query: a return type, no await
+  pub async fn count(self) u64 { total }
+
+  // Synchronous: an ordinary call, inside the actor
+  fn plus(self: &amp;, k: u64) u64 { total + k }
+}
+
+actor Client {
+  store: Store;
+
+  // Awaits, owes nobody: an await, no return type
+  pub async fn run(self) {
+    store.add(5u64);
+    store.add(7u64);
+    let c = await store.count();
+    print &lt;- "count ", c, "\n";
+    let r = await self.report();
+    print &lt;- "report ", r, "\n";
+  }
+
+  // The full handshake: an await and a return type
+  pub async fn report(self) u64 {
+    let c = await store.count();
+    c * 10u64
+  }
+}
+
+fn main() {
+  let client = Client(Store(0u64));
+  client.run();
+}
+</pre>
+	<p>It prints, on every run:</p>
+<pre>
+count 12
+report 120
+</pre>
+	<p><b>Try this:</b> move <span class="pre">store.add(7u64)</span> to after the <span class="pre">await</span> in
+		<span class="pre">run</span>, and predict the count before you run it.</p>
+
+	<h2 id="shapes">Four shapes of behaviour</h2>
+	<p>Two things about a behaviour are independent, and each decides one thing. Whether it declares a return type
+		decides whether an answer is sent back; whether it holds an <span class="pre">await</span> decides whether it may
+		pause partway. So every behaviour has one of four shapes, and you can tell which from its declaration alone:</p>
+	<ul>
+	<li><b>Fire and forget</b>: no return type, no <span class="pre">await</span>. It runs once and ends; nothing is
+		sent back, and nothing waits. The cheapest shape, and <span class="pre">Store.add</span>'s.</li>
+	<li><b>A cheap query</b>: a return type, no <span class="pre">await</span>. It runs once and answers with its value
+		as it ends, to a caller that awaited it: <span class="pre">Store.count</span>.</li>
+	<li><b>Awaits, owes nobody</b>: an <span class="pre">await</span>, no return type. It waits for other actors'
+		answers, and answers no one: <span class="pre">Client.run</span>.</li>
+	<li><b>The full handshake</b>: both. It waits for answers, then answers with its own value:
+		<span class="pre">Client.report</span>, which <span class="pre">run</span> awaits in turn.</li>
+	</ul>
+	<p>The count is 12 every time, never 5 or 0, because one sender's messages to an actor are handled in the order they
+		were sent: both adds reach the store before the count does. Choose the cheapest shape that does the job. An answer
+		costs a message back, and an <span class="pre">await</span> costs a pause, which
+		<a href="conc-await.html">Awaiting and futures</a> takes apart in full.</p>
+
+	<h2 id="behaviours">Behaviours and synchronous methods</h2>
+	<p>A method declared <span class="pre">async fn</span> is a <b>behaviour</b>: it runs asynchronously, when the actor
+		is scheduled, and an <span class="pre">await</span> on one waits for its answer. <span class="pre">async</span>
+		says when the behaviour runs, and pairs with <span class="pre">await</span>; <span class="pre">fn</span> is the
+		declaration's verb, as it is a function's. <span class="pre">async</span> means nothing alone, and written
+		without <span class="pre">fn</span> it is refused:</p>
+<pre>
+Error 1273: 'async' means nothing alone: an actor's behaviour is declared 'async fn name(self, ...)'.
+</pre>
+	<p>A behaviour never starts on the sender's thread, as an asynchronous function may in some designs: a send only
+		queues the message, so no thread but the one running the actor ever touches its state.</p>
+
+	<h3 id="synchronous">Synchronous methods</h3>
+	<p>A method declared <span class="pre">fn</span> is synchronous: the actor's <span class="pre">init</span> and
+		<span class="pre">final</span>, and any helper, such as <span class="pre">Store.plus</span>. It sees the actor's
+		fields directly and runs inside the method that calls it, as a struct's method does. It is the actor's alone:
+		never <span class="pre">pub</span>, and not carried by the handle. It holds no <span class="pre">await</span>. An
+		<span class="pre">await</span> belongs at the top of a behaviour, and the synchronous work between awaits is pushed
+		down, onto a helper or onto a type the actor owns (<a href="conc-await.html#await-sync">Await only in a
+		behaviour</a>).</p>
+
+	<h2 id="declaration">The declaration</h2>
+	<p>An actor is declared with <span class="pre">actor</span>, in a module that imports the
+		<span class="pre">actors</span> package: the mailbox, the work-stealing scheduler, the counting that decides when
+		an actor dies, and the quiet the program ends at. Its body is written as a
+		<a href="guide-structs.html">struct's</a>: fields, an <span class="pre">init</span>, behaviours, synchronous
+		methods, a <span class="pre">final</span>:</p>
+<pre>
+actor Counter {
+  count: u64;                       // its state: private to it
+
+  fn init(self: &amp;new, start: u64) {  // run by 'Counter(start)'
+    *self = Self(count: start);
+  }
+
+  pub async fn add(self, n: u64) {  // a behaviour: sent as a message
+    count = count + n;
+  }
+
+  pub async fn report(self: &amp;, to: Printer) {   // carries another actor's handle
+    to.show(self.doubled());
+  }
+
+  fn doubled(self: &amp;) u64 {         // synchronous: called, inside the actor
+    count * 2u64
+  }
+
+  fn final(self: &amp;uni) {}           // when it dies
+}
+
+actor Printer {
+  pub async fn show(self, n: u64) {
+    print &lt;- "doubled: ", n, "\n";
+  }
+}
+
+fn main() {
+  let c = Counter(0u64);       // the first actor starts the workers
+  c.add(5u64);                     // a message: queued, and run later
+  c.add(7u64);                     // run after the first
+  c.report(Printer());         // prints doubled: 24
+}
+</pre>
+	<p>The rules of the declaration:</p>
+	<ul>
+	<li><b>The fields are the actor's state</b>, private to it: a field is never <span class="pre">pub</span>, and
+		nothing outside the actor reaches one.</li>
+	<li><b>A method's <span class="pre">self</span> is the state</b>, lent to a behaviour for the message it handles,
+		and to a synchronous method by its caller. Written bare, it is <span class="pre">self: &amp;uni</span>, which the
+		method has alone while it runs, so it may lend a part of the state on as <span class="pre">&amp;uni</span>.
+		A weaker permission may be written instead: <span class="pre">self: &amp;</span> (only reads it),
+		<span class="pre">&amp;mut</span>, <span class="pre">&amp;imm</span> or <span class="pre">&amp;opaq</span>. A method
+		written with a weaker <span class="pre">self</span> cannot call a synchronous helper whose
+		<span class="pre">self</span> is bare: give the helper the weaker permission too.</li>
+	<li><b>A behaviour that is not <span class="pre">pub</span> is a message all the same</b>, which only its own module
+		sends. A function without <span class="pre">self</span> is the actor's own, called from its methods as a struct's
+		is.</li>
+	<li><b>A behaviour is not generic, and every parameter it takes is <span class="pre">Sendable</span></b>, since the
+		message carries its arguments to the thread the actor runs on
+		(<a href="conc-sharing.html">What may cross a thread</a>). A borrow is refused, unless it lasts the whole program,
+		is written so (<span class="pre">&amp;'static imm T</span>, <span class="pre">&amp;'static opaq T</span> or
+		<span class="pre">&amp;'static uni T</span>) and reaches what may cross
+		(<a href="conc-sharing.html#static-borrow">A borrow that lasts the whole program</a>). The refusal says what to
+		pass instead:
+<pre>
+Error 1194: Actor A's behaviour take takes r, a borrowed reference, which is not Sendable: no borrow may leave
+its thread. A message carries its arguments to the thread the actor runs on; pass an owner that may cross, such
+as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &amp;'static imm, &amp;'static opaq
+or &amp;'static uni.
+</pre></li>
+	<li><b>A behaviour may return a value</b>, which must be <span class="pre">Sendable</span> too, by the same rule, so
+		a borrow in it is written <span class="pre">'static</span> as a parameter's is. A plain send returns at once,
+		before the behaviour runs, and the value is dropped, unless the behaviour was awaited or its future kept
+		(<a href="conc-await.html">Awaiting and futures</a>).</li>
+	<li><b>An actor declares no static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
+		lifetime parameter, and has no base.</b> It may take type parameters
+		(<a href="#generic-actor">a generic actor</a>). It may say which
+		<a href="#actortrait"><span class="pre">actor traits</span></a>, its abstraction, it conforms to, with
+		<span class="pre">is</span>, and conforms by having the behaviours, with or without it.</li>
+	</ul>
+
+	<h2 id="making">Making an actor</h2>
+	<p><span class="pre">Counter(args)</span> makes an actor and answers its <b>handle</b>. The actor is real before
+		its <span class="pre">init</span> runs: the runtime's part of it is made first, and the <span class="pre">init</span>
+		then runs, on the calling thread, on the state where it will stay. So the <span class="pre">init</span>, and any
+		synchronous method it calls, may send to the actor itself, once <span class="pre">*self = ...</span> has filled the
+		state. Before that, <span class="pre">self</span> holds nothing, and every use through it is refused, as in any
+		initializer; after it, a send may stand anywhere, in an <span class="pre">if</span>, a loop or a
+		<span class="pre">match</span> arm too, and the <span class="pre">init</span> may hand
+		<span class="pre">selfactor</span> to another actor. The actor runs no message until its
+		<span class="pre">init</span> has returned: a message sent meanwhile, by the <span class="pre">init</span> or by
+		another actor already given the handle, waits in the mailbox and runs afterwards, in the order sent:</p>
+<pre>
+actor Starter {
+  count: u64;
+
+  fn init(self: &amp;new) {
+    *self = Self(count: 0u64);
+    self.note(1u64);              // a send to itself: queued, run after the init
+    self.helper();                // a helper the init calls may send too
+    print &lt;- "init ends ", count, "\n";
+  }
+
+  fn helper(self) {
+    selfactor.note(2u64);
+  }
+
+  pub async fn note(self, k: u64) {
+    count = count + k;
+    print &lt;- "note ", count, "\n";
+  }
+}
+</pre>
+	<p><span class="pre">Starter()</span> prints:</p>
+<pre>
+init ends 0
+note 1
+note 3
+</pre>
+	<p>Both notes wait until the <span class="pre">init</span> has returned. A panic in the <span class="pre">init</span>
+		is a <a href="safe-panics.html#panic">panic</a>, which ends the program.</p>
+	<p>The initializer's parameters must be <span class="pre">Sendable</span> too, since the state made from them runs on
+		other threads. An actor may declare several initializers, as a struct may, each joining the overload name
+		<span class="pre">init</span>. One that declares none is made by its state's implicit initializer, as the bakery's
+		were: <span class="pre">Store(0u64)</span> takes the fields whose types are written, in order, a field with a
+		default taking it where the argument is left out. That initializer is the module's own, as a struct's implicit one
+		is where its fields are private, except for a <span class="pre">pub</span> actor with no fields at all. There is no
+		other way to make an actor, and no creation function: <span class="pre">spawn</span> stays reserved.</p>
+
+	<h3 id="handle">The handle</h3>
+	<p>The actor's name names its handle: a value holding one counted owner of the actor's mailbox, the runtime's part of
+		it. Copying a handle (passing it, storing it, putting it in a message) makes another owner, and each going drops
+		one. A handle carries the actor's behaviours and nothing else: calling one on it,
+		<span class="pre">c.add(5u64)</span>, sends that message, and reaching a field of the state or a synchronous method
+		through it is refused as private. A handle is <span class="pre">Sendable</span> whatever the state holds: it may be
+		sent to a thread, over a channel, in another actor's message, or kept in another actor's state. So the state may
+		hold what may not cross threads (an <span class="pre">Rc</span>, a <span class="pre">mut</span> owner, borrows
+		inside a method), since it never crosses as a value: only the runtime reaches it.</p>
+
+	<h2 id="actortrait">Actor traits: sending to whichever actor</h2>
+	<p>A function that sends a chunk to "anything that accepts chunks" does not want to know which actor that is. An
+		<span class="pre">actor trait</span> says what a sender needs, as behaviours and nothing else:</p>
+<pre>
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+</pre>
+	<p>It declares signatures only. An actor has no fields a caller outside it can read and no code a caller can run
+		inside it, so a field, a <span class="pre">fn</span> and a body are refused, and each behaviour is
+		<span class="pre">pub</span>, since a sender is outside the actor. The module declaring the trait imports
+		<span class="pre">actors</span>, as for an actor.</p>
+	<p><b>Conformance is structural.</b> An actor conforms to the trait where it has each of its behaviours, <span class="pre">pub</span>,
+		by name, with the same parameter types and the same returned type. It writes nothing for it, and may have
+		more: a fake with the same behaviours conforms with no declaration, and so does an actor written before the
+		trait was. It is checked where a handle is converted, and the error names what is missing:</p>
+<pre>
+Error 1570: Actor Mute does not conform to actor trait ChunkSink, which it is converted to here: It has no behaviour
+'pub async fn accept(c: Chunk)'. It has no behaviour 'pub async fn total() u64'. An actor conforms when it has every
+behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.
+</pre>
+	<p><b>The trait's name is a type</b>, as an actor's is, and a value of it is a handle that holds any conforming
+		actor. An actor's handle given where the trait's is wanted (an argument, a <span class="pre">let</span> with
+		the type written, a field's value, a return) is converted, with nothing written at the conversion:</p>
+<pre>
+fn feedAll(sinks: &amp;List[ChunkSink], n: u64) {
+  each sink in sinks.iter() { sink.accept(Chunk(n)); }
+}
+
+let counter = Counter();
+let doubler = Doubler();                  // another actor, with the same two behaviours
+var sinks = List[ChunkSink]();
+sinks.push(counter);
+sinks.push(doubler);
+feedAll(&amp;sinks, 5u64);
+</pre>
+	<p>The handle is two words: a counted owner of the actor's mailbox, copied and dropped as an actor's handle is, so
+		it keeps the actor alive; and a pointer to the table of the actor's own sending methods for the trait, one table
+		for each actor and trait, made where the conversion is. A call through the handle is the same call as a direct
+		one with one more indirect jump, and has the same four shapes: <span class="pre">sink.accept(c)</span> sends,
+		<span class="pre">let t = sink.total()</span> keeps the future,
+		<span class="pre">await sink.total()</span> waits for the reply, and a plain
+		<span class="pre">sink.total();</span> drops it (<a href="conc-await.html">Awaiting and futures</a>).</p>
+	<p><b>A behaviour may carry an <a href="mod-namespaces.html#overload">overload name</a></b>, in an actor and in an
+		actor trait alike: <span class="pre">pub async fn accept overload `&lt;-`(self, c: Chunk);</span> makes
+		<span class="pre">sink &lt;- chunk</span> send <span class="pre">accept</span>, as <span class="pre">&lt;-</span>
+		calls whatever method of its receiver's type declares that name. The name belongs to the handle that declares
+		it. The trait's handle has the name its trait gave; the actor's own handle has the name the actor gave; and an
+		actor that conforms need not repeat the trait's name (conformance is by the behaviour's own name, not its overload
+		name), so <span class="pre">&lt;-</span> works on a trait handle holding it whatever the actor itself says.</p>
+	<p><b>Two handles are equal where they name the one actor</b>: <span class="pre">==</span> compares the mailboxes.
+		That is how a subscriber is removed from a list of them, and it holds for an actor's own handle as well; it is
+		not a comparison of values, so a handle made twice from the same actor is equal to itself.</p>
+	<p><b>"Whoever asked" is a parameter.</b> An actor trait of one behaviour is a reply address. Cone has no callbacks:
+		a one-off answer is a behaviour's return, and anything the answerer should send back, more than once or to
+		someone else, is an ordinary message to a handle it was given:</p>
+<pre>
+actor trait ReadDone {
+  pub async fn done(self, n: u64);
+}
+
+actor Reader {
+  pub async fn read(self, f: File, reply: ReadDone) { ... reply.done(n); }
+}
+</pre>
+	<p>Reader sends to <span class="pre">reply</span> without knowing what it is; a test can pass a fake, and another
+		actor can be passed along to answer in its turn. A handle is <span class="pre">Sendable</span> and may be
+		passed in a message, kept in another actor's state or put in a list; it keeps its actor alive, so a list of
+		subscribers that should not hold them is not what an actor trait gives yet.</p>
+
+	<h3 id="generic-trait">A generic actor trait</h3>
+	<p>The trait may take type parameters, and each type of event, message or answer it is used at is an instance of
+		it, as for any generic type, with a handle and a table of its own. The actors that conform conform to the
+		instance their behaviours' types make (a generic actor to the instance at its own arguments,
+		<a href="#generic-actor">below</a>):</p>
+<pre>
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Tally  { pub async fn hear(self, e: Click) { ... } }     // a Subscriber[Click]
+actor Typist { pub async fn hear(self, e: Key)   { ... } }     // a Subscriber[Key]
+
+let clicks: List[Subscriber[Click]] = ...;   // a Tally and a Clicker in one list
+let keys: Subscriber[Key] = typist;
+let bad: Subscriber[Key] = tally;            // Error 1570: ... put(e: Click) does not take and return
+                                             // what the trait's hear(e: Key) does
+</pre>
+	<p>What an <span class="pre">await</span> through a handle of an instance gives is the instance's type.</p>
+
+	<h3 id="trait-bound">As a bound: no table</h3>
+	<p>An actor trait may bound a type parameter, <span class="pre">[S: ChunkSink]</span> or
+		<span class="pre">[S: Subscriber[Click]]</span>, and an actor that conforms meets the bound, as does the trait's
+		own handle. A generic function is made for the type it is given, so it calls that actor's own methods directly:
+		no handle is made, no table, and no indirect call. A pipeline whose stages are fixed when the program is compiled
+		pays nothing for the abstraction.</p>
+<pre>
+fn connect[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));          // for a Counter, a call of Counter's own accept
+}
+connect(counter, 10u64);       // not connect(counter as a handle): none is made
+</pre>
+	<p>An actor that does not conform given to such a parameter is refused, as for any bound
+		(<span class="pre">connect requires S is ChunkSink, and Mute is not ChunkSink</span>). Convert it to the trait's
+		handle, where the error names what it lacks.</p>
+
+	<h3 id="actor-is">An actor that says what it is</h3>
+	<p>Conformance needs nothing written on the actor, but an author may say what the actor is meant to be, and have the
+		compiler keep it true. <span class="pre">is</span> names actor traits (instances of generic ones too), and each
+		is checked as an assertion:</p>
+<pre>
+actor Counter is ChunkSink { ... }
+actor Both is ChunkSink, Subscriber[Click] { ... }
+
+actor Lacks is ChunkSink {            // Error 1570: Actor Lacks does not conform to actor trait ChunkSink,
+  pub async fn other(self) { ... }    // which it says it is: It has no behaviour 'pub async fn accept(c: Chunk)'.
+}                                     // It has no behaviour 'pub async fn total() u64'. ...
+</pre>
+	<p>The error lists everything missing, as the conversion's does. Saying so changes nothing else: the actor is
+		converted, bounded and sent to the same with or without it, and the assertion is not part of its state or its
+		handle. A name that is not an actor trait, a struct for one, is refused. An actor still has no base to
+		<span class="pre">extends</span>.</p>
+
+	<h2 id="generic-actor">A generic actor</h2>
+	<p>An actor may take type parameters, declared and bounded as a struct's. Each type it is made at is an actor of
+		its own kind: <span class="pre">Counter[i32]</span> and <span class="pre">Counter[f64]</span> have a state, a
+		message type and a handle each, made from the one declaration as any generic type's instances are, and neither
+		is the other's type. Its behaviours take and return the parameter, and so do its initializers:</p>
+<pre>
+actor Counter[T] {
+  total: T;
+  fn init(self: &amp;new, start: T) { *self = Self(total: start); }
+  pub async fn add(self, x: T) { total = total + x; }
+  pub async fn get(self) T { total }
+}
+
+let ints = Counter[i32](10i32);        // the handle of a Counter[i32]
+let reals = Counter[f64](0.5);         // an actor of another kind
+ints.add(5i32);
+let n = await ints.get();              // an i32
+</pre>
+	<p>A parameter may be bounded by a trait, <span class="pre">actor TransformStage[T: Transform]</span>, and the body calls the
+		argument's methods as a generic struct's does; a type that does not meet the bound is refused where the instance
+		is written. The type parameters stand for types only (no lifetime: no borrow leaves its thread).</p>
+	<p>Everything that crosses to the actor's thread is judged <b>at the instance</b>. A behaviour's parameter of type
+		<span class="pre">T</span> must be <span class="pre">Sendable</span> in each instance, and so must an initializer's
+		and a returned value; the refusal names the instance:</p>
+<pre>
+let box = Box[Rc[mut, Log]]();
+// Error 1194: Actor Box[Rc[mut, Log]]'s behaviour put takes v, a Rc[mut, Log], which is not Sendable: it is an
+// owner whose permission, mut, is not race-safe: ...
+</pre>
+	<p>A generic actor meets an actor trait at an instance too: <span class="pre">actor Collector[E] is Sink[E]</span>
+		says that each <span class="pre">Collector[E]</span> is a <span class="pre">Sink[E]</span>, and the assertion is
+		checked for each instance that is made, as is a conversion to the trait's handle. The compiler's own generated
+		parts of the actor are cloned per instance (<a href="#stands-for">What the declaration stands for</a>), so a
+		behaviour that awaits, sends to itself or names <span class="pre">selfactor</span> does it as a plain actor's
+		does. <span class="pre">packages/stages</span> has two: <span class="pre">TransformStage[T: Transform]</span>, one stage for
+		every codec (<span class="pre">TransformStage[deflate.Inflater]</span>, <span class="pre">TransformStage[zstd.Compressor]</span>), and
+		<span class="pre">HashStage[D: Digester]</span>, whose digest sink is <span class="pre">DigestSink[D.Out]</span>.</p>
+
+	<h2 id="messages">Messages and their order</h2>
+	<p>A send is one-way: it queues the message and returns. An answer comes back only to an
+		<span class="pre">await</span> (<a href="conc-await.html#await">Awaiting a behaviour's answer</a>), or as a message
+		sent back to a handle passed along, as <span class="pre">report</span> sends <span class="pre">show</span> to the
+		printer above. Each sender's messages to one actor are handled in the order sent, and a message is never overtaken
+		by one it caused. Messages from <i>different</i> senders interleave in whatever order they arrive, which is why the
+		Guide's bakery could not say which customer would go short.</p>
+	<p>Each argument arrives moved into the behaviour's call, once. A value that may only move (a
+		<span class="pre">uni</span> or <span class="pre">Uni</span> owner) arrives whole, and a counted one (a handle, an
+		<span class="pre">Arc</span>, a lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
+
+	<h3 id="group-travels">A message carries its sender's cancel group</h3>
+	<p>Code runs in a <a href="conc-ioloop.html#cancel-groups">cancel group</a> (the <span class="pre">cancelgroups</span>
+		package's <span class="pre">CancelGroup</span>), its <i>current group</i>: <span class="pre">actors.currentGroup()</span>
+		answers it. A message carries its sender's current group, and the behaviour that handles it runs in that group, so
+		a cancel of the sender's group reaches the work its messages started with nothing passed along. A behaviour that
+		sends on carries the group forward the same way. Where the sender is in no group, the handler is in the process's
+		own group, which nothing cancels, and a message sent from there costs no more than one always did.</p>
+	<p><span class="pre">actors.isCancelled()</span> asks whether the current group is cancelled, a flag read cheap
+		enough for a loop to ask between pieces of work. To send in another group, call
+		<span class="pre">actors.withGroup(&amp;g, body)</span>: the messages <span class="pre">body</span> sends carry
+		<span class="pre">g</span>, and when it returns the current group is what it was.</p>
+<pre>
+mod travel;
+
+import actors;
+import cancelgroups use CancelGroup;
+
+actor Worker {
+  pub async fn crunch(self, pieces: u64) {
+    var i = 0u64;
+    while i &lt; pieces &amp;&amp; !actors.isCancelled() {   // the group its sender worked in
+      // ...one piece of work...
+      i = i + 1u64;
+    }
+  }
+}
+
+fn main() {
+  let job = CancelGroup.make();
+  let w = Worker();
+  actors.withGroup(&amp;job, fn() [w] { w.crunch(1000000u64); });   // crunch runs in job
+  job.cancel();                                                // ...and sees it
+}
+</pre>
+	<p>The message holds the group as another owner, so a group with a deadline still times out when the sender has
+		dropped every handle of it before the message is handled. A <span class="pre">parallel each</span> begun in a
+		group runs its pieces in a child group of its own: a cancel of the group above reaches them, a piece that cancels its
+		current group (a search that has found what it wanted) stops this loop alone, and the pieces not yet begun are
+		skipped. The messages the pieces send and the rest of the behaviour after the loop are in the group of the code that
+		began the loop.
+		The code that resumes after an <span class="pre">await</span> runs in the group the await was made in, however
+		long the answer took and on whatever worker takes the actor; an await made in no group resumes in the process's
+		own, as always.</p>
+	<p><b>A cancelled await always resumes.</b> If the group is cancelled while the behaviour is parked, the answer is
+		still delivered when it comes and the code after the <span class="pre">await</span> runs, so its clean-up runs and
+		what it held is dropped as usual. The cancel is seen at the callee's answer, or at the next check: cooperative, as
+		in Swift and Go. A callee that watches its group answers its own <span class="pre">Err</span> (an I/O operation
+		answers <span class="pre">Cancelled</span>), and <span class="pre">actors.checkCancelled()</span> is the check as an
+		error: <span class="pre">Ok</span> while the group is live, <span class="pre">Err(Cancelled)</span> with the
+		<span class="pre">cause</span> once it is cancelled, which <span class="pre">?</span> passes on to the caller (as a
+		<span class="pre">Cancelled</span>, a variant of an error enum that holds one, or an <span class="pre">AnyError</span>).
+		A cancel that comes after the answer is pushed does not change the answer: the code sees it at its next check.</p>
+	<p>A message sent in a group takes two places in its actor's queue (one holds the group, one the message), so the
+		mailbox's depth, high-water mark and limit (<span class="pre">mailboxDepth</span>,
+		<span class="pre">mailboxHighWater</span>, <span class="pre">setMailboxLimit</span>) count it as two. A message
+		sent in no group takes one place and is as large as it always was.</p>
+
+	<h2 id="life">An actor's life</h2>
+	<p>The <span class="pre">actors</span> package starts and stops by itself. The first actor made starts the worker
+		threads, and when <span class="pre">main</span> returns, the module's
+		<a href="mod-globals.html#dyninit">finalizer</a> waits until all is quiet, then stops them
+		(<a href="conc-runtime.html#runtime">How the runtime works</a> has the details).</p>
+	<p>While an actor is queued to run, or running, the scheduler holds one owner more, taken by the send that found it
+		idle and dropped when its mailbox is found empty. So an actor dies exactly once, when its last handle has gone
+		<i>and</i> its mailbox is empty. A handle dropped with messages still queued leaves the actor alive until they are
+		handled. At its death its state is finalized (its <span class="pre">final</span>, then its fields, handles to other
+		actors among them), on whichever thread let go last, then the block is freed. Actors that hold handles to each
+		other in a cycle never die by counting, as a cycle of <span class="pre">Arc</span> owners never does, until one of
+		them lets go.</p>
+
+	<h2 id="selfactor">self and selfactor</h2>
+	<p>An actor has two selves. <span class="pre">self</span> is its <i>state</i>, lent to the method while it runs; it
+		never leaves the actor. <span class="pre">selfactor</span> is its <i>handle</i>: another owner of the actor, a
+		value that may go anywhere a handle may: into a message, into another actor's state, or to an
+		<span class="pre">await</span> on one of its own behaviours:</p>
+<pre>
+actor Doubler {
+  pub async fn double(self, n: u64) u64 { n * 2u64 }
+
+  pub async fn twice(self, n: u64) u64 {
+    let once = await selfactor.double(n);  // a message to itself
+    let again = await selfactor.double(once);
+    again
+  }
+}
+</pre>
+	<p><span class="pre">await doubler.twice(5u64)</span> is 20. Each <span class="pre">double</span> is queued in the
+		doubler's own mailbox, and runs because <span class="pre">twice</span> has paused and the actor is free.
+		<span class="pre">selfactor</span> may be written in any of the actor's methods, its <span class="pre">init</span>
+		among them once the state is filled, but not in its <span class="pre">final</span>, nor anywhere outside the
+		actor.</p>
+
+	<h3 id="self-send">Sending to itself</h3>
+	<p>In the actor's own methods, <span class="pre">self.m(args)</span>, where <span class="pre">m</span> is one of its
+		behaviours, sends <span class="pre">m</span> to the actor itself, as <span class="pre">selfactor.m(args)</span>
+		does: the message joins the end of the actor's own mailbox, the method goes on at once, and
+		<span class="pre">m</span> runs later. A behaviour is never <i>called</i>, not even by its own actor: it runs only
+		when its dispatcher takes up a message for it. A synchronous method is called, as a struct's is:</p>
+<pre>
+actor Echo {
+  pub async fn start(self) {
+    print &lt;- "start\n";
+    self.later(1u64);             // a send to itself: start goes on at once
+    self.relay();                 // a synchronous helper, an ordinary call
+    print &lt;- "start ends\n";
+  }
+
+  async fn later(self, k: u64) {
+    print &lt;- "later ", k, "\n";
+    if k == 2u64 {
+      self.finish();
+    }
+  }
+
+  fn relay(self) {
+    later(2u64);                  // 'self.later(2)': a send, from a helper too
+  }
+
+  async fn finish(self) {
+    let d = await self.double(21u64);
+    print &lt;- "finish ", d, "\n";
+    self.show(d / 2u64 - 11u64);
+  }
+
+  async fn double(self, k: u64) u64 { k * 2u64 }
+
+  async fn show(self, k: u64) {
+    print &lt;- "show ", k, "\n";
+  }
+}
+</pre>
+	<p>Sent <span class="pre">echo.start()</span>, this prints:</p>
+<pre>
+start
+start ends
+later 1
+later 2
+finish 42
+show 10
+</pre>
+	<p>Both lines of <span class="pre">start</span> come before either <span class="pre">later</span> runs.
+		<span class="pre">await self.double(21u64)</span> is a send and an await, as through
+		<span class="pre">selfactor</span>, never a call run at once. A behaviour reached through anything but the method's
+		own <span class="pre">self</span> (another borrow of a state, a parameter's, say) is refused, and so is one sent
+		through <span class="pre">self</span> in the actor's <span class="pre">final</span>, as it dies. In its
+		<span class="pre">init</span> it is a send like any other, run once the init has returned
+		(<a href="#making">Making an actor</a>).</p>
+
+	<h2 id="confined">Private state</h2>
+	<p>The state exists only inside its actor, and the compiler keeps it there. It is constructed in one place, as the
+		actor is made, where its <span class="pre">init</span> fills it, <span class="pre">*self = Self(count:
+		0u64)</span>. Any other construction of it, <span class="pre">Self(...)</span> in one of the actor's methods or
+		as an allocation's value, by its fields' names or by its <span class="pre">init</span>, is refused, since the state
+		it made would be in no actor, and the sends it or a helper made to its actor would reach nothing. Nor is the state
+		copied out of its actor: it is a move type whatever its fields are, so <span class="pre">let s = *self</span> is
+		refused, as taking any value out through a borrow is. And nothing outside reaches a field through the handle:</p>
+<pre>
+actor Keeper {
+  count: u64;
+
+  pub async fn start(self) {
+    var s = Self(count: 5u64);    // refused: a state in no actor
+  }
+
+  pub async fn peek(self) {
+    let s = *self;                    // refused: the state is not copied out
+  }
+}
+
+fn main() {
+  let k = Keeper(0u64);
+  let n = k.count;                    // refused: private state
+}
+</pre>
+<pre>
+Error 1290: Actor Keeper's state exists only inside its actor, so it is constructed only as the actor is made
+('Keeper(...)'), where its init fills it, '*self = Self(field: value)'. Constructed here, it would be a
+state in no actor, and a send it made to its actor would reach none. For a value of this shape, declare a plain
+struct.
+Error 1120: May not move a value out through a borrowed reference, which does not own it.
+Error 1042: `count` is part of actor Keeper's private state, which only its own methods reach, one message at a
+time. Send it a behaviour that uses it.
+</pre>
+	<p>For a value of the state's shape, declare a plain struct.</p>
+
+	<h2 id="inside">Inside an actor</h2>
+	<p>A method of an actor may use what a single thread may: borrows, and <span class="pre">Uni</span> and
+		<span class="pre">Rc</span> owners, whose count need not be atomic, since one worker at a time runs an actor and
+		every hand-off of an actor between workers orders what the first did before anything the next does. Three things
+		differ from a plain thread:</p>
+	<ul>
+	<li><b>The <span class="pre">collector</span> package's <span class="pre">Gc</span> is not supported inside an
+		actor</b> (it is <a href="mem-ownregion.html">discouraged</a> everywhere, and likely to be replaced). That collector
+		is single-threaded, and an actor runs on every worker in turn, so a traced reference made, held, reached or
+		dropped by an actor would corrupt it. The compiler refuses one made or held in an actor: a field of its state, a
+		synchronous method's parameter, an allocation, a call that returns one, or a literal holding one in any method's
+		body, <span class="pre">init</span> and <span class="pre">final</span> included, and a struct, tuple, array or enum
+		holding one as well. The message says what to do instead:
+<pre>
+Error 1389: A traced reference (a Gc, for example) cannot be used inside an actor or a parallel each: this makes
+a Gc[mut, u64], which a collector traces, inside an actor's method. That collector's one chain of roots and its
+heap are process globals, not safe on the threads an actor or a parallel each runs on. Use Gc only in code that
+runs on a single thread; in an actor, allocate with 'new self[T](...)' and hold an ActorGc (the actors
+package's), which the actor collects between its messages.
+</pre>
+		<b>An actor has a garbage-collected region of its own</b>, whose references it makes, holds and copies freely
+		(<a href="conc-runtime.html#actor-gc">The actor's own garbage-collected region</a>).</li>
+	<li><b>A thread-local global</b> seen from an actor's method is the current <i>worker's</i> copy, not the actor's:
+		its next message may run on another worker.</li>
+	<li><b>A method that blocks holds its worker</b> while it does. Actors wait by being sent a message, or by
+		awaiting: for another actor's answer, or for <a href="conc-io.html">I/O</a>.</li>
+	</ul>
+
+	<h2 id="stands-for">What the declaration stands for</h2>
+	<p>Underneath, the compiler turns an actor into four ordinary declarations, which the <span class="pre">actors</span>
+		package runs:</p>
+	<ul>
+	<li><b>The state</b>, a struct of the body as written, named <span class="pre">Counter.State</span>.</li>
+	<li><b>The messages</b>, an enum with one variant per behaviour, named for it, its fields the behaviour's
+		parameters, named <span class="pre">Counter.Msg</span>.</li>
+	<li><b>The handle</b>, <span class="pre">Counter</span>, whose one field is an
+		<span class="pre">Arc[opaq, actors.Mailbox[Counter.Msg]]</span>. It has an initializer for each of the state's,
+		which makes the actor's block with <span class="pre">actors.makeActor</span>, constructs the state in it in place,
+		and starts the actor with <span class="pre">actors.startActor</span>; and a method per behaviour, as public as the
+		behaviour, which calls <span class="pre">actors.send</span>.</li>
+	<li><b>The dispatch function</b>, <span class="pre">Counter.dispatch</span>, which the runtime hands each message
+		where it lies, and which moves each argument out of it into the behaviour's call.</li>
+	</ul>
+	<p>A <a href="#generic-actor">generic actor</a> declares its type parameters on the state, the messages and the
+		handle, and every use of one of those is followed by them: <span class="pre">Counter.Msg[T]</span>. A message
+		variant is written with them after it, <span class="pre">Counter.Msg.add[T]</span>. The dispatch function, and the
+		small functions an <span class="pre">await</span>, <span class="pre">selfactor</span> and an <span class="pre">is</span>
+		list need, are statics of the handle rather than the module's, so that each instance of the handle has its own;
+		the compiler finds an instance's by name. The message enum is <span class="pre">Sendable</span> on the strength of
+		the check made of each instance's parameters, not of its type arguments.</p>
+	<p>An <a href="#actortrait">actor trait</a> stands for four declarations too: an ordinary trait with the three methods
+		an actor's handle has for each behaviour (the send, and for one that returns a value the awaited send and the
+		future-giving one); the trait's handle, whose fields are the mailbox, its type erased, and the table; and a
+		function that makes the handle from a reference to an actor's. The table is the compiler's ordinary vtable of
+		the actor's handle as that trait, one for each actor and trait, whose slots are the handle's own methods that
+		send.</p>
+	<p>Those names are what a diagnostic about them says; no source can write them, so nothing but the actor reaches its
+		state, its messages or its mailbox. The mailbox's header and the state are one allocation; the mailbox's slots are in segments of their own, the first
+		allocated with the actor, and a send allocates nothing.
+		Actors and the declarations that use them may be written in any order: a message enum holds handles by value, a
+		handle reaches the enum only through its owning reference to the mailbox, and a
+		<a href="mem-regions.html">reference</a> never needs what it points at to be laid out first.</p>
+
+	<p>You can now choose each behaviour's shape, make an actor and know when it dies, and keep its state its own. Some
+		work is not a standing role at all but one big loop; next, the <span class="pre">parallel each</span> that runs
+		it, in full.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="conc-parallel.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

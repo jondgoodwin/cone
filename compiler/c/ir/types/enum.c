@@ -30,7 +30,7 @@ void enumPrint(EnumNode *node) {
 
 // Does a variant's tag value fit an integer 'bits' wide, signed or not? The
 // literal rule, that a value must fit its type and that a negative sign counts
-// (reftoken.html), read against the value as written. A negative value fits no
+// (syntax-lexical.html), read against the value as written. A negative value fits no
 // unsigned integer: a tag is a constant lined up with another library's, so -4
 // in a u32 enum is refused rather than taken as 0xFFFFFFFC.
 int enumTagFits(struct StructNode *variant, unsigned int bits, int issigned) {

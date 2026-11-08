@@ -1,0 +1,142 @@
+// The leak check, made through the region as a collection would: eight threads
+// take and release blocks of every class and oversize through the region's
+// functions, some blocks handed to another thread to be released there; half the
+// threads flush their caches as they end and half do not. At the end every block
+// is home (nothing lent, takes and returns equal) and, once the caches are
+// flushed, every slab is back with the OS. A List in the pool is made and dropped
+// on each thread too.
+
+mod leak;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use *;
+import bufpool use *;
+
+const threads = 8u64;
+const perThread = 20000u64;
+
+// A block and the bytes it was asked for: what the other thread releases it by
+struct Piece {
+  pub addr: usize;
+  pub bytes: usize;
+}
+
+struct Job {
+  pub id: u64;
+  pub tx: Sender[Piece];
+  pub flush: bool;
+}
+
+fn next(x: u64) u64 {
+  var v = x;
+  v = v ^ (v << 13u64);
+  v = v ^ (v >> 7u64);
+  v = v ^ (v << 17u64);
+  v
+}
+
+// A request size: mostly small, every class, and a few oversize
+fn pick(r: u64) usize {
+  if r < 40u64 {100usize}
+  else if r < 70u64 {5000usize}
+  else if r < 85u64 {20000usize}
+  else if r < 93u64 {70000usize}
+  else if r < 97u64 {300000usize}
+  else if r < 99u64 {1048576usize}
+  else {1500000usize}
+}
+
+fn worker(j: Job) u64 {
+  let region = bufferPool() as &MemRegion;
+  var rng = (j.id + 1u64) * 0x9E3779B97F4A7C15u64;
+  var ring: Array[Piece, 4] = [Piece(0usize, 0usize), Piece(0usize, 0usize), Piece(0usize, 0usize), Piece(0usize, 0usize)];
+  var held = 0usize;
+  var k = 0u64;
+  while k < perThread {
+    rng = next(rng);
+    let bytes = pick((rng >> 20u64) % 100u64);
+    let p = region.allocate(bytes, 8usize);
+    *p = 1u8;
+    if k % 7u64 == 0u64 {
+      j.tx.send(Piece(p as usize, bytes));
+    } else {
+      if held == 4usize {
+        // drop the oldest
+        let old = ring[0usize];
+        region.release(old.addr as *u8, old.bytes);
+        ring[0usize] = ring[1usize];
+        ring[1usize] = ring[2usize];
+        ring[2usize] = ring[3usize];
+        held = 3usize;
+      }
+      ring[held] = Piece(p as usize, bytes);
+      held = held + 1usize;
+    }
+    if k % 1000u64 == 0u64 {
+      var xs = List[u8](bytes % 70000usize + 1usize, bufferPool());
+      xs.push(3u8);
+    }
+    k = k + 1u64;
+  }
+  var i = 0usize;
+  while i < held {
+    region.release(ring[i].addr as *u8, ring[i].bytes);
+    i = i + 1usize;
+  }
+  if j.flush {flushThread();}
+  k
+}
+
+fn sink(rx: Receiver[Piece]) u64 {
+  let region = bufferPool() as &MemRegion;
+  var r = rx;
+  var n = 0u64;
+  while true {
+    match r.recv() {
+      case let Some(p) {
+        region.release(p.addr as *u8, p.bytes);
+        n = n + 1u64;
+      }
+      case is None[Piece] {break;}
+    }
+  }
+  n
+}
+
+fn main() i32 {
+  setLimits(268435456usize, 0usize);
+  var tx: Sender[Piece];
+  var rx: Receiver[Piece];
+  tx, rx = Channel[Piece].bounded(64usize);
+  let s = thread.start(rx, &sink);
+  var finished = 0u64;
+  {
+    var ws = thread.start(Job(0u64, tx.clone(), true), &worker);
+    var w1 = thread.start(Job(1u64, tx.clone(), false), &worker);
+    var w2 = thread.start(Job(2u64, tx.clone(), true), &worker);
+    var w3 = thread.start(Job(3u64, tx.clone(), false), &worker);
+    var w4 = thread.start(Job(4u64, tx.clone(), true), &worker);
+    var w5 = thread.start(Job(5u64, tx.clone(), false), &worker);
+    var w6 = thread.start(Job(6u64, tx.clone(), true), &worker);
+    var w7 = thread.start(Job(7u64, tx, false), &worker);
+    finished = ws.join() + w1.join() + w2.join() + w3.join() + w4.join() + w5.join() + w6.join() + w7.join();
+  }
+  let released = s.join();
+  expectUInt(finished, threads * perThread, "every worker finished");
+  expectUInt(released, 8u64 * ((perThread + 6u64) / 7u64), "the sink released every block sent to it");
+  let st = blockStats();
+  expectUInt(st.lent, 0u64, "every block home");
+  expect(st.takes >= threads * perThread, "every take counted");
+  expect(st.cachedBytes > 0usize, "the threads that did not flush left their blocks cached, counted");
+  trimEverything();
+  let t = blockStats();
+  expectUInt(u64.from(t.cachedBytes), 0u64, "every cache flushed");
+  expectUInt(u64.from(t.heldBytes), 0u64, "nothing held");
+  expectUInt(u64.from(t.slabs), 0u64, "no slab");
+  expectUInt(t.osAllocs, t.osFrees, "every allocation from the OS freed");
+  expectUInt(osBlocks(), 0u64, "every block back with the OS");
+  expectUInt(osBytes(), 0u64, "no bytes");
+  done()
+}

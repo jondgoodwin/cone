@@ -1,7 +1,7 @@
-// What an init's 'self &new' may do, which flow analysis decides.
+// What an init's 'self: &new' may do, which flow analysis decides.
 //
 // 'self' is a reference to memory that holds no value until '*self = value'
-// writes one (doc/reference/refinitdrop.html): before that on every path,
+// writes one (doc/manual/rec-methods.html#initfinal): before that on every path,
 // nothing is read or written through it -- no field, no method -- and the init
 // may not return. Once filled, it is reached only through itself: '*self', a
 // field of it, a method called on it. Passed, stored, copied or returned, it
@@ -19,66 +19,80 @@
 mod struct_flow_new;
 
 struct ReadFirst {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn init(self &new, a i32) {
-    imm v = self.x;                          //~ ErrorInitSelf:13 "holds no value until"
-    *self = new ReadFirst(v, a);
+  pub fn init(self: &new, a: i32) {
+    let v = self.x;                          //~ ErrorInitSelf:13 "holds no value until"
+    *self = ReadFirst(v, a);
   }
 }
 
 struct WriteFirst {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn init(self &new, a i32) {
+  pub fn init(self: &new, a: i32) {
     self.x = a;                              //~ ErrorInitSelf:5 "holds no value until"
-    *self = new WriteFirst(a, a);
+    *self = WriteFirst(a, a);
   }
 }
 
 struct CallFirst {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn sum(self &) i32 { x + y; }
+  pub fn sum(self: &) i32 { x + y }
 
-  pub fn init(self &new, a i32) {
-    imm s = self.sum();                      //~ ErrorInitSelf:13 "holds no value until"
-    *self = new CallFirst(s, a);
+  pub fn init(self: &new, a: i32) {
+    let s = self.sum();                      //~ ErrorInitSelf:13 "holds no value until"
+    *self = CallFirst(s, a);
   }
 }
 
 struct OnePath {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn init(self &new, a i32) {           //~ ErrorInitSelf:15 "can return before"
+  pub fn init(self: &new, a: i32) {           //~ ErrorInitSelf:15 "can return before"
     if a > 0 {
-      *self = new OnePath(a, a);
+      *self = OnePath(a, a);
+    }
+  }
+}
+
+// Filled only in a loop that may not run: the loop's test leaves before the
+// first pass on one path
+struct InLoop {
+  pub x: i32;
+
+  pub fn init(self: &new, n: i32) {           //~ ErrorInitSelf:15 "can return before"
+    var i = 0;
+    while i < n {
+      *self = InLoop(x: i);
+      i = i + 1;
     }
   }
 }
 
 struct Escapes {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn init(self &new, a i32) {
-    *self = new Escapes(a, a);
+  pub fn init(self: &new, a: i32) {
+    *self = Escapes(a, a);
     keep(self);                              //~ ErrorInitSelf:10 "reached only through itself"
   }
 }
 
 struct Copied {
-  pub x i32;
-  pub y i32;
+  pub x: i32;
+  pub y: i32;
 
-  pub fn init(self &new, a i32) {
-    *self = new Copied(a, a);
-    imm other = self;                        //~ ErrorInitSelf:17 "reached only through itself"
+  pub fn init(self: &new, a: i32) {
+    *self = Copied(a, a);
+    let other = self;                        //~ ErrorInitSelf:17 "reached only through itself"
   }
 }
 
-fn keep(p &Escapes) { }
+fn keep(p: &Escapes) { }

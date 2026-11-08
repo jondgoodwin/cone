@@ -1,0 +1,59 @@
+// Reader.lastRoom and Reader.appendLast (they pass through to the Chain's):
+// an empty reader has no room; after a buffer of 10 bytes (a block holds
+// more than asked: 'cap' is what it reports), cap - 10 bytes fit and an append
+// of more takes exactly that many, the bytes after the 10, the reader's bound
+// counted (a reader bounded at 40 allows 30); a peek across what was joined
+// reads the sender's bytes in order.
+
+mod readerjoin;
+
+import testing use *;
+import iobuf use IoBuf;
+import streams use *;
+
+fn block(n: usize, size: usize, from: u8) IoBuf {
+  var b = IoBuf(size);
+  var i = 0usize;
+  while i < n {
+    _ = b.append(&[u8.from((usize.from(from) + i) % 251usize)]);
+    i = i + 1usize;
+  }
+  b
+}
+
+fn main() i32 {
+  var r = Reader.make(100000usize);
+  expectUInt(u64.from(r.lastRoom()), 0u64, "an empty reader has no room");
+  expectUInt(u64.from(r.appendLast("abc")), 0u64, "and appends nothing");
+
+  let first = block(10usize, 64usize, 0u8);
+  let cap = first.capacity();
+  _ = r.push(first);
+  expectUInt(u64.from(r.lastRoom()), u64.from(cap - 10usize), "10 bytes leave the block's capacity less 10");
+  let more = block(cap + 50usize, cap + 50usize, 10u8);
+  let k = r.appendLast(more.view());
+  expectUInt(u64.from(k), u64.from(cap - 10usize), "an append of more takes what fits");
+  expectUInt(u64.from(r.len()), u64.from(cap), "the reader holds the block's capacity");
+  expectUInt(u64.from(r.segments()), 1u64, "in one segment");
+  expectUInt(u64.from(r.lastRoom()), 0u64, "none left");
+  var ok = false;
+  match r.peek(cap) {
+    case let Some(v) {
+      ok = true;
+      var i = 0usize;
+      while i < cap {
+        if v[i] != u8.from(i % 251usize) {ok = false;}
+        i = i + 1usize;
+      }
+    }
+    else {}
+  }
+  expect(ok, "its bytes are the sender's, in order");
+
+  var s = Reader.make(40usize);
+  _ = s.push(block(10usize, 64usize, 0u8));
+  expectUInt(u64.from(s.lastRoom()), 30u64, "a reader bounded at 40 allows 30 more");
+  expectUInt(u64.from(s.appendLast(more.view())), 30u64, "and takes 30");
+  expectUInt(u64.from(s.len()), 40u64, "to its bound");
+  done()
+}

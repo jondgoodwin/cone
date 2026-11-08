@@ -26,7 +26,7 @@ Six forms:
 | --- | --- | --- | --- |
 | `x as T` | `CastTag` | `newRecastNode` | reinterpret the bits |
 | `x is T` | `IsTag` | `newIsNode` | is this the runtime type? |
-| `case imm c &Circle` | `CastTag` + `FlagConvert` + `FlagMatchBind` | `newConvCastNode` from `parseBoundMatch` | the matched value, narrowed, that initializes `c` |
+| `case let &Circle(c)` | `CastTag` + `FlagConvert` + `FlagMatchBind` | `newConvCastNode` from `parseBoundMatch` | the matched value, narrowed, that initializes `c` |
 | *(injected)* | `CastTag` | `newRecastNode` from `iexpCoerce` | a `CastSubtype` coercion |
 | *(injected)* | `CastTag` + `FlagConvert` | `newConvCastNode` from `iexpCoerce` | a `ConvSubtype` coercion |
 | `case v` | `IsTag` + `FlagMatchValue` | `newMatchValueNode` | a value alone as a pattern: `is v` for a variant of the matched enum, else `== v` |
@@ -39,7 +39,7 @@ lowers to a type literal that generation hands to the same `genlConvert`
 ([literals](literals.md)), and a reference narrows to a variant only through a
 pattern, whose `is` test checks the variant first.
 
-**A bound pattern desugars to two of these sharing one `typ`**: `case imm c
+**A bound pattern desugars to two of these sharing one `typ`**: `case let c
 &Circle` is an `is` test and a conversion (`FlagMatchBind`) that initializes
 `c`. The variable itself declares no type and takes the conversion's, because a
 clone copies `typ` once per holder and a third copy would be left unbound (see
@@ -99,6 +99,11 @@ builds `newMatchValueNode`: an `is` node flagged `FlagMatchValue`, the value in
 must become a borrow. Name resolution walks `typ` as it would any `is` test's,
 which resolves a value just as well.
 
+**A bare variant name keeps the matched value's lifetimes.** When the name binds to a
+variant and an invariant lifetime has been seen, `castPatternAdoptLifetimes` gives it the
+lifetime names and type arguments of the value's own type, so a field read through the
+pattern carries the brand the value carries (`E['=a]`), never a brand not known here.
+
 **The same word declares nominal conformance**, in `parseStruct`: `struct Gauge is
 Meter` asserts of a type what `p is Mobile` asks of a value. The two cannot be
 confused. Here `is` is **infix** — `parseCmp` only looks for it once a left
@@ -147,12 +152,15 @@ reference type, whatever the name means for now.
 written as a reference, against a matched value that is a reference of any kind
 (a borrow, an owner into a managed region, a virtual reference) becomes a
 reference to that type with the matched value's region and permission:
-`case imm c Circle` on an `&imm Shape` narrows to `&imm Circle`, on an
+`case let Circle(c)` on an `&imm Shape` narrows to `&imm Circle`, on an
 `Rc[mut, Shape]` to `Rc[mut, Circle]`. The `is` test and the conversion each wrap
 their own copy of the pattern, around the one shared name. A pattern that is
 already a reference, `&Circle`, or an alias of one, is left as written: it is the
 check, and `castIsTypeCheck` refuses it where the matched value is no reference,
-is in another region, or has a weaker permission.
+is in another region, or has a weaker permission. A bound pattern on an **owning
+virtual reference** is the exception: its conversion binds a borrow, not an owner
+(see "A binding through an owning trait value" below), while its `is` test adopts
+the owner as above.
 
 **Only the `is` test reports.** In source the two nodes share `typ`, so the `is`
 test, checked first, binds it for both and the conversion finds the mark
@@ -182,9 +190,19 @@ call, so a value alone reports exactly what `case ==value` would.
 Check both children, set `vtype` from `typ`, then split on `FlagConvert`.
 
 **Reinterpret** (`as`) requires **identical bit size** via `castBitsize` — except
-to a struct, which is not checked here at all, because `castBitsize` knows
-nothing of field layout, padding or alignment. That check is deferred to
-generation, where the data layout exists.
+to a struct, which this size test skips, because `castBitsize` knows nothing of
+field layout, padding or alignment. A struct, an enum (a struct carrying
+`EnumType`) or `char` target is first held to `castRecastTargetCheck`: the
+source must be a recast, as coercion defines it: `itypeMatches(typ, source, Coercion)`
+answering `EqMatch` or `CastSubtype`, which today is a type as itself or a variant
+as its enum. The relation is the definition, not a list of those two, so the two
+cannot drift apart; a converting coercion is out, and whatever passes could be
+written by assignment with no `as`. Anything else is `ErrorAsTarget` (1594), whose message names the fix (`char.from`
+for a `char`, a pattern for an enum read as a variant, a constructor or method
+otherwise) and says `trust` is not built. A generic `x as T` is checked in the
+instance, where `T` is known. So the size check in generation (`genlRecast`,
+`ErrorRecastSize`) is a guard that only a variant as its enum reaches, always at
+one size, until `trust` allows other struct recasts.
 
 **Between two references, `as` may only be a legal coercion of the permission**
 (`castRefPermCheck`, before the size test; any kind of reference counts: a
@@ -194,8 +212,8 @@ asks (`permMatches`): `uni` to `mut`, `imm`, `&`; `mut` and `imm` to `&`; the
 same to the same. Anything else, `&` to `&mut`, `&imm` to `&uni`, `&mut` to
 `&uni`, is `ErrorCastPerm`, whose message names both permissions and says it
 needs `trust`, which is not built yet. Reinterpretation is trusted
-([reftrust.html](../../../../doc/reference/reftrust.html), "Type
-Reinterpretation"), but a reference's permission is what flow, the loan walk and
+([safe-trust.html](../../../../doc/manual/safe-trust.html#reinterpret), "Reinterpretations that need trust"),
+but a reference's permission is what flow, the loan walk and
 the checks of `parallel each` rest on, so a cast that changed it would be a way
 round every one (`&mut` as `&uni` slips past `ErrorParRoot`; `&` as `&mut`
 writes through a read-only view). **A raw pointer `as` a reference is not asked**
@@ -204,12 +222,12 @@ writes through a read-only view). **A raw pointer `as` a reference is not asked*
 needs a `&uni` slice of memory it owns calls `mem.sliceFromPartsUni`, not a cast.
 **One case is let through for now: a `ro` source made the `imm` a type
 declaring `Immutable` gives a reference that writes no permission**, which is how
-a slice of bytes is made text (`bytes as &str`, `p as So[str]`, documented in
-refarrayref.html). It is keyed on the target being *defaulted*, not written:
+a slice of bytes is made text (`bytes as &str`, `p as Uni[str]`, documented in
+lib-collections.html). It is keyed on the target being *defaulted*, not written:
 `refTypeCheck` sets `RefNode.permImmDefault` when it replaces the unwritten
 permission with `refImmutableDefaultPerm`, and `castRefPermCheck` asks it of the
 target. A permission written out (`as &imm P` from a `&`, `bytes as &imm str`,
-`So[imm, str]`) is checked as any other and is `ErrorCastPerm`; so is `&mut` as
+`Uni[imm, str]`) is checked as any other and is `ErrorCastPerm`; so is `&mut` as
 `&imm`. The name `str` appears nowhere in the test. The cast promises that the
 bytes are text and that nothing changes them while the text is used, neither of
 which is checked, so it is for `trust` to guard too once that is built.
@@ -282,13 +300,12 @@ reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
 another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is
 a copy of the owner typed as the variant, allowed only where no writer can store another variant
-through any owner (`MayIntRefSum`: `imm`, `uni`, `mut1`): the cast is a recast marked
-`FlagOwnerNarrow`, which flow counts as it counts any copy of an owner (a recast is its operand).
+through any owner (`MayIntRefSum`: `imm`, `uni`, `mut1`): the cast is a plain recast, which
+flow counts as it counts any copy of an owner (a recast is its operand).
 No loan stands for the other owners, so an owner whose permission lets one store another variant
-(`mut`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, but
-the allocation's header before it is rounded up to the alignment of the type, which a variant
-may have less of: generation asks that the value sits at the same offset in both allocations
-(`genlOwnerNarrowCheck`, `ErrorOwnerNarrow`). The `is` test binds
+(`mut`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, and the
+allocation's header before it is the same size for both: an allocation places a variant at its
+enum's alignment (generation.md, "An enum variant's allocation is laid out at its enum's alignment"). The `is` test binds
 nothing and is not asked. A narrowing from a virtual reference is not asked either.
 
 **Flow typing narrows a reference the same way** (`castNarrowRef`, from narrow.c): a
@@ -299,21 +316,22 @@ marked `FlagVariantNarrow` and followed by the loan walk. It initializes the hid
 
 ### Trait patterns
 
-A trait named as a pattern on an enum (`case imm m Measured`, `s is Measured`) matches the
+A trait named as a pattern on an enum (`case let Measured(m)`, `s is Measured`) matches the
 variants that comply with it. It is the same pair, an `is` test and a conversion that binds,
 and the same shared `typ`; what differs is what the name is bound to. `castPatternTrait` finds
 a trait (a struct with `TraitType`, not an enum) at the root of a pattern, looking through a
 written reference, and `castMatchedEnum` says the matched value is an enum, so the pattern
 is a trait pattern; where the matched value is not an enum, the downcast checks of
 `castIsTypeCheck` refuse it with `ErrorPatTrait` (a closed family alone can say which values
-comply).
+comply), and the conversion of such a binding, on a virtual reference to an open trait, is
+typed `errorType` (`castTraitBind`) so that its uses say nothing more.
 
 **Which variants comply** (`castTraitVariants`, `castVariantComplies`): a variant of the
 enum's `derived` complies when a generic's `where T is Trait` would say yes of it
 (`genericTypeIs`: it declares the trait with `is`, or, for a trait that requires something,
 has it) and the variant can fill the trait's vtable (`structVirtRefMatches`, which registers
 its implementation). So a marker trait is complied with only by declaring it, and a method over
-the whole enum (`self &Shape`, which has no copy in any variant, `structIsWholeEnumMethod`)
+the whole enum (`self: &Shape`, which has no copy in any variant, `structIsWholeEnumMethod`)
 makes no variant comply. None at all is `ErrorPatTraitNone`.
 
 **The test.** `castTraitIsCheck` stores the complying variants on the `is` node (`variants`).
@@ -344,9 +362,30 @@ only the variants that comply, so `FlagTraitBind` lets the selection skip the ot
 named only the others. The selection is always by comparing the tag, never by index, since the
 trait's vtable list is in the order conversions registered their implementers.
 
+### A binding through an owning trait value
+
+A bound pattern naming a concrete type, matched against an owning virtual reference
+(`case let Cat(c)` on a `Uni[Named]`, an `Rc[Named]`, a field holding one), binds a
+**borrow of the value as that type, never the owner**: Rust's `downcast_ref` and
+`downcast_mut`, so nothing is moved out of the value through the binding.
+`castOwnerVirtLend`, which `castBindProject` runs before anything else, lends the
+owner as a borrowed virtual reference, `&<mut Named`, through `iexpCoerce` (the
+coercion that lends an owner where a borrowed virtual reference is wanted, which
+flow reads as a loan of the owner), and turns the conversion's pattern into the
+borrow it binds, `&mut Cat`; the conversion then narrows a borrowed virtual reference
+as it always has. Where the arm took the matched place into a hidden variable of its
+own (`FlagMatchArm`), that variable holds the borrow instead, so the place is lent and
+stays whole (`match h.inner` through a `&Holder`); a value the match holds itself
+(`match makeOwner()`) is lent from its hidden variable. The permission is the owner's
+as a borrow can hold it (`castOwnerLendPerm`): `uni` and `mut` lend `mut`, `imm` lends
+`imm`, anything else `ro`, and an owner reached through a borrow that only reads lends
+only `ro`, as `borrowOwnerLendRefused` would require. The `is` test is untouched: it
+reads the owner where it is. A guard's binding on a place (`FlagMatchGuardBind`, whose
+matched value is the place itself, not a hidden variable) is not rewritten.
+
 ### What a binding takes from a place
 
-An arm that binds, `case imm c Circle` or `if imm c Circle = s`, on a place takes the
+An arm that binds, `case let Circle(c)` or `if let Circle(c) = s`, on a place takes the
 place's value into a hidden variable of its own (`FlagMatchArm`, made by
 `parseBoundMatch`), which the binding's conversion reads. Where the variant is **plain
 data** (`castVariantIsPlain`: nothing in it to move, finalize, count or trace),
@@ -371,6 +410,11 @@ not rewritten: its guard binds the reference, which takes nothing.
 Decides only whether a **downcast specialization** is possible, and needs a
 discriminant to do it.
 
+A left side that is no expression, a type (`Handle is Move`), is refused once, as
+`ErrorInvType` "requires a typed expression to the left": it is checked with
+`inodeTypeCheckAny`, not `iexpTypeCheckAny`, so `ErrorNotTyped` does not say it
+first, and `ifExhaustCheck` returns on it rather than ask a type for its variants.
+
 - **Reference to reference** (from a virtual or a plain ref): regions must be
   **identical** — two regions are represented differently in memory, so no
   recast exists between them, not even into a borrow. Then permissions must
@@ -380,7 +424,13 @@ discriminant to do it.
   not narrow to a trait or an enum: it was made from a concrete type, its vtable
   pointer is compared with that type's, and no vtable is built for a trait or an
   enum, so the comparison had nothing to find and failed at link. (A trait is
-  `ErrorPatTrait`: a trait pattern is for an enum, [Trait patterns](#trait-patterns).)
+  `ErrorPatTrait`: a trait pattern is for an enum, [Trait patterns](#trait-patterns);
+  a test of one trait value against another trait would need tables of which traits
+  each type meets, which are not built.) A type that does not meet the trait, or
+  something that is no struct (`n is i64`), is no type a virtual reference to an
+  untagged trait can have been made from, and is refused as that (`ErrorInvType`,
+  "Plain does not meet Named, so no value seen through Named is one")
+  rather than as a missing tag.
 - **Struct to struct**: needs `HasTagField`, then `structMatches` under
   `Coercion`.
 
@@ -425,12 +475,17 @@ which is lowered to a type literal, [literals](literals.md)):
   truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
   poison), a pointer truncated.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
-  `fptrunc`/`fpext`. A float whose truncated value the integer type cannot hold
-  (a negative float to an unsigned type, 300.0 to a `u8`) is LLVM's poison: the
-  value differs between an optimized and an unoptimized build (`u32` from
-  -3.7 printed 4294967293 unoptimized and a value past `u32`'s range
-  optimized). The checked and saturating conversions that would define it are
-  not built.
+  `fptrunc`/`fpext`, except that a float into an integer is
+  `llvm.fptosi.sat`/`llvm.fptoui.sat` (`genlFloatToInt`): a value the integer
+  type cannot hold gives its top or bottom (0 for an unsigned type), NaN 0, and
+  nothing is poison (Bug 43; the plain `fptoui`/`fptosi` were, and the
+  optimizer deleted a bounds check on such an index when the float was a
+  constant). A number into a `char` is `genlNumberToChar`: the number if it is
+  a code point, else U+FFFD (a float through the saturating conversion to
+  `i64`, a NaN none; a `u8` and `bool` need no check). A constant with no such
+  value, a float the integer cannot hold or a number that is no code point, is
+  refused when `fnCallNumberFrom` type checks it, in any expression
+  (`litFoldConst`, `ErrorConstOverflow`, `ErrorConstChar`).
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
   alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
   a loop is a fresh frame slot per iteration, which mem2reg does not promote, and
@@ -475,8 +530,9 @@ a trait pattern's test (`variants` set) is that test for each variant that compl
   bound to nothing (`castPatternBind` reported it) is never type checked, so a
   pattern written with arguments is still the unchecked call node: ask
   `isTypeNode` before unwrapping one.
-- **A struct reinterpret is checked in generation, not type check.** A size
-  mismatch surfaces late, as `ErrorRecastSize`.
+- **A struct's size is checked in generation, not type check.** Only a variant
+  as its enum gets there (`ErrorAsTarget` refuses the rest), so `ErrorRecastSize`
+  is a guard no program reaches.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and
   exit.** Reaching either means a conversion was built, by a pattern or a
   coercion, that generation has no arm for.

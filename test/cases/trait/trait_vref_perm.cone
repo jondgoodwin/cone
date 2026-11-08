@@ -1,76 +1,77 @@
 // Every pairing of a virtual reference's permission with a method's 'self'
 // that the permission allows, run, so the numbers show each call reached the
-// value and each change stayed: '&<mut' calls a 'self &mut' method and a
-// 'self &' one, '&<' and '&<imm' a 'self &' one, '&<uni' any of the three, and
-// an owning virtual reference whatever its own permission lends ('So[App]' and
+// value and each change stayed: '&<mut' calls a 'self: &mut' method and a
+// 'self: &' one, '&<' and '&<imm' a 'self: &' one, '&<uni' any of the three, and
+// an owning virtual reference whatever its own permission lends ('Uni[App]' and
 // 'Rc[App]' are 'uni', 'Rc[mut, App]' is shared and mutable, 'Rc[imm, App]' and
-// 'So[imm, App]' only readable). trait_typecheck_vref_perm holds the refusals.
+// 'Uni[imm, App]' only readable). trait_typecheck_vref_perm holds the refusals.
 //
-// A '&<uni' receiver is handed to the method as it is, which moves it, so each
-// function taking one dispatches through it once.
+// A '&<uni' receiver is reborrowed for each call, not used up by it, so a function
+// taking one may dispatch through it as often as it likes ('uniFrame' calls twice;
+// trait_vref_reborrow runs more).
 
 mod trait_vref_perm;
 
 import stdio use *;
 
 trait App {
-  pub fn frame(self &mut) bool;
-  pub fn look(self &) i64;
-  pub fn take(self &uni) i64;
+  pub fn frame(self: &mut) bool;
+  pub fn look(self: &) i64;
+  pub fn take(self: &uni) i64;
 }
 
 struct Spinner {
-  pub n i64;
-  pub fn frame(self &mut) bool {n = n + 1; n < 4;}
-  pub fn look(self &) i64 {n;}
-  pub fn take(self &uni) i64 {n * 100;}
+  pub n: i64;
+  pub fn frame(self: &mut) bool {n = n + 1; n < 4}
+  pub fn look(self: &) i64 {n}
+  pub fn take(self: &uni) i64 {n * 100}
 }
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
   printStr("\n");
 }
 
-fn mutFrame(b &<mut App) i64 { b.frame(); b.frame(); b.look(); }
-fn roLook(b &<App) i64 { b.look(); }
-fn immLook(b &<imm App) i64 { b.look(); }
-fn uniFrame(b &<uni App) { b.frame(); }
-fn uniLook(b &<uni App) i64 { b.look(); }
-fn uniTake(b &<uni App) i64 { b.take(); }
+fn mutFrame(b: &<mut App) i64 { b.frame(); b.frame(); b.look() }
+fn roLook(b: &<App) i64 { b.look() }
+fn immLook(b: &<imm App) i64 { b.look() }
+fn uniFrame(b: &<uni App) { b.frame(); b.frame(); }
+fn uniLook(b: &<uni App) i64 { b.look() }
+fn uniTake(b: &<uni App) i64 { b.take() }
 
 fn main() i32 {
   // Borrowed, from a mutable local
-  mut s = new Spinner(0);
+  var s = Spinner(0);
   show("mut-frame-twice", mutFrame(&mut s));
   show("ro-look", roLook(&s));
 
   // Borrowed, from an immutable local
-  imm i = new Spinner(10);
+  let i = Spinner(10);
   show("imm-look", immLook(&imm i));
 
   // Borrowed '&<uni', from a sole owner
-  mut u = new So[Spinner](20);
+  var u = Uni[Spinner](20);
   uniFrame(&uni *u);
   show("uni-look", uniLook(&uni *u));
   show("uni-take", uniTake(&uni *u));
 
   // Owning, each lent with the permission 'self' declares
-  mut o So[App] = new So[Spinner](30);
+  var o: Uni[App] = Uni[Spinner](30);
   o.frame();
   show("so-frame-look", o.look());
-  mut c Rc[App] = new Rc[Spinner](40);
+  var c: Rc[App] = Rc[Spinner](40);
   c.frame();
   show("rc-frame-look", c.look());
   show("rc-take", c.take());
-  imm m Rc[mut, App] = new Rc[mut, Spinner](50);
+  let m: Rc[mut, App] = Rc[mut, Spinner](50);
   m.frame();
   show("rc-mut-frame-look", m.look());
-  imm ri Rc[imm, App] = new Rc[imm, Spinner](60);
+  let ri: Rc[imm, App] = Rc[imm, Spinner](60);
   show("rc-imm-look", ri.look());
-  imm si So[imm, App] = new So[imm, Spinner](70);
-  show("so-imm-look", si.look());
+  let si: Uni[imm, App] = Uni[imm, Spinner](70);
+  show("uni-imm-look", si.look());
 
-  0i32;
+  0i32
 }

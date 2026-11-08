@@ -14,15 +14,12 @@
 // names of its type as names of the module -- reached through the global, whose
 // address is fixed at compile time (compiler/c/doc/nodes/module.md, "Name folding").
 typedef struct VarDclNode {
-    IExpNodeHdr;             // 'vtype': type of this name's value
-    Name *namesym;
+    DclScopeHdr;             // 'vtype': type of this name's value; namesym; scope (0=global); index within this scope (e.g., parameter number)
     INode *value;              // Starting value/declaration (NULL if not initialized)
     LLVMValueRef llvmvar;      // LLVM's handle for a declared variable (for generation)
     DclInfo dclinfo;           // Owner and the facts that decide the linker symbol (globals; name.c spells it)
     INode *perm;               // Permission type (often mut or imm)
     struct FoldClause *fold;   // A global's fold clause, or NULL
-    uint16_t scope;            // 0=global
-    uint16_t index;            // index within this scope (e.g., parameter number)
     uint16_t flowtempflags;    // Data flow pass temporary flags
     uint16_t flowdepth;        // Data flow: the conditional depth it was declared at (flowDepth)
     uint8_t flowtracked;       // Data flow: 0 not yet asked, 1 its state is not followed for drops, 2 it is (flowDropTracked)
@@ -39,7 +36,7 @@ enum VarFlowTemp {
     VarMoved = 0x0002,          // Variable has been moved
     VarHollow = 0x0004,         // What this owning reference points at, or an element of it, was moved out ('hollowed')
     VarDropFlag = 0x0008,       // Whether it holds its value differs by path: a drop flag says so at run time
-    // An initializer's 'self &new' whose value has not been written yet on some
+    // An initializer's 'self: &new' whose value has not been written yet on some
     // path: set as its function's flow begins, cleared by '*self = value'. Like
     // the others it is joined by union, so a store on only some paths leaves it.
     VarUnfilled = 0x0010,
@@ -77,6 +74,7 @@ void varDclPrint(VarDclNode *fn);
 
 // Name resolution of vardcl
 void varDclNameRes(NameResState *pstate, VarDclNode *node);
+void varDclHook(NameResState *pstate, VarDclNode *node);
 
 // Type check vardcl
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *node);
@@ -114,6 +112,9 @@ struct VarDclExtend {
 // hands back the hidden locals to declare before it, in order, or NULL.
 void varDclExtendBegin(TypeCheckState *pstate, VarDclExtend *ext, VarDclNode *var);
 Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext);
+// The values of a declaration of several names, once checked, as the one initializer
+// whose extending positions are walked (assignTypeCheck)
+void varDclExtendInit(TypeCheckState *pstate, INode **valuep);
 
 // A borrow, type checked within such a statement, of a place whose root
 // 'slot' is a temporary: make the temporary a hidden local, which the borrow

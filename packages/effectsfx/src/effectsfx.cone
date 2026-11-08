@@ -1,0 +1,59 @@
+// The effectsfx package: effects at the standard of the best shooters, defined as data and
+// drawn by the GPU. A program reaches it with 'import effectsfx'. It sits beside 'vfx' (which
+// keeps its stateless emitters) and over 'gpu', 'render' (the lights, the image-quality
+// passes and their decals) and 'noise'.
+//
+// WHAT IT HAS, each with its method named:
+//
+// - GPU PARTICLES (particles.cone, particlesim.slang, particledraw.slang). A pool of
+//   particles that lives on the GPU as a ring buffer, simulated by a compute kernel a
+//   frame, spawned from batches the CPU lists, with forces (gravity, drag, wind, curl
+//   noise) and COLLISION WITH THE DEPTH BUFFER (screen-space collision) so sparks skitter
+//   and bounce across whatever the scene drew; a ground plane catches what the depth
+//   buffer cannot see. Drawn as velocity-stretched additive sparks and as soft, sun-lit
+//   smoke puffs.
+// - FLIPBOOK EXPLOSIONS (flipbook.cone, flipbook.slang). A fireball that billows and rolls
+//   into smoke, BAKED ON THE GPU AT START-UP from a procedural volumetric model (ray
+//   marched fBm-displaced density with a cooling temperature, shaded for emission and
+//   soot) into an atlas of frames, then played as camera-facing billboards with frame
+//   blending: a volumetric look at the cost of a textured quad.
+// - HEAT DISTORTION AND SHOCKWAVES (distort.cone, distort.slang). Refraction sprites that
+//   read a copy of the frame and offset where they read: a ring that sweeps outward
+//   (a sphere's silhouette), a rising shimmer.
+// - POINT LIGHTS (lights.cone). An effect's flash and glow as lights in render's clustered
+//   light set, each with an intensity curve over time.
+// - MESH DEBRIS (debris.cone). Chunks of any mesh thrown ballistically, bouncing and
+//   coming to rest, drawn through render's draw list.
+// - IMPACT DECALS (decals.cone). A scorch texture made from a few numbers, laid with
+//   render's box-projected decals and faded with time.
+// - A CAMERA-SHAKE HOOK (shake.cone). Trauma, Eiserloh's model: shake grows with the
+//   square of a trauma that decays, driven by smooth noise, with distance falloff.
+// - A SMALL-GRID FIRE AND SMOKE FLUID (fluid.cone, fluid.slang, fluidvolume.slang). Stable
+//   fluids on the GPU (semi-Lagrangian advection, a Jacobi pressure projection, buoyancy,
+//   vorticity confinement) in a box of about 90 thousand cells, drawn by ray marching: a flame
+//   that licks and a plume that eddies. It is state on the GPU, driven by 'step' and 'render'.
+// - A HALF-RESOLUTION LAYER (lowres.cone). Smoke, flipbooks and the fluid volume at a quarter of the
+//   fragments ('halfResolution'), for the integrated GPU.
+// - EFFECTS AS DATA (effect.cone). An 'Effect' is lists of layers of those kinds; an
+//   'EffectPlayer' registers effects once and plays any number of them, each an event
+//   (an effect, a seed, a start and a placement) the way vfx's event is. No effect is
+//   written in code; the examples' effects are values.
+//
+// A FRAME, with render's Renderer, Post and ImageFx (the image-quality driver whose
+// scene half leaves the depth for the effects):
+//
+//   fx.renderScene(&mut device, &mut encoder, &mut renderer, &mut post, &camera, &light, &list);
+//   player.update(&mut device, &mut encoder, &mut renderer, &fx, &mut post, &camera, now, dt, &mut list);
+//   fx.renderFinish(&mut device, &mut encoder, &mut renderer, &mut post, &list, &target);
+//
+// Its files are one module, and only this one, the root, imports.
+
+mod effectsfx;
+
+import libc;
+import geomath use *;
+import collections use *;
+import noise use pcg4d, toUnit, toSigned, UVec4, value2, fbm2;
+import mesh use Mesh;
+import gpu use *;
+import render use *;

@@ -20,8 +20,9 @@
 // - strlen, strcmp, memcpy and memset, and a string literal passed as a C
 //   string, since it carries its NUL;
 // - math.h's functions, double and float, each at a value known exactly;
-// - stdout() is the stream stdio prints to, so what is written to it comes out
-//   in order with the rest;
+// - stdout() is the C library's own stream, which has its buffer apart from the one
+//   stdio prints through, so a program that writes to both flushes between them
+//   (printFlush, fflush) to keep what each wrote in order;
 // - exit ends the program with the status given, flushing what was written:
 //   main returns 1, which the runner would report, after a call that exits 0.
 //
@@ -34,20 +35,20 @@ mod bindings;
 import stdio use *;
 import libc use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
   printStr("\n");
 }
 
-fn isNull(p *u8) i64 {if p == null {1i64;} else {0i64;};}
+fn isNull(p: *u8) i64 {if p == null {1i64} else {0i64}}
 
 fn memory() {
   // calloc: eight zeroed bytes
-  mut p = calloc(8usize, 1usize);
-  mut sum = 0i64;
-  mut i = 0usize;
+  var p = calloc(8usize, 1usize);
+  var sum = 0i64;
+  var i = 0usize;
   while i < 8usize {sum = sum + i64.from(p[i]); i = i + 1usize;};
   show("calloc-zeroed-sum", sum);
   // Filled 1 to 8, grown to 4096 bytes: the first eight survive
@@ -62,53 +63,56 @@ fn memory() {
   show("realloc-last", i64.from(p[4095]));
   free(p);
   // malloc, bare: core's fold of libc's and this module's own meet as one
-  imm q = malloc(16usize);
+  let q = malloc(16usize);
   show("malloc-null", isNull(q));
   free(q);
 }
 
 // The folder for temporary files: Windows' TEMP, Linux's TMPDIR or /tmp
 fn tempFolder() *u8 {
-  if isWindows() {return getenv("TEMP");}
-  imm dir = getenv("TMPDIR");
-  if dir == null {return &"/tmp" as *u8;}
-  dir;
+  #if #os == .windows {
+    getenv("TEMP")
+  } #else {
+    let dir = getenv("TMPDIR");
+    if dir == null {return &"/tmp" as *u8;}
+    dir
+  }
 }
 
 fn files() {
   // The temporary folder, a separator, and the file's name, with the NUL the literal carries
-  mut path = new Array[u8, 512] <- fill 0u8;
-  imm name *u8 = &[]path as *u8;
-  imm cname = cstr.fromPtr(name);
-  imm temp = tempFolder();
-  imm templen = strlen(cstr.fromPtr(temp));
+  var path = Array[u8, 512]() <- fill 0u8;
+  let name: *u8 = &[]path as *u8;
+  let cname = cstr.fromPtr(name);
+  let temp = tempFolder();
+  let templen = strlen(cstr.fromPtr(temp));
   memcpy(name, temp, templen);
-  if isWindows() {
+  #if #os == .windows {
     memcpy(name + templen, &"\\module_package_libc.tmp" as *u8, 25usize);
-  } else {
+  } #else {
     memcpy(name + templen, &"/module_package_libc.tmp" as *u8, 25usize);
   }
   show("path-length", i64.from(strlen(cname) - templen));
 
-  imm out = fopen(cname, "wb");
+  let out = fopen(cname, "wb");
   show("fopen-write-null", isNull(out as *u8));
-  imm text = &[]"line one\nline two\n";
+  let text = &[]"line one\nline two\n";
   show("fwrite-count", i64.from(fwrite(text as *u8, 1usize, 18usize, out)));
   show("fflush", i64.from(fflush(out)));
   show("fclose", i64.from(fclose(out)));
 
-  mut buf = new Array[u8, 64] <- fill 0u8;
-  imm back = fopen(cname, "rb");
-  imm got = fread(&[]buf as *u8, 1usize, 64usize, back);
+  var buf = Array[u8, 64]() <- fill 0u8;
+  let back = fopen(cname, "rb");
+  let got = fread(&[]buf as *u8, 1usize, 64usize, back);
   fclose(back);
   show("fread-count", i64.from(got));
-  show("read-back-equal", if strcmp(cstr.fromPtr(&[]buf as *u8), cstr.fromPtr(text as *u8)) == 0i32 {1i64;} else {0i64;});
+  show("read-back-equal", if strcmp(cstr.fromPtr(&[]buf as *u8), cstr.fromPtr(text as *u8)) == 0i32 {1i64} else {0i64});
 
   // rename, to the same name with '2' before its NUL, and back
-  mut path2 = new Array[u8, 512] <- fill 0u8;
-  imm name2 *u8 = &[]path2 as *u8;
-  imm cname2 = cstr.fromPtr(name2);
-  imm len = strlen(cname);
+  var path2 = Array[u8, 512]() <- fill 0u8;
+  let name2: *u8 = &[]path2 as *u8;
+  let cname2 = cstr.fromPtr(name2);
+  let len = strlen(cname);
   memcpy(name2, name, len);
   name2[len] = '2';
   show("rename", i64.from(rename(cname, cname2)));
@@ -122,13 +126,13 @@ fn files() {
   show("errno-set", i64.from(*errno()));
 
   // ferror: nothing failed reading, and reading a stream opened for writing does
-  imm clean = fopen(cname, "rb");
+  let clean = fopen(cname, "rb");
   fread(&[]buf as *u8, 1usize, 64usize, clean);
   show("ferror-clean", i64.from(ferror(clean)));
   fclose(clean);
-  imm writing = fopen(cname, "ab");
+  let writing = fopen(cname, "ab");
   fread(&[]buf as *u8, 1usize, 64usize, writing);
-  show("ferror-reading-a-writer", if ferror(writing) != 0i32 {1i64;} else {0i64;});
+  show("ferror-reading-a-writer", if ferror(writing) != 0i32 {1i64} else {0i64});
   fclose(writing);
 
   show("remove", i64.from(remove(cname)));
@@ -137,36 +141,36 @@ fn files() {
 
 // time: seconds since 1970, after 2026 began, and stored where asked
 fn clock() {
-  mut stored = 0i64;
-  imm now = time(&mut stored as *i64);
-  show("time-after-2026", if now >= 1767225600i64 {1i64;} else {0i64;});
-  show("time-stored", if stored == now {1i64;} else {0i64;});
-  show("time-null", if time(null) >= now {1i64;} else {0i64;});
+  var stored = 0i64;
+  let now = time(&mut stored as *i64);
+  show("time-after-2026", if now >= 1767225600i64 {1i64} else {0i64});
+  show("time-stored", if stored == now {1i64} else {0i64});
+  show("time-null", if time(null) >= now {1i64} else {0i64});
   // timespec_get: TIME_UTC answered, its seconds time()'s, its nanoseconds
   // below a second
-  mut ts = new Timespec(0i64, 0i32);
-  imm before = time(null);
-  imm base = timespec_get(&mut ts as *Timespec, TIME_UTC);
-  imm after = time(null);
+  var ts = Timespec(0i64, 0i32);
+  let before = time(null);
+  let base = timespec_get(&mut ts as *Timespec, TIME_UTC);
+  let after = time(null);
   show("timespec_get-base", i64.from(base));
-  show("timespec_get-seconds", if ts.tv_sec >= before and ts.tv_sec <= after {1i64;} else {0i64;});
-  show("timespec_get-nanoseconds", if ts.tv_nsec >= 0i32 and ts.tv_nsec < 1000000000i32 {1i64;} else {0i64;});
+  show("timespec_get-seconds", if ts.tv_sec >= before && ts.tv_sec <= after {1i64} else {0i64});
+  show("timespec_get-nanoseconds", if ts.tv_nsec >= 0i32 && ts.tv_nsec < 1000000000i32 {1i64} else {0i64});
 }
 
 fn process() {
   show("getenv-unset-null", isNull(getenv("CONE_LIBC_NEVER_SET")));
-  if isWindows() {
+  #if #os == .windows {
     show("system-status", i64.from(system("exit /b 3")));
-  } else {
+  } #else {
     show("system-status", i64.from((system("exit 3") >> 8i32) & 255i32));
   }
 }
 
 fn strings() {
   show("strlen-literal", i64.from(strlen("hello")));
-  show("strcmp-less", if strcmp("abc", "abd") < 0i32 {1i64;} else {0i64;});
-  mut buf = new Array[u8, 8] <- fill 0u8;
-  imm at *u8 = &[]buf as *u8;
+  show("strcmp-less", if strcmp("abc", "abd") < 0i32 {1i64} else {0i64});
+  var buf = Array[u8, 8]() <- fill 0u8;
+  let at: *u8 = &[]buf as *u8;
   memset(at, i32.from('x'), 3usize);
   memcpy(at + 3usize, &"yz" as *u8, 3usize);
   printStr("built = ");
@@ -177,11 +181,11 @@ fn strings() {
 // math.h, each result rounded to a millionth and printed as a whole number of
 // millionths. Pi arrives from acos, asin, atan and atan2 in both forms; the
 // float forms carry f32's pi (3.14159274), which rounds the same
-fn micro(x f64) i64 {i64.from(floor(x * 1000000. + 0.5));}
+fn micro(x: f64) i64 {i64.from(floor(x * 1000000. + 0.5))}
 
 fn maths() {
-  imm dpi = acos(-1.);
-  imm fpi = acosf(-1f);
+  let dpi = acos(-1.);
+  let fpi = acosf(-1f);
   show("sqrt-144", micro(sqrt(144.)));
   show("sqrtf-2.25", micro(sqrtf(2.25f)));
   show("acos-pi", micro(dpi));
@@ -219,7 +223,11 @@ fn maths() {
 
 fn streams() {
   printStr("stream = ");
+  // stdio keeps its own buffer, and C's stdout is another: each is written
+  // out in turn to keep the order
+  printFlush();
   fwrite(&"through stdout()\n" as *u8, 1usize, 17usize, stdout());
+  fflush(stdout());
 }
 
 // Ends the program: nothing after the call runs
@@ -238,5 +246,5 @@ fn main() i32 {
   maths();
   streams();
   finish();
-  1i32;
+  1i32
 }

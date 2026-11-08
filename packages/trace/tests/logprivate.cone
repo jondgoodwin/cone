@@ -1,0 +1,93 @@
+// 'private(&x)' in a log send: a sink that was not allowed private values sees
+// <private> in the message and as the field's text, and the value is absent from the
+// event's bytes altogether; a sink that 'allowsPrivate' gets the value. A sink that
+// declares only the three required methods is unchanged. A struct logged whole goes
+// out as its debug text, private fields included: private(x) protects only what it wraps.
+
+mod logprivate;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Log, Value, private;
+
+let log: Log;
+
+fn @initpure init() {
+  log = Log.make("vault", Level.Info);
+}
+
+struct Account {
+  id: u64;
+  pw: &str;
+}
+
+// Does the text s contain the text needle?
+fn has(s: &str, needle: &str) bool {
+  if needle.len > s.len {
+    return false;
+  }
+  var at = 0usize;
+  while at + needle.len <= s.len {
+    var k = 0usize;
+    while k < needle.len && s[at + k] == needle[k] {
+      k = k + 1usize;
+    }
+    if k == needle.len {
+      return true;
+    }
+    at = at + 1usize;
+  }
+  false
+}
+
+var leaks = 0u64;
+
+fn show(who: &str, e: &trace.Event) {
+  print <- who, " [", e.kind.name, "] msg='", e.message, "'";
+  var i = 0usize;
+  while i < e.values.len {
+    match e.values[i] {
+      case let Text(v) {
+        print <- " ", e.kind.names[i], "='", v, "'";
+        if who[0] == 'p' && (has(v, "hunter2") || has(v, "4242")) {
+          leaks = leaks + 1u64;
+        }
+      }
+      case let U64(v) {print <- " ", e.kind.names[i], "=", v;}
+      else {print <- " ", e.kind.names[i], "=?";}
+    }
+    i = i + 1usize;
+  }
+  print <- "\n";
+  if who[0] == 'p' && (has(e.message, "hunter2") || has(e.message, "4242")) {
+    leaks = leaks + 1u64;
+  }
+}
+
+// Only the three methods Sink requires
+struct Plain is trace.Sink {
+  pub n: i64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {show("plain", e);}
+}
+
+struct Allowed is trace.Sink {
+  pub n: i64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {show("allowed", e);}
+  pub fn allowsPrivate(self: &) bool {true}
+}
+
+fn main() i32 {
+  expect(trace.installPair(Uni[Plain](0), Uni[Allowed](0)), "the pair is installed");
+  trace.setDefaultLevel(Level.Info);
+  let secret = "hunter2";
+  let pin = 4242u64;
+  let user = "ada";
+  log <- $"login {user} secret {private(&secret)} pin {private(&pin)} done";
+  log <- $"login {user} secret {private(&secret)} pin {private(&pin)} done";
+  let acct = Account(77u64, "hunter2");
+  log <- $"whole {acct}";
+  expectUInt(leaks, 2u64, "only the struct logged whole leaks, in its field and its message (its debug text, as said)");
+  done()
+}

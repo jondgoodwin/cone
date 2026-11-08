@@ -11,56 +11,56 @@
 // 'mergeThreshold' (the agent's climb), so a step the agent can climb over does not make the
 // ground unwalkable.
 
-pub const MaxHeight i32 = 65535i32;
+pub const MaxHeight: i32 = 65535i32;
 
 pub struct Span {
-  pub smin i32;
-  pub smax i32;
-  pub area u8;
-  pub next i32;      // the next span up this column, -1 none
+  pub smin: i32;
+  pub smax: i32;
+  pub area: u8;
+  pub next: i32;      // the next span up this column, -1 none
 }
 
 pub struct Heightfield {
-  pub w i32;
-  pub h i32;
-  pub bmin Vec3;
-  pub cs f32;
-  pub ch f32;
-  pub yRange f32;    // the height covered, in metres, above bmin.y
-  pub cols List[i32];
-  pub spans List[Span];
-  pub freeHead i32;
+  pub w: i32;
+  pub h: i32;
+  pub bmin: Vec3;
+  pub cs: f32;
+  pub ch: f32;
+  pub yRange: f32;    // the height covered, in metres, above bmin.y
+  pub cols: List[i32];
+  pub spans: List[Span];
+  pub freeHead: i32;
 
-  pub fn make(w i32, h i32, bmin Vec3, yRange f32, cs f32, ch f32) Heightfield {
-    mut hf = new Heightfield(w, h, bmin, cs, ch, yRange, List[i32].empty(), List[Span].empty(), -1i32);
-    imm n = usize.from(w) * usize.from(h);
+  pub fn make(w: i32, h: i32, bmin: Vec3, yRange: f32, cs: f32, ch: f32) Heightfield {
+    var hf = Heightfield(w, h, bmin, cs, ch, yRange, List[i32](), List[Span](), -1i32);
+    let n = usize.from(w) * usize.from(h);
     hf.cols.reserve(n);
-    mut i = 0usize;
+    var i = 0usize;
     while i < n { hf.cols.push(-1i32); i = i + 1usize; }
-    hf;
+    hf
   }
 
-  fn allocSpan(self &mut, s Span) i32 {
+  fn allocSpan(self: &mut, s: Span) i32 {
     if freeHead >= 0i32 {
-      imm k = freeHead;
+      let k = freeHead;
       freeHead = (*spans[usize.from(k)]).next;
       spans.set(usize.from(k), s);
       return k;
     }
     spans.push(s);
-    i32.from(spans.len() - 1usize);
+    i32.from(spans.len() - 1usize)
   }
 
   // A span added to column (x, z), merging with the ones it overlaps
-  pub fn addSpan(self &mut, x i32, z i32, smin0 i32, smax0 i32, area0 u8, mergeThreshold i32) {
-    imm idx = usize.from(z) * usize.from(w) + usize.from(x);
-    mut smin = smin0;
-    mut smax = smax0;
-    mut area = area0;
-    mut prev = -1i32;
-    mut cur = *cols[idx];
+  pub fn addSpan(self: &mut, x: i32, z: i32, smin0: i32, smax0: i32, area0: u8, mergeThreshold: i32) {
+    let idx = usize.from(z) * usize.from(w) + usize.from(x);
+    var smin = smin0;
+    var smax = smax0;
+    var area = area0;
+    var prev = -1i32;
+    var cur = *cols[idx];
     while cur >= 0i32 {
-      imm c = *spans[usize.from(cur)];
+      let c = *spans[usize.from(cur)];
       if c.smin > smax { break; }
       if c.smax < smin {
         prev = cur;
@@ -68,40 +68,40 @@ pub struct Heightfield {
       } else {
         if c.smin < smin { smin = c.smin; }
         if c.smax > smax { smax = c.smax; }
-        if iabs(smax - c.smax) <= mergeThreshold {
+        if (smax - c.smax).abs() <= mergeThreshold {
           if c.area > area { area = c.area; }
         }
         // drop the merged span
-        imm nxt = c.next;
-        spans.set(usize.from(cur), new Span(0i32, 0i32, 0u8, freeHead));
+        let nxt = c.next;
+        spans.set(usize.from(cur), Span(0i32, 0i32, 0u8, freeHead));
         freeHead = cur;
         if prev >= 0i32 {
-          imm p = *spans[usize.from(prev)];
-          spans.set(usize.from(prev), new Span(p.smin, p.smax, p.area, nxt));
+          let p = *spans[usize.from(prev)];
+          spans.set(usize.from(prev), Span(p.smin, p.smax, p.area, nxt));
         } else {
           cols.set(idx, nxt);
         }
         cur = nxt;
       }
     }
-    imm k = self.allocSpan(new Span(smin, smax, area, cur));
+    let k = self.allocSpan(Span(smin, smax, area, cur));
     if prev >= 0i32 {
-      imm p = *spans[usize.from(prev)];
-      spans.set(usize.from(prev), new Span(p.smin, p.smax, p.area, k));
+      let p = *spans[usize.from(prev)];
+      spans.set(usize.from(prev), Span(p.smin, p.smax, p.area, k));
     } else {
       cols.set(idx, k);
     }
   }
 
-  pub fn spanCount(self &) usize {
-    mut n = 0usize;
-    mut i = 0usize;
+  pub fn spanCount(self: &) usize {
+    var n = 0usize;
+    var i = 0usize;
     while i < cols.len() {
-      mut s = *cols[i];
+      var s = *cols[i];
       while s >= 0i32 { n = n + 1usize; s = (*spans[usize.from(s)]).next; }
       i = i + 1usize;
     }
-    n;
+    n
   }
 }
 
@@ -110,29 +110,29 @@ pub struct Heightfield {
 // The polygon 'src' (x, y, z triples) cut by the line coordinate 'axis' = 'at':
 // the part at or below the line into 'low', the rest into 'high'.
 // Sutherland-Hodgman, as Recast's dividePoly
-fn dividePoly(src &List[f32], low &mut List[f32], high &mut List[f32], at f32, axis usize) {
+fn dividePoly(src: &List[f32], low: &mut List[f32], high: &mut List[f32], at: f32, axis: usize) {
   low.clear();
   high.clear();
-  imm n = src.len() / 3usize;
+  let n = src.len() / 3usize;
   if n == 0usize { return; }
-  mut j = n - 1usize;
-  mut dj = at - *src[j * 3usize + axis];
-  mut i = 0usize;
+  var j = n - 1usize;
+  var dj = at - *src[j * 3usize + axis];
+  var i = 0usize;
   while i < n {
-    imm di = at - *src[i * 3usize + axis];
-    imm ina = dj >= 0.;
-    imm inb = di >= 0.;
+    let di = at - *src[i * 3usize + axis];
+    let ina = dj >= 0.;
+    let inb = di >= 0.;
     if ina != inb {
-      imm s = di / (di - dj);
-      imm x = *src[i * 3usize] + (*src[j * 3usize] - *src[i * 3usize]) * s;
-      imm y = *src[i * 3usize + 1usize] + (*src[j * 3usize + 1usize] - *src[i * 3usize + 1usize]) * s;
-      imm z = *src[i * 3usize + 2usize] + (*src[j * 3usize + 2usize] - *src[i * 3usize + 2usize]) * s;
+      let s = di / (di - dj);
+      let x = *src[i * 3usize] + (*src[j * 3usize] - *src[i * 3usize]) * s;
+      let y = *src[i * 3usize + 1usize] + (*src[j * 3usize + 1usize] - *src[i * 3usize + 1usize]) * s;
+      let z = *src[i * 3usize + 2usize] + (*src[j * 3usize + 2usize] - *src[i * 3usize + 2usize]) * s;
       low.push(x); low.push(y); low.push(z);
       high.push(x); high.push(y); high.push(z);
       // the i'th point goes to its own side; one on the line was added above
       if di > 0. {
         low.push(*src[i * 3usize]); low.push(*src[i * 3usize + 1usize]); low.push(*src[i * 3usize + 2usize]);
-      } elif di < 0. {
+      } else if di < 0. {
         high.push(*src[i * 3usize]); high.push(*src[i * 3usize + 1usize]); high.push(*src[i * 3usize + 2usize]);
       }
     } else {
@@ -149,93 +149,93 @@ fn dividePoly(src &List[f32], low &mut List[f32], high &mut List[f32], at f32, a
   }
 }
 
-fn copyPoly(src &List[f32], dst &mut List[f32]) {
+fn copyPoly(src: &List[f32], dst: &mut List[f32]) {
   dst.clear();
-  mut i = 0usize;
+  var i = 0usize;
   while i < src.len() { dst.push(*src[i]); i = i + 1usize; }
 }
 
 // The buffers the clipping works in, kept between triangles
 pub struct RasterScratch {
-  pub tri List[f32];
-  pub row List[f32];
-  pub inrow List[f32];
-  pub p1 List[f32];
-  pub p2 List[f32];
-  pub tmp List[f32];
+  pub tri: List[f32];
+  pub row: List[f32];
+  pub inrow: List[f32];
+  pub p1: List[f32];
+  pub p2: List[f32];
+  pub tmp: List[f32];
 
   pub fn make() RasterScratch {
-    new RasterScratch(List[f32].withCapacity(24usize), List[f32].withCapacity(24usize), List[f32].withCapacity(24usize),
-      List[f32].withCapacity(24usize), List[f32].withCapacity(24usize), List[f32].withCapacity(24usize));
+    RasterScratch(List[f32].withCapacity(24usize), List[f32].withCapacity(24usize), List[f32].withCapacity(24usize),
+      List[f32].withCapacity(24usize), List[f32].withCapacity(24usize), List[f32].withCapacity(24usize))
   }
 }
 
-fn pushV(l &mut List[f32], v Vec3) { l.push(v.x); l.push(v.y); l.push(v.z); }
+fn pushV(l: &mut List[f32], v: Vec3) { l.push(v.x); l.push(v.y); l.push(v.z); }
 
 // One triangle into the heightfield (Recast's rasterizeTri)
-pub fn rasterizeTriangle(hf &mut Heightfield, v0 Vec3, v1 Vec3, v2 Vec3, area u8, mergeThr i32, sc &mut RasterScratch) {
-  imm tmin = v0.min(v1).min(v2);
-  imm tmax = v0.max(v1).max(v2);
-  imm ics = 1. / hf.cs;
-  imm ich = 1. / hf.ch;
-  imm bmin = hf.bmin;
-  imm worldW = f32.from(hf.w) * hf.cs;
-  imm worldH = f32.from(hf.h) * hf.cs;
-  if tmax.x < bmin.x or tmin.x > bmin.x + worldW or tmax.z < bmin.z or tmin.z > bmin.z + worldH { return; }
-  if tmax.y < bmin.y or tmin.y > bmin.y + hf.yRange { return; }
-  mut z0 = i32.from(floorf((tmin.z - bmin.z) * ics));
-  mut z1 = i32.from(floorf((tmax.z - bmin.z) * ics));
+pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, area: u8, mergeThr: i32, sc: &mut RasterScratch) {
+  let tmin = v0.min(v1).min(v2);
+  let tmax = v0.max(v1).max(v2);
+  let ics = 1. / hf.cs;
+  let ich = 1. / hf.ch;
+  let bmin = hf.bmin;
+  let worldW = f32.from(hf.w) * hf.cs;
+  let worldH = f32.from(hf.h) * hf.cs;
+  if tmax.x < bmin.x || tmin.x > bmin.x + worldW || tmax.z < bmin.z || tmin.z > bmin.z + worldH { return; }
+  if tmax.y < bmin.y || tmin.y > bmin.y + hf.yRange { return; }
+  var z0 = i32.from(((tmin.z - bmin.z) * ics).floor());
+  var z1 = i32.from(((tmax.z - bmin.z) * ics).floor());
   z0 = iclamp(z0, -1i32, hf.h - 1i32);
   z1 = iclamp(z1, 0i32, hf.h - 1i32);
   sc.tri.clear();
   pushV(&mut sc.tri, v0); pushV(&mut sc.tri, v1); pushV(&mut sc.tri, v2);
-  mut z = z0;
+  var z = z0;
   while z <= z1 {
-    imm cellZ = bmin.z + f32.from(z) * hf.cs;
+    let cellZ = bmin.z + f32.from(z) * hf.cs;
     dividePoly(&sc.tri, &mut sc.row, &mut sc.tmp, cellZ + hf.cs, 2usize);
     copyPoly(&sc.tmp, &mut sc.tri);
     z = z + 1i32;
     if sc.row.len() < 9usize { continue; }
     if z - 1i32 < 0i32 { continue; }
-    mut minX = 3.4e38;
-    mut maxX = -3.4e38;
-    mut k = 0usize;
+    var minX = 3.4e38f;
+    var maxX = -3.4e38f;
+    var k = 0usize;
     while k < sc.row.len() {
-      imm vx = *sc.row[k];
+      let vx = *sc.row[k];
       if vx < minX { minX = vx; }
       if vx > maxX { maxX = vx; }
       k = k + 3usize;
     }
-    mut x0 = i32.from(floorf((minX - bmin.x) * ics));
-    mut x1 = i32.from(floorf((maxX - bmin.x) * ics));
-    if x1 < 0i32 or x0 >= hf.w { continue; }
+    var x0 = i32.from(((minX - bmin.x) * ics).floor());
+    var x1 = i32.from(((maxX - bmin.x) * ics).floor());
+    if x1 < 0i32 || x0 >= hf.w { continue; }
     x0 = iclamp(x0, -1i32, hf.w - 1i32);
     x1 = iclamp(x1, 0i32, hf.w - 1i32);
     copyPoly(&sc.row, &mut sc.inrow);
-    mut x = x0;
+    var x = x0;
     while x <= x1 {
-      imm cellX = bmin.x + f32.from(x) * hf.cs;
+      let cellX = bmin.x + f32.from(x) * hf.cs;
       dividePoly(&sc.inrow, &mut sc.p1, &mut sc.p2, cellX + hf.cs, 0usize);
       copyPoly(&sc.p2, &mut sc.inrow);
       x = x + 1i32;
       if sc.p1.len() < 9usize { continue; }
       if x - 1i32 < 0i32 { continue; }
-      mut smin = 3.4e38;
-      mut smax = -3.4e38;
+      var smin = 3.4e38f;
+      var smax = -3.4e38f;
       k = 1usize;
       while k < sc.p1.len() {
-        imm vy = *sc.p1[k];
+        let vy = *sc.p1[k];
         if vy < smin { smin = vy; }
         if vy > smax { smax = vy; }
         k = k + 3usize;
       }
       smin = smin - bmin.y;
       smax = smax - bmin.y;
-      if smax < 0. or smin > hf.yRange { continue; }
+      if smax < 0. || smin > hf.yRange { continue; }
       if smin < 0. { smin = 0.; }
       if smax > hf.yRange { smax = hf.yRange; }
-      imm ismin = iclamp(i32.from(floorf(smin * ich)), 0i32, MaxHeight);
-      imm ismax = iclamp(i32.from(ceilf(smax * ich)), ismin + 1i32, MaxHeight);
+      let ismin = iclamp(i32.from((smin * ich).floor()), 0i32, MaxHeight);
+      let ismax = iclamp(i32.from((smax * ich).ceil()), ismin + 1i32, MaxHeight);
       hf.addSpan(x - 1i32, z - 1i32, ismin, ismax, area, mergeThr);
     }
   }
@@ -243,24 +243,24 @@ pub fn rasterizeTriangle(hf &mut Heightfield, v0 Vec3, v1 Vec3, v2 Vec3, area u8
 
 // A solid obstacle: every column its footprint touches gets a span of
 // area 0 from its bottom to its top
-pub fn rasterizeObstacle(hf &mut Heightfield, o &Obstacle, mergeThr i32) {
-  imm e = o.extent();
-  imm ics = 1. / hf.cs;
-  imm ich = 1. / hf.ch;
-  imm x0 = iclamp(i32.from(floorf((e.x - hf.bmin.x) * ics)), 0i32, hf.w - 1i32);
-  imm x1 = iclamp(i32.from(floorf((e.z - hf.bmin.x) * ics)), 0i32, hf.w - 1i32);
-  imm z0 = iclamp(i32.from(floorf((e.y - hf.bmin.z) * ics)), 0i32, hf.h - 1i32);
-  imm z1 = iclamp(i32.from(floorf((e.w - hf.bmin.z) * ics)), 0i32, hf.h - 1i32);
-  if e.z < hf.bmin.x or e.x > hf.bmin.x + f32.from(hf.w) * hf.cs { return; }
-  if e.w < hf.bmin.z or e.y > hf.bmin.z + f32.from(hf.h) * hf.cs { return; }
-  imm ismin = iclamp(i32.from(floorf((o.ymin - hf.bmin.y) * ich)), 0i32, MaxHeight);
-  imm ismax = iclamp(i32.from(ceilf((o.ymax - hf.bmin.y) * ich)), ismin + 1i32, MaxHeight);
-  mut z = z0;
+pub fn rasterizeObstacle(hf: &mut Heightfield, o: &Obstacle, mergeThr: i32) {
+  let e = o.extent();
+  let ics = 1. / hf.cs;
+  let ich = 1. / hf.ch;
+  let x0 = iclamp(i32.from(((e.x - hf.bmin.x) * ics).floor()), 0i32, hf.w - 1i32);
+  let x1 = iclamp(i32.from(((e.z - hf.bmin.x) * ics).floor()), 0i32, hf.w - 1i32);
+  let z0 = iclamp(i32.from(((e.y - hf.bmin.z) * ics).floor()), 0i32, hf.h - 1i32);
+  let z1 = iclamp(i32.from(((e.w - hf.bmin.z) * ics).floor()), 0i32, hf.h - 1i32);
+  if e.z < hf.bmin.x || e.x > hf.bmin.x + f32.from(hf.w) * hf.cs { return; }
+  if e.w < hf.bmin.z || e.y > hf.bmin.z + f32.from(hf.h) * hf.cs { return; }
+  let ismin = iclamp(i32.from(((o.ymin - hf.bmin.y) * ich).floor()), 0i32, MaxHeight);
+  let ismax = iclamp(i32.from(((o.ymax - hf.bmin.y) * ich).ceil()), ismin + 1i32, MaxHeight);
+  var z = z0;
   while z <= z1 {
-    mut x = x0;
+    var x = x0;
     while x <= x1 {
-      imm px = hf.bmin.x + (f32.from(x) + 0.5) * hf.cs;
-      imm pz = hf.bmin.z + (f32.from(z) + 0.5) * hf.cs;
+      let px = hf.bmin.x + (f32.from(x) + 0.5) * hf.cs;
+      let pz = hf.bmin.z + (f32.from(z) + 0.5) * hf.cs;
       if o.touchesSquare(px, pz, hf.cs) {
         hf.addSpan(x, z, ismin, ismax, AreaNull, mergeThr);
       }
@@ -274,19 +274,19 @@ pub fn rasterizeObstacle(hf &mut Heightfield, o &Obstacle, mergeThr i32) {
 
 // A span that is not walkable but within a climb of a walkable one below it
 // (a kerb, a low box) becomes walkable
-pub fn filterLowHangingObstacles(hf &mut Heightfield, climb i32) {
-  mut c = 0usize;
+pub fn filterLowHangingObstacles(hf: &mut Heightfield, climb: i32) {
+  var c = 0usize;
   while c < hf.cols.len() {
-    mut prevWalkable = false;
-    mut prevArea = 0u8;
-    mut prevMax = 0i32;
-    mut s = *hf.cols[c];
+    var prevWalkable = false;
+    var prevArea = 0u8;
+    var prevMax = 0i32;
+    var s = *hf.cols[c];
     while s >= 0i32 {
-      imm sp = *hf.spans[usize.from(s)];
-      imm walkable = sp.area != AreaNull;
-      if !walkable and prevWalkable {
-        if iabs(sp.smax - prevMax) <= climb {
-          hf.spans.set(usize.from(s), new Span(sp.smin, sp.smax, prevArea, sp.next));
+      let sp = *hf.spans[usize.from(s)];
+      let walkable = sp.area != AreaNull;
+      if !walkable && prevWalkable {
+        if (sp.smax - prevMax).abs() <= climb {
+          hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, prevArea, sp.next));
         }
       }
       prevWalkable = walkable;
@@ -301,45 +301,45 @@ pub fn filterLowHangingObstacles(hf &mut Heightfield, climb i32) {
 // A span at a ledge (a drop of more than a climb to a neighbour the agent
 // could step to) or on too steep a slope (neighbours differing by more than a
 // climb) is not walkable. The heightfield's edge counts as a drop
-pub fn filterLedgeSpans(hf &mut Heightfield, height i32, climb i32) {
-  imm w = hf.w;
-  imm h = hf.h;
-  mut z = 0i32;
+pub fn filterLedgeSpans(hf: &mut Heightfield, height: i32, climb: i32) {
+  let w = hf.w;
+  let h = hf.h;
+  var z = 0i32;
   while z < h {
-    mut x = 0i32;
+    var x = 0i32;
     while x < w {
-      mut s = *hf.cols[usize.from(z) * usize.from(w) + usize.from(x)];
+      var s = *hf.cols[usize.from(z) * usize.from(w) + usize.from(x)];
       while s >= 0i32 {
-        imm sp = *hf.spans[usize.from(s)];
+        let sp = *hf.spans[usize.from(s)];
         if sp.area != AreaNull {
-          imm bot = sp.smax;
-          imm top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin; } else { MaxHeight; };
-          mut minh = MaxHeight;
-          mut asmin = sp.smax;
-          mut asmax = sp.smax;
-          mut dir = 0i32;
+          let bot = sp.smax;
+          let top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin } else { MaxHeight };
+          var minh = MaxHeight;
+          var asmin = sp.smax;
+          var asmax = sp.smax;
+          var dir = 0i32;
           while dir < 4i32 {
-            imm dx = x + dirX(dir);
-            imm dz = z + dirZ(dir);
-            if dx < 0i32 or dz < 0i32 or dx >= w or dz >= h {
-              minh = imin(minh, -climb - bot);
+            let dx = x + dirX(dir);
+            let dz = z + dirZ(dir);
+            if dx < 0i32 || dz < 0i32 || dx >= w || dz >= h {
+              minh = minh.min(-climb - bot);
               dir = dir + 1i32;
               continue;
             }
-            mut ns = *hf.cols[usize.from(dz) * usize.from(w) + usize.from(dx)];
+            var ns = *hf.cols[usize.from(dz) * usize.from(w) + usize.from(dx)];
             // from minus infinity to the first span
-            mut nbot = -climb;
-            mut ntop = if ns >= 0i32 { (*hf.spans[usize.from(ns)]).smin; } else { MaxHeight; };
-            if imin(top, ntop) - imax(bot, nbot) > height {
-              minh = imin(minh, nbot - bot);
+            var nbot = -climb;
+            var ntop = if ns >= 0i32 { (*hf.spans[usize.from(ns)]).smin } else { MaxHeight };
+            if top.min(ntop) - bot.max(nbot) > height {
+              minh = minh.min(nbot - bot);
             }
             while ns >= 0i32 {
-              imm n = *hf.spans[usize.from(ns)];
+              let n = *hf.spans[usize.from(ns)];
               nbot = n.smax;
-              ntop = if n.next >= 0i32 { (*hf.spans[usize.from(n.next)]).smin; } else { MaxHeight; };
-              if imin(top, ntop) - imax(bot, nbot) > height {
-                minh = imin(minh, nbot - bot);
-                if iabs(nbot - bot) <= climb {
+              ntop = if n.next >= 0i32 { (*hf.spans[usize.from(n.next)]).smin } else { MaxHeight };
+              if top.min(ntop) - bot.max(nbot) > height {
+                minh = minh.min(nbot - bot);
+                if (nbot - bot).abs() <= climb {
                   if nbot < asmin { asmin = nbot; }
                   if nbot > asmax { asmax = nbot; }
                 }
@@ -349,9 +349,9 @@ pub fn filterLedgeSpans(hf &mut Heightfield, height i32, climb i32) {
             dir = dir + 1i32;
           }
           if minh < -climb {
-            hf.spans.set(usize.from(s), new Span(sp.smin, sp.smax, AreaNull, sp.next));
-          } elif asmax - asmin > climb {
-            hf.spans.set(usize.from(s), new Span(sp.smin, sp.smax, AreaNull, sp.next));
+            hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, AreaNull, sp.next));
+          } else if asmax - asmin > climb {
+            hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, AreaNull, sp.next));
           }
         }
         s = sp.next;
@@ -363,15 +363,15 @@ pub fn filterLedgeSpans(hf &mut Heightfield, height i32, climb i32) {
 }
 
 // A span with less than the agent's height above it is not walkable
-pub fn filterLowHeightSpans(hf &mut Heightfield, height i32) {
-  mut c = 0usize;
+pub fn filterLowHeightSpans(hf: &mut Heightfield, height: i32) {
+  var c = 0usize;
   while c < hf.cols.len() {
-    mut s = *hf.cols[c];
+    var s = *hf.cols[c];
     while s >= 0i32 {
-      imm sp = *hf.spans[usize.from(s)];
-      imm top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin; } else { MaxHeight; };
+      let sp = *hf.spans[usize.from(s)];
+      let top = if sp.next >= 0i32 { (*hf.spans[usize.from(sp.next)]).smin } else { MaxHeight };
       if top - sp.smax < height {
-        hf.spans.set(usize.from(s), new Span(sp.smin, sp.smax, AreaNull, sp.next));
+        hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, AreaNull, sp.next));
       }
       s = sp.next;
     }
@@ -381,14 +381,14 @@ pub fn filterLowHeightSpans(hf &mut Heightfield, height i32) {
 
 // The four neighbours of a cell, in Recast's order: 0 is -x, 1 is +z,
 // 2 is +x, 3 is -z
-pub fn dirX(dir i32) i32 inline {
+pub fn dirX(dir: i32) i32 inline {
   if dir == 0i32 { return -1i32; }
   if dir == 2i32 { return 1i32; }
-  0i32;
+  0i32
 }
 
-pub fn dirZ(dir i32) i32 inline {
+pub fn dirZ(dir: i32) i32 inline {
   if dir == 1i32 { return 1i32; }
   if dir == 3i32 { return -1i32; }
-  0i32;
+  0i32
 }

@@ -90,6 +90,14 @@ void shapeDeclaredCheck(void);
 // source does not? True of a type of the package the compiler found so
 int shapeRecordable(StructNode *st);
 
+// Does the package's include file say this type's methods reshape nothing a caller
+// holds a borrow into ('ShapeKeeping', below)? True of a type of the package with
+// a method a trait could dispatch to, each of which the compiler found so. The
+// file is all an importer has of the methods' bodies, so it takes the type as the
+// file says: a value of the type goes behind a '+ ShapeKeeping' reference only if
+// the file records it (shapeKeepsVia)
+int shapeKeepRecordable(StructNode *st);
+
 // '+ ShapeKeeping' on a virtual reference: does a call through '&<Trait' on a value
 // of the struct 'impl' reshape nothing the caller may hold a borrow into? It holds
 // when no method the trait dispatches to, in its body or in anything it calls,
@@ -133,7 +141,7 @@ int siBodyReady(FnDclNode *fn);
 // Code the compiler cannot read, or whose body is not checked yet, answers yes.
 int shapeParamReshapes(FnDclNode *fn, uint32_t k);
 int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaparams);
-// The same through a global alone, for a call made while a borrow into a 'mut' global is held:
+// The same through a global alone, for a call made while a borrow into a 'var' global is held:
 // a virtual call or a call of a function value in the body (or in what it calls) is taken to
 // write any global, whatever it is handed
 int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont);

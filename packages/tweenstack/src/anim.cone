@@ -1,0 +1,633 @@
+// Anim: an animator as a value. It is plain data, built by a named function,
+// storable, copyable, sendable, and it does nothing until a registry starts
+// it ('Animators.start'). It is an enum, one variant for each kind:
+//
+//   Transition  from a value to a value over a duration, eased. 'from' is the
+//               value the field has when it starts, unless given
+//   Keys        a keyframetracks Clip: tracks addressed by (target, property),
+//               with markers
+//   Along       a curve in space (Curve3) with an optional facing rotation:
+//               turned to the direction of travel, or to a heading of its own
+//               given at each waypoint (the short way round)
+//   Chase       STEPPED: approaches a goal the host moves, either with a time
+//               constant (x += (goal - x) * (1 - exp(-dt / tau)): 'chase' with
+//               a time constant, 'chaseSettle' with the time to get within 1%)
+//               or at a constant speed ('chaseSpeed': x moves towards the goal
+//               by amount per second and stops on it, never passing it)
+//   Spring      a damped spring towards a goal: closed form while the goal is
+//               fixed (a function of time), carrying position and velocity
+//               over when the goal moves
+//   Group       other animators, each at an offset: together, sequence,
+//               stagger, lagged (a lag ratio), a Timeline with labels. A group
+//               is an animator, so groups nest and take every timing field
+//               below
+//
+// What every kind has (the enum's common fields): the field it animates (target
+// and property), the type of its value, its duration, easing, and the TIMING
+// fields: delay, repeat (a count, fractions allowed, or FOREVER), direction
+// (normal, reverse, alternate), hold (what a member of a group shows before it
+// starts and after it ends: nothing, the end, the start, both; a lone
+// animator's hold before its start is what it writes during its delay) and
+// rate. A stepped kind (Chase, Spring) honours delay, hold and rate; it does
+// not repeat or run in reverse (its state only moves forward).
+//
+// The builder methods ('withEase', 'withDelay', 'forever' ...) are written once
+// on the enum, taking the animator by value and returning it, so they chain on
+// any kind: 'Anim.transition(...).withLinear().withDelay(1.).forever()'.
+//
+// There is no weight, no layer and no combine mode: an animator writes the
+// field it animates, directly, and ends. How effects combine is the author's
+// own formula over separate values.
+
+pub const FOREVER = 1.0e30f;
+
+pub fn isForever(x: f64) bool { x >= 1.0e29f64 }
+
+pub const DIR_NORMAL = 0u32;
+pub const DIR_REVERSE = 1u32;
+pub const DIR_ALTERNATE = 2u32;
+
+pub const HOLD_NONE = 0u32;
+pub const HOLD_END = 1u32;
+pub const HOLD_START = 2u32;
+pub const HOLD_BOTH = 3u32;
+
+// What a subtree holds, so a pass can skip what it cannot concern
+pub const F_STEPPED = 1u32;
+pub const F_MARKERS = 2u32;
+pub const F_NEEDS_INIT = 4u32;
+
+pub const SETTLE_EPS = 0.0005f;
+
+// How a chase approaches its goal
+pub const CHASE_EXP = 0u32;
+pub const CHASE_SPEED = 1u32;
+
+pub enum Anim {
+  // the field a single-field kind animates, and its type
+  pub target: u32;
+  pub prop: u32;
+  pub vkind: u32;
+  // the length of one iteration; for a group, the end of its last member
+  pub dur: f32;
+  // how long it is active for: dur, except for a stepped kind (it lives until
+  // it is done, or for its life) and a group holding one
+  pub life: f32;
+  pub easing: Easing;
+  // the author named an easing; if not, starting the animator picks the default
+  // (linear if it repeats, cubic in-out if not) once
+  pub easingSet: bool;
+  pub space: u32;
+  // timing
+  pub delay: f32;
+  pub repeat: f32;
+  pub direction: u32;
+  pub hold: u32;
+  pub rate: f32;
+  // a registry stops the other running animators of the same exclusive group
+  // (0 for none) when this one starts
+  pub xgroup: u32;
+  // nodes in this subtree, and what it holds
+  pub size: usize;
+  pub flags: u32;
+
+  // from 'from' (or the field's value when it starts) to 'to'
+  pub struct Transition {
+    pub hasFrom: bool;
+    pub from: Value;
+    pub to: Value;
+  }
+
+  pub struct Keys {
+    pub clip: Clip;
+  }
+
+  pub struct Along {
+    pub curve: Curve3;
+    pub faceProp: u32;
+    pub arc: bool;
+    // the heading (radians about +y) at each waypoint, unwound; empty to face
+    // the direction of travel
+    pub headings: List[f32];
+  }
+
+  pub struct Chase {
+    pub hasFrom: bool;
+    pub from: Value;
+    pub to: Value;
+    pub tau: f32;
+    pub slot: u32;
+    // CHASE_EXP (a time constant, tau) or CHASE_SPEED (a constant speed, 'speed' a second)
+    pub mode: u32;
+    pub speed: f32;
+    // a constant-speed chase ends when it reaches its goal (else it stays, ready for a goal that moves)
+    pub endOnArrival: bool;
+  }
+
+  pub struct Spring {
+    pub hasFrom: bool;
+    pub from: Value;
+    pub to: Value;
+    pub zeta: f32;
+    pub omega: f32;
+    pub slot: u32;
+    pub inheritVel: bool;
+  }
+
+  pub struct Group {
+    pub kids: List[Anim];
+    pub offs: List[f32];
+  }
+
+  // A deep copy
+  pub fn clone(self: &Anim) Anim {
+    match self {
+      case let Transition(t) {
+        Transition(t.target, t.prop, t.vkind, t.dur, t.life, t.easing, t.easingSet, t.space, t.delay, t.repeat,
+          t.direction, t.hold, t.rate, t.xgroup, t.size, t.flags, t.hasFrom, t.from, t.to)
+      }
+      case let Keys(k) {
+        Keys(k.target, k.prop, k.vkind, k.dur, k.life, k.easing, k.easingSet, k.space, k.delay, k.repeat,
+          k.direction, k.hold, k.rate, k.xgroup, k.size, k.flags, k.clip.clone())
+      }
+      case let Along(a) {
+        Along(a.target, a.prop, a.vkind, a.dur, a.life, a.easing, a.easingSet, a.space, a.delay, a.repeat,
+          a.direction, a.hold, a.rate, a.xgroup, a.size, a.flags, a.curve.clone(), a.faceProp, a.arc, copyFloats(&a.headings))
+      }
+      case let Chase(c) {
+        Chase(c.target, c.prop, c.vkind, c.dur, c.life, c.easing, c.easingSet, c.space, c.delay, c.repeat,
+          c.direction, c.hold, c.rate, c.xgroup, c.size, c.flags, c.hasFrom, c.from, c.to, c.tau, c.slot, c.mode, c.speed,
+          c.endOnArrival)
+      }
+      case let Spring(s) {
+        Spring(s.target, s.prop, s.vkind, s.dur, s.life, s.easing, s.easingSet, s.space, s.delay, s.repeat,
+          s.direction, s.hold, s.rate, s.xgroup, s.size, s.flags, s.hasFrom, s.from, s.to, s.zeta, s.omega, s.slot,
+          s.inheritVel)
+      }
+      case let Group(g) {
+        var out = Group(g.target, g.prop, g.vkind, g.dur, g.life, g.easing, g.easingSet, g.space, g.delay, g.repeat,
+          g.direction, g.hold, g.rate, g.xgroup, g.size, g.flags, List[Anim](), List[f32]());
+        var i = 0usize;
+        while i < g.kids.len() { out.kids.push(g.kids[i].clone()); out.offs.push(*g.offs[i]); i = i + 1usize; }
+        out
+      }
+    }
+  }
+
+  // ---- the kinds ----
+
+  // 'target.prop' going to 'to' over 'dur' seconds, from whatever it holds when this starts
+  pub fn transition(target: u32, prop: u32, to: Value, dur: f32) Anim {
+    Transition(target, prop, to.kind, dur, dur, Easing.of(EASE_IN_OUT_CUBIC), false, SPACE_LINEAR, 0., 1., DIR_NORMAL,
+      HOLD_END, 1., 0u32, 1usize, F_NEEDS_INIT, false, Value.rest(to.kind), to)
+  }
+
+  // The same from a given value
+  pub fn transitionFrom(target: u32, prop: u32, from: Value, to: Value, dur: f32) Anim {
+    Transition(target, prop, to.kind, dur, dur, Easing.of(EASE_IN_OUT_CUBIC), false, SPACE_LINEAR, 0., 1., DIR_NORMAL,
+      HOLD_END, 1., 0u32, 1usize, 0u32, true, from, to)
+  }
+
+  // The clip's tracks, linearly timed (the clip's own loop mode becomes
+  // repeat and direction: LOOP is repeat FOREVER, PINGPONG is repeat FOREVER,
+  // alternate)
+  pub fn keys(clip: &Clip) Anim {
+    let rep = if clip.mode == LOOP_LOOP || clip.mode == LOOP_PINGPONG { FOREVER } else { 1. };
+    let dir = if clip.mode == LOOP_PINGPONG { DIR_ALTERNATE } else { DIR_NORMAL };
+    let fl = if clip.markers.len() > 0usize { F_MARKERS } else { 0u32 };
+    Keys(0u32, 0u32, TK_F32, clip.length, clip.length, Easing.linear(), true, SPACE_LINEAR, 0., rep, dir, HOLD_END, 1.,
+      0u32, 1usize, fl, clip.clone())
+  }
+
+  // One track of a property, as a clip of its own
+  pub fn keysTrack(target: u32, prop: u32, track: &Track) Anim {
+    var c = Clip.make("", LOOP_ONCE);
+    c.addTrack(target, prop, track.clone());
+    Anim.keys(&c)
+  }
+
+  // A point riding 'curve' (target.prop, a Vec3) over 'dur' seconds. With
+  // 'byArcLength' it moves at one speed along the curve, else at the curve's
+  // parameter speed
+  pub fn along(target: u32, prop: u32, curve: &Curve3, dur: f32) Anim {
+    Along(target, prop, TK_VEC3, dur, dur, Easing.of(EASE_IN_OUT_CUBIC), false, SPACE_LINEAR, 0., 1., DIR_NORMAL,
+      HOLD_END, 1., 0u32, 1usize, 0u32, curve.clone(), 0u32, false, List[f32]())
+  }
+
+  // STEPPED: target.prop approaching a goal (first 'goal'; the host moves it
+  // with Animators.setGoal on the animator's slot) within a time constant of
+  // 'tau' seconds: it covers 63% of what is left in every 'tau', whatever
+  // the frame rate. It never ends unless given a life with 'withLife'.
+  pub fn chase(target: u32, prop: u32, goal: Value, tau: f32) Anim {
+    Chase(target, prop, goal.kind, FOREVER, FOREVER, Easing.linear(), true, SPACE_LINEAR, 0., 1., DIR_NORMAL, HOLD_END,
+      1., 0u32, 1usize, F_STEPPED | F_NEEDS_INIT, false, Value.rest(goal.kind), goal, tau, 0u32, CHASE_EXP, 0., false)
+  }
+
+  // The same, spelled by how long it takes to get within 1% of the way: the
+  // facerig way ('settle: 99% per seconds'). The time constant is seconds over
+  // ln 100.
+  pub fn chaseSettle(target: u32, prop: u32, goal: Value, seconds: f32) Anim {
+    Anim.chase(target, prop, goal, seconds / 4.6051702)
+  }
+
+  // STEPPED: target.prop moving towards its goal at a constant speed, 'amount'
+  // per 'per' seconds, and stopping ON the goal (never past it). The speed is
+  // along the straight line to the goal in the value's own components (the
+  // length of the difference of a Vec2, Vec3 or Color; the angle in radians
+  // for a rotation, which turns along the great circle). A goal that moves is
+  // chased from where it is, at the same speed. It stays registered on its
+  // goal, ready for the goal to move (see 'endsOnArrival' to have it end).
+  pub fn chaseSpeed(target: u32, prop: u32, goal: Value, amount: f32, per: f32) Anim {
+    Chase(target, prop, goal.kind, FOREVER, FOREVER, Easing.linear(), true, SPACE_LINEAR, 0., 1., DIR_NORMAL, HOLD_END,
+      1., 0u32, 1usize, F_STEPPED | F_NEEDS_INIT, false, Value.rest(goal.kind), goal, 0., 0u32, CHASE_SPEED,
+      if per > 0. { amount / per } else { 0. }, false)
+  }
+
+  // A damped spring (damping ratio zeta, angular frequency omega in radians a
+  // second) towards 'goal'. It carries the velocity the field had when it
+  // started (see withInheritVelocity), and ends when it has settled.
+  pub fn spring(target: u32, prop: u32, goal: Value, zeta: f32, omega: f32) Anim {
+    Spring(target, prop, goal.kind, springSettle(zeta, omega, SETTLE_EPS), FOREVER, Easing.linear(), true, SPACE_LINEAR,
+      0., 1., DIR_NORMAL, HOLD_END, 1., 0u32, 1usize, F_STEPPED | F_NEEDS_INIT, false, Value.rest(goal.kind), goal, zeta,
+      omega, 0u32, true)
+  }
+
+  // A spring given as a mass on a spring has it
+  pub fn springStiff(target: u32, prop: u32, goal: Value, stiffness: f32, damping: f32, mass: f32) Anim {
+    Anim.spring(target, prop, goal, springZeta(stiffness, damping, mass), springOmegaOf(stiffness, mass))
+  }
+
+  // ---- modifiers: each takes the animator and returns it, for any kind ----
+
+  // Start from this value, not the field's (a transition, chase or spring)
+  pub fn withFrom(var self: Anim, v: Value) Anim {
+    match &mut self {
+      case var Transition(t) { t.hasFrom = true; t.from = v; t.flags = t.flags & (F_STEPPED | F_MARKERS); }
+      case var Chase(c) { c.hasFrom = true; c.from = v; }
+      case var Spring(s) { s.hasFrom = true; s.from = v; }
+      else {}
+    }
+    self
+  }
+
+  // An easing named by the author is kept, whatever else is set and in
+  // whatever order. With none named, starting the animator picks linear if it
+  // repeats (a count above one, or forever) and cubic in-out if not.
+  pub fn withEase(var self: Anim, id: u32) Anim { easing = Easing.of(id); easingSet = true; self }
+  pub fn withEaseParams(var self: Anim, id: u32, p0: f32, p1: f32) Anim {
+    easing = Easing.withParams(id, p0, p1);
+    easingSet = true;
+    self
+  }
+  pub fn withEasing(var self: Anim, e: Easing) Anim { easing = e; easingSet = true; self }
+  pub fn withLinear(var self: Anim) Anim { easing = Easing.linear(); easingSet = true; self }
+  pub fn withBezier(var self: Anim, x1: f32, y1: f32, x2: f32, y2: f32) Anim {
+    easing = Easing.bezier(x1, y1, x2, y2);
+    easingSet = true;
+    self
+  }
+  pub fn withSpace(var self: Anim, s: u32) Anim { space = s; self }
+
+  // How long a stepped animator lives, in seconds
+  pub fn withLife(var self: Anim, seconds: f32) Anim { dur = seconds; life = seconds; self }
+
+  // The goal slot a stepped animator reads setGoal from
+  pub fn withSlot(var self: Anim, s: u32) Anim {
+    match &mut self {
+      case var Chase(c) { c.slot = s; }
+      case var Spring(sp) { sp.slot = s; }
+      else {}
+    }
+    self
+  }
+
+  pub fn withInheritVelocity(var self: Anim, on: bool) Anim {
+    match &mut self {
+      case var Spring(sp) { sp.inheritVel = on; }
+      else {}
+    }
+    self
+  }
+
+  // An along animator also writes the rotation facing the direction of travel
+  // (+Z forward, +Y up) to the property 'faceProp'
+  pub fn facing(var self: Anim, prop: u32) Anim {
+    match &mut self {
+      case var Along(a) { a.faceProp = prop; a.headings.clear(); }
+      else {}
+    }
+    self
+  }
+
+  // An along animator writes to 'prop' the rotation about +y that turns +Z to
+  // a heading of its own, not the direction of travel: 'headings' gives one
+  // (radians about +y, so +Z faces (sin h, cos h)) for each waypoint of the
+  // curve (its points, or every third control point of a Bezier chain). Each
+  // is taken the SHORT way round from the one before ('unwindHeadings'), and
+  // between waypoints the heading is a Catmull-Rom through them along the
+  // span's own parameter, so a rider can look at a view while the path goes
+  // elsewhere. The heading is a second field the same curve position drives,
+  // not a second animator.
+  pub fn facingHeadings(var self: Anim, prop: u32, headings: &List[f32]) Anim {
+    match &mut self {
+      case var Along(a) { a.faceProp = prop; a.headings = unwindHeadings(headings); }
+      else {}
+    }
+    self
+  }
+
+  // A chase at constant speed ends when it reaches its goal and is removed,
+  // the field keeping the goal's value; else it stays registered on it. (A
+  // time-constant chase only approaches its goal, so it has nothing to end on.)
+  pub fn endsOnArrival(var self: Anim, on: bool) Anim {
+    match &mut self {
+      case var Chase(c) { c.endOnArrival = on; }
+      else {}
+    }
+    self
+  }
+
+  // The speed rises as 1 - cos over the first 'seconds', is steady, and falls
+  // the same way over the last 'seconds' (see Easing.endRamps)
+  pub fn withEndRamps(var self: Anim, seconds: f32) Anim { easing = Easing.endRamps(seconds); easingSet = true; self }
+
+  // An along animator moves at one speed along the curve
+  pub fn byArcLength(var self: Anim, on: bool) Anim {
+    match &mut self {
+      case var Along(a) { a.arc = on; }
+      else {}
+    }
+    self
+  }
+
+  pub fn withDelay(var self: Anim, d: f32) Anim { delay = d; self }
+
+  // The number of iterations (fractions allowed), or forever
+  pub fn withRepeat(var self: Anim, n: f32) Anim { repeat = n; self }
+  pub fn forever(var self: Anim) Anim { repeat = FOREVER; self }
+  pub fn withDirection(var self: Anim, d: u32) Anim { direction = d; self }
+  pub fn withHold(var self: Anim, h: u32) Anim { hold = h; self }
+  pub fn withRate(var self: Anim, r: f32) Anim { rate = r; self }
+
+  // Starting this stops the running animators of the exclusive group 'g'
+  pub fn exclusive(var self: Anim, g: u32) Anim { xgroup = g; self }
+
+  // ---- reading ----
+
+  pub fn isStepped(self: &Anim) bool {
+    match self {
+      case is Chase { true }
+      case is Spring { true }
+      else { false }
+    }
+  }
+
+  pub fn isGroup(self: &Anim) bool {
+    match self {
+      case is Group { true }
+      else { false }
+    }
+  }
+
+  // Iterations: a stepped kind has one
+  pub fn iterations(self: &Anim) f32 { if self.isStepped() { 1. } else { repeat } }
+
+  pub fn rateOf(self: &Anim) f64 { if rate < 0.000001 { 0.000001f64 } else { f64.from(rate) } }
+
+  // The time it takes in its parent's timeline: delay, then the iterations at
+  // the rate (FOREVER if it has no end)
+  pub fn span(self: &Anim) f64 {
+    let d = f64.from(dur);
+    let n = f64.from(self.iterations());
+    if isForever(d) || isForever(n) { return 1.0e30f64; }
+    f64.from(delay) + d * n / self.rateOf()
+  }
+
+  // The same, counting a stepped kind by how long it lives rather than how
+  // long it nominally takes
+  pub fn lifeSpan(self: &Anim) f64 {
+    let d = f64.from(life);
+    let n = f64.from(self.iterations());
+    if isForever(d) || isForever(n) { return 1.0e30f64; }
+    f64.from(delay) + d * n / self.rateOf()
+  }
+
+  // The animator has no end
+  pub fn isEndless(self: &Anim) bool { isForever(self.span()) }
+
+  // How many animators the tree holds
+  pub fn count(self: &Anim) usize { size }
+
+  // Where the i-th member of a group starts in the group's timeline (0 for
+  // an animator that is not a group, or an index past the end)
+  pub fn kidOffset(self: &Anim, i: usize) f32 {
+    match self {
+      case let Group(g) { if i < g.offs.len() { *g.offs[i] } else { 0. } }
+      else { 0. }
+    }
+  }
+}
+
+// Pick the easing of every animator in the tree whose author named none:
+// linear if it repeats (more than one iteration, or forever), cubic in-out if
+// not. Done once, on the copy a registry starts, so it does not depend on the
+// order the author's calls were made in. A member of a repeated group is
+// judged by its own repeat.
+pub fn resolveDefaults(a: &mut Anim) {
+  if !a.easingSet {
+    a.easing = if a.repeat > 1. { Easing.linear() } else { Easing.of(EASE_IN_OUT_CUBIC) };
+    a.easingSet = true;
+  }
+  match a {
+    case var Group(g) {
+      var i = 0usize;
+      while i < g.kids.len() { resolveDefaults(&mut g.kids[i]); i = i + 1usize; }
+    }
+    else {}
+  }
+}
+
+fn copyFloats(src: &List[f32]) List[f32] {
+  var out = List[f32]();
+  var i = 0usize;
+  while i < src.len() { out.push(*src[i]); i = i + 1usize; }
+  out
+}
+
+fn capTime(x: f64) f32 { if x >= 1.0e29f64 { FOREVER } else { f32.from(x) } }
+
+// A group of copies of 'parts' at the given offsets
+fn buildGroup(parts: &List[Anim], offs: &List[f32]) Anim {
+  var kids = List[Anim]();
+  var koffs = List[f32]();
+  var size = 1usize;
+  var flags = 0u32;
+  var end: f64 = 0.;
+  var lend: f64 = 0.;
+  var i = 0usize;
+  while i < parts.len() {
+    let k = parts[i].clone();
+    size = size + k.size;
+    flags = flags | k.flags;
+    let e = f64.from(*offs[i]) + k.span();
+    if e > end { end = e; }
+    let le = f64.from(*offs[i]) + k.lifeSpan();
+    if le > lend { lend = le; }
+    kids.push(k);
+    koffs.push(*offs[i]);
+    i = i + 1usize;
+  }
+  Anim.Group(0u32, 0u32, TK_F32, capTime(end), capTime(lend), Easing.of(EASE_IN_OUT_CUBIC), false, SPACE_LINEAR, 0., 1.,
+    DIR_NORMAL, HOLD_END, 1., 0u32, size, flags, kids, koffs)
+}
+
+// All the parts at once; ends when the last ends
+pub fn together(parts: &List[Anim]) Anim {
+  var offs = List[f32]();
+  var i = 0usize;
+  while i < parts.len() { offs.push(0.); i = i + 1usize; }
+  buildGroup(parts, &offs)
+}
+
+// Each part starts when the one before ends
+pub fn sequence(parts: &List[Anim]) Anim {
+  var offs = List[f32]();
+  var t: f64 = 0.;
+  var i = 0usize;
+  while i < parts.len() {
+    offs.push(capTime(t));
+    t = t + parts[i].span();
+    if t > 1.0e30f64 { t = 1.0e30f64; }
+    i = i + 1usize;
+  }
+  buildGroup(parts, &offs)
+}
+
+// Each part starts 'lag' seconds after the one before
+pub fn stagger(parts: &List[Anim], lag: f32) Anim {
+  var offs = List[f32]();
+  var i = 0usize;
+  while i < parts.len() { offs.push(lag * f32.from(i)); i = i + 1usize; }
+  buildGroup(parts, &offs)
+}
+
+// Manim's lag ratio: each part starts the fraction 'ratio' of the way
+// through the one before (0 is together, 1 is a sequence)
+pub fn lagged(parts: &List[Anim], ratio: f32) Anim {
+  var offs = List[f32]();
+  var cur: f64 = 0.;
+  var i = 0usize;
+  while i < parts.len() {
+    offs.push(capTime(cur));
+    let start = cur;
+    let end = start + parts[i].span();
+    cur = (1.0f64 - f64.from(ratio)) * start + f64.from(ratio) * end;
+    if cur > 1.0e30f64 { cur = 1.0e30f64; }
+    i = i + 1usize;
+  }
+  buildGroup(parts, &offs)
+}
+
+// Copies of 'parts' that are one exclusive group: starting one stops the others
+pub fn oneOf(parts: &List[Anim], g: u32) List[Anim] {
+  var out = List[Anim]();
+  var i = 0usize;
+  while i < parts.len() { out.push(parts[i].clone().exclusive(g)); i = i + 1usize; }
+  out
+}
+
+fn findName(names: &List[String], name: &str) i64 {
+  var i = 0usize;
+  while i < names.len() {
+    if names[i].view() == name { return i64.from(i); }
+    i = i + 1usize;
+  }
+  -1i64
+}
+
+// A Timeline lays animators on a line the way GSAP's does: each is placed at
+// the end of what is there so far (add), at a time (addAt), with the last
+// one (addWith), after it (addAfter) or relative to a named label or to the
+// start or end of a named member (addAtLabel, addAtStartOf, addAtEndOf).
+// 'build' makes one group.
+pub struct Timeline {
+  pub items: List[Anim];
+  pub offs: List[f32];
+  pub itemNames: List[String];
+  pub labelNames: List[String];
+  pub labelTimes: List[f32];
+  pub lastStart: f64;
+  pub lastEnd: f64;
+  pub end: f64;
+
+  pub fn make() Timeline {
+    Timeline(List[Anim](), List[f32](), List[String](), List[String](), List[f32](),
+      0., 0., 0.)
+  }
+
+  fn place(self: &mut, a: &Anim, at: f64) {
+    let t = if at < 0. { 0. } else { at };
+    self.items.push(a.clone());
+    self.offs.push(capTime(t));
+    self.itemNames.push(String.from(""));
+    self.lastStart = t;
+    self.lastEnd = t + a.span();
+    if self.lastEnd > 1.0e30f64 { self.lastEnd = 1.0e30f64; }
+    if self.lastEnd > self.end { self.end = self.lastEnd; }
+  }
+
+  pub fn add(var self, a: &Anim) Timeline { let at = self.end; self.place(a, at); self }
+  pub fn addAt(var self, a: &Anim, t: f32) Timeline { self.place(a, f64.from(t)); self }
+  pub fn addWith(var self, a: &Anim, off: f32) Timeline { let at = self.lastStart + f64.from(off); self.place(a, at); self }
+  pub fn addAfter(var self, a: &Anim, off: f32) Timeline { let at = self.lastEnd + f64.from(off); self.place(a, at); self }
+
+  // At a label's time plus 'off'; an unknown label is time 0
+  pub fn addAtLabel(var self, a: &Anim, name: &str, off: f32) Timeline {
+    let i = findName(&self.labelNames, name);
+    let base = if i >= 0i64 { f64.from(*self.labelTimes[usize.from(i)]) } else { 0. };
+    self.place(a, base + f64.from(off));
+    self
+  }
+
+  // At the start of the member named 'name' plus 'off'
+  pub fn addAtStartOf(var self, a: &Anim, name: &str, off: f32) Timeline {
+    let i = findName(&self.itemNames, name);
+    let base = if i >= 0i64 { f64.from(*self.offs[usize.from(i)]) } else { 0. };
+    self.place(a, base + f64.from(off));
+    self
+  }
+
+  // At the end of the member named 'name' plus 'off'
+  pub fn addAtEndOf(var self, a: &Anim, name: &str, off: f32) Timeline {
+    let i = findName(&self.itemNames, name);
+    var base: f64 = 0.;
+    if i >= 0i64 { base = f64.from(*self.offs[usize.from(i)]) + self.items[usize.from(i)].span(); }
+    self.place(a, base + f64.from(off));
+    self
+  }
+
+  // Name the member added last
+  pub fn named(var self, name: &str) Timeline {
+    if self.itemNames.len() > 0usize {
+      let k = self.itemNames.len() - 1usize;
+      self.itemNames.set(k, String.from(name));
+    }
+    self
+  }
+
+  // A label at a time
+  pub fn label(var self, name: &str, t: f32) Timeline {
+    self.labelNames.push(String.from(name));
+    self.labelTimes.push(t);
+    self
+  }
+
+  // A label at the end of what is there so far
+  pub fn labelHere(var self, name: &str) Timeline {
+    self.labelNames.push(String.from(name));
+    self.labelTimes.push(capTime(self.end));
+    self
+  }
+
+  pub fn build(self: &) Anim { buildGroup(&self.items, &self.offs) }
+}

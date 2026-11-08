@@ -94,6 +94,13 @@ static inline void flowGateCall(FlowState *fstate, Nodes *args) {
     }
 }
 
+// Gate trigger: a literal of two or more values, which the loan walk asks as it
+// does a call's arguments (pwJoinStores)
+static inline void flowGateJoin(FlowState *fstate, Nodes *elems) {
+    if (elems != NULL && elems->used >= 2 && flowGateOpen(fstate, FlowGateStore))
+        flowGateJoinAsk(fstate, elems);
+}
+
 // Gate trigger: a method lending a borrow from a value that may change shape,
 // reached through a reference, in a function that also makes a call with a
 // writable argument. Asked even when another trigger has fired, for it also
@@ -105,7 +112,7 @@ static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
     // A call with a writable argument matters once a borrow is lent before it (a
     // borrow held across a loop is a holder, which gates the function itself)
     if (fstate->shapelend) {
-        // A borrow of a 'mut' global is asked of every call, not only one with a writable argument
+        // A borrow of a 'var' global is asked of every call, not only one with a writable argument
         if (fstate->shapeglobal)
             fstate->gate |= FlowGateShape;
         else {
@@ -120,9 +127,26 @@ static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
         flowGateShapeAsk(fstate, (INode *)call);
 }
 
+// An operand of a call or a literal is about to be walked. One that is itself a
+// call or a literal whose value may carry a borrow may carry one its own operands
+// made, of a variable the later operands may name ('both(s.view(), &mut s)',
+// 'two(first(&mut b), &mut b)'): what its operands lend is kept waiting
+// (flowGateOperandsEnd) until the call or literal around it is made. One whose
+// value carries none ('len(s.view())') lends nothing past itself.
+static inline void flowGateOperandNext(FlowState *fstate, INode *operand) {
+    while (operand->tag == CastTag)
+        operand = ((CastNode *)operand)->exp;
+    if ((operand->tag == FnCallTag || operand->tag == TypeLitTag || operand->tag == ArrayLitTag
+            || operand->tag == VTupleTag)
+        && flowGateOpen(fstate, FlowGateInCall)
+        && ((IExpNode *)operand)->vtype && !flowGateCarriesNone(((IExpNode *)operand)->vtype))
+        fstate->inflightkeep = 1;
+}
+
 // An operand of a call or a literal was just walked: while the rest are, a
 // borrow it made waits, and the variable it borrows is remembered
 static inline void flowGateOperand(FlowState *fstate, INode *operand) {
+    fstate->inflightkeep = 0;
     if ((operand->tag == BorrowTag || operand->tag == ArrayBorrowTag || operand->tag == CastTag
             || operand->tag == ArrIndexTag)
         && flowGateOpen(fstate, FlowGateInCall))
@@ -154,12 +178,20 @@ static inline void flowGateShapeStore(FlowState *fstate, INode *lval) {
 }
 
 // Gate trigger: a conversion, which may make an owning virtual reference of
-// a value holding a borrow ('So[Trait]' from a 'So[H]'): a number's
+// a value holding a borrow ('Uni[Trait]' from a 'Uni[H]'): a number's
 // conversion is dismissed by its operand's type
 static inline void flowGateBoxed(FlowState *fstate, INode *cast) {
     if ((cast->flags & FlagConvert) && flowGateOpen(fstate, FlowGateBoxed)
         && !flowGateCarriesNone(((IExpNode *)((CastNode *)cast)->exp)->vtype))
         flowGateBoxedAsk(fstate, cast);
+}
+
+// Gate trigger: the value of a struct or variant literal's field at 'i',
+// which may hold a borrow given to a field holding only ''static' ones: a
+// value that is no reference nor a struct that may hold one is dismissed
+static inline void flowGateStatic(FlowState *fstate, INode *lit, uint32_t i, INode *val) {
+    if (flowGateOpen(fstate, FlowGateStatic) && !flowGateCarriesNone(((IExpNode *)val)->vtype))
+        flowGateStaticAsk(fstate, lit, i, val);
 }
 
 #endif

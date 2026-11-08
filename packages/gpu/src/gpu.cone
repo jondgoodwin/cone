@@ -14,10 +14,10 @@
 //   mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_UNDEFINED);
 //   mut shader = device.createShaderModule(&TRIANGLE_SPIRV);   // SPIR-V, embedded
 //   mut layout = device.createEmptyPipelineLayout(0u32);
-//   imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
-//     new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32)];
-//   imm buffers = [new VertexBufferLayout(arrayStride: 20u64, attributes: &attributes)];
-//   mut pipeline = device.createRenderPipeline(&new RenderPipelineDescriptor(layout: &layout,
+//   imm attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
+//     VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32)];
+//   imm buffers = [VertexBufferLayout(arrayStride: 20u64, attributes: &attributes)];
+//   mut pipeline = device.createRenderPipeline(&RenderPipelineDescriptor(layout: &layout,
 //     vertexModule: &shader, buffers: &buffers, fragmentModule: &shader, colorFormat: swapchain.format));
 //   mut vertices = device.createBuffer(60u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
 //   device.queue.writeBuffer(&vertices, 0u64, &data as *u8, 60u64);
@@ -26,8 +26,8 @@
 //     imm frame = swapchain.getCurrentTexture(&mut device);
 //     if frame.ok() {
 //       mut encoder = device.createCommandEncoder();
-//       imm attachment = new RenderPassColorAttachment(view: frame.texture.createView(),
-//         clearValue: new Color(0.1, 0.2, 0.4, 1.));
+//       imm attachment = RenderPassColorAttachment(view: frame.texture.createView(),
+//         clearValue: Color(0.1, 0.2, 0.4, 1.));
 //       mut pass = encoder.beginRenderPass(&attachment);
 //       pass.setPipeline(&pipeline);
 //       pass.setVertexBuffer(0u32, &vertices, 0u64);
@@ -54,7 +54,7 @@
 //
 // Compute, WebGPU's way:
 //
-//   mut pipeline = device.createComputePipeline(&new ComputePipelineDescriptor(layout: &layout,
+//   mut pipeline = device.createComputePipeline(&ComputePipelineDescriptor(layout: &layout,
 //     module: &shader, entryPoint: "bakeMain"));
 //   mut encoder = device.createCommandEncoder();
 //   mut pass = encoder.beginComputePass();
@@ -69,6 +69,17 @@
 // a workgroup of at most 256 invocations, 8 storage buffers and 4 storage
 // textures a stage. 'dispatchWorkgroupsIndirect', 'drawIndirect' and
 // 'drawIndexedIndirect' read their arguments from a buffer the GPU wrote.
+//
+// Compute that moves a lot of numbers (a language model's quantised weights)
+// needs what a browser's GPU layer does not give: 16-bit floats, 8-bit
+// storage, the integer dot product, subgroup operations, and buffers of
+// gigabytes. 'adapter.computeCapabilities()' answers what a GPU offers as a
+// plain value; 'adapter.requestComputeDevice(&request)' enables what is asked
+// for and present, and with 'largeBuffers' lifts the 128 MiB binding and
+// 8-buffer limits to the GPU's own; 'device.compute' says what the device has.
+// A drawing device ('requestDevice') is unchanged and enables none of it. See
+// features.cone for what is queried, what is enabled and when, and what is
+// left out.
 //
 // Where WebGPU's shape and Vulkan's differ, this follows WebGPU's names and says so:
 //
@@ -115,6 +126,43 @@
 // clip space has y down, the viewport is flipped (a negative height, as wgpu
 // and most engines do), so a triangle counterclockwise in clip space is
 // counterclockwise on the screen, and FRONT_FACE_CCW means what it says.
+//
+// A headset's runtime makes the Vulkan instance and device itself (OpenXR's
+// XR_KHR_vulkan_enable2: xrCreateVulkanInstanceKHR, xrCreateVulkanDeviceKHR on
+// the physical device the runtime names) and hands over its swapchain images:
+// the one place this layer's API names Vulkan's types. 'Instance.createWith'
+// takes a maker (InstanceMaker) that calls the runtime with the create-info the
+// layer assembled, and makes no window's surface; 'instance.requestAdapterFor'
+// takes the GPU the runtime chose; 'adapter.requestDeviceVia' takes a maker
+// (DeviceMaker) the same way; 'vulkanHandle' and the like say the handles the
+// runtime is told; and 'device.wrapImage' makes a texture of an image
+// something else owns, which a render pass draws into like any other and which
+// the owner takes back. Every object made so is as valid as one made the
+// window's way, and ends as it does. Nothing else of the layer changes.
+//
+// A headset program may also show a window, a mirror of one eye. A runtime
+// lets the program add its own extensions to the instance and device it makes,
+// so 'Instance.createWithWindow' adds the extensions a window's surface needs
+// (and starts SDL's video subsystem), 'instance.createSurfaceOf' makes the
+// window's surface, 'instance.requestAdapterForSurface' takes the runtime's GPU
+// only if a queue of it presents to that surface, 'adapter.requestDeviceViaWindow'
+// enables VK_KHR_swapchain beside the runtime's extensions, and
+// 'device.createMirrorSwapChain' makes a swapchain that never holds the
+// program to the display's refresh or waits for an image. The eye's picture is
+// put into the swapchain's texture by 'encoder.blitTexture', which scales a box
+// of one texture into all of another and converts the format. A window that
+// shows its own pictures (every program that does not mirror) is made as it
+// always was.
+//
+// A program with no window that runs for its results (a compute program: a language
+// model's chat) makes its instance with 'Instance.createHeadless(name,
+// validation)': made directly, no SDL, no surface extensions, and the Khronos validation layer
+// on only if asked for. 'Instance.create' always asks for it, and with it every Vulkan call is
+// several times as dear (llmrun's 722 dispatches a token: 11 ms to record with it, 1 to 3 ms
+// without), which a test wants and a program that runs for its results does not. The layer
+// finds fault with a headless instance's device (VK_KHR_swapchain, with no VK_KHR_surface).
+// A program with a window that does not want the layer's cost in every frame makes its instance
+// with 'Instance.createWindowed(name, validation)' ('create' is that with 'true').
 //
 // Frames in flight. The CPU records frame N+1 while the GPU draws frame N:
 // there are FRAMES_IN_FLIGHT (2) sets of per-frame state, each a fence the
@@ -201,8 +249,23 @@
 // fallback, invalidated by each 'mappedRange', and coherent uncached memory
 // the last. Staging is a
 // block per frame in flight, handed out from its start (a bump allocator)
-// and reset when the frame comes round; a write too big for the block
-// retires it until then and takes a bigger one. Suballocating buffers and
+// and reset when the frame comes round. A write too big for what is left
+// retires the block until then and takes one twice the size, up to 32 MiB;
+// a block of that size is not outgrown: the uploads recorded so far are
+// submitted and waited for, and the block is handed out from its start
+// again (the GPU idles the CPU for that, once per 32 MiB uploaded in one
+// frame). So a frame uploads any number of bytes through at most about
+// 64 MiB of staging memory, and 'queue.writeBuffer' splits a larger write
+// into pieces of 32 MiB. Only a texture written in one piece larger than
+// that gets a block of its own size. A block that a frame comes round to
+// using a quarter of, by an estimate of the last few frames' uploads
+// (halving each frame), is given back and made again at the estimate's size.
+// A buffer larger than 2 GiB works the same way, written in 64-bit offsets and
+// the same pieces (tests/bigbuffers.cone: 2.5 GiB, filled in 64 MiB writes in
+// about half a second on the RTX 4060 Laptop, read by shaders and copies past
+// byte 2^31); 'createBuffer' refuses one over the GPU's maxBufferSize or
+// maxMemoryAllocationSize (the 4060's is 4292870144, a little under 4 GiB).
+// Suballocating buffers and
 // textures from larger blocks, as the Vulkan Memory Allocator (VMA) does, is
 // the refinement for when there are hundreds of them: Vulkan guarantees only
 // 4096 allocations.
@@ -210,11 +273,12 @@
 // Lifetimes. An object's finalizer destroys it once the device is idle, so
 // one dropped while a frame in flight may still use it is safe; this waits,
 // which dropping objects in a frame loop would feel. A buffer given to
-// 'queue.releaseBuffer' (WebGPU's 'buffer.destroy()') is instead retired to
-// the frame in flight, and destroyed when that frame comes round again, its
-// fence waited on: the deletion queue, for replacing what is drawn frame by
-// frame without a stall. The other objects' retiring the same way is the
-// refinement.
+// 'queue.releaseBuffer' (WebGPU's 'buffer.destroy()'), a texture given to
+// 'queue.releaseTexture' or a bind group given to 'queue.releaseBindGroup' is
+// instead retired to the frame in flight, and destroyed when that frame comes
+// round again, its fence waited on: the deletion queue, for replacing what is
+// drawn frame by frame, or giving back a whole world's, without a stall. The
+// other objects' retiring the same way is the refinement.
 //
 // Errors. Every Vulkan call that answers a VkResult is checked; a failure is
 // written to stderr with the result's name ("gpu: vkQueuePresentKHR failed:
@@ -248,6 +312,9 @@
 //   commands.cone   barriers, CommandEncoder, RenderPass and CommandBuffer
 //   compute.cone    ComputePassEncoder, QuerySet, and the checks of WebGPU's
 //                   limits
+//   features.cone   what a GPU offers for compute (ComputeCapabilities), what
+//                   a program asks for (ComputeRequest), and the check of a
+//                   shader's SPIR-V capabilities against what was enabled
 
 mod gpu;
 

@@ -1,0 +1,110 @@
+// What the stream's handshakes rest on (STEP 0 of the handshakes' build), pinned
+// in the runtime itself, with actors and no stages:
+//
+//   (a) one sender's messages to one actor are DELIVERED IN THE ORDER SENT, and
+//   (b) while a behaviour is PARKED on an 'await', the actor runs its next
+//       message.
+//
+// (a) is why chunks ARRIVE in order; (b) is why a sink that awaits inside
+// 'accept' can see chunk n+1, or the 'end', start before chunk n is finished,
+// which the receiving half of a link (chunkinbox.cone) puts right.
+//
+// A Sender sends 1,000 numbered messages to a Receiver in one loop. The Receiver
+// sleeps a different little while in each (an await), so many are parked at
+// once. It checks that every message STARTED in the order sent (a), that a
+// message started while an earlier one was still parked (b), and that the
+// messages FINISHED out of order, which is what the sleeps' lengths do once (b)
+// holds. Every message ran to its end, once.
+
+mod delivery;
+
+import testing use *;
+import time use Duration;
+import actors;
+import aio;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+
+fn count() u64 { 1000u64 }
+
+struct Seen {
+  pub started: Atomic[u64];       // messages that began
+  pub finished: Atomic[u64];      // messages that ran to their end
+  pub disorder: Atomic[u64];      // messages that began out of the order sent (none should)
+  pub overlapped: Atomic[u64];    // messages that began while an earlier one was parked
+  pub parkedMax: Atomic[i64];     // the most parked at once
+  pub inversions: Atomic[u64];    // messages that finished before an earlier one did
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[i64].of(0i64), Atomic[u64].of(0u64));
+}
+
+actor Receiver {
+  next: u64;                // the number expected to begin next
+  parked: i64;              // behaviours parked now
+  lastFinished: u64;        // the highest number finished so far, plus one
+  ran: u64;                 // behaviours run to their end
+  done: OneshotSender[u64]; // told when the last has, so that main can wait (an awaited sleep is not 'quiet')
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(next: 0u64, parked: 0i64, lastFinished: 0u64, ran: 0u64, done: done);
+  }
+
+  pub async fn take(self, n: u64) {
+    if n != next { seen.disorder.add(1u64); }
+    next = n + 1u64;
+    seen.started.add(1u64);
+    if parked > 0i64 { seen.overlapped.add(1u64); }
+    // 0 to 3 ms, by a mix of the number: some are short, some long
+    let ms = i64.from((n * 2654435761u64 >> 7u64) % 4u64);
+    parked = parked + 1i64;
+    seen.parkedMax.max(parked);
+    let r = await aio.sleep(Duration.fromMillis(ms));
+    parked = parked - 1i64;
+    if n + 1u64 < lastFinished { seen.inversions.add(1u64); }
+    if n + 1u64 > lastFinished { lastFinished = n + 1u64; }
+    seen.finished.add(1u64);
+    ran = ran + 1u64;
+    if ran == count() { done.send(1u64); }
+  }
+}
+
+actor Sender {
+  to: Receiver;
+
+  pub fn init(self: &new, to: Receiver) {
+    *self = Self(to: to);
+  }
+
+  pub async fn run(self) {
+    var i = 0u64;
+    while i < count() {
+      to.take(i);
+      i = i + 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var doneTx: OneshotSender[u64];
+  var doneRx: OneshotReceiver[u64];
+  doneTx, doneRx = Oneshot[u64].make();
+  {
+    let rx = Receiver(doneTx);
+    let tx = Sender(rx);
+    tx.run();
+  }
+  doneRx.recv();
+  finalAll();
+  expectUInt(seen.started.load(), count(), "every message began");
+  expectUInt(seen.finished.load(), count(), "and ran to its end");
+  expectUInt(seen.disorder.load(), 0u64, "(a) they began in the order one sender sent them");
+  expect(seen.overlapped.load() > 0u64, "(b) a message began while an earlier one was parked on an await");
+  expect(seen.parkedMax.load() >= 2i64, "(b) two or more were parked at once");
+  expect(seen.inversions.load() > 0u64, "(b) and they finished out of the order they began");
+  done()
+}

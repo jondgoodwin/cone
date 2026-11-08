@@ -113,4 +113,9 @@ void importNameRes(NameResState *pstate, ImportNode *mod);
 
 void importTypeCheck(TypeCheckState *pstate, ImportNode *mod);
 
+// Is this a name of a module's own lifecycle: its 'init', its 'final', or a
+// clone? The program's stitched init and final run them once, so no fold carries
+// them to another module, and a star passes over them
+int importIsLifecycleName(Name *name);
+
 #endif

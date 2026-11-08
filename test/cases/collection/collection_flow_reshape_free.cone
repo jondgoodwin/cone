@@ -14,124 +14,124 @@ import collections use *;
 import libc;
 
 // A free function lends an element of the list it is handed
-fn first(xs &List[i64]) &i64 { xs[0usize]; }
+fn first(xs: &List[i64]) &i64 { &xs[0usize] }
 
 // The same name pushes
-fn sameName(xs &mut List[i64]) i64 {
-  imm a = first(xs);
+fn sameName(xs: &mut List[i64]) i64 {
+  let a = first(xs);
   xs.push(1);                   //~ ErrorShapeReshape
-  *a;
+  *a
 }
 
 // Another reference pushes
-fn twoNames(l &mut List[i64], m &mut List[i64]) i64 {
-  imm a = first(l);
+fn twoNames(l: &mut List[i64], m: &mut List[i64]) i64 {
+  let a = first(l);
   m.push(1);                    //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
-  *a;
+  *a
 }
 
 // ... or a function pushes
-fn grow(xs &mut List[i64]) { xs.push(1); }
+fn grow(xs: &mut List[i64]) { xs.push(1); }
 
-fn growOther(l &mut List[i64], m &mut List[i64]) i64 {
-  imm a = first(l);
+fn growOther(l: &mut List[i64], m: &mut List[i64]) i64 {
+  let a = first(l);
   grow(m);                      //~ ErrorShapeReshape "'grow' is handed something that reaches a 'List'"
-  *a;
+  *a
 }
 
 // A shared owner reached under two names
-fn viaRc(l Rc[mut, List[i64]]) i64 {
-  imm l2 = l;
-  imm a = first(l);
+fn viaRc(l: Rc[mut, List[i64]]) i64 {
+  let l2 = l;
+  let a = first(l);
   l2.push(1);                   //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
-  *a;
+  *a
 }
 
 // The list a field of the receiver
 struct Bag {
-  pub items List[i64];
+  pub items: List[i64];
 
-  fn sameField(self &mut) i64 {
-    imm a = first(&items);
+  fn sameField(self: &mut) i64 {
+    let a = first(&items);
     items.push(1);              //~ ErrorShapeReshape
-    *a;
+    *a
   }
 
-  fn otherBag(self &mut, other &mut Bag) i64 {
-    imm a = first(&items);
+  fn otherBag(self: &mut, other: &mut Bag) i64 {
+    let a = first(&items);
     other.items.push(1);        //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
-    *a;
+    *a
   }
 }
 
 // A free function lends a borrow of the result of the call: a longer chain
-fn pick(xs &List[i64]) &i64 { first(xs); }
+fn pick(xs: &List[i64]) &i64 { first(xs) }
 
-fn viaPick(l &mut List[i64], m &mut List[i64]) i64 {
-  imm a = pick(l);
+fn viaPick(l: &mut List[i64], m: &mut List[i64]) i64 {
+  let a = pick(l);
   m.push(1);                    //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
-  *a;
+  *a
 }
 
 // A type whose method lends and whose only writer is a free function
 struct Block {
-  ptr *i64;
+  ptr: *i64;
 
-  fn at(self &) &i64 { ptr as &i64; }
+  fn at(self: &) &i64 { ptr as &i64 }
 }
 
-fn growBlock(b &mut Block) {
+fn growBlock(b: &mut Block) {
   b.ptr = libc.realloc(b.ptr as *u8, 64usize) as *i64;
 }
 
-fn blockMethodLends(a &mut Block, b &mut Block) i64 {
-  imm e = a.at();
+fn blockMethodLends(a: &mut Block, b: &mut Block) i64 {
+  let e = a.at();
   growBlock(b);                 //~ ErrorShapeReshape "'growBlock' is handed something that reaches a 'Block'"
-  *e;
+  *e
 }
 
 // ... and one called through another free function
-fn growBlockTwice(b &mut Block) {
+fn growBlockTwice(b: &mut Block) {
   growBlock(b);
   growBlock(b);
 }
 
-fn blockTwice(a &mut Block, b &mut Block) i64 {
-  imm e = a.at();
+fn blockTwice(a: &mut Block, b: &mut Block) i64 {
+  let e = a.at();
   growBlockTwice(b);            //~ ErrorShapeReshape "'growBlockTwice' is handed something that reaches a 'Block'"
-  *e;
+  *e
 }
 
 // A type whose lender and writer are both free functions
 struct Cell {
-  ptr *i64;
+  ptr: *i64;
 }
 
-fn cellFirst(c &Cell) &i64 { c.ptr as &i64; }
+fn cellFirst(c: &Cell) &i64 { c.ptr as &i64 }
 
-fn growCell(c &mut Cell) {
+fn growCell(c: &mut Cell) {
   c.ptr = libc.realloc(c.ptr as *u8, 64usize) as *i64;
 }
 
-fn cellFree(a &mut Cell, b &mut Cell) i64 {
-  imm e = cellFirst(a);
+fn cellFree(a: &mut Cell, b: &mut Cell) i64 {
+  let e = cellFirst(a);
   growCell(b);                  //~ ErrorShapeReshape "'growCell' is handed something that reaches a 'Cell'"
-  *e;
+  *e
 }
 
 // A free function lends, a method writes
 struct Heap {
-  ptr *i64;
+  ptr: *i64;
 
-  fn grow(self &mut) { ptr = libc.realloc(ptr as *u8, 64usize) as *i64; }
+  fn grow(self: &mut) { ptr = libc.realloc(ptr as *u8, 64usize) as *i64; }
 }
 
-fn heapFirst(h &Heap) &i64 { h.ptr as &i64; }
+fn heapFirst(h: &Heap) &i64 { h.ptr as &i64 }
 
-fn heapMethod(a &mut Heap, b &mut Heap) i64 {
-  imm e = heapFirst(a);
+fn heapMethod(a: &mut Heap, b: &mut Heap) i64 {
+  let e = heapFirst(a);
   b.grow();                     //~ ErrorShapeReshape "'grow' reshapes the 'Heap' it is called on"
-  *e;
+  *e
 }
 
 fn main() {}

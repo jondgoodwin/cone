@@ -16,14 +16,14 @@
 //
 //   struct LeafValue {
 //     pub n i64;
-//     fn final(self &uni) { ... }
+//     fn final(self: &uni) { ... }
 //   }
 //   alias Leaf = Gc[mut, LeafValue];
 //   struct Pair { pub left Leaf; pub right Leaf; }
 //
 //   fn build() {
-//     mut p = new Gc[mut, Pair](new Leaf(1), new Leaf(2));
-//     p.left = new Leaf(3);            // Leaf 1 is garbage now
+//     mut p = Gc[mut, Pair](Leaf(1), Leaf(2));
+//     p.left = Leaf(3);            // Leaf 1 is garbage now
 //     Gc.collect();                    // Leaf 1's 'final' runs here
 //   }
 //
@@ -39,7 +39,7 @@
 //
 // THE NAME. The package is 'collector' and its region ref is 'Gc'. The 'mod'
 // line below makes 'Gc' the package's default fold, so a bare
-// 'import collector;' binds both names, and a program writes 'new Gc[mut,
+// 'import collector;' binds both names, and a program writes 'Gc[mut,
 // LeafValue](1)' and 'Gc.collect()'. 'import collector use *;' binds them too.
 //
 // WHAT A PROGRAM CALLS:
@@ -103,7 +103,7 @@
 // - FINALIZE, a step at a time: each separated object is marked finalized
 //   and put back among the ordinary objects, then its record's finalizer runs
 //   -- its 'final', then its fields', then the owners its fields hold are
-//   released ('Rc' counted down, 'So' finalized and freed). Newest first.
+//   released ('Rc' counted down, 'Uni' finalized and freed). Newest first.
 // An object is finalized once, and freed by the first collection that finds
 // it unreachable after that: a CYCLE LATE, so a 'final' may read its 'Gc'
 // children, which are still there, possibly finalized, never freed. A 'final'
@@ -111,6 +111,14 @@
 //
 // Objects whose type needs no finalizing are never separated, and are freed
 // by the collection that finds them unreachable.
+//
+// WHEN A VALUE IS GARBAGE. A function's roots are its 'Gc' locals and one
+// birth slot per allocation site; a slot keeps what it holds until its site
+// runs again or the function returns, and a local until the function returns,
+// whatever its scope (compiler/c/doc/phases/generation.md, "a little floating
+// garbage, bounded by the sites"). So 'Gc.collect()' finalizes every value
+// made in a function only once that function has returned: called in the
+// making function itself, after a loop of three, it may finalize two.
 //
 // THE WRITE BARRIER. The compiler calls 'writeBarrier' after every store of a
 // 'Gc' reference into memory that is not a local -- a field, an element, a
@@ -141,7 +149,7 @@
 //   container from a young one -- it asks only about what was stored, which
 //   is all a store through a borrow can tell it -- so every young object
 //   stored into the heap survives the next minor collection, and is
-//   promoted. Objects born holding their values ('new Gc[T](a, b)') are stored
+//   promoted. Objects born holding their values ('Gc[T](a, b)') are stored
 //   by no barrier, and die young if they are dropped. (Acorn's barrier asks
 //   whether the container is black, so there a young object stored into a
 //   young one is not kept.)
@@ -177,7 +185,7 @@
 // what its tries at generational running cost.
 //
 // WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
-// inside allocations (and Gc.collect(), Gc.step()): 'new Gc[T](...)' evaluates
+// inside allocations (and Gc.collect(), Gc.step()): 'Gc[T](...)' evaluates
 // its value first, then calls 'alloc', so at that moment every 'Gc'
 // reference the program holds is in a stack slot the compiler registered
 // (its roots), and none is only in a register. Between collections, one
@@ -240,89 +248,89 @@ const stepMul = 2usize;
 //
 // Every header is linked into exactly one of these lists (each a header's
 // address, 0 for empty, newest first):
-mut @threadlocal allgc = 0usize;        // objects with nothing to finalize, or finalized
-mut @threadlocal finobj = 0usize;       // objects to finalize when unreachable
-mut @threadlocal tobefnz = 0usize;      // unreachable, awaiting their finalizer
-mut @threadlocal grays = 0usize;        // during marking: gray objects, through 'gray'
+var @threadlocal allgc = 0usize;        // objects with nothing to finalize, or finalized
+var @threadlocal finobj = 0usize;       // objects to finalize when unreachable
+var @threadlocal tobefnz = 0usize;      // unreachable, awaiting their finalizer
+var @threadlocal grays = 0usize;        // during marking: gray objects, through 'gray'
 
-mut @threadlocal curWhite = 1u32;       // what a new object is born, and a survivor made
-mut @threadlocal gcPhase = 0u32;        // where the collection is: pausePhase, ...
-mut @threadlocal sweepList = 0u32;      // sweeping allgc (0), finobj (1), tobefnz (2)
-mut @threadlocal sweepAt = 0usize;      // the object last kept there: the next is its next; 0, the list's head
-mut @threadlocal stepping = false;      // collection work (or a finalizer) is running
-mut @threadlocal debt = 0usize;         // bytes allocated, and not yet paid for by a step
-mut @threadlocal estimate = 0usize;     // bytes live at the flip, less what the sweep frees
-mut @threadlocal autoOn = true;         // Gc.stop() / Gc.start()
-mut @threadlocal stressOn = false;
-mut @threadlocal stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
-mut @threadlocal envRead = false;
-mut @threadlocal maxBytes = 0usize;     // Gc.setLimit; 0 is none
+var @threadlocal curWhite = 1u32;       // what a new object is born, and a survivor made
+var @threadlocal gcPhase = 0u32;        // where the collection is: pausePhase, ...
+var @threadlocal sweepList = 0u32;      // sweeping allgc (0), finobj (1), tobefnz (2)
+var @threadlocal sweepAt = 0usize;      // the object last kept there: the next is its next; 0, the list's head
+var @threadlocal stepping = false;      // collection work (or a finalizer) is running
+var @threadlocal debt = 0usize;         // bytes allocated, and not yet paid for by a step
+var @threadlocal estimate = 0usize;     // bytes live at the flip, less what the sweep frees
+var @threadlocal autoOn = true;         // Gc.stop() / Gc.start()
+var @threadlocal stressOn = false;
+var @threadlocal stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
+var @threadlocal envRead = false;
+var @threadlocal maxBytes = 0usize;     // Gc.setLimit; 0 is none
 
 // Generational running (see THE GENERATIONS)
-mut @threadlocal genOn = false;         // Gc.setGenerational, or CONE_GC_MODE
-mut @threadlocal barrierOn = false;     // the barrier shades: while marking, and between generational collections
-mut @threadlocal oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
-mut @threadlocal minorMark = false;     // this collection's marking is minor: the old generation is not traced
-mut @threadlocal sweepGen = false;      // this collection's sweep promotes its survivors, and stops at the first old one
-mut @threadlocal keeping = false;       // the atomic step is marking what finalizable garbage reaches
-mut @threadlocal sinceFull = 0usize;    // bytes promoted by minor collections since the last full marking
-mut @threadlocal oldLimit = 262144usize; // when sinceFull reaches it, the next marking is full
-mut @threadlocal fullEstimate = 0usize; // the estimate after the last full marking: what was live
-mut @threadlocal markedBytes = 0usize;  // bytes this collection's marking made black (not those it keeps for finalizers)
-mut @threadlocal oldGenBytes = 0usize;  // bytes of old objects
-mut @threadlocal backoff = 0usize;      // full collections to run before the next generational sweep
-mut @threadlocal backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
+var @threadlocal genOn = false;         // Gc.setGenerational, or CONE_GC_MODE
+var @threadlocal barrierOn = false;     // the barrier shades: while marking, and between generational collections
+var @threadlocal oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
+var @threadlocal minorMark = false;     // this collection's marking is minor: the old generation is not traced
+var @threadlocal sweepGen = false;      // this collection's sweep promotes its survivors, and stops at the first old one
+var @threadlocal keeping = false;       // the atomic step is marking what finalizable garbage reaches
+var @threadlocal sinceFull = 0usize;    // bytes promoted by minor collections since the last full marking
+var @threadlocal oldLimit = 262144usize; // when sinceFull reaches it, the next marking is full
+var @threadlocal fullEstimate = 0usize; // the estimate after the last full marking: what was live
+var @threadlocal markedBytes = 0usize;  // bytes this collection's marking made black (not those it keeps for finalizers)
+var @threadlocal oldGenBytes = 0usize;  // bytes of old objects
+var @threadlocal backoff = 0usize;      // full collections to run before the next generational sweep
+var @threadlocal backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
 
-mut @threadlocal totalBytes = 0usize;   // bytes held by 'Gc' objects, headers included
-mut @threadlocal trigger = 262144usize; // start a collection when an allocation would pass this
-mut @threadlocal nobjects = 0usize;
-mut @threadlocal ncollections = 0usize;
-mut @threadlocal nfinalized = 0usize;
-mut @threadlocal nfreed = 0usize;
-mut @threadlocal nsteps = 0usize;
-mut @threadlocal maxStep = 0usize;      // the most work one automatic step did
-mut @threadlocal nminor = 0usize;       // minor collections: a minor marking, and a generational sweep
-mut @threadlocal nmarked = 0usize;      // objects made black
-mut @threadlocal nswept = 0usize;       // objects the sweep freed or kept
-mut @threadlocal npromoted = 0usize;    // bytes promoted by minor collections
-mut @threadlocal nwork = 0usize;        // bytes of work done, by every step and whole collection
-mut @threadlocal nminorWork = 0usize;   // of that, the work of minor collections
+var @threadlocal totalBytes = 0usize;   // bytes held by 'Gc' objects, headers included
+var @threadlocal trigger = 262144usize; // start a collection when an allocation would pass this
+var @threadlocal nobjects = 0usize;
+var @threadlocal ncollections = 0usize;
+var @threadlocal nfinalized = 0usize;
+var @threadlocal nfreed = 0usize;
+var @threadlocal nsteps = 0usize;
+var @threadlocal maxStep = 0usize;      // the most work one automatic step did
+var @threadlocal nminor = 0usize;       // minor collections: a minor marking, and a generational sweep
+var @threadlocal nmarked = 0usize;      // objects made black
+var @threadlocal nswept = 0usize;       // objects the sweep freed or kept
+var @threadlocal npromoted = 0usize;    // bytes promoted by minor collections
+var @threadlocal nwork = 0usize;        // bytes of work done, by every step and whole collection
+var @threadlocal nminorWork = 0usize;   // of that, the work of minor collections
 
 // The header before every 'Gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector
 // walks lists of headers; a program never holds a header to read them from.
 pub struct Gc is RegionRef, Traced {
-  pub next usize;      // the next object in its list
-  pub gray usize;      // its link in the gray list
-  pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
-  pub marked u32;      // its colour
-  pub extra u32;       // the bytes it takes beyond its record's, in eights: a body's elements past the one a record counts
+  pub next: usize;      // the next object in its list
+  pub gray: usize;      // its link in the gray list
+  pub ty: *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
+  pub marked: u32;      // its colour
+  pub extra: u32;       // the bytes it takes beyond its record's, in eights: a body's elements past the one a record counts
 
-  // 'new Gc[T](...)': the byte count of {header, value}, and T's type record.
+  // 'Gc[T](...)': the byte count of {header, value}, and T's type record.
   // The value has been evaluated already, so every root is in its slot. A body
   // whose length a reference carries ('Gc[str]', 'Gc[Array[T]]') has the
   // record of one element and as many bytes as its length makes, so the size
   // is what says how many bytes the object takes.
-  fn alloc(size usize, ty *TypeRecord) *u8 {
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
     readEnv();
-    imm bytes = bodyBytes(size, ty);
+    let bytes = bodyBytes(size, ty);
     // The surplus is kept in eights in 32 bits, so a body can be 32 GiB past
     // its record's one element; a longer one is memory that is not there
     if (bytes - objBytes(ty)) / 8usize > 4294967295usize {
       return null;
     }
-    if !stepping and autoOn {
+    if !stepping && autoOn {
       // The limit caps the heap, so a heap held under one is collected (and
       // finalized) in the ordinary way, not only in emergencies
-      if stressFull or (maxBytes != 0usize and totalBytes + bytes > maxBytes) {
+      if stressFull || (maxBytes != 0usize && totalBytes + bytes > maxBytes) {
         fullCollect(false);
       }
       else if workWanted(bytes) {
         stepOwed();
       }
     }
-    mut p = tryMalloc(bytes);
-    if p as usize == 0usize and !stepping {
+    var p = tryMalloc(bytes);
+    if p as usize == 0usize && !stepping {
       fullCollect(true);
       p = tryMalloc(bytes);
     }
@@ -332,18 +340,18 @@ pub struct Gc is RegionRef, Traced {
     // Born the current white: during marking, reached only through the
     // roots, traced again at the atomic step, or through a store, which the
     // barrier shades; during the sweep, the new white, which survives it
-    imm fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
-    imm extra = u32.from((bytes - objBytes(ty)) / 8usize);
-    mem.writeRaw(p as *Gc, new Gc(if fin {finobj;} else {allgc;}, 0usize, ty, curWhite, extra));
+    let fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
+    let extra = u32.from((bytes - objBytes(ty)) / 8usize);
+    mem.writeRaw(p as *Gc, Gc(if fin {finobj} else {allgc}, 0usize, ty, curWhite, extra));
     if fin { finobj = p as usize; } else { allgc = p as usize; }
     totalBytes = totalBytes + bytes;
     nobjects = nobjects + 1usize;
-    p;
+    p
   }
 
   // A 'Gc' reference was found, by a root or in a value being traced; 'slot'
   // is where it is stored, which this collector, never moving an object, leaves be
-  fn mark(self &uni Gc, slot *usize) {
+  fn mark(self: &uni Gc, slot: *usize) {
     shade(self as *Gc as usize);
   }
 
@@ -351,7 +359,7 @@ pub struct Gc is RegionRef, Traced {
   // marking, and between generational collections, what it refers to is
   // shaded, so no black object -- one marked this collection, or an old one
   // -- can come to hide a white one; otherwise nothing.
-  fn writeBarrier(self &uni Gc) inline {
+  fn writeBarrier(self: &uni Gc) inline {
     if barrierOn {
       shade(self as *Gc as usize);
     }
@@ -364,12 +372,12 @@ pub struct Gc is RegionRef, Traced {
   fn readEnv() {
     if !envRead {
       envRead = true;
-      imm val = libc.getenv("CONE_GC_STRESS");
+      let val = libc.getenv("CONE_GC_STRESS");
       if val as usize != 0usize {
         stressOn = true;
         stressFull = libc.strcmp(cstr.fromPtr(val), "full") == 0i32;
       }
-      imm mode = libc.getenv("CONE_GC_MODE");
+      let mode = libc.getenv("CONE_GC_MODE");
       if mode as usize != 0usize {
         if libc.strcmp(cstr.fromPtr(mode), "generational") == 0i32 { genOn = true; }
         else if libc.strcmp(cstr.fromPtr(mode), "incremental") == 0i32 { genOn = false; }
@@ -382,82 +390,82 @@ pub struct Gc is RegionRef, Traced {
   // step's budget); during one, when a step's worth has been allocated since
   // the last. Under stress, always, with the allocation's own budget. This
   // is the decision a safe point would make instead (see SAFE POINTS).
-  fn workWanted(bytes usize) bool {
+  fn workWanted(bytes: usize) bool {
     if gcPhase == pausePhase {
-      if !stressOn and totalBytes + bytes <= trigger {
+      if !stressOn && totalBytes + bytes <= trigger {
         return false;
       }
-      debt = if stressOn {bytes;} else {stepSize;};
+      debt = if stressOn {bytes} else {stepSize};
       return true;
     }
     debt = debt + bytes;
-    stressOn or debt >= stepSize;
+    stressOn || debt >= stepSize
   }
 
   // The step the bytes allocated have paid for
   fn stepOwed() {
-    imm work = runStep(debt * stepMul);
+    let work = runStep(debt * stepMul);
     debt = 0usize;
     if work > maxStep { maxStep = work; }
   }
 
   // Memory for an object of 'bytes' bytes, unless it would pass the limit
-  fn tryMalloc(bytes usize) *u8 {
-    if maxBytes != 0usize and totalBytes + bytes > maxBytes {
+  fn tryMalloc(bytes: usize) *u8 {
+    if maxBytes != 0usize && totalBytes + bytes > maxBytes {
       return null;
     }
-    libc.malloc(bytes);
+    libc.malloc(bytes)
   }
 
   // n rounded up to a multiple of align, a power of two
-  fn roundUp(n usize, align usize) usize {
-    (n + align - 1usize) & (0usize - align);
+  fn roundUp(n: usize, align: usize) usize {
+    (n + align - 1usize) & (0usize - align)
   }
 
   // Where the value sits after its header: the {region, permission, value}
   // layout, whose permission takes no room (the compiler refuses a traced
   // region with one that does)
-  fn valueOffset(ty *TypeRecord) usize {
-    roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align);
+  fn valueOffset(ty: *TypeRecord) usize {
+    roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align)
   }
 
   // The bytes an object takes, as the compiler sized it for 'alloc'
-  fn objBytes(ty *TypeRecord) usize {
-    imm rec = ty as &TypeRecord;
-    mut al = rec.align;
+  fn objBytes(ty: *TypeRecord) usize {
+    let rec = ty as &TypeRecord;
+    var al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
-    roundUp(valueOffset(ty) + rec.size, al);
+    roundUp(valueOffset(ty) + rec.size, al)
   }
 
   // The bytes an object takes, for a size the compiler asked for: the record's
   // count, or more when the object is a body longer than its one element. Never
   // fewer than the size asked for, so what is allocated is what is counted.
-  fn bodyBytes(size usize, ty *TypeRecord) usize {
-    imm rec = ty as &TypeRecord;
-    mut al = rec.align;
+  fn bodyBytes(size: usize, ty: *TypeRecord) usize {
+    let rec = ty as &TypeRecord;
+    var al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
-    imm asked = roundUp(size, al);
-    imm one = objBytes(ty);
-    if asked > one { asked; } else { one; }
+    let asked = roundUp(size, al);
+    let one = objBytes(ty);
+    if asked > one { asked } else { one }
   }
 
   // The bytes the object whose header is 'h' takes: as counted when it was made
-  fn heldBytes(h &Gc) usize {
-    objBytes(h.ty) + usize.from(h.extra) * 8usize;
+  fn heldBytes(h: &Gc) usize {
+    objBytes(h.ty) + usize.from(h.extra) * 8usize
   }
 
-  fn header(at usize) &mut Gc {
-    at as &mut Gc;
+  fn header(at: usize) &mut Gc {
+    at as &mut Gc
   }
 
   // The value of the object whose header is at 'at'
-  fn valueOf(at usize) *u8 {
-    (at + valueOffset(header(at).ty)) as *u8;
+  fn valueOf(at: usize) *u8 {
+    (at + valueOffset(header(at).ty)) as *u8
   }
 
   // Mark the object at 'at': a white one turns gray, onto the gray list
-  fn shade(at usize) {
-    imm h = header(at);
+  fn shade(at: usize) {
+    let h = header(at);
     if h.marked & whites != 0u32 {
       h.marked = h.marked & finalizedBit;
       h.gray = grays;
@@ -469,10 +477,10 @@ pub struct Gc is RegionRef, Traced {
   // holds; kept too, if only finalizable garbage reaches it. Its bytes are
   // the work done.
   fn propagateOne() usize {
-    imm at = grays;
-    imm h = header(at);
+    let at = grays;
+    let h = header(at);
     grays = h.gray;
-    imm bytes = heldBytes(h);
+    let bytes = heldBytes(h);
     if keeping {
       h.marked = h.marked | black | keptBit;
     }
@@ -481,21 +489,21 @@ pub struct Gc is RegionRef, Traced {
       markedBytes = markedBytes + bytes;
     }
     nmarked = nmarked + 1usize;
-    imm rec = h.ty as &TypeRecord;
+    let rec = h.ty as &TypeRecord;
     if rec.flags & 2u32 != 0u32 {
-      imm tracefn = rec.trace;
+      let tracefn = rec.trace;
       tracefn(valueOf(at), 0u32);
     }
-    bytes;
+    bytes
   }
 
   // Until nothing is gray
   fn propagateAll() usize {
-    mut work = 0usize;
+    var work = 0usize;
     while grays != 0usize {
       work = work + propagateOne();
     }
-    work;
+    work
   }
 
   // A collection starts: every root is marked, and marking begins. After a
@@ -516,15 +524,15 @@ pub struct Gc is RegionRef, Traced {
   // tobefnz, keeping their order: newest first. The first old object ends
   // the search: everything after it is old, and so black
   fn separate() {
-    mut tail = tobefnz;
+    var tail = tobefnz;
     if tail != 0usize {
       while header(tail).next != 0usize { tail = header(tail).next; }
     }
-    mut prev = 0usize;
-    mut at = finobj;
-    while at != 0usize and header(at).marked & oldBit == 0u32 {
-      imm h = header(at);
-      imm nxt = h.next;
+    var prev = 0usize;
+    var at = finobj;
+    while at != 0usize && header(at).marked & oldBit == 0u32 {
+      let h = header(at);
+      let nxt = h.next;
       if h.marked & whites != 0u32 {
         if prev == 0usize { finobj = nxt; } else { header(prev).next = nxt; }
         h.next = 0usize;
@@ -544,11 +552,11 @@ pub struct Gc is RegionRef, Traced {
   // collection; the white flipped, so whatever carries the old one is
   // garbage; and the sweep begins
   fn atomic() usize {
-    mut work = propagateAll();
+    var work = propagateAll();
     mem.traceRoots(0u32);
     work = work + propagateAll();
     separate();
-    mut at = tobefnz;
+    var at = tobefnz;
     while at != 0usize {
       shade(at);
       at = header(at).next;
@@ -566,7 +574,7 @@ pub struct Gc is RegionRef, Traced {
     // full ones, incremental, for a while (see THE GENERATIONS). Only a
     // generational sweep leaves black objects the barrier must guard between
     // collections
-    mut full = false;
+    var full = false;
     if minorMark {
       full = sinceFull + markedBytes >= oldLimit;
       if markedBytes * 2usize > totalBytes - oldGenBytes {
@@ -582,9 +590,9 @@ pub struct Gc is RegionRef, Traced {
       backoff = backoff - 1usize;
       full = true;
     }
-    sweepGen = genOn and !full;
+    sweepGen = genOn && !full;
     barrierOn = sweepGen;
-    if minorMark and sweepGen { nminor = nminor + 1usize; }
+    if minorMark && sweepGen { nminor = nminor + 1usize; }
     if !minorMark { sinceFull = 0usize; }
     curWhite = whites ^ curWhite;
     ncollections = ncollections + 1usize;
@@ -592,21 +600,21 @@ pub struct Gc is RegionRef, Traced {
     gcPhase = sweepPhase;
     sweepList = 0u32;
     sweepAt = 0usize;
-    work + 1usize;
+    work + 1usize
   }
 
-  fn listHead(which u32) usize {
-    if which == 0u32 { allgc; } else if which == 1u32 { finobj; } else { tobefnz; }
+  fn listHead(which: u32) usize {
+    if which == 0u32 { allgc } else if which == 1u32 { finobj } else { tobefnz }
   }
-  fn setListHead(which u32, at usize) {
+  fn setListHead(which: u32, at: usize) {
     if which == 0u32 { allgc = at; } else if which == 1u32 { finobj = at; } else { tobefnz = at; }
   }
 
   // Does the object at 'at' end a generational sweep of its list? The first
   // old one does: new objects are pushed at a list's head, so everything
   // after it is older, and old (Acorn's mem_sweeplist, 'tostop')
-  fn endsSweep(at usize) bool {
-    at == 0usize or (sweepGen and header(at).marked & oldBit != 0u32);
+  fn endsSweep(at: usize) bool {
+    at == 0usize || (sweepGen && header(at).marked & oldBit != 0u32)
   }
 
   // Sweep the next object: freed if it carries the dead white. A survivor is
@@ -615,8 +623,8 @@ pub struct Gc is RegionRef, Traced {
   // sweep ends: the trigger is set from what the collection found live, and
   // finalizing begins, if anything was separated.
   fn sweepOne() usize {
-    mut at = if sweepAt == 0usize {listHead(sweepList);} else {header(sweepAt).next;};
-    while sweepList < 2u32 and endsSweep(at) {
+    var at = if sweepAt == 0usize {listHead(sweepList)} else {header(sweepAt).next};
+    while sweepList < 2u32 && endsSweep(at) {
       sweepList = sweepList + 1u32;
       sweepAt = 0usize;
       at = listHead(sweepList);
@@ -630,21 +638,21 @@ pub struct Gc is RegionRef, Traced {
       // trigger at each minor collection, however little is live
       if !minorMark {
         fullEstimate = estimate;
-        oldLimit = if estimate < minTrigger {minTrigger;} else {estimate;};
+        oldLimit = if estimate < minTrigger {minTrigger} else {estimate};
       }
-      mut allowed = fullEstimate * 2usize;
+      var allowed = fullEstimate * 2usize;
       if allowed < minTrigger { allowed = minTrigger; }
       trigger = estimate + allowed - fullEstimate;
       // A sweep that made the old generation white again did so for a full
       // marking: it starts with the next allocation, before what the old
       // generation holds of garbage grows further
-      if minorMark and !sweepGen { trigger = 0usize; }
+      if minorMark && !sweepGen { trigger = 0usize; }
       oldGen = sweepGen;
-      gcPhase = if tobefnz != 0usize {finalizePhase;} else {pausePhase;};
+      gcPhase = if tobefnz != 0usize {finalizePhase} else {pausePhase};
       return 1usize;
     }
-    imm h = header(at);
-    imm bytes = heldBytes(h);
+    let h = header(at);
+    let bytes = heldBytes(h);
     nswept = nswept + 1usize;
     if h.marked & (whites ^ curWhite) != 0u32 {
       if sweepAt == 0usize { setListHead(sweepList, h.next); } else { header(sweepAt).next = h.next; }
@@ -659,7 +667,7 @@ pub struct Gc is RegionRef, Traced {
       libc.free(at as *u8);
     }
     else {
-      if !sweepGen or h.marked & keptBit != 0u32 {
+      if !sweepGen || h.marked & keptBit != 0u32 {
         // A full sweep's survivor, or one only finalizable garbage reaches
         // (and the separated objects themselves): the new white, young. No
         // live object can reach it, so no black one holds it
@@ -679,7 +687,7 @@ pub struct Gc is RegionRef, Traced {
       // barrier since: young, and left as it is
       sweepAt = at;
     }
-    bytes;
+    bytes
   }
 
   // Run the finalizer of the newest object separated. It is marked
@@ -687,17 +695,17 @@ pub struct Gc is RegionRef, Traced {
   // so it is never finalized again, and is freed once it is found
   // unreachable. Its bytes are the work done.
   fn finalizeOne() usize {
-    imm at = tobefnz;
-    imm h = header(at);
+    let at = tobefnz;
+    let h = header(at);
     tobefnz = h.next;
     h.marked = h.marked | finalizedBit;
     h.next = allgc;
     allgc = at;
     nfinalized = nfinalized + 1usize;
     if tobefnz == 0usize { gcPhase = pausePhase; }
-    imm fin = (h.ty as &TypeRecord).finalize;
+    let fin = (h.ty as &TypeRecord).finalize;
     fin(valueOf(at));
-    heldBytes(h);
+    heldBytes(h)
   }
 
   // One piece of the collection, whichever phase it is in; its work
@@ -707,48 +715,48 @@ pub struct Gc is RegionRef, Traced {
       return 1usize;
     }
     if gcPhase == markPhase {
-      return if grays != 0usize {propagateOne();} else {atomic();};
+      return if grays != 0usize {propagateOne()} else {atomic()};
     }
     if gcPhase == sweepPhase {
       return sweepOne();
     }
-    finalizeOne();
+    finalizeOne()
   }
 
   // Work until 'budget' bytes' worth is done, at least one piece, or until
   // the collection ends. The work done.
-  fn runStep(budget usize) usize {
+  fn runStep(budget: usize) usize {
     stepping = true;
     nsteps = nsteps + 1usize;
-    mut work = 0usize;
-    mut going = true;
+    var work = 0usize;
+    var going = true;
     while going {
-      imm piece = stepOne();
-      account(piece, minorMark and (gcPhase == markPhase or sweepGen));
+      let piece = stepOne();
+      account(piece, minorMark && (gcPhase == markPhase || sweepGen));
       work = work + piece;
-      going = work < budget and gcPhase != pausePhase;
+      going = work < budget && gcPhase != pausePhase;
     }
     stepping = false;
-    work;
+    work
   }
 
   // Work done, by a minor collection or a full one
-  fn account(work usize, minor bool) {
+  fn account(work: usize, minor: bool) {
     nwork = nwork + work;
     if minor { nminorWork = nminorWork + work; }
   }
 
   // Each object of a list the current white again, not old: its bytes
-  fn unmark(list usize) usize {
-    mut work = 0usize;
-    mut at = list;
+  fn unmark(list: usize) usize {
+    var work = 0usize;
+    var at = list;
     while at != 0usize {
-      imm h = header(at);
+      let h = header(at);
       h.marked = (h.marked & finalizedBit) | curWhite;
       work = work + heldBytes(h);
       at = h.next;
     }
-    work;
+    work
   }
 
   // Every object white and young, and nothing gray: the marks of a
@@ -758,19 +766,19 @@ pub struct Gc is RegionRef, Traced {
     grays = 0usize;
     oldGen = false;
     oldGenBytes = 0usize;
-    unmark(allgc) + unmark(finobj) + unmark(tobefnz);
+    unmark(allgc) + unmark(finobj) + unmark(tobefnz)
   }
 
   // The sweep and finalizing of the collection in progress, to their end;
   // an emergency runs no finalizer
-  fn finishCollection(emergency bool) usize {
-    mut work = 0usize;
+  fn finishCollection(emergency: bool) usize {
+    var work = 0usize;
     while gcPhase == sweepPhase { work = work + sweepOne(); }
     if gcPhase == finalizePhase {
       if emergency { gcPhase = pausePhase; }
       else { while gcPhase == finalizePhase { work = work + finalizeOne(); } }
     }
-    work;
+    work
   }
 
   // A whole collection, stop-the-world. One in progress is finished first --
@@ -780,17 +788,17 @@ pub struct Gc is RegionRef, Traced {
   // one, run because memory ran out, runs no finalizer: those wait for the
   // next ordinary collection, their objects and what they reach kept alive
   // until then.
-  fn fullCollect(emergency bool) {
+  fn fullCollect(emergency: bool) {
     if stepping {
       return;
     }
     stepping = true;
-    mut work = 0usize;
+    var work = 0usize;
     if gcPhase == markPhase {
       work = unmarkAll();
       gcPhase = pausePhase;
     }
-    account(finishCollection(emergency), minorMark and sweepGen);
+    account(finishCollection(emergency), minorMark && sweepGen);
     if oldGen {
       work = work + unmarkAll();
     }
@@ -811,57 +819,57 @@ pub struct Gc is RegionRef, Traced {
   // finalized, each costing its bytes (0: one piece, the least there is).
   // A collection starts if none is running. True if this step finished one.
   // Nothing happens, and false, if collection work is running already.
-  pub fn step(work usize) bool {
+  pub fn step(work: usize) bool {
     if stepping {
       return false;
     }
     runStep(work);
-    gcPhase == pausePhase;
+    gcPhase == pausePhase
   }
   // Where the collection is: 0 none running, 1 marking, 2 sweeping,
   // 3 finalizing
-  pub fn phase() u32 { gcPhase; }
+  pub fn phase() u32 { gcPhase }
   // Turn the automatic work off, and on again
   pub fn stop() { autoOn = false; }
   pub fn start() { autoOn = true; }
   // A step at every allocation, or not; and whether it does (either stress)
-  pub fn setStress(on bool) { readEnv(); stressOn = on; stressFull = false; }
-  pub fn stressed() bool { readEnv(); stressOn; }
+  pub fn setStress(on: bool) { readEnv(); stressOn = on; stressFull = false; }
+  pub fn stressed() bool { readEnv(); stressOn }
   // Generational running, or incremental: from the next sweep on (see THE
   // GENERATIONS); and which is chosen
-  pub fn setGenerational(on bool) { readEnv(); genOn = on; }
-  pub fn generational() bool { readEnv(); genOn; }
+  pub fn setGenerational(on: bool) { readEnv(); genOn = on; }
+  pub fn generational() bool { readEnv(); genOn }
   // No more than 'bytes' of objects at once, headers included; 0 is no limit
-  pub fn setLimit(bytes usize) { maxBytes = bytes; }
+  pub fn setLimit(bytes: usize) { maxBytes = bytes; }
 
   // Objects not yet freed: live ones, and finalized ones awaiting the
   // collection that frees them
-  pub fn liveObjects() usize { nobjects; }
+  pub fn liveObjects() usize { nobjects }
   // Their bytes, headers included
-  pub fn liveBytes() usize { totalBytes; }
+  pub fn liveBytes() usize { totalBytes }
   // Collections that finished marking, finalizers run, objects freed, and
   // steps taken (by allocations, and Gc.step()), since the program began
-  pub fn collections() usize { ncollections; }
-  pub fn finalized() usize { nfinalized; }
-  pub fn freed() usize { nfreed; }
-  pub fn steps() usize { nsteps; }
+  pub fn collections() usize { ncollections }
+  pub fn finalized() usize { nfinalized }
+  pub fn freed() usize { nfreed }
+  pub fn steps() usize { nsteps }
   // The most work an allocation's step has done, in bytes: the longest pause
-  pub fn largestStep() usize { maxStep; }
+  pub fn largestStep() usize { maxStep }
   // Of the collections, the minor ones: a minor marking, and a sweep that
   // stopped at the old generation
-  pub fn minorCollections() usize { nminor; }
+  pub fn minorCollections() usize { nminor }
   // Objects made black, and objects the sweep freed or kept: the work,
   // counted in objects
-  pub fn markedObjects() usize { nmarked; }
-  pub fn sweptObjects() usize { nswept; }
+  pub fn markedObjects() usize { nmarked }
+  pub fn sweptObjects() usize { nswept }
   // Bytes of work done, by every step and whole collection: objects marked,
   // swept or finalized, each costing its bytes
-  pub fn work() usize { nwork; }
+  pub fn work() usize { nwork }
   // Of that, the work of minor collections (and the marking of one whose
   // sweep turned out full, for a full marking after it)
-  pub fn minorWork() usize { nminorWork; }
+  pub fn minorWork() usize { nminorWork }
   // Bytes promoted to the old generation by minor collections
-  pub fn promotedBytes() usize { npromoted; }
+  pub fn promotedBytes() usize { npromoted }
   // Bytes of the old generation now
-  pub fn oldBytes() usize { oldGenBytes; }
+  pub fn oldBytes() usize { oldGenBytes }
 }

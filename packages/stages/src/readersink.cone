@@ -1,0 +1,105 @@
+// ======== Layer 3, a sink an actor reads: ReaderSink[R] ========
+//
+// A stream's end is usually a stage that does something with each chunk. Sometimes it is an
+// actor that wants to READ the stream, a chunk at a time, when it is ready: an HTTP
+// body, a log, an LLM's tokens. A ReaderSink is the sink for that. It takes the chunks
+// as they arrive, holds each IoBuf until a reader has read it through, and only then gives
+// it back to the source, so the source's credit comes back as the reader takes the chunks and a
+// reader that is slow slows the source and nothing else. (It does not drain by
+// 'Chain.advance', which finalizes a drained segment and never gives it back: a stream longer
+// than its window would stop.)
+//
+//   let rs = ReaderSink[Result[Option[String], AnyError]](&makeText, &makeEnd);
+//   source.start(rs);                          // the sink end of a link, as any ChunkSink
+//   ...
+//   let r = await readSink(&rs);               // the next chunk, or the end
+//
+// R is what a read answers, made by two plain functions given at construction: 'onChunk(&c)'
+// builds the answer from a chunk (it may copy it: the chunk goes back to the source after), and
+// 'onEnd(&how)' builds it once the chunks are all read (and again, the same, at every read after).
+// The reader owns the type, so the sink knows nothing of its errors. One read is outstanding at a
+// time: a second, while one waits, is answered with onEnd of a Failed ending.
+//
+// WHAT BOUNDS IT. The chunks held are at most the link's window: a chunk is not given back until
+// it is read, and the source sends no more than its window of unreturned bytes.
+
+// A read is a message to the sink that carries the reply
+pub fn readSink[R](s: &ReaderSink[R]) actors.Awaitable[R] {
+  let h = s.clone();
+  actors.Awaitable[R].make(fn(rp: actors.ReplyOf[R]) [h] {
+    h.want(rp);
+  })
+}
+
+pub actor ReaderSink[R] is ChunkSink {
+  up: Option[ChunkSource];
+  held: Deque[IoBuf];                         // chunks arrived and not yet read
+  waiting: Option[actors.ReplyOf[R]];         // a reader awaiting the next chunk
+  ended: Option[Ending];                      // the end, once it has come
+  onChunk: &fn(c: &IoBuf) R;
+  onEnd: &fn(how: &Ending) R;
+
+  pub fn init(self: &new, onChunk: &fn(c: &IoBuf) R, onEnd: &fn(how: &Ending) R) {
+    *self = Self(up: None[ChunkSource], held: Deque[IoBuf](), waiting: None[actors.ReplyOf[R]], ended: None[Ending],
+      onChunk: onChunk, onEnd: onEnd);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    var taken: Option[actors.ReplyOf[R]] = None;
+    taken <-> waiting;
+    match taken {
+      case let Some(rp) {
+        let f = onChunk;
+        rp.answer(f(&c));
+        handBack(&up, c);
+      }
+      else { held.push(c); }
+    }
+  }
+
+  // The end. The source lets go of this sink with it, and this lets go of the source
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    if held.len() == 0usize {
+      var taken: Option[actors.ReplyOf[R]] = None;
+      taken <-> waiting;
+      match taken {
+        case let Some(rp) {
+          let f = onEnd;
+          rp.answer(f(&how));
+        }
+        else {}
+      }
+    }
+    ended = Some[Ending](how);
+  }
+
+  // A read: the next chunk, else the end, else wait
+  pub async fn want(self, rp: actors.ReplyOf[R]) {
+    if waiting is Some {
+      let f = onEnd;
+      rp.answer(f(&Ending.Failed(AnyError.msg("a second read while one waits"))));
+      return;
+    }
+    match held.popFront() {
+      case let Some(c) {
+        let f = onChunk;
+        rp.answer(f(&c));
+        handBack(&up, c);
+        return;
+      }
+      else {}
+    }
+    match &ended {
+      case let &Some(how) {
+        let f = onEnd;
+        rp.answer(f(how));
+      }
+      else { waiting = Some[actors.ReplyOf[R]](rp); }
+    }
+  }
+}

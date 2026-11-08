@@ -1,0 +1,52 @@
+// Bytes as base64 and hex text, the URL-safe form without padding, a strict
+// decode that refuses a malformed text, and a text encoded in chunks.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import binarytext;
+
+fn main() i32 {
+  // RFC 4648's example: "foobar" in base64 and in hex
+  let base = binarytext.encodeBase64("foobar");
+  printStr(base.view());
+  printStr(" ");
+  let hex = binarytext.encodeHex("foobar");
+  printStr(hex.view());
+  printStr("\n");
+
+  // Bytes past the ASCII range in the URL-safe alphabet, without padding (a
+  // JWT's form): '-' and '_' stand where the standard text has '+' and '/'
+  var raw = List[u8]();
+  raw.push(0xfbu8);
+  raw.push(0xffu8);
+  raw.push(0xfeu8);
+  let tokenForm = binarytext.Base64Format.urlSafeUnpadded();
+  let token = binarytext.encodeBase64With(raw.view(), &tokenForm);
+  printStr(token.view());
+  printStr("\n");
+  match binarytext.decodeBase64With(token.view(), &tokenForm) {
+    case let Ok(bytes) { printInt(i64.from(bytes.len())); printStr(" bytes back\n"); }
+    case let Err(e) { let m = String() <- e; printStr(m.view()); printStr("\n"); }
+  }
+
+  // Strict by default: this one has a character that is not base64
+  match binarytext.decodeBase64("Zm9v!mFy") {
+    case is Ok { printStr("accepted\n"); }
+    case let Err(e) { let m = String() <- e; printStr(m.view()); printStr("\n"); }
+  }
+
+  // Encoding in chunks, split anywhere, gives the same text
+  var enc = binarytext.Base64Encoder.standard();
+  var text = String();
+  enc.update("foo", &mut text);
+  enc.update("b", &mut text);
+  enc.update("ar", &mut text);
+  enc.finish(&mut text);
+  printStr(text.view());
+  printStr("\n");
+  0i32
+}

@@ -57,6 +57,12 @@ extern INode *neverType;
 // every bracketed use into an array type node (arrayTypeLower)
 extern StructNode *arrayTypeDcl;
 
+// 'Vector', the name the SIMD vector type is written with, 'Vector[T, N]'
+// (stdlibInit): a struct with no fields that only names it, as 'Array' does,
+// since name resolution lowers every bracketed use into a vector type node
+// (vectorTypeLower)
+extern StructNode *vectorTypeDcl;
+
 // The compiler's own 'Array' struct, when module 'mod' is core declaring 'Array[T]'
 // for the first time, so that core's declaration makes it the generic body of a
 // run-time length instead of a second struct of the name; else NULL.
@@ -126,6 +132,10 @@ extern StructNode *carriesRegionTrait;
 extern StructNode *gcTraceElementsTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
+extern StructNode *floatTrait;
+extern StructNode *signedTrait;
+extern StructNode *unsignedTrait;
+extern StructNode *numericTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
 // 'Shareable', Sendable's sibling: a borrow of a value of the type may be held
@@ -163,5 +173,9 @@ void stdNbrInit(int ptrsize);
 // Give every integer type and bool the method core's Hash requires of them,
 // 'hash(self, h &mut Hasher)', once core's Hasher is name resolved
 void nbrAddHashMethods(StructNode *hasher);
+
+// Give every number type, bool and char the method a value writes its text
+// with, 'toText(self, out &uni TextOut)', once core's TextOut is name resolved
+void nbrAddTextMethods(StructNode *textout);
 
 #endif

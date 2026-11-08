@@ -1,0 +1,98 @@
+// "Reply to whoever asked", with no closure: a one-behaviour actor trait,
+// 'ReadDone', passed as a parameter. The asker is any actor with a 'done'
+// behaviour; the answerer takes the handle and sends to it, and never learns
+// what kind of actor it is.
+//
+// - Driver is asked to run with a 'Lookup' (an actor trait of a query and an
+//   update) and a 'ReadDone'. It sends the update through the trait's handle,
+//   awaits one query, keeps another as a future and awaits that, then hands
+//   the sum to its reply handle (all four shapes of a behaviour, through a
+//   trait handle: sent, sent for a future, sent awaited, and sent with its
+//   value dropped).
+// - Relay takes the reply handle on to a second hop and sends it twice, so a
+//   handle passed in a message is copied again and again and the actor it
+//   names still gets each.
+// - Reader is the asker: 'done' adds up what it is told and prints the total
+//   when it has had three (Driver's one, Relay's two), whichever order they
+//   come in.
+//
+// Table's values follow from the messages in the order main sends them: 100,
+// then 'put(1, 2)' makes it 103, so get(10) is 113 and get(20) is 123; 236.
+
+mod concurrency_actor_trait_reply;
+
+import stdio use *;
+import actors;
+
+actor trait Lookup {
+  pub async fn get(self, k: u64) u64;
+  pub async fn put(self, k: u64, v: u64);
+}
+
+actor trait ReadDone {
+  pub async fn done(self, n: u64);
+}
+
+actor Table {
+  base: u64;
+
+  fn init(self: &new, base: u64) {
+    *self = Self(base: base);
+  }
+
+  pub async fn get(self, k: u64) u64 {
+    base + k
+  }
+
+  pub async fn put(self, k: u64, v: u64) {
+    base = base + k + v;
+  }
+}
+
+actor Reader {
+  seen: u64;
+  count: u64;
+
+  fn init(self: &new) {
+    *self = Self(seen: 0u64, count: 0u64);
+  }
+
+  pub async fn done(self, n: u64) {
+    seen = seen + n;
+    count = count + 1u64;
+    if count == 3u64 {
+      printStr("reader saw "); printUInt(seen); printStr(" in "); printUInt(count); printStr("\n");
+    }
+  }
+}
+
+actor Relay {
+  pub async fn twice(self, reply: ReadDone, n: u64) {
+    reply.done(n);
+    reply.done(n + 1u64);
+  }
+}
+
+actor Driver {
+  pub async fn run(self, t: Lookup, reply: ReadDone, relay: Relay) {
+    t.put(1u64, 2u64);
+    let a = await t.get(10u64);
+    let f = t.get(20u64);
+    let b = await f;
+    t.get(30u64);
+    reply.done(a + b);
+    relay.twice(reply, 1000u64);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let t = Table(100u64);
+    let r = Reader();
+    let relay = Relay();
+    let d = Driver();
+    d.run(t, r, relay);
+  }
+  finalAll();
+}

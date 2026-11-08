@@ -76,7 +76,7 @@ to answer with.
 **Two more are counted into a group before type check has replaced them.**
 `isTypeNode` also counts an unlowered `Box[i64]` as a type
 (`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference;
-never a construction, `new Box(5i64)`, a value whose `objfn` is the type —
+never a construction, `Box(5i64)`, a value whose `objfn` is the type —
 and an unlowered managed reference type, `Rc[mut, Node]`
 (`itypeIsManagedRefType`), which type check lowers into a `RefNode`.
 `isMethodType` inherits that, being `isTypeNode` and the table's method
@@ -119,7 +119,7 @@ the struct:
 | `ir/types/` | types — number, struct, array, reference, arrayref, pointer, fnsig, enum, permission, region, lifetime, tuple, void |
 | `ir/meta/` | generics and macros |
 | `ir/` | shared machinery — dispatch, namespaces, name and type tables, cloning, flow, `--checktree` |
-| `corelib/` | **the built-in types themselves** — `corelib.c` declares the permissions; `corenumber.c` builds the number types in C and hangs every operator method and intrinsic off them. The `So` and `Rc` regions, `Option` and `Result` are Cone source in the core package, `packages/core/src/core.cone`, outside the compiler |
+| `corelib/` | **the built-in types themselves** — `corelib.c` declares the permissions; `corenumber.c` builds the number types in C and hangs every operator method and intrinsic off them. The `Uni` and `Rc` regions, `Option` and `Result` are Cone source in the core package, `packages/core/src/core.cone`, outside the compiler |
 | `shared/` | diagnostics (`error.h` is the `ErrorCode` list), memory arena, file, options, timer, UTF-8 |
 
 `corelib/` is the one most often looked for in the wrong place. A built-in
@@ -318,11 +318,13 @@ phase notes for mechanism rather than restating it:
 | `ir/types/reference.c`, `arrayref.c`, `ir/exp/borrow.c`, `allocate.c` | [references](references.md) | seven tags on one struct, across two node groups |
 | `ir/stmt/vardcl.c`, `fielddcl.c`, `const.c`, `aliasdcl.c` | [vardcl](vardcl.md) | three declaration nodes that differ mostly in what they lack, and the alias, which lacks everything but a name and a target |
 | `ir/stmt/module.c`, `modtrait.c`, `import.c`, `fold.c`, `program.c` | [module](module.md) | the module, package and compilation-unit model has no other home; what is generated is gated on a flag set at parse; `fold.c` holds what every `use` clause shares and the whole of a global's; `modtrait.c` the module trait and a module's conformance to one |
+| `ir/exp/destruct.c` | [destruct](destruct.md) | a field list `x.(a, b)`: lowered to field accesses where the value stays whole, and otherwise the one node that moves a value in whole and gives some of its fields back |
 | `ir/exp/nameuse.c` | [nameuse](nameuse.md) | one tag, bound at name resolution and asked for what it names; two lowerings and the move diagnostics |
 | `ir/exp/assign.c` | [assign](assign.md) | mutability and ownership are enforced in flow, not type check |
 | `ir/exp/cast.c` | [cast](cast.md) | three syntaxes plus two injected forms; generation re-checks what type check could not |
 | `ir/stmt/return.c`, `break.h` | [return](return.md) | one struct serves four tags; placement rule and escape check live in three different phases |
 | `ir/exp/block.c` | [block](block.md) | loops are the same node; `blockret` is injected by two phases |
+| `ir/types/vector.c`, `genllvm/genlvector.c` | [vector](vector.md) | a type of the compiler's own that has methods but no declaration: its operators are made when it is checked, its conversions and construction are type literals, and generation expands both |
 | `ir/exp/if.c` | [if](if.md) | a flat alternating list, an identity-compared sentinel, and `match` lowered into it |
 | `ir/exp/narrow.c` | [narrow](narrow.md) | no node of its own: what type check knows of the variant a name holds along a path, read where a member of the variant is named |
 | `ir/exp/closure.c` | [closure](closure.md) | a literal that lives until type check, which makes a struct of it, found by trying the body |

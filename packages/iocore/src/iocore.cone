@@ -16,26 +16,20 @@
 //
 //   fn main() {
 //     mut lp = Loop.mustMake();
-//     imm pool = Pool.make();
 //     imm listener = lp.mustListen(SocketAddr.localhost(0u16));
 //     lp.submit(Op.Accept(listener), Target.Here(1u64));
-//     mut out = List[Completion].empty();
+//     mut out = List[Completion]();
 //     while true {
 //       lp.poll(forever(), &mut out);             // waits here, and only here
-//       mut k = 0usize;
-//       while k < out.len() {
-//         imm c = &mut out[k];
+//       each c in out.drain() {                   // each answer, owned
 //         if c.token == 1u64 and c.isDone() {     // a connection: read from it
-//           lp.submit(Op.Recv(c.handle, pool.mustTake(4096usize)), Target.Here(2u64));
+//           lp.submit(Op.Recv(c.handle, IoBuf(4096usize)), Target.Here(2u64));
 //         }
-//         elif c.token == 2u64 and c.count() > 0usize {
-//           mut b = IoBuf.empty();
-//           b <=> c.buf;                          // the buffer, back from the kernel
-//           lp.submit(Op.Send(c.handle, b), Target.Here(3u64));   // echo it
+//         else if c.token == 2u64 and c.count() > 0usize {
+//           imm h, b = c.(handle, buf);           // the buffer, back from the kernel
+//           lp.submit(Op.Send(h, b), Target.Here(3u64));   // echo it
 //         }
-//         k = k + 1usize;
-//       }
-//       out.clear();                              // what is left dies: buffers go home
+//       }                                         // what is left dies: buffers go home
 //     }
 //   }
 //
@@ -56,11 +50,26 @@
 //   lp.openFile(path, access)           a file for ReadAt and WriteAt
 //   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
 //   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
-//   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()      (DIAGNOSTICS)
+//   lp.setKeepAlive(h, ka)  lp.keepAlive(h)   TCP keepalive set, and read back (KeepAlive)
+//   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()  lp.records()  lp.recordsMade()
+//   recordPools()                       (DIAGNOSTICS)
+//   lp.cancelHandle(h, write)           end every read (or write) in flight on h  (CANCEL)
+//   lp.hint(h)  lp.setHint(h, v)        a handle's hint word                      (HANDLES)
+//   OpPool[A].make(): pool.take(ask) pool.takeHere(ask) pool.dissolve(p) pool.dissolveHere(p)
+//     pool.flushHere() pool.at(i) pool.inUse() pool.size()    an asker's records  (RECORDS)
+//   OpRec[A] {core, ask}  OpCore: core.kind .handle .at .deadline .buf .bytes .group .lane .work
+//     .setPeer(a) .qnext; .status .n .code .newHandle .submitted .dequeued .peer() .outcome()
+//     .count() .isDone() .isEarly() .isLate() .isLetGo() .id()
+//   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
-//
+//   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
+//   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone() sh.clone()
+//     sharedTables()   tables made and not yet freed
+//     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
+//     core.isIssued()                                    (WORKER-SIDE ISSUE)//
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
+//   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
 //   Op.ReadAt(file, at, buf)  Op.WriteAt(file, at, buf)
 //   Op.RecvFrom(sock, buf)  Op.SendTo(sock, addr, buf)      one datagram each  (DATAGRAMS)
 //   Op.Call(lane, work, arg, buf)       work run on the blocking pool (THE BLOCKING POOL)
@@ -68,19 +77,25 @@
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
 //   Target.Here(token)  Target.Post(token, waker)           (TARGETS)
 //   Target.Chan(token, tx)  Target.Once(token, oneshotTx)  Target.Status(token, board, slot)
-//   Target.Hook(token, sink)  Sink.make(deliver)       deliver: a So[fn(c Completion) + Sendable]
+//   Target.Hook(token, sink)  Sink.make(deliver)       deliver: a Uni[fn(c Completion) + Sendable]
 //   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
 //   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
-//     g.cancel() g.isCancelled() g.deadline() g.id()
+//     g.cancel() g.cancelWith(cause) g.isCancelled() g.cause() g.deadline() g.id()
+//     (the cancelgroups package's, re-exported here, with Cause)
 //   Request: r.cancel() r.detach() r.id()
 //   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
 //     c.isCancelRequested() c.isLive() c.id()
-//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle c.peer, the stamps,
-//     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
+//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.bufs c.handle c.peer, the stamps,
+//     c.outcome() c.isDone() c.count() c.bufLen() c.chainBack() c.record()   (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
-//   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut),
-//     e.isCancelled() e.isTimedOut()  IoError.cancelled()  IoError.timedOut()
+//     addr.text()  addr.toText(out)     the written form, as a String / sent to a '$"..."' or a print
+//   IoError: e.kind() (the ioerror package's IoErrorKind: NotFound, ConnectionRefused, ...,
+//     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), String() <- e,
+//     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
+//     IoError(code)  IoError.cancelled()  IoError.timedOut()  IoError.truncated()  IoError.aborted()
+//     IoError.ofKind(kind)  e.describe()
+//   c.error()  answerError(kind, status, code)   an answer that is not Done, as an IoError
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
 // polls it. It is a resource: when it dies it cancels every operation still
@@ -88,9 +103,20 @@
 // each buffer back before it frees anything (I18). Answers it owed to its own
 // thread are dropped then, their buffers going home to their pools; answers
 // owed to another loop or thread are still delivered there. A job running
-// on the pool is not waited for: its thread finds the loop gone and drops
-// it. Loops on other threads are
-// other Loops: one per driving thread.
+// on the pool (or an external operation's Completer not yet ended) is not
+// waited for: the old API's is answered Cancelled at the death, without its
+// buffer, which the job still holds; the record stays the job's, and when its
+// thread finds the loop gone it dissolves it there, the buffer going home (THE
+// BLOCKING POOL). The loop lets go of its records at the end of its death, in
+// one step under its port's lock with any job's post home, then takes what was
+// posted before: so no job's record lands in the port after that, and a job
+// whose answer goes back to its own loop (Target.Post) cannot hold the port
+// alive from inside it. A job's post that Windows refuses while its loop
+// still lives (no room for the packet) is tried again every millisecond,
+// since that loop still holds the record. Loops on other threads are other
+// Loops: one per driving thread. One exception to "one thread": a receive or
+// a send may be ISSUED on another thread through the loop's shared table and
+// handed to it in flight (WORKER-SIDE ISSUE).
 //
 // OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
 // a borrow: an IoBuf moved in, which the kernel writes into (Recv, ReadAt, at
@@ -106,35 +132,52 @@
 //   in the answer ('c.handle'). Accept(listener): the next connection on a
 //   listening socket, likewise. Every socket iocore makes has Nagle's
 //   algorithm off (TCP_NODELAY), as Go's do: a small send goes at once.
+//   TCP keepalive is the asker's to set, on a socket once connected
+//   ('setKeepAlive', a KeepAlive: httpconn sets its Config's).
 // - Recv(sock, buf): up to buf's room; Done(n), the n bytes added to its
 //   length; Done(0) is the end of the stream. A buffer with no room is
-//   refused (Failed, ERROR_INSUFFICIENT_BUFFER), since a zero-byte receive
+//   refused (Failed, ERROR_INSUFFICIENT_BUFFER; Linux's EINVAL: the kind
+//   InvalidInput), since a zero-byte receive
 //   means something else:
 // - RecvReady(sock): a zero-byte receive, holding no buffer at all: Done(0)
 //   once data has arrived (or the stream has ended), for an idle connection,
 //   so that thousands of them pin no memory. Then a Recv takes what came.
 // - Send(sock, buf), SendBytes(sock, bytes): all of it; Done(n), n the bytes
 //   sent.
+// - SendChain(sock, bufs): every unconsumed byte of an iobuf Chain, its
+//   segments in order, in ONE operation (a gather write: one kernel call
+//   where the socket takes it all, not one per buffer); Done(n), n the
+//   bytes sent. The answer gives the whole chain back ('c.bufs', or
+//   'c.chainBack()'), every segment in it, however it ended. Windows hands
+//   the segments to one WSASend as an array of WSABUFs (Winsock captures the
+//   array at the call, so it is built on the stack, or for more than 16
+//   segments in a block freed at once); Linux sends them with sendmsg over an
+//   iovec of at most 64 segments a call, and a send the socket takes only in
+//   part goes on from the byte it reached, across segment boundaries, as
+//   Send's does. An empty chain is Done(0). The record holds the chain out of
+//   line, 'bufs', an Option of an owning pointer (8 bytes, None for every
+//   other operation), so no other operation's record is larger for it.
 // - ReadAt(file, at, buf), WriteAt(file, at, buf): at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
 //
 // DATAGRAMS. 'lp.bindUdp(addr)' is a UDP socket bound to addr (port 0 has the
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
-// operations fail on it with ERROR_INVALID_HANDLE, as the datagram ones do on a
-// TCP socket. It is not connected; each datagram names its other end.
+// operations fail on it as on a handle that names nothing (ERROR_INVALID_HANDLE,
+// EBADF: InvalidInput), as the datagram ones do on a TCP socket. It is not connected; each datagram names its other end.
 // - RecvFrom(sock, buf): ONE datagram, into buf's room (a buffer with no room
 //   is refused, as Recv's is); Done(n), the n bytes added to its length, and
 //   the sender in the answer's 'c.peer', a SocketAddr. A datagram of no bytes
 //   is Done(0): unlike a stream's, it is not an end. A datagram longer than
-//   the room is cut: Failed with WSAEMSGSIZE (10040), the same number on both
-//   systems, the room filled with its first bytes (the length says so), the
+//   the room is cut: Failed with the system's number for it (WSAEMSGSIZE,
+//   10040; Linux's EMSGSIZE, 90), which 'c.error()' reads as the kind
+//   Truncated, the room filled with its first bytes (the length says so), the
 //   sender named, the rest of that datagram lost; the next one is whole. An
 //   operation that took no datagram names no sender (an address of size 0, its
 //   port 0).
 // - SendTo(sock, addr, buf): all of buf as ONE datagram to addr; Done(n), n its
 //   bytes; 'c.peer' is addr. A datagram too large for the network is Failed
-//   with WSAEMSGSIZE too. UDP promises nothing about delivery: Done says the
+//   with the same number, of the kind Other (nothing was cut on receipt). UDP promises nothing about delivery: Done says the
 //   system took the datagram.
 // - Deadlines, cancel groups, Requests and handle close work as for TCP, the
 //   answer carrying the buffer back; a receive no datagram has met is the
@@ -174,14 +217,15 @@
 //
 // The last hands the answer to another runtime, which the loop knows nothing
 // of (I11): Target.Hook(token, sink), where a Sink is a closure of that
-// runtime's own, a So[fn(c Completion) + Sendable] holding what it needs. The
+// runtime's own, a Uni[fn(c Completion) + Sendable] holding what it needs. The
 // loop calls it with the answer on its own thread, once, where it would have
 // sent the answer; a Sink that dies without delivering (its loop gone before
 // the operation was started, say) finalizes the closure instead, and what the
 // closure holds is finalized with it. The closure runs inside poll, or inside
 // the loop's death, so it hands the answer on and never calls back into the
-// loop: the actor runtime's I/O thread (the aio package) turns each answer
-// into a message to the actor that awaits it.
+// loop. No package of the runtime uses it now: the actor runtime's I/O thread
+// (the aio package) keeps records of its own, starts them itself and takes
+// them back answered (RECORDS), with no Completion and no closure between.
 //
 // Each of these answers is stamped delivered when the loop hands it over,
 // and a loop whose answers all go elsewhere still sees its poll return as
@@ -189,9 +233,10 @@
 //
 // ANSWERS. Every operation gets exactly one terminal answer, a Completion
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
-// Done with a count, Failed with Windows' error number (on Linux, the one
-// that names the same condition as the errno; see linux.cone), Cancelled, or
-// TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none), the
+// Done with a count, Failed with the system's own error number (Windows'
+// on Windows, the errno on Linux; 'c.error()' is it as an IoError, ERRORS),
+// Cancelled, or TimedOut -- the buffer back ('c.buf', IoBuf() when it
+// had none; a SendChain's chain in 'c.bufs', None for every other operation), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
 // kernel finished, so this is the earliest the loop can know; on Linux, when
@@ -199,9 +244,30 @@
 // (when poll handed it over, or the loop it was posted to took it). The
 // outcome is in plain fields ('c.status', a diag outcome number, 'c.n',
 // 'c.code'), and 'c.outcome()' gives it as the Outcome enum, to match on. A
-// buffer comes out of a Completion by a swap, 'b <=> c.buf', since Cone does
-// not yet move a value out of a field; one left in dies with it, home to its
-// pool. A Completion is Sendable: it may go to another thread.
+// buffer comes out of a Completion the code owns by a field list, 'let buf =
+// c.(buf)' (the rest of the answer goes at the end of the statement), or
+// 'let h, buf = c.(handle, buf)' for more than one; one left in dies with
+// it, home to its pool. A Completion is Sendable: it may go to another thread.
+//
+// ERRORS. An IoError says what went wrong in two ways. Its kind, an
+// IoErrorKind of the ioerror package (a leaf the fs package shares), is the
+// same on every system: NotFound, PermissionDenied, ConnectionRefused,
+// ConnectionReset, AddressInUse, TimedOut, ... (Rust's io::ErrorKind, trimmed
+// to what the two systems give here), and Other for a number no kind names;
+// a caller matches on it ('e.kind() == IoErrorKind.ConnectionRefused', with
+// 'import ioerror use IoErrorKind'). Its code is the system's own number, kept
+// for diagnostics and the message: Windows' error number on Windows, the
+// errno on Linux, so the same failure has a different number on each (a
+// refused connection: 1225 and 111). ioerror sorts each system's numbers into
+// kinds by a table of its own (osKind). Cancelled and TimedOut from a cancel
+// or a deadline carry code 0 (the system aborting an operation,
+// ERROR_OPERATION_ABORTED or ECANCELED, is Cancelled too, with its number);
+// Truncated, a datagram cut to the room, carries the system's number for a
+// datagram too long. 'c.error()' (or 'answerError') turns an answer that is
+// not Done into its IoError; 'IoError(code)' is the system's error of a
+// number got elsewhere (the process package's, say). IoError stays here, not
+// in ioerror, because its words are the loop's system calls' (FormatMessageW,
+// strerror, gai_strerror).
 //
 // CANCEL. 'lp.cancel(id)' asks an operation to end. It is a request: the
 // operation still answers exactly once, and its answer says how it ended --
@@ -211,11 +277,17 @@
 // once its answer is decided or for an id that names nothing. A timer
 // cancelled answers Cancelled, decided there and then (so a second cancel
 // of it says false). Closing a handle cancels everything in flight
-// on it. A job queued on the blocking pool is taken out of its queue and
+// on it; 'lp.cancelHandle(h, write)' asks every operation in flight on h in
+// one direction to end, the old API's and an asker's records alike: its reads
+// (accept, receive, RecvFrom, ReadAt) or its writes (send, SendTo, WriteAt,
+// Linux's connect; Windows' connect has no handle until it has connected),
+// each answering as a cancel's does, and says how many it asked (one asked
+// already is not asked again). A job queued on the blocking pool is taken out of its queue and
 // answered Cancelled at once, its buffer back; one running cannot be
-// stopped, and answers how it ended when it returns. An external operation's
+// stopped, and answers how it ended when it returns (one answered early, by a
+// deadline, leaves its record to the job until then). An external operation's
 // Completer is told (EXTERNAL OPERATIONS). Cancel does not abandon anything:
-// what is still the kernel's stays in the in-flight table until it is not.
+// what is still the kernel's stays in its record until it is not.
 //
 // DEADLINES. A deadline is an absolute Instant, never a duration (I6):
 // 'submitBy', or the deadline of 'submitIn', whichever is tighter with the
@@ -228,8 +300,8 @@
 // the grace the loop answers TimedOut at once WITHOUT the buffer, promptly,
 // as a frame loop needs even when a read on a hung share is stuck; the
 // buffer goes home to its pool when the kernel or the job lets it go (a
-// late return, counted), and the record waits for it in the in-flight
-// table. After such a prompt TimedOut the operation's effect is unknown: a
+// late return, counted), and the record waits for it (RECORDS: for an
+// asker's record this is the one bad case). After such a prompt TimedOut the operation's effect is unknown: a
 // receive may have taken bytes, a send may have sent. If the kernel answers
 // between the loop's decision and its delivery, the kernel's own outcome is
 // the answer, buffer and all. A job still queued at its deadline is taken
@@ -253,7 +325,13 @@
 // cancel still ends it. A group cancelled from another thread posts a
 // packet to each loop with operations in it, so a loop asleep in poll wakes
 // at once; the loop then asks the cancel of each of its operations in a
-// cancelled group.
+// cancelled group. The group itself is the cancelgroups package's (iocore
+// re-exports it), which actors and 'parallel each' reach as well: its header
+// says how it is built, and why 'isCancelled()' is a flag load per level of
+// ancestry with no count touched. A group with a deadline of its own also
+// arms a timer that cancels it with the cause TimedOut ('g.cause()' says
+// why a group ended); the loop does not treat that as a cancel, and answers
+// its operations TimedOut from their deadlines, as it always did.
 //
 // REQUESTS. 'lp.request(id)' is a Request: a handle on operation id that
 // asks its cancel when it dies -- dropping it sends a cancel and abandons
@@ -275,11 +353,11 @@
 // (between a least and a most, started as jobs wait and leaving after an
 // idle time), so a slow resolver holds up only other look-ups, never the
 // disk. Lane.general() (4 threads, 1,024 queued) and Lane.dns() (2 threads,
-// 256 queued) every process has; 'addLane(new LaneConfig(name: ...,
+// 256 queued) every process has; 'addLane(LaneConfig(name: ...,
 // minThreads: ..., maxThreads: ..., queueBound: ..., idleMillis: ...))' makes
 // more (64 in all), one per storage device for the file service to come. A
-// submit past a lane's bound is answered at once, Failed with ERROR_BUSY,
-// its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
+// submit past a lane's bound is answered at once, Failed with ERROR_BUSY
+// (Linux's EBUSY: ResourceBusy), its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
 // threads, jobs run, cancelled out of the queue and refused, and the time
 // jobs waited queued. The pool comes with three kinds of work, each an Op
 // built by a function: 'resolveOp(host, port, buf)' (DNS lane; Done(n), the
@@ -289,6 +367,25 @@
 // is a '&Path' (a string literal where one is wanted is made one), as is
 // 'lp.openFile''s. The
 // lanes and their threads live as long as the process.
+//
+// A job is its RECORD (RECORDS), and nothing is allocated for it: the record is
+// queued on its lane, and the lane's thread is handed its address, runs the
+// work on the record's own buffer where it lies, writes the outcome into the
+// record and posts its address home, as the kernel does an operation's. The
+// rule while it is AWAY, a promise the package keeps on trust (no type says
+// it): from the moment a record is queued on a lane until it is posted home,
+// the pool's thread owns the record's job part (its outcome, its waker, Linux's
+// descriptor) and its buffer, and reads its request ('work', 'at', 'lane',
+// 'kind'), which nobody changes then; the loop touches only the record's
+// cancel flag (to ask a cancel) and, under the lane's lock, its queue links and
+// job state (to take a job still queued back). An external operation's record
+// is away the same way from its start, its Completer the owner. The rest of the
+// record (its promise, its lists, its timer) stays the loop's. A record away
+// keeps its POOL alive: a pool dies when its owner has let it go and its last
+// record away is home (one count, the pool's holds), so a loop that dies with
+// a job running lets its record go, the job's thread finding the loop gone
+// dissolves it where it is, its answer abandoned and its buffer home, and the
+// last one home frees the pool.
 //
 // EXTERNAL OPERATIONS. An operation whose answer comes from outside the
 // kernel and the pool -- another thread, a GPU fence's watcher, a library
@@ -303,12 +400,86 @@
 // ('isCancelRequested()'), which gives the answer; its deadline gives a
 // prompt TimedOut past the grace, and a later ending is dropped, the buffer
 // going home; a Completer that dies without an ending ends its operation
-// Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once.
+// Failed with ERROR_OPERATION_ABORTED (Linux's ECANCELED: 'IoError.aborted()',
+// of the kind Cancelled), so it still answers exactly once. The
+// Completer holds the operation's record while it is away (THE BLOCKING POOL):
+// one that outlives its loop (answered Cancelled at the death, its cancel
+// asked) still writes into 'buf()', and its ending, false then, dissolves the
+// record on its own thread.
+//
+// RECORDS. Every operation is ONE RECORD, which the loop owns while it works on
+// it: an OpRec[A], the loop's OpCore first (the request, what the operation
+// owns, the promise, the answer) and the asker's own A after it. The calls
+// above take records from the loop's own pool, their A the target and the
+// token, and answer each with a Completion. A layer with answers of its own
+// (the aio package) keeps a pool of its own, an OpPool[A], and starts its
+// records itself:
+//
+// - The record is the carrier. The asker takes one ('pool.take(ask)', from any
+//   thread: the pointer to a record holding ask and an OpCore with nothing in
+//   it) and fills its request: 'kind' (diag.kindRecv, ...), 'handle', 'buf',
+//   'bytes' or 'bufs' (Options: None is nothing here; 'bufs', a Uni[Chain],
+//   makes a kindSend a gather, as SendChain is), 'at', 'deadline' (forever()
+//   for none; a timer's own time for diag.kindTimer), 'group', 'lane' and
+//   'work' for a Call, 'setPeer(addr)' for SendTo and Connect. Only its
+//   address crosses to the loop's thread; 'qnext' is the asker's link for
+//   queueing it there.
+// - 'lp.start(core)', on the loop's thread, starts it as 'submitIn' starts an
+//   operation (its deadline the tighter of its own and its group's, cancelled
+//   at once in a cancelled group). Its answer is no Completion: the record goes
+//   on the loop's done list, and after poll 'lp.takeDone(out)' hands over each
+//   record answered since (an 8-byte pointer each). Its answer is in it, as a
+//   Completion's fields: 'status', 'n', 'code', 'newHandle', 'peer()',
+//   'outcome()', and the buffer, back in 'buf'.
+// - The asker then starts it again (a read's second stage: a buffer put in by
+//   assignment over None) or DISSOLVES it: 'pool.dissolve(p)' reads the record
+//   out whole and frees its cell, and field lists take the value apart --
+//   'let core, ask = rec.(core, ask)', 'let buf = core.(buf)' -- each piece
+//   going where the ending says. A record is dissolved once, at one moment;
+//   no piece is taken out of a record that stays alive.
+// - The one bad case: a deadline's grace runs out while the kernel still holds
+//   the record and its buffer (Windows; a Linux loop holds no socket
+//   operation's buffer in the kernel). The record is on the done list
+//   answered TimedOut and 'isEarly()': the asker answers its own then, and
+//   LEAVES the record. When the kernel gives it back it is on the done list
+//   again, 'isLate()', and the asker dissolves it, the buffer going home. Its
+//   outcome then is what the kernel really did: a receive, read or send that
+//   finished after all is Done with its count, the bytes in its buffer (so an
+//   asker whose own deadline it was, having answered nobody, keeps them:
+//   aio's quiet read); anything else stays TimedOut.
+// - A record LET GO. A record handed over by takeDone, neither early nor late,
+//   is held by nothing of the loop's: it is off its handle's in-flight list
+//   (what 'cancelHandle' and a close walk), off the grouped list and the done
+//   list, its timer cancelled, no job away. A trust claim, which an asker may
+//   rely on to hand the record to another thread, which alone touches it from
+//   then on (aio's answer lent from its record, dissolved on the awaiting
+//   actor's worker); 'core.isLetGo()' checks it, and aio asks it at that point.
+//   An early record is not let go: the kernel and the loop still hold it.
+// - A loop that dies dissolves every asker's record it still holds into its
+//   pool, after cancelling and draining it: the record's asker part dies
+//   there, so an answer it owed is abandoned. Records the asker holds (taken
+//   and not started, or handed back by takeDone) are the asker's. A record
+//   away with its job (THE BLOCKING POOL) is its job's: it is dissolved, its
+//   answer abandoned, when it comes home.
+//
+// The pool keeps its records in chunks of 64 that never move, found by
+// index through a fixed directory, 262,144 at most (one more is a panic).
+// 'take' and 'dissolve' work from any thread, under the pool's one lock; the
+// pool's owner thread, which dissolves many records in one pass, uses
+// 'dissolveHere' (no lock) and pushes those back under one lock with
+// 'flushHere', and 'takeHere' takes them first. A record's index and
+// generation are its OpId ('core.id()'); the generation moves on as it is
+// dissolved, and as an early answer goes. An OpPool is Sendable, on trust:
+// share it through an Arc, or keep it for the life of the process. Its owner
+// keeps it while a live loop holds a record of it; a record away keeps it
+// itself (THE BLOCKING POOL), so a pool let go of with records away is freed
+// when the last of them is home.
 //
 // POLL. 'lp.poll(until, out)' is the only place the loop waits. It appends
 // to out every answer ready for this loop, at most a batch of 128 completions
 // taken from the kernel per wait (a budget, I16), and returns how many it
-// appended. It waits in the kernel while nothing is ready, at most until
+// appended; it returns as well, without waiting, while an asker's records
+// are on the done list (RECORDS). It waits in the kernel while nothing is ready, at most until
 // 'until', an Instant: 'poll(forever(), out)' waits as long as it takes,
 // 'poll(Instant.now(), out)' never waits (a frame's drain). It returns early,
 // with nothing, when a waker wakes it, or when it has posted answers to
@@ -325,28 +496,69 @@
 // epoll instance, which ends the wait on time to the nanosecond.
 //
 // WAKERS. 'lp.waker()' is a Waker: Sendable, copied to share, and 'wake()'
-// from any thread ends the loop's current or next poll. It is also how
-// Target.Post reaches its loop. A waker keeps its loop's port open (not the
+// from any thread ends the loop's current or next poll; wakes asked while
+// one waits to be taken end it once, and what the posters made before waking
+// is there when the poll returns (on both systems the loop takes the wake
+// before it looks). It is also how Target.Post reaches its loop. A waker keeps its loop's port open (not the
 // loop): one woken or posted to after its loop has died says so (false), and
 // a posted answer's buffer goes home.
 //
 // HANDLES. A Handle names a socket or a file the loop holds: an entry of the
 // loop's handle table and the entry's generation, plain data, copied freely.
 // A handle closed (by 'close', or the loop's death) is never reached through
-// again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE)
-// even when Windows has given its number to something new. The loop owns
+// again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE,
+// Linux's EBADF: InvalidInput) even when the system has given its number to
+// something new. The loop owns
 // what its handles name, and closes them all when it dies. A connected
 // socket's two directions end apart: 'shutdown(h)' finishes its sending side
 // (TCP's FIN after what was sent), so the peer's receive ends, Done(0),
 // while this side still receives -- a half-close; 'close(h)' finishes both
 // (Windows resets the connection instead when received bytes were left
 // unread); 'reset(h)' closes it abortively, the peer seeing the connection
-// reset and what was not yet sent dropped.
+// reset and what was not yet sent dropped. Each handle has a HINT WORD, a u32
+// the loop keeps for the layer that opened it and reads nothing of
+// ('lp.hint(h)', 'lp.setHint(h, v)'; 0 when it is opened, and for a handle
+// that names nothing): aio keeps a socket's read hint there. On Windows a
+// socket's completions SKIP THE PORT when an operation finishes at once
+// (SetFileCompletionNotificationModes, where its provider hands out real
+// handles): its start then answers it there, and no packet comes.
+//
+// WORKER-SIDE ISSUE (shared.cone). 'lp.share()' is the loop's SHARED TABLE, a
+// Shared: Sendable and Move, one holder each ('sh.clone()' for another); the
+// loop's handles as any thread sees them, found with a load and a generation
+// check, each entry with a lock. On another
+// thread, 'sh.lock(h)' (false: h names nothing there), then 'sh.issue(p)' tries
+// record p's receive or send (Recv into a buffer, a Send of one buffer) on that
+// thread: issueDone, answered there, its outcome in the record (state done,
+// let go: the loop never sees it, and its counters do not count it);
+// issuePending, in flight, which the caller hands to the loop's thread, whose
+// 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
+// deadline armed) -- the kernel's completion may come first, and is kept until
+// the record is linked, so it is answered once; or issueNot, nothing done, the
+// record started on the loop as ever. Then 'sh.unlock(h)'. Windows issues only
+// on a socket that skips the port on success; Linux tries the non-blocking
+// recv/send, and one that would block before moving a byte is issueNot, a send
+// that moved part of its bytes is issuePending and goes on from them. A cancel
+// or a close of h queued under the lock is ordered against an issue under it;
+// 'sh.markClosing(h)' (under the lock) stops any issue on h after it, so an
+// operation awaited behind a close fails as it does without the table. The
+// loop unpublishes a handle, under its lock, before it closes it. A lock found
+// held spins a while and then yields; 'sh.contended()' counts those. The table
+// outlives its loop for as long as a Shared is held (a thread that looks after
+// the loop died finds every entry unpublished), and the last holder to let go
+// frees it; 'sharedTables()' is how many are made and not yet freed.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
 // 'lp.subscribe(&diag.textSubscriber)' every answer delivered prints a line,
 // its kernel and delivery latencies among it; with none, nothing prints.
+// 'lp.records()' is how many of the loop's own records are taken (in flight,
+// decided, or waiting for the kernel after an early answer), 'lp.recordsMade()'
+// how many its pool has made. 'recordPools()' is how many pools of records the
+// process holds (made, and not yet freed): a pool let go of while a record of it
+// is away is held until that record is home. 'threadTimes()' is the calling
+// thread's own time so far, in nanoseconds, in user mode and in the kernel
+// (zeros where the system cannot say): what a loop's driver reports of itself.
 //
 // MEASURED, release, an i7-13700HX on Windows 11 (examples/echo.cone and
 // examples/tick.cone; numbers vary run to run):
@@ -403,6 +615,7 @@
 // (linux.cone), epoll with an eventfd
 // (how other threads wake the loop) and a timerfd, non-blocking sockets and
 // accept4, recvfrom (with MSG_TRUNC, to tell a cut datagram) and sendto,
+// sendmsg for a gather,
 // getaddrinfo and stat on the pool's threads, and a lane of the pool
 // for ReadAt and WriteAt (pread and pwrite). All from Cone with no C between;
 // the pool's threads and locks are the thread and sync packages'. Where the
@@ -418,17 +631,50 @@ import libc;
 import thread;
 import sync use Arc, Once, Mutex, Condvar, Sender, OneshotSender;
 import collections use List, String;
+import slots use SlotTable, Slot;
 import time use Instant, Duration, Timestamp;
-import iobuf use IoBuf, Bytes;
+import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
+import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
+
+// The cancel group is the cancelgroups package's, which actors and 'parallel
+// each' reach as well; iocore's own names for it stay
+pub import cancelgroups use CancelGroup, Cause;
+
+// What a cancel group tells a loop with: a packet carrying keyGroup, posted to
+// its port (see the package's header, CANCEL GROUPS)
+struct GroupWaker is Sendable {
+  w: Waker;
+
+  pub fn signal(self: &) bool {w.signal(keyGroup)}
+  pub fn isGone(self: &) bool {w.isGone()}
+}
+
+// Whether a group ended by its deadline. The loop answers its operations
+// TimedOut itself, at the deadline, from its own timers: a group's timeout is
+// not a cancel to it
+fn timedOut(g: &CancelGroup) bool {
+  match g.cause() {
+    case let Some(c) {
+      match c {
+        case Cause.TimedOut {true}
+        case Cause.Cancelled {false}
+        case Cause.SiblingFinished {false}
+        case Cause.Shutdown {false}
+      }
+    }
+    else {false}
+  }
+}
 
 fn @initpure init() {
-  groupSeq = Atomic[u64].of(0u64);
+  poolsLive = Atomic[u32].of(0u32);
+  sharedLive = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
-  imm ws = startWinsock();
+  let ws = startWinsock();
   acceptExAddr = ws.acceptEx;
   connectExAddr = ws.connectEx;
   startError = ws.error;
@@ -439,7 +685,17 @@ fn @initpure init() {
 }
 
 // An instant that never comes, for 'poll(forever(), out)'
-pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);}
+pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64)}
+
+// The calling thread's time so far, in nanoseconds: in user mode, then in the
+// kernel (DIAGNOSTICS)
+pub fn threadTimes() u64, u64 {
+  #if #os == .windows {
+    winThreadTimes()
+  } #else {
+    lxThreadTimes()
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Ids and handles
@@ -447,86 +703,168 @@ pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);}
 
 const noEntry = 4294967295u32;
 
-// An operation: an entry of its loop's in-flight table, and which of the
-// entry's occupants it was (a generation), so an id kept after its answer
-// names nothing
+// An operation: its record's index in its pool, and which of the record's
+// occupants it was (a generation), so an id kept after its answer names
+// nothing
 pub struct OpId {
-  index u32;
-  gen u32;
+  index: u32;
+  gen: u32;
 
-  pub fn none() OpId {new OpId(noEntry, 0u32);}
-  pub fn isNone(self) bool {gen == 0u32;}
+  pub fn none() OpId {OpId(noEntry, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
   // As one number, for diagnostics: the generation above the entry
-  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
-  pub fn `==`(self, o OpId) bool {index == o.index and gen == o.gen;}
-  pub fn `!=`(self, o OpId) bool {index != o.index or gen != o.gen;}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
+  pub fn `==`(self, o: OpId) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: OpId) bool {index != o.index || gen != o.gen}
 }
 
 // A socket or a file a loop holds (see the package's header, HANDLES)
 pub struct Handle {
-  index u32;
-  gen u32;
+  index: u32;
+  gen: u32;
 
-  pub fn none() Handle {new Handle(noEntry, 0u32);}
-  pub fn isNone(self) bool {gen == 0u32;}
-  pub fn `==`(self, o Handle) bool {index == o.index and gen == o.gen;}
-  pub fn `!=`(self, o Handle) bool {index != o.index or gen != o.gen;}
+  pub fn none() Handle {Handle(noEntry, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  // The loop's table slot this handle names, and the generation of that slot's
+  // use: a small dense number and a count that tells a later socket in the
+  // same slot apart, for a table of the caller's own kept beside the loop's
+  // (aio's read hints)
+  pub fn slot(self) u32 {index}
+  pub fn generation(self) u32 {gen}
+  pub fn `==`(self, o: Handle) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: Handle) bool {index != o.index || gen != o.gen}
 }
 
-// How an IoError came to be: the system failed (Os, the default), or the
-// operation was ended by a cancel (Cancelled) or by its deadline (TimedOut)
-pub enum IoErrorKind {
-  Os,
-  Cancelled,
-  TimedOut;
+// Where an IoError came from: the system (its kind read from its number), or
+// iocore's own ending of an operation
+enum ErrorSource {
+  System,
+  Cancel,
+  Deadline,
+  Cut,
+  Made
 }
 
-// Why something could not be done: for an Os error, Windows' error number, on
-// every system (Linux's errno is turned into the Windows number that names the
-// same condition, or, with none, is itself above 0x10000000). A Cancelled or
-// TimedOut error is no system's failure: its code is 0 and its kind says what
-// it is. 'new IoError(code)' is an Os error
-pub struct IoError {
-  pub code u32;
-  cause IoErrorKind = IoErrorKind.Os;
+// Why something could not be done: its kind, the same on every system, and
+// 'code', the system's own number for it, kept for diagnostics: Windows'
+// error number on Windows (GetLastError's, Winsock's, or an NTSTATUS turned
+// into one), the errno on Linux (a getaddrinfo failure is its EAI_ number,
+// below 0, as a u32). 'IoError(code)' is the system's error of that number,
+// its kind read from the number when asked. A cancel's and a deadline's
+// error is no system's failure: its code is 0, and so is the code of an error
+// made of a kind ('IoError.ofKind', Rust's io::Error::from(ErrorKind)). A
+// Truncated error carries the system's number for a datagram too long
+// (WSAEMSGSIZE, EMSGSIZE)
+pub struct IoError is Error, Sendable {
+  pub code: u32;
+  origin: ErrorSource = ErrorSource.System;
+  made: IoErrorKind = IoErrorKind.Other;
+
+  // A failure that is a library's own, not the system's: of that kind, with
+  // no system number (code 0). For a handle that names nothing, say, or an
+  // operation that never answered
+  pub fn ofKind(k: IoErrorKind) IoError {IoError(0u32, ErrorSource.Made, k)}
+
+  // A received datagram cut to its buffer's room
+  pub fn truncated() IoError {IoError(datagramCut(), ErrorSource.Cut)}
 
   // An operation ended by a cancel
-  pub fn cancelled() IoError {new IoError(0u32, IoErrorKind.Cancelled);}
+  pub fn cancelled() IoError {IoError(0u32, ErrorSource.Cancel)}
 
   // An operation ended by its deadline
-  pub fn timedOut() IoError {new IoError(0u32, IoErrorKind.TimedOut);}
+  pub fn timedOut() IoError {IoError(0u32, ErrorSource.Deadline)}
 
-  // How it came to be
-  pub fn kind(self &) IoErrorKind {cause;}
+  // An operation that was given up before it could answer (a pool job's
+  // Completer that died unended, say): ERROR_OPERATION_ABORTED, ECANCELED,
+  // which are Cancelled, as iocore's own cancel is
+  pub fn aborted() IoError {IoError(abandoned())}
 
-  // Ended by a cancel
-  pub fn isCancelled(self &) bool {cause == IoErrorKind.Cancelled;}
+  // What went wrong: the ioerror package's kind, the system's number read by
+  // its osKind
+  pub fn kind(self: &) IoErrorKind {
+    if origin == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
+    if origin == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
+    if origin == ErrorSource.Cut {return IoErrorKind.Truncated;}
+    if origin == ErrorSource.Made {return made;}
+    osKind(code)
+  }
 
-  // Ended by its deadline
-  pub fn isTimedOut(self &) bool {cause == IoErrorKind.TimedOut;}
+  // Ended by a cancel, or aborted by the system (ERROR_OPERATION_ABORTED,
+  // ECANCELED)
+  pub fn isCancelled(self: &) bool {self.kind() == IoErrorKind.Cancelled}
+
+  // Ended by its deadline (code 0), or timed out by the system
+  pub fn isTimedOut(self: &) bool {self.kind() == IoErrorKind.TimedOut}
+
+  // A datagram longer than the room that took it
+  pub fn isTruncated(self: &) bool {self.kind() == IoErrorKind.Truncated}
 
   // The OS's text for it: Windows' in English where the system has it, the
-  // C library's (strerror) on Linux; a Cancelled or TimedOut error says so
-  pub fn message(self &) String {
-    if cause == IoErrorKind.Cancelled {
-      mut s = String.empty();
-      s.append("cancelled");
-      return s;
+  // C library's (strerror, gai_strerror) on Linux; a cancel's and a
+  // deadline's error says so; a number the system has no text for, its
+  // 'describe'
+  pub fn toText(self: &, out: &uni TextOut) {
+    if origin == ErrorSource.Cancel { out <- "cancelled"; return; }
+    if origin == ErrorSource.Deadline { out <- "deadline passed"; return; }
+    if origin == ErrorSource.Made { out <- made; return; }
+    let text = systemText(code);
+    if text.isEmpty() {
+      let words = self.describe();
+      out <- words.view();
+      return;
     }
-    if cause == IoErrorKind.TimedOut {
-      mut s = String.empty();
-      s.append("deadline passed");
-      return s;
+    out <- text.view();
+  }
+
+  // The kind in words, then the system's number and its text when it gave
+  // one, for a log: 'connection refused, OS error 10061: No connection could
+  // be made because the target machine actively refused it'. A getaddrinfo
+  // failure's number is shown as the EAI_ number it is, below 0. An error
+  // with no system number (a cancel's, a deadline's, one made of a kind)
+  // says its kind alone, and one the system has no text for says its number
+  // alone: 'other, OS error 12345'
+  pub fn describe(self: &) String {
+    let kindNow = self.kind();
+    var out = String() <- kindNow;
+    if code == 0u32 {return out;}
+    out.append(", OS error ");
+    if (#if #os != .windows {code >= gaiFloor} #else {false}) {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
+    let text = systemText(code);
+    if !text.isEmpty() {
+      out.append(": ");
+      out.append(text.view());
     }
-    systemText(code);
+    out
   }
 }
+
+// The IoError an operation's answer stands for when it is not Done (kind,
+// status and code as a Completion or a record holds them): Cancelled,
+// TimedOut, a RecvFrom's datagram cut to the room (Truncated), or the
+// system's failure of that number
+pub fn answerError(kind: u32, status: u32, code: u32) IoError {
+  if status == diag.outcomeCancelled {return IoError.cancelled();}
+  if status == diag.outcomeTimedOut {return IoError.timedOut();}
+  if kind == diag.kindRecvFrom && code == datagramCut() {return IoError.truncated();}
+  IoError(code)
+}
+
+
+// The system's own number for each failure iocore finds itself, on the
+// system the program runs on (Windows' error number; Linux's errno)
+fn noSuchHandle() u32 {#if #os == .windows {errorInvalidHandle} #else {9u32}}          // EBADF
+fn noRoom() u32 {#if #os == .windows {errorInsufficientBuffer} #else {22u32}}          // EINVAL
+fn badParameter() u32 {#if #os == .windows {errorInvalidParameter} #else {22u32}}      // EINVAL
+fn queueFull() u32 {#if #os == .windows {errorBusy} #else {16u32}}                     // EBUSY
+fn noMemory() u32 {#if #os == .windows {errorNotEnoughMemory} #else {12u32}}           // ENOMEM
+fn abandoned() u32 {#if #os == .windows {errorOperationAborted} #else {125u32}}        // ECANCELED
+fn datagramCut() u32 {#if #os == .windows {errorMsgSize} #else {90u32}}                // EMSGSIZE
 
 // How a file is opened
 pub enum Access {
   Read,       // an existing file, to read
   Create,     // a new file, or an existing one emptied, to read and write
-  Update;     // an existing file, or a new one, its bytes kept, to read and write
+  Update     // an existing file, or a new one, its bytes kept, to read and write
 }
 
 // ---------------------------------------------------------------------------
@@ -535,100 +873,102 @@ pub enum Access {
 
 // AF_INET6, the family of an IPv6 address: Windows' number is 23, Linux's 10
 // (AF_INET is 2 on both)
-fn afInet6Tag() u8 {if isWindows() {23u8;} else {10u8;}}
+fn afInet6Tag() u8 {#if #os == .windows {23u8} #else {10u8}}
 
 // An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them
 pub struct SocketAddr {
-  raw Array[u8, 28];
-  size i32;
+  raw: Array[u8, 28];
+  size: i32;
 
   // a.b.c.d:port
-  pub fn v4(a u8, b u8, c u8, d u8, port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 16i32);
+  pub fn v4(a: u8, b: u8, c: u8, d: u8, port: u16) SocketAddr {
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 16i32);
     s.raw[0usize] = 2u8;
     s.setPort(port);
     s.raw[4usize] = a;
     s.raw[5usize] = b;
     s.raw[6usize] = c;
     s.raw[7usize] = d;
-    s;
+    s
   }
 
   // 127.0.0.1:port, this machine only: a server bound here takes no
   // connection from outside it, and asks the firewall nothing
-  pub fn localhost(port u16) SocketAddr {SocketAddr.v4(127u8, 0u8, 0u8, 1u8, port);}
+  pub fn localhost(port: u16) SocketAddr {SocketAddr.v4(127u8, 0u8, 0u8, 1u8, port)}
 
   // [addr]:port, addr its 16 bytes
-  pub fn v6(addr &Array[u8], port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+  pub fn v6(addr: &Array[u8], port: u16) SocketAddr {
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
-    mut i = 0usize;
-    while i < 16usize and i < addr.len {
+    var i = 0usize;
+    while i < 16usize && i < addr.len {
       s.raw[8usize + i] = addr[i];
       i = i + 1usize;
     }
-    s;
+    s
   }
 
   // [::1]:port
-  pub fn v6Localhost(port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+  pub fn v6Localhost(port: u16) SocketAddr {
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     s.raw[23usize] = 1u8;
-    s;
+    s
   }
 
-  pub fn port(self &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize]);}
-  pub fn isV6(self &) bool {raw[0usize] == afInet6Tag();}
-  pub fn family(self &) u16 {u16.from(raw[0usize]);}
+  pub fn port(self: &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize])}
+  pub fn isV6(self: &) bool {raw[0usize] == afInet6Tag()}
+  pub fn family(self: &) u16 {u16.from(raw[0usize])}
 
   // Whether this is a loopback address: any of IPv4's 127.0.0.0/8, or IPv6's
   // ::1 (an IPv4-mapped IPv6 address is not recognized)
-  pub fn isLoopback(self &) bool {
-    if not self.isV6() {
-      return raw[0usize] == 2u8 and raw[4usize] == 127u8;
+  pub fn isLoopback(self: &) bool {
+    if !self.isV6() {
+      return raw[0usize] == 2u8 && raw[4usize] == 127u8;
     }
-    mut i = 8usize;
+    var i = 8usize;
     while i < 23usize {
       if raw[i] != 0u8 {return false;}
       i = i + 1usize;
     }
-    raw[23usize] == 1u8;
+    raw[23usize] == 1u8
   }
 
-  fn setPort(self &mut, port u16) {
+  fn setPort(self: &mut, port: u16) {
     raw[2usize] = u8.from(port >> 8u16);
     raw[3usize] = u8.from(port & 255u16);
   }
 
   // The same family's every address, port 0: what a connecting socket binds to
-  fn wildcard(self &) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, size);
+  fn wildcard(self: &) SocketAddr {
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, size);
     s.raw[0usize] = raw[0usize];
-    s;
+    s
   }
 
   // As text: '127.0.0.1:8080', '[2001:db8:0:0:0:0:0:1]:8080' (each group
-  // in hexadecimal without leading zeros; no '::' shortening)
-  pub fn text(self &) String {
-    mut out = String.empty();
+  // in hexadecimal without leading zeros; no '::' shortening). 'toText' sends
+  // the same text, so '$"{addr}"' and 'print <- addr' take the address
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.text().view(); }
+  pub fn text(self: &) String {
+    var out = String();
     if self.isV6() {
       out.append("[");
-      mut g = 0usize;
+      var g = 0usize;
       while g < 8usize {
         if g > 0usize {out.append(":");}
-        imm v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
+        let v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
         // appendHex writes exactly the digits it is told: as many as v needs
-        mut digits = 1usize;
-        while digits < 4usize and (v >> u64.from(digits * 4usize)) != 0u64 {digits = digits + 1usize;}
+        var digits = 1usize;
+        while digits < 4usize && (v >> u64.from(digits * 4usize)) != 0u64 {digits = digits + 1usize;}
         out.appendHex(v, digits);
         g = g + 1usize;
       }
       out.append("]");
     } else {
-      mut i = 4usize;
+      var i = 4usize;
       while i < 8usize {
         if i > 4usize {out.append(".");}
         out.appendUInt(u64.from(raw[i]));
@@ -637,8 +977,33 @@ pub struct SocketAddr {
     }
     out.append(":");
     out.appendUInt(u64.from(self.port()));
-    out;
+    out
   }
+}
+
+// TCP keepalive, as Loop.setKeepAlive sets it on a connected socket: after
+// 'idle' with nothing received a probe goes, then one every 'interval', and
+// 'probes' unanswered end the connection, so a peer that vanished is found
+// in idle + probes x interval. 'userTimeout' is Linux's TCP_USER_TIMEOUT:
+// the longest sent bytes may wait unacknowledged before the connection
+// ends (Windows has no such option). Times go to the OS in whole seconds
+// (at least one), userTimeout in milliseconds; 0 probes is keepalive off
+pub struct KeepAlive {
+  pub idle: Duration;
+  pub interval: Duration;
+  pub probes: u32;
+  pub userTimeout: Duration;
+
+  // No keepalive
+  pub fn off() KeepAlive {KeepAlive(Duration.zero(), Duration.zero(), 0u32, Duration.zero())}
+
+  pub fn isOff(self: &) bool {probes == 0u32}
+}
+
+// A keepalive time in whole seconds, at least one
+fn keepSeconds(d: Duration) i32 {
+  let s = d.seconds();
+  if s < 1i64 {1i32} else if s > 0x7FFFFFFFi64 {0x7FFFFFFFi32} else {i32.from(s)}
 }
 
 // ---------------------------------------------------------------------------
@@ -648,29 +1013,30 @@ pub struct SocketAddr {
 // A job for the kernel (see the package's header, OPERATIONS). Every variant
 // that carries bytes takes an owner of them, never a borrow (I2, I3)
 pub enum Op {
-  pub struct Connect {pub addr SocketAddr;}
-  pub struct Accept {pub listener Handle;}
-  pub struct Recv {pub sock Handle; pub buf IoBuf;}
-  pub struct RecvReady {pub sock Handle;}
-  pub struct Send {pub sock Handle; pub buf IoBuf;}
-  pub struct SendBytes {pub sock Handle; pub bytes Bytes;}
-  pub struct ReadAt {pub file Handle; pub at u64; pub buf IoBuf;}
-  pub struct WriteAt {pub file Handle; pub at u64; pub buf IoBuf;}
-  pub struct Call {pub lane Lane; pub work WorkFn; pub arg u64; pub buf IoBuf;}
-  pub struct RecvFrom {pub sock Handle; pub buf IoBuf;}
-  pub struct SendTo {pub sock Handle; pub addr SocketAddr; pub buf IoBuf;}
+  pub struct Connect {pub addr: SocketAddr;}
+  pub struct Accept {pub listener: Handle;}
+  pub struct Recv {pub sock: Handle; pub buf: IoBuf;}
+  pub struct RecvReady {pub sock: Handle;}
+  pub struct Send {pub sock: Handle; pub buf: IoBuf;}
+  pub struct SendBytes {pub sock: Handle; pub bytes: Bytes;}
+  pub struct SendChain {pub sock: Handle; pub bufs: Chain;}
+  pub struct ReadAt {pub file: Handle; pub at: u64; pub buf: IoBuf;}
+  pub struct WriteAt {pub file: Handle; pub at: u64; pub buf: IoBuf;}
+  pub struct Call {pub lane: Lane; pub work: WorkFn; pub arg: u64; pub buf: IoBuf;}
+  pub struct RecvFrom {pub sock: Handle; pub buf: IoBuf;}
+  pub struct SendTo {pub sock: Handle; pub addr: SocketAddr; pub buf: IoBuf;}
 }
 
 // Where an operation's answer goes, and the token it carries back (see the
 // package's header, TARGETS)
 pub enum Target {
-  pub token u64;
+  pub token: u64;
   pub struct Here {}
-  pub struct Post {pub waker Waker;}
-  pub struct Chan {pub tx Sender[Completion];}
-  pub struct Once {pub tx OneshotSender[Completion];}
-  pub struct Status {pub board StatusArray; pub slot u32;}
-  pub struct Hook {pub sink Sink;}
+  pub struct Post {pub waker: Waker;}
+  pub struct Chan {pub tx: Sender[Completion];}
+  pub struct Once {pub tx: OneshotSender[Completion];}
+  pub struct Status {pub board: StatusArray; pub slot: u32;}
+  pub struct Hook {pub sink: Sink;}
 }
 
 // Where a Target.Hook's answer goes: code of another runtime's (an actor
@@ -687,65 +1053,82 @@ pub enum Target {
 // Sendable, so what the closure holds may be handed on and dropped on any
 // thread
 pub struct Sink is Move {
-  deliver So[fn(c Completion) + Sendable];
+  deliver: Uni[fn(c: Completion) + Sendable];
 
-  pub fn make(deliver So[fn(c Completion) + Sendable]) Sink {
-    new Sink(deliver);
+  pub fn make(deliver: Uni[fn(c: Completion) + Sendable]) Sink {
+    Sink(deliver)
   }
 
   // Hand the answer on
-  fn give(self &mut, c Completion) {
+  fn give(self: &mut, c: Completion) {
     deliver(c);
   }
 }
 
 // How an operation ended: its one terminal reply (I1)
 pub enum Outcome {
-  pub struct Done {pub n usize;}
-  pub struct Failed {pub code u32;}
+  pub struct Done {pub n: usize;}
+  pub struct Failed {pub code: u32;}
   pub struct Cancelled {}
   pub struct TimedOut {}
 }
 
 // An operation's one answer (see the package's header, ANSWERS)
 pub struct Completion {
-  pub loop u64;           // the id of the loop it was submitted to
-  pub id OpId;
-  pub token u64;
-  pub kind u32;           // diag.kindRecv, ...
-  pub status u32;         // diag.outcomeDone, ...
-  pub n usize;            // Done's count of bytes
-  pub code u32;           // Failed's error number
-  pub buf IoBuf;          // the loan back, or IoBuf.empty()
-  pub handle Handle;      // the socket Connect or Accept made, or Handle.none()
-  pub peer SocketAddr;    // RecvFrom's sender, SendTo's destination, Connect's address; else size 0
-  pub submitted Instant;
-  pub dequeued Instant;
-  pub delivered Instant;
+  pub loop: u64;           // the id of the loop it was submitted to
+  pub id: OpId;
+  pub token: u64;
+  pub kind: u32;           // diag.kindRecv, ...
+  pub status: u32;         // diag.outcomeDone, ...
+  pub n: usize;            // Done's count of bytes
+  pub code: u32;           // Failed's error number, the system's own (see IoError)
+  pub buf: IoBuf;          // the loan back, or IoBuf()
+  pub bufs: Option[Uni[Chain]];  // a SendChain's chain back, every segment; None for any other operation
+  pub handle: Handle;      // the socket Connect or Accept made, or Handle.none()
+  pub peer: SocketAddr;    // RecvFrom's sender, SendTo's destination, Connect's address; else size 0
+  pub submitted: Instant;
+  pub dequeued: Instant;
+  pub delivered: Instant;
 
-  pub fn isDone(self &) bool {status == diag.outcomeDone;}
+  pub fn isDone(self: &) bool {status == diag.outcomeDone}
   // Done's count, or 0
-  pub fn count(self &) usize {if status == diag.outcomeDone {n;} else {0usize;};}
+  pub fn count(self: &) usize {if status == diag.outcomeDone {n} else {0usize}}
 
-  pub fn outcome(self &) Outcome {
-    if status == diag.outcomeDone {Outcome.Done(n);}
-    elif status == diag.outcomeFailed {Outcome.Failed(code);}
-    elif status == diag.outcomeCancelled {Outcome.Cancelled;}
-    else {Outcome.TimedOut;}
+  pub fn outcome(self: &) Outcome {
+    if status == diag.outcomeDone {Outcome.Done(n)}
+    else if status == diag.outcomeFailed {Outcome.Failed(code)}
+    else if status == diag.outcomeCancelled {Outcome.Cancelled}
+    else {Outcome.TimedOut}
+  }
+
+  // The IoError it stands for when it is not Done (answerError): its kind
+  // is what a caller matches on
+  pub fn error(self: &) IoError {answerError(kind, status, code)}
+
+  // The bytes the buffers it carries back hold: a SendChain's chain's, or
+  // its buffer's. A send whose Done count is this sent all of it
+  pub fn bufLen(self: &) usize {
+    match &bufs {
+      case let &Some(c) {c.len()}
+      else {buf.len()}
+    }
+  }
+
+  // The answer read out for a SendChain's chain, every segment in it; an
+  // empty chain for any other operation. The rest of the answer dies here
+  pub fn chainBack(self) Chain {
+    let b = self.(bufs);
+    match b {
+      case var Some(c) {*c}
+      else {Chain.make(0usize)}
+    }
   }
 
   // Its diagnostics record
-  pub fn record(self &) diag.OpRecord {
-    new diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
-      submitted, dequeued, delivered);
+  pub fn record(self: &) diag.OpRecord {
+    diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
+      submitted, dequeued, delivered)
   }
-}
-
-// A Completion holding nothing, to swap one out of where it is held
-fn blankCompletion() Completion {
-  new Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
-    Handle.none(), new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32),
-    new Instant(), new Instant(), new Instant());
 }
 
 // ---------------------------------------------------------------------------
@@ -757,170 +1140,268 @@ fn blankCompletion() Completion {
 // Sendable, a promise taken on trust: the port's handle is safe to use from
 // any thread, which is what a port is for
 struct Port is Sendable {
-  handle usize;           // Windows: the completion port. Linux: the eventfd that wakes the loop
-  closed Atomic[bool];    // its loop has gone: nobody will take what is posted
+  handle: usize;           // Windows: the completion port. Linux: the eventfd that wakes the loop
+  closed: Atomic[bool];    // its loop has gone: nobody will take what is posted
   // Linux: the packets other threads have posted (the OS holds them on
   // Windows), under 'lock'; 'pending' says the eventfd has been written to
   // since the loop last took them
-  pending Atomic[u32];
-  lock Mutex;
-  head *Packet;
-  tail *Packet;
+  pending: Atomic[u32];
+  lock: Mutex;
+  head: *Packet;
+  tail: *Packet;
+  // Linux: the records of jobs posted home, linked by their own 'jnext' (a
+  // job's post allocates nothing), under 'lock' too
+  jobsHead: *OpCore;
+  jobsTail: *OpCore;
+  // Linux: a wake asked since the loop last took its packets (a wake carries
+  // nothing, so it is this word and the eventfd's write, no packet: a wake
+  // allocates nothing). Windows: a wake packet is posted and the loop has not
+  // yet taken it; a wake asked meanwhile posts nothing, the packet already
+  // there will end the poll for it too (see 'send')
+  wakes: Atomic[u32];
+  // The system calls posting made (a PostQueuedCompletionStatus, an eventfd
+  // write), from any thread: the loop's 'posted' counter
+  posts: Atomic[u64];
 
   // Its queue, changed under its lock through a shared reference
-  fn lists(self &) &mut Port {
-    imm p = self as *Port;
-    p as &mut Port;
+  fn lists(self: &) &mut Port {
+    let p = self as *Port;
+    p as &mut Port
   }
 
   // Post a packet for the loop to take: its key, and a pointer that means
   // what the key says. False if it could not be queued
-  fn send(self &, key usize, ov *u8) bool {
-    if isWindows() {
-      PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32;
-    } else {
-      imm node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
+  fn send(self: &, key: usize, ov: *u8) bool {
+    #if #os == .windows {
+      if key == keyWake {
+        // A wake packet carries nothing, so one in the port serves every wake
+        // asked until the loop takes it. The word is raised before the post;
+        // the loop lowers it when it takes the packet, before it looks at
+        // anything the wake was for (dequeue): a wake after that posts
+        // again, one before it is covered by the packet (the loop lowers the
+        // word with a swap: see dequeue). If the post itself fails the word
+        // is lowered again, so a later wake tries afresh; a poster that
+        // coalesced onto the failed post still returns true, which only
+        // happens when the port cannot take a packet at all
+        if wakes.swap(1u32) != 0u32 {return true;}
+        posts.addOrdered(1u64, MemOrder.Relaxed);
+        if PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32 {return true;}
+        wakes.store(0u32);
+        return false;
+      }
+      posts.addOrdered(1u64, MemOrder.Relaxed);
+      PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32
+    } #else {
+      if key == keyWake {
+        // Before the write below, which the loop's drain reads before it
+        // takes this word
+        wakes.store(1u32);
+        if pending.swap(1u32) == 0u32 {
+          posts.addOrdered(1u64, MemOrder.Relaxed);
+          var one = 1u64;
+          sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+        }
+        return true;
+      }
+      let node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
       if node as usize == 0usize {return false;}
       (*node).key = key;
       (*node).ov = ov;
       (*node).next = null;
-      imm st = self.lists();
+      let st = self.lists();
       st.lock.lock();
       if st.tail as usize == 0usize {st.head = node;} else {(*st.tail).next = node;}
       st.tail = node;
       st.lock.unlock();
       // One write wakes the loop for all the packets queued before it takes them
       if pending.swap(1u32) == 0u32 {
-        mut one = 1u64;
+        posts.addOrdered(1u64, MemOrder.Relaxed);
+        var one = 1u64;
         sysWrite(fdOf(handle), &mut one as *u8, 8usize);
       }
-      true;
+      true
     }
   }
 
-  // The last owner has gone: answers posted since the loop died are
-  // dropped (their buffers go home), and the port closed
-  fn final(self &uni) {
-    if isWindows() {
-      imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+  // A job's record posted home: false if it could not be queued (Windows:
+  // the system had no room for the packet). Linux links the record itself
+  // ... unless the loop has let go of its records: false then, and the record
+  // still the caller's. Whether it has, and the post, are one step under the
+  // port's lock, which 'close' takes to raise 'closed': so a record is either
+  // posted before the loop lets go (and its death's drain takes it) or finds it
+  // gone, never posted after the drain
+  fn sendJob(self: &, p: *OpCore) bool {
+    let st = self.lists();
+    st.lock.lock();
+    if closed.load() {
+      st.lock.unlock();
+      return false;
+    }
+    var ok = true;
+    #if #os == .windows {
+      ok = self.send(keyJob, p as *u8);
+    } #else {
+      (*p).jnext = null;
+      if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
+      st.jobsTail = p;
+      if pending.swap(1u32) == 0u32 {
+        posts.addOrdered(1u64, MemOrder.Relaxed);
+        var one = 1u64;
+        sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+      }
+    }
+    st.lock.unlock();
+    ok
+  }
+
+  // Its loop lets go of its records: 'closed' raised under the lock a job's
+  // post takes (sendJob). The other posts (a wake, an answer, a cancel) read
+  // 'closed' without it: what one of them leaves after the drain waits for the
+  // port's own death, and holds no owner of the port
+  fn close(self: &) {
+    let st = self.lists();
+    st.lock.lock();
+    closed.store(true);
+    st.lock.unlock();
+  }
+
+  // What is queued for a loop that has let go of its records (its death has
+  // ended, or the port's own): answers posted to it are dropped (their buffers
+  // go home), and a job's record come home is dissolved (record.cone, homeDead)
+  fn drainDead(self: &) {
+    #if #os == .windows {
+      let entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
       while true {
-        mut got = 0u32;
-        if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
+        var got = 0u32;
+        if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 || got == 0u32 {
           break;
         }
-        mut k = 0usize;
+        var k = 0usize;
         while k < usize.from(got) {
-          imm e = entries + k;
+          let e = entries + k;
           if (*e).key == keyPost {
             mem.finalize[Completion]((*e).ov as *Completion);
             libc.free((*e).ov);
-          } elif (*e).key == keyJob {
-            dropBox((*e).ov as *JobBox);
+          } else if (*e).key == keyJob {
+            homeDead((*e).ov as *OpCore);
           }
           k = k + 1usize;
         }
       }
       libc.free(entries as *u8);
-      CloseHandle(handle);
-    } else {
-      mut node = head;
+    } #else {
+      let st = self.lists();
+      st.lock.lock();
+      var node = st.head;
+      var job = st.jobsHead;
+      st.head = null;
+      st.tail = null;
+      st.jobsHead = null;
+      st.jobsTail = null;
+      st.lock.unlock();
       while node as usize != 0usize {
-        imm next = (*node).next;
+        let next = (*node).next;
         if (*node).key == keyPost {
           mem.finalize[Completion]((*node).ov as *Completion);
           libc.free((*node).ov);
-        } elif (*node).key == keyJob {
-          dropBox((*node).ov as *JobBox);
         }
         libc.free(node as *u8);
         node = next;
       }
-      sysClose(fdOf(handle));
+      while job as usize != 0usize {
+        let next = (*job).jnext;
+        homeDead(job);
+        job = next;
+      }
     }
+  }
+
+  // The last owner has gone: what was posted since the loop let go of its
+  // records is dropped (drainDead), and the port closed
+  fn final(self: &uni) {
+    self.drainDead();
+    #if #os == .windows {CloseHandle(handle);} #else {sysClose(fdOf(handle));}
   }
 }
 
 // A packet in the queue of a Linux Port
 struct Packet {
-  key usize;
-  ov *u8;
-  next *Packet;
+  key: usize;
+  ov: *u8;
+  next: *Packet;
 }
 
 // What wakes a loop's poll from any thread, and what Target.Post delivers
 // through (see the package's header, WAKERS). Copying it makes another
 pub struct Waker {
-  port Arc[imm, Port];
+  port: Arc[imm, Port];
 
   // End the loop's current or next poll: false if the loop has gone
-  pub fn wake(self &) bool {
+  pub fn wake(self: &) bool {
     if port.closed.load() {return false;}
-    port.send(keyWake, null);
+    port.send(keyWake, null)
   }
 
   // Post an answer to the loop: false, and the answer dropped (its buffer
   // home), if the loop has gone
-  fn post(self &, c Completion) bool {
+  fn post(self: &, c: Completion) bool {
     if port.closed.load() {return false;}
-    imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
+    let block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
     mem.writeRaw[Completion](block, c);
-    if not port.send(keyPost, block as *u8) {
+    if !port.send(keyPost, block as *u8) {
       mem.finalize[Completion](block);
       libc.free(block as *u8);
       return false;
     }
-    true;
+    true
   }
 
   // Whether its loop has gone
-  fn isGone(self &) bool {port.closed.load();}
+  fn isGone(self: &) bool {port.closed.load()}
 
   // A packet carrying nothing but its key (keyGroup): false if the loop
   // has gone
-  fn signal(self &, key usize) bool {
+  fn signal(self: &, key: usize) bool {
     if port.closed.load() {return false;}
-    port.send(key, null);
+    port.send(key, null)
   }
 
   // Ask the loop to cancel operation id: false if the loop has gone
-  fn postCancel(self &, id OpId) bool {
+  fn postCancel(self: &, id: OpId) bool {
     if port.closed.load() {return false;}
-    port.send(keyCancel, usize.from(id.number()) as *u8);
+    port.send(keyCancel, usize.from(id.number()) as *u8)
   }
 
-  // Hand a job that has run back to its loop: false, and the box still the
-  // caller's, if the loop has gone
-  fn postJob(self &, b *JobBox) bool {
-    if port.closed.load() {return false;}
-    port.send(keyJob, b as *u8);
-  }
+  // Post a job's record home to its loop: false, and the record still the
+  // caller's, if the loop has let go of its records
+  fn postJob(self: &, p: *OpCore) bool {port.sendJob(p)}
 }
 
 // A handle on an operation that cancels it when the handle dies (see the
 // package's header, REQUESTS). Sendable: it may be held on another thread,
 // whose cancel is posted to the operation's loop
 pub struct Request is Move {
-  waker Waker;
-  op OpId;
-  armed bool;             // its death still cancels: neither cancelled nor detached
+  waker: Waker;
+  op: OpId;
+  armed: bool;             // its death still cancels: neither cancelled nor detached
 
   // The operation it names
-  pub fn id(self &) OpId {op;}
+  pub fn id(self: &) OpId {op}
 
   // Ask the operation to end, from any thread: the loop cancels it at its
   // next poll, as 'lp.cancel(id)' would. True once asked; false if the loop
   // has gone. Idempotent
-  pub fn cancel(self &mut) bool {
-    if not armed {return not waker.isGone();}
+  pub fn cancel(self: &mut) bool {
+    if !armed {return !waker.isGone();}
     armed = false;
-    waker.postCancel(op);
+    waker.postCancel(op)
   }
 
   // Let the handle go without cancelling: its death does nothing. For when
   // the answer has come
-  pub fn detach(self &mut) {armed = false;}
+  pub fn detach(self: &mut) {armed = false;}
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if armed {waker.postCancel(op);}
   }
 }

@@ -1,0 +1,171 @@
+// A transform that fails stops the work feeding it (TransformStage calls ChunkSource.stop upstream as well
+// as sending end(Failed) down). A source that follows the stop rules sends 200 chunks of 64 KiB of plain
+// text into an Inflater that expects gzip, so the inflater fails at the first chunk. The sink gives
+// everything back and stops nothing. Checked:
+//
+//   the sink hears one end, Failed, and never Finished (with the inflater's own error, not a copy);
+//   the source is stopped once, by the stage, and sends one end;
+//   the source sent far fewer than its 200 chunks, every one came back, and every buffer is home.
+
+mod stoptransform;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Instant, Duration;
+import actors;
+import streams use *;
+import stages use *;
+import deflate;
+
+fn chunkBytes() usize { 65536usize }
+
+struct Seen {
+  pub sent: Atomic[u64];        // chunks the source sent
+  pub back: Atomic[u64];        // buffers given back to the source
+  pub srcStopped: Atomic[u64];  // stops the source acted on
+  pub srcIgnored: Atomic[u64];  // stops it ignored
+  pub srcEnds: Atomic[u64];     // ends the source sent
+  pub failed: Atomic[u64];      // end(Failed) at the sink
+  pub finished: Atomic[u64];    // end(Finished) at the sink
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn block() List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(chunkBytes() + 16usize);
+  var s = 7u64;
+  while d.len() < chunkBytes() {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(chunkBytes());
+  d
+}
+
+// Sends the same block 'left' times through a window of four buffers, and follows the stop rules
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  left: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], left: u64) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, left: left, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    seen.back.add(1u64);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if over {
+      seen.srcIgnored.add(1u64);
+      return;
+    }
+    seen.srcStopped.add(1u64);
+    self.endWith(why);
+  }
+
+  fn endWith(self, how: Ending) {
+    over = true;
+    seen.srcEnds.add(1u64);
+    down.end(how);
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if left == 0u64 {
+        self.endWith(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(chunkBytes()) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - 1u64;
+            seen.sent.add(1u64);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Takes chunks and gives each back at once; counts the ends
+actor Sink is ChunkSink {
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished { seen.finished.add(1u64); }
+      case is Failed { seen.failed.add(1u64); }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let base = iobuf.stats().lent;
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let sink = Sink(tx);
+    let inf = TransformStage[deflate.Inflater](sink, deflate.Inflater.make(deflate.Format.Gzip));
+    let src = Source(inf, block(), 200u64);
+    src.start();
+  }
+  rx.recvTimeout(Duration.fromMillis(30000i64));
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while seen.back.load() < seen.sent.load() && Instant.now() < limit {thread.yieldNow();}
+  finalAll();
+
+  expectUInt(seen.failed.load(), 1u64, "the sink heard one end, Failed");
+  expectUInt(seen.finished.load(), 0u64, "and never Finished");
+  expectUInt(seen.srcStopped.load(), 1u64, "the stage stopped the source once");
+  expectUInt(seen.srcIgnored.load(), 0u64, "and no second stop reached it");
+  expectUInt(seen.srcEnds.load(), 1u64, "and the source sent one end");
+  expect(seen.sent.load() < 100u64, "the source sent far fewer than its 200 chunks");
+  expectUInt(seen.back.load(), seen.sent.load(), "every chunk the source lent came back");
+  expectUInt(iobuf.stats().lent, base, "every buffer is back in its pool");
+  done()
+}

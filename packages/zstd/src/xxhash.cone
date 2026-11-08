@@ -1,0 +1,143 @@
+// ======== xxHash64 ========
+//
+// XXH64 (Yann Collet; the algorithm as RFC 8878 section 3.1.1 cites it): a
+// zstd frame's Content_Checksum is the low 32 bits of the XXH64 of the
+// frame's whole content, with seed 0. Four lanes of 64 bits take 32 bytes a
+// step; what is left is folded in 8, 4 and 1 bytes at a time; the result is
+// mixed ("avalanche") at the end.
+
+fn prime1() u64 { 0x9E3779B185EBCA87u64 }
+fn prime2() u64 { 0xC2B2AE3D27D4EB4Fu64 }
+fn prime3() u64 { 0x165667B19E3779F9u64 }
+fn prime4() u64 { 0x85EBCA77C2B2AE63u64 }
+fn prime5() u64 { 0x27D4EB2F165667C5u64 }
+
+// One lane's step: the lane takes in 8 bytes of input
+fn xxRound(acc: u64, input: u64) u64 {
+  (acc + input * prime2()).rotateLeft(31u32) * prime1()
+}
+
+fn xxMerge(acc: u64, lane: u64) u64 {
+  (acc ^ xxRound(0u64, lane)) * prime1() + prime4()
+}
+
+// The eight bytes at p, least significant first
+fn le64(b: &Array[u8], p: usize) u64 {
+  u64.from(b[p]) | (u64.from(b[p + 1usize]) << 8u64) | (u64.from(b[p + 2usize]) << 16u64)
+    | (u64.from(b[p + 3usize]) << 24u64) | (u64.from(b[p + 4usize]) << 32u64)
+    | (u64.from(b[p + 5usize]) << 40u64) | (u64.from(b[p + 6usize]) << 48u64)
+    | (u64.from(b[p + 7usize]) << 56u64)
+}
+
+// The four bytes at p, least significant first
+fn le32(b: &Array[u8], p: usize) u32 {
+  u32.from(b[p]) | (u32.from(b[p + 1usize]) << 8u32) | (u32.from(b[p + 2usize]) << 16u32)
+    | (u32.from(b[p + 3usize]) << 24u32)
+}
+
+// The XXH64 of 'data' alone, with 'seed' (zstd's checksum uses seed 0)
+pub fn xxh64(data: &Array[u8], seed: u64) u64 {
+  var h = Xxh64.make(seed);
+  h.update(data, 0usize, data.len);
+  h.digest()
+}
+
+// An XXH64 in progress: feed it pieces of any size, ask 'digest' at any
+// point (it does not end the hash). Its memory is the four lanes and a
+// 32-byte stripe not yet full.
+pub struct Xxh64 {
+  v1: u64;
+  v2: u64;
+  v3: u64;
+  v4: u64;
+  seed: u64;
+  // Bytes taken in so far
+  total: u64;
+  // The start of a stripe, 'held' bytes of it (0 to 31)
+  stripe: Array[u8, 32];
+  held: usize;
+
+  pub fn make(seed: u64) Xxh64 {
+    Xxh64(seed + prime1() + prime2(), seed + prime2(), seed, seed - prime1(), seed, 0u64,
+      [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+       0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 0usize)
+  }
+
+  // Takes in data[from, to)
+  pub fn update(self: &mut, data: &Array[u8], from: usize, to: usize) {
+    var i = from;
+    total = total + u64.from(to - from);
+    // Fill a stripe already started
+    if held > 0usize {
+      while held < 32usize && i < to {
+        stripe[held] = data[i];
+        held = held + 1usize;
+        i = i + 1usize;
+      }
+      if held < 32usize { return; }
+      v1 = xxRound(v1, le64(&stripe, 0usize));
+      v2 = xxRound(v2, le64(&stripe, 8usize));
+      v3 = xxRound(v3, le64(&stripe, 16usize));
+      v4 = xxRound(v4, le64(&stripe, 24usize));
+      held = 0usize;
+    }
+    // Whole stripes straight from the input
+    var a = v1;
+    var b = v2;
+    var c = v3;
+    var d = v4;
+    while i + 32usize <= to {
+      a = xxRound(a, le64(data, i));
+      b = xxRound(b, le64(data, i + 8usize));
+      c = xxRound(c, le64(data, i + 16usize));
+      d = xxRound(d, le64(data, i + 24usize));
+      i = i + 32usize;
+    }
+    v1 = a;
+    v2 = b;
+    v3 = c;
+    v4 = d;
+    // The rest waits for a whole stripe
+    while i < to {
+      stripe[held] = data[i];
+      held = held + 1usize;
+      i = i + 1usize;
+    }
+  }
+
+  // The hash of everything taken in so far
+  pub fn digest(self: &) u64 {
+    var h = 0u64;
+    if total >= 32u64 {
+      h = v1.rotateLeft(1u32) + v2.rotateLeft(7u32) + v3.rotateLeft(12u32) + v4.rotateLeft(18u32);
+      h = xxMerge(h, v1);
+      h = xxMerge(h, v2);
+      h = xxMerge(h, v3);
+      h = xxMerge(h, v4);
+    } else {
+      h = seed + prime5();
+    }
+    h = h + total;
+    var p = 0usize;
+    while p + 8usize <= held {
+      h = h ^ xxRound(0u64, le64(&stripe, p));
+      h = h.rotateLeft(27u32) * prime1() + prime4();
+      p = p + 8usize;
+    }
+    if p + 4usize <= held {
+      h = h ^ (u64.from(le32(&stripe, p)) * prime1());
+      h = h.rotateLeft(23u32) * prime2() + prime3();
+      p = p + 4usize;
+    }
+    while p < held {
+      h = h ^ (u64.from(stripe[p]) * prime5());
+      h = h.rotateLeft(11u32) * prime1();
+      p = p + 1usize;
+    }
+    h = h ^ (h >> 33u64);
+    h = h * prime2();
+    h = h ^ (h >> 29u64);
+    h = h * prime3();
+    h ^ (h >> 32u64)
+  }
+}

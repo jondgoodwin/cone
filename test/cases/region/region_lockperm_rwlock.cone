@@ -28,15 +28,15 @@ import time;
 import sync use Arc, Rwlock;
 
 struct Settings {
-  pub scale u64;
+  pub scale: u64;
 }
 alias Shared = Arc[Rwlock, Settings];
 
 // How many readers hold their borrow, main's word to the readers, and
 // whether the writer has its borrow
-imm inside Atomic[u32];
-imm release Atomic[bool];
-imm writerIn Atomic[bool];
+let inside: Atomic[u32];
+let release: Atomic[bool];
+let writerIn: Atomic[bool];
 
 fn @initpure init() {
   inside = Atomic[u32].of(0u32);
@@ -44,30 +44,30 @@ fn @initpure init() {
   writerIn = Atomic[bool].of(false);
 }
 
-fn reader(s Shared) u64 {
-  imm r = &*s;                 // a read lock, shared
+fn reader(s: Shared) u64 {
+  let r = &*s;                 // a read lock, shared
   inside.add(1u32);
   while !release.load() {
     thread.yieldNow();
   }
   inside.sub(1u32);            // out of the count while the lock is still held
-  imm seen = r.scale;          // the borrow's last use: the read lock goes back after it
-  seen;
+  let seen = r.scale;          // the borrow's last use: the read lock goes back after it
+  seen
 }
 
-fn writer(s Shared) u32 {
-  imm w = &mut *s;             // the write lock, once every reader is out
+fn writer(s: Shared) u32 {
+  let w = &mut *s;             // the write lock, once every reader is out
   writerIn.store(true);
-  imm readers = inside.load();
+  let readers = inside.load();
   w.scale = 20u64;
-  readers;
+  readers
 }
 
 fn main() {
   initAll();
-  imm s = new Shared(10u64);
-  imm a = thread.start(s, &reader);
-  imm b = thread.start(s, &reader);
+  let s = Shared(10u64);
+  let a = thread.start(s, &reader);
+  let b = thread.start(s, &reader);
   while inside.load() < 2u32 {
     thread.yieldNow();
   }
@@ -75,7 +75,7 @@ fn main() {
   printInt(i64.from(inside.load()));
   printStr("\n");
 
-  imm w = thread.start(s, &writer);
+  let w = thread.start(s, &writer);
   thread.sleep(time.Duration.fromMillis(20));
   if writerIn.load() {
     printStr("the writer got in beside the readers\n");
@@ -84,9 +84,9 @@ fn main() {
     printStr("the writer waited\n");
   }
   release.store(true);
-  imm seenA = a.join();
-  imm seenB = b.join();
-  imm readers = w.join();
+  let seenA = a.join();
+  let seenB = b.join();
+  let readers = w.join();
   printStr("readers saw ");
   printInt(i64.from(seenA));
   printStr(" ");

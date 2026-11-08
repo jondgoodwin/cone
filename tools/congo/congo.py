@@ -9,9 +9,18 @@
                                       build the package, run each program in
                                       its tests/ and build each in examples/
     congo clean [file.cone]           delete what a build wrote
+    congo publish [--registry URL]    point an index registry at this package's
+                                      current commit
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
+They take --strip too: no debug info in any compile, and no PDB (a build
+otherwise carries debug info, and on Windows its link writes a PDB beside
+the .exe, for a profiler to read function names from).
+They take --no-cache too: a compile is otherwise skipped where nothing it reads
+has changed since it last succeeded in that build folder ("The build cache"),
+and on Windows the environment vcvars64.bat sets is taken from the Congo home
+(MsvcEnvironment).
 
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
 package's folders and reads each source file's header -- its leading comments,
@@ -57,6 +66,7 @@ import argparse
 import codecs
 import difflib
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -126,8 +136,13 @@ def dll_note(code: int | None, exe: Path | str) -> str:
 
 # TEMPORARY, a provisional mechanism whose final design is open: each '-D NAME'
 # or '-D NAME=123' given to build, run or test, passed to every conec compile of
-# the build, the packages it imports included (conec's isDefined, definedInt)
+# the build, the packages it imports included (conec's #defined, #define)
 DEFINES: list[str] = []
+
+# '--strip' given to build, run or test: conec is passed --strip for every compile
+# of the build, and a Windows link writes no PDB. Without it every native build
+# carries debug info, and a link on Windows writes a PDB beside the .exe
+STRIP_DEBUG = [False]
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
@@ -151,9 +166,9 @@ GPU_FOLDER = "gpu"
 # compiler's own lists
 KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const alias typedef struct mod"
-    " actor trait extends mixin use but enum return with if elif else case match"
-    " while each in by break continue not or and as is into inline where new trynew await yield selfactor async do"
-    " void nil null true false undef using").split())
+    " actor trait extends mixin use but enum return with if else case match"
+    " while each in by break continue as is into inline where new trynew try await yield selfactor async"
+    " void nil null true false undef using let var").split())
 RESERVED = frozenset((
     "baseurl context local selfmethod wait throw catch spawn"
     ).split())
@@ -208,12 +223,22 @@ class Package:
     link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
     runtime: list[str] = field(default_factory=list)      # [link] runtime: DLLs, bare names
     gpu: bool = False     # [package] targets names "gpu": it may be compiled for the GPU
+    quiet: list[str] = field(default_factory=list)       # [package] quiet: tests run alone, last
 
     @property
     def hand_include(self) -> Path:
         """Where an include file written by hand used to sit, <name>.cone at the
         package root. Congo no longer reads one, and says so where it finds one."""
         return self.root / f"{self.name}.cone"
+
+    @property
+    def key(self) -> str:
+        """What the build's tables are keyed by: a package's name, but for a
+        lone file, a program. Its module is named by its own 'mod' line and may
+        be named like a package it imports, directly or through another
+        (Bug 24); a program's module is not a package, so the two never share
+        a key."""
+        return f"{self.name}#program" if self.lone else self.name
 
     def label(self) -> str:
         return f"{self.name} v{self.version}" if self.version else self.name
@@ -313,9 +338,9 @@ def read_manifest(path: Path) -> Package:
         raise CongoError(f"{path}: the manifest needs a [package] table with name,"
                          " version and output")
     for key in table:
-        if key not in ("name", "version", "output", "targets"):
+        if key not in ("name", "version", "output", "targets", "quiet"):
             raise CongoError(f"{path}: '{key}' is not a [package] key; the keys are"
-                             " name, version, output and targets")
+                             " name, version, output, targets and quiet")
     name, version, output = table.get("name"), table.get("version"), table.get("output")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise CongoError(f"{path}: [package] name must be a Cone name, such as \"hello\"")
@@ -327,11 +352,16 @@ def read_manifest(path: Path) -> Package:
     if output not in OUTPUTS:
         raise CongoError(f"{path}: [package] output must be \"executable\" or \"library\"")
     gpu = read_targets(path, table.get("targets", ["native"]), output)
+    quiet = table.get("quiet", [])
+    if not isinstance(quiet, list) or not all(isinstance(q, str) for q in quiet):
+        raise CongoError(f"{path}: [package] quiet must be a list of test names, such as"
+                         " [\"pipeline\"]")
     libraries, link_paths, runtime = (read_link(path, data["link"]) if "link" in data
                                       else ([], [], []))
     root = path.parent.resolve()
     return Package(name, version, output, root, root / "src" / f"{name}.cone",
-                   libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu)
+                   libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu,
+                   quiet=list(quiet))
 
 
 def read_targets(path: Path, targets: object, output: str) -> bool:
@@ -752,33 +782,233 @@ def registry_folders() -> list[Path]:
 
         [registry]
         folders = ["D:/cone/mypackages", "~/cone/vendor"]
+        indexes = ["https://example.com/team/registry.git"]
 
-    A relative folder is relative to the config file's own folder."""
+    A relative folder is relative to the config file's own folder. The indexes
+    are registries of the other kind (see "Index registries" below), searched
+    after every folder."""
     folders = [REPO_PACKAGES] if REPO_PACKAGES.is_dir() else []
     config = config_path()
-    if config.is_file():
-        try:
-            data = tomllib.loads(config.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
-        listed = data.get("registry", {}).get("folders", [])
-        if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
-            raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
-        for entry in listed:
-            folder = Path(os.path.expandvars(os.path.expanduser(entry)))
-            if not folder.is_absolute():
-                folder = config.parent / folder
-            folders.append(folder.resolve())
+    listed = machine_config().get("registry", {}).get("folders", [])
+    if not isinstance(listed, list) or not all(isinstance(f, str) for f in listed):
+        raise CongoError(f"{config}: [registry] folders must be a list of folder paths")
+    for entry in listed:
+        folder = Path(os.path.expandvars(os.path.expanduser(entry)))
+        if not folder.is_absolute():
+            folder = config.parent / folder
+        folders.append(folder.resolve())
     return folders
+
+
+def machine_config() -> dict:
+    """The machine config, <Congo home>/config.toml, read; {} where there is none."""
+    config = config_path()
+    if not config.is_file():
+        return {}
+    try:
+        return tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise CongoError(f"{config}: cannot read the machine config: {exc}") from None
+
+
+def registry_indexes() -> list[str]:
+    """The index registries the machine config lists, in order: the git URLs (or
+    folders) of repositories holding one TOML file per package."""
+    listed = machine_config().get("registry", {}).get("indexes", [])
+    if not isinstance(listed, list) or not all(isinstance(f, str) and f for f in listed):
+        raise CongoError(f"{config_path()}: [registry] indexes must be a list of git URLs")
+    return listed
+
+
+# ---------------------------------------------------------------------------
+# Index registries: a package fetched by name [Jon 23 Sep, hole 9]
+# ---------------------------------------------------------------------------
+#
+# An index is a git repository holding one file per package, <name>.toml:
+#
+#     name = "core"
+#     git = "https://github.com/jondgoodwin/cone.git"
+#     commit = "0123456789abcdef0123456789abcdef01234567"
+#     path = "packages/core"
+#
+# name is the package's flat name, git the repository its source is in, commit
+# the one commit that is fetched (a push to that repository changes nothing a
+# build gets; 'congo publish' moves the commit), and path, optional, the folder
+# of the package in that repository (its root where it is left out), since the
+# Cone repository holds many packages. A name no registry folder holds is looked
+# up in the indexes, in the order listed; the repository is fetched at its
+# commit into <Congo home>/src/ and the package built from there. Congo needs
+# git on PATH for this and uses the credentials git has for the URL, which is how
+# an index can be a private repository.
+
+INDEX_KEYS = ("name", "git", "commit", "path")
+COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """git, its output captured. It never asks for a password on a terminal: with
+    no credentials for a URL, git fails and Congo says so."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+    try:
+        return subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise CongoError("git was not found on PATH; Congo uses it to fetch packages from"
+                         " a registry") from None
+
+
+def git_ok(*args: str, cwd: Path | None = None, doing: str) -> str:
+    """git's output, or a CongoError saying what was being done and why git refused."""
+    run = git(*args, cwd=cwd)
+    if run.returncode != 0:
+        why = run.stderr.strip() or run.stdout.strip() or f"exit status {run.returncode}"
+        raise CongoError(f"{doing}: {why}")
+    return run.stdout.strip()
+
+
+def url_slug(url: str) -> str:
+    """A folder name for a repository: its last name, and the first ten hex digits of
+    the SHA-1 of its URL as written, which both Congos compute."""
+    last = re.split(r"[/\\:]", url.rstrip("/\\"))[-1]
+    last = re.sub(r"\.git\Z", "", last)
+    last = re.sub(r"[^A-Za-z0-9._-]+", "_", last) or "repo"
+    return f"{last}-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:10]}"
+
+
+def toml_string(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def index_entry_text(name: str, git_url: str, commit: str, path: str) -> str:
+    """The text of an index file, as 'congo publish' and tools/registry/make_index.py
+    both write it (LF line ends, on every system)."""
+    lines = [f"name = {toml_string(name)}", f"git = {toml_string(git_url)}",
+             f"commit = {toml_string(commit)}"]
+    if path:
+        lines.append(f"path = {toml_string(path)}")
+    return "\n".join(lines) + "\n"
+
+
+@dataclass
+class IndexEntry:
+    name: str
+    git: str
+    commit: str
+    path: str
+
+
+class Index:
+    """One index registry, cloned into <Congo home>/registry/ and brought up to date
+    once in a run, the first time a name is looked up in it. Offline, the clone
+    that is there is used, with a warning."""
+
+    def __init__(self, url: str):
+        self.url = url
+        self.dir = congo_home() / "registry" / url_slug(url)
+        self.refreshed = False
+
+    def refresh(self) -> None:
+        if self.refreshed:
+            return
+        self.refreshed = True
+        if (self.dir / ".git").exists():
+            run = git("fetch", "--quiet", "--depth", "1", "origin", cwd=self.dir)
+            if run.returncode != 0:
+                print(f"warning: cannot update the registry {self.url}, so the copy fetched"
+                      f" before is used: {run.stderr.strip()}", file=sys.stderr)
+            elif git("rev-parse", "--verify", "--quiet", "FETCH_HEAD", cwd=self.dir).returncode == 0:
+                git_ok("reset", "--quiet", "--hard", "FETCH_HEAD", cwd=self.dir,
+                       doing=f"cannot update the registry {self.url}")
+            return
+        say("Updating", f"registry {self.url}")
+        self.dir.parent.mkdir(parents=True, exist_ok=True)
+        git_ok("clone", "--quiet", "--depth", "1", self.url, str(self.dir),
+               doing=f"cannot fetch the registry {self.url}")
+
+    def entry(self, name: str) -> IndexEntry | None:
+        """The index's entry for a package, or None. An unusable file is an error."""
+        self.refresh()
+        file = self.dir / f"{name}.toml"
+        if not file.is_file():
+            return None
+        where = f"{self.url}: {name}.toml"
+        try:
+            data = tomllib.loads(file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise CongoError(f"{where}: cannot read the entry: {exc}") from None
+        for key in data:
+            if key not in INDEX_KEYS:
+                raise CongoError(f"{where}: '{key}' is not an index key; the keys are"
+                                 f" {', '.join(INDEX_KEYS)}")
+        for key in ("name", "git", "commit"):
+            if not isinstance(data.get(key), str) or not data[key]:
+                raise CongoError(f"{where}: needs {key}, a string")
+        path = data.get("path", "")
+        if not isinstance(path, str):
+            raise CongoError(f"{where}: path must be a string")
+        if data["name"] != name:
+            raise CongoError(f"{where}: names the package '{data['name']}'")
+        if not COMMIT_RE.match(data["commit"]):
+            raise CongoError(f"{where}: commit must be a full commit hash: 40 (or 64) lower-case"
+                             f" hex digits, which no later push can change")
+        if data["git"].startswith("-") or "::" in data["git"]:
+            raise CongoError(f"{where}: git must be a repository's URL or a folder, not an option"
+                             f" or a transport helper")
+        parts = [p for p in re.split(r"[/\\]", path) if p]
+        if path.startswith(("/", "\\")) or ":" in path or ".." in parts or "." in parts:
+            raise CongoError(f"{where}: path must be a folder inside the repository, written"
+                             f" with '/' and no '..'")
+        return IndexEntry(name, data["git"], data["commit"], "/".join(parts))
+
+
+def remove_tree(folder: Path) -> None:
+    """Delete a folder, git's read-only files included (Windows will not otherwise)."""
+    def writable_then_remove(func, path, _exc):
+        os.chmod(path, 0o700)
+        func(path)
+    shutil.rmtree(folder, onerror=writable_then_remove)
+
+
+def checkout_source(entry: IndexEntry) -> Path:
+    """The repository of an entry at its commit, under <Congo home>/src/, fetched
+    there if it is not already; the folder of the package in it. Packages of one
+    repository at one commit share the checkout."""
+    clone = congo_home() / "src" / url_slug(entry.git) / entry.commit
+    package = clone / entry.path if entry.path else clone
+    if (clone / ".git").exists() and git("rev-parse", "HEAD", cwd=clone).stdout.strip() == entry.commit:
+        return package
+    doing = f"cannot fetch {entry.name} from {entry.git} at {entry.commit}"
+    say("Downloading", f"{entry.name} ({entry.git} at {entry.commit[:10]})")
+    partial = clone.with_name(entry.commit + ".partial")
+    for old in (partial, clone):
+        if old.exists():
+            remove_tree(old)
+    partial.mkdir(parents=True)
+    git_ok("init", "--quiet", cwd=partial, doing=doing)
+    git_ok("remote", "add", "origin", entry.git, cwd=partial, doing=doing)
+    # The commit alone where the server allows it (GitHub does), else everything
+    if git("fetch", "--quiet", "--depth", "1", "origin", entry.commit, cwd=partial).returncode != 0:
+        git_ok("fetch", "--quiet", "origin", cwd=partial, doing=doing)
+    git_ok("-c", "advice.detachedHead=false", "checkout", "--quiet", entry.commit,
+           cwd=partial, doing=f"{doing} (is the commit in that repository?)")
+    if git_ok("rev-parse", "HEAD", cwd=partial, doing=doing) != entry.commit:
+        raise CongoError(f"{doing}: the checkout is not that commit")
+    partial.rename(clone)
+    return package
 
 
 class Registry:
     """Package name -> its folder, answered from the registry folders in order.
     A package folder is a folder whose subfolders are packages, each found by its
-    congo.toml and named by it, not by the subfolder."""
+    congo.toml and named by it, not by the subfolder. The indexes, searched after
+    the folders, are used only by 'fetch', which 'restore' calls for a name no
+    folder holds."""
 
-    def __init__(self, folders: list[Path]):
+    def __init__(self, folders: list[Path], indexes: list[str] = ()):
         self.folders = folders
+        self.indexes = [Index(url) for url in indexes]
+        self.missed: set[str] = set()
         self.packages: dict[str, Package] = {}
         for folder in folders:
             if not folder.is_dir():
@@ -798,8 +1028,68 @@ class Registry:
     def find(self, name: str) -> Package | None:
         return self.packages.get(name)
 
+    def fetch(self, name: str) -> Package | None:
+        """The package of that name from the first index that has it, fetched and
+        added to the registry; None where no index has it."""
+        if name in self.missed or not NAME_RE.match(name):
+            return None
+        for index in self.indexes:
+            entry = index.entry(name)
+            if entry is None:
+                continue
+            folder = checkout_source(entry)
+            manifest = folder / MANIFEST
+            where = f"{index.url}: {name}.toml"
+            if not manifest.is_file():
+                raise CongoError(f"{where}: {entry.git} at {entry.commit[:10]} has no"
+                                 f" {MANIFEST} in '{entry.path or '.'}'")
+            pkg = read_manifest(manifest)
+            if pkg.name != name:
+                raise CongoError(f"{where}: the package at {entry.git} '{entry.path or '.'}'"
+                                 f" is named '{pkg.name}', not '{name}'")
+            self.packages[name] = pkg
+            return pkg
+        self.missed.add(name)
+        return None
+
     def searched(self) -> str:
-        return ", ".join(str(f) for f in self.folders) or "(no registry folders)"
+        where = [str(f) for f in self.folders] + [i.url for i in self.indexes]
+        return ", ".join(where) or "(no registry folders)"
+
+
+def restore(top: Package, registry: Registry) -> None:
+    """The step before a build: every package the build imports that no registry
+    folder holds is fetched from the indexes, and so are the packages it imports in
+    turn. Nothing happens where no index is configured. The build then resolves
+    every import through the registry as it always did [Jon 23 Sep, hole 12:
+    restore and build stay separate steps]."""
+    if not registry.indexes:
+        return
+    if registry.find(PRELUDE) is None:
+        registry.fetch(PRELUDE)
+    seen: set[str] = set()
+
+    def visit(pkg: Package) -> None:
+        if pkg.name in seen:
+            return
+        seen.add(pkg.name)
+        for module, parent in scan_package(pkg).walk():
+            sisters = {m.name for m in parent.children} if parent else set()
+            for imp in module.imports:
+                if imp.name is None or imp.name in sisters or imp.name == PRELUDE:
+                    continue
+                found = registry.find(imp.name) or registry.fetch(imp.name)
+                if found is not None:
+                    visit(found)
+
+    visit(top)
+    core = registry.find(PRELUDE)
+    if core is not None:
+        visit(core)
+
+
+def open_registry() -> Registry:
+    return Registry(registry_folders(), registry_indexes())
 
 
 @dataclass
@@ -985,13 +1275,13 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
     stack: list[Unit] = []
 
     def visit(pkg: Package) -> None:
-        state[pkg.name] = "visiting"
+        state[pkg.key] = "visiting"
         unit = resolve_imports(pkg, scan_package(pkg), registry)
-        units[pkg.name] = unit
+        units[pkg.key] = unit
         stack.append(unit)
         for name, dep in unit.deps.items():
             if state.get(name) == "visiting":
-                at = next(i for i, u in enumerate(stack) if u.pkg.name == name)
+                at = next(i for i, u in enumerate(stack) if u.pkg.key == name)
                 loop = stack[at:]
                 chain = " -> ".join([u.pkg.name for u in loop] + [name])
                 steps = "; ".join(
@@ -1002,7 +1292,7 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
             if state.get(name) is None:
                 visit(dep)
         stack.pop()
-        state[pkg.name] = "done"
+        state[pkg.key] = "done"
         order.append(unit)
 
     if top.name != PRELUDE:
@@ -1011,7 +1301,7 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
             raise CongoError(f"no package named '{PRELUDE}', the prelude, in the"
                              f" registries searched: {registry.searched()}")
         visit(core)
-        if top.name in state:
+        if top.key in state:
             # One of core's own imports: built with what it imports, and no core
             order.clear()
             state.clear()
@@ -1059,13 +1349,13 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
-        for name, dep in units[pkg.name].deps.items():
+        for name, dep in units[pkg.key].deps.items():
             if name not in seen:
                 visit(dep)
                 seen[name] = dep
 
     if (registry_core is not None and unit.pkg.name != PRELUDE
-            and PRELUDE in units and unit.pkg.name not in prelude_needs(units)):
+            and PRELUDE in units and unit.pkg.key not in prelude_needs(units)):
         visit(registry_core)
         seen[PRELUDE] = registry_core
     visit(unit.pkg)
@@ -1073,9 +1363,15 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
 
 
 def description(unit: Unit, mode: str, output: str, out: Path,
-                packages: list[Package] = ()) -> str:
+                packages: list[Package] = (),
+                homes: "Callable[[Package], Path] | None" = None) -> str:
     """The build description of one package; 'out' is the folder the include
-    files of the packages it imports are in."""
+    files of the packages it imports are in, or where 'homes' gives, for a
+    package, the folder its own is in (the libraries a folder of packages
+    shares, Session.home)."""
+    def at(dep: Package) -> Path:
+        return homes(dep) if homes is not None else out
+
     pkg = unit.pkg
     lines = [
         f"// The build description of {pkg.label()}, written by Congo for conec;",
@@ -1090,7 +1386,7 @@ def description(unit: Unit, mode: str, output: str, out: Path,
     # include file that package's compile generated into 'out'. The package's
     # own modules import only what their own lines, below, give them
     for dep in packages:
-        lines.append(f'import {dep.name}: "{cone_path(include_for(dep, out))}"')
+        lines.append(f'import {dep.name}: "{cone_path(include_for(dep, at(dep)))}"')
     if packages:
         lines.append("")
 
@@ -1100,7 +1396,7 @@ def description(unit: Unit, mode: str, output: str, out: Path,
         for file in module.files:
             lines.append(f'{pad}    "{cone_path(file)}"')
         for name, dep in unit.lines.get(id(module), {}).items():
-            lines.append(f'{pad}    import {name}: "{cone_path(include_for(dep, out))}"')
+            lines.append(f'{pad}    import {name}: "{cone_path(include_for(dep, at(dep)))}"')
         for child in module.children:
             emit(child, depth + 1)
         lines.append(f"{pad}}}")
@@ -1146,11 +1442,17 @@ def warn_if_stale(conec: Path) -> None:
             return
 
 
+def conestd_path(conec: Path) -> Path:
+    """Where conestd is: the one CONESTD names, else the one built beside conec,
+    whether or not it is there."""
+    named = os.environ.get("CONESTD")
+    return Path(named) if named else conec.parent / ("conestd.lib" if IS_WINDOWS
+                                                     else "libconestd.a")
+
+
 def find_conestd(conec: Path) -> Path:
     """CONESTD names the runtime library; else it is the one built beside conec."""
-    named = os.environ.get("CONESTD")
-    path = Path(named) if named else conec.parent / ("conestd.lib" if IS_WINDOWS
-                                                     else "libconestd.a")
+    path = conestd_path(conec)
     if not path.is_file():
         raise CongoError(f"no conestd library at {path}; build it with conec, or set"
                          f" CONESTD")
@@ -1273,6 +1575,157 @@ def without_vs_libs(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+class MsvcEnvironment:
+    """What vcvars64.bat does to an environment, captured once and kept in the
+    Congo home, <Congo home>/msvc-env.json, so that a link needs no run of it:
+    each run takes seconds, and every build folder's link needed one.
+
+    The file holds, for each variable vcvars64.bat sets or changes, its value
+    as a TEMPLATE in which <congo:base> stands for the variable's value before
+    vcvars64.bat ran: so PATH, LIB and the rest keep whatever the environment
+    Congo starts from lists (SDL3's lib folder on LIB, say) behind or around
+    Visual Studio's, as a run of vcvars64.bat would. The list variables are
+    given a marker for their value while it runs, so that where it puts the
+    base is found even where there was none.
+
+    The file is KEYED by vcvars64.bat's path and the content of the files that
+    decide what it sets: vcvars64.bat, vcvarsall.bat, VsDevCmd.bat, the
+    default tools version files beside vcvars64.bat, and the Windows SDK
+    versions installed. A Visual Studio update changes the key, and the
+    environment is captured again. One whose LIB names a folder that is gone,
+    or in which no Microsoft link.exe is found, or with which a link fails
+    the way a broken environment does (Linker.environmental), is captured
+    again once. '--no-cache' captures it again too. Used only where Congo
+    runs vcvars64.bat itself: an inherited x64 environment is used as it is,
+    and an x86 Developer Command Prompt's is converted by a run, as before."""
+
+    FILE = "msvc-env.json"
+    FORMAT = 1
+    BASE = "<congo:base>"
+    # The lists vcvars64.bat adds its folders to; PATH is one too, and is
+    # never empty
+    LISTS = ("LIB", "LIBPATH", "INCLUDE", "EXTERNAL_INCLUDE")
+    MARK = r"C:\congo-msvc-environment-base"
+
+    @staticmethod
+    def path() -> Path:
+        return congo_home() / MsvcEnvironment.FILE
+
+    @staticmethod
+    def key(vcvars: str) -> str:
+        build = Path(vcvars).parent                     # VC\Auxiliary\Build
+        files = [Path(vcvars), build / "vcvarsall.bat",
+                 *sorted(build.glob("Microsoft.VCToolsVersion*.txt")),
+                 build.parents[2] / "Common7" / "Tools" / "VsDevCmd.bat"]
+        lines = [f"format {MsvcEnvironment.FORMAT}", f"vcvars {os.path.normcase(vcvars)}"]
+        lines += [f"{f.name} {content_hash(f) if f.is_file() else 'absent'}" for f in files]
+        kits = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) \
+            / "Windows Kits" / "10" / "Lib"
+        sdks = sorted(p.name for p in kits.iterdir() if p.is_dir()) if kits.is_dir() else []
+        lines.append("sdks " + " ".join(sdks))
+        return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def capture(base: dict[str, str], vcvars: str) -> tuple[dict[str, str], tuple[str, str]]:
+        """Run vcvars64.bat over base: the templates of what it set, and the
+        run (the batch file and what it printed)."""
+        probe = dict(base)
+        spelled = {k.upper(): k for k in probe}
+        for name in MsvcEnvironment.LISTS:
+            probe[spelled.get(name, name)] = MsvcEnvironment.MARK
+        env, ran = Linker.run_vcvars(probe, vcvars)
+        templates: dict[str, str] = {}
+        for name, value in env.items():
+            upper = name.upper()
+            before = env_value(probe, name)
+            # What a run keeps of the environment it started in, to undo it
+            if upper.startswith("__VSCMD_PREINIT") or value == before:
+                continue
+            if upper in MsvcEnvironment.LISTS:
+                value = value.replace(MsvcEnvironment.MARK, MsvcEnvironment.BASE)
+            elif before:
+                value = value.replace(before, MsvcEnvironment.BASE)
+            templates[name] = value
+        return templates, ran
+
+    @staticmethod
+    def apply(templates: dict[str, str], base: dict[str, str]) -> dict[str, str]:
+        """base with what vcvars64.bat set: each template with base's own value
+        in place of <congo:base>, an empty one taken out with its ';'."""
+        env = dict(base)
+        spelled = {k.upper(): k for k in env}
+        mark = MsvcEnvironment.BASE
+        for name, template in templates.items():
+            now = env_value(base, name) or ""
+            value = (template.replace(mark, now) if now else
+                     template.replace(";" + mark, "").replace(mark + ";", "").replace(mark, ""))
+            env[spelled.get(name.upper(), name)] = value
+        return env
+
+    @staticmethod
+    def load(key: str) -> dict[str, str] | None:
+        try:
+            data = json.loads(MsvcEnvironment.path().read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        templates = data.get("variables") if isinstance(data, dict) else None
+        if (data.get("key") != key or not isinstance(templates, dict)
+                or not all(isinstance(k, str) and isinstance(v, str)
+                           for k, v in templates.items())):
+            return None
+        # A folder LIB names that is gone (an SDK removed): captured again
+        lib = next((v for k, v in templates.items() if k.upper() == "LIB"), "")
+        if not all(Path(entry).is_dir() for entry in lib.split(";")
+                   if entry and entry != MsvcEnvironment.BASE):
+            return None
+        return templates
+
+    @staticmethod
+    def save(key: str, vcvars: str, templates: dict[str, str]) -> None:
+        """Written whole or not at all; a home that cannot be written keeps
+        nothing, and the next link runs vcvars64.bat again."""
+        path = MsvcEnvironment.path()
+        partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial.write_text(json.dumps({"format": MsvcEnvironment.FORMAT, "key": key,
+                                           "vcvars": vcvars, "variables": templates},
+                                          indent=1, sort_keys=True), encoding="utf-8")
+            os.replace(partial, path)
+        except OSError:
+            partial.unlink(missing_ok=True)
+
+    @staticmethod
+    def recorded_vcvars() -> str | None:
+        """The vcvars64.bat the file was captured from, where it is still there:
+        so that a link need not ask vswhere where Visual Studio is."""
+        try:
+            vcvars = json.loads(MsvcEnvironment.path().read_text(encoding="utf-8")).get("vcvars")
+        except (OSError, UnicodeDecodeError, ValueError, AttributeError):
+            return None
+        return vcvars if isinstance(vcvars, str) and Path(vcvars).is_file() else None
+
+    @staticmethod
+    def environment(base: dict[str, str], fresh: bool = False
+                    ) -> tuple[dict[str, str], tuple[str, str] | None, bool]:
+        """vcvars64.bat's environment over base: (the environment, the run of
+        vcvars64.bat where there was one, whether it came from the file).
+        'fresh' captures it again whatever the file holds."""
+        if not fresh:
+            vcvars = MsvcEnvironment.recorded_vcvars()
+            if vcvars is not None:
+                key = MsvcEnvironment.key(vcvars)
+                templates = MsvcEnvironment.load(key)
+                if templates is not None:
+                    return MsvcEnvironment.apply(templates, base), None, True
+        vcvars = find_vcvars()
+        if vcvars is None:
+            raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
+        templates, ran = MsvcEnvironment.capture(base, vcvars)
+        MsvcEnvironment.save(MsvcEnvironment.key(vcvars), vcvars, templates)
+        return MsvcEnvironment.apply(templates, base), ran, False
+
+
 class Linker:
     """The system linker, with the environment it needs. On Windows that is
     Microsoft's link.exe in the environment vcvars64.bat sets up, which Congo
@@ -1281,27 +1734,70 @@ class Linker:
     as conec's objects are: Visual Studio's default Developer Command Prompt
     links for x86."""
 
-    def __init__(self, conestd: Path):
+    def __init__(self, conestd: Path, base: dict[str, str] | None = None):
+        """'base' is the environment Congo starts from, its own by default."""
         self.conestd = conestd
-        self.env = dict(os.environ)
+        self.base = dict(os.environ) if base is None else dict(base)
+        self.env = dict(self.base)
+        # Whether the environment came from the cache in the Congo home, and
+        # whether it has been captured again since (MsvcEnvironment)
+        self.cached = self.recaptured = False
         if IS_WINDOWS:
             ran: tuple[str, str] | None = None     # vcvars64.bat, and what it printed
-            inherited = shutil.which("link.exe")
+            inherited = shutil.which("link.exe", path=env_value(self.base, "PATH") or "")
             if not (inherited and is_msvc_linker(inherited)):
-                self.env, ran = self.run_vcvars(self.env)
+                self.env, ran, self.cached = MsvcEnvironment.environment(
+                    self.base, fresh=not USE_CACHE[0])
             elif msvc_target(inherited, self.env) not in (None, "x64"):
                 # Silently, as when there is no linker: nothing is the user's to fix
                 self.env, ran = self.run_vcvars(without_vs_libs(self.env))
-            path = env_value(self.env, "PATH") or ""
-            tool = shutil.which("link.exe", path=path)
-            if tool is None or not is_msvc_linker(tool):
-                raise CongoError(self.no_linker(tool, path, ran))
+            tool = self.find_tool()
+            if tool is None and self.recapture():
+                tool = self.find_tool()
+            if tool is None:
+                path = env_value(self.env, "PATH") or ""
+                found = shutil.which("link.exe", path=path)
+                raise CongoError(self.no_linker(found, path, ran or self.ran))
             self.tool = tool
         else:
             tool = shutil.which("cc") or shutil.which("gcc")
             if tool is None:
                 raise CongoError("no cc or gcc on PATH to link with")
             self.tool = tool
+
+    ran: tuple[str, str] | None = None      # the run of vcvars64.bat a recapture made
+
+    def find_tool(self) -> str | None:
+        """Microsoft's link.exe on the environment's PATH, or None."""
+        tool = shutil.which("link.exe", path=env_value(self.env, "PATH") or "")
+        return tool if tool is not None and is_msvc_linker(tool) else None
+
+    def recapture(self) -> bool:
+        """Where the environment came from the cache and has not been captured
+        again yet, capture it again from vcvars64.bat, replacing the cache, and
+        find link.exe in it; whether that was done. Once a Linker, so that an
+        environment that is not the trouble costs one run of vcvars64.bat."""
+        if not self.cached or self.recaptured:
+            return False
+        self.recaptured = True
+        self.env, self.ran, _ = MsvcEnvironment.environment(self.base, fresh=True)
+        tool = self.find_tool()
+        if tool is not None:
+            self.tool = tool
+        return True
+
+    def environmental(self, said: str, code: int | None, libraries: list[str]) -> bool:
+        """Whether a failed link looks like the environment's fault rather than
+        the build's: link.exe could not run, or ended with a status of
+        Windows' own (a DLL of its own not found), or could not open a library
+        that no package of the build names (the C runtime's, the Windows SDK's)."""
+        if code is None or code & 0xFFFFFFFF >= 0xC0000000:
+            return True
+        named = {f"{lib}.lib".lower() for lib in libraries}
+        for file in re.findall(r"cannot open (?:input )?file '([^']+)'", said):
+            if file.lower().endswith(".lib") and Path(file).name.lower() not in named:
+                return True
+        return False
 
     @staticmethod
     def no_linker(tool: str | None, path: str, ran: tuple[str, str] | None) -> str:
@@ -1328,10 +1824,11 @@ class Linker:
         return Linker.run_vcvars(dict(os.environ) if base is None else base)[0]
 
     @staticmethod
-    def run_vcvars(base: dict[str, str]) -> tuple[dict[str, str], tuple[str, str]]:
+    def run_vcvars(base: dict[str, str], vcvars: str | None = None
+                   ) -> tuple[dict[str, str], tuple[str, str]]:
         """vcvars64.bat's environment, run in base, and the batch file with what
         it printed, which a failure to find link.exe shows."""
-        vcvars = find_vcvars()
+        vcvars = vcvars or find_vcvars()
         if vcvars is None:
             raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
         # A single string, not a list: list2cmdline would escape the quotes
@@ -1355,9 +1852,16 @@ class Linker:
         return with_set_output(base, variables), (vcvars, printed + err)
 
     def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
-                paths: list[Path] = ()) -> list[str]:
+                paths: list[Path] = (), release: bool = False,
+                strip: bool = False) -> list[str]:
         """The link line: the objects, conestd, then the C libraries the packages'
-        [link] tables name, each searched for first in their [link] paths."""
+        [link] tables name, each searched for first in their [link] paths. A
+        release link folds identical functions (/OPT:ICF), the net under the
+        compiler's size gate on generic instances: the copies each object keeps
+        for itself that came out the same are one again in the program. On
+        Windows a link that is not stripped, debug or release, also writes the debug info
+        of the objects (CodeView) into a PDB beside the .exe, which a profiler
+        reads for function names and lines; on Linux the info stays in the ELF."""
         if IS_WINDOWS:
             # The C runtime's own libraries are the toolchain's and stay here;
             # the Windows SDK's import libraries a package calls (sync's
@@ -1366,7 +1870,9 @@ class Linker:
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib"]
+                    "legacy_stdio_definitions.lib",
+                    *(["/OPT:REF,ICF"] if release else []),
+                    *(["/DEBUG"] if not strip else [])]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]
@@ -1441,12 +1947,158 @@ def copy_if_changed(source: Path, target: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The build cache: a compile skipped when nothing it reads has changed
+# ---------------------------------------------------------------------------
+#
+# A compile -- a package's, from its build description, or a package's
+# kernels -- is skipped when its KEY is the one recorded beside its outputs by
+# the last compile that succeeded there, and each output is still the very
+# file that compile wrote. The key is a SHA-256 over everything conec reads or
+# is told: the content of every file it reads (the package's sources, its
+# congo.toml, the build description, each include file the description names,
+# and the prelude's source where conec loads the prelude from its package
+# search path), the content of conec itself and of conestd, conec's whole
+# command line (the mode, the -D defines and every path), and the environment
+# variables conec reads. Contents, never times. The key is written only after
+# a compile succeeds, and the one there before is removed before conec runs,
+# so a compile that fails or is killed leaves no key and is done again.
+# Linking always runs. '--no-cache' compiles everything, and records the keys
+# of what it compiled.
+
+KEY_FORMAT = "congo build key 1"
+KEY_EXT = ".key"
+# The environment variables conec reads (getenv in compiler/c): each is part
+# of every key
+CONEC_ENV = ("CONE_PACKAGES", "CONE_LLVM_OPTIONS", "CONE_NO_NOALIAS")
+# Whether a compile whose key is unchanged is skipped: '--no-cache' says not
+USE_CACHE = [True]
+
+# Where 'congo test' over a folder of packages builds the libraries they share
+SHARED_FOLDER = ".congo-shared"
+
+# The compiles of this process, by the key file they wrote: the key it recorded.
+# A folder of packages under test shares its libraries (Session.home), so the
+# same library is asked for by many packages; one built this run under the very
+# key is not built again, and one that failed under it is not run again, even
+# with --no-cache. Nothing outlives the process
+RUN_BUILT: dict[str, str] = {}
+RUN_FAILED: dict[str, str] = {}
+
+# conec's and conestd's content hashes, made once in a process and again only
+# where the file's size or time has changed since: conec is tens of megabytes,
+# and a folder of packages builds in many sessions. The key holds the content
+# hash, never the time
+_TOOL_HASHES: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def content_hash(path: Path) -> str:
+    """The SHA-256 of a file's content, in hex."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tool_hash(path: Path) -> str:
+    """conec's or conestd's content hash, or 'absent' where there is no file."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return "absent"
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    known = _TOOL_HASHES.get(str(path))
+    if known is None or known[0] != stamp:
+        known = (stamp, content_hash(path))
+        _TOOL_HASHES[str(path)] = known
+    return known[1]
+
+
+def conec_command(command: list[str]) -> list[str]:
+    """conec's command line as it is run: the -D defines, and --strip where the
+    build is stripped, put after the compiler."""
+    defines = [arg for define in DEFINES for arg in ("-D", define)]
+    strip = ["--strip"] if STRIP_DEBUG[0] else []
+    return [command[0], *defines, *strip, *command[1:]]
+
+
+def key_inputs(command: list[str], env: dict[str, str],
+               files: list[tuple[str, Path]]) -> list[str]:
+    """The lines a key is the hash of: conec and conestd by content, conec's
+    whole command line, the environment it reads, and each file it reads by
+    what it is to the compile, its content and its path."""
+    conec = Path(command[0])
+    lines = [f"conec {tool_hash(conec)} {conec}"]
+    conestd = conestd_path(conec)
+    lines.append(f"conestd {tool_hash(conestd)} {conestd}")
+    lines.append("command " + json.dumps(command))
+    lines += [f"env {name}={env.get(name, '')}" for name in CONEC_ENV]
+    for kind, path in files:
+        lines.append(f"{kind} {content_hash(path) if path.is_file() else 'absent'} {path}")
+    return lines
+
+
+def key_of(inputs: list[str]) -> str:
+    return hashlib.sha256("\n".join([KEY_FORMAT, *inputs]).encode("utf-8")).hexdigest()
+
+
+def cache_fresh(key_file: Path, key: str, outputs: list[Path]) -> bool:
+    """Whether the compile a key file records can stand: the key is the same,
+    and each output is there and is the file that compile wrote."""
+    if not USE_CACHE[0]:
+        return False
+    try:
+        lines = key_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if lines[:2] != [KEY_FORMAT, f"key {key}"]:
+        return False
+    recorded = {}
+    for line in lines:
+        if line.startswith("output "):
+            digest, _, path = line[len("output "):].partition(" ")
+            recorded[path] = digest
+    return all(str(out) in recorded and out.is_file() and content_hash(out) == recorded[str(out)]
+               for out in outputs)
+
+
+def record_key(key_file: Path, key: str, inputs: list[str], outputs: list[Path]) -> None:
+    """Record a successful compile's key, with the inputs it was made from and
+    the hash of each output, written whole or not at all."""
+    lines = [KEY_FORMAT, f"key {key}", *inputs,
+             *(f"output {content_hash(out)} {out}" for out in outputs)]
+    partial = key_file.with_name(key_file.name + ".partial")
+    partial.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(partial, key_file)
+
+
+def cone_sources(folder: Path) -> list[Path]:
+    """Every .cone file in a folder, at any depth, in a fixed order: more than
+    conec reads of a package it finds on its package search path, never less."""
+    if not folder.is_dir():
+        return []
+    return sorted((p for p in folder.rglob("*.cone") if p.is_file()), key=lambda p: str(p))
+
+
+def searched_sources(pkg: Package, kind: str = "searched") -> list[tuple[str, Path]]:
+    """What conec may read of a package it finds on its package search path,
+    rather than being told its files: its folder's name.cone, which the search
+    tries first, and everything in its src/ and gpu/."""
+    files = [(kind, pkg.root.parent / f"{pkg.name}.cone")]
+    for folder in ("src", GPU_FOLDER):
+        files += [(kind, p) for p in cone_sources(pkg.root / folder)]
+    return files
+
+
+# ---------------------------------------------------------------------------
 # Building
 # ---------------------------------------------------------------------------
 
 def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
                  env: dict[str, str], packages: list[Package] = (),
-                 includes: Path | None = None, announce: bool = True) -> Path:
+                 includes: Path | None = None, announce: bool = True,
+                 prelude: list[tuple[str, Path]] | None = (),
+                 homes: "Callable[[Package], Path] | None" = None) -> Path:
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
@@ -1455,34 +2107,76 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     what every package compiled after it that imports it is compiled against.
     'includes' is the folder those include files are in, where it is not 'out'
     itself: a test program is compiled into a folder of its own, against the
-    include files in the package's build folder."""
+    include files in the package's build folder.
+
+    The compile is skipped where its key is unchanged (above, "The build
+    cache"). 'prelude' is what conec reads of core when it loads the prelude
+    from its package search path, for a description with no package line for
+    core; None where Congo cannot say what that is (no core in the build, so
+    no CONE_PACKAGES), and the compile is never skipped.
+
+    'homes' gives, for a package, the folder its include file is in, where
+    that is not one folder ('includes' or 'out') for all of them: a folder of
+    packages under test shares its libraries (Session.home). A library
+    compiled into a shared folder is skipped, or its failure not repeated,
+    for any later package whose key is the same (RUN_BUILT, RUN_FAILED)."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
-    desc.write_text(description(unit, mode, output, includes or out, packages),
+    desc.write_text(description(unit, mode, output, includes or out, packages, homes),
                     encoding="utf-8")
-    # A library's include file is written afresh, so one left by an earlier
-    # build never stands in for it
-    include_for(unit.pkg, out).unlink(missing_ok=True)
+    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
+    include = include_for(unit.pkg, out)
+    outputs = [obj, include] if output == "library" else [obj]
+    command = conec_command([str(conec), "-o", str(out), str(desc)])
+    files: list[tuple[str, Path]] = []
+    if not unit.pkg.lone:
+        files.append(("manifest", unit.pkg.root / MANIFEST))
+    files.append(("description", desc))
+    files += [("source", file) for module, _ in unit.tree.walk() for file in module.files]
+    imported = {dep.name: dep for dep in [*packages, *(dep for names in unit.lines.values()
+                                                       for dep in names.values())]}
+    files += [("include", include_for(dep, homes(dep) if homes is not None else includes or out))
+              for dep in imported.values()]
+    files += prelude or []
+    inputs = key_inputs(command, env, files)
+    key = key_of(inputs)
+    key_file = out / f"{unit.pkg.name}{KEY_EXT}"
+    if prelude is not None and cache_fresh(key_file, key, outputs):
+        return obj
+    # A shared library this run built already, under this very key: the files
+    # are there (checked), so it stands even with the build cache off
+    if (prelude is not None and RUN_BUILT.get(str(key_file)) == key
+            and all(out_file.is_file() for out_file in outputs)):
+        return obj
+    if prelude is not None and RUN_FAILED.get(str(key_file)) == key:
+        raise CongoError(f"could not compile {unit.pkg.name} (it failed earlier in this"
+                         f" run, with the same inputs; build description: {desc})")
+    # No key stands while conec runs, so a compile that fails or is killed
+    # leaves none; and a library's include file is written afresh, so one left
+    # by an earlier build never stands in for it
+    key_file.unlink(missing_ok=True)
+    include.unlink(missing_ok=True)
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
-    if not run_conec([str(conec), "-o", str(out), str(desc)], env):
+    if not run_conec(command, env):
+        if prelude is not None:
+            RUN_FAILED[str(key_file)] = key
         raise CongoError(f"could not compile {unit.pkg.name} (build description:"
                          f" {desc})")
-    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
     if not obj.is_file():
         raise CongoError(f"conec wrote no object at {obj}")
-    include = include_for(unit.pkg, out)
     if output == "library" and not include.is_file():
         raise CongoError(f"conec wrote no include file for {unit.pkg.name} at {include}")
+    if prelude is not None:
+        record_key(key_file, key, inputs, outputs)
+        RUN_BUILT[str(key_file)] = key
     return obj
 
 
 def run_conec(command: list[str], env: dict[str, str]) -> bool:
-    """Run conec, the -D defines put after the compiler, and show what it said
-    but its closing 'Compile finished' line; whether it succeeded."""
-    defines = [arg for define in DEFINES for arg in ("-D", define)]
-    result = subprocess.run([command[0], *defines, *command[1:]], env=env,
-                            capture_output=True)
+    """Run conec, its command line as conec_command made it, and show what it
+    said but its closing 'Compile finished' line; whether it succeeded."""
+    result = subprocess.run(command, env=env, capture_output=True)
     said = utf8_text(result.stdout) + utf8_text(result.stderr)
     chatter = [line for line in said.splitlines()
                if line.strip() and not line.startswith("Compile finished")]
@@ -1609,7 +2303,7 @@ def gpu_closure(unit: Unit, units: dict[str, Unit], core: Package) -> list[Packa
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
-        for name, dep in units[pkg.name].deps.items():
+        for name, dep in units[pkg.key].deps.items():
             if name not in seen:
                 visit(dep)
                 seen[name] = dep
@@ -1674,20 +2368,41 @@ def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, 
     source = work / f"{module}.cone"
     source.write_text(text, encoding="utf-8")
     spv = out / f"{pkg.name}{SPV_EXT}"
-    spv.unlink(missing_ok=True)
     written = work / f"{module}{SPV_EXT}"
-    written.unlink(missing_ok=True)
-    say("Compiling", f"{pkg.label()} for the GPU ({shown_root})")
     command = [str(conec), f"--triple={GPU_TRIPLE}"]
     if mode == "debug":
         command.append("--debug")
     if folders:
         command.append("--path=" + ";".join(str(f) for f in folders))
-    if not run_conec([*command, "-o", str(work), str(source)], env):
+    command = conec_command([*command, "-o", str(work), str(source)])
+    # The key (above, "The build cache") holds what conec may read of each
+    # package it finds on its search path and compiles from source, more than
+    # it reads, never less: the gpu/ folder's modules where that is what is
+    # compiled, else the marked package's, and those of every package of the
+    # closure, core's among them
+    files: list[tuple[str, Path]] = [("manifest", pkg.root / MANIFEST), ("module", source)]
+    if unit.gpu_deps is not None:
+        files += [("searched", p) for p in cone_sources(pkg.root / GPU_FOLDER)]
+    else:
+        files += searched_sources(pkg)
+    compiled = {dep.name: dep for dep in [core, *packages] if dep.key != pkg.key}
+    for dep in compiled.values():
+        files += searched_sources(dep)
+    inputs = key_inputs(command, env, files)
+    key = key_of(inputs)
+    key_file = work / f"{module}{KEY_EXT}"
+    if cache_fresh(key_file, key, [spv]):
+        return spv
+    key_file.unlink(missing_ok=True)
+    spv.unlink(missing_ok=True)
+    written.unlink(missing_ok=True)
+    say("Compiling", f"{pkg.label()} for the GPU ({shown_root})")
+    if not run_conec(command, env):
         raise CongoError(f"could not compile {pkg.name} for the GPU ({source})")
     if not written.is_file():
         raise CongoError(f"conec wrote no SPIR-V module at {written}")
     os.replace(written, spv)
+    record_key(key_file, key, inputs, [spv])
     return spv
 
 
@@ -1721,10 +2436,16 @@ class Session:
     program against the objects and include files that build left, compiling
     only what a test imports that the package does not (stdio, say)."""
 
-    def __init__(self, registry: Registry, out: Path, mode: str):
+    def __init__(self, registry: Registry, out: Path, mode: str,
+                 shared: Path | None = None, own: str | None = None):
         self.registry = registry
         self.out = out
         self.mode = mode
+        # Under 'congo test' over a folder of packages: the folder the run's
+        # libraries are built in, once each, and the key of the package under
+        # test, which is built in 'out' as ever. None: every package in 'out'
+        self.shared = shared
+        self.own = own
         self.objs: dict[str, Path] = {}      # each library compiled into 'out'
         self.spvs: dict[str, Path] = {}      # each package's kernels compiled into 'out'
         self.gpu_checked: set[str] = set()   # packages whose imports were checked for the GPU
@@ -1739,6 +2460,21 @@ class Session:
         if self._conec is None:
             self._conec = find_conec()
         return self._conec
+
+    def home(self, pkg: Package) -> Path:
+        """The folder a package is compiled into, and its include file is
+        found in. Alone, 'out'. Sharing, the package under test is built in
+        'out' as ever; every other package of the build in a folder of its own
+        in the shared one, named for the package and where its source is, so two
+        packages of one name never meet. The same folder serves every package
+        tested, which is the point: a library is compiled once (its key decides
+        whether it is again), and nothing is linked to a library built for
+        another configuration, since the shared folder is named for the mode,
+        the -D defines and --strip."""
+        if self.shared is None or pkg.key == self.own or pkg.lone:
+            return self.out
+        where = hashlib.sha256(str(pkg.root).encode("utf-8")).hexdigest()[:8]
+        return self.shared / f"{pkg.name}-{where}"
 
     def compile(self, order: list[Unit], top: Package, top_out: Path | None = None,
                 announce: bool = True) -> list[Path]:
@@ -1767,34 +2503,53 @@ class Session:
                 print(f"warning: {unit.pkg.hand_include} is not used: a package's importers"
                       f" compile against the include file its own compile generates,"
                       f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
-        by_name = {unit.pkg.name: unit for unit in order}
+        by_name = {unit.pkg.key: unit for unit in order}
         # Before anything is compiled: a package compiled for the GPU, and a
         # marked package being built, import only packages marked for it
         for unit in order:
             if ((unit.kernels or (unit.pkg is top and (unit.pkg.gpu
                                                         or unit.gpu_deps is not None)))
-                    and unit.pkg.name not in self.gpu_checked):
+                    and unit.pkg.key not in self.gpu_checked):
                 check_gpu_marks(unit, by_name)
-                self.gpu_checked.add(unit.pkg.name)
+                self.gpu_checked.add(unit.pkg.key)
         objs = []
         for unit in order:
             is_top = unit.pkg is top
-            if not is_top and unit.pkg.name in self.objs:
-                objs.append(self.objs[unit.pkg.name])
+            if not is_top and unit.pkg.key in self.objs:
+                objs.append(self.objs[unit.pkg.key])
                 continue
-            into = top_out if is_top and top_out is not None else self.out
+            into = top_out if is_top and top_out is not None else self.home(unit.pkg)
+            if (is_top and into == self.out and top.lone
+                    and any(u.pkg.name == top.name for u in order if u.pkg is not top)):
+                # A program named like a package it reaches (Bug 24): the files
+                # of its compile are named for the module, and would be the
+                # package's own, beside which they would otherwise be written
+                into = self.out / "program"
             into.mkdir(parents=True, exist_ok=True)
+            packages = closure(unit, by_name, core)
+            # A description with no package line for core (core's own, and
+            # those of what core imports) has conec load the prelude from the
+            # packages folder CONE_PACKAGES names: what it reads there is part
+            # of the key. With no core in the build there is no CONE_PACKAGES,
+            # and Congo cannot say what conec reads, so that compile is never
+            # skipped
+            if any(dep.name == PRELUDE for dep in packages):
+                prelude: list[tuple[str, Path]] | None = []
+            elif core is None:
+                prelude = None
+            else:
+                prelude = searched_sources(core, "prelude")
             obj = compile_unit(conec, unit, into, self.mode, is_top, env,
-                               closure(unit, by_name, core), self.out,
-                               announce or not is_top)
-            if into == self.out and (not is_top or unit.pkg.output == "library"):
-                self.objs[unit.pkg.name] = obj
+                               packages, self.out, announce or not is_top, prelude,
+                               self.home)
+            if not is_top or (into == self.out and unit.pkg.output == "library"):
+                self.objs[unit.pkg.key] = obj
             objs.append(obj)
         # Then the kernels of each marked package that has them, once a
         # session, into the build folder, beside its object
         for unit in order:
-            if unit.kernels and core is not None and unit.pkg.name not in self.spvs:
-                self.spvs[unit.pkg.name] = compile_gpu(conec, unit, by_name, core, self.out,
+            if unit.kernels and core is not None and unit.pkg.key not in self.spvs:
+                self.spvs[unit.pkg.key] = compile_gpu(conec, unit, by_name, core, self.out,
                                                        self.mode, env)
         return objs
 
@@ -1827,27 +2582,46 @@ class Session:
                 except OSError:
                     pass
                 raise
-        command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
+        linked = [objs[-1], *reversed(objs[:-1])]
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
-        result = subprocess.run(command, env=linker.env, capture_output=True)
-        if result.returncode != 0:
+        # The PDB of an earlier link is no part of this one's
+        exe.with_suffix(".pdb").unlink(missing_ok=True)
+
+        def run_link() -> tuple[list[str], int | None, str]:
+            command = linker.command(linked, exe, libraries, paths, release=self.mode == "release",
+                                     strip=STRIP_DEBUG[0])
+            try:
+                result = subprocess.run(command, env=linker.env, capture_output=True)
+            except OSError as exc:
+                return command, None, f"{command[0]} could not run: {exc}\n"
+            return (command, result.returncode,
+                    console_text(result.stdout) + console_text(result.stderr))
+
+        command, code, said = run_link()
+        again = ""
+        # A link that failed the way a stale Visual Studio environment makes
+        # one fail is tried once more, in the environment captured afresh
+        if code != 0 and linker.environmental(said, code, libraries) and linker.recapture():
+            command, code, said = run_link()
+            again = ("\n(linked twice: the second time in Visual Studio's environment captured"
+                     " again from vcvars64.bat)")
+        if code != 0:
             named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
                               for u in units if u.pkg.libraries)
             where = ("the folders the LIB environment variable lists" if IS_WINDOWS
                      else "the linker's own search path")
             hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
                     f" folders [link] paths names, then in {where}" if named else "")
-            raise CongoError(f"link failed:\n{' '.join(command)}\n{console_text(result.stdout)}"
-                             f"{console_text(result.stderr)}{hint}")
+            raise CongoError(f"link failed:\n{' '.join(command)}\n{said}{hint}{again}")
         for name, source in runtime.items():
             if copy_runtime(source, exe.parent, name) and announce:
                 say("Copying", shown(source))
         # The kernels of every package of the build, each beside the program
         # as a runtime DLL is, where gpuwork's readSpirv finds it by its name
         for u in units:
-            spv = self.spvs.get(u.pkg.name)
+            spv = self.spvs.get(u.pkg.key)
             if spv is not None and spv.parent != exe.parent:
                 if copy_if_changed(spv, exe.parent / spv.name) and announce:
                     say("Copying", shown(spv))
@@ -1857,7 +2631,8 @@ def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     """Build pkg and everything it imports; return the executable, or for a
     library its object."""
     if session is None:
-        session = Session(Registry(registry_folders()), build_folder(pkg, mode), mode)
+        session = Session(open_registry(), build_folder(pkg, mode), mode)
+    restore(pkg, session.registry)
     order = build_order(pkg, session.registry)
     objs = session.compile(order, pkg)
     if pkg.output == "library":
@@ -1914,7 +2689,7 @@ import stdio;
 
 fn main() i32 {{
   stdio.print <- "Hello, world!\\n";
-  0i32;
+  0i32
 }}
 """
 
@@ -1926,7 +2701,7 @@ LIBRARY_TEMPLATE = """\
 mod {name};
 
 pub fn answer() i64 {{
-  42i64;
+  42i64
 }}
 """
 
@@ -1980,6 +2755,52 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Point an index at this package's current commit: write <name>.toml (name,
+    git URL, commit, folder) into the index and push it. Publishing moves the pin;
+    it is for whoever can push to the index, which is the credentials git has."""
+    pkg = current_package()
+    name = pkg.name
+    indexes = [args.registry] if args.registry else registry_indexes()
+    if not indexes:
+        raise CongoError(f"no index registry to publish to: list one under [registry] as"
+                         f" indexes = [\"<git URL>\"] in {config_path()}, or give --registry <URL>")
+    top = Path(git_ok("rev-parse", "--show-toplevel", cwd=pkg.root,
+                      doing=f"{pkg.root} is not in a git repository, and a registry pins a"
+                            f" git commit"))
+    folder = pkg.root.resolve().relative_to(top.resolve()).as_posix()
+    folder = "" if folder == "." else folder
+    if git_ok("status", "--porcelain", "--", ".", cwd=pkg.root, doing="cannot read the package's git status"):
+        raise CongoError(f"{name} has changes that are not committed; commit and push them,"
+                         f" then publish")
+    commit = git_ok("rev-parse", "HEAD", cwd=pkg.root, doing="cannot read the package's commit")
+    if not git_ok("branch", "--remotes", "--contains", commit, cwd=pkg.root,
+                  doing="cannot tell whether the commit is pushed"):
+        raise CongoError(f"commit {commit[:10]} of {name} is on no remote branch: push it, so"
+                         f" that others can fetch it, then publish")
+    origin = git("remote", "get-url", "origin", cwd=pkg.root)
+    if origin.returncode != 0:
+        raise CongoError(f"the repository of {name} has no remote 'origin' to record as"
+                         f" where its source is")
+    index = Index(indexes[0])
+    index.refresh()
+    file = index.dir / f"{name}.toml"
+    text = index_entry_text(name, origin.stdout.strip(), commit, folder)
+    file.write_bytes(text.encode("utf-8"))
+    doing = f"cannot publish {name} to {index.url}"
+    git_ok("add", file.name, cwd=index.dir, doing=doing)
+    # git, not a byte compare, says whether the entry changed: a checkout may have
+    # written the file with its own line ends
+    if not git_ok("status", "--porcelain", "--", file.name, cwd=index.dir, doing=doing):
+        say("Unchanged", f"{name} is already at {commit[:10]} in {index.url}")
+        return 0
+    git_ok("commit", "--quiet", "-m", f"Publish {name} at {commit[:10]}", cwd=index.dir, doing=doing)
+    git_ok("push", "--quiet", "origin", "HEAD", cwd=index.dir,
+           doing=f"{doing} (if someone published meanwhile, publish again)")
+    say("Published", f"{name} at {commit[:10]} to {index.url}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # congo test
 # ---------------------------------------------------------------------------
@@ -1995,7 +2816,8 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
 TESTS = "tests"
 EXAMPLES = "examples"
-TEST_TIMEOUT = 60     # seconds a test program may run before it fails
+TEST_TIMEOUT = 180    # seconds a test program may run before it fails
+SKIP_STATUS = 77      # the status a test exits with when it ran no checks (testing.skip), automake's
 
 
 @dataclass
@@ -2003,6 +2825,7 @@ class Tally:
     passed: int = 0
     failed: int = 0
     skipped: int = 0      # debug-only tests, not built or run in a release test
+    unrun: list[str] = field(default_factory=list)  # why each test that skipped itself ran no checks
     built: int = 0
     unbuilt: int = 0
     broken: int = 0       # packages that did not build, so nothing of theirs ran
@@ -2012,6 +2835,7 @@ class Tally:
         self.passed += other.passed
         self.failed += other.failed
         self.skipped += other.skipped
+        self.unrun += other.unrun
         self.built += other.built
         self.unbuilt += other.unbuilt
         self.broken += other.broken
@@ -2023,12 +2847,15 @@ class Tally:
     def summary(self) -> str:
         def count(n: int, word: str) -> str:
             return f"{n} {word}{'' if n == 1 else 's'}"
-        text = (f"{count(self.passed + self.failed + self.skipped, 'test')}:"
+        text = (f"{count(self.passed + self.failed + self.skipped + len(self.unrun), 'test')}:"
                 f" {self.passed} passed, {self.failed} failed")
         # Said only where a test was skipped, so a report without one reads
         # as it always has
         if self.skipped:
             text += f", {self.skipped} skipped (debug only)"
+        if self.unrun:
+            # Each reason once, in the order first met
+            text += f", {len(self.unrun)} skipped ({'; '.join(dict.fromkeys(self.unrun))})"
         text += (f"; {count(self.built + self.unbuilt, 'example')}:"
                  f" {self.built} built, {self.unbuilt} failed to build")
         if self.broken:
@@ -2101,6 +2928,7 @@ def build_program(session: Session, file: Path, into: Path) -> Path:
     compiled into the package's build folder (once each, most already there),
     and the program itself into a folder of its own, then linked."""
     pkg = lone_package(file)
+    restore(pkg, session.registry)
     order = build_order(pkg, session.registry)
     objs = session.compile(order, pkg, top_out=into, announce=False)
     exe = into / f"{pkg.name}{EXE_EXT}"
@@ -2239,7 +3067,7 @@ def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedPro
     return subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
 
 
-def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
+def run_test(session: Session, file: Path, bless: bool) -> tuple[bool | None, str]:
     """Build, run and compare one test program: (passed, what to show)."""
     into = session.out / TESTS / file.stem
     exe = build_program(session, file, into)
@@ -2259,6 +3087,15 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
         return False, not_started.lstrip("\n")
     stdout = ran.stdout.decode("utf-8", errors="replace")
     stderr = ran.stderr.decode("utf-8", errors="replace")
+    # A test that exits with SKIP_STATUS (testing.skip) ran no checks, so it is
+    # neither passed nor failed, and nothing is compared or blessed: None, and
+    # why, the last line it printed. A test whose .exit holds the status, a
+    # test of skip itself, is compared as any other
+    if ran.returncode == SKIP_STATUS and expected_exit(file) != SKIP_STATUS:
+        said = normalized_lines(stdout)
+        reason = said[-1].strip() if said else ""
+        reason = reason.removeprefix("skipped:").strip()
+        return None, reason or "no reason given"
     expected_path = expectation_file(file, ".out")
     if not expected_path.is_file():
         if not bless:
@@ -2308,16 +3145,47 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
     return not problems, "\n".join(problems)
 
 
-def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) -> Tally:
-    """Build the package, then run each test and build each example."""
+def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: bool,
+                 tally: Tally) -> None:
+    """Run one test and print and count its result."""
+    # Not built or run, so nothing is blessed for it either
+    if mode == "release" and debug_only(file):
+        print(f"        test {file.stem} ... skipped (debug only)", flush=True)
+        tally.skipped += 1
+        return
+    try:
+        passed, detail = run_test(session, file, bless)
+    except CongoError as exc:
+        passed, detail = False, str(exc)
+    if passed is None:
+        print(f"        test {file.stem} ... skipped ({detail})", flush=True)
+        tally.unrun.append(detail)
+        return
+    print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
+    if detail:
+        print(indent(detail), flush=True)
+    if passed:
+        tally.passed += 1
+    else:
+        tally.failed += 1
+        tally.failures.append(f"{pkg.name}: test {file.stem}")
+
+
+def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
+                 later: list | None = None, shared: Path | None = None) -> Tally:
+    """Build the package, then run each test and build each example. A test the
+    manifest marks quiet runs after the package's other tests and its examples;
+    where `later` is a list, it is left there as (package, session, file) for the
+    caller to run, alone, after every package's other tests. Where `shared` is a
+    folder, every package of the build but this one is compiled there (Session.home)."""
     tally = Tally()
     say("Testing", f"{pkg.label()} ({pkg.root})")
     # The package under test is found first, under its own name, so a test
     # imports this copy -- whether or not it is in a registry, and whatever
     # else a registry holds of that name
-    registry = Registry(registry_folders())
+    registry = open_registry()
     registry.packages[pkg.name] = pkg
-    session = Session(registry, build_folder(pkg, mode), mode)
+    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
     tests = programs(pkg.root / TESTS, name_filter)
     examples = programs(pkg.root / EXAMPLES, name_filter)
     try:
@@ -2357,24 +3225,24 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
         tests = []
     elif not tests and name_filter is None:
         say("Tests", f"none: {pkg.name}'s {TESTS} folder holds no .cone program")
+    quiet = [f for f in tests if f.stem in pkg.quiet]
+    if name_filter is None and (pkg.root / TESTS).is_dir():
+        for q in pkg.quiet:
+            if not (pkg.root / TESTS / f"{q}.cone").is_file():
+                print(f"error: {pkg.name}: [package] quiet names '{q}', and {TESTS}/{q}.cone"
+                      f" is not a test", file=sys.stderr)
+                tally.failed += 1
+                tally.failures.append(f"{pkg.name}: quiet test {q} does not exist")
     for file in tests:
-        # Not built or run, so nothing is blessed for it either
-        if mode == "release" and debug_only(file):
-            print(f"        test {file.stem} ... skipped (debug only)", flush=True)
-            tally.skipped += 1
-            continue
-        try:
-            passed, detail = run_test(session, file, bless)
-        except CongoError as exc:
-            passed, detail = False, str(exc)
-        print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
-        if detail:
-            print(indent(detail), flush=True)
-        if passed:
-            tally.passed += 1
-        else:
-            tally.failed += 1
-            tally.failures.append(f"{pkg.name}: test {file.stem}")
+        if file not in quiet:
+            run_one_test(pkg, session, file, mode, bless, tally)
+    if quiet and later is not None:
+        print(f"        {len(quiet)} quiet test(s) run last, alone: "
+              + ", ".join(f.stem for f in quiet), flush=True)
+        later.extend((pkg, session, f, tally) for f in quiet)
+    else:
+        for file in quiet:
+            run_one_test(pkg, session, file, mode, bless, tally)
     for file in examples:
         try:
             build_program(session, file, session.out / EXAMPLES / file.stem)
@@ -2400,6 +3268,21 @@ def package_manifests(folder: Path) -> list[Path]:
             if (sub / MANIFEST).is_file()]
 
 
+def shared_folder(folder: Path, mode: str) -> Path:
+    """Where 'congo test' over a folder of packages builds the libraries its
+    packages share, so that each is compiled once in the run and not once for
+    every package: .congo-shared/ in the folder tested, so that two runs in
+    different checkouts share nothing. The name holds the mode and a hash of
+    everything that changes what a compile makes but is no part of a package:
+    the -D defines and --strip. (The compile's key holds them too, and decides;
+    the name keeps one configuration's files from being rebuilt for another's.)
+    What it holds is what a package's build/<mode>/ holds today, with the same
+    keys, and is kept the same way."""
+    settings = json.dumps([DEFINES, STRIP_DEBUG[0]])
+    tag = hashlib.sha256(settings.encode("utf-8")).hexdigest()[:8]
+    return folder / SHARED_FOLDER / f"{mode}-{tag}"
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     mode = "release" if args.release else "debug"
     here = Path.cwd()
@@ -2409,9 +3292,17 @@ def cmd_test(args: argparse.Namespace) -> int:
     if not manifests:
         manifests = [current_package_manifest()]
     total = Tally()
+    later: list = []
+    shared = shared_folder(here, mode) if len(manifests) > 1 else None
     for manifest in manifests:
-        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless))
-    if args.name is not None and not (total.passed + total.failed + total.skipped
+        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
+                               later if len(manifests) > 1 else None, shared))
+    if later:
+        say("Quiet", f"{len(later)} test(s), one at a time, nothing else running")
+        for pkg, session, file, _ in later:
+            print(f"     {pkg.name}:", flush=True)
+            run_one_test(pkg, session, file, mode, args.bless, total)
+    if args.name is not None and not (total.passed + total.failed + total.skipped + len(total.unrun)
                                       + total.built + total.unbuilt + total.broken):
         raise CongoError(f"no test or example has '{args.name}' in its name")
     if len(manifests) > 1:
@@ -2426,8 +3317,24 @@ def add_define_argument(parser: argparse.ArgumentParser) -> None:
     """TEMPORARY, a provisional mechanism whose final design is open: '-D',
     handed to conec as it is given, which checks it."""
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME[=INT]",
-                        help="define NAME (1) or NAME=INT for isDefined and definedInt in every"
+                        help="define NAME (1) or NAME=INT for #defined and #define in every"
                              " compile of the build (provisional)")
+
+
+def add_strip_argument(parser: argparse.ArgumentParser) -> None:
+    """'--strip': no debug info in any compile of the build, and no PDB."""
+    parser.add_argument("--strip", action="store_true",
+                        help="emit no debug info (and, on Windows, no PDB); a native"
+                             " build otherwise carries function names and line tables")
+
+
+def add_cache_argument(parser: argparse.ArgumentParser) -> None:
+    """'--no-cache': compile every package of the build, as if no compile
+    before had left anything (README.md, "What a build does"), and capture
+    Visual Studio's environment afresh (MsvcEnvironment)."""
+    parser.add_argument("--no-cache", action="store_true",
+                        help="compile everything, whatever an earlier build left, and"
+                             " capture Visual Studio's environment again")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -2444,6 +3351,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")
         add_define_argument(p)
+        add_strip_argument(p)
+        add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
             p.epilog = "Arguments after '--' are passed to the program."
@@ -2454,6 +3363,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="only the tests and examples whose file name contains this")
     test.add_argument("--release", action="store_true", help="an optimised build")
     add_define_argument(test)
+    add_strip_argument(test)
+    add_cache_argument(test)
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")
@@ -2461,6 +3372,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     clean = sub.add_parser("clean", help="delete what a build wrote")
     clean.add_argument("file", nargs="?", help="a lone .cone file whose build to delete")
     clean.set_defaults(func=cmd_clean)
+    publish = sub.add_parser("publish", help="point an index registry at this package's"
+                                             " current commit")
+    publish.add_argument("--registry", metavar="URL",
+                         help="the index to publish to (default: the first [registry] indexes)")
+    publish.set_defaults(func=cmd_publish)
     # What follows '--' is the program's, and argparse never sees it
     program_args: list[str] = []
     if "--" in argv:
@@ -2491,6 +3407,8 @@ def main(argv: list[str] | None = None) -> int:
     hard_errors_to_status()
     args = parse_args(sys.argv[1:] if argv is None else argv)
     DEFINES[:] = getattr(args, "define", [])
+    USE_CACHE[0] = not getattr(args, "no_cache", False)
+    STRIP_DEBUG[0] = getattr(args, "strip", False)
     try:
         return args.func(args)
     except CongoError as exc:

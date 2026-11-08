@@ -1,0 +1,46 @@
+// A bound on an actor trait dispatches statically: 'connect[S: ChunkSink]'
+// given a Counter calls the Counter's own sending method, directly. The program
+// converts nothing to the trait's handle, so no table is made for the pair: the
+// pre-optimization dump (the named checks in cases.toml) holds the instance of
+// 'connect' at the Counter, a direct call of the Counter's 'accept' in it, no
+// call through a loaded code pointer, and no vtable of a Counter as the trait's
+// virtual trait.
+
+mod concurrency_actor_trait_static;
+
+import stdio use *;
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+}
+
+actor Counter {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n;
+    printStr("counter "); printUInt(sum); printStr("\n");
+  }
+}
+
+fn connect[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Counter();
+    connect(c, 5u64);
+  }
+  finalAll();
+}

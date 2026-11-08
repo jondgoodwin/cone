@@ -1,0 +1,72 @@
+// The buffer pool as a region, used as a region: a List handed it takes its
+// block from the pool, asks the pool's size function first and takes the whole
+// class as its capacity, and its death gives the block home. 'List[u8](3000,
+// bufferPool())' has a capacity of 4,096. Every block is counted: lent now, and
+// slabs held from the OS, and at the end all are home and all are back.
+
+mod list;
+
+import testing use *;
+import collections use *;
+import bufpool use *;
+
+fn main() i32 {
+  expectUInt(osBlocks(), 0u64, "nothing held from the OS to begin");
+  {
+    var xs = List[u8](3000usize, bufferPool());
+    expectUInt(u64.from(xs.capacity()), 4096u64, "3000 bytes asked, a capacity of 4096");
+    let s = blockStats();
+    expectUInt(s.lent, 1u64, "one block lent");
+    expectUInt(osBlocks(), 1u64, "from one slab");
+    var i = 0usize;
+    while i < 4096usize {
+      xs.push(u8.from(i % 251usize));
+      i = i + 1usize;
+    }
+    expectUInt(u64.from(xs.capacity()), 4096u64, "4096 values fit without growing");
+    expectUInt(blockStats().lent, 1u64, "still one block");
+    xs.push(7u8);
+    expectUInt(u64.from(xs.capacity()), 16384u64, "the 4097th takes the 16 KiB class");
+    expectUInt(blockStats().lent, 1u64, "the old block went home as the new one came");
+    expectUInt(u64.from(*xs[0usize]), 0u64, "the values moved with it");
+    expectUInt(u64.from(*xs[4095usize]), u64.from(u8.from(4095usize % 251usize)), "all of them");
+    expectUInt(u64.from(*xs[4096usize]), 7u64, "and the new one");
+  }
+  expectUInt(blockStats().lent, 0u64, "the list died: its block is home");
+  trimStock();
+  expectUInt(osBlocks(), 0u64, "every slab back with the OS");
+
+  // A String is a List[u8]
+  {
+    var s = String(100usize, bufferPool());
+    expectUInt(blockStats().lent, 1u64, "String(100) took one block");
+    var i = 0usize;
+    while i < 4095usize { s.appendByte('a'); i = i + 1usize; }
+    expectUInt(blockStats().lent, 1u64, "4095 bytes and the NUL fill the 4 KiB it was given");
+    s.appendByte('b');
+    expectUInt(blockStats().lent, 1u64, "the 4096th moved to a bigger class and gave the first home");
+    expectUInt(u64.from(s.len()), 4096u64, "all are there");
+  }
+  expectUInt(blockStats().lent, 0u64, "and gives it home");
+
+  // Every class, and oversize
+  {
+    var a = List[u8](1usize, bufferPool());
+    var b = List[u8](4097usize, bufferPool());
+    var c = List[u8](16385usize, bufferPool());
+    var d = List[u8](65537usize, bufferPool());
+    var e = List[u8](262145usize, bufferPool());
+    var f = List[u8](1048577usize, bufferPool());
+    expectUInt(u64.from(a.capacity()), 4096u64, "4 KiB");
+    expectUInt(u64.from(b.capacity()), 16384u64, "16 KiB");
+    expectUInt(u64.from(c.capacity()), 65536u64, "64 KiB");
+    expectUInt(u64.from(d.capacity()), 262144u64, "256 KiB");
+    expectUInt(u64.from(e.capacity()), 1048576u64, "1 MiB");
+    expectUInt(u64.from(f.capacity()), 1052672u64, "over 1 MiB: whole pages");
+    expectUInt(blockStats().lent, 6u64, "six blocks lent");
+  }
+  expectUInt(blockStats().lent, 0u64, "all home");
+  trimStock();
+  expectUInt(osBlocks(), 0u64, "every slab and the oversize block back with the OS");
+  done()
+}

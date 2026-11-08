@@ -14,8 +14,12 @@ BlockNode *newBlockNode() {
     blk->vtype = unknownType;  // This will be overridden with loop-as-expr
     blk->stmts = newNodes(8);
     blk->lifesym = NULL;
+    blk->tailmark = NULL;
+    blk->elseblk = NULL;
     blk->breaks = NULL;
     blk->flowmark = 0;
+    blk->eachpass = NULL;
+    blk->fieldeach = NULL;
     return blk;
 }
 
@@ -29,6 +33,8 @@ BlockNode *newLoopBlockNode() {
 
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
+    if (node->fieldeach)
+        return cloneFieldEach(cstate, node);
     uint32_t dclpos = cloneDclPush();
     BlockNode *newnode;
     newnode = memAllocBlk(sizeof(BlockNode));
@@ -69,6 +75,7 @@ void blockPrint(BlockNode *blk) {
 // anything else (a declaration) gives none.
 BlockNode *blockElseFinish(BlockNode *elseblk, BlockNode *loop, INode *lexnode) {
     elseblk->flags |= FlagLoopElse;
+    loop->elseblk = elseblk;   // the parser judges its last line from the loop (parseTailCheck)
     INode *last = elseblk->stmts->used > 0 ? nodesLast(elseblk->stmts) : NULL;
     if (last != NULL && (last->tag == ReturnTag || last->tag == BreakTag || last->tag == ContinueTag))
         return elseblk;
@@ -134,7 +141,19 @@ static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
+static void blockNameResIn(NameResState *pstate, BlockNode *blk);
+
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
+    EachPass *svpass = errorEachPass;
+    if (blk->eachpass)
+        errorEachPass = blk->eachpass;
+    if (blk->fieldeach)
+        fieldEachNameRes(pstate, blk);
+    blockNameResIn(pstate, blk);
+    errorEachPass = svpass;
+}
+
+static void blockNameResIn(NameResState *pstate, BlockNode *blk) {
     // Set up for break and continue nodes that do not specify a labeled block
     // By default we want to resolve them to inner-most loop block
     BlockNode *svloopblock = pstate->loopblock;
@@ -208,7 +227,8 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
 //    All breaks must resolve to either the expected type or the same inferred supertype
 //    Coercion is performed on breaks as needed to accomplish this, or errors result
-// Type check a block's statement, its value unwanted. One declaring a local
+// Type check a block's statement, its value unwanted (and warned where it is one
+// that should not be dropped unseen, discardCheck). One declaring a local
 // may extend a temporary its initializer borrows into a hidden local
 // (varDclExtendBegin); 'hoists' gathers, for each such statement, its hidden
 // locals in order and then the statement, for blockHoist.
@@ -216,15 +236,33 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
     // Flow typing declares hidden variables after the statement that narrows a name,
     // and must know which statement of this block that is (narrow.h)
     INode *svstmt = narrowStmtBegin(*stmtp);
-    if ((*stmtp)->tag != VarDclTag) {
+    // 'let a, b = values;' is the assignment that follows its names' declarations: its values
+    // are the initializer of them all, whose temporaries a borrow extends as a name's own do.
+    // A stand-in for the declaration owns the extension (it has the names' scope)
+    VarDclNode *owner = (*stmtp)->tag == VarDclTag ? (VarDclNode *)*stmtp : NULL;
+    if ((*stmtp)->tag == AssignTag && ((*stmtp)->flags & FlagDestructAssign)) {
+        INode **elemp;
+        uint32_t ecnt;
+        for (nodesFor(((TupleNode *)((AssignNode *)*stmtp)->lval)->elems, ecnt, elemp)) {
+            INode *dcl = isNameUseNode(*elemp) ? ((NameUseNode *)*elemp)->dclnode : NULL;
+            if (dcl && dcl->tag == VarDclTag) {
+                owner = newVarDclNode(anonName, VarDclTag, (INode *)immPerm);
+                owner->scope = ((VarDclNode *)dcl)->scope;
+                break;
+            }
+        }
+    }
+    if (owner == NULL) {
         inodeTypeCheck(pstate, stmtp, noCareType);
+        discardCheck(*stmtp);
         narrowStmtEnd(svstmt);
         return;
     }
     VarDclExtend ext;
     INode *stmt = *stmtp;
-    varDclExtendBegin(pstate, &ext, (VarDclNode *)stmt);
+    varDclExtendBegin(pstate, &ext, owner);
     inodeTypeCheck(pstate, stmtp, noCareType);
+    discardCheck(*stmtp);
     narrowStmtEnd(svstmt);
     Nodes *hoisted = varDclExtendEnd(pstate, &ext);
     if (hoisted == NULL)
@@ -260,13 +298,34 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
     }
 }
 
+static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType);
+
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
+    EachPass *svpass = errorEachPass;
+    if (blk->eachpass)
+        errorEachPass = blk->eachpass;
+    blockTypeCheckIn(pstate, blk, expectType);
+    errorEachPass = svpass;
+}
+
+static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     INode *inferredType = unknownType;
     TypeCompare match = EqMatch;
     INode **laststmtp = NULL;
     INode **lastexp = NULL;
     Nodes *hoists = NULL;
     int parentered = 0;     // A parallel each built, whose body is checked below
+
+    // A 'try' block with no function around it gives a global its value. It holds
+    // that value in a local of its own, which a block there may declare only as a
+    // constant (vardcl.c), and nothing lifts it into a setup: it is refused here,
+    // once, and nothing in it is checked
+    if ((blk->flags & FlagTry) && pstate->fn == NULL) {
+        errorMsgNode((INode*)blk, ErrorNotLit,
+            "A try block cannot give a global its value: it holds the value in a local of its own, and a block that gives a global its value can declare only constants. Put the work in a function that returns the Result or Option, and give the global a call to it.");
+        blk->vtype = errorType;
+        return;
+    }
 
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
@@ -298,6 +357,25 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             eachLower(pstate, blk);
         }
     }
+    // A number range with a literal first bound and an end that is not one,
+    // 'each i in 0 ..< n': the end is checked first, and the first bound takes
+    // its number type, as a literal beside an operator does
+    else if (eachRangeFirstFollowsEnd(blk)) {
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 1), &hoists);
+        eachRangeFirstAdopt(blk);
+    }
+    // 'x?': what 'x' is, and what the function returns, say what the test and
+    // the early return are, so 'x' is checked first, as the initializer of the
+    // variable that holds it, and the statements below are checked as built
+    else if (blk->flags & FlagPropagate) {
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
+        propagateLower(pstate, blk);
+    }
+    // A 'try' block: its last value is held, and the '?'s in it leave it
+    // (propagate.h), so its type is known once all but its last statement, the
+    // success wrapped, are checked
+    if (blk->flags & FlagTry)
+        propagateTryEnter(pstate, blk, expectType);
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
     if (blk->flags & FlagLoop) {
@@ -332,6 +410,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         }
     }
 
+    // A try block's last statement, the success, and its breaks, the failures,
+    // are checked against the type it gives
+    if (blk->flags & FlagTry)
+        expectType = propagateTryFinish(pstate, blk);
+
     // Handle final statement differently for loop block vs. regular block
     if (blk->flags & FlagLoop) {
         // Last statement should not be break, continue, return
@@ -360,6 +443,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
                 returnJoinFn(pstate, retnode);
             }
             else {
+                // The block's last line ends in ';' (the parser makes no empty
+                // statement of it): its value is dropped
+                if (blk->flags & FlagTailSemi)
+                    discardCheck(*laststmtp);
                 lastexp = laststmtp;
                 match = iexpMultiCheckedCoerceInfer(expectType, &inferredType, lastexp, match);
             }
@@ -399,7 +486,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         nodesp = (INode**)((blk->breaks) + 1);
         cnt = 0;
         for (; cnt < blk->breaks->used; ++cnt, ++nodesp) {
@@ -442,7 +529,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // The block gives its last value or a break's, so a borrowed reference lives
     // only as long as the shortest-lived of them, not as the type expected of it
     uint16_t narrowest = lastexp ? iexpNarrowerScope(0, *lastexp) : 0;
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         for (nodesFor(blk->breaks, cnt, nodesp))
             narrowest = iexpNarrowerScope(narrowest, ((BreakRetNode *)*nodesp)->exp);
     }
@@ -527,14 +614,17 @@ static int blockDiscards(FlowState *fstate, BlockNode *blk) {
     return vtype == NULL || vtype == unknownType || itypeGetTypeDcl(vtype)->tag == VoidTag;
 }
 
-// Once a statement is walked: if it made temporaries, keep each that what
-// goes out of it ('out': its value is stored or handed back) may point into
-static void blockTempEscape(uint32_t tempmark, INode *node, int out) {
-    if (flowTempCount != tempmark)
-        flowTempEscape(node, out);
-}
+static void blockFlowIn(FlowState *fstate, BlockNode **blknode);
 
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
+    EachPass *svpass = errorEachPass;
+    if ((*blknode)->eachpass)
+        errorEachPass = (*blknode)->eachpass;
+    blockFlowIn(fstate, blknode);
+    errorEachPass = svpass;
+}
+
+static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
     // Record where this block's scope starts, so a break or continue naming it
@@ -551,12 +641,14 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     }
     // A loop's body runs on some paths only, and again after itself
     int loop = (blk->flags & FlagLoop) != 0;
-    if (loop)
+    if (loop) {
         ++flowDepth;
+        flowLoopBegin(blk);
+    }
 
     // Ensure last node is return, blockret, break or continue
     // Inject blockret, if not present. Type check already ended a block whose
-    // last statement is no expression -- '{ imm f = new Fin(1); }' -- with a
+    // last statement is no expression -- '{ let f = Fin(1); }' -- with a
     // 'blockret nil' (blockTypeCheck), and a second one after it would be a
     // second exit from the same scope: the drop walk, which records a release
     // at every exit it meets, would finalize 'f' at both.
@@ -590,12 +682,9 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // Handle last node differently, below
         if (cnt <= 1)
             break;
-        uint32_t tempmark = flowTempCount;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             varDclFlow(fstate, (VarDclNode**)nodesp);
-            if (((VarDclNode *)*nodesp)->value)
-                blockTempEscape(tempmark, ((VarDclNode *)*nodesp)->value, 1);
             break;
         case SwapTag:
             swapFlow(fstate, (SwapNode **)nodesp);
@@ -603,7 +692,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // A break or continue reaches a non-final position only in an 'each' loop
         // block, whose synthesized step follows the jump the reader wrote last.
         // Nothing after the jump runs, so the scope's de-aliasing has to be captured
-        // here too, exactly as it is for a block's final node below.
+        // here too, exactly as it is for a block's final node below, and the
+        // state it leaves goes to its loop.
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             INode **brkexp = &brknode->exp;
@@ -612,8 +702,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             flowGateResult(fstate, result);
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
-            blockTempEscape(tempmark, *brkexp, 1);
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
+            flowLoopJump(brknode->block, 0);
             break;
         }
         case ContinueTag: {
@@ -621,6 +711,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             brknode->flowresult = NULL;
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL, *nodesp);
+            flowLoopJump(brknode->block, 1);
             break;
         }
         default:
@@ -628,7 +719,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             if (isExpNode(*nodesp)) {
                 flowLoadValue(fstate, nodesp);
                 flowTempRead(nodesp);
-                blockTempEscape(tempmark, *nodesp, 0);
             }
         }
     }
@@ -642,13 +732,13 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     // before the list that would have released 'a' at scope exit is built.
     // The list is built against the result node as it stood before the walk,
     // which is the node whose name the release exemption is about.
-    // Whether every path through the block leaves the function: it ends in a
-    // return, or hands back an 'if' or a block every path through which does
-    // (ifFlow). A 'break' or 'continue' goes on inside it, to a place this walk
-    // reaches with one state (it walks a loop once), so a path ending in one is
-    // still joined, which counts what it moved as moved from there on.
+    // Whether every path through the block jumps away: it ends in a return, a
+    // break or a continue, or hands back an 'if' or a block every path through
+    // which does (ifFlow). A return leaves the function. A break or continue
+    // hands the state it leaves to its loop (flowLoopJump), which joins it with
+    // the others where the loop ends, so its path takes no part in the join
+    // after the 'if' it ends an arm of.
     int jumped = 0;
-    uint32_t tempmark = flowTempCount;
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
@@ -664,7 +754,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             // function may move: not a value it reached through a borrow
             blockResultMove(*retexp);
             blockResultCount(retexp, result, 0);
-            blockTempEscape(tempmark, *retexp, 1);
         }
         // An init returns only once it has filled self
         flowNewSelfReturn(fstate, *nodesp);
@@ -697,7 +786,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
                 flowTempRead(retexp);
             else
                 blockResultCount(retexp, result, svpos);
-            blockTempEscape(tempmark, *retexp, !discards);
         }
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
@@ -712,18 +800,23 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             flowLoadValue(fstate, brkexp);
             blockResultCount(brkexp, result, blockJumpMark(brknode, svpos));
         }
-        blockTempEscape(tempmark, *brkexp, 1);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
+        jumped = flowLoopJump(brknode->block, 0);
         break;
     }
     case ContinueTag:
         ((BreakRetNode *)*nodesp)->flowresult = NULL;
         flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL, *nodesp);
+        jumped = flowLoopJump(((BreakRetNode *)*nodesp)->block, 1);
         break;
     }
 
+    // The state after a loop is the join of its breaks, each from the state
+    // the head holds on a later pass where its path wrote nothing: the head
+    // joins the entry, each continue and the body's end (flowLoopEnd)
     if (loop) {
         --flowDepth;
+        flowLoopEnd(!jumped);
         jumped = 0;
     }
     fstate->jumped = jumped;

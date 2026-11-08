@@ -1,0 +1,47 @@
+// A clause naming an instance of a generic enum, 'where U is Opt[T]', unmet. An
+// enum is closed: a type is one only by being it or one of its variants, never by
+// the methods or fields it has, so the refusal names the clause and says no more.
+// Its methods are not requirements a type could meet, and the refusal once walked
+// them as a trait's: a whole-enum method (its receiver naming the enum, as Option's
+// and Result's helpers in core do) ended the compile with a compiler defect, and
+// the enum's tag was reported as a field named '_' the argument lacked.
+
+mod generic_typecheck_where_enum_instance;
+
+enum Opt[T] {
+  Nada;
+  Algo(T);
+
+  // One function over the whole enum, by value
+  pub fn get(self: Opt[T], d: T) T inline {
+    match self {
+      case let Algo(v) { v }
+      case is Nada { d }
+    }
+  }
+  // And through a borrow
+  pub fn full(self: &Opt[T]) bool inline { self is Algo }
+}
+use Opt;
+
+// With no methods at all
+enum Bare[T] {
+  Empty;
+  Held(T);
+}
+use Bare;
+
+fn holds[T, U](a: &T, b: &U) i64 where U is Opt[T] {4}
+fn bare[T, U](a: &T, b: &U) i64 where U is Bare[T] {5}
+
+fn main() {
+  let n = 5i64;
+  let o: Opt[bool] = Nada;
+  holds(&n, &o);                  //~ ErrorWhereUnmet:8 "holds requires U is Opt[i64], and Opt[bool] is not Opt[i64]."
+  let v = Algo[bool](true);
+  holds(&n, &v);                  //~ ErrorWhereUnmet:8 "holds requires U is Opt[i64], and Algo[bool] is not Opt[i64]."
+  let b: Bare[bool] = Empty;
+  bare(&n, &b);                   //~ ErrorWhereUnmet:7 "bare requires U is Bare[i64], and Bare[bool] is not Bare[i64]."
+  let fine: Opt[i64] = Algo[i64](3i64);
+  holds(&n, &fine);
+}

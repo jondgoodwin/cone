@@ -1,6 +1,6 @@
 `FnCallNode` is the compiler's busiest node. One shape — `objfn`, `methfld`,
 `args` — serves function calls, method calls, operator applications, field
-access, array indexing, constructions (`new Point(1, 2)`), variants' literals,
+access, array indexing, constructions (`Point(1, 2)`), variants' literals,
 number conversions, generic instantiation and macro calls. Type check is where
 they separate.
 
@@ -38,7 +38,7 @@ flags carry the rest of what the source said:
 | `FlagLvalOp` | the operator needs an lval receiver (`++`, `--`, `<-`, op-assign) |
 | `FlagOpAssgn` | an operator-assignment such as `+=` |
 | `FlagOperator` | **the source wrote an operator, not a named member access** |
-| `FlagNew` | a construction, `new Point(1, 2)`; kept on what type check lowers it to |
+| `FlagNew` | a construction, `Point(1, 2)` or `new a[Node](1)`: set by the parser on `new`, by name resolution on a call of a type (`fnCallConstructNameRes`); kept on what type check lowers it to |
 | `FlagTryNew` | beside `FlagNew`, a construction written `trynew`; its `methfld` holds the bound `Option` from name resolution to type check |
 | `FlagAllocValue` | a struct's bracketed literal that a refused `+` allocation takes as its value, which type check refuses there with its own code (`ErrorPlusAlloc`) rather than `ErrorStructBracket` |
 
@@ -65,16 +65,20 @@ Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
 type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some(x)`, `None` or `None[i32]` (a
 struct's in brackets is refused), a number's conversion `u64.from(count)`, a member access
-like any other, and a construction, `new Point(1, 2)` or the allocation
-`new Rc[mut, Node](1)`: `parseNew`, a term, takes `new`, the type (a name,
+like any other, and a construction in a dynamic region, `new a[Node](1)`:
+`parseNew`, a term, takes `new`, the region and the type made in it (a name,
 `.` paths and bracketed type arguments) and the parenthesized arguments, left
 off when there are none, into one node flagged `FlagNew`; suffixes after the
-parentheses apply to the value. `trynew` builds the same node, flagged
+parentheses apply to the value. A construction of a type, `Point(1, 2)` or the
+allocation `Rc[mut, Node](1)`, is no node of its own: it is the call `f(a)`
+that it looks like, and name resolution marks it (below). `trynew` builds the same node, flagged
 `FlagTryNew` as well, inside an `Option` node tagged `QuesTag`, as `?T`
 parses, which name resolution takes apart (`allocateQuesNameRes`): the
 construction replaces it, holding the bound `Option` in its `methfld`.
 `parseDotCall`, `parseSuffix`, `parseArgs` and the whole precedence cascade
-all build this node.
+all build this node. A `.` followed by `(` is the exception: a field list,
+`x.(a, b)`, is a `DestructNode` ([destruct](destruct.md)), which type check
+lowers to the member accesses this node makes where nothing is moved.
 
 `<-` is an operator application too, its one argument what follows it: one
 entry, or a `TupleNode` of several (`parseAppend`, `parseEntries`). An entry
@@ -143,7 +147,7 @@ module that does not import `actors` is `ErrorParReduce`, as `parallel each`'s
 `ErrorParRuntime`. After the rewrite it is a call of a generic function like any
 other, which is why the closures take their parameter types from the bounds
 (`genericClosureSig`, [generic](generic.md)). By shape alone, so a reduction on a
-view held in a variable (`imm v = xs.parallel(); v.sum()`) is not rewritten and is
+view held in a variable (`let v = xs.parallel(); v.sum()`) is not rewritten and is
 refused at type check, in `fnCallLowerMethodOn`'s method-not-found message
 (`parallelViewNotFound`), as is `parallel()` of a type that has none (a chain of
 iterator adapters, a deque's cursor): `ErrorParReduce`, saying what has one. A
@@ -174,7 +178,7 @@ a number type, a generic instance, a generic parameter. Those arrive at type
 check as member accesses. **An instance's path is collapsed there**, once the
 receiver's check has made the instance: a generic module's by
 `fnCallModuleInstancePath`, `stack[i64].push(3)`, and a generic type's by
-`fnCallTypeInstancePath`, `List[i64].empty()`, which looks the member up in the
+`fnCallTypeInstancePath`, `List[i64]()`, which looks the member up in the
 instance's namespace and applies the same privacy and abstract-method rules as
 above, the privacy judged against the instance's module. A generic type's path
 reaches only a function or an overload name. **A number type's path reaches
@@ -187,7 +191,8 @@ base, is refused by stage 2's type receiver.
 `fnCallTypeCheck` in three stages. This is the map worth carrying.
 
 **A construction (`FlagNew`) is handed whole to `typeLitNewCheck`** before any
-stage ([literals](literals.md), "Construction"), which selects the init its
+stage (a call of a type that only substitution made one, `T(1)`, is marked first,
+`fnCallIsTypeCall`) ([literals](literals.md), "Construction"), which selects the init its
 arguments call for and lowers it to the struct's literal or to a call of a
 declared init (below, "Construction"); a managed reference type there makes
 it an allocation, the `AllocateTag` node holding the value's construction or
@@ -204,20 +209,60 @@ access, with the instance the arguments name bound to the member
 (`genericMethodInstance`) — finished here rather than handed back, since the
 receiver is already checked. The type arguments are checked before the
 instance is made, as a generic function's are, so a written instance of a
-generic type, `h.pick[Box[i32]](...)`, is the type it names. A member that is not a generic method is
+generic type, `h.pick[Box[i32]](...)`, is the type it names. A macro method
+declared in the receiver's type, `h.scaled[i32](2)`, expands there with them
+(`macroMethodTypeCheck`). A member that is neither is
 `ErrorNotTyped` at the first type argument. A base that is a type or a module,
 or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
-to `self.name`); `<-` given a list of entries, an entry that is not a plain
+to `self.name`), and a macro called with its type arguments in brackets before
+its value arguments, `m[i32](x)` (`macroCallTypeArgsTypeCheck`); `<-` given a list of entries, an entry that is not a plain
 value, or a construction's contents, which becomes the applications it stands
 for (`contentsLower`, below, "The list after `<-`");
 a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
 (`fnCallLowerManagedRef`, [references](references.md), "The managed reference
 type") ahead of the struct-literal pass below, which would take its head for a
 literal's struct; and a permission in the brackets of anything else, refused
-(`fnCallRefusePermArg`). Then, for a member access by name that is not an operator, the **receiver is
+(`fnCallRefusePermArg`). **An operator whose method is a macro method expands
+it** (`fnCallOperatorMacro`): an operator node, or a plain index `x[i]` (not
+borrowed, a range or in set position), whose name — or the name it is lowered
+through, `==` for a `!=`, `+` for a `+=` — some type declares a macro method by
+(`macroMethodNamed`, noted by `iNsTypeAddMacro`) has its receiver checked first,
+and where the receiver's type (or the type a reference to it refers to; not a
+pointer's) binds that name to a macro, `macroMethodTypeCheck` expands it with the
+operands unchecked. The method reached is the operator's own name's, else, where
+the type declares none by that name, the one `fnCallNeFromEq` or
+`fnCallOpAssgn` would call: a derived `!=` becomes the `!` of the `==`
+expansion, coerced to `bool`; a `+=` becomes `fnCallOpAssgn`'s
+`{let tmp = &mut x; *tmp = *tmp + y}` with the `+` expanded, its answer
+coerced to the place's type or `ErrorInvType` (`fnCallOpAssgnMacro`). An operand
+count other than the macro's parameter count after `self` is `ErrorArgCount`,
+naming the operator, where the name holds one macro; a name that holds several
+(overloaded by repeating it, [generic](generic.md), "Type check") picks by the
+operands, their number included. A receiver its operand types (`None == x`, an
+`if`), a literal, or a name that is not a value's keeps the order below. A bare
+field name is a receiver of its operator as `self.field` is: checking it makes
+it that. Where no type
+declares a macro method by the name, nothing here runs, and every operator is
+checked as it always was; where one does, an operator by that name whose method
+is a function goes on with its receiver already checked, `==`'s, `!=`'s, `<-`'s
+and a number operator's expected argument type still taken from it.
+**`||` and `&&` are methods of the left operand's type** (`fnCallLogicMethod`, called by
+`logicTypeCheck` once the left operand is checked). A left operand of type `bool` (or a
+reference to one) finds the primitives declared on `bool` (`LogicAndIntrinsic`,
+`LogicOrIntrinsic`, [intrinsic](intrinsic.md)) and the `LogicNode` goes on as it always has:
+narrowing, folding, constant evaluation and code generation are the node's. Any other type
+needs the method: a macro method expands in the node's place, a function method is called
+(its right operand evaluated first, as for any call), and a type with neither is
+`ErrorNoLogicMethod` (1564), naming the operator and the type. The left operand is checked,
+and a checked tree is not checked again (a lowered call in it fails the second check), so it is
+held once in a hidden variable and the method is used on that, `{let tmp = left; tmp.||(right)}`;
+the right operand is not checked, so a macro's `lazy` parameter takes it whole. Option's and
+Result's are macros in core. A bool's right operand that is an Option or a Result is
+`ErrorOptionLogic` (1561).
+Then, for a member access by name that is not an operator, the **receiver is
 checked ahead of the arguments** and its type asked what the name binds. **A
 receiver that is a number type with the member `from`** — named directly,
 through an alias, or as the argument a type parameter has in an instance — is a
@@ -239,7 +284,10 @@ each value expecting the field it will fill (`fnCallTypeLitField`). Then every
 argument is checked, against that type where there is one, so an `if`, a block
 or an array literal is coerced branch by branch as an initializer is; an
 overload set's, an operator's and a generic's arguments get none, because their
-types are what selects or infers the callee. **A closure literal among a
+types are what selects or infers the callee -- but for an `if` that is the argument of a
+number operator, which is given the receiver's number type (checked first for that, as
+`==`'s and `<-`'s are for a call), and an `if` that is the receiver, which is given the
+argument's. **A closure literal among a
 generic's or an overload set's arguments waits for the others** and is checked
 after them (`fnCallClosureArgs`): its signature is what the other arguments leave
 the callee's bound, or the overload its parameter count and written types pick
@@ -251,6 +299,24 @@ becomes the call of the access `t.profile` (`fnCallFieldCall`), unless the field
 type cannot be called, which is `ErrorFldArgs`. Then generic substitution, which
 may finish the node entirely.
 
+**`parse` and `tryFrom` on a number type** (`fnCallNumberConvert`, beside
+`fnCallNumberFrom`, T5) are not lowered but rewritten: `i32.parse(s)` and
+`u8.tryFrom(x)` become the path `NumberConv[i32].parse(s)` and
+`NumberConv[u8].tryFrom(x)`, a generic struct in core (found through
+`strTypeDcl`'s module) whose static functions are ordinary Cone and carry nothing for a
+program that never calls them. A struct, not six generic functions, because the
+source type `S` of `tryFrom[S](x: S)` must be inferred from the argument by the
+ordinary generic call, which checks the argument once (pre-checking it and
+re-checking corrupted a method-call argument), and a partial explicit type
+argument list does not exist. A call through a type parameter bound to a number
+is the same rewrite once the receiver is a number type in the instance. A
+struct's own static `parse` is untouched. `parse` or `tryFrom` with the wrong
+number of values, or `parse` named without a call, is `ErrorNbrParse` (1597)
+or `ErrorNbrTryFrom` (1598); a wrong argument type is the ordinary
+`ErrorInvType` (parse) or `ErrorWhereUnmet` (tryFrom). The float reader behind
+`f64.parse` and `f32.parse` is conestd's `cone_parseF64` and `cone_parseF32`
+(floatfmt.cone), the exact decimal method, with no C library.
+
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
 skips the ordinary name-use check, which leaves `nameUseTypeCheck` free to
@@ -259,7 +325,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
   `typeLitTypeCheck`, which builds a variant's literal, refuses a struct's
-  (`ErrorStructBracket`, naming `new Point(...)`; at a `+` allocation's value,
+  (`ErrorStructBracket`, naming `Point(...)`; at a `+` allocation's value,
   `ErrorPlusAlloc` instead), and refuses a number type, `u64[count]`, with
   `ErrorNbrBracket` naming `u64.from(...)`: its conversion is the method.
   Refused there, at type check, so a type reached through an alias or a type
@@ -268,8 +334,11 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   the base is not a namespace until later: an alias, a number type's member
   other than `from`, a generic instance, a generic parameter. `ErrorUnkName`,
   naming what a path may pass through.
-- **A type**, with neither, called `Point(1, 2)` → `ErrorInitCall`: a type is
-  not called, its value is constructed with `new`.
+- **A type**, with neither, called `Point(1, 2)` → a construction: the node is
+  marked (`fnCallMarkConstruction`) and handed to `typeLitNewCheck` with its
+  arguments checked. Name resolution marks the calls whose callee is a type
+  then, and stage 0 the ones only a generic's substitution made one; this one
+  is a callee that is a type only once checked (an alias).
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
   Outside a method there is no `self`, so it is `ErrorUnkName`, "there is no
@@ -284,7 +353,10 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
   picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
-  on a method type to `fnCallOpAssgn`. A receiver that is already a reference
+  on a method type to `fnCallOpAssgn`. `<-` on a value is not borrowed there:
+  the method it selects declares the permission, and the borrow retry
+  (`fnCallBorrowReceiver`, below) makes it, so a `self: &` `<-` appends through
+  a `let` receiver. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
   stage 3 takes a named method's receiver: its own permission is what candidate
   selection checks, not the permission of the binding that holds it. The `<-`
@@ -321,7 +393,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   `!=`, on the pointer, and a virtual reference refuses it, so neither asks a
   referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
   is declared together, and a type declaring neither is reported missing its
-  `!=`. A `==` that selects nothing is reported once, under `==`, and the `not`
+  `!=`. A `==` that selects nothing is reported once, under `==`, and the `!`
   carries `errorType` on.
 
 **Stage 3 — dispatch on the receiver's type tag.**
@@ -337,9 +409,10 @@ by value, an array and a function go on to the table's own rows.
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
-| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
-| `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
+| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
+| `TTupleTag` | `==`, `!=` to `fnCallLowerTupleCompare` (below); else `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
+| `VectorTag` | `fnCallArrIndex` (a lane, `vectorIndex`) under `FlagIndex`; else fill in `()` as `methfld` if absent and `fnCallLowerMethod`, which finds the operator or method in the vector's own namespace. Four things are lowered by hooks of `fnCallLowerMethodOn` or the call's checks and not found there: a number beside a vector (`vectorBroadcastOperand`, before selection), `select` (`vectorSelectLower`), `.from` (`vectorFromCall`, ahead of `fnCallNumberFrom`) and a vector's contents (`contentsLowerVector`) — [vector](vector.md) |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
 | `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` (a reference to an array: a method of core's `Array[T]`) |
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
@@ -352,7 +425,7 @@ the parameters its arguments are wanted as, and after the callee is checked;
 and in `fnCallMethodTypeArgs`). While the receiver is a `RefTag` (a borrow or an
 owner) whose referent is a `RefTag`, `ArrayRefTag` or `VirtRefTag`, it injects a
 dereference (`derefInject`), so `r.x`, `r.len()`, `r[i]` and `r.pick[T](v)` on a
-`&&Pt`, `&&&Pt`, `&mut &Pt` or `&So[Pt]` see a receiver of one reference level,
+`&&Pt`, `&&&Pt`, `&mut &Pt` or `&Uni[Pt]` see a receiver of one reference level,
 exactly as the explicit `(**r).x` would. Not done for an operator (`FlagOperator`),
 a call with no member name, or a borrowed or ranged index, whose receiver is the
 borrow the parser put round it; and it stops at a key (`lifeIsKey`), a
@@ -368,7 +441,7 @@ refused through a `&mut &Pt` because the inner level is read-only. Only an owner
 is held to the steps above it (a `&` lends only `&` of an owner,
 `borrowOwnerLendRefused`): from the first step whose permission cannot write,
 the dereference that reaches an owner is typed as a copy of the owner's type
-with that permission (`clamp`), so a field stored or a `self &mut` candidate
+with that permission (`clamp`), so a field stored or a `self: &mut` candidate
 through it is refused by the checks that already read the type. That copy is a
 reference type of its own, so it is normalized as any is (`typetblFind`, as
 `refTypeCheck` does): generation lays out an owning reference's block and traces a
@@ -384,7 +457,7 @@ instance of core's `Array[T]` for the element type (`fnCallSliceBodyOf`: a
 `FnCallNode` for `Array[elem]`, type checked), and the call is lowered against
 that struct (`fnCallLowerMethodOn`) with the array or slice as the receiver, as
 the methods a list folds in from its `view()` are called. An array's `len` is
-its type's, not a member of the value, and stays refused. A `self &mut` method
+its type's, not a member of the value, and stays refused. A `self: &mut` method
 on an array borrows it mutably (`fnCallBorrowReceiver` takes an array).
 
 **Text has three lowerings of its own, ahead of that dispatch.** `fnCallTextOf` asks
@@ -392,8 +465,8 @@ whether a receiver's type, through any references and owners, is `str` or a
 struct that lends it (`structLentBody`). Then: (1) `==`, `!=` and the orderings
 between two texts of different kinds replace each operand that lends by the call
 of its lending method (`fnCallLentOperands`, `structLendView`), so the comparison
-is `str`'s own operator on two borrows, and `String == So[str]` needs no operator
-of either; (2) a borrowed range of text, `&s[a..<b]`, `&s[a..]`, `&s[a..b]`, is a
+is `str`'s own operator on two borrows, and `String == Uni[str]` needs no operator
+of either; (2) a borrowed range of text, `&s[a..<b]`, `&s[a..]`, `&s[a..=b]`, is a
 call of the `slice`, `sliceFrom` or `sliceThrough` method (`fnCallLowerStrRange`,
 asked once the receiver is checked, as the dispatch's first test of a range). The
 receiver is the borrow `borrowReassocIndex` put around what is indexed; it is
@@ -406,8 +479,8 @@ inside a character. A range of text not borrowed is `ErrorBadIndex`; (3) a byte 
 `str`, found as any struct's is.
 
 **A comparison on a reference compares what it refers to.** A reference reads
-as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=` and the four
-orderings do too, and `===`/`!==` are what ask whether two references point to
+as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=`, the four
+orderings and `<=>` do too, and `===`/`!==` are what ask whether two references point to
 the same place; `refType` and `arrayRefType` declare only those two, as
 `EqIntrinsic` and `NeIntrinsic` on the address (on both words, for a slice).
 Identity is selected by `iNsTypeFindPtrMethod`, which wants the two operands of
@@ -430,14 +503,14 @@ candidate. `fnCallLowerRefCompare`:
   both sides, and the result compared as it would be by value: a pointer by its
   own operators, a reference by this same function again, a slice by
   `fnCallLowerSliceCompare`. The exception is text: an owner of it,
-  `&So[str]` or `&Rc[str]`, whose referent is a reference, against a `&str`,
+  `&Uni[str]` or `&Rc[str]`, whose referent is a reference, against a `&str`,
   whose referent is `str` itself, is read through on the owner's side only,
-  and the comparison goes on between `So[str]` and `&str`. That is what
-  `&str == &So[str]` already does by the `str` operator's taking the owner as
+  and the comparison goes on between `Uni[str]` and `&str`. That is what
+  `&str == &Uni[str]` already does by the `str` operator's taking the owner as
   its other side, so text compares alike in either order.
 - **A referent whose type declares the operator** is asked first with the
-  operands as written, so a method declared for references (`self &`,
-  `other &T`) takes them unchanged. Only when no candidate matches are both
+  operands as written, so a method declared for references (`self: &`,
+  `other: &T`) takes them unchanged. Only when no candidate matches are both
   operands dereferenced (`derefInject`, positioned on the comparison) and the
   value's operator selected by `fnCallLowerMethod`, as for `*a == *b`. An
   enum's compiler-declared `==` is reached that way, and so is its refusal,
@@ -449,9 +522,20 @@ candidate. `fnCallLowerRefCompare`:
   be dispatched on the variant and is not built. A virtual reference is refused
   the same way in its own arm.
 
+**A comparison of two tuples compares their elements**
+(`fnCallLowerTupleCompare`), for tuples of two to four elements: core's
+`mem.tupleEq2` to `tupleEq4`, generic functions whose body is
+`&a.0 == &b.0 && ...`, found by name and package (`tupleEqDclNameRes`,
+`tupleEqFn`). The node becomes a call of the instance at the element types
+(`genericMethodInstance`) with both operands lent read-only where they lie
+(`fnCallLendEnumOperand`). `!=` is derived under a `!` (`fnCallNeFromEq`); an
+ordering is `ErrorRefNoCompare`, as a longer tuple is. As for a slice, the
+instance is checked as any call, so an element with no `==` is refused in the
+instance. A reference to a tuple is read through to this (`fnCallLowerRefCompare`).
+
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
-to its partner. A slice has no order, so an ordering is `ErrorRefNoCompare`.
+to its partner. A slice has no order, so an ordering and `<=>` are `ErrorRefNoCompare`.
 The comparison is core's `mem.sliceEq[T](a &Array[T], b &Array[T]) bool`, a generic
 function whose body is the loop: the node becomes a call of its instance at
 the receiver's element type (`genericMethodInstance`), the receiver its first
@@ -492,7 +576,7 @@ lent to it read-only where it lies (`fnCallLendEnumOperand`: a place is borrowed
 a temporary borrowed to the end of its statement, a reference passed as it is),
 so an enum that moves is compared as one that copies is and nothing is moved into
 the comparison; the node becomes a call of `-eq` with those two arguments. `!=`
-is `not (a == b)`, as for any type declaring only `==` (`fnCallNeFromEq`). Where
+is `!(a == b)`, as for any type declaring only `==` (`fnCallNeFromEq`). Where
 no `-eq` was made, because a variant carries fields and declares no `==`, the
 call is refused with `ErrorEnumEquality`, naming the first such variant and its
 fields.
@@ -501,12 +585,13 @@ fields.
 (`fnCallLowerEnumTagTest`, tried first by `fnCallLowerEnumEq`). When either
 operand is statically an empty variant of the enum, written out or held in a
 variable (a variant with nothing beyond the tag; anything else is not read, so
-nothing with an effect is dropped), the call becomes `other is &Variant` on a
+nothing with an effect is dropped), and the other is the enum or one of its variants
+(`structVariantEnum`), a value or a borrow, the call becomes `other is &Variant` on a
 read-only borrow of the other operand, with no `-eq` and no `==` of any variant
 needed. The test is built here and put in the call's place by `fnCallTypeCheck`
-(`fnCallTagTest`), under the `not` for `!=`. An empty variant on the left has no `==`
+(`fnCallTagTest`), under the `!` for `!=`. An empty variant on the left has no `==`
 to select, so `fnCallTypeCheck` tries the same lowering before dispatch, deriving
-the `not` itself. Two variants that both carry fields are not of this shape.
+the `!` itself. Two variants that both carry fields are not of this shape.
 
 **An operator's argument that is a call is checked after its receiver for `==`,
 `!=` and `<-`**, where the argument first is the order operators otherwise keep (a
@@ -516,7 +601,11 @@ every `<-` candidate agrees on (`fnCallArgAgreed`), so `x == None` types the
 `None`, and so does `list <- None`. A call among the arguments of an overload set
 is likewise expected to be the type every candidate that could take the call (the
 rest having defaults) declares at its position, when none is generic and they
-agree; any other argument is checked with no expectation as before.
+agree; any other argument is checked with no expectation as before. A receiver
+that is a construction only its place can type, `None == x`, is checked after the
+argument, wanted as the argument's type. A construction among the arguments of a
+generic is checked last (see [generic](generic.md), "An argument that is itself a
+construction").
 
 **A variant is constructed by a call, `Some(5)` and `Some[i32](5)`, or by its name
 alone when it is empty** (`Lamp.Red`, `None`, `None[i32]`). A call whose callee
@@ -524,7 +613,7 @@ names a variant, or a variant with its type arguments, is the variant's literal:
 `fnCallVariantCall` marks the node `FlagIndex | FlagCtorParen` and the call goes on
 as the literal always did, a generic variant inferring from its values and from
 where it goes (`genericSubstitute`). An empty variant's parentheses are
-`ErrorVariantEmptyCall`; a struct called is still `ErrorInitCall`. A name that is
+`ErrorVariantEmptyCall`; a struct called is its construction, not a variant's. A name that is
 an empty variant is made the same literal by name resolution
 ([name-resolution](../phases/name-resolution.md), "What it retags"). The literal
 written in square brackets, `Some[5]`, `None[]`, `Some[i32][5]`, lacks
@@ -548,7 +637,7 @@ and `fnCallLowerTraitMethod` is what routes it there. Neither of the trait's own
 declarations is callable — an abstract method has no body, and one with a body is
 a default that was cloned into each variant — so selecting either left the call
 naming a declaration with no symbol, which generation dereferenced as a null.
-The route is the one [reftraitvar](../../../../doc/reference/reftraitvar.html)
+The route is the one [mod-substitution](../../../../doc/manual/mod-substitution.html#traitvar)
 describes: the tag says which variant, that selects its vtable, and the vtable
 holds the method. It is built by coercing the receiver to `&<Trait`, which
 already exists and already does the tag lookup, and then dispatching as any
@@ -560,15 +649,19 @@ and the remedy: obtain a virtual reference first. **A field takes none of this**
 — it lives in the trait's own layout, a prefix of every implementer, so
 `fnCallLowerMethod` reaches it directly.
 
-**A method called on a value typed as an enum is refused**, `ErrorEnumValueDispatch`,
-in `fnCallLowerMethod` once a candidate is selected: a method of a trait reached
-without `FlagVDisp`, other than an intrinsic such as a payload-free enum's `==`.
-Only a by-value `self` can be called on a value, and which variant's clone runs
-would have to be read from the tag at run time, which is built for a reference and
-not for a value. Before, the call named the enum's own declaration, which is never
-generated, and only LLVM's verifier or the linker caught it. On a variant's value
+**A by-value method called on a value typed as an enum is refused**,
+`ErrorEnumValueDispatch`, in `fnCallLowerMethod` once a candidate is selected: a
+method of a trait reached without `FlagVDisp`, other than an intrinsic such as a
+payload-free enum's `==`. Which variant's clone runs would have to be read from the
+tag at run time, which is built for a reference and not for a value. Before, the
+call named the enum's own declaration, which is never generated, and only LLVM's
+verifier or the linker caught it. **A reference receiver (`self: &`, `&mut`) on a
+value is not refused:** candidate selection borrowed the value for it
+(`fnCallBorrowReceiver`), so the receiver is now a reference the value was not, and
+the call is handed to `fnCallLowerTraitMethod` with the enum, which coerces that
+borrow to `&<Enum` and dispatches it as `(&k).name()` is. On a variant's value
 the call reaches that variant's clone and is fine. **A method whose receiver names
-the enum** (`self &Lamp`, `structIsWholeEnumMethod`) is not a template and is
+the enum** (`self: &Lamp`, `structIsWholeEnumMethod`) is not a template and is
 exempt: it is the one function over the whole enum, called as it is on an enum's
 value, a reference to it, or a variant's value (found in the enum when the variant
 has none of its own, `fnCallLowerMethodOn`), and `fnCallLowerTraitMethod` leaves it
@@ -604,10 +697,12 @@ name binding one binds it alone, and the candidate tried is the instance: the on
 `fnCallMethodTypeArgs` for written type arguments, or by substitution for a
 bare `pick[i32](6)` that became `self.pick` — which `genericIsInstanceOf`
 recognizes in the generic's memo, else the one the call's arguments infer
-(`genericMethodInstance`). Inference matches the arguments against the
-parameters after `self`, since the receiver is not among them yet, so the
-receiver tells it nothing. The instance is then selected like any method, and
-the receiver dereferenced or borrowed to fit its `self`.
+(`genericMethodInstance`). Inference matches the receiver against `self`
+first, as the call will fit it (`genericInferReceiver`: a value against a
+reference `self`'s target, a reference's target against a by-value `self`), then
+the arguments against the parameters after `self`, since the receiver is not
+among them yet. The instance is then selected like any method, and the receiver
+dereferenced or borrowed to fit its `self`.
 
 **A generic in an overload set is selected by its arguments, and instantiated
 after.** Only a generic whose every type parameter is bound to a function
@@ -652,8 +747,9 @@ receiver is granted it when the function being checked is written in the module
 that declares the receiver's type — `dclInfoGetModule` of `pstate->fn` and of the
 type agree — or in an extension of the receiver's enum (`structSeesPrivate`,
 `structEnumSeesPrivate`). Every other receiver gets `ErrorNotPublic`. An `isTrue`
-a coercion injects is lowered with no state (`iexpCoerce` passes none), so only
-`self` reaches a private one.
+a coercion injects is lowered with the state of the check under way
+(`iexpCoerceIn`, `iexpCoerceCondition`), so it reaches a private one as an explicit
+call does: from the module that declares it.
 
 ⚠ **Visible is not reachable through a vtable.** A call or field access with
 `FlagVDisp` reads the member's slot, and a private member has none
@@ -683,14 +779,51 @@ Three adjustments, two of them asymmetric on purpose:
   matches the operands as written before any of this, and a type that moves is
   never read through, so a borrowed `String` is refused where it was. An
   argument that is not a borrow of such a value, and an index (`FlagIndex`,
-  which is not an operator), are left alone.
+  which is not an operator), are left alone. **Every level of borrow is read
+  through** (`fnCallReadThroughAll`; `fnCallBorrowTypeReadsThrough` recurses
+  into a borrow of a borrow, so `&&i64` qualifies as `&i64` does): the
+  closure of `iter().filter(...)` sees such a borrow, and `p > 4`, `p == q` and
+  `p + 1` read it as `*p` would. A receiver that is itself a borrow of a
+  borrow is read one level at a time by the `RefTag` dispatch
+  (`fnCallTypeCheck`) and dispatched again.
+- **The read-through argument of a receiver that must be borrowed.** A `<-`
+  such as `print <- n` (`IOStream`'s methods declare `self: &`) finds no
+  candidate in the deref retry, which tries the receiver as it is. After
+  `fnCallBorrowReceiver` has found none either, an operator's one argument that
+  reads through is read through and `fnCallBorrowReceiver` is asked again. It
+  runs last, only when nothing accepted the arguments as written, so an
+  overload taking the borrow still wins over one taking the value. (A `&u8`
+  still meets `*u8` first: the borrow converts to a raw pointer, so
+  `print <- n` for a borrowed byte selects the C-string overload, as it did.)
+- **A comparison lends its other operand.** `==`, `<`, `<=`, `>` and `>=` (`!=`
+  arrives as `==`; `<=>` is not included) whose candidates, after the borrowed
+  receiver, still found none and whose argument is a struct value, try again
+  with the argument lent read-only (`fnCallLendEnumOperand`: a place is borrowed
+  where it lies, a temporary to the end of its statement) and the receiver
+  borrowed (`fnCallBorrowReceiver`). So `a == b` is `&a == &b` for a `==` written
+  against `&Self` (hand-written, derived, Option's, List's); a candidate taking
+  values, or the borrows written out, is selected first as before. A number's
+  comparison needs no lending and is not retried. The retry is the last of the
+  operator retries and runs only on failure, so it changes no call that
+  compiled.
+- **`x.clone()` of a Copy type is the value** (`fnCallCloneCopy`, ahead of the
+  dispatch on the receiver's type). A call of `clone` with no arguments on a
+  receiver (or a borrow of one) whose type does not move, is a number, vector,
+  tuple, array, pointer, `void`, a struct or an enum, and has no `clone` in its
+  namespace, is replaced by the receiver (read through the borrow). This is the
+  method core's `Clone` grants every Copy type ([struct](struct.md), "Clone, and
+  the `clone` it supplies"). A type that moves and has no `clone` falls through
+  to the ordinary missing-member refusal. `clone` takes `&Self`, so on a borrow
+  of a read-only borrow (`Option[&T]`'s payload, `T` instanced as `&U`) the call
+  does not read through the outer level (`fnCallReadThroughRefs` stops there):
+  `Self` is the inner borrow (`refIsCopyBorrow`), and the call is that borrow.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
-  reaches a method declaring `self &`, `self &mut` or `self &uni`: it is probed as a `ro`
-  borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
+  reaches a method declaring `self: &`, `self: &mut` or `self: &uni`: it is probed as a `ro`
+  borrow, then (for a receiver whose type declares `Immutable`, whose `self: &`
   is `&imm`) an `imm` one, then a `mut` one, then a `uni` one, and the first that selects a
   candidate is made by `borrowMutRef`, so the permission check and the lifetime are a written
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable — or, for `uni`, a
-  written `&uni v`'s (`borrowLocalLendsUni`: a `mut` local or a part of one held by
+  written `&uni v`'s (`borrowLocalLendsUni`: a `var` local or a part of one held by
   value lends it, anything else is `ErrorBadPerm`, "cannot obtain this permission"), and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.
@@ -699,9 +832,9 @@ Three adjustments, two of them asymmetric on purpose:
   does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
   An ambiguity among the probed candidates is reported as one. **An owner
-  receiver is borrowed too** (a `So[T]`, `Rc[T]`, `Arc[T]`, any reference that
+  receiver is borrowed too** (a `Uni[T]`, `Rc[T]`, `Arc[T]`, any reference that
   is not a borrow): it is a reference and so passed as it is, but any type's
-  method may declare `self &So[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
+  method may declare `self: &Uni[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
   borrow of an owner of its type — core's `str.cstr`, which a plain `&str`
   therefore has no candidate for, is one — and that is what the probe's borrow of
   the owner finds. The form is general: no owner kind is named in the compiler.
@@ -712,6 +845,21 @@ Three adjustments, two of them asymmetric on purpose:
   dispatch (a name), and the RefTag branch of `fnCallTypeCheck` once
   (`ownerread`) for an operator.
   Pinned by `typemgmt_owner_self` and `typemgmt_typecheck_owner_self`.
+- **The permission retry.** A reference receiver is never borrowed from, so a
+  `&List` calling `push` finds no candidate: `self: &mut` is not `&`. When that
+  is all that is wrong, the call is reported as `(*r).push(x)` is, `ErrorInvType`
+  (the method is there; the permission is what it refuses), not as the
+  `ErrorNoCandidate` of a method that is not. After the borrow retry (and the
+  index-as-mut one) found nothing, a `RefTag` receiver that is not lock-managed
+  is read through and borrowed as a value is; the probe selects only where a
+  method of that name takes the arguments, so a wrong argument, a wrong arity
+  or a missing method keeps its own report. A single `<-` is this same retry
+  (as several entries, lent a borrow once by `contentsLowerEntries`, already
+  were). A borrow that reports itself, an owner behind a `&` (`ErrorBadPerm`),
+  ends the call there, as the same call on `*r` does. The index `&x[i]` keeps
+  `fnCallRefIndexWantsMut`, and a virtual reference or a slice has no value to
+  read through, so those stay `ErrorNoCandidate`. Pinned by
+  `ref_typecheck_named_call_perm`.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
   on a pointer receiver is what skips the retry, argument included. A
@@ -721,7 +869,7 @@ Three adjustments, two of them asymmetric on purpose:
 
 **An index in set position.** `x[i] = v`, `x[i].f = v`, an operator
 changing `x[i]` or a field of it in place, a `&mut` borrow of a place
-through `x[i]`, and either side of a swap (`x[i] <=> y[j]`, `swapTypeCheck`)
+through `x[i]`, and either side of a swap (`x[i] <-> y[j]`, `swapTypeCheck`)
 write to the element, so where `x`'s type declares `&[]` the
 index is lowered as `&mut x[i]` is. The place may be any chain of field reads
 and indexes, `a[g].b[i].n`, of any depth, and every index in it is in set
@@ -733,21 +881,60 @@ returns (`derefInject`); every other link takes the reference as any field
 access or index does. A method called on a place the call's receiver must
 write, `x[i].m()` or `a[g].b.push(v)`, is known to write only once the method
 is selected, with the place already checked as a read. It is then lowered
-again where it was a read-only element: a candidate taking `self &mut` makes
+again where it was a read-only element: a candidate taking `self: &mut` makes
 `fnCallBorrowReceiver`, and a receiver that is itself an index
 `fnCallIndexAsMut`, lower every index of the receiver's chain again from its
 checked receiver and arguments, the innermost first, as `&mut x[i]` would
 (`fnCallPlaceAsMut`, `fnCallMutIndex`). A link is left as it was where its
 type declares no `&[]`, or the place below it may not be borrowed mutably (a
-`&` reference, an `imm` variable), so a place that may not be written is
+`&` reference, a `let` variable), so a place that may not be written is
 refused as before. Rust chooses `IndexMut` the same way; a dynamic arena's
 `ar[key] = v` is the case it was built for.
 
+**A borrowed index, `&x[i]`.** `borrowReassocIndex` makes it the index
+`(&x)[i]` with `FlagBorrow`, and `fnCallImplicitName` chooses its method, as
+Rust chooses between `Index` and `IndexMut`. A borrow written with no permission,
+`&x[i]` (its `perm` is still `unknownType` when the method is named), is a
+read-only borrow of the element, so it calls `` `[]` ``, whose result is that
+borrow: `&*x.[](i)`. It needs no more than a read-only receiver, so it works
+through a `&` parameter, a `let` and a generic body alike, and its loan is the one
+any borrow a method returns holds. This holds only where every `[]` the type
+declares returns a borrowed reference (`fnCallIndexLends`; a generic `[]`, whose
+signature is unresolved until an instance is made, by a written `&` return). A
+`[]` returning a value, a `String`'s byte or a user type's `i32`, names no
+place, and `&x[i]` of it keeps `` `&[]` ``, refused as a missing method or as
+below. `&mut x[i]`, `&uni x[i]` and `&imm x[i]` call `` `&[]` `` as before, as
+does an index in set position. A type declaring a `&[]` that takes an index and
+no `[]` is refused where it is declared, `ErrorRefIndexAlone`
+(`structCheckMembers`), as Rust requires `Index` for `IndexMut`; a `&[]` taking
+no index is the whole-value borrow `&[]mut v`, which needs none. In
+`&a[i][j]` the inner link `(&a)[i]` is lowered first; where it lent a read-only
+reference, the outer link calls `[]` too.
+
+**An index through a type's `[]` is a place.** A plain index, `x[i]` (no member
+name, no `FlagBorrow` or `FlagRange`), that `fnCallTypeCheck` lowered to a call
+of a `[]` returning a borrowed reference is wrapped in a dereference marked
+`FlagIndexPlace` (`fnCallIndexPlace`): `x[i]` is `*x.[](i)`, the element itself,
+as Rust's `a[i]` is `*a.index(i)` and as an array's element is a place
+(`ArrIndexTag`). Read, it copies; passed by value, it copies; a non-copyable
+element is not moved out of it (flow's `ErrorMoveElem`); `&x[i]` is the borrow
+(above). The `[]` call's borrow is a statement temporary, so a read holds no loan
+past its statement. An index in set position took `&[]` and is not wrapped; a
+`[]` returning a value is a value. Three places see through the marked
+dereference so nothing else moves: a receiver (`x[i].m()`, `x[i].f`,
+`x[i] + 1`, `x[i][j]`) is reached through the borrow, in `fnCallReadThroughRefs`
+and just before the dispatch, so the method selected and the relowering of a
+receiver that must write (`fnCallIndexAsMut`) see the call as before; and an
+explicit `*` over it (`derefTypeCheck`) takes the injected one's place, so the
+spelling `*x[i]` from when the index was the borrow keeps its meaning during the
+transition, reported as `WarnIndexStar` only under `--warn-index-star`.
+
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
-message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
-read-only receiver `&x`, and where a `&mut` receiver would have been accepted
-the message says the method takes `self &mut` and names `x[i]` and
-`&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
+message of their own. An indexed borrow `&x[i]` that reaches `` `&[]` `` (a
+`[]` giving a value, or `&imm x[i]`) hands it the read-only receiver `&x`, and
+where a `&mut` receiver would have been accepted the message says the method
+takes `self: &mut` and names `x[i]` and `&mut x[i]` (`fnCallRefIndexWantsMut`,
+still `ErrorNoCandidate`). An operator
 or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
 (`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. The same probe
@@ -756,7 +943,11 @@ a `char`, and a character literal of 128 or more where it declares a `u8`, as
 `ErrorCharNotNbr` (`iexpCharNumberMismatch`). Neither probe changes anything;
 the refusal is the same. Before any candidate is tried, a character literal that
 is a binary operator's receiver, beside a `u8` argument, is retyped `u8`
-(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`.
+(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`. So is an untyped
+number literal beside an argument of a number type (`litAdoptBesideOperand`), so `0.5 - s`
+selects `s`'s type's `-`; and an operator whose operands are untyped literals is
+folded into one literal before any candidate is tried (`litFoldUntyped`), at the
+point type check has checked the operands (see [literals](literals.md)).
 
 A call that selects nothing, a method's or an overload set's, is `errorType`
 from then on: a variable it initializes, a condition it is, or a generic
@@ -768,7 +959,7 @@ that made it bad being the one; an ambiguity is still reported.
 
 `contentsLower` (`ir/exp/contents.c`) takes apart a `<-` whose argument is a
 tuple of entries or an `EntryNode`, or whose receiver is a construction,
-`new` or `trynew` (`contentsIsAppend`). A construction's type is checked
+`Point(1, 2)`, `new a[Node](1)` or `trynew` (`contentsIsAppend`). A construction's type is checked
 first, unless it is a generic struct named bare, whose arguments infer it
 (`contentsBuiltType`), since an array, an allocation of one, or anything else
 lowers differently. `EntryNode` is one struct for the entry forms, the
@@ -778,8 +969,11 @@ value. Its `first` is an expression resolved like any other, which a
 (`EachEntryTag`) holds in `first` the loop `parseEach` built (below), and a
 `YieldEntryTag` entry is that loop's last statement.
 
-- **On a value**, the receiver is checked, borrowed `&mut` once (held as it is
-  when it is already a reference) into a temporary, and each entry becomes
+- **On a value**, the receiver is checked, borrowed once (held as it is when it
+  is already a reference) into a temporary, with the permission the type's `<-`
+  methods need (`fnCallAppendBorrowPerm`: `mut` when every `<-` takes
+  `self: &mut`, `ro` (`imm` for an `Immutable` type) when none does, and when
+  they differ `mut` if the receiver may be written, else `ro`), and each entry becomes
   statements of one block against that borrow: a value, one application
   `*recv <- value`; `n of x`, a block counting `n` (checked here as a `usize`,
   a constant one 0 through 4294967295, `ErrorRepeatCount`) with `x`'s
@@ -815,11 +1009,11 @@ value. Its `first` is an expression resolved like any other, which a
   variables agree with the ones `eachLower` gives. An array's contents refuse
   an `each` (`ErrorArrayContents`), whose count is not known.
 - **After a construction**, the construction becomes a variable the contents
-  are appended to, and the block's value: `{ mut built = new T(...); built <-
+  are appended to, and the block's value: `{ var built = T(...); built <-
   contents; built }`, so the construction fills the variable in place. An
   allocation of a collection is this form too, the variable its reference and
   the contents appended through it.
-- **After an array's construction**, `new Array[T, n] <- ...`, there is no
+- **After an array's construction**, `Array[T, n]() <- ...`, there is no
   `<-` to call, so the contents become an `ArrayLitTag` node typed as the
   array (`contentsLowerArray`). Every count is a constant, `fill` given what
   is left, and they add to the size exactly (`ErrorArrayContents`; a pair is
@@ -845,7 +1039,7 @@ value. Its `first` is an expression resolved like any other, which a
   argument reaches its instance without its shape (`arrayTypeUnshaped`, at
   the clone's substitution), since one instance serves both spellings of a
   type: through a parameter the entries are rows.
-- **After an allocation of an array**, `new Rc[mut, Array[T, n]] <- ...`, the
+- **After an allocation of an array**, `Rc[mut, Array[T, n]]() <- ...`, the
   contents become the same literal, typed as the value type, and the
   allocation's value (`contentsLowerAlloc`, `typeLitNewFilled`), flagged
   `FlagAllocFill`: generation fills it in place after the region's and the
@@ -862,6 +1056,164 @@ value. Its `first` is an expression resolved like any other, which a
 An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
 only possible inside a tuple used as a value: `ErrorEntryPlace`. (A yield is the
 exception: it is reached as its loop's statement and lowers there.)
+
+### Text sends
+
+A value writes its text into core's `TextOut` with its own
+`toText(self: &, out: &uni TextOut)`; a `<-` whose receiver takes text is
+lowered to that (`contents.c`, the last section; the names `toText`,
+`record`, `textOut`, `TextOut` and `writeStr` are the compiler's, known by
+their names, `coreIsTextOut`). Three kinds of receiver, told by the receiver
+type's methods (`textKindOf`): a **writer** (`TextOut` itself, held in a
+variable or lent `&uni`); a **record maker** (a method `record(self: &)`
+answering a `TextOut`: `IOStream`, the console); a **text sink** (a method
+`textOut(self: &mut)` answering a `TextOut` onto the receiver's own bytes:
+`String`, trace's `Message`).
+
+A receiver's own `<-` is always tried first, so a `List`'s element append
+stays one and a text goes in as it did. Then, by the shape of the right side:
+
+- **A list of pieces** on a writer or a record maker is lowered before its pieces
+  are looked at (`textSendLower`; the receiver alone is checked, on a copy as a
+  trial, so what is not text's is checked once, as written). A record maker's
+  becomes the block
+  `{ var -w = recv.record(); -w <- p1; -w <- p2; ...; -w.finish() }`
+  (`FlagKeepTemps`): the writer is a local, so it is finalized at the statement's
+  end if an early `return` leaves first, and `finish` hands the record to the
+  maker's function after the last piece and before the statement's temporaries are
+  finalized, so a `final` that prints runs after the pieces before it. A
+  writer's becomes a send per piece. A list with an entry that is not a plain value
+  (`3 of x`, `fill`, `each`) sent to a writer in hand is the general list, a piece
+  at a time. For a record maker it is still one record: the block makes the writer,
+  lends it `&uni` to a variable, sends the whole list to that (the general list
+  lowering, piece by piece into the one writer) and finishes it
+  (`module_text_listrecord`).
+- **A list sent to a sink** is the general list lowering with its temporaries
+  dying per statement (`contentsTextList`), so each piece's writer is finished
+  before the next piece's begins.
+- **A single piece no `<-` took** is rewritten where the choice failed
+  (`fnCallLowerMethodOn`, no candidate; `textSendFallback`), the call node
+  changed in place to `piece.toText(&uni W)`: `W` is the writer itself, or a
+  temporary `recv.textOut()` or `recv.record()` borrowed `&uni`, finalized at
+  the statement's end (for a single piece the record is delivered when that
+  temporary dies, after the temporaries the piece made if it is a number, since a
+  number's `toText` is rewritten to a call on the writer). A piece with no
+  `toText` is `ErrorNoText`. A number's, bool's or char's `toText` is no function
+  (`nbrAddTextMethods` declares it): `fnCallTextNumber` rewrites the call to the
+  `TextOut` method that writes that kind (`putI64` for a signed integer, `putU64`
+  for an unsigned one, `putF32`, `putF64`, `putBool`, `putChar`), with the writer
+  as receiver and the value converted to the type the method takes; core's
+  `TextOut` lacking the method is `ErrorNoMbr`. A text receiver's `<-` candidates do not
+  propose an expected type for the piece (`fnCallArgAgreed`).
+
+**The debug form** (`ir/exp/debugfn.c`). `x.toDebug(out)` where `x`'s type
+declares no `toDebug` is rewritten by `fnCallDebugLower`, run in
+`fnCallTypeCheckNode` right after `fnCallCloneCopy`, before the receiver's
+members are looked at. A number or bool becomes its `toText`; a char
+`out.putDebugChar(x)`; a raw pointer, a function, a closure, a trait object and an actor's handle
+(`actorOfHandle`: its state is not the caller's to read, so it is written as the actor's own name, `<Counter>`;
+an actor trait's handle, as a trait, is written as the trait's name)
+`out.writeStr("<mark>")`; an array, a List or a Dict a call of the generic free
+function `debugArray`, `debugList` or `debugDict` (core and collections; free
+functions, not methods, because a method of `Array[T]` is checked for every
+instance, asked for or not); any other struct, enum, variant or tuple a call of
+`toDebug#N(self: &T, out: &uni TextOut)`, built once per (type, module) and
+appended to a generating module's `nodes` (the module of the call, or the first
+generating module of the program, `debugSetProgram`), checked at once. A struct
+or variant body opens with `if out.debugEnter() {...; out.debugLeave()}`
+(`TextOut.depth` and `TextOut.work`; at 128 open bodies, or 65,536 entered since
+depth was last 0, `debugEnter` writes `...` and answers false). The generated function reads
+private fields (`FnDclNode.generatedFor`: code the compiler generates for a type is part of that type, so `structSeesPrivate` lets it see what the type's own code sees, a variant counting as its enum, and no other type's). A sink whose type
+declares core's `DebugText` (`coreIsDebugText`, matched by name and package) takes
+each non-literal piece of a `<-` as `piece.toDebug(&uni W)`: `textSendDebug`, run in
+`fnCallLowerMethodOn` before the candidates, so a `&str` or String value is
+quoted although a `<-` would have taken it. When the piece's `toDebug` is
+generated, the writer is left unchecked and checked once with the generated call
+(a checked `recv.textOut()` temporary cannot be checked again). Pinned by
+`module_debug_basic`, `module_debug_more`, `module_debug_sink`,
+`module_debug_sink_refuse` and `module_debug_cycle`.
+
+Parenthesized and nested sends are statements or values where they stand: a
+`(String() <- ...)` piece is a String made before the outer record is finished, a
+function a piece calls that prints writes its own record first
+(`module_text_nesting`). Pinned by `module_text_overloads`,
+`module_text_nesting` and `module_text_refuse`.
+
+**The `wants` guard.** A text receiver (any of the three kinds) that declares
+`wants(self: &) bool` is asked first (`textSendLower`, ahead of the single-piece
+early return, so a single piece, a list and a construction's contents meet it in one
+place; `textGuardLower`): the send becomes
+`{ [var -g = receiver]; if -g.wants() { -g <- pieces }; nil }`. **Arguments after
+`<-` to a receiver that declines are not evaluated**; the guard is the outermost
+statement, so nothing a piece or a list's `await` makes first runs either. The
+receiver is evaluated once: a name or fields of one (`textIsPlain`) is read again
+for the test, and any other is lent once to `-g` as a writer reached some other way
+is. The `<-` the guard wraps, and each one the list lowering makes
+(`contentsAppend`, `textSend`), has `FlagTextLowered` on its `methfld`, so the guard
+is decided once and not again for the pieces. A piece that moves is moved on one
+branch of the `if`, and flow's rule for a conditional move applies unchanged: the
+variable is finalized once either way, and a later use is the ordinary moved-out
+refusal. `WarnTextEffect` (3008, never gating) is raised by `textWarnEffects` on a
+trial-checked copy of each piece (`textChangesState`): an assignment, swap, a change
+in place or send (`FlagOpAssgn`), a `&mut` or `&uni` borrow (which a call's receiver
+and arguments are lent as). A call whose body changes state, or one reached through
+a `&` or a global, is not seen. Pinned by `module_text_wants` and its `_move`,
+`_move_use`, `_warn`, `_await` and `_ir` scenarios.
+
+**A log receiver** (a type whose `open(self: &, site: &mut S, spec: &str, file: &str,
+line: u32)` exists and answers a type with `text`, `value` and `finish`: `TextSite`,
+found by name and signature as `record` is (`textOpensSite` checks the parameters'
+types as declared: the second `&mut`, then `&str`, `&str`, `u32`; one that does not
+match leaves its type ordinary, `module_text_site_plain`); `textSiteLower`) makes each `<-` to it one event of one call site:
+`{ static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
+-lw.text("lit"); { -lw.value(x) }; ...; -lw.finish() }`. `-siteN` is a zeroed static,
+one per call site (so a log send in an `inline` function is refused with
+`ErrorBadStatic`: `module_text_site_inline`). `spec` is the fixed text with `{name}`
+for each value, then each name after a `\x01`; a name is the brace's source text
+(each brace's sub-lexer holds `interpstart`/`interpend`, read through the piece's
+`lexer`, so it survives generics) or the value's number in a plain list. `value` is
+chosen by ordinary overload resolution; when no overload takes the piece
+(`OverloadNone`), `textValueFallback` (called from `fnCallLowerMethodOn` ahead of the
+no-candidate error) turns the call into `-lw <- x`, the debug-text send. That send
+reaches `fnCallDebugLower` for a built-in scalar (a number, `bool` or `char`: all
+are `Nbr` types, so `isNbr` is the one test in `fnCallLowerMethodOn`, not a case per
+type), so a borrow `&T` of one is written as the value's debug text, as the value
+itself is: a number's or bool's `toText`, a char quoted (`logbool`, `logchar`,
+`lognumbers`). Each piece's
+`value` call is a block of its own: a debug writer a piece makes is a statement
+temporary, and had it lived to the end of the whole send, its length would have
+overwritten the pieces written after it. An ambiguous `value` (a bare integer literal
+among signed and unsigned overloads) is `ErrorAmbiguous` as for any overload. Pinned
+by `module_text_site` and `module_text_site_inline`, and the `trace` package's
+`logsite`, `logprivate` and `logasync` tests.
+
+**An interpolated string** `$"moved {n} files to {dir}"` and the send list
+`"moved ", n, " files to ", dir` are one thing in two spellings, made so by the
+parser, before any of the above sees it. The lexer reads `$"..."` as one
+`InterpToken` holding its parts (`InterpLit`): text parts as a plain literal's
+text is read (escapes, the multi-line margin, `{{` and `}}` for a brace), and for
+each brace the source of its expression, which the parser reads with a lexer of
+its own set over that source (`parseInterpPieces`: the ordinary
+`parseSimpleExpr`, so an error in it points at its real line and column). Where
+the string is a whole entry of a `<-` list (`parseEntries`: `,` `;` `)` `}` or
+the end follows it) its pieces become entries of that list, text parts string
+literals and each expression a value, so `sink <- $"..."` and `sink <- a, $"...", b`
+are the same lists the lowering above takes: one record, an `await` among the
+pieces made first, each expression run once, left to right. Anywhere else
+(`parseInterpString`) it is `String() <- pieces`, the `String` a name use flagged
+`FlagInterpString`, so that with no `String` in scope the diagnostic says what to
+import (collections) rather than naming an unknown. Nothing is held: there is no
+node for an interpolated string after parsing, so a generic body's include file
+prints the send list and reads back the same pieces (`meta_text_interp_include`
+compiles a package's include file and has a program expand its generic bodies
+from it). **A shadowing `String` wins where the `$"..."` is written**: the name is
+looked up there, so a `String` the module declares or imports is the one built,
+accepted for now. When that type has no matching init or `<-`, the errors are the
+ordinary ones on a type literal and a missing `<-` at the string, and none says
+the string stands for `String`: this lead is open until an error names it.
+Pinned by
+`module_text_interp` and its `_threads`, `_await`, `_refuse*`, `_unclosed` and
+`_nocollections` scenarios.
 
 ### Construction
 
@@ -881,7 +1233,7 @@ refused there is an init called on `self` inside another init.
 
 `FnCallTag` (a real call, or a construction by a declared init), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
 generic instance, a macro expansion, a block of applications, or — for a
-derived `!=` — a call wrapped in a `not` that replaces it in the tree. Anything after
+derived `!=` — a call wrapped in a `!` that replaces it in the tree. Anything after
 type check that still sees an un-lowered `FnCallTag` with `methfld` set is
 looking at a bug.
 
@@ -893,7 +1245,7 @@ Three entry points, by what the node became:
   called through), `nameuseFlow` on it, so one never given a value is refused;
   then for each argument: `flowLoadValue`, then
   `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee. A
-  method's receiver that is an init's `self &new` is walked as a use through
+  method's receiver that is an init's `self: &new` is walked as a use through
   it (`flowNewSelfThrough`; [Flow](../phases/flow.md), "An init's self"). A
   construction by a declared init is walked as any call: its arguments; the
   value it yields is the call's.
@@ -962,7 +1314,7 @@ and `fnCallArrIndex` refuses it unborrowed, where it would copy or fill a
 segment. Borrowed, its type is an `ArrayRefTag` slice with the permission and
 scope an element's borrow gets, and `genlSubslice` builds `{&x[start], end -
 start}` after checking `start <= end <= count` at run time (`end` is the count
-when the range runs to the end, and one past what was written for `..`).
+when the range runs to the end, and one past what was written for `..=`).
 
 ## Hazards
 
