@@ -2421,7 +2421,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
     } else if kind == kindMsgGroup {
       runInGroup[S, M](f, h, slot, mslot);
     } else {
-      resumeSlot[S](st, h, payloadOf(slot), kind);
+      resumeSlot[S](st, payloadOf(slot), kind);
     }
     if tracing {
       traceRunEnd(h, cause, bhv);
@@ -2859,11 +2859,16 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
 // which sweeps what is left of its entries. Nothing has a timeout or a cancel
 // path of its own that frees a parked record while its reply is in flight, so
 // those are all; each runs once for an entry, so a node's address is good for as
-// long as its id word is in a Reply or a slot.
+// long as its id word is in a Reply or a slot. A node carries a magic word, set
+// when it is noted and cleared when it is unlinked, which a take checks: a take of
+// a node already taken dies with a message, where it would otherwise unlink
+// through links that are no longer in the table.
 const groupBit = 0x8000000000000000u64;
 const gBuckets = 1024usize;
+const gMagic = 0x67726F75704E6F64u64;
 
 struct GNode {
+  pub magic: u64;       // gMagic while the node is in the table, 0 after it is unlinked
   pub next: *GNode;
   pub prev: *usize;     // the word that points at this node: its bucket, or the previous node's 'next'
   pub h: *Header;
@@ -2925,6 +2930,18 @@ pub fn testActorWithGroupedAwait() usize {
   h as usize
 }
 
+// An entry taken twice, which dies with a message (the take's check of the
+// node's magic word); the node is not freed between, so it is no use after free
+pub fn testTakeTwice() {
+  let h = fakeActor();
+  let gp = curGroup;
+  if gp != 0usize {
+    let n = usize.from(groupNote(h, 0u64, gp) ^ groupBit) as *GNode;
+    groupTake(n);
+    groupTake(n);
+  }
+}
+
 // That actor's death: what finalizeState does for its entries
 pub fn testKillActor(a: usize) {
   groupSweep(a as *Header);
@@ -2969,10 +2986,13 @@ fn groupNote(h: *Header, w: u64, gp: usize) u64 {
   if n as usize == 0usize {
     die("actors: out of memory for an await's group");
   }
+  // The id word is the address with groupBit (the top bit) set, so this assumes a
+  // user address has its top bit clear: below 2^63 on x64 Windows, x64 Linux and wasm32
   let addr = u64.from(n as usize);
   if (addr & groupBit) != 0u64 {
     die("actors: an address with its top bit set cannot carry a group");
   }
+  (*n).magic = gMagic;
   (*n).h = h;
   (*n).w = w;
   mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
@@ -3004,13 +3024,19 @@ fn groupUnlink(n: *GNode) {
   if nx as usize != 0usize {
     (*nx).prev = (*n).prev;
   }
+  (*n).magic = 0u64;
   gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
 }
 
 // Take the entry n out of the table: the caller moves the group out of it and
-// frees it
+// frees it. A node not in the table (its magic word is not set) is a runtime
+// bug and dies here, before anything is unlinked
 fn groupTake(n: *GNode) {
   gL();
+  if (*n).magic != gMagic {
+    gU();
+    die("actors: a reply made in a cancel group has no group noted");
+  }
   groupUnlink(n);
   gU();
 }
@@ -3372,7 +3398,7 @@ pub fn resumeId[S](st: &mut S, run: *u8, id: u64, data: *u8) {
 // resume function and the id, then the value (or a pointer to the box that
 // holds it). The resume function takes the value out; a box is freed after
 // it has (REPLIES, above)
-fn resumeSlot[S](st: *S, h: *Header, p: *u8, kind: u64) {
+fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
   let id0 = *((p + 8usize) as *u64);
   if (id0 & groupBit) == 0u64 {
     resumeSlotIn[S](st, p, kind, id0);
