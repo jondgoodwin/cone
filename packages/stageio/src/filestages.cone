@@ -176,11 +176,12 @@ pub actor FileSource is ChunkSource {
   at: u64;
   pumping: bool;
   over: bool;
-  halt: bool;                   // cancelled while a read was in flight
+  halt: bool;                   // cancelled or stopped while a read was in flight
+  why: Option[Ending];          // the stop's reason, kept for the end when a read was in flight
 
   pub fn init(self: &new, down: ChunkSink, name: String) {
     *self = Self(down: down, link: ChunkWindow.own(linkWindow), name: name, file: File.none(),
-      at: 0u64, pumping: false, over: false, halt: false);
+      at: 0u64, pumping: false, over: false, halt: false, why: None[Ending]);
     down.attach(selfactor);
   }
 
@@ -206,7 +207,7 @@ pub actor FileSource is ChunkSource {
     var more = true;
     while more {
       if halt || actors.isCancelled() {
-        self.stop(Ending.Failed(AnyError.msg("streams: cancelled")));
+        self.finishHalted();
         more = false;
       } else {
         match link.take(linkBytes) {
@@ -217,11 +218,11 @@ pub actor FileSource is ChunkSource {
               case let Ok(buf) {
                 if halt {
                   link.give(buf);
-                  self.stop(Ending.Failed(AnyError.msg("streams: cancelled")));
+                  self.finishHalted();
                   more = false;
                 } else if buf.isEmpty() {
                   link.give(buf);
-                  self.stop(Ending.Finished);
+                  self.finish(Ending.Finished);
                   more = false;
                 } else {
                   at = at + u64.from(buf.len());
@@ -229,7 +230,7 @@ pub actor FileSource is ChunkSource {
                 }
               }
               case let Err(e) {
-                self.stop(Ending.Failed(AnyError.from(e)));
+                self.finish(Ending.Failed(AnyError.from(e)));
                 more = false;
               }
             }
@@ -245,14 +246,39 @@ pub actor FileSource is ChunkSource {
     if over { return; }
     if actors.isCancelled() {
       // a read in flight is let finish: the pump sees 'halt' when it resumes
-      if pumping { halt = true; } else { self.stop(Ending.Failed(AnyError.msg("streams: cancelled"))); }
+      if pumping { halt = true; } else { self.finishHalted(); }
     } else if !pumping {
       selfactor.pump();
     }
   }
 
+  // The consumer wants no more (ChunkSource.stop): a read in flight finishes and
+  // then the file is closed and the sink gets its one end, Failed(why). After the
+  // end, or a second stop, nothing happens. Buffers still out come back through giveBack.
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    if pumping {
+      halt = true;
+      why = Some[Ending](reason);
+    } else {
+      self.finish(reason);
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
   // The stream is over: the file is closed and the sink told
-  fn stop(self, how: Ending) {
+  fn finish(self, how: Ending) {
     over = true;
     var old = File.none();
     old <-> file;
