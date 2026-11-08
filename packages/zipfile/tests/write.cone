@@ -10,7 +10,16 @@ import collections use *;
 import zipfile use *;
 import deflate;
 import fs;
+import iobuf use IoBuf;
 import path use Path;
+
+// One pull of at most 'max' bytes through a pooled buffer, appended to 'all'
+fn pullInto(w: &mut ZipWriter, all: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(if max < 65536usize { max } else { 65536usize });
+  let st = w.pull(&mut buf, max);
+  all.appendSlice(buf.view());
+  st
+}
 
 fn why(a: &str, e: &ZipError) String {
   var s = String.from(a);
@@ -192,17 +201,17 @@ fn main() i32 {
       var x = ZipWriter.make();
       expect(x.add("one.txt", body.view(), &EntryOptions.plain()) is Ok, "pieces: add");
       var got = List[u8]();
-      var st = x.pull(&mut got, pieceSizes[k]);
+      var st = pullInto(&mut x, &mut got, pieceSizes[k]);
       if pieceSizes[k] < 1000usize { expect(st == Status.MoreOutput, "pieces: an entry waits to be pulled"); }
       var guard = 0usize;
-      while st == Status.MoreOutput && guard < 2000000usize { st = x.pull(&mut got, pieceSizes[k]); guard += 1usize; }
+      while st == Status.MoreOutput && guard < 2000000usize { st = pullInto(&mut x, &mut got, pieceSizes[k]); guard += 1usize; }
       expect(st == Status.NeedInput, "pieces: pulled dry, the writer wants more or the end");
       expect(x.add("two.txt", "second\n", &EntryOptions.stored()) is Ok, "pieces: add again after pulling");
       expect(x.finish() is Ok, "pieces: finish");
       st = Status.MoreOutput;
-      while st == Status.MoreOutput && guard < 4000000usize { st = x.pull(&mut got, pieceSizes[k]); guard += 1usize; }
+      while st == Status.MoreOutput && guard < 4000000usize { st = pullInto(&mut x, &mut got, pieceSizes[k]); guard += 1usize; }
       expect(st == Status.Done, "pieces: Done after the end is pulled");
-      expect(x.pull(&mut got, 10usize) == Status.Done, "pieces: and stays Done");
+      expect(pullInto(&mut x, &mut got, 10usize) == Status.Done, "pieces: and stays Done");
       match Archive.open(got.view()) {
         case let Err(e) { expect(false, why("pieces: the archive opens", &e).view()); }
         case let Ok(ar) {
