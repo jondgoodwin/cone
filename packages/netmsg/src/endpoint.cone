@@ -41,9 +41,9 @@
 // is not "running", so the program's end does not wait for it (aio's header,
 // THE PROGRAM'S END); the peers then time out as for any lost datagram.
 //
-// STILL SHARED: events reach the application through one EventHandler closure
-// under Arc[Mutex] for all connections, because actors cannot yet be generic or
-// take a trait; it becomes direct actor messages once they can.
+// EVENTS reach the application through one EventHandler, a ValueSink[NetEvent]
+// shared by all the connections (see events.cone and Connection); the endpoint's
+// own Left (a dial that failed, with no connection) goes to it directly.
 
 // A connection an endpoint holds
 struct ConnectionSlot {
@@ -274,7 +274,7 @@ pub actor Endpoint {
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
         dialing = false;
-        (&mut *handler).call(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
+        handler.accept(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
       }
     }
     var i = 0usize;
@@ -366,7 +366,7 @@ pub actor Endpoint {
       }
       case is Refused {
         dialing = false;
-        (&mut *handler).call(NetEvent.Left(1u32, CloseReason.Refused));
+        handler.accept(NetEvent.Left(1u32, CloseReason.Refused));
       }
       case is Nothing {}
     }

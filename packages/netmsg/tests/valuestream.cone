@@ -1,0 +1,350 @@
+// Events as a stream of values with credit: a connection sends its handler an event
+// only against credit the handler has granted. A handler that is slow slows the
+// connection, or ends it. Over in-process pairs, so no socket and no packets:
+//  (a) a sink that grants only a window gets reliable messages in order, and the
+//      connection ends Overflow when more wait than the bound (256)
+//  (b) a latest-wins stream at zero credit: of 1000 values exactly the newest
+//      is sent once credit comes, and the rest are counted in latestStale
+//  (c) Left follows every queued message
+//  (d) Joined and Left pass with no credit
+//  (e) two connections into one sink: credit goes to the right one, by id
+//  (f) the sink's stop closes the connection with CloseReason.Local
+
+mod valuestream;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration;
+import actors;
+import stages use ValueSink, ValueSource, Ending;
+import netmsg use *;
+
+fn reasonText(r: CloseReason) &str {
+  match r {
+    case is Local {"local"}
+    case is Remote {"remote"}
+    case is TimedOut {"timeout"}
+    case is Overflow {"overflow"}
+    case is Refused {"refused"}
+    case is NoAnswer {"noanswer"}
+  }
+}
+
+// An event as text: J1, L1:reason, M1:text, U1:stream:text, R1
+fn describe(e: NetEvent) String {
+  var s = String();
+  match e {
+    case let Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case let Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+    case let Message(m) {
+      s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
+      s.append(String.fromBytes(m.data.view()).view());
+    }
+    case let Update(u) {
+      s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
+      s.append(":"); s.append(String.fromBytes(u.data.view()).view());
+    }
+    case let Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+  }
+  s
+}
+
+// The next event as text, or "none" if none comes within ms
+fn next(rx: &mut Receiver[NetEvent], ms: i64) String {
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(e) { return describe(e); }
+    case is None[NetEvent] {}
+  }
+  String.from("none")
+}
+
+fn bytes(s: &str) List[u8] {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  b
+}
+
+// "m" and a number, as text
+fn numbered(prefix: &str, n: usize) String {
+  var s = String();
+  s.append(prefix);
+  s.appendUInt(u64.from(n));
+  s
+}
+
+// A sink that grants credit only as told: 'first' units when attached (none if 0),
+// 'give(n)' more on request, one per event once 'auto' is on. Events go to a channel.
+actor ManualSink is ValueSink[NetEvent] {
+  tx: Sender[NetEvent];
+  first: u32;
+  auto: bool;
+  up: Option[ValueSource];
+
+  pub fn init(self: &new, tx: Sender[NetEvent], first: u32) {
+    *self = Self(tx: tx, first: first, auto: false, up: None[ValueSource]);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    if first > 0u32 { source.credit(first); }
+  }
+
+  pub async fn accept(self, ev: NetEvent) {
+    tx.send(ev);
+    if auto { self.give(1u32); }
+  }
+
+  pub async fn end(self, how: Ending) {}
+
+  // n more events may come
+  pub async fn give(self, n: u32) {
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else {}
+    }
+  }
+
+  // From now on, one unit back for each event
+  pub async fn autoOn(self) {
+    auto = true;
+    self.give(first);
+  }
+
+  // The sink wants no more
+  pub async fn quit(self) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Finished); }
+      else {}
+    }
+  }
+}
+
+fn manual(tx: Sender[NetEvent], first: u32) EventHandler {
+  let s: EventHandler = ManualSink(tx, first);
+  s
+}
+
+// The sink itself, for calls that are not the handler's
+fn makeSink(tx: Sender[NetEvent], first: u32) ManualSink {
+  ManualSink(tx, first)
+}
+
+// Reads a connection's measurements, with 'await'
+actor Prober {
+  pub async fn ask(self, c: Connection, out: Sender[ConnectionStats]) {
+    let s = await c.stats();
+    out.send(s);
+  }
+}
+
+fn main() i32 {
+  // (a) a sink that grants a window of 4 and then waits: 260 messages wait, the 261st
+  // is too many
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 4u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "a control event passes");
+    var i = 1usize;
+    while i <= 300usize {
+      pair.a.sendReliable(bytes(numbered("m", i).view()));
+      i = i + 1usize;
+    }
+    actors.waitQuiet();
+    var inOrder = true;
+    i = 1usize;
+    while i <= 4usize {
+      if next(&mut rxB, 1000i64).view() != numbered("M7:m", i).view() { inOrder = false; }
+      i = i + 1usize;
+    }
+    expect(inOrder, "the credited four arrive, in order");
+    expectStr(next(&mut rxB, 200i64).view(), "none", "and nothing more without credit");
+    sink.autoOn();
+    inOrder = true;
+    i = 5usize;
+    while i <= 260usize {
+      if next(&mut rxB, 1000i64).view() != numbered("M7:m", i).view() { inOrder = false; }
+      i = i + 1usize;
+    }
+    expect(inOrder, "the 256 that waited arrive in order once credit comes");
+    expectStr(next(&mut rxB, 1000i64).view(), "L7:overflow", "then the connection ended Overflow, after them");
+    expectStr(next(&mut rxA, 1000i64).view(), "J1", "the other end joined");
+    expectStr(next(&mut rxA, 1000i64).view(), "L1:remote", "and was told it ended");
+    expectStr(next(&mut rxB, 200i64).view(), "none", "nothing after Left");
+  }
+
+  // (b) latest-wins at zero credit: 1000 values, one is delivered
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 1u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "joined");
+    pair.a.sendLatest(5u16, bytes("v0"));
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:5:v0", "the one credit sends the first value");
+    var i = 1usize;
+    while i <= 1000usize {
+      pair.a.sendLatest(5u16, bytes(numbered("v", i).view()));
+      i = i + 1usize;
+    }
+    actors.waitQuiet();
+    expectStr(next(&mut rxB, 200i64).view(), "none", "none arrives while there is no credit");
+    var txP: Sender[ConnectionStats];
+    var rxP: Receiver[ConnectionStats];
+    txP, rxP = Channel[ConnectionStats].make();
+    Prober().ask(pair.b, txP);
+    var stale = 0u64;
+    match rxP.recvTimeout(Duration.fromMillis(2000i64)) {
+      case let Some(st) { stale = st.latestStale; }
+      case is None[ConnectionStats] {}
+    }
+    expectUInt(stale, 999u64, "999 of the 1000 were replaced in the slot, and counted");
+    sink.give(1u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "U7:5:v1000", "credit comes: exactly the newest arrives");
+    expectStr(next(&mut rxB, 200i64).view(), "none", "and no other");
+  }
+
+  // (c) and (d) Left follows every queued message; Joined and Left need no credit
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 1u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "joined");
+    pair.a.sendReliable(bytes("one"));
+    expectStr(next(&mut rxB, 1000i64).view(), "M7:one", "the credited message arrives");
+    pair.a.sendReliable(bytes("two"));
+    pair.a.sendReliable(bytes("three"));
+    pair.a.close();
+    actors.waitQuiet();
+    expectStr(next(&mut rxB, 200i64).view(), "none", "two messages wait, and the Left behind them");
+    sink.autoOn();
+    expectStr(next(&mut rxB, 1000i64).view(), "M7:two", "the waiting arrive in order");
+    expectStr(next(&mut rxB, 1000i64).view(), "M7:three", "all of them");
+    expectStr(next(&mut rxB, 1000i64).view(), "L7:remote", "and Left follows them");
+  }
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 0u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "Joined passes with no credit ever granted");
+    pair.b.sendReliable(bytes("x"));
+    pair.b.sendReliable(filledTooLarge());
+    pair.a.sendReliable(bytes("held"));
+    expectStr(next(&mut rxB, 1000i64).view(), "R7", "Refused passes with no credit");
+    expectStr(next(&mut rxB, 200i64).view(), "none", "the message waits");
+    pair.a.close();
+    actors.waitQuiet();
+    expectStr(next(&mut rxB, 200i64).view(), "none", "Left waits behind the message");
+  }
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 0u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "Joined passes with no credit ever granted");
+    pair.a.close();
+    expectStr(next(&mut rxB, 1000i64).view(), "L7:remote", "so does Left, with nothing before it");
+  }
+
+  // (e) two connections, one sink: each is credited by its id, so both run past the window
+  {
+    var txS: Sender[NetEvent];
+    var rxS: Receiver[NetEvent];
+    txS, rxS = Channel[NetEvent].make();
+    var txX: Sender[NetEvent];
+    var rxX: Receiver[NetEvent];
+    txX, rxX = Channel[NetEvent].make();
+    var txY: Sender[NetEvent];
+    var rxY: Receiver[NetEvent];
+    txY, rxY = Channel[NetEvent].make();
+    let server = channelHandler(txS);
+    let p1 = pairInProcess(server, 1u32, channelHandler(txX), 1u32);
+    let p2 = pairInProcess(server, 2u32, channelHandler(txY), 1u32);
+    var i = 1usize;
+    while i <= 200usize {
+      p1.b.sendReliable(bytes(numbered("a", i).view()));
+      p2.b.sendReliable(bytes(numbered("b", i).view()));
+      i = i + 1usize;
+    }
+    var n1 = 0usize;
+    var n2 = 0usize;
+    var ok = true;
+    var got = 0usize;
+    while got < 402usize {
+      let s = next(&mut rxS, 2000i64);
+      if s.view() == "none" { break; }
+      got = got + 1usize;
+      if s.view() == "J1" || s.view() == "J2" { continue; }
+      if s.view().startsWith("M1:") {
+        n1 = n1 + 1usize;
+        if s.view() != numbered("M1:a", n1).view() { ok = false; }
+      } else if s.view().startsWith("M2:") {
+        n2 = n2 + 1usize;
+        if s.view() != numbered("M2:b", n2).view() { ok = false; }
+      } else {
+        ok = false;
+      }
+    }
+    expectUInt(u64.from(n1), 200u64, "all 200 of id 1 arrive, past the window of 64");
+    expectUInt(u64.from(n2), 200u64, "and all 200 of id 2");
+    expect(ok, "each in its own order");
+  }
+
+  // (f) the sink's stop closes the connection, Local
+  {
+    var txA: Sender[NetEvent];
+    var rxA: Receiver[NetEvent];
+    txA, rxA = Channel[NetEvent].make();
+    var txB: Sender[NetEvent];
+    var rxB: Receiver[NetEvent];
+    txB, rxB = Channel[NetEvent].make();
+    let sink = makeSink(txB, 8u32);
+    let h: EventHandler = sink;
+    let pair = pairInProcess(channelHandler(txA), 1u32, h, 7u32);
+    expectStr(next(&mut rxB, 1000i64).view(), "J7", "joined");
+    sink.quit();
+    expectStr(next(&mut rxB, 1000i64).view(), "L7:local", "the sink's stop ends its connection Local");
+    expectStr(next(&mut rxA, 1000i64).view(), "J1", "the other end joined");
+    expectStr(next(&mut rxA, 1000i64).view(), "L1:remote", "and hears the other end closed");
+  }
+  done()
+}
+
+fn filledTooLarge() List[u8] {
+  var b = List[u8]();
+  var i = 0usize;
+  while i < 1174usize {
+    b.push(120u8);
+    i = i + 1usize;
+  }
+  b
+}

@@ -42,8 +42,10 @@
 	<h2 id="using">Using it</h2>
 	<p>An application talks to a connection as an actor talks to any actor: it sends messages to a
 		<span class="pre">Connection</span>, and what the other end sends arrives as events at a
-		<span class="pre">EventHandler</span>, a closure of the application's own that hands each event on, usually as a message to
-		an application actor. A server's one handler serves all its clients, told apart by the id each event carries.</p>
+		<span class="pre">EventHandler</span>, a <span class="pre">ValueSink[NetEvent]</span> (an actor of the application's own, or a
+		small one made from a closure or a channel). A connection sends it events only against credit the handler has granted, so a
+		slow handler slows its connection (or ends it) and never blocks it. A server's one handler serves all its clients, told
+		apart by the id each event carries.</p>
 <pre>
 mod hello;
 
@@ -98,8 +100,16 @@ fn main() {
 	<li><span class="pre">eventHandler(f)</span> makes an <span class="pre">EventHandler</span> of a closure
 		(<span class="pre">Uni[fn(ev: NetEvent) + Sendable]</span>); <span class="pre">channelHandler(tx)</span> makes one that puts
 		each event on a <span class="pre">Sender[NetEvent]</span>, for a thread that is not an actor (a frame loop drains the
-		receiving end each frame). The closure must not wait. It is called under a lock, so one handler shared by
-		many connections is called one event at a time.</li>
+		receiving end each frame). Both are small actors that grant each connection a window of 64 events when it
+		attaches and one more for each event they have handled; the closure must not wait. A handler of your own is an
+		actor that is a <span class="pre">ValueSink[NetEvent]</span>: it keeps the <span class="pre">Connection</span> each
+		<span class="pre">Joined</span> carries, grants it credit with <span class="pre">credit(n)</span> as it takes events (finding it by
+		the event's <span class="pre">id</span>), forgets it on <span class="pre">Left</span>, and may end a connection with
+		<span class="pre">stop(why)</span> (it ends <span class="pre">Local</span>). <span class="pre">Joined</span>,
+		<span class="pre">Left</span> and <span class="pre">Refused</span> need no credit; a <span class="pre">Left</span> still follows the
+		messages before it. While a handler has no credit, up to 256 reliable messages wait for it, and past that the connection ends with
+		<span class="pre">Overflow</span>; of a latest-wins stream only the newest value waits, and the ones it replaced are counted in
+		<span class="pre">latestStale</span>.</li>
 	<li><span class="pre">mustListen(addr, cfg, h)</span> binds a UDP socket and accepts clients;
 		<span class="pre">mustConnect(addr, cfg, h)</span> dials a server, the handshake running in the background (the handler
 		hears <span class="pre">Joined</span>, or <span class="pre">Left</span> with <span class="pre">NoAnswer</span> or
@@ -272,8 +282,8 @@ while ms &lt; 3000i64 {
 		deadline any connection has, to tick the ones that are due (aio's sleep; it never waits on a worker thread,
 		and there is no fixed tick). Each connection is an actor that drives its
 		<span class="pre">ConnectionCore</span>. Nothing waits in an actor. On Windows the I/O thread's loop is an I/O completion port, on Linux epoll;
-		<span class="pre">netmsg</span> binds no operating system call of its own. The events still reach the application through
-		one closure shared by every connection (under a lock), since actors cannot yet be generic.</p>
+		<span class="pre">netmsg</span> binds no operating system call of its own. The events reach the application as a value stream with credit: one
+		<span class="pre">ValueSink[NetEvent]</span> shared by every connection.</p>
 
 	<h2>Comes back in</h2>
 	<ul>
