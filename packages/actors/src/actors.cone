@@ -2393,6 +2393,10 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   while n < limit && (*h).par as usize == 0usize {
     let slot = ringPeek(h);
     if slot as usize == 0usize {
+      #if #defined("GC_EMPTY") {
+        // GC lab: the mailbox is empty; the actor may collect now, with no message waiting
+        afterEmpty(h, st as *u8, rec);
+      }
       curActor = 0usize;
       reclaim(h);
       return n;
@@ -2494,6 +2498,14 @@ fn afterMessage(h: *Header, st: *u8, rec: *TypeRecord) {
     return;
   }
   collectIfDue((*h).gc as &mut ActorRegion, st, rec);
+}
+
+// GC lab (GC_EMPTY): the mailbox emptied; collect if the region allocated past the floor
+fn afterEmpty(h: *Header, st: *u8, rec: *TypeRecord) {
+  if (*h).gc as usize == 0usize || (*h).par as usize != 0usize {
+    return;
+  }
+  collectIfEmpty((*h).gc as &mut ActorRegion, st, rec);
 }
 
 // The rest of a behaviour cut at its 'parallel each', run as a reply's dispatch

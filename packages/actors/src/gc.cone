@@ -112,6 +112,58 @@
 // only ever run by the worker running that actor.
 
 // ---------------------------------------------------------------------------
+// THE GC LAB (a lab copy of this file, never merged): collector variants chosen
+// at build time with congo's '-D NAME=value'. With none given this is the
+// collector described above, unchanged. Notes: C:\src\zz-gc-lab-collector-notes.md
+//
+//   GC_FACTOR=2|3|4|5|6|8   collect when the heap would be this multiple of the live bytes (2 = today)
+//   GC_ADAPT=<percent>      adaptive trigger: steer the factor (150..1600) toward this share of time in collection
+//   GC_EMPTY=1              also collect when the actor's mailbox empties (GC_EMPTYFLOOR bytes allocated, default 8192)
+//   GC_RECLAIM=0|1|2        0 copy everything (today); 1 mark in place, Immix-style blocks and lines;
+//                           2 as 1 plus evacuation of sparse blocks while marking (GC_EVAC_FRAG, GC_EVAC_SPARSE percent)
+//   GC_CHECK=1              after every collection, walk the live graph and verify every reference
+// ---------------------------------------------------------------------------
+
+const factorInit = #if #define("GC_FACTOR") == 3 {300usize} #elif #define("GC_FACTOR") == 4 {400usize}
+  #elif #define("GC_FACTOR") == 5 {500usize} #elif #define("GC_FACTOR") == 6 {600usize}
+  #elif #define("GC_FACTOR") == 8 {800usize} #else {200usize};
+// (A build fact can only be read in a '#if' condition, so each number a flag may take is listed.)
+const adaptOn = #if #defined("GC_ADAPT") {true} #else {false};
+const adaptTarget = #if #define("GC_ADAPT") == 1 {1usize} #elif #define("GC_ADAPT") == 2 {2usize}
+  #elif #define("GC_ADAPT") == 3 {3usize} #elif #define("GC_ADAPT") == 5 {5usize}
+  #elif #define("GC_ADAPT") == 8 {8usize} #elif #define("GC_ADAPT") == 10 {10usize}
+  #elif #define("GC_ADAPT") == 15 {15usize} #elif #define("GC_ADAPT") == 20 {20usize}
+  #elif #define("GC_ADAPT") == 25 {25usize} #elif #define("GC_ADAPT") == 30 {30usize}
+  #elif #define("GC_ADAPT") == 40 {40usize} #elif #define("GC_ADAPT") == 50 {50usize} #else {10usize};
+const emptyOn = #if #defined("GC_EMPTY") {true} #else {false};
+const emptyFloor = #if #define("GC_EMPTYFLOOR") == 1024 {1024usize} #elif #define("GC_EMPTYFLOOR") == 4096 {4096usize}
+  #elif #define("GC_EMPTYFLOOR") == 16384 {16384usize} #elif #define("GC_EMPTYFLOOR") == 65536 {65536usize}
+  #elif #define("GC_EMPTYFLOOR") == 262144 {262144usize} #else {8192usize};
+// GC lab, added at the harness join: GC_EMPTYPCT = 25, 50 or 75: the empty-mailbox collection waits until the bytes allocated since the last
+// collection pass that per cent of the trigger's own amount (and the floor), so its cost follows the live size as the trigger's does. Unset: the
+// floor alone (the first version of the variant, which collects after nearly every message on a large live set)
+const emptyPct = #if #define("GC_EMPTYPCT") == 25 {25usize} #elif #define("GC_EMPTYPCT") == 50 {50usize}
+  #elif #define("GC_EMPTYPCT") == 75 {75usize} #else {0usize};
+const reclaimMode = #if #define("GC_RECLAIM") == 1 {1usize} #elif #define("GC_RECLAIM") == 2 {2usize} #else {0usize};
+const checkOn = #if #defined("GC_CHECK") {true} #else {false};
+// GC_STICKY=1 (on GC_RECLAIM=1 only): minor and full collections. Mark bits stay between collections, so a marked object is old; a minor
+// collection traces from the roots and the remembered set only, and sweeps only the blocks allocated into since the last collection; a full
+// collection clears the marks and traces everything. GC_NURSERY (KiB allocated between collections) 256, 1024, 4096; GC_FULLEVERY: a full
+// collection after this many minors, 8, 32, 128. Old objects written to are logged by 'wrote' (the workload's barrier call).
+const stickyOn = #if #defined("GC_STICKY") { reclaimMode == 1usize } #else {false};
+const nurseryBytes = #if #define("GC_NURSERY") == 256 {262144usize} #elif #define("GC_NURSERY") == 4096 {4194304usize} #else {1048576usize};
+const fullEvery = #if #define("GC_FULLEVERY") == 8 {8usize} #elif #define("GC_FULLEVERY") == 128 {128usize} #else {32usize};
+// Evacuation: candidates are chosen when the free room inside partly used blocks passes evacFrag per cent of
+// those blocks' room; a block is a candidate when under evacSparse per cent of its room is live
+const evacFrag = #if #define("GC_EVAC_FRAG") == 5 {5usize}
+  #elif #define("GC_EVAC_FRAG") == 10 {10usize} #elif #define("GC_EVAC_FRAG") == 30 {30usize}
+  #elif #define("GC_EVAC_FRAG") == 40 {40usize} #elif #define("GC_EVAC_FRAG") == 50 {50usize}
+  #elif #defined("GC_EVAC_FRAG") && #define("GC_EVAC_FRAG") == 0 {0usize} #else {20usize};
+const evacSparse = #if #define("GC_EVAC_SPARSE") == 25 {25usize} #elif #define("GC_EVAC_SPARSE") == 33 {33usize}
+  #elif #define("GC_EVAC_SPARSE") == 66 {66usize} #elif #define("GC_EVAC_SPARSE") == 75 {75usize}
+  #elif #define("GC_EVAC_SPARSE") == 90 {90usize} #else {50usize};
+
+// ---------------------------------------------------------------------------
 // The knobs: set before the first actor allocates, for the process
 // ---------------------------------------------------------------------------
 
@@ -165,6 +217,12 @@ fn readEnv() {
   envOnce.callOnce(&readEnvOnce);
 }
 
+// Clock ticks (clockTicks, actors.cone) as nanoseconds
+fn ticksToNs(t: usize) usize {
+  let f = usize.from(clockFrequency());
+  (t / f) * 1000000000usize + ((t % f) * 1000000000usize) / f
+}
+
 // ---------------------------------------------------------------------------
 // The region: a header before each value
 // ---------------------------------------------------------------------------
@@ -172,6 +230,8 @@ fn readEnv() {
 const flagLarge = 1u32;      // a block of its own, never moved: 'link' chains the large objects
 const flagForwarded = 2u32;  // copied, in this collection: 'link' is where
 const flagMarked = 4u32;     // a large object reached in this collection
+const flagOld = 8u32;        // (GC_STICKY) a large object a collection has kept: not traced by a minor one
+const flagLogged = 16u32;    // (GC_STICKY) an old object in the remembered set
 
 // The header before every value. It is a collector's data, so its fields are
 // public, but a program never holds one.
@@ -201,8 +261,98 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
     if sp == null {
       return;
     }
-    (sp as &mut ActorRegion).markObject(self as *ActorGc, slot);
+    let r = sp as &mut ActorRegion;
+    if r.verifying {
+      r.verifyRef(self as *ActorGc as usize);
+    } else if reclaimMode == 0usize {
+      r.markObject(self as *ActorGc, slot);
+    } else {
+      r.markObjectMark(self as *ActorGc, slot);
+    }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The mark variants' blocks (GC_RECLAIM 1 and 2): Immix's, a block of 32 KiB
+// aligned to 32 KiB, in lines of 128 bytes. The first five lines of a block
+// hold its record, a line mark per line and a mark bit per 16 bytes (the side
+// table: marking writes only here and never an object's line); the objects
+// are in the other 251 lines. An object is at most 4096 bytes and sits
+// inside one block, its bytes on the lines it covers.
+// ---------------------------------------------------------------------------
+
+const blockBytes = 32768usize;
+const lineBytes = 128usize;
+const linesPerBlock = 256usize;
+const firstLine = 5usize;
+const blockMeta = 640usize;       // firstLine * lineBytes
+const lineOff = 64usize;          // the line marks, a byte a line
+const bitmapOff = 320usize;       // the mark bits, a bit per 16 bytes of the block
+const flagRecyclable = 1u32;      // BlockInfo.flags: in the recycle list, not yet allocated in since the sweep
+const flagCandidate = 2u32;       // BlockInfo.flags: its live objects are evacuated in this collection
+
+// A block's record, at the block's start
+struct BlockInfo {
+  pub raw: usize;      // what RawBlocks gave (the block is aligned inside it)
+  pub next: usize;     // the next block of the recycle list or the free list
+  pub live: u32;       // bytes the last collection marked in the block
+  pub flags: u32;
+  pub pad0: usize;
+  pub pad1: usize;
+}
+
+// Is the object at 'a' (its header) marked in its block's side table?
+fn markedAt(a: usize) bool {
+  let blk = a & (0usize - blockBytes);
+  let idx = (a - blk) >> 4usize;
+  let wp = (blk + bitmapOff + (idx >> 6usize) * 8usize) as *u64;
+  ((*wp) & (1u64 << u64.from(idx & 63usize))) != 0u64
+}
+
+// A hash set of nonzero addresses in malloc'd memory (the verification's)
+fn setSlot(key: usize, cap: usize) usize {
+  ((key >> 4usize) ^ (key >> 12usize) ^ (key >> 21usize)) & (cap - 1usize)
+}
+
+fn setHas(tab: *usize, cap: usize, key: usize) bool {
+  var i = setSlot(key, cap);
+  while *(tab + i) != 0usize {
+    if *(tab + i) == key {
+      return true;
+    }
+    i = (i + 1usize) & (cap - 1usize);
+  }
+  false
+}
+
+// Add key; true if it was not there
+fn setAdd(tab: *usize, cap: usize, key: usize) bool {
+  var i = setSlot(key, cap);
+  while *(tab + i) != 0usize {
+    if *(tab + i) == key {
+      return false;
+    }
+    i = (i + 1usize) & (cap - 1usize);
+  }
+  *(tab + i) = key;
+  true
+}
+
+// A power of two of at least n, for a table that holds n entries with room
+fn setCap(n: usize) usize {
+  var c = 16usize;
+  while c < n * 2usize {
+    c = c * 2usize;
+  }
+  c
+}
+
+fn setMake(cap: usize) *usize {
+  let t = libc.calloc(cap, mem.sizeof[usize]()) as *usize;
+  if t == null {
+    panic("ActorGc: out of memory for a check");
+  }
+  t
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +387,30 @@ pub struct GcStats {
   pub survived: usize;       // bytes that survived the last collection
   pub blocks: usize;         // bytes held now in the blocks of collections made in the region
   pub spare: usize;          // bytes of old chunks kept for the next allocations (the SPARE list)
+  // THE GC LAB's counters, appended. 'copied' above counts the objects a collection kept (copied, or marked
+  // in place, or evacuated); these say what a collection really did
+  pub nsCollecting: usize;   // nanoseconds spent in collections, in all
+  pub maxPauseNs: usize;     // the longest one collection took
+  pub movedObjects: usize;   // objects actually moved (copied or evacuated), in all
+  pub movedBytes: usize;     // their bytes (the 'bytes copied')
+  pub markedObjects: usize;  // objects marked in place, in all (mark variants)
+  pub liveBytes: usize;      // heap bytes the last collection kept, large objects included (not collection blocks)
+  pub heapBlocks: usize;     // chunks (copying) or blocks (mark variants) held now, spare and free ones too
+  pub freeBlocks: usize;     // of the blocks, those holding nothing (mark variants)
+  pub fragPercent: usize;    // free room inside partly used blocks, per cent of their room, at the last sweep
+  pub evacBlocks: usize;     // blocks chosen for evacuation, in all
+  pub factor: usize;         // the trigger's factor now, per cent (200 is 2x); moves only when adaptive
+  pub evacCollections: usize; // collections that evacuated at least one block (GC lab, added by the lab harness)
+  // GC_STICKY counters (zero in every other build)
+  pub minorCollections: usize;
+  pub fullCollections: usize;
+  pub maxMinorPauseNs: usize;
+  pub maxFullPauseNs: usize;
+  pub nsMinor: usize;
+  pub nsFull: usize;
+  pub barrierCalls: usize;    // calls of 'wrote'
+  pub remPeak: usize;         // the remembered set's largest size (objects), at a collection
+  pub remLogged: usize;       // objects logged in all (a barrier call that found an old, unlogged object)
 }
 
 // An actor's region: its chunks, its large objects, its final list, and what
@@ -278,6 +452,65 @@ pub struct ActorRegion {
   nfreed: usize = 0usize;
   blocks: usize = 0usize;         // bytes held in the blocks of collections made here
   epoch: u32 = 0u32;
+  // ---- THE GC LAB ----
+  factor100: usize = 0usize;      // the trigger's factor, per cent; 0 until first used (factorInit)
+  lastEnd: usize = 0usize;        // clock ticks when the last collection ended (0: none yet)
+  ticksTotal: usize = 0usize;     // clock ticks spent in collections
+  ticksMax: usize = 0usize;       // the longest collection, in ticks
+  nmoved: usize = 0usize;
+  bytesMoved: usize = 0usize;
+  nmarked: usize = 0usize;
+  liveHeap: usize = 0usize;       // liveNow of the last collection
+  fragPct: usize = 0usize;
+  nevacBlocks: usize = 0usize;
+  nevacColl: usize = 0usize;
+  // GC_STICKY
+  rem: *usize = null;             // the remembered set: headers of old objects written to since the last collection
+  nrem: usize = 0usize;
+  caprem: usize = 0usize;
+  remPeak: usize = 0usize;
+  nlogged: usize = 0usize;
+  nbarrier: usize = 0usize;
+  tch: *usize = null;             // the blocks the allocator took since the last collection (the minor sweep's)
+  ntch: usize = 0usize;
+  captch: usize = 0usize;
+  finalsOld: usize = 0usize;      // the final list's entries before this index were there at the last collection
+  stickyReady: bool = false;      // a collection has run, so the marks mean old
+  sinceFull: usize = 0usize;      // minors since the last full collection
+  isMinor: bool = false;
+  nobjBase: usize = 0usize;
+  nminor: usize = 0usize;
+  nfull: usize = 0usize;
+  ticksMinor: usize = 0usize;
+  ticksFull: usize = 0usize;
+  ticksMinorMax: usize = 0usize;
+  ticksFullMax: usize = 0usize;
+  verifying: bool = false;        // GC_CHECK: a verification walk is running, 'mark' checks instead of marking
+  // mark variants: the blocks (GC_RECLAIM 1 and 2)
+  bk: *usize = null;              // every block held: its address
+  nbk: usize = 0usize;
+  capbk: usize = 0usize;
+  recycle: usize = 0usize;        // blocks with free lines, linked by BlockInfo.next, first to allocate in first
+  freeList: usize = 0usize;       // blocks holding nothing
+  nfree: usize = 0usize;
+  curBlock: usize = 0usize;       // the block the allocator is in
+  curLine: usize = 0usize;        // the line to look for the next hole from
+  cursor: usize = 0usize;         // bump through the current hole
+  limit: usize = 0usize;
+  evacBlock: usize = 0usize;      // the block evacuation copies into
+  evacCursor: usize = 0usize;
+  evacLimit: usize = 0usize;
+  evacOn: bool = false;           // this collection evacuates the candidate blocks
+  // verification's scratch: a hash set of addresses
+  vset: *usize = null;
+  vcap: usize = 0usize;
+  vcount: usize = 0usize;
+  vknown: *usize = null;          // the known object starts / blocks, as a set
+  vkcap: usize = 0usize;
+  vkcount: usize = 0usize;
+  vlarge: *usize = null;          // the large objects, as a set
+  vlcap: usize = 0usize;
+  vlcount: usize = 0usize;
 
   // A region holding nothing, made where it will stay: its three functions set
   // and its 'region' pointed at them
@@ -311,8 +544,16 @@ pub struct ActorRegion {
 
   // What the region holds and has done, for tests and tuning
   pub fn stats(self: &) GcStats {
+    var f = self.factor100;
+    if f == 0usize {
+      f = factorInit;
+    }
     GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
-      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks, self.nspare)
+      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks, self.nspare,
+      ticksToNs(self.ticksTotal), ticksToNs(self.ticksMax), self.nmoved, self.bytesMoved, self.nmarked,
+      self.liveHeap, self.nchunks, self.nfree, self.fragPct, self.nevacBlocks, f, self.nevacColl,
+      self.nminor, self.nfull, ticksToNs(self.ticksMinorMax), ticksToNs(self.ticksFullMax), ticksToNs(self.ticksMinor),
+      ticksToNs(self.ticksFull), self.nbarrier, self.remPeak, self.nlogged)
   }
 
   // ---- A collection's block: the region's allocate, resize and release ----
@@ -517,8 +758,10 @@ pub struct ActorRegion {
       p = RawBlocks.alloc(bytes, 16usize);
       flags = flagLarge;
       link = self.large;
-    } else {
+    } else if reclaimMode == 0usize {
       p = self.bump(bytes);
+    } else {
+      p = self.bumpBlock(bytes);
     }
     if p == null {
       return null;
@@ -604,6 +847,8 @@ pub struct ActorRegion {
     h.link = dst as usize;
     self.liveNow = self.liveNow + bytes;
     self.ncopied = self.ncopied + 1usize;
+    self.nmoved = self.nmoved + 1usize;
+    self.bytesMoved = self.bytesMoved + bytes;
     self.nobjects = self.nobjects + 1usize;
   }
 
@@ -719,8 +964,77 @@ pub struct ActorRegion {
   }
 
   // A collection: the state at 'st', whose type record is 'rec', and what the
-  // pending table parks with it, are the roots
+  // pending table parks with it, are the roots. The variant is reclaimMode's;
+  // the time it takes, the longest, and the adaptive factor are kept here
   fn collect(self: &mut, st: *u8, rec: *TypeRecord) {
+    if self.factor100 == 0usize {
+      self.factor100 = factorInit;
+    }
+    let t0 = usize.from(clockTicks());
+    var minor = false;
+    if stickyOn {
+      if self.stickyReady && self.sinceFull < fullEvery {
+        minor = true;
+        self.sinceFull = self.sinceFull + 1usize;
+      } else {
+        self.sinceFull = 0usize;
+      }
+      self.isMinor = minor;
+    }
+    if reclaimMode == 0usize {
+      self.collectCopy(st, rec);
+    } else {
+      self.collectMark(st, rec);
+    }
+    if checkOn {
+      self.verify(st, rec);
+    }
+    let t1 = usize.from(clockTicks());
+    let took = t1 - t0;
+    self.ticksTotal = self.ticksTotal + took;
+    if took > self.ticksMax {
+      self.ticksMax = took;
+    }
+    if stickyOn {
+      if minor {
+        self.nminor = self.nminor + 1usize;
+        self.ticksMinor = self.ticksMinor + took;
+        if took > self.ticksMinorMax {
+          self.ticksMinorMax = took;
+        }
+      } else {
+        self.nfull = self.nfull + 1usize;
+        self.ticksFull = self.ticksFull + took;
+        if took > self.ticksFullMax {
+          self.ticksFullMax = took;
+        }
+      }
+    }
+    if adaptOn {
+      // The share of time spent collecting since the last collection ended; the factor moves
+      // 25% toward fewer collections when over the target, toward more when well under it
+      if self.lastEnd != 0usize {
+        let since = t0 - self.lastEnd;
+        let share = (took * 1000usize) / (took + since + 1usize);
+        let target = adaptTarget * 10usize;
+        if share > target + target / 10usize {
+          self.factor100 = (self.factor100 * 5usize) / 4usize;
+          if self.factor100 > 1600usize {
+            self.factor100 = 1600usize;
+          }
+        } else if share + share / 10usize < target {
+          self.factor100 = (self.factor100 * 4usize) / 5usize;
+          if self.factor100 < 150usize {
+            self.factor100 = 150usize;
+          }
+        }
+      }
+    }
+    self.lastEnd = t1;
+  }
+
+  // The copying collection (today's): everything live is copied
+  fn collectCopy(self: &mut, st: *u8, rec: *TypeRecord) {
     self.epoch = self.epoch + 1u32;
     if self.epoch == 0u32 {
       self.epoch = 1u32;
@@ -745,7 +1059,21 @@ pub struct ActorRegion {
     }
     self.drain();
     self.finalizeDead();
-    // The large objects: freed unless reached; those kept are unmarked again
+    self.sweepLarge();
+    // The old chunks, whole, nothing points into them now: kept for the next
+    // allocations up to twice what survived (the copy to come and the allocation
+    // before the next collection), the rest given back
+    self.spareOld(oldChunks, self.liveNow * 2usize);
+    self.ncollections = self.ncollections + 1usize;
+    self.live = self.liveNow + self.blocks;
+    self.liveHeap = self.liveNow;
+    self.allocated = 0usize;
+    self.nobjects = self.nobjects + self.nlarge;
+    curActorRegion = null;
+  }
+
+  // The large objects: freed unless reached; those kept are unmarked again
+  fn sweepLarge(self: &mut) {
     var prev = 0usize;
     var at = self.large;
     var nlive = 0usize;
@@ -762,21 +1090,754 @@ pub struct ActorRegion {
         self.nfreed = self.nfreed + 1usize;
       } else {
         h.flags = h.flags & ~flagMarked;
+        if stickyOn {
+          h.flags = h.flags | flagOld;
+        }
         nlive = nlive + 1usize;
         prev = at;
       }
       at = next;
     }
     self.nlarge = nlive;
-    // The old chunks, whole, nothing points into them now: kept for the next
-    // allocations up to twice what survived (the copy to come and the allocation
-    // before the next collection), the rest given back
-    self.spareOld(oldChunks, self.liveNow * 2usize);
+  }
+
+  // ---- The mark variants: allocation in blocks ----
+
+  // A new block of 32 KiB aligned to 32 KiB, its record and side table cleared,
+  // listed with the others. RawBlocks aligns to 16, so twice the room is asked
+  fn newBlock(self: &mut) usize {
+    let raw = RawBlocks.alloc(blockBytes * 2usize, 16usize);
+    if raw == null {
+      panic("ActorGc: out of memory for a block");
+    }
+    let base = ActorRegion.roundUp(raw as usize, blockBytes);
+    libc.memset(base as *u8, 0, blockMeta);
+    (base as &mut BlockInfo).raw = raw as usize;
+    if self.nbk == self.capbk {
+      var cap = 16usize;
+      if self.capbk != 0usize {
+        cap = self.capbk * 2usize;
+      }
+      let grown = libc.realloc(self.bk as *u8, cap * mem.sizeof[usize]()) as *usize;
+      if grown == null {
+        panic("ActorGc: out of memory for the block list");
+      }
+      self.bk = grown;
+      self.capbk = cap;
+    }
+    *(self.bk + self.nbk) = base;
+    self.nbk = self.nbk + 1usize;
+    self.nchunks = self.nbk;
+    self.bytes = self.nbk * blockBytes;
+    base
+  }
+
+  // The block to allocate in next: a recyclable one (free lines among live
+  // ones), else an empty one, else a new one
+  fn takeBlock(self: &mut) usize {
+    if self.recycle != 0usize {
+      let b = self.recycle;
+      let info = b as &mut BlockInfo;
+      self.recycle = info.next;
+      info.next = 0usize;
+      info.flags = info.flags & ~flagRecyclable;
+      self.touch(b);
+      return b;
+    }
+    let f = self.takeFree();
+    self.touch(f);
+    f
+  }
+
+  // (GC_STICKY) the allocator takes block 'b': the next minor collection sweeps it
+  fn touch(self: &mut, b: usize) {
+    if !stickyOn {
+      return;
+    }
+    if self.ntch == self.captch {
+      var cap = 64usize;
+      if self.captch != 0usize {
+        cap = self.captch * 2usize;
+      }
+      let grown = libc.realloc(self.tch as *u8, cap * mem.sizeof[usize]()) as *usize;
+      if grown == null {
+        panic("ActorGc: out of memory for the touched blocks");
+      }
+      self.tch = grown;
+      self.captch = cap;
+    }
+    *(self.tch + self.ntch) = b;
+    self.ntch = self.ntch + 1usize;
+  }
+
+  // An empty block, from the free list or new
+  fn takeFree(self: &mut) usize {
+    if self.freeList != 0usize {
+      let b = self.freeList;
+      let info = b as &mut BlockInfo;
+      self.freeList = info.next;
+      info.next = 0usize;
+      self.nfree = self.nfree - 1usize;
+      self.nspare = self.nfree * blockBytes;
+      return b;
+    }
+    self.newBlock()
+  }
+
+  // The next hole in block 'blk' at or after line 'from' that holds 'need'
+  // bytes: the allocator's cursor and limit are set to it
+  fn nextHole(self: &mut, blk: usize, from: usize, need: usize) bool {
+    let marks = (blk + lineOff) as *u8;
+    let lines = (need + lineBytes - 1usize) >> 7usize;
+    var l = from;
+    while l < linesPerBlock {
+      if *(marks + l) == 0u8 {
+        var e = l;
+        while e < linesPerBlock && *(marks + e) == 0u8 {
+          e = e + 1usize;
+        }
+        if e - l >= lines {
+          self.cursor = blk + l * lineBytes;
+          self.limit = blk + e * lineBytes;
+          self.curLine = e;
+          return true;
+        }
+        l = e;
+      } else {
+        l = l + 1usize;
+      }
+    }
+    false
+  }
+
+  // Room for an object of 'bytes' bytes: bump through the current hole, else
+  // the next hole that fits, in this block and then in the next ones
+  fn bumpBlock(self: &mut, bytes: usize) *u8 {
+    if self.cursor + bytes <= self.limit {
+      let p = self.cursor;
+      self.cursor = p + bytes;
+      return p as *u8;
+    }
+    while true {
+      if self.curBlock != 0usize && self.nextHole(self.curBlock, self.curLine, bytes) {
+        let p = self.cursor;
+        self.cursor = p + bytes;
+        return p as *u8;
+      }
+      self.curBlock = self.takeBlock();
+      self.curLine = firstLine;
+      self.cursor = 0usize;
+      self.limit = 0usize;
+    }
+    null
+  }
+
+  // Room for an evacuated object: bump through the evacuation block, an empty
+  // one taken when it is full
+  fn evacBump(self: &mut, bytes: usize) *u8 {
+    if self.evacCursor + bytes > self.evacLimit {
+      let b = self.takeFree();
+      self.evacBlock = b;
+      self.evacCursor = b + blockMeta;
+      self.evacLimit = b + blockBytes;
+    }
+    let p = self.evacCursor;
+    self.evacCursor = p + bytes;
+    p as *u8
+  }
+
+  // ---- The mark variants: the collection ----
+
+  // Mark the object at 'a' (its header, in the block 'blk'), 'size' bytes, if
+  // not marked: its mark bit, the lines it covers, the block's live bytes; it
+  // is to be scanned. True if it was not marked before
+  fn markIn(self: &mut, a: usize, blk: usize, size: usize) bool {
+    let idx = (a - blk) >> 4usize;
+    let wp = (blk + bitmapOff + (idx >> 6usize) * 8usize) as *u64;
+    let bit = 1u64 << u64.from(idx & 63usize);
+    let w = *wp;
+    if (w & bit) != 0u64 {
+      return false;
+    }
+    *wp = w | bit;
+    let off = a - blk;
+    var l = off >> 7usize;
+    let last = (off + size - 1usize) >> 7usize;
+    let marks = (blk + lineOff) as *u8;
+    while l <= last {
+      *(marks + l) = 1u8;
+      l = l + 1usize;
+    }
+    let info = blk as &mut BlockInfo;
+    info.live = info.live + u32.from(size);
+    self.liveNow = self.liveNow + size;
+    self.ncopied = self.ncopied + 1usize;
+    self.nobjects = self.nobjects + 1usize;
+    self.pushGray(a);
+    true
+  }
+
+  // A reference to the object at 'header' was found at 'slot': marked in
+  // place, or (if its block is being evacuated) copied and the slot rewritten
+  fn markObjectMark(self: &mut, header: *ActorGc, slot: *usize) {
+    let h = header as &mut ActorGc;
+    if h.flags & flagLarge != 0u32 {
+      if h.flags & (flagMarked | flagOld) == 0u32 {
+        h.flags = h.flags | flagMarked;
+        self.liveNow = self.liveNow + usize.from(h.size);
+        self.pushGray(header as usize);
+      }
+      return;
+    }
+    let a = header as usize;
+    let blk = a & (0usize - blockBytes);
+    if reclaimMode == 2usize {
+      let info = blk as &mut BlockInfo;
+      if info.flags & flagCandidate != 0u32 && !markedAt(a) {
+        if h.flags & flagForwarded == 0u32 {
+          self.evacuate(h);
+        }
+        *slot = h.link + ActorRegion.valueOffset(h.ty as &TypeRecord);
+        return;
+      }
+    }
+    if self.markIn(a, blk, usize.from(h.size)) {
+      self.nmarked = self.nmarked + 1usize;
+    }
+  }
+
+  // Copy the object out of a block being evacuated: forwarding is left in the
+  // old header as the copying collection leaves it; the copy is marked in its
+  // own block, and scanned
+  fn evacuate(self: &mut, h: &mut ActorGc) {
+    let bytes = usize.from(h.size);
+    let dst = self.evacBump(bytes);
+    libc.memcpy(dst, h as *ActorGc as *u8, bytes);
+    h.flags = h.flags | flagForwarded;
+    h.link = dst as usize;
+    let d = dst as usize;
+    self.markIn(d, d & (0usize - blockBytes), bytes);
+    self.nmoved = self.nmoved + 1usize;
+    self.bytesMoved = self.bytesMoved + bytes;
+  }
+
+  // Scan what marking pushed until nothing is left (large objects too)
+  fn drainMark(self: &mut) {
+    while self.ngray > 0usize {
+      self.ngray = self.ngray - 1usize;
+      self.scanObject(*(self.gray + self.ngray));
+    }
+  }
+
+  // Has a mark-variant collection found the object at 'header'?
+  fn reachedMark(header: usize) bool {
+    let f = (header as &ActorGc).flags;
+    if f & flagLarge != 0u32 {
+      return f & (flagMarked | flagOld) != 0u32;
+    }
+    if f & flagForwarded != 0u32 {
+      return true;
+    }
+    markedAt(header)
+  }
+
+  fn movedMark(header: usize) usize {
+    let f = (header as &ActorGc).flags;
+    if f & flagLarge == 0u32 && f & flagForwarded != 0u32 {
+      return (header as &ActorGc).link;
+    }
+    header
+  }
+
+  // As finalizeDead: the objects with a final that nothing reached are kept
+  // one more cycle, here by marking them in place with all they reach, and
+  // their death is run once, newest first. They are not moved
+  fn finalizeDeadMark(self: &mut) {
+    if self.nfinals == 0usize {
+      return;
+    }
+    let dead = libc.malloc(self.nfinals * mem.sizeof[usize]()) as *usize;
+    if dead == null {
+      panic("ActorGc: out of memory for a collection");
+    }
+    var ndead = 0usize;
+    // a minor collection judges only the young finalizable objects (those after finalsOld); an old one is found by a full collection
+    var start = 0usize;
+    if stickyOn && self.isMinor {
+      start = self.finalsOld;
+    }
+    var kept = start;
+    var i = start;
+    while i < self.nfinals {
+      let header = *(self.finals + i);
+      if ActorRegion.reachedMark(header) {
+        *(self.finals + kept) = ActorRegion.movedMark(header);
+        kept = kept + 1usize;
+      } else {
+        *(dead + ndead) = header;
+        ndead = ndead + 1usize;
+      }
+      i = i + 1usize;
+    }
+    self.nfinals = kept;
+    i = 0usize;
+    while i < ndead {
+      let header = *(dead + i);
+      let h = header as &mut ActorGc;
+      if h.flags & flagLarge != 0u32 {
+        if h.flags & flagMarked == 0u32 {
+          h.flags = h.flags | flagMarked;
+          self.liveNow = self.liveNow + usize.from(h.size);
+          self.pushGray(header);
+        }
+      } else if self.markIn(header, header & (0usize - blockBytes), usize.from(h.size)) {
+        self.nmarked = self.nmarked + 1usize;
+      }
+      i = i + 1usize;
+    }
+    self.drainMark();
+    i = ndead;
+    while i > 0usize {
+      i = i - 1usize;
+      let header = *(dead + i);
+      let rec = (header as &ActorGc).ty as &TypeRecord;
+      let fin = rec.finalize;
+      fin((header + ActorRegion.valueOffset(rec)) as *u8);
+      self.nfinalized = self.nfinalized + 1usize;
+    }
+    libc.free(dead as *u8);
+  }
+
+  // Before marking (GC_RECLAIM 2): if the free room inside partly used blocks
+  // passed evacFrag per cent at the last sweep, the blocks that sweep left
+  // recyclable, that nothing has allocated in since, and that are under
+  // evacSparse per cent live, are evacuated in this collection
+  fn chooseCandidates(self: &mut) {
+    self.evacOn = false;
+    if self.fragPct < evacFrag {
+      return;
+    }
+    let room = (linesPerBlock - firstLine) * lineBytes;
+    var n = 0usize;
+    var i = 0usize;
+    while i < self.nbk {
+      let info = *(self.bk + i) as &mut BlockInfo;
+      if info.flags & flagRecyclable != 0u32 && usize.from(info.live) * 100usize < room * evacSparse {
+        info.flags = info.flags | flagCandidate;
+        n = n + 1usize;
+      }
+      i = i + 1usize;
+    }
+    self.nevacBlocks = self.nevacBlocks + n;
+    self.evacOn = n > 0usize;
+    if n > 0usize {
+      self.nevacColl = self.nevacColl + 1usize;
+    }
+  }
+
+  // The collection of the mark variants: nothing moves unless a block is
+  // being evacuated
+  fn collectMark(self: &mut, st: *u8, rec: *TypeRecord) {
+    self.epoch = self.epoch + 1u32;
+    if self.epoch == 0u32 {
+      self.epoch = 1u32;
+    }
+    curActorRegion = self as *ActorRegion;
+    self.evacCursor = 0usize;
+    self.evacLimit = 0usize;
+    self.evacOn = false;
+    if reclaimMode == 2usize {
+      self.chooseCandidates();
+    }
+    let minor = stickyOn && self.isMinor;
+    if !minor {
+      // Clear the side tables and the blocks' live bytes
+      var i = 0usize;
+      while i < self.nbk {
+        let b = *(self.bk + i);
+        libc.memset((b + lineOff) as *u8, 0, bitmapOff + 256usize - lineOff);
+        (b as &mut BlockInfo).live = 0u32;
+        i = i + 1usize;
+      }
+      self.liveNow = 0usize;
+      self.nobjects = 0usize;
+      if stickyOn {
+        // every large object is young again, until this collection keeps it
+        var at = self.large;
+        while at != 0usize {
+          let h = at as &mut ActorGc;
+          h.flags = h.flags & ~flagOld;
+          at = h.link;
+        }
+      }
+    } else {
+      // a minor collection keeps the marks and the live counts of the last: only what it finds is added
+      self.nobjects = self.nobjBase;
+    }
+    if self.nrem > self.remPeak {
+      self.remPeak = self.nrem;
+    }
+    let r = rec as &TypeRecord;
+    if r.flags & 2u32 != 0u32 {
+      let trace = r.trace;
+      trace(st, self.epoch);
+    }
+    if stickyOn {
+      // The remembered set: old objects written to since the last collection. A minor collection scans each (what it holds that is
+      // young is then marked); a full one traces everything anyway. Either way the set is emptied and the log flags cleared
+      var k = 0usize;
+      while k < self.nrem {
+        let hd = *(self.rem + k);
+        (hd as &mut ActorGc).flags = (hd as &ActorGc).flags & ~flagLogged;
+        if minor {
+          self.scanObject(hd);
+        }
+        k = k + 1usize;
+      }
+      self.nrem = 0usize;
+    }
+    self.drainMark();
+    self.finalizeDeadMark();
+    if minor {
+      self.sweepLargeYoung();
+      self.sweepTouched();
+    } else {
+      self.sweepLarge();
+      self.sweepBlocks();
+      self.ntch = 0usize;
+    }
+    self.finalsOld = self.nfinals;
+    self.stickyReady = true;
     self.ncollections = self.ncollections + 1usize;
     self.live = self.liveNow + self.blocks;
+    self.liveHeap = self.liveNow;
     self.allocated = 0usize;
-    self.nobjects = self.nobjects + self.nlarge;
+    if !minor {
+      self.nobjects = self.nobjects + self.nlarge;
+    }
+    self.nobjBase = self.nobjects;
     curActorRegion = null;
+  }
+
+  // (GC_STICKY, minor) The young large objects are at the head of the list, as new ones are put there: free those not reached, keep and
+  // age the others, and stop at the first old one
+  fn sweepLargeYoung(self: &mut) {
+    var prev = 0usize;
+    var at = self.large;
+    var kept = 0usize;
+    while at != 0usize {
+      let h = at as &mut ActorGc;
+      if h.flags & flagOld != 0u32 {
+        break;
+      }
+      let next = h.link;
+      if h.flags & flagMarked == 0u32 {
+        if prev == 0usize {
+          self.large = next;
+        } else {
+          (prev as &mut ActorGc).link = next;
+        }
+        RawBlocks.release(at as *u8);
+        self.nfreed = self.nfreed + 1usize;
+        self.nlarge = self.nlarge - 1usize;
+      } else {
+        h.flags = (h.flags & ~flagMarked) | flagOld;
+        kept = kept + 1usize;
+        prev = at;
+      }
+      at = next;
+    }
+    self.nobjects = self.nobjects + kept;
+  }
+
+  // (GC_STICKY, minor) Only the blocks the allocator took since the last collection are swept: empty ones join the free list, the
+  // rest the recycle list if they have a free line. Blocks it did not take are as the last sweep left them (and are not given back
+  // here: a full collection does that)
+  fn sweepTouched(self: &mut) {
+    var i = 0usize;
+    while i < self.ntch {
+      let b = *(self.tch + i);
+      let info = b as &mut BlockInfo;
+      info.flags = 0u32;
+      info.next = 0usize;
+      if info.live == 0u32 {
+        info.next = self.freeList;
+        self.freeList = b;
+        self.nfree = self.nfree + 1usize;
+      } else {
+        let marks = (b + lineOff) as *u8;
+        var free = 0usize;
+        var l = firstLine;
+        while l < linesPerBlock {
+          if *(marks + l) == 0u8 {
+            free = free + 1usize;
+          }
+          l = l + 1usize;
+        }
+        if free > 0usize {
+          info.flags = flagRecyclable;
+          info.next = self.recycle;
+          self.recycle = b;
+        }
+      }
+      i = i + 1usize;
+    }
+    self.ntch = 0usize;
+    self.nspare = self.nfree * blockBytes;
+    self.curBlock = 0usize;
+    self.curLine = 0usize;
+    self.cursor = 0usize;
+    self.limit = 0usize;
+  }
+
+  // (GC_STICKY) The workload's write barrier: 'o' has had a reference stored into one of its fields. If 'o' is old (kept by a collection)
+  // and not yet logged, it joins the remembered set, which the next minor collection scans. A young object needs nothing. Call it after
+  // each such store, through the actor's region: 'self.allocRegion().wrote(o)'
+  pub fn wrote[T](self: &mut, o: ActorGc[mut, T]) {
+    if !stickyOn {
+      return;
+    }
+    self.nbarrier = self.nbarrier + 1usize;
+    let header = (o as *u8 as usize) - ActorRegion.roundUp(mem.sizeof[ActorGc](), mem.alignof[T]());
+    let h = header as &mut ActorGc;
+    if h.flags & flagLogged != 0u32 {
+      return;
+    }
+    var old = false;
+    if h.flags & flagLarge != 0u32 {
+      old = h.flags & flagOld != 0u32;
+    } else {
+      old = markedAt(header);
+    }
+    if !old {
+      return;
+    }
+    h.flags = h.flags | flagLogged;
+    if self.nrem == self.caprem {
+      var cap = 256usize;
+      if self.caprem != 0usize {
+        cap = self.caprem * 2usize;
+      }
+      let grown = libc.realloc(self.rem as *u8, cap * mem.sizeof[usize]()) as *usize;
+      if grown == null {
+        panic("ActorGc: out of memory for the remembered set");
+      }
+      self.rem = grown;
+      self.caprem = cap;
+    }
+    *(self.rem + self.nrem) = header;
+    self.nrem = self.nrem + 1usize;
+    self.nlogged = self.nlogged + 1usize;
+    if self.nrem > self.remPeak {
+      self.remPeak = self.nrem;
+    }
+  }
+
+  // After marking: each block is empty (kept on the free list up to twice the
+  // live bytes, else given back), full, or recyclable (listed, in block
+  // order). The fragmentation measure for the next collection comes from here
+  fn sweepBlocks(self: &mut) {
+    let maxFree = (self.liveNow * 2usize) / blockBytes + 2usize;
+    let room = (linesPerBlock - firstLine) * lineBytes;
+    self.recycle = 0usize;
+    self.freeList = 0usize;
+    self.nfree = 0usize;
+    var tail = 0usize;
+    var out = 0usize;
+    var usedRoom = 0usize;
+    var freeRoom = 0usize;
+    var i = 0usize;
+    while i < self.nbk {
+      let b = *(self.bk + i);
+      let info = b as &mut BlockInfo;
+      info.flags = 0u32;
+      info.next = 0usize;
+      if info.live == 0u32 {
+        if self.nfree < maxFree {
+          info.next = self.freeList;
+          self.freeList = b;
+          self.nfree = self.nfree + 1usize;
+          *(self.bk + out) = b;
+          out = out + 1usize;
+        } else {
+          let raw = info.raw;
+          RawBlocks.release(raw as *u8);
+        }
+      } else {
+        let marks = (b + lineOff) as *u8;
+        var free = 0usize;
+        var l = firstLine;
+        while l < linesPerBlock {
+          if *(marks + l) == 0u8 {
+            free = free + 1usize;
+          }
+          l = l + 1usize;
+        }
+        usedRoom = usedRoom + room;
+        if free > 0usize {
+          freeRoom = freeRoom + free * lineBytes;
+          info.flags = flagRecyclable;
+          if tail == 0usize {
+            self.recycle = b;
+          } else {
+            (tail as &mut BlockInfo).next = b;
+          }
+          tail = b;
+        }
+        *(self.bk + out) = b;
+        out = out + 1usize;
+      }
+      i = i + 1usize;
+    }
+    self.nbk = out;
+    self.nchunks = out;
+    self.bytes = out * blockBytes;
+    self.nspare = self.nfree * blockBytes;
+    self.fragPct = 0usize;
+    if usedRoom > 0usize {
+      self.fragPct = (freeRoom * 100usize) / usedRoom;
+    }
+    self.curBlock = 0usize;
+    self.curLine = 0usize;
+    self.cursor = 0usize;
+    self.limit = 0usize;
+    self.evacCursor = 0usize;
+    self.evacLimit = 0usize;
+  }
+
+  // ---- The check (GC_CHECK) ----
+
+  // After a collection: walk everything reachable from the roots, and panic
+  // at the first reference that is not to a live object in a known block
+  fn verify(self: &mut, st: *u8, rec: *TypeRecord) {
+    // The known places. Copying: every object in the chunks, found by walking
+    // them. Mark variants: the blocks. Both: the large objects
+    var nknown = self.nbk;
+    if reclaimMode == 0usize {
+      nknown = self.nobjects;
+    }
+    self.vkcap = setCap(nknown);
+    self.vknown = setMake(self.vkcap);
+    self.vlcap = setCap(self.nlarge);
+    self.vlarge = setMake(self.vlcap);
+    self.vcap = setCap(self.nobjects + self.nlarge);
+    self.vset = setMake(self.vcap);
+    if reclaimMode == 0usize {
+      var c = self.first;
+      while c != null {
+        var off = mem.sizeof[Chunk]();
+        let used = (c as &Chunk).used;
+        while off < used {
+          let at = (c as usize) + off;
+          let size = usize.from((at as &ActorGc).size);
+          if size == 0usize || size % 16usize != 0usize {
+            panic("ActorGc check: a chunk holds an object with a bad size");
+          }
+          setAdd(self.vknown, self.vkcap, at);
+          off = off + size;
+        }
+        c = (c as &Chunk).next;
+      }
+    } else {
+      var i = 0usize;
+      while i < self.nbk {
+        setAdd(self.vknown, self.vkcap, *(self.bk + i));
+        i = i + 1usize;
+      }
+    }
+    var nl = 0usize;
+    var at = self.large;
+    while at != 0usize {
+      setAdd(self.vlarge, self.vlcap, at);
+      nl = nl + 1usize;
+      at = (at as &ActorGc).link;
+    }
+    if nl != self.nlarge {
+      panic("ActorGc check: the large list and the large count disagree");
+    }
+    // The final list: each entry a live object
+    var i = 0usize;
+    while i < self.nfinals {
+      self.checkObject(*(self.finals + i));
+      i = i + 1usize;
+    }
+    // The walk from the roots
+    self.epoch = self.epoch + 1u32;
+    if self.epoch == 0u32 {
+      self.epoch = 1u32;
+    }
+    self.verifying = true;
+    curActorRegion = self as *ActorRegion;
+    let r = rec as &TypeRecord;
+    if r.flags & 2u32 != 0u32 {
+      let trace = r.trace;
+      trace(st, self.epoch);
+    }
+    while self.ngray > 0usize {
+      self.ngray = self.ngray - 1usize;
+      self.scanObject(*(self.gray + self.ngray));
+    }
+    self.verifying = false;
+    curActorRegion = null;
+    libc.free(self.vknown as *u8);
+    libc.free(self.vlarge as *u8);
+    libc.free(self.vset as *u8);
+    self.vknown = null;
+    self.vlarge = null;
+    self.vset = null;
+  }
+
+  // Is 'header' a live object in a known place, with a header that makes sense?
+  fn checkObject(self: &mut, header: usize) {
+    var ok = false;
+    var large = false;
+    if setHas(self.vlarge, self.vlcap, header) {
+      ok = true;
+      large = true;
+    } else if reclaimMode == 0usize {
+      ok = setHas(self.vknown, self.vkcap, header);
+    } else {
+      let blk = header & (0usize - blockBytes);
+      if setHas(self.vknown, self.vkcap, blk) {
+        if header < blk + blockMeta {
+          panic("ActorGc check: a reference into a block's record");
+        }
+        if !markedAt(header) {
+          panic("ActorGc check: a reference to an object that is not marked live");
+        }
+        ok = true;
+      }
+    }
+    if !ok {
+      panic("ActorGc check: a reference to a place that is not a live object in a known block");
+    }
+    let h = header as &ActorGc;
+    if h.flags & flagForwarded != 0u32 {
+      panic("ActorGc check: a reference to a forwarded object");
+    }
+    if h.ty == null {
+      panic("ActorGc check: an object with no type record");
+    }
+    if usize.from(h.size) % 16usize != 0usize {
+      panic("ActorGc check: an object with a size that is not a multiple of 16");
+    }
+    let t = h.ty as &TypeRecord;
+    if usize.from(h.size) != ActorRegion.roundUp(ActorRegion.valueOffset(t) + t.size, 16usize) {
+      panic("ActorGc check: an object whose size does not fit its type");
+    }
+    if large != (h.flags & flagLarge != 0u32) {
+      panic("ActorGc check: the large flag and the large list disagree");
+    }
+  }
+
+  // The walk found a reference to the object at 'header': check it once, and
+  // have it scanned
+  fn verifyRef(self: &mut, header: usize) {
+    if !setAdd(self.vset, self.vcap, header) {
+      return;
+    }
+    self.checkObject(header);
+    self.pushGray(header);
   }
 
   // The actor has died, its state finalized: every object on the final list
@@ -811,8 +1872,18 @@ pub struct ActorRegion {
       RawBlocks.release(at as *u8);
       at = next;
     }
+    var k = 0usize;
+    while k < self.nbk {
+      let raw = (*(self.bk + k) as &BlockInfo).raw;
+      RawBlocks.release(raw as *u8);
+      k = k + 1usize;
+    }
+    self.nbk = 0usize;
+    libc.free(self.bk as *u8);
     libc.free(self.finals as *u8);
     libc.free(self.gray as *u8);
+    libc.free(self.rem as *u8);
+    libc.free(self.tch as *u8);
   }
 }
 
@@ -847,14 +1918,41 @@ fn blockSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
 // is on). Only an actor that has asked for its region comes here
 fn collectIfDue(g: &mut ActorRegion, st: *u8, rec: *TypeRecord) {
   var want = stressOn.load();
-  if !want {
+  if stickyOn && !want {
+    want = g.allocated > nurseryBytes;
+  } else if !want {
     var threshold = floorBytes.load();
-    if g.live > threshold {
-      threshold = g.live;
+    var f = g.factor100;
+    if f == 0usize {
+      f = factorInit;
+    }
+    // The heap may grow to f/100 times what survived: allocate (f - 100)/100 times that
+    let grow = (g.live * (f - 100usize)) / 100usize;
+    if grow > threshold {
+      threshold = grow;
     }
     want = g.allocated > threshold;
   }
   if want {
+    g.collect(st, rec);
+  }
+}
+
+// The actor's mailbox has emptied (GC_EMPTY): collect if it has allocated past
+// a small floor since the last collection. No message waits for it
+fn collectIfEmpty(g: &mut ActorRegion, st: *u8, rec: *TypeRecord) {
+  var th = emptyFloor;
+  if emptyPct > 0usize {
+    var f = g.factor100;
+    if f == 0usize {
+      f = factorInit;
+    }
+    let part = (g.live * (f - 100usize) / 100usize) * emptyPct / 100usize;
+    if part > th {
+      th = part;
+    }
+  }
+  if g.allocated > th {
     g.collect(st, rec);
   }
 }
