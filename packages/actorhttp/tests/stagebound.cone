@@ -11,8 +11,9 @@
 //     piece sent past a non-empty staging buffer (out of order) is a wrong hash; each ends
 //     whole, before a deadline, with every buffer back in the pool (the window reopened by
 //     the capacity recorded when a buffer was sent);
-//   - the pool taken (hoarded) while a stream is staging: the fetch ends with an Overloaded
-//     failure, the process lives, and a new fetch is served.
+//   - the pool taken (hoarded) while a stream is staging: the fetch ends in a bounded way
+//     (Overloaded, or Closed when the test's own server is refused first), the pool counts a refusal,
+//     nothing stays lent, the process lives, and a new fetch is served.
 // What each stream's reader does is told to the main thread in atomics; 'lentBytes' and
 // 'heldBytes' are the pool's.
 
@@ -40,7 +41,6 @@ struct Tally {
   pub ended: Atomic[u64];      // streams that ended in any way
   pub pieces: Atomic[u64];     // pieces read
   pub opened: Atomic[u64];     // heads that arrived
-  pub served: Atomic[u64];     // /tiny responses the server has written whole and finished
   pub kind: Atomic[u64];       // 1 + the ErrorKind of the last failure a reader saw (0 none)
 }
 
@@ -74,7 +74,7 @@ let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -85,7 +85,6 @@ fn reset() {
   tally.ended.store(0u64);
   tally.pieces.store(0u64);
   tally.opened.store(0u64);
-  tally.served.store(0u64);
   tally.kind.store(0u64);
 }
 
@@ -243,7 +242,6 @@ actor Handler {
     if going {
       let f = await ex.finish();
     }
-    tally.served.add(1u64);
   }
 }
 
@@ -506,11 +504,18 @@ fn main() i32 {
     r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 1500i64, 0i64, 1u64);
     expect(waitFor(&tally.opened, 1u64, 20000i64), "the head arrived");
     thread.sleep(Duration.fromMillis(300i64));
+    var refusedBefore = 0u64;
     {
       let h = hoard();
+      // the hoard ends on a refusal of its own: count only the refusals after it is whole
+      refusedBefore = iobuf.stats().refused;
       expect(waitFor(&tally.ended, 1u64, 30000i64), "the starved stream ended, it did not hang");
     }
-    if tally.overloaded.load() != 1u64 {
+    let refusedAfter = iobuf.stats().refused;
+    let kc = tally.kind.load();
+    // a starved pool ends the fetch in a bounded way: refused by the pool, ended Overloaded or Closed
+    // (the test's own in-process server may be the one refused first, so the client sees Closed)
+    if kc != 7u64 {
       printStr("the starved stream ended with kind: ");
       printStr(kindName(tally.kind.load()));
       printStr(" good ");
@@ -523,9 +528,11 @@ fn main() i32 {
       printUInt(tally.pieces.load());
       printStr("\n");
     }
-    expect(tally.overloaded.load() == 1u64, "...with an Overloaded failure");
+    expect(kc == 7u64 || kc == 4u64, "...with an Overloaded or Closed failure, no other kind");
+    expect(refusedAfter > refusedBefore, "...the pool refused a take after the hoard was whole");
   }
-  expect(allHome(), "every buffer is home after the shortage");
+  // the hoard is released: nothing stays lent (the baseline is 0, as before the fetch)
+  expect(allHome(), "...and every buffer is home after the shortage");
   reset();
   {
     let r = Reader(Client.standard());
