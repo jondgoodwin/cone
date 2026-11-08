@@ -1,9 +1,9 @@
 # actortrace
 
-Tracing the actors runtime, round 1: the actor level only, four ways of
+Tracing the actors runtime, round 1: the actor level only, three ways of
 recording the same events, measured against one benchmark. A first round, to
 learn from; names and shape are expected to change. The source's header comment
-(`src/actortrace.cone`) is the account of the record, the file and the four
+(`src/actortrace.cone`) is the account of the record, the file and the three
 ways; this file is what to run.
 
 ## What it records
@@ -26,9 +26,8 @@ The record is 32 bytes: `u64 time, u16 kind, u16 worker, u32 actor, u64 id,
 u64 argument`. A file is a self-describing header (clock frequency, kinds,
 layers), then records.
 
-## The four ways (`start(method, ...)`)
+## The three ways (`start(method, ...)`)
 
-- `methodLogger` (A): a logger actor, one message per event.
 - `methodBuffers` (B): a buffer for each worker, a full one moved whole to the
   logger as one message; the pool of spare buffers is finite (drop and count)
   unless `Options.grow`.
@@ -48,7 +47,7 @@ layers), then records.
 
 ```
 congo test                                                  # in this folder
-congo run --release examples/bench.cone -- logger high 8 100000 5000 trace.bin
+congo run --release examples/bench.cone -- buffers high 8 100000 5000 trace.bin
 congo run --release examples/microbench.cone -- buffers enabled 1000000 trace.bin
 congo run --release examples/tracestat.cone -- trace.bin    # the reader
 ```
