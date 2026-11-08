@@ -1,0 +1,128 @@
+// The extract half: zipfile's sync Archive.extractAll against archivestage's extract (the plan run by an actor
+// over FileSink), on the same archive, alternating, five runs each; the archive is built and opened before the
+// clock starts, the folders are removed after it stops, so only the extracting is timed. Informative only; it
+// gates nothing.
+//
+//   congo run --release examples/extractbench.cone
+
+mod extractbench;
+
+import stdio use *;
+import collections use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time;
+import actors;
+import archivestage use *;
+import zipfile;
+import path use Path;
+import fs;
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  while out.len() < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(97u8 + u8.from(x % 26u64));
+  }
+  out
+}
+
+fn build(count: usize, size: usize, stored: bool) List[u8] {
+  var w = zipfile.ZipWriter.make();
+  var i = 0usize;
+  while i < count {
+    let data = noise(size, u64.from(i) + 1u64);
+    var name = String.from("entry");
+    name.appendUInt(u64.from(i));
+    let opts = if stored { zipfile.EntryOptions.stored() } else { zipfile.EntryOptions.plain() };
+    _ = w.add(name.view(), data.view(), &opts);
+    i += 1usize;
+  }
+  match w.bytes() {
+    case let Ok(b) { b }
+    case is Err { List[u8]() }
+  }
+}
+
+fn copyOf(b: &List[u8]) List[u8] {
+  var c = List[u8].withCapacity(b.len());
+  c.appendSlice(b.view());
+  c
+}
+
+fn millis(d: time.Duration) f64 { d.secondsF64() * 1000.0 }
+
+fn syncRun(bytes: &List[u8]) f64 {
+  _ = fs.removeAll(&Path.from("extbench_sync"));
+  match zipfile.Archive.open(bytes.view()) {
+    case let Ok(ar) {
+      let opts = zipfile.ExtractOptions.safe();
+      let t0 = time.Instant.now();
+      _ = ar.extractAll(bytes.view(), &Path.from("extbench_sync"), &opts);
+      let ms = millis(t0.elapsed());
+      _ = fs.removeAll(&Path.from("extbench_sync"));
+      ms
+    }
+    case is Err { 0.0 }
+  }
+}
+
+fn asyncRun(bytes: &List[u8]) f64 {
+  _ = fs.removeAll(&Path.from("extbench_async"));
+  match zipfile.Archive.open(bytes.view()) {
+    case let Ok(ar) {
+      var tx: OneshotSender[Result[zipfile.Extracted, AnyError]];
+      var rx: OneshotReceiver[Result[zipfile.Extracted, AnyError]];
+      tx, rx = Oneshot[Result[zipfile.Extracted, AnyError]].make();
+      let mine = copyOf(bytes);
+      let t0 = time.Instant.now();
+      extract(ar, mine, String.from("extbench_async"), zipfile.ExtractOptions.safe(), tx);
+      _ = rx.recv();
+      let ms = millis(t0.elapsed());
+      _ = fs.removeAll(&Path.from("extbench_async"));
+      ms
+    }
+    case is Err { 0.0 }
+  }
+}
+
+fn middle(v: &mut List[f64]) f64 {
+  var i = 1usize;
+  while i < v.len() {
+    var j = i;
+    while j > 0usize && v[j - 1usize] > v[j] {
+      let t = v[j];
+      v[j] = v[j - 1usize];
+      v[j - 1usize] = t;
+      j -= 1usize;
+    }
+    i += 1usize;
+  }
+  v[v.len() / 2usize]
+}
+
+fn measure(label: &str, count: usize, size: usize, stored: bool) {
+  let bytes = build(count, size, stored);
+  var s = List[f64]();
+  var a = List[f64]();
+  var k = 0usize;
+  while k < 5usize {
+    s.push(syncRun(&bytes));
+    a.push(asyncRun(&bytes));
+    k += 1usize;
+  }
+  let ms = middle(&mut s);
+  let ma = middle(&mut a);
+  print <- label, ": sync ", ms, " ms, extract ", ma, " ms (ratio ", ma / ms, ")\n";
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 4u32));
+  measure("1 entry of 100 MiB (stored)", 1usize, 104857600usize, true);
+  measure("2000 entries of 1 KiB (deflate)", 2000usize, 1024usize, false);
+  measure("100 entries of 1 MiB (stored)", 100usize, 1048576usize, true);
+  measure("100 entries of 1 MiB (deflate)", 100usize, 1048576usize, false);
+  0i32
+}
