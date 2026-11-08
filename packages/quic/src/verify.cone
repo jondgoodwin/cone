@@ -76,7 +76,12 @@ fn @c("coneQuicRecvCryptoData") onRecvCryptoData(conn: *u8, level: i32, offset: 
 
 // The OS verifier's job for a chain the server sent: the name asked for,
 // then each certificate in DER, the server's own first (tls's layout)
-fn verifyJob(ssl: *u8, host: &str) IoBuf {
+// Pool work that does nothing: the op verifyOp hands out when the pool
+// refused its job's buffer
+fn verifyNothing(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
+
+// (None when the buffer pool refused the job's buffer, iobuf's tryMake)
+fn verifyJob(ssl: *u8, host: &str) Option[IoBuf] {
   var job = List[u8]();
   putU32(&mut job, u32.from(host.len()));
   var k = 0usize;
@@ -102,9 +107,12 @@ fn verifyJob(ssl: *u8, host: &str) IoBuf {
     }
     i = i + 1i32;
   }
-  var b = IoBuf(job.len());
+  var b = match IoBuf.tryMake(job.len()) {
+    case var Some(got) {got}
+    else {return None;}
+  };
   b.append(job.view());
-  b
+  Some[IoBuf](b)
 }
 
 // Whether the server's own certificate's public key is one of the pins

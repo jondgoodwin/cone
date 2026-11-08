@@ -79,6 +79,7 @@ struct Lst {
   accepting: bool;          // new connections are taken (stopListening ends it)
   conns: u32;               // its connections, which send on its socket
   h3cfg: http3.Config;      // its connections' HTTP/3 (maxRequestStreams the context's stream limit)
+  owed: u32;                // receives the buffer pool refused a buffer for: made again by a later turn
 }
 
 // A connection: its QUIC, its HTTP/3, its streams
@@ -201,6 +202,30 @@ pub struct Driver {
         else if c2.wake < next {next = c2.wake;}
       }
     }
+    // A listener owed receives (the pool refused their buffers) makes them
+    // again as soon as the pool gives one, and looks again a step later else
+    k = 0usize;
+    while k < listeners.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !listeners.isLive(cell) {continue;}
+      let l = listeners.at(cell) as &mut Lst;
+      if l.owed == 0u32 {continue;}
+      if !lp.isOpen(l.handle) {
+        l.owed = 0u32;
+        continue;
+      }
+      while l.owed > 0u32 {
+        match IoBuf.tryMake(l.recvSize) {
+          case var Some(b) {
+            lp.submit(Op.RecvFrom(l.handle, b), Target.Here(self.tok(kRecvL, listeners.slotAt(cell))));
+            l.owed = l.owed - 1u32;
+          }
+          else {break;}
+        }
+      }
+      if l.owed > 0u32 && now + wakeStep < next {next = now + wakeStep;}
+    }
     nextWake = next;
   }
 
@@ -229,7 +254,16 @@ pub struct Driver {
         st.recvFailed = st.recvFailed + 1u64;
       }
       if !cancelled && lp.isOpen(l.handle) {
-        lp.submit(Op.RecvFrom(l.handle, IoBuf(l.recvSize)), Target.Here(comp.token));
+        // A receive serves every connection of the listener, so a pool that
+        // refuses its buffer (iobuf's tryMake) ends none of them: the receive
+        // is owed, and a later turn makes it when the pool has room again
+        match IoBuf.tryMake(l.recvSize) {
+          case var Some(b) {lp.submit(Op.RecvFrom(l.handle, b), Target.Here(comp.token));}
+          else {
+            l.owed = l.owed + 1u32;
+            st.bufferRefused = st.bufferRefused + 1u64;
+          }
+        }
       }
       return true;
     }
@@ -251,7 +285,17 @@ pub struct Driver {
       if !cancelled && !c.ended {
         c.recvsOut = c.recvsOut + 1u32;
         let size = recvSizeOf(c.q.isServer(), self.clientUdp());
-        lp.submit(Op.RecvFrom(c.handle, IoBuf(size)), Target.Here(comp.token));
+        match IoBuf.tryMake(size) {
+          case var Some(b) {lp.submit(Op.RecvFrom(c.handle, b), Target.Here(comp.token));}
+          else {
+            // The pool (iobuf's tryMake) is within its reserve of maxBytes:
+            // this connection ends Overloaded, its buffers going home
+            c.recvsOut = c.recvsOut - 1u32;
+            st.bufferRefused = st.bufferRefused + 1u64;
+            c.h.starve("the buffer pool is full (iobuf maxBytes): no buffer for a receive");
+            self.markDirty(cell);
+          }
+        }
       }
     } else if kind == kSend {
       c.sendsOut = c.sendsOut - 1u32;
@@ -370,7 +414,18 @@ pub struct Driver {
         let size = recvSizeOf(false, self.clientUdp());
         var r = 0u32;
         while r < recvDepth {
-          lp.submit(Op.RecvFrom(handle, IoBuf(size)), Target.Here(self.tok(kRecvC, s)));
+          match IoBuf.tryMake(size) {
+            case var Some(b) {lp.submit(Op.RecvFrom(handle, b), Target.Here(self.tok(kRecvC, s)));}
+            else {
+              // The pool (iobuf's tryMake) is within its reserve of maxBytes:
+              // no connection is made; the receives posted are cancelled with
+              // the socket, and their completions find no connection
+              st.bufferRefused = st.bufferRefused + 1u64;
+              lp.close(handle);
+              conns.removeAt(s.index);
+              return Err[ConnId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for a receive"));
+            }
+          }
           r = r + 1u32;
         }
         c.recvsOut = recvDepth;
@@ -423,10 +478,20 @@ pub struct Driver {
     var hc = h3cfg;
     hc.maxRequestStreams = usize.from(ctx.config().maxStreamsBidi);
     let size = recvSizeOf(true, ctx.config().maxUdpPayload);
-    let s = listeners.add(Lst(handle, ctx, localQ, size, token, true, 0u32, hc));
+    let s = listeners.add(Lst(handle, ctx, localQ, size, token, true, 0u32, hc, 0u32));
     var r = 0u32;
     while r < recvDepth {
-      lp.submit(Op.RecvFrom(handle, IoBuf(size)), Target.Here(self.tok(kRecvL, s)));
+      match IoBuf.tryMake(size) {
+        case var Some(b) {lp.submit(Op.RecvFrom(handle, b), Target.Here(self.tok(kRecvL, s)));}
+        else {
+          // The pool (iobuf's tryMake) is within its reserve of maxBytes: no
+          // listener is made
+          st.bufferRefused = st.bufferRefused + 1u64;
+          lp.close(handle);
+          listeners.removeAt(s.index);
+          return Err[ListenerId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for a receive"));
+        }
+      }
       r = r + 1u32;
     }
     Ok[ListenerId, Failure](ListenerId(s.index, s.gen))
@@ -780,6 +845,7 @@ pub struct Driver {
         case is VerifyNeeded {
           moved = true;
           if c.q.wantsVerify() {
+            // (A pool that refuses the job's buffer ends QUIC; the op does nothing)
             lp.submit(c.q.verifyOp(), Target.Here(self.tok(kVerify, conns.slotAt(i))));
           }
         }
@@ -845,6 +911,14 @@ pub struct Driver {
           // idle timeout H3_NO_ERROR (nothing open: a clean end), or for a
           // transport's failure H3_INTERNAL_ERROR
           let code = if x.app {x.code} else if x.idle {http3.h3NoError} else {http3.h3InternalError};
+          // QUIC ended because the buffer pool refused it a buffer: the
+          // requests fail Overloaded, not Closed
+          match c.q.error() {
+            case let Some(qe) {
+              if qe.overloaded() {c.h.starve("the buffer pool is full (iobuf maxBytes): no buffer for QUIC");}
+            }
+            case is None[quic.QuicError] {}
+          }
           c.h.handleClose(code, now);
           going = false;
         }
@@ -910,7 +984,16 @@ pub struct Driver {
         }
         let credit = c.h.readCredit(s.id);
         if credit == 0usize {break;}
-        let piece = takeUpTo(&mut s.inbound, credit);
+        var piece = match takeUpTo(&mut s.inbound, credit) {
+          case var Some(got) {got}
+          else {
+            // The pool (iobuf's tryMake) refuses the copy's buffer: the
+            // connection ends Overloaded, the bytes still in the stream with it
+            st.bufferRefused = st.bufferRefused + 1u64;
+            c.h.starve("the buffer pool is full (iobuf maxBytes): no buffer for a stream's bytes");
+            return true;
+          }
+        };
         let n = piece.len();
         let last = s.inFin && s.inbound.len() == 0usize;
         if last {s.inDone = true;}
@@ -1074,7 +1157,8 @@ pub struct Driver {
     if e.scope == ErrorScope.Connection {
       stage = if !c.told && !c.server {Stage.Tls} else {Stage.Closed};
       if unsent {
-        e.kind = ErrorKind.Refused;
+        // (a buffer pool's refusal stays Overloaded; 'unsent' says it may be sent again)
+        if e.kind != ErrorKind.Overloaded {e.kind = ErrorKind.Refused;}
         e.detail.append(": the request never reached QUIC, so it may be sent again");
       } else if c.idle {
         e.kind = ErrorKind.TimedOut;
@@ -1470,10 +1554,21 @@ pub struct Driver {
     match c.q.error() {
       case let Some(qe) {
         clean = false;
-        cf = Failure.make(if c.told || c.server {Stage.Closed} else {Stage.Tls}, qe.osError, ErrorKind.Closed,
+        cf = Failure.make(if c.told || c.server {Stage.Closed} else {Stage.Tls}, qe.osError,
+          if qe.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed},
           (String() <- qe).view());
       }
       case is None[quic.QuicError] {}
+    }
+    // A connection the buffer pool ended fails what is left on it Overloaded
+    var left = ErrorKind.Closed;
+    match c.q.error() {
+      case let Some(qe) {if qe.overloaded() {left = ErrorKind.Overloaded;}}
+      case is None[quic.QuicError] {}
+    }
+    match &c.h3Error {
+      case let Some(he) {if he.kind == ErrorKind.Overloaded {left = ErrorKind.Overloaded;}}
+      case is None[HttpError] {}
     }
     var k = 0usize;
     while k < c.streams.bound() {
@@ -1482,7 +1577,7 @@ pub struct Driver {
       if !c.streams.isLive(cell) {continue;}
       let s = c.streams.at(cell) as &mut Strm;
       if s.req {
-        let e = HttpError.coded(ErrorKind.Closed, http3.h3NoError, ErrorScope.Connection, "the connection closed");
+        let e = HttpError.coded(left, http3.h3NoError, ErrorScope.Connection, "the connection closed");
         let f = self.reqFailure(c, s, e);
         self.answer(c, cid, cell, s, EventKind.Failed, f);
       }
@@ -1543,18 +1638,22 @@ fn recvSizeOf(server: bool, maxUdp: usize) usize {if maxUdp > minRecvSize {maxUd
 
 // The first n bytes of a chain, at most: its first buffer moved out whole
 // when it holds no more, else n bytes copied out
-fn takeUpTo(ch: &mut Chain, n: usize) IoBuf {
+fn takeUpTo(ch: &mut Chain, n: usize) Option[IoBuf] {
   if ch.firstLen() <= n {
     match ch.popFront() {
-      case let Some(b) {return b;}
+      case let Some(b) {return Some[IoBuf](b);}
       case is None[IoBuf] {}
     }
-    return IoBuf();
+    return Some[IoBuf](IoBuf());
   }
-  var b = IoBuf(n);
+  // None, the chain as it was, when the pool refuses the copy's buffer
+  var b = match IoBuf.tryMake(n) {
+    case var Some(got) {got}
+    else {return None;}
+  };
   let got = ch.take(mem.sliceFromPartsMut(b.base(), n));
   b.setLen(got);
-  b
+  Some[IoBuf](b)
 }
 
 // A received datagram's bytes, lent from the completion's buffer for the
