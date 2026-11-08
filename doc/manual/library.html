@@ -354,7 +354,7 @@ fn main() i32 {
 	<p><span class="pre">chatapi</span>'s tests run against a mock server on loopback, and
 		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.</p>
 
-	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
+	<h3 id="textpkgs">Text: textdiff, toml, json and regex</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
@@ -372,6 +372,9 @@ fn main() i32 {
 	<tr><td><span class="pre">json</span><br><span class="pre">import json;</span></td>
 		<td>JSON (RFC 8259) read and written: a value tree, a streaming reader of events, a writer, numbers kept as
 		written and read as i64 or f64 on request, UTF-8 checked. Written in Cone, with no C library.</td></tr>
+	<tr><td><span class="pre">regex</span><br><span class="pre">import regex;</span></td>
+		<td>Regular expressions in Rust's syntax, matched in time linear in the text: no backreferences and no
+		look-around. Captures, iteration over matches, replace and split. Written in Cone, with no C library.</td></tr>
 	</table>
 
 	<h3 id="textdiff">textdiff</h3>
@@ -502,6 +505,54 @@ hello
     "b"
   ]
 }
+</pre>
+
+	<h3 id="regex">regex</h3>
+	<p><i>Status: the first step. It matches in time linear in the text with a Pike VM and nothing faster yet; the
+		Unicode classes wait for the Unicode tables.</i></p>
+	<p><span class="pre">regex.Regex.parse(pattern)</span> compiles a pattern in Rust's regex syntax and answers a
+		<span class="pre">Result[Regex, RegexError]</span>; <span class="pre">parseBytes</span> does the same for text
+		that need not be UTF-8. The compiled <span class="pre">Regex</span> is not changed by a search.
+		<span class="pre">isMatch(text)</span>, <span class="pre">find(text)</span> (a <span class="pre">Match</span> with
+		byte offsets <span class="pre">start</span> and <span class="pre">end</span>), <span class="pre">captures(text)</span>
+		(<span class="pre">get(i)</span> and <span class="pre">named(name)</span> give parts of the text),
+		<span class="pre">matches(text)</span> and <span class="pre">split(text)</span> (cursors), and
+		<span class="pre">replace</span> and <span class="pre">replaceAll</span> (with <span class="pre">$1</span>,
+		<span class="pre">${name}</span> and <span class="pre">$$</span> in the replacement) are the calls;
+		<span class="pre">findFrom</span> and <span class="pre">capturesFrom</span> begin at a byte and still see the
+		text before it. There are no backreferences and no look-around, so no pattern takes more than time
+		proportional to its size times the text's length; a pattern that uses either is refused with an
+		<span class="pre">ErrorKind.Unsupported</span> error. Until the Unicode tables exist, a bare
+		<span class="pre">\d \s \w \b</span>, <span class="pre">\p{..}</span> and <span class="pre">(?i)</span> on a letter
+		are refused rather than taken to mean ASCII: write <span class="pre">(?-u:\w)</span>,
+		<span class="pre">(?i-u)</span> or <span class="pre">[0-9]</span>. A <span class="pre">.</span>, a negated class,
+		a range such as <span class="pre">[α-ω]</span> and a literal <span class="pre">é</span> work on any character
+		already. The package's header lists the syntax, the limits and what is left out.</p>
+<pre>
+mod demo;
+
+import stdio use *;
+import regex;
+
+fn main() i32 {
+  match regex.Regex.parse("(?P&lt;year&gt;[0-9]{4})-(?P&lt;month&gt;[0-9]{2})") {
+    case let Ok(re) {
+      match re.captures("due 2026-11, paid 2026-12") {
+        case let Some(c) { printStr(c.named("year").unwrap()); printStr("\n"); }
+        case is None {}
+      }
+      printStr(re.replaceAll("2026-11 and 2026-12", "$month/$year").view());
+      printStr("\n");
+    }
+    case let Err(e) { printStr((String() &lt;- e).view()); return 1i32; }
+  }
+  0i32
+}
+</pre>
+	<p>prints:</p>
+<pre>
+2026
+11/2026 and 12/2026
 </pre>
 
 	<h3 id="randompkg">Random numbers</h3>
