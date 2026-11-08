@@ -40,13 +40,41 @@ struct Tally {
   pub ended: Atomic[u64];      // streams that ended in any way
   pub pieces: Atomic[u64];     // pieces read
   pub opened: Atomic[u64];     // heads that arrived
+  pub served: Atomic[u64];     // /tiny responses the server has written whole and finished
+  pub kind: Atomic[u64];       // 1 + the ErrorKind of the last failure a reader saw (0 none)
+}
+
+// The name of a kind code kept in Tally.kind
+fn kindName(code: u64) &str {
+  if code == 0u64 {"none"}
+  else if code == 1u64 {"malformed"}
+  else if code == 2u64 {"too large"}
+  else if code == 3u64 {"unsupported"}
+  else if code == 4u64 {"closed"}
+  else if code == 5u64 {"timed out"}
+  else if code == 6u64 {"refused"}
+  else if code == 7u64 {"overloaded"}
+  else if code == 8u64 {"reset"}
+  else {"other"}
+}
+
+fn kindCode(k: ErrorKind) u64 {
+  if k == ErrorKind.Malformed {1u64}
+  else if k == ErrorKind.TooLarge {2u64}
+  else if k == ErrorKind.Unsupported {3u64}
+  else if k == ErrorKind.Closed {4u64}
+  else if k == ErrorKind.TimedOut {5u64}
+  else if k == ErrorKind.Refused {6u64}
+  else if k == ErrorKind.Overloaded {7u64}
+  else if k == ErrorKind.Reset {8u64}
+  else {9u64}
 }
 
 let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -57,6 +85,8 @@ fn reset() {
   tally.ended.store(0u64);
   tally.pieces.store(0u64);
   tally.opened.store(0u64);
+  tally.served.store(0u64);
+  tally.kind.store(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
@@ -213,6 +243,7 @@ actor Handler {
     if going {
       let f = await ex.finish();
     }
+    tally.served.add(1u64);
   }
 }
 
@@ -293,6 +324,7 @@ actor Reader {
               }
             }
             case let Err(e) {
+              tally.kind.store(kindCode(e.failure.error.kind));
               if e.failure.error.kind == ErrorKind.Overloaded {tally.overloaded.add(1u64);} else {tally.failed.add(1u64);}
               going = false;
             }
@@ -477,6 +509,19 @@ fn main() i32 {
     {
       let h = hoard();
       expect(waitFor(&tally.ended, 1u64, 30000i64), "the starved stream ended, it did not hang");
+    }
+    if tally.overloaded.load() != 1u64 {
+      printStr("the starved stream ended with kind: ");
+      printStr(kindName(tally.kind.load()));
+      printStr(" good ");
+      printUInt(tally.good.load());
+      printStr(" wrong ");
+      printUInt(tally.wrong.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(" pieces ");
+      printUInt(tally.pieces.load());
+      printStr("\n");
     }
     expect(tally.overloaded.load() == 1u64, "...with an Overloaded failure");
   }
