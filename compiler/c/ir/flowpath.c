@@ -4208,16 +4208,15 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
     case CastTag:
     {
+        // A borrow made a raw pointer, or one made from a raw pointer, is a
+        // route the walk does not follow: what the body does with a parameter
+        // is not fully seen (pwTieWarn)
+        if (iexpGetTypeDcl(node)->tag == PtrTag || iexpGetTypeDcl(((CastNode *)node)->exp)->tag == PtrTag)
+            pwTieBlind = 1;
         if (pathLoans && castSumNarrows(node))
             return pwNarrowShared((CastNode *)node);
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
-        // A borrow made a raw pointer, or one made from a raw pointer, is a
-        // route the walk does not follow: what the body does with a parameter
-        // is not fully seen (pwTieWarn)
-        if (!(node->flags & FlagConvert) && (iexpGetTypeDcl(node)->tag == PtrTag
-                || iexpGetTypeDcl(((CastNode *)node)->exp)->tag == PtrTag))
-            pwTieBlind = 1;
         // A conversion moves nothing but an owner it carries; whatever borrow
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
