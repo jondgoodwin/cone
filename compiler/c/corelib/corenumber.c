@@ -389,6 +389,36 @@ static void nbrMathMethods(NbrNode *nbrtype) {
             (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig
                 : mathmeths[i].kind == ClampIntrinsic ? clampsig : fmasig), (INode *)node));
     }
+
+    // A float's transcendental and classifying methods. Rust's names, except
+    // that the predicates are camelCase as the bit methods are ('signBit').
+    // sig: 0 = (self), 1 = (self, other), 2 = (self, n: i32), 3 = (self) bool
+    if (isfloat) {
+        FnSigNode *powisig = newFnSigNode();
+        powisig->rettype = (INode*)selftype;
+        nodesAdd(&powisig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&powisig->parms, (INode *)newVarDclFull(nametblFind("n", 1), VarDclTag, (INode*)i32Type, newPermUseNode(immPerm), NULL));
+        FnSigNode *testsig = newFnSigNode();
+        testsig->rettype = (INode*)boolType;
+        nodesAdd(&testsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        static struct { char *name; int16_t kind; int sig; } floatmeths[] = {
+            {"tan", TanIntrinsic, 0}, {"asin", AsinIntrinsic, 0}, {"acos", AcosIntrinsic, 0},
+            {"atan", AtanIntrinsic, 0}, {"atan2", Atan2Intrinsic, 1},
+            {"exp", ExpIntrinsic, 0}, {"exp2", Exp2Intrinsic, 0}, {"ln", LnIntrinsic, 0},
+            {"log2", Log2Intrinsic, 0}, {"log10", Log10Intrinsic, 0},
+            {"pow", PowIntrinsic, 1}, {"powi", PowiIntrinsic, 2},
+            {"hypot", HypotIntrinsic, 1}, {"cbrt", CbrtIntrinsic, 0},
+            {"sinh", SinhIntrinsic, 0}, {"cosh", CoshIntrinsic, 0}, {"tanh", TanhIntrinsic, 0},
+            {"isNaN", IsNanIntrinsic, 3}, {"isInfinite", IsInfiniteIntrinsic, 3}, {"isFinite", IsFiniteIntrinsic, 3},
+        };
+        for (size_t i = 0; i < sizeof(floatmeths) / sizeof(floatmeths[0]); ++i) {
+            IntrinsicNode *node = newIntrinsicNode(floatmeths[i].kind);
+            node->typearg = (INode*)selftype;
+            iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind(floatmeths[i].name, strlen(floatmeths[i].name)),
+                FlagMethFld | FlagPub, (INode *)(floatmeths[i].sig == 0 ? unarysig : floatmeths[i].sig == 1 ? binarysig
+                    : floatmeths[i].sig == 2 ? powisig : testsig), (INode *)node));
+        }
+    }
 }
 
 // A float's encoding: 'x.bits()' (a u32 for f32, a u64 for f64), the static

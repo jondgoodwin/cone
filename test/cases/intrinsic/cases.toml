@@ -126,6 +126,23 @@ options = []
 name = "debug"
 options = ["--debug"]
 
+# A float's math methods, tan to tanh and isNaN, isInfinite, isFinite, on f64 and
+# f32. Operands come through a C function the optimizer cannot see into, so the
+# C library runs; the last section is folded by the compiler. Release and debug.
+[scenario.intrinsic_float_math]
+category = "run"
+description = "A float's tan, asin, acos, atan, atan2, exp, exp2, ln, log2, log10, pow, powi, hypot, cbrt, sinh, cosh, tanh, isNaN, isInfinite and isFinite on f64 and f32, at known values and the edges: atan2 in four quadrants and at signed zeros, ln(0) -inf, ln(-1) NaN, pow(0, 0) 1, powi with a negative base and exponent, hypot(inf, NaN) inf with no overflow, cbrt of a negative, exp2(-1074) the smallest subnormal, tanh saturating, the three tests on NaN, the infinities, zeros, a subnormal and the largest finite; at run time and folded"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.intrinsic_float_math.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_float_math.run]]
+name = "debug"
+options = ["--debug"]
+
 [scenario.intrinsic_typecheck_numbers]
 category = "reject"
 description = "abs of an unsigned integer, floor, ceil, round and fma of an integer, min of a bool and max of a char, which have no such method, a method given the wrong arguments, and core's mem versions called at a type outside their class"
@@ -382,3 +399,27 @@ tags = ["genllvm", "runtime"]
 category = "run"
 description = "A struct holding a List of an Option of an Rc of a struct that holds an Rc of a trait and the Option of an Rc of itself: constructed and a trait method called through it"
 tags = ["genllvm", "runtime"]
+
+# A float's math methods are LLVM's intrinsics where it has one; only hypot and cbrt
+# call the C library, and the tests are comparisons
+[scenario.intrinsic_genllvm_floatmath]
+category = "compile"
+description = "A float's tan, asin, acos, atan, atan2, exp, exp2, ln, log2, log10, pow, powi, sinh, cosh and tanh are LLVM's intrinsic of each meaning, f64 and f32; hypot and cbrt call the C library (an f32's hypot through the double form); isNaN, isInfinite and isFinite are comparisons with no call"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_floatmath.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.intrinsic_genllvm_floatmath.check]]
+name = "each-is-llvms-intrinsic"
+target = "preir"
+contains = [
+  "@llvm.tan.f64(", "@llvm.asin.f32(", "@llvm.acos.f64(", "@llvm.atan.f64(", "@llvm.atan2.f32(",
+  "@llvm.exp.f64(", "@llvm.exp2.f32(", "@llvm.log.f64(", "@llvm.log2.f32(", "@llvm.log10.f64(",
+  "@llvm.pow.f64(", "@llvm.powi.f32.i32(", "@llvm.sinh.f64(", "@llvm.cosh.f32(", "@llvm.tanh.f64(",
+  "call double @hypot(", "call float @cbrtf(", "call double @cbrt(", "fpext float", "fptrunc double",
+  "fcmp une double", "@llvm.fabs.f64(", "@llvm.fabs.f32(", "fcmp oeq double", "fcmp olt float",
+]
+excludes = ["call float @hypotf(", "call float @tanf(", "call float @expf(", "call float @logf(", "call float @powf(",
+  "call double @tan(", "call double @log(", "call double @pow(", "call float @powi("]

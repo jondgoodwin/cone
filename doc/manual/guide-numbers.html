@@ -319,6 +319,41 @@ t.abs()                    // 7
 		the rest, are <a href="safe-intrinsics.html#numbers">core's intrinsics</a>, and a
 		<a href="guide-vectors.html#math">vector</a> has them lane by lane.</p>
 
+	<h3 id="floatmath">A float's math: tan, atan2, exp, ln, pow, hypot, isNaN and more</h3>
+	<p>Beyond <span class="pre">sqrt</span>, <span class="pre">sin</span> and <span class="pre">cos</span>, every
+		float has these methods, on <span class="pre">f32</span> and <span class="pre">f64</span> alike, named as Rust's
+		are (there is no <span class="pre">math</span> package). Angles are in radians, and each gives its own type:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+		<tr><td><span class="pre">tan</span> <span class="pre">asin</span> <span class="pre">acos</span> <span class="pre">atan</span></td><td>the usual functions; <span class="pre">asin</span> and <span class="pre">acos</span> of a number outside -1 to 1 are NaN</td></tr>
+		<tr><td><span class="pre">y.atan2(x)</span></td><td>the angle of the point (x, y), from -pi to pi, the quadrant told by both signs: <span class="pre">1.0.atan2(-1.0)</span> is 3pi/4, and <span class="pre">(-0.0).atan2(-1.0)</span> is -pi</td></tr>
+		<tr><td><span class="pre">exp</span> <span class="pre">exp2</span></td><td>e to the x, and 2 to the x; <span class="pre">(-1074.0).exp2()</span> is the smallest f64, 5e-324</td></tr>
+		<tr><td><span class="pre">ln</span> <span class="pre">log2</span> <span class="pre">log10</span></td><td>the natural, base 2 and base 10 logarithm; of 0 they give -inf, of a negative a NaN</td></tr>
+		<tr><td><span class="pre">x.pow(y)</span></td><td>x to the float y; <span class="pre">pow(0, 0)</span> is 1, and so is <span class="pre">pow(NaN, 0)</span>; a negative x to a fractional y is NaN</td></tr>
+		<tr><td><span class="pre">x.powi(n)</span></td><td>x to the <span class="pre">i32</span> n by repeated multiplication; <span class="pre">x.powi(0)</span> is 1 for every x, a NaN included, and a negative n gives 1 / x.powi(-n)</td></tr>
+		<tr><td><span class="pre">x.hypot(y)</span></td><td>the square root of x*x + y*y, without overflow of the squares; an infinity wins over a NaN</td></tr>
+		<tr><td><span class="pre">cbrt</span></td><td>the cube root, a negative's too: <span class="pre">(-8.0).cbrt()</span> is -2</td></tr>
+		<tr><td><span class="pre">sinh</span> <span class="pre">cosh</span> <span class="pre">tanh</span></td><td>the hyperbolic functions; <span class="pre">tanh</span> is -1 and 1 at the infinities</td></tr>
+		<tr><td><span class="pre">isNaN</span> <span class="pre">isInfinite</span> <span class="pre">isFinite</span></td><td>true for a NaN alone, for either infinity alone, and for everything else (zero of either sign and a subnormal included)</td></tr>
+	</table>
+<pre>
+2.0.pow(10.0)              // 1024
+(-2.0).powi(3)             // -8
+3.0.hypot(4.0)             // 5
+(0.0 / 0.0).isNaN()        // true
+1.0.atan2(1.0)             // 0.785398...: pi / 4
+</pre>
+	<p>The special cases are the C library's (C99 Annex F), as Rust's are. Each is LLVM's intrinsic for the
+		function, except <span class="pre">hypot</span> and <span class="pre">cbrt</span>, which call the C library, so the
+		optimizer can fold and vectorize them; the last digit of a result may differ between systems.
+		<b>In a GPU kernel</b> the methods compile to GLSL.std.450's instructions, except
+		<span class="pre">hypot</span>, <span class="pre">cbrt</span> and <span class="pre">powi</span>, which are formulas
+		there: <span class="pre">hypot</span> is the square root of x*x + y*y with no protection from overflow,
+		<span class="pre">cbrt</span> is the sign of x times 2 to the (log2 of |x|) / 3, within a few ulp, and
+		<span class="pre">powi</span> is <span class="pre">pow</span> of the magnitude with the sign and a zero exponent
+		restored, so a kernel's <span class="pre">powi</span> of 0 to a negative power is whatever the GPU's <span class="pre">pow</span> gives.
+		A vector does not have these methods yet. The constants pi, e, tau, infinity and NaN
+		have no spelling yet: build an infinity or a NaN with <span class="pre">f64.fromBits</span>, below.</p>
+
 	<h3 id="floatbits">A float's encoding: bits, fromBits, exponent, mantissa and signBit</h3>
 	<p>A float is stored as a sign bit, an exponent field and a fraction. Reading them needs no
 		<span class="pre">as</span>: an <span class="pre">f32</span> has them in a <span class="pre">u32</span>
