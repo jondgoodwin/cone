@@ -59,6 +59,7 @@ enum SeamFlags {
     SeamEnds = 0x10,    // it holds a borrow that is not global, which ends at the seam
     SeamParm = 0x20,    // a parameter: it dies as the function ends
     SeamTemp = 0x40,    // a temporary of the statement the seam is in
+    SeamHollow = 0x80,  // a sole owner some of whose referent moved out, on some path here (on all, if it has no drop flag)
 };
 
 typedef struct SeamVar {

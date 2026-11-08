@@ -2198,7 +2198,11 @@ is awaited, which the `await` takes as a call takes an argument. At the seam
    the seam before it is stored over whole (`SeamLive`), plus every droppable
    (`itypeNeedsFinal`, `SeamDies`) still holding its value
    (`SeamOpen`, from drop flags' state: not moved out, not never given one,
-   not the variable whose initializer holds the seam), used again or not. A
+   not the variable whose initializer holds the seam), used again or not. One
+   hollowed there (a sole owner some of whose referent moved out, state
+   `DropHollow` on some path) is noted `SeamHollow`: the record's drop releases
+   it hollow, as its scope's end does, where it has no drop flag or its flag
+   says hollow. A
    dead variable with nothing to do as it dies is left behind. Liveness is
    found forward as a frozen borrow's last use is: each variable in scope gets
    a live mark (`loanSeamLive`, kind `PendingSeamLive`), a pending entry its
