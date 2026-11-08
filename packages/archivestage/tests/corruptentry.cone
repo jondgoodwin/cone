@@ -1,0 +1,213 @@
+// A corrupt entry stops the fetch (ArchiveStage's failure calls ChunkSource.stop upstream). Thirty stored
+// entries of 100,000 bytes (a 3 MB archive of about 190 chunks of 16 KiB) come from a source that follows
+// the stop rules; one byte in the data of the third entry is flipped, so its checksum fails at its end.
+// No entry sink stops anything. Checked:
+//
+//   the answer is Err; the source is stopped once, by the stage (the stop reached it), and sends one end;
+//   the entries before the third ended Finished, and the third ended Failed once; no entry after it
+//   began, and the source sent far fewer chunks than the archive holds;
+//   every input chunk the source lent came back, and every buffer is back in its pool.
+
+mod corruptentry;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import stages use *;
+import archivestage use *;
+import zipfile;
+
+struct Seen {
+  pub begins: Atomic[u64];      // entry sinks made
+  pub ends: Atomic[u64];        // end(Finished) at an entry sink
+  pub failedEnds: Atomic[u64];  // end(Failed) at an entry sink
+  pub reasonOk: Atomic[u64];    // ...of them, with the reason "enough"
+  pub sent: Atomic[u64];        // input chunks the source sent
+  pub back: Atomic[u64];        // ... and had back
+  pub srcStopped: Atomic[u64];  // stops the source acted on
+  pub srcIgnored: Atomic[u64];
+  pub srcEnds: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn textIs(e: &AnyError, want: &str) bool {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  bytesEqual(text.view(), want)
+}
+
+// An entry's sink: gives every chunk back; the one at 'stopIdx' stops its source at its first chunk
+actor EntrySink is ChunkSink {
+  idx: usize;
+  stopIdx: usize;
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new, idx: usize, stopIdx: usize) {
+    *self = Self(idx: idx, stopIdx: stopIdx, up: None[ChunkSource]);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) {
+        u.giveBack(c);
+        if idx == stopIdx { u.stop(Ending.Failed(AnyError.msg("not used"))); }
+      }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished { seen.ends.add(1u64); }
+      case let Failed(e) {
+        seen.failedEnds.add(1u64);
+        if textIs(&e, "enough") { seen.reasonOk.add(1u64); }
+      }
+    }
+  }
+}
+
+// The archive in chunks of 16 KiB through a window of 256 KiB; it follows the stop rules
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  at: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8]) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, at: 0usize, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    seen.back.add(1u64);
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if over {
+      seen.srcIgnored.add(1u64);
+      return;
+    }
+    seen.srcStopped.add(1u64);
+    over = true;
+    seen.srcEnds.add(1u64);
+    down.end(why);
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if at >= data.len() {
+        over = true;
+        seen.srcEnds.add(1u64);
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        let left = data.len() - at;
+        let n = if left < 16384usize { left } else { 16384usize };
+        match link.take(n) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(&data.view()[at ..< at + n]);
+            at += n;
+            seen.sent.add(1u64);
+            down.accept(buf);
+          }
+        }
+      }
+    }
+  }
+}
+
+fn archive() List[u8] {
+  var body = List[u8].withCapacity(100000usize);
+  var i = 0usize;
+  while i < 100000usize { body.push(u8.from((i * 7usize + 3usize) % 251usize)); i += 1usize; }
+  var w = zipfile.ZipWriter.make();
+  var k = 0usize;
+  while k < 30usize {
+    var name = String.from("dir/file");
+    name.appendUInt(u64.from(k));
+    _ = w.add(name.view(), body.view(), &zipfile.EntryOptions.stored());
+    k += 1usize;
+  }
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, "the archive is made"); List[u8]() }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var data = archive();
+  data[250000usize] = data[250000usize] ^ 255u8;
+  let total = (u64.from(data.len()) + 16383u64) / 16384u64;
+  let base = iobuf.stats().lent;
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  {
+    let open = Uni[fn(e: &zipfile.Local) ChunkSink + Sendable](fn(e: &zipfile.Local) [var next = 0usize] ChunkSink {
+      let i = next;
+      next += 1usize;
+      seen.begins.add(1u64);
+      let s: ChunkSink = EntrySink(i, 9999usize);
+      s
+    });
+    let stage = ArchiveStage(open, tx);
+    let src = Source(stage, data);
+    src.start();
+  }
+  let answer = rx.recvTimeout(Duration.fromMillis(30000i64));
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while (seen.back.load() < seen.sent.load() || seen.ends.load() + seen.failedEnds.load() < seen.begins.load())
+      && Instant.now() < limit {thread.yieldNow();}
+  finalAll();
+
+  var errReason = false;
+  var isErr = false;
+  match &answer {
+    case let &Some(r) {
+      match r {
+        case let &Err(e) { isErr = true; errReason = true; }
+        case is Ok {}
+      }
+    }
+    case is None {}
+  }
+  expect(isErr, "the answer is Err");
+  expect(errReason, "carrying the archive's error");
+  expectUInt(seen.srcStopped.load(), 1u64, "the stop reached the source once, through the stage");
+  expectUInt(seen.srcEnds.load(), 1u64, "and the source sent one end");
+  expectUInt(seen.begins.load(), 3u64, "no entry began after the third");
+  expectUInt(seen.ends.load(), 2u64, "the two before it ended Finished");
+  expectUInt(seen.failedEnds.load(), 1u64, "the third ended Failed once");
+  expect(seen.sent.load() < total / 2u64, "the source sent far fewer chunks than the archive holds");
+  expectUInt(seen.back.load(), seen.sent.load(), "every input chunk came back to the source");
+  expectUInt(iobuf.stats().lent, base, "every buffer is back in its pool");
+  done()
+}
