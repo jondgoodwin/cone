@@ -4,13 +4,13 @@
 //
 //   disabled   the kind's layer is off: one relaxed load and a bit test
 //   enabled    the layer is on at high: counted and recorded by the method
-//   dropped    on at high, the way of recording out of room (logger with a cap
-//              reached, buffers full with no spare): counted, then dropped
+//   dropped    on at high, the way of recording out of room (buffers full
+//              with no spare): counted, then dropped
 //
 //   congo run --release packages/actortrace/examples/microbench.cone -- \
 //       <method> <state> <count> <file>
 //
-// method: count | null | logger | buffers | etw | text (etw: no session listens;
+// method: count | null | buffers | etw | text (etw: no session listens;
 // enabled and dropped are then what a shipped program pays). 'etwnocheck' is etw
 // without the EventEnabled question first. Prints 'ns_per_record <n>' in
 // hundredths of a nanosecond (the clock ticks 100 ns here, so a loop is timed
@@ -66,7 +66,6 @@ fn main(argc: i32, argv: **u8) i32 {
   var method = actortrace.methodCount;
   var check = true;
   if argIs(argc, argv, 1i32, "null") {method = actortrace.methodNull;}
-  else if argIs(argc, argv, 1i32, "logger") {method = actortrace.methodLogger;}
   else if argIs(argc, argv, 1i32, "buffers") {method = actortrace.methodBuffers;}
   else if argIs(argc, argv, 1i32, "etw") {method = actortrace.methodEtw;}
   else if argIs(argc, argv, 1i32, "etwnocheck") {method = actortrace.methodEtw; check = false;}
@@ -83,11 +82,7 @@ fn main(argc: i32, argv: **u8) i32 {
   }
   actors.configure(actors.Options(workers: 4u32));
   let kind = actortrace.register("tick", actortrace.layerUser, actortrace.levelHigh);
-  var cap = 0u64;
-  if dropped && method == actortrace.methodLogger {
-    cap = 1u64;
-  }
-  actortrace.start(method, path, actortrace.Options(cap: cap, spare: 700u32, timeLogger: false, etwCheck: check));
+  actortrace.start(method, path, actortrace.Options(spare: 700u32, timeLogger: false, etwCheck: check));
   if !disabled {
     actortrace.setLevel(actortrace.layerUser, actortrace.levelHigh);
   }
