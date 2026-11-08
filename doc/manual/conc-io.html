@@ -656,6 +656,13 @@ actor Weather {
 		<span class="pre">ex.startEvents()</span> then <span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of
 		server-sent events. A write is answered when the connection has taken the bytes, so an actor that awaits each is
 		slowed to its peer's speed; a peer that has left answers the write <span class="pre">Closed</span>.
+		After <span class="pre">start</span>, <span class="pre">ex.bodySink()</span> instead of <span class="pre">write</span> and
+		<span class="pre">finish</span> gives a <span class="pre">ChunkSink</span>: a pipeline that ends in it
+		(<span class="pre">FileSource</span>, a gzip stage, the sink) is the response's body, a chunk at a time, so a large
+		or generated body never sits whole in memory. The service thread copies each chunk into buffers of its own and gives the
+		chunk back to its source once the connection has accepted the copy, so a slow client holds the pipeline back. The sink's
+		end is the finish; a sized body that the pipeline overruns or ends short of resets the exchange and stops the source
+		<span class="pre">Failed</span>; dropping the Exchange leaves the body to the sink.
 		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
 		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
 		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,

@@ -242,6 +242,7 @@ pub fn listen(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Serve
 const phaseFresh = 0u32;        // no response begun
 const phaseStreaming = 1u32;    // a response begun, its body to write
 const phaseOver = 2u32;         // a response whole, or all of it asked for
+const phaseSink = 3u32;         // the body is a sink's (bodySink): 'write' and 'finish' are not allowed
 
 // One request and the response to it, as the actor that took it holds it
 // (the package's header, A SERVER): plain data that moves, naming an exchange
@@ -348,6 +349,30 @@ pub struct Exchange is Move {
     if sized && written != length {die("actorhttp: finish short of the length 'start' declared", file, line);}
     phase = phaseOver;
     awaitable[FinishJob, Result[u64, ServerError]](FinishJob(srv, slot, id))
+  }
+
+  // The body fed by a stream instead of written: after 'start', once, before any 'write'.
+  // A stage pipeline ending in the sink ('FileSource -> TransformStage -> sink') is the
+  // response's body, chunk by chunk, so a large or generated body never sits whole in
+  // memory; the connection's pace is the pipeline's (a slow client holds it back). The
+  // sink's end is 'finish'; ending it Failed resets the exchange. Afterwards 'write',
+  // 'finish' and a second 'bodySink' are program errors. Dropping the Exchange leaves the
+  // body to the sink. For a sized body the sink counts the bytes: past the length, or
+  // short of it at the end, the exchange is reset and the source stopped Failed. For a
+  // body the protocol forbids (HEAD, 204, 304, a length of 0) the source is stopped
+  // Finished when it is attached, so the pipeline is not run. (responsesink.cone)
+  pub fn bodySink(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ChunkSink {
+    if phase == phaseSink {die("actorhttp: bodySink was taken already", file, line);}
+    if phase == phaseFresh {die("actorhttp: bodySink needs a response begun by 'start'", file, line);}
+    if phase == phaseOver && !(bodyless && written == 0u64) {
+      die("actorhttp: bodySink needs a response begun by 'start' and not yet finished", file, line);
+    }
+    if written != 0u64 {die("actorhttp: bodySink must come before any write", file, line);}
+    phase = phaseSink;
+    // (a body the protocol forbids needs nothing of the service: the sink stops its source itself)
+    if !bodyless {post[SinkOpenJob](SinkOpenJob(srv, slot, id));}
+    let sink: ChunkSink = ResponseSink(srv, slot, id, bodyless);
+    sink
   }
 
   // Whether a response has been begun
