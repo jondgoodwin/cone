@@ -26,6 +26,8 @@ import sync use Channel, Sender, Receiver;
 import collections use List, String, AnyError;
 import iobuf use IoBuf, Chain;
 import iocore use SocketAddr;
+import fs;
+import path use Path;
 import http use *;
 import httpclient use Request;
 import actors;
@@ -41,7 +43,8 @@ struct Tally {
   pub ended: Atomic[u64];      // streams that ended in any way
   pub pieces: Atomic[u64];     // pieces read
   pub opened: Atomic[u64];     // heads that arrived
-  pub kind: Atomic[u64];       // 1 + the ErrorKind of the last failure a reader saw (0 none)
+  pub mine: Atomic[u64];       // refusals the hoard itself met (they are in the pool's count)
+  pub kind: Atomic[u64];      // 1 + the ErrorKind of the last failure a reader saw (0 none)
 }
 
 // The name of a kind code kept in Tally.kind
@@ -74,7 +77,7 @@ let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -86,6 +89,7 @@ fn reset() {
   tally.pieces.store(0u64);
   tally.opened.store(0u64);
   tally.kind.store(0u64);
+  tally.mine.store(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
@@ -335,13 +339,16 @@ actor Reader {
   }
 }
 
-// Take with tryMake, every size class in turn, until each is refused
+// Take with tryMake, every size class in turn, until each is refused, and keep taking whatever
+// comes back to the pool until a stream has ended (or 30 s pass), so the shortage holds however
+// fast buffers are reused. Each refusal of its own is counted in tally.mine, so a test can tell
+// the refusals of the code under test from these.
 fn hoard() Chain {
   iobuf.trimAll();
   var held = Chain.make(unbounded);
-  var took = true;
-  while took {
-    took = false;
+  let limit = Instant.now() + Duration.fromMillis(30000i64);
+  while tally.ended.load() < 1u64 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
     var cls = 5u32;
     while cls > 0u32 {
       cls = cls - 1u32;
@@ -351,9 +358,8 @@ fn hoard() Chain {
           case var Some(b) {
             b.append("x");
             _ = held.push(b);
-            took = true;
           }
-          else {going = false;}
+          else {going = false; tally.mine.add(1u64);}
         }
       }
     }
@@ -504,15 +510,20 @@ fn main() i32 {
     r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 1500i64, 0i64, 1u64);
     expect(waitFor(&tally.opened, 1u64, 20000i64), "the head arrived");
     thread.sleep(Duration.fromMillis(300i64));
-    var refusedBefore = 0u64;
+    let refusedBefore = iobuf.stats().refused;
     {
+      // returns when the stream has ended (or 30 s pass), still holding everything it took
       let h = hoard();
-      // the hoard ends on a refusal of its own: count only the refusals after it is whole
-      refusedBefore = iobuf.stats().refused;
-      expect(waitFor(&tally.ended, 1u64, 30000i64), "the starved stream ended, it did not hang");
+      expect(tally.ended.load() >= 1u64, "the starved stream ended, it did not hang");
     }
-    let refusedAfter = iobuf.stats().refused;
+    // the hoard's own refusals are in the pool's count: take them out, what is left are the code under test's
+    let refusedAfter = iobuf.stats().refused - tally.mine.load();
     let kc = tally.kind.load();
+    // the kind of each run, for a person running the test many times: a file in the test's build folder
+    var kindLine = String.from(kindName(kc));
+    kindLine.append("\n");
+    let kindFile = Path.fromString(String.from("lastkind.txt"));
+    _ = fs.writeFile(&kindFile, kindLine.view());
     // a starved pool ends the fetch in a bounded way: refused by the pool, ended Overloaded or Closed
     // (the test's own in-process server may be the one refused first, so the client sees Closed)
     if kc != 7u64 {
@@ -529,7 +540,7 @@ fn main() i32 {
       printStr("\n");
     }
     expect(kc == 7u64 || kc == 4u64, "...with an Overloaded or Closed failure, no other kind");
-    expect(refusedAfter > refusedBefore, "...the pool refused a take after the hoard was whole");
+    expect(refusedAfter > refusedBefore, "...the pool refused the client or the server (beyond the hoard's own refusals)");
   }
   // the hoard is released: nothing stays lent (the baseline is 0, as before the fetch)
   expect(allHome(), "...and every buffer is home after the shortage");
