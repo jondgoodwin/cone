@@ -1,0 +1,124 @@
+// The write half of an archive's round trip: zipfile's sync ZipWriter.saveTo against archivestage's saveTo
+// (ZipSource into FileSink), on the same archive, alternating, five runs each (and the bare pipeline, ZipSource into FileSink, without what saveTo adds); the writers are made before the
+// clock starts, so only the writing is timed. Informative only; it gates nothing.
+//
+//   congo run --release examples/savebench.cone
+
+mod savebench;
+
+import stdio use *;
+import collections use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time;
+import actors;
+import archivestage use *;
+import stageio;
+import zipfile;
+import path use Path;
+import fs;
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  while out.len() < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(97u8 + u8.from(x % 26u64));
+  }
+  out
+}
+
+fn build(count: usize, size: usize, stored: bool) zipfile.ZipWriter {
+  var w = zipfile.ZipWriter.make();
+  var i = 0usize;
+  while i < count {
+    let data = noise(size, u64.from(i) + 1u64);
+    var name = String.from("entry");
+    name.appendUInt(u64.from(i));
+    let opts = if stored { zipfile.EntryOptions.stored() } else { zipfile.EntryOptions.plain() };
+    _ = w.add(name.view(), data.view(), &opts);
+    i += 1usize;
+  }
+  w
+}
+
+fn millis(d: time.Duration) f64 { d.secondsF64() * 1000.0 }
+
+fn syncRun(count: usize, size: usize, stored: bool) f64 {
+  var w = build(count, size, stored);
+  let t0 = time.Instant.now();
+  _ = w.saveTo(&Path.from("savebench_sync.zip"));
+  let ms = millis(t0.elapsed());
+  _ = fs.removeFile(&Path.from("savebench_sync.zip"));
+  ms
+}
+
+fn asyncRun(count: usize, size: usize, stored: bool) f64 {
+  let w = build(count, size, stored);
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  let t0 = time.Instant.now();
+  saveTo(w, String.from("savebench_async.zip"), tx);
+  _ = rx.recv();
+  let ms = millis(t0.elapsed());
+  _ = fs.removeFile(&Path.from("savebench_async.zip"));
+  ms
+}
+
+// Only the pipeline: ZipSource into FileSink, with no open beforehand and no thread (what saveTo adds)
+fn bareRun(count: usize, size: usize, stored: bool) f64 {
+  let w = build(count, size, stored);
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  let t0 = time.Instant.now();
+  let sink = stageio.FileSink(String.from("savebench_bare.zip"), tx);
+  let src = ZipSource(sink, w);
+  src.start();
+  _ = rx.recv();
+  let ms = millis(t0.elapsed());
+  _ = fs.removeFile(&Path.from("savebench_bare.zip"));
+  ms
+}
+
+fn middle(v: &mut List[f64]) f64 {
+  var i = 1usize;
+  while i < v.len() {
+    var j = i;
+    while j > 0usize && v[j - 1usize] > v[j] {
+      let t = v[j];
+      v[j] = v[j - 1usize];
+      v[j - 1usize] = t;
+      j -= 1usize;
+    }
+    i += 1usize;
+  }
+  v[v.len() / 2usize]
+}
+
+fn measure(label: &str, count: usize, size: usize, stored: bool) {
+  var s = List[f64]();
+  var a = List[f64]();
+  var b = List[f64]();
+  var k = 0usize;
+  while k < 5usize {
+    s.push(syncRun(count, size, stored));
+    a.push(asyncRun(count, size, stored));
+    b.push(bareRun(count, size, stored));
+    k += 1usize;
+  }
+  let ms = middle(&mut s);
+  let ma = middle(&mut a);
+  let mb = middle(&mut b);
+  print <- label, ": sync ", ms, " ms, saveTo ", ma, " ms (ratio ", ma / ms, "), bare pipeline ", mb, " ms (ratio ", mb / ms, ")\n";
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 4u32));
+  measure("1 entry of 100 MiB (stored)", 1usize, 104857600usize, true);
+  measure("2000 entries of 1 KiB (deflate)", 2000usize, 1024usize, false);
+  measure("100 entries of 1 MiB (stored)", 100usize, 1048576usize, true);
+  0i32
+}
