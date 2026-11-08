@@ -9,7 +9,7 @@
 // at 'r2' in 'outlive'.
 // Basis: language rule (3 Oct 2026): an inferred type argument carries no
 // band of its call, and the instance's body holds what a parameter of type
-// T lends as the caller's (reflifefn.html, "Lifetime bounds"): a local's
+// T lends as the caller's (mem-lifetimes.html#bounds, "Lifetime bounds on generics and virtual references"): a local's
 // borrow may not leave the function, a caller's may not reach a global, and
 // a call carries an argument's borrows wherever its signature's one unnamed
 // lifetime flows (the flow rule, 2 Oct 2026).
@@ -22,65 +22,65 @@ mod lifetime_bound_generic_inferred_still_refused;
 import stdio use *;
 
 struct R {
-  pub n i64;
+  pub n: i64;
 }
 
-mut G Option[&R];
+var G: Option[&R];
 
 fn @initpure init() {
   G = None;
 }
 
-fn viaLocal[T](dst &mut &R, x T) {
-  imm tmp T = x;
-  mut o Option[T] = Some[T](tmp);
+fn viaLocal[T](dst: &mut &R, x: T) {
+  let tmp: T = x;
+  var o: Option[T] = Some[T](tmp);
   match o {
-    case imm e Some {
+    case let Some(e) {
       *dst = e;
     }
     else {}
   }
 }
 
-fn putLocal[T](dst &mut T, x T) {
-  imm l = new R(6);
-  mut t T = x;
+fn putLocal[T](dst: &mut T, x: T) {
+  let l = R(6);
+  var t: T = x;
   t = &l;
   *dst = t;                  //~ ErrorEscape "a borrow of 'l'"
 }
 
-fn retLocal[T](x T) T {
-  imm l = new R(5);
-  mut t T = x;
+fn retLocal[T](x: T) T {
+  let l = R(5);
+  var t: T = x;
   t = &l;
-  t;                         //~ ErrorEscape "a borrow of 'l'"
+  t                         //~ ErrorEscape "a borrow of 'l'"
 }
 
-fn stashAny[T](x T) {
-  imm tmp T = x;
+fn stashAny[T](x: T) {
+  let tmp: T = x;
   G = Some[&R](tmp);         //~ ErrorEscape "the caller lent through 'x'"
 }
 
 fn ownLocal() {
-  imm r1 = new R(1);
-  mut d = &r1;
+  let r1 = R(1);
+  var d = &r1;
   {
-    imm r2 = new R(2);
+    let r2 = R(2);
     putLocal(&mut d, &r2);
     printInt(retLocal(&r2).n);
   }
 }
 
 fn global() {
-  imm r1 = new R(1);
+  let r1 = R(1);
   stashAny(&r1);
 }
 
 fn outlive() {
-  imm r1 = new R(1);
-  mut d = &r1;
+  let r1 = R(1);
+  var d = &r1;
   {
-    imm r2 = new R(2);       //~ ErrorFrozen "goes out of scope while 'd'"
+    let r2 = R(2);       //~ ErrorFrozen "goes out of scope while 'd'"
     viaLocal(&mut d, &r2);
   }
   printInt(d.n);

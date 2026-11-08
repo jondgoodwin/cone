@@ -1,0 +1,38 @@
+// What '&x[i]' may borrow through a type's own indexing. A read-only '&x[i]'
+// calls '[]' (Rust's 'Index'), which must return a borrow of the element for
+// there to be a place to borrow (collection_index_borrow_success). A '[]' that
+// returns a value names no place: a String's byte, or a user type's 'i32'.
+// '&x[i]' of one is refused as before, as a borrow of a method that is not
+// there ('&[]', which a String does not declare) or, where the type declares
+// a '&[]' taking 'self: &mut', as a read-only receiver handed to it
+// (ref_typecheck_borrow has that message in full). '&[]' borrows an element
+// mutably ('IndexMut'), which a type may not declare without '[]': there would
+// be no way to read an element, nor to borrow one read-only.
+
+mod collection_typecheck_index_borrow;
+
+import collections use *;
+
+// A '[]' returning a value: an element read, but no place
+struct Cells {
+  pub var a: Array[i32, 3];
+  pub fn `[]`(self, index: usize) i32 { a[index] }
+  pub fn `&[]`(self: &mut, index: usize) &mut i32 { &mut a[index] }
+}
+
+// '&[]' with no '[]'
+struct OnlyMut {
+  pub var a: Array[i32, 3];
+  pub fn `&[]`(self: &mut, index: usize) &mut i32 { &mut a[index] }  //~ ErrorRefIndexAlone:7 "OnlyMut declares `&[]` but no `[]`"
+}
+
+fn stringByte() {
+  let s = String.from("ab");
+  let r = &s[0usize];           //~ ErrorNoMbr:13 "`&[]` not found"
+}
+
+fn userValue() {
+  var c = Cells(a: [1, 2, 3]);
+  let r = &c[0usize];           //~ ErrorNoCandidate:13 "hands `&[]` a read-only receiver"
+  let m = &mut c[0usize];
+}

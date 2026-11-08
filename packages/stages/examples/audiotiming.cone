@@ -1,0 +1,232 @@
+// Steady timing, as audio needs it (streams PR 7, "the proof"): 10 ms chunks of a
+// 48 kHz, 16-bit, stereo stream (1,920 bytes) cross THREE stages and arrive at a sink,
+// and the sink writes down how late each chunk is: the time it arrives minus the time it
+// was due, which is its number times 10 ms after the first. Nothing is played: the chunks
+// are only timed (this program opens no audio device and makes no sound).
+//
+//   source -> HashStage[Sha256] -> HashStage[Sha256] -> HashStage[Sha256] -> sink
+//
+// The source is an actor that sleeps until each chunk is due (aio.sleepUntil, an absolute
+// time, so a late wake-up does not push the next one later) and sends it into a link of
+// eight buffers. If no buffer is free when a chunk is due it is skipped and counted
+// (a real source would drop the sample too). The stages are the library's, each hashing
+// the 1,920 bytes it passes on.
+//
+//   congo run --release packages/stages/examples/audiotiming.cone -- <seconds> <busy threads>
+//
+// With 0 busy threads the machine is as quiet as it is; with N, N threads spin
+// meanwhile, to load the machine as a game or a build would. It prints the chunks sent,
+// skipped and received, and the lateness: p50, p99, p99.9 and the worst, in microseconds.
+
+mod audiotiming;
+
+import stdio use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Arc;
+import thread;
+import time use Instant, Duration;
+import actors;
+import aio;
+import streams use *;
+import stages use *;
+import cryptohash;
+import diag use Histogram;
+
+const chunkBytes = 1920usize;
+const periodNs = 10000000i64;
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+struct Shared {
+  pub sent: Atomic[u64];
+  pub skipped: Atomic[u64];
+  pub got: Atomic[u64];
+  pub late: Atomic[i64];       // the worst lateness, ns
+}
+
+let shared: Shared;
+
+fn @initpure init() {
+  shared = Shared(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[i64].of(0i64));
+}
+
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  base: Instant;
+  count: u64;
+  wake: Histogram;
+
+  pub fn init(self: &new, down: ChunkSink, base: Instant, count: u64) {
+    *self = Self(down: down, link: ChunkWindow.own(8usize * chunkBytes), base: base, count: count, wake: Histogram.make());
+    down.attach(selfactor);
+  }
+
+  pub async fn run(self) {
+    var i = 0u64;
+    while i < count {
+      let due = base + Duration.fromNanos(i64.from(i) * periodNs);
+      let slept = await aio.sleepUntil(due);
+      wake.record(base.elapsed().nanos() - i64.from(i) * periodNs);
+      match link.take(chunkBytes) {
+        case let Some(b) {
+          var buf = b;
+          {
+            let sp = buf.spare();
+            var n = i;
+            var k = 0usize;
+            while k < 8usize {                      // the chunk's number, in its first 8 bytes
+              sp[k] = u8.from(n & 255u64);
+              n = n >> 8u64;
+              k += 1usize;
+            }
+            var sent = u64.from(base.elapsed().nanos());
+            while k < 16usize {                     // ... and the time it was sent, ns after the base
+              sp[k] = u8.from(sent & 255u64);
+              sent = sent >> 8u64;
+              k += 1usize;
+            }
+            while k < chunkBytes { sp[k] = u8.from(k & 255usize); k += 1usize; }
+          }
+          buf.setLen(chunkBytes);
+          shared.sent.add(1u64);
+          down <- buf;
+        }
+        case is None { shared.skipped.add(1u64); }
+      }
+      i += 1u64;
+    }
+    printStr("timer wake-up us (the source, due time to awake): p50 "); printUInt(wake.percentile(0.5) / 1000u64);
+    printStr(", p99 "); printUInt(wake.percentile(0.99) / 1000u64);
+    printStr(", p99.9 "); printUInt(wake.percentile(0.999) / 1000u64);
+    printStr(", worst "); printUInt(wake.max() / 1000u64); printStr("\n");
+    down.end(Ending.Finished);
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+}
+
+actor Sink is ChunkSink {
+  up: Option[ChunkSource];
+  base: Instant;
+  lat: Histogram;
+  transit: Histogram;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, base: Instant, done: OneshotSender[u64]) {
+    *self = Self(up: None[ChunkSource], base: base, lat: Histogram.make(), transit: Histogram.make(), done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let now = base.elapsed().nanos();
+    let v = c.view();
+    var n = 0u64;
+    var k = 8usize;
+    while k > 0usize {
+      k -= 1usize;
+      n = (n << 8u64) | u64.from(v[k]);
+    }
+    var sent = 0u64;
+    k = 16usize;
+    while k > 8usize {
+      k -= 1usize;
+      sent = (sent << 8u64) | u64.from(v[k]);
+    }
+    transit.record(now - i64.from(sent));
+    let late = now - i64.from(n) * periodNs;
+    lat.record(if late < 0i64 {0i64} else {late});
+    shared.late.max(late);
+    shared.got.add(1u64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    printStr("chunks received "); printUInt(lat.count()); printStr("\n");
+    printStr("transit us (sent to arrived, through the three stages): p50 "); printUInt(transit.percentile(0.5) / 1000u64);
+    printStr(", p99 "); printUInt(transit.percentile(0.99) / 1000u64);
+    printStr(", p99.9 "); printUInt(transit.percentile(0.999) / 1000u64);
+    printStr(", worst "); printUInt(transit.max() / 1000u64); printStr("\n");
+    printStr("lateness us (due to arrived): p50 "); printUInt(lat.percentile(0.5) / 1000u64);
+    printStr(", p99 "); printUInt(lat.percentile(0.99) / 1000u64);
+    printStr(", p99.9 "); printUInt(lat.percentile(0.999) / 1000u64);
+    printStr(", worst "); printUInt(u64.from(shared.late.load()) / 1000u64); printStr("\n");
+    done.send(1u64);
+  }
+}
+
+actor Quiet is DigestSink[Array[u8, 32]] {
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {}
+}
+
+fn spin(stop: Arc[imm, Atomic[bool]]) u64 {
+  var x = 1u64;
+  while !stop.load() {
+    var i = 0u32;
+    while i < 100000u32 { x = x * 6364136223846793005u64 + 1442695040888963407u64; i += 1u32; }
+  }
+  x
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var seconds = 10u32;
+  var busy = 0u32;
+  if argc > 1i32 { seconds = digits(*(argv + 1usize)); }
+  if argc > 2i32 { busy = digits(*(argv + 2usize)); }
+  let count = u64.from(seconds) * 100u64;
+  let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  var spinners = List[thread.Thread[u64]]();
+  var s = 0u32;
+  while s < busy {
+    spinners.push(thread.start(stop, &spin));
+    s += 1u32;
+  }
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let base = Instant.now() + Duration.fromMillis(50i64);
+  {
+    let sink = Sink(base, tx);
+    let h3 = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Quiet());
+    let h2 = HashStage[cryptohash.Sha256](h3, cryptohash.Sha256.make(), Quiet());
+    let h1 = HashStage[cryptohash.Sha256](h2, cryptohash.Sha256.make(), Quiet());
+    let src = Source(h1, base, count);
+    src.run();
+  }
+  rx.recv();
+  finalAll();
+  stop.store(true);
+  while spinners.len() > 0usize {
+    match spinners.pop() {
+      case let Some(t) { t.join(); }
+      case is None {}
+    }
+  }
+  printStr("busy threads "); printUInt(u64.from(busy));
+  printStr(", sent "); printUInt(shared.sent.load());
+  printStr(", skipped "); printUInt(shared.skipped.load());
+  printStr(", received "); printUInt(shared.got.load()); printStr("\n");
+  0i32
+}

@@ -1,0 +1,131 @@
+// A comparison whose chosen method takes its operands by '&' lends them: 'a == b'
+// is '&a == &b' for an Option, a List, a derived struct and a hand-written
+// '==' against &Self. A number is unchanged, the explicit '&a == &b' still works,
+// and a temporary is lent to the end of its statement and finalized there (the
+// String temporaries here are made by 'make' and counted by Tracker's final).
+// Each printed value was checked by hand.
+
+mod generic_compare_autolend;
+
+import stdio use *;
+import collections use *;
+
+fn showB(b: bool) { if b { printStr("true\n"); } else { printStr("false\n"); } }
+fn showI(n: i32) { printInt(n); printStr("\n"); }
+
+struct Id is Eq {
+  n: i32;
+  pub fn `==`(self: &, o: &Id) bool { n == o.n }
+}
+
+struct Pt is Eq { x: i32; y: i32 }
+
+// '<' from a hand-written ordering against &Self
+struct Lvl {
+  v: i32;
+  pub fn `<`(self: &, o: &Lvl) bool { v < o.v }
+}
+
+// An enum whose variants carry fields, and an enum that writes its own == against &Self
+enum Shape {
+  struct Circle { r: i32; pub fn `==`(self: &, o: &Circle) bool { r == o.r } }
+  struct Dot;
+}
+
+enum Level {
+  struct Low { n: i32 }
+  struct High { n: i32 }
+  pub fn `==`(self: &, o: &Level) bool { true }
+}
+
+var @threadlocal finals = 0;
+
+struct Tracker is Eq {
+  n: i32;
+  pub fn `==`(self: &, o: &Tracker) bool { n == o.n }
+  fn final(self: &uni) { finals = finals + 1; }
+}
+
+fn make(n: i32) Tracker { Tracker(n) }
+
+fn main() {
+  // A hand-written == against &Self
+  let a = Id(3);
+  let b = Id(3);
+  let c = Id(4);
+  showB(a == b);                       // true
+  showB(a == c);                       // false
+  showB(a != c);                       // true
+  showB(a == Id(3));                   // true
+  showB(Id(3) == a);                   // true
+
+  // Derived
+  let p = Pt(1, 2);
+  showB(p == Pt(1, 2));                // true
+  showB(p == Pt(1, 3));                // false
+  showB(p != Pt(1, 3));                // true
+
+  // Option
+  let s3: Option[i32] = Some[i32](3);
+  let s3b: Option[i32] = Some[i32](3);
+  let s4: Option[i32] = Some[i32](4);
+  let none: Option[i32] = None;
+  showB(s3 == s3b);                    // true
+  showB(s3 == s4);                     // false
+  showB(s3 != none);                   // true
+
+  // List
+  var xs = List[i32]();
+  xs.push(1);
+  xs.push(2);
+  var ys = List[i32]();
+  ys.push(1);
+  ys.push(2);
+  var zs = List[i32]();
+  zs.push(1);
+  showB(xs == ys);                     // true
+  showB(xs == zs);                     // false
+  showB(xs != zs);                     // true
+
+  // An ordering written against &Self
+  showB(Lvl(1) < Lvl(2));              // true
+  showB(Lvl(2) < Lvl(1));              // false
+
+  // The explicit borrows still work, on one side or both
+  showB(&a == &b);                     // true
+  showB(&a == &c);                     // false
+  showB(&s3 == &s3b);                  // true
+
+  // Numbers are unchanged
+  showB(3i32 == 3i32);                 // true
+  showB(2.5f64 < 3.5f64);              // true
+
+  // A temporary is lent and finalized at the end of its statement
+  finals = 0;
+  showB(make(1) == make(1));           // true
+  showI(finals);                       // 2
+  let t = Tracker(5);
+  showB(t == make(6));                 // false
+  showI(finals);                       // 3
+  showB(make(5) == t);                 // true
+  showI(finals);                       // 4
+
+  // Enum operands are lent as struct operands are: Option and Result of a number or a
+  // String, a variant-carrying enum, and an enum with a == of its own against &Self
+  let r1: Result[i32, String] = Ok[i32, String](1);
+  let r1b: Result[i32, String] = Ok[i32, String](1);
+  let r2: Result[i32, String] = Ok[i32, String](2);
+  showB(r1 == r1b);                    // true
+  showB(r1 == r2);                     // false
+  showB(r1 != r2);                     // true
+  let os: Option[String] = Some[String](String.from("ab"));
+  showB(os == Some[String](String.from("ab")));   // true
+  showB(os == Some[String](String.from("ac")));   // false
+  let c1: Shape = Shape.Circle(1);
+  showB(c1 == Shape.Circle(1));        // true
+  showB(c1 == Shape.Circle(2));        // false
+  showB(c1 != Shape.Dot);              // true
+  let lv: Level = Level.Low(1);
+  showB(lv == Level.High(2));          // true: its own == says so
+  showB(lv != Level.High(2));          // false
+}

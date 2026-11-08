@@ -1,0 +1,60 @@
+// What a raw pointer may still do with a value it points at.
+//
+// A copy value reads out through '*p' as it always has: a number, and a plain
+// struct of numbers. A move value is moved out of raw memory with
+// 'mem.readRaw(p)', which leaves the place holding nothing, so it is finalized
+// once, by its new holder: a 'Buf' written into a malloc'd slot with
+// 'mem.writeRaw' and read out with 'mem.readRaw' frees its memory once. The run
+// counts each final. Run twice, lowered and through readRaw's fallback body
+// '{*p}', an '@intrinsic' one, which is the one body a move through '*p' is let
+// through in. Moving it out with '*p' is refused (move_flow_rawptr).
+
+mod move_flow_rawptr_ok;
+
+import stdio use *;
+import libc;
+
+struct Pt { x: i64; y: i64; }
+
+fn readInt(p: *i64) i64 { *p }
+fn readPt(p: *Pt) Pt { *p }
+
+// An owner of malloc'd memory whose final frees it
+struct Buf is Move {
+  p: *u8;
+  n: i64;
+  fn final(self: &uni) {
+    printStr("free ");
+    printInt(self.n);
+    printStr("\n");
+    libc.free(self.p);
+  }
+}
+
+fn takeOut(slot: *Buf) Buf {
+  mem.readRaw[Buf](slot)
+}
+
+fn main() {
+  var n = 41;
+  var pt = Pt(3, 4);
+  let a = readInt(&mut n as *i64);
+  let q = readPt(&mut pt as *Pt);
+  let b = *(&mut n as *i64);
+  printInt(a + b + q.x + q.y + pt.x);
+  printStr("\n");
+
+  // Two slots of raw memory, each given a live Buf, each moved out once
+  let slots = libc.malloc(2usize * mem.sizeof[Buf]()) as *Buf;
+  mem.writeRaw[Buf](slots, Buf(libc.malloc(64usize), 1));
+  mem.writeRaw[Buf](slots + 1usize, Buf(libc.malloc(64usize), 2));
+  {
+    let first = mem.readRaw[Buf](slots);
+    let second = takeOut(slots + 1usize);
+    printStr("taken ");
+    printInt(first.n + second.n);
+    printStr("\n");
+  }
+  libc.free(slots as *u8);
+  printStr("slots freed\n");
+}

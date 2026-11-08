@@ -19,47 +19,47 @@ import stdio use *;
 import collections use *;
 import actors;
 
-fn say(s &str, n u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
 
 actor Painter {
-  a List[u64];
-  b List[u64];
-  small List[u64];
-  tens List[u64];
-  total Atomic[u64];
+  a: List[u64];
+  b: List[u64];
+  small: List[u64];
+  tens: List[u64];
+  total: Atomic[u64];
 
-  fn init(self &new) {
-    mut a = new List[u64];
-    mut b = new List[u64];
-    mut small = new List[u64];
-    mut tens = new List[u64];
-    mut i = 0usize;
+  fn init(self: &new) {
+    var a = List[u64]();
+    var b = List[u64]();
+    var small = List[u64]();
+    var tens = List[u64]();
+    var i = 0usize;
     while i < 6000usize {
       if i < 3000usize { a.push(0u64); }
       b.push(0u64);
       if i < 10usize { small.push(u64.from(i)); tens.push(10u64); }
       i = i + 1usize;
     }
-    *self = new Self(a: a, b: b, small: small, tens: tens, total: Atomic[u64].of(0u64));
+    *self = Self(a: a, b: b, small: small, tens: tens, total: Atomic[u64].of(0u64));
   }
 
-  fn sum(self &, l &List[u64]) u64 {
-    mut s = 0u64;
-    each p in l { s = s + *p; }
-    s;
+  fn sum(self: &, l: &List[u64]) u64 {
+    var s = 0u64;
+    each p in &*l { s = s + *p; }
+    s
   }
 
-  pub async do fill(self) u64 {
+  pub async fn fill(self) u64 {
     parallel each y, ra, rb in a.mutChunks(3usize).zip(b.mutChunks(6usize)).indexed() {
       each p in ra.mutItems() { *p = u64.from(y); }
       each q in rb.mutItems() { *q = u64.from(y) * 2u64; }
     }
     say("a", sum(&a));
     say("b", sum(&b));
-    sum(&a) + sum(&b);
+    sum(&a) + sum(&b)
   }
 
-  pub async do read(self) u64 {
+  pub async fn read(self) u64 {
     total.store(0u64);
     parallel each x, y in zip(&small, &tens) {
       total.add(*x * *y);
@@ -70,24 +70,24 @@ actor Painter {
       total.add(u64.from(i));
     }
     say("positions", total.load());
-    total.load();
+    total.load()
   }
 }
 
 actor Driver {
-  pub async do go(self, p Painter) u64 {
-    imm f = await p.fill();
-    imm r = await p.read();
-    f + r;
+  pub async fn go(self, p: Painter) u64 {
+    let f = await p.fill();
+    let r = await p.read();
+    f + r
   }
 }
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm p = new Painter();
-    imm d = new Driver();
+    let p = Painter();
+    let d = Driver();
     d.go(p);
   }
   finalAll();

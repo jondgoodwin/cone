@@ -1,0 +1,174 @@
+// Mapping a struct to JSON and back by hand (the same code as
+// examples/mapping.cone), against documents that are whole, that lack an
+// optional member, that carry members the mapping does not know, and that are
+// wrong in each way a member can be: missing, the wrong kind, not whole, too
+// large, an array holding the wrong kind, a nested object missing a member, a
+// document that is not an object. The complaint names the member.
+
+mod mapping;
+
+import testing use *;
+import collections use *;
+import json;
+
+struct Address {
+  pub street: String;
+  pub zip: String;
+}
+
+struct Person {
+  pub name: String;
+  pub age: i64;
+  pub email: Option[String];
+  pub tags: List[String];
+  pub address: Address;
+}
+
+fn within(path: &str, e: &json.JsonError) json.JsonError {
+  var m = String.from(path);
+  m.append(": ");
+  m.append(e.reason.view());
+  json.JsonError.shape(m.view())
+}
+
+fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
+  let street = j.requireText("street")?;
+  let zip = j.requireText("zip")?;
+  Ok[Address, json.JsonError](Address(street, zip))
+}
+
+fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
+  let name = j.requireText("name")?;
+  let age = j.requireI64("age")?;
+  var email: Option[String] = None;
+  match j.getText("email") {
+    case let Some(s) { email = Some[String](String.from(s)); }
+    case is None { }
+  }
+  var tags = List[String]();
+  match j.get("tags") {
+    case let Some(t) {
+      if !t.isArray() {
+        return Err[Person, json.JsonError](json.JsonError.shape("the member \"tags\" is not an array"));
+      }
+      var i = 0usize;
+      while i < t.len() {
+        match t.at(i) {
+          case let Some(v) {
+            match v.asText() {
+              case let Some(s) { tags.push(String.from(s)); }
+              case is None {
+                var m = String.from("tags[");
+                m.appendUInt(u64.from(i));
+                m.append("] is not a string");
+                return Err[Person, json.JsonError](json.JsonError.shape(m.view()));
+              }
+            }
+          }
+          case is None { }
+        }
+        i = i + 1usize;
+      }
+    }
+    case is None { }
+  }
+  var address = Address(String(), String());
+  let a = j.require("address")?;
+  match addressFrom(a) {
+    case var Ok(ok) { address <-> ok; }
+    case let Err(e) { return Err[Person, json.JsonError](within("address", &e)); }
+  }
+  Ok[Person, json.JsonError](Person(name, age, email, tags, address))
+}
+
+fn personJson(p: &Person) json.Json {
+  var address = json.Json.newObject();
+  address.set("street", json.Json.fromText(p.address.street.view()));
+  address.set("zip", json.Json.fromText(p.address.zip.view()));
+  var tags = json.Json.newArray();
+  each t in &p.tags { tags.push(json.Json.fromText(t.view())); }
+  var o = json.Json.newObject();
+  o.set("name", json.Json.fromText(p.name.view()));
+  o.set("age", json.Json.fromI64(p.age));
+  match &p.email {
+    case let Some(e) { o.set("email", json.Json.fromText(e.view())); }
+    case is None { }
+  }
+  o.set("tags", tags);
+  o.set("address", address);
+  o
+}
+
+// The text mapped to a Person and written again, or the complaint
+fn mapped(text: &str) String {
+  match json.parse(text) {
+    case let Ok(doc) {
+      match personFrom(&doc) {
+        case let Ok(p) {
+          match personJson(&p).encode() {
+            case let Ok(t) { t.clone() }
+            case let Err(e) { String() <- e }
+          }
+        }
+        case let Err(e) { String() <- e }
+      }
+    }
+    case let Err(e) { String() <- e }
+  }
+}
+
+fn main() i32 {
+  let whole = "{\"name\":\"Ada\",\"age\":36,\"email\":\"ada@example.com\",\"tags\":[\"math\",\"engines\"],\"address\":{\"street\":\"1 Byron Rd\",\"zip\":\"W1\"}}";
+  expectStr(mapped(whole).view(), whole, "a whole document maps and maps back as it was");
+
+  // The fields themselves
+  match json.parse(whole) {
+    case let Ok(doc) {
+      match personFrom(&doc) {
+        case let Ok(p) {
+          expectStr(p.name.view(), "Ada", "name");
+          expectInt(p.age, 36i64, "age");
+          match &p.email {
+            case let Some(e) { expectStr(e.view(), "ada@example.com", "email"); }
+            case is None { expect(false, "email"); }
+          }
+          expectUInt(u64.from(p.tags.len()), 2u64, "two tags");
+          expectStr(p.tags[1usize].view(), "engines", "second tag");
+          expectStr(p.address.zip.view(), "W1", "zip");
+        }
+        case let Err(e) { let why = String() <- e; expectStr(why.view(), "<mapped>", "whole"); }
+      }
+    }
+    case let Err(e) { expect(false, "whole parse"); }
+  }
+
+  // Optional members: missing, null, or the wrong kind are all no email
+  let noEmail = "{\"name\":\"Bo\",\"age\":0,\"tags\":[],\"address\":{\"street\":\"s\",\"zip\":\"z\"}}";
+  expectStr(mapped(noEmail).view(), noEmail, "a missing email stays missing");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":0,\"email\":null,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), noEmail, "a null email is none, and tags default to empty");
+  // Members the mapping does not know are left alone
+  expectStr(mapped("{\"extra\":[1,2,{\"deep\":true}],\"name\":\"Bo\",\"age\":0,\"tags\":[],\"address\":{\"street\":\"s\",\"zip\":\"z\",\"floor\":3},\"more\":null}").view(), noEmail, "unknown members are ignored");
+  // A number given in a form that is still a whole number
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":3.60e1,\"tags\":[],\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(),
+    "{\"name\":\"Bo\",\"age\":36,\"tags\":[],\"address\":{\"street\":\"s\",\"zip\":\"z\"}}", "36 written as 3.60e1 is the whole number 36");
+
+  // Each way a document can be wrong
+  expectStr(mapped("{\"age\":1,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"name\" is missing", "name missing");
+  expectStr(mapped("{\"name\":5,\"age\":1,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"name\" is not a string", "name a number");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":\"1\",\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"age\" is not a number", "age a string");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1.5,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"age\" is not a whole number", "age with a fraction");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1e30,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"age\" is beyond the range of the type asked for", "age too large");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":9223372036854775808,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"age\" is beyond the range of the type asked for", "age one past i64");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":null,\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"age\" is not a number", "age null");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1,\"tags\":\"x\",\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: the member \"tags\" is not an array", "tags a string");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1,\"tags\":[\"a\",2],\"address\":{\"street\":\"s\",\"zip\":\"z\"}}").view(), "json: tags[1] is not a string", "a tag a number");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1}").view(), "json: the member \"address\" is missing", "address missing");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1,\"address\":{\"street\":\"s\"}}").view(), "json: address: the member \"zip\" is missing", "zip missing, named from the address");
+  expectStr(mapped("{\"name\":\"Bo\",\"age\":1,\"address\":[]}").view(), "json: address: expected an object", "address an array");
+  expectStr(mapped("[1,2]").view(), "json: expected an object", "the document an array");
+  expectStr(mapped("\"Bo\"").view(), "json: expected an object", "the document a string");
+  // And a text that is not JSON never reaches the mapping
+  expectStr(mapped("{\"name\":\"Bo\",").view(), "json: line 1, column 14: the text ends inside an object: expected a key", "not JSON");
+
+  done()
+}

@@ -105,11 +105,15 @@ not a library, WebAssembly or GPU compile; not a function with a C name; with no
 parameters or two) — is therefore declared under the internal symbol
 `cone.main` (`genlGloFnName`), and is called with `argc` and `argv` if it takes
 them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
-nothing is generated returning `i32 0`. A panic ends the process through
+nothing is generated returning `i32 0`. A `main` returning a Result is called
+through the private function type check gave its module, `-mainresult`
+(`propagateMainEntry`, `ir/exp/propagate.h`), which calls it, prints a failure's
+error: for a type meeting core's `Error`, core's `Error.reportFailure(&<Error)` (an `inline` static, so only a program that returns an error carries it) (`Error: `, `report(out)` and a newline into one record handed to conestd's `cone_mainErrorRecord`); for a type with only a `message()`, that through conestd's `cone_mainError`. It answers 1, or 0; the entry calls
+that in its place and returns what it answers. A panic ends the process through
 `abort`, and a call to C's `exit` leaves it, so neither reaches the final.
 [module](../nodes/module.md), "Init and final".
 
-**An `imm` global is an LLVM constant only where this object gives it its value
+**A `let` global is an LLVM constant only where this object gives it its value
 and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
 not `extern`, not thread-local, and its type has no drop function. A global
 without a value is assigned by its module's `init` at run time, an `extern`
@@ -126,7 +130,7 @@ or a shared library, relaxed by an ELF linker building an executable, and
 ignored on Windows, whose one access sequence goes through the TEB and
 `_tls_index`. Uses reach the global directly rather than through
 `llvm.threadlocal.address`, which LLVM reads as the current thread's copy. It
-is never a constant: the parser refuses one `imm`, and `genlGloVarIsConstant`
+is never a constant: the parser refuses a `let` one, and `genlGloVarIsConstant`
 excludes it besides.
 
 Both recurse into a type's method list, into a generic's
@@ -209,6 +213,7 @@ its linkage:
 | --- | --- | --- |
 | a definition of a program compiled with no build description — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
 | in a described build, library or program, an instance of a generic, a member of one, or a vtable (`GenlShared`) | `linkonce_odr`: every object that uses it defines it, all the copies are the same, and an unused one may be dropped | `any` — the linker keeps one copy. `nodeduplicate` would make the copies a duplicate-symbol error (LNK2005), and internal would leave two vtables with two addresses |
+| a *function* of such an instance, in a release program of at most `--private-instances` LLVM instructions as first generated (below) | `internal`, set once the body is generated | `nodeduplicate`; the object's own copy |
 | a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
 | a described build's other definitions — a program's, or a library's that are not exported, and every vtable list | `internal` | `nodeduplicate` |
 | `main`, or a public C-named definition (`pub` and `@c` export to C) | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
@@ -276,7 +281,27 @@ instance, and a vtable `GenlShared`, which `genlLinkage` lowers to
 package defines the instances it uses; each importer defines the ones it uses,
 from the full body its include file carries (a generic cannot be `extern`);
 identical instances in two objects merge at link, and one only an importer
-makes is in that importer's object alone. A vtable is shared because pattern
+makes is in that importer's object alone. **A release program keeps its small
+instance functions to itself** (`genlInstanceIsPrivate`). Shared, an instance
+is a `linkonce_odr` function LLVM has to keep a body of for the linker, and one
+it chooses not to inline is called out of line, its argument's address taken
+and the value spilled (measured 31 Oct 2026: core's `Option[Rc[..]]` drop glue,
+called out of line on every decrement, made richards 2.6 times slower than the
+same IR with the instances internal). So a function of a shared instance, generated in a program
+compile (not `--library`) that is release and described, is set `internal` when
+its body is at most `opt->privateinst` LLVM instructions as first generated,
+before any optimisation (`--private-instances=n`, `DefaultPrivateInstances`; 0
+shares all). The size is measured on the generated function because a reshaped
+private copy cannot safely be merged back afterwards, so the decision precedes
+optimisation. A larger instance stays `linkonce_odr`, one copy per program; a
+library keeps all of its instances shared, since its importers may link against
+them; a debug build keeps one copy (it compiles faster and a breakpoint lands in
+one place). A generic's global (its statics) and a vtable are never decided by
+size: they stay `linkonce_odr`, one object per program, because a counter must
+count once and a vtable's address tells a type apart. A function's address is
+therefore not promised to agree across objects (a private copy per object, and
+the linker's identical-code folding `/OPT:ICF` may then merge or not): the
+language promises it only within one object. A vtable is shared because pattern
 matching tells a concrete type by comparing a virtual reference's vtable
 address with the one its own object built (`genlIsType`): a reference built in
 the program and tested in the library matched nothing while each object kept
@@ -297,7 +322,7 @@ attached where the body is generated.
 individually discardable, and keeps alive everything it names. A vtable did
 exactly that: a struct coerced to `&<Trait` kept every one of its trait methods
 in the image whether or not anything ever dispatched. The call sites are
-`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, `genlStitch`, and the
+`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtableImpls`, `genlStitch`, and the
 `StringLitTag` case in `genlAddr`. **A new kind of generated global needs a
 seventh.**
 
@@ -340,17 +365,21 @@ section 3, "Roots"), then erase the alloca point. Every parameter and local is m
 comment is that all allocas belong in the entry block so `PromoteMemoryToRegister`
 and SRoA can undo it.
 
-`genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
+`genpgm` then settles the blocks no path reaches and checks every block's
+terminator (section 6, "A jump ends the path"), optionally verifies, dumps `.preir`, runs LLVM's new pass manager
 through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
-standard pipeline, `default<O2>`**, handed the target machine, so that the
+standard pipeline, `default<O3>`**, handed the target machine, so that the
 inliner's, the vectorizers' and the unroller's costs are the target's: the
 `--cpu` and `--features` the machine was made with, `generic` by default (on
-x86-64, SSE2 and no more). That is the pipeline clang's `-O2` runs: SROA,
+x86-64, SSE2 and no more). That is the pipeline clang's `-O3` runs: SROA,
 instcombine, inlining, LICM, unrolling, dead global elimination (so an
 internal definition nothing reaches is gone from `.ir`), and the loop and SLP
-vectorizers. Measured against `default<O3>` (3 Oct 2026, LLVM 23), O3 ran no
-faster on any benchmark but one matrix product (9%), compiled 5 to 11% slower
-and made larger code. **No float is ever reordered**: generation marks no
+vectorizers. Measured against `default<O2>` (5 Nov 2026, LLVM 23), O3 ran
+`nbody` 13 to 14% faster wherever its code was placed and matrix products an
+uncertain 2 to 8% faster, for about 6% more compile time and exe size; a few
+rows ran 2 to 4% slower. A loop's position alone can move a row by more than
+that (`fannkuch` by 13% at either level), so a comparison of the two levels
+needs its loops at matched positions. **No float is ever reordered**: generation marks no
 operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
@@ -362,7 +391,7 @@ GPU target's pipeline is its own, at every level (section 7). **There is no
 
 **Only what live code reaches is emitted**, in a debug build as in a release
 one. `.preir` is what generation wrote, every function included; the `globaldce`
-that opens the debug pipeline (it is in `default<O2>` already) deletes each
+that opens the debug pipeline (it is in `default<O3>` already) deletes each
 definition with internal, private or `linkonce` linkage that nothing refers to,
 and then whatever only it referred to, before anything else runs, so `.ir`
 and the object have only what live code reaches. The roots are the symbols the
@@ -387,8 +416,8 @@ kernels are settled.
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
-| **`&T`, `&mut T`, `Rc[T]`, `So[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
-| **`&str`, `So[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
+| **`&T`, `&mut T`, `Rc[T]`, `Uni[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&str`, `Uni[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
 | **`&Array[T]`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A signature marked `ccall` (a C-named function's, and the pointee of `&fn @c`) has its structs lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
@@ -396,6 +425,7 @@ kernels are settled.
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
 | array | nested `LLVMArrayType`; each dimension must be a `ULitTag` |
+| **vector `Vector[T, N]`** | **`<N x T>`** (`LLVMVectorType`). A mask, `Vector[bool, N]`, is `<N x i1>`. Size and alignment are LLVM's: the whole is the alignment (16 for four floats), and a count that is not a power of two is padded up. A vector argument or result of a C-named function is handed to LLVM as it is, which the x86 back end passes as C does `__m128` (section 3, "Vectors"). A vector in memory is its lanes one after another, except a mask's, which is bits and is never read lane by lane |
 
 Every pointer is LLVM's opaque `ptr`, whatever it points at: the table's pointee
 lives in the Cone type, never in the LLVM one (section 4).
@@ -405,7 +435,7 @@ Lowering a `*T`, `&T` or `&Array[T]` queues `T`, and `genlType` generates the qu
 when the outermost type it was asked for is done, before returning to anything
 but type generation. Generated in place, a struct reaching itself through a
 reference is reached again while its own body is still empty: with `A` holding
-`So[AState]` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
+`Uni[AState]` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
 `A` as nothing, and `Option[A]` came out one byte. Nothing outside type
 generation sees the difference, since every pointee is generated before
 `genlType` returns to it — which the nullable-pointer flag (below), set when an
@@ -417,6 +447,38 @@ Verified: `&Array[i32]` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yieldin
 **Erased with no representation at all:** lifetimes (`LifetimeTag` has no
 lowering case and would assert), `QuesTag`, `BorrowRegTag`, move semantics,
 thread-binding.
+
+### Vectors
+
+A `Vector[T, N]` ([vector](../nodes/vector.md)) is LLVM's `<N x T>`, so an operator on two is the
+instruction a number's is on the whole value, and `genlFnCallInternal` hands an intrinsic whose first argument
+is an LLVM vector to `genlVectorIntrinsic` (`genlvector.c`) before it asks the other type kinds. What that
+file adds to the scalar's lowering:
+
+- **Division is checked as a whole.** An integer `/` or `%` compares the divisor with zero and, signed, the dividend with the
+  type's minimum beside the divisor with -1; each is reduced to one flag with `llvm.vector.reduce.or`, the two
+  are ORed, and one branch goes to `genlPanic` (`PanicDivide`, which `cone_panicDivide` in `packages/conestd/panic.cone`
+  reports with the line) before the `udiv`/`sdiv`/`urem`/`srem`. On four `i32` lanes that is about eight
+  instructions and one branch (`vector_genllvm`), against four `idiv`s that each cost more.
+- **A shift is defined past the width,** lane by lane, as a scalar's is (`genlVectorShift`).
+- **Reductions are LLVM's vector reductions,** called by name with the vector's type (`llvm.vector.reduce.add`,
+  `.fadd` started at -0.0, `.fmul` from 1.0, `.smin`/`.umin`/`.fmin`, `.or` and `.and` for `any`
+  and `all`). A float sum carries no fast-math flag, so it is the ordered sum: generation marks no float
+  operation reassociable.
+- **A conversion is a type literal** (`TypeLitTag` whose type is a vector or an array,
+  `genlVectorConvert`): an array to a vector and back through a slot of the vector's type (a store
+  of one, a load of the other; the optimizer sees through it), a mask to and from an array of `bool` lane by
+  lane, a vector to a vector lane by lane (`genlVectorLanes`), a mask's `select`, and a number into every lane.
+- **A lane is an element of the vector in memory** (`genlVectorLane`), so `v[i]` is a load or store of a
+  scalar through its address, bounds checked against the lane count; SROA turns it into an
+  `extractelement` or `insertelement` where the vector lives in a register. A mask's lane is the exception:
+  its bits have no address, so `m[i]` is an `extractelement` of the mask's value (`genlMaskLane`).
+- **Lanes picked and vectors joined are one `shufflevector`** (`genlVectorShuffle`, a type literal of
+  two arguments or of the vector and literal positions): a pick of a join is a shuffle of the join's
+  two vectors, so `a.join(b).(0, 4, 1, 5)` is one instruction; a single position is an `extractelement`.
+- **A slice's `load` and `store` check their span once** (`genlSliceSpan`: `at` below `count - N + 1`,
+  else the index panic with the last lane's index) and are one `load <N x T>` or `store` of the whole
+  vector at the lane's alignment.
 
 ### C-named functions and the C ABI
 
@@ -517,7 +579,11 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   A slice or a virtual reference is two words, and the value is that pair: its
   first word, the pointer, null is the empty variant, so the literal writes that
   word and the variant test (`genlIsType`) and the drop read it, the second word
-  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
+  left alone. That is why no slice may be made with a null pointer word, empty
+  or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
+  intrinsics, swaps a null pointer for the element's alignment as an address
+  (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
+  reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
@@ -586,6 +652,32 @@ constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
 
+**An implementer's vtable address is its type's identity through that trait**: a
+downcast, `v is Circle` or `case let Circle(c)` on a `&<Shape` or a `Uni[Shape]`,
+compares the virtual reference's vtable pointer with `Circle as Shape`'s
+(`genlIsType`), so there is no identity field. That holds only while each
+(trait, type) pair has one vtable in the image, which three things keep:
+- **Every object that builds it shares it.** In a described build the vtable is
+  `linkonce_odr` in a COMDAT of `any` ("Linkage" above), in a debug and a release
+  build alike, and the linker keeps one copy; a build with no description is the
+  program's only object, so its internal vtables have no second copy to disagree
+  with.
+- **Two vtables never fold into one.** Neither carries `unnamed_addr`, so LLVM
+  merges no two. The linker's identical-COMDAT folding (`link.exe`'s default
+  `/OPT:ICF`, which Congo's release link gives explicitly as `/OPT:REF,ICF` because
+  `/DEBUG` turns it off by default) does fold two implementers' methods whose code is
+  the same, but each vtable's last slot points at its implementer's own type
+  record, a private constant in the object's plain `.rdata` (no COMDAT, no
+  `unnamed_addr`), so no two vtables' bytes are the same and neither are folded,
+  and no two records are either. A record moved into a COMDAT of its own, or given
+  `unnamed_addr`, would let two implementers whose methods fold share a vtable, and
+  `v is Circle` say yes of a `Square` (`module_downcast_icf` holds it).
+- **Every Cone object links into one image.** Congo links a program's packages
+  statically, a library being an object (`tools/congo/README.md`), and `conec`
+  makes no shared library, so no second image holds a second copy. A Cone package
+  built as a DLL or shared object would break the comparison, and identity would
+  then have to compare something stable instead, such as the type's mangled name.
+
 **A plain function has a vtable of its own for a callable trait** (`fnSigCallTrait`,
 [closure](../nodes/closure.md), "A callable used dynamically"). A reference to a
 function converts to `&<fn(sig)` with the function's code pointer as the data
@@ -596,7 +688,7 @@ remaining arguments, and a null type record. A callable trait is in no module's 
 and no struct is registered as its implementer for a function.
 
 **A vtable may contain itself**, through a slot whose method takes or returns a
-virtual reference to the same trait (`fn cmp(self &, o &<Self)`). So `genlVtable`
+virtual reference to the same trait (`fn cmp(self: &, o: &<Self)`). So `genlVtable`
 creates the vtable struct and the fat-pointer struct as named types and stores
 both on the `Vtable` **before** it types any slot. A slot that names the trait's
 virtual reference then gets that stored type, whose vtable body is still empty
@@ -605,6 +697,22 @@ itself is built. The same cycle runs through the symbol pass: declaring such a
 method types its signature, which builds the vtable, which asks for the symbol
 of every method in its slots. So `genlGloFnName` types the signature first and
 checks again whether the function has been declared before declaring it.
+
+**A vtable's implementers are measured after the type that reached it, not
+inside it.** Each implementer's vtable global holds byte offsets into the
+implementer (its virtual fields) and its type record, which holds its size and
+alignment. A trait's virtual reference is reached from the middle of a struct's
+fields, and the struct may be one of the trait's implementers (`struct One is
+Show {first: Uni[Show]}`, or a field's field holding one) whose body is still
+unset there. Measured then, it has size 0, and LLVM caches a struct's layout
+the first time it is asked, so every later allocation of it is a block too small
+for it. So `genlVtable` builds the two types at once but, while `genlType` is
+generating a type, queues the vtable, and `genlType` builds the queued vtables'
+globals (`genlVtableImpls`) once its outermost type and its pointees are done.
+Outside type generation `genlVtable` builds them at once, and a coercion or
+match calls it every time, so whatever it reads is whole. An implementer's
+global is added before its contents are worked out, since its type record may
+generate a finalizer whose code asks for the same vtable.
 
 **Which vtable a tag names is found two ways, and the tag values decide.** Where
 every variant's tag value is its position in `derived`, the tag indexes the list
@@ -655,8 +763,8 @@ What follows from that:
 
 - **A region method is handed the header, found from the layout.**
   `genlRegionHeader` steps back from the value pointer, a GEP over `i8`, by
-  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `Rc`, 0 for `So`,
-  16 for a region with a `{usize, u32}` header; for `So` the header is the
+  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `Rc`, 0 for `Uni`,
+  16 for a region with a `{usize, u32}` header; for `Uni` the header is the
   value pointer itself, and no instruction is emitted. Every call of `aliasRef`, `dealiasRef` and `free` goes through it, so a
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
@@ -681,9 +789,20 @@ What follows from that:
   value as generated. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
   region and permission's size rounded up to the `align` of the implementer's
   `TypeRecord`, loaded through word 1 (`genlVirtHeader`; nothing is loaded for
-  a `So`, whose header is empty), and its death calls the record's `finalize`
+  a `Uni`, whose header is empty), and its death calls the record's `finalize`
   on the object (`genlVirtFinalize`) where a plain reference's calls
   `genlFinalizeAt`.
+- **An enum variant's allocation is laid out at its enum's alignment, and so is
+  its record.** A virtual reference reaches a variant through its vtable, which
+  the tag picks, so the offset `genlVirtHeader` computes from the record's `align`
+  must be the one the allocation used, whether the owner was made as the enum or
+  as the variant. `genlAllocAlign` answers the variant's alignment as its enum's
+  (never less than its own), for the record (`genlTypeRecordOf`); and
+  `genlAllocValueType` gives the value field a zero-length array of the enum before
+  the variant where the enum is the more strictly aligned, which puts the value at
+  the same offset (`genlRefTypeSetup`). A variant allocated alone therefore takes a
+  little padding. The same offset is why an owner narrowed to a variant is the same
+  pointer ([cast](../nodes/cast.md)).
 - **An owning reference to a body that carries its length is the fat `{ptr, usize}`
   value, and its header is as constant as a thin one's.** The element type
   stands in the allocation's value field (`genlRefTypeSetup`), since the body has
@@ -705,6 +824,19 @@ owner, whether its copies are counted or free. The death,
 single reference the value it points at, for a virtual reference through its
 record's `finalize` — then
 the region's `free` if it has one.
+
+**In a release build the death is a cold function, the decrement stays in
+line** (`genlDropSlow`). After `dealiasRef`'s `bool`, a plain thin reference
+(not fat or virtual, not a guard, not a release of a value moved out of in
+part) calls `cone.dropslow.N(ptr)`, an internal `noinline cold` function made once
+for each region and pointee type in the object, whose body is `genlRegionDeath`.
+So a release is a decrement, a compare and one call on the rare branch, however
+large the pointee's own drop is; a drop of a type holding such a reference is
+then small enough for LLVM to inline even where its instance is shared
+(`linkonce_odr`), which is what keeps a shared instance's drop from being called
+on every decrement. The recursion of a chain of counted links is not flattened:
+each link's death still calls the next's inside its own, one `dropslow` frame
+deep per link. Debug builds keep the death in line.
 
 **One routine is a value's death in place, whatever its type**
 (`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
@@ -763,6 +895,17 @@ tag: the value is the one variant's reference, tested against null. No
 expression places a generated drop's calls, so in a debug build each is placed
 at the type, where a call without a location would fail verification.
 
+**A value taken apart by a field list** (`genlDestruct`, `DestructTag`) is
+generated whole, each named field is read out of it with `extractvalue`, and the
+fields not named that need finalizing end with the statement: each is handed to
+`genlDiscard`, as a `_` target's value is. The statement finalizes its temporaries
+newest first, so they are kept in the **reverse** of the order the value's own drop
+would have used (`genlStructDrop`'s: the fields that finalize and are no owning
+references in field order, then the owning references in field order; a tuple's,
+element by element), and they die in that order. A variant laid out as a
+nullable pointer is only its reference: the one nameable field is the whole value,
+and nothing else is left.
+
 **A copy of a value holding counted references its death releases** (flow's
 `flowHeldCounted`: a struct, an enum, a tuple or an array holding one, however
 deep) reaches `genlAliasHeld` from the `RefCountNode`: the copied value is
@@ -790,7 +933,7 @@ out in line up to `RegionAliasUnroll` (16), a loop beyond, since calls written
 out fold together in either pipeline, while a loop of them folds only where the
 release pipeline chooses to unroll it. Core's methods are
 `inline`, so each call is the method's body pasted at the site
-(`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
+(`genlFnCallInternal`); after optimization `Rc`'s and `Uni`'s events are the
 instructions the compiler used to emit itself.
 
 **A type record is a constant, one per type in each object**
@@ -799,7 +942,7 @@ instructions the compiler used to emit itself.
 names one, or a vtable is built for `T` (`genlVtableImpl`), and found again by type (`itypeIsSame`) from a list on the
 generator's state. It is a private global `cone.tyrec.<n>` of core's
 `TypeRecord`, whose layout the compiler checks as it builds the first — two
-`usize`, a function pointer of `fn(p *u8)` and one of `fn(p *u8, mode u32)`, a
+`usize`, a function pointer of `fn(p: *u8)` and one of `fn(p: *u8, mode: u32)`, a
 `u32` — and fills with the value's ABI size and alignment (as `mem.sizeof` and
 `mem.alignof`), its finalizer, its trace, and flags (bit 0, `itypeNeedsFinal`;
 bit 1, `itypeHoldsTraced`). The finalizer of a type that finalizes is a
@@ -838,7 +981,7 @@ fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
 nullable-pointer layout, which has no tag, is its one reference — and so is a
-variant of such an enum held as itself (`*t` for `t &Some[Gc[T]]`, a birth),
+variant of such an enum held as itself (`*t` for `t: &Some[Gc[T]]`, a birth),
 whose layout is its enum's (`genlTraceNullableVariant`). It stops at
 every borrow and every pointer: the placement rules keep a traced reference
 from hiding behind them. It does not share the finalizer's walk, which finalizes
@@ -846,7 +989,7 @@ an owner's value where the trace passes through it to find what it holds.
 
 **An allocation runs in one order, in every region** (`genlallocref`): the
 value init's arguments are evaluated (`genlNewArgs`; for the implicit init,
-the struct's literal, and for a finished value, `new Rc[i32](5)`, the value
+the struct's literal, and for a finished value, `Rc[i32](5)`, the value
 itself, moved); then `alloc`, and its null check; then the region's `init` and a lock
 permission's fill their parts of the header in place, each called with its
 part's address as its `self`; then a declared init fills the value's part in
@@ -856,7 +999,7 @@ not evaluated before `alloc`) fill it in place, element by element and run by
 run (`genlArrayLitInto`), each value evaluated then; then the reference
 goes to its destination. A declared init fills in place in three other places:
 a local it initializes, a construction written raw,
-`mem.writeRaw[T](p, new T(...))`, whose init is called with `p` as its `self`
+`mem.writeRaw[T](p, T(...))`, whose init is called with `p` as its `self`
 (`genlFnCall`) -- how an actor's state is made in its block, so that its init
 runs on the state where it stays -- and the argument of an inline function that
 writes its parameter that way (next). A `trynew`'s contents are therefore evaluated only
@@ -879,7 +1022,7 @@ given to, so the block lives no longer than its owners.
 **A construction built where an inline function puts it**
 (`genlDeferCall`, `genlInlineParm`). An inline function that takes room and
 then moves its parameter into it, as an arena's `alloc` does (`mem.writeRaw(at
-as *T, value)` after the room is taken), would be handed `new T(...)` as a
+as *T, value)` after the room is taken), would be handed `T(...)` as a
 value built in a temporary and copied. Instead the call evaluates its
 arguments in order, the construction's own included (`genlNewArgs`), and leaves
 the construction itself waiting: the function's parameter is a
@@ -903,7 +1046,7 @@ one never written is reported (`errorUnreachable`) rather than left unbuilt.
 A value that is not a construction by a declared init (a struct literal, a
 variable, a finished value) is passed as before.
 
-`So` and `Rc` are declared in Cone source in the core package,
+`Uni` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their
 `alloc` and `free` call core's `RawBlocks`, the raw blocks layer, which `conestd`
 defines (`rawblocks.cone`: `cone_rawBlockAlloc`, `cone_rawBlockResize`,
@@ -916,13 +1059,22 @@ own.
 
 ### Roots: the shadow stack
 
-**Every function holding a traced reference on its stack links a frame of them
+**Every function holding a collected reference on its stack links a frame of them
 into one chain** while it runs, so a collector can find every live one:
 `mem.traceRoots(mode)` is a call to conestd's `cone_traceRoots`
 (`packages/conestd/roots.cone`), which walks the chain from its head,
 `cone_gcframes`, and calls each root's record's trace. A **root** is a stack
-slot whose type holds a traced reference (`itypeHoldsTraced`), noted as it is
-made (`genlRootNote`, on `gen->roots`):
+slot whose type holds a collected reference (`itypeHoldsRooted`: a traced one,
+`itypeHoldsTraced`, that is not into an `ActorLocal` region, as
+`itypeHoldsCollected` finds), noted as it is made (`genlRootNote`, on
+`gen->roots`). A type holding only actor-local references (an `ActorGc`'s) is
+no root, and a function holding nothing else has no frame: the actor's collector
+finds them from the actor's state and its parked records and scans no stack. A
+type holding both kinds has its frame, for the `Gc` part. Core's `Erased`
+holds a collected reference wherever a traced region that is not `ActorLocal` is
+declared (`regionCollectedAnywhere`), and so is a root there only. Only the
+roots ask this: the type's trace, its record's Traced flag, a parked record's
+traced fields and `holdsTraced` still ask `itypeHoldsTraced`.
 
 - a **local's or a parameter's** alloca (`genlLocalVar`, `genlParmVar`, and an
   inline function's parameters, which are its caller's slots and so in its
@@ -945,7 +1097,7 @@ made (`genlRootNote`, on `gen->roots`):
 
 Once the body is generated, `genlRootFrame` builds the frame of a function
 with any root. One with none gets nothing, which is why a program with no
-traced region generates exactly what it did before roots existed.
+collected region generates exactly what it did before roots existed.
 
 ```llvm
 @cone.roots.<k> = private constant { i64, [n x ptr] } { i64 n, [n x ptr] [<each root's record>] }
@@ -1003,8 +1155,17 @@ into — gets it as surely as one through a `R` reference.
   run beside cannot have been finished with. A declared init's stores into
   its `self` are stores through a reference, and get it. `mem.writeRaw` gets it
   too, for the value it wrote: a collection's push of a reference into its
-  block is such a store. `mem.moveRaw` gets none: it moves what was stored
-  already.
+  block is such a store. `mem.moveRaw` gets none, and is for moves inside one
+  container only (a shift, a swap, a merge through a scratch block): a collector
+  traces a container whole (`propagateOne`), so a reference moved within it is
+  neither hidden from a collector that has finished with the container nor from
+  one that has not. A move from one container into another (`appendList`,
+  `appendSlice`, the parallel builder's piece join) hides a reference from a
+  collector that has marked the destination but not the source, so it uses
+  `mem.moveRawInto`: the same block move, then `genlBarrierAt` over each of the
+  `count` values now at the destination, in a loop, emitted only where the
+  element type holds a reference into a region with a `writeBarrier`
+  (`itypeHoldsBarriered`); for any other element type it is the plain block move.
 - **What.** `genlBarrierAt` walks the value just stored, at its destination,
   with the trace's walk (`genlTraceWalk`), handing each reference into a
   region with a `writeBarrier` to it as the header of what it points at
@@ -1034,7 +1195,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
 | `&T` value | a `ptr` to the `T` |
-| `&Array[T]` value, `&<Trait` value, a reference whose target carries its length (`&str`, `So[str]`) | an **aggregate value**, not a pointer |
+| `&Array[T]` value, `&<Trait` value, a reference whose target carries its length (`&str`, `Uni[str]`) | an **aggregate value**, not a pointer |
 | owning reference value | a `ptr` to the `T`, **past** the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |
@@ -1091,7 +1252,7 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **A shift is a compare and a select, never a bare LLVM shift.** Cone's `<<`
   and `>>` are defined for every amount: the width or more gives 0, or the sign
   for `>>` on a signed integer, the amount read unsigned so a negative one is
-  past the width too (`doc/reference/refexpr.html`, "Shift operators"). LLVM's
+  past the width too (`doc/manual/guide-numbers.html#shift`, "Shift operators"). LLVM's
   `shl`, `lshr` and `ashr` by the width or more are poison, so `genlShift`
   compares a run-time amount with the width and uses the shift's result only
   below it (a signed `>>` instead clamps its amount to width - 1), and writes no
@@ -1151,24 +1312,43 @@ the branch, never the block generation was positioned in — evaluating a
 subexpression may have emitted branches of its own and split the block.
 
 `if` builds `endif` first, then per arm a next-condition block and a body
-block. An arm whose last statement is a return, break or continue contributes no
-fallthrough and no phi edge. `while` is not a generation concept: it arrives as
-a loop block containing `if not cond { break }`.
+block. An arm whose path a jump ended contributes no fallthrough and no phi
+edge. `while` is not a generation concept: it arrives as a loop block
+containing `if !cond { break }`.
 
-**An arm whose condition is a constant of the build is decided at
-generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
-`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
-(TEMPORARY; its final design is open), or `!`, `and`, `or` of them. A false
-arm generates nothing, not even its test; a true one generates its body as the
-`else` would and ends the chain, the arms after it generating nothing. A call
-on an untaken side therefore never reaches the object, in either build, and an
-`extern` only that side names is declared and never referenced, and a function
-only that side calls is not emitted (section 2, "Only what live code reaches
-is emitted"). Everything
-before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
-"Constants of the build drop the untaken side at generation").
+**A jump ends the path where it is, and nothing is emitted after its
+terminator.** A `return`, `break` or `continue`, and a call that does not
+return, emit their terminator and then `genlEndPath`: generation goes on in a
+fresh, unnamed block no path reaches, which `gen->unreached` remembers. LLVM
+takes a block's last instruction as its terminator, so anything emitted after
+a jump in the same block -- an arm's branch to `endif`, a loop's branch back to
+`loopbeg`, a block's releases, the rest of an expression -- would replace the
+jump, silently: `fn x(c: bool) i32 { if c { { return 7; } } 0 }` gave 0 for
+`x(true)`, the `return` ending a plain block that the arm's block ends in. In
+the block no path reaches, whatever still follows is dead code and harmless.
+**Whether a path ended is the block the builder is at, not the last
+statement's tag** (`genlPathEnded`: is it `gen->unreached`?), so a jump inside
+a statement, however deep, counts as one that is the statement. `genlBlock`
+stops generating a block's statements once its path has ended, skips that
+statement's temporaries and its `dealias` (the jump finalized them as it
+left), and emits no loop back edge; `genlIfArm` emits no branch to `endif` and
+no phi edge; `genlReturn` and `genlBreak` do nothing more after a value whose
+generation itself jumped away (`return { return 7; }`). A block whose path
+ended answers `undef` of its type, for an expression it is part of
+(`add(1, { return 7; })`) to go on with. Once the module is made,
+`genlSettleUnreached` deletes each such block nothing was emitted into and
+ends any other with `unreachable`; the block is unnamed because a name would
+take a number from the function's count of the names it made unique, and so
+rename every value named after it, although the block is gone.
 
-Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
+**Every basic block ends in exactly one terminator, and generation checks it**
+(`genlCheckBlockEnds`, in `genpgm` after `genlSettleUnreached` and before
+anything else touches the module). A block with none, with two, or with one not
+last is a compiler defect, reported (`ErrorUnreachable`) with the block and its
+function, and the object is not made. LLVM's verifier says the same, but only
+under `--verify`; this check runs on every compile.
+
+Short-circuit `&&`/`||` are two blocks and a 2-way `i1` phi. `!` is
 `xor i1 %x, true`.
 
 **`FlagInline` functions are inlined by the Cone generator, not by LLVM.** They
@@ -1209,9 +1389,9 @@ bounds checked.**
 ends in a call returning `Never` end in a `return` of that call
 (blockTypeCheck), and `genlReturn` and `genlBreak` generate such a return, or
 one of an `if` every path of which jumps away, as the value and then
-`unreachable`: nothing is released and nothing handed back. `genlIf` leaves a
-branch that ends in a return out of its phi, and answers `undef` where no
-branch reaches the end. A function returning `Never` is declared `noreturn`.
+`unreachable`, which ends the path (`genlEndPath`): nothing is released and
+nothing handed back. `genlIf` leaves a branch whose path ended out of its phi,
+and answers `undef` where no branch reaches the end. A function returning `Never` is declared `noreturn`.
 
 ### Temporaries
 
@@ -1229,8 +1409,8 @@ it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 | Part | Where it ends |
 | --- | --- |
 | a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
-| an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
-| the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
+| an `if` or `else if` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
+| the right operand of `&&` or `||` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |
 
 A part's end runs on the one path that reaches it, since every construct that
@@ -1379,7 +1559,7 @@ miscompile):
   of a borrow of it (`VarLendWritable`, set by `flowLendNote` as `borrowFlow`
   walks each borrow). So no `&mut` route to it is passed in the call or held
   anywhere: `viaMut(u, &mut u)` copies `u`;
-- an `imm` variable is then lent. One the program may assign is lent only
+- a `let` variable is then lent. One the program may assign is lent only
   when no other argument, nor the callee's expression, holds anything that
   could assign it (`genlLendQuiet`: names, literals, reads, borrows, casts,
   calls, and literals of them; an assignment, a swap, a block or an `if` is
@@ -1415,7 +1595,7 @@ it. Its parameter is `ptr noalias readonly captures(none) dereferenceable(N)`:
 nothing changes what it points at until the call returns, and nothing keeps
 it past. `genlParmVar` stores each parameter into its variable's slot, as
 always, and marks the store `GenlParmHomeMark` where the parameter is only
-read (`genlParmInPlace`: its binding is not `mut`, flow saw no borrow of it
+read (`genlParmInPlace`: its binding is not `var`, flow saw no borrow of it
 at all, nothing finalizes its type, it holds no traced reference, and the
 function is neither split nor C-named); the pass then makes the pointer the
 variable's slot (`genlAggParmInPlace`), and every read, and every lend of it
@@ -1440,11 +1620,66 @@ operation a call; i7-13700HX, best of 9, interleaved, at the `generic` /
 `Mat4 * Mat4` 6.9 / 5.9 ns against 18.8 / 8.9, `Mat4 * Vec4` 1.40 / 1.08
 against 6.8 / 3.9, `Mat4 * point` 1.66 / 1.50 against 3.2 / 3.4, and
 `Mat3 * Mat3` 4.4 / 4.2 against 6.8 / 6.2, every result the same bits; the
-shipped bench, its methods `inline`, is unchanged. The matrix, an `imm`
+shipped bench, its methods `inline`, is unchanged. The matrix, a `let`
 local, is lent; the bench's other operand, a `mut` slice's element, is
 copied, and a release build's optimizer forwards that copy itself where it
 proves nothing the call reaches can write the slice's memory. Measured 4
 October 2026.
+
+### noalias on a borrowed parameter
+
+LLVM keeps a borrowed value in registers across a loop only when it knows no
+other pointer reaches that memory, and the permissions already say so.
+`genlBorrowAttrs` (called where `genlGloFnName` makes the symbol) marks a
+parameter that is a borrowed reference, thin or a slice, in a region that is not
+a `RegionRef`:
+
+- `&uni T`: `noalias nonnull`. No other live reference reaches it.
+- `&imm T`, where `T` holds no atomic inline (`itypeHoldsAtomic`) and the
+  permission is not a lock's: `noalias nonnull readonly`. An atomic is written
+  through an immutable borrow by design, as Rust's `UnsafeCell` is.
+- `align <ABI alignment of T, capped at 16>` beside it: LLVM may hoist a load past a
+  conditional exit only if it is safe to speculate, which needs the alignment as
+  well as the size (a matmul over `&imm, &imm, &uni List`, 2.8 s without, 0.87 s
+  with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
+  borrow's address meets the pointee's alignment up to 16, as a read through that
+  borrow already assumes its ABI alignment. A cast from a pointer or integer to a
+  reference is not checked for it (`castRefPermCheck`); whether that changes
+  belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
+- `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
+  the body is generated, because a pointee's layout is not known when the
+  signature is (the pointee of a reference is generated later,
+  `genlPointeeLater`); a declaration has none.
+
+**A slice** (`&uni Array[T]`, `&imm Array[T]`, a `&str`) is one `{ ptr, i64 }`
+value, and no attribute can sit on a struct. So `genlAggCopies` passes every
+parameter of that literal struct type, in a function with Cone's convention and
+in each call to a function type taking one (through a function reference or a
+virtual reference as through a name), as two scalars, the pointer then the count
+(`genlAggIsSlice`; the body joins them again with `insertvalue` as it begins,
+`genlAggParmJoin`, which LLVM's own passes undo). A `&uni` slice's parameter
+is marked with the string attribute `cone-slice-borrow`, which
+`genlAggSigAttrs` turns into `noalias` on the pointer at its new position. The
+pointer gets neither `nonnull`, since an empty slice's may be null, nor
+`dereferenceable`, since the count is not in the signature. An `&imm` slice and
+a `&str` get nothing: `noalias readonly` on them slowed one benchmark (fasta) by
+6% and no measured program gains from it. A slice returned stays one value.
+
+`&mut` (shared mutable) and `&` (read-only, maybe changed by others) get
+nothing, nor does a pointer, an owning or virtual reference, a
+lock's guard, a C-named function (`genlIsCAbiFn`: its caller is C), a split
+method (its first half hands its parameters on to the halves after it), a GPU
+module, or a function this does not name: an async half, a `parallel` body
+and a vtable thunk are made elsewhere and carry none. A method's `self` counts
+as any parameter. `genlAggSigAttrs` copies a pointer parameter's attributes
+across when it rewrites a signature, so they survive "Large aggregates".
+
+Everything this relies on is the checker's: a `&uni` lent beside a borrow of
+one of its parts, or a `&uni` or `&imm` of a global, is refused (cases
+`ref_noalias_reject`), so a `noalias` cannot meet an alias. If a miscompile
+ever points here, build the program with `--no-noalias` (or `CONE_NO_NOALIAS`
+set in the environment, which reaches every `conec` a build tool starts) and
+compare.
 
 ### A split method
 
@@ -1488,7 +1723,16 @@ waiting for their statement's end (`GenTemp`), the newest first, but a lock's
 guard and any that does nothing as it dies; and flow's record of variables
 (`seamvars`: holding its value, and used after the seam or droppable), the
 last declared first, but `self`, which the dispatcher lends each half afresh,
-each bringing its drop flag where it has one. A value in flight is one
+each bringing its drop flag where it has one. **A match's binding by value
+(`flowMatchInPlace`) is no variable of its own to the record**: it names the
+matched value's storage, which its owner (`flowDropOwner`) carries once -- by
+the owner's own entry where that is carried, else, if the binding is used after
+the seam and the owner holds a value but would not be carried, by the owner in
+the binding's place. An owner that holds nothing at the seam (the binding took
+the whole payload, `case let Ok(x)`) leaves the record nothing, so the
+abandoned record's drop function (`genlSeamDrop`) and trace function
+(`genlSeamTrace`), which walk the same fields, see the value once, in `x`.
+A value in flight is one
 generated before a later operand holding a seam -- `x` in `two(x, await
 give())`, a call's argument or receiver, a literal's field or element -- which
 belongs to no variable: `genlExprsAcross` keeps it in a slot of its own
@@ -1540,7 +1784,8 @@ the call the handle's second method for it, whose last argument is the
 request's envelope (`AwaitReplyNode`). The envelope is in the message, never
 in the method's parameters; what the author wrote is unchanged. The seam's
 record waits in the awaiting actor's **pending table**, `Pending`, a hidden
-field of its state, and the reply's dispatch calls the second half.
+field of its state, and the reply, a slot in the awaiting actor's mailbox ring,
+is resumed by the actors package, which calls the second half.
 
 - **The envelope** (`genlAwaitReply`) is generated where it is passed, before
   the seam, since the request carries the record's id. So the seam is laid out
@@ -1552,24 +1797,27 @@ field of its state, and the reply's dispatch calls the second half.
   the slot's index is the record's **id**, a plain index with no generation.
   The actor's generated
   `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
-  envelope, an `actors.Reply`: it takes one count of the awaiting actor, so
-  that it cannot die while the reply is owed, and allocates the reply's mailbox
-  node, with room after the message for the value returned, aligned to it; the
-  node's message is already the actor's own resume variant, naming the seam's
-  **resume function** (the tag) and the id, with where the value will be.
+  envelope, an `actors.Reply` (one call of `actors.replyFor`): it takes one
+  count of the awaiting actor, so that it cannot die while the reply is owed,
+  and holds the seam's **resume function** (the tag), the id, and the size of
+  the value awaited. It allocates nothing.
 - **The seam** moves its record into the slot's block (`parked`) and returns.
-  The reply cannot be dispatched before then: it comes to this actor's
+  The reply cannot be resumed before then: it comes to this actor's
   mailbox, which runs one message at a time.
-- **The answer.** The actor answering writes its value where the envelope says
-  and pushes the node (`actors.answerNow`, `answerAt`, `answered`), knowing
-  nothing of the awaiting actor's type. The count the envelope held becomes
-  the scheduler's owner when the push finds the actor idle, as a send's would.
+- **The answer.** The actor answering claims a slot in the awaiting actor's
+  mailbox ring and writes the resume function, the id and the value into it
+  (the value in a box of its own where it is too large for the slot's payload),
+  then publishes it (`actors.answerNow`, `answerAt`, `answered`), knowing
+  nothing of the awaiting actor's type. `answerTo` claims the slot before the
+  value is written, so the compiled code writes into it. The count the
+  envelope held becomes the scheduler's owner when the publication finds the
+  actor idle, as a send's would.
 - **The resume function**, `<method>'<n>.resume(state, [id,] data)`
-  (`genlSeamResume`), is what the reply's dispatch arm calls
-  (`actors.resume`, `resumeId`): it takes the record out of the table at id,
+  (`genlSeamResume`), is what the actors package calls when its worker reaches
+  the reply's slot (`actors.resume`, `resumeId`): it takes the record out of the table at id,
   frees its block, and calls the second half with the record and the value,
-  both moved. **An empty record has no slot, no id and no lookup**: its resume
-  variant and resume function take none.
+  both moved. **An empty record has no slot, no id and no lookup**: its
+  envelope and resume function take none.
 
 A behaviour that returns a value and holds an `await` answers its own request
 whichever half returns its value. The request's envelope waits, while the
@@ -1578,9 +1826,9 @@ behaviour runs, in the state's hidden `Answer` slot, which the dispatcher fills
 dropped). Each seam of such a method takes it into its record first
 (`GenSeamAnswer`), leaving the slot empty, and the second half's entry puts it
 back. So the dispatcher answers only when the slot still holds it, the first
-half having returned a value rather than parking (`answerAt`, which reads the
-value only then: the dispatcher keeps the call's value through a raw pointer,
-`actors.keep`, so that a parked method's undefined one is never finalized).
+half having returned a value rather than parking (`answerAt` takes the call's
+value by value and moves it into the reply; a parked method's value is
+undefined, so `answerAt` forgets it, `mem.forget`).
 The resume function answers likewise once the second half returns
 (`answerTo`), dropping the value where nothing awaits it.
 
@@ -1592,11 +1840,15 @@ everything above holds but the request. The seam is laid out once the operand
 is made, as a seam with no envelope argument is; its envelope is made there by
 the same functions (`genlSeamReply`); and the Awaitable, moved into a slot of
 its own, is handed with the envelope to the actors package's `startAwait`,
-which calls the start function its maker stored in it. Nothing of the Awaitable
+which calls the start function its maker stored in it (a closure, or a context
+word and a function, `Awaitable.of`). Nothing of the Awaitable
 is finalized: its maker's context is the start function's from then on. The
 maker writes the answer into the envelope as `answerNow` does, from whatever
-thread finishes the operation, and the reply's dispatch calls the resume
-function. The 'await' adds nothing to the `R`.
+thread finishes the operation, or lends it (`answerLent`: the answer stays in
+a place of the maker's own until the dispatch has moved it to the worker's
+stack, just before the resume function is called, which takes it from there as
+from a box), and the reply's dispatch calls the resume function. The 'await'
+adds nothing to the `R`.
 
 **A future.** What a seam awaits may instead be a future: a value of an
 instance of the actors package's `Future[T]` (type check set
@@ -1609,14 +1861,15 @@ whichever way the behaviour goes on; the future is moved into a slot of its
 own, and `actors.futureReady` asks whether it has its ending already. If it
 has, the behaviour goes on **where it stands**: no record, no envelope, no
 return to the dispatcher, the code after the seam reached from here. If not,
-the envelope is made as for a message, its data room for a waiter (the
-future's reference, a link, the actor awaiting and the node), and handed to
-`actors.futureRegister` with the future, which parks the envelope's node on
-the future's waiter list with one compare-and-swap, or finds the list closed
-because the future has its ending by now. Parked, the record moves into its
-slot and the method returns, as at any seam; the future pushes the node when
-its value arrives, and the resume function opens it. Abandoned instead, the
-future drops the node, as an envelope dropped unanswered is, so the record
+the envelope is made as for a message, and handed to
+`actors.futureRegister` with the future, which allocates a waiter (the
+future's reference, a link, the actor awaiting and its resume function and
+id) and puts it on the future's waiter list with one compare-and-swap, or
+finds the list closed because the future has its ending by now. Parked, the
+record moves into its slot and the method returns, as at any seam; the future
+publishes a reply slot in the awaiting actor's mailbox when its value arrives,
+carrying the reference, and the resume function opens it. Abandoned instead,
+the future drops the waiter, as an envelope dropped unanswered is, so the record
 stays parked until its actor's death drops it ("An abandoned record"). Not parked, the slot
 reserved for the record is given back, its block freed with nothing in it,
 and the behaviour goes on where it stands, as above. **Opening the future**
@@ -1801,8 +2054,18 @@ Not tried: a GPU or WebAssembly target (a box is a C `malloc`).
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
-by default. `--debug` emits DWARF and drops optimization — it is the only
-switch here, with release as the default. Debug info covers only files,
+by default (the test suite passes it); one of its rules, a block's one terminator,
+is checked on every compile (section 6). `--debug` drops optimization; release is the default.
+Debug info is a separate switch, `opt->debuginfo` (`genSetup`): a native build emits it, release
+or debug, so a profiler can name a release program's functions, and `--strip` emits none. A
+WebAssembly or SPIR-V build emits it for `--debug` alone: a release module is as small as it
+can be, with no PDB to hold the information apart. On a Windows triple the module carries the
+`CodeView` flag, so the object holds CodeView and the linker (`/DEBUG`, which Congo passes on a
+link that is not `--strip`ped) writes a PDB; on Linux the object holds DWARF, which stays in the ELF. The
+information does not change the code: a release program's `.text` is the same instructions
+with and without it (measured on `nbody` and `richards`; only the displacements into `.rdata`
+move, as the PDB's path is written there).
+Debug info covers only files,
 subprograms and each instruction's line and column. A subprogram is in the file its
 function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
 compile's main file for a node with no lexer), so a sibling file of a folder module,
@@ -1814,7 +2077,13 @@ one. Every `genlExpr` sets the builder's debug location to its node's line and
 column, and `genlAlloca` puts it back after taking an alloca in the entry
 block: positioning the builder before the `allocaPoint` takes that
 instruction's location, which is none, and the verifier refuses a call with no
-location in a function with debug info.
+location in a function with debug info. `genlTerm` places each term in `gen->fn`'s
+subprogram, and a location whose scope is null is invalid, so every function the compiler
+builds itself has a subprogram when debug info is on: the program's entry `main` (genlEntry;
+a release build inlines the program's own `main` into it, and an entry with no subprogram
+would drop the inlined code's lines), a type's drop, a parallel `each`'s body, a split
+method, a kernel, and a counted reference's `cone.dropslow.N` (release only). A new
+generated function needs the same.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
@@ -1905,12 +2174,12 @@ are in [closure](../nodes/closure.md)): a borrow of a function, `&name`
 (`borrowTypeCheck`), since the calls are inlined and a pointer to code would be an
 indirect call; a reference converted to a virtual reference (`iexpCoerceShape`,
 the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
-crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
+crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, a construction or
 `trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
 import the Vulkan form does not allow (`Capability Linkage`). Also an owning
-reference type written at all, `So[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
+reference type written at all, `Uni[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
 (`refTypeCheck` and `refvirtTypeCheck`, `refGpuOwnerCheck`), in any declaration but
-the type a `new` names, which `allocateValueCheck` reports as the allocation it
+the type a construction names, which `allocateValueCheck` reports as the allocation it
 is (`refNewTypeWritten`); a function reference can still arrive as a parameter
 of a function and be passed about, and nothing can make one.
 
@@ -1968,7 +2237,7 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   returns, one for each failed check, are made one (`genlGpuOneReturn`).
   `structurizecfg` takes no switch: it leaves each of a switch's branches a
   `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
-  simplifycfg makes a switch of an if-elif chain on one integer, so
+  simplifycfg makes a switch of an if-else if chain on one integer, so
   `lower-switch` makes each switch a tree of comparisons just before it
   (`module_target_spirv_switch`). And `structurizecfg` wants every loop
   entered through a preheader, as LLVM's own GPU pipelines hand it loops:
@@ -2017,7 +2286,7 @@ validator refused.
 **A compute entry point is a kernel beside its function** (`genlgpu.c`). A
 function declared `@compute(x, y, z)` (the parser reads the size; type check,
 `fnDclComputeCheck`, its signature and what its buffers hold;
-[reference](../../../../doc/reference/refgpu.html)) is generated as every
+[conc-gpu](../../../../doc/manual/conc-gpu.html)) is generated as every
 function is, internal and inlined, and on the Vulkan form `genlComputeEntry`
 makes the kernel: an LLVM function of no parameters named as the Cone function
 is (which, if its symbol is the same, takes `.body` after its name), marked as
@@ -2115,7 +2384,18 @@ for it), is caught before its body is expanded, so the module asks for no
 64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
 intrinsics. The CPU is untouched, and the C library is called there. Core's
 `sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
-every target.
+every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
+`round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
+SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
+(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+**A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
+exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
+`max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
+`NMin` and `NMax` for those same intrinsics (read from `--asm`). Vulkan lets a driver assume
+there are no NaNs unless a kernel declares `SignedZeroInfNanPreserve`, an optional feature,
+which Cone does not declare. So a kernel answers as it always has, and the NaN and the
+`-0.0` answers of the CPU are not promised there. None of this has been run on a GPU;
+`module_target_spirv_numbers` pins only the instructions selected.
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
@@ -2130,7 +2410,7 @@ over 65,536 arguments a function: `fabs`, `floor` and `ceil` bit for bit;
 `acos`, `atan` and `atan2` within 2; `exp` within 8 over [-10, 10]; `pow`
 within 27; `log` within 87 ulp near 1, where it is near 0; `sin` and `cos`
 within 4e-7 absolute in [-pi, pi], 1e-5 in [-100, 100]; `tan` within 4e-5 in
-[-1.5, 1.5]. Vulkan's own bounds are in the [reference](../../../../doc/reference/refgpu.html).
+[-1.5, 1.5]. Vulkan's own bounds are in the [conc-gpu](../../../../doc/manual/conc-gpu.html).
 
 **Every float operation but the remainder is decorated `NoContraction`**
 (`genlGpuNoContraction`), as slangc's `-fp-mode precise` does, so no driver
@@ -2177,7 +2457,7 @@ straight back into an `srem`. An unsigned remainder is `OpUMod`, as it was
 ### What invocations share
 
 **Invocations share a storage buffer and a `@workgroup` global**
-(`genlgpusync.c`; [reference](../../../../doc/reference/refgpu.html#atomics)).
+(`genlgpusync.c`; [conc-gpu](../../../../doc/manual/conc-gpu.html#atomics)).
 A buffer of `Atomic[u32]` or `Atomic[i32]` is a run-time array of core's
 `Atomic` struct, one `i32` wide, and an atomic method is core's: a call to
 mem's intrinsic on `self as *T`, the same `atomicrmw`, atomic `load` or
@@ -2263,7 +2543,7 @@ core's `setBarrierHook` sets and `clearBarrierHook` clears
 two thread-locals itself, by their C names, as it declares `cone_gcframes`.
 With none set a barrier costs the thread-local load (on Windows `_tls_index`,
 the TEB's TLS array, the block, the value) and a not-taken branch; the
-measured cost is in `refgpu.html`, "Barriers". The call is indirect, so no
+measured cost is in `conc-gpu.html#barriers`, "Barriers". The call is indirect, so no
 alias analysis lets LLVM move an access to a `@workgroup` global, an internal
 global whose address never escapes, across it: GlobalsAA's answer for an
 internal global is only for a direct call. The hook being the thread's own
@@ -2328,10 +2608,10 @@ variables.
   refuses as unreachable rather than build a wrong record.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
-  in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
+  in: `f(mk(1).n, { let x = mk(2); if c { return; } 3 })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
-- **A function taking an aggregate passed as a pointer, or returning any
+- **A function taking an aggregate passed as a pointer or a slice, or returning any
   aggregate but one or two scalars, is a different LLVM function after
   `genlAggCopies`** (section 6, "Large aggregates", "Lending a place to a
   call"): remade with pointer parameters or another result type and the old
@@ -2346,13 +2626,14 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
-| | `genpgm` | generate, move large aggregates into memory (not on a GPU target), verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
+| | `genlCheckBlockEnds` | every block of every defined function ends in its one terminator, else a compiler defect reported per block (section 6) |
+| | `genpgm` | generate, settle the blocks no path reaches and check every block's terminator, move large aggregates into memory (not on a GPU target), verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function but a kernel marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
-| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
+| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main` (or, for a `main` returning a Result, the `-mainresult` that calls it and prints its failure), stitched final, its result the exit status |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
 | | `genlInitByCtor`, `genlCtors` | a C-named module's `init` as a static constructor: `cone.ctor`, calling each such module this object generates in the module order, registered in `llvm.global_ctors` at priority 1000; the stitched init leaves those out |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
@@ -2363,20 +2644,21 @@ variables.
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
 | | `genlClaimSymbol`, `genlSymAgree`, `genlSymOwner` | one symbol, one global: which of two declarations spelling one symbol has it, or `ErrorCNameConflict` / `ErrorCNameDefTwice` |
-| | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
+| | `genlGloVarIsConstant` | whether a `let` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | emit object and asm, the asm from a copy of the module, by a target machine of its own, on a GPU target |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
-| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
+| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees, then the queued vtables' globals, once the outermost type is done, and the per-tag lowering switch |
 | | `genlUsize` | `usize`'s LLVM type: `ConeOptions.ptrsize` bits, the target's pointer, but 32 on SPIR-V's Vulkan form (section 7) |
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
-| | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants (the implementer's type record last), the virtref fat pointer |
+| | `genlVtable`, `genlVtableImpls`, `genlVtableImpl` | vtable type and the virtref fat pointer; then, once no type is being generated, the per-struct constants (the implementer's type record last) and their list |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
+| | `genlVtableInlineFn` | the function filling a slot an `inline` method satisfies: the method's expansion over the slot's parameters (an inline method has no symbol; only an enum's has a slot, `structMakeVtable`) |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
 | | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |
@@ -2394,15 +2676,20 @@ variables.
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiFnType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnPtrCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type (and a `ccall` signature's), its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it and a call through a reference to it, its prologue's parameters and its returns — lowered for a C-named one |
+| `genllvm/genllvm.c` | `genlBorrowKind`, `genlBorrowAttrs`, `genlBorrowDeref` | which borrowed parameters get `noalias` (a `&uni`, an `&imm` holding no atomic), marked at the symbol and, for `dereferenceable`, with the body (section 6, "noalias on a borrowed parameter") |
+| `genllvm/genlvector.c` | `genlVectorIntrinsic`, `genlDivideCheck`, `genlVectorShift` | a vector's operator, math or reduction, over its first argument's lanes; the one check before an integer division; a shift defined past the width (section 3, "Vectors") |
+| | `genlVectorConvert`, `genlVectorLanes`, `genlVectorArray`, `genlVectorLane` | a vector's conversion, construction and select (a type literal); a lane type as another over whole vectors; an array as a vector and back; the address of a lane, bounds checked |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |
 | | `genlAggCopyTo`, `genlAggConstTo`, `genlAggPhis`, `genlAggEdge` | a copy with `llvm.memcpy`, a constant's with `llvm.memset` or field by field, each phi's slot filled at its predecessors' ends, an edge given a block of its own |
 | | `genlAggByPtr`, `genlAggPassesByPtr` | whether an argument of an LLVM type is passed as a pointer (section 6, "Lending a place to a call") |
 | | `genlAggLent`, `genlAggArgPtr`, `genlAggWideStore` | a load generation lent, passed its address; any other argument passed as a pointer, copied: where it was loaded, a call's result slot passed on, or stored wide |
+| | `genlAggIsSlice`, `genlAggParmJoin` | a literal `{ ptr, count }` struct, passed as its two scalars; the parameter's value rebuilt as the body begins (section 6, "noalias on a borrowed parameter") |
 | | `genlAggParmInPlace`, `genlAggParmLoad` | a parameter only read, its variable's slot made the pointer; any other read whole as the body begins |
-| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
-| | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
+| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state; no statement, release or back edge once the path ended; each statement's temporaries finalized at its end |
+| | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break; the path ended after |
+| | `genlEndPath`, `genlPathEnded`, `genlSettleUnreached` | after a jump, generation goes on in a block no path reaches; whether it is there; each such block deleted or ended by `unreachable` once the module is made (section 6, "A jump ends the path") |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
 | | `genlFlatAddr`, `genlVarSym` | a global's address as a reference holds it: cast to the flat address space on a GPU target (section 7) |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
@@ -2446,10 +2733,12 @@ variables.
 | | `genlBarrierAt`, `itypeHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
-| `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `So`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
+| `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `Uni`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s` on Windows, `getentropy` elsewhere) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
 | `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`; the globals `EILSEQ`, `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time`, `timespec_get`, `EILSEQ` and the locale categories bind (`libc` is C-named, with no prelude and so no `isWindows()`, so a number that differs by C library is a global read as a constant is) |
-| `packages/conestd/floatfmt.cone` | `floatText` (private; `printFloat` and `eprintFloat` call it) | a float as C's `%g` writes it: six significant digits of the exact value, correctly rounded (a tie to the even digit), the digits found over a 1536-bit integer so no C library's `printf` is involved, an infinity as `inf` and every NaN as `nan`; the text is the same on every OS |
+| `packages/conestd/floatfmt.cone` | `cone_floatShortest`, `cone_floatShortest32` | a float as the shortest text that reads back as the same float (Ryu's digits), written as Python's `repr` writes it: core's `FloatText`, and so the text of every f64 and f32 a `TextOut` writes; an infinity as `inf` and every NaN as `nan`; the same text on every OS |
+| `packages/conestd/stdio.cone` | `consoleDeliver`, `cone_consoleInstall`, `printStr` and the other `print` and `eprint` functions, `cone_textGrow`, `cone_textFinish` | the console: a send statement's record handed over whole, under the console's lock, and written at once to a terminal and to standard error, or held in the console's own buffer for a file or a pipe until it fills, standard error writes, a flush or the program's end; three slots (`consoleEngine`, `consoleEngineBytes`, `consoleEngineControl`) for an engine that takes records, lone texts and flush instead, installed under the console's lock by `cone_consoleInstall` (the actors package's console owner, `packages/actors/src/console.cone`). Also the slow side of core's `TextOut` (making room for a record, the writer's death) |
+| `packages/conestd/console.c` | `cone_consoleLock`, `cone_consoleIsTty`, `cone_consoleWrite`, `cone_consoleWriteParts`, `cone_consoleAtExit` | the console's operating-system calls: an SRWLOCK or a pthread mutex, the terminal test, a write that carries on until every byte is out (`_write`, `write`), a gathered write (`writev` on POSIX; Windows has none for a console or a pipe, so the parts go out one after another under the lock), and `atexit` |
 | `packages/conestd/oscalls.c` | `cone_futexWait`, `cone_futexWake`, `cone_threadId`, `cone_processors`, `cone_flushProcessWriteBuffers` | Linux's system calls the `sync` and `thread` packages need and Cone cannot call (the futex is one variadic `syscall`), empty on Windows, whose kernel32 those packages bind directly: the futex's wait and wake on a 32-bit word, the kernel's thread id, the online processors, and the process-wide memory barrier (`membarrier`, or a protection change on a dirty page when the kernel refuses it); the packages choose by `isWindows()`, and POSIX's `pthread_create`, `sched_yield` and `nanosleep` they bind by name |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |

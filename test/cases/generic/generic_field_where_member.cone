@@ -1,0 +1,94 @@
+// The same as generic_global_where_member, reached from a struct's field and
+// from a function's signature rather than a global: 'struct W { h: Host[Svc]; }'
+// above Svc lays Host[Svc] out inside W's layout, and 'fn probe(h: &Host[Opt])'
+// above Opt checks Host[Opt] inside its signature, held as a layout in flight
+// (fnDclTypeCheck). Deciding each bound checks the type argument's 'turn'
+// there, whose body calls overloaded methods of instances made while their
+// argument was not yet laid out. A member whose 'where' is false -- 'K is u64'
+// for Table[i32, Req], 'V is Copy' for Cells[Req] -- is left out, so its body,
+// which compiles at no other argument, is never checked. Before, both were
+// refused as in generic_global_where_member: neither needed a global. The
+// printed values were checked by hand: find takes the key overload (1), get the
+// borrow (Req's 4).
+
+mod generic_field_where_member;
+
+import stdio use *;
+
+trait Hosted {
+  pub fn turn(self: &mut) u64;
+}
+
+struct Host[S: Hosted] {
+  pub at: u64;
+}
+
+struct W {
+  h: Host[Svc];
+}
+
+fn probe(h: &Host[Opt]) u64 {h.at}
+
+struct Table[K, V] {
+  key: K;
+  vals: *V;
+  pub fn findKey overload find(self: &, k: &K) u64 {if *k == key {1u64} else {0u64}}
+  pub fn findText overload find(self: &, k: &str) u64 where K is u64 {
+    let n: u64 = key;
+    n + u64.from(k.len())
+  }
+}
+
+struct Cells[V] {
+  vals: *V;
+  pub fn getRef overload get(self: &, tag: &str) &V {&*vals}
+  pub fn getCopy overload get(self: &, i: u64) V where V is Copy {*vals}
+}
+
+struct Svc {
+  r: Rec;
+  pub fn turn(self: &mut) u64 {
+    printStr("field type = "); printUInt(r.ti.find(&5i32)); printStr("\n");
+    printStr("field trait = "); printUInt(r.cr.get("a").n); printStr("\n");
+    1u64
+  }
+}
+
+struct Rec {
+  ti: Table[i32, Req];
+  cr: Cells[Req];
+}
+
+struct Opt {
+  q: Rec2;
+  pub fn turn(self: &mut) u64 {
+    printStr("signature type = "); printUInt(q.ti.find(&5i32)); printStr("\n");
+    printStr("signature trait = "); printUInt(q.cr.get("a").n); printStr("\n");
+    2u64
+  }
+}
+
+struct Rec2 {
+  ti: Table[i32, Req2];
+  cr: Cells[Req2];
+}
+
+struct Req is Move {
+  n: u64;
+}
+
+struct Req2 is Move {
+  n: u64;
+}
+
+fn main() {
+  let q = Req(4u64);
+  let q2 = Req2(4u64);
+  var s = Svc(Rec(Table[i32, Req](5i32, &q as *Req), Cells[Req](&q as *Req)));
+  var o = Opt(Rec2(Table[i32, Req2](5i32, &q2 as *Req2), Cells[Req2](&q2 as *Req2)));
+  let w = W(Host[Svc](3u64));
+  let a = s.turn();
+  let b = o.turn();
+  printStr("turns = "); printUInt(a + b); printStr("\n");
+  printStr("probe = "); printUInt(probe(&Host[Opt](6u64)) + w.h.at); printStr("\n");
+}

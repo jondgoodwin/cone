@@ -38,6 +38,8 @@ Name *enumEqName;
 Name *finalName;
 Name *enumFinalName;
 Name *initName;
+Name *lazyName;
+Name *typeWordName;
 Name *yieldsName;
 Name *nextName;
 Name *tagName;
@@ -60,6 +62,8 @@ Name *divName;
 Name *remName;
 Name *orName;
 Name *andName;
+Name *logicOrName;
+Name *logicAndName;
 Name *xorName;
 Name *shlName;
 Name *shrName;
@@ -75,13 +79,21 @@ Name *leName;
 Name *ltName;
 Name *geName;
 Name *gtName;
+Name *threeWayName;
 Name *parensName;
 Name *indexName;
 Name *refIndexName;
 Name *optionName;
+Name *parseName;
+Name *tryFromName;
 Name *fromName;
+Name *selectName;
+Name *joinName;
 Name *hashName;
 Name *hashTraitName;
+Name *eqTraitName;
+Name *cloneTraitName;
+Name *defaultTraitName;
 Name *iteratorTraitName;
 Name *hasherName;
 Name *writeU64Name;
@@ -95,6 +107,10 @@ Name *parallelName;
 Name *splitName;
 Name *someName;
 Name *noneName;
+Name *resultName;
+Name *okName;
+Name *errorVariantName;
+Name *reportName;
 Name *allocMethodName;
 Name *allocRegionMethodName;
 Name *initMethodName;
@@ -119,6 +135,10 @@ Name *gcTraceElementsMethodName;
 Name *visitMethodName;
 Name *atomicValueTraitName;
 Name *integerTraitName;
+Name *floatTraitName;
+Name *signedTraitName;
+Name *unsignedTraitName;
+Name *numericTraitName;
 Name *pointerTraitName;
 Name *sendableTraitName;
 Name *shareableTraitName;
@@ -152,11 +172,11 @@ static struct NameOperator {
     {&plusName, "pl"},    {&minusName, "mi"},   {&multName, "ml"},    {&divName, "dv"},
     {&remName, "rm"},     {&eqName, "eq"},      {&neName, "ne"},      {&ltName, "lt"},
     {&leName, "le"},      {&gtName, "gt"},      {&geName, "ge"},      {&andName, "an"},
-    {&orName, "or"},      {&xorName, "eo"},     {&shlName, "ls"},     {&shrName, "rs"},
+    {&orName, "or"},      {&logicAndName, "aa"}, {&logicOrName, "oo"}, {&xorName, "eo"},     {&shlName, "ls"},     {&shrName, "rs"},
     {&indexName, "ix"},   {&parensName, "cl"},  {&incrName, "pp"},    {&decrName, "mm"},
     {&plusEqName, "pL"},  {&minusEqName, "mI"}, {&multEqName, "mL"},  {&divEqName, "dV"},
     {&remEqName, "rM"},   {&andEqName, "aN"},   {&orEqName, "oR"},    {&xorEqName, "eO"},
-    {&shlEqName, "lS"},   {&shrEqName, "rS"},
+    {&shlEqName, "lS"},   {&shrEqName, "rS"},   {&threeWayName, "ss"},
     // Cone's own: '<-', '&[]', and the postfix forms of '++' and '--'
     {&lessDashName, "la"}, {&refIndexName, "rx"}, {&incrPostName, "pP"}, {&decrPostName, "mM"},
 };
@@ -494,6 +514,12 @@ char *nameType(char *bufp, INode *vtype) {
         }
         return bufp;
     }
+    case VectorTag:
+        // 'N', the lane type, the number of lanes in decimal, '_'
+        *bufp++ = 'N';
+        bufp = nameType(bufp, vectorElemType(vtype));
+        bufp += sprintf(bufp, "%llu_", (unsigned long long)vectorLanes(vtype));
+        return bufp;
     case FnSigTag:
     {
         FnSigNode *fnsig = (FnSigNode *)vtype;

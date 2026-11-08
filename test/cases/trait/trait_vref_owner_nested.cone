@@ -1,0 +1,380 @@
+// An owning virtual reference whose value itself holds an owner, among them an
+// owning virtual reference to the same trait: 'struct One is Show {first:
+// Uni[Show];}' made into a 'Uni[Show]'. Generating One's type reaches Show's
+// vtable from One's own field, while One's body is still being laid out. The
+// vtable's implementers are measured (One's type record, its virtual field
+// offsets) only once One is laid out: measured earlier, One has size 0 for
+// good, and every allocation of it is a block too small for it.
+//
+// Every block here comes from a guarded allocator: 16 bytes holding the size
+// asked for, the block, then 32 guard bytes. A free checks the guard bytes and
+// counts a block whose guard was written ('torn'). 'Guni' is a sole owner, as
+// Uni is, and 'Grc' a counted one, as Rc is. Each value's 'final' counts its
+// deaths ('inner' the innermost value's, 'outer' the holder's), so each case
+// shows every finalizer run once a step, every block freed, and no guard
+// written. 'sizeof' is the holder's size, or for the closures the innermost
+// value's.
+
+mod trait_vref_owner_nested;
+
+import stdio use *;
+import collections use *;
+import libc;
+
+var @threadlocal allocs = 0i64;
+var @threadlocal frees = 0i64;
+var @threadlocal torn = 0i64;
+var @threadlocal finInner = 0i64;
+var @threadlocal finOuter = 0i64;
+
+fn guardAlloc(size: usize) *u8 {
+  allocs = allocs + 1;
+  let raw = malloc(size + 48usize);
+  mem.writeRaw[usize](raw as *usize, size);
+  let p = raw + 16usize;
+  var i = 0usize;
+  while i < 32usize {
+    mem.writeRaw[u8](p + (size + i), 165u8);
+    i = i + 1usize;
+  }
+  p
+}
+
+fn guardFree(p: *u8) {
+  frees = frees + 1;
+  let raw = p - 16usize;
+  let size = mem.readRaw[usize](raw as *usize);
+  var bad = 0i64;
+  var i = 0usize;
+  while i < 32usize {
+    if mem.readRaw[u8](p + (size + i)) != 165u8 { bad = 1; }
+    i = i + 1usize;
+  }
+  torn = torn + bad;
+  libc.free(raw);
+}
+
+struct Guni is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { guardAlloc(size) }
+  fn free(self: &uni Guni) inline { guardFree(self as *u8); }
+}
+
+struct Grc is RegionRef {
+  owners: u32;
+  fn alloc(size: usize) *u8 inline { guardAlloc(size) }
+  fn init(self: &new) inline { *self = Grc(1u32); }
+  fn aliasRef(self: &uni Grc) inline { owners = owners + 1u32; }
+  fn dealiasRef(self: &uni Grc) bool inline { owners = owners - 1u32; owners == 0u32 }
+  fn free(self: &uni Grc) inline { guardFree(self as *u8); }
+}
+
+fn start() {
+  allocs = 0; frees = 0; torn = 0; finInner = 0; finOuter = 0;
+}
+
+fn report(label: &str, steps: u64, size: usize) {
+  printStr(label);
+  printStr(": steps="); printInt(i64.from(steps));
+  printStr(" sizeof="); printInt(i64.from(size));
+  printStr(" inner="); printInt(finInner);
+  printStr(" outer="); printInt(finOuter);
+  printStr(" allocs="); printInt(allocs);
+  printStr(" frees="); printInt(frees);
+  printStr(" torn="); printInt(torn);
+  printStr("\n");
+}
+
+// 1. A sole virtual owner holding a sole virtual owner of the same trait
+trait Show1 { pub fn show(self: &) u64; }
+struct A1 is Show1 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One1 is Show1 {
+  first: Guni[Show1];
+  pub fn show(self: &) u64 {first.show()}
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case1() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show1] = Guni[One1](Guni[A1](1u64));
+    i = i + q.show();
+  }
+  report("uni-in-uni", i, mem.sizeof[One1]());
+}
+
+// 2. A counted virtual owner holding a counted virtual owner, both shared
+trait Show2 { pub fn show(self: &) u64; }
+struct A2 is Show2 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One2 is Show2 {
+  first: Grc[mut, Show2];
+  pub fn show(self: &) u64 {first.show()}
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case2() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let inner: Grc[mut, Show2] = Grc[mut, A2](1u64);
+    let q: Grc[mut, Show2] = Grc[mut, One2](inner);
+    let r = q;
+    i = i + q.show() + r.show() - 1u64;
+  }
+  report("rc-in-rc", i, mem.sizeof[One2]());
+}
+
+// 3. A counted virtual owner holding a sole virtual owner
+trait Show3 { pub fn show(self: &) u64; }
+struct A3 is Show3 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One3 is Show3 {
+  first: Guni[Show3];
+  pub fn show(self: &) u64 {first.show()}
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case3() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Grc[mut, Show3] = Grc[mut, One3](Guni[A3](1u64));
+    let r = q;
+    i = i + r.show();
+  }
+  report("uni-in-rc", i, mem.sizeof[One3]());
+}
+
+// 4. A List of sole virtual owners, held in a sole virtual owner of the same
+// trait, and a List of them in a local whose elements hold such Lists
+trait Show4 { pub fn show(self: &) u64; }
+struct A4 is Show4 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct Many4 is Show4 {
+  items: List[Guni[Show4]];
+  pub fn show(self: &) u64 {
+    var sum = 0u64;
+    var j = 0usize;
+    while j < items.len() { sum = sum + items[j].show(); j = j + 1usize; }
+    sum
+  }
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn twoA4() List[Guni[Show4]] {
+  var l = List[Guni[Show4]]();
+  l.push(Guni[A4](1u64));
+  l.push(Guni[A4](0u64));
+  l
+}
+fn case4() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show4] = Guni[Many4](twoA4());
+    var l = List[Guni[Show4]]();
+    l.push(Guni[Many4](twoA4()));
+    i = i + q.show() + l[0usize].show() - 1u64;
+  }
+  report("list-in-uni", i, mem.sizeof[Many4]());
+}
+
+// 5. A sole owner of a closure holding a sole virtual owner, whose value holds
+// another of the same trait
+trait Show5 { pub fn show(self: &) u64; }
+struct A5 is Show5 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One5 is Show5 {
+  first: Guni[Show5];
+  pub fn show(self: &) u64 {first.show()}
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn make5() Guni[Show5] { Guni[One5](Guni[A5](1u64)) }
+fn case5() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let f = Guni[fn() u64](fn() [h = make5()] u64 { h.show() });
+    i = i + f();
+  }
+  report("uni-in-closure", i, mem.sizeof[One5]());
+}
+
+// 6. A sole owner of a closure holding a sole owner of a closure of the same
+// signature: the closure is an implementer of the callable trait its own
+// capture names
+struct A6 {
+  pub n: u64;
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+fn case6() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let g = Guni[fn() u64](fn() [k = Guni[A6](1u64)] u64 { k.n });
+    var f = Guni[fn() u64](fn() [var h = g] u64 { h() });
+    i = i + f();
+  }
+  report("closure-in-closure", i, mem.sizeof[A6]());
+}
+
+// 7. A trait with fields: an implementer holding an owner of the trait reads
+// its second field through the vtable's offset, which was measured with it
+trait Show7 {
+  pub a: u64;
+  pub b: u64;
+}
+struct A7 is Show7 {
+  pub a: u64;
+  pub b: u64;
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One7 is Show7 {
+  pub a: u64;
+  pub b: u64;
+  first: Guni[Show7];
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case7() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show7] = Guni[One7](7u64, 1u64, Guni[A7](0u64, 5u64));
+    i = i + q.b;
+  }
+  report("trait-field", i, mem.sizeof[One7]());
+}
+
+// 8. The owner one step further in: the implementer holds, by value, a struct
+// that holds the virtual owner
+trait Show8 { pub fn show(self: &) u64; }
+struct A8 is Show8 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct Mid8 { pub first: Guni[Show8]; }
+struct One8 is Show8 {
+  mid: Mid8;
+  pub fn show(self: &) u64 {mid.first.show()}
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case8() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show8] = Guni[One8](Mid8(Guni[A8](1u64)));
+    i = i + q.show();
+  }
+  report("uni-in-field", i, mem.sizeof[One8]());
+}
+
+// 9. The owner in an Option and in an array of the implementer
+trait Show9 { pub fn show(self: &) u64; }
+struct A9 is Show9 {
+  pub n: u64;
+  pub fn show(self: &) u64 {n}
+  fn final(self: &uni) { finInner = finInner + 1; }
+}
+struct One9 is Show9 {
+  maybe: Option[Guni[Show9]];
+  pair: Array[Guni[Show9], 2];
+  pub fn show(self: &) u64 {
+    var n = pair[0].show() + pair[1].show();
+    if let Some(m) = &maybe { n = n + m.show(); }
+    n
+  }
+  fn final(self: &uni) { finOuter = finOuter + 1; }
+}
+fn case9() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let pair: Array[Guni[Show9], 2] = [Guni[A9](1u64), Guni[A9](0u64)];
+    let q: Guni[Show9] = Guni[One9](Some[Guni[Show9]](Guni[A9](0u64)), pair);
+    i = i + q.show();
+  }
+  report("uni-in-option-array", i, mem.sizeof[One9]());
+}
+
+// 10. A same-size enum implementing the trait, one of whose variants holds a
+// sole virtual owner of it: generating the enum lays out every variant, and
+// the trait's vtable, reached from Pair's field, measures them all
+trait Show10 { pub fn show(self: &) u64; }
+enum Node10 is Show10 {
+  pub fn show(self: &) u64;
+  struct Leaf {
+    pub n: u64;
+    pub fn show(self: &) u64 {n}
+    fn final(self: &uni) { finInner = finInner + 1; }
+  }
+  struct Pair {
+    first: Guni[Show10];
+    pub fn show(self: &) u64 {first.show()}
+    fn final(self: &uni) { finOuter = finOuter + 1; }
+  }
+}
+fn case10() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show10] = Guni[Node10](Node10.Pair(Guni[Node10](Node10.Leaf(1u64))));
+    i = i + q.show();
+  }
+  report("variant-uni", i, mem.sizeof[Node10]());
+}
+
+// 11. The same with a counted virtual owner in the variant, both shared
+trait Show11 { pub fn show(self: &) u64; }
+enum Node11 is Show11 {
+  pub fn show(self: &) u64;
+  struct Leaf {
+    pub n: u64;
+    pub fn show(self: &) u64 {n}
+    fn final(self: &uni) { finInner = finInner + 1; }
+  }
+  struct Pair {
+    first: Grc[mut, Show11];
+    pub fn show(self: &) u64 {first.show()}
+    fn final(self: &uni) { finOuter = finOuter + 1; }
+  }
+}
+fn case11() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let inner: Grc[mut, Show11] = Grc[mut, Node11](Node11.Leaf(1u64));
+    let q: Grc[mut, Show11] = Grc[mut, Node11](Node11.Pair(inner));
+    let r = q;
+    i = i + q.show() + r.show() - 1u64;
+  }
+  report("variant-rc", i, mem.sizeof[Node11]());
+}
+
+fn main() i32 {
+  case1();
+  case2();
+  case3();
+  case4();
+  case5();
+  case6();
+  case7();
+  case8();
+  case9();
+  case10();
+  case11();
+  0
+}

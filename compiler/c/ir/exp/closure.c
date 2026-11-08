@@ -2,7 +2,7 @@
  *
  * See closure.h. In the order a literal passes through the compiler:
  *
- * - The parser reads 'fn (u f32) [ribs, mut n = 0] f32 { ... }' and
+ * - The parser reads 'fn (u: f32) [ribs, var n = 0] f32 { ... }' and
  *   'x => x * 2' into a ClosureNode.
  * - Name resolution resolves the body in the code around it, with its own
  *   parameters and state names hooked over that, and notes each variable of the
@@ -11,9 +11,9 @@
  *   state entry, a field holding a borrow for each variable the body names, and
  *   '()' holding the body. A name inside the body that names one of them is
  *   rewritten to the field's access when the body is checked (closureUse). The
- *   literal itself becomes 'new Hidden(state values, &variables)'.
+ *   literal itself becomes 'Hidden(state values, &variables)'.
  *
- * Whether a borrow is '&' or '&mut', and whether '()' takes 'self &' or 'self
+ * Whether a borrow is '&' or '&mut', and whether '()' takes 'self: &' or 'self
  * &mut', is what the body does with it. It is found by trying: the body is
  * checked, its diagnostics unprinted, as a clone, with the weakest permissions;
  * if that fails it is checked with every borrow the variable allows '&mut', and
@@ -72,7 +72,7 @@ FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count) {
     return sig;
 }
 
-// Whether the method the closure struct holds takes 'self &mut'
+// Whether the method the closure struct holds takes 'self: &mut'
 int closureMethodMutates(ClosureInfo *info) {
     INode *meth = info->method ? namespaceFind(&info->strct->namespace, info->method) : NULL;
     if (meth == NULL || meth->tag != FnDclTag)
@@ -100,7 +100,10 @@ ClosureNode *newClosureNode() {
 // The copy of a closure literal, name resolved and not yet checked. Its state
 // entries, parameters and body are copied, and each variable it borrows is
 // pointed at the copy of its declaration where that was copied too.
+uint32_t closuresCloned = 0;
+
 INode *cloneClosureNode(CloneState *cstate, ClosureNode *node) {
+    ++closuresCloned;
     ClosureNode *newnode = memAllocBlk(sizeof(ClosureNode));
     memcpy(newnode, node, sizeof(ClosureNode));
     uint32_t dclpos = cloneDclPush();
@@ -253,7 +256,7 @@ void closureNoteUse(NameResState *pstate, NameUseNode *name) {
 // ---------------------------------------------------------------------------
 // The hidden struct
 
-// What a guess at the permissions is: whether '()' takes 'self &mut', and
+// What a guess at the permissions is: whether '()' takes 'self: &mut', and
 // whether each variable the body names is borrowed '&mut'
 typedef struct ClosurePlan {
     uint8_t selfmut;
@@ -263,6 +266,10 @@ typedef struct ClosurePlan {
 } ClosurePlan;
 
 static uint32_t closureSerial = 0;
+
+uint32_t closureSerialNow(void) {
+    return closureSerial;
+}
 
 // Does this variable allow a '&mut' borrow of it?
 static int closureVarMut(VarDclNode *var) {
@@ -364,7 +371,7 @@ static const char *closureGpuWhy(INode *type, int depth) {
         if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
             return "a function reference, a pointer to code, which a GPU has none of";
         if (ref->region == NULL || itypeGetTypeDcl(ref->region) != borrowRef)
-            return "an owning reference (So, Rc, Arc, Gc), which needs an allocator a GPU has none of";
+            return "an owning reference (Uni, Rc, Arc, Gc), which needs an allocator a GPU has none of";
         return closureGpuWhy(ref->vtexp, depth + 1);
     }
     case VirtRefTag:
@@ -416,7 +423,7 @@ int closureGpuVirtRefused(INode *from, INode *totypedcl) {
     if (fromtype->tag != RefTag || closureOfStruct(itypeGetTypeDcl(((RefNode*)fromtype)->vtexp)) == NULL)
         return 0;
     errorMsgNode(from, ErrorGpuClosureRef,
-        "A closure in GPU code cannot be made a virtual reference: it would be called through a table of code pointers, which a GPU has none of. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+        "A closure in GPU code cannot be made a virtual reference: it would be called through a table of code pointers, which a GPU has none of. Give it to a function generic over its signature, '[F: fn(...)]', which is inlined.");
     return 1;
 }
 
@@ -442,7 +449,8 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     info->retinfer = 0;
     info->retset = 0;
     info->method = plan->method;
-    info->errbase = errors;
+    info->errbase = errorsOwn();
+    info->serial = closureSerial;
     info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
     info->lit = clo;
 
@@ -519,9 +527,9 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
     // The default methods of the trait it fills, which any implementer inherits.
-    // Not when the body needs a 'self &mut' the trait's method does not give: the
+    // Not when the body needs a 'self: &mut' the trait's method does not give: the
     // literal is refused for that (ErrorVtableSelf), and defaults that read through
-    // the trait's 'self &' would only add their own failures to it
+    // the trait's 'self: &' would only add their own failures to it
     if (plan->trait) {
         INode *traitmeth = namespaceFind(&plan->trait->namespace, plan->method);
         INode *tperm = traitmeth && traitmeth->tag == FnDclTag ? fnSigSelfBorrowPerm((FnDclNode*)traitmeth) : NULL;
@@ -530,7 +538,9 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
             structInheritDefaults(st, plan->trait);
     }
 
-    if (final)
+    // A closure built inside a trial (error.h) is the trial's copy's, made to be
+    // checked and dropped: it does not join the module, so nothing generates it
+    if (final && !errorSilent)
         nodesAdd(&mod->nodes, (INode*)st);
     INode *stnode = (INode*)st;
     inodeTypeCheckAny(pstate, &stnode);
@@ -540,7 +550,7 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
 // A plain function given where a callable owner is made: the reference to it is held
 // by a struct of the compiler's, whose '()' calls it, so that an owner of the struct
 // is the owner of a callable as any closure's is. The struct holds the one field,
-// the reference, and its '()' takes the signature's parameters after a 'self &'.
+// the reference, and its '()' takes the signature's parameters after a 'self: &'.
 // Answers the struct, laid out; the caller makes a value of it from the reference.
 StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode) {
     ModuleNode *mod = dclInfoGetModule((INode*)pstate->fn);
@@ -558,7 +568,8 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
     info->retinfer = 0;
     info->retset = 0;
     info->method = parensName;
-    info->errbase = errors;
+    info->errbase = errorsOwn();
+    info->serial = closureSerial;
     info->expanded = (pstate->fn->flags & FlagInline) || dclIsInstance((INode*)pstate->fn);
     info->lit = NULL;
 
@@ -612,7 +623,9 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
 
-    nodesAdd(&mod->nodes, (INode*)st);
+    // Made inside a trial, it is the trial's copy's (closureBuild)
+    if (!errorSilent)
+        nodesAdd(&mod->nodes, (INode*)st);
     INode *stnode = (INode*)st;
     inodeTypeCheckAny(pstate, &stnode);
     return st;
@@ -622,9 +635,8 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
 // its diagnostics unprinted and uncounted.
 static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *plan, INode **statetypes,
         FnSigNode *exsig) {
-    int svErrors = errors;
-    int svWarnings = warnings;
-    errorSilent++;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerial);
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
@@ -632,11 +644,75 @@ static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *pl
     clonePopState();
     cloneDclPop(dclpos);
     closureBuild(pstate, copy, plan, statetypes, exsig, 0);
-    int ok = errors == svErrors;
-    errorSilent--;
-    errors = svErrors;
-    warnings = svWarnings;
+    int ok = errorTrialEnd(&trial);
+    genericTrialPurge();
     return ok;
+}
+
+// Does this type name a closure's hidden struct made since the trial began, or
+// an instance of a generic made with one?
+static int closureTrialMentions(INode *type, int depth) {
+    if (type == NULL || depth > 6 || !isTypeNode(type) || inodeIsError(type))
+        return 0;
+    INode *dcl = itypeGetDerefTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    ClosureInfo *info = closureOfStruct(dcl);
+    if (info)
+        return info->serial > errorTrialMark;
+    Nodes *targs = itypeInstanceTypeArgs(dcl);
+    if (targs == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(targs, cnt, nodesp))
+        if (closureTrialMentions(*nodesp, depth + 1))
+            return 1;
+    return 0;
+}
+
+// Is this declaration made by a trial now open, so that it is the trial's and
+// not the program's? A trial makes hidden structs for the copy it checks (and
+// for closures written inside the copy), and a generic's instance made for one.
+// Anything else it reaches first exists without it, is checked only once, and
+// reports for the program (error.h, "A trial").
+int closureTrialOwns(INode *dcl) {
+    for (INode *node = dcl; node; node = inodeGetOwner(node)) {
+        if (node->tag == FnDclTag) {
+            FnDclNode *fn = (FnDclNode*)node;
+            if (fn->namesym == NULL || (fn->closure && fn->closure->serial > errorTrialMark))
+                return 1;
+        }
+        if (node->tag == StructTag) {
+            ClosureInfo *info = closureOfStruct(node);
+            if (info && info->serial > errorTrialMark)
+                return 1;
+        }
+        Nodes *targs = itypeInstanceTypeArgs(node);
+        if (targs) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(targs, cnt, nodesp))
+                if (closureTrialMentions(*nodesp, 0))
+                    return 1;
+        }
+    }
+    return 0;
+}
+
+int closureTrialType(INode *type) {
+    return errorSilent && closureTrialMentions(type, 0);
+}
+
+int closureTrialArgs(Nodes *args) {
+    if (!errorSilent || args == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp))
+        if (closureTrialMentions(*nodesp, 0))
+            return 1;
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -715,7 +791,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
                 parm->vtype = ((VarDclNode*)nodesGet(exsig->parms, pi))->vtype;
             else {
                 errorMsgNode((INode*)parm, ErrorClosureParm,
-                    "The type of %s is not written, and nothing here says what it is. Write it, as in 'fn (%s i32) { ... }', or give the closure to a parameter whose signature does.",
+                    "The type of %s is not written, and nothing here says what it is. Write it, as in 'fn (%s: i32) { ... }', or give the closure to a parameter whose signature does.",
                     &parm->namesym->namestr, &parm->namesym->namestr);
                 *nodep = (ClosureNode*)newErrorNode((INode*)clo);
                 return;
@@ -734,7 +810,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
     // the closure is taken by a generic bound by its signature instead
     if (isref && flowGpu) {
         errorMsgNode((INode*)clo, ErrorGpuClosureRef,
-            "A closure in GPU code cannot be made a function reference, '&fn(...)': a GPU has no pointers to code. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+            "A closure in GPU code cannot be made a function reference, '&fn(...)': a GPU has no pointers to code. Give it to a function generic over its signature, '[F: fn(...)]', which is inlined.");
         *nodep = (ClosureNode*)newErrorNode((INode*)clo);
         return;
     }
@@ -761,7 +837,9 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
             sig->rettype = exsig->rettype;
         FnDclNode *fn = newFnDclNode(NULL, 0, (INode*)sig, clo->body);
         inodeLexCopy((INode*)fn, (INode*)clo);
-        nodesAdd(&mod->nodes, (INode*)fn);
+        // Made inside a trial, it is the trial's copy's (closureBuild)
+        if (!errorSilent)
+            nodesAdd(&mod->nodes, (INode*)fn);
         dclInfoJoin((INode*)fn, (INode*)mod);
         INode *fnnode = (INode*)fn;
         inodeTypeCheckAny(pstate, &fnnode);
@@ -884,7 +962,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
 // Reading the return type off the paths
 
 // A statement that changes something, as the last of a closure's body, is the
-// change and not a value to hand back: 'total += x;', 'n++;', 'a = b;', 'a <=> b;'
+// change and not a value to hand back: 'total += x;', 'n++;', 'a = b;', 'a <-> b;'
 static int closureIsChange(INode *stmt) {
     return stmt->tag == AssignTag || stmt->tag == SwapTag
         || (stmt->tag == FnCallTag && (stmt->flags & FlagLvalOp));
@@ -896,13 +974,32 @@ void closureImplicitReturn(FnDclNode *fn) {
     INode *last = blk->stmts->used ? nodesLast(blk->stmts) : NULL;
     if (last && last->tag == ReturnTag)
         return;
-    if (last && isExpOrMacroNode(last) && !closureIsChange(last)) {
+    // A last line ended by ';' throws its value away, so the closure returns nothing;
+    // one without the ';' returns it. Either is the closure's to write, as its return
+    // type is read off the paths
+    int semi = (blk->flags & FlagTailSemi) != 0;
+    if (last && isExpOrMacroNode(last) && !closureIsChange(last) && !semi) {
         nodesLast(blk->stmts) = (INode*)newReturnNodeExp(last);
         return;
     }
     // Nothing to hand back: it returns nothing
     fn->closure->retset = 1;
     fnImplicitReturn(sig->rettype, blk);
+}
+
+// A closure whose return type is not written takes it from where it is given, and the
+// ';' of its last line goes by that: left off where a value is wanted, kept where none is.
+// (A closure that writes its type is judged as a function is, by the parser.)
+void closureContextTail(FnDclNode *fn) {
+    BlockNode *blk = (BlockNode*)fn->value;
+    FnSigNode *sig = (FnSigNode*)fn->vtype;
+    if (sig->retwritten || blk->stmts->used == 0)
+        return;
+    int voidret = sig->rettype->tag == VoidTag;
+    if ((blk->flags & FlagTailSemi) && !voidret)
+        errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
+    else if ((blk->flags & FlagTailOpen) && voidret)
+        errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
 }
 
 void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
@@ -930,7 +1027,7 @@ void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         closureInferring = 0;
         if (!fnCallIsNever(retnode->exp) && !iexpCheckedCoerce(sig->rettype, &retnode->exp))
             errorMsgNode((INode*)info->lit, ErrorClosureRet,
-                "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
+                "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x: i32) i32 { ... }'.");
     }
     returnJoinFn(tstate, retnode);
 }

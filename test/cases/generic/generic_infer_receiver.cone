@@ -1,0 +1,51 @@
+// A generic method's type arguments are inferred from its receiver as from any
+// other argument: matched against 'self' as the call fits the receiver to it, so
+// a value given to 'self: &Box[Box[U]]' is matched as the borrow it is lent as,
+// and a reference given to a by-value 'self: Box[Box[U]]' as what it points at.
+// 'self' is the only parameter naming U in each method below but 'withSame', where
+// the receiver and the argument agree. A generic struct and a generic enum alike;
+// core's helpers are generic_infer_receiver_helpers.
+//
+// Each printed value was checked by hand against the source.
+
+mod generic_infer_receiver;
+
+import stdio use *;
+
+struct Box[T] {
+  pub v: T;
+  pub fn innerOf[U](self: &Box[Box[U]]) U { v.v }
+  pub fn takeInner[U](self: Box[Box[U]]) U { v.v }
+  pub fn withSame[U](self: &Box[Box[U]], d: U) U { d }
+}
+
+enum Wrap[T] {
+  Empty;
+  Full(T);
+  pub fn innerOr[U](self: &Wrap[Wrap[U]], d: U) U {
+    match *self {
+      case let Full(w) {
+        match w {
+          case let Full(u) { u }
+          case is Empty { d }
+        }
+      }
+      case is Empty { d }
+    }
+  }
+}
+use Wrap;
+
+fn main() {
+  let bb = Box[Box[i32]](Box[i32](5));
+  print <- "borrowed ", bb.innerOf(), "\n";
+  let rb = &bb;
+  print <- "through a reference ", rb.innerOf(), "\n";
+  print <- "dereferenced to a value ", rb.takeInner(), "\n";
+  print <- "receiver and argument agree ", bb.withSame(7), "\n";
+  let w = Full[Wrap[i32]](Full[i32](6));
+  print <- "enum, a variant's value ", w.innerOr(0), "\n";
+  var e: Wrap[Wrap[i64]] = Empty[Wrap[i64]];
+  print <- "enum, the enum's value ", e.innerOr(-8), "\n";
+  print <- "enum through a reference ", (&w).innerOr(0), "\n";
+}

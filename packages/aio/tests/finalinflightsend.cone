@@ -1,0 +1,101 @@
+// Bug 37: finalizers in dropped frames that send to the other actor being torn
+// down. A and B each hold the other's handle (a cycle) and are each parked on
+// a 1 hour sleep, each holding a Spy whose final sends 'log' to the other.
+// finalAll() drops both tables (ABANDONING AT THE END, actors.cone) with the
+// workers still running, so:
+//
+// - both Spy finalizers run, and both 'log' messages are delivered and handled
+//   (7 + 5 added);
+// - 'log' parks again, in a table that was just emptied (id 0 reused): that
+//   fresh record is dropped by the next round, not resumed by anything old, and
+//   not lost (its Note, 1000, is dropped twice over: once per actor);
+// - no crash, no use after free, and everything is given back: no actors or
+//   futures, no park blocks.
+
+mod finalinflightsend;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import actors;
+import aio;
+
+let got: Atomic[u64];       // what 'log' added
+let dropped: Atomic[u64];   // Notes dropped (sum of their n)
+
+fn @initpure init() {
+  got = Atomic[u64].of(0u64);
+  dropped = Atomic[u64].of(0u64);
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {dropped.add(n);}
+}
+
+actor A {
+  pub async fn hold(self, b: B, ready: OneshotSender[u64]) {
+    let spy = SpyB(b, 5u64);
+    var r = ready;
+    r.send(1u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+
+  pub async fn log(self, n: u64) {
+    got.add(n);
+    let again = Note(1000u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+}
+
+actor B {
+  pub async fn hold(self, a: A, ready: OneshotSender[u64]) {
+    let spy = SpyA(a, 7u64);
+    var r = ready;
+    r.send(1u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+
+  pub async fn log(self, n: u64) {
+    got.add(n);
+    let again = Note(1000u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+  }
+}
+
+struct SpyB {
+  b: B;
+  n: u64;
+  fn final(self: &uni) {b.log(n);}
+}
+
+struct SpyA {
+  a: A;
+  n: u64;
+  fn final(self: &uni) {a.log(n);}
+}
+
+fn main() {
+  initAll();
+  var t1: OneshotSender[u64];
+  var r1: OneshotReceiver[u64];
+  t1, r1 = Oneshot[u64].make();
+  var t2: OneshotSender[u64];
+  var r2: OneshotReceiver[u64];
+  t2, r2 = Oneshot[u64].make();
+  {
+    let a = A();
+    let b = B();
+    a.hold(b, t1);
+    b.hold(a, t2);
+    r1.recv();
+    r2.recv();
+  }
+  finalAll();
+  printStr("log added (12 expected): "); printUInt(got.load()); printStr("\n");
+  printStr("Notes dropped (2000 expected): "); printUInt(dropped.load()); printStr("\n");
+  printStr("futures live: "); printUInt(u64.from(actors.liveFutures())); printStr("\n");
+  let pb = actors.parkBlocks();
+  printStr("park blocks not given back: "); printUInt(pb.taken - pb.given); printStr("\n");
+  printStr("end\n");
+}

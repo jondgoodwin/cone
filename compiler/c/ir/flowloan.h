@@ -106,6 +106,7 @@ enum LoanEscape {
     LoanEscapeReturn,
     LoanEscapeStore,
     LoanEscapeCall,
+    LoanEscapeJoin,     // borrows made one value: a literal, or a field assigned on a local aggregate
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
@@ -139,6 +140,31 @@ uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
     VarDclNode **through);
 
+// What an arena reached through a reference takes of caller loans: only those
+// of the parameter the reference holds a loan of, the arena's own (Bug 48's
+// exception, Bug 51). Returns the first stored caller loan that is not, or 0,
+// with the parameter it was stored through as 'through'.
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through);
+
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena a caller may keep, reached by a route that shows the body nothing of
+// what else the caller lent (loanArenaApart then decides what it may store).
+// 'byparm' when the reference was reached from a parameter by field steps and
+// dereferences alone, a path whose places a caller's own check sees.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm);
+
+// Whether the arena reference holding 'arenaholds' is checked at all: not
+// where it holds no loan but what was stored through it (made from a raw
+// pointer, the one trusted route).
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds);
+
+// The same for a function naming no lifetimes: a caller loan among 'stored'
+// going where a reference holding 'refholds' points, at what a parameter lent
+// that holds no borrow but ''static' ones (itypeCarriesEndingBorrow), which
+// takes no borrow the caller lent. Returns 0, or the loan, with that
+// parameter as 'through'.
+uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
+
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0
 uint32_t loanNotGlobalIn(PathSet *set);
@@ -168,6 +194,12 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how);
 // bound makes global
 void loanNotGlobal(INode *node, uint32_t loan, Name *tparm);
 
+// Report a loan that is not global put, at 'node', into a place whose type
+// holds only ''static' borrows: the field 'field' of the struct 'strname'
+// (with the spelling for a struct holding a borrow that ends), or, where
+// 'field' is NULL, a variable or what a reference points at
+void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field);
+
 // Report, at 'node', a loan held inside a value stored or returned where a
 // virtual reference's bound says what it points at holds lasts 'bound'
 void loanNotBound(INode *node, uint32_t loan, Name *bound);
@@ -189,6 +221,11 @@ uint32_t loanAt(INode *site);
 // whose own loans come along with it -- neither a caller loan nor one of this
 // function's own storage (loanNotGlobalIn's test)?
 int loanIsGlobal(uint32_t loan);
+
+// Is a loan rooted at a global (or a static): of its storage, or of what a
+// reference held in one points at? A reborrow through any other reference is
+// not: it is what a ''static' borrow cannot be (pwCall's 'globalonly').
+int loanOfGlobal(uint32_t loan);
 
 // Does a holder holding 'holds' hold a borrow that is not global? The loan to
 // name in a message, the borrow it was given where that can be told, or 0
@@ -292,8 +329,8 @@ void loanReachAdd(LoanReach *r, PathSet *set);
 
 int loanShapeLocal(uint32_t loan);
 int loanPlaceInGlobal(Place *pl);
-// A marked loan into a 'mut' global, or into something reached from one (1), or reached through a
-// reference a caller lent where a 'mut' global reaches its type (2): every call is asked whether it may
+// A marked loan into a 'var' global, or into something reached from one (1), or reached through a
+// reference a caller lent where a 'var' global reaches its type (2): every call is asked whether it may
 // write it (reshapeCall's 'globalview')
 int loanShapeGlobalView(uint32_t loan);
 int loanShapeReaches(uint32_t loan, const LoanReach *r);
@@ -335,8 +372,11 @@ INode *loanShapeContainer(uint32_t loan);
 // The struct holding the container as a field, where the borrow was taken through that field
 // (a call asked whether it could reshape the container asks only whether it reaches this
 // struct, or the container through a reference), else NULL
-void loanShapeOwnerSet(uint32_t loan, INode *owner);
+// 'byvalue': the container is held by that struct itself (the field is the container, not a reference
+// to one), so it is not any other struct's field
+void loanShapeOwnerSet(uint32_t loan, INode *owner, int byvalue);
 INode *loanShapeOwner(uint32_t loan);
+int loanShapeOwnerByValue(uint32_t loan);
 int loanShapeInFlight(uint32_t loan);
 int loanShapeSamePlace(uint32_t loan, Place *pl);
 int loanShapeDisjoint(uint32_t loan, Place *pl);
@@ -374,6 +414,14 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
 // Do the near loans of 'a' and 'b' differ? If so, 'la' is one of 'a''s that
 // 'b' lacks, or any of 'a''s, and 'lb' the same of 'b' (0 where a set has none)
 int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
+
+// The function the loan walk is in
+FnDclNode *flowPathCurrentFn(void);
+
+// Report the GPU refusals held (ErrorGpuRefChoice and ErrorGpuRefIndexed), those
+// of a function 'reached' says a kernel reaches, and drop the rest. With no
+// 'reached' (a compile that ends before generation), those not in core's own code
+void loanGpuHeldFlush(int (*reached)(void *ctx, FnDclNode *fn), void *ctx);
 
 // Report, at 'node', a value of an 'if', a 'match' or a block chosen at run
 // time between where 'la' and 'lb' point

@@ -3,12 +3,12 @@
 // that call the C library and tally what they were asked: allocations,
 // resizes, releases of a block, and the bytes handed out and not yet given
 // back. A pool is made in it by passing it as the construction's last
-// argument, 'new Pool[i64](region)'. Every expected count is worked out by
+// argument, 'Pool[i64](region)'. Every expected count is worked out by
 // hand from the growth rules:
 // - a slot of Pool[i64] is a generation, a free-list link and the value: 16
 //   bytes. The block starts at 4 slots, from a resize of nothing, then
 //   doubles: ten values make 4, 8 and 16 slots, three resizes, the last block
-//   256 bytes. 'new Pool[i64](10, r)' makes room for exactly ten (160 bytes)
+//   256 bytes. 'Pool[i64](10, r)' makes room for exactly ten (160 bytes)
 //   at once, and an eleventh doubles it to twenty (320);
 // - a slot of Pool[Spawner] is 8 bytes of generation and link and a 24-byte
 //   value: 32. A value whose 'final' adds twenty more while it is dying in a
@@ -24,54 +24,56 @@ import pool use *;
 import libc;
 
 struct Counting {
-  header MemRegion;
-  allocs usize;
-  resizes usize;
-  releases usize;
-  live isize;
+  header: MemRegion;
+  allocs: usize;
+  resizes: usize;
+  releases: usize;
+  live: isize;
 }
 
-fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
-  libc.malloc(bytes);
+  libc.malloc(bytes)
 }
 
-fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  imm c = r as *Counting;
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
   (*c).resizes = (*c).resizes + 1usize;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
-  libc.realloc(block, newBytes);
+  libc.realloc(block, newBytes)
 }
 
-fn countRelease(r *MemRegion, block *u8, bytes usize) {
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize { return; }
-  imm c = r as *Counting;
+  let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
   (*c).live = (*c).live - isize.from(bytes);
   libc.free(block);
 }
 
+fn countSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
+
 fn newCounting() Counting {
-  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize);
+  Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize, 0usize, 0isize)
 }
 
-fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion; }
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
 
-fn tally(c &Counting, allocs u64, resizes u64, releases u64, live i64, label &Array[u8]) {
-  imm ok = u64.from(c.allocs) == allocs and u64.from(c.resizes) == resizes
-    and u64.from(c.releases) == releases and i64.from(c.live) == live;
+fn tally(c: &Counting, allocs: u64, resizes: u64, releases: u64, live: i64, label: &Array[u8]) {
+  let ok = u64.from(c.allocs) == allocs && u64.from(c.resizes) == resizes
+    && u64.from(c.releases) == releases && i64.from(c.live) == live;
   expect(ok, label);
 }
 
 fn grows() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut p = new Pool[i64](regionOf(&mut c));
+    var p = Pool[i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty pool in a region asks it for nothing");
-    mut last = Ref[i64].none();
-    mut i = 0i64;
+    var last = Ref[i64].none();
+    var i = 0i64;
     while i < 10i64 { last = p.add(i * 3i64); i = i + 1i64; }
     tally(&c, 0, 3, 0, 256, "ten values: blocks of 4, 8 and 16 slots, the last 256 bytes");
     expectInt(*p[last], 27, "the last value survived the moves");
@@ -81,12 +83,12 @@ fn grows() {
 }
 
 fn capacity() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut p = new Pool[i64](10usize, regionOf(&mut c));
+    var p = Pool[i64](10usize, regionOf(&mut c));
     tally(&c, 0, 1, 0, 160, "a starting size makes the block at once, room for exactly ten");
     expectUInt(u64.from(p.capacity()), 10, "ten slots");
-    mut i = 0i64;
+    var i = 0i64;
     while i < 10i64 { p.add(i); i = i + 1i64; }
     tally(&c, 0, 1, 0, 160, "ten values fit");
     p.add(10i64);
@@ -95,36 +97,36 @@ fn capacity() {
   tally(&c, 0, 2, 1, 0, "its death gave the block back");
 }
 
-mut @threadlocal log = 0i64;
-mut @threadlocal spawned = 0i64;
+var @threadlocal log = 0i64;
+var @threadlocal spawned = 0i64;
 
 // Its death notes n (or counts it, if it is of the spawned kind, n = 2), then
 // adds 'count' of the spawned kind, to the pool it reaches through 'home'
 struct Spawner {
-  pub n i64;
-  pub home *u8;
-  pub count i64;
-  fn final(self &uni) {
+  pub n: i64;
+  pub home: *u8;
+  pub count: i64;
+  fn final(self: &uni) {
     if n == 2i64 { spawned = spawned + 1i64; } else { log = log * 10i64 + n; }
-    imm p = (home as *Pool[Spawner]) as &mut Pool[Spawner];
-    mut k = 0i64;
+    let p = (home as *Pool[Spawner]) as &mut Pool[Spawner];
+    var k = 0i64;
     while k < count {
-      p.add(new Spawner(2, home, 0));
+      p.add(Spawner(2, home, 0));
       k = k + 1i64;
     }
   }
 }
 
-fn spawner(p &mut Pool[Spawner], n i64, count i64) Ref[Spawner] {
-  imm home = (p as *Pool[Spawner]) as *u8;
-  p.add(new Spawner(n, home, count));
+fn spawner(p: &mut Pool[Spawner], n: i64, count: i64) Ref[Spawner] {
+  let home = (p as *Pool[Spawner]) as *u8;
+  p.add(Spawner(n, home, count))
 }
 
 fn growsWhileDying() {
-  mut c = newCounting();
+  var c = newCounting();
   {
-    mut p = new Pool[Spawner](regionOf(&mut c));
-    imm a = spawner(&mut p, 1, 20);
+    var p = Pool[Spawner](regionOf(&mut c));
+    let a = spawner(&mut p, 1, 20);
     spawner(&mut p, 3, 0);
     spawner(&mut p, 3, 0);
     spawner(&mut p, 3, 0);
@@ -148,5 +150,5 @@ fn main() i32 {
   capacity();
   growsWhileDying();
   sizes();
-  done();
+  done()
 }

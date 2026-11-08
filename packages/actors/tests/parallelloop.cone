@@ -11,30 +11,30 @@ import testing use *;
 import collections use *;
 import actors;
 
-fn weigh(i u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+fn weigh(i: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
   while k < (i * i) % 53u64 * 20u64 {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
   }
-  x;
+  x
 }
 
 struct Probe {
-  pub handled Atomic[u64];
-  pub inOrder Atomic[u64];       // 1 while every message handled came in order
-  pub next Atomic[u64];          // the number the next message is to carry
+  pub handled: Atomic[u64];
+  pub inOrder: Atomic[u64];       // 1 while every message handled came in order
+  pub next: Atomic[u64];          // the number the next message is to carry
 }
 
-imm probe Probe;
+let probe: Probe;
 
 fn @initpure init() {
-  probe = new Probe(Atomic[u64].of(0u64), Atomic[u64].of(1u64), Atomic[u64].of(0u64));
+  probe = Probe(Atomic[u64].of(0u64), Atomic[u64].of(1u64), Atomic[u64].of(0u64));
 }
 
 actor Sink {
-  pub async do note(self, n u64) {
+  pub async fn note(self, n: u64) {
     if probe.next.load() != n {
       probe.inOrder.store(0u64);
     }
@@ -45,42 +45,42 @@ actor Sink {
 
 fn main() i32 {
   initAll();
-  actors.configure(new actors.Options(workers: 1u32));
+  actors.configure(actors.Options(workers: 1u32));
 
   // A range
-  imm total = Atomic[u64].of(0u64);
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 2000usize {
     total.add(weigh(u64.from(i)));
   }
-  mut plain = 0u64;
+  var plain = 0u64;
   each i in 0usize ..< 2000usize {
     plain = plain + weigh(u64.from(i));
   }
   expectUInt(total.load(), plain, "a range from main, the plain loop's sum");
 
   // A list
-  mut l = new List[u64];
-  mut k = 0u64;
+  var l = List[u64]();
+  var k = 0u64;
   while k < 700u64 {
     l.push(k * 3u64);
     k = k + 1u64;
   }
-  imm lsum = Atomic[u64].of(0u64);
-  parallel each x in l {
+  let lsum = Atomic[u64].of(0u64);
+  parallel each x in &l {
     lsum.add(*x);
   }
   expectUInt(lsum.load(), 3u64 * (699u64 * 700u64 / 2u64), "a list of 700");
 
   // Messages to an actor, from the passes: gathered, sent in order after the loop
   {
-    imm sink = new Sink();
+    let sink = Sink();
     parallel each i in 0usize ..< 500usize {
-      imm w = weigh(u64.from(i));
+      let w = weigh(u64.from(i));
       sink.note(u64.from(i) + (w & 0u64));
     }
   }
   finalAll();
   expectUInt(probe.handled.load(), 500u64, "all 500 messages were handled");
   expectUInt(probe.inOrder.load(), 1u64, "and in iteration order");
-  done();
+  done()
 }

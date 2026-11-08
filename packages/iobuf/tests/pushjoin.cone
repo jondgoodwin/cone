@@ -1,0 +1,80 @@
+// Chain.pushJoin: a buffer that fits the last segment's room is copied into
+// it and goes back to its pool; otherwise it is 'push'. Checked: 100 pieces of
+// 8 bytes hold one segment and one buffer; a piece bigger than the room is a
+// segment of its own; an empty chain takes the first as it is; the bound
+// refuses as push does; a part-consumed first segment (also the last) is joined
+// into with its skip kept; the bytes read back are those pushed, in order.
+
+mod pushjoin;
+
+import testing use *;
+import iobuf use *;
+import collections use String;
+
+fn piece(text: &Array[u8]) IoBuf {
+  var b = IoBuf(text.len);
+  b.append(text);
+  b
+}
+
+fn main() i32 {
+  trim();
+  let lent0 = stats().lent;
+  {
+    var c = Chain.make(65536usize);
+    var k = 0u32;
+    while k < 100u32 {
+      expect(c.pushJoin(piece("abcdefgh")) is None[IoBuf], "a piece joined or pushed");
+      k = k + 1u32;
+    }
+    expectUInt(u64.from(c.segments()), 1u64, "100 pieces of 8 bytes: one segment");
+    expectUInt(u64.from(c.len()), 800u64, "...of 800 bytes");
+    expectUInt(stats().lent - lent0, 1u64, "...and one buffer lent");
+    // One bigger than the room is a segment of its own
+    var big = IoBuf(8192usize);
+    let room = big.spare();
+    var i = 0usize;
+    while i < 8000usize {room[i] = 120u8; i = i + 1usize;}
+    big.setLen(8000usize);
+    expect(c.pushJoin(big) is None[IoBuf], "a big piece pushed");
+    expectUInt(u64.from(c.segments()), 2u64, "a piece past the room is a segment of its own");
+    expect(c.pushJoin(piece("xy")) is None[IoBuf], "a small one after it");
+    expectUInt(u64.from(c.segments()), 2u64, "...joins that one, if it has room, else pushes");
+    expectUInt(u64.from(c.len()), 8802u64, "8802 bytes held");
+    var out = String();
+    while c.len() > 0usize {
+      match c.popFront() {
+        case let Some(b) {out.appendBytes(b.view());}
+        case is None[IoBuf] {}
+      }
+    }
+    expectUInt(u64.from(out.len()), 8802u64, "all bytes come out");
+    expect(&out.view()[0usize ..< 16usize] == "abcdefghabcdefgh", "in order: the first pieces");
+    expect(&out.view()[8800usize ..< 8802usize] == "xy", "...and the last");
+  }
+  expectUInt(stats().lent, lent0, "every buffer home");
+  {
+    // The first segment part consumed and also the last: joined with its skip kept
+    var c = Chain.make(65536usize);
+    expect(c.pushJoin(piece("12345678")) is None[IoBuf], "first");
+    c.advance(3usize);
+    expect(c.pushJoin(piece("90")) is None[IoBuf], "joined into the part-consumed one");
+    expectUInt(u64.from(c.segments()), 1u64, "one segment");
+    expectUInt(u64.from(c.len()), 7u64, "7 bytes unconsumed");
+    match c.popFront() {
+      case let Some(b) {expect(b.view() == "4567890", "the unconsumed bytes, then the joined");}
+      case is None[IoBuf] {expect(false, "a segment");}
+    }
+    // The bound refuses as push does
+    var d = Chain.make(10usize);
+    expect(d.pushJoin(piece("123456")) is None[IoBuf], "within the bound");
+    expect(!(d.pushJoin(piece("78901")) is None[IoBuf]), "past the bound: refused, handed back");
+    expectUInt(u64.from(d.len()), 6u64, "refused changes nothing");
+    expect(d.pushJoin(piece("7890")) is None[IoBuf], "to the bound");
+    expectUInt(u64.from(d.len()), 10u64, "10 bytes");
+    // An empty buffer is dropped
+    expect(d.pushJoin(IoBuf()) is None[IoBuf], "an empty buffer is accepted and dropped");
+  }
+  expectUInt(stats().lent, lent0, "every buffer home after the bound");
+  done()
+}

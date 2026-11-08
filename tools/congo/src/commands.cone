@@ -5,174 +5,174 @@
 // The nearest congo.toml in the current folder or one above it; the empty
 // path when there is none
 fn findManifest() Path {
-  mut folder Path = "";
+  var folder: Path = "";
   match fs.currentDir() {
-    case mut ok Ok { folder <=> ok; }
-    case imm e Error {
+    case var Ok(ok) { folder <-> ok; }
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
   while true {
-    imm candidate = folder.join("congo.toml");
+    let candidate = folder.join("congo.toml");
     if fs.isFile(&candidate) { return candidate; }
-    imm up = folder.parent();
+    let up = folder.parent();
     if up.view() == folder.view() { return Path.from(""); }
     folder = up;
   }
-  Path.from("");
+  Path.from("")
 }
 
 fn currentManifest() Path {
-  imm manifest = findManifest();
+  let manifest = findManifest();
   if manifest.isEmpty() {
     fail(String.from("no congo.toml in this folder or any above it; 'congo new <name>' makes a package, and 'congo run <file.cone>' runs a lone file"));
   }
-  manifest;
+  manifest
 }
 
 // The package the current folder is in, read from its manifest
 fn currentPackage() Package {
-  imm manifest = currentManifest();
+  let manifest = currentManifest();
   match readManifest(&manifest) {
-    case mut ok Ok {
-      mut pkg = emptyPackage();
-      pkg <=> ok;
-      pkg;
+    case var Ok(ok) {
+      var pkg = emptyPackage();
+      pkg <-> ok;
+      pkg
     }
-    case mut e Error {
-      mut m = String.empty();
-      m <=> e;
-      fail(m);
+    case var Err(e) {
+      var m = String();
+      m <-> e;
+      fail(m)
     }
   }
 }
 
 // A file's text with every '\n' written '\r\n', as Python's write_text
 // writes text on Windows
-fn writeLines(file &Path, text &str) {
-  mut s = String.from(text);
+fn writeLines(file: &Path, text: &str) {
+  var s = String.from(text);
   s.replace("\n", "\r\n");
   match fs.writeFile(file, s.view()) {
     case is Ok {}
-    case imm e Error {
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
 }
 
 // What 'congo new' writes as a program's root file
-fn programTemplate(name &str) String {
+fn programTemplate(name: &str) String {
   cat("// ", name, ": a program. 'congo run' builds it and runs it.\n\nmod ", name,
-    ";\n\nimport stdio;\n\nfn main() i32 {\n  stdio.print <- \"Hello, world!\\n\";\n  0i32;\n}\n");
+    ";\n\nimport stdio;\n\nfn main() i32 {\n  stdio.print <- \"Hello, world!\\n\";\n  0i32\n}\n")
 }
 
 // What 'congo new --lib' writes as a library's root file
-fn libraryTemplate(name &str) String {
+fn libraryTemplate(name: &str) String {
   cat("// ", name, ": a library package. A program imports it by name, and is compiled\n// against its include file, which compiling ",
     name, " generates from this source:\n// build/<mode>/", name,
-    ".cone, beside its object.\n\nmod ", name, ";\n\npub fn answer() i64 {\n  42i64;\n}\n");
+    ".cone, beside its object.\n\nmod ", name, ";\n\npub fn answer() i64 {\n  42i64\n}\n")
 }
 
 // Make a package folder: its manifest, src/<name>.cone and an empty tests/
-fn cmdNew(name &str, folder &str, lib bool) i32 {
-  imm fault = nameFault(name);
-  if not fault.isEmpty() { fail(cat("'", name, "' ", fault.view())); }
-  imm given = Path.from(if folder.len() > 0usize {folder;} else {name;});
-  imm root = resolved(&given);
+fn cmdNew(name: &str, folder: &str, lib: bool) i32 {
+  let fault = nameFault(name);
+  if !fault.isEmpty() { fail(cat("'", name, "' ", fault.view())); }
+  let given = Path.from(if folder.len() > 0usize {folder} else {name});
+  let root = resolved(&given);
   if fs.exists(&root) {
-    imm place = native(&root);
+    let place = native(&root);
     fail(cat(place.view(), " already exists"));
   }
-  mut output &str = "executable";
+  var output: &str = "executable";
   if lib { output = "library"; }
-  imm src = root.join("src");
+  let src = root.join("src");
   makeFolder(&src);
-  imm tests = root.join("tests");
+  let tests = root.join("tests");
   makeFolder(&tests);
-  imm manifest = root.join("congo.toml");
-  imm manifestText = cat("[package]\nname = \"", name, "\"\nversion = \"0.1.0\"\noutput = \"", output, "\"\n");
+  let manifest = root.join("congo.toml");
+  let manifestText = cat("[package]\nname = \"", name, "\"\nversion = \"0.1.0\"\noutput = \"", output, "\"\n");
   writeLines(&manifest, manifestText.view());
-  imm fileName = cat(name, ".cone");
-  imm file = src.join(fileName.view());
-  imm template = if lib {libraryTemplate(name);} else {programTemplate(name);};
+  let fileName = cat(name, ".cone");
+  let file = src.join(fileName.view());
+  let template = if lib {libraryTemplate(name)} else {programTemplate(name)};
   writeLines(&file, template.view());
-  imm place = shown(&root);
-  imm created = cat(output, " package ", name, " (", place.view(), ")");
+  let place = shown(&root);
+  let created = cat(output, " package ", name, " (", place.view(), ")");
   say("Created", created.view());
-  0i32;
+  0i32
 }
 
 // Build the current package
-fn cmdBuild(release bool, defines &List[String]) i32 {
-  imm pkg = currentPackage();
-  mut mode &str = "debug";
+fn cmdBuild(release: bool, defines: &List[String], noCache: bool, strip: bool) i32 {
+  let pkg = currentPackage();
+  var mode: &str = "debug";
   if release { mode = "release"; }
-  imm repo = findRepo();
-  buildPackage(&repo, pkg, mode, defines);
-  0i32;
+  let repo = findRepo();
+  buildPackage(&repo, pkg, mode, defines, !noCache, strip);
+  0i32
 }
 
 // Build the current package, or a lone file, and run it, passing on its
 // exit code
-fn cmdRun(file &str, hasFile bool, release bool, defines &List[String], programArgs &List[String]) i32 {
-  imm repo = findRepo();
-  mut pkg = emptyPackage();
+fn cmdRun(file: &str, hasFile: bool, release: bool, defines: &List[String], noCache: bool, strip: bool, programArgs: &List[String]) i32 {
+  let repo = findRepo();
+  var pkg = emptyPackage();
   if hasFile {
-    imm given = Path.from(file);
+    let given = Path.from(file);
     match lonePackage(&given) {
-      case mut ok Ok { pkg <=> ok; }
-      case imm e Error { fail(e.copy()); }
+      case var Ok(ok) { pkg <-> ok; }
+      case let Err(e) { fail(e.clone()); }
     }
   }
   else { pkg = currentPackage(); }
-  if not pkg.output.equals("executable") {
+  if !pkg.output.equals("executable") {
     fail(cat(pkg.name.view(), " is a library, which has nothing to run; 'congo build' builds it"));
   }
-  mut mode &str = "debug";
+  var mode: &str = "debug";
   if release { mode = "release"; }
-  imm exe = buildPackage(&repo, pkg, mode, defines);
-  imm place = shown(&exe);
+  let exe = buildPackage(&repo, pkg, mode, defines, !noCache, strip);
+  let place = shown(&exe);
   say("Running", place.view());
-  mut args = List[String].empty();
+  var args = List[String]();
   args.push(native(&exe));
-  mut i = 0usize;
+  var i = 0usize;
   while i < programArgs.len() {
-    args.push(programArgs[i].copy());
+    args.push(programArgs[i].clone());
     i = i + 1usize;
   }
-  match process.run(args.view(), new process.Options(inherit: true)) {
-    case imm ok Ok {
-      imm dll = dllNote(ok.exitCode, &exe);
-      if dll.len() > 0usize { warn(dll.copy()); }
-      ok.exitCode as i32;
+  match process.run(args.view(), process.Options(inherit: true)) {
+    case let Ok(ok) {
+      let dll = dllNote(ok.exitCode, &exe);
+      if dll.len() > 0usize { warn(dll.clone()); }
+      ok.exitCode as i32
     }
-    case imm e Error {
-      fail(e.message());
+    case let Err(e) {
+      fail(String() <- e)
     }
   }
 }
 
 // Delete what a build wrote: a lone file's build, or the current package's
 // build folder
-fn cmdClean(file &str, hasFile bool) i32 {
-  mut target Path = "";
+fn cmdClean(file: &str, hasFile: bool) i32 {
+  var target: Path = "";
   if hasFile {
-    imm given = Path.from(file);
+    let given = Path.from(file);
     target = loneBuildRoot(&given);
   }
   else {
-    imm pkg = currentPackage();
+    let pkg = currentPackage();
     target = pkg.root.join("build");
   }
   if fs.exists(&target) {
     match fs.removeAll(&target) {
       case is Ok {}
-      case imm e Error {
+      case let Err(e) {
         fail(fsMessage(&e));
       }
     }
-    imm place = shown(&target);
+    let place = shown(&target);
     say("Removed", place.view());
   }
-  0i32;
+  0i32
 }

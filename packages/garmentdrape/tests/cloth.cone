@@ -1,0 +1,146 @@
+// Cloth materials: the pattern sheet (the texture painted from a garment's own panels by rules) and the shader's
+// parameters. The shader itself is drawn by examples/outfits.cone on a GPU; here, on the CPU:
+//
+// 1. A draped garment keeps, for every output vertex, the metres to its hem, to a free edge and to a seam, and its v.
+//    A tube's hem is the bottom edge (its sides are seamed), a sleeve's top edge is free too.
+// 2. The sheet is the flat layout of the panels at the texel density asked: its size is the sheet's size in metres times
+//    the density, and a texel under a triangle is painted (alpha 255); the dilation leaves none unpainted next to one.
+// 3. Dirt (red) is more at the hem than at the top; none where the look has no dirt.
+// 4. Wear (green) is more at a free edge than far from one; none where the look has no wear; a wear band wears a stripe.
+// 5. Seam (blue) is high on a seam and zero far from one.
+// 6. The rules are deterministic: painting twice gives the same bytes. A different seed gives a different sheet.
+// 7. The shader's parameters are 28 floats (112 bytes) carrying the look.
+
+mod cloth;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import render use *;
+import garmentdrape use *;
+
+fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label)
+}
+
+// A texel of the sheet at a uv, one channel
+fn texel(img: &Image, uv: Vec2, c: usize) u8 {
+  let x = usize.from(uv.x.max(0.).min(0.9999) * f32.from(img.width));
+  let y = usize.from(uv.y.max(0.).min(0.9999) * f32.from(img.height));
+  *img.pixels[(y * usize.from(img.width) + x) * 4usize + c]
+}
+
+fn main() i32 {
+  let rig = humanoidMannequin(1.75);
+  let names = humanoidNames();
+  var parsed = parsePattern(tunicBody(), &names);
+  let pat = parsed.take();
+  let none = LayerSurface();
+  let d = drape(&pat, &rig, 0., &none, 1u32);
+  expectBool(d.ok, true, "the tunic drapes");
+  let g = &d.garment;
+
+  // 1. the vertex measures
+  expectUInt(u64.from(g.vertexAttr.len()), u64.from(g.soft.vertexMap.len()), "a measure for every output vertex");
+  var minHem = 1e9f; var maxHem = -1e9f; var minSeam = 1e9f; var minFree = 1e9f; var maxFree = -1e9f;
+  var vHem = 0usize; var vTop = 0usize; var vSeam = 0usize; var vFree = 0usize; var vInterior = 0usize;
+  var i = 0usize;
+  while i < g.vertexAttr.len() {
+    let a = *g.vertexAttr[i];
+    if a.x < minHem { minHem = a.x; vHem = i; }
+    if a.x > maxHem && a.x < 50. { maxHem = a.x; vTop = i; }
+    if a.z < minSeam { minSeam = a.z; vSeam = i; }
+    if a.y < minFree { minFree = a.y; vFree = i; }
+    // the middle: far from the free edges and from the seam both
+    if fminf(a.y, a.z) > maxFree && a.y < 50. && a.z < 50. { maxFree = fminf(a.y, a.z); vInterior = i; }
+    i = i + 1usize;
+  }
+  near(minHem, 0., 1e-4, "a vertex is on the hem (zero metres from the bottom edge)");
+  expectBool(maxHem > 0.5, true, "and the top is more than half a metre from it (the tunic is 0.8 m long)");
+  near(minSeam, 0., 1e-4, "a vertex is on the seam");
+  near(minFree, 0., 1e-4, "and one on a free edge");
+  expectBool(maxFree > 0.2, true, "the middle is over 20 cm from a free edge and from the seam");
+
+  // 2. the sheet
+  let bands = List[WearBand]();
+  var look = ClothLook.linen(Color(0.6, 0.45, 0.3, 1.));
+  look.dirt = 1.;
+  look.wear = 1.;
+  let sheet = paintSheet(g, &look, &bands, 250.);
+  near(f32.from(sheet.width), g.atlasWidth * 250., 2., "the sheet is as wide as the layout, 250 texels a metre");
+  near(f32.from(sheet.height), g.atlasHeight * 250., 2., "and as high");
+  expectInt(i64.from(sheet.channels), 4i64, "four channels");
+  expectUInt(u64.from(texel(&sheet, *g.soft.vertexUvs[vHem], 3usize)), 255u64, "a texel under the hem's vertex is painted");
+  expectUInt(u64.from(texel(&sheet, *g.soft.vertexUvs[vTop], 3usize)), 255u64, "and one under the top's");
+
+  // 3. dirt: the hem's is more than the top's; none from a clean look
+  expectBool(texel(&sheet, *g.soft.vertexUvs[vHem], 0usize) > texel(&sheet, *g.soft.vertexUvs[vTop], 0usize) + 20u8, true, "dirt: the hem's texel is over 20 steps dirtier than the top's");
+  var clean = ClothLook.linen(Color(0.6, 0.45, 0.3, 1.));
+  clean.dirt = 0.;
+  clean.wear = 0.;
+  let cleanSheet = paintSheet(g, &clean, &bands, 250.);
+  var maxDirt = 0u8;
+  var maxWear = 0u8;
+  var px = 0usize;
+  while px + 3usize < cleanSheet.pixels.len() {
+    if *cleanSheet.pixels[px + 3usize] == 255u8 {
+      if *cleanSheet.pixels[px] > maxDirt { maxDirt = *cleanSheet.pixels[px]; }
+      if *cleanSheet.pixels[px + 1usize] > maxWear { maxWear = *cleanSheet.pixels[px + 1usize]; }
+    }
+    px = px + 4usize;
+  }
+  expectUInt(u64.from(maxDirt), 0u64, "a look with no dirt has none anywhere");
+  expectUInt(u64.from(maxWear), 0u64, "and with no wear none");
+
+  // 4. wear: more at a free edge than far from one
+  expectBool(texel(&sheet, *g.soft.vertexUvs[vFree], 1usize) > texel(&sheet, *g.soft.vertexUvs[vInterior], 1usize), true, "wear: the free edge's texel is more worn than the middle's");
+  var worn = List[WearBand]();
+  worn.push(WearBand(0.5, 0.08, 1.0));
+  var bandOnly = ClothLook.linen(Color(0.6, 0.45, 0.3, 1.));
+  bandOnly.dirt = 0.;
+  bandOnly.wear = 0.6;
+  let banded = paintSheet(g, &bandOnly, &worn, 250.);
+  let unbanded = paintSheet(g, &bandOnly, &bands, 250.);
+  // a vertex whose v is 0.5 (the middle of its panel, away from the edges), against its own texel without the band
+  var mid = 0usize;
+  var bestV = 1e9f;
+  i = 0usize;
+  while i < g.vertexAttr.len() {
+    let a = *g.vertexAttr[i];
+    if (a.w - 0.5).abs() < bestV && a.y > 0.25 { bestV = (a.w - 0.5).abs(); mid = i; }
+    i = i + 1usize;
+  }
+  expectBool(texel(&banded, *g.soft.vertexUvs[mid], 1usize) > texel(&unbanded, *g.soft.vertexUvs[mid], 1usize), true, "a wear band at v = 0.5 wears the texels there");
+
+  // 5. seam
+  expectBool(texel(&sheet, *g.soft.vertexUvs[vSeam], 2usize) > 200u8, true, "seam: a texel on the seam is bright in blue");
+  expectBool(texel(&sheet, *g.soft.vertexUvs[vInterior], 2usize) == 0u8, true, "and far from it, none");
+
+  // 6. determinism, and the seed
+  let again = paintSheet(g, &look, &bands, 250.);
+  var same = again.pixels.len() == sheet.pixels.len();
+  px = 0usize;
+  while same && px < sheet.pixels.len() { if *again.pixels[px] != *sheet.pixels[px] { same = false; } px = px + 1usize; }
+  expectBool(same, true, "painted twice, the same bytes");
+  var other = ClothLook.linen(Color(0.6, 0.45, 0.3, 1.));
+  other.dirt = 1.;
+  other.wear = 1.;
+  other.seed = 777u32;
+  let different = paintSheet(g, &other, &bands, 250.);
+  var differs = false;
+  px = 0usize;
+  while px < sheet.pixels.len() { if *different.pixels[px] != *sheet.pixels[px] { differs = true; } px = px + 1usize; }
+  expectBool(differs, true, "and another seed paints another sheet");
+
+  // 7. the parameters
+  let params = clothParams(&look, g.atlasWidth, g.atlasHeight, 1., 1.);
+  expectUInt(u64.from(params.len()), 28u64, "28 floats");
+  expectUInt(u64.from(params.len() * 4usize), CLOTH_PARAM_BYTES, "that is the pipeline's parameter size");
+  near(*params[16usize], look.threadsPerMetre, 1e-3, "threads a metre is where the shader reads it");
+  near(*params[22usize], g.atlasWidth, 1e-5, "and the sheet's width");
+  near(*params[26usize], f32.from(look.seed), 1e-3, "and the seed");
+
+  done()
+}

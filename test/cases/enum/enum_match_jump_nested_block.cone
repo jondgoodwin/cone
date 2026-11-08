@@ -1,0 +1,83 @@
+// A 'return' ending a plain block in a match arm ends the path there: the
+// arm's jump to the match's end is not generated after it. Once it was, in the
+// same basic block, and LLVM dropped the 'return'. Arms of each form a match
+// is generated in: a 'switch' on an integer or on an enum's tag, the chain of
+// tests a binding or a guard makes, a match whose value is bound, and a match
+// on a place; beside each, an arm that does not return, so the run shows both.
+
+mod enum_match_jump_nested_block;
+
+import stdio use *;
+
+fn show(label: &str, n: i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+enum Shape {
+  Circle(i32);
+  Square(i32);
+  Dot;
+}
+
+fn onInt(n: i32) i32 {
+  match n {
+    case 1 { { return 11; } }
+    case 2 { printStr(""); }
+    else { printStr(""); }
+  }
+  0
+}
+
+fn onTag(s: Shape) i32 {
+  match s {
+    case is Circle { { return 12; } }
+    case is Square { printStr(""); }
+    case is Dot { printStr(""); }
+  }
+  0
+}
+
+fn onBinding(s: Shape) i32 {
+  match s {
+    case let Circle(r) { { return r * 10; } }
+    case let Square(w) if w > 5 { { { return w * 100; } } }
+    else { printStr(""); }
+  }
+  0
+}
+
+fn bound(n: i32) i32 {
+  let v = match n {
+    case 1 { { return 13; } }
+    else { 4 }
+  };
+  v + 100
+}
+
+fn onPlace(s: &Shape) i32 {
+  match *s {
+    case let Square(w) { { return w + 1; } }
+    else { printStr(""); }
+  }
+  0
+}
+
+fn main() i32 {
+  show("int-arm", onInt(1));
+  show("int-arm-not-taken", onInt(2));
+  show("tag-arm", onTag(Shape.Circle(1)));
+  show("tag-arm-not-taken", onTag(Shape.Dot));
+  show("binding-arm", onBinding(Shape.Circle(3)));
+  show("guarded-arm", onBinding(Shape.Square(7)));
+  show("guarded-arm-not-taken", onBinding(Shape.Square(2)));
+  show("bound-match", bound(1));
+  show("bound-match-not-taken", bound(2));
+  let sq = Shape.Square(41);
+  show("place-arm", onPlace(&sq));
+  let d = Shape.Dot;
+  show("place-arm-not-taken", onPlace(&d));
+  0
+}

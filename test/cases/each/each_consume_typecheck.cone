@@ -1,0 +1,57 @@
+// What a plain 'each' cannot give: items that move cannot be taken out of a borrow (a
+// reference, a field reached through one, a slice), so it is refused and names the
+// borrow to write. A fixed array of items that move has no cursor to consume it yet.
+// A 'parallel each' does not consume either.
+
+mod each_consume_typecheck;
+
+import collections use *;
+import actors;
+
+struct Holder {
+  names: List[String];
+}
+
+fn throughRef(l: &List[String]) {
+  each s in l {                     //~ ErrorEachBehindBorrow:13 "write 'each x in &*l'"
+  }
+}
+
+fn throughSelf(h: &Holder) {
+  each s in h.names {               //~ ErrorEachBehindBorrow:14 "write 'each x in &h.names'"
+  }
+}
+
+fn aSlice(s: &Array[String]) {
+  each x in s {                     //~ ErrorEachBehindBorrow:13 "write 'each x in &*s'"
+  }
+}
+
+fn aDeque(d: &Deque[String]) {
+  each x in d {                     //~ ErrorEachBehindBorrow:13 "write 'each x in &*d'"
+  }
+}
+
+fn aDict(d: &Dict[String, String]) {
+  each k, v in d {                  //~ ErrorEachBehindBorrow:16 "write 'each x in &*d'"
+  }
+}
+
+fn anArray() {
+  let a = [String.from("a"), String.from("b")];
+  each s in a {                     //~ ErrorEachNoDrain:13 "no cursor consumes an array yet"
+  }
+}
+
+fn parallelOwned() {
+  var l = List[String]();
+  parallel each s in l {            //~ ErrorEachBehindBorrow:22 "its passes borrow them"
+  }
+}
+
+fn parallelBorrowed(l: &List[String]) {
+  parallel each s in l {            //~ ErrorEachBehindBorrow:22 "write 'each x in &*l'"
+  }
+}
+
+fn main() i32 { 0i32 }

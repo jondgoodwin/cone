@@ -8,6 +8,7 @@
 #include "ir.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -40,6 +41,52 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
+// Set only around the coercion of a condition operand (iexpCoerceCondition).
+// An Option or Result converts to bool through isTrue there and under '!', and
+// nowhere else. In particular not as an operand of '||' or '&&' (logicTypeCheck
+// refuses those, with its own message): PR 6 makes those operators methods on
+// Option and Result, so 'opt || flag' written now would silently change meaning.
+// Elsewhere ('let b: bool = opt', an argument, a return) they stay refused, as
+// before isTrue existed on them.
+static int iexpInCondition = 0;
+
+// The check state under way where a coercion is asked for with one (iexpCoerceIn,
+// iexpCoerceCondition), which the isTrue a coercion to bool injects is lowered with: it
+// lends a temporary receiver (a returned Option) for the statement being checked
+static TypeCheckState *iexpCoerceState = NULL;
+
+// Is the expression's type Option or Result, or a variant of one?
+int iexpIsOptionOrResult(INode *node) {
+    if (!isExpNode(node))
+        return 0;
+    INode *type = iexpGetDerefTypeDcl(node);
+    StructNode *enumdcl = structVariantEnum(type);
+    if (enumdcl == NULL && type != NULL && type->tag == StructTag)
+        enumdcl = (StructNode*)type;
+    return enumdcl != NULL && (enumdcl->namesym == optionName || enumdcl->namesym == resultName);
+}
+
+// Coerce a condition's operand to bool: the one place, with '!', where an
+// Option or Result converts to it
+int iexpCoerceCondition(TypeCheckState *pstate, INode **from) {
+    int saved = iexpInCondition;
+    iexpInCondition = 1;
+    int ok = iexpCoerceIn(pstate, from, (INode*)boolType);
+    iexpInCondition = saved;
+    return ok;
+}
+
+// iexpTypeCheckCoerce to bool for the operand of '!'; the check is outside the
+// window, so a condition nested in the operand is judged on its own
+int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from) {
+    inodeTypeCheck(pstate, from, (INode*)boolType);
+    int saved = iexpInCondition;
+    iexpInCondition = 1;
+    int ok = iexpCheckedCoerceIn(pstate, (INode*)boolType, from);
+    iexpInCondition = saved;
+    return ok;
+}
+
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
@@ -53,11 +100,23 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     if (result != NoMatch)
         return result;
 
+    // An actor's handle where an actor trait's handle is wanted is converted by
+    // the language (actorTraitCoerce), which judges whether the actor conforms
+    if (actorTraitWanted(fromtype, itypeGetTypeDcl(totype)))
+        return ConvByMeth;
+
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
-        if ((foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName)))
-            && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
+        if (!iexpInCondition && iexpIsOptionOrResult(*from))
+            return NoMatch;
+        foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
+        // A value of a variant reaches its enum's isTrue that takes the whole enum
+        // ('self: &Option[T]'), as it reaches any such method (fnCallLowerMethod)
+        StructNode *enumdcl;
+        if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
+            foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
+        if (foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
             return ConvByMeth;
         else
             return NoMatch;
@@ -69,6 +128,9 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         && (totyp->tag == UintNbrTag || totyp->tag == IntNbrTag || totyp->tag == FloatNbrTag)) {
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
+    // An untyped float literal likewise stands for any float type, f32 included
+    if ((*from)->tag == FLitTag && ((*from)->flags & FlagUnkType) && totyp->tag == FloatNbrTag)
+        return ConvSubtype;
 
     // An ASCII character literal, as written, stands for a u8 where one is wanted
     if (litCharMatchesByte(*from, totyp))
@@ -91,6 +153,29 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     }
 
     return NoMatch;
+}
+
+INode *iexpMutDclEnum(INode *perm, INode **valuep) {
+    if (perm == NULL || itypeGetTypeDcl(perm) != (INode*)mutPerm || !isExpNode(*valuep))
+        return NULL;
+    INode *vtype = ((IExpNode*)*valuep)->vtype;
+    StructNode *enumdcl = structVariantEnum(itypeGetTypeDcl(vtype));
+    if (enumdcl == NULL)
+        return NULL;
+    // The enum of a generic's variant is the instance the initializer fixes ('Some(5)'
+    // is an 'Option[i32]'); a variant whose type arguments nothing fixed ('None') is of
+    // the generic itself, and keeps the variant's type
+    if (enumdcl->genericinfo != NULL)
+        return NULL;
+    // An '@unsized' enum has no size to hold a variant at, and a variant that does
+    // not coerce to it keeps its own type
+    INode *nosizeroot;
+    if (itypeNoSizeCause((INode*)enumdcl, &nosizeroot) != NULL
+        || itypeMatches((INode*)enumdcl, vtype, Coercion) == NoMatch)
+        return NULL;
+    if (!iexpCoerce(valuep, (INode*)enumdcl))
+        return NULL;
+    return (INode*)enumdcl;
 }
 
 // Is this the type of a borrowed reference, whose scope is a lifetime? A key's
@@ -349,6 +434,19 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             borrowOwnerLend(from, totypedcl);
             return iexpCoerce(from, totype);
         }
+        // An enrichment's own 'final' runs only while the value is typed as the
+        // enrichment: by value, into its base, it would never run. The recast is
+        // built anyway, so what uses the value says nothing more.
+        StructNode *skipbase = NULL;
+        StructNode *skipped = structEnrichFinalSkipped(iexpGetTypeDcl(*from), totypedcl, &skipbase);
+        if (skipped && namespaceFind(&skipbase->namespace, finalName) != NULL)
+            errorMsgNode(*from, ErrorEnrichFinalSkipped,
+                "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has a different 'final', and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
+                itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));
+        else if (skipped)
+            errorMsgNode(*from, ErrorEnrichFinalSkipped,
+                "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has none, and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
+                itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));
         INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;
@@ -379,6 +477,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     }
     case ConvByMeth:
     {
+        if (actorTraitWanted(iexpGetTypeDcl(*from), totypedcl))
+            return actorTraitCoerce(iexpCoerceState, from, totype);
         // The injected call takes the operand's position before it is lowered,
         // because lowering is what reports a private or unmatched isTrue
         FnCallNode *istrue = newFnCallLower(*from, *from, 1);
@@ -388,7 +488,7 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
-            success = fnCallLowerMethod(NULL, istrue) == 1;
+            success = fnCallLowerMethod(iexpCoerceState, istrue) == 1;
         if (success) {
             *from = (INode*)istrue;
             return 1;
@@ -415,6 +515,14 @@ int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
     return iexpCheckedCoerceIn(pstate, totype, from);
 }
 
+int iexpTypeCheckCoerceStated(TypeCheckState *pstate, INode *totype, INode **from) {
+    INode *saved = genericStatedType;
+    genericStatedType = totype;
+    int ok = iexpTypeCheckCoerce(pstate, totype, from);
+    genericStatedType = saved;
+    return ok;
+}
+
 // iexpCoerce where the type check state is at hand. A string literal wanted as
 // a read-only borrow of a type that declares 'fromLiteral' is lent as a
 // temporary of it (slitBorrowCoerce), and that is made only in a function's
@@ -425,6 +533,20 @@ int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *totype) {
     if (pstate && pstate->scope >= 2 && totype != unknownType && totype != noCareType
         && slitBorrowMatches(*from, itypeGetTypeDcl(totype)))
         return slitBorrowCoerce(pstate, from, totype);
+    TypeCheckState *saved = iexpCoerceState;
+    iexpCoerceState = pstate;
+    int ok = iexpCoerce(from, totype);
+    iexpCoerceState = saved;
+    return ok;
+}
+
+// iexpCoerce for a literal's field value: the check state is lent only to the
+// conversion of an actor's handle to an actor trait's (actorTraitCoerce), which
+// lends a temporary for an actor made in place. Everything else is iexpCoerce
+// as before, so a string literal is not lent as a temporary to a field.
+int iexpCoerceActorIn(TypeCheckState *pstate, INode **from, INode *totype) {
+    if (isExpNode(*from) && actorTraitWanted(iexpGetTypeDcl(*from), itypeGetTypeDcl(totype)))
+        return iexpCoerceIn(pstate, from, totype);
     return iexpCoerce(from, totype);
 }
 
@@ -444,13 +566,97 @@ int iexpCheckedCoerce(INode *totype, INode **from) {
     return iexpCheckedCoerceIn(NULL, totype, from);
 }
 
+// Does a plain read-only borrow of 'from' stand where 'to' wants an '&imm' one
+// of the same value: the two references, or the same generic type made with one
+// each ('Option[&i32]' where 'Option[&imm i32]' is wanted)? Every other argument
+// of such a pair must be the same type, so the borrow's permission is the cause.
+static int iexpImmBorrowWanted(INode *from, INode *to) {
+    INode *fromdcl = itypeGetTypeDcl(from);
+    INode *todcl = itypeGetTypeDcl(to);
+    // A variant ('Some(&n)') stands for the enum it belongs to
+    if (fromdcl->tag == StructTag && ((StructNode*)fromdcl)->basetrait
+        && (itypeGetTypeDcl(((StructNode*)fromdcl)->basetrait)->flags & EnumType))
+        fromdcl = itypeGetTypeDcl(((StructNode*)fromdcl)->basetrait);
+    if (fromdcl->tag == RefTag && todcl->tag == RefTag) {
+        RefNode *fromref = (RefNode*)fromdcl;
+        RefNode *toref = (RefNode*)todcl;
+        INode *fromperm = fromref->perm && isTypeNode(fromref->perm) ? itypeGetTypeDcl(fromref->perm) : NULL;
+        INode *toperm = toref->perm && isTypeNode(toref->perm) ? itypeGetTypeDcl(toref->perm) : NULL;
+        return fromperm == (INode*)roPerm && toperm == (INode*)immPerm && !toref->permImmDefault
+            && itypeGetTypeDcl(fromref->region) == borrowRef && itypeGetTypeDcl(toref->region) == borrowRef
+            && itypeIsSame(fromref->vtexp, toref->vtexp);
+    }
+    if (fromdcl == todcl || fromdcl->tag != todcl->tag)
+        return 0;
+    Nodes *fromargs = itypeInstanceTypeArgs(fromdcl);
+    Nodes *toargs = itypeInstanceTypeArgs(todcl);
+    if (fromargs == NULL || toargs == NULL || fromargs->used != toargs->used)
+        return 0;
+    // The type an enum's variant was made through can be a different generic from the one named ('Some' for 'Option'), so the enum's own name is what agrees
+    if (fromdcl->tag != StructTag || ((StructNode*)fromdcl)->namesym != ((StructNode*)todcl)->namesym)
+        return 0;
+    int found = 0;
+    uint32_t cnt;
+    INode **fromp = &nodesGet(fromargs, 0);
+    INode **top = &nodesGet(toargs, 0);
+    for (cnt = 0; cnt < fromargs->used; cnt++, fromp++, top++) {
+        if (itypeIsSame(*fromp, *top))
+            continue;
+        if (!iexpImmBorrowWanted(*fromp, *top))
+            return 0;
+        found = 1;
+    }
+    return found;
+}
+
+// A hint to append to the message that expression 'node' was refused where
+// 'totype' is wanted: when a plain '&' borrow was given where an '&imm' reference
+// is wanted, it says to write '&imm' before the borrowed value (named, when the
+// node is a borrow of one variable). Empty when that is not the cause. Words only:
+// it decides nothing about what is accepted.
+const char *iexpImmBorrowHint(INode *node, INode *totype) {
+    static char hint[400];
+    if (!isExpNode(node) || totype == unknownType || totype == noCareType
+        || !iexpImmBorrowWanted(((IExpNode*)node)->vtype, totype))
+        return "";
+    // The borrow written: the node itself, or an argument of the call or literal
+    // that wraps it ('Some(&n)'). A reference held in a variable has none to respell.
+    INode *borrow = node->tag == BorrowTag ? node : NULL;
+    if (borrow == NULL && (node->tag == FnCallTag || node->tag == TypeLitTag) && ((FnCallNode*)node)->args) {
+        INode **argp;
+        uint32_t cnt;
+        for (nodesFor(((FnCallNode*)node)->args, cnt, argp)) {
+            if (*argp && (*argp)->tag == BorrowTag) {
+                borrow = *argp;
+                break;
+            }
+        }
+    }
+    if (borrow == NULL)
+        return "";
+    if (((RefNode*)borrow)->vtexp && isNameUseNode(((RefNode*)borrow)->vtexp)) {
+        Name *namesym = ((NameUseNode*)((RefNode*)borrow)->vtexp)->namesym;
+        if (namesym) {
+            snprintf(hint, sizeof(hint),
+                "; a plain `&` borrow is read-only but not `imm`, so write `&imm %s` to lend it as imm",
+                &namesym->namestr);
+            return hint;
+        }
+    }
+    return "; a plain `&` borrow is read-only but not `imm`, so write `&imm` before the borrowed value to lend it as imm";
+}
+
 // Report that expression 'node' was refused where 'totype' is wanted
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
-    char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype) : NULL;
+    int whycode;
+    char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype, &whycode) : NULL;
+    char privwhy[400];
     if (why)
-        errorMsgNode(node, ErrorFnRefConv, "%s", why);
+        fnSigRefusalMsg(node, whycode, why);
+    else if (isExpNode(node) && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
+        errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
     else
-        errorMsgNode(node, code, "%s", msg);
+        errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,
@@ -494,7 +700,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
             else {
                 if (closureInferring)
                     errorMsgNode(*from, ErrorClosureRet,
-                        "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
+                        "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x: i32) i32 { ... }'.");
                 else
                     errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
                 return NoMatch;
@@ -563,6 +769,9 @@ int iexpIsLval(INode *lval) {
     case DerefTag:
         return 1;
     case ArrIndexTag:
+        // A mask's lane is a bool read from the mask, not a place in it
+        if (vectorIsMaskLane(lval))
+            return 0;
         return iexpIsLval(((FnCallNode *)lval)->objfn);
     case FldAccessTag:
         return iexpIsLval(((FnCallNode *)lval)->objfn);
@@ -585,7 +794,11 @@ int iexpIsLval(INode *lval) {
 int iexpIsLvalError(INode *lval) {
     if (iexpIsLval(lval))
         return 1;
-    errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+    if (vectorIsMaskLane(lval))
+        errorMsgNode(lval, ErrorVectorIndex,
+            "A mask's lane is read, 'm[i]', and is not a place to write: build the mask with a comparison, or choose lanes with select(a, b).");
+    else
+        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
     return 0;
 }
 
@@ -622,7 +835,7 @@ static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype,
 // reference: the value it holds is where a loan points, and what is lent of it
 // is held to that loan's permission? An owner whose own permission is shared
 // and writable ('Rc[mut, T]', 'Arc[mut, T]') is a shared path as well
-// (refborref.html, "Freezing access to the source of a borrow"): another name
+// (mem-borrowing.html#freezing, "What a borrow leaves its source free to do"): another name
 // for the owner reaches the same value. A lock permission is not one: its value
 // is reached only through the lock's guard.
 int iexpPathThroughBorrow(INode *lval) {
@@ -656,7 +869,7 @@ int iexpPathThroughBorrow(INode *lval) {
 // T]'). Its type is answered, NULL where every link is 'uni' or the place is
 // reached through none (a variable, a field of a value held by value). A 'uni'
 // reference is the one name for what it points at; a '&uni' field is seen
-// only through such links (refperm.html, "Viewpoint Adaptation"). A lock
+// only through such links (mem-permissions.html#view, "Viewpoint Adaptation"). A lock
 // permission is not asked: its value is reached only by the lock's guard, a
 // '&mut' that is asked.
 INode *iexpPathNonUniLink(INode *lval) {
@@ -683,9 +896,9 @@ INode *iexpPathNonUniLink(INode *lval) {
 
 // Does every reference the place 'lval' is reached through grant write? A
 // reference that only reads ('&', '&imm', a read-only virtual reference or slice,
-// a 'So[imm, T]') on the way makes the place one nothing is written through,
+// a 'Uni[imm, T]') on the way makes the place one nothing is written through,
 // whatever the place's own slot says: whether the slot can be assigned to (an
-// 'imm' field, a variable) is another matter, and does not reach what a
+// 'let' field, a variable) is another matter, and does not reach what a
 // reference held in it points at. A lock permission is not asked: its value is
 // reached only by the lock's guard.
 int iexpReachWrites(INode *lval) {
@@ -714,7 +927,7 @@ int iexpReachWrites(INode *lval) {
 // at, 'refperm' being the reference's own. The reference's permission is what it
 // grants its holder; a place reached through a borrow grants only what that borrow
 // let it be held with, so the permission is the intersection of all those along
-// the path (refperm.html, "Viewpoint Adaptation"): a '&mut' held in a place
+// the path (mem-permissions.html#view, "Viewpoint Adaptation"): a '&mut' held in a place
 // reached through a '&' (or a '&imm') lends '&' and reads, no more (a '&uni' field
 // is not seen through one at all: fnCallUniFieldSeen). A place
 // not reached through a borrow (a variable, or a field of a value held by value:

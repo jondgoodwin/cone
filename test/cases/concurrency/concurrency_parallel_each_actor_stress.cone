@@ -22,69 +22,69 @@ import time;
 import actors;
 
 struct Probe {
-  pub steps Atomic[u64];
-  pub overlaps Atomic[u64];
-  pub wrong Atomic[u64];
-  pub notes Atomic[u64];
-  pub mains Atomic[u64];
+  pub steps: Atomic[u64];
+  pub overlaps: Atomic[u64];
+  pub wrong: Atomic[u64];
+  pub notes: Atomic[u64];
+  pub mains: Atomic[u64];
 }
 
-imm probe Probe;
+let probe: Probe;
 
 fn @initpure init() {
-  probe = new Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  probe = Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+fn mix(i: u64, n: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
   }
-  x;
+  x
 }
 
 actor Sink {
-  got u64;
+  got: u64;
 
-  fn init(self &new) {
-    *self = new Self(got: 0u64);
+  fn init(self: &new) {
+    *self = Self(got: 0u64);
   }
 
-  pub async do note(self, n u64) {
+  pub async fn note(self, n: u64) {
     got = got + 1u64;
     probe.notes.add(1u64);
   }
 }
 
 actor Looper {
-  items List[u64];
-  inLoop u64;
-  hits Atomic[u64];
-  acc Atomic[u64];
-  steps u64;
-  sink Sink;
+  items: List[u64];
+  inLoop: u64;
+  hits: Atomic[u64];
+  acc: Atomic[u64];
+  steps: u64;
+  sink: Sink;
 
-  fn init(self &new, sink Sink) {
-    mut l = new List[u64];
-    mut i = 0u64;
+  fn init(self: &new, sink: Sink) {
+    var l = List[u64]();
+    var i = 0u64;
     while i < 400u64 {
       l.push(i);
       i = i + 1u64;
     }
-    *self = new Self(items: l, inLoop: 0u64, hits: Atomic[u64].of(0u64), acc: Atomic[u64].of(0u64),
+    *self = Self(items: l, inLoop: 0u64, hits: Atomic[u64].of(0u64), acc: Atomic[u64].of(0u64),
       steps: 0u64, sink: sink);
   }
 
-  pub async do step(self, n u64) {
+  pub async fn step(self, n: u64) {
     if inLoop != 0u64 {
       probe.overlaps.add(1u64);
     }
     inLoop = 1u64;
     steps = steps + 1u64;
-    imm before = acc.load();
+    let before = acc.load();
     parallel each v in items.mutItems() {
       *v = *v + 1000u64;
       acc.add(mix(*v, 40u64) & 1u64);
@@ -98,10 +98,10 @@ actor Looper {
     }
     inLoop = 0u64;
     // against the plain loop
-    mut ok = hits.load() == n;
-    mut want = 0u64;
-    mut i = 0u64;
-    each v in items {
+    var ok = hits.load() == n;
+    var want = 0u64;
+    var i = 0u64;
+    each v in &items {
       if *v != i + 1000u64 * steps {
         ok = false;
       }
@@ -118,8 +118,8 @@ actor Looper {
   }
 }
 
-fn bodyFill(out *u64, lo usize, hi usize) {
-  mut i = lo;
+fn bodyFill(out: *u64, lo: usize, hi: usize) {
+  var i = lo;
   while i < hi {
     *(out + i) = mix(u64.from(i), 20u64);
     i = i + 1usize;
@@ -131,20 +131,20 @@ const stepsEach = 20u64;
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm sink = new Sink();
-    imm a = new Looper(sink);
-    imm b = new Looper(sink);
-    imm c = new Looper(sink);
-    imm d = new Looper(sink);
-    imm e = new Looper(sink);
-    imm f = new Looper(sink);
-    imm g = new Looper(sink);
-    imm h = new Looper(sink);
-    mut s = 0u64;
+    let sink = Sink();
+    let a = Looper(sink);
+    let b = Looper(sink);
+    let c = Looper(sink);
+    let d = Looper(sink);
+    let e = Looper(sink);
+    let f = Looper(sink);
+    let g = Looper(sink);
+    let h = Looper(sink);
+    var s = 0u64;
     while s < stepsEach {
-      imm n = (s * 37u64) % 301u64;
+      let n = (s * 37u64) % 301u64;
       a.step(n);
       b.step(n);
       c.step(n + 1u64);
@@ -156,13 +156,13 @@ fn main() {
       s = s + 1u64;
     }
     // main's own loops, blocking, while the actors' run
-    mut round = 0u64;
+    var round = 0u64;
     while round < 100u64 {
-      imm len = usize.from(10u64 + (round * 53u64) % 700u64);
-      imm out = libc.calloc(len, 8usize) as *u64;
-      actors.parallelRange(0usize, len, 4usize, fn(lo usize, hi usize) [out] { bodyFill(out, lo, hi); });
-      mut i = 0usize;
-      mut good = true;
+      let len = usize.from(10u64 + (round * 53u64) % 700u64);
+      let out = libc.calloc(len, 8usize) as *u64;
+      actors.parallelRange(0usize, len, 4usize, fn(lo: usize, hi: usize) [out] { bodyFill(out, lo, hi); });
+      var i = 0usize;
+      var good = true;
       while i < len {
         if *(out + i) != mix(u64.from(i), 20u64) {
           good = false;
@@ -182,8 +182,8 @@ fn main() {
   }
   printStr("steps run "); printUInt(probe.steps.load()); printStr("\n");
   printStr("main's loops "); printUInt(probe.mains.load()); printStr("\n");
-  printStr("no behaviour began inside another's loop: "); printStr(if probe.overlaps.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
-  printStr("results as the plain loop's: "); printStr(if probe.wrong.load() == 0u64 {"ok";} else {"FAILED";}); printStr("\n");
+  printStr("no behaviour began inside another's loop: "); printStr(if probe.overlaps.load() == 0u64 {"ok"} else {"FAILED"}); printStr("\n");
+  printStr("results as the plain loop's: "); printStr(if probe.wrong.load() == 0u64 {"ok"} else {"FAILED"}); printStr("\n");
   finalAll();
   // every gathered message was sent and handled: each step with n passes sends
   // one at each multiple of 50 below n

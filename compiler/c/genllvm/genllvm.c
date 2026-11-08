@@ -6,6 +6,7 @@
 */
 
 #include "../ir/ir.h"
+#include "../ir/flowloan.h"
 #include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "../shared/timer.h"
@@ -39,7 +40,7 @@
 // rather than copied into the parameter's own slot (generation.md, "Lending a
 // place to a call")? Only one its body cannot change and never borrows, so
 // that nothing writes through the pointer and nothing keeps it: its binding
-// is not 'mut', flow saw no borrow of it, nothing finalizes its type and it
+// is not 'var', flow saw no borrow of it, nothing finalizes its type and it
 // holds no traced reference (both of which take its slot's address); not in
 // a split method, whose parameters outlive its first half's call; not for a
 // C-named function, which keeps C's ABI
@@ -142,6 +143,43 @@ static int genlIsEntryMain(GenState *gen, FnDclNode *fnnode, const char *symbol)
     return parmcnt == 0 || parmcnt == 2;
 }
 
+static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode);
+
+// The size of a function just generated, in LLVM instructions, before any
+// optimisation: the compiler's estimate of what inlining it would cost. Counted
+// from the body, the one place its size is known before LLVM reshapes it.
+static unsigned genlFnSize(LLVMValueRef fn) {
+    unsigned size = 0;
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
+            ++size;
+    return size;
+}
+
+// Whether a shared generic instance, now generated, is small enough to be this
+// object's own copy. A release program (no library, whose instances other
+// objects might link against) in a described build shares an instance across
+// its objects only so that it exists once. A small one costs less than the call
+// it forces: kept shared, LLVM leaves it out of line, so each use calls out,
+// spills what it passes, and loses its constants (drop glue taken out of line
+// was a 2.6x loss on one benchmark). Debug code
+// keeps one copy, which compiles faster and keeps a breakpoint in one place. A
+// large instance stays shared, so a program is not made to carry a copy per
+// object. Only a function is decided here: a generic's static, and a vtable,
+// stay shared whatever their size, as address identity requires.
+static int genlInstanceIsPrivate(GenState *gen, FnDclNode *fnnode, LLVMValueRef fn) {
+    ConeOptions *opt = gen->opt;
+    if (!opt->release || opt->library || !opt->described || opt->privateinst == 0
+        || opt->wasm || opt->gpu)
+        return 0;
+    if (LLVMGetLinkage(fn) != LLVMLinkOnceODRLinkage)
+        return 0;
+    // A split method is several functions, one the others call by address
+    if (gen->seams != NULL || fnDclIsCompute(fnnode))
+        return 0;
+    return genlFnSize(fn) <= (unsigned)opt->privateinst;
+}
+
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Only a concrete declaration has an implementation. An overload name is a
@@ -151,7 +189,8 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
         return;
 
     genlNameAnonFn(gen, fnnode->llvmvar);
-    genlComdat(gen, fnnode->llvmvar);
+    // Its COMDAT waits for the body: its size decides whether it is shared
+    genlBorrowDeref(gen, fnnode);
 
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
@@ -159,6 +198,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     INode *svfnblock = gen->fnblock;
     FnDclNode *svfndcl = gen->fndcl;
     int svexitzero = gen->exitzero;
+    LLVMBasicBlockRef svunreached = gen->unreached;
     GenRoots svroots;
     genlRootsSave(gen, &svroots);
     // A function generated while another is -- a drop asked for by a death --
@@ -225,6 +265,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     if (LLVMGetInstructionParent(allocaPoint))
         LLVMInstructionEraseFromParent(allocaPoint);
 
+    if (genlInstanceIsPrivate(gen, fnnode, fnnode->llvmvar))
+        LLVMSetLinkage(fnnode->llvmvar, LLVMInternalLinkage);
+    genlComdat(gen, fnnode->llvmvar);
+
     LLVMDisposeBuilder(gen->builder);
 
     gen->builder = svbuilder;
@@ -233,6 +277,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->fnblock = svfnblock;
     gen->fndcl = svfndcl;
     gen->exitzero = svexitzero;
+    gen->unreached = svunreached;
     gen->tempcnt = gen->tempbase;
     gen->tempbase = svtempbase;
     genlRootsRestore(gen, &svroots);
@@ -293,10 +338,12 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 //
 // each 'rec' the type record of the root at the same position, whose trace
 // hands what the slot holds to 'mark'. A function with no root has no frame
-// and generates exactly what it did before roots existed.
+// and generates exactly what it did before roots existed. A type holding only
+// actor-local references (an ActorGc's) is no root: the actor's collector finds
+// them from the state and the parked records (itypeHoldsRooted).
 
 void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
-    if (!itypeHoldsTraced(vtype))
+    if (!itypeHoldsRooted(vtype))
         return;
     GenRoots *roots = &gen->roots;
     if (roots->cnt == roots->max) {
@@ -318,6 +365,8 @@ void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
 // One slot per site: a site run again (in a loop) overwrites what it stored
 // last time, and what it stored stays rooted until then or the return
 void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype) {
+    if (!itypeHoldsRooted(vtype))
+        return;
     LLVMValueRef slot = genlAlloca(gen, genlType(gen, vtype), "birth");
     genlRootNote(gen, slot, vtype);
     LLVMBuildStore(gen->builder, val, slot);
@@ -439,7 +488,7 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
 // is another object's. Nor one whose type finalizes: the module's 'drop' hands
 // it to that 'final' as '&uni', which may write it. Nor a thread-local, whose
 // storage is each thread's own block, which no read-only section holds (the
-// parser refuses one 'imm', and this keeps the rule where the flag is set).
+// parser refuses a 'let' one, and this keeps the rule where the flag is set).
 // Nor one holding an atomic value, which atomic operations change even
 // through 'imm' [Jon 26 Sep]: a write to read-only memory would fault, and
 // every read of a constant could be folded to its initial value.
@@ -837,6 +886,115 @@ LLVMMetadataRef genlDiFile(GenState *gen, INode *node) {
     return made->file;
 }
 
+// Which borrow does a parameter of this type take, as far as LLVM's 'noalias'
+// is concerned: 1 a borrow, thin or a slice, of unique permission (no other live
+// reference reaches what it points at), 2 one of immutable permission whose
+// pointee holds no atomic inline (nobody writes it; an atomic is written through
+// an immutable borrow by design, as Rust's UnsafeCell is), 0 anything else:
+// shared-mutable and read-only borrows, which others may change, an owning or
+// virtual reference, a pointer, a value, a lock's guard
+static int genlBorrowKind(GenState *gen, INode *parmtype) {
+    if (gen->opt->no_noalias || gen->opt->gpu)
+        return 0;
+    INode *type = itypeGetTypeDcl(parmtype);
+    if (type->tag != RefTag && type->tag != ArrayRefTag)
+        return 0;
+    RefNode *ref = (RefNode*)type;
+    if (ref->region && regionIsRegionRef(ref->region))
+        return 0;
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    if (perm == (INode*)uniPerm)
+        return 1;
+    if (perm == (INode*)immPerm && !permIsLock(perm) && !itypeHoldsAtomic(ref->vtexp))
+        return 2;
+    return 0;
+}
+
+// Is a borrowed parameter of this type a slice, a pointer with a count?
+static int genlBorrowFat(INode *parmtype) {
+    INode *type = itypeGetTypeDcl(parmtype);
+    return type->tag == ArrayRefTag || refIsFat((RefNode*)type);
+}
+
+// Tell LLVM what the permissions of a function's borrowed parameters already
+// say: nobody else reaches what a unique borrow points at ('noalias'), nobody
+// writes what an immutable one does ('noalias readonly'), and neither is null.
+// Only a function with Cone's own convention: not a C-named one, whose caller
+// is C, and not a split method, whose first half hands its parameters on to
+// the halves after it. Called where the symbol is made (genlGloFnName);
+// 'dereferenceable' needs the pointee's layout and is added with the body
+// (genlFn), since a pointee is generated later than the signature.
+static void genlBorrowAttrs(GenState *gen, FnDclNode *glofn, LLVMValueRef fn) {
+    if (genlIsCAbiFn(glofn) || glofn->vtype->tag != FnSigTag || awaitSplitOf(glofn))
+        return;
+    FnSigNode *fnsig = (FnSigNode*)glofn->vtype;
+    uint32_t cnt;
+    INode **nodesp;
+    unsigned idx = 1;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        INode *parmtype = ((IExpNode*)*nodesp)->vtype;
+        int kind = genlBorrowKind(gen, parmtype);
+        if (kind && genlBorrowFat(parmtype)) {
+            // A slice is passed as its pointer and its count (genlAggCopies),
+            // which puts 'noalias' on the pointer; 'nonnull' not with it, since
+            // an empty slice's pointer may be null. Only a '&uni' slice: 'noalias
+            // readonly' on an '&imm' one (a '&str') slowed fasta by 6% (measured
+            // 31 Oct 2026), and nothing measured gains from it
+            if (kind == 1)
+                LLVMAddAttributeAtIndex(fn, idx, LLVMCreateStringAttribute(gen->context, GenlSliceBorrow,
+                    (unsigned)strlen(GenlSliceBorrow), "uni", 3));
+        }
+        else if (kind) {
+            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("noalias", 7), 0));
+            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("nonnull", 7), 0));
+            if (kind == 2)
+                LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                    LLVMGetEnumAttributeKindForName("readonly", 8), 0));
+        }
+        ++idx;
+    }
+}
+
+// The 'dereferenceable' half of genlBorrowAttrs, for the function whose body is
+// being generated: the pointee's whole size, when it has one
+static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode) {
+    if (genlIsCAbiFn(fnnode) || awaitSplitOf(fnnode))
+        return;
+    FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
+    uint32_t cnt;
+    INode **nodesp;
+    unsigned idx = 1;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        INode *parmtype = ((IExpNode*)*nodesp)->vtype;
+        if (genlBorrowKind(gen, parmtype) && !genlBorrowFat(parmtype)) {
+            LLVMTypeRef pointee = genlType(gen, ((RefNode*)itypeGetTypeDcl(parmtype))->vtexp);
+            if (LLVMTypeIsSized(pointee)) {
+                unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, pointee);
+                if (size > 0)
+                    LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
+                        LLVMGetEnumAttributeKindForName("dereferenceable", 15), size));
+                // The pointee's ABI alignment too: LLVM hoists a load past a
+                // conditional exit only if it is safe to speculate, which needs
+                // the alignment as well as the size (measured 5 Nov 2026: a
+                // matmul over '&imm, &imm, &uni List' 2.8 s without, 0.87 s with)
+                unsigned abialign = LLVMABIAlignmentOfType(gen->datalayout, pointee);
+                // Capped at 16, the alignment the heap gives (core's RawBlocks
+                // does not yet act on a request past 16), so a type aligned
+                // past that, such as Vector[f32, 8], does not claim what a
+                // block holding it may not have
+                if (abialign > 16)
+                    abialign = 16;
+                if (size > 0 && abialign > 0)
+                    LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
+                        LLVMGetEnumAttributeKindForName("align", 5), abialign));
+            }
+        }
+        ++idx;
+    }
+}
+
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Do not generate inline functions
@@ -874,6 +1032,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         }
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
+        genlBorrowAttrs(gen, glofn, glofn->llvmvar);
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
@@ -887,7 +1046,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         // HERE: an imported module's function has a body in the IR and is only a
         // declaration in this object, and LLVM's verifier rejects a declaration
         // carrying a subprogram
-        if (!gen->opt->release && defined != GenlDeclared) {
+        if (gen->opt->debuginfo && defined != GenlDeclared) {
             char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
             LLVMMetadataRef difile = genlDiFile(gen, (INode*)glofn);
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
@@ -964,7 +1123,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 // owns and names the copy. Its static functions are its own --
                 // nothing inherits or dispatches them -- so they are generated
                 // here or nowhere, and 'Trait.name()' loaded a null without this.
-                // (an enum's method over the whole enum, 'self &Lamp', is its own)
+                // (an enum's method over the whole enum, 'self: &Lamp', is its own)
                 if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalSyms(gen, *nodesp);
@@ -1296,11 +1455,19 @@ static void genlStitch(GenState *gen, int which) {
 // in dependency order before the program's code, calls the program's 'main'
 // with the arguments C gave it, runs the stitched final, and returns what
 // 'main' returned as the exit status. A panic, or a call to C's 'exit', ends
-// the process without reaching the final.
+// the process without reaching the final. A 'main' returning a Result is
+// called through the function type check gave it (propagateMainEntry), which
+// prints its error and answers the exit status.
 static void genlEntry(GenState *gen) {
     FnDclNode *mainfn = gen->entrymain;
     if (mainfn == NULL || mainfn->llvmvar == NULL || LLVMGetNamedFunction(gen->module, "main"))
         return;
+    FnDclNode *standin = propagateMainEntry(mainfn);
+    if (standin != NULL) {
+        if (standin->llvmvar == NULL)
+            return;
+        mainfn = standin;
+    }
     LLVMContextRef context = gen->context;
     LLVMTypeRef i32type = LLVMInt32TypeInContext(context);
     LLVMTypeRef cparms[2] = { i32type, LLVMPointerTypeInContext(context, 0) };
@@ -1308,6 +1475,18 @@ static void genlEntry(GenState *gen) {
     genlComdat(gen, entry);
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(context);
     LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(context, entry, "entry"));
+    // The program's 'main' is a single-call function that a release build
+    // inlines here. An entry with no subprogram would drop the inlined code's
+    // lines and names, which is all of a small program
+    if (gen->opt->debuginfo) {
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)mainfn);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            "main", 4, "main", 4, difile, mainfn->linenbr, sptype, 0, 1, mainfn->linenbr, LLVMDIFlagPublic, 0);
+        LLVMSetSubprogram(entry, sp);
+        LLVMSetCurrentDebugLocation2(builder,
+            LLVMDIBuilderCreateDebugLocation(context, mainfn->linenbr, 0, sp, NULL));
+    }
 
     LLVMValueRef initfn = genlStitchFn(gen, InitAllIntrinsic);
     LLVMValueRef finalfn = genlStitchFn(gen, FinalAllIntrinsic);
@@ -1342,7 +1521,13 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     char *layout = LLVMCopyStringRepOfTargetData(gen->datalayout);
     LLVMSetDataLayout(gen->module, layout);
     LLVMDisposeMessage(layout);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
+        // Windows' debugger and profiler tools read CodeView, which the linker
+        // writes out as a PDB; without this flag LLVM emits DWARF into the COFF
+        // object, which the linker ignores
+        if (strstr(gen->opt->triple, "windows") != NULL)
+            LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning, "CodeView", 8,
+                LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0)));
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difiles = NULL;
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
@@ -1376,8 +1561,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
         int16_t generating = mod->flags & FlagGenMod;
         // A generic module is compiled only as its instances: each is a module
-        // of the program (pgmTypeCheck), generated in every object that uses it
-        if (mod->genericinfo)
+        // of the program (pgmTypeCheck), generated in every object that uses
+        // it. So is each of its submodules, as each instance's copy
+        if (modIsTemplate(mod))
             continue;
 
         uint32_t icnt;
@@ -1392,7 +1578,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     // Now generate implementation logic, including function logic or var init
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
-        if (mod->genericinfo)
+        if (modIsTemplate(mod))
             continue;
 
         // Generate implementation only for module(s) flagged for generation,
@@ -1416,7 +1602,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMDIBuilderFinalize(gen->dibuilder);
 }
 
@@ -1580,6 +1766,78 @@ static void genlCallWalk(GenState *gen, GenlCallWalk *walk, LLVMValueRef fn) {
     --walk->depth;
 }
 
+// Each expansion of an inline function on a GPU target: the function expanded
+// and the one it was expanded into (an inline function has no function of its
+// own, and its body is reached as the function holding it is)
+typedef struct {
+    FnDclNode *inlined;
+    LLVMValueRef into;
+} GenlInlineEdge;
+static GenlInlineEdge *genlInlineEdges = NULL;
+static uint32_t genlInlineCnt = 0;
+static uint32_t genlInlineCap = 0;
+
+void genlGpuInlineNote(GenState *gen, FnDclNode *fndcl) {
+    if (genlInlineCnt > 0 && genlInlineEdges[genlInlineCnt - 1].inlined == fndcl
+        && genlInlineEdges[genlInlineCnt - 1].into == gen->fn)
+        return;
+    if (genlInlineCnt == genlInlineCap) {
+        genlInlineCap = genlInlineCap ? genlInlineCap * 2 : 256;
+        GenlInlineEdge *grown = (GenlInlineEdge *)memAllocBlk(genlInlineCap * sizeof(GenlInlineEdge));
+        if (genlInlineCnt)
+            memcpy(grown, genlInlineEdges, genlInlineCnt * sizeof(GenlInlineEdge));
+        genlInlineEdges = grown;
+    }
+    genlInlineEdges[genlInlineCnt].inlined = fndcl;
+    genlInlineEdges[genlInlineCnt].into = gen->fn;
+    ++genlInlineCnt;
+}
+
+// The functions a kernel calls, directly or through others, by the same table
+typedef struct {
+    GenlCallWalk *walk;
+    uint8_t *seen;
+} GenlGpuReach;
+
+static void genlGpuReachFrom(GenlGpuReach *reach, LLVMValueRef fn) {
+    uint32_t slot = genlCallSlot(reach->walk, fn);
+    if (reach->seen[slot])
+        return;
+    reach->seen[slot] = 1;
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (!LLVMIsACallInst(inst))
+                continue;
+            LLVMValueRef callee = LLVMGetCalledValue(inst);
+            if (LLVMIsAFunction(callee) && !LLVMIsDeclaration(callee))
+                genlGpuReachFrom(reach, callee);
+        }
+    }
+}
+
+// Whether a kernel reaches the function. One that has no function in this
+// object was generated for no call (a call of it would have made one), and is
+// not reached
+static int genlGpuReached(void *ctx, FnDclNode *fndcl) {
+    GenlGpuReach *reach = (GenlGpuReach *)ctx;
+    LLVMValueRef fn = (LLVMValueRef)fndcl->llvmvar;
+    if (fn != NULL) {
+        uint32_t slot = genlCallSlot(reach->walk, fn);
+        if (reach->walk->fns[slot] == fn)
+            return reach->seen[slot];
+    }
+    // An inline function: reached where the function holding an expansion is.
+    // Expansions inside expansions are noted against the function holding both
+    for (uint32_t i = 0; i < genlInlineCnt; ++i) {
+        if (genlInlineEdges[i].inlined != fndcl)
+            continue;
+        uint32_t slot = genlCallSlot(reach->walk, genlInlineEdges[i].into);
+        if (reach->walk->fns[slot] == genlInlineEdges[i].into && reach->seen[slot])
+            return 1;
+    }
+    return 0;
+}
+
 // A GPU has no call stack to speak of, and Vulkan's SPIR-V types a pointer by
 // the memory it points into: only with every call inlined does each borrow
 // have one origin, whose address space LLVM's inference then settles. So
@@ -1618,6 +1876,17 @@ static void genlGpuCalls(GenState *gen) {
         if (!LLVMIsDeclaration(fn) && walk.state[genlCallSlot(&walk, fn)] == 0)
             genlCallWalk(gen, &walk, fn);
     }
+    // What flow held back of core's own functions (loanGpuHeldFlush) is refused
+    // for those a kernel reaches: the same calls, walked from each kernel
+    GenlGpuReach reach;
+    reach.walk = &walk;
+    reach.seen = (uint8_t *)memAllocBlk(cap);
+    memset(reach.seen, 0, cap);
+    for (uint32_t e = 0; e < gen->entrycnt; ++e) {
+        if (gen->entries[e].kernel && !LLVMIsDeclaration(gen->entries[e].kernel))
+            genlGpuReachFrom(&reach, gen->entries[e].kernel);
+    }
+    loanGpuHeldFlush(genlGpuReached, &reach);
 }
 
 // LLVM 23's SPIR-V backend mishandles a struct or array held as one value (a
@@ -2235,6 +2504,37 @@ static void genlGpuAggregates(GenState *gen) {
     free(map.slots);
 }
 
+// Does every basic block of every function this object defines hold exactly
+// one terminator, as its last instruction? LLVM's verifier says so too, but it
+// runs only with --verify; this runs on every compile, so a path generation
+// failed to end where it jumped is a compiler defect reported, not a
+// miscompile. Each block that breaks the rule is reported, with its function.
+static int genlCheckBlockEnds(GenState *gen) {
+    int good = 1;
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (LLVMIsDeclaration(fn))
+            continue;
+        for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+            uint32_t terms = 0;
+            int lastterm = 0;
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+                lastterm = LLVMIsATerminatorInst(inst) != NULL;
+                terms += lastterm;
+            }
+            if (terms == 1 && lastterm)
+                continue;
+            size_t fnlen;
+            const char *fnname = LLVMGetValueName2(fn, &fnlen);
+            errorMsg(ErrorUnreachable,
+                "Compiler defect: generation left block '%s' of function '%.*s' with %u terminators%s. Please report this, with the source that provoked it.",
+                LLVMGetBasicBlockName(blk), (int)fnlen, fnname, terms,
+                terms > 0 && !lastterm ? ", the last of its instructions not one" : "");
+            good = 0;
+        }
+    }
+    return good;
+}
+
 // Generate IR nodes into LLVM IR using LLVM
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
@@ -2249,6 +2549,15 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // (genlGloVar) or a function calling itself (genlGpuCalls) -- so nothing
     // is emitted after one
     if (errors) {
+        LLVMDisposeModule(gen->module);
+        return;
+    }
+
+    // Every basic block generation made ends in its one terminator, before
+    // LLVM is handed the module, since LLVM reads a block's last instruction
+    // as its terminator and silently drops whatever terminator came before it
+    genlSettleUnreached(gen);
+    if (!genlCheckBlockEnds(gen)) {
         LLVMDisposeModule(gen->module);
         return;
     }
@@ -2278,15 +2587,16 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     }
 
     // Optimize the generated LLVM IR, through LLVM's new pass manager. A
-    // release build runs LLVM's standard O2 pipeline (what clang's -O2 runs:
+    // release build runs LLVM's standard O3 pipeline (what clang's -O3 runs:
     // inlining, SROA, instcombine, LICM, unrolling, the loop and SLP
     // vectorizers), given the target machine, so that every cost model is the
-    // CPU's that --cpu and --features name. O3 was measured against it and
-    // compiled slower for no run time worth having. Generation marks no float
-    // operation fast or contractable, so nothing reorders a float sum. A debug
+    // CPU's that --cpu and --features name. O3 costs about 6% more compile time
+    // and exe size than O2, for what generation.md's section 2 measures.
+    // Generation marks no float operation fast or contractable, so nothing
+    // reorders a float sum. A debug
     // build first drops what no live symbol reaches (globaldce: a definition
     // with internal, private or linkonce linkage that nothing refers to, and
-    // then what only it referred to, which a release build's O2 does too),
+    // then what only it referred to, which a release build's O3 does too),
     // then only promotes allocas to registers, reassociates, eliminates
     // common subexpressions and simplifies the control flow graph, each
     // function in turn, with no target machine. So a helper holding the
@@ -2315,7 +2625,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // returning early, as a module the validator refuses. structurizecfg
     // takes no switch, and makes each of a switch's branches 'br i1 undef',
     // so a switch is first made a tree of branches (lower-switch): simplifycfg
-    // makes one of an if-elif chain on one integer. And every loop is first
+    // makes one of an if-else if chain on one integer. And every loop is first
     // given a preheader (loop-simplify), as LLVM's own GPU pipelines give
     // structurizecfg every loop: simplifycfg folds away the empty block
     // before a loop, and a loop entered straight from a conditional branch
@@ -2336,7 +2646,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             ? "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
             : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
-        ? "default<O2>"
+        ? "default<O3>"
         : "globaldce,function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
@@ -2474,6 +2784,8 @@ static void genlLLVMOptions(int gpu) {
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
     gen->libroot = NULL;
+    gen->dropslow = NULL;
+    gen->dropslowcnt = 0;
     gen->deferred = NULL;
     gen->deferredcnt = 0;
     gen->deferredmax = 0;
@@ -2482,6 +2794,11 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
     opt->vulkan = opt->gpu && strstr(opt->triple, "vulkan") != NULL;
+    // A native program carries debug info in a release build too, so a profiler
+    // can name its functions (a PDB on Windows, DWARF in the ELF on Linux).
+    // WebAssembly and SPIR-V output keep it for a debug build alone: a release
+    // module is as small as it can be, and there is no tool to split it off.
+    opt->debuginfo = !opt->strip_debug && (!opt->release || !(opt->wasm || opt->gpu));
     genlLLVMOptions(opt->gpu);
     // A crash inside LLVM then names the pass and the function it was in, as
     // llc's does, rather than ending conec without a word
@@ -2512,6 +2829,10 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->tempcnt = 0;
     gen->tempmax = 0;
     gen->tempbase = 0;
+    gen->unreached = NULL;
+    gen->unreachedblks = NULL;
+    gen->unreachedcnt = 0;
+    gen->unreachedmax = 0;
     gen->seams = NULL;
     gen->resumeat = NULL;
     gen->resumeblk = NULL;

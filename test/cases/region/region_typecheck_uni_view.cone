@@ -8,48 +8,45 @@
 // declare 'Move', a user's as much as 'Rc', and for a slice's elements.
 //
 // Not behind a borrow the same coercion is a move, which consumes the sole
-// owner, so it stays allowed; so does a 'So' owner seen as 'So[mut, T]', because
-// 'So' declares 'Move' and every 'So' owner still moves, which a borrow refuses.
+// owner, so it stays allowed. A single owner has no shared view to refuse: 'Uni[mut,
+// T]' is not a type (region_typecheck_sole_owner_mut).
 
 mod region_typecheck_uni_view;
 
-struct Fin { pub n i64; }
+struct Fin { pub n: i64; }
 
 struct Arena is RegionRef {
-  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
 }
 
-fn share(b &Rc[mut, Fin]) Rc[mut, Fin] { *b; }
-fn shareOne(b &Array[Rc[mut, Fin]]) Rc[mut, Fin] { b[0]; }
-fn shareArena(b &Arena[mut, Fin]) Arena[mut, Fin] { *b; }
-fn lookSo(b &So[mut, Fin]) { }
-fn lookUni(b &Rc[Fin]) { }
+fn share(b: &Rc[mut, Fin]) Rc[mut, Fin] { *b }
+fn shareOne(b: &Array[Rc[mut, Fin]]) Rc[mut, Fin] { b[0] }
+fn shareArena(b: &Arena[mut, Fin]) Arena[mut, Fin] { *b }
+fn lookUni(b: &Rc[Fin]) { }
 
 // A borrow's own type may not change on the way out either
-fn view(b &Rc[Fin]) &Rc[mut, Fin] {      //~ ErrorInvType:21 "This is the declared function's return type" follow-on
-  b;                                     //~ ErrorInvType:3 "Return expression type does not match"
+fn view(b: &Rc[Fin]) &Rc[mut, Fin] {      //~ ErrorInvType:22 "This is the declared function's return type" follow-on
+  b                                     //~ ErrorInvType:3 "Return expression type does not match"
 }
 
 fn f() i32 {
-  imm u = new Rc[Fin](1);
-  imm m = share(&u);                     //~ ErrorInvType
-  imm i &Rc[imm, Fin] = &u;               //~ ErrorInvType
-  imm r &Rc[ro, Fin] = &u;                //~ ErrorInvType
+  let u = Rc[Fin](1);
+  let m = share(&u);                     //~ ErrorInvType
+  let i: &Rc[imm, Fin] = &u;               //~ ErrorInvType
+  let r: &Rc[ro, Fin] = &u;                //~ ErrorInvType
 
-  imm owners = [new Rc[Fin](2), new Rc[Fin](3)];
-  imm s = shareOne(&[]owners);           //~ ErrorInvType
-  imm t = shareOne(&owners);             //~ ErrorInvType
+  let owners = [Rc[Fin](2), Rc[Fin](3)];
+  let s = shareOne(&[]owners);           //~ ErrorInvType
+  let t = shareOne(&owners);             //~ ErrorInvType
 
-  imm a = new Arena[Fin](4);
-  imm c = shareArena(&a);                //~ ErrorInvType
+  let a = Arena[Fin](4);
+  let c = shareArena(&a);                //~ ErrorInvType
 
-  // Still allowed: the sole owner seen as itself, a 'So' owner whose view
-  // still moves, a shared owner seen as shared, and a move that consumes 'u'
+  // Still allowed: the sole owner seen as itself, a shared owner seen as shared,
+  // and a move that consumes 'u'
   lookUni(&u);
-  imm o = new So[Fin](5);
-  lookSo(&o);
-  imm shared = new Rc[mut, Fin](6);
-  imm d = share(&shared);
-  imm moved Rc[mut, Fin] = u;
-  0;
+  let shared = Rc[mut, Fin](6);
+  let d = share(&shared);
+  let moved: Rc[mut, Fin] = u;
+  0
 }

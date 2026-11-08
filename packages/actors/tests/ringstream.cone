@@ -1,0 +1,165 @@
+// A mailbox that is never quiet still reuses its segments. A producer sends a
+// consumer 1,500,000 messages as a continuous stream: it holds 30 credits, each
+// worth 100 messages, spends one for each hundred it sends, and gets one back
+// from the consumer for each hundred the consumer has taken. So about 3,000
+// messages are queued in the consumer's ring at every moment, and the ring
+// runs through some 5,800 segments' worth of positions (at 256 slots a
+// segment, the most a segment has) while the sender and the consumer work at
+// once.
+//
+// The consumer is never idle until the stream ends, and that is made so, not
+// left to the scheduler: it keeps 1,500 "ballast" messages in its own ring,
+// each of which sends the next when it is taken, so that the ring is never
+// empty even if the producer's worker is held up for longer than the consumer
+// needs to take what it has (without the ballast, a busy machine does that
+// some dozens of times in the stream, and a mailbox that falls quiet gives its
+// kept segments back (atRest), and has to allocate again: that is the memory
+// fix, not a leak).
+//
+// A drained segment is reused as soon as the consumer has passed it and every
+// position that was claimed when it was drained has been published, not when
+// the mailbox falls quiet (THE MAILBOX, SEGMENTS ARE REUSED in the package's
+// header). So the allocations the runtime makes for messages stop growing once
+// the ring has filled to the most the stream queues: the count read when
+// 900,000 messages have been taken and the count read at the end are the same
+// or differ by a few, though 600,000 more messages (2,300 segments' worth) went
+// through between, and the whole stream took about two dozen segments in all
+// (measured: 14 to 26 on an idle machine). What can still add some is a pause
+// (a worker descheduled for a while on a busy machine) that lets the 3,000
+// queued reach further than any before; the numbers are bounded by the window
+// of 3,000, never by the length of the stream.
+
+mod ringstream;
+
+import testing use *;
+import actors;
+
+const ballast = 1500u64;
+const credits = 30u64;
+const perCredit = 100u64;
+const total = 1500000u64;
+const warm = 300000u64;
+const late = 900000u64;
+
+struct Marks {
+  pub taken: Atomic[u64];
+  pub atWarm: Atomic[u64];
+  pub atLate: Atomic[u64];
+  pub atEnd: Atomic[u64];
+  pub work: Atomic[u64];
+}
+
+let marks: Marks;
+
+fn @initpure init() {
+  marks = Marks(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Consumer {
+  n: u64;
+  acc: u64;
+  producer: Option[Producer];
+  over: bool;
+
+  fn init(self: &new) {
+    *self = Self(n: 0u64, acc: 0u64, producer: None[Producer], over: false);
+  }
+
+  pub async fn start(self, p: Producer) {
+    producer = Some[Producer](p);
+    var b = 0u64;
+    while b < ballast {
+      selfactor.pad();
+      b = b + 1u64;
+    }
+  }
+
+  // A ballast message: it sends the next, until the stream is over
+  pub async fn pad(self) {
+    if !over {
+      selfactor.pad();
+    }
+  }
+
+  // Each message does a little work, so that the consumer is slower than a
+  // producer refilling credits, and the ring stays deep
+  pub async fn take(self, i: u64) {
+    var k = 0u64;
+    while k < 20u64 {
+      acc = acc * 6364136223846793005u64 + i + k;
+      k = k + 1u64;
+    }
+    n = n + 1u64;
+    if n == warm {
+      marks.atWarm.store(actors.messageAllocs());
+    }
+    if n == late {
+      marks.atLate.store(actors.messageAllocs());
+    }
+    if n % perCredit == 0u64 {
+      match producer {
+        case let Some(p) {p.credit();}
+        case is None[Producer] {}
+      }
+    }
+    if n == total {
+      marks.atEnd.store(actors.messageAllocs());
+      marks.taken.store(n);
+      marks.work.store(acc | 1u64);
+      producer = None;
+      over = true;
+    }
+  }
+}
+
+actor Producer {
+  to: Consumer;
+  sent: u64;
+
+  fn init(self: &new, to: Consumer) {
+    *self = Self(to: to, sent: 0u64);
+  }
+
+  // A credit: a hundred more messages may go
+  pub async fn credit(self) {
+    self.sendBatch();
+  }
+
+  pub async fn begin(self) {
+    var c = 0u64;
+    while c < credits {
+      self.sendBatch();
+      c = c + 1u64;
+    }
+  }
+
+  fn sendBatch(self) {
+    var i = 0u64;
+    while i < perCredit && sent < total {
+      to.take(sent);
+      sent = sent + 1u64;
+      i = i + 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let c = Consumer();
+    let p = Producer(c);
+    c.start(p);
+    p.begin();
+    actors.waitUntilIdle();
+  }
+  finalAll();
+  expectUInt(marks.taken.load(), total, "every message of the stream taken");
+  expect(marks.work.load() != 0u64, "the consumer ran its work to the end");
+  expect(marks.atWarm.load() > 0u64, "the ring grew while it filled");
+  expect(marks.atEnd.load() < 64u64, "the whole stream, 5,800 segments' worth, took under 64 segments");
+  expect(marks.atEnd.load() - marks.atLate.load() <= 24u64,
+    "allocations stop growing after warm-up: at most 24 (under 1%) in the last 600,000 messages");
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "every segment freed once the actors have died");
+  done()
+}

@@ -1,0 +1,341 @@
+<html>
+  <head>
+	  <title>Extended BNF - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Extended BNF</div>
+		</div>
+
+    <div class="text">
+
+		<p>The syntax is specified below using 
+		<a href="https://www.w3.org/TR/2004/REC-xml-20040204/#sec-notation">XML's Extended BNF</a> Notation.
+		The diagrams do not attempt to convey operator precedence within a rule
+		(see <a href="syntax-lexical.html#oper">Operator and Precedence</a> for that information).
+		The <a href="syntax-diagrams.xhtml">railroad diagrams</a> are drawn from an older grammar than the one below.</p>
+		
+<h2 id="statements">Statements</h2>
+<pre>
+	program ::= dcl_stmt*
+	dcl_stmt ::= mod_stmt | modtrait_stmt | extern_stmt | var_stmt | fn_stmt | use_stmt | import_stmt
+	mod_stmt ::= 'pub'? 'mod' ident_token ('extends' ident_token)? ('is' ident_token)? defaultfold? ';'
+		/* the first statement of a module's designated file, or of a one-file module's file; 'extends' names one module already in reach, a sister or one this module imports;
+		   'is' names the one module trait this module conforms to, by one name it can reach */
+	modtrait_stmt ::= 'pub'? 'mod' 'trait' ident_token ('{' (modtraitmember | ';')* modtraitlast? '}' | ';')
+	modtraitmember ::= 'pub'? (fn_type block? | dcl_word ident_token (':' type)? ('=' literal)? ';')
+		/* a function or a global: with a body or an initial value a default, without one a requirement.
+		   Not generic, and no overload name. Anywhere among a module's statements */
+	modtraitlast ::= modtraitmember without its ';'
+		/* ';' delimits a module trait's declarations as it does a type's (structbody): the last needs none, and a lone ';' is an empty declaration */
+	extern_stmt ::= 'pub'? 'extern' (('{' (externitem | ';')* externlast? '}') | externitem)
+	externitem ::= 'pub'? (fn_type | dcl_word ident_token (':' type)?) ';'
+		/* functions and globals defined in a differently compiled unit; in the braces the last item needs no ';' (externlast, the item without it)
+		   and a lone ';' is an empty declaration, as in a type's braces */
+	defaultfold ::= 'use' ('*' ('but' ident_token (',' ident_token)*)? | namelist | '{' namelist ','? '}')
+	namelist ::= ident_token (',' ident_token)*
+		/* what a bare import of this module folds by default; each name a public name of the module.
+		   Folds into importers, not into this module; an importer's own clause replaces it. No 'as', no 'pub' */
+	import_stmt ::= 'pub'? 'import' (ident_token | text_token) ('as' ident_token)? foldclause? ';'
+		/* 'as' binds the module under that name instead of its own, which is then not bound here.
+		   A module imports another once: a second import is refused, identical or not, whatever name each binds it under */
+	use_stmt ::= 'pub'? 'use' genqualname (folditems | '{' folditems ','? '}')? ';'
+		/* folds in a namespace the module reaches without an import: an enum's variants, the enum named alone, never an instance of a generic one;
+		   or a submodule's public names, the submodule named by its name or a path through submodules. Never an imported module */
+	var_stmt ::= dcl_word ident_token (':' type)? ('=' append_exp (',' append_exp)*)? foldclause? ';'
+		/* a fold clause only on a module's global, an 'extern' one included: a local, a parameter and a type's static have no namespace to fold into */
+	destruct_stmt ::= dcl_word target (':' type)? (',' dcl_word? target (':' type)?)+ '=' exp ';'
+	target ::= ident_token | '_'
+		/* a local only, 'let q, r = divmod(7, 2);': the names are declared together and take their values apart, exactly one value for each,
+		   so there are as many targets as values, a call's tuple or a list written out ('let a, b = b, a;' means the outer a and b).
+		   A '_' declares nothing: it takes a value and drops it at the end of the statement, and has no type. Each name may carry a type
+		   and its own 'let' or 'var' ('var count, let limit = 0, 10;'). Without a ',' the one name takes the whole of the value, a tuple included;
+		   '_ = f();' and 'let _ = f();' are a single '_' target. An assignment may take its targets apart the same way: 'a, _ = f();' */
+	fn_stmt ::= fn_type block
+	block ::= '{' stmt* '}'
+	stmt ::= if_stmt | letelse_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | par_each_stmt | return_stmt | yield_stmt | exp_stmt | ';'
+	if_stmt ::= 'if' logic_exp block ( 'else' 'if' logic_exp block )* ( 'else' block )?
+	letelse_stmt ::= dcl_word variant_pat '=' exp 'else' block ';'
+		/* binds a variant of the value or leaves: every path through the block must leave, by ending in 'return', 'break', 'continue',
+		   a call that does not return, or an 'if' with an 'else' or a 'match' each of whose blocks leaves.
+		   A function's pattern may take the place of variant_pat: 'let rest using prefix("GET ") = line else {...};' */
+	variant_pat ::= type '(' ident_token ')'
+		/* the type names only the variant ('Some', 'Shape.Circle', 'Option[i32]', '&amp;mut Err'), and the one name in the parentheses takes what the variant holds.
+		   The 'let' or 'var' in front of it (dcl_word) is in front of the whole pattern, and 'var' lets the arm change the name. A pattern does not nest.
+		   It follows 'let' or 'var' in an 'if', an 'else if' and a case, 'case let Ok(avg) {...}'; a case's pattern with no 'let' or 'var' is a value alone */
+	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
+	while_stmt ::= (lifetime_token ':')? 'while' logic_exp? block ('else' block)?
+		/* with no condition the loop never runs out, and takes no 'else'; with a condition, the loop is an expression only when it has an 'else',
+		   whose block (outside the loop) gives the value when the condition fails */
+	each_stmt  ::= (lifetime_token ':')? 'each' ident_token (',' ident_token)* 'in' (range_exp | simple_exp) ('by' simple_exp)? ('if' logic_exp)? block ('else' block)?
+		/* 'by' follows a numeric range, a range_exp ('a ..= b' through b, 'a ..&lt; b' before b); a range gives one variable, and the other sources
+		   (an array, a slice, a list) one as well; a cursor, or something that gives one, one or several that unpack a tuple item;
+		   'if' skips the items for which its condition is false; the loop is an expression only when it has an 'else' */
+	yield_stmt ::= 'yield' 'each'? exp ';'
+		/* only in the body of a function declared 'yields' (a generator), and a statement of its own, never part of an expression;
+		   'yield exp' hands the caller a value, 'yield each src' hands on every value of another generator or of anything with a 'next' */
+	par_each_stmt ::= 'parallel' 'each' ident_token 'in' (range_exp | simple_exp) ('if' logic_exp)? block
+		/* 'parallel' is a word only directly before 'each', and a name anywhere else; the source is a number range counting up by one,
+		   a range_exp (no 'by'), or an array, a slice or a list; one variable; no 'else', and a statement only */
+	break_stmt ::= 'break' lifetime_token? this_exp? ('if' logic_exp)? ';'
+	cont_stmt  ::= 'continue' lifetime_token? ('if' logic_exp)? ';'
+	return_stmt ::= 'return' this_exp? ('if' logic_exp)? ';'
+		/* a trailing 'if' makes the statement conditional; only these three take one. An 'if' expression as the value
+		   is told from it by the block that follows its condition */
+	exp_stmt   ::= this_exp ';'
+	             | this_exp  /* only as the last statement of a block, before its '}' */
+		/* a ';' separates statements, so a block that ends in one ends in an empty statement, which has no value (a ';' after an 'if', 'match', loop or
+		   block adds an empty statement too); the last line has none where the block's value is used (a function body that writes a return type, a macro's,
+		   a block after '=', as an argument or operand or after 'return', an arm of an 'if' or 'match' used so, or the last line of a block used so)
+		   and has one everywhere else (a function that writes no return type, an 'if' or a 'match' used as a statement, a loop's body), whatever
+		   type the line has; a closure that writes no return type goes either way */
+
+	this_exp ::= exp (('using' exp)? block)?
+	var_list ::= dcl_word? ident_token type (',' dcl_word? ident_token type)*
+</pre>
+
+<h2 id="types">Type declarations</h2>
+<pre>
+	type ::= genqualname | nbrtype | arraytype | optiontype | ptrtype | reftype | ownreftype | fntype | structtype
+	nbrtype ::= 'bool' | 'i8' | 'i16' | 'i32' | 'i64' | 'isize' | 'u8' | 'u16' | 'u32' | 'u64' | 'usize' | 'f32' | 'f64'
+	arraytype ::= 'Array' '[' type (',' integer_token)+ ']'
+		/* the element type, then one size for each dimension, the first the outermost:
+		   'Array[T, n, m]' is 'Array[Array[T, m], n]'. 'Array' is a name every module
+		   reaches unless it declares the name itself */
+	optiontype ::= '?' type
+	ptrtype ::= '*' type
+	reftype ::= ('&' | '&<') lifetime_token? perm_type? type ('+' lifetime_token)?
+		/* a borrowed reference names no region: '&mut Point', a virtual one '&<Shape', a slice '&Array[u8]';
+		   its lifetime is written only in a type of a function's signature or of a struct's field.
+		   The '+' lifetime, a bound, only on a virtual reference: what it points at holds borrows lasting that long */
+	ownreftype ::= region_type ('[' type (',' type)* ']')? '[' (perm_ident ',')? type ']'
+		/* the region a struct declaring 'is RegionRef', its own type arguments first when it is
+		   generic; no permission written is 'uni'; virtual when the type is an open trait */
+	dcl_word ::= 'let' | 'var'
+		/* what a declaration starts with, whatever it declares: 'let' for a name that is never given a new value, 'var' for one that may be. Left out of a parameter, a field or a closure's state entry, the declaration is what the kind of declaration defaults to: 'let' for a parameter and a state entry, 'var' for a field (the struct decides) */
+	perm_ident ::= 'uni' | 'mut' | 'imm' | 'ro' | 'mut1' | 'opaq' | ident_token
+		/* a static permission, or the name of a lock permission: written on a reference, never to start a declaration */
+	region_type ::= ident_token
+	fntype ::= 'fn' (ident_token genparms?)? '(' fnparm (',' fnparm)* ')' ((type (',' type)*) | ('yields' type))? 'inline'? whereclause?
+		/* 'yields' is a word only here, after the parameters: it declares a generator, and the type is what it hands its caller
+		   one at a time. A generator has a body, is not 'inline' and has no where clause, and takes no other return type;
+			   it may be generic and may be a method */
+		/* a comma after a return type adds another only outside every list: a function's own return types,
+		   a field's type, a variable's type. Inside a parenthesised or bracketed list (a parameter list,
+		   a function type's own parameter list, arguments, a tuple, type arguments) the comma continues
+		   the list, so a signature there has one return type, and several values are a tuple:
+		   '(f: &amp;fn(u32) (u32, u32), x: u32)' */
+	fnparm ::= dcl_word? ident_token (':' type)? ('=' (literal | ident))?
+	structtype ::= 'struct' 'trait'? '@mustUse'? ident_token? genparms? baseclause* whereclause? structbody?
+	structbody ::= '{' (structstmt | ';')* lastdcl? '}'
+		/* ';' delimits the declarations of a type's braces, a struct's, a trait's, an actor's or an enum's. A declaration
+		   that ends in a block (a method with a body, a struct variant) needs none after it; the last declaration of the body
+		   needs none at all, in lastdcl; and a ';' with nothing before it is an empty declaration, which is harmless */
+	lastdcl ::= (var_stmt | usestmt | variantlist) without its ';'   /* also a method or requirement with no body: 'fn size(self: &amp;) i32' */
+	genparms ::= '[' genparm (',' genparm)* ']'
+	genparm ::= ident_token ((':' (genqualname | sigbound) ('+' genbound)*) | ('+' lifetime_token)+)? | lifetime_token
+		/* what follows the name and its ':' names traits, all required, which constrain the parameter as a whereclause does
+		   ('||' is not taken here); a type or a kind there, a value or kind parameter, is not built.
+		   A function signature written bare, 'F: fn(a: &amp;T, b: &amp;T) i32', is a bound too (sigbound).
+		   A lifetime after a '+' is a bound, on a generic function's type parameter only: what a value of it
+		   holds lasts that long.
+		   A macro's or a generic module's parameter takes none. A lifetime only in a struct's or an enum's
+		   brackets: it declares one of its lifetimes, which is never instanced */
+	genbound ::= genqualname | sigbound | lifetime_token
+	sigbound ::= 'fn' '(' fnparm (',' fnparm)* ')' type?
+		/* an ad hoc structural trait: the type has a pub '()' method whose parameters after its receiver, and whose
+		   return type, are exactly these (names do not matter, and a parameter may be written as its type alone);
+		   a plain function referenced, '&amp;byAge', meets it as it is. One return type, and no 'inline' or 'where'.
+		   A '+' after it joins the next bound, as in 'F: fn() + Sendable'. Not a macro's or a module's parameter,
+		   and not a condition on a type's 'is' entry */
+	whereclause ::= 'where' whereor
+	whereor ::= whereand ('||' whereand)*
+		/* no alternative of a '||' holds a lifetime comparison or bound */
+	whereand ::= whereterm ('&amp;&amp;' whereterm)*   /* '&amp;&amp;' binds tighter than '||', as in an expression */
+	whereterm ::= '(' whereor ')' | whereitem | wherebound | wherelife
+	whereitem ::= ident_token 'is' (genqualname | sigbound) ('+' genbound)*
+		/* each name a trait, or a type, met by that type alone ('T is bool'), or a function signature, 'F is fn(a: &amp;T) i32';
+		   the subject is a type parameter of the generic, or of the generic type the function is a method of;
+		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing.
+		   A lifetime after a '+' is a bound, as in wherebound */
+	wherebound ::= ident_token ('+' lifetime_token)+
+		/* 'T + 'a': a bound on a generic function's own type parameter; 'T is 'a' is not the spelling */
+	wherelife ::= lifetime_token ('>=' | '==') lifetime_token
+		/* ''a >= 'b': ''a' lasts at least as long as ''b'; '==' both ways. On any function, of lifetimes its
+		   signature names, and on a struct, of lifetimes it declares */
+	baseclause ::= isaclause | extendsclause   /* either order, each at most once; 'extends' not on a trait */
+	isaclause ::= 'is' genqualname (',' genqualname)*
+		/* every name is an open trait: an enum anywhere in the list is refused.
+		   On a struct or a trait the first is its base; an enum and a variant have none of their own */
+	extendsclause ::= 'extends' genqualname   /* the concrete base this type enriches with methods */
+	structstmt ::= var_stmt | fn_stmt | usestmt | alias_stmt | assoctype
+		/* 'mixin', retired, is refused: a type names what it complies with in its isaclause.
+		   An alias_stmt in a struct's or a variant's body is the type's own name for a type, in its namespace;
+		   an assoctype only in a trait's */
+	alias_stmt ::= 'pub'? 'alias' ident_token '=' (type | sigbound) ';'
+	assoctype ::= 'type' ident_token (':' genqualname ('+' genqualname)*)? ';'
+		/* a trait's associated type, a type the type meeting the trait chooses; 'type' is a word only here.
+		   A use of the trait writes its type parameters only, never an associated type ('Iterable[i64, Cursor = u8]',
+		   an equality constraint, is not built) */
+	usestmt ::= 'use' genqualname folditems? ';'   /* folds in a sibling: a type that declared the same 'extends' base */
+	foldclause ::= 'pub'? 'use' ('*' ('but' ident_token (',' ident_token)*)? | folditems | '{' folditems ','? '}')
+		/* written after the type of a struct's field or of a module's global, or after an import's module; 'pub' not on a field's.
+		   'pub' comes first, as on every declaration: 'use pub' is refused */
+	folditems ::= ident_token ('as' ident_token)? (',' ident_token ('as' ident_token)?)*
+		| 'but' ident_token (',' ident_token)*   /* omitted admits every member of the sibling named */
+	traittype ::= 'trait' ident_token? isaclause? structbody?   /* a synonym for 'struct trait' */
+	actortype ::= 'actor' ident_token ('is' genqualname (',' genqualname)*)? '{' (structstmt | behaviourstmt | ';')* lastdcl? '}'
+		/* its fields are its private state, never 'pub'; each behaviour is a message, whose parameters
+		   and returned value are Sendable; each 'fn' method is synchronous and never 'pub' ('init' and
+		   'final' as a struct's); no static, macro, 'extern' or 'use'. 'Name(args)' runs its 'init'
+		   and answers its handle. Needs 'import actors'. The 'is' list names actor traits the actor says it
+		   conforms to, checked once types are known; no 'extends' */
+	behaviourstmt ::= 'pub'? 'async' 'fn' ident_token '(' fnparm (',' fnparm)* ')' type? block
+		/* an actor's behaviour: its first parameter 'self'; 'async' means nothing apart from 'fn' */
+	actortraittype ::= 'actor' 'trait' ident_token genparms? '{' (traitbehaviour | ';')* lastdcl? '}'
+		/* its members are behaviours only, each a signature with no body; its type parameters, if any, are types */
+	traitbehaviour ::= 'pub' 'async' 'fn' ident_token '(' fnparm (',' fnparm)* ')' type? ';'
+		/* its first parameter 'self'; the parameters and the returned type are Sendable. Needs 'import actors' */
+	enumtype ::= 'enum' '@unsized'? '@mustUse'? ident_token genparms? (':' nbrtype)? (('extends' genqualname) | isaclause)? whereclause? '{' (enumstmt | ';')* lastdcl? '}'
+		/* 'extends' names another enum, a generic one with its type arguments, whose variants
+		   this one holds copies of; such an enum declares only variants in its body, writes
+		   no integer type of its own, and names no isaclause: its base's comes with the copies.
+		   An isaclause gives every variant the traits' requirements and defaults */
+	enumstmt ::= structstmt | variantlist | 'struct' ident_token ('=' integer_token)? isaclause? structbody?
+		/* a variant's isaclause names open traits beyond its enum, which is its base unwritten */
+	variantlist ::= variant (',' variant)* ';'
+		/* one declaration: its variants are comma-separated, any of them may hold a value, and the ';' ends it unless it
+		   is the body's last declaration, where the '}' does: 'enum Fault { SoldOut, NoSuchCode(i32) }'. A comma is followed
+		   by another variant's name, never by the '}' or by a struct variant */
+	variant ::= ident_token ('(' type ')')? ('=' integer_token)?
+		/* the type in parentheses is a variant that holds that type itself, with no name for it; an enum with fields in
+		   common writes its variants as structs or bare names, never with one */
+	tagtype ::= 'tag'
+</pre>
+
+<h2 id="assignexp">General use expressions (with possible assignments)</h2>
+<pre>
+	exp ::= assgn_exp
+	assgn_exp ::= ('<-' entries) | tuple_exp ((('=' | ':=' | '<->' | '+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>=') exp) | ('<-' entries))?
+		/* the loosest operators, and right-associative: 'a = b = 5' gives both 5. '<->' swaps the two places;
+		   ':=' stores the new value and gives back the one it replaces. A '<-' with nothing before it sends to 'this' */
+	tuple_exp ::= simple_exp (',' simple_exp)*
+	entries ::= entry (',' entry)*
+		/* the list after '<-', running to the statement's end, across lines; each entry is appended in turn */
+	entry ::= ('fill' contents_exp) | (contents_exp (('of' | ':') contents_exp)?) | ('(' entries ')') | each_entry
+	each_entry ::= 'each' (simple_exp | ident (',' ident)* 'in' simple_exp ('by' simple_exp)? ('if' simple_exp)? 'yield' simple_exp (':' simple_exp)?)
+		/* 'each src' appends every item of src; with variables, the loop's own header, and the 'yield' says
+		   what each pass appends ('yield k: v' a pair) */
+		/* 'of' and 'fill' are words only here, names elsewhere; 'fill' is the word when a space and a value
+		   follow it. 'n of x': n values, x evaluated for each; 'fill x': x until the collection's len()
+		   reaches its capacity(); 'k: v': a key and its value, given to a '<-' that takes both */
+	contents_exp ::= simple_exp ('<-' entry)?
+		/* inside a comma list, a construction's contents take one entry: several are parenthesized */
+</pre>
+
+<h2 id="simpleexp">Expressions without any assignments</h2>
+<pre>
+	logic_exp ::= simple_exp
+		/* a condition. In an 'if' or an 'else if' it may instead bind a variant, 'if let Some(n) = counts.get("cat") {...}', as letelse_stmt does (a dcl_word and a variant_pat) */
+	range_exp ::= simple_exp ('..=' | '..&lt;') simple_exp
+		/* not an operator of an expression, and no value of its own: the source of an each loop, whose bounds are whole
+		   expressions ('0 ..= 1 | 2' runs to 3). An index's range is in suffix; a match pattern's range has bitxor_exp bounds, 'case 3 ..= 6', and a case's patterns are joined by a top-level '|' */
+	simple_exp ::= or_exp
+		/* from here down, each rule binds tighter than the one above it, and the binary operators are left-associative */
+	or_exp ::= and_exp ('||' and_exp)*
+	and_exp ::= not_exp ('&amp;&amp;' not_exp)*
+	not_exp ::= '!'* compare_exp
+		/* '!' negates the whole comparison after it: '!a == b' is '!(a == b)' */
+	compare_exp ::= bitor_exp ((('=='|'!='|'==='|'!=='|'<'|'<='|'>'|'>='|'<=>') bitor_exp) | ('is' type))?
+		/* one comparison: 'a &lt; b == c' is refused. '<=>' is the three-way comparison, an i32 of -1, 0 or 1 */
+	bitor_exp ::= bitxor_exp ('|' bitxor_exp)*
+	bitxor_exp ::= bitand_exp ('^' bitand_exp)*
+	bitand_exp ::= shift_exp ('&' shift_exp)*
+		/* all three bind tighter than a comparison: '3 &amp; 1 == 1' is '(3 &amp; 1) == 1' */
+	shift_exp ::= add_exp? (('<<' | '>>') add_exp)*
+		/* the left operand is left out only before the first '<<' or '>>', and is then 'this' */
+	add_exp ::= mult_exp (('+'|'-') mult_exp)*
+	mult_exp ::= as_exp (('*'|'/'|'%') as_exp)*
+	as_exp ::= prefix_exp ('as' type)*
+		/* 'into' is retired: a value converts with 'f32.from(x)', and a reference narrows to a variant by a match or a bound 'if' */
+	prefix_exp ::= ('-'|'~'|'*'|'++'|'--') prefix_exp | 'await' prefix_exp ('?' suffix*)? | '.' (property | fieldlist) suffix* | addr | plus_alloc | suffix_exp
+		/* a prefix applies to the whole suffixed term after it: '-x[1]' negates the element. '.' with nothing before it is 'this.'.
+		   'await' only in an actor's behaviour; built on a behaviour of an actor that returns a value. A '?' after its operand
+		   (a term with no prefix of its own) applies to what the wait gives, 'await x?' being '(await x)?', and so do the suffixes after it */
+	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | prefix_exp)
+		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
+	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp
+		/* the retired allocation spelling, refused: every allocation is a construction, 'Rc[i32](5)'.
+		   It stays only as a match pattern's owning reference type, '+Rc-mut Circle', whose spelling
+		   is an open design question */
+	suffix_exp ::= term suffix*
+	suffix ::= '++'|'--'|'?'| ('.' (property | fieldlist)) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
+		/* square brackets hold type arguments, an index, or a range of indexes, '&amp;s[a..=b]', which makes a slice
+		   (no start is 0; no end is the array's end: 'a..' alone runs to it, while '..=' and '..&lt;' must say where they end,
+		   and a '..' before an end, 'a..b' or '..b', is refused: with no end there is nothing to include or leave out,
+		   so 'a..' and '..' alone are accepted). They never hold a value's
+		   contents: an enum variant is constructed with parentheses, 'Some(x)', and an empty one by its name alone,
+		   'None'. A struct's value is built as they are, by its name and parentheses, 'Point(1, 2)': a call whose callee is a type */
+	property ::= ident_token | symbol_token | integer_token
+	fieldlist ::= '(' (ident_token | integer_token) (',' (ident_token | integer_token))* ')'
+		/* 'x.(a, b)' takes the named fields of a struct, or the numbered elements of a tuple, 't.(0, 2)', and gives their
+		   values: one name gives that field's value, two or more a tuple of them. Names or numbers, not both, each once.
+		   '.(a, b)' with nothing before it is 'this.(a, b)'. A '.' followed by '(' is a field list; a method's call
+		   parentheses come after its name, 'x.f(a, b)' */
+	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp | if_stmt | match_stmt | while_stmt | each_stmt | block | try_exp
+		/* an 'if', a 'match', a loop or a block is a term, so it may be an operand: 'if c {1;} else {2;} + 10' adds to what the 'if' gives */
+	try_exp ::= 'try' block
+		/* a '?' inside leaves the block, not the function: its value is the first failure, or the block's last value
+		   wrapped as the success, 'Ok' or 'Some'; a last line ending in ';' succeeds with nil */
+	new_exp ::= ('new' ident_token ('.' ident_token)* '[' type (',' type)* ']' | 'trynew' ident_token ('.' ident_token)* ('[' type (',' type)* ']')*) ('(' (contents_exp (',' contents_exp)*)? ')')?
+		/* 'new' names a dynamic region, a region whose state is a value, and the type made in it: 'new a[Node](1)',
+		   'new self[List[i64]](16)'. A name before the brackets that is a type, not a variable or a path of
+		   fields, is refused. Every other construction is a call of its type (a suffix_exp): its initializer's
+		   arguments in parentheses, 'Point(1, 2)', and its contents after '<-' (entries): 'List[i32](100) <- fill 0';
+		   an array takes contents only. A managed reference type, or an alias of one, allocates:
+		   'Rc[mut, Node](1)', or, given one finished value of the value type, moves it in: 'Rc[i32](5)'.
+		   'trynew' takes only a managed reference type, and gives an Option of it, None when memory runs out */
+	genqualname ::= ident_token ('.' ident_token)* ('[' typearg (',' typearg)* ']')?
+	typearg ::= type | lifetime_token
+		/* a lifetime only in a type of a function's signature or of a struct's field: a struct's lifetimes,
+		   named positionally ('Cursor['a]', 'Parser['s, 'r]', 'Cursor['a, T]') or not at all; never in a
+		   construction's type, a variable's or a function's brackets */
+	pseudo ::= 'self' | 'this' | 'selfactor'
+		/* 'selfactor' only in an actor's method: the actor's own handle */
+</pre>
+
+<h2 id="tokens">Literals and other tokens</h2>
+<pre>
+	literal ::= float_token | integer_token | text_token | symbol_token | 'true' | 'false' | 'null' | array_lit
+		/* 'null' is the null raw pointer, of the pointer type it is wanted as */
+	array_lit ::= '[' contents_exp (',' contents_exp)* ']'
+		/* '[n; x]', the fill literal, is retired: 'Array[T, n]() <- fill x' */
+	float_token ::= (('0'-'9') ('0'-'9')*) '.' ('0'-'9')* (('e'|'E') ('-'|'+')? ('0'-'9')+)?
+	integer_token ::= (('0'-'9') ('0'-'9')*) | '0x' (('0'-'9')|('a'-'f')|('A'-'F'))+
+	lifetime_token ::= '\'' ident_token
+	text_token ::= '"' any_char '"'
+	symbol_token ::= "'" any_char "'"
+
+	ident_token ::= '`' any_char* '`' | ('_' | alpha_char) (alpha_char | ('0'-'9') | '$' | '_')*
+</pre>
+	<p>Railroad diagrams courtesy of the 
+	<a href="http://bottlecaps.de/rr/ui">Railroad Diagram Generator</a>.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="syntax-lexical.html">Lexical Elements</a> &mdash; the tokens this grammar is written over, and operator precedence.</li>
+		<li><a href="syntax-diagrams.xhtml">Syntax Railroad Diagrams</a> &mdash; drawn from an older grammar.</li>
+		<li><a href="syntax.html">Syntax</a> &mdash; the head page of this part.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="syntax-diagrams.xhtml"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

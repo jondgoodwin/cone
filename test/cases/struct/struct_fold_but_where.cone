@@ -1,0 +1,50 @@
+// A fold's 'but' names a member the folded type DECLARES even when the folded
+// instance's 'where' left it out. 'Cells[V]' declares 'dup' only where V is
+// Copy. Both holders fold Cells and leave 'dup' out, to write their own: at
+// i32 Cells has it, and at Token (which moves) Cells[Token] does not, and
+// 'but dup' used to be refused there (ErrorNoMbr, bug 31) while leaving 'but'
+// off clashed with the holder's own 'dup' (ErrorDupName).
+//
+// Printed values checked by hand: 'get' answers the one value held (21, 7);
+// IntHolder.dup is its own: 2 * 21 = 42; TokHolder.dup is its own: 7 + 1 = 8.
+
+mod struct_fold_but_where;
+
+import stdio use *;
+
+struct Token {
+  pub id: i32;
+  fn final(self: &uni) {}
+}
+
+struct Cells[V] {
+  pub val: V;
+  pub fn get(self: &) &V {&val}
+  pub fn dup(self: &) V where V is Copy {val}
+}
+
+struct IntHolder {
+  pub inner: Cells[i32] use * but dup;
+  pub fn dup(self: &) i32 {*inner.get() * 2}
+}
+
+struct TokHolder {
+  pub inner: Cells[Token] use * but dup;
+  pub fn dup(self: &) i32 {inner.get().id + 1}
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  let a = IntHolder(Cells[i32](21));
+  show("int get", i64.from(*a.get()));
+  show("int dup", i64.from(a.dup()));
+  let t = TokHolder(Cells[Token](Token(7)));
+  show("token get", i64.from(t.get().id));
+  show("token dup", i64.from(t.dup()));
+}

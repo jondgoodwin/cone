@@ -26,12 +26,12 @@
  *   another struct holds is another value. A reference that is read-only (`&`, `&imm`) cannot write what
  *   it reaches, and a value this function owns whole is nobody else's;
  * - or it is a mutable virtual call, through a '&<mut Trait' receiver (a '&<mut fn' called is
- *   one): the type behind it is hidden, and the trait method's declared 'self &mut Trait' names
+ *   one): the type behind it is hidden, and the trait method's declared 'self: &mut Trait' names
  *   no fields, so the call is asked of the virtual reference it was made through, which could
  *   reach any container (a closure that captured the list, a struct that holds it);
  * - or, handed nothing that reaches the type, it is a callee that reshapes one
  *   through a global;
- * - or the borrow points into a 'mut' global, or into anything reached from one (the
+ * - or the borrow points into a 'var' global, or into anything reached from one (the
  *   loan's 'globalview'), or is reached through a reference a caller lent where a 'mut'
  *   global reaches 'cont' (reshapeMutGlobalsReach; 'globalview' 2): a call whatever it is handed
  *   that is code the compiler cannot read (a virtual call, a function value, a Cone function
@@ -39,7 +39,7 @@
  *   inference (shapeTypeWritesGlobal, where a virtual call in a body counts as writing any
  *   global), for a function may write a global by its name and no summary is kept of which. The
  *   intrinsics, an init and a call through a virtual reference marked '+ ShapeKeeping' are
- *   exempt, an 'extern' C function is asked of what it is handed; an 'imm' global is no such
+ *   exempt, an 'extern' C function is asked of what it is handed; a 'let' global is no such
  *   borrow.
  *
  * 'clear', 'pop' and 'truncate' each write the length; 'set' of a String finalizes
@@ -72,9 +72,9 @@
 enum ReshapeReach {
     ReachContained = 1,     // by containment alone: a field, an element, a variant
     ReachBorrowed = 2,      // through some reference, pointer or owner
-    ReachVirtual = 4,       // through a virtual reference, which could be anything
+    ReachVirtual = 4,       // through a virtual reference, which could be anything (not one marked '+ ShapeKeeping': nothing a call through it does reshapes what the caller reaches)
     ReachGaveUp = 8,        // the type graph was too large to follow: taken as reaching
-    ReachOwned = 16         // set beside ReachBorrowed when every reference on the way owns what it points at ('So', 'Rc', 'Arc')
+    ReachOwned = 16         // set beside ReachBorrowed when every reference on the way owns what it points at ('Uni', 'Rc', 'Arc')
 };
 
 // Can a value of 'type' reach a value of the struct 'cont'? 'writable' asks only
@@ -106,7 +106,7 @@ int reshapeIsSum(INode *type);
 int reshapeStoreHits(INode *lval, INode *cont);
 
 // The container may be an owner instead of a struct: a borrow into what an owning reference
-// ('So', 'Rc', 'Arc', a region a program declares) points at is a borrow into a value that is
+// ('Uni', 'Rc', 'Arc', a region a program declares) points at is a borrow into a value that is
 // freed when the owner is stored over, by this name or another, in the function or in a callee.
 // The container is then the owner's reference type, one node for all the same types
 // (reshapeOwnerCont); a call reshapes it when it is handed a path it may write to a place
@@ -135,8 +135,8 @@ enum ReshapeWhy {
     ReshapeBody,        // a callee handed a writable value that can reach it, whose body reshapes one
     ReshapeGlobal,      // a callee that reshapes one through a global, handed nothing that reaches it
     ReshapeStore,       // a store through another name (not a call): reshapeStoreHits
-    ReshapeGlobalView,  // a callee that may write a 'mut' global the borrow points into: code the compiler cannot read, or one that reshapes the type through a global
-    ReshapeGlobalMaybe  // the same, the borrow reached through a reference a caller lent that may be a 'mut' global (one reaches the type)
+    ReshapeGlobalView,  // a callee that may write a 'var' global the borrow points into: code the compiler cannot read, or one that reshapes the type through a global
+    ReshapeGlobalMaybe  // the same, the borrow reached through a reference a caller lent that may be a 'var' global (one reaches the type)
 };
 
 typedef struct {
@@ -153,13 +153,17 @@ typedef struct {
 // taken through that field (NULL otherwise): the borrow is then into that one value, and an
 // argument reaches it only by reaching the owner, or by a reference that points at a 'cont'
 // (which may be that very one); a 'cont' held as a field of any other struct is another value.
-// 'globalview' says the borrow points into a 'mut' global, or into anything reached from one: every
+// 'globalview' says the borrow points into a 'var' global, or into anything reached from one: every
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
 // 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
 // the method called: the receiver is then the borrow and no other name for the owner, and only
 // the other arguments are asked.
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-    ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
+// 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
+// access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
+// of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is
+// not asked: that needs both known.
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
+    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv);
 
 #endif

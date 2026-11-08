@@ -1,5 +1,5 @@
 // The fs package: files and folders, synchronously. A file is read or
-// written whole; a folder is made, listed, walked and removed; a file's size,
+// written whole, or mapped into memory for reading; a folder is made, listed, walked and removed; a file's size,
 // time and kind are asked; and the current folder is read and changed.
 //
 //   mod notes;
@@ -8,18 +8,18 @@
 //   import fs;
 //
 //   fn main() i32 {
-//     mut text = String.empty();
+//     var text = String();
 //     match fs.readFile("notes.txt") {
-//       case mut ok Ok { text <=> ok; }             // the String moved out
-//       case imm e Error {
-//         imm m = e.message();                     // 'readFile notes.txt: No such file or directory'
+//       case let Ok(ok) { text = ok; }              // the String moved out
+//       case let Err(e) {
+//         let m = String() <- e;                    // 'readFile notes.txt: No such file or directory'
 //         eprintStr(m.view());
 //         return 1i32;
 //       }
 //     }
 //     text.append("another line\n");
 //     imm wrote = fs.writeFile("notes.txt", text.view());
-//     if wrote is Error { return 1i32; }
+//     if wrote is Err { return 1i32; }
 //     0i32;
 //   }
 //
@@ -27,15 +27,18 @@
 //
 // **Failure.** Everything that can fail answers a core 'Result': 'Ok' with
 // the value ('Result[void, FsError]' where there is none, its 'Ok' holding
-// 'nil'), or 'Error' with an 'FsError', which says what was being done
+// 'nil'), or 'Err' with an 'FsError', which says what was being done
 // ('op', the function's name), to which path ('path', and 'other' for the
-// second path of 'rename'), and why ('code', the C library's errno, a posix
-// 'E...' constant). Its 'message()' is one line to show a person,
-// 'readFile notes.txt: No such file or directory', and 'notFound()' asks the
-// commonest question about it. A path holding a NUL byte, which C would read
+// second path of 'rename'), and why: 'kind()', iocore's IoErrorKind, the
+// same on every system (NotFound, PermissionDenied, AlreadyExists, ...; the
+// ioerror package's, which iocore's IoError shares), which
+// a caller matches on, and 'code', the C library's errno it was read from, a
+// posix 'E...' constant, kept for diagnostics. Its text ('String() <- e') is one line to
+// show a person, 'readFile notes.txt: No such file or directory', and
+// 'notFound()' asks the commonest question about it. A path holding a NUL byte, which C would read
 // as its end, fails with EINVAL before anything is asked of the system.
 // Cone has no '?' yet, so a caller matches each Result; a value is moved out
-// of a matched 'Ok' by swapping an empty one in ('text <=> ok').
+// of a matched 'Ok' by binding it ('case let Ok(ok) { text = ok; }').
 // Asking whether something is there is not a failure: 'exists', 'isDir' and
 // 'isFile' answer a bool, false for anything they cannot see.
 //
@@ -66,17 +69,85 @@
 // goes down into a linked folder, and 'removeAll' removes a link itself,
 // never what it leads to. On Windows a link is any reparse point: a
 // symbolic link or a directory junction, and also some cloud-storage
-// placeholders, which are then left whole.
+// placeholders, which are then left whole. 'lstat' is 'stat' without
+// following, and 'isLink(path)' asks the one question, both through the posix
+// package's 'lstat': on Windows the C runtime's '_findfirst64' (over
+// FindFirstFile) reading the reparse-point attribute, the very test a
+// listing's 'isLink' makes, so 'isLink' and a listing always agree (the
+// reparse tag, which would tell a symbolic link from a junction from a
+// placeholder, is not read, because this package calls all of them links);
+// on Linux the C library's 'lstat'.
+//
+// **Permissions and times.** 'chmod(path, mode)' sets POSIX permission bits
+// (Linux: 'chmod'). Windows has only a read-only attribute, so there 'chmod'
+// reads the owner's write bit alone (0o200): set makes the file writable,
+// clear makes it read-only (the C runtime's '_chmod'), and the other bits are
+// ignored. 'utime(path, accessed, modified)' sets the two times (Linux:
+// 'utimensat', nanoseconds kept; Windows: 'SetFileTime' on a handle opened to
+// write attributes only, 100 ns kept), as Timestamps of the time package.
+// Both follow a link, as POSIX's do.
+//
+// **Mapped files.** 'mapFile(path)' maps a whole file for reading and answers a
+// 'MappedFile': one owner, moved, whose 'view()' is the file's bytes in place
+// (a '&Array[u8]'), 'size()' their count, 'isEmpty()', and 'base()' the address
+// of the first byte for handing on (a GPU upload). Its death unmaps the view;
+// no file stays open. The OS reads a page when it is first touched, so a file
+// far larger than memory (a multi-gigabyte model's weights) is mapped at no
+// cost and only what is read is loaded. Sizes and offsets are 64 bits whole:
+// a file past 4 GB is mapped as any other (the test mapfile_big.cone maps a
+// sparse one with markers either side of 4 GiB and past 5 GiB). It is Sendable,
+// and an 'Arc[imm, MappedFile]' shares one among threads.
+//
+//   match fs.mapFile("model.bin") {
+//     case imm m Ok { imm w = m.view(); ... w[0usize] ... }   // read in place, nothing copied
+//     case imm e Err { ... }                                // as readFile's
+//   }
+//
+// Method choices (defaults for review, not rulings):
+// - The whole file, read-only, private: no writable map, no map of a byte
+//   range, no offset. A range is a sub-slice of the view; the OS pages in only
+//   what is touched, so mapping all of a file costs only address space.
+//   Not here: writable maps (and flushing them), mapping a range, 'madvise'
+//   and MAP_POPULATE (Linux), prefetch and large pages (Windows), locking
+//   pages in memory.
+// - Failures are 'FsError's with the C library's error numbers, as everything
+//   here: a file not there ENOENT, a folder EISDIR (also on Linux, where
+//   fopen would open one), anything but a regular file EINVAL, a NUL in the
+//   path EINVAL, a refused mapping (no address space) ENOMEM or the system's
+//   own errno. Windows' error numbers are translated (ERROR_FILE_NOT_FOUND to
+//   ENOENT, and so on; one with no counterpart is EIO).
+// - The file is opened through the C runtime's 'fopen' (mode "rb"), as
+//   'readFile' does, so its path, UTF-8 names and failures are exactly
+//   readFile's; the OS handle under the stream (Windows: _get_osfhandle of
+//   _fileno; Linux: fileno) is what is mapped, and the stream is closed as soon
+//   as the map is made.
+// - Windows: GetFileSizeEx, CreateFileMappingW (PAGE_READONLY, the size given
+//   as its high and low halves), MapViewOfFile (FILE_MAP_READ, the whole
+//   file), then the mapping object's handle is closed at once; the view keeps
+//   the file. Linux: the size is lseek's end offset (64 bits), then mmap
+//   (PROT_READ, MAP_PRIVATE, offset 0). The Windows externs are kernel32's,
+//   on every link line already; the rest is the C library's.
+// - An empty file is an empty view with no address, since the OS cannot map no
+//   bytes.
+// - The size is the file's when mapped. A file made shorter while mapped, by
+//   this program or another, faults when the lost part is read (SIGBUS on
+//   Linux, an in-page error on Windows), and Windows refuses to remove,
+//   rename or truncate a file while it is mapped; a map that must not hold
+//   its file keeps the file alone or is dropped first.
 //
 // **What differs by system.** The package itself is written over ISO C (libc's
 // 'fopen', 'fread', 'fwrite', 'rename') and POSIX (posix's 'stat', 'lstat',
 // 'unlink', 'mkdir', 'rmdir', 'getcwd', 'chdir', 'realpath', 'opendir',
 // 'readdir'), and holds nothing of Windows' own, except 'absolute' on POSIX,
-// which reads the path's text (below). What is Windows' is beneath it: the
+// which reads the path's text (below), and 'mapFile', which asks kernel32 for
+// the mapping itself (above). What is Windows' is beneath it: the
 // posix package maps those names onto the Windows C runtime, and its
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
 // '_findfirst64'. The 'path' rules it relies on are the system's own (drive
-// letters, shares and '\' on Windows). Where Windows behaves differently from
+// letters, shares and '\' on Windows). 'chmod' and 'utime' are the exceptions
+// beside 'mapFile': they call '_chmod' (the runtime's) and 'utimensat' on Linux,
+// and 'utime' kernel32 ('CreateFileW', 'SetFileTime') on Windows, converting
+// the name to UTF-16 itself. Where Windows behaves differently from
 // POSIX it is said beside the function: 'rename' replaces an existing file on
 // POSIX and is refused on Windows, a name is one name whatever its ASCII case
 // on Windows only, and 'modified' (a time.Timestamp) is in whole seconds on
@@ -90,78 +161,76 @@ import collections use String, List;
 import path use Path;
 import sync;
 import time;
+import ioerror use IoErrorKind, errnoKind;
 
 // -------- failure --------
 
 // Why an operation failed: what was being done, to which path, and the C
-// library's error number
-pub struct FsError {
+// library's error number, whose kind is the same on every system
+pub struct FsError is Error {
   // The function that failed: "readFile", "makeDir", ...
-  pub op String;
+  pub op: String;
   // The path it was given
-  pub path Path;
+  pub path: Path;
   // The second path, 'rename''s 'to'; empty for the others
-  pub other Path;
+  pub other: Path;
   // The C library's errno: posix.ENOENT, posix.EACCES, ...
-  pub code i32;
+  pub code: i32;
+
+  // What went wrong, the same on every system: ioerror's IoErrorKind for the
+  // errno (NotFound for ENOENT, PermissionDenied for EACCES, ...)
+  pub fn kind(self: &) IoErrorKind { errnoKind(code) }
 
   // One line for a person: 'readFile notes.txt: No such file or directory',
   // or 'rename a.txt to b.txt: File exists'
-  pub fn message(self &) String {
-    mut out = String.from(op.view());
-    if not path.isEmpty() {
-      out.append(" ");
-      out.append(path.view());
-    }
-    if not other.isEmpty() {
-      out.append(" to ");
-      out.append(other.view());
-    }
-    out.append(": ");
-    out.append(libc.strerror(code).view());
-    out;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- op.view();
+    if !path.isEmpty() { out <- " ", path.view(); }
+    if !other.isEmpty() { out <- " to ", other.view(); }
+    out <- ": ", libc.strerror(code).view();
   }
 
-  // Whether it failed because nothing has that name (ENOENT)
-  pub fn notFound(self &) bool { code == posix.ENOENT; }
+  // Whether it failed because nothing has that name (NotFound: ENOENT)
+  pub fn notFound(self: &) bool { self.kind() == IoErrorKind.NotFound }
 
-  // Whether it failed because something already has that name (EEXIST)
-  pub fn alreadyExists(self &) bool { code == posix.EEXIST; }
+  // Whether it failed because something already has that name (AlreadyExists:
+  // EEXIST)
+  pub fn alreadyExists(self: &) bool { self.kind() == IoErrorKind.AlreadyExists }
 }
 
-fn failure(op &str, p &Path, code i32) FsError {
-  new FsError(String.from(op), p.copy(), Path.from(""), code);
+fn failure(op: &str, p: &Path, code: i32) FsError {
+  FsError(String.from(op), p.clone(), Path.from(""), code)
 }
 
-fn fail[T](op &str, p &Path, code i32) Result[T, FsError] {
-  Error[T, FsError](failure(op, p, code));
+fn fail[T](op: &str, p: &Path, code: i32) Result[T, FsError] {
+  Err[T, FsError](failure(op, p, code))
 }
 
-fn succeeded() Result[void, FsError] { Ok[void, FsError](nil); }
+fn succeeded() Result[void, FsError] { Ok[void, FsError](nil) }
 
 // The error number the last C call left
-fn lastErrno() i32 { *libc.errno(); }
+fn lastErrno() i32 { *libc.errno() }
 
 // Whether a path holds a NUL byte, which a C function would take as its end
-fn hasNul(path &Path) bool {
-  imm p &Array[u8] = path.view();
-  mut i = 0usize;
+fn hasNul(path: &Path) bool {
+  let p: &Array[u8] = path.view();
+  var i = 0usize;
   while i < p.len {
     if p[i] == 0u8 { return true; }
     i = i + 1usize;
   }
-  false;
+  false
 }
 
 // A path's text as a String, which C reads: the NUL-checked copy every call
 // into the C runtime is given
-fn cText(path &Path) String { String.from(path.view()); }
+fn cText(path: &Path) String { String.from(path.view()) }
 
 // -------- UTF-8 names --------
 
 // Run by the first call that needs it. A thread that arrives meanwhile waits
 // until it is done, so none reaches the C runtime before the names are set
-imm utf8Once sync.Once;
+let utf8Once: sync.Once;
 
 fn @initpure init() {
   utf8Once = sync.Once.make();
@@ -175,10 +244,11 @@ fn useUtf8() {
 
 fn setUtf8() {
   // POSIX hands a name's bytes to the system as they are
-  if not isWindows() { return; }
-  imm now = libc.setlocale(libc.LC_CTYPE, null);
-  if now != null and libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
-    libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
+  #if #os == .windows {
+    let now = libc.setlocale(libc.LC_CTYPE, null);
+    if now != null && libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
+      libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
+    }
   }
 }
 
@@ -187,116 +257,401 @@ fn setUtf8() {
 // What 'stat' tells of a file or folder
 pub struct FileInfo {
   // Its size in bytes; 0 for a folder
-  pub size i64;
+  pub size: i64;
   // When it was last written, a Timestamp of the time package (UTC), in
   // whole seconds: the C runtime's stat counts no finer
-  pub modified time.Timestamp;
-  pub isDir bool;
+  pub modified: time.Timestamp;
+  pub isDir: bool;
   // A regular file: not a folder, a device or anything else
-  pub isFile bool;
+  pub isFile: bool;
 }
 
 fn emptyStat() posix.Stat {
-  new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+  posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64)
 }
 
 // The size, time and kind of what a path names, following a link
-pub fn stat(path &Path) Result[FileInfo, FsError] {
+pub fn stat(path: &Path) Result[FileInfo, FsError] {
   if hasNul(path) { return fail[FileInfo]("stat", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
-  mut st = emptyStat();
+  var c = cText(path);
+  var st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
-  imm kind = st.st_mode & posix.S_IFMT;
-  Ok[FileInfo, FsError](new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
-    kind == posix.S_IFDIR, kind == posix.S_IFREG));
+  let kind = st.st_mode & posix.S_IFMT;
+  Ok[FileInfo, FsError](FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG))
 }
 
 // The file-type bits of what a path names, or 0 when it cannot be seen
-fn kindOf(path &Path) u16 {
+fn kindOf(path: &Path) u16 {
   if hasNul(path) { return 0u16; }
   useUtf8();
-  mut c = cText(path);
-  mut st = emptyStat();
+  var c = cText(path);
+  var st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return 0u16; }
-  st.st_mode & posix.S_IFMT;
+  st.st_mode & posix.S_IFMT
 }
 
 // The file-type bits of what a path names, not following a link, or 0 when
 // it cannot be seen
-fn linkKindOf(path &Path) u16 {
-  mut c = cText(path);
-  mut st = emptyStat();
+fn linkKindOf(path: &Path) u16 {
+  var c = cText(path);
+  var st = emptyStat();
   if posix.lstat(c.cstr(), &mut st) != 0i32 { return 0u16; }
-  st.st_mode & posix.S_IFMT;
+  st.st_mode & posix.S_IFMT
 }
 
 // Whether anything has that name
-pub fn exists(path &Path) bool { kindOf(path) != 0u16; }
+pub fn exists(path: &Path) bool { kindOf(path) != 0u16 }
 
 // Whether a folder has that name
-pub fn isDir(path &Path) bool { kindOf(path) == posix.S_IFDIR; }
+pub fn isDir(path: &Path) bool { kindOf(path) == posix.S_IFDIR }
 
 // Whether a regular file has that name
-pub fn isFile(path &Path) bool { kindOf(path) == posix.S_IFREG; }
+pub fn isFile(path: &Path) bool { kindOf(path) == posix.S_IFREG }
+
+// The size, time and kind of what a path names, NOT following a link: a link
+// is described itself. A link is neither a folder nor a file here ('isDir' and
+// 'isFile' false), as in a listing; its 'size' is the system's (on Windows 0)
+// and its 'modified' its own. Anything that is not a link answers as 'stat'
+// does. A path nothing has is refused (ENOENT). This sees a link whose target
+// is gone, which 'stat' refuses.
+pub fn lstat(path: &Path) Result[FileInfo, FsError] {
+  if hasNul(path) { return fail[FileInfo]("lstat", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  var st = emptyStat();
+  if posix.lstat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("lstat", path, lastErrno()); }
+  let kind = st.st_mode & posix.S_IFMT;
+  Ok[FileInfo, FsError](FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG))
+}
+
+// Whether the name itself is a link, a link whose target is gone as well as one
+// that leads somewhere (on POSIX 'exists' and 'isDir' follow the first and say
+// false; the Windows runtime's 'stat' answers for a junction whose folder is
+// gone as for the junction itself, so they say true). On POSIX a symbolic link;
+// on Windows any reparse point (a symbolic link, a directory junction, a
+// cloud-storage placeholder), the same test a listing's 'isLink' makes, so the
+// two always agree. False for anything it cannot see.
+pub fn isLink(path: &Path) bool {
+  if hasNul(path) { return false; }
+  useUtf8();
+  linkKindOf(path) == posix.S_IFLNK
+}
 
 // -------- whole files --------
 
 // The error number for a file that would not open: Windows answers EACCES
 // for a folder, which is EISDIR in POSIX's terms. Called straight after the
 // failure, before errno changes.
-fn openErrno(path &Path) i32 {
-  imm code = lastErrno();
-  if code == posix.EACCES and isDir(path) {posix.EISDIR;} else {code;};
+fn openErrno(path: &Path) i32 {
+  let code = lastErrno();
+  if code == posix.EACCES && isDir(path) {posix.EISDIR} else {code}
 }
 
 // The whole of a file, its bytes as they are: text or not, NULs included
-pub fn readFile(path &Path) Result[String, FsError] {
+pub fn readFile(path: &Path) Result[String, FsError] {
   if hasNul(path) { return fail[String]("readFile", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
-  imm f = libc.fopen(c.cstr(), "rb");
+  var c = cText(path);
+  let f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[String]("readFile", path, openErrno(path)); }
-  mut out = String.empty();
-  mut buf = new Array[u8, 65536] <- fill 0u8;
-  imm bp *u8 = &[]buf as *u8;
-  mut going = true;
+  var out = String();
+  var buf = Array[u8, 65536]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  var going = true;
   while going {
-    imm n = libc.fread(bp, 1usize, 65536usize, f);
+    let n = libc.fread(bp, 1usize, 65536usize, f);
     if n > 0usize { out.appendBytes(mem.sliceFromParts(bp, n)); }
     going = n == 65536usize;
   }
-  imm broke = libc.ferror(f) != 0i32;
-  imm code = lastErrno();
+  let broke = libc.ferror(f) != 0i32;
+  let code = lastErrno();
   libc.fclose(f);
   if broke { return fail[String]("readFile", path, code); }
-  Ok[String, FsError](out);
+  Ok[String, FsError](out)
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
-fn writeWith(op &str, path &Path, data &Array[u8], mode cstr) Result[void, FsError] {
+fn writeWith(op: &str, path: &Path, data: &Array[u8], mode: cstr) Result[void, FsError] {
   if hasNul(path) { return fail[void](op, path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
-  imm f = libc.fopen(c.cstr(), mode);
+  var c = cText(path);
+  let f = libc.fopen(c.cstr(), mode);
   if f == null { return fail[void](op, path, openErrno(path)); }
-  imm wrote = if data.len > 0usize {libc.fwrite(data as *u8, 1usize, data.len, f);} else {0usize;};
-  imm code = lastErrno();
-  imm closed = libc.fclose(f);
+  let wrote = if data.len > 0usize {libc.fwrite(data as *u8, 1usize, data.len, f)} else {0usize};
+  let code = lastErrno();
+  let closed = libc.fclose(f);
   if wrote != data.len { return fail[void](op, path, code); }
   if closed != 0i32 { return fail[void](op, path, lastErrno()); }
-  succeeded();
+  succeeded()
 }
 
 // Make the file hold exactly data, making it if it is not there and
 // replacing what it held if it is
-pub fn writeFile(path &Path, data &Array[u8]) Result[void, FsError] {
-  writeWith("writeFile", path, data, "wb");
+pub fn writeFile(path: &Path, data: &Array[u8]) Result[void, FsError] {
+  writeWith("writeFile", path, data, "wb")
 }
 
 // Add data to the end of the file, making it if it is not there
-pub fn appendFile(path &Path, data &Array[u8]) Result[void, FsError] {
-  writeWith("appendFile", path, data, "ab");
+pub fn appendFile(path: &Path, data: &Array[u8]) Result[void, FsError] {
+  writeWith("appendFile", path, data, "ab")
+}
+
+// -------- modes and times --------
+
+extern {
+  // Windows: the C runtime's, and kernel32's (on every link line)
+  fn @c _chmod(path: cstr, mode: i32) i32;
+  fn @c(system) MultiByteToWideChar(page: u32, flags: u32, from: *u8, fromLen: i32, to: *u16, toLen: i32) i32;
+  fn @c(system) CreateFileW(name: *u16, access: u32, share: u32, sa: *u8, disposition: u32,
+    flags: u32, template: usize) usize;
+  fn @c(system) SetFileTime(h: usize, created: *i64, accessed: &i64, written: &i64) i32;
+  // Linux: the C library's
+  fn @c("chmod") posixChmod(path: cstr, mode: u32) i32;
+  fn @c utimensat(dirfd: i32, path: cstr, times: *i64, flags: i32) i32;
+}
+
+const modeBits = 0xFFFu32;          // the permission bits and setuid, setgid, sticky
+const ownerWrite = 0x80u32;         // 0o200, S_IWUSR; also Windows' _S_IWRITE
+const winReadable = 0x100i32;       // _S_IREAD
+const winWritable = 0x180i32;       // _S_IREAD | _S_IWRITE
+const atFdCwd = -100i32;            // AT_FDCWD
+const utf8CodePage = 65001u32;      // CP_UTF8
+const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
+const fileWriteAttributes = 0x100u32;
+const shareAll = 7u32;              // FILE_SHARE_READ | WRITE | DELETE
+const openExisting = 3u32;
+const backupSemantics = 0x02000000u32;   // lets a folder be opened
+const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;
+const ticksPerSecond = 10000000i64;      // FILETIME counts 100 ns
+const secondsTo1970 = 11644473600i64;    // from 1601-01-01, FILETIME's origin, to 1970
+
+// Set what a path names' permission bits, following a link to its target.
+// 'mode' is POSIX's: the nine permission bits (0o755 is 0x1ED) and, on POSIX,
+// setuid, setgid and sticky above them; any bit above those is ignored.
+//
+// Windows has no permission bits, only a read-only attribute, and this does not
+// pretend otherwise: the one bit it reads is the owner's write bit (0o200, 0x80).
+// Set, the file is made writable; clear, it is made read-only. Every other bit
+// of 'mode' is accepted and ignored there, so 'chmod(p, 0o644)' and
+// 'chmod(p, 0o666)' do the same, and a program that wants a file read-only everywhere
+// clears the three write bits (0o444). A file made read-only is then refused
+// by 'writeFile' (EACCES). There is no reader of the bits in this package
+// ('FileInfo' holds none); the posix package's 'stat' gives 'st_mode', which on
+// Windows has the write bit clear for a read-only file.
+pub fn chmod(path: &Path, mode: u32) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("chmod", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  let bits = mode & modeBits;
+  let failed = #if #os == .windows {
+    _chmod(c.cstr(), if (bits & ownerWrite) != 0u32 {winWritable} else {winReadable}) != 0i32
+  } #else {
+    posixChmod(c.cstr(), bits) != 0i32
+  };
+  if failed { return fail[void]("chmod", path, lastErrno()); }
+  succeeded()
+}
+
+// Set when a file or folder was last read and last written, following a link
+// to its target. Both are Timestamps of the time package (as 'FileInfo's
+// 'modified' is), UTC; mind the order: the access time first, as POSIX's
+// 'utime' takes them. Linux keeps the nanoseconds given (the file system may round
+// them: ext4 does not, FAT does to 2 seconds); Windows keeps 100 nanoseconds,
+// rounded down. A time before 1970 is set on both, though the Windows C runtime's
+// 'stat' (so 'FileInfo.modified') shows none, only -1 second. Setting a
+// time needs ownership of the file or write access to it (EACCES or EPERM
+// otherwise); a file another program has open without sharing is refused on
+// Windows (EACCES). The change time is the system's own and is not set.
+pub fn utime(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("utime", path, posix.EINVAL); }
+  useUtf8();
+  let code = #if #os == .windows {setTimesWindows(path, accessed, modified)}
+    #else {setTimesLinux(path, accessed, modified)};
+  if code != 0i32 { return fail[void]("utime", path, code); }
+  succeeded()
+}
+
+// The nanoseconds of a Timestamp past its whole second, 0 to 999999999, which
+// is not the remainder for a moment before 1970
+fn nanosPastSecond(t: time.Timestamp) i64 { t.unixNanos() - t.unixSeconds() * 1000000000i64 }
+
+// Linux: utimensat with the two (seconds, nanoseconds) pairs; 0 or the error number
+fn setTimesLinux(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) i32 {
+  var c = cText(path);
+  var pairs = Array[i64, 4]() <- fill 0i64;
+  pairs[0usize] = accessed.unixSeconds();
+  pairs[1usize] = nanosPastSecond(accessed);
+  pairs[2usize] = modified.unixSeconds();
+  pairs[3usize] = nanosPastSecond(modified);
+  if utimensat(atFdCwd, c.cstr(), &[]pairs as *i64, 0i32) != 0i32 { return lastErrno(); }
+  0i32
+}
+
+// A Timestamp as a FILETIME, 100 ns since 1601; -1 for a moment before it
+fn fileTimeOf(t: time.Timestamp) i64 {
+  let seconds = t.unixSeconds() + secondsTo1970;
+  if seconds < 0i64 { return -1i64; }
+  seconds * ticksPerSecond + nanosPastSecond(t) / 100i64
+}
+
+// Windows: open the file for writing its attributes alone (so one that is read-only
+// or open elsewhere for reading still takes it), set the two times, close; 0 or
+// the error number. The name is converted to UTF-16 here, from UTF-8 as
+// the rest of the package reads it.
+fn setTimesWindows(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) i32 {
+  let atime = fileTimeOf(accessed);
+  let mtime = fileTimeOf(modified);
+  if atime < 0i64 || mtime < 0i64 { return posix.EINVAL; }
+  var c = cText(path);
+  let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+  if n <= 0i32 { return posix.EINVAL; }
+  let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+  let h = CreateFileW(wide, fileWriteAttributes, shareAll, null, openExisting, backupSemantics, 0usize);
+  let opened = GetLastError();
+  libc.free(wide as *u8);
+  if h == invalidHandle { return errnoOfWindows(opened); }
+  let done = SetFileTime(h, null, &atime, &mtime);
+  let code = GetLastError();
+  CloseHandle(h);
+  if done == 0i32 { return errnoOfWindows(code); }
+  0i32
+}
+
+// -------- mapped files --------
+
+// What the OS is asked for. Every extern is declared on every system;
+// '#if #os == .windows', resolved as the file is parsed, chooses, so only the
+// target's calls are generated.
+extern {
+  // Windows: kernel32 (on every link line), and the C runtime's way from a
+  // stream to the handle under it
+  fn @c(system) GetFileSizeEx(h: usize, size: &mut i64) i32;
+  fn @c(system) CreateFileMappingW(h: usize, attrs: *u8, protect: u32, sizeHigh: u32, sizeLow: u32,
+    name: *u16) usize;
+  fn @c(system) MapViewOfFile(map: usize, access: u32, offHigh: u32, offLow: u32, bytes: usize) *u8;
+  fn @c(system) UnmapViewOfFile(base: *u8) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetLastError() u32;
+  fn @c _fileno(stream: *libc.FILE) i32;
+  fn @c _get_osfhandle(fd: i32) isize;
+  // Linux: the C library's
+  fn @c fileno(stream: *libc.FILE) i32;
+  fn @c lseek(fd: i32, offset: i64, whence: i32) i64;
+  fn @c mmap(addr: *u8, size: usize, protect: i32, flags: i32, fd: i32, offset: i64) *u8;
+  fn @c munmap(addr: *u8, size: usize) i32;
+}
+
+const pageReadonly = 0x02u32;       // PAGE_READONLY
+const fileMapRead = 0x04u32;        // FILE_MAP_READ
+const seekEnd = 2i32;               // SEEK_END
+const protRead = 1i32;              // PROT_READ
+const mapPrivate = 2i32;            // MAP_PRIVATE
+const mmapFailed = 0xFFFFFFFFFFFFFFFFusize;     // MAP_FAILED, (void*)-1
+
+// The POSIX error number for a Windows error number from the calls above
+fn errnoOfWindows(code: u32) i32 {
+  if code == 2u32 || code == 3u32 { posix.ENOENT }                  // file / path not found
+  else if code == 5u32 || code == 32u32 || code == 33u32 { posix.EACCES }  // denied, sharing, lock
+  else if code == 8u32 || code == 14u32 || code == 1450u32 || code == 1455u32 || code == 1453u32 {
+    posix.ENOMEM       // not enough memory, address space or system resources
+  }
+  else if code == 87u32 { posix.EINVAL }
+  else { posix.EIO }
+}
+
+// A read-only view of a whole file's bytes, held by the OS's memory mapping:
+// one owner, moved, never copied. 'view' lends the bytes, in place, as a
+// '&Array[u8]'; the OS reads a page from the file when it is first touched, so
+// a file larger than memory costs nothing to map and only what is read is
+// loaded. Its death unmaps the view; the file itself is not held open. It
+// declares Sendable, a promise taken on trust, for its raw pointer: the view is
+// the owner's alone and read-only, so it may be handed to another thread, and
+// 'Arc[imm, MappedFile]' shares it among threads.
+pub struct MappedFile is Default, Move, Sendable {
+  ptr: *u8;          // the view's first byte; null for an empty file
+  bytes: usize;      // the file's size when it was mapped
+
+  fn init(self: &new) { *self = MappedFile(null, 0usize); }
+
+  // The file's size in bytes, as it was when mapped
+  pub fn size(self: &) usize { bytes }
+
+  // Whether the file held nothing
+  pub fn isEmpty(self: &) bool { bytes == 0usize }
+
+  // The file's bytes, in place: a view as long as 'size()', good while this
+  // owner lives
+  pub fn view(self: &) &Array[u8] { mem.sliceFromParts(ptr, bytes) }
+
+  // The address of the first byte (null for an empty file), for handing the
+  // mapping on, to a GPU upload for instance. Good while this owner lives.
+  pub fn base(self: &) *u8 { ptr }
+
+  // Unmap the view
+  fn final(self: &uni) {
+    if ptr as usize != 0usize {
+      #if #os == .windows { UnmapViewOfFile(ptr); } #else { munmap(ptr, bytes); }
+    }
+  }
+}
+
+// Map a file for reading, whole. A file that is not there, a folder, anything
+// that is not a regular file, or one that cannot be read is refused, as
+// 'readFile' refuses it. An empty file is mapped as an empty view (the OS
+// cannot map no bytes). The file must stay as long as the mapping does: one
+// that is truncated while mapped, by this program or another, makes a read of
+// the lost part fault (SIGBUS on Linux, an in-page error on Windows), and
+// Windows refuses to remove or rename a mapped file.
+pub fn mapFile(path: &Path) Result[MappedFile, FsError] {
+  if hasNul(path) { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
+  useUtf8();
+  let kind = kindOf(path);
+  if kind == posix.S_IFDIR { return fail[MappedFile]("mapFile", path, posix.EISDIR); }
+  if kind != 0u16 && kind != posix.S_IFREG { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
+  var c = cText(path);
+  let f = libc.fopen(c.cstr(), "rb");
+  if f == null { return fail[MappedFile]("mapFile", path, openErrno(path)); }
+  // The mapping holds the file once made, so the stream can go at once
+  let mapped = #if #os == .windows {mapWindows(path, f)} #else {mapLinux(path, f)};
+  libc.fclose(f);
+  mapped
+}
+
+// Windows: size the file, make a file-mapping object over it, map a view of
+// the whole of it, and let the object go (the view keeps the file)
+fn mapWindows(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
+  let h = usize.from(_get_osfhandle(_fileno(f)));
+  var size = 0i64;
+  if GetFileSizeEx(h, &mut size) == 0i32 {
+    return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError()));
+  }
+  if size == 0i64 { return Ok[MappedFile, FsError](MappedFile()); }
+  // The size as the two halves Windows takes it in
+  let n = u64.from(size);
+  let map = CreateFileMappingW(h, null, pageReadonly, u32.from(n >> 32u64),
+    u32.from(n & 0xFFFFFFFFu64), null);
+  if map == 0usize { return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError())); }
+  let view = MapViewOfFile(map, fileMapRead, 0u32, 0u32, usize.from(n));
+  let code = GetLastError();
+  CloseHandle(map);
+  if view as usize == 0usize { return fail[MappedFile]("mapFile", path, errnoOfWindows(code)); }
+  Ok[MappedFile, FsError](MappedFile(view, usize.from(n)))
+}
+
+// Linux: the size is the offset of the end; map it private and read-only
+fn mapLinux(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
+  let fd = fileno(f);
+  let end = lseek(fd, 0i64, seekEnd);
+  if end < 0i64 { return fail[MappedFile]("mapFile", path, lastErrno()); }
+  if end == 0i64 { return Ok[MappedFile, FsError](MappedFile()); }
+  let n = usize.from(end);
+  let view = mmap(null, n, protRead, mapPrivate, fd, 0i64);
+  if view as usize == mmapFailed { return fail[MappedFile]("mapFile", path, lastErrno()); }
+  Ok[MappedFile, FsError](MappedFile(view, n))
 }
 
 // -------- names --------
@@ -304,123 +659,122 @@ pub fn appendFile(path &Path, data &Array[u8]) Result[void, FsError] {
 // Give a file or folder another name, which may be in another folder on the
 // same volume. Where 'to' is already there, POSIX replaces it; Windows
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
-pub fn rename(from &Path, to &Path) Result[void, FsError] {
-  if hasNul(from) or hasNul(to) {
-    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
+pub fn rename(from: &Path, to: &Path) Result[void, FsError] {
+  if hasNul(from) || hasNul(to) {
+    return Err[void, FsError](FsError(String.from("rename"), from.clone(), to.clone(), posix.EINVAL));
   }
   useUtf8();
-  mut a = cText(from);
-  mut b = cText(to);
+  var a = cText(from);
+  var b = cText(to);
   if libc.rename(a.cstr(), b.cstr()) != 0i32 {
-    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
+    return Err[void, FsError](FsError(String.from("rename"), from.clone(), to.clone(), lastErrno()));
   }
-  succeeded();
+  succeeded()
 }
 
 // Remove a file. A folder is refused (EISDIR): 'removeDir' or 'removeAll'
-pub fn removeFile(path &Path) Result[void, FsError] {
+pub fn removeFile(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeFile", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
+  var c = cText(path);
   if posix.unlink(c.cstr()) != 0i32 { return fail[void]("removeFile", path, openErrno(path)); }
-  succeeded();
+  succeeded()
 }
 
 // -------- folders --------
 
 // Make a folder, whose parent must be there. One already there is refused
 // (EEXIST).
-pub fn makeDir(path &Path) Result[void, FsError] {
+pub fn makeDir(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("makeDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
+  var c = cText(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 { return fail[void]("makeDir", path, lastErrno()); }
-  succeeded();
+  succeeded()
 }
 
 // Make a folder and every folder above it that is not there yet. A folder
 // already there is success; a file in the way is refused (ENOTDIR), and so
 // is a parent that cannot be made, whose error names it.
-pub fn makeDirAll(path &Path) Result[void, FsError] {
+pub fn makeDirAll(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("makeDirAll", path, posix.EINVAL); }
-  imm kind = kindOf(path);
+  let kind = kindOf(path);
   if kind == posix.S_IFDIR { return succeeded(); }
   if kind != 0u16 { return fail[void]("makeDirAll", path, posix.ENOTDIR); }
-  imm up = path.parent();
-  if not up.isEmpty() and up.view() != path.view() {
-    imm made = makeDirAll(&up);
-    if made is Error { return made; }
+  let up = path.parent();
+  if !up.isEmpty() && up.view() != path.view() {
+    makeDirAll(&up)?;
   }
-  mut c = cText(path);
+  var c = cText(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
-    imm code = lastErrno();
+    let code = lastErrno();
     // Made meanwhile by someone else, or named with a '..' that mkdir read
-    if not isDir(path) { return fail[void]("makeDirAll", path, code); }
+    if !isDir(path) { return fail[void]("makeDirAll", path, code); }
   }
-  succeeded();
+  succeeded()
 }
 
 // Remove an empty folder. One with anything in it is refused (ENOTEMPTY).
-pub fn removeDir(path &Path) Result[void, FsError] {
+pub fn removeDir(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
+  var c = cText(path);
   if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeDir", path, lastErrno()); }
-  succeeded();
+  succeeded()
 }
 
 // One entry of a folder
 pub struct DirEntry {
   // Its name in the folder
-  pub name String;
+  pub name: String;
   // The folder's path as given joined to the name: 'src/main.cone'
-  pub path Path;
-  pub isDir bool;
+  pub path: Path;
+  pub isDir: bool;
   // A regular file
-  pub isFile bool;
+  pub isFile: bool;
   // A link, which is neither a folder nor a file here: 'stat' its path to
   // learn what it leads to
-  pub isLink bool;
+  pub isLink: bool;
 }
 
-fn byName(a &DirEntry, b &DirEntry) i32 { a.name.compare(b.name.view()); }
+fn byName(a: &DirEntry, b: &DirEntry) i32 { a.name.compare(b.name.view()) }
 
 // What a folder holds, '.' and '..' left out, sorted by name, byte by byte
 // (so 'B' before 'a', and a UTF-8 name by its bytes). A path that is not a
 // folder is refused (ENOTDIR).
-pub fn readDir(path &Path) Result[List[DirEntry], FsError] {
+pub fn readDir(path: &Path) Result[List[DirEntry], FsError] {
   if hasNul(path) { return fail[List[DirEntry]]("readDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
-  imm dir = posix.opendir(c.cstr());
+  var c = cText(path);
+  let dir = posix.opendir(c.cstr());
   if dir == null { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
-  mut out = List[DirEntry].empty();
+  var out = List[DirEntry]();
   *libc.errno() = 0i32;
-  mut e = posix.readdir(dir);
+  var e = posix.readdir(dir);
   while e != null {
-    imm entry = e as &posix.dirent;
-    imm np *u8 = &[]entry.d_name as *u8;
-    imm name = cstr.fromPtr(np).view();
-    if name != "." and name != ".." {
-      mut t = entry.d_type;
-      imm full = path.join(name);
+    let entry = e as &posix.dirent;
+    let np: *u8 = &[]entry.d_name as *u8;
+    let name = cstr.fromPtr(np).view();
+    if name != "." && name != ".." {
+      var t = entry.d_type;
+      let full = path.join(name);
       // A file system that does not say what an entry is (POSIX allows it)
       // is asked, by the entry's own status, link or not
       if t == posix.DT_UNKNOWN {
-        imm kind = linkKindOf(&full);
-        t = if kind == posix.S_IFLNK {posix.DT_LNK;} elif kind == posix.S_IFDIR {posix.DT_DIR;}
-          elif kind == posix.S_IFREG {posix.DT_REG;} else {posix.DT_UNKNOWN;};
+        let kind = linkKindOf(&full);
+        t = if kind == posix.S_IFLNK {posix.DT_LNK} else if kind == posix.S_IFDIR {posix.DT_DIR}
+          else if kind == posix.S_IFREG {posix.DT_REG} else {posix.DT_UNKNOWN};
       }
-      out.push(new DirEntry(String.from(name), full,
+      out.push(DirEntry(String.from(name), full,
         t == posix.DT_DIR, t == posix.DT_REG, t == posix.DT_LNK));
     }
     e = posix.readdir(dir);
   }
-  imm code = lastErrno();
+  let code = lastErrno();
   posix.closedir(dir);
   if code != 0i32 { return fail[List[DirEntry]]("readDir", path, code); }
   out.sortBy(&byName);
-  Ok[List[DirEntry], FsError](out);
+  Ok[List[DirEntry], FsError](out)
 }
 
 // Every entry below a folder, depth first: each folder's entries in name
@@ -428,43 +782,32 @@ pub fn readDir(path &Path) Result[List[DirEntry], FsError] {
 // not among them. Each entry's path is the root as given joined with the
 // names down to it. A linked folder is listed but not gone into. The first
 // folder that cannot be read ends the walk with its error.
-pub fn walk(root &Path) Result[List[DirEntry], FsError] {
-  mut out = List[DirEntry].empty();
-  imm went = walkInto(root, &mut out);
-  match went {
-    case mut e Error {
-      mut err = failure("", "", 0i32);
-      err <=> e;
-      return Error[List[DirEntry], FsError](err);
-    }
-    case is Ok {}
-  }
-  Ok[List[DirEntry], FsError](out);
+pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
+  var out = List[DirEntry]();
+  walkInto(root, &mut out)?;
+  Ok[List[DirEntry], FsError](out)
 }
 
-fn walkInto(dir &Path, out &mut List[DirEntry]) Result[void, FsError] {
+fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
   match readDir(dir) {
-    case mut e Error {
-      mut err = failure("", "", 0i32);
-      err <=> e;
-      err.op = String.from("walk");
-      return Error[void, FsError](err);
+    case var Err(e) {
+      e.op = String.from("walk");
+      return Err[void, FsError](e);
     }
-    case imm listed Ok {
-      imm entries = &listed;
-      mut i = 0usize;
+    case let Ok(listed) {
+      let entries = &listed;
+      var i = 0usize;
       while i < entries.len() {
-        imm entry = entries[i];
-        out.push(new DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
+        let entry = &entries[i];
+        out.push(DirEntry(entry.name.clone(), entry.path.clone(), entry.isDir, entry.isFile, entry.isLink));
         if entry.isDir {
-          imm below = walkInto(&entry.path, out);
-          if below is Error { return below; }
+          walkInto(&entry.path, out)?;
         }
         i = i + 1usize;
       }
     }
   }
-  succeeded();
+  succeeded()
 }
 
 // Remove what a path names, and, for a folder, everything in it. A link is
@@ -474,68 +817,65 @@ fn walkInto(dir &Path, out &mut List[DirEntry]) Result[void, FsError] {
 // removed. As a guard against a path made wrongly, a path that is empty, is
 // a root or a volume ('C:/', '/', 'C:'), or ends in '.' or '..' is refused
 // (EINVAL).
-pub fn removeAll(path &Path) Result[void, FsError] {
+pub fn removeAll(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeAll", path, posix.EINVAL); }
-  imm n = path.normalize();
-  imm up = n.parent();
-  imm last = lastName(path);
-  if path.isEmpty() or last == "." or last == ".." or n.view() == "."
-    or n.view() == ".." or n.view().endsWith("/..") or up.view() == n.view() {
+  let n = path.normalize();
+  let up = n.parent();
+  let last = lastName(path);
+  if path.isEmpty() || last == "." || last == ".." || n.view() == "."
+    || n.view() == ".." || n.view().endsWith("/..") || up.view() == n.view() {
     return fail[void]("removeAll", path, posix.EINVAL);
   }
   useUtf8();
-  mut c = cText(path);
-  mut st = emptyStat();
+  var c = cText(path);
+  var st = emptyStat();
   if posix.lstat(c.cstr(), &mut st) != 0i32 {
-    imm code = lastErrno();
-    if code == posix.ENOENT { return succeeded(); }
+    let code = lastErrno();
+    if errnoKind(code) == IoErrorKind.NotFound { return succeeded(); }
     return fail[void]("removeAll", path, code);
   }
-  removeTree(path, st.st_mode & posix.S_IFMT);
+  removeTree(path, st.st_mode & posix.S_IFMT)
 }
 
 // A path's last name, as written
-fn lastName(p &Path) &str { p.name(); }
+fn lastName(p: &Path) &str { p.name() }
 
 // Remove what path names, whose kind (from lstat) is given
-fn removeTree(path &Path, kind u16) Result[void, FsError] {
+fn removeTree(path: &Path, kind: u16) Result[void, FsError] {
   if kind == posix.S_IFLNK { return removeLink(path); }
   if kind != posix.S_IFDIR {
-    mut c = cText(path);
+    var c = cText(path);
     if posix.unlink(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
     return succeeded();
   }
   match readDir(path) {
-    case mut e Error {
-      mut err = failure("", "", 0i32);
-      err <=> e;
-      err.op = String.from("removeAll");
-      return Error[void, FsError](err);
+    case var Err(e) {
+      e.op = String.from("removeAll");
+      return Err[void, FsError](e);
     }
-    case imm listed Ok {
-      imm entries = &listed;
-      mut i = 0usize;
+    case let Ok(listed) {
+      let entries = &listed;
+      var i = 0usize;
       while i < entries.len() {
-        imm entry = entries[i];
-        imm childKind = if entry.isLink {posix.S_IFLNK;} elif entry.isDir {posix.S_IFDIR;} else {posix.S_IFREG;};
-        imm gone = removeTree(&entry.path, childKind);
-        if gone is Error { return gone; }
+        let entry = &entries[i];
+        let childKind = if entry.isLink {posix.S_IFLNK} else if entry.isDir {posix.S_IFDIR} else {posix.S_IFREG};
+        removeTree(&entry.path, childKind)?;
         i = i + 1usize;
       }
     }
   }
-  mut c = cText(path);
+  var c = cText(path);
   if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
-  succeeded();
+  succeeded()
 }
 
 // Remove a link itself: a link to a folder goes by rmdir on Windows, and a
 // link to a file, or any link on POSIX, by unlink
-fn removeLink(path &Path) Result[void, FsError] {
-  mut c = cText(path);
+fn removeLink(path: &Path) Result[void, FsError] {
+  var c = cText(path);
   if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
   if posix.unlink(c.cstr()) == 0i32 { return succeeded(); }
-  fail[void]("removeAll", path, lastErrno());
+  fail[void]("removeAll", path, lastErrno())
 }
 
 // -------- the current folder --------
@@ -544,49 +884,47 @@ fn removeLink(path &Path) Result[void, FsError] {
 pub fn currentDir() Result[Path, FsError] {
   useUtf8();
   // A null buffer of size 0: the runtime allocates one as long as it needs
-  imm got = posix.getcwd(null, 0usize);
+  let got = posix.getcwd(null, 0usize);
   if got == null { return fail[Path]("currentDir", "", lastErrno()); }
-  imm raw = Path.from(cstr.fromPtr(got).view());
+  let raw = Path.from(cstr.fromPtr(got).view());
   libc.free(got);
-  Ok[Path, FsError](raw.normalize());
+  Ok[Path, FsError](raw.normalize())
 }
 
 // Make path the folder relative paths are read from, for the whole program
 // (every thread)
-pub fn setCurrentDir(path &Path) Result[void, FsError] {
+pub fn setCurrentDir(path: &Path) Result[void, FsError] {
   if hasNul(path) { return fail[void]("setCurrentDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = cText(path);
+  var c = cText(path);
   if posix.chdir(c.cstr()) != 0i32 { return fail[void]("setCurrentDir", path, lastErrno()); }
-  succeeded();
+  succeeded()
 }
 
 // The absolute, normalized path of path, read from the current folder: 'a.txt'
 // in 'C:/work' is 'C:/work/a.txt'. Its text is all that is read: whatever is
 // or is not there, links are not followed, and '..' drops the name before
 // it. "" is the current folder.
-pub fn absolute(path &Path) Result[Path, FsError] {
+pub fn absolute(path: &Path) Result[Path, FsError] {
   if hasNul(path) { return fail[Path]("absolute", path, posix.EINVAL); }
   if path.isEmpty() { return currentDir(); }
-  if not isWindows() {
+  #if #os != .windows {
     // POSIX's realpath asks the file system (the path must be there, links
     // are followed); this reads the text alone, as Windows' does: the
     // current folder, then the path, normalized
     match currentDir() {
-      case imm here Ok { return Ok[Path, FsError](here.join(path).normalize()); }
-      case mut e Error {
-        mut err = failure("", "", 0i32);
-        err <=> e;
-        err.op = String.from("absolute");
-        return Error[Path, FsError](err);
+      case let Ok(here) { return Ok[Path, FsError](here.join(path).normalize()); }
+      case var Err(e) {
+        e.op = String.from("absolute");
+        return Err[Path, FsError](e);
       }
     }
   }
   useUtf8();
-  mut c = cText(path);
-  imm got = posix.realpath(c.cstr(), null);
+  var c = cText(path);
+  let got = posix.realpath(c.cstr(), null);
   if got == null { return fail[Path]("absolute", path, lastErrno()); }
-  imm raw = Path.from(cstr.fromPtr(got).view());
+  let raw = Path.from(cstr.fromPtr(got).view());
   libc.free(got);
-  Ok[Path, FsError](raw.normalize());
+  Ok[Path, FsError](raw.normalize())
 }

@@ -16,67 +16,51 @@ import stdio use *;
 import collections use *;
 import toml;
 
-// The manifest's package, or the reason it cannot be read
-fn describe(text &Array[u8]) Result[String, String] {
-  mut doc = new toml.Document();
-  match toml.parse(text) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error { return Error[String, String](e.message()); }
-  }
+// The manifest's package, or the reason it cannot be read (an application: the
+// parser's error and its own refusals alike are an AnyError)
+fn describe(text: &Array[u8]) Result[String, AnyError] {
+  let doc = toml.parse(text)?;
   // Only Congo's tables, each table only Congo's keys
-  imm names = doc.names();
-  mut i = 0usize;
+  let names = doc.names();
+  var i = 0usize;
   while i < names.len() {
-    if not (names[i].equals("package") or names[i].equals("link")) {
-      mut m = String.from("[");
+    if !(names[i].equals("package") || names[i].equals("link")) {
+      var m = String.from("[");
       m.append(names[i].view());
       m.append("] is not part of a Congo manifest");
-      return Error[String, String](m);
+      return Err[String, AnyError](AnyError.msg(m.view()));
     }
     i = i + 1usize;
   }
-  if not doc.has("package") {
-    return Error[String, String](String.from("the manifest needs a [package] table"));
+  if !doc.has("package") {
+    return Err[String, AnyError](AnyError.msg("the manifest needs a [package] table"));
   }
-  imm pkg = doc["package"];
-  mut out = String.empty();
-  match pkg.getString("name") {
-    case imm n Some { out.append(n.view()); }
-    case is None { return Error[String, String](String.from("[package] name must be a string")); }
-  }
-  match pkg.getString("version") {
-    case imm v Some {
-      out.append(" ");
-      out.append(v.view());
-    }
-    case is None { return Error[String, String](String.from("[package] version must be a string")); }
-  }
-  match pkg.getString("output") {
-    case imm o Some {
-      out.append(", a ");
-      out.append(o.view());
-    }
-    case is None { return Error[String, String](String.from("[package] output must be a string")); }
-  }
+  let pkg = &doc["package"];
+  var out = String();
+  let Some(n) = pkg.getString("name") else { return Err[String, AnyError](AnyError.msg("[package] name must be a string")); };
+  out.append(n.view());
+  let Some(v) = pkg.getString("version") else { return Err[String, AnyError](AnyError.msg("[package] version must be a string")); };
+  out.append(" ");
+  out.append(v.view());
+  let Some(o) = pkg.getString("output") else { return Err[String, AnyError](AnyError.msg("[package] output must be a string")); };
+  out.append(", a ");
+  out.append(o.view());
   if doc.has("link") {
-    match doc["link"].getStrings("libraries") {
-      case imm l Some {
-        out.append("\nlinks: ");
-        imm shown = String.join(l.view(), ", ");
-        out.append(shown.view());
-      }
-      case is None { return Error[String, String](String.from("[link] libraries must be a list of strings")); }
-    }
+    let Some(l) = doc["link"].getStrings("libraries") else { return Err[String, AnyError](AnyError.msg("[link] libraries must be a list of strings")); };
+    out.append("\nlinks: ");
+    let shown = String.join(l.view(), ", ");
+    out.append(shown.view());
   }
-  Ok[String, String](out);
+  Ok[String, AnyError](out)
 }
 
-fn show(text &Array[u8]) {
+fn show(text: &Array[u8]) {
   match describe(text) {
-    case imm ok Ok { printStr(ok.view()); }
-    case imm e Error {
+    case let Ok(ok) { printStr(ok.view()); }
+    case let Err(e) {
       printStr("congo.toml: ");
-      printStr(e.view());
+      let why = String() <- e;
+      printStr(why.view());
     }
   }
   printStr("\n");

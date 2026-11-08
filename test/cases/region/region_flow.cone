@@ -15,93 +15,93 @@
 
 mod region_flow;
 
-alias SoPair = (So[i32], So[i32]);
+alias UniPair = (Uni[i32], Uni[i32]);
 
 struct Plain {
-  pub n i32;
+  pub n: i32;
 }
 
 // A region declaring 'Move': one owner per value
 struct Lonely is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
 }
 
 // A region declaring neither 'Move' nor 'aliasRef': its references are shared
 // freely, as a collector's are
 struct Swept is RegionRef {
-  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
 }
 
 // A move type, by its finalizer
 struct Tracked {
-  pub n i32;
-  fn final(self &uni) { }
+  pub n: i32;
+  fn final(self: &uni) { }
 }
 
 // An enrichment: Plain's representation under a second name
 struct RichPlain extends Plain {
-  pub fn doubled(self &) i32 { n * 2; }
+  pub fn doubled(self: &) i32 { n * 2 }
 }
 
-fn soPair() So[i32], So[i32] {
-  imm a = new So[i32](1);
-  imm b = new So[i32](2);
-  a, b;
+fn soPair() Uni[i32], Uni[i32] {
+  let a = Uni[i32](1);
+  let b = Uni[i32](2);
+  a, b
 }
 
-fn soPairAlias() SoPair {
-  imm a = new So[i32](1);
-  imm b = new So[i32](2);
-  a, b;
+fn soPairAlias() UniPair {
+  let a = Uni[i32](1);
+  let b = Uni[i32](2);
+  a, b
 }
 
 fn moving() {
-  // 'So' declares 'Move' in core, which makes it a single-owner region, so
+  // 'Uni' declares 'Move' in core, which makes it a single-owner region, so
   // every reference into it is a move type however aliasable its permission:
   // the second read of the source finds nothing there
-  imm sole = new So[i32](1);
-  imm moved = sole;
-  imm again = sole;             //~ ErrorMove "has been moved out"
+  let sole = Uni[i32](1);
+  let moved = sole;
+  let again = sole;             //~ ErrorMove "has been moved out"
 
   // It is the declaration that says so, not the name: a region declared here
   // as 'Move' is single owner in the same way
-  imm lone = new Lonely[mut, i32](7);
-  imm taken1 = lone;
-  imm taken2 = lone;            //~ ErrorMove "has been moved out"
+  let lone = Lonely[imm, i32](7);
+  let taken1 = lone;
+  let taken2 = lone;            //~ ErrorMove "has been moved out"
 
   // And one declaring neither 'Move' nor 'aliasRef' copies its references for
   // nothing: two reads of the source raise nothing
-  imm traced = new Swept[mut, i32](8);
-  imm traced1 = traced;
-  imm traced2 = traced;
+  let traced = Swept[mut, i32](8);
+  let traced1 = traced;
+  let traced2 = traced;
 
   // Such a reference is one of many holders, so a move value may not be moved
   // out through it, as it may not through a shared 'Rc' owner
-  imm tracked = new Swept[mut, Tracked](9);
-  imm out = *tracked;           //~ ErrorMoveOut "through a shared owning reference"
+  let tracked = Swept[mut, Tracked](9);
+  let out = *tracked;           //~ ErrorMoveOut "through a shared owning reference"
 
   // The other path to the same place: an allocation with no stated permission is
   // 'uni', which lacks MayAlias, so an 'Rc' reference moves too even though the
   // region counts references
-  imm unique = new Rc[i32](2);
-  imm taken = unique;
-  imm twice = unique;           //~ ErrorMove "has been moved out"
+  let unique = Rc[i32](2);
+  let taken = unique;
+  let twice = unique;           //~ ErrorMove "has been moved out"
 
   // An owner handed to an enrichment's reference type moves too: the reference
   // crosses in a recast, which once hid the source, leaving two owners
-  imm based = new So[Plain](6);
-  imm enriched So[RichPlain] = based;
-  imm stale = based;            //~ ErrorMove "has been moved out"
+  let based = Uni[Plain](6);
+  let enriched: Uni[RichPlain] = based;
+  let stale = based;            //~ ErrorMove "has been moved out"
 
   // For contrast, the aliasable permission on the same region copies, and the
   // source is still there. Two reads of it raise nothing.
-  imm shared = new Rc[mut, i32](3);
-  imm copy1 = shared;
-  imm copy2 = shared;
+  let shared = Rc[mut, i32](3);
+  let copy1 = shared;
+  let copy2 = shared;
 
   // The permission belongs to the reference, so a 'ro' allocation may not be
   // written through any more than a 'ro' borrow may
-  imm readonly = new Rc[ro, i32](4);
+  let readonly = Rc[ro, i32](4);
   *readonly = 5;                //~ ErrorNoMut "permission to modify lval"
 
   // A tuple carrying an owning reference is a move type too, so destructuring
@@ -109,25 +109,25 @@ fn moving() {
   // second time. Written as an alias of the tuple it moves the same way: an
   // alias is transparent, and the two assignment paths that read the tuple's
   // element list resolve it to find one.
-  imm pair = soPair();
-  imm first So[i32];
-  imm second So[i32];
+  let pair = soPair();
+  let first: Uni[i32];
+  let second: Uni[i32];
   first, second = pair;
-  imm third So[i32];
-  imm fourth So[i32];
+  let third: Uni[i32];
+  let fourth: Uni[i32];
   third, fourth = pair;         //~ ErrorMove "has been moved out"
 
-  imm aliased = soPairAlias();
-  imm fifth So[i32];
-  imm sixth So[i32];
+  let aliased = soPairAlias();
+  let fifth: Uni[i32];
+  let sixth: Uni[i32];
   fifth, sixth = aliased;
-  imm seventh So[i32];
-  imm eighth So[i32];
+  let seventh: Uni[i32];
+  let eighth: Uni[i32];
   seventh, eighth = aliased;    //~ ErrorMove "has been moved out"
 
   // A finished value an allocation takes is moved in, so a move value's
   // source holds nothing afterwards
-  imm tr = new Tracked(10);
-  imm held = new Rc[mut, Tracked](tr);
-  imm left = tr;                //~ ErrorMove "has been moved out"
+  let tr = Tracked(10);
+  let held = Rc[mut, Tracked](tr);
+  let left = tr;                //~ ErrorMove "has been moved out"
 }

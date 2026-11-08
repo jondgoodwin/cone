@@ -76,12 +76,36 @@ void genericInstantiateExit();
 uint32_t genericInstantiateDepth();
 void genericInstantiateDepthSet(uint32_t depth);
 
+// A typed 'let' or an assignment's target states the type its value is wanted
+// as: 'genericStatedType' is it while the value is checked, and fnCallTypeCheck
+// sets 'genericExpectStated' for the call whose expected type it is, and only it.
+extern int genericExpectStated;
+extern INode *genericStatedType;
+
 // Perform generic substitution, if this is a correctly set up generic "fncall".
 // A type parameter the arguments leave unsaid is read off 'expectType', the type
 // the call's value is wanted as (unknownType if nothing says): see
 // genericInferFromExpected in generic.c.
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
+
+// A macro's type parameters, inferred from its arguments by the rules a
+// generic function's are from a call's. 'parmtypes' and 'args' are paired, a
+// parameter's type as written and its argument type checked, a pair left out
+// where either is NULL. The type arguments, one nothing said left NULL, or
+// NULL once two arguments are reported to disagree. 'prior', or NULL, is what
+// earlier arguments said, which these must agree with.
+Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
+    Nodes *prior, INode *errnode, Name *name);
+// Report the type parameters genericInferMacroParms left NULL in 'typeargs'
+void genericMacroMissingParms(Nodes *typeargs, Nodes *typeparms, Name *name, INode *errnode);
+
+// A generic's instance made inside a trial (error.h) for a type the trial made
+// (a closure's hidden struct) is the trial's: it is memoized while the trial
+// runs, so the trial's own check can find it again, and taken out once the
+// outermost trial has closed, so it is never generated. Called after a trial
+// closes; does its work only when none is open.
+void genericTrialPurge(void);
 
 // The instance of generic method 'genmeth' that a call on a receiver names,
 // its type arguments 'typeargs' or, when NULL, inferred from the call's
@@ -129,10 +153,10 @@ INode *genericStructArgExpect(TypeCheckState *pstate, StructNode *generic, Nodes
 // Does a generic variant have a type parameter none of its fields names ('None')?
 int genericVariantParmUnnamed(StructNode *variant);
 
-// Constraints:'where T is Name and ... or ...', and the inline '[T Name + Name]'.
+// Constraints:'where T is Name && ... || ...', and the inline '[T Name + Name]'.
 //
 // A 'where' list holds conditions, every one of which must hold: the operands
-// of the 'and's at the top of what was written, each in its own element. A
+// of the '&&'s at the top of what was written, each in its own element. A
 // condition is a clause, 'T is Name' -- an IsTag CastNode whose 'exp' is a use
 // of the type parameter it constrains and whose 'typ' is a use of the trait --
 // or an OrLogicTag or AndLogicTag LogicNode joining two conditions. A generic
@@ -148,6 +172,47 @@ int genericVariantParmUnnamed(StructNode *variant);
 // a member of, or whose name is not a trait
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep);
 
+// Associated types: 'type Cursor: Iterator[T];' in a trait is a parameter of the
+// trait that no use writes (FlagAssocType), after the written ones. A use names
+// the trait with the written arguments alone, 'C: Iterable[T]'; the type meeting
+// it says the rest, by an alias it declares, 'alias Cursor = ListIter[T];', or by
+// the shape of its methods, the one mentioning it ('iter''s return type). Generic
+// code names it through the parameter, 'C.Cursor', resolved in each instance.
+
+// How many of a generic's parameters a use writes: all but its associated types
+uint32_t genericWrittenCount(GenericInfo *info);
+
+// Does this generic (a trait) declare an associated type?
+int genericHasAssoc(GenericInfo *info);
+
+// A trait whose every parameter is an associated type is written bare, 'C:
+// Holder', in a bound or an 'is' list: the name, resolved, is replaced by its use
+// with no written arguments, 'Holder[]', completed as any other use is
+void genericAssocBareUse(INode **nodep);
+
+// 'C.Cursor' in a generic's template, C a type parameter whose bound declares
+// Cursor: rewritten as the path the instance resolves, 'Iterable[T].Cursor(C)',
+// and 1 returned. 'C.Nope', where C's bounds declare associated types but none
+// of that name, is refused (1, reported). 0 for any other path.
+int genericAssocPathNameRes(NameResState *pstate, FnCallNode **nodep);
+
+// Is this the path genericAssocPathNameRes made? Then it stands for a type once
+// its parameter is substituted
+int genericAssocPathIs(INode *node);
+
+// Is it such a path in an instance, its parameter substituted by a type? Then it
+// is a type, which type check replaces with the one it names
+int genericAssocPathIsType(INode *node);
+
+// 'Iterable[i64].Cursor(Bag)' in an instance: the type Bag says its Cursor is,
+// which replaces the node. 0 for any other call.
+int genericAssocPathTypeCheck(TypeCheckState *pstate, INode **nodep);
+
+// An entry of a type's 'is' list naming a trait with associated types,
+// 'is Iterable[i64]': completed with what 'type' says they are, so that it names
+// the trait's instance. 0, reported, where the type does not say them.
+int genericAssocCompleteIs(TypeCheckState *pstate, INode *entry, StructNode *type);
+
 // Resolve and vet the condition on one entry of a generic type's 'is' list,
 // 'is Move if T is Move', once its type parameters 'parms' are hooked: a
 // condition as a 'where' clause writes one, each clause asking about one of
@@ -155,6 +220,13 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
 // the entry where its arguments make the condition true (genericInstantiate
 // evaluates it, as it does a method's 'where').
 int genericIsConditionNameRes(NameResState *pstate, Nodes *parms, INode *cond);
+
+// A type-fact '#if' asks what a type parameter is, as a 'where' clause does, and
+// may negate it. Its condition is resolved here (0, reported, where a clause is
+// refused) and decided once a clone has substituted the instance's arguments:
+// 1, 0, or -1 while it still turns on a parameter bound elsewhere.
+int genericHashCondNameRes(NameResState *pstate, INode *cond);
+int genericHashCondHolds(INode *cond);
 
 // Is 'type' what 'trait' says, as a constraint asks it? A marker trait -- one
 // requiring nothing of a value, the compiler's own among them -- by the
@@ -170,7 +242,7 @@ void genericSendableCheckAll();
 // Why a type is not Sendable, as the thread check's diagnostics say it: where
 // the culprit sits in it, into 'what', and what kind of thing it is, into
 // 'reason', each 512 bytes. Returns whether the cause is a borrow or a
-// permission, which a diagnostic says is not a local's own 'mut'. 'how' is how
+// permission, which a diagnostic says is not a local's own 'var'. 'how' is how
 // the check was made: whether a borrow of the whole program may cross there
 int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how);
 
@@ -193,6 +265,27 @@ struct ClosureCap *genericClosureNotShareableCap(INode *type, int mutrule);
 // 'typedcl' because its 'where' clause is not met there, report so at
 // 'errnode', naming the clause, and return 1. Otherwise return 0.
 int genericReportAbsent(INode *errnode, INode *typedcl, Name *name);
+
+// The generic type (or generic variant) whose instance 'inst' is, or NULL
+// where 'inst' is no generic type's instance
+StructNode *genericTypeTemplate(StructNode *inst);
+
+// Decide now the members of instance 'instance' whose 'where' waited on an
+// argument's layout (StructNode.latewhere), where every argument can be laid
+// out: called wherever the instance's members are read, so that a member its
+// arguments leave out is neither selected nor checked, whatever is in flight.
+void genericLateWhereNow(StructNode *instance);
+
+// Is 'member' of struct 'type' reached by code in a generic's instance THROUGH
+// the generic's bound? True when 'node' (any node of the instance: a call, a
+// function) was instantiated from a generic one of whose type parameters is
+// bounded by a trait, 'type' is that parameter's argument and declares the
+// trait with 'is', and the trait requires a member by this name. Such a type has
+// asserted the fit itself and meets the trait everywhere, so a private member
+// is named by the body as the bound promised (struct.md, "A private member of a
+// type meets a trait's requirement only for code inside the module declaring
+// the type").
+int genericBoundReachesMember(INode *node, StructNode *type, Name *member);
 
 // Is this function a member of a generic type's template that exists only
 // where its clause holds? A use of one from an instance is a use of what that

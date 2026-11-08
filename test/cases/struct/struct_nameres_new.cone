@@ -1,0 +1,55 @@
+// 'new' takes a dynamic region, a value such as an arena (region_new_arena):
+// written before a type it is refused, once, at the 'new', wherever the type
+// is allocated and whatever it is -- a struct, a generic struct with its type
+// arguments written or inferred, a collection, a collection with its contents,
+// an owner of a region written out or through an alias, a type reached through
+// a module, a generic's parameter, a borrow of a construction, an array, a
+// number and an enum's variant. The refusal says nothing of a spelling to write
+// instead, and the construction goes on as the call of the type it is, so
+// nothing else is reported of it. 'trynew' is its own (region_fallible_alloc)
+// and a dynamic region keeps its 'new' (region_new_arena).
+//
+// Name resolution stage: a program refused here is refused before its types
+// are checked, so every line is a refusal of 'new' and nothing else.
+
+mod struct_nameres_new;
+
+import collections use *;
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Box[T] {
+  pub v: T;
+}
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+
+alias Counted = Rc[mut, Point];
+
+fn make[T](a: i32, b: i32) T {
+  new T(a, b)                                    //~ ErrorNewNotRegion:3 "takes a dynamic region"
+}
+
+fn forms() {
+  let a = new Point(1, 2);                       //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let b = new Point;                             //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let c = new Box[i32](5);                       //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let d = new Box(6);                            //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let e = new List[i32](4);                      //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  var f = new List[i32] <- 2, 3, 5;              //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let g = new Rc[mut, Point](Point(1, 2));       //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let h = new Counted(Point(1, 2));              //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let i = new collections.List[i32](4);          //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let j = &new Point(1, 2);                      //~ ErrorNewNotRegion:12 "takes a dynamic region"
+  let k = new Array[i32, 2] <- fill 0;           //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let l = new u32(5);                            //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let m = new Shape.Circle(3);                   //~ ErrorNewNotRegion:11 "takes a dynamic region"
+  let n = new Point(1, new Point(2, 3).x);       //~ ErrorNewNotRegion:11 "takes a dynamic region"
+                                                 //~^ ErrorNewNotRegion:24 "takes a dynamic region"
+}

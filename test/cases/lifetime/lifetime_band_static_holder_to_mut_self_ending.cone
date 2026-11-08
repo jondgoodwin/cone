@@ -1,0 +1,46 @@
+// lifetime_band_static_holder_to_mut_self with a field '&'a str': the
+// result of an unannotated signature holding a borrow that ends carries the
+// receiver's loan, a borrow of 'self.reader', which may not be stored into
+// '*self'.
+//
+// Verdict: refuse: ErrorSelfStore at 'self.take(f)'.
+// Basis: mem-lifetimes.html (an unannotated signature's borrows share one
+// lifetime); a value may not keep a borrow of its own storage.
+// Master c85d9fa99: refused the same.
+
+mod lifetime_band_static_holder_to_mut_self_ending;
+
+struct Fault {
+  code: u32;
+  detail: &'a str;
+}
+
+struct Reader {
+  count: u32;
+
+  fn next(self: &mut, input: &mut i64) Fault {
+    count = count + 1u32;
+    *input = *input + 1i64;
+    Fault(count, "short")
+  }
+}
+
+struct Conn {
+  reader: Reader;
+  last: Option[Fault];
+
+  fn take(self: &mut, f: Fault) {
+    last = Some[Fault](f);
+  }
+
+  fn step(self: &mut, input: &mut i64) {
+    let f = self.reader.next(input);
+    self.take(f);           //~ ErrorSelfStore "the value carries a borrow of 'self.reader'"
+  }
+}
+
+fn main() {
+  var c = Conn(Reader(0u32), None[Fault]);
+  var n = 0i64;
+  c.step(&mut n);
+}

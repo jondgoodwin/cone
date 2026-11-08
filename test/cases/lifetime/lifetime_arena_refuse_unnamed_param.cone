@@ -1,0 +1,35 @@
+// Bug 55: a function naming no lifetime stores a borrow of another parameter in a node of the arena it is
+// handed; the node's finalizer reads it after the caller's local is gone. Refuse.
+mod lifetime_arena_refuse_unnamed_param;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F {
+  pub p: Option[&mut T];
+  fn final(self: &uni) {
+    match self.p {
+      case let Some(r) { print <- "finalizer reads ", r.v, "\n"; }
+      case None { print <- "none\n"; }
+    }
+  }
+}
+fn clobber(n: i64) i64 {
+  var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64];
+  var i = 0usize;
+  var s = n;
+  while i < 8usize { b[i] += s; s += b[i]; i += 1usize; }
+  s
+}
+fn stash(ar: &mut Arena, x: &mut T) {
+  let f = ar.alloc(F(None));
+  f.p = Some(x);  //~ ErrorEscape
+}
+fn scope(a: &mut Arena) {
+  var t = T(7);
+  stash(a, &mut t);
+}
+fn main() {
+  var a = Arena();
+  scope(&mut a);
+  print <- clobber(3), "\n";
+}

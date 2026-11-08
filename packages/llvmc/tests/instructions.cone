@@ -1,0 +1,311 @@
+// One function that uses the instruction builder's whole range (the integer and floating-point arithmetic,
+// the comparisons with every predicate the compiler uses, the casts, memory, aggregates, vectors,
+// atomics, a call), verified and printed; then the same IR read back and edited: instructions walked
+// forwards and backwards, their operands, parents and opcodes, the uses of a value, a block moved,
+// inserted and removed, a value replaced, an instruction cloned and erased, the builder positioned
+// before an instruction, intrinsics looked up. The module has no target, so the text is the same everywhere.
+
+mod instructions;
+
+import stdio use *;
+import collections use *;
+import llvmc;
+
+fn expect(ok: bool, label: &str) {
+  if !ok { print <- "FAILED: ", label, "\n"; }
+}
+
+fn main() i32 {
+  let ctx = llvmc.ContextCreate();
+  let m = llvmc.ModuleCreateWithNameInContext("instructions", ctx);
+  let bld = llvmc.CreateBuilderInContext(ctx);
+  let i1 = llvmc.Int1TypeInContext(ctx);
+  let i8 = llvmc.Int8TypeInContext(ctx);
+  let i16 = llvmc.Int16TypeInContext(ctx);
+  let i32t = llvmc.Int32TypeInContext(ctx);
+  let i64 = llvmc.Int64TypeInContext(ctx);
+  let flt = llvmc.FloatTypeInContext(ctx);
+  let dbl = llvmc.DoubleTypeInContext(ctx);
+  let voidt = llvmc.VoidTypeInContext(ctx);
+  let ptr = llvmc.PointerTypeInContext(ctx, 0u32);
+  let ptr1 = llvmc.PointerTypeInContext(ctx, 1u32);
+
+  // a callee, declared only
+  var cps: Array[*llvmc.Type, 2] = [i32t, ptr];
+  let callee = llvmc.AddFunction(m, "callee", llvmc.FunctionType(i32t, &cps[0], 2u32, 0i32));
+
+  // sink(i32 a, i32 b, double x, ptr p) i32
+  var sps: Array[*llvmc.Type, 4] = [i32t, i32t, dbl, ptr];
+  let sink = llvmc.AddFunction(m, "sink", llvmc.FunctionType(i32t, &sps[0], 4u32, 0i32));
+  let a = llvmc.GetParam(sink, 0u32);
+  let b = llvmc.GetParam(sink, 1u32);
+  let x = llvmc.GetParam(sink, 2u32);
+  let p = llvmc.GetParam(sink, 3u32);
+  llvmc.SetValueName2(a, llvmc.bytesOf("a"), 1usize);
+  llvmc.SetValueName2(b, llvmc.bytesOf("b"), 1usize);
+  llvmc.SetValueName2(x, llvmc.bytesOf("x"), 1usize);
+  llvmc.SetValueName2(p, llvmc.bytesOf("p"), 1usize);
+  let entry = llvmc.AppendBasicBlockInContext(ctx, sink, "entry");
+  llvmc.PositionBuilderAtEnd(bld, entry);
+
+  // integer arithmetic
+  let i_add = llvmc.BuildAdd(bld, a, b, "add");
+  let i_sub = llvmc.BuildSub(bld, a, b, "sub");
+  let i_mul = llvmc.BuildMul(bld, a, b, "mul");
+  let i_sdiv = llvmc.BuildSDiv(bld, a, b, "sdiv");
+  let i_udiv = llvmc.BuildUDiv(bld, a, b, "udiv");
+  let i_xdiv = llvmc.BuildExactSDiv(bld, a, b, "exactsdiv");
+  let i_srem = llvmc.BuildSRem(bld, a, b, "srem");
+  let i_urem = llvmc.BuildURem(bld, a, b, "urem");
+  let i_shl = llvmc.BuildShl(bld, a, b, "shl");
+  let i_lshr = llvmc.BuildLShr(bld, a, b, "lshr");
+  let i_ashr = llvmc.BuildAShr(bld, a, b, "ashr");
+  let i_and = llvmc.BuildAnd(bld, a, b, "and");
+  let i_or = llvmc.BuildOr(bld, a, b, "or");
+  let i_xor = llvmc.BuildXor(bld, a, b, "xor");
+  let i_neg = llvmc.BuildNeg(bld, a, "neg");
+  let i_not = llvmc.BuildNot(bld, a, "not");
+
+  // floating point
+  let f_add = llvmc.BuildFAdd(bld, x, x, "fadd");
+  let f_sub = llvmc.BuildFSub(bld, x, f_add, "fsub");
+  let f_mul = llvmc.BuildFMul(bld, x, x, "fmul");
+  let f_div = llvmc.BuildFDiv(bld, f_mul, x, "fdiv");
+  let f_rem = llvmc.BuildFRem(bld, f_div, x, "frem");
+  let f_neg = llvmc.BuildFNeg(bld, f_rem, "fneg");
+
+  // comparisons: every integer predicate, and the real ones the compiler uses
+  let c_eq = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntEQ, a, b, "eq");
+  let c_ne = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntNE, a, b, "ne");
+  let c_ugt = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntUGT, a, b, "ugt");
+  let c_uge = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntUGE, a, b, "uge");
+  let c_ult = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntULT, a, b, "ult");
+  let c_ule = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntULE, a, b, "ule");
+  let c_sgt = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSGT, a, b, "sgt");
+  let c_sge = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSGE, a, b, "sge");
+  let c_slt = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSLT, a, b, "slt");
+  let c_sle = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSLE, a, b, "sle");
+  let d_oeq = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealOEQ, x, f_add, "oeq");
+  let d_ogt = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealOGT, x, f_add, "ogt");
+  let d_oge = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealOGE, x, f_add, "oge");
+  let d_olt = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealOLT, x, f_add, "olt");
+  let d_ole = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealOLE, x, f_add, "ole");
+  let d_one = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealONE, x, f_add, "one");
+  let d_une = llvmc.BuildFCmp(bld, llvmc.RealPredicate.RealUNE, x, f_add, "une");
+  let both = llvmc.BuildAnd(bld, c_eq, d_oeq, "both");
+  let pick = llvmc.BuildSelect(bld, both, i_add, i_sub, "pick");
+  let fpick = llvmc.BuildSelect(bld, c_slt, f_add, f_sub, "fpick");
+
+  // casts
+  let t8 = llvmc.BuildTrunc(bld, a, i8, "trunc");
+  let z32 = llvmc.BuildZExt(bld, t8, i32t, "zext");
+  let s64 = llvmc.BuildSExt(bld, a, i64, "sext");
+  let fsi = llvmc.BuildFPToSI(bld, x, i64, "fptosi");
+  let fui = llvmc.BuildFPToUI(bld, x, i32t, "fptoui");
+  let sif = llvmc.BuildSIToFP(bld, a, dbl, "sitofp");
+  let uif = llvmc.BuildUIToFP(bld, b, flt, "uitofp");
+  let ftr = llvmc.BuildFPTrunc(bld, x, flt, "fptrunc");
+  let fex = llvmc.BuildFPExt(bld, ftr, dbl, "fpext");
+  let p2i = llvmc.BuildPtrToInt(bld, p, i64, "ptrtoint");
+  let i2p = llvmc.BuildIntToPtr(bld, p2i, ptr, "inttoptr");
+  let bc = llvmc.BuildBitCast(bld, a, flt, "bitcast");
+  let asc = llvmc.BuildAddrSpaceCast(bld, p, ptr1, "addrspacecast");
+  let ic = llvmc.BuildIntCast2(bld, t8, i16, 1i32, "intcast");
+
+  // memory
+  let slot = llvmc.BuildAlloca(bld, i32t, "slot");
+  llvmc.SetAlignment(slot, 4u32);
+  let st = llvmc.BuildStore(bld, i_add, slot);
+  let ld = llvmc.BuildLoad2(bld, i32t, slot, "loaded");
+  let arrty = llvmc.ArrayType2(i32t, 8u64);
+  var idx: Array[*llvmc.Value, 2] = [llvmc.ConstInt(i64, 0u64, 0i32), llvmc.ConstInt(i64, 3u64, 0i32)];
+  let gep = llvmc.BuildGEP2(bld, arrty, p, &idx[0], 2u32, "gep");
+  let gepib = llvmc.BuildInBoundsGEP2(bld, arrty, p, &idx[0], 2u32, "gepib");
+  var sfs: Array[*llvmc.Type, 3] = [i8, i32t, i64];
+  let sty = llvmc.StructTypeInContext(ctx, &sfs[0], 3u32, 0i32);
+  let sgep = llvmc.BuildStructGEP2(bld, sty, p, 2u32, "sgep");
+  llvmc.BuildMemSet(bld, p, llvmc.ConstInt(i8, 0u64, 0i32), llvmc.ConstInt(i64, 16u64, 0i32), 1u32);
+  llvmc.BuildMemCpy(bld, p, 1u32, gep, 1u32, llvmc.ConstInt(i64, 8u64, 0i32));
+  llvmc.BuildMemMove(bld, p, 1u32, gepib, 1u32, llvmc.ConstInt(i64, 4u64, 0i32));
+  let rmw = llvmc.BuildAtomicRMW(bld, llvmc.AtomicRMWBinOp.AtomicRMWBinOpAdd, slot, a, llvmc.AtomicOrdering.AtomicOrderingSequentiallyConsistent, 0i32);
+  let cas = llvmc.BuildAtomicCmpXchg(bld, slot, a, b, llvmc.AtomicOrdering.AtomicOrderingAcquireRelease, llvmc.AtomicOrdering.AtomicOrderingMonotonic, 0i32);
+  let cas_old = llvmc.BuildExtractValue(bld, cas, 0u32, "cas.old");
+  let nul = llvmc.BuildIsNull(bld, p, "isnull");
+  let nnul = llvmc.BuildIsNotNull(bld, p, "isnotnull");
+
+  // aggregates and vectors
+  let agg0 = llvmc.GetUndef(sty);
+  let agg1 = llvmc.BuildInsertValue(bld, agg0, t8, 0u32, "ins0");
+  let agg2 = llvmc.BuildInsertValue(bld, agg1, a, 1u32, "ins1");
+  let agg_a = llvmc.BuildExtractValue(bld, agg2, 1u32, "ext1");
+  let vty = llvmc.VectorType(i32t, 4u32);
+  let v0 = llvmc.BuildInsertElement(bld, llvmc.GetUndef(vty), a, llvmc.ConstInt(i32t, 2u64, 0i32), "vins");
+  let v1 = llvmc.BuildExtractElement(bld, v0, llvmc.ConstInt(i32t, 2u64, 0i32), "vext");
+  let fr = llvmc.BuildFreeze(bld, v1, "frozen");
+
+  // a call, with its calling convention and tail flag
+  var args: Array[*llvmc.Value, 2] = [fr, p];
+  let call = llvmc.BuildCall2(bld, llvmc.GlobalGetValueType(callee), callee, &args[0], 2u32, "call");
+  llvmc.SetInstructionCallConv(call, llvmc.FastCallConv);
+  llvmc.SetTailCall(call, 1i32);
+
+  // keep a few results alive: sum them into the return value
+  let r1 = llvmc.BuildAdd(bld, call, agg_a, "r1");
+  let r2 = llvmc.BuildAdd(bld, r1, cas_old, "r2");
+  let r3 = llvmc.BuildAdd(bld, r2, ld, "r3");
+  let ret = llvmc.BuildRet(bld, r3);
+
+  match llvmc.checkModule(m) {
+    case is None { print <- "verifies\n"; }
+    case let Some(why) { print <- "does not verify: ", why.view(), "\n"; }
+  }
+  let text = llvmc.moduleToString(m);
+  print <- text.view();
+
+  // ---- read it back ----
+  expect(llvmc.CountBasicBlocks(sink) == 1u32, "one block");
+  expect(llvmc.GetEntryBasicBlock(sink) == entry && llvmc.GetFirstBasicBlock(sink) == entry, "the entry block");
+  expect(llvmc.GetNextBasicBlock(entry) == null, "and no second");
+  expect(llvmc.GetBasicBlockParent(entry) == sink, "the block's function");
+  expect(llvmc.GetBasicBlockTerminator(entry) == ret, "the terminator");
+  expect(llvmc.GetInsertBlock(bld) == entry, "the builder's block");
+  expect(llvmc.GetFirstInstruction(entry) == i_add, "the first instruction is the add");
+  expect(llvmc.GetNextInstruction(i_add) == i_sub, "and the next the sub");
+  expect(llvmc.GetPreviousInstruction(i_sub) == i_add, "and back");
+  expect(llvmc.GetPreviousInstruction(i_add) == null, "nothing before the first");
+  expect(llvmc.GetInstructionParent(i_xor) == entry, "an instruction's block");
+  expect(llvmc.GetInstructionOpcode(i_sdiv) == llvmc.Opcode.SDiv && llvmc.GetInstructionOpcode(i_udiv) == llvmc.Opcode.UDiv, "division opcodes");
+  expect(llvmc.GetInstructionOpcode(i_shl) == llvmc.Opcode.Shl && llvmc.GetInstructionOpcode(i_ashr) == llvmc.Opcode.AShr, "shift opcodes");
+  expect(llvmc.GetInstructionOpcode(f_neg) == llvmc.Opcode.FNeg && llvmc.GetInstructionOpcode(f_rem) == llvmc.Opcode.FRem, "float opcodes");
+  expect(llvmc.GetInstructionOpcode(c_eq) == llvmc.Opcode.ICmp && llvmc.GetInstructionOpcode(d_oeq) == llvmc.Opcode.FCmp, "compare opcodes");
+  expect(llvmc.GetInstructionOpcode(pick) == llvmc.Opcode.Select, "select opcode");
+  expect(llvmc.GetInstructionOpcode(t8) == llvmc.Opcode.Trunc && llvmc.GetInstructionOpcode(z32) == llvmc.Opcode.ZExt
+    && llvmc.GetInstructionOpcode(s64) == llvmc.Opcode.SExt, "extension opcodes");
+  expect(llvmc.GetInstructionOpcode(p2i) == llvmc.Opcode.PtrToInt && llvmc.GetInstructionOpcode(i2p) == llvmc.Opcode.IntToPtr
+    && llvmc.GetInstructionOpcode(bc) == llvmc.Opcode.BitCast && llvmc.GetInstructionOpcode(asc) == llvmc.Opcode.AddrSpaceCast, "pointer cast opcodes");
+  expect(llvmc.GetInstructionOpcode(slot) == llvmc.Opcode.Alloca && llvmc.GetInstructionOpcode(st) == llvmc.Opcode.Store
+    && llvmc.GetInstructionOpcode(ld) == llvmc.Opcode.Load && llvmc.GetInstructionOpcode(gep) == llvmc.Opcode.GetElementPtr, "memory opcodes");
+  expect(llvmc.GetInstructionOpcode(rmw) == llvmc.Opcode.AtomicRMW && llvmc.GetInstructionOpcode(cas) == llvmc.Opcode.AtomicCmpXchg, "atomic opcodes");
+  expect(llvmc.GetInstructionOpcode(agg2) == llvmc.Opcode.InsertValue && llvmc.GetInstructionOpcode(agg_a) == llvmc.Opcode.ExtractValue, "aggregate opcodes");
+  expect(llvmc.GetInstructionOpcode(call) == llvmc.Opcode.Call && llvmc.GetInstructionOpcode(fr) == llvmc.Opcode.Freeze, "call and freeze");
+  expect(llvmc.GetInstructionOpcode(v0) == llvmc.Opcode.InsertElement && llvmc.GetInstructionOpcode(v1) == llvmc.Opcode.ExtractElement, "vector opcodes");
+  expect(llvmc.IsAAllocaInst(slot) != null && llvmc.IsALoadInst(ld) != null && llvmc.IsAStoreInst(st) != null, "memory casts");
+  expect(llvmc.IsACallInst(call) != null && llvmc.IsASelectInst(pick) != null && llvmc.IsAReturnInst(ret) != null, "call, select, return casts");
+  expect(llvmc.IsAGetElementPtrInst(gep) != null && llvmc.IsAAtomicRMWInst(rmw) != null && llvmc.IsAAtomicCmpXchgInst(cas) != null, "gep and atomic casts");
+  expect(llvmc.IsAInsertValueInst(agg2) != null && llvmc.IsAExtractValueInst(agg_a) != null, "aggregate casts");
+  expect(llvmc.IsABitCastInst(bc) != null && llvmc.IsAAddrSpaceCastInst(asc) != null, "bitcast casts");
+  expect(llvmc.IsAPHINode(call) == null && llvmc.IsAInstruction(call) != null, "a call is no phi, but an instruction");
+  expect(llvmc.IsAArgument(a) != null && llvmc.IsAConstant(a) == null, "an argument is no constant");
+  expect(llvmc.GetAllocatedType(slot) == i32t, "the alloca's type");
+  expect(llvmc.GetAlignment(slot) == 4u32, "its alignment");
+  expect(llvmc.IsInBounds(gepib) != 0i32 && llvmc.IsInBounds(gep) == 0i32, "inbounds");
+  expect(llvmc.GetGEPSourceElementType(gep) == arrty, "the gep's source element type");
+  expect(llvmc.GetNumIndices(agg_a) == 1u32, "one extractvalue index");
+  expect(*llvmc.GetIndices(agg_a) == 1u32, "which is 1");
+  expect(llvmc.GetOrdering(rmw) == llvmc.AtomicOrdering.AtomicOrderingSequentiallyConsistent, "the rmw's ordering");
+  llvmc.SetOrdering(rmw, llvmc.AtomicOrdering.AtomicOrderingAcquireRelease);
+  expect(llvmc.GetOrdering(rmw) == llvmc.AtomicOrdering.AtomicOrderingAcquireRelease, "reset");
+  expect(llvmc.GetCmpXchgSuccessOrdering(cas) == llvmc.AtomicOrdering.AtomicOrderingAcquireRelease, "the cmpxchg's success ordering");
+  expect(llvmc.GetCmpXchgFailureOrdering(cas) == llvmc.AtomicOrdering.AtomicOrderingMonotonic, "and failure ordering");
+  expect(llvmc.IsAtomic(rmw) != 0i32 && llvmc.IsAtomic(ld) == 0i32, "atomic or not");
+  expect(llvmc.GetVolatile(ld) == 0i32, "not volatile");
+  expect(llvmc.GetCalledValue(call) == callee, "the callee");
+  expect(llvmc.GetCalledFunctionType(call) == llvmc.GlobalGetValueType(callee), "its type");
+  expect(llvmc.GetNumArgOperands(call) == 2u32, "two arguments");
+  expect(llvmc.GetInstructionCallConv(call) == llvmc.FastCallConv, "the call's convention");
+  expect(llvmc.GetNumOperands(i_add) == 2i32 && llvmc.GetOperand(i_add, 1u32) == b, "operands");
+  expect(llvmc.GetOperand(ret, 0u32) == r3, "the return's operand");
+  let gv = llvmc.AddGlobal(m, i32t, "gv");
+  let cast = llvmc.ConstAddrSpaceCast(gv, ptr1);
+  expect(llvmc.IsAConstantExpr(cast) != null, "a cast of a global is a constant expression");
+  expect(llvmc.GetConstOpcode(cast) == llvmc.Opcode.AddrSpaceCast, "whose opcode is addrspacecast");
+  expect(llvmc.ConstBitCast(gv, ptr) == gv, "a bitcast to the same pointer type is the global");
+  let sz = llvmc.SizeOf(i64);
+  expect(llvmc.TypeOf(sz) == i64, "SizeOf is an i64 constant");
+  expect(llvmc.TypeOf(sgep) == ptr && llvmc.TypeOf(asc) == ptr1, "pointer types");
+
+  // the uses of a value: a is used by many instructions
+  var uses = 0u32;
+  var u = llvmc.GetFirstUse(a);
+  while u != null {
+    if llvmc.GetUser(u) != null { uses = uses + 1u32; }
+    u = llvmc.GetNextUse(u);
+  }
+  expect(uses > 20u32, "a has many uses");
+
+  // instructions edited: replace, clone, erase
+  let extra = llvmc.BuildAdd(bld, a, a, "extra");
+  llvmc.PositionBuilderBefore(bld, ret);
+  let clone = llvmc.InstructionClone(extra);
+  llvmc.InsertIntoBuilder(bld, clone);
+  expect(llvmc.GetInstructionParent(clone) == entry, "a clone inserted before the return");
+  expect(llvmc.GetNextInstruction(clone) == ret, "right before it");
+  llvmc.ReplaceAllUsesWith(clone, i_add);
+  llvmc.InstructionEraseFromParent(clone);
+  expect(llvmc.GetNextInstruction(llvmc.GetPreviousInstruction(ret)) == ret, "erased");
+
+  // blocks: add, move, remove
+  let second = llvmc.AppendBasicBlockInContext(ctx, sink, "second");
+  let third = llvmc.InsertBasicBlockInContext(ctx, second, "third");
+  expect(llvmc.CountBasicBlocks(sink) == 3u32, "three blocks");
+  var blocks: Array[*llvmc.BasicBlock, 3] = [null, null, null];
+  llvmc.GetBasicBlocks(sink, &blocks[0]);
+  expect(blocks[0] == entry && blocks[1] == third && blocks[2] == second, "in order: entry, third, second");
+  llvmc.MoveBasicBlockBefore(second, third);
+  llvmc.GetBasicBlocks(sink, &blocks[0]);
+  expect(blocks[1] == second && blocks[2] == third, "second moved before third");
+  llvmc.RemoveBasicBlockFromParent(third);
+  expect(llvmc.CountBasicBlocks(sink) == 2u32, "one removed from its function");
+  llvmc.AppendExistingBasicBlock(sink, third);
+  expect(llvmc.CountBasicBlocks(sink) == 3u32, "and appended again");
+
+  // a second function: branches, successors, a phi's incoming edges
+  let g = llvmc.AddFunction(m, "g", llvmc.FunctionType(i32t, &cps[0], 1u32, 0i32));
+  let ge = llvmc.AppendBasicBlockInContext(ctx, g, "entry");
+  let gl = llvmc.AppendBasicBlockInContext(ctx, g, "left");
+  let gr = llvmc.AppendBasicBlockInContext(ctx, g, "right");
+  let gj = llvmc.AppendBasicBlockInContext(ctx, g, "join");
+  llvmc.PositionBuilderAtEnd(bld, ge);
+  let cond = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSGT, llvmc.GetParam(g, 0u32), llvmc.ConstInt(i32t, 0u64, 0i32), "cond");
+  let cb = llvmc.BuildCondBr(bld, cond, gl, gr);
+  llvmc.PositionBuilderAtEnd(bld, gl);
+  llvmc.BuildBr(bld, gj);
+  llvmc.PositionBuilderAtEnd(bld, gr);
+  llvmc.BuildBr(bld, gj);
+  llvmc.PositionBuilderAtEnd(bld, gj);
+  let phi = llvmc.BuildPhi(bld, i32t, "phi");
+  var pv: Array[*llvmc.Value, 2] = [llvmc.ConstInt(i32t, 1u64, 0i32), llvmc.ConstInt(i32t, 2u64, 0i32)];
+  var pb: Array[*llvmc.BasicBlock, 2] = [gl, gr];
+  llvmc.AddIncoming(phi, &pv[0], &pb[0], 2u32);
+  llvmc.BuildRet(bld, phi);
+  expect(llvmc.GetNumSuccessors(cb) == 2u32, "a conditional branch has two successors");
+  expect(llvmc.GetSuccessor(cb, 0u32) == gl && llvmc.GetSuccessor(cb, 1u32) == gr, "which are left and right");
+  llvmc.SetSuccessor(cb, 1u32, gj);
+  expect(llvmc.GetSuccessor(cb, 1u32) == gj, "one is changed");
+  llvmc.SetSuccessor(cb, 1u32, gr);
+  expect(llvmc.CountIncoming(phi) == 2u32, "two incoming edges");
+  expect(llvmc.GetIncomingValue(phi, 1u32) == pv[1] && llvmc.GetIncomingBlock(phi, 0u32) == gl, "read back");
+  expect(llvmc.IsAPHINode(phi) != null, "a phi is a PHINode");
+  llvmc.PositionBuilder(bld, ge, cond);
+  expect(llvmc.GetInsertBlock(bld) == ge, "positioned at an instruction");
+
+  // intrinsics
+  let memcpyId = llvmc.LookupIntrinsicID(llvmc.bytesOf("llvm.memcpy"), 11usize);
+  expect(memcpyId != 0u32, "llvm.memcpy is an intrinsic");
+  expect(llvmc.LookupIntrinsicID(llvmc.bytesOf("not.an.intrinsic"), 16usize) == 0u32, "and this is not");
+  var over: Array[*llvmc.Type, 3] = [ptr, ptr, i64];
+  let memcpyFn = llvmc.GetIntrinsicDeclaration(m, memcpyId, &over[0], 3usize);
+  expect(llvmc.GetIntrinsicID(memcpyFn) == memcpyId, "the declaration is that intrinsic");
+  expect(llvmc.IntrinsicGetType(ctx, memcpyId, &over[0], 3usize) != null, "its type");
+  let decl = llvmc.valueToString(memcpyFn);
+  print <- decl.view(), "\n";
+  let copy = llvmc.CloneModule(m);
+  expect(llvmc.GetNamedFunction(copy, "sink") != null && llvmc.GetNamedFunction(copy, "sink") != sink, "a cloned module has its own functions");
+  llvmc.DisposeModule(copy);
+
+  print <- "read back\n";
+  llvmc.DisposeBuilder(bld);
+  llvmc.DisposeModule(m);
+  llvmc.ContextDispose(ctx);
+  0i32
+}

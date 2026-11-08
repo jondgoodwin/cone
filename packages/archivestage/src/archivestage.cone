@@ -1,0 +1,359 @@
+// A zip archive read as a stream between actors. 'ArchiveStage' is a ChunkSink: the archive's bytes
+// arrive as chunks, it feeds them to a zipfile.ArchiveStream and pumps it, and each entry is handed to a
+// ChunkSink of the caller's choosing, as an ordinary stream of its own:
+//
+//   var tx: OneshotSender[Result[u64, AnyError]];
+//   var rx: OneshotReceiver[Result[u64, AnyError]];
+//   tx, rx = Oneshot[Result[u64, AnyError]].make();
+//   let stage = ArchiveStage(Uni[fn(e: &zipfile.Local) ChunkSink + Sendable](fn(e: &zipfile.Local) ChunkSink {
+//     Saver(e.name.clone())                  // a ChunkSink for this entry
+//   }), tx);
+//   source.start(stage);                     // any source of chunks: a file, a socket, a fetch's body
+//   rx.recv();                               // Some(Ok(n)): n entries, and the archive agreed with itself
+//
+// THE ENTRIES. At each entry's start the stage calls the caller's function with the entry's local header
+// (name, method, sizes where the header has them) and gets a ChunkSink. It sends that sink 'attach' (the
+// stage is the source its buffers go back to), then each piece of the entry's data as 'accept', then
+// 'end(Finished)' when the entry is complete and matches its own header. An entry with no data (a folder)
+// gets an attach and an end. Entries come in the archive's order, one at a time; each sink is a stream of
+// its own, so a sink may be an actor that awaits (keep a ChunkInbox in it) and one entry's sink never sees
+// another's chunks.
+//
+// THE CREDIT. The output buffers come from a ChunkWindow over a ChunkPool, as TransformStage takes them
+// (256 KiB of window by default), one window for the whole archive: a sink gives each buffer back when it
+// has finished with it, whichever entry it came from, and the window counts bytes, not entries. With no room
+// the stage stops pulling and waits for a 'giveBack'; the input chunk it is working on then stays unreturned,
+// so a slow entry sink slows the fetch. An input chunk goes back to the source when the pulls have used
+// it up (ArchiveStream.feed copies the bytes, as before). The stage never holds more than the window and
+// the input chunk in hand and what the source has sent behind it.
+//
+// THE END. 'Ending' says how the STREAM of one entry ended; it does not say the archive is good. An entry's
+// 'end(Finished)' means that entry is whole and matches its own local header, never that the central
+// directory (which is last) agrees with it: a hidden entry, or one the directory lists differently, shows
+// only at the end of the archive, after the entries were delivered. So the stage answers 'done' once,
+// separately: Ok(entries) when the archive is complete and its directory agrees with every entry, Err(why)
+// for anything else (the archive failed after some entries were delivered, the source failed, the stream
+// was cancelled). A caller that cannot act on an entry the directory might disown waits for 'done'.
+// 'done' says nothing of a sink's own failure: a sink that fails while it writes reports that itself.
+// A caller that wants to stop early cancels the group the stage works in; it does not wait for 'done'.
+//
+// WHEN IT FAILS. A corrupt entry, an archive that does not agree with itself, a source that ends Failed:
+// the entry open at the time gets 'end(Failed)' (once), 'done' gets the error, every input chunk the stage
+// holds goes back to the source, and chunks that still arrive are given back unhandled. Buffers granted to
+// the entry sinks come back to the window as they are given back.
+//
+// CANCELLATION. The stage works in the cancel group of the message it handles, as every stage does (see
+// package stages): a cancelled group ends the open entry Failed("streams: cancelled"), answers 'done' with
+// an Err, gives the input back and drops the upstream handle.
+//
+// THE LIMITS. An entry that declares no size is bounded by 'entryLimit' (1 GiB at first) and the central
+// directory by 'maxDirectory' (16 MiB at first), as ArchiveStream's own setEntryLimit and setMaxDirectory:
+// the 'shared' constructor takes both.
+
+mod archivestage;
+
+import iobuf use IoBuf;
+import collections use AnyError, Deque, String;
+import actors;
+import sync use OneshotSender;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow, ChunkPool, linkWindow, linkBytes;
+import zipfile;
+
+// Gives a chunk back to its source, if the source is still held
+fn handBack(up: &Option[ChunkSource], b: IoBuf) {
+  match up {
+    case let &Some(u) { u.giveBack(b); }
+    case is None {}
+  }
+}
+
+// A copy of an entry's local header
+fn copyOf(l: &zipfile.Local) zipfile.Local {
+  zipfile.Local(l.name.clone(), l.rawName.clone(), l.method, l.flags, l.crc, l.compressedSize, l.size, l.offset, l.zip64)
+}
+
+// An error's text as an error of its own (an AnyError cannot be copied)
+fn textOf(e: &AnyError) AnyError {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  AnyError.msg(text.view())
+}
+
+pub actor ArchiveStage is ChunkSink, ChunkSource {
+  arch: zipfile.ArchiveStream;
+  link: ChunkWindow;                // the output's window, its buffers from a pool
+  open: Uni[fn(entry: &zipfile.Local) ChunkSink + Sendable];   // the caller's choice of a sink for an entry
+  done: OneshotSender[Result[u64, AnyError]];
+  up: Option[ChunkSource];
+  entry: Option[ChunkSink];         // the sink of the entry that is open
+  cur: Option[IoBuf];               // the input chunk being worked on; held until its output is all out
+  backlog: Deque[IoBuf];            // chunks that arrived while 'cur' was held (at most the upstream's window)
+  waiting: bool;                    // a pull wants an output buffer and the window or the pool is full
+  finishing: bool;                  // the archive has been told its input is over
+  dry: bool;                        // a pull after that said NeedInput once
+  upEnded: bool;                    // the upstream's 'end' has arrived
+  ended: bool;                      // the answer has been given and the open entry ended
+  want: usize;                      // the room a pull asks for: the open entry's size if it is small
+
+  // A stage whose pipeline has a pool of its own, 'open' its entries' sinks, 'done' its one answer
+  pub fn own overload init(self: &new, open: Uni[fn(entry: &zipfile.Local) ChunkSink + Sendable], done: OneshotSender[Result[u64, AnyError]]) {
+    *self = Self(arch: zipfile.ArchiveStream.make(), link: ChunkWindow.own(linkWindow), open: open, done: done,
+      up: None[ChunkSource], entry: None[ChunkSink], cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false,
+      finishing: false, dry: false, upEnded: false, ended: false, want: linkBytes);
+  }
+
+  // The same, its output buffers from a shared 'pool' and its window 'window' bytes, and the archive's
+  // limits set: 'entryLimit' bounds an entry that declares no size, 'maxDirectory' the central directory
+  pub fn shared overload init(self: &new, open: Uni[fn(entry: &zipfile.Local) ChunkSink + Sendable],
+      done: OneshotSender[Result[u64, AnyError]], pool: ChunkPool, window: usize, entryLimit: u64, maxDirectory: usize) {
+    var a = zipfile.ArchiveStream.make();
+    a.setEntryLimit(entryLimit);
+    a.setMaxDirectory(maxDirectory);
+    *self = Self(arch: a, link: ChunkWindow.make(window, pool), open: open, done: done,
+      up: None[ChunkSource], entry: None[ChunkSink], cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false,
+      finishing: false, dry: false, upEnded: false, ended: false, want: linkBytes);
+  }
+
+  // The stage that sends here (the sink's 'attach')
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  // A chunk of the archive arrives (the sink's 'accept')
+  pub async fn accept(self, c: IoBuf) {
+    self.cancelCheck();
+    if ended {
+      handBack(&up, c);
+    } else if cur is Some || upEnded {
+      backlog.push(c);
+    } else {
+      arch.feed(c.view());
+      cur = Some[IoBuf](c);
+      self.drain();
+    }
+    self.settle();
+  }
+
+  // The upstream's end arrives (the sink's 'end')
+  pub async fn end(self, how: Ending) {
+    self.cancelCheck();
+    upEnded = true;
+    match how {
+      case is Finished {
+        if !waiting && !ended { self.drain(); }
+      }
+      case let Failed(e) {
+        if !ended {
+          // the entry open gets the source's own error, the answer its text
+          let text = textOf(&e);
+          self.finish(Ending.Failed(e), Err[u64, AnyError](text));
+        }
+      }
+    }
+    self.settle();
+  }
+
+  // An output buffer comes back from an entry's sink (the source's 'giveBack')
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.cancelCheck();
+    if waiting { self.drain(); }
+    self.settle();
+  }
+
+  // A stop from an entry's sink (ChunkSource.stop) stops the whole archive, not that entry: the open
+  // entry gets its end, 'done' the reason as text, and the stop goes on upstream. The upstream handle
+  // stays until its 'end' comes (settle), so chunks still in flight are given back.
+  pub async fn stop(self, why: Ending) {
+    if ended { return; }
+    var entryEnd = Ending.Finished;
+    var answer = AnyError.msg("archivestage: stopped before the end");
+    match &why {
+      case let &Failed(e) {
+        entryEnd = Ending.Failed(textOf(e));
+        answer = textOf(e);
+      }
+      case is Finished {}
+    }
+    self.finish(entryEnd, Err[u64, AnyError](answer));
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      case is None {}
+    }
+  }
+
+  // The stage works in the cancel group of the message it handles; when that is cancelled it ends
+  // the open entry, answers 'done', gives the input back and lets go of the upstream
+  fn cancelCheck(self: &mut) {
+    if ended || !actors.isCancelled() { return; }
+    self.finish(Ending.Failed(AnyError.msg("streams: cancelled")), Err[u64, AnyError](AnyError.msg("streams: cancelled")));
+    up = None[ChunkSource];
+  }
+
+  // Pull while there is a buffer to pull into and something to pull
+  fn drain(self: &mut) {
+    waiting = false;
+    self.cancelCheck();
+    var go = !ended;
+    while go {
+      match link.take(want) {
+        case is None {
+          waiting = true;
+          go = false;
+        }
+        case let Some(b) {
+          var out = b;
+          let s = arch.pull(&mut out);
+          if s == zipfile.Step.Begin {
+            link.give(out);
+            self.begin();
+          } else if s == zipfile.Step.Data {
+            if out.isEmpty() { link.give(out); } else { self.send(out); }
+          } else if s == zipfile.Step.End {
+            link.give(out);
+            self.endEntry();
+          } else if s == zipfile.Step.NeedInput {
+            link.give(out);
+            go = self.nextInput();
+          } else if s == zipfile.Step.Done {
+            link.give(out);
+            self.finish(Ending.Finished, Ok[u64, AnyError](u64.from(arch.entriesDone())));
+            go = false;
+          } else {
+            link.give(out);
+            self.failed();
+            go = false;
+          }
+          // a long run of pulls stops at a cancel between chunks
+          self.cancelCheck();
+          if ended { go = false; }
+        }
+      }
+    }
+  }
+
+  // An entry begins: the caller's function chooses its sink
+  fn begin(self: &mut) {
+    // the function gets a copy of the header: it is arbitrary code and may not be handed a borrow into the stream
+    let header = copyOf(arch.current());
+    let sink = open(&header);
+    sink.attach(selfactor);
+    entry = Some[ChunkSink](sink);
+    let size = header.size;
+    want = if size > 0u64 && size < u64.from(linkBytes) { usize.from(size) } else { linkBytes };
+  }
+
+  // The entry's data goes to its sink
+  fn send(self: &mut, c: IoBuf) {
+    match &entry {
+      case let &Some(k) { k.accept(c); }
+      case is None { link.give(c); }
+    }
+  }
+
+  // The entry is whole: its stream ends
+  fn endEntry(self: &mut) {
+    want = linkBytes;
+    var k = None[ChunkSink];
+    k <-> entry;
+    match k {
+      case let Some(s) { s.end(Ending.Finished); }
+      case is None {}
+    }
+  }
+
+  // The archive failed: the entry open gets the archive's error, 'done' a copy
+  fn failed(self: &mut) {
+    var forEntry = AnyError.msg("the archive failed");
+    var forDone = AnyError.msg("the archive failed");
+    match arch.error() {
+      case let Some(e) { forEntry = AnyError.from(e); }
+      case is None[zipfile.ZipError] {}
+    }
+    match arch.error() {
+      case let Some(e) { forDone = AnyError.from(e); }
+      case is None[zipfile.ZipError] {}
+    }
+    let w = Ending.Failed(textOf(&forDone));
+    self.finish(Ending.Failed(forEntry), Err[u64, AnyError](forDone));
+    // the whole archive stops: the work feeding us ends at once (the handle stays until its 'end')
+    if upEnded { return; }
+    match &up {
+      case let &Some(u) { u.stop(w); }
+      case is None {}
+    }
+  }
+
+  // The input is used up: give the chunk back and go on to the next, or to the
+  // end. Whether to pull again.
+  fn nextInput(self: &mut) bool {
+    self.returnCur();
+    match backlog.popFront() {
+      case let Some(c) {
+        arch.feed(c.view());
+        cur = Some[IoBuf](c);
+        return true;
+      }
+      case is None {}
+    }
+    if !upEnded { return false; }
+    if !finishing {
+      arch.finish();
+      finishing = true;
+      return true;
+    }
+    if dry {
+      self.finish(Ending.Failed(AnyError.msg("archivestage: the archive wants input after the stream's end")),
+        Err[u64, AnyError](AnyError.msg("archivestage: the archive wants input after the stream's end")));
+      return false;
+    }
+    dry = true;
+    true
+  }
+
+  // The answer, once: the open entry (if any) ends 'entryEnd', 'done' gets 'result', the input goes home
+  fn finish(self: &mut, entryEnd: Ending, result: Result[u64, AnyError]) {
+    if ended { return; }
+    ended = true;
+    var k = None[ChunkSink];
+    k <-> entry;
+    match k {
+      case let Some(s) { s.end(entryEnd); }
+      case is None {}
+    }
+    done.send(result);
+    self.returnAll();
+  }
+
+  fn returnCur(self: &mut) {
+    var taken = None[IoBuf];
+    taken <-> cur;
+    match taken {
+      case let Some(c) { handBack(&up, c); }
+      case is None {}
+    }
+  }
+
+  // Every input chunk held goes back to the upstream
+  fn returnAll(self: &mut) {
+    self.returnCur();
+    var more = true;
+    while more {
+      match backlog.popFront() {
+        case let Some(c) { handBack(&up, c); }
+        case is None { more = false; }
+      }
+    }
+  }
+
+  // Once both ends are over, every chunk held goes home and the upstream handle goes
+  fn settle(self: &mut) {
+    if ended && upEnded {
+      self.returnAll();
+      up = None[ChunkSource];
+    }
+  }
+}

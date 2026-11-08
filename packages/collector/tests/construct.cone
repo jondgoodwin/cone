@@ -1,5 +1,5 @@
 // A 'Gc' allocation's value is filled in place by its init, and that init may
-// allocate again: 'new Tree(depth, n)' makes its children inside the parent's
+// allocate again: 'Tree(depth, n)' makes its children inside the parent's
 // init. The order is what keeps that safe. The init's arguments are evaluated
 // first; then 'alloc', which links the new block into the heap; then, before
 // anything else runs, the block is rooted and its value zeroed; then the init
@@ -26,17 +26,17 @@ import collector;
 // Filled whole once its children are made: the children are allocated while
 // the parent's block is rooted and still null
 struct TreeValue {
-  pub n i64;
-  pub left Option[Tree];
-  pub right Option[Tree];
-  pub fn init(self &new, depth i64, n i64) {
+  pub n: i64;
+  pub left: Option[Tree];
+  pub right: Option[Tree];
+  pub fn init(self: &new, depth: i64, n: i64) {
     if depth == 0 {
-      *self = new TreeValue(n, None[Tree], None[Tree]);
+      *self = TreeValue(n, None[Tree], None[Tree]);
       return;
     }
-    imm l = new Tree(depth - 1, n * 2);
-    imm r = new Tree(depth - 1, n * 2 + 1);
-    *self = new TreeValue(n, Some[Tree](l), Some[Tree](r));
+    let l = Tree(depth - 1, n * 2);
+    let r = Tree(depth - 1, n * 2 + 1);
+    *self = TreeValue(n, Some[Tree](l), Some[Tree](r));
   }
 }
 alias Tree = Gc[mut, TreeValue];
@@ -44,42 +44,42 @@ alias Tree = Gc[mut, TreeValue];
 // Filled first with no children, then each child stored into it after it is
 // made: a store into the parent, which a step may already have marked
 struct GrownValue {
-  pub n i64;
-  pub left Option[Grown];
-  pub right Option[Grown];
-  pub fn init(self &new, depth i64, n i64) {
-    *self = new GrownValue(n, None[Grown], None[Grown]);
+  pub n: i64;
+  pub left: Option[Grown];
+  pub right: Option[Grown];
+  pub fn init(self: &new, depth: i64, n: i64) {
+    *self = GrownValue(n, None[Grown], None[Grown]);
     if depth > 0 {
-      self.left = Some[Grown](new Grown(depth - 1, n * 2));
-      self.right = Some[Grown](new Grown(depth - 1, n * 2 + 1));
+      self.left = Some[Grown](Grown(depth - 1, n * 2));
+      self.right = Some[Grown](Grown(depth - 1, n * 2 + 1));
     }
   }
 }
 alias Grown = Gc[mut, GrownValue];
 
-fn treeSum(t Option[Tree]) i64 {
+fn treeSum(t: Option[Tree]) i64 {
   match t {
-    case imm s Some[Tree] { s.n + treeSum(s.left) + treeSum(s.right); }
-    else { 0; }
+    case let Some[Tree](s) { s.n + treeSum(s.left) + treeSum(s.right) }
+    else { 0 }
   }
 }
 
-fn grownSum(t Option[Grown]) i64 {
+fn grownSum(t: Option[Grown]) i64 {
   match t {
-    case imm s Some[Grown] { s.n + grownSum(s.left) + grownSum(s.right); }
-    else { 0; }
+    case let Some[Grown](s) { s.n + grownSum(s.left) + grownSum(s.right) }
+    else { 0 }
   }
 }
 
-fn build(mode &Array[u8]) {
-  imm t = new Tree(6, 1);
+fn build(mode: &Array[u8]) {
+  let t = Tree(6, 1);
   expectInt(treeSum(Some[Tree](t)), 8128, mode);
-  imm g = new Grown(6, 1);
+  let g = Grown(6, 1);
   expectInt(grownSum(Some[Grown](g)), 8128, mode);
   // Garbage made in between, then both read again
-  mut i = 0i64;
+  var i = 0i64;
   while i < 200 {
-    imm junk = new Tree(2, i);
+    let junk = Tree(2, i);
     i = i + 1;
   }
   expectInt(treeSum(Some[Tree](t)) + grownSum(Some[Grown](g)), 16256, mode);
@@ -94,5 +94,5 @@ fn main() i32 {
   build("children made inside the parent's init, generational");
   Gc.collect();
   expectUInt(u64.from(Gc.liveObjects()), 0, "and again, generationally");
-  done();
+  done()
 }

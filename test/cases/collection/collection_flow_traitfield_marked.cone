@@ -1,0 +1,35 @@
+// Bug 30. A trait-object field marked '+ ShapeKeeping' is not "anything" to the reshape check:
+// a call through it reshapes nothing the caller reaches by a shared mutable path (held where the
+// value becomes the reference, collection_flow_traitfield_refuse), so a struct holding one
+// reaches no more than its other fields do. 'touch' is an 'extern', a function whose body the
+// compiler cannot read (cancelgroups' case: a function of another package, seen through its
+// include file), handed a holder of the field through a read-only reference while a borrow
+// through the 'Arc' is live. The unmarked field is collection_flow_traitfield_unmarked.
+
+mod collection_flow_traitfield_marked;
+
+import collections use *;
+import sync use Arc;
+
+trait Waker { pub fn wake(self: &); }
+
+struct Reg { pub ws: List[Uni[Waker + ShapeKeeping]]; }
+
+struct State {
+  pub n: i64;
+  pub reg: *Reg;
+  pub parent: Option[Handle];
+  fn lists(self: &) &mut State {
+    let p = self as *State;
+    p as &mut State
+  }
+}
+struct Handle { s: Arc[imm, State]; }
+
+extern fn @c touch(p: &State);
+
+fn marked(h: &Handle) i64 {
+  let st = h.s.lists();
+  touch(st);
+  st.n
+}

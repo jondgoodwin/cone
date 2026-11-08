@@ -1,6 +1,6 @@
 // A value holding a borrow made an owning virtual reference, whose type
 // names no lifetime: a struct holding a borrow the caller lent, boxed into a
-// 'So[Show]', and into an 'Arc[Show]', and returned; one holding a local's
+// 'Uni[Show]', and into an 'Arc[Show]', and returned; one holding a local's
 // borrow, boxed where a local is declared and where an argument is handed;
 // an 'Rc[H]' converted to an 'Rc[Show]'; and a generic function's unbounded
 // T boxed, instanced with a struct holding a borrow.
@@ -10,8 +10,8 @@
 // behind an owning pointer, defaults to ''static' ('Box<dyn Trait>' is
 // 'Box<dyn Trait + 'static>'; the Reference, "Default trait object lifetime
 // bounds"), so a value holding a borrow that is not global may not become
-// one. 'So[Trait]', 'Rc[Trait]' and 'Arc[Trait]' read the same way
-// (refvirtref.html; reflifefn.html, "Lifetime bounds").
+// one. 'Uni[Trait]', 'Rc[Trait]' and 'Arc[Trait]' read the same way
+// (mod-substitution.html#virtref; mem-lifetimes.html#bounds, "Lifetime bounds on generics and virtual references").
 // Master ff2c3626: accepted, and main, run, prints "final" as the boxed
 // value's R dies at the end of the inner block, and then a value read
 // through 'keep' from that R's freed block: the conversion dropped every
@@ -23,62 +23,62 @@ import stdio use *;
 import sync use Arc;
 
 trait Show {
-  pub fn show(self &) i64;
+  pub fn show(self: &) i64;
 }
 
 struct R {
-  pub n i64;
-  fn final(self &uni) {
+  pub n: i64;
+  fn final(self: &uni) {
     printStr("final\n");
   }
 }
 
 struct H is Show {
-  pub r &R;
-  fn show(self &) i64 {
-    self.r.n;
+  pub r: &R;
+  fn show(self: &) i64 {
+    self.r.n
   }
 }
 
-fn boxit(h H) So[Show] {
-  new So[H](h);              //~ ErrorLifetimeBound "the caller lent through 'h'"
+fn boxit(h: H) Uni[Show] {
+  Uni[H](h)              //~ ErrorLifetimeBound "the caller lent through 'h'"
 }
 
-fn arcit(h H) Arc[Show] {
-  new Arc[H](h);             //~ ErrorLifetimeBound "the caller lent through 'h'"
+fn arcit(h: H) Arc[Show] {
+  Arc[H](h)             //~ ErrorLifetimeBound "the caller lent through 'h'"
 }
 
-fn take(b So[Show]) i64 {
-  b.show();
+fn take(b: Uni[Show]) i64 {
+  b.show()
 }
 
-fn boxAny[T Show](x T) So[Show] {
-  new So[T](x);              //~ ErrorLifetimeBound "the caller lent through 'x'"
+fn boxAny[T: Show](x: T) Uni[Show] {
+  Uni[T](x)              //~ ErrorLifetimeBound "the caller lent through 'x'"
 }
 
-fn clobber(n i64) i64 {
-  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
-  a[3] + a[9];
+fn clobber(n: i64) i64 {
+  var a: Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9]
 }
 
 fn generic() {
-  imm x = new R(4);
-  printInt(boxAny(new H(&x)).show());
+  let x = R(4);
+  printInt(boxAny(H(&x)).show());
 }
 
 fn main() {
-  imm g = new R(1);
-  mut keep So[Show] = boxit(new H(&g));
+  let g = R(1);
+  var keep: Uni[Show] = boxit(H(&g));
   {
-    imm r = new So[R](42);
-    keep = boxit(new H(&*r));
+    let r = Uni[R](42);
+    keep = boxit(H(&*r));
   }
   clobber(21);
   printInt(keep.show());
-  imm x = new R(2);
-  imm b So[Show] = new So[H](new H(&x));   //~ ErrorLifetimeBound "a borrow of 'x'"
-  printInt(take(new So[H](new H(&x))));    //~ ErrorLifetimeBound "a borrow of 'x'"
-  imm a = new Rc[H](new H(&x));
-  imm c Rc[Show] = a;        //~ ErrorLifetimeBound "a borrow of 'x'"
+  let x = R(2);
+  let b: Uni[Show] = Uni[H](H(&x));   //~ ErrorLifetimeBound "a borrow of 'x'"
+  printInt(take(Uni[H](H(&x))));    //~ ErrorLifetimeBound "a borrow of 'x'"
+  let a = Rc[H](H(&x));
+  let c: Rc[Show] = a;        //~ ErrorLifetimeBound "a borrow of 'x'"
   printStr("\n");
 }

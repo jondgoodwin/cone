@@ -30,7 +30,7 @@ typedef struct {
 
 // A temporary made and not yet finalized (TempNode): the slot its value was
 // kept in. The generator keeps a stack of them; the end of a statement, of an
-// 'if' or 'while' condition, or of the right operand of 'and' or 'or'
+// 'if' or 'while' condition, or of the right operand of '&&' or '||'
 // finalizes those its part made, newest first (genlTempsEnd), and a jump
 // finalizes every one made since the block it leaves to began (genlTempsJump).
 typedef struct {
@@ -135,6 +135,14 @@ typedef struct GenDiFile {
     struct GenDiFile *next;
 } GenDiFile;
 
+// The cold function that finishes a counted reference's death (genlDropSlow)
+typedef struct GenDropSlow {
+    INode *vtexp;           // The type the reference points at
+    INode *region;          // Its region
+    LLVMValueRef fn;
+    struct GenDropSlow *next;
+} GenDropSlow;
+
 typedef struct GenState {
     LLVMTargetMachineRef machine;
     LLVMTargetDataRef datalayout;
@@ -147,6 +155,8 @@ typedef struct GenState {
     LLVMDIBuilderRef dibuilder;
     LLVMMetadataRef difile;     // The compile's main source file
     GenDiFile *difiles;         // The others, made as the code in them is reached
+    GenDropSlow *dropslow;      // The cold death functions made so far (genlDropSlow)
+    uint32_t dropslowcnt;
 
     LLVMTypeRef emptyStructType;
 
@@ -167,6 +177,18 @@ typedef struct GenState {
     uint32_t tempcnt;
     uint32_t tempmax;
     uint32_t tempbase;      // How many were waiting as the function being generated began: a 'return' finalizes the rest
+
+    // Once a jump the program wrote -- a 'return', 'break' or 'continue', or a
+    // call that does not return -- ends the basic block it was generated in,
+    // generation goes on in a fresh block no path reaches (genlEndPath), so
+    // nothing is ever emitted after a terminator. 'unreached' is the latest,
+    // which the builder is at until generation moves to a block a path
+    // reaches (genlPathEnded); every one made is settled before the module
+    // is checked (genlSettleUnreached).
+    LLVMBasicBlockRef unreached;
+    LLVMBasicBlockRef *unreachedblks;
+    uint32_t unreachedcnt;
+    uint32_t unreachedmax;
 
     // A split method (genlawait.c): its seams, or NULL for any other function;
     // the seam whose second half is being generated, NULL for the first half;
@@ -328,6 +350,13 @@ void genlParCapture(GenState *gen, VarDclNode *var);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
+// After the terminator a jump the program wrote: generation goes on in a block no path reaches
+void genlEndPath(GenState *gen);
+// Has a jump ended the path generation is on, so that nothing it emits now is reached?
+int genlPathEnded(GenState *gen);
+// Each block genlEndPath made: one nothing was emitted into is deleted, one given no
+// terminator gets 'unreachable'
+void genlSettleUnreached(GenState *gen);
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
@@ -339,7 +368,7 @@ LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant);
 // and the pointer intrinsics read; NULL for a call the compiler makes itself.
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype);
 // Fill 'dest' in place when 'exp' is a construction by a declared 'init',
-// 'new Point(1, 2)', returning 1; else 0, and the caller stores the value
+// 'Point(1, 2)', returning 1; else 0, and the caller stores the value
 int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest);
 // A construction by a declared 'init' in two steps, as an allocation runs it:
 // its arguments evaluated (the first slot left for 'self'), then, once its
@@ -354,8 +383,27 @@ void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest, int trac
 typedef enum {
     PanicIndex,     // an index at or past the count: the index, the count
     PanicSlice,     // a range not within the count: its start, its end, the count
-    PanicAlloc      // a region's 'alloc' answered null: the size asked for
+    PanicAlloc,     // a region's 'alloc' answered null: the size asked for
+    PanicDivide     // an integer divided by zero, or its minimum by -1: 0 for the zero, 1 for the overflow
 } GenlPanicKind;
+// Panic unless index < count, reporting both at 'site'
+void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRef count);
+// A vector's operation on its lanes, once the type of its first argument says
+// it is one (genlvector.c): the operator or reduction 'fndcl' is, over
+// 'fnargs'; 'site' is where a failed check is reported
+LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMValueRef *fnargs, uint32_t fnargcnt);
+// A vector's conversion or construction: 'Vector[T, N].from(x)', the array a
+// vector comes free from, a number put in every lane, a mask's select, and the
+// shufflevector of 'a.join(b)' and of a pick of lanes, 'v.(3, 2, 1, 0)'
+LLVMValueRef genlVectorConvert(GenState *gen, FnCallNode *lit);
+// 'Vector[T, N].load(s, at)', a call of the vector type's function: the lanes of
+// the slice, bounds checked once
+LLVMValueRef genlVectorLoad(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs);
+// 'm[i]', a lane of a mask: a bool read, bounds checked
+LLVMValueRef genlMaskLane(GenState *gen, FnCallNode *fncall);
+// The address of a lane of the vector at 'vecp': bounds checked against its
+// lane count, as an array's index is
+LLVMValueRef genlVectorLane(GenState *gen, INode *site, INode *vectype, LLVMValueRef vecp, LLVMValueRef index);
 // End the program where a check the compiler inserted has failed, reporting
 // the values the kind names and the source location of 'site'. Leaves the
 // block terminated
@@ -397,10 +445,17 @@ void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value);
 // Whether a function is core's 'panic' (conestd's 'cone_panic'); and a call to
 // it on a GPU target, given its arguments
 int genlIsConePanic(FnDclNode *fndcl);
+
+// A float (scalar or vector) converted to an integer type, saturating (genlexpr.c)
+LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned);
 LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
 // A call to a C library math function on a GPU target, as its LLVM intrinsic
 // (GLSL.std.450's instruction), or NULL when the function is no such one
 LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs);
+
+// On a GPU target, note that the body of the inline function 'fndcl' is expanded
+// into the function being generated: it is reached when that one is (genlGpuCalls)
+void genlGpuInlineNote(GenState *gen, FnDclNode *fndcl);
 
 // The node an instruction was made for, as genlGpuSite marked it, or NULL
 INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst);
@@ -525,6 +580,10 @@ LLVMTypeRef genlCAbiFnType(GenState *gen, FnSigNode *fnsig);
 // Call through a function pointer or reference, in the convention its pointee
 // signature is marked for
 LLVMValueRef genlFnPtrCall(GenState *gen, INode *pointee, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt);
+// The string attribute on a slice parameter of a unique ("uni") or immutable
+// ("imm") borrow (genlBorrowAttrs): genlAggCopies, which passes a slice as its
+// pointer and its count, puts 'noalias' on the pointer
+#define GenlSliceBorrow "cone-slice-borrow"
 // Mark a just-declared function's hidden result slot ('sret'), if it has one
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
 // Call a declared function with Cone argument values, returning its Cone value
@@ -575,7 +634,7 @@ LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
-// Generate a vtable type
+// Generate a vtable: its type, and its implementers' globals once no type is being generated
 void genlVtable(GenState *gen, Vtable *vtable);
 // A callable trait's vtable for a plain function, whose one slot is a stub calling it
 LLVMValueRef genlFnStubVtable(GenState *gen, Vtable *vtable);

@@ -1,0 +1,79 @@
+// A streams Reader lends a view of its bytes: 'peek(n)' gives the first n as one
+// slice, a borrow of the reader, and 'consume(n)' uses them up and gives their
+// segments back to the pool. The checker keeps the two apart: a 'consume' (or
+// a 'popFront', which also moves bytes off the front) while a view is live is
+// refused with ErrorShapeReshape, because the view points into what the call
+// would free; a second 'peek' is refused the same way, since a peek across a
+// segment's edge writes the reader's own copy. The same calls with the view dead compile: a number copied out
+// of the view before the call, or a view not used again after it. The lines
+// without annotations compile.
+
+mod concurrency_streams_reader_view;
+
+import iobuf use IoBuf;
+import streams use Reader;
+
+// Copying the number out first is the way: the view is dead at 'consume'
+fn firstByte(r: &mut Reader) u8 {
+  var b = 0u8;
+  match r.peek(1usize) {
+    case let Some(v) {b = v[0usize];}
+    case is None[&Array[u8]] {}
+  }
+  r.consume(1usize);
+  b
+}
+
+// A view not used again after the call is fine too
+fn skipFirst(r: &mut Reader) {
+  match r.peek(1usize) {
+    case let Some(v) {
+      let n = v.len;
+      r.consume(n);
+    }
+    case is None[&Array[u8]] {}
+  }
+}
+
+fn consumeUnderView(r: &mut Reader) u8 {
+  match r.peek(1usize) {
+    case let Some(v) {
+      r.consume(1usize);               //~ ErrorShapeReshape "borrow into it (made by 'peek'"
+      return v[0usize];
+    }
+    case is None[&Array[u8]] {}
+  }
+  0u8
+}
+
+fn popUnderView(r: &mut Reader) u8 {
+  match r.peek(1usize) {
+    case let Some(v) {
+      let gone = r.popFront();       //~ ErrorShapeReshape "borrow into it (made by 'peek'"
+      return v[0usize];
+    }
+    case is None[&Array[u8]] {}
+  }
+  0u8
+}
+
+fn secondPeek(r: &mut Reader) usize {
+  match r.peek(1usize) {
+    case let Some(v) {
+      let w = r.peek(2usize);          //~ ErrorShapeReshape "'peek' reshapes the 'Reader'"
+      return v.len;
+    }
+    case is None[&Array[u8]] {}
+  }
+  0usize
+}
+
+fn main() i32 {
+  var r = Reader.make(4096usize);
+  var b = IoBuf(16usize);
+  b.append("abc");
+  r.push(b);
+  let x = firstByte(&mut r);
+  skipFirst(&mut r);
+  0i32
+}

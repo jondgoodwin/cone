@@ -1,0 +1,248 @@
+// The streams sample, and its numbers (streams PR 7, "the proof"): the same job
+// two ways on the same input, so that the plumbing of layer 3 can be read against
+// the path a program would write today.
+//
+//   the job: a gzip stream arrives over a loopback TCP socket; inflate it, take its
+//   sha256, and write the inflated bytes to a file.
+//
+//   mode "pipeline"  socket -> SocketSource -> TransformStage[Inflater] -> HashStage[Sha256] -> FileSink
+//                    four actors under credit (a window of 256 KiB at each link, 64 KiB chunks);
+//                    the file is written as the bytes arrive
+//   mode "adhoc"     one actor: read the whole body into a List, gzipDecompress it in one call,
+//                    sha256 the result, write the file in one call (what a program does without
+//                    a stream: it holds the body and the result whole)
+//
+// A real HTTPS body would put TLS records and HTTP/1 framing before the inflater (the
+// sources of packages tls and http1); neither is a stage yet (the refit is a separate
+// brief), so this sample starts at the socket.
+//
+//   congo run --release packages/stageio/examples/streamsample.cone -- <mode> [MiB of inflated data]
+//
+// It prints the milliseconds from the server's start to the file written, the rate in MB/s
+// of inflated data, and 'ok' if the digest and the file's size are right. The data is a
+// pseudo-random run of five words (as the codecs' tests use), about 5:1 under gzip level 2.
+
+mod streamsample;
+
+import stdio use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import iocore use SocketAddr, IoError, Access;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant;
+import actors;
+import aio use Socket, File;
+import streams use *;
+import stages use *;
+import stageio use *;
+import deflate;
+import cryptohash;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) { s <-> *ok; }
+    else {}
+  }
+  s
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+// What the sink end writes down, read by main when it is told the job is over
+struct Result0 {
+  pub bytes: Atomic[u64];       // bytes written to the file
+  pub digestOk: Atomic[u64];
+  pub digestErr: Atomic[u64];
+  pub failed: Atomic[u64];
+}
+
+let outcome: Result0;
+
+fn @initpure init() {
+  outcome = Result0(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// ---- the server: listens on the loopback, sends the gzip bytes to the first connection ----
+
+actor Server {
+  gz: List[u8];
+
+  pub fn init(self: &new, gz: List[u8]) {
+    *self = Self(gz: gz);
+  }
+
+  pub async fn serve(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var at = 0usize;
+    var more = true;
+    while more && at < gz.len() {
+      let n = if gz.len() - at < 65536usize {gz.len() - at} else {65536usize};
+      var buf = IoBuf(n);
+      buf.append(&gz.view()[at ..< at + n]);
+      at = at + n;
+      let sent = await conn.write(buf);
+      match sent {
+        case is Err { more = false; }
+        else {}
+      }
+    }
+  }                                      // conn closes here: the client sees the end
+}
+
+// ---- the digest's receiver ----
+
+actor Checker is DigestSink[Array[u8, 32]] {
+  want: List[u8];
+
+  pub fn init(self: &new, want: List[u8]) {
+    *self = Self(want: want);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    match r {
+      case let Ok(d) { if same(&d, want.view()) { outcome.digestOk.add(1u64); } }
+      case is Err { outcome.digestErr.add(1u64); }
+    }
+  }
+}
+
+// ---- mode "adhoc": one actor does it all, holding the body and the result whole ----
+
+actor AdHoc {
+  pub async fn run(self, port: u16, name: String, expect: usize, want: List[u8], done: OneshotSender[u64]) {
+    let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var body = List[u8]();
+    var more = true;
+    while more {
+      let got = await conn.read(IoBuf(65536usize));
+      match got {
+        case let Ok(b) {
+          if b.len() == 0usize { more = false; } else { body.appendSlice(b.view()); }
+        }
+        case is Err { more = false; outcome.failed.add(1u64); }
+      }
+    }
+    match deflate.gzipDecompress(body.view(), expect) {
+      case let Ok(data) {
+        let d = cryptohash.sha256(data.view());
+        if same(&d, want.view()) { outcome.digestOk.add(1u64); } else { outcome.digestErr.add(1u64); }
+        match fs.writeFile(&Path.from(name.view()), data.view()) {
+          case is Ok { outcome.bytes.store(u64.from(data.len())); }
+          case is Err { outcome.failed.add(1u64); }
+        }
+      }
+      case is Err { outcome.failed.add(1u64); }
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var adhoc = false;
+  var mib = 64u32;
+  if argc > 1i32 {
+    let m = *(argv + 1usize);
+    adhoc = *m == 97u8;                     // "adhoc"
+  }
+  if argc > 2i32 { mib = digits(*(argv + 2usize)); }
+  let size = usize.from(mib) * 1048576usize;
+  let data = corpus(size);
+  let gz = deflate.gzipCompress(data.view(), 2);
+  let digest = cryptohash.sha256(data.view());
+  var want = List[u8]();
+  want.appendSlice(&digest);
+  let name = if adhoc {"streamsample_adhoc.tmp"} else {"streamsample_pipeline.tmp"};
+
+  var portTx: OneshotSender[u16];
+  var portRx: OneshotReceiver[u16];
+  portTx, portRx = Oneshot[u16].make();
+  var doneTx: OneshotSender[u64];
+  var doneRx: OneshotReceiver[u64];
+  doneTx, doneRx = Oneshot[u64].make();
+  var fileTx: OneshotSender[Result[u64, AnyError]];
+  var fileRx: OneshotReceiver[Result[u64, AnyError]];
+  fileTx, fileRx = Oneshot[Result[u64, AnyError]].make();
+
+  let t0 = Instant.now();
+  {
+    let server = Server(gz);
+    server.serve(portTx);
+    var port = 0u16;
+    match portRx.recv() {
+      case let Some(p) { port = p; }
+      case is None {}
+    }
+    if adhoc {
+      let a = AdHoc();
+      var w2 = List[u8]();
+      w2.appendSlice(want.view());
+      a.run(port, String.from(name), size, w2, doneTx);
+    } else {
+      let sink = FileSink(String.from(name), fileTx);
+      let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
+      let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+      let src = SocketSource(inf);
+      src.start(SocketAddr.localhost(port));
+    }
+  }
+  if adhoc {
+    doneRx.recv();
+  } else {
+    // the file sink's one answer: the bytes written, or why not
+    match fileRx.recv() {
+      case let Some(r) {
+        match r {
+          case let Ok(n) { outcome.bytes.store(n); }
+          case is Err { outcome.failed.add(1u64); }
+        }
+      }
+      case is None { outcome.failed.add(1u64); }
+    }
+  }
+  finalAll();
+  let ns = u64.from(t0.elapsed().nanos());
+  let ok = outcome.digestOk.load() == 1u64 && outcome.failed.load() == 0u64 && outcome.bytes.load() == u64.from(size);
+  _ = fs.removeFile(&Path.from(name));
+  printStr(if adhoc {"adhoc"} else {"pipeline"}); printStr(" "); printUInt(u64.from(mib)); printStr(" MiB: ");
+  printUInt(ns / 1000000u64); printStr(" ms, ");
+  printUInt(u64.from(size) * 1000u64 / ns); printStr(" MB/s ");
+  printStr(if ok {"ok"} else {"WRONG"}); printStr("\n");
+  if ok {0i32} else {1i32}
+}

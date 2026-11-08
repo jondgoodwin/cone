@@ -75,12 +75,25 @@ INode *refImmutableDefaultPerm(INode *target) {
     return itypeIsImmutable(target) ? newPermUseNode(immPerm) : NULL;
 }
 
+// The permission an owner takes when none is written (refTypeCheck,
+// refvirtTypeCheck): 'uni', or 'imm' where a thin reference's target declares
+// Immutable (rule one). Whether 'ref' has it, for a type printed in a message.
+int refOwnerPermIsDefault(RefNode *ref) {
+    if (ref->region == NULL || !isTypeNode(ref->region) || itypeGetTypeDcl(ref->region) == (INode*)borrowRef
+        || ref->perm == NULL || !isTypeNode(ref->perm))
+        return 0;
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    if (ref->tag == RefTag && ref->vtexp && isTypeNode(ref->vtexp) && itypeIsImmutable(ref->vtexp))
+        return perm == (INode*)immPerm;
+    return perm == (INode*)uniPerm;
+}
+
 // 'Immutable', rule two, the ban on mutation: a permission that writes through
 // a path others share, 'mut', 'mut1' or a lock permission ('Arc[Mutex, str]'),
 // is refused on a reference to a type declaring Immutable, written or
 // inherited from a generic's argument. 'uni' is not refused: it is the one
 // holder's, a 'final' receives its 'self' as it, and a unique owner of a str
-// ('So[uni, str]') is that alone, there being no write to make through a str.
+// ('Uni[str]') is that alone, there being no write to make through a str.
 // This is the rule a later loosening narrows (a 'uni' borrow of an owned 'str'
 // given length-preserving methods) without touching rule one. Answers whether
 // the permission is refused, after saying so.
@@ -158,6 +171,23 @@ void refAdoptInfections(RefNode *refnode) {
         refnode->flags |= MoveType;
 }
 
+// Is this type a read-only borrow, '&T', a slice or a virtual reference: a
+// borrow that copies, so core's Clone is granted to it and its clone is the same
+// borrow? Asks the permission itself (it may alias and may not write). Not
+// '&mut' (which the compiler lets alias, so it copies, but which is not granted
+// Clone: design chat's ruling) or '&uni', and not an owner such as Rc.
+int refIsCopyBorrow(INode *type) {
+    type = itypeGetTypeDcl(type);
+    if (type->tag != RefTag && type->tag != ArrayRefTag && type->tag != VirtRefTag)
+        return 0;
+    RefNode *ref = (RefNode*)type;
+    if (ref->perm == NULL)
+        return 0;
+    int flags = permGetFlags(ref->perm);
+    return (flags & MayAlias) && !(flags & MayWrite)
+        && itypeGetTypeDcl(ref->region) == borrowRef && !itypeIsMove(type);
+}
+
 // Whether a reference may cross to another thread, as far as the reference
 // itself says: the thread check's rule, with what it points at asked
 // separately (itypeThreadBound). In order:
@@ -167,7 +197,7 @@ void refAdoptInfections(RefNode *refnode) {
 // - A traced reference never crosses while the collector is single threaded,
 //   whatever its permission or its region declares.
 // - An owner that cannot be aliased moves, taking its value with it: a 'uni'
-//   owner of any region, and any owner of a 'Move' region ('So').
+//   owner of any region, and any owner of a 'Move' region ('Uni').
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
 //   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
 //   dealiasRef may run on several threads at once ('Arc' does; 'Rc' does not).
@@ -200,7 +230,7 @@ RefBinds refThreadBinds(RefNode *ref) {
 // into the collector's one chain of frames (conestd's roots.cone, single
 // threaded; a reference into an actor-local region is not counted, since each
 // thread has a chain of its own and the actor's roots are found between its
-// messages). A move owner (So) cannot be copied. Any other owner that may be
+// messages). A move owner (Uni) cannot be copied. Any other owner that may be
 // aliased writes its count, which only a region declaring ThreadSafe makes
 // atomic.
 int refCountsPlain(RefNode *ref) {
@@ -242,7 +272,11 @@ int refWritesShared(RefNode *ref) {
 // parameter is bounded ''static' (StaticVouched), the signature's where it is
 // written so (StaticWritten).
 StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how) {
-    if (how == StaticOff ||itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
+    // Where borrows are not let cross at large (StaticOff), one written ''static'
+    // still does, as Rust's '&'static str' is Send: its data is global and
+    // immutable. What a StaticOff walk remembers per struct is that strict answer.
+    if ((how == StaticOff && ref->lifename != staticLifeName)
+        || itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
         return StaticNotBorrow;
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     if (perm != (INode *)immPerm && perm != (INode *)opaqPerm && perm != (INode *)uniPerm)
@@ -314,13 +348,19 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     // A pattern's reference is always a type: the name under it is bound at type
     // check, against the matched value, and may be unbound or mean a value until then.
     if (!isTypeNode(node->vtexp) && !castPatternPending(node->vtexp)) {
-        if (node->tag == RefTag)
+        if (node->tag == RefTag) {
             node->tag = node->region == (INode*)borrowRef ? BorrowTag : AllocateTag;
+            // In a macro's body, a '&mut' of a plain parameter is refused here
+            INode *perm = (INode*)node->perm;
+            if (node->tag == BorrowTag && perm && isNameUseNode(perm)
+                && ((NameUseNode*)perm)->dclnode == (INode*)mutPerm)
+                macroChangeNameRes((INode*)node, node->vtexp, MacroChangePlace);
+        }
         else if (node->region == (INode*)borrowRef)
             errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow a virtual reference. Coerce from a regular ref.");
         else
             errorMsgNode((INode*)node, ErrorPlusAlloc,
-                "An allocation is written 'new Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
+                "An allocation is written 'Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
     }
     // '&Array[T]' written out is the slice type, so it is the
     // slice's node from here on (the borrow of the body of a run-time length)
@@ -372,7 +412,7 @@ static void refRefuseRegionRef(RefNode *node) {
 }
 
 // A managed reference type is written 'R[perm, T]', and so is the one an
-// allocation names, 'new R[perm, T](...)', so the older plus spelling of one,
+// allocation names, 'R[perm, T](...)', so the older plus spelling of one,
 // '+R-perm T', is refused where it was written. Reported once:
 // a node reached twice says it once.
 static void refRefusePlusType(RefNode *node) {
@@ -384,7 +424,7 @@ static void refRefusePlusType(RefNode *node) {
     char *reg = regname ? &regname->namestr : "R";
     char *perm = permname ? &permname->namestr : "uni";
     errorMsgNode((INode*)node, ErrorPlusRefType,
-        "A managed reference type is written '%s[%s, T]', and allocated 'new %s[%s, T](...)'.", reg, perm, reg, perm);
+        "A managed reference type is written '%s[%s, T]', and allocated '%s[%s, T](...)'.", reg, perm, reg, perm);
 }
 
 // Set by fnSigTypeCheck while it checks a signature's 'self', the one place
@@ -396,7 +436,7 @@ int refAllowNewPerm = 0;
 // refused again
 int refNewTypeWritten = 0;
 
-// An owning reference type written in GPU code, 'So[T]', 'Rc[T]', 'Arc[imm, T]',
+// An owning reference type written in GPU code, 'Uni[T]', 'Rc[T]', 'Arc[imm, T]',
 // is refused: a GPU has no allocator, so nothing could own memory, and a kernel
 // has only its locals and the buffers it is bound. A borrow, whose region is
 // the borrow's own, is what a GPU has.
@@ -460,10 +500,11 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
+    refSoleOwnerPermCheck(node);
     // A type checked once is not checked again, so this is said once
     if (itypeGetTypeDcl(node->perm) == (INode*)newPerm && (!allownew || node->region != borrowRef)) {
         errorMsgNode((INode*)node, ErrorPermNew,
-            "'&new' is the permission of an init's self, a reference to memory not yet filled: 'fn init(self &new, ...)'.");
+            "'&new' is the permission of an init's self, a reference to memory not yet filled: 'fn init(self: &new, ...)'.");
         node->perm = newPermUseNode(uniPerm);
     }
     // A reference in a parameter position parses with no pointee, because
@@ -529,6 +570,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refGpuOwnerCheck(node, newtype);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
+    refSoleOwnerPermCheck(node);
     int waiting;
     if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
@@ -538,11 +580,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
     // A signature behind a virtual reference is the callable trait of that
     // signature, of the kind this reference's permission allows to be called
-    // ('&<fn(i32) i32', 'So[fn(i32) i32]')
+    // ('&<fn(i32) i32', 'Uni[fn(i32) i32]')
     INode *target = itypeGetTypeDcl(node->vtexp);
     if (target->tag == FnSigTag && ((FnSigNode*)target)->ccall) {
         errorMsgNode((INode*)node, ErrorFnRefConv,
-            "A callable (`&<fn`, `So[fn]`) holds a closure, a Cone function or a struct with a `()`, and calls it in Cone's convention; `@c` marks a plain function reference, `&fn @c (...)`, one that C can be handed or hands over.");
+            "A callable (`&<fn`, `Uni[fn]`) holds a closure, a Cone function or a struct with a `()`, and calls it in Cone's convention; `@c` marks a plain function reference, `&fn @c (...)`, one that C can be handed or hands over.");
         return;
     }
     if (target->tag == FnSigTag) {
@@ -703,11 +745,14 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 
     // A reference to a plain function is a callable of its signature: its
     // vtable's one '()' is a stub calling the function, which reads and changes
-    // nothing, so it meets either kind of callable reference at any permission
+    // nothing, so it meets either kind of callable reference at any permission.
+    // The function's signature meets the callable's as a method's meets a
+    // trait's (fnSigMeets): a recast's difference, never a conversion, so the
+    // stub passes the callable's values to the function as they are
     StructNode *totrait = (StructNode*)itypeGetTypeDcl(to->vtexp);
     INode *fromtarget = itypeGetTypeDcl(from->vtexp);
     if (fromtarget->tag == FnSigTag)
-        return totrait->tag == StructTag && totrait->callsig && fnSigEqual(totrait->callsig, (FnSigNode*)fromtarget)
+        return totrait->tag == StructTag && totrait->callsig && fnSigMeets((FnSigNode*)fromtarget, totrait->callsig)
             ? ConvSubtype : NoMatch;
 
     // Now their permissions
@@ -719,6 +764,7 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 
     // Handle value type without worrying about mutability-triggered variance
     // This is because a virtual reference "supertype" can never change the value's underlying type
+    // (the fields it reaches are another matter: see the write test below)
     // Virtual references are based on structs/traits
     StructNode *tovtypedcl = (StructNode*)itypeGetTypeDcl(to->vtexp);
     StructNode *fromvtypedcl = (StructNode*)itypeGetTypeDcl(from->vtexp);
@@ -748,6 +794,15 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     case EqMatch:
     case CastSubtype:
     case ConvSubtype:
+        // The value's type cannot change, but a field of it can be stored into through
+        // the trait: a reference that may write sees each field at exactly the trait's
+        // type, while a read-only one may see a narrower field as the trait's wider type
+        if ((permGetFlags(to->perm) & MayWrite)
+            && structVirtRefFieldVariant((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl, NULL))
+            return NoMatch;
+        // A member private to another module fills no slot from here
+        if (structVirtRefHidden((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl))
+            return NoMatch;
         return ConvSubtype;  // Creating a virtual reference is always a conversion
     default:
         return NoMatch;

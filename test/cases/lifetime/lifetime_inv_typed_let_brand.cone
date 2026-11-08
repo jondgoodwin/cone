@@ -1,0 +1,71 @@
+// A generic variant built under a typed `let` takes the brand the let states for the argument its value leaves
+// unsaid, and for the one the value minted: `let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a)` is that
+// Either, as `Either.R(b)` is, and an assignment's target says the same.
+//
+// Verdict: accept; prints "3", "7", "3", "7", "5".
+// Basis: a typed let and an assignment's target state a type this body names, so their brands are the ones a call
+// the body made may be taken for; a callee's parameter type names the callee's own (jn_d3's `usee(Some(t), t)`),
+// and a brand that differs stays different (lifetime_inv_infer_declared_refused).
+
+mod lifetime_inv_typed_let_brand;
+
+import stdio use *;
+import arena use *;
+
+struct Num { pub v: i64; }
+struct Bin { pub p: i64; pub q: i64; }
+enum Either[A, B] {
+  L(A);
+  R(B);
+}
+
+fn eval(ar: &DynArena['=a], e: Either[&'=a mut Num, &'=a mut Bin]) i64 {
+  match e {
+    case let L(n) { ar[n].v }
+    case let R(b) { ar[b].p + ar[b].q }
+  }
+}
+
+fn runL(ar: &mut DynArena['=a]) i64 {
+  let a = ar.alloc(Num(3));
+  let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a);
+  eval(ar, e)
+}
+
+fn runR(ar: &mut DynArena['=a]) i64 {
+  let b = ar.alloc(Bin(3, 4));
+  let e: Either[&'=a mut Num, &'=a mut Bin] = Either.R(b);
+  eval(ar, e)
+}
+
+fn runAssign(ar: &mut DynArena['=a]) i64 {
+  let a = ar.alloc(Num(3));
+  let b = ar.alloc(Bin(3, 4));
+  var e: Either[&'=a mut Num, &'=a mut Bin] = Either.R(b);
+  e = Either.L(a);
+  eval(ar, e)
+}
+
+// A callee's parameter states the brand, the call's argument another name for it (jn_d3)
+fn usee(o: Option[&'=a mut Num], p: &'=a mut Num, ar: &DynArena['=a]) i64 {
+  match o {
+    case let Some(n) { ar[n].v + ar[p].v }
+    else { ar[p].v }
+  }
+}
+
+fn runCallee(ar: &mut DynArena['=a]) i64 {
+  let t = ar.alloc(Num(1));
+  let u = ar.alloc(Num(4));
+  usee(Some(t), u, ar)
+}
+
+fn main() {
+  var ar = DynArena.empty();
+  print <- runL(&mut ar), "\n";
+  print <- runR(&mut ar), "\n";
+  print <- runAssign(&mut ar), "\n";
+  var br = DynArena.empty();
+  print <- runR(&mut br), "\n";
+  print <- runCallee(&mut br), "\n";
+}

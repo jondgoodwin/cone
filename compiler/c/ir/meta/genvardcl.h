@@ -16,10 +16,13 @@ typedef struct GenVarDclNode {
     // makes it a constraint (genericConstraintsNameRes); a type or a kind, a
     // value or kind parameter. A kind parameter is not built.
     Nodes *annot;
-    // The integer type of a value parameter, '[N usize]': its annotation named
-    // a number type, which genericConstraintsNameRes takes out of the
-    // constraints and records here. NULL for a type parameter. An argument is
-    // a literal of this type (genericValueArg).
+    // The type of a value parameter: one slot, two meanings by declaration.
+    // On a generic, '[N: usize]': its annotation named an integer type, which
+    // genericConstraintsNameRes takes out of the constraints and records here,
+    // and an argument is a compile-time literal of it (genericValueArg). On a
+    // macro, '[a: T]', '[a: lazy T]': the type written after the ':', which the
+    // parser records here (FlagLazy for 'lazy'), and an argument is a run-time
+    // value of it. NULL for a type parameter, and for a macro method's 'self'.
     INode *valtype;
 } GenVarDclNode;
 

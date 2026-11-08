@@ -1,0 +1,587 @@
+// A response body sent to a stage as it arrives (Client.streamTo), against a
+// loopback server of the package's own. Checked, in order:
+//   - a 16 MiB body to a counting sink: every byte checked, the head answered,
+//     one 'end' (Finished), the bytes lent (both ends' buffers, the server's
+//     writes too) never past a bound far below the body, every buffer home;
+//   - a slow sink (it awaits before giving each chunk back): the same body
+//     arrives whole, slowly, the bytes lent under the same bound. The slow
+//     sink slows the link, it does not fill memory: there is one credit, the
+//     fetch's own window, and giveBack is what releases it;
+//   - a fetch cancelled mid-body through its group (a body of 1 GiB): the sink
+//     gets one 'end' that is Failed("cancelled"), far short of the body, and
+//     every buffer comes home;
+//   - the consumer's quitting seen only by a buffer given back in a cancelled
+//     group (what a TransformStage does): the fetch ends the same way;
+//   - a failure before the head (a refused connection): the caller's Err and
+//     the sink's one Failed end;
+//   - thirty fetches over one HTTP/2 connection (TLS, the tls package's test
+//     certificates), 2 MiB each, one sink stalled (it never gives a buffer
+//     back): the other twenty-nine arrive whole at full rate while the stalled
+//     one has taken no more than its window, then it is let go and arrives
+//     whole too (promise S4: a stalled stream holds up no other).
+
+mod body;
+
+import stdio use *;
+import thread;
+import fs;
+import path use Path;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Request;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending, ChunkInbox, Turn;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+const mib = 1048576u64;
+
+// ---------------------------------------------------------------------------
+// What the sinks tell the main thread
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub bytes: Atomic[u64];      // bytes taken by the counting sinks
+  pub bad: Atomic[u64];        // bytes that were not the pattern
+  pub finished: Atomic[u64];   // ends that were Finished
+  pub failed: Atomic[u64];     // ends that were Failed
+  pub cancelled: Atomic[u64];  // ...of them, with the message "cancelled"
+  pub peak: Atomic[u64];       // the most bytes lent at once, as a sink saw it
+  pub stalledBytes: Atomic[u64];
+  pub stalledEnds: Atomic[u64];
+  pub heads: Atomic[u64];      // heads answered Ok
+  pub headErrs: Atomic[u64];   // heads answered Err
+  pub headBad: Atomic[u64];    // heads that were not a 200 over the protocol expected
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.finished.store(0u64);
+  tally.failed.store(0u64);
+  tally.cancelled.store(0u64);
+  tally.peak.store(0u64);
+  tally.stalledBytes.store(0u64);
+  tally.stalledEnds.store(0u64);
+  tally.heads.store(0u64);
+  tally.headErrs.store(0u64);
+  tally.headBad.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+// The pool's bytes lent now: both ends' buffers
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// ---------------------------------------------------------------------------
+// The server: GET /big/N answers N bytes, byte i being i % 251
+// ---------------------------------------------------------------------------
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let left = n - at;
+      let m = if left < 65536u64 {usize.from(left)} else {65536usize};
+      var piece = List[u8].withCapacity(m);
+      var i = 0usize;
+      while i < m {
+        piece.push(u8.from((at + u64.from(i)) % 251u64));
+        i = i + 1usize;
+      }
+      let w = await ex.write(String.fromBytes(piece.view()));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sinks. Role 0 never awaits: it counts, checks and gives each buffer back
+// at once. Role 1 awaits 'pace' ms before giving each back, and keeps its
+// chunks in order with a ChunkInbox. Role 2 gives nothing back until it is
+// released (a stalled consumer).
+// ---------------------------------------------------------------------------
+
+// Gives buffers back in the group its message was sent in: what a TransformStage that has
+// quit does with its input
+actor Returner {
+  held: List[IoBuf];
+
+  pub async fn hold(self, b: IoBuf) { held.push(b); }
+
+  pub async fn giveAll(self, src: ChunkSource) {
+    each b in held.drain() { src.giveBack(b); }
+  }
+}
+
+actor Counter is ChunkSink {
+  ret: Returner;
+  rx: ChunkInbox;
+  up: Option[ChunkSource];
+  role: u32;
+  pace: i64;
+  at: u64;
+  top: u64;
+  held: List[IoBuf];
+  quitAt: u64;                 // cancel 'quit' after this many bytes
+  quit: CancelGroup;
+  quitting: bool;              // ...and give the buffers back in it, as a TransformStage that has quit does
+  quitDone: bool;
+  released: bool;              // a stalled sink let go: what comes after goes back at once
+
+  pub fn init(self: &new, role: u32, pace: i64, quitAt: u64, quit: CancelGroup, quitting: bool) {
+    *self = Self(ret: Returner(List[IoBuf]()), rx: ChunkInbox.make(), up: None[ChunkSource], role: role, pace: pace, at: 0u64, top: 0u64,
+      held: List[IoBuf](), quitAt: quitAt, quit: quit, quitting: quitting, quitDone: false, released: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    rx.attach(source);
+    up = Some[ChunkSource](source);
+  }
+
+  // Count and check a chunk
+  fn take(self: &mut, b: &IoBuf) {
+    let v = b.view();
+    var bad = 0u64;
+    var i = 0usize;
+    while i < v.len {
+      if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+      i = i + 1usize;
+    }
+    at = at + u64.from(v.len);
+    if bad > 0u64 {tally.bad.add(bad);}
+    let l = lent();
+    if l > top {top = l;}
+  }
+
+  fn giveNow(self: &mut, b: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(b); }
+      case is None {}
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if role == 0u32 {
+      self.take(&c);
+      if quitAt > 0u64 && at >= quitAt && !quitDone {
+        quitDone = true;
+        quit.cancel();
+      }
+      if quitting && quitDone {
+        // the buffer goes back in the group that has been cancelled
+        match &up {
+          case let &Some(u) {
+            let src = *u;
+            let r = ret;
+            r.hold(c);
+            actors.withGroup(&quit, fn() [src, r] { r.giveAll(src); });
+          }
+          case is None {}
+        }
+      } else {
+        self.giveNow(c);
+      }
+      return;
+    }
+    if role == 3u32 {
+      // a sink that trims a buffer to one byte before giving it back
+      self.take(&c);
+      var t = c;
+      t.setLen(1usize);
+      self.giveNow(t);
+      return;
+    }
+    if role == 2u32 {
+      self.take(&c);
+      tally.stalledBytes.store(at);
+      if released {self.giveNow(c);} else {held.push(c);}
+      return;
+    }
+    var turn = rx.arrive(c);
+    var more = true;
+    while more {
+      match turn {
+        case let Chunk(b) {
+          self.take(&b);
+          let s = await aio.sleep(Duration.fromMillis(pace));
+          turn = rx.finished(b);
+        }
+        case let End(how) {
+          self.over(how);
+          turn = Turn.Wait;
+          more = false;
+        }
+        case is Wait { more = false; }
+      }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    if role == 1u32 {
+      match rx.arriveEnd(how) {
+        case let End(h) { self.over(h); }
+        else {}
+      }
+    } else {
+      self.over(how);
+    }
+  }
+
+  // Let a stalled sink's buffers go
+  pub async fn release(self) {
+    released = true;
+    each b in held.drain() { self.giveNow(b); }
+  }
+
+  fn over(self: &mut, how: Ending) {
+    if top > tally.peak.load() {tally.peak.store(top);}
+    if role == 2u32 {
+      tally.stalledBytes.store(at);
+      tally.stalledEnds.add(1u64);
+      return;
+    }
+    tally.bytes.add(at);
+    match how {
+      case is Finished { tally.finished.add(1u64); }
+      case let Failed(e) {
+        tally.failed.add(1u64);
+        if (String() <- e).view() == "cancelled" {tally.cancelled.add(1u64);}
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn url(scheme: &str, port: u16, path: &str) String {
+  var u = String.from(scheme);
+  u.append("://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+actor Fetcher {
+  client: Client;
+
+  // One fetch to 'sink'; the head's arrival is counted
+  pub async fn run(self, u: String, sink: ChunkSink, lim: IoLimits, h2: bool) {
+    let r = await client.streamToIn(Request.get(u.view()), sink, lim);
+    match r {
+      case let Ok(head) {
+        tally.heads.add(1u64);
+        let right = head.status == 200u16 && (!h2 || head.version == Version.Http2);
+        if !right {tally.headBad.add(1u64);}
+      }
+      case is Err { tally.headErrs.add(1u64); }
+    }
+  }
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn trusting() Client {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+const bound = 2097152u64;
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    let plain = Acceptor(Server.none());
+    plain.open(ServerConfig.make(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    plain.serve();
+    let secure = Acceptor(Server.none());
+    secure.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2(), ptx.clone());
+    let sport = take[u16](&mut prx, 0u16);
+    secure.serve();
+    printStr("two servers listen: ");
+    printStr(yes(port != 0u16 && sport != 0u16));
+    printStr("\n");
+
+    // (each fetch has a client of its own, dropped with it, so that no connection
+    // kept alive holds a buffer when the buffers are counted)
+    let none = CancelGroup.make();
+
+    // A 16 MiB body to a counting sink
+    reset();
+    {
+      let sink = Counter(0u32, 0i64, 0u64, none, false);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", port, "/big/16777216"), sink, IoLimits.none(), false);
+      waitFor(&tally.finished, 1u64);
+      printStr("16 MiB to a counting sink: head ok ");
+      printStr(yes(tally.heads.load() == 1u64 && tally.headBad.load() == 0u64));
+      printStr(", bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr("\n");
+      printStr("...the bytes lent never past 2 MiB: ");
+      printStr(yes(tally.peak.load() <= bound && tally.peak.load() > 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // The same through a slow sink
+    reset();
+    {
+      let sink = Counter(1u32, 3i64, 0u64, none, false);
+      let f = Fetcher(Client.standard());
+      let t0 = Instant.now();
+      f.run(url("http", port, "/big/4194304"), sink, IoLimits.none(), false);
+      waitFor(&tally.finished, 1u64);
+      let ms = (Instant.now() - t0).millis();
+      printStr("4 MiB to a sink that awaits 3 ms a chunk: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(", held back to its pace (64 chunks, at least 150 ms): ");
+      printStr(yes(ms >= 150i64));
+      printStr("\n");
+      printStr("...the bytes lent never past 2 MiB: ");
+      printStr(yes(tally.peak.load() <= bound && tally.peak.load() > 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // Cancelled mid-body through the request's group
+    reset();
+    {
+      let g = CancelGroup.make();
+      let sink = Counter(0u32, 0i64, mib, g, false);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", port, "/big/1073741824"), sink, IoLimits.within(g), false);
+      waitFor(&tally.failed, 1u64);
+      thread.sleep(Duration.fromMillis(200i64));
+      printStr("cancelled after 1 MiB of 1 GiB, by the request's group: head ok ");
+      printStr(yes(tally.heads.load() == 1u64));
+      printStr(", ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr(", the failure is 'cancelled' ");
+      printStr(yes(tally.cancelled.load() == 1u64));
+      printStr(", far short of the body ");
+      printStr(yes(tally.bytes.load() >= mib && tally.bytes.load() < 64u64 * mib));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // Cancelled where only the buffers given back know
+    reset();
+    {
+      let g = CancelGroup.make();
+      let sink = Counter(0u32, 0i64, mib, g, true);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", port, "/big/1073741824"), sink, IoLimits.none(), false);
+      waitFor(&tally.failed, 1u64);
+      thread.sleep(Duration.fromMillis(200i64));
+      printStr("cancelled by a buffer given back in a cancelled group: ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr(", the failure is 'cancelled' ");
+      printStr(yes(tally.cancelled.load() == 1u64));
+      printStr(", far short of the body ");
+      printStr(yes(tally.bytes.load() >= mib && tally.bytes.load() < 64u64 * mib));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A sink that trims each buffer before giving it back: the credit is what was lent
+    reset();
+    {
+      let sink = Counter(3u32, 0i64, 0u64, none, false);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", port, "/big/4194304"), sink, IoLimits.none(), false);
+      waitFor(&tally.finished, 1u64);
+      printStr("4 MiB to a sink that trims every buffer to a byte: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A refused connection: before any head
+    reset();
+    {
+      let sink = Counter(0u32, 0i64, 0u64, none, false);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", 1u16, "/big/10"), sink, IoLimits.none(), false);
+      waitFor(&tally.failed, 1u64);
+      thread.sleep(Duration.fromMillis(100i64));
+      printStr("a refused connection: the caller's Err ");
+      printUInt(tally.headErrs.load());
+      printStr(", the sink's ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr("\n");
+    }
+
+    // Thirty fetches over one HTTP/2 connection, one sink stalled
+    reset();
+    {
+      let tc = trusting();
+      let stalled = Counter(2u32, 0i64, 0u64, none, false);
+      let sf = Fetcher(tc.clone());
+      sf.run(url("https", sport, "/big/2097152"), stalled, IoLimits.none(), true);
+      // let the first connection form before the others join it
+      waitFor(&tally.heads, 1u64);
+      var k = 0u32;
+      while k < 29u32 {
+        let s = Counter(0u32, 0i64, 0u64, none, false);
+        let f = Fetcher(tc.clone());
+        f.run(url("https", sport, "/big/2097152"), s, IoLimits.none(), true);
+        k = k + 1u32;
+      }
+      waitFor(&tally.finished, 29u64);
+      printStr("thirty over one HTTP/2 connection, one stalled: the other 29 arrived whole ");
+      printStr(yes(tally.finished.load() == 29u64 && tally.bytes.load() == 29u64 * 2u64 * mib && tally.bad.load() == 0u64));
+      printStr(" over HTTP/2 ");
+      printStr(yes(tally.heads.load() == 30u64 && tally.headBad.load() == 0u64));
+      printStr("\n");
+      printStr("...the stalled one took no more than its 256 KiB window and has not ended: ");
+      printStr(yes(tally.stalledBytes.load() <= 262144u64 && tally.stalledBytes.load() > 0u64 && tally.stalledEnds.load() == 0u64));
+      printStr("\n");
+      stalled.release();
+      waitFor(&tally.stalledEnds, 1u64);
+      printStr("...let go, it arrives whole: ");
+      printStr(yes(tally.stalledBytes.load() == 2u64 * mib && tally.stalledEnds.load() == 1u64 && tally.bad.load() == 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    plain.stop();
+    secure.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}

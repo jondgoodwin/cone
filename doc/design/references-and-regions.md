@@ -15,7 +15,7 @@ borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
 **The distance** is large and worth stating plainly. Two regions ship in the
-core package, `So` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
+core package, `Uni` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
 with its count changed atomically, declaring the built-in marker
 **`ThreadSafe`**, which the thread check asks of a reference's region: an owner
 that may be aliased crosses threads only in a region declaring it, so
@@ -30,12 +30,14 @@ and trace) by taking one after the size. A region may declare itself
 hands each reference into the region a value holds to the region's `mark` (with
 the reference's permission and a mode, where `mark` asks), and the compiler
 refuses a traced reference wherever a collector could not find it — behind an
-`Rc` or `So` owner, in a global, in raw memory placed by `mem.writeRaw` (an
+`Rc` or `Uni` owner, in a global, in raw memory placed by `mem.writeRaw` (an
 arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
 into a chain that `mem.traceRoots` walks, handing each to its region's `mark`.
-Every allocation, `new Gc[mut, Node](1)`, runs in one order: the value
+A reference into an `ActorLocal` region is no root: its collector runs between
+one actor's messages and finds it from the actor's state.
+Every allocation, `Gc[mut, Node](1)`, runs in one order: the value
 init's arguments, `alloc` (memory only), the region's `init` filling the
 header in place, a dynamic permission's `init`, the value's `init` filling
 the value in place, and the reference moved to its destination. In a traced
@@ -52,7 +54,7 @@ locals get none, since a collector traces the stacks again before it ends a
 mark. No more of the protocol below is built: no read barrier, no weak
 reference kind, and no region with global state. Of the strategies that motivate the whole
 design, a tracing collector is written as library code, incremental: the
-`collector` package's region ref `Gc` (`new Gc[mut, T](...)`), Acorn's tri-colour
+`collector` package's region ref `Gc` (`Gc[mut, T](...)`), Acorn's tri-colour
 mark and sweep over those roots and the type records' traces, a step at a
 time inside allocations once the heap passes its trigger (and whole on
 `gc.collect()`), its `writeBarrier` shading what a store puts into an object
@@ -71,7 +73,7 @@ are the actor's state and the records its `await`s have parked, with a non-movin
 space for large objects and a final list for the values that need finalizing; no
 barrier and no stack scan. `new self[T](...)` allocates in it: the actor's state
 has an `allocRegion` method giving it, and a value whose type has one *leads to* a
-region, so `new x[T](...)` is `x.allocRegion().alloc(new T(...))`.
+region, so `new x[T](...)` is `x.allocRegion().alloc(T(...))`.
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`, or `new a[T](...)`, which is that call: the arena value in
@@ -85,6 +87,13 @@ each value through the finalizer in its type's record
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
 **scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
 are its whole safety, with their gaps (below, "Where each rule is enforced").
+An arena reads what it holds only when it dies, so a value stored in it must
+outlive it only if its finalizer, or that of anything it owns, can read a
+borrow it holds (`itypeDropReadsBorrow`, which answers yes for a type it cannot
+see all of); any other value is no store, and the borrow `alloc` returns
+carries what the value held. A function handed `ar: &'a mut Arena` and
+something else of `'a` may fill a node of the arena with it, and its caller
+answers for the call as for a store into the arena.
 The `pool` package's `Pool[T]` is a generational pool: `add` returns a
 `Ref[T]`, a slot's index and generation, which owns nothing and is checked
 against the slot each time it is used, through the pool value — `get` answers
@@ -181,25 +190,25 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-imm person = new So[Person]("Tako")     // single-owner: freed when the owner drops
-imm shared = new Rc[Person]("Tako")     // counted: freed at zero
+let person = Uni[Person]("Tako")     // single-owner: freed when the owner drops
+let shared = Rc[Person]("Tako")     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `So` | `struct So is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
-| `Rc` | `struct Rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
-| `Rcw` | `struct Rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
+| `Uni` | `struct Uni is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
+| `Rc` | `struct Rc is RegionRef { cnt: usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
+| `Rcw` | `struct Rcw is RegionRef { strong: usize; weak: usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
-**`So` and `Rc` are Cone source, not built into the compiler**, and nothing in
+**`Uni` and `Rc` are Cone source, not built into the compiler**, and nothing in
 the compiler names either. Each method is optional, and an absent one's
 operation does not happen: without `aliasRef` a copy of a reference calls nothing;
 `dealiasRef` answers whether the owner that went was the last, and without it an
 owner's going asks nothing; `free` gives the memory back. **One owner per value
 is declared, not read off a missing method** [Jon 26 Sep]: a region ref
-declaring the built-in trait `Move`, as `So` does, has its copies moved and
+declaring the built-in trait `Move`, as `Uni` does, has its copies moved and
 every owner's going is the value's death. One declaring neither `Move` nor
 `aliasRef` shares its references for nothing, and with no `dealiasRef` either its
 owners' going does nothing at all — the compiler never frees such a value, the
@@ -210,11 +219,11 @@ the order a value on the stack is finalized in. A value moved out through its
 sole owner leaves that owner **hollow**: its memory is still freed, but nothing
 that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
-(`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
+(`doc/manual/rec-moves.html`). The compiler checks the methods' shapes where the struct is declared,
 refusing only contradictions — `Move` with `aliasRef`, `Move` with `Traced` — and
 a `Traced` region without its `mark` (or with a `writeBarrier` of another
 shape); and the test corpus
-declares regions of its own that get every call `Rc` and `So` get
+declares regions of its own that get every call `Rc` and `Uni` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
 **But the intended shape is much larger than that.** A region is meant to be a
@@ -253,18 +262,20 @@ anything coerces **to** `borrowRef`, and never between two owning regions.
 
 ### Permission — what may be done through this reference
 
-**Two different things share the word, and confusing them is easy.** A reference
-*type* carries a permission, and so does a *declaration* — a field, a local, a
-parameter or a global. They are written in different places, parsed by different
+**Two different things are easy to confuse.** A reference *type* carries a
+permission, and a *declaration* — a field, a local, a parameter or a global —
+carries a word, `let` or `var`, that says only whether its name may be given a new
+value (the compiler holds it as the `imm` or `mut` permission, the two that say
+that). They are written in different places, parsed by different
 functions, admit different vocabularies, and answer different questions:
 
-| | reference permission | declaration permission |
+| | reference permission | declaration word |
 | --- | --- | --- |
-| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `mut x i32` |
-| Parsed by | `parsePerm`, inside `parseType` | `parseDclPerm` |
-| Vocabulary | all six below | `mut` and `imm`, nothing else |
+| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `var x: i32` |
+| Parsed by | `parsePerm`, inside `parseType` | `parseDclWord` |
+| Vocabulary | all six below | `let` and `var`, nothing else |
 | Answers | read, write, alias, share — and move-ness | may this storage's value change |
-| Default | `ro` borrowed, `uni` owning, `opaq` for a function | `imm` on a variable, `mut` on a field |
+| Default | `ro` borrowed, `uni` owning, `opaq` for a function | `let` on a variable, `var` on a field |
 
 **Why they differ is the reason the rest of this note exists.** A declaration
 names one storage location that only it owns, so the aliasing and sharing
@@ -274,18 +285,18 @@ is where the other axes start to matter.
 
 Two consequences worth knowing:
 
-- **A declaration permission is not part of a function's signature.**
+- **A declaration word is not part of a function's signature.**
   `fnSigMatches` compares each parameter's *type* and nothing else, so
-  `fn f(mut n i32)` and `fn f(n i32)` are one signature and a caller cannot tell
+  `fn f(var n: i32)` and `fn f(n: i32)` are one signature and a caller cannot tell
   them apart. What a caller does see is the permission on a reference
   parameter's *type* — a different thing in the same sentence, which is what
-  makes a parameter's own permission as private to the body as a local's.
+  makes a parameter's own word as private to the body as a local's.
 - **They compose by taking the minimum, for the one bit that is enforced.**
   `iexpGetLvalInfo` walks an lval to its variable, adopting a reference's
-  permission wherever one is crossed and downgrading on a field's. So a `mut`
-  field is not writable through an `imm` value or a `&` reference, and an `imm`
+  permission wherever one is crossed and downgrading on a field's. So a `var`
+  field is not writable through a `let` variable or a `&` reference, and a `let`
   field is not writable through a `&mut` one. That is the write half of what
-  `doc/reference/refstruct.html` calls *viewpoint adaptation*, and it is the half that
+  `doc/manual/guide-structs.html` calls *viewpoint adaptation*, and it is the half that
   exists, with one rule from the sharing side: a `&uni` field, array element or
   tuple element is seen only through `uni` references or a holder held by value
   (`ErrorUniShared`). The rest of
@@ -309,7 +320,7 @@ Six permissions, each a bit set:
 writing but **not aliasing** — and lacking `MayAlias` is precisely what makes a
 reference carrying it a move type. It is the default for a managed reference
 type whose permission is left out, `Rc[Node]`, and so for an allocation of
-one, `new Rc[Node](1)`, which is why owning references move by default.
+one, `Rc[Node](1)`, which is why owning references move by default.
 
 `opaq` permits nothing, which makes it the safe default where the value type is
 not concrete.
@@ -332,7 +343,7 @@ nothing; a borrow through it takes the lock, waiting for a lock for threads,
 panicking for `Rwcell`, and the borrow's last use gives it back: the end of its
 statement, or, where a local's initializer made it, the last use of the local
 (or of what holds the borrow on) on each path. What is built
-and what is not is `doc/reference/refpermlock.html`; how,
+and what is not is `doc/manual/conc-locks.html`; how,
 [references](../../compiler/c/doc/nodes/references.md), "Lock permissions".
 
 The permissions are meant to be the *race-safe strategies* — the programmer
@@ -365,14 +376,14 @@ conversion.
 
 Ordinary, with one consequence worth stating: **a reference answers its own size
 and never consults its target**, which is what makes recursive types
-expressible. `struct S { next &S }` is legal because `&S` never asks `S`
+expressible. `struct S { next: &S }` is legal because `&S` never asks `S`
 anything.
 
 ## What composes out of the axes
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `So` declares `is Move`, which makes it one, so every `So` reference moves; `Rc` with the
+type**. `Uni` declares `is Move`, which makes it one, so every `Uni` reference moves; `Rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
 an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 
@@ -387,15 +398,21 @@ an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 
 So `&mut T` is invariant in `T` and `&ro T` is covariant — the opposite of the
 intuition that a mutable reference is "more capable" and therefore more
-permissive.
+permissive. A virtual reference follows the same rule for the fields a trait
+requires: a view that may write (`&<mut`, `&<uni`, `Uni[Trait]`) sees each field
+at exactly the trait's type, because a store through the trait writes a value of
+that type, while a read-only one may see a narrower field (a `Shape.Circle` as the
+`Shape` the trait asks for).
 
 **Covariance does not turn a move type behind a reference into a copy type.**
 A read through the reference copies what it holds when that is a copy type, so
 a borrow of a sole owner may not be seen as a borrow of a shared one:
 `&Rc[mut, T]` from `&Rc[T]` would copy a second, writable owner out of a value
 `uni` promised unique. The permission lattice still lets `uni` coerce down
-where the owner itself is moved. A `So[T]` owner may be seen as `So[mut, T]` behind
-a borrow, since both move and a move out through a borrow is refused.
+where the owner itself is moved. A single owner has no shared view to be
+seen as: `mut` is shared mutable and a `Move` region shares nothing, so `Uni[mut, T]`
+is refused where it is written (`ErrorSoleOwnerMut`), while `Uni[imm, T]` stays, a
+promise that the value never changes.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
 parameter, 2+ a local. It is not a type parameter, not a constraint variable,
@@ -442,7 +459,7 @@ asked by a constraint (`where T is DynSized`).
 **A body whose length a reference carries has no size to hold.** `str` is never
 a local, a field or a parameter, only the target of a reference; so is
 `Array[T]`, the body of a run-time length, whose borrow is the slice. It is allocated
-by copying a borrow of one, `new So[str](view)`, as long as the view, into the
+by copying a borrow of one, `Uni[str](view)`, as long as the view, into the
 memory the region gives. Each owner carries its own count, which is right
 because the body never grows: a growable one would need a count every holder
 sees, and keeps it (`List`, below).
@@ -460,12 +477,12 @@ declare it.
 array reference.** A statically sized array is reached by a thin reference with
 its size in the type; an array whose length is chosen at run time and never
 changes is the body `Array[T]`, owned by a fat reference in any region
-(`So[Array[T]]`, `Rc[Array[T]]`), one hop; and one that may grow is a
+(`Uni[Array[T]]`, `Rc[Array[T]]`), one hop; and one that may grow is a
 collection, a `List`, shared as a managed reference to it, `Rc[List[T]]`: a
 length carried in each fat pointer works against sharing a growable array,
 where every holder needs the one count the list keeps. Sharing costs a second
 block and a second hop; a list held in a local is used directly, lends its
-elements as the slice, and `freeze()` moves its block into a `So[Array[T]]`.
+elements as the slice, and `freeze()` moves its block into a `Uni[Array[T]]`.
 
 Three of the five are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single
@@ -489,6 +506,7 @@ gap:
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
 | a sole owner behind a borrow is not seen as a shared one | `refHeldMoveSeenAsCopy`, from `refMatches` and `arrayRefMatchesRef` | type check |
+| `mut` is not written on an owner of a `Move` region | `refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck` | type check |
 | region coercion direction | `regionMatches` | type check |
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
@@ -514,7 +532,7 @@ gap:
   initialized with; kept past its source's block and used there, it is
   refused at the source's end, by freezing — see [Safety](safety.md).
 - **The permission on a reference is not the permission on the binding.**
-  `imm fixed = &mut target` is a writable target through an unrebindable name.
+  `let fixed = &mut target` is a writable target through an unrebindable name.
 - **`&[]x` on a non-array is legal** and yields a one-element slice.
 
 ## What lives elsewhere

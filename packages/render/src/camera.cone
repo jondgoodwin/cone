@@ -14,18 +14,18 @@ pub const Perspective = 0;
 pub const Orthogonal = 1;
 
 pub struct Camera {
-  pub projection i32;       // Perspective (default) or Orthogonal
-  pub fov f32;              // perspective: the vertical field of view, in radians
-  pub viewHeight f32;       // orthogonal: the height of what it sees
-  pub near f32;             // nothing nearer than this is drawn
-  pub far f32;              // nor further than this
-  pub origin Vec3;          // where it is
-  pub orientation Quat;     // which way it faces
-  pub scale Vec3;
-  pub background Color;     // what the renderer clears to
-  pub following bool;       // placed relative to 'followMatrix'?
-  pub followMatrix Mat4;    // the placement of the thing it follows
-  pub eye Vec3;             // where on that thing it looks out from
+  pub projection: i32;       // Perspective (default) or Orthogonal
+  pub fov: f32;              // perspective: the vertical field of view, in radians
+  pub viewHeight: f32;       // orthogonal: the height of what it sees
+  pub near: f32;             // nothing nearer than this is drawn
+  pub far: f32;              // nor further than this
+  pub origin: Vec3;          // where it is
+  pub orientation: Quat;     // which way it faces
+  pub scale: Vec3;
+  pub background: Color;     // what the renderer clears to
+  pub following: bool;       // placed relative to 'followMatrix'?
+  pub followMatrix: Mat4;    // the placement of the thing it follows
+  pub eye: Vec3;             // where on that thing it looks out from
   // A camera that sees in a mirror ('reflectedAbout'): the world is
   // reflected about 'mirror' (xyz a unit normal, w the offset: n.p + w = 0)
   // before the camera sees it, so it draws the picture a planar mirror
@@ -33,50 +33,83 @@ pub struct Camera {
   // Reflecting turns the winding of every triangle round, which the clip
   // space's x flipped turns back; the picture is then mirrored left to
   // right, and the mirror material reads it at 1 - u.
-  pub reflected bool = false;
-  pub mirror Vec4 = new Vec4(0., 1., 0., 0.);
+  pub reflected: bool = false;
+  pub mirror: Vec4 = Vec4(0., 1., 0., 0.);
   // An oblique near plane (Lengyel 2005): when 'clipped', nothing on the
   // negative side of 'clip' (world coordinates, xyz a unit normal, w the
   // offset) is drawn
-  pub clipped bool = false;
-  pub clip Vec4 = new Vec4(0., 1., 0., 0.);
+  pub clipped: bool = false;
+  pub clip: Vec4 = Vec4(0., 1., 0., 0.);
   // A sub-pixel shift of the picture, in clip space (NDC) units, that
   // temporal anti-aliasing (taa.cone) jitters the projection by: the whole
   // picture moves by (jitterX, jitterY) in NDC (x right, y up). 0 is no shift.
-  pub jitterX f32 = 0.;
-  pub jitterY f32 = 0.;
+  pub jitterX: f32 = 0.;
+  pub jitterY: f32 = 0.;
+  // An off-axis perspective ('setFovAngles'), a headset eye's: the view's
+  // edges are four tangents from its axis, not one field of view about it, so
+  // the picture's middle need not be the axis's. Perspective only; the target's
+  // aspect is not used, the four tangents say the shape.
+  pub offAxis: bool = false;
+  pub tanLeft: f32 = 0.;     // the tangent of the angle to the left edge (negative for a left edge left of the axis)
+  pub tanRight: f32 = 0.;
+  pub tanUp: f32 = 0.;
+  pub tanDown: f32 = 0.;     // (negative for a bottom edge below the axis)
 
   // Pegasus's new camera: perspective, a field of view of 50 degrees (an
   // orthogonal view 10 high), drawing from 0.1 to 1000 away, at (0, 0, 5)
   // looking down -z at the origin, clearing to black
   pub fn make() Camera {
-    new Camera(Perspective, radians(50.), 10., 0.1, 1000., new Vec3(0., 0., 5.), Quat.identity(), new Vec3(1., 1., 1.),
-      new Color(0., 0., 0., 1.), false, Mat4.identity(), new Vec3(0., 0., 0.));
+    Camera(Perspective, radians(50.), 10., 0.1, 1000., Vec3(0., 0., 5.), Quat.identity(), Vec3(1., 1., 1.),
+      Color(0., 0., 0., 1.), false, Mat4.identity(), Vec3(0., 0., 0.))
   }
 
   // Place it at 'eye', facing 'target', 'up' saying which way is up (its
   // own -z at the target, its +y as near 'up' as it can be)
-  pub fn lookAt(self &mut, eye Vec3, target Vec3, up Vec3) {
+  pub fn lookAt(self: &mut, eye: Vec3, target: Vec3, up: Vec3) {
     origin = eye;
     orientation = rotationOf(Mat4.targetTo(eye, target, up));
   }
 
+  // Make it an off-axis perspective with the four angles OpenXR's xrLocateViews
+  // gives an eye ('Fovf': radians from the view axis, left and down negative,
+  // right and up positive; a symmetric view's are plus and minus half its
+  // field of view). 'fov' becomes the vertical field that contains the view,
+  // twice the larger of the up and down angles: what level of detail and the
+  // sun's cascades take the view's size from (the cascades fit a symmetric
+  // frustum, so they are slightly generous for an eye that looks inward).
+  pub fn setFovAngles(self: &mut, angleLeft: f32, angleRight: f32, angleUp: f32, angleDown: f32) {
+    projection = Perspective;
+    offAxis = true;
+    tanLeft = tan(angleLeft);
+    tanRight = tan(angleRight);
+    tanUp = tan(angleUp);
+    tanDown = tan(angleDown);
+    let reach = if tanUp > 0. - tanDown { tanUp } else { 0. - tanDown };
+    fov = 2. * libc.atanf(reach);
+  }
+
   // Its perspective projection into a target 'aspect' wide for each unit
-  // high, depth from 0 to 1
-  pub fn perspective(self &, aspect f32) Mat4 { Mat4.perspective(fov, aspect, near, far); }
+  // high, depth from 0 to 1. An off-axis camera's is the projection of its
+  // four tangents (the aspect does not enter): clip x is
+  // (2 x / -z - (r + l)) / (r - l) and clip y likewise from the up and down
+  // tangents, the same depth as the symmetric one.
+  pub fn perspective(self: &, aspect: f32) Mat4 {
+    if offAxis { return offAxisPerspective(tanLeft, tanRight, tanDown, tanUp, near, far); }
+    Mat4.perspective(fov, aspect, near, far)
+  }
 
   // Its orthogonal projection, depth from 0 to 1. It looks down -z and sees
   // 'viewHeight' above and below its middle, and that times the aspect to
   // either side.
-  pub fn orthogonal(self &, aspect f32) Mat4 {
-    imm w = viewHeight * aspect;
-    Mat4.orthographic(-w, w, -viewHeight, viewHeight, near, far);
+  pub fn orthogonal(self: &, aspect: f32) Mat4 {
+    let w = viewHeight * aspect;
+    Mat4.orthographic(-w, w, -viewHeight, viewHeight, near, far)
   }
 
   // The projection its 'projection' names, into a target 'aspect' wide for
   // each unit high
-  pub fn projectionMatrix(self &, aspect f32) Mat4 {
-    mut p = if projection == Orthogonal { self.orthogonal(aspect); } else { self.perspective(aspect); };
+  pub fn projectionMatrix(self: &, aspect: f32) Mat4 {
+    var p = if projection == Orthogonal { self.orthogonal(aspect) } else { self.perspective(aspect) };
     if clipped { p = obliqueNearPlane(p, self.viewMatrix(), clip); }
     if reflected {
       // clip x negated: the winding turned back (see 'reflected')
@@ -85,38 +118,38 @@ pub struct Camera {
       p.m[8] = 0. - p.m[8];
       p.m[12] = 0. - p.m[12];
     }
-    if jitterX != 0. or jitterY != 0. {
+    if jitterX != 0. || jitterY != 0. {
       // Clip x and y moved by the jitter times clip w, so the picture shifts
       // by the jitter in NDC
-      mut c = 0usize;
+      var c = 0usize;
       while c < 4usize {
         p.m[4usize * c] = p.m[4usize * c] + jitterX * p.m[4usize * c + 3usize];
         p.m[4usize * c + 1usize] = p.m[4usize * c + 1usize] + jitterY * p.m[4usize * c + 3usize];
         c = c + 1usize;
       }
     }
-    p;
+    p
   }
 
   // The same camera as it sees the mirror plane 'plane' (xyz a unit normal
   // facing the side the camera is on, w the offset), nothing behind the
   // plane drawn: the camera of the picture the mirror shows
-  pub fn reflectedAbout(self &, plane Vec4) Camera {
-    mut c = *self;
+  pub fn reflectedAbout(self: &, plane: Vec4) Camera {
+    var c = *self;
     c.reflected = true;
     c.mirror = plane;
     c.clipped = true;
     c.clip = plane;
-    c;
+    c
   }
 
   // The reflection about 'mirror' as a matrix: p - 2 (n.p + w) n
-  pub fn reflectionMatrix(self &) Mat4 {
-    imm n = [mirror.x, mirror.y, mirror.z];
-    mut r = Mat4.identity();
-    mut c = 0usize;
+  pub fn reflectionMatrix(self: &) Mat4 {
+    let n = [mirror.x, mirror.y, mirror.z];
+    var r = Mat4.identity();
+    var c = 0usize;
     while c < 3usize {
-      mut row = 0usize;
+      var row = 0usize;
       while row < 3usize {
         r.m[4usize * c + row] = r.m[4usize * c + row] - 2. * n[row] * n[c];
         row = row + 1usize;
@@ -124,50 +157,50 @@ pub struct Camera {
       r.m[12usize + c] = -2. * mirror.w * n[c];
       c = c + 1usize;
     }
-    r;
+    r
   }
 
   // Where it is placed: relative to the thing it follows, looking out from
   // that thing's eye
-  pub fn placement(self &) Mat4 {
-    imm cammat = Mat4.fromTrs(origin, orientation, scale);
+  pub fn placement(self: &) Mat4 {
+    let cammat = Mat4.fromTrs(origin, orientation, scale);
     if following {
-      mut follow = followMatrix;
-      imm e = followMatrix * eye;
+      var follow = followMatrix;
+      let e = followMatrix * eye;
       follow.m[12] = e.x;
       follow.m[13] = e.y;
       follow.m[14] = e.z;
-      follow * cammat;
+      follow * cammat
     } else {
-      cammat;
+      cammat
     }
   }
 
   // Its view matrix: the inverse of where it is placed
   // (a reflected camera's sees the world reflected: V R)
-  pub fn viewMatrix(self &) Mat4 {
-    if reflected { self.placement().inverse() * self.reflectionMatrix(); } else { self.placement().inverse(); }
+  pub fn viewMatrix(self: &) Mat4 {
+    if reflected { self.placement().inverse() * self.reflectionMatrix() } else { self.placement().inverse() }
   }
 
   // Where it is in world coordinates (a reflected camera: its reflection,
   // the point the picture it draws is lit and shaded from)
-  pub fn position(self &) Vec3 {
-    if reflected { self.reflectionMatrix() * self.placement().translation(); } else { self.placement().translation(); }
+  pub fn position(self: &) Vec3 {
+    if reflected { self.reflectionMatrix() * self.placement().translation() } else { self.placement().translation() }
   }
 
   // A point in the local coordinates of something placed by 'mmatrix', in
   // the camera's (eye) coordinates (Pegasus's CameraXyz)
-  pub fn cameraPoint(self &, p Vec3, mmatrix Mat4) Vec3 { (self.viewMatrix() * mmatrix) * p; }
+  pub fn cameraPoint(self: &, p: Vec3, mmatrix: Mat4) Vec3 { (self.viewMatrix() * mmatrix) * p }
 
   // How many pixels high a sphere of 'radius' at 'center' (world coordinates)
   // looks, drawn into a target 'viewportHeight' pixels high: its projected
   // diameter, which a LodChain chooses by. A sphere around the camera fills
   // it: the viewport's height.
-  pub fn projectedSize(self &, center Vec3, radius f32, viewportHeight f32) f32 {
+  pub fn projectedSize(self: &, center: Vec3, radius: f32, viewportHeight: f32) f32 {
     if projection == Orthogonal { return radius / viewHeight * viewportHeight; }
-    imm d = center.distance(self.position());
+    let d = center.distance(self.position());
     if d <= radius { return viewportHeight; }
-    radius / (d * tan(fov * 0.5)) * viewportHeight;
+    radius / (d * tan(fov * 0.5)) * viewportHeight
   }
 }
 
@@ -179,42 +212,62 @@ pub struct Camera {
 // C / (C . Q) with Q = proj^-1 (sign Cx, sign Cy, 1, 1). What lies on C's
 // negative side gets a negative depth and is clipped. 'view' is the matrix
 // the camera draws with.
-fn obliqueNearPlane(proj Mat4, view Mat4, world Vec4) Mat4 {
-  imm c = view.inverse().transpose() * world;
-  imm sx = if c.x < 0. { -1.; } else { 1.; };
-  imm sy = if c.y < 0. { -1.; } else { 1.; };
-  imm q = proj.inverse() * new Vec4(sx, sy, 1., 1.);
-  imm s = 1. / c.dot(q);
-  mut r = proj;
+fn obliqueNearPlane(proj: Mat4, view: Mat4, world: Vec4) Mat4 {
+  let c = view.inverse().transpose() * world;
+  let sx = if c.x < 0. { -1.f } else { 1. };
+  let sy = if c.y < 0. { -1.f } else { 1. };
+  let q = proj.inverse() * Vec4(sx, sy, 1., 1.);
+  let s = 1. / c.dot(q);
+  var r = proj;
   r.m[2] = c.x * s;
   r.m[6] = c.y * s;
   r.m[10] = c.z * s;
   r.m[14] = c.w * s;
-  r;
+  r
+}
+
+// The perspective projection of the view whose edges, at one unit ahead, are
+// 'l' and 'r' to the left and right and 'b' and 't' below and above the axis
+// (the tangents of the four angles), depth from 0 at 'near' to 1 at 'far'.
+// A point (x, y, z) in front of the camera (z < 0) goes to
+//   clip x = (2 x / -z - (r + l)) / (r - l) * -z,  clip y likewise,
+//   clip w = -z,
+// and the same depth as Mat4.perspective's, of which this is the general case
+// (l = -r, b = -t gives it).
+fn offAxisPerspective(l: f32, r: f32, b: f32, t: f32, near: f32, far: f32) Mat4 {
+  var p = Mat4(Array[f32, 16]() <- fill 0f);
+  p.m[0] = 2. / (r - l);
+  p.m[5] = 2. / (t - b);
+  p.m[8] = (r + l) / (r - l);
+  p.m[9] = (t + b) / (t - b);
+  p.m[10] = far / (near - far);
+  p.m[11] = -1.;
+  p.m[14] = near * far / (near - far);
+  p
 }
 
 // The rotation of a placement matrix of no scale, as a quaternion (the
 // matrix's upper 3 x 3, by Shepperd's method: the largest of the four
 // candidates is taken, for accuracy)
-fn rotationOf(m Mat4) Quat {
-  imm m00 = m.m[0];
-  imm m11 = m.m[5];
-  imm m22 = m.m[10];
-  imm trace = m00 + m11 + m22;
+fn rotationOf(m: Mat4) Quat {
+  let m00 = m.m[0];
+  let m11 = m.m[5];
+  let m22 = m.m[10];
+  let trace = m00 + m11 + m22;
   if trace > 0. {
-    imm s = (trace + 1.).sqrt() * 2.;
-    return new Quat((m.m[6] - m.m[9]) / s, (m.m[8] - m.m[2]) / s, (m.m[1] - m.m[4]) / s, 0.25 * s);
+    let s = (trace + 1.).sqrt() * 2.;
+    return Quat((m.m[6] - m.m[9]) / s, (m.m[8] - m.m[2]) / s, (m.m[1] - m.m[4]) / s, 0.25 * s);
   }
-  if m00 > m11 and m00 > m22 {
-    imm s = (1. + m00 - m11 - m22).sqrt() * 2.;
-    return new Quat(0.25 * s, (m.m[4] + m.m[1]) / s, (m.m[8] + m.m[2]) / s, (m.m[6] - m.m[9]) / s);
+  if m00 > m11 && m00 > m22 {
+    let s = (1. + m00 - m11 - m22).sqrt() * 2.;
+    return Quat(0.25 * s, (m.m[4] + m.m[1]) / s, (m.m[8] + m.m[2]) / s, (m.m[6] - m.m[9]) / s);
   }
   if m11 > m22 {
-    imm s = (1. + m11 - m00 - m22).sqrt() * 2.;
-    return new Quat((m.m[4] + m.m[1]) / s, 0.25 * s, (m.m[9] + m.m[6]) / s, (m.m[8] - m.m[2]) / s);
+    let s = (1. + m11 - m00 - m22).sqrt() * 2.;
+    return Quat((m.m[4] + m.m[1]) / s, 0.25 * s, (m.m[9] + m.m[6]) / s, (m.m[8] - m.m[2]) / s);
   }
-  imm s = (1. + m22 - m00 - m11).sqrt() * 2.;
-  new Quat((m.m[8] + m.m[2]) / s, (m.m[9] + m.m[6]) / s, 0.25 * s, (m.m[1] - m.m[4]) / s);
+  let s = (1. + m22 - m00 - m11).sqrt() * 2.;
+  Quat((m.m[8] + m.m[2]) / s, (m.m[9] + m.m[6]) / s, 0.25 * s, (m.m[1] - m.m[4]) / s)
 }
 
 // The exposure ('renderer.exposure') of a camera set to 'ev100', an exposure
@@ -223,8 +276,8 @@ fn rotationOf(m Mat4) Quat {
 // Rousiers, "Moving Frostbite to Physically Based Rendering", 2014: the
 // saturation-based sensitivity, 78 / (S q) with S = 100 and q = 0.65.) The
 // sunny-16 rule puts a sunlit scene at EV100 15, an exposure of 1 / 39322.
-pub fn exposureFromEv100(ev100 f32) f32 {
-  1. / (1.2 * libc.powf(2., ev100));
+pub fn exposureFromEv100(ev100: f32) f32 {
+  1. / (1.2 * libc.powf(2., ev100))
 }
 
 // The light: one directional light, the sun's kind, and the ambient light
@@ -237,18 +290,18 @@ pub fn exposureFromEv100(ev100 f32) f32 {
 // 'ambient' is a radiance (nits), the light of an even sky, so that white
 // surface under it alone is 'ambient' bright.
 pub struct Light {
-  pub direction Vec3;       // the way the light travels: unit length
-  pub color Color;          // its irradiance on a surface facing it head on
-  pub ambient Color;        // the sky's even radiance
+  pub direction: Vec3;       // the way the light travels: unit length
+  pub color: Color;          // its irradiance on a surface facing it head on
+  pub ambient: Color;        // the sky's even radiance
 
   // A light travelling along 'direction'
-  pub fn directional(direction Vec3, color Color, ambient Color) Light {
-    new Light(direction.normalize(), color, ambient);
+  pub fn directional(direction: Vec3, color: Color, ambient: Color) Light {
+    Light(direction.normalize(), color, ambient)
   }
 
   // A light from far off in the direction of 'position' from the origin,
   // shining towards the origin, as Pegasus's scenes placed their one light
-  pub fn from(position Vec3, color Color, ambient Color) Light {
-    new Light((new Vec3(0., 0., 0.) - position).normalize(), color, ambient);
+  pub fn from(position: Vec3, color: Color, ambient: Color) Light {
+    Light((Vec3(0., 0., 0.) - position).normalize(), color, ambient)
   }
 }

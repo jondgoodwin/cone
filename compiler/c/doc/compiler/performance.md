@@ -85,6 +85,8 @@ into a scan.
 | a named type's LLVM type | the `llvmtype` field | `genlType` |
 | a reference type's LLVM type | the interned `typeinfo` | `genlType` |
 | whether a struct carries a borrow | the `carriesborrow` field, once the struct is type checked | `itypeCarriesBorrow` |
+| whether a struct carries a borrow that is not `'static` | the `carriesending` field, once the struct is type checked | `itypeCarriesEndingBorrow` |
+| whether a struct may hold a writable borrow a store can go through | the `carrieswritable` field, once the struct is type checked | `itypeWritableBorrowDepth` |
 | whether a struct holds a traced reference | the `holdstraced` field, once the struct is type checked | `itypeHoldsTraced` |
 | whether a struct holds an atomic value | the `holdsatomic` field, once the struct is type checked | `itypeHoldsAtomic` |
 | whether a struct is bound to its thread | the `threadbound` field, once the struct is type checked and the answer did not lean on one still being laid out | `itypeThreadBound` |
@@ -114,7 +116,7 @@ compiler reported as Analysis. Being two clock reads per function, it runs only
 when `-V 1` or more asks (`timerFine`). `-V 2` adds the count of functions flow's
 gate marked ([Flow](../phases/flow.md), "The gate"), and the path walk's: the
 functions it walked (and how many for borrow freezing), their loops, how many
-loop bodies it walked again, and how many loops it had to widen to settle
+loop bodies it walked again, and the most walks any one loop took
 ("The loan walk"); and the drop-flag client's: the functions it walked for
 drops, and the variables it gave a flag ("Drop flags").
 
@@ -188,10 +190,10 @@ For anything finer, instrument and compile the corpus:
   Accepted in exchange for not maintaining an include graph.
 - **The compiler keeps no pass list of its own** — it is not trying to
   out-optimize LLVM, only to hand it IR it can optimize. A release build runs
-  LLVM's standard `default<O2>` pipeline (`phases/generation.md`, section 2),
+  LLVM's standard `default<O3>` pipeline (`phases/generation.md`, section 2),
   which is most of a large package's release compile: `sculpt`, 12,900 lines,
   compiled in 5.1 s, 2.8 s of it optimizing and 2.3 s generating code (3 Oct
-  2026; 2.7 s in all under the short list it replaced). A `--debug` build runs
+  2026, at O2; 2.7 s in all under the short list it replaced). A `--debug` build runs
   four passes.
 
 ## Hazards

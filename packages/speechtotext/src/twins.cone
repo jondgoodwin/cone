@@ -1,0 +1,216 @@
+// ======== The CPU twins of the speech kernels ========
+//
+// One function for each kernel in speechkernels.cone, written plainly and summing in f64, which the tests compare the
+// GPU's answers with (the difference is then the GPU's own f32 error). They are not fast and are not what the model
+// runs; they pin what each kernel computes. 'small' is the F32 buffer the GPU kernels read their tensors from, each at
+// a float offset.
+
+fn sigmoid64(v: f64) f64 { 1.0 / (1.0 + libc.exp(0.0 - v)) }
+
+fn silu64(v: f64) f64 { v / (1.0 + libc.exp(0.0 - v)) }
+
+// y = (x - mean) / sqrt(var + eps) * w + b over 'rows' rows of n
+pub fn layernormCpu(x: &Array[f32], small: &Array[f32], n: usize, rows: usize, eps: f64, wOff: usize, bOff: usize,
+    y: &mut Array[f32]) {
+  var r = 0usize;
+  while r < rows {
+    var s = 0.0;
+    var i = 0usize;
+    while i < n { s = s + f64.from(x[r * n + i]); i = i + 1usize; }
+    let mean = s / f64.from(n);
+    var ss = 0.0;
+    i = 0usize;
+    while i < n {
+      let d = f64.from(x[r * n + i]) - mean;
+      ss = ss + d * d;
+      i = i + 1usize;
+    }
+    let scale = 1.0 / libc.sqrt(ss / f64.from(n) + eps);
+    i = 0usize;
+    while i < n {
+      y[r * n + i] = f32.from((f64.from(x[r * n + i]) - mean) * scale * f64.from(small[wOff + i]) + f64.from(small[bOff + i]));
+      i = i + 1usize;
+    }
+    r = r + 1usize;
+  }
+}
+
+// y[r * n + c] = x[r * n + c] + small[bOff + c]
+pub fn biasAddCpu(x: &Array[f32], small: &Array[f32], n: usize, rows: usize, bOff: usize, y: &mut Array[f32]) {
+  var i = 0usize;
+  while i < n * rows {
+    y[i] = f32.from(f64.from(x[i]) + f64.from(small[bOff + i % n]));
+    i = i + 1usize;
+  }
+}
+
+// y[i] = a[i] + s * b[i]
+pub fn scaleAddCpu(a: &Array[f32], b: &Array[f32], n: usize, s: f64, y: &mut Array[f32]) {
+  var i = 0usize;
+  while i < n { y[i] = f32.from(f64.from(a[i]) + s * f64.from(b[i])); i = i + 1usize; }
+}
+
+// y[i] = max(a[aOff + i] + b[i], 0)
+pub fn addReluCpu(a: &Array[f32], aOff: usize, b: &Array[f32], n: usize, y: &mut Array[f32]) {
+  var i = 0usize;
+  while i < n {
+    let v = f64.from(a[aOff + i]) + f64.from(b[i]);
+    y[i] = if v > 0.0 { f32.from(v) } else { 0.0 };
+    i = i + 1usize;
+  }
+}
+
+// y[r][i] = x[r][i] * sigmoid(x[r][c + i])
+pub fn gluCpu(x: &Array[f32], c: usize, rows: usize, y: &mut Array[f32]) {
+  var r = 0usize;
+  while r < rows {
+    var i = 0usize;
+    while i < c {
+      y[r * c + i] = f32.from(f64.from(x[r * 2usize * c + i]) * sigmoid64(f64.from(x[r * 2usize * c + c + i])));
+      i = i + 1usize;
+    }
+    r = r + 1usize;
+  }
+}
+
+// The depthwise convolution (time-major t x c) with k taps and 'pad' zeros either side, then SiLU
+pub fn dwconvCpu(x: &Array[f32], small: &Array[f32], t: usize, c: usize, k: usize, pad: usize, wOff: usize, bOff: usize,
+    y: &mut Array[f32]) {
+  var tt = 0usize;
+  while tt < t {
+    var ch = 0usize;
+    while ch < c {
+      var acc = f64.from(small[bOff + ch]);
+      var kk = 0usize;
+      while kk < k {
+        let src = i64.from(tt) - i64.from(pad) + i64.from(kk);
+        if src >= 0i64 && src < i64.from(t) {
+          acc = acc + f64.from(small[wOff + ch * k + kk]) * f64.from(x[usize.from(src) * c + ch]);
+        }
+        kk = kk + 1usize;
+      }
+      y[tt * c + ch] = f32.from(silu64(acc));
+      ch = ch + 1usize;
+    }
+    tt = tt + 1usize;
+  }
+}
+
+// The 2-D convolution of conv2d (the same arguments)
+pub fn conv2dCpu(x: &Array[f32], small: &Array[f32], cin: usize, cout: usize, groups: usize, h: usize, w: usize,
+    k: usize, stride: usize, pad: usize, wOff: usize, bOff: usize, relu: bool, outMode: u32, y: &mut Array[f32]) {
+  let oh = convOutLen(h, k, stride, pad);
+  let ow = convOutLen(w, k, stride, pad);
+  let cpg = cin / groups;
+  let opg = cout / groups;
+  var co = 0usize;
+  while co < cout {
+    let g = co / opg;
+    var oy = 0usize;
+    while oy < oh {
+      var ox = 0usize;
+      while ox < ow {
+        var acc = f64.from(small[bOff + co]);
+        var ci = 0usize;
+        while ci < cpg {
+          let chan = g * cpg + ci;
+          var ky = 0usize;
+          while ky < k {
+            let iy = i64.from(oy * stride + ky) - i64.from(pad);
+            var kx = 0usize;
+            while kx < k {
+              let ix = i64.from(ox * stride + kx) - i64.from(pad);
+              if iy >= 0i64 && iy < i64.from(h) && ix >= 0i64 && ix < i64.from(w) {
+                acc = acc + f64.from(small[wOff + ((co * cpg + ci) * k + ky) * k + kx])
+                  * f64.from(x[(chan * h + usize.from(iy)) * w + usize.from(ix)]);
+              }
+              kx = kx + 1usize;
+            }
+            ky = ky + 1usize;
+          }
+          ci = ci + 1usize;
+        }
+        if relu && acc < 0.0 { acc = 0.0; }
+        var o = (co * oh + oy) * ow + ox;
+        if outMode == 1u32 { o = oy * cout * ow + co * ow + ox; }
+        y[o] = f32.from(acc);
+        ox = ox + 1usize;
+      }
+      oy = oy + 1usize;
+    }
+    co = co + 1usize;
+  }
+}
+
+// scores[h][i][j] as relScores
+pub fn relScoresCpu(small: &Array[f32], q: &Array[f32], k: &Array[f32], pos: &Array[f32], t: usize, nHeads: usize,
+    dk: usize, uOff: usize, vOff: usize, scale: f64, scores: &mut Array[f32]) {
+  let width = nHeads * dk;
+  var h = 0usize;
+  while h < nHeads {
+    var i = 0usize;
+    while i < t {
+      var j = 0usize;
+      while j < t {
+        var ac = 0.0;
+        var bd = 0.0;
+        let pRow = t - 1usize - i + j;
+        var d = 0usize;
+        while d < dk {
+          let qv = f64.from(q[i * width + h * dk + d]);
+          ac = ac + (qv + f64.from(small[uOff + h * dk + d])) * f64.from(k[j * width + h * dk + d]);
+          bd = bd + (qv + f64.from(small[vOff + h * dk + d])) * f64.from(pos[pRow * width + h * dk + d]);
+          d = d + 1usize;
+        }
+        scores[(h * t + i) * t + j] = f32.from((ac + bd) * scale);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    h = h + 1usize;
+  }
+}
+
+// out[i][h * dk + d] = sum over j of w[h][i][j] * v[j][h * dk + d]
+pub fn attnValueCpu(w: &Array[f32], v: &Array[f32], t: usize, nHeads: usize, dk: usize, out: &mut Array[f32]) {
+  let width = nHeads * dk;
+  var i = 0usize;
+  while i < t {
+    var hd = 0usize;
+    while hd < width {
+      let h = hd / dk;
+      var acc = 0.0;
+      var j = 0usize;
+      while j < t {
+        acc = acc + f64.from(w[(h * t + i) * t + j]) * f64.from(v[j * width + hd]);
+        j = j + 1usize;
+      }
+      out[i * width + hd] = f32.from(acc);
+      hd = hd + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+// An LSTM cell: the new hidden and cell states from gi, gh (4 n each), the bias and the previous cell state
+pub fn lstmCellCpu(small: &Array[f32], gi: &Array[f32], gh: &Array[f32], cPrev: &Array[f32], n: usize, bOff: usize,
+    hNew: &mut Array[f32], cNew: &mut Array[f32]) {
+  var u = 0usize;
+  while u < n {
+    let gI = f64.from(gi[u]) + f64.from(gh[u]) + f64.from(small[bOff + u]);
+    let gF = f64.from(gi[n + u]) + f64.from(gh[n + u]) + f64.from(small[bOff + n + u]);
+    let gG = f64.from(gi[2usize * n + u]) + f64.from(gh[2usize * n + u]) + f64.from(small[bOff + 2usize * n + u]);
+    let gO = f64.from(gi[3usize * n + u]) + f64.from(gh[3usize * n + u]) + f64.from(small[bOff + 3usize * n + u]);
+    let c = sigmoid64(gF) * f64.from(cPrev[u]) + sigmoid64(gI) * tanh64(gG);
+    cNew[u] = f32.from(c);
+    hNew[u] = f32.from(sigmoid64(gO) * tanh64(c));
+    u = u + 1usize;
+  }
+}
+
+fn tanh64(v: f64) f64 {
+  let e = libc.exp(2.0 * v);
+  if v > 20.0 { return 1.0; }
+  if v < -20.0 { return -1.0; }
+  (e - 1.0) / (e + 1.0)
+}

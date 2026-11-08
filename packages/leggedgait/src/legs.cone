@@ -1,0 +1,142 @@
+// Finding a creature's legs in its rig, and reading what the gait needs of
+// each from the rest pose.
+//
+// A leg is a chain of kind KIND_LEG with at least three bones: the hip (the
+// bone the leg turns about), the knee, the ankle and then any bones of the
+// foot, the last one being the TIP, the point that touches the ground (a
+// toe, a hoof's edge, a claw). Two bones above the ankle make the limb the
+// two-bone solver bends; the bones from the ankle on are the FOOT, carried
+// as a rigid group and turned as a whole.
+//
+// Everything is read from the rest pose, which is a standing pose: the tips
+// on the ground, the legs where they stand. The rest pose says where each foot
+// goes when the creature stands still (the NEUTRAL point), which way each knee
+// bends (the POLE), and how the foot lies (the FOOT VECTOR, ankle to tip).
+//
+// Where a leg is on the body: its SIDE is the rig's (left is -x), its RANK
+// is how far back it is: rank 0 the frontmost, then 1 and so on. Legs whose
+// hips are within a tenth of the body's length of one another front to back
+// share a rank. Two legs in a rank is the common case (a pair); the gait
+// patterns do not need it (a rank of one is a centre leg, or one leg of an
+// odd body).
+
+pub struct LegInfo {
+  pub chain: usize;           // the rig's chain number
+  pub hip: usize;             // bone numbers
+  pub knee: usize;
+  pub ankle: usize;
+  pub tip: usize;
+  pub side: i32;
+  pub rank: usize;
+  pub hipRest: Vec3;          // rest positions, model space
+  pub ankleRest: Vec3;
+  pub tipRest: Vec3;
+  pub l1: f32;                // hip to knee, knee to ankle
+  pub l2: f32;
+  pub footVec: Vec3;          // ankle to tip, at rest
+  pub pole: Vec3;             // the way the knee bends at rest (unit)
+  pub footForward: f32;       // how far forward the foot points at rest: 0 straight down, 1 flat forward
+  pub reach: f32;             // l1 + l2: the farthest the ankle can be from the hip
+  pub slack: f32;             // how far the ankle can go forward or back of the hip, at the rest height of the hip, with the leg at 95% of its reach
+
+  pub fn hasFoot(self: &) bool { footVec.length() > 0.0001 }
+}
+
+pub struct LegSet {
+  pub legs: List[LegInfo];
+  pub rankCount: usize;
+  pub bodyLength: f32;        // front hip to rear hip (0 for a single rank)
+  pub hipHeight: f32;         // mean hip height above the tips at rest
+  pub centre: Vec3;           // the mean of the hips, model space (the body's pivot for pitch and roll)
+  pub width: f32;             // the largest |x| of a hip
+
+  pub fn count(self: &) usize { legs.len() }
+}
+
+// The legs of a rig, in the order their chains are listed in the rig
+pub fn findLegs(rig: &Rig) LegSet {
+  let chains = rig.chainsOfKind(KIND_LEG);
+  var legs = List[LegInfo]();
+  var c = 0usize;
+  while c < chains.len() {
+    let ch = *chains[c];
+    let bones = &rig.chains[ch].bones;
+    if bones.len() >= 3usize {
+      let hip = *bones[0usize];
+      let knee = *bones[1usize];
+      let ankle = *bones[2usize];
+      let tip = *bones[bones.len() - 1usize];
+      let hp = rig.restPosition(hip);
+      let kp = rig.restPosition(knee);
+      let ap = rig.restPosition(ankle);
+      let tp = rig.restPosition(tip);
+      let foot = tp - ap;
+      var pole = kp - (hp + ap) * 0.5;
+      if pole.length() < 0.0005 { pole = Vec3(0., 0., -1.); } else { pole = pole.normalize(); }
+      let fl = foot.length();
+      let forward = if fl > 0.0001 { clampf(0. - foot.z / fl, 0., 1.) } else { 0. };
+      let reach = (kp - hp).length() + (ap - kp).length();
+      let dv = hp.y - ap.y;
+      let room = 0.95 * 0.95 * reach * reach - dv * dv;
+      legs.push(LegInfo(ch, hip, knee, ankle, tip, rig.chains[ch].side, 0usize, hp, ap, tp, (kp - hp).length(),
+        (ap - kp).length(), foot, pole, forward, reach, if room > 0.0004 { room.sqrt() } else { 0.02 }));
+    }
+    c = c + 1usize;
+  }
+  // Ranks: sort the hips' z, then cut where the gap passes a tenth of the span
+  var zmin = 1.0e9f;
+  var zmax = -1.0e9f;
+  var cx = 0.f;
+  var cy = 0.f;
+  var cz = 0.f;
+  var hy = 0.f;
+  var ty = 0.f;
+  var wide = 0.f;
+  var i = 0usize;
+  while i < legs.len() {
+    let h = legs[i].hipRest;
+    if h.z < zmin { zmin = h.z; }
+    if h.z > zmax { zmax = h.z; }
+    cx = cx + h.x; cy = cy + h.y; cz = cz + h.z;
+    hy = hy + h.y;
+    ty = ty + legs[i].tipRest.y;
+    if h.x.abs() > wide { wide = h.x.abs(); }
+    i = i + 1usize;
+  }
+  let n = f32.from(legs.len());
+  let span = zmax - zmin;
+  let cut = (0.1 * span).max(0.01);
+  // Walk the legs from the front: a new rank starts at each gap larger than the cut
+  var order = List[usize]();
+  i = 0usize;
+  while i < legs.len() { order.push(i); i = i + 1usize; }
+  // Sorted by hip z, frontmost (most negative) first
+  order.sortByKey(fn(r: &usize) f32 { legs[*r].hipRest.z });
+  var rank = 0usize;
+  var ranks = List[usize]();
+  i = 0usize;
+  while i < legs.len() { ranks.push(0usize); i = i + 1usize; }
+  i = 0usize;
+  while i < order.len() {
+    if i > 0usize {
+      let gap = legs[*order[i]].hipRest.z - legs[*order[i - 1usize]].hipRest.z;
+      if gap > cut { rank = rank + 1usize; }
+    }
+    ranks.set(*order[i], rank);
+    i = i + 1usize;
+  }
+  if legs.len() == 0usize {
+    return LegSet(legs, 0usize, 0., 0., Vec3(0., 0., 0.), 0.);
+  }
+  // The same legs with their ranks
+  var ranked = List[LegInfo]();
+  i = 0usize;
+  while i < legs.len() {
+    let l = legs[i];
+    ranked.push(LegInfo(l.chain, l.hip, l.knee, l.ankle, l.tip, l.side, *ranks[i], l.hipRest, l.ankleRest, l.tipRest,
+      l.l1, l.l2, l.footVec, l.pole, l.footForward, l.reach, l.slack));
+    i = i + 1usize;
+  }
+  LegSet(ranked, rank + 1usize, span, (hy - ty) / n, Vec3(cx / n, cy / n, cz / n), wide)
+}
+

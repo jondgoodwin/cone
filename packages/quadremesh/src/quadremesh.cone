@@ -1,0 +1,102 @@
+// The quadremesh package: automatic quad retopology. A closed or open mesh of
+// triangles, quads or larger faces becomes a mesh of quads (quad-dominant: a
+// few triangles are left where the flow could not close) at a face count or an
+// edge length asked for, its rows following a smoothed orientation field. It is
+// Instant Meshes (Jakob, Tarini, Panozzo and Sorkine-Hornung, "Instant
+// Field-Aligned Meshes", 2015), Blender's Quad Remesh (QuadriFlow) and ZBrush's
+// ZRemesher in what they do for an artist: the high mesh a sculpt, a boolean or
+// a voxel remesh made, to the clean mesh a rig, a subdivision or a game wants.
+//
+//   import quadremesh use *;
+//   mut o = RemeshOptions.withFaces(2000u32);
+//   o.creaseAngle = 0.6;                       // keep edges sharper than this
+//   imm r = quadRemesh(&source, &o);           // r.mesh is the PolyMesh
+//   imm st = measure(&r.mesh, &source);        // quads, valences, Hausdorff ...
+//
+// Options (RemeshOptions)
+// - 'faces' (aim) or 'edgeLength'; a lattice spacing from the area, so the
+//   count comes out within a few per cent for a smooth shape.
+// - 'creaseAngle' and 'creaseChannel' (an edge "crease" channel above 0), and
+//   always the boundary of an open mesh: the result's rows run along them, its
+//   vertices lie on them and a corner is a vertex. The edges found are written to
+//   the result's "crease" edge channel, so subdivision keeps them sharp.
+// - 'guides': pairs of source vertices joined by an edge (RemeshOptions.addGuide,
+//   addGuidePath): the field must follow them, as ZRemesher's guide curves, and a
+//   loop of them (an eye, a mouth) becomes a ring of quads.
+// - 'density': a vertex channel of relative density (finer where larger, held
+//   to a sixteenfold range: a fourfold change in edge length), as ZRemesher's
+//   density painting.
+// - 'symmetryAxis' and 'symmetryOffset': the plane the result is mirrored in.
+//   One half of the source is remeshed, its cut held on the plane, and mirrored
+//   and joined, so the two halves are exact mirror images. (The selection lane's
+//   symmetry is not yet in the repository; this takes a plane.)
+// - 'orientIterations', 'positionIterations', 'relax' (smoothing of the result
+//   along the surface), 'tolerance' and 'maxPolygon' tune the method.
+// - The result is projected back onto the source (sculpt's SurfaceIndex), and the
+//   source's channels carried by sculpt's dataTransfer.
+//
+// The method (after Jakob et al.; the code is written from the paper)
+// 1. The source is cut into triangles, edges longer than 0.3 of the lattice
+//    spacing split (so every lattice cell holds several vertices), creases,
+//    guides and the boundary marked as feature edges. Cotangent weights, held to
+//    a sane range, are the graph's.
+// 2. The vertices are merged in pairs by best score (normals alike, areas
+//    small) level on level to about two dozen, constraints carried up.
+// 3. The orientation field: at each vertex a unit tangent, equal to its quarter
+//    turns (a 4-RoSy), smoothed by Gauss-Seidel from the coarsest level down,
+//    each vertex taking the weighted sum of its neighbours' vectors turned to
+//    the nearest quarter turn. A feature vertex's is fixed along the feature.
+// 4. The position field: a point at each vertex; the lattice of the spacing
+//    through it along the orientation is its reading of where vertices go.
+//    Gauss-Seidel on the least distance between a point of one vertex's lattice
+//    and a point of its neighbour's, from the coarsest level down. A feature
+//    vertex's lattice is held to pass through it, a corner's to have a point
+//    at it. (A first version took the lattices' points nearest the edge's
+//    middle; that has the vertices following their own points as a fixed point
+//    and never aligns: the distance between the lattices is what is minimised.)
+// 5. Extraction: each source vertex rounds its position to its own lattice's
+//    nearest point; neighbours rounding to the same point (within a tolerance
+//    in lattice steps) are one output vertex, neighbours one step apart are
+//    joined by an output edge. Edges lying along one another at a vertex are cut
+//    to the better supported. The graph's faces are traced from its rotation
+//    system (the edges at a vertex in order round its normal), and three to eight
+//    sided faces kept.
+// 6. Mending: larger faces are cut into quads round a middle vertex, holes of up to
+//    ten edges that lie on the source are filled the same way, triangles next
+//    to each other merged into a quad where it comes out between 35 and 145
+//    degrees. Vertices are relaxed along the surface (feature vertices along
+//    their feature) and put back onto the source.
+//
+// What it does not do
+// - The flow is the field's, not the artist's: it has the singularities (valence
+//   3 and 5) the field needs, on a sphere more than the eight a cube has, and
+//   some isolated triangles.
+// - A feature thinner than the lattice spacing is not resolved: the sealed lids
+//   and lips of the MakeHuman head, the horns of the creature at 2k faces.
+// - Creases are held exactly (the result lies on them), but the lattice cannot
+//   be fitted to both ends of an edge, so a crease whose length is not a
+//   multiple of the spacing has its last cells distorted, and at a coarse
+//   spacing a face can span a crease.
+// - No guarantee of manifold output: a face that would break a vertex's fan is
+//   dropped and reported in 'problems'.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   work.cone       the working triangle mesh: triangulating, splitting long
+//                   edges, clipping to a half, the boundary, normals and areas,
+//                   the weighted graph
+//   field.cone      the hierarchy, the orientation field, the position field
+//   extract.cone    the clusters, the graph, its faces from the rotation system
+//   assemble.cone   the mesh: polygons cut, holes filled, triangles paired,
+//                   relaxing and projecting, mirroring, the PolyMesh
+//   remesh.cone     RemeshOptions, Remesh, quadRemesh
+//   measure.cone    QuadStats, measure
+
+mod quadremesh;
+
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import sculpt use *;
+import time use Instant;

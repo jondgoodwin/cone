@@ -1,0 +1,39 @@
+// An 'await' on a value whose type has the 'await' method, nested in the argument
+// of another such 'await': each operand is type checked once (the call
+// 'x.await()' is made with its receiver already checked), so the nesting is
+// linear to compile and each level reports nothing twice. Delay's wait answers
+// its number plus one, so three nested levels from 1 give 4.
+
+mod concurrency_await_method_nested;
+
+import stdio use *;
+import actors;
+
+struct Delay {
+  pub n: u64;
+
+  pub fn await(self) actors.Awaitable[u64] {
+    let v = n;
+    actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [v] {
+      rp.answer(v + 1u64);
+    })
+  }
+}
+
+fn delay(n: u64) Delay {Delay(n)}
+
+actor Prober {
+  pub async fn go(self) {
+    let v = await delay(await delay(await delay(1u64)));
+    printStr("nested "); printUInt(v); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let p = Prober();
+    p.go();
+  }
+  finalAll();
+}

@@ -1,6 +1,6 @@
 /** Handling for 'await' nodes
  *
- * 'await x', in an actor's behaviour (a method declared 'async do'), waits
+ * 'await x', in an actor's behaviour (a method declared 'async fn'), waits
  * for x: the behaviour is cut there, a seam, where it returns to the actor's
  * dispatcher, and what it needs after the seam waits in a continuation until
  * x is answered. Type check places an 'await' -- in a behaviour, never in a
@@ -22,11 +22,13 @@
  * operation of the aio package's): the seam starts it, handing it a reply's
  * envelope as a request carries one, and its answer, an R, is the 'await''s
  * value; an 'await' on one whose value is unwanted is warned
- * (WarnAwaitUnused). Or what is awaited is a future, a value of the actors
+ * (WarnDiscard, discard.h). Or what is awaited is a future, a value of the actors
  * package's Future[T], which a call of a behaviour returning a T gives where
  * its value is used (actorFutureCall): the seam parks on it unless it has
  * its ending already, when the behaviour goes on at once, and the 'await''s
- * value is the T opened out of it. An 'await' on anything else waits for no
+ * value is the T opened out of it. Or the operand's type has a method named
+ * 'await' taking only 'self', giving one of those two (awaitMethod): the
+ * operand is made the call of it. An 'await' on anything else waits for no
  * answer, and is refused (ErrorAwaitNotFuture), naming what its continuation
  * would carry, unless '--await-direct', for tests, hands its record straight
  * to its second half. compiler/c/doc/phases/flow.md, "A seam", and

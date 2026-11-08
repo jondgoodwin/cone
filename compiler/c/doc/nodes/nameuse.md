@@ -26,7 +26,7 @@ name the source qualified. *Which* namespace it came through is not kept,
 because nothing asks.
 
 `FlagPattern` marks a pattern's bare root — `Red` in `case is Red`, `Circle` in
-`case imm c &Circle`, `K` in `case K` — which is looked up in the matched value's
+`case let &Circle(c)`, `K` in `case K` — which is looked up in the matched value's
 enum before its lexical meaning. The parser stamps it, `nameUseNameRes` leaves
 such a name unbound instead of reporting it when nothing lexical answers, and
 `castPatternBind` (or, for a value alone, `castMatchValueTypeCheck`) binds it at
@@ -207,8 +207,10 @@ only a path shows (`dropRefuse`, below). `nameuseFlow` checks a name read:
 - `VarMoved` → `ErrorMove`, "value has been moved out"
 
 `nameuseFlowBorrowed` checks the variable at the root of a borrowed place
-(`borrowFlow`), and only the second: a variable never initialized may be
-borrowed, so that a method taking it `&mut` can fill it in.
+(`borrowFlow`) the same two ways, with "There is no value to borrow": a borrow
+of a variable never given a value would let a method read memory never
+written, so `&c`, `&mut c`, a method's receiver and a field's borrow are all
+refused until the variable holds a value.
 
 It returns immediately for anything that is not a `VarDclTag`, so a function or
 constant name passes through untouched. The flags themselves are read elsewhere
@@ -216,7 +218,9 @@ too — `assignlvalrtype` and `flowScopeDealias` both consult them.
 
 The flags are the state along the walk in source order, the arms of an `if`
 joined after it: a move in one arm of an `if` is not seen by the other, and
-counts as a move after the `if`; "initialized on one branch" reads as
+counts as a move after the `if` unless that arm jumped away (a `return`, or a
+`break` or `continue`, whose state its loop joins where the loop ends);
+"initialized on one branch" reads as
 initialized after it. What the walk in source order cannot see — a loop's
 earlier pass, and a variable given a value on one branch only — the path walk
 refuses for a variable that moves or has anything to do as it dies, and for

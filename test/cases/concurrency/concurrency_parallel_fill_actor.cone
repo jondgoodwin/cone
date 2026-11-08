@@ -23,66 +23,66 @@ import stdio use *;
 import collections use *;
 import actors;
 
-fn say(s &str, n u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" = "); printUInt(n); printStr("\n");}
 
-fn place(x usize, y usize) u32 {
-  u32.from((y * 64usize + x) * 3usize + 1usize);
+fn place(x: usize, y: usize) u32 {
+  u32.from((y * 64usize + x) * 3usize + 1usize)
 }
 
 actor Baker {
-  pixels List[u32];
-  grid Array[u64, 6];
-  total Atomic[u64];
+  pixels: List[u32];
+  grid: Array[u64, 6];
+  total: Atomic[u64];
 
-  fn init(self &new, n usize) {
-    mut l = new List[u32];
-    mut i = 0usize;
+  fn init(self: &new, n: usize) {
+    var l = List[u32]();
+    var i = 0usize;
     while i < n {
       l.push(0u32);
       i = i + 1usize;
     }
-    *self = new Self(pixels: l, grid: [0u64, 0u64, 0u64, 0u64, 0u64, 0u64], total: Atomic[u64].of(0u64));
+    *self = Self(pixels: l, grid: [0u64, 0u64, 0u64, 0u64, 0u64, 0u64], total: Atomic[u64].of(0u64));
   }
 
-  fn sum(self &) u64 {
-    mut s = 0u64;
-    each p in pixels { s = s + u64.from(*p); }
-    s;
+  fn sum(self: &) u64 {
+    var s = 0u64;
+    each p in &pixels { s = s + u64.from(*p); }
+    s
   }
 
-  pub async do bake(self) u64 {
+  pub async fn bake(self) u64 {
     parallel each y, row in pixels.mutChunks(64usize).indexed() {
       each x, p in row.mutItems().indexed() { *p = place(x, y); }
     }
     say("bake", sum());
-    sum();
+    sum()
   }
 
-  pub async do perElement(self) u64 {
+  pub async fn perElement(self) u64 {
     parallel each i, p in pixels.mutItems().indexed() {
       *p = u32.from(i) * 2u32;
     }
     say("perElement", sum());
-    sum();
+    sum()
   }
 
-  pub async do fieldArray(self) u64 {
+  pub async fn fieldArray(self) u64 {
     parallel each i, p in grid.mutItems().indexed() {
       *p = u64.from(i) * 10u64;
     }
-    mut first = 0u64;
-    each p in grid { first = first + *p; }
+    var first = 0u64;
+    each p in &grid { first = first + *p; }
     say("array of tens", first);
     parallel each y, c in grid.mutChunks(4usize).indexed() {
       each p in c.mutItems() { *p = *p + u64.from(y) * 1000u64; }
     }
-    mut second = 0u64;
-    each p in grid { second = second + *p; }
+    var second = 0u64;
+    each p in &grid { second = second + *p; }
     say("array in chunks", second);
-    second;
+    second
   }
 
-  pub async do readOnly(self) u64 {
+  pub async fn readOnly(self) u64 {
     total.store(0u64);
     parallel each i, x in pixels.indexed() {
       total.add(u64.from(i));
@@ -93,27 +93,27 @@ actor Baker {
       total.add(u64.from(y) * u64.from(c.len));
     }
     say("chunk numbers", total.load());
-    total.load();
+    total.load()
   }
 
 }
 
 actor Driver {
-  pub async do go(self, b Baker) u64 {
-    imm a = await b.bake();
-    imm c = await b.perElement();
-    imm d = await b.fieldArray();
-    imm e = await b.readOnly();
-    a + c + d + e;
+  pub async fn go(self, b: Baker) u64 {
+    let a = await b.bake();
+    let c = await b.perElement();
+    let d = await b.fieldArray();
+    let e = await b.readOnly();
+    a + c + d + e
   }
 }
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm b = new Baker(5000usize);
-    imm d = new Driver();
+    let b = Baker(5000usize);
+    let d = Driver();
     d.go(b);
   }
   finalAll();

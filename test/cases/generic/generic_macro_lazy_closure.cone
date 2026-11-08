@@ -1,0 +1,53 @@
+// A closure in a macro's arguments: written inside a lazy argument, and given
+// as a plain argument whose type infers the macro's type parameter.
+//
+// A lazy argument is checked, before it is substituted, on a copy, as a trial.
+// Checking the copy builds the copy's own closure, with its hidden struct, and
+// the instance of 'applyTwice' made for that struct. Both are the trial's: the
+// struct does not join the module and the instance is taken out of its
+// generic's memo once the trial closes, so neither is generated. The program
+// carries one closure struct per closure written, each built where the
+// argument is checked for real, with its own captures: this file's checks
+// count them in the IR (each closure's number is the serial the compiler gave
+// it; the trials' structs take the numbers between).
+//
+// A plain argument is bound, and its binding checked, before anything else,
+// so a type parameter inferred from a closure is the real closure's type.
+//
+// What the program prints says each closure reads the 'k' it was written
+// beside, at the value it has when the closure runs, and runs as often as it
+// is called.
+
+mod generic_macro_lazy_closure;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+var @threadlocal calls = 0i64;
+
+fn applyTwice[F: fn(y: i64) i64](f: F, x: i64) i64 {
+  f(f(x))
+}
+
+macro run[a: lazy i64] {
+  a
+}
+
+macro apply[F][f: F, x: i64] {
+  f(x) + f(x)
+}
+
+fn main() {
+  var k = 5i64;
+  show("in a lazy argument", run(applyTwice(fn (y: i64) i64 { calls = calls + 1i64; y + k }, 3)));
+  show("calls", calls);
+  k = 100i64;
+  show("as a plain argument", apply(fn (y: i64) i64 { calls = calls + 1i64; y + k }, 1));
+  show("calls", calls);
+}

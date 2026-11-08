@@ -12,7 +12,7 @@
 //
 // - Moved on one branch: finalized by the callee on that path, at its scope's
 //   end on the other.
-// - Moved on both branches, and on two arms of three of an 'elif' chain.
+// - Moved on both branches, and on two arms of three of an 'else if' chain.
 // - Handed on by a block, an 'if', a loop's 'break' or a 'match' used as a
 //   value, on one path: the new holder finalizes it there, its own scope's end
 //   on the others.
@@ -22,7 +22,7 @@
 //   run over storage that never held a value on the other.
 // - Moved, then returned early; moved in a loop and broken out of; moved and
 //   continued past; reassigned after a move in an earlier pass of a loop.
-// - Moved in the right operand of 'and', which runs on one path.
+// - Moved in the right operand of '&&', which runs on one path.
 // - A match's binding moved on one arm: the matched value is finalized when
 //   the arm that moves it does not run.
 // - Destructured into on one path.
@@ -34,61 +34,61 @@ mod move_drop_flags;
 import stdio use *;
 
 struct Fin {
-  pub v i32;
-  fn final(self &uni) { printStr("F"); printInt(i64.from(v)); printStr(" "); }
+  pub v: i32;
+  fn final(self: &uni) { printStr("F"); printInt(i64.from(v)); printStr(" "); }
 }
 
 enum E {
-  struct A { pub f Fin; }
-  struct B { pub n i32; }
+  struct A { pub f: Fin; }
+  struct B { pub n: i32; }
 }
 use E;
 
-fn cond(b bool) bool { b; }
-fn take(f Fin) { printStr("take "); }
-fn takeE(e E) { printStr("takeE "); }
-fn line(label &str) { printStr("| "); printStr(label); printStr("\n"); }
+fn cond(b: bool) bool { b }
+fn take(f: Fin) { printStr("take "); }
+fn takeE(e: E) { printStr("takeE "); }
+fn line(label: &str) { printStr("| "); printStr(label); printStr("\n"); }
 
-fn oneBranch(c bool) { imm a = new Fin(1); if cond(c) { take(a); } printStr("end "); }
-fn bothBranches(c bool) { imm a = new Fin(2); if cond(c) { take(a); } else { take(a); } printStr("end "); }
-fn elifs(n i32) {
-  imm a = new Fin(3);
+fn oneBranch(c: bool) { let a = Fin(1); if cond(c) { take(a); } printStr("end "); }
+fn bothBranches(c: bool) { let a = Fin(2); if cond(c) { take(a); } else { take(a); } printStr("end "); }
+fn elifs(n: i32) {
+  let a = Fin(3);
   if n == 0 { take(a); }
-  elif n == 1 { printStr("kept "); }
+  else if n == 1 { printStr("kept "); }
   else { take(a); }
   printStr("end ");
 }
 
-fn ifValue(c bool) { imm a = new Fin(4); imm y = if cond(c) {a;} else {new Fin(0);}; printStr("end "); }
-fn blockValue(c bool) { imm a = new Fin(5); imm y = { if cond(c) {a;} else {new Fin(0);}; }; printStr("end "); }
-fn breakValue(c bool) {
-  imm a = new Fin(6);
-  imm y = while { if cond(c) {break a;} else {break new Fin(0);}; };
+fn ifValue(c: bool) { let a = Fin(4); let y = if cond(c) {a} else {Fin(0)}; printStr("end "); }
+fn blockValue(c: bool) { let a = Fin(5); let y = { if cond(c) {a} else {Fin(0)} }; printStr("end "); }
+fn breakValue(c: bool) {
+  let a = Fin(6);
+  let y = while { if cond(c) {break a;} else {break Fin(0);}; };
   printStr("end ");
 }
-fn matchValue(e E) {
-  imm a = new Fin(7);
-  imm y = match e { case is A {a;} else {new Fin(0);} };
+fn matchValue(e: E) {
+  let a = Fin(7);
+  let y = match e { case is A {a} else {Fin(0)} };
   printStr("end ");
 }
-fn handedBack(c bool) Fin {
-  imm a = new Fin(8);
-  imm b = new Fin(9);
-  if cond(c) {a;} else {b;};
+fn handedBack(c: bool) Fin {
+  let a = Fin(8);
+  let b = Fin(9);
+  if cond(c) {a} else {b}
 }
 
-fn givenOnOne(c bool) { mut f Fin; if cond(c) { f = new Fin(10); } printStr("end "); }
+fn givenOnOne(c: bool) { var f: Fin; if cond(c) { f = Fin(10); } printStr("end "); }
 
-fn earlyReturn(c bool) {
-  imm a = new Fin(11);
-  imm b = new Fin(12);
+fn earlyReturn(c: bool) {
+  let a = Fin(11);
+  let b = Fin(12);
   if cond(c) { take(a); return; }
   take(b);
   printStr("end ");
 }
-fn loopBreak(n i32) {
-  imm a = new Fin(13);
-  mut i = 0;
+fn loopBreak(n: i32) {
+  let a = Fin(13);
+  var i = 0;
   while i < 3 {
     if i == n { take(a); break; }
     i = i + 1;
@@ -96,9 +96,9 @@ fn loopBreak(n i32) {
   printStr("end ");
 }
 fn loopContinue() {
-  mut i = 0;
+  var i = 0;
   while i < 3 {
-    imm a = new Fin(20 + i);
+    let a = Fin(20 + i);
     i = i + 1;
     if i == 2 { take(a); continue; }
     printStr("kept ");
@@ -106,39 +106,39 @@ fn loopContinue() {
   printStr("end ");
 }
 fn loopCarried() {
-  mut a = new Fin(30);
-  mut i = 1;
+  var a = Fin(30);
+  var i = 1;
   while i < 4 {
-    if i == 2 { take(a); a = new Fin(30 + i * 10); }
-    else { a = new Fin(30 + i); }
+    if i == 2 { take(a); a = Fin(30 + i * 10); }
+    else { a = Fin(30 + i); }
     i = i + 1;
   }
   printStr("end ");
 }
-fn andOperand(c bool) {
-  imm a = new Fin(14);
-  if cond(c) and { take(a); true; } { printStr("then "); }
+fn andOperand(c: bool) {
+  let a = Fin(14);
+  if cond(c) && { take(a); true } { printStr("then "); }
   printStr("end ");
 }
-fn matchBinding(c bool) {
-  imm e E = A(new Fin(15));
+fn matchBinding(c: bool) {
+  let e: E = A(Fin(15));
   match e {
-    case imm a A { if cond(c) { takeE(a); } else { printStr("keep "); } }
+    case let A(a) { if cond(c) { takeE(a); } else { printStr("keep "); } }
     else { printStr("else "); }
   }
   printStr("end ");
 }
-fn pair() (Fin, Fin) { (new Fin(16), new Fin(17)); }
-fn destructured(c bool) {
-  mut x Fin;
-  mut y Fin;
+fn pair() (Fin, Fin) { (Fin(16), Fin(17)) }
+fn destructured(c: bool) {
+  var x: Fin;
+  var y: Fin;
   if cond(c) { x, y = pair(); }
   printStr("end ");
 }
-fn declaredLast(c bool) {
-  imm a = new Fin(18);
-  if cond(c) { take(a); imm b = new Fin(19); }
-  { imm d = new Fin(40); { imm e = new Fin(41); } }
+fn declaredLast(c: bool) {
+  let a = Fin(18);
+  if cond(c) { take(a); let b = Fin(19); }
+  { let d = Fin(40); { let e = Fin(41); } }
   printStr("end ");
 }
 
@@ -156,10 +156,10 @@ fn main() i32 {
   blockValue(false); line("block value, not taken");
   breakValue(true); line("break value, taken");
   breakValue(false); line("break value, not taken");
-  matchValue(A(new Fin(70))); line("match value, taken");
+  matchValue(A(Fin(70))); line("match value, taken");
   matchValue(B(1)); line("match value, not taken");
-  { imm x = handedBack(true); printStr("got "); } line("handed back, then");
-  { imm x = handedBack(false); printStr("got "); } line("handed back, else");
+  { let x = handedBack(true); printStr("got "); } line("handed back, then");
+  { let x = handedBack(false); printStr("got "); } line("handed back, else");
   givenOnOne(true); line("given a value, taken");
   givenOnOne(false); line("given a value, not taken");
   earlyReturn(true); line("returned early");
@@ -176,5 +176,5 @@ fn main() i32 {
   destructured(false); line("never given values");
   declaredLast(true); line("a block ending in its declaration, moved");
   declaredLast(false); line("a block ending in its declaration, kept");
-  0i32;
+  0i32
 }

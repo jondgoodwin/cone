@@ -161,6 +161,11 @@ static void rcWalk(INode *type, int ind) {
             }
         }
         if (type->tag == VirtRefTag) {
+            // Held as a field (Bug 30): a call through a reference marked '+ ShapeKeeping' reshapes
+            // nothing the caller reaches by a shared mutable path (held where the value became the
+            // reference, shapeKeepsVia), so it reaches nothing here. An unmarked one could be anything
+            if (ref->marks & RefMarkShapeKeeping)
+                return;
             // An owning virtual reference holds only global borrows (it names no lifetime), so
             // it cannot reach a local of this function
             if (rcLocalOnly && ref->region && itypeGetTypeDcl(ref->region) != borrowRef)
@@ -170,7 +175,7 @@ static void rcWalk(INode *type, int ind) {
         }
         // A 'mut' reference beneath a read-only view can be written through
         uint16_t pflags = perm && perm->tag == PermTag ? ((PermNode *)perm)->permflags : 0;
-        // An owning reference ('So', 'Rc', 'Arc', a user region) keeps what it points at alive:
+        // An owning reference ('Uni', 'Rc', 'Arc', a user region) keeps what it points at alive:
         // the walk stays 'owned' through it (ReachOwned); a borrow does not
         int owning = ref->region && itypeGetTypeDcl(ref->region) != borrowRef;
         int nind = 1 | (owning ? (ind & 4) : 4) | ((ind & 2) && !(pflags & MayAliasWrite) ? 2 : 0);
@@ -337,7 +342,7 @@ int reshapeGlobalsReach(INode *cont) {
     return m->reaches;
 }
 
-// The same, of the globals that can be written ('mut' ones): an 'imm' global cannot change under a borrow
+// The same, of the globals that can be written ('var' ones): a 'let' global cannot change under a borrow
 static RgMemo rgMutMemo[RgMemoCap];
 static uint32_t rgMutMemoUsed = 0;
 static uint32_t rgMutMemoNext = 0;
@@ -478,7 +483,7 @@ int reshapeIsOwner(INode *cont) {
     return cont && (cont->tag == RefTag || cont->tag == VirtRefTag);
 }
 
-// A borrow into what an owning reference ('So', 'Rc', 'Arc', a program's region) points at
+// A borrow into what an owning reference ('Uni', 'Rc', 'Arc', a program's region) points at
 // is a borrow into a value the owner frees when it is stored over, as a list is when its
 // block is replaced. The owner's type stands for it, one node for all the types that are
 // the same (the inference keeps its answers by the node)
@@ -518,7 +523,7 @@ int reshapeStoreHits(INode *lval, INode *cont) {
             && !((stored->tag == RefTag || stored->tag == ArrayRefTag) && ((RefNode *)stored)->region
                 && itypeGetTypeDcl(((RefNode *)stored)->region) != borrowRef))
         return 0;
-    // A value holding the other by value, or through owning references alone ('So', 'Rc',
+    // A value holding the other by value, or through owning references alone ('Uni', 'Rc',
     // 'Arc'): replaced whole, it takes the old one with it (the last owner's going frees it)
     if (reshapeReach(stored, cont, 0) & (ReachContained | ReachOwned))
         return 1;
@@ -557,7 +562,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -574,7 +579,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
     int capable = 0;
     for (uint32_t k = first; k < nargs && !capable; ++k) {
         INode *t = iexpGetTypeDcl(nodesGet(call->args, k));
-        // A read-only reference to a value holding borrows can write through a 'mut' one it holds
+        // A read-only reference to a value holding borrows can write through a 'var' one it holds
         INode *pointee = nmine > 0 && (t->tag == RefTag || t->tag == ArrayRefTag) ? itypeGetTypeDcl(((RefNode *)t)->vtexp) : NULL;
         capable = ((t->tag == RefTag || t->tag == ArrayRefTag) && (permGetFlags(((RefNode *)t)->perm) & MayWrite))
             || (pointee && pointee->tag == StructTag && ((StructNode *)pointee)->carriesborrow != CarriesBorrowNo)
@@ -598,6 +603,12 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             first = 1;
             INode *selft = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
             int writes = selft->tag == RefTag && (permGetFlags(((RefNode *)selft)->perm) & MayWrite) != 0;
+            // The receiver is a field of one struct, the borrow is into a field of another (or an
+            // element of a list that is no field of the receiver's struct): two values, whatever
+            // paths reach the structs. The borrow's value is the receiver only if it is the same
+            // struct's field (or a name or call result, which says nothing of where it is held)
+            if (owner && recvowner && owner != recvowner && !itypeIsSame(owner, recvowner))
+                writes = 0;
             if (writes && !recvunique && !visible) {
                 verdict->why = ReshapeReceiverUnseen;
                 return 1;
@@ -621,7 +632,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             ba = ((CastNode *)ba)->exp;
         INode *wt = reshapeParmType(callee, k, arg);
         // A virtual call's receiver ('&<mut Trait', a '&<mut fn' called) hides the type behind
-        // it, and the trait method's declared 'self &mut Trait' names no fields: the call is
+        // it, and the trait method's declared 'self: &mut Trait' names no fields: the call is
         // asked of the virtual reference it was made through, which may reach any container
         if (k == 0 && (call->flags & FlagVDisp) && at->tag == VirtRefTag && wt->tag == RefTag
                 && (permGetFlags(((RefNode *)wt)->perm) & MayWrite))
@@ -663,11 +674,11 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
     return 0;
 }
 
-int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, int globalview,
-        ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, verdict, mine, nmine, skiprecv))
+int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
+        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv))
         return 1;
-    // The borrow points into a 'mut' global, or into something reached from one: a call that may
+    // The borrow points into a 'var' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
     // (shapeTypeWritesGlobal). A callee whose body cannot be read (extern, virtual, a function value,
     // another package's) may do anything. No summary is made of which global a function writes.

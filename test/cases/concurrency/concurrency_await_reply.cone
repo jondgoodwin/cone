@@ -37,158 +37,158 @@ import stdio use *;
 import actors;
 
 struct Tally {
-  pub resumed Atomic[u64];
-  pub sum Atomic[u64];
-  pub quiet Atomic[u64];
-  pub ticks Atomic[u64];
-  pub pages Atomic[u64];
+  pub resumed: Atomic[u64];
+  pub sum: Atomic[u64];
+  pub quiet: Atomic[u64];
+  pub ticks: Atomic[u64];
+  pub pages: Atomic[u64];
 }
 
-imm tally Tally;
+let tally: Tally;
 
 fn @initpure init() {
-  tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
 struct Buf {
-  pub n u64;
-  fn final(self &uni) {say("  drop buf", n);}
+  pub n: u64;
+  fn final(self: &uni) {say("  drop buf", n);}
 }
 
 struct Conn {
-  pub id u64;
-  fn final(self &uni) {say("  close conn", id);}
+  pub id: u64;
+  fn final(self: &uni) {say("  close conn", id);}
 }
 
 // What the burst counts, printing nothing
 struct Quiet {
-  pub n u64;
-  fn final(self &uni) {tally.quiet.add(1u64);}
+  pub n: u64;
+  fn final(self: &uni) {tally.quiet.add(1u64);}
 }
 struct Tick {
-  pub n u64;
-  fn final(self &uni) {tally.ticks.add(1u64);}
+  pub n: u64;
+  fn final(self: &uni) {tally.ticks.add(1u64);}
 }
 
 actor Net {
-  pub async do read(self, id u64) Buf {
+  pub async fn read(self, id: u64) Buf {
     say("  read", id);
-    new Buf(id * 10u64);
+    Buf(id * 10u64)
   }
-  pub async do size(self, id u64) u64 {id + 1u64;}
-  pub async do count(self, id u64) Tick {new Tick(id + 1000u64);}
+  pub async fn size(self, id: u64) u64 {id + 1u64}
+  pub async fn count(self, id: u64) Tick {Tick(id + 1000u64)}
 }
 
 actor Fetcher {
-  net Net;
+  net: Net;
 
-  pub async do fetch(self, url u64) Buf {
+  pub async fn fetch(self, url: u64) Buf {
     if url == 0u64 {
       say("  fetch at once", url);
-      return new Buf(0u64);
+      return Buf(0u64);
     }
-    imm conn = new Conn(url);
+    let conn = Conn(url);
     say("  fetch", url);
-    imm buf = await net.read(conn.id);
+    let buf = await net.read(conn.id);
     say("  fetched", buf.n);
-    buf;
+    buf
   }
 
-  pub async do tick(self, id u64) Tick {
-    imm q = new Quiet(id);
-    imm t = await net.count(id);
-    t;
+  pub async fn tick(self, id: u64) Tick {
+    let q = Quiet(id);
+    let t = await net.count(id);
+    t
   }
 }
 
 actor Page {
-  fetcher Fetcher;
-  body u64;
+  fetcher: Fetcher;
+  body: u64;
 
-  pub async do load(self, u u64) u64 {
+  pub async fn load(self, u: u64) u64 {
     say("load", u);
-    imm b = await fetcher.fetch(u);
+    let b = await fetcher.fetch(u);
     body = b.n;
     say("  loaded", body);
-    body;
+    body
   }
 
-  pub async do two(self, u u64) u64 {
-    imm keep = new Conn(99u64);
-    imm a = await fetcher.fetch(u);
-    imm b = await fetcher.fetch(u + 1u64);
+  pub async fn two(self, u: u64) u64 {
+    let keep = Conn(99u64);
+    let a = await fetcher.fetch(u);
+    let b = await fetcher.fetch(u + 1u64);
     say("  two", a.n + b.n + keep.id);
-    a.n + b.n;
+    a.n + b.n
   }
 
-  pub async do relay(self, d Driver, n u64) u64 {
-    imm x = await d.double(n);
+  pub async fn relay(self, d: Driver, n: u64) u64 {
+    let x = await d.double(n);
     say("  relayed", x);
-    x + 1u64;
+    x + 1u64
   }
 
-  pub async do burst(self, n u64) {
-    mut i = 0u64;
+  pub async fn burst(self, n: u64) {
+    var i = 0u64;
     while i < n {
       selfactor.held(i);
       i = i + 1u64;
     }
   }
 
-  pub async do held(self, i u64) {
-    imm q = new Quiet(i);
-    imm t = await fetcher.tick(i);
+  pub async fn held(self, i: u64) {
+    let q = Quiet(i);
+    let t = await fetcher.tick(i);
     tally.sum.add(t.n + q.n);
     tally.resumed.add(1u64);
   }
 
-  fn final(self &uni) {tally.pages.add(1u64);}
+  fn final(self: &uni) {tally.pages.add(1u64);}
 }
 
 actor Driver {
-  page Page;
-  fetcher Fetcher;
-  net Net;
+  page: Page;
+  fetcher: Fetcher;
+  net: Net;
 
-  pub async do go(self) {
-    imm a = await page.load(7u64);
+  pub async fn go(self) {
+    let a = await page.load(7u64);
     say("loaded", a);
-    imm z = await fetcher.fetch(0u64);
+    let z = await fetcher.fetch(0u64);
     say("at once", z.n);
-    imm t = await page.two(1u64);
+    let t = await page.two(1u64);
     say("two", t);
-    imm r = await page.relay(selfactor, 4u64);
+    let r = await page.relay(selfactor, 4u64);
     say("relay", r);
-    imm s = await selfactor.double(21u64);
+    let s = await selfactor.double(21u64);
     say("self", s);
-    mut total = 0u64;
-    mut i = 0u64;
+    var total = 0u64;
+    var i = 0u64;
     while i < 3u64 {
       total = total + await net.size(i);
       i = i + 1u64;
     }
     say("total", total);
     page.burst(20u64);
-    mut j = 0u64;
+    var j = 0u64;
     while j < 5u64 {
       fetcher.tick(100u64 + j);
       j = j + 1u64;
     }
   }
 
-  pub async do double(self, n u64) u64 {n * 2u64;}
+  pub async fn double(self, n: u64) u64 {n * 2u64}
 }
 
 fn main() {
   initAll();
   {
-    imm net = new Net();
-    imm fetcher = new Fetcher(net);
-    imm page = new Page(fetcher, 0u64);
-    imm d = new Driver(page, fetcher, net);
+    let net = Net();
+    let fetcher = Fetcher(net);
+    let page = Page(fetcher, 0u64);
+    let d = Driver(page, fetcher, net);
     d.go();
   }
   finalAll();

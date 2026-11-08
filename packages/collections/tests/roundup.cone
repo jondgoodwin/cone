@@ -1,0 +1,233 @@
+// A region may give more than a block asked for, and say how much: core's
+// 'MemRegion.sizeFor'. A List (and so a String) and a Deque ask before they
+// allocate, and the room the region answers is their capacity, at their starting
+// size and at each growth. The region here rounds every request up to a whole
+// number of 4,096-byte pages (its block is never smaller than one), as a pool of
+// 4 KiB blocks would, and counts what it was asked and what it gave. Its
+// accounting is by the room, on every call, so a collection that handed back a
+// size the region does not answer for the block (the room's bytes, or a whole
+// number of elements that fit in it) would leave 'live' above zero at its death.
+// Every expected value is worked out by hand:
+// - List[u8](3000, r): 3000 bytes ask for a page, 4096, so the capacity is 4096;
+//   4096 bytes fit with no growing, the 4097th makes 8192 bytes of the doubling
+//   and the capacity 8192;
+// - List[i64](100, r): 800 bytes ask for a page, 512 values; List[i64](r) asks
+//   for its first 4 values (32 bytes), a page too, and has room for 512;
+// - a 24-byte element does not divide a page: 100 of them ask for 2400 bytes,
+//   a page, and hold 170 (4080 bytes of the 4096), which the region still finds
+//   the page from when the block goes back; the 171st doubles to 340, 8160 bytes,
+//   two pages, 341 values;
+// - String(100, r) asks for 101 bytes, a page: 4095 bytes and the NUL fit, the
+//   4096th byte makes the block two pages;
+// - Deque[i64](100, r) holds 512, and the 513th value makes a new block of 1024
+//   values, 8192 bytes, and gives the first back;
+// - a Dict asks for its table's bytes, which are not a capacity, and still
+//   draws on the region and gives its table back by the same bytes;
+// - the heap's region gives exactly what is asked: List[i64](50) holds 50.
+
+mod roundup;
+
+import testing use *;
+import collections use *;
+import libc;
+
+const page = 4096usize;
+
+// A rounding region: its header first, then the tallies. 'live' is the bytes
+// handed out by the room, less what was given back by the room of the bytes
+// the release was told
+struct Rounding {
+  header: MemRegion;
+  allocs: usize;
+  resizes: usize;
+  releases: usize;
+  live: isize;
+}
+
+fn roomOf(bytes: usize) usize {
+  if bytes == 0usize { return page; }
+  ((bytes + page - 1usize) / page) * page
+}
+
+fn roundAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
+  let c = r as *Rounding;
+  (*c).allocs = (*c).allocs + 1usize;
+  (*c).live = (*c).live + isize.from(roomOf(bytes));
+  libc.malloc(roomOf(bytes))
+}
+
+fn roundResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  let c = r as *Rounding;
+  (*c).resizes = (*c).resizes + 1usize;
+  if block as usize == 0usize {
+    (*c).live = (*c).live + isize.from(roomOf(newBytes));
+  }
+  else {
+    (*c).live = (*c).live + isize.from(roomOf(newBytes)) - isize.from(roomOf(oldBytes));
+  }
+  libc.realloc(block, roomOf(newBytes))
+}
+
+fn roundRelease(r: *MemRegion, block: *u8, bytes: usize) {
+  if block as usize == 0usize { return; }
+  let c = r as *Rounding;
+  (*c).releases = (*c).releases + 1usize;
+  (*c).live = (*c).live - isize.from(roomOf(bytes));
+  libc.free(block);
+}
+
+fn roundSize(r: *MemRegion, bytes: usize, align: usize) usize { roomOf(bytes) }
+
+fn newRounding() Rounding {
+  Rounding(MemRegion(&roundAlloc, &roundResize, &roundRelease, &roundSize), 0usize, 0usize, 0usize, 0isize)
+}
+
+fn regionOf(c: &mut Rounding) *MemRegion { (c as *Rounding) as *MemRegion }
+
+fn tally(c: &Rounding, allocs: u64, resizes: u64, releases: u64, live: i64, label: &Array[u8]) {
+  let ok = u64.from(c.allocs) == allocs && u64.from(c.resizes) == resizes
+    && u64.from(c.releases) == releases && i64.from(c.live) == live;
+  expect(ok, label);
+}
+
+struct Triple {
+  pub a: i64;
+  pub b: i64;
+  pub c: i64;
+}
+
+fn regionAnswers() {
+  var c = newRounding();
+  let r = regionOf(&mut c) as &MemRegion;
+  expectUInt(u64.from(r.sizeFor(3000usize, 1usize)), 4096, "3000 bytes ask for a page");
+  expectUInt(u64.from(r.sizeFor(4096usize, 1usize)), 4096, "a page asks for itself");
+  expectUInt(u64.from(r.sizeFor(4097usize, 8usize)), 8192, "a page and a byte, two");
+  expectUInt(u64.from(r.sizeFor(r.sizeFor(3000usize, 1usize), 1usize)), 4096, "asking of the answer gives it back");
+  tally(&c, 0, 0, 0, 0, "asking how much room a block has makes none");
+  let h = heapRegion() as &MemRegion;
+  expectUInt(u64.from(h.sizeFor(3000usize, 1usize)), 3000, "the heap's region gives exactly what is asked");
+}
+
+fn listBytes() {
+  var c = newRounding();
+  {
+    var l = List[u8](3000usize, regionOf(&mut c));
+    expectUInt(u64.from(l.capacity()), 4096, "3000 bytes: a capacity of the page, 4096");
+    tally(&c, 1, 0, 0, 4096, "one allocation, one page");
+    var i = 0usize;
+    while i < 4096usize { l.push(7u8); i = i + 1usize; }
+    tally(&c, 1, 0, 0, 4096, "4096 bytes fit with no growing");
+    expectUInt(u64.from(l.len()), 4096, "all are there");
+    l.push(8u8);
+    expectUInt(u64.from(l.capacity()), 8192, "the 4097th doubles to the two pages that holds 8192");
+    tally(&c, 1, 1, 0, 8192, "one resize, two pages");
+    expectUInt(u64.from(*l[4096usize]), 8, "the value pushed after the move is there");
+  }
+  tally(&c, 1, 1, 1, 0, "its death gave the block back");
+}
+
+fn listValues() {
+  var c = newRounding();
+  {
+    var l = List[i64](100usize, regionOf(&mut c));
+    expectUInt(u64.from(l.capacity()), 512, "100 values of 8 bytes: a page, 512 values");
+    tally(&c, 1, 0, 0, 4096, "one page");
+  }
+  tally(&c, 1, 0, 1, 0, "and it went back");
+  {
+    var l = List[i64](regionOf(&mut c));
+    l.push(1i64);
+    expectUInt(u64.from(l.capacity()), 512, "the first block, of 4 values, is a page: 512 values");
+    tally(&c, 1, 1, 1, 4096, "a resize of nothing");
+    var i = 1i64;
+    while i < 512i64 { l.push(i); i = i + 1i64; }
+    tally(&c, 1, 1, 1, 4096, "512 values need no growing");
+    l.push(512i64);
+    expectUInt(u64.from(l.capacity()), 1024, "the 513th asks for 1024 values, two pages");
+    tally(&c, 1, 2, 1, 8192, "one more resize");
+    expectInt(*l[0usize], 1, "the first survived the move");
+    expectInt(*l[512usize], 512, "and the last");
+  }
+  tally(&c, 1, 2, 2, 0, "its death gave the block back");
+}
+
+fn listTriples() {
+  var c = newRounding();
+  {
+    var l = List[Triple](100usize, regionOf(&mut c));
+    expectUInt(u64.from(mem.sizeof[Triple]()), 24, "a Triple is 24 bytes");
+    expectUInt(u64.from(l.capacity()), 170, "2400 bytes ask for a page, which holds 170 of 24");
+    tally(&c, 1, 0, 0, 4096, "one page");
+    var i = 0i64;
+    while i < 170i64 { l.push(Triple(i, i, i)); i = i + 1i64; }
+    tally(&c, 1, 0, 0, 4096, "170 fit");
+    l.push(Triple(170i64, 170i64, 170i64));
+    expectUInt(u64.from(l.capacity()), 341, "the 171st asks for 340, 8160 bytes, two pages: 341");
+    tally(&c, 1, 1, 0, 8192, "one resize, two pages");
+    expectInt(l[170usize].a, 170, "the value pushed after the move is there");
+  }
+  tally(&c, 1, 1, 1, 0, "the block of 341 went back by bytes that are not a page, and the page was found");
+}
+
+fn stringBytes() {
+  var c = newRounding();
+  {
+    var s = String(100usize, regionOf(&mut c));
+    tally(&c, 1, 0, 0, 4096, "101 bytes ask for a page");
+    var i = 0usize;
+    while i < 4095usize { s.appendByte('a'); i = i + 1usize; }
+    tally(&c, 1, 0, 0, 4096, "4095 bytes and the NUL fit");
+    s.appendByte('b');
+    tally(&c, 1, 1, 0, 8192, "the 4096th makes the block two pages");
+    expectUInt(u64.from(s.len()), 4096, "all are there");
+  }
+  tally(&c, 1, 1, 1, 0, "its death gave the block back");
+}
+
+fn dequeValues() {
+  var c = newRounding();
+  {
+    var d = Deque[i64](100usize, regionOf(&mut c));
+    expectUInt(u64.from(d.capacity()), 512, "a deque holds the page, 512 values");
+    tally(&c, 1, 0, 0, 4096, "one page");
+    var i = 0i64;
+    while i < 512i64 { d.push(i); i = i + 1i64; }
+    d.pushFront(-1i64);
+    expectUInt(u64.from(d.capacity()), 1024, "the 513th makes a block of 1024 values");
+    tally(&c, 2, 0, 1, 8192, "a new block, two pages, and the page given back");
+    expectInt(*d[0usize], -1, "the front value survived the move");
+    expectInt(*d[512usize], 511, "and the back");
+  }
+  tally(&c, 2, 0, 2, 0, "its death gave the block back");
+}
+
+fn dictTable() {
+  var c = newRounding();
+  {
+    var d = Dict[i64, i64](100usize, regionOf(&mut c));
+    var i = 0i64;
+    while i < 1000i64 { d.insert(i, i * 2i64); i = i + 1i64; }
+    expectUInt(u64.from(d.len()), 1000, "a thousand entries");
+  }
+  let tables = u64.from(c.allocs);
+  tally(&c, tables, 0, tables, 0, "every table it asked for went back");
+}
+
+fn heapIsExact() {
+  var l = List[i64](50usize);
+  expectUInt(u64.from(l.capacity()), 50, "in the heap's region a list holds what it asked for");
+  var d = Deque[i64](50usize);
+  expectUInt(u64.from(d.capacity()), 50, "and so does a deque");
+}
+
+fn main() i32 {
+  regionAnswers();
+  listBytes();
+  listValues();
+  listTriples();
+  stringBytes();
+  dequeValues();
+  dictTable();
+  heapIsExact();
+  done()
+}

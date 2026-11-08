@@ -11,7 +11,7 @@
 //
 //   imm moss = fx.addDecalMaterial(&mut device, &renderer, mossAlbedo, mossNormal, TextureHandle.none());
 //   ...
-//   mut d = Decal.at(moss, Mat4.fromTrs(position, Quat.identity(), new Vec3(1.5, 0.6, 1.5)));
+//   mut d = Decal.at(moss, Mat4.fromTrs(position, Quat.identity(), Vec3(1.5, 0.6, 1.5)));
 //   d.fade = 0.8;
 //   fx.decals.add(d);
 //
@@ -21,150 +21,149 @@
 
 // A decal's textures: the renderer's handles, and the group that binds them
 pub struct DecalMaterial {
-  pub albedo TextureHandle;
-  pub normal TextureHandle;        // a tangent-space normal map (addNormalTexture), or none
-  pub roughness TextureHandle;     // its green channel (addLinearTexture), or none
-  pub hasNormal bool;
-  pub hasRoughness bool;
-  pub group BindGroup;
+  pub albedo: TextureHandle;
+  pub normal: TextureHandle;        // a tangent-space normal map (addNormalTexture), or none
+  pub roughness: TextureHandle;     // its green channel (addLinearTexture), or none
+  pub hasNormal: bool;
+  pub hasRoughness: bool;
+  pub group: BindGroup;
 }
 
 // One decal in a frame
 pub struct Decal {
-  pub material u32;                // 'ImageFx.addDecalMaterial''s answer
-  pub model Mat4;                  // places the unit cube: its size, its place and which way is up (+y)
-  pub tint Color = new Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
-  pub fade f32 = 1.;               // 0 to 1: how much of it shows (to fade a footprint out)
-  pub normalStrength f32 = 1.;     // how much its normal map bends the surface's normal (0 to 1)
+  pub material: u32;                // 'ImageFx.addDecalMaterial''s answer
+  pub model: Mat4;                  // places the unit cube: its size, its place and which way is up (+y)
+  pub tint: Color = Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
+  pub fade: f32 = 1.;               // 0 to 1: how much of it shows (to fade a footprint out)
+  pub normalStrength: f32 = 1.;     // how much its normal map bends the surface's normal (0 to 1)
   // Used when it has no roughness map: 0.9, the roughness of the ground,
   // moss and dirt decals are meant for (a smoother one shows the sun's sheen
   // at a grazing angle, as wet ground does)
-  pub roughness f32 = 0.9;
+  pub roughness: f32 = 0.9;
   // A surface takes it when the angle between its normal and the decal's up
   // is under 'maxAngle' (radians; 1.2 is 69 degrees), fading over the next 0.1 of the cosine
-  pub maxAngle f32 = 1.2;
+  pub maxAngle: f32 = 1.2;
   // The share of the box's depth faded out at each face (so its depth, the
   // thickness the surface may lie in, has soft limits)
-  pub depthFade f32 = 0.3;
+  pub depthFade: f32 = 0.3;
   // Faded out by distance from the camera: full to 'fadeStart', gone at 'fadeEnd'
-  pub fadeStart f32 = 100.;
-  pub fadeEnd f32 = 120.;
+  pub fadeStart: f32 = 100.;
+  pub fadeEnd: f32 = 120.;
   // Drawn in order, lowest first (a footprint over moss over a stain)
-  pub order i32 = 0;
+  pub order: i32 = 0;
 
   // A decal of 'material' placed by 'model', the rest as they default
-  pub fn at(material u32, model Mat4) Decal { new Decal(material, model); }
+  pub fn at(material: u32, model: Mat4) Decal { Decal(material, model) }
 }
 
-pub struct DecalList {
-  pub decals List[Decal];
+pub struct DecalList is Default {
+  pub decals: List[Decal];
 
-  pub fn empty() DecalList { new DecalList(List[Decal].empty()); }
-  pub fn clear(self &mut) { decals.clear(); }
-  pub fn len(self &) usize { decals.len(); }
-  pub fn add(self &mut, d Decal) { decals.push(d); }
+  pub fn clear(self: &mut) { decals.clear(); }
+  pub fn len(self: &) usize { decals.len() }
+  pub fn add(self: &mut, d: Decal) { decals.push(d); }
 }
 
 // What the pass's immediates hold (decal.slang's DecalImmediates): 112 bytes
 struct DecalImmediates {
-  inverseModel Array[f32, 16];
-  tint Array[f32, 4];
-  a Array[f32, 4];
-  b Array[f32, 4];
+  inverseModel: Array[f32, 16];
+  tint: Array[f32, 4];
+  a: Array[f32, 4];
+  b: Array[f32, 4];
 }
 
 pub struct DecalPass {
-  pub shader ShaderModule;
-  pub materialLayout BindGroupLayout;      // group 1
-  pub passLayout BindGroupLayout;          // group 3
-  pub pipelineLayout PipelineLayout;
-  pub pipeline RenderPipeline;
-  pub sampler Sampler;
-  pub passGroup BindGroup;                 // the frame uniform and the scene's depth
-  pub materials List[DecalMaterial];
-  pub order List[u32];                     // the decals of a frame, sorted
-  pub drawn u32;                           // how many the last frame drew
+  pub shader: ShaderModule;
+  pub materialLayout: BindGroupLayout;      // group 1
+  pub passLayout: BindGroupLayout;          // group 3
+  pub pipelineLayout: PipelineLayout;
+  pub pipeline: RenderPipeline;
+  pub sampler: Sampler;
+  pub passGroup: BindGroup;                 // the frame uniform and the scene's depth
+  pub materials: List[DecalMaterial];
+  pub order: List[u32];                     // the decals of a frame, sorted
+  pub drawn: u32;                           // how many the last frame drew
 
-  pub fn create(device &mut Device, frameLayout &BindGroupLayout, environmentLayout &BindGroupLayout,
-      frameBuffer &Buffer, depth &TextureView) DecalPass {
-    mut shader = device.createShaderModule(&DECAL_SPIRV);
-    imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
-    mut materialLayout = device.createBindGroupLayout(&materialEntries);
-    imm passEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+  pub fn create(device: &mut Device, frameLayout: &BindGroupLayout, environmentLayout: &BindGroupLayout,
+      frameBuffer: &Buffer, depth: &TextureView) DecalPass {
+    var shader = device.createShaderModule(&DECAL_SPIRV);
+    let materialEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
+    var materialLayout = device.createBindGroupLayout(&materialEntries);
+    let passEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         sampleType: TEXTURE_SAMPLE_TYPE_DEPTH)];
-    mut passLayout = device.createBindGroupLayout(&passEntries);
-    imm groups = [frameLayout, &materialLayout, environmentLayout, &passLayout];
-    mut pipelineLayout = device.createPipelineLayout(&groups, 112u32);
-    imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-    imm buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-    imm desc = new RenderPipelineDescriptor(layout: &pipelineLayout, vertexModule: &shader, buffers: &buffers[..<0],
+    var passLayout = device.createBindGroupLayout(&passEntries);
+    let groups = [frameLayout, &materialLayout, environmentLayout, &passLayout];
+    var pipelineLayout = device.createPipelineLayout(&groups, 112u32);
+    let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+    let buffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+    let desc = RenderPipelineDescriptor(layout: &pipelineLayout, vertexModule: &shader, buffers: &buffers[..<0],
       fragmentModule: &shader, colorFormat: TEXTURE_FORMAT_RGBA16_FLOAT, cullMode: CULL_MODE_FRONT,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut pipeline = device.createRenderPipeline(&desc);
-    imm samplerDesc = new SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 8u32,
+    var pipeline = device.createRenderPipeline(&desc);
+    let samplerDesc = SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 8u32,
       addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
-    mut sampler = device.createSampler(&samplerDesc);
-    imm passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
-    mut passGroup = device.createBindGroup(&passLayout, &passEntriesGroup);
-    new DecalPass(shader, materialLayout, passLayout, pipelineLayout, pipeline, sampler, passGroup,
-      List[DecalMaterial].empty(), List[u32].empty(), 0u32);
+    var sampler = device.createSampler(&samplerDesc);
+    let passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
+    var passGroup = device.createBindGroup(&passLayout, &passEntriesGroup);
+    DecalPass(shader, materialLayout, passLayout, pipelineLayout, pipeline, sampler, passGroup,
+      List[DecalMaterial](), List[u32](), 0u32)
   }
 
-  pub fn isValid(self &) bool { pipeline.isValid() and passGroup.isValid() and sampler.isValid(); }
+  pub fn isValid(self: &) bool { pipeline.isValid() && passGroup.isValid() && sampler.isValid() }
 
   // The group over the scene's depth made again (it was replaced)
-  pub fn remake(self &mut, device &mut Device, frameBuffer &Buffer, depth &TextureView) {
-    imm passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
+  pub fn remake(self: &mut, device: &mut Device, frameBuffer: &Buffer, depth: &TextureView) {
+    let passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
     passGroup = device.createBindGroup(&passLayout, &passEntriesGroup);
   }
 
   // A decal material of these textures, its number. The renderer has them (its
   // 'addTexture', 'addNormalTexture', 'addLinearTexture'); a map that is
   // 'TextureHandle.none()' is left out.
-  pub fn addMaterial(self &mut, device &mut Device, r &Renderer, albedo TextureHandle, normal TextureHandle,
-      roughness TextureHandle) u32 {
-    imm a = if r.textures.alive(albedo.slot) { albedo; } else { r.white; };
-    imm hasNormal = r.textures.alive(normal.slot);
-    imm hasRoughness = r.textures.alive(roughness.slot);
-    imm n = if hasNormal { normal; } else { r.white; };
-    imm rough = if hasRoughness { roughness; } else { r.white; };
-    imm av = r.textures[a.slot].texture.createView();
-    imm nv = r.textures[n.slot].texture.createView();
-    imm rv = r.textures[rough.slot].texture.createView();
-    imm entries = [BindGroupEntry.texture(0u32, &av), BindGroupEntry.texture(1u32, &nv), BindGroupEntry.texture(2u32, &rv),
+  pub fn addMaterial(self: &mut, device: &mut Device, r: &Renderer, albedo: TextureHandle, normal: TextureHandle,
+      roughness: TextureHandle) u32 {
+    let a = if r.textures.alive(albedo.slot) { albedo } else { r.white };
+    let hasNormal = r.textures.alive(normal.slot);
+    let hasRoughness = r.textures.alive(roughness.slot);
+    let n = if hasNormal { normal } else { r.white };
+    let rough = if hasRoughness { roughness } else { r.white };
+    let av = r.textures[a.slot].texture.createView();
+    let nv = r.textures[n.slot].texture.createView();
+    let rv = r.textures[rough.slot].texture.createView();
+    let entries = [BindGroupEntry.texture(0u32, &av), BindGroupEntry.texture(1u32, &nv), BindGroupEntry.texture(2u32, &rv),
       BindGroupEntry.sampler(3u32, &sampler)];
-    mut group = device.createBindGroup(&materialLayout, &entries);
-    materials.push(new DecalMaterial(a, n, rough, hasNormal, hasRoughness, group));
-    u32.from(materials.len() - 1usize);
+    var group = device.createBindGroup(&materialLayout, &entries);
+    materials.push(DecalMaterial(a, n, rough, hasNormal, hasRoughness, group));
+    u32.from(materials.len() - 1usize)
   }
 
   // Draw the decals of 'list' over 'hdr' (the frame, after the scene): sorted
   // by order, then back to front from the camera at 'eye'
-  pub fn record(self &mut, encoder &mut CommandEncoder, r &Renderer, hdr &Texture, list &DecalList, eye Vec3) {
+  pub fn record(self: &mut, encoder: &mut CommandEncoder, r: &Renderer, hdr: &Texture, list: &DecalList, eye: Vec3) {
     drawn = 0u32;
     if list.decals.len() == 0usize { return; }
     order.clear();
-    mut i = 0usize;
+    var i = 0usize;
     while i < list.decals.len() {
-      imm d = list.decals[i];
-      if usize.from(d.material) < materials.len() and d.fade > 0. {
+      let d = list.decals[i];
+      if usize.from(d.material) < materials.len() && d.fade > 0. {
         // Insertion sort by (order, distance far to near)
-        imm dist = d.model.translation().distance(eye);
-        mut at = order.len();
+        let dist = d.model.translation().distance(eye);
+        var at = order.len();
         while at > 0usize {
-          imm other = list.decals[usize.from(*order[at - 1usize])];
-          imm otherDist = other.model.translation().distance(eye);
-          if other.order < d.order or (other.order == d.order and otherDist >= dist) { break; }
+          let other = list.decals[usize.from(*order[at - 1usize])];
+          let otherDist = other.model.translation().distance(eye);
+          if other.order < d.order || (other.order == d.order && otherDist >= dist) { break; }
           at = at - 1usize;
         }
         order.push(0u32);
-        mut k = order.len() - 1usize;
+        var k = order.len() - 1usize;
         while k > at {
           order.set(k, *order[k - 1usize]);
           k = k - 1usize;
@@ -174,30 +173,30 @@ pub struct DecalPass {
       i = i + 1usize;
     }
     if order.len() == 0usize { return; }
-    imm attachment = new RenderPassColorAttachment(view: hdr.createView(), loadOp: LOAD_OP_LOAD, clearValue: new Color(0., 0., 0., 0.));
-    mut pass = encoder.beginRenderPass(&attachment);
+    let attachment = RenderPassColorAttachment(view: hdr.createView(), loadOp: LOAD_OP_LOAD, clearValue: Color(0., 0., 0., 0.));
+    var pass = encoder.beginRenderPass(&attachment);
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &r.frameGroup);
     pass.setBindGroup(2u32, &r.environment.group);
     pass.setBindGroup(3u32, &passGroup);
-    mut bound = 0xFFFFFFFFu32;
-    mut j = 0usize;
+    var bound = 0xFFFFFFFFu32;
+    var j = 0usize;
     while j < order.len() {
-      imm d = list.decals[usize.from(*order[j])];
+      let d = list.decals[usize.from(*order[j])];
       j = j + 1usize;
-      imm m = materials[usize.from(d.material)];
+      let m = &materials[usize.from(d.material)];
       if bound != d.material {
         pass.setBindGroup(1u32, &m.group);
         bound = d.material;
       }
-      imm inverse = d.model.inverse();
-      mut flags = 0u32;
+      let inverse = d.model.inverse();
+      var flags = 0u32;
       if m.hasNormal { flags = flags | 1u32; }
       if m.hasRoughness { flags = flags | 2u32; }
-      mut data = new DecalImmediates(new Array[f32, 16] <- fill 0f, [d.tint.red, d.tint.green, d.tint.blue, d.tint.alpha],
+      var data = DecalImmediates(Array[f32, 16]() <- fill 0f, [d.tint.red, d.tint.green, d.tint.blue, d.tint.alpha],
         [d.fade, d.normalStrength, d.roughness, cosOf(d.maxAngle)],
         [d.depthFade, d.fadeStart, d.fadeEnd, f32.from(flags)]);
-      mut k = 0usize;
+      var k = 0usize;
       while k < 16usize {
         data.inverseModel[k] = inverse.m[k];
         k = k + 1usize;
@@ -210,11 +209,11 @@ pub struct DecalPass {
   }
 }
 
-fn cosOf(x f32) f32 { libc.cosf(x); }
+fn cosOf(x: f32) f32 { libc.cosf(x) }
 
 // spirv-begin decal.spv DECAL_SPIRV
-// Written by tools/shaders/shaders.py from decal.slang (sha256 514308dde657a68bcd5e8a4cd848bbfccf7774cf6afd862dd99775899576923b): do not edit.
-imm DECAL_SPIRV Array[u32, 7037] = [
+// Written by tools/shaders/shaders.py from decal.slang (sha256 01c4552c6ec16bacb7e344f61f6cf60d54413c6d6963c660f6cc8c5307da15e5): do not edit.
+let DECAL_SPIRV: Array[u32, 7037] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000700u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000040u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,

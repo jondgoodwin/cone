@@ -26,6 +26,7 @@ typedef uint32_t VkFlags;
 typedef uint64_t VkFlags64;
 typedef uint32_t VkBool32;
 typedef uint64_t VkDeviceSize;
+typedef uint64_t VkDeviceAddress;
 typedef int VkStructureType;       /* enums are int-sized */
 typedef int VkFormat;
 typedef int VkImageLayout;
@@ -162,6 +163,85 @@ typedef struct VkPhysicalDeviceVulkan13Features {
   VkBool32 synchronization2; VkBool32 textureCompressionASTC_HDR; VkBool32 shaderZeroInitializeWorkgroupMemory;
   VkBool32 dynamicRendering; VkBool32 shaderIntegerDotProduct; VkBool32 maintenance4;
 } VkPhysicalDeviceVulkan13Features;
+
+typedef struct VkPhysicalDeviceVulkan11Features {
+  VkStructureType sType; void* pNext;
+  VkBool32 storageBuffer16BitAccess; VkBool32 uniformAndStorageBuffer16BitAccess; VkBool32 storagePushConstant16;
+  VkBool32 storageInputOutput16; VkBool32 multiview; VkBool32 multiviewGeometryShader;
+  VkBool32 multiviewTessellationShader; VkBool32 variablePointersStorageBuffer; VkBool32 variablePointers;
+  VkBool32 protectedMemory; VkBool32 samplerYcbcrConversion; VkBool32 shaderDrawParameters;
+} VkPhysicalDeviceVulkan11Features;
+
+typedef struct VkPhysicalDeviceVulkan12Features {
+  VkStructureType sType; void* pNext;
+  VkBool32 samplerMirrorClampToEdge; VkBool32 drawIndirectCount; VkBool32 storageBuffer8BitAccess;
+  VkBool32 uniformAndStorageBuffer8BitAccess; VkBool32 storagePushConstant8; VkBool32 shaderBufferInt64Atomics;
+  VkBool32 shaderSharedInt64Atomics; VkBool32 shaderFloat16; VkBool32 shaderInt8; VkBool32 descriptorIndexing;
+  VkBool32 shaderInputAttachmentArrayDynamicIndexing; VkBool32 shaderUniformTexelBufferArrayDynamicIndexing;
+  VkBool32 shaderStorageTexelBufferArrayDynamicIndexing; VkBool32 shaderUniformBufferArrayNonUniformIndexing;
+  VkBool32 shaderSampledImageArrayNonUniformIndexing; VkBool32 shaderStorageBufferArrayNonUniformIndexing;
+  VkBool32 shaderStorageImageArrayNonUniformIndexing; VkBool32 shaderInputAttachmentArrayNonUniformIndexing;
+  VkBool32 shaderUniformTexelBufferArrayNonUniformIndexing; VkBool32 shaderStorageTexelBufferArrayNonUniformIndexing;
+  VkBool32 descriptorBindingUniformBufferUpdateAfterBind; VkBool32 descriptorBindingSampledImageUpdateAfterBind;
+  VkBool32 descriptorBindingStorageImageUpdateAfterBind; VkBool32 descriptorBindingStorageBufferUpdateAfterBind;
+  VkBool32 descriptorBindingUniformTexelBufferUpdateAfterBind; VkBool32 descriptorBindingStorageTexelBufferUpdateAfterBind;
+  VkBool32 descriptorBindingUpdateUnusedWhilePending; VkBool32 descriptorBindingPartiallyBound;
+  VkBool32 descriptorBindingVariableDescriptorCount; VkBool32 runtimeDescriptorArray; VkBool32 samplerFilterMinmax;
+  VkBool32 scalarBlockLayout; VkBool32 imagelessFramebuffer; VkBool32 uniformBufferStandardLayout;
+  VkBool32 shaderSubgroupExtendedTypes; VkBool32 separateDepthStencilLayouts; VkBool32 hostQueryReset;
+  VkBool32 timelineSemaphore; VkBool32 bufferDeviceAddress; VkBool32 bufferDeviceAddressCaptureReplay;
+  VkBool32 bufferDeviceAddressMultiDevice; VkBool32 vulkanMemoryModel; VkBool32 vulkanMemoryModelDeviceScope;
+  VkBool32 vulkanMemoryModelAvailabilityVisibilityChains; VkBool32 shaderOutputViewportIndex;
+  VkBool32 shaderOutputLayer; VkBool32 subgroupBroadcastDynamicId;
+} VkPhysicalDeviceVulkan12Features;
+
+typedef struct VkPhysicalDeviceVulkan11Properties {
+  VkStructureType sType; void* pNext;
+  uint8_t deviceUUID[16]; uint8_t driverUUID[16]; uint8_t deviceLUID[8]; uint32_t deviceNodeMask;
+  VkBool32 deviceLUIDValid; uint32_t subgroupSize; VkFlags subgroupSupportedStages; VkFlags subgroupSupportedOperations;
+  VkBool32 subgroupQuadOperationsInAllStages; int pointClippingBehavior; uint32_t maxMultiviewViewCount;
+  uint32_t maxMultiviewInstanceIndex; VkBool32 protectedNoFault; uint32_t maxPerSetDescriptors;
+  VkDeviceSize maxMemoryAllocationSize;
+} VkPhysicalDeviceVulkan11Properties;
+
+typedef struct VkPhysicalDeviceVulkan13Properties {
+  VkStructureType sType; void* pNext;
+  uint32_t minSubgroupSize; uint32_t maxSubgroupSize; uint32_t maxComputeWorkgroupSubgroups;
+  VkFlags requiredSubgroupSizeStages; uint32_t maxInlineUniformBlockSize;
+  uint32_t maxPerStageDescriptorInlineUniformBlocks; uint32_t maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks;
+  uint32_t maxDescriptorSetInlineUniformBlocks; uint32_t maxDescriptorSetUpdateAfterBindInlineUniformBlocks;
+  uint32_t maxInlineUniformTotalSize;
+  VkBool32 integerDotProduct8BitUnsignedAccelerated; VkBool32 integerDotProduct8BitSignedAccelerated;
+  VkBool32 integerDotProduct8BitMixedSignednessAccelerated; VkBool32 integerDotProduct4x8BitPackedUnsignedAccelerated;
+  VkBool32 integerDotProduct4x8BitPackedSignedAccelerated; VkBool32 integerDotProduct4x8BitPackedMixedSignednessAccelerated;
+  VkBool32 integerDotProduct16BitUnsignedAccelerated; VkBool32 integerDotProduct16BitSignedAccelerated;
+  VkBool32 integerDotProduct16BitMixedSignednessAccelerated; VkBool32 integerDotProduct32BitUnsignedAccelerated;
+  VkBool32 integerDotProduct32BitSignedAccelerated; VkBool32 integerDotProduct32BitMixedSignednessAccelerated;
+  VkBool32 integerDotProduct64BitUnsignedAccelerated; VkBool32 integerDotProduct64BitSignedAccelerated;
+  VkBool32 integerDotProduct64BitMixedSignednessAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating8BitUnsignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating8BitSignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating16BitUnsignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating16BitSignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating32BitUnsignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating32BitSignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating64BitUnsignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating64BitSignedAccelerated;
+  VkBool32 integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated;
+  VkDeviceSize storageTexelBufferOffsetAlignmentBytes; VkBool32 storageTexelBufferOffsetSingleTexelAlignment;
+  VkDeviceSize uniformTexelBufferOffsetAlignmentBytes; VkBool32 uniformTexelBufferOffsetSingleTexelAlignment;
+  VkDeviceSize maxBufferSize;
+} VkPhysicalDeviceVulkan13Properties;
+
+typedef struct VkPhysicalDeviceProperties2 {
+  VkStructureType sType; void* pNext; VkPhysicalDeviceProperties properties;
+} VkPhysicalDeviceProperties2;
 
 typedef struct VkQueueFamilyProperties {
   VkFlags queueFlags; uint32_t queueCount; uint32_t timestampValidBits; VkExtent3D minImageTransferGranularity;
@@ -314,6 +394,11 @@ typedef struct VkBufferImageCopy {
   VkImageSubresourceLayers imageSubresource; VkOffset3D imageOffset; VkExtent3D imageExtent;
 } VkBufferImageCopy;
 
+typedef struct VkImageBlit {
+  VkImageSubresourceLayers srcSubresource; VkOffset3D srcOffsets[2];
+  VkImageSubresourceLayers dstSubresource; VkOffset3D dstOffsets[2];
+} VkImageBlit;
+
 typedef struct VkShaderModuleCreateInfo {
   VkStructureType sType; const void* pNext; VkFlags flags; size_t codeSize; const uint32_t* pCode;
 } VkShaderModuleCreateInfo;
@@ -464,6 +549,79 @@ typedef struct VkWriteDescriptorSet {
   uint32_t descriptorCount; int descriptorType; const VkDescriptorImageInfo* pImageInfo;
   const VkDescriptorBufferInfo* pBufferInfo; const uint64_t* pTexelBufferView;
 } VkWriteDescriptorSet;
+
+/* Ray tracing. VkAccelerationStructureGeometryKHR holds a union of three structs; the Cone side has one struct
+   for each member the package uses, as large as the union, and here each is written out flat the same way. */
+typedef uint64_t VkAccelerationStructureKHR;
+typedef struct VkPhysicalDeviceBufferDeviceAddressFeatures {
+  VkStructureType sType; void* pNext; VkBool32 bufferDeviceAddress; VkBool32 bufferDeviceAddressCaptureReplay;
+  VkBool32 bufferDeviceAddressMultiDevice;
+} VkPhysicalDeviceBufferDeviceAddressFeatures;
+typedef struct VkPhysicalDeviceAccelerationStructureFeaturesKHR {
+  VkStructureType sType; void* pNext; VkBool32 accelerationStructure; VkBool32 accelerationStructureCaptureReplay;
+  VkBool32 accelerationStructureIndirectBuild; VkBool32 accelerationStructureHostCommands;
+  VkBool32 descriptorBindingAccelerationStructureUpdateAfterBind;
+} VkPhysicalDeviceAccelerationStructureFeaturesKHR;
+typedef struct VkPhysicalDeviceRayQueryFeaturesKHR { VkStructureType sType; void* pNext; VkBool32 rayQuery; } VkPhysicalDeviceRayQueryFeaturesKHR;
+typedef struct VkMemoryAllocateFlagsInfo { VkStructureType sType; const void* pNext; uint32_t flags; uint32_t deviceMask; } VkMemoryAllocateFlagsInfo;
+typedef struct VkBufferDeviceAddressInfo { VkStructureType sType; const void* pNext; VkBuffer buffer; } VkBufferDeviceAddressInfo;
+typedef struct VkAccelerationStructureCreateInfoKHR {
+  VkStructureType sType; const void* pNext; uint32_t createFlags; VkBuffer buffer; VkDeviceSize offset; VkDeviceSize size;
+  int type; VkDeviceAddress deviceAddress;
+} VkAccelerationStructureCreateInfoKHR;
+typedef struct VkAccelerationStructureDeviceAddressInfoKHR {
+  VkStructureType sType; const void* pNext; VkAccelerationStructureKHR accelerationStructure;
+} VkAccelerationStructureDeviceAddressInfoKHR;
+typedef struct VkAccelerationStructureGeometryKHR {
+  VkStructureType sType; const void* pNext; int geometryType;
+  union {
+    struct { VkStructureType sType; const void* pNext; int vertexFormat; VkDeviceAddress vertexData; VkDeviceSize vertexStride;
+      uint32_t maxVertex; int indexType; VkDeviceAddress indexData; VkDeviceAddress transformData; } triangles;
+    struct { VkStructureType sType; const void* pNext; VkBool32 arrayOfPointers; VkDeviceAddress data; } instances;
+  } geometry;
+  uint32_t flags;
+} VkAccelerationStructureGeometryKHR;
+/* The two members the Cone side uses, each flattened with the union's padding, and checked against the real struct */
+typedef struct VkAccelerationStructureGeometryTrianglesKHR {
+  VkStructureType sType; const void* pNext; int geometryType; uint32_t unionPad;
+  VkStructureType trianglesSType; const void* trianglesPNext; int vertexFormat; VkDeviceAddress vertexData;
+  VkDeviceSize vertexStride; uint32_t maxVertex; int indexType; VkDeviceAddress indexData; VkDeviceAddress transformData;
+  uint32_t flags;
+} VkAccelerationStructureGeometryTrianglesKHR;
+typedef struct VkAccelerationStructureGeometryInstancesKHR {
+  VkStructureType sType; const void* pNext; int geometryType; uint32_t unionPad;
+  VkStructureType instancesSType; const void* instancesPNext; VkBool32 arrayOfPointers; VkDeviceAddress data;
+  uint64_t unused0; uint64_t unused1; uint64_t unused2; uint64_t unused3;
+  uint32_t flags;
+} VkAccelerationStructureGeometryInstancesKHR;
+_Static_assert(sizeof(VkAccelerationStructureGeometryKHR) == sizeof(VkAccelerationStructureGeometryTrianglesKHR), "size");
+_Static_assert(sizeof(VkAccelerationStructureGeometryKHR) == sizeof(VkAccelerationStructureGeometryInstancesKHR), "size");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.triangles.vertexData)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, vertexData), "vertexData");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.triangles.transformData)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, transformData), "transformData");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, geometry.instances.data)
+  == offsetof(VkAccelerationStructureGeometryInstancesKHR, data), "instances data");
+_Static_assert(offsetof(VkAccelerationStructureGeometryKHR, flags)
+  == offsetof(VkAccelerationStructureGeometryTrianglesKHR, flags), "flags");
+typedef struct VkAccelerationStructureBuildGeometryInfoKHR {
+  VkStructureType sType; const void* pNext; int type; uint32_t flags; int mode;
+  VkAccelerationStructureKHR srcAccelerationStructure; VkAccelerationStructureKHR dstAccelerationStructure;
+  uint32_t geometryCount; const void* pGeometries; const void* ppGeometries; VkDeviceAddress scratchData;
+} VkAccelerationStructureBuildGeometryInfoKHR;
+typedef struct VkAccelerationStructureBuildRangeInfoKHR {
+  uint32_t primitiveCount; uint32_t primitiveOffset; uint32_t firstVertex; uint32_t transformOffset;
+} VkAccelerationStructureBuildRangeInfoKHR;
+typedef struct VkAccelerationStructureBuildSizesInfoKHR {
+  VkStructureType sType; const void* pNext; VkDeviceSize accelerationStructureSize; VkDeviceSize updateScratchSize;
+  VkDeviceSize buildScratchSize;
+} VkAccelerationStructureBuildSizesInfoKHR;
+typedef struct VkAccelerationStructureInstanceKHR {
+  float transform[12]; uint32_t instanceWord; uint32_t flagsWord; uint64_t accelerationStructureReference;
+} VkAccelerationStructureInstanceKHR;
+typedef struct VkWriteDescriptorSetAccelerationStructureKHR {
+  VkStructureType sType; const void* pNext; uint32_t accelerationStructureCount; const VkAccelerationStructureKHR* pAccelerationStructures;
+} VkWriteDescriptorSetAccelerationStructureKHR;
 
 #define S(t) printf("%s size %zu align %zu\n", #t, sizeof(Vk##t), _Alignof(Vk##t))
 #define O(t, f) printf("%s.%s %zu\n", #t, #f, offsetof(Vk##t, f))

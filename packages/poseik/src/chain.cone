@@ -32,86 +32,86 @@ pub const JOINT_CONE = 1u32;
 pub const JOINT_HINGE = 2u32;
 
 pub struct JointLimit {
-  pub kind u32;
-  pub axis Vec3;     // hinge: its unit axis, in model space
-  pub half f32;      // cone: half-angle, radians
-  pub lo f32;        // hinge: smallest angle from the reference, radians
-  pub hi f32;        // hinge: largest
+  pub kind: u32;
+  pub axis: Vec3;     // hinge: its unit axis, in model space
+  pub half: f32;      // cone: half-angle, radians
+  pub lo: f32;        // hinge: smallest angle from the reference, radians
+  pub hi: f32;        // hinge: largest
 
-  pub fn free() JointLimit { new JointLimit(JOINT_FREE, new Vec3(0., 1., 0.), 0., 0., 0.); }
-  pub fn cone(half f32) JointLimit { new JointLimit(JOINT_CONE, new Vec3(0., 1., 0.), half, 0., 0.); }
-  pub fn hinge(axis Vec3, lo f32, hi f32) JointLimit { new JointLimit(JOINT_HINGE, axis.normalize(), 0., lo, hi); }
+  pub fn free() JointLimit { JointLimit(JOINT_FREE, Vec3(0., 1., 0.), 0., 0., 0.) }
+  pub fn cone(half: f32) JointLimit { JointLimit(JOINT_CONE, Vec3(0., 1., 0.), half, 0., 0.) }
+  pub fn hinge(axis: Vec3, lo: f32, hi: f32) JointLimit { JointLimit(JOINT_HINGE, axis.normalize(), 0., lo, hi) }
 }
 
 // What a solve achieved: the iterations used and the distance from the end to the target
 pub struct ChainResult {
-  pub iterations u32;
-  pub error f32;
+  pub iterations: u32;
+  pub error: f32;
 }
 
-fn pt(l &List[Vec3], i usize) Vec3 { *l[i]; }
+fn pt(l: &List[Vec3], i: usize) Vec3 { *l[i] }
 
-fn perpendicular(v Vec3) Vec3 {
-  if absf(v.x) < 0.9 { return new Vec3(1., 0., 0.).cross(v).normalize(); }
-  new Vec3(0., 1., 0.).cross(v).normalize();
+fn perpendicular(v: Vec3) Vec3 {
+  if v.x.abs() < 0.9 { return Vec3(1., 0., 0.).cross(v).normalize(); }
+  Vec3(0., 1., 0.).cross(v).normalize()
 }
 
 // A limit seen from the other end of the chain: a cone is the same; a hinge's
 // range is negated (the turn from the far segment back to the near one)
-fn reversed(lim &JointLimit) JointLimit {
-  new JointLimit(lim.kind, lim.axis, lim.half, -lim.hi, -lim.lo);
+fn reversed(lim: &JointLimit) JointLimit {
+  JointLimit(lim.kind, lim.axis, lim.half, -lim.hi, -lim.lo)
 }
 
 // The unit direction 'd' brought inside limit 'lim' about the unit reference 'ref'
-pub fn constrainDirection(d Vec3, ref Vec3, lim &JointLimit) Vec3 {
+pub fn constrainDirection(d: Vec3, ref: Vec3, lim: &JointLimit) Vec3 {
   if lim.kind == JOINT_CONE {
-    imm c = clampf(d.dot(ref), -1., 1.);
-    imm ang = acos(c);
+    let c = clampf(d.dot(ref), -1., 1.);
+    let ang = acos(c);
     if ang <= lim.half { return d; }
-    mut axis = ref.cross(d);
+    var axis = ref.cross(d);
     if axis.length() < 0.000001 { axis = perpendicular(ref); } else { axis = axis.normalize(); }
     return (Quat.angleAxis(lim.half, axis) * ref).normalize();
   }
   if lim.kind == JOINT_HINGE {
-    imm a = lim.axis;
-    mut dp = d - a * d.dot(a);
-    imm rp0 = ref - a * ref.dot(a);
-    mut rp = rp0;
+    let a = lim.axis;
+    var dp = d - a * d.dot(a);
+    let rp0 = ref - a * ref.dot(a);
+    var rp = rp0;
     if rp0.length() < 0.00001 { rp = perpendicular(a); } else { rp = rp0.normalize(); }
     if dp.length() < 0.00001 { dp = rp; } else { dp = dp.normalize(); }
-    imm ang = atan2(a.dot(rp.cross(dp)), rp.dot(dp));
-    imm clamped = clampf(ang, lim.lo, lim.hi);
+    let ang = atan2(a.dot(rp.cross(dp)), rp.dot(dp));
+    let clamped = clampf(ang, lim.lo, lim.hi);
     return (Quat.angleAxis(clamped, a) * rp).normalize();
   }
-  d;
+  d
 }
 
 // The segments' directions brought inside their limits from the base out,
 // each segment's length and the base point kept (the points beyond move
 // with it)
-pub fn enforceLimits(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3) {
-  imm n = lens.len();
-  mut ref = baseDir;
-  mut i = 0usize;
-  mut dirs = List[Vec3].empty();
+pub fn enforceLimits(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3) {
+  let n = lens.len();
+  var ref = baseDir;
+  var i = 0usize;
+  var dirs = List[Vec3]();
   while i < n {
     dirs.push((pt(points, i + 1usize) - pt(points, i)).normalize());
     i = i + 1usize;
   }
   i = 0usize;
   while i < n {
-    imm d = constrainDirection(pt(&dirs, i), ref, limits[i]);
+    let d = constrainDirection(pt(&dirs, i), ref, &limits[i]);
     points.set(i + 1usize, pt(points, i) + d * (*lens[i]));
     ref = d;
     i = i + 1usize;
   }
 }
 
-pub fn chainLength(lens &List[f32]) f32 {
-  mut s f32 = 0.;
-  mut i = 0usize;
+pub fn chainLength(lens: &List[f32]) f32 {
+  var s: f32 = 0.;
+  var i = 0usize;
   while i < lens.len() { s = s + (*lens[i]); i = i + 1usize; }
-  s;
+  s
 }
 
 // FABRIK: Forward And Backward Reaching IK. Each iteration pulls the end to
@@ -121,33 +121,33 @@ pub fn chainLength(lens &List[f32]) f32 {
 // point staying put. A target beyond the chain's reach stretches it straight
 // at the target (its limits still applied). Stops when the end is within
 // 'tolerance' of the target or after 'maxIterations'.
-pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3, target Vec3,
-    tolerance f32, maxIterations u32) ChainResult {
-  imm n = lens.len();
-  imm base = pt(points, 0usize);
-  mut it = 0u32;
+pub fn solveFabrik(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3, target: Vec3,
+    tolerance: f32, maxIterations: u32) ChainResult {
+  let n = lens.len();
+  let base = pt(points, 0usize);
+  var it = 0u32;
   if (target - base).length() >= chainLength(lens) {
     // Out of reach: lay the chain along the line to the target
-    imm dir = (target - base).normalize();
-    mut i = 0usize;
+    let dir = (target - base).normalize();
+    var i = 0usize;
     while i < n { points.set(i + 1usize, pt(points, i) + dir * (*lens[i])); i = i + 1usize; }
     enforceLimits(points, lens, limits, baseDir);
-    return new ChainResult(0u32, (pt(points, n) - target).length());
+    return ChainResult(0u32, (pt(points, n) - target).length());
   }
-  mut err = (pt(points, n) - target).length();
-  while it < maxIterations and err > tolerance {
+  var err = (pt(points, n) - target).length();
+  while it < maxIterations && err > tolerance {
     // Backward: the end on the target, each point pulled to its segment's length from the next
     points.set(n, target);
-    mut i = n;
+    var i = n;
     while i > 0usize {
       i = i - 1usize;
-      mut d = (pt(points, i) - pt(points, i + 1usize)).normalize();
+      var d = (pt(points, i) - pt(points, i + 1usize)).normalize();
       // The joint between segments i and i+1 limits this one against the one
       // just placed, seen from the far end (the paper applies its limits in
       // both passes: forward only, the chain can lock into a fixed point)
       if i + 1usize < n {
-        imm ref = (pt(points, i + 1usize) - pt(points, i + 2usize)).normalize();
-        imm back = reversed(limits[i + 1usize]);
+        let ref = (pt(points, i + 1usize) - pt(points, i + 2usize)).normalize();
+        let back = reversed(&limits[i + 1usize]);
         d = constrainDirection(d, ref, &back);
       }
       points.set(i, pt(points, i + 1usize) + d * (*lens[i]));
@@ -156,7 +156,7 @@ pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLi
     points.set(0usize, base);
     i = 0usize;
     while i < n {
-      imm d = (pt(points, i + 1usize) - pt(points, i)).normalize();
+      let d = (pt(points, i + 1usize) - pt(points, i)).normalize();
       points.set(i + 1usize, pt(points, i) + d * (*lens[i]));
       i = i + 1usize;
     }
@@ -164,7 +164,7 @@ pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLi
     err = (pt(points, n) - target).length();
     it = it + 1u32;
   }
-  new ChainResult(it, err);
+  ChainResult(it, err)
 }
 
 // CCD: Cyclic Coordinate Descent. Each sweep visits the joints from the one
@@ -174,21 +174,21 @@ pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLi
 // more slowly than FABRIK and tends to bend the joints near the end first,
 // but each step is a pure rotation about a joint, which suits a rig whose
 // joints are rotations.
-pub fn solveCcd(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3, target Vec3,
-    tolerance f32, maxIterations u32) ChainResult {
-  imm n = lens.len();
-  mut it = 0u32;
-  mut err = (pt(points, n) - target).length();
-  while it < maxIterations and err > tolerance {
-    mut i = n;
+pub fn solveCcd(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3, target: Vec3,
+    tolerance: f32, maxIterations: u32) ChainResult {
+  let n = lens.len();
+  var it = 0u32;
+  var err = (pt(points, n) - target).length();
+  while it < maxIterations && err > tolerance {
+    var i = n;
     while i > 0usize {
       i = i - 1usize;
-      imm pivot = pt(points, i);
-      imm toEnd = pt(points, n) - pivot;
-      imm toTarget = target - pivot;
-      if toEnd.length() > 0.000001 and toTarget.length() > 0.000001 {
-        imm q = Quat.fromVectors(toEnd, toTarget);
-        mut j = i + 1usize;
+      let pivot = pt(points, i);
+      let toEnd = pt(points, n) - pivot;
+      let toTarget = target - pivot;
+      if toEnd.length() > 0.000001 && toTarget.length() > 0.000001 {
+        let q = Quat.fromVectors(toEnd, toTarget);
+        var j = i + 1usize;
         while j <= n {
           points.set(j, pivot + q * (pt(points, j) - pivot));
           j = j + 1usize;
@@ -199,24 +199,24 @@ pub fn solveCcd(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit
     err = (pt(points, n) - target).length();
     it = it + 1u32;
   }
-  new ChainResult(it, err);
+  ChainResult(it, err)
 }
 
 // The joint positions of bone 'first' and its first children, 'count' of
 // them, in model space; 'lens' gets the segment lengths from the rest
 // offsets and 'bones' the bone numbers
-pub fn chainPoints(skel &Skeleton, models &List[Transform3], first usize, count usize, points &mut List[Vec3],
-    lens &mut List[f32], bones &mut List[usize]) {
+pub fn chainPoints(skel: &Skeleton, models: &List[Transform3], first: usize, count: usize, points: &mut List[Vec3],
+    lens: &mut List[f32], bones: &mut List[usize]) {
   points.clear();
   lens.clear();
   bones.clear();
-  mut b = first;
-  mut k = 0usize;
+  var b = first;
+  var k = 0usize;
   while k < count {
     bones.push(b);
     points.push((*models[b]).translation);
     if k + 1usize < count {
-      imm c = usize.from(skel.childOf(b));
+      let c = usize.from(skel.childOf(b));
       lens.push(skel.restOf(c).translation.length());
       b = c;
     }
@@ -228,17 +228,17 @@ pub fn chainPoints(skel &Skeleton, models &List[Transform3], first usize, count 
 // smallest rotation from where it points now, so twist stays. 'models' is
 // current for the first bone and the bones before it, and is brought up to
 // date. The last bone keeps its local rotation.
-pub fn applyChain(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], bones &List[usize], points &List[Vec3]) {
-  imm n = bones.len();
-  mut k = 0usize;
+pub fn applyChain(skel: &Skeleton, pose: &mut Pose, models: &mut List[Transform3], bones: &List[usize], points: &List[Vec3]) {
+  let n = bones.len();
+  var k = 0usize;
   while k + 1usize < n {
-    imm b = *bones[k];
-    imm child = *bones[k + 1usize];
-    imm rot = (*models[b]).rotation;
-    imm restDir = skel.restOf(child).translation.normalize();
-    imm now = rot * restDir;
-    imm want = pt(points, k + 1usize) - pt(points, k);
-    imm newRot = Quat.fromVectors(now, want) * rot;
+    let b = *bones[k];
+    let child = *bones[k + 1usize];
+    let rot = (*models[b]).rotation;
+    let restDir = skel.restOf(child).translation.normalize();
+    let now = rot * restDir;
+    let want = pt(points, k + 1usize) - pt(points, k);
+    let newRot = Quat.fromVectors(now, want) * rot;
     skel.setModelRotation(pose, models, b, newRot);
     skel.recompose(pose, models, b);
     k = k + 1usize;

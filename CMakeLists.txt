@@ -53,6 +53,7 @@ add_executable(conec
 	compiler/c/shared/utf8.c
 
 	compiler/c/ir/checktree.c
+	compiler/c/ir/trustreport.c
 	compiler/c/ir/clone.c
 	compiler/c/ir/dclinfo.c
 	compiler/c/ir/dclspan.c
@@ -100,9 +101,13 @@ add_executable(conec
 	compiler/c/ir/exp/borrow.c
 	compiler/c/ir/exp/cast.c
 	compiler/c/ir/exp/contents.c
+	compiler/c/ir/exp/debugfn.c
 	compiler/c/ir/exp/deref.c
+	compiler/c/ir/exp/destruct.c
 	compiler/c/ir/exp/each.c
 	compiler/c/ir/exp/pareach.c
+	compiler/c/ir/exp/propagate.c
+	compiler/c/ir/exp/discard.c
 	compiler/c/ir/exp/fncall.c
 	compiler/c/ir/exp/if.c
 	compiler/c/ir/exp/literal.c
@@ -128,10 +133,12 @@ add_executable(conec
 	compiler/c/ir/types/region.c
 	compiler/c/ir/types/struct.c
 	compiler/c/ir/types/ttuple.c
+	compiler/c/ir/types/vector.c
 	compiler/c/ir/types/void.c
 
 	compiler/c/ir/meta/macro.c
 	compiler/c/ir/meta/genvardcl.c
+	compiler/c/ir/meta/fields.c
 	compiler/c/ir/meta/generic.c
 
 	compiler/c/corelib/corelib.c
@@ -146,6 +153,7 @@ add_executable(conec
 	compiler/c/parser/parseexpr.c
 	compiler/c/parser/parsetype.c
 	compiler/c/parser/parsehelper.c
+	compiler/c/parser/parsemeta.c
 
 	compiler/c/genllvm/genllvm.c
 	compiler/c/genllvm/genlstmt.c
@@ -159,6 +167,7 @@ add_executable(conec
 	compiler/c/genllvm/genlaggcopy.c
 	compiler/c/genllvm/genlgpu.c
 	compiler/c/genllvm/genlgpusync.c
+	compiler/c/genllvm/genlvector.c
 )
 
 target_link_libraries(conec ${llvm_libs})
@@ -173,6 +182,13 @@ set_property(TARGET conec APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/CMake
 # "Paths are UTF-8")
 if(WIN32)
 	target_sources(conec PRIVATE compiler/c/conec.manifest)
+	# LLVM's optimiser recurses along a long chain of dependent operations;
+	# a straight-line function of ~300 calls overflowed the default 1 MB
+	# stack in a release compile (llvmc's symbols test, Bug 16). Linux's
+	# main thread already has 8 MB.
+	if(MSVC)
+		target_link_options(conec PRIVATE /STACK:16777216)
+	endif()
 endif()
 
 # The fallback packages folder, where core and stdio are: this repository's
@@ -188,12 +204,14 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # addresses), and cnames.c a third (the C library's stdin, stdout and stderr,
 # errno and the numbers that differ by C library, which Cone cannot name), and oscalls.c a fourth
 # (the futex and the other system calls sync and thread need on Linux, which
-# Cone cannot call; empty on Windows). All go into the one library. The object also holds what it uses of core and
+# Cone cannot call; empty on Windows), and console.c a fifth (the console's lock,
+# terminal test and write, in each system's own calls). All go into the one library. The object also holds what it uses of core and
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/barrier.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/floatfmt.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/floattables.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/hash.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/panic.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/rawblocks.cone
@@ -217,5 +235,6 @@ add_library(conestd STATIC
 	packages/conestd/heapregion.c
 	packages/conestd/cnames.c
 	packages/conestd/oscalls.c
+	packages/conestd/console.c
 	${CONESTD_OBJ}
 )

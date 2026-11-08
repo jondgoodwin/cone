@@ -1,0 +1,552 @@
+// ======== The working triangle mesh ========
+//
+// The source PolyMesh cut into triangles, with a density per vertex and the
+// feature edges (creases, guides) the field must follow. Edges longer than a
+// limit are split first, so every lattice cell has input vertices inside it;
+// the boundary of an open mesh is found last, from the triangles themselves.
+
+// What a feature edge is (bit flags)
+const FeatBoundary = 1u32;
+const FeatCrease = 2u32;
+const FeatGuide = 4u32;
+
+const NoVertex = 0xFFFFFFFFu32;
+
+fn ekey(a: u32, b: u32) u64 {
+  if a < b { (u64.from(a) << 32u64) | u64.from(b) } else { (u64.from(b) << 32u64) | u64.from(a) }
+}
+fn keyLo(k: u64) u32 { u32.from(k >> 32u64) }
+fn keyHi(k: u64) u32 { u32.from(k & 0xFFFFFFFFu64) }
+
+fn sortKeys(keys: &mut List[u64]) {
+  keys.sort();
+}
+
+// The sorted list without its repeats
+fn uniqueKeys(keys: &List[u64]) List[u64] {
+  var out = List[u64].withCapacity(keys.len());
+  var i = 0usize;
+  while i < keys.len() {
+    if i == 0usize || *keys[i] != *keys[i - 1usize] { out.push(*keys[i]); }
+    i = i + 1usize;
+  }
+  out
+}
+
+// Where a key is in a sorted list, or the list's length
+fn findKey(keys: &List[u64], k: u64) usize {
+  var lo = 0usize;
+  var hi = keys.len();
+  while lo < hi {
+    let mid = (lo + hi) / 2usize;
+    let v = *keys[mid];
+    if v < k { lo = mid + 1usize; } else if v > k { hi = mid; } else { return mid; }
+  }
+  keys.len()
+}
+
+fn copyOf[T](src: &List[T]) List[T] {
+  var out = List[T].withCapacity(src.len());
+  var i = 0usize;
+  while i < src.len() {
+    out.push(*src[i]);
+    i = i + 1usize;
+  }
+  out
+}
+
+fn minf(a: f32, b: f32) f32 { if a < b {a} else {b} }
+fn maxf(a: f32, b: f32) f32 { if a > b {a} else {b} }
+fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo {lo} else if v > hi {hi} else {v} }
+fn rnd(x: f32) f32 { libc.floorf(x + 0.5) }
+fn unit(v: Vec3) Vec3 {
+  let len = v.length();
+  if len > 0.0000000001 { v * (1. / len) } else { Vec3(0., 0., 0.) }
+}
+fn zero3() Vec3 { Vec3(0., 0., 0.) }
+fn isZero3(v: Vec3) bool { v.x == 0. && v.y == 0. && v.z == 0. }
+fn coord(p: Vec3, axis: u32) f32 { if axis == 0u32 {p.x} else if axis == 1u32 {p.y} else {p.z} }
+
+// A hash of an integer, for the field's first guess
+fn hash32(x: u32) u32 {
+  var h = x * 747796405u32 + 2891336453u32;
+  h = ((h >> ((h >> 28u32) + 4u32)) ^ h) * 277803737u32;
+  (h >> 22u32) ^ h
+}
+
+// A unit vector in the tangent plane of n, turned by an arbitrary angle
+fn anyTangent(n: Vec3, seed: u32) Vec3 {
+  let ax = if n.x.abs() < 0.6 { Vec3(1., 0., 0.) } else { Vec3(0., 1., 0.) };
+  let e1 = unit(ax - n * ax.dot(n));
+  let e2 = n.cross(e1);
+  let a = f32.from(hash32(seed) & 65535u32) * (6.2831853 / 65536.);
+  e1 * cos(a) + e2 * sin(a)
+}
+
+// The tangent vector of n nearest v, unit; none if v is along n
+fn toTangent(n: Vec3, v: Vec3) Vec3 { unit(v - n * v.dot(n)) }
+
+// ---------------------------------------------------------------- the mesh
+
+struct Work is Default {
+  pos: List[Vec3];
+  idx: List[u32];            // three a triangle
+  dens: List[f32];           // per vertex: the density asked for
+  fa: List[u32];             // feature edges
+  fb: List[u32];
+  fk: List[u32];
+
+  fn triCount(self: &) usize { idx.len() / 3usize }
+
+  fn addFeature(self: &mut, a: u32, b: u32, k: u32) {
+    fa.push(a); fb.push(b); fk.push(k);
+  }
+
+  fn area(self: &) f32 {
+    var sum = 0.f;
+    var t = 0usize;
+    while t < idx.len() {
+      let a = *pos[usize.from(*idx[t])];
+      let b = *pos[usize.from(*idx[t + 1usize])];
+      let c = *pos[usize.from(*idx[t + 2usize])];
+      sum = sum + 0.5 * (b - a).cross(c - a).length();
+      t = t + 3usize;
+    }
+    sum
+  }
+}
+
+// The source cut into triangles. Creases: an edge whose two faces turn by more
+// than 'creaseAngle' (radians; 0 or less: none), or whose "crease" channel is
+// above 0 when 'useChannel'. Guides: pairs of source vertices.
+fn workFrom(m: &PolyMesh, creaseAngle: f32, useChannel: bool, guides: &List[u32], densityChannel: &str) Work {
+  var w = Work();
+  let nv = m.vertexCount();
+  let dch = if densityChannel.len() > 0usize { m.findFloatChannel(VertexDomain, densityChannel) } else { NoIndex };
+  var v = 0usize;
+  while v < nv {
+    w.pos.push(*m.positions[v]);
+    w.dens.push(if dch != NoIndex { m.float(dch, u32.from(v)).max(0.0001) } else { 1. });
+    v = v + 1usize;
+  }
+  var cuts = List[u32]();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    cuts.clear();
+    m.cutFace(u32.from(f), &mut cuts);
+    var k = 0usize;
+    while k + 2usize < cuts.len() {
+      w.idx.push(*vs[usize.from(*cuts[k])]);
+      w.idx.push(*vs[usize.from(*cuts[k + 1usize])]);
+      w.idx.push(*vs[usize.from(*cuts[k + 2usize])]);
+      k = k + 3usize;
+    }
+    f = f + 1usize;
+  }
+  let cch = if useChannel { m.findFloatChannel(EdgeDomain, "crease") } else { NoIndex };
+  let cosLimit = cos(creaseAngle);
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let h = u32.from(2usize * e);
+    let a = m.fromVertex(h);
+    let b = m.toVertex(h);
+    var crease = false;
+    if cch != NoIndex && m.float(cch, u32.from(e)) > 0. { crease = true; }
+    if creaseAngle > 0. && !m.isBoundaryEdge(u32.from(e)) {
+      let f0 = m.face(h);
+      let f1 = m.face(h ^ 1u32);
+      if f0 != NoIndex && f1 != NoIndex {
+        if m.faceNormal(f0).dot(m.faceNormal(f1)) < cosLimit { crease = true; }
+      }
+    }
+    if crease { w.addFeature(a, b, FeatCrease); }
+    e = e + 1usize;
+  }
+  var g = 0usize;
+  while g + 1usize < guides.len() {
+    w.addFeature(*guides[g], *guides[g + 1usize], FeatGuide);
+    g = g + 2usize;
+  }
+  w
+}
+
+// Every edge longer than 'maxLen' split at its middle, until none is, the
+// triangles cut to match (one, two or three edges of a triangle split) and the
+// feature edges split with them
+fn splitLong(w: &mut Work, maxLen: f32) {
+  let limit2 = maxLen * maxLen;
+  var round = 0;
+  while round < 14 {
+    var keys = List[u64]();
+    var t = 0usize;
+    while t < w.idx.len() {
+      var e = 0usize;
+      while e < 3usize {
+        let a = *w.idx[t + e];
+        let b = *w.idx[t + (e + 1usize) % 3usize];
+        if (*w.pos[usize.from(a)] - *w.pos[usize.from(b)]).lengthSquared() > limit2 { keys.push(ekey(a, b)); }
+        e = e + 1usize;
+      }
+      t = t + 3usize;
+    }
+    if keys.len() == 0usize { return; }
+    sortKeys(&mut keys);
+    let marks = uniqueKeys(&keys);
+    let base = u32.from(w.pos.len());
+    var k = 0usize;
+    while k < marks.len() {
+      let a = usize.from(keyLo(*marks[k]));
+      let b = usize.from(keyHi(*marks[k]));
+      w.pos.push((*w.pos[a] + *w.pos[b]) * 0.5);
+      w.dens.push((*w.dens[a] + *w.dens[b]) * 0.5);
+      k = k + 1usize;
+    }
+    var out = List[u32].withCapacity(w.idx.len() * 2usize);
+    t = 0usize;
+    while t < w.idx.len() {
+      let v0 = *w.idx[t];
+      let v1 = *w.idx[t + 1usize];
+      let v2 = *w.idx[t + 2usize];
+      let i0 = findKey(&marks, ekey(v0, v1));
+      let i1 = findKey(&marks, ekey(v1, v2));
+      let i2 = findKey(&marks, ekey(v2, v0));
+      let m0 = if i0 < marks.len() { base + u32.from(i0) } else { NoVertex };
+      let m1 = if i1 < marks.len() { base + u32.from(i1) } else { NoVertex };
+      let m2 = if i2 < marks.len() { base + u32.from(i2) } else { NoVertex };
+      var count = 0;
+      if m0 != NoVertex { count = count + 1; }
+      if m1 != NoVertex { count = count + 1; }
+      if m2 != NoVertex { count = count + 1; }
+      if count == 0 {
+        out.push(v0); out.push(v1); out.push(v2);
+      } else if count == 3 {
+        out.push(v0); out.push(m0); out.push(m2);
+        out.push(m0); out.push(v1); out.push(m1);
+        out.push(m2); out.push(m1); out.push(v2);
+        out.push(m0); out.push(m1); out.push(m2);
+      } else if count == 1 {
+        if m0 != NoVertex {
+          out.push(v0); out.push(m0); out.push(v2);
+          out.push(m0); out.push(v1); out.push(v2);
+        } else if m1 != NoVertex {
+          out.push(v1); out.push(m1); out.push(v0);
+          out.push(m1); out.push(v2); out.push(v0);
+        } else {
+          out.push(v2); out.push(m2); out.push(v1);
+          out.push(m2); out.push(v0); out.push(v1);
+        }
+      } else {
+        // Two split: rotate so the whole edge is (a, b) and the corner c
+        // is where the two split edges meet
+        var a = v0; var b = v1; var c = v2; var mbc = m1; var mca = m2;
+        if m0 == NoVertex { a = v0; b = v1; c = v2; mbc = m1; mca = m2; }
+        else if m1 == NoVertex { a = v1; b = v2; c = v0; mbc = m2; mca = m0; }
+        else { a = v2; b = v0; c = v1; mbc = m0; mca = m1; }
+        out.push(mbc); out.push(c); out.push(mca);
+        let d1 = (*w.pos[usize.from(a)] - *w.pos[usize.from(mbc)]).lengthSquared();
+        let d2 = (*w.pos[usize.from(b)] - *w.pos[usize.from(mca)]).lengthSquared();
+        if d1 <= d2 {
+          out.push(a); out.push(b); out.push(mbc);
+          out.push(a); out.push(mbc); out.push(mca);
+        } else {
+          out.push(a); out.push(b); out.push(mca);
+          out.push(b); out.push(mbc); out.push(mca);
+        }
+      }
+      t = t + 3usize;
+    }
+    w.idx = out;
+    // The features split with their edges
+    var na = List[u32]();
+    var nb = List[u32]();
+    var nk = List[u32]();
+    var f = 0usize;
+    while f < w.fa.len() {
+      let a = *w.fa[f];
+      let b = *w.fb[f];
+      let kd = *w.fk[f];
+      let i = findKey(&marks, ekey(a, b));
+      if i < marks.len() {
+        let mid = base + u32.from(i);
+        na.push(a); nb.push(mid); nk.push(kd);
+        na.push(mid); nb.push(b); nk.push(kd);
+      } else {
+        na.push(a); nb.push(b); nk.push(kd);
+      }
+      f = f + 1usize;
+    }
+    w.fa = na; w.fb = nb; w.fk = nk;
+    round = round + 1;
+  }
+}
+
+// The half of the mesh on one side of an axis-aligned plane (the side where
+// coordinate - offset >= 0, or its opposite), cut along the plane exactly,
+// with the vertices it does not use dropped.
+fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
+  let nv = w.pos.len();
+  var s = List[f32].withCapacity(nv);
+  var v = 0usize;
+  while v < nv {
+    let d = coord(*w.pos[v], axis) - off;
+    s.push(if positive { d } else { -d });
+    v = v + 1usize;
+  }
+  var keys = List[u64]();
+  var t = 0usize;
+  while t < w.idx.len() {
+    var e = 0usize;
+    while e < 3usize {
+      let a = *w.idx[t + e];
+      let b = *w.idx[t + (e + 1usize) % 3usize];
+      if *s[usize.from(a)] * *s[usize.from(b)] < 0. { keys.push(ekey(a, b)); }
+      e = e + 1usize;
+    }
+    t = t + 3usize;
+  }
+  sortKeys(&mut keys);
+  let cross = uniqueKeys(&keys);
+  var out = Work();
+  var remap = List[u32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    if *s[v] >= 0. {
+      remap.push(u32.from(out.pos.len()));
+      out.pos.push(*w.pos[v]);
+      out.dens.push(*w.dens[v]);
+    } else { remap.push(NoVertex); }
+    v = v + 1usize;
+  }
+  let cbase = u32.from(out.pos.len());
+  var k = 0usize;
+  while k < cross.len() {
+    let a = usize.from(keyLo(*cross[k]));
+    let b = usize.from(keyHi(*cross[k]));
+    let sa = *s[a];
+    let sb = *s[b];
+    let u = sa / (sa - sb);
+    var p = *w.pos[a] + (*w.pos[b] - *w.pos[a]) * u;
+    if axis == 0u32 { p = Vec3(off, p.y, p.z); }
+    else if axis == 1u32 { p = Vec3(p.x, off, p.z); }
+    else { p = Vec3(p.x, p.y, off); }
+    out.pos.push(p);
+    out.dens.push(*w.dens[a] + (*w.dens[b] - *w.dens[a]) * u);
+    k = k + 1usize;
+  }
+  t = 0usize;
+  var poly = List[u32]();
+  while t < w.idx.len() {
+    poly.clear();
+    var e = 0usize;
+    while e < 3usize {
+      let a = *w.idx[t + e];
+      let b = *w.idx[t + (e + 1usize) % 3usize];
+      if *s[usize.from(a)] >= 0. { poly.push(*remap[usize.from(a)]); }
+      if *s[usize.from(a)] * *s[usize.from(b)] < 0. {
+        poly.push(cbase + u32.from(findKey(&cross, ekey(a, b))));
+      }
+      e = e + 1usize;
+    }
+    var i = 1usize;
+    while i + 1usize < poly.len() {
+      out.idx.push(*poly[0usize]); out.idx.push(*poly[i]); out.idx.push(*poly[i + 1usize]);
+      i = i + 1usize;
+    }
+    t = t + 3usize;
+  }
+  // Features that survive
+  var f = 0usize;
+  while f < w.fa.len() {
+    let a = *w.fa[f];
+    let b = *w.fb[f];
+    let kd = *w.fk[f];
+    let ra = *remap[usize.from(a)];
+    let rb = *remap[usize.from(b)];
+    if ra != NoVertex && rb != NoVertex {
+      out.addFeature(ra, rb, kd);
+    } else if ra != NoVertex || rb != NoVertex {
+      let i = findKey(&cross, ekey(a, b));
+      if i < cross.len() {
+        let keep = if ra != NoVertex { ra } else { rb };
+        out.addFeature(keep, cbase + u32.from(i), kd);
+      }
+    }
+    f = f + 1usize;
+  }
+  out
+}
+
+// Edges with one triangle only are the boundary: added as features
+fn markBoundary(w: &mut Work) {
+  var keys = List[u64]();
+  var t = 0usize;
+  while t < w.idx.len() {
+    var e = 0usize;
+    while e < 3usize {
+      keys.push(ekey(*w.idx[t + e], *w.idx[t + (e + 1usize) % 3usize]));
+      e = e + 1usize;
+    }
+    t = t + 3usize;
+  }
+  sortKeys(&mut keys);
+  var i = 0usize;
+  while i < keys.len() {
+    var j = i;
+    while j < keys.len() && *keys[j] == *keys[i] { j = j + 1usize; }
+    if j - i == 1usize { w.addFeature(keyLo(*keys[i]), keyHi(*keys[i]), FeatBoundary); }
+    i = j;
+  }
+}
+
+// ---------------------------------------------------------------- vertex data
+
+// Area-weighted vertex normals (unit) and a third of the adjoining triangles'
+// area to each vertex
+fn vertexData(w: &Work, nrm: &mut List[Vec3], area: &mut List[f32]) {
+  let nv = w.pos.len();
+  var acc = List[Vec3].withCapacity(nv);
+  nrm.clear();
+  area.clear();
+  var v = 0usize;
+  while v < nv {
+    acc.push(zero3());
+    area.push(0.);
+    v = v + 1usize;
+  }
+  var t = 0usize;
+  while t < w.idx.len() {
+    let a = usize.from(*w.idx[t]);
+    let b = usize.from(*w.idx[t + 1usize]);
+    let c = usize.from(*w.idx[t + 2usize]);
+    let cr = (*w.pos[b] - *w.pos[a]).cross(*w.pos[c] - *w.pos[a]);
+    let ar = cr.length() * 0.5 / 3.;
+    acc.set(a, *acc[a] + cr); acc.set(b, *acc[b] + cr); acc.set(c, *acc[c] + cr);
+    area.set(a, *area[a] + ar); area.set(b, *area[b] + ar); area.set(c, *area[c] + ar);
+    t = t + 3usize;
+  }
+  v = 0usize;
+  while v < nv {
+    nrm.push(unit(*acc[v]));
+    v = v + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------- graphs
+
+// Vertex neighbours in compressed rows, each with a weight
+struct Graph {
+  start: List[u32];          // n + 1
+  nbr: List[u32];
+  wt: List[f32];
+
+  fn count(self: &) usize { start.len() - 1usize }
+}
+
+// A graph from directed (a, b, weight) entries; repeats of a pair add
+fn graphFrom(n: usize, ca: &List[u32], cb: &List[u32], cw: &List[f32]) Graph {
+  var cnt = List[u32].withCapacity(n + 1usize);
+  var i = 0usize;
+  while i <= n { cnt.push(0u32); i = i + 1usize; }
+  i = 0usize;
+  while i < ca.len() {
+    let a = usize.from(*ca[i]);
+    cnt.set(a + 1usize, *cnt[a + 1usize] + 1u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n { cnt.set(i + 1usize, *cnt[i + 1usize] + *cnt[i]); i = i + 1usize; }
+  var fill = copyOf[u32](&cnt);
+  var sb = List[u32]();
+  var sw = List[f32]();
+  sb.resize(ca.len(), 0u32);
+  sw.resize(ca.len(), 0.);
+  i = 0usize;
+  while i < ca.len() {
+    let a = usize.from(*ca[i]);
+    let at = usize.from(*fill[a]);
+    sb.set(at, *cb[i]);
+    sw.set(at, *cw[i]);
+    fill.set(a, *fill[a] + 1u32);
+    i = i + 1usize;
+  }
+  // Each row sorted by neighbour, repeats added
+  var g = Graph(List[u32].withCapacity(n + 1usize), List[u32].withCapacity(ca.len()), List[f32].withCapacity(ca.len()));
+  g.start.push(0u32);
+  var ord = List[usize]();
+  var rowB = List[u32]();
+  var rowW = List[f32]();
+  var v = 0usize;
+  while v < n {
+    let lo = usize.from(*cnt[v]);
+    let hi = usize.from(*cnt[v + 1usize]);
+    // a stable sort of the row's places by neighbour (the weights are summed in the order given),
+    // then the row laid out in that order
+    ord.clear();
+    var a = lo;
+    while a < hi { ord.push(a); a = a + 1usize; }
+    ord.sortByKey(fn(x: &usize) u32 { *sb[*x] });
+    rowB.clear();
+    rowW.clear();
+    a = 0usize;
+    while a < ord.len() { rowB.push(*sb[*ord[a]]); rowW.push(*sw[*ord[a]]); a = a + 1usize; }
+    a = 0usize;
+    while a < ord.len() { sb.set(lo + a, *rowB[a]); sw.set(lo + a, *rowW[a]); a = a + 1usize; }
+    a = lo;
+    while a < hi {
+      var wsum = *sw[a];
+      var b = a + 1usize;
+      while b < hi && *sb[b] == *sb[a] { wsum = wsum + *sw[b]; b = b + 1usize; }
+      if *sb[a] != u32.from(v) {
+        g.nbr.push(*sb[a]);
+        g.wt.push(wsum);
+      }
+      a = b;
+    }
+    g.start.push(u32.from(g.nbr.len()));
+    v = v + 1usize;
+  }
+  g
+}
+
+// The mesh's own graph, with cotangent weights held to a sensible range
+fn meshGraph(w: &Work) Graph {
+  let n = w.pos.len();
+  var ca = List[u32].withCapacity(w.idx.len() * 2usize);
+  var cb = List[u32].withCapacity(w.idx.len() * 2usize);
+  var cw = List[f32].withCapacity(w.idx.len() * 2usize);
+  var t = 0usize;
+  while t < w.idx.len() {
+    var e = 0usize;
+    while e < 3usize {
+      let c = *w.idx[t + e];
+      let a = *w.idx[t + (e + 1usize) % 3usize];
+      let b = *w.idx[t + (e + 2usize) % 3usize];
+      let u = *w.pos[usize.from(a)] - *w.pos[usize.from(c)];
+      let v = *w.pos[usize.from(b)] - *w.pos[usize.from(c)];
+      let cr = u.cross(v).length();
+      let cot = if cr > 0.0000000001 { u.dot(v) / cr } else { 0. };
+      let wt = 0.5 * cot;
+      ca.push(a); cb.push(b); cw.push(wt);
+      ca.push(b); cb.push(a); cw.push(wt);
+      e = e + 1usize;
+    }
+    t = t + 3usize;
+  }
+  var g = graphFrom(n, &ca, &cb, &cw);
+  // The mean of the positive weights; the range held about it
+  var sum = 0.f;
+  var cnt = 0.f;
+  var i = 0usize;
+  while i < g.wt.len() {
+    if *g.wt[i] > 0. { sum = sum + *g.wt[i]; cnt = cnt + 1.; }
+    i = i + 1usize;
+  }
+  let mean = if cnt > 0. { sum / cnt } else { 1. };
+  i = 0usize;
+  while i < g.wt.len() {
+    g.wt.set(i, clampf(*g.wt[i], 0.15 * mean, 6. * mean));
+    i = i + 1usize;
+  }
+  g
+}

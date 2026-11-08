@@ -490,6 +490,11 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         importnode->fold->ispub = 1;
     parseEndOfStatement();
 
+    // In a '#if' branch the build does not take (parsemeta.c) an import is read
+    // for its syntax alone: nothing is found, loaded or bound
+    if (parse->mod->scratch)
+        return NULL;
+
     Name *filesym = nametblFind(modstr, strlen(modstr));
 
     // THE REGISTRY FIRST, AND THE FILESYSTEM ONLY AFTER IT. A neighbour has
@@ -702,12 +707,37 @@ void parseExternFnCheck(FnDclNode *fn) {
             "A generic function is instantiated where it is used, so it has no definition elsewhere for 'extern' to name. Write its body.");
 }
 
+// Refuse a C name that LLVM reserves for its intrinsics, 'llvm.x86.sse2.pause':
+// a function so named is no symbol to link, and the code generator cannot select
+// the call. The name is the final one, where the declaration's own '@c("sym")'
+// or its C-named module's prefix gives it. A Cone name holds no '.', so a final
+// name begins 'llvm.' only if the string that gave it that start does: the
+// declaration's own, or the module's prefix. Run on a declaration whose module
+// line is parsed already, which sets the prefix. A generic fn keeps its Cone name.
+static void parseLlvmNameCheck(ParseState *parse, INode *node, Name *namesym, DclInfo *dclinfo, int generic) {
+    if (namesym == NULL)
+        return;
+    DclInfo *modinfo = &parse->mod->dclinfo;
+    if ((dclinfo->facts & DclCName) && dclinfo->cname != NULL) {
+        if (strncmp(dclinfo->cname, "llvm.", 5) == 0)
+            errorMsgNode(node, ErrorLlvmName,
+                "The C name \"%s\" begins 'llvm.', which LLVM reserves for its intrinsics: they are not symbols to link, and a call to one cannot be generated. Give %s a C name that does not.",
+                dclinfo->cname, &namesym->namestr);
+    }
+    else if (!generic && (modinfo->facts & DclCName) && modinfo->cname != NULL && strncmp(modinfo->cname, "llvm.", 5) == 0)
+        errorMsgNode(node, ErrorLlvmName,
+            "Module %s gives its C names the prefix \"%s\", so %s is the C name \"%s%s\", which begins 'llvm.': LLVM reserves those for its intrinsics, which are not symbols to link. Give the module a prefix that does not begin so.",
+            &parse->mod->namesym->namestr, modinfo->cname, &namesym->namestr, modinfo->cname, &namesym->namestr);
+}
+
 // Parse function or variable, as it may be preceded by a qualifier
-// Return NULL if not either
-INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
+// Return NULL if not either. 'member' is set for an item of an 'extern' block's
+// braces, whose last declaration needs no ';' before the '}' (parseEndOfMember)
+static INode *parseFnOrVarIn(ParseState *parse, uint16_t flags, int member) {
 
     if (lexIsToken(FnToken)) {
-        FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
+        FnDclNode *node = (FnDclNode*)parseFn(parse, ((flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl))
+            | (member ? ParseMemberEnd : 0));
         node->flags |= flags;
         parseExternFnCheck(node);
         // A bare '@c' in a module that already gives its functions C names says
@@ -721,12 +751,13 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
             errorMsgNode((INode*)node, ErrorCNameTwice,
                 "Module %s already gives its functions C names, so a bare '@c' on %s says nothing. To spell its symbol differently, write it: '@c(\"symbol\")'.",
                 &parse->mod->namesym->namestr, &node->namesym->namestr);
+        parseLlvmNameCheck(parse, (INode*)node, node->namesym, dclinfo, node->genericinfo != NULL);
         modAddFn(parse->mod, node);
         return (INode*)node;
     }
 
-    // A global variable declaration, if it begins with a permission
-    else if lexIsToken(PermToken) {
+    // A global variable declaration, if it begins with 'let' or 'var'
+    else if lexIsDclStart() {
         // A module's global may carry a fold clause: it is the one-instance
         // analogue of a field, so 'config Config use *' admits Config's members
         // as names of this module, reached through 'config'. An 'extern' global
@@ -752,7 +783,11 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
                 "'@workgroup' global %s may not have an initial value: each workgroup's copy starts undefined, and its invocations write what they will read, before a barrier.",
                 &node->namesym->namestr);
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
-        parseEndOfStatement();
+        parseLlvmNameCheck(parse, (INode*)node, node->namesym, &node->dclinfo, 0);
+        if (member)
+            parseEndOfMember();
+        else
+            parseEndOfStatement();
         modAddNode(parse->mod, node->namesym, (INode*)node);
         return (INode*)node;
     }
@@ -761,6 +796,10 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
         parseSkipToNextStmt();
         return NULL;
     }
+}
+
+INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
+    return parseFnOrVarIn(parse, flags, 0);
 }
 
 // Parse a global area statement (within a module)
@@ -891,9 +930,14 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
     }
     parseBlockStart();
     while (!parseBlockEnd()) {
+        // A lone ';' is an empty declaration, as in a type's braces
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
         uint16_t memberpub = parsePub();
         if (lexIsToken(FnToken)) {
-            FnDclNode *fn = (FnDclNode*)parseFn(parse, ParseMayName | ParseMaySig | ParseMayImpl);
+            FnDclNode *fn = (FnDclNode*)parseFn(parse, ParseMayName | ParseMaySig | ParseMayImpl | ParseMemberEnd);
             fn->flags |= memberpub;
             if (fn->genericinfo)
                 errorMsgNode((INode*)fn, ErrorModTraitBody,
@@ -904,11 +948,11 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
             else if (fn->namesym)
                 modTraitAddMember(trait, (INode*)fn);
         }
-        else if (lexIsToken(PermToken)) {
+        else if (lexIsDclStart()) {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
             var->flags |= memberpub;
             var->flowtempflags |= VarInitialized;   // A global always holds a valid value
-            parseEndOfStatement();
+            parseEndOfMember();
             modTraitAddMember(trait, (INode*)var);
         }
         else {
@@ -1290,8 +1334,93 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
 // [Jon 24 Sep], and its imports come right after it, before anything else it
 // declares. A module's other files have no 'mod' line, and so no place for an
 // import: a module's whole inbound dependency list is in its designated file
-// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it
+// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it, or one of these
+// for the statements of a '#if' branch, which read to the branch's '}' and have no
+// 'mod' line of their own: a branch where an import would be allowed anyway
+// (AtInHashIfHeader, the header it is in not yet past) may hold imports; one past
+// the header (AtInHashIf) or in a file with no 'mod' line (AtInHashIfNoMod) may not
+#define AtInHashIf 3
+#define AtInHashIfHeader 4
+#define AtInHashIfNoMod 5
+
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
+static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstart, int *pastp);
+
+// The items of a '#if' chain at a module's level. A branch the build takes joins
+// the module; one it does not is read into the scratch module parse->mod then is.
+// 'state' is how the branch begins (AtInHashIf and its kin), and 'past' is set by
+// a branch with a statement that is no import, which ends the header
+typedef struct GlobalIf {
+    ModuleNode *mod;
+    int state;
+    int past;
+} GlobalIf;
+
+static INode *parseGlobalBranch(ParseState *parse, void *ctx, int mode) {
+    GlobalIf *gif = (GlobalIf*)ctx;
+    int past = 0;
+    parseGlobalStmtsIn(parse, mode == MetaTaken ? gif->mod : parse->mod, gif->state, &past);
+    gif->past |= past;
+    return NULL;
+}
+
+// The items of an 'extern' block's braces, to the '}' that closes them or
+// the branch of a '#if' inside them; 'items' is where their spans go
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items);
+
+typedef struct ExternIf {
+    uint16_t extflag;
+    DclSpans **items;
+} ExternIf;
+
+static INode *parseExternBranch(ParseState *parse, void *ctx, int mode) {
+    ExternIf *xif = (ExternIf*)ctx;
+    DclSpans *dropped = NULL;
+    parseExternItems(parse, xif->extflag, mode == MetaTaken ? xif->items : &dropped);
+    return NULL;
+}
+
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items) {
+    while (!parseBlockEnd()) {
+        // A lone ';' is an empty declaration, as in a type's braces
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (lexIsToken(HashIfToken)) {
+            ExternIf xif;
+            xif.extflag = extflag;
+            xif.items = items;
+            parseHashIf(parse, parseExternBranch, &xif,
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: an 'extern' block declares what exists whatever a type is.", NULL);
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        char *itemat = lex->tokp;
+        uint16_t itemflag = extflag | parsePub();
+        char *itemkw = lex->tokp;
+        if (lexIsToken(FnToken) || lexIsDclStart()) {
+            INode *item = parseFnOrVarIn(parse, itemflag, 1);
+            if (item)
+                parseSpan(parse, items, item, itemat, itemkw, SpanDcl);
+        }
+        else {
+            errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
+            parseSkipToNextStmt();
+        }
+    }
+}
+
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
+    uint32_t metamark = parseMetaScope();   // The meta constants this file declares are its own
+    parseGlobalStmtsIn(parse, mod, atmodstart, NULL);
+    parseMetaScopeEnd(metamark);
+}
+
+static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstart, int *pastp) {
     // An empty first file has no statement to report against, so the end of
     // the file stands in for it
     if (atmodstart == 1 && lexIsToken(EofToken))
@@ -1299,9 +1428,9 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
             &mod->namesym->namestr, &mod->namesym->namestr);
     // Set by the first statement that is neither the 'mod' line nor an import
-    int pastheader = 0;
+    int pastheader = atmodstart == AtInHashIf;
     // A file of the module other than its first has no 'mod' line to follow
-    int nomodline = atmodstart == 2;
+    int nomodline = atmodstart == 2 || atmodstart == AtInHashIfNoMod;
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
         int atstart = atmodstart;
         atmodstart = 0;
@@ -1313,6 +1442,40 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         stmtat.srcp = lex->tokp;
         stmtat.linep = lex->linep;
         stmtat.linenbr = lex->linenbr;
+        // '#if' chooses which declarations exist, from the facts of the build.
+        // The branch it takes is read into this module as though it were written
+        // here (parsemeta.c); no 'pub' goes before it, since it declares nothing
+        // itself. Imports may stand in its branches where they would be allowed
+        // anyway, in the header; a branch with any other statement ends the header
+        if (lexIsToken(HashIfToken)) {
+            if (atstart == 1)
+                errorMsgNode(&stmtat, ErrorNoModDcl,
+                    "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
+                    &mod->namesym->namestr, &mod->namesym->namestr);
+            GlobalIf gif;
+            gif.mod = mod;
+            gif.state = nomodline ? AtInHashIfNoMod : pastheader ? AtInHashIf : AtInHashIfHeader;
+            gif.past = 0;
+            parseHashIf(parse, parseGlobalBranch, &gif,
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: at a module's level there is no type parameter to ask about (a generic module's declarations are not built to hold one yet).", NULL);
+            if (gif.past)
+                pastheader = 1;
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        // 'let #sizes = [8, 16];' at a module's level: a meta constant the file's functions and
+        // generics read; held by the parser to the file's end, and gone from the code
+        if ((lexIsToken(LetToken) || lexIsToken(VarToken)) && parseMetaIsDecl()) {
+            if (lexIsToken(VarToken))
+                errorMsgLex(ErrorMetaVar, "A meta variable at a module's level is fixed: write 'let #n = 3;'. A 'var' counts passes of a '#each' inside one function body.");
+            pastheader = 1;
+            parseMetaDecl(parse);
+            parseSpan(parse, &mod->spans, NULL, stmtat.srcp, stmtat.srcp, SpanOther);
+            continue;
+        }
         uint16_t pubflag = parsePub();
         // Where the statement's keyword is, after its 'pub', and what it makes:
         // its span is recorded once it is parsed (dclspan.h)
@@ -1343,7 +1506,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // global like any other; the flag is recorded for the generic module
         // that will make the distinction real.
         uint16_t staticflag = parseStatic();
-        if (staticflag && !lexIsToken(PermToken) && !lexIsToken(FnToken))
+        if (staticflag && !lexIsDclStart() && !lexIsToken(FnToken))
             parseBadStatic(staticflag);
         switch (lex->toktype) {
 
@@ -1459,7 +1622,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
 
         // 'macro'
         case MacroToken: {
-            MacroDclNode *macro = parseMacro(parse);
+            MacroDclNode *macro = parseMacro(parse, 0);
             macro->flags |= pubflag;
             modAddNode(mod, macro->namesym, (INode*)macro);
             made = (INode*)macro;
@@ -1490,20 +1653,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 spankind = SpanExternBlock;
-                while (!parseBlockEnd()) {
-                    char *itemat = lex->tokp;
-                    uint16_t itemflag = extflag | parsePub();
-                    char *itemkw = lex->tokp;
-                    if (lexIsToken(FnToken) || lexIsToken(PermToken)) {
-                        INode *item = parseFnOrVar(parse, itemflag);
-                        if (item)
-                            parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
-                    }
-                    else {
-                        errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
-                        parseSkipToNextStmt();
-                    }
-                }
+                parseExternItems(parse, extflag, &items);
             }
             else
                 made = parseFnOrVar(parse, extflag);
@@ -1516,14 +1666,15 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             made = parseFnOrVar(parse, pubflag);
             break;
 
-        // 'async do' declares an actor's behaviour, which only an actor's body
-        // holds: reported, with either word alone, and passed over
+        // 'async fn' declares an actor's behaviour, which only an actor's body
+        // holds: reported, as 'async' alone is, and passed over
         case AsyncToken:
-        case DoToken:
             parseBehaviourWords("a module's own declarations");
             spankind = SpanOther;
             break;
         case PermToken:
+        case LetToken:
+        case VarToken:
             made = parseFnOrVar(parse, pubflag | staticflag);
             break;
 
@@ -1540,14 +1691,14 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // its permission
         case ThreadLocalToken:
             errorMsgLex(ErrorThreadLocalPlace,
-                "'@threadlocal' is written after the global's permission: 'mut @threadlocal name'.");
+                "'@threadlocal' is written after the global's 'let' or 'var': 'var @threadlocal name'.");
             lexNextToken();
             parseSkipToNextStmt();
             spankind = SpanOther;
             break;
         case WorkgroupToken:
             errorMsgLex(ErrorWorkgroupPlace,
-                "'@workgroup' is written after the global's permission: 'mut @workgroup name'.");
+                "'@workgroup' is written after the global's 'let' or 'var': 'var @workgroup name'.");
             lexNextToken();
             parseSkipToNextStmt();
             spankind = SpanOther;
@@ -1564,6 +1715,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         DclSpan *span = parseSpan(parse, &mod->spans, made, stmtat.srcp, kwat, spankind);
         span->members = items;
     }
+    if (pastp)
+        *pastp = pastheader;
 }
 
 // Give a module the position of the file that makes it one, line 1 column 1:
@@ -1829,8 +1982,8 @@ void parseBuildModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, B
 // 'name/src/name.cone'. That is the designated file of the package's 'src'
 // folder, the package's name standing in for the folder's, so the module is
 // named for the package and sweeps 'src' by the rules any module folder
-// follows -- the files Congo's scan of the package lists (refmodule.html,
-// "Packages and Congo")
+// follows -- the files Congo's scan of the package lists (mod-packages.html#package,
+// "What a package is")
 static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag, BuildModule *build, int pkgsrc) {
     Name *pathsym = nametblFind(path, strlen(path));
 
@@ -2008,6 +2161,8 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.genctx = NULL;
     parse.library = 0;
     parse.genoperand = 0;
+    parse.awaitoperand = 0;
+    parse.trydepth = 0;
     parse.tparms = parse.tparmsend = NULL;
     INode **nodesp;
     uint32_t cnt;
@@ -2061,6 +2216,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
 void parseInit(ConeOptions *opt) {
     nametblInit();
     lexInit(opt);
+    parseMetaInit(opt);
 }
 
 // Parse a program = the main module. 'desc' is the build description the
@@ -2096,6 +2252,8 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.genctx = NULL;
     parse.library = desc != NULL && desc->library;
     parse.genoperand = 0;
+    parse.awaitoperand = 0;
+    parse.trydepth = 0;
     parse.tparms = parse.tparmsend = NULL;
 
     // Create module node and set up for parsing main source file.

@@ -16,7 +16,7 @@
 //     req.headers.add("Range", "bytes=0-65535");
 //     ...                                       // handed to a core to send
 //     match resp.headers.get("content-type") {  // names compare ignoring case
-//       case imm v Some { ... v.value ... }     // the first field's value
+//       case imm v Some { ... v ... }           // the first field's value
 //       case is None[&Array[u8]] { ... }
 //     }
 //     if http.isSuccess(resp.status) { ... }
@@ -28,14 +28,17 @@
 //   responseHasBody(method, code)
 //   Headers  h.add(name, value)  h.set  h.remove  h.get  h.count  h.has  (FIELDS)
 //     h.hasToken(name, token)  h.joined(name)  h.len()  h.nameAt(i)  h.valueAt(i)
-//     h.copy()  h.clear()
+//     h.clone()  h.clear()
 //   isToken(s)  checkFieldName(s)  checkFieldValue(s)  trimOws(s)
-//   RequestHead.make(method, target, authority)  RequestHead.empty()     (HEADS)
+//   RequestHead.make(method, target, authority)  RequestHead()     (HEADS)
 //     r.method  r.methodName()  r.target  r.authority  r.scheme  r.version  r.headers
-//   ResponseHead.make(status)  ResponseHead.empty()
+//   ResponseHead.make(status)  ResponseHead()
 //     r.status  r.version  r.headers
-//   BodyLength.empty()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
-//   HttpError: e.kind  e.status  e.noResponse  e.detail  e.message()     (ERRORS)
+//   BodyLength()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
+//   HttpError: e.kind  e.status  e.noResponse  e.detail  String() <- e     (ERRORS)
+//     e.code  e.scope  e.isRetrySafe()  HttpError.coded(kind, code, scope, detail)
+//   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset Overloaded
+//   ErrorScope: Stream Connection
 //
 // METHODS. A method is a token, compared case-sensitively ('get' is not
 // GET). The nine RFC 9110 and RFC 5789 define are variants of Method; any
@@ -89,11 +92,22 @@
 // every version can say -- Malformed (the peer broke the protocol), TooLarge
 // (a configured bound was passed), Unsupported (something this
 // implementation does not do), Closed (the connection ended mid-message),
-// TimedOut (a deadline passed); the status a server would answer it with
-// (400, 408, 431, 501, 505; 0 for none); 'noResponse', whether no byte of
-// the response had arrived, which, with an idempotent method, is when a
-// client may retry on a fresh connection (the client layer's decision); and
-// one line saying what was wrong.
+// TimedOut (a deadline passed), Refused (the peer did not process the
+// request: HTTP/2's REFUSED_STREAM or HTTP/3's H3_REQUEST_REJECTED, a
+// request above a GOAWAY's last stream, or one never sent; safe to retry on
+// another connection whatever its method, RFC 9113 section 8.7), Reset (the
+// peer, or this end, reset the one stream: HTTP/2's RST_STREAM, HTTP/3's
+// RESET_STREAM), Overloaded (the buffer pool would not give room for the
+// bytes, iobuf's tryMake refusing: not a message too big, a moment that is
+// not right, so a caller may come back later); the status a server would answer it with (400, 408, 431,
+// 501, 505; 0 for none); 'noResponse', whether no byte of the response had
+// arrived, which, with an idempotent method, is when a client may retry on
+// a fresh connection (the client layer's decision); 'code', the protocol's
+// own error code where it named one (HTTP/2's u32, HTTP/3's up to 2^62-1;
+// None for HTTP/1.1, which has none); 'scope', what the failure ended: one
+// Stream of a multiplexed connection, or the whole Connection (every
+// HTTP/1.1 failure is the connection's); and one line saying what was
+// wrong.
 //
 // URLs are the url package's, and the request and response with their
 // bodies the client layer's (httpclient). Not here yet: typed accessors for
@@ -110,47 +124,47 @@ import collections use List, String;
 
 // A request method: one of the nine registered ones, or another token
 pub enum Method {
-  Get, Head, Post, Put, Delete, Connect, Options, Trace, Patch, Other;
+  Get, Head, Post, Put, Delete, Connect, Options, Trace, Patch, Other
 }
 
 // The Method a token names, case-sensitively; Method.Other for any other
-pub fn methodOf(token &str) Method {
-  if token == "GET" {Method.Get;}
-  elif token == "HEAD" {Method.Head;}
-  elif token == "POST" {Method.Post;}
-  elif token == "PUT" {Method.Put;}
-  elif token == "DELETE" {Method.Delete;}
-  elif token == "CONNECT" {Method.Connect;}
-  elif token == "OPTIONS" {Method.Options;}
-  elif token == "TRACE" {Method.Trace;}
-  elif token == "PATCH" {Method.Patch;}
-  else {Method.Other;}
+pub fn methodOf(token: &str) Method {
+  if token == "GET" {Method.Get}
+  else if token == "HEAD" {Method.Head}
+  else if token == "POST" {Method.Post}
+  else if token == "PUT" {Method.Put}
+  else if token == "DELETE" {Method.Delete}
+  else if token == "CONNECT" {Method.Connect}
+  else if token == "OPTIONS" {Method.Options}
+  else if token == "TRACE" {Method.Trace}
+  else if token == "PATCH" {Method.Patch}
+  else {Method.Other}
 }
 
 // A registered method's token; "" for Method.Other, whose spelling a
 // RequestHead keeps
-pub fn methodToken(m Method) &str {
-  if m == Method.Get {"GET";}
-  elif m == Method.Head {"HEAD";}
-  elif m == Method.Post {"POST";}
-  elif m == Method.Put {"PUT";}
-  elif m == Method.Delete {"DELETE";}
-  elif m == Method.Connect {"CONNECT";}
-  elif m == Method.Options {"OPTIONS";}
-  elif m == Method.Trace {"TRACE";}
-  elif m == Method.Patch {"PATCH";}
-  else {"";}
+pub fn methodToken(m: Method) &str {
+  if m == Method.Get {"GET"}
+  else if m == Method.Head {"HEAD"}
+  else if m == Method.Post {"POST"}
+  else if m == Method.Put {"PUT"}
+  else if m == Method.Delete {"DELETE"}
+  else if m == Method.Connect {"CONNECT"}
+  else if m == Method.Options {"OPTIONS"}
+  else if m == Method.Trace {"TRACE"}
+  else if m == Method.Patch {"PATCH"}
+  else {""}
 }
 
 // Whether the method asks only to read (RFC 9110, 9.2.1)
-pub fn isSafe(m Method) bool {
-  m == Method.Get or m == Method.Head or m == Method.Options or m == Method.Trace;
+pub fn isSafe(m: Method) bool {
+  m == Method.Get || m == Method.Head || m == Method.Options || m == Method.Trace
 }
 
 // Whether sending the request twice does what sending it once does (RFC
 // 9110, 9.2.2): the condition for retrying it automatically
-pub fn isIdempotent(m Method) bool {
-  isSafe(m) or m == Method.Put or m == Method.Delete;
+pub fn isIdempotent(m: Method) bool {
+  isSafe(m) || m == Method.Put || m == Method.Delete
 }
 
 // ---------------------------------------------------------------------------
@@ -159,79 +173,79 @@ pub fn isIdempotent(m Method) bool {
 
 // The version a message travelled by
 pub enum Version {
-  Http10, Http11, Http2, Http3;
+  Http10, Http11, Http2, Http3
 }
 
 // ---------------------------------------------------------------------------
 // Status codes
 // ---------------------------------------------------------------------------
 
-pub fn isInformational(code u16) bool {code >= 100u16 and code < 200u16;}
-pub fn isSuccess(code u16) bool {code >= 200u16 and code < 300u16;}
-pub fn isRedirect(code u16) bool {code >= 300u16 and code < 400u16;}
-pub fn isClientError(code u16) bool {code >= 400u16 and code < 500u16;}
-pub fn isServerError(code u16) bool {code >= 500u16 and code < 600u16;}
+pub fn isInformational(code: u16) bool {code >= 100u16 && code < 200u16}
+pub fn isSuccess(code: u16) bool {code >= 200u16 && code < 300u16}
+pub fn isRedirect(code: u16) bool {code >= 300u16 && code < 400u16}
+pub fn isClientError(code: u16) bool {code >= 400u16 && code < 500u16}
+pub fn isServerError(code: u16) bool {code >= 500u16 && code < 600u16}
 
 // Whether a response with this status, to a request with this method, has
 // a body at all: not to HEAD, and not a 1xx, 204 or 304 (RFC 9110, 6.4.1)
-pub fn responseHasBody(method Method, code u16) bool {
+pub fn responseHasBody(method: Method, code: u16) bool {
   if method == Method.Head {return false;}
-  not (isInformational(code) or code == 204u16 or code == 304u16);
+  !(isInformational(code) || code == 204u16 || code == 304u16)
 }
 
 // The registered reason phrase for a status code, or ""
-pub fn reasonPhrase(code u16) &str {
+pub fn reasonPhrase(code: u16) &str {
   match code {
-    case 100u16 {"Continue";}
-    case 101u16 {"Switching Protocols";}
-    case 103u16 {"Early Hints";}
-    case 200u16 {"OK";}
-    case 201u16 {"Created";}
-    case 202u16 {"Accepted";}
-    case 203u16 {"Non-Authoritative Information";}
-    case 204u16 {"No Content";}
-    case 205u16 {"Reset Content";}
-    case 206u16 {"Partial Content";}
-    case 300u16 {"Multiple Choices";}
-    case 301u16 {"Moved Permanently";}
-    case 302u16 {"Found";}
-    case 303u16 {"See Other";}
-    case 304u16 {"Not Modified";}
-    case 305u16 {"Use Proxy";}
-    case 307u16 {"Temporary Redirect";}
-    case 308u16 {"Permanent Redirect";}
-    case 400u16 {"Bad Request";}
-    case 401u16 {"Unauthorized";}
-    case 402u16 {"Payment Required";}
-    case 403u16 {"Forbidden";}
-    case 404u16 {"Not Found";}
-    case 405u16 {"Method Not Allowed";}
-    case 406u16 {"Not Acceptable";}
-    case 407u16 {"Proxy Authentication Required";}
-    case 408u16 {"Request Timeout";}
-    case 409u16 {"Conflict";}
-    case 410u16 {"Gone";}
-    case 411u16 {"Length Required";}
-    case 412u16 {"Precondition Failed";}
-    case 413u16 {"Content Too Large";}
-    case 414u16 {"URI Too Long";}
-    case 415u16 {"Unsupported Media Type";}
-    case 416u16 {"Range Not Satisfiable";}
-    case 417u16 {"Expectation Failed";}
-    case 421u16 {"Misdirected Request";}
-    case 422u16 {"Unprocessable Content";}
-    case 426u16 {"Upgrade Required";}
-    case 428u16 {"Precondition Required";}
-    case 429u16 {"Too Many Requests";}
-    case 431u16 {"Request Header Fields Too Large";}
-    case 500u16 {"Internal Server Error";}
-    case 501u16 {"Not Implemented";}
-    case 502u16 {"Bad Gateway";}
-    case 503u16 {"Service Unavailable";}
-    case 504u16 {"Gateway Timeout";}
-    case 505u16 {"HTTP Version Not Supported";}
-    case 511u16 {"Network Authentication Required";}
-    else {"";}
+    case 100u16 {"Continue"}
+    case 101u16 {"Switching Protocols"}
+    case 103u16 {"Early Hints"}
+    case 200u16 {"OK"}
+    case 201u16 {"Created"}
+    case 202u16 {"Accepted"}
+    case 203u16 {"Non-Authoritative Information"}
+    case 204u16 {"No Content"}
+    case 205u16 {"Reset Content"}
+    case 206u16 {"Partial Content"}
+    case 300u16 {"Multiple Choices"}
+    case 301u16 {"Moved Permanently"}
+    case 302u16 {"Found"}
+    case 303u16 {"See Other"}
+    case 304u16 {"Not Modified"}
+    case 305u16 {"Use Proxy"}
+    case 307u16 {"Temporary Redirect"}
+    case 308u16 {"Permanent Redirect"}
+    case 400u16 {"Bad Request"}
+    case 401u16 {"Unauthorized"}
+    case 402u16 {"Payment Required"}
+    case 403u16 {"Forbidden"}
+    case 404u16 {"Not Found"}
+    case 405u16 {"Method Not Allowed"}
+    case 406u16 {"Not Acceptable"}
+    case 407u16 {"Proxy Authentication Required"}
+    case 408u16 {"Request Timeout"}
+    case 409u16 {"Conflict"}
+    case 410u16 {"Gone"}
+    case 411u16 {"Length Required"}
+    case 412u16 {"Precondition Failed"}
+    case 413u16 {"Content Too Large"}
+    case 414u16 {"URI Too Long"}
+    case 415u16 {"Unsupported Media Type"}
+    case 416u16 {"Range Not Satisfiable"}
+    case 417u16 {"Expectation Failed"}
+    case 421u16 {"Misdirected Request"}
+    case 422u16 {"Unprocessable Content"}
+    case 426u16 {"Upgrade Required"}
+    case 428u16 {"Precondition Required"}
+    case 429u16 {"Too Many Requests"}
+    case 431u16 {"Request Header Fields Too Large"}
+    case 500u16 {"Internal Server Error"}
+    case 501u16 {"Not Implemented"}
+    case 502u16 {"Bad Gateway"}
+    case 503u16 {"Service Unavailable"}
+    case 504u16 {"Gateway Timeout"}
+    case 505u16 {"HTTP Version Not Supported"}
+    case 511u16 {"Network Authentication Required"}
+    else {""}
   }
 }
 
@@ -241,20 +255,20 @@ pub fn reasonPhrase(code u16) &str {
 
 // What is known of a body's length (see the package's header, BODIES)
 pub enum BodyKind {
-  Empty, Sized, Unsized;
+  Empty, Sized, Unsized
 }
 
-pub struct BodyLength {
-  pub kind BodyKind;
-  pub length u64;          // Sized's byte count; 0 otherwise
+pub struct BodyLength is Default {
+  pub kind: BodyKind;
+  pub length: u64;          // Sized's byte count; 0 otherwise
 
-  pub fn empty() BodyLength {new BodyLength(BodyKind.Empty, 0u64);}
-  pub fn sized(n u64) BodyLength {new BodyLength(BodyKind.Sized, n);}
-  pub fn unsized() BodyLength {new BodyLength(BodyKind.Unsized, 0u64);}
+  pub fn init(self: &new) {*self = BodyLength(BodyKind.Empty, 0u64);}
+  pub fn sized(n: u64) BodyLength {BodyLength(BodyKind.Sized, n)}
+  pub fn unsized() BodyLength {BodyLength(BodyKind.Unsized, 0u64)}
 
-  pub fn isEmpty(self &) bool {kind == BodyKind.Empty;}
-  pub fn isSized(self &) bool {kind == BodyKind.Sized;}
-  pub fn isUnsized(self &) bool {kind == BodyKind.Unsized;}
+  pub fn isEmpty(self: &) bool {kind == BodyKind.Empty}
+  pub fn isSized(self: &) bool {kind == BodyKind.Sized}
+  pub fn isUnsized(self: &) bool {kind == BodyKind.Unsized}
 }
 
 // ---------------------------------------------------------------------------
@@ -263,37 +277,58 @@ pub struct BodyLength {
 
 // What kind of failure (see the package's header, ERRORS)
 pub enum ErrorKind {
-  Malformed, TooLarge, Unsupported, Closed, TimedOut;
+  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset, Overloaded;
+
+  // The kind's name, in lower case: 'too large'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let k = *self;
+    out <- if k == ErrorKind.Malformed {"malformed"}
+      else if k == ErrorKind.TooLarge {"too large"}
+      else if k == ErrorKind.Unsupported {"unsupported"}
+      else if k == ErrorKind.Closed {"closed"}
+      else if k == ErrorKind.TimedOut {"timed out"}
+      else if k == ErrorKind.Refused {"refused"}
+      else if k == ErrorKind.Overloaded {"overloaded"}
+      else {"reset"};
+  }
 }
 
-// The name of an error's kind, in lower case
-pub fn kindName(k ErrorKind) &str {
-  if k == ErrorKind.Malformed {"malformed";}
-  elif k == ErrorKind.TooLarge {"too large";}
-  elif k == ErrorKind.Unsupported {"unsupported";}
-  elif k == ErrorKind.Closed {"closed";}
-  else {"timed out";}
+// What a failure ended: one stream of a multiplexed connection (HTTP/2,
+// HTTP/3), or the whole connection
+pub enum ErrorScope {
+  Stream, Connection
 }
 
 // Why an exchange or a connection failed
-pub struct HttpError {
-  pub kind ErrorKind;
-  pub status u16;          // what a server answers it with, or 0
-  pub noResponse bool;     // no byte of a response had arrived
-  pub detail String;       // what was wrong, one line
+pub struct HttpError is Default, Error {
+  pub kind: ErrorKind;
+  pub status: u16;          // what a server answers it with, or 0
+  pub noResponse: bool;     // no byte of a response had arrived
+  pub detail: String;       // what was wrong, one line
+  pub code: Option[u64];    // the protocol's error code, where it named one
+  pub scope: ErrorScope;    // what it ended
 
-  pub fn make(kind ErrorKind, status u16, detail &str) HttpError {
-    new HttpError(kind, status, false, String.from(detail));
+  // A failure of the whole connection, with no protocol code
+  pub fn make(kind: ErrorKind, status: u16, detail: &str) HttpError {
+    HttpError(kind, status, false, String.from(detail), None[u64], ErrorScope.Connection)
+  }
+
+  // A failure the protocol named with its own error code, of one stream or
+  // the whole connection
+  pub fn coded(kind: ErrorKind, code: u64, scope: ErrorScope, detail: &str) HttpError {
+    HttpError(kind, 0u16, false, String.from(detail), Some[u64](code), scope)
   }
 
   // Nothing yet: an error to swap another out with
-  pub fn empty() HttpError {new HttpError(ErrorKind.Malformed, 0u16, false, String.empty());}
+  pub fn init(self: &new) {*self = HttpError(ErrorKind.Malformed, 0u16, false, String(), None[u64], ErrorScope.Connection);}
+
+  // Whether the peer is known not to have processed the request, so it may
+  // be sent again on another connection whatever its method (RFC 9113,
+  // section 8.7): the kind is Refused
+  pub fn isRetrySafe(self: &) bool {kind == ErrorKind.Refused}
 
   // 'malformed: a header field's name has a space before its colon'
-  pub fn message(self &) String {
-    mut out = String.from(kindName(kind));
-    out.append(": ");
-    out.append(detail.view());
-    out;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- kind, ": ", detail.view();
   }
 }

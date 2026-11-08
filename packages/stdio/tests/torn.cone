@@ -1,0 +1,158 @@
+// No torn records: eight threads each print 10,000 lines to standard output
+// and 10,000 to standard error, every line a send statement of several pieces
+// ("T3 N00042 " then a run of letters that varies in length from 1 to 200
+// bytes, some lines longer than a writer's own buffer, then " end"), and every
+// line comes out whole and each thread's lines in the order it sent them.
+//
+// The test runs itself again as the child, with both streams captured through
+// pipes (not a terminal, so the console buffers what standard output gets and
+// writes it in its own pieces), and checks what the child wrote: 80,000 whole
+// lines on each stream, line by line equal to the line its thread and number
+// make, each thread's numbers 0, 1, 2, ... in turn. Interleaving between
+// threads is expected and not checked; only that nothing is cut in half.
+
+mod torn;
+
+import stdio use *;
+import collections use *;
+import testing use *;
+import thread;
+import process;
+
+const threads = 8u64;
+const lines = 10000u64;
+
+// A job a thread is started with: which thread it is
+struct Job is Sendable {
+  pub id: u64;
+}
+
+// The run of letters of line n of thread id: its length 1 to 200, its letter the thread's
+fn letters(id: u64, n: u64) String {
+  var s = String();
+  let count = n % 200u64 + 1u64;
+  let letter = char.from(u32.from('a') + u32.from(id));
+  var i = 0u64;
+  while i < count {
+    s <- letter;
+    i = i + 1u64;
+  }
+  s
+}
+
+// What the pieces of line n of thread id add up to
+fn expected(id: u64, n: u64) String {
+  var s = String();
+  s <- "T", id, " N", n, " ", letters(id, n), " end";
+  s
+}
+
+// The child: eight threads writing
+fn work(job: Job) u64 {
+  var n = 0u64;
+  while n < lines {
+    let run = letters(job.id, n);
+    print <- "T", job.id, " N", n, " ", run, " end\n";
+    eprint <- "T", job.id, " N", n, " ", run, " end\n";
+    n = n + 1u64;
+  }
+  n
+}
+
+fn child() i32 {
+  var started = List[thread.Thread[u64]]();
+  var id = 0u64;
+  while id < threads {
+    started.push(thread.start(Job(id), &work));
+    id = id + 1u64;
+  }
+  var total = 0u64;
+  while started.len() > 0usize {
+    total = total + started.pop().unwrap().join();
+  }
+  if total == threads * lines {0i32} else {1i32}
+}
+
+// The next number of each thread, and whether all lines were whole
+struct Check {
+  next: Array[u64, 8];
+  whole: u64;
+  broken: u64;
+  wrongOrder: u64;
+}
+
+// One line of a stream: whole, and the next of its thread
+fn checkLine(c: &mut Check, text: &str) {
+  let b: &Array[u8] = text;
+  if b.len < 4usize || b[0usize] != 'T' || b[1usize] < '0' || b[1usize] > '7' {
+    c.broken = c.broken + 1u64;
+    return;
+  }
+  let id = u64.from(b[1usize] - '0');
+  let want = c.next[usize.from(id)];
+  if text == expected(id, want).view() {
+    c.whole = c.whole + 1u64;
+    c.next[usize.from(id)] = want + 1u64;
+  }
+  else {
+    // Whole in itself, or not: is it some other line of its thread?
+    c.broken = c.broken + 1u64;
+  }
+}
+
+// A stream's text, line by line
+fn checkStream(text: &str) Check {
+  var c = Check(Array[u64, 8]() <- fill 0u64, 0u64, 0u64, 0u64);
+  let b: &Array[u8] = text;
+  var start = 0usize;
+  var i = 0usize;
+  while i < b.len {
+    if b[i] == '\n' {
+      // (Windows' C runtime writes a line end as '\r' '\n')
+      var end = i;
+      if end > start && b[end - 1usize] == '\r' {end = end - 1usize;}
+      checkLine(&mut c, &b[start..<end] as &str);
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // The stream ends with a line end
+  if start != b.len {c.broken = c.broken + 1u64;}
+  c
+}
+
+fn report(name: &str, c: &Check) {
+  expectUInt(c.whole, threads * lines, "whole lines in order");
+  expectUInt(c.broken, 0u64, "lines cut or out of order");
+  var id = 0usize;
+  var all = true;
+  while id < 8usize {
+    if c.next[id] != lines {all = false;}
+    id = id + 1usize;
+  }
+  expect(all, "each thread's last line seen");
+  print <- name, ": ", c.whole, " whole lines, ", c.broken, " broken\n";
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 2usize && a[1usize].equals("--child") {return child();}
+
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe <- e.view(); }
+    case is Err { require(false, "currentExe"); }
+  }
+  var cmd = List[String]();
+  cmd.push(exe);
+  cmd.push(String.from("--child"));
+  match process.run(cmd.view()) {
+    case let Ok(o) {
+      expectUInt(u64.from(o.exitCode), 0u64, "the child's exit code");
+      report("standard output", &checkStream(o.stdout.view()));
+      report("standard error", &checkStream(o.stderr.view()));
+    }
+    case is Err { require(false, "the child ran"); }
+  }
+  done()
+}

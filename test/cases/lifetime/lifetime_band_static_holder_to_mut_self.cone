@@ -1,0 +1,65 @@
+// A method's result whose type holds only a ''static' borrow (a struct
+// with a '&'static str' field), from a call on a field of 'self' with
+// another '&mut' argument, the signature naming no lifetimes, carries no
+// borrow of 'self.reader': it may be handed to a 'self: &mut' method that
+// stores it into '*self'.
+//
+// Verdict: accept; prints "short 1" and "short 2".
+// Basis: mem-lifetimes.html, "The global lifetime: 'static"; http2's
+// FrameReader.next (PR #735, language gap 2) is this shape.
+// Master c85d9fa99: refused, Error 1409 at 'self.take(f)' (the value taken
+// to carry a borrow of 'self.reader').
+// lifetime_band_static_holder_to_mut_self_ending is the same shape with a
+// borrow that ends, still refused.
+
+mod lifetime_band_static_holder_to_mut_self;
+
+import stdio use *;
+
+struct Fault {
+  code: u32;
+  detail: &'static str;
+}
+
+struct Reader {
+  count: u32;
+
+  fn next(self: &mut, input: &mut i64) Fault {
+    count = count + 1u32;
+    *input = *input + 1i64;
+    Fault(count, "short")
+  }
+}
+
+struct Conn {
+  reader: Reader;
+  last: Option[Fault];
+
+  fn take(self: &mut, f: Fault) {
+    last = Some[Fault](f);
+  }
+
+  fn step(self: &mut, input: &mut i64) {
+    let f = self.reader.next(input);
+    self.take(f);
+  }
+}
+
+fn main() {
+  var c = Conn(Reader(0u32), None[Fault]);
+  var n = 0i64;
+  var k = 0;
+  while k < 2 {
+    c.step(&mut n);
+    match c.last {
+      case let Some(f) {
+        printStr(f.detail);
+        printStr(" ");
+        printInt(i64.from(f.code));
+      }
+      else {printStr("none");}
+    }
+    printStr("\n");
+    k = k + 1;
+  }
+}

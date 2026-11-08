@@ -1,0 +1,215 @@
+// Junctions and switches (src/network.cone): a trunk that forks into a straight branch A and a curving branch B,
+// a ring that joins onto itself, and two feeders that merge, each check on what must hold.
+//
+// 1. The joins meet: the end of the trunk and the start of each branch are under 1 mm apart and their tangents
+//    under 0.02 rad apart.
+// 2. With the switch set to A, a three-car train frictionless at 10 m/s on the trunk ends on A (the lead's track
+//    number), the lead's place agrees with A's own (under 1 mm), and on B's side with the switch at B it ends on B
+//    (its z over 5 m).
+// 3. Through the join nothing jumps: the lead car's position changes by v dt (within 1 percent plus 1 mm) at every
+//    step, and the train's energy is conserved (frictionless: within 1e-4 of the total), on either branch.
+// 4. A car behind the lead follows it onto the branch: when the whole train is on B, the rear car's position is on
+//    B's own curve (under 1 mm).
+// 5. The switch is read once, a lookahead before the end: thrown to B at s = 40 m (before the lookahead's 72 m) it
+//    sends the train to B; thrown at s = 80 m, after the route has been laid, it does not.
+// 6. A ring that joins onto itself is circled six times (the odometer over six laps, the route never longer than three
+//    laps' length), speed constant to 1e-3 (frictionless, flat).
+// 7. Zones belong to a track: a chain on B only pulls a train there to 8 m/s (30 m onto B it has 8 m/s; gravity
+//    alone gives 7.2) and does nothing to a train on A (under 7.5 at the same distance).
+// 8. Merge: trains from either feeder end on the merged track.
+
+mod networktest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import splinetrack use *;
+
+fn pt(x: f32, y: f32, z: f32) TrackPoint { TrackPoint(Vec3(x, y, z), 0.) }
+fn frictionless() CarSpec { CarSpec(650., 2.4, 1.6, 0.4, 0., 0., 0.) }
+
+struct Fork {
+  net: TrackNetwork;
+  trunk: usize;
+  a: usize;
+  b: usize;
+}
+
+fn fork() Fork {
+  let tan = (Vec3(50., -1., 0.)).normalize();
+  var tp = List[TrackPoint]();
+  tp.push(pt(0., 12., 0.)); tp.push(pt(50., 11., 0.)); tp.push(pt(100., 10., 0.));
+  var ap = List[TrackPoint]();
+  ap.push(pt(100., 10., 0.)); ap.push(pt(150., 9., 0.)); ap.push(pt(200., 8., 0.));
+  var bp = List[TrackPoint]();
+  bp.push(pt(100., 10., 0.)); bp.push(pt(130., 9.4, 6.)); bp.push(pt(160., 8.8, 24.)); bp.push(pt(175., 8.2, 45.));
+  var net = TrackNetwork.make();
+  let trunk = net.addTrack(Track.build(tp, false, Vec3(1., 0., 0.), tan));
+  let a = net.addTrack(Track.build(ap, false, tan, tan));
+  let b = net.addTrack(Track.build(bp, false, tan, Vec3(0., 0., 1.)));
+  var options = List[usize]();
+  options.push(a); options.push(b);
+  net.addJoin(trunk, options);
+  Fork(net, trunk, a, b)
+}
+
+fn cars3() List[CarSpec] {
+  var c = List[CarSpec]();
+  c.push(frictionless()); c.push(frictionless()); c.push(frictionless());
+  c
+}
+
+fn main() i32 {
+  // 1. the joins
+  var f = fork();
+  expectFloat(f64.from(f.net.joinGap(f.trunk, f.a)), 0.0, 0.001, "the trunk meets branch A");
+  expectFloat(f64.from(f.net.joinGap(f.trunk, f.b)), 0.0, 0.001, "and branch B");
+  expectFloat(f64.from(f.net.joinBend(f.trunk, f.a)), 0.0, 0.02, "tangent to A");
+  expectFloat(f64.from(f.net.joinBend(f.trunk, f.b)), 0.0, 0.02, "tangent to B");
+
+  // 2, 3, 4. the two branches
+  let dt = 1.f / 60.;
+  var k = 0;
+  while k < 2 {
+    var fk = fork();
+    fk.net.throwSwitch(fk.trunk, usize.from(k));
+    var nt = NetTrain.make(&fk.net, fk.trunk, cars3(), 20.);
+    nt.train.v = 10.;
+    let e0 = nt.train.energy(&nt.route);
+    var worstJump = 0.f;
+    var worstE = 0.f;
+    var prev = nt.route.at(nt.train.s).pos;
+    var t = 0.;
+    while t < 11. {
+      let sBefore = nt.train.s;
+      nt.step(&fk.net, dt);
+      t = t + dt;
+      let cur = nt.route.at(nt.train.s).pos;
+      let d = (cur - prev).length();
+      let ds = nt.train.s - sBefore;
+      // (a step that dropped a leg re-bases s; every other step moves the lead by the arc it ran)
+      if ds > 0. {
+        let e = libc.fabsf(d - ds) / ds;
+        if e > worstJump { worstJump = e; }
+      }
+      prev = cur;
+      let de = libc.fabsf(nt.train.energy(&nt.route) - e0) / (0.5 * 1950. * 100.);
+      if de > worstE { worstE = de; }
+    }
+    let lead = nt.lead();
+    if k == 0 {
+      expectInt(i64.from(lead.0), i64.from(fk.a), "switch at A: the train ends on A");
+      expectFloat(f64.from((nt.route.at(nt.train.s).pos - fk.net.tracks[fk.a].at(lead.1).pos).length()), 0.0, 0.001, "its place agrees with A's");
+    } else {
+      expectInt(i64.from(lead.0), i64.from(fk.b), "switch at B: the train ends on B");
+      expect(nt.route.at(nt.train.s).pos.z > 5., "B curves away to +z");
+      // the rear car on B's own curve
+      let rearS = nt.train.s - *nt.train.offsets[2usize];
+      let legB = nt.legs[nt.legs.len() - 1usize];
+      let onB = fk.net.tracks[fk.b].at(rearS - legB.start).pos;
+      expectFloat(f64.from((nt.route.at(rearS).pos - onB).length()), 0.0, 0.001, "the rear car is on B's own curve");
+    }
+    expectFloat(f64.from(worstJump), 0.0, 0.012, "the lead moves v dt each step, through the join");
+    expectFloat(f64.from(worstE), 0.0, 0.0001, "energy is conserved through the join");
+    k = k + 1;
+  }
+
+  // 5. the switch is read once
+  var early = fork();
+  early.net.throwSwitch(early.trunk, 0usize);
+  var te = NetTrain.make(&early.net, early.trunk, cars3(), 20.);
+  te.train.v = 10.;
+  var thrown = false;
+  var tt = 0.f;
+  while tt < 16. {
+    te.step(&early.net, dt);
+    tt = tt + dt;
+    if !thrown && te.train.s > 40. { early.net.throwSwitch(early.trunk, 1usize); thrown = true; }
+  }
+  expectInt(i64.from(te.lead().0), i64.from(early.b), "thrown at s = 40 m: the train takes B");
+  var late = fork();
+  late.net.throwSwitch(late.trunk, 0usize);
+  var tl = NetTrain.make(&late.net, late.trunk, cars3(), 20.);
+  tl.train.v = 10.;
+  thrown = false;
+  tt = 0.;
+  while tt < 16. {
+    tl.step(&late.net, dt);
+    tt = tt + dt;
+    if !thrown && tl.train.s > 80. { late.net.throwSwitch(late.trunk, 1usize); thrown = true; }
+  }
+  expectInt(i64.from(tl.lead().0), i64.from(late.a), "thrown at s = 80 m, after the route is laid: the train keeps to A");
+
+  // 6. a ring
+  var rp = List[TrackPoint]();
+  var j = 0;
+  while j <= 24 {
+    let a = 6.28318530718 * f32.from(j % 24) / 24.;
+    rp.push(pt(30. * libc.cosf(a), 0., 30. * libc.sinf(a)));
+    j = j + 1;
+  }
+  var rnet = TrackNetwork.make();
+  let ringIdx = rnet.addTrack(Track.build(rp, false, Vec3(0., 0., 1.), Vec3(0., 0., 1.)));
+  var self1 = List[usize]();
+  self1.push(ringIdx);
+  rnet.addJoin(ringIdx, self1);
+  var tr = NetTrain.make(&rnet, ringIdx, cars3(), 20.);
+  tr.train.v = 12.;
+  let ringLen = rnet.tracks[ringIdx].length;
+  var maxRoute = 0.f;
+  tt = 0.;
+  while tt < 6. * ringLen / 12. {
+    tr.step(&rnet, dt);
+    tt = tt + dt;
+    if tr.route.length > maxRoute { maxRoute = tr.route.length; }
+  }
+  expect(tr.train.odometer > 5.98 * ringLen && !tr.train.ended, "six laps of the ring");
+  expect(maxRoute < 3. * ringLen, "the route stays short");
+  expectFloat(f64.from(tr.train.v), 12.0, 0.001, "and the speed is constant");
+
+  // 7. zones belong to a track
+  var zf = fork();
+  zf.net.addZone(zf.b, Zone.chain(5., 120., 8., 20000.));
+  zf.net.throwSwitch(zf.trunk, 1usize);
+  var tz = NetTrain.make(&zf.net, zf.trunk, cars3(), 20.);
+  tz.train.v = 3.;
+  tt = 0.;
+  while tt < 40. { tz.step(&zf.net, dt); tt = tt + dt; if tz.lead().0 == zf.b && tz.lead().1 > 30. { tt = 100.; } }
+  expectInt(i64.from(tz.lead().0), i64.from(zf.b), "on B");
+  expect(tz.train.v > 7.99, "the chain on B has pulled the train to 8 m/s (30 m onto B: gravity alone gives 7.2)");
+  var zf2 = fork();
+  zf2.net.addZone(zf2.b, Zone.chain(5., 120., 8., 20000.));
+  zf2.net.throwSwitch(zf2.trunk, 0usize);
+  var tz2 = NetTrain.make(&zf2.net, zf2.trunk, cars3(), 20.);
+  tz2.train.v = 3.;
+  tt = 0.;
+  while tt < 40. { tz2.step(&zf2.net, dt); tt = tt + dt; if tz2.lead().0 == zf2.a && tz2.lead().1 > 30. { tt = 100.; } }
+  expectInt(i64.from(tz2.lead().0), i64.from(zf2.a), "on A");
+  expect(tz2.train.v < 7.5, "the chain on B did nothing to a train on A (gravity alone: 7.2)");
+
+  // 8. a merge
+  var mp1 = List[TrackPoint]();
+  mp1.push(pt(0., 5., -20.)); mp1.push(pt(25., 5., -10.)); mp1.push(pt(50., 5., 0.));
+  var mp2 = List[TrackPoint]();
+  mp2.push(pt(0., 5., 20.)); mp2.push(pt(25., 5., 10.)); mp2.push(pt(50., 5., 0.));
+  var mm = List[TrackPoint]();
+  mm.push(pt(50., 5., 0.)); mm.push(pt(100., 5., 0.)); mm.push(pt(150., 5., 0.));
+  var mnet = TrackNetwork.make();
+  let f1 = mnet.addTrack(Track.build(mp1, false, Vec3(1., 0., 0.), Vec3(1., 0., 0.)));
+  let f2 = mnet.addTrack(Track.build(mp2, false, Vec3(1., 0., 0.), Vec3(1., 0., 0.)));
+  let merged = mnet.addTrack(Track.build(mm, false, Vec3(1., 0., 0.), Vec3(1., 0., 0.)));
+  var o1 = List[usize](); o1.push(merged);
+  var o2 = List[usize](); o2.push(merged);
+  mnet.addJoin(f1, o1);
+  mnet.addJoin(f2, o2);
+  var m1 = NetTrain.make(&mnet, f1, cars3(), 20.);
+  m1.train.v = 10.;
+  var m2 = NetTrain.make(&mnet, f2, cars3(), 20.);
+  m2.train.v = 10.;
+  tt = 0.;
+  while tt < 8. { m1.step(&mnet, dt); m2.step(&mnet, dt); tt = tt + dt; }
+  expectInt(i64.from(m1.lead().0), i64.from(merged), "feeder 1 ends on the merged track");
+  expectInt(i64.from(m2.lead().0), i64.from(merged), "feeder 2 ends on the merged track");
+  done()
+}

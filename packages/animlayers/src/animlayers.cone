@@ -1,0 +1,56 @@
+// The animlayers package: layered animation on top of a base pose. A program
+// reaches it with 'import animlayers'.
+//
+// WHAT IT IS. poseik says of its own blending: "no layers or root motion yet;
+// masks and addPose are the pieces a layering system would use". This is the
+// least that layering needs, built from those pieces and nothing else:
+//
+//   1. A BASE LAYER: a full pose, from whatever moves the body (walkgait,
+//      leggedgait, a poseik Animator over clips, a glTF clip). It is not
+//      owned here.
+//   2. LAYERS ON TOP, each with a KIND, a WEIGHT and a per-bone MASK:
+//      - ADDITIVE: a delta pose (how far each bone is turned and moved FROM
+//        NOTHING: identity rotations and zero translations are nothing)
+//        added to what is below, as poseik's 'addPose' does:
+//        rotation slerp(identity, delta, w) * base, translation base + w *
+//        delta. A breath, a lean, a fidget, a flinch, a tired slump are
+//        authored as deltas, so they ride on a walk or a stand alike.
+//      - OVERRIDE: a full pose blended over what is below by 'blendMasked'
+//        (the arms play a wave while the legs keep walking).
+//      The mask multiplies the weight bone by bone, so one layer can reach the
+//      spine and not the legs. A layer's weight FADES to a goal over a time, so
+//      a posture comes in and goes out without a pop.
+//   3. POSE-SPACE CORRECTIONS AFTER THE LAYERS: 'LimbPin' puts a limb's end
+//      back where the world needs it (a layer that moved the pelvis has moved
+//      the planted feet with it; the pin brings them back, two-bone IK as
+//      bonepose's aimLimb), and 'LookChain' turns a chain of bones to face a
+//      point, the turn shared by fixed fractions (poseik's lookAt, for any
+//      skeleton and any list of bones, not only the 19-bone humanoid).
+//
+// METHOD. This is the "additive layered blend per bone" of Unreal's Layered
+// Blend Per Bone and Unity's additive layers with avatar masks: the
+// industry's answer to "play a breath on top of a walk". The pieces compose
+// exactly because slerp is bi-invariant: slerp(b, d*b, m) = slerp(id, d, m)*b,
+// so a masked blend towards an added pose IS the delta scaled by weight times
+// mask.
+//
+// What is not here (deliberately; Backlog\creature-animation.md): no balance,
+// no centre of mass or support polygon, no postures that serve gravity (sit,
+// lie), no root motion, no retargeting. A layer is free articulation on top
+// of a base that is already standing.
+//
+// Conventions are bonepose's: right-handed, y up, metres, f32; a being faces
+// -z; a positive turn about x of an upright bone leans it back.
+//
+//   mask.cone       BoneMask: a weight per bone, built from subtrees and lists
+//   stack.cone      Layer, LayerStack: kinds, weights, fades and the composition
+//   pins.cone       LimbPin: a limb's end held at a place, after the layers
+//   lookchain.cone  LookChain: a chain of bones turned to face a point
+
+mod animlayers;
+
+import libc;
+import collections use *;
+import geomath use *;
+import bonepose use *;
+import poseik use *;

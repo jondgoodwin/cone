@@ -67,11 +67,11 @@ var ConeHighlightRules = function() {
         }],
         "#vardeclarations": [{
             token: [
-                "entity.permission.cone",
+                "keyword.declaration.cone",
                 "text",
                 "var.cone"
             ],
-            regex: /\b(mut|imm)(\s+)([_a-z][_a-zA-Z0-9]*)/
+            regex: /\b(let|var)(\s+)([_a-z][_a-zA-Z0-9]*)/
         }],
         "#identifiers": [{
             token: ["support.function.cone", "text"],
@@ -114,7 +114,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:break|continue|return)\b/
         }, {
             token: "keyword.control.cone",
-            regex: /\b(?:if|elif|else|match|case|where|with|using|as|inline)\b/
+            regex: /\b(?:if|elif|else|match|case|where|with|using|as|inline|try)\b/
         }, {
             token: "keyword.control.loop.cone",
             regex: /\b(?:while|each|in|by)\b/

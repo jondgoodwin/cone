@@ -13,50 +13,86 @@
 //
 // Two streams, each a variable and a set of functions: 'print <- x' and the
 // 'print' functions write to standard output, 'eprint <- x' and the 'eprint'
-// functions to standard error, the same text either way. Both go through the
-// C library's streams. Standard output is buffered, so what was printed may
-// not have reached its file or pipe yet: before a program runs another that
-// writes to the same place, or where the order of the two streams matters,
-// it flushes first ('print.flush()'). Standard error is not buffered on
-// the Windows C runtime, so its flush has nothing to do there.
+// functions to standard error, the same text either way.
+//
+// A send statement is one record. 'print <- "x=", x, "\n"' writes its pieces
+// into a writer (core's TextOut) that the statement owns, and hands the
+// finished record to the console as one piece, so output from several threads
+// never tears a record: another thread's record comes before or after, whole.
+// A value that can be sent has a 'toText(self: &, out: &uni TextOut)' method
+// that writes its text with 'out <- ...'; numbers, bool, char and text have one
+// of their own, so 'print <- x' works for any type that has it, and the
+// compiler refuses a type that has none.
+//
+// Both streams are two outputs of one console: the stream is a tag on the
+// record, so what is printed and what is eprinted stay in the order sent.
+// Standard output is written at once if it is a terminal, and held in the
+// console's own buffer if it is a file or a pipe, until the buffer fills, or
+// standard error writes, or the program flushes ('print.flush()') or ends.
+// Standard error is written at once. The buffer is the console's, not the C
+// library's: a C function that prints with printf has its text in C's buffer,
+// which C writes at its own times.
+//
+// In a program that runs actors the console's writing passes to an owner, a
+// thread of the actors package's, installed in the console's engine slot when
+// the runtime starts (this package imports nothing of actors): a finished
+// record moves to it and the sender goes on, and print.flush() waits until all
+// that was sent has been written.
 
 mod stdio;
 
 // Standard output
 pub extern {
-  fn @c printStr(str &str);
-  fn @c printCStr(str *u8);
-  fn @c printFloat(a f64);
-  fn @c printInt(a i64);
-  fn @c printUInt(a u64);
-  fn @c printChar(code u64);
-  // Write out what the C library holds for standard output
+  fn @c printStr(str: &str);
+  fn @c printCStr(str: *u8);
+  fn @c printFloat(a: f64);
+  fn @c printInt(a: i64);
+  fn @c printUInt(a: u64);
+  fn @c printChar(code: u64);
+  // Write out what the console holds, and what the C library holds for standard output
   fn @c printFlush();
 }
 
 // Standard error
 pub extern {
-  fn @c eprintStr(str &str);
-  fn @c eprintCStr(str *u8);
-  fn @c eprintFloat(a f64);
-  fn @c eprintInt(a i64);
-  fn @c eprintUInt(a u64);
-  fn @c eprintChar(code u64);
+  fn @c eprintStr(str: &str);
+  fn @c eprintCStr(str: *u8);
+  fn @c eprintFloat(a: f64);
+  fn @c eprintInt(a: i64);
+  fn @c eprintUInt(a: u64);
+  fn @c eprintChar(code: u64);
   fn @c eprintFlush();
 }
 
+// The console takes a finished record away
+extern fn @c consoleDeliver(record: &uni TextOut);
+
 // A stream to print to: 'fd' is its POSIX number, 1 for standard output and
-// 2 for standard error
+// 2 for standard error. It keeps nothing it writes, since the console holds
+// that, so its methods take 'self: &' and 'print' and 'eprint' are 'imm':
+// every thread appends to them.
 pub struct IOStream {
-  pub fd i32;
-  pub fn appendStr overload `<-`(self &mut, str &str) {if fd == 2i32 {eprintStr(str);} else {printStr(str);}}
-  pub fn appendCStr overload `<-`(self &mut, str *u8) {if fd == 2i32 {eprintCStr(str);} else {printCStr(str);}}
-  pub fn appendInt overload `<-`(self &mut, i i64) {if fd == 2i32 {eprintInt(i);} else {printInt(i);}}
-  pub fn appendFloat overload `<-`(self &mut, n f64) {if fd == 2i32 {eprintFloat(n);} else {printFloat(n);}}
-  pub fn appendUInt overload `<-`(self &mut, i u64) {if fd == 2i32 {eprintUInt(i);} else {printUInt(i);}}
-  // Write out what the C library holds for it
-  pub fn flush(self &mut) {if fd == 2i32 {eprintFlush();} else {printFlush();}}
+  pub fd: i32;
+  // One text sent alone is one record, written without a writer. (A send of
+  // several pieces, or of anything but a text, is the compiler's bracket:
+  // 'record' below.)
+  pub fn appendStr overload `<-`(self: &, str: &str) {if fd == 2i32 {eprintStr(str);} else {printStr(str);}}
+  // A C string, by name and not through '<-': a cstr promises the zero that ends
+  // it, which a raw pointer or a borrow of one byte does not. ('<-' cannot take
+  // it, since a literal is both a &str and a cstr and no ranking picks one.) For
+  // the text of a cstr through '<-', 'print <- c.view()'.
+  pub fn appendCStr(self: &, str: cstr) {if fd == 2i32 {eprintCStr(str.ptr());} else {printCStr(str.ptr());}}
+  // The writer a send statement writes its pieces into: a record of this
+  // stream, which is handed to the console as one piece when the writer dies
+  // (a statement's end). The compiler calls this for 'print <- a, b, c'; a
+  // record held across statements is 'var rec = print.record()', sent to with
+  // '<-' like any writer, and delivered at its scope's end.
+  pub fn record(self: &) TextOut {
+    TextOut.record(&consoleDeliver as usize, null, u32.from(fd))
+  }
+  // Write out what the console holds, and what the C library holds
+  pub fn flush(self: &) {if fd == 2i32 {eprintFlush();} else {printFlush();}}
 }
 
-pub mut print = new IOStream(1i32);
-pub mut eprint = new IOStream(2i32);
+pub let print = IOStream(1i32);
+pub let eprint = IOStream(2i32);

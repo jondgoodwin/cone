@@ -604,11 +604,11 @@ reached by path. What reaching a member by path cannot do is below.
 
 ```
 pub mod trait Runner {
-    pub fn step(n i64) i64;         // a requirement
-    pub mut scale i64;              // a requirement
-    pub mut offset = 100i64;        // a default
-    pub fn run(n i64) i64 {         // a default
-        step(n) * scale + offset;
+    pub fn step(n: i64) i64;         // a requirement
+    pub var scale: i64;              // a requirement
+    pub var offset = 100i64;        // a default
+    pub fn run(n: i64) i64 {         // a default
+        step(n) * scale + offset
     }
 }
 ```
@@ -683,9 +683,14 @@ open.
 **What the module has for each member must have the member's shape**
 (`modTraitCheck`, at the start of `modTypeCheck`, once both sides have types): a
 function or an overload name for a function, one candidate with exactly the
-member's signature (`fnSigEqual`; no coercion, as for a struct trait); a global
+member's signature (`fnSigEqual`), or else the sole candidate whose signature is a
+subtype of it by a recast alone (`fnSigMeets`, as a struct's method meets a trait's:
+nodes/struct.md, "A method meets a requirement as a subtype"; a conversion is no
+recast, and no coercion stands in for the signature); a global
 for a global, of the member's type and permission. Each difference is
-`ErrorModTraitMismatch` at the `is`, naming the member. A copy has the shape by
+`ErrorModTraitMismatch` at the `is`, naming the member, except a function whose
+signature differs by a variant/enum held by value, which is `ErrorFnRefByValue`
+(`fnSigLayoutDiff`). A copy has the shape by
 construction and is passed over, and where a difference was reported the copies
 are marked checked rather than analyzed, since their bodies were written against
 the trait's members and would report the difference again. An `extern`
@@ -723,10 +728,10 @@ stack[T];`, and instantiated where it is used, `stack[i64].push(3i64)`, as
 ```
 pub mod stack[T];
 
-pub mut count i64 = 0i64;
-pub mut top T = 0;
+pub var count: i64 = 0i64;
+pub var top: T = 0;
 
-pub fn push(x T) {
+pub fn push(x: T) {
     top = x;
     count = count + 1i64;
 }
@@ -737,7 +742,11 @@ resolved once, in place, with its parameters hooked over its own names
 (`modNameRes`), and never type checked (`modTypeCheck` returns after its
 imports) or generated (`genlProgram` passes it over): its body is written
 against parameters that stand for nothing. Its imports, folds and `is` are
-made once, on the generic, and every instance shares them.
+made once, on the generic, and every instance shares them. **So is each of its
+submodules, at any depth** (`modIsTemplate`): resolved in place with the
+parameters of every generic module it is inside hooked, as a generic type's
+methods see the type's (`modHookTemplateParms`), never checked or generated
+itself, and instantiated with its parent.
 
 **An instance is a module of its own**, made by `modInstantiate` the first
 time type check meets `stack[i64]` — `genericSubstitute` asks `genericMemoize`,
@@ -745,17 +754,46 @@ whose memo is the generic's `memonodes`. **Identical arguments anywhere are one
 instance**, compared by `itypeIsSame`, so `stack[i64]` in two modules is one
 module with one set of globals (`module_generic`). The instance is named as
 the generic is, owned where it is, marked with the call that made it
-(`instnode`, which `generic` points back from), and flagged `FlagGenMod`. Its
-declarations are cloned the way a generic type's members are
-(`cloneStructNode`): a shell for each — a function, a global, a type, an
-overload name, a type alias — mapped from the generic's before anything is
-copied, then every signature, body, type and initial value, so a body naming
-another declaration of the module, before it or after, names the instance's.
+(`instnode`, which `generic` points back from), and flagged `FlagGenMod`.
+**Each submodule of the generic is a module of the instance too**
+(`modInstanceTree`, `module_generic_submodule`): its copy is owned by the
+instance's copy of its parent, shares the call that made the instance (so its
+own symbol component carries no type arguments: `holder[i64].inner.twice` is
+`_CNvNtIC6holderxE5inner5twice`), has `generic` pointing back at the submodule
+it copies, and is mapped from it, so the parent naming `inner.twice` names
+this instance's copy, and `holder[i64].inner.twice` reaches it from outside
+through two collapsed paths. Its declarations, and every module of the
+instance's, are cloned the way a generic type's members are
+(`cloneStructNode`): a shell for each — a function, a global, a type, trait,
+enum or variant, an overload name, a type alias, a macro, and each copy of a
+base's variant an enum extension holds (no module's node) — mapped from the
+generic's before anything is copied, then every signature, body, type and
+initial value, so a body naming another declaration of the module, before it
+or after, names the instance's. An enum's copy lists the copies of its
+variants, in its order, as a generic enum's instance does; a type that `is` a
+trait of the module takes the instance's copy of the trait (the clone runs
+with `CloneState.modinst`, which `cloneStructNode` reads). **A generic function
+or type of the module stays generic in each instance**, as a generic method is
+copied with its type (`cloneFnDclShell`): the copy shares the original's
+parameters, hooked to themselves while it is copied, so only the module's are
+substituted, and its instances are made from the copy at their own arguments,
+in its own memo — `stack[i64].Pair[f64]`, and `stack[i64].tag[f64]` beside
+`stack[f64].tag[f64]` (`module_generic_gentype`, `module_generic_genfn`).
 The generic's own name is mapped to the instance, so `stack.count` or
 `stack[T].count` inside the body is this instance's global, while another
 argument list, `stack[f64]`, is another instance reached through the memo
-(`cloneFnCallNode`). Every other name the generic's namespace binds — what its
-imports bound and folded — is bound in the instance's to the same declaration.
+(`cloneFnCallNode`); a generic type of the module given type arguments in the
+body stays mapped to the instance's copy, which is the generic its instances
+come from. **The names the generic folded in that stand for something of its
+own** — a variant a standalone `use` of its enum folded in, a member a
+global's `use` clause folded in through the global — are aliases of the
+instance's own, mapped before any body is copied (`modFoldAliasShells`) and
+pointed at the instance's variant, or its global and the member of that
+global's type, once everything is copied (`modFoldAliasFill`). Every other
+name the generic's namespace binds — what its imports bound and folded — is
+bound in the instance's to the same declaration. A global's `use` clause is
+expanded in the fold pass, before the module's own resolution, so a generic
+module's type parameters are hooked for it there too (`modFoldNames`).
 A module trait's defaults the generic took are declarations of it, and are
 cloned with the rest; the instance keeps the generic's `trait`, so
 `modTraitCheck` checks each instance. It is registered before it is type checked, so a body
@@ -767,7 +805,13 @@ then type checked with no function around it, which runs `modLifecycle`, so
 `fnCallModuleInstancePath`), since the instance does not exist at name
 resolution: `stack[i64].push` looks `push` up in the instance's namespace, a
 private member named from outside it is `ErrorNotPublic`, and the hop
-disappears as `fnCallNameResPath` makes it for any other module. What a
+disappears as `fnCallNameResPath` makes it for any other module. A member
+given brackets through an instance — a generic function's type arguments,
+`stack[i64].make[f64]`, or a macro's, `stack[i64].dbl[3]` — is read at name
+resolution as the generic declares it (`fnCallGenModMember`, so a type in the
+brackets is not taken for a value), and at type check the path is collapsed
+first, without checking the member (`fnCallInstanceMember`), so the brackets
+follow the instance's member as they follow `m.make` in `m.make[f64]`. What a
 generic is given that is not a list of types is refused as a generic type's is
 — `ErrorNotType`, `ErrorArgCount`; nothing is inferred.
 
@@ -780,23 +824,39 @@ the name and folds nothing); `extends stack`; and a default fold on its own
 instance is then written through that name.
 
 **What an instance is cloned from is its generic's own declarations**, so what
-a clone does not yet re-point is refused where the generic declares it,
-`ErrorGenModBody` (`modGenericCheckBody`): a generic function or type inside it,
-whose own parameters the clone would have to carry through; a trait or an enum,
-a macro and a module trait; and a global's `use` clause, whose aliases are
-reached through the generic's global. **A generic module's submodules are not
-built** (the same code, `pgmGenericModulesCheck`): by the analogy they are
-instantiated with it, as a generic type's methods are, and the flat case is
-what is built. **An executable's root may not be generic** (`ErrorGenModRoot`):
-nothing could instantiate the program. A library's root may, and so may a
-submodule or an imported module.
+a clone is not built for is refused where the generic declares it,
+`ErrorGenModBody` (`modGenericCheckBody`): a module trait. One declared inside
+a generic module would be each instance's own, as everything else it declares
+is, and a module conforming to it is outside the instance, with no spelling yet
+that names an instance's module trait (`is` takes one name, and an import of a
+generic folds nothing). So is a generic module inside a generic module (the
+same code, `pgmGenericModulesCheck`), which would be a generic of each instance,
+copied still generic into it. **An executable's root may not be
+generic** (`ErrorGenModRoot`): nothing could instantiate the program. A
+library's root may, and so may a submodule or an imported module.
+
+**A type of the module that `extends` a base is enriched again in each
+instance** (`cloneStructNode`, `reenrich`): name resolution took the base into
+the generic's type — its fields copied in, its other members bound as aliases —
+and a copy's namespace, made from its fields and members, would hold neither,
+so the copy starts without the base's fields and its type check takes the base
+(`structEnrichFromBase`), as an instance of a generic type's does: the
+instance's own copy of a base the module declares, or another module's base as
+it is. A use in a method body of an alias the generic's enrichment made is
+pointed at a fresh alias, bound to the instance's base's member of that name
+once every declaration is copied (`structCloneEnrichFix`), since the base may
+be copied after the type extending it (`module_generic_extends`).
 
 **Its symbols carry the instance's type arguments on the module**, as a generic
 type instance's carry them on the type: the instance's `instnode` is what
 `nameOwnTypeArgs` reads, so `namePath` wraps the module's component in `I…E` —
 `stack[i64].push` is `_CNvIC5stackxE4push`, `stack[i64].Entry.doubled` is
 `_CNvNtIC5stackxE5Entry7doubled` — and each member's own component is its
-identifier alone. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
+identifier alone, or its own `I…E` where it is an instance of a generic the
+module declares: `pairs[i64].Pair[f64].first` is
+`_CNvINtIC5pairsxE4PairdE5first`, `tags[i64].tag[f64]` is
+`_CINvIC4tagsxE3tagdE`, and a vtable names the instance's type and trait,
+`shapes[i64].Box as shapes[i64].Has`. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
 "Symbols", is the rule.
 
 **An instance joins the program's modules once type check is done**
@@ -840,8 +900,8 @@ package's tests call, ordinary library code that the compiler knows nothing of
 Cone package over `libc`: a growable `List[T]`, an owned `String` and a
 `Dict[K, V]` (a SwissTable over any `K` that is `Hash`), `OrderedDict[K, V]` (the same
 table indexing a dense array, so it iterates in insertion order), `Set[T]` and a ring-buffer `Deque[T]`,
-each holding its elements in one block from its region (core's `MemRegion`; the heap's, which is core's raw blocks layer, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics,
-and the structural capability traits `Collection`, `Indexed`, `Stack`, `Queue` and `Map`; its generic types'
+each holding its elements in one block from its region (core's `MemRegion`; the heap's, which is core's raw blocks layer, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics
+(it declares no capability traits: the shared method names are documented, and a program declares the traits it needs); its generic types'
 methods are written whole into its include file, so each importer compiles the
 instances it uses.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
@@ -860,7 +920,7 @@ it builds the package into its own object (below), so `fileFindPackage` tries
 and one left behind must not stand in for the source. Only a bare name is
 looked for there. **The source root is the designated file of `src`**, the
 package's name standing in for the folder's, as the reference manual has it
-(`refmodule.html`, "Packages and Congo": under `src` the module rules apply
+(`mod-packages.html#package`, "What a package is": under `src` the module rules apply
 unchanged). `fileFindPackage` says when that is what it found, and
 `parseLoadModulePath` then sets `foldersym` to the package's name rather than
 asking `parseDesignatedFolder`, which would see `src` and not `name`. So `src` is
@@ -930,7 +990,7 @@ private `extern` declarations bound by `@c` to `cone_rawBlockAlloc`,
 `cone_rawBlockResize` and `cone_rawBlockRelease`, which conestd's `rawblocks.cone`
 defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. It is
 the one place that names where the heap's bytes come from: the heap region
-(`heapregion.c`), `So`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
+(`heapregion.c`), `Uni`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
 blocks and an actor's chunks and large objects go through it, so an allocator
 can replace the three functions and no caller. Bookkeeping objects (mailbox
 nodes, tables, the runtime's own records) and generated code's own boxes
@@ -1185,7 +1245,7 @@ is the module's. What an importer must have the body of — an `inline` or
 generic function, a macro, a trait's methods, a generic type's — is written
 whole, and `extern` on it is `ErrorBadExtern`. **A global the package folds
 through is declared `extern` with the source's fold clause** [Jon 25 Sep],
-`pub extern mut config Config pub use *;`: the fold reads only the declared
+`pub extern var config: Config pub use *;`: the fold reads only the declared
 type, so an importer reaches the folded names as the package does, each the
 package's one global (`module_build_fold_extern`; the refusals where the type
 is out of view, `module_build_fold_extern_nameres`).
@@ -1285,6 +1345,31 @@ each alias, const, macro and module trait, which
 declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.
+
+**The generic-module instances the package uses are recorded at the file's end**
+(`incInstanceUses`): a program that never names `g[i64]`, which only a package
+uses, would never build it, so the instance's `init` and `final` would have no
+place in the stitched pair. The file ends with a private `fn __uses() { g[i64]; }`
+(a module is no type to `alias`, and only a body names an instance); the
+program's compile checks it, builds the instance from the generic's include file
+and places it (`pgmInstanceOrder`), and nothing calls the function. Recorded:
+each instance of a generic module the package does not hold, whose call the
+package's own root text wrote (not one made inside another instance's body, nor
+by a file the package imports), when the generic is named by a bare name and each
+type argument is a number type. **An instance with any other spelling is not
+recorded**, and where its generic module declares an `init` or `final` that is a
+compile error when the include file is generated (`ErrorInstanceUnrecorded`,
+pointed at the instance), since its setup would never run in a program that does
+not name it (`module_generic_pkguse_unspelled`). Where the generic declares
+neither, nothing is lost and the file says so in a comment
+(`// Not recorded, ...`). **The same for an instance made in a submodule's
+file** (its call sits in a submodule's spans, not the root's): the root cannot
+spell it, so it is refused where its generic has setup
+(`module_generic_pkguse_submodule`), and passed over where not. An instance made inside another instance's body, or by included text, is
+in no submodule's file and stays unrecorded and unrefused: the program makes it
+with the instance. No run-time guard: the
+instance's `init` is still `linkonce` in the package's object, merged at link,
+and the stitched init calls it once, from the program's `initorder`.
 
 **A type the compiler found shape-changing carries the finding**
 (`incRecordShape`, `shapeRecordable`): `ShapeChanging` is appended to the `is`
@@ -1643,7 +1728,13 @@ module that follows those and uses it — **except a module that supplied one of
 its type arguments**, which the instance follows: in `module_generic`,
 `tally[user.Tag]` runs its `init` after `user`'s. A module that uses an instance
 places no edge of its own: its place was fixed at name resolution. Instances
-that use one another round a loop are placed last, in the order made.
+that use one another round a loop are placed last, in the order made. **An
+instance's copies of its generic's submodules take the instance's place with
+it, together** [design chat, 28 Oct] (`pgmInstanceGroup`): in the order the walk
+gave the generic and its submodules — an ordinary parent's and its submodules',
+each submodule before the module holding it — and after whatever any of them
+depends on outside the instance; finalizers run in the reverse
+(`module_generic_submodule`).
 
 `modFoldNames` runs four kinds of fold, in order: what the module extends, then its `imports`,
 then every global carrying a `use` clause, then every standalone `use` on
@@ -1783,9 +1874,11 @@ declaration's `DclPrivate` bit where the source declared the name, the alias's o
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
 clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
 private name behaves as a missing one does, and there is nothing to leave out.
-The source's `final` and `clone` are passed over by a star clause as well
-(`importStarAdmits`), so after `but` they are `ErrorBadFold`, in `importNameRes`
-and, for a `mod` line's default, `modDefaultFoldCheck`. A
+The source's `init`, `final` and `clone` are passed over by a star clause as well
+(`importStarAdmits`, which asks `importIsLifecycleName`), so after `but` they are
+`ErrorBadFold`, in `importNameRes`
+and, for a `mod` line's default, `modDefaultFoldCheck`; so is naming them in a
+list (`importFoldItem`, and `modDefaultFoldCheck`). A
 name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
 where a list names it, because the import bound it already. (A module's `extends`
@@ -1911,10 +2004,10 @@ dependencies first and the root last, before its own work, and every module's
 finalizer in exactly the reverse, the root first, after it.
 
 ```
-imm handler Handler;
+let handler: Handler;
 
 fn @initpure init() {
-    handler = new Handler(1);
+    handler = Handler(1);
 }
 
 fn final() {
@@ -1929,27 +2022,46 @@ it, and its own function `final`, written `fn final()` by analogy with a type's
 overload name, since the stitched functions call each with nothing to pass and
 nothing to receive. Anything else under either name at module scope is
 `ErrorModLifecycle`, with the cause in the message — a function of another
-shape, `init` without `@initpure`, a global named `final`. A name a fold
-brought is another module's `init` and is not this module's. Either may be
-`extern` (an include file's), and either may be private: the stitched functions
-reach them however they are declared. A module may declare either, both or
-neither. Each well-formed one is marked `DclLifecycle`.
+shape, `init` without `@initpure`, a global named `final`. A name an alias
+brought is another module's and is not this module's. Either may be
+`extern` (an include file's), and either may be private or `pub`: the stitched
+functions reach them however they are declared. A module may declare either, both
+or neither. Each well-formed one is marked `DclLifecycle`.
+
+**They are run by the runtime, once, and are not named by anything else.** A use
+of either in an expression — a call, a borrow, a bare name inside the module that
+declares it, or a path from any module (`extra.final()`, `&extra.init`) — is
+`ErrorLifecycleNamed`, whatever `pub` says: the stitched functions already run
+each once, and a second run is a double `final`, which frees twice. The check is
+`nameUseLifecycleNamed`, asked of a bare name in `nameUseNameRes` and of a path's
+member in `fnCallNameResPath`, ahead of the private-name check, so a private one
+is told the lifecycle answer and not "make it public". It asks the declaration,
+not `DclLifecycle`, which is set only when the module is type checked and never
+on an include file's declaration. A module-level function named `init` or `final`
+is the module's lifecycle function; a method of that name is not. Neither folds:
+`importIsLifecycleName` makes a star pass over `init`, `final` and `clone`, and a
+list or `but` naming one is `ErrorBadFold`.
 
 **`@initpure`** is an attribute after `fn`, before or after `@c`: a function a
 module's `init` may call, as `init` itself is. The parser records it
 (`DclInitPure`, kept by `dclInfoJoin`) and **nothing checks it**: the rule that
 such a function call only `pure` or `initpure` functions needs `pure`, which is
-not built.
+not built. Only `modLifecycleFn` reads it, and only on `init`, as its required
+spelling. It marks no *helper*: a helper's safety is read from its body (below),
+so no Cone function of the module carries it; it stays on the `extern` functions
+`init` reaches (libc's `malloc`, Winsock, `LoadLibraryA`, `dlopen`), where it is
+only a record of the author's promise — the compiler does not read an extern's
+body — until `trust` is built.
 
 **Every global without an initial value must be assigned by its module's
-`init`** (refmodule.html). The check is `init`'s own data flow pass
+`init`** (mod-namespaces.html). The check is `init`'s own data flow pass
 (`fnDclTypeCheck` asks `modInitOf`): `modInitFlowBegin` clears `VarInitialized`
 on each global the module declares without a value — an `extern` one excepted,
 its value being another object's, and a `@workgroup` one, whose value each
 workgroup's invocations write (`modGlobalUninit`) — so inside `init` such a global is exactly an
-uninitialized local. Its first assignment is allowed, an `imm` one's included,
+uninitialized local. Its first assignment is allowed, a `let` one's included,
 and carries `FlagFirstAssign`, so nothing is released from the zeroed storage; a
-second assignment of an `imm` one is `ErrorNoMut`; and a read before any
+second assignment of a `let` one is `ErrorNoMut`; and a read before any
 assignment is flow's own `ErrorMove`, "has not been initialized", which is the
 manual's rule that `init` read no uninitialized global of its module, for `init`
 itself. `modInitFlowEnd` then reports each global still unassigned as
@@ -1960,8 +2072,100 @@ arms set it — which is what the manual says: assigned "at some point" in `init
 assignment does not assign the global. A global without a value in a module that
 declares no `init` is `ErrorGlobalUninit` too, reported by `modLifecycle`;
 where the module's `init` is malformed, only that is reported. Assigning such a
-global in any other function does not count, and an `imm` one may not be
+global in any other function does not count, and a `let` one may not be
 assigned there at all.
+
+**A call `init` makes counts as a read of what the callee reads** (`modInitCall`,
+asked at the end of `fnCallFlow` while `init`'s own flow pass is the one walking:
+the pass records the function in `modInitFnCur`, so a callee checked on demand in
+the middle of it asks nothing). Where the call is statically resolved to one of
+the module's own functions — an `FnDclNode` the module declares (`modDeclares`:
+owned by the module, or a method of a type it declares), or an instance of a
+generic wherever the generic lives (below), with a Cone
+body, not `extern` — `modReadsFollow` reads its body with `siVisit`
+(shapeinfer's tree walk) and looks for a name use of a global that is still
+unassigned *at that point of the walk* (`modGlobalUninit`, `VarInitialized`
+clear): the position is `init`'s flow state, so a global assigned before the call
+passes, and one assigned after it is refused only if the callee reads it. A call
+met in the body to another such function is followed the same way, to any depth,
+and each function is entered once per query (`ModReadCtx.seen`), which ends a
+cycle. The target of an assignment is not a read; any other mention is, a field
+assignment or a borrow included. The refusal is `ErrorMove` at the call, naming
+the global and the function that reads it. A method call is lowered before flow
+to a call whose `objfn` names the selected method, so it reaches `modInitCall`
+the way a function call does. A generic's call is substituted by type check to a
+use of its *instance* (`genericInstanceUse`), a clone of the template that keeps
+its owner and is type checked when made; `modReadsFollow` walks that instance's
+body, whose names are resolved, and refuses to follow a `FnDclNode` still
+carrying `genericinfo` (a template, which no substituted call names). A method of
+a generic type's instance is an ordinary method of that instance, owned by it.
+**An instance of another module's generic is followed too** (`modIsInstance`: the
+function's `instnode`, set on a generic function's instance, or its type's, for a
+method cloned with an instantiated generic type): given this module's type, the
+generic's body can call that type's method, which reads this module's globals,
+and that is no cycle of modules. A plain function or a method of a plain type of
+another module is not an instance and is not followed.
+**Not followed, and so passing:** a call that is not statically resolved — a
+virtual call (`FlagVDisp`), a closure, a call through a function reference or any
+variable — and a call to an `extern` function; a closure literal's body is not
+entered. These pass until `trust` is built, a known gap it closes.
+`conec --report-trust` already lists the extern kind, as its `extern` lines
+(`extern <file>:<line> <function> [<callee>]`, whole-program: those in a module's
+`init` and its helpers are this module's unfollowed externs); it lists no virtual
+call, function-reference call or closure, which `trust` will have to take over
+with the rest. **Another module's plain function needs no following:** that module
+cannot read this module's globals without importing it, which would be a cycle of
+modules, and that is refused. A helper's own assignment to a global does not
+count as `init` setting it (the target of an assignment is not a read, and only
+`init`'s flow records a set), so a helper that sets a global and then reads it,
+called before `init` sets it, is refused.
+
+**Setups: a `let` global given a value written where it is declared** (rule 4;
+`modAddSetup`, `modSetupOrder`, `modSetupBuild`). `varDclTypeCheck` type checks a
+global's value as always, in the module's own context, and where `litFoldConst`
+finds it not a constant asks `modAddSetup` before reporting `ErrorNotLit`. A
+`let` global (immutable permission, scope 0, not a static, not `extern`,
+`@threadlocal` or `@workgroup`, not C-named, in a Cone-named module, on a target
+that is not a GPU's) is taken as a setup: its type-checked value moves into a
+pre-typed `AssignNode` on the module's `setups` list, the declaration is left
+with no value (`DclSetup`; `modGlobalUninit` excludes it, so `init` owes it
+nothing, and generation gives it zeroed, writable storage until its setup runs),
+and nothing is reported. Everything else keeps `ErrorNotLit`: a `var`, a static,
+the others above. The value cannot be type checked again (this pass lowers and
+replaces nodes), which is why it is moved and not rebuilt.
+
+Once the module is type checked, `modLifecycle` asks `modSetupBuild`. It reads each
+setup's value with the walk `init`'s check uses (`modReadsVisit` in collecting mode,
+`ModReadCtx.reads`: every setup global and every global `init` sets that the value
+names, directly or through the module's own functions that `modReadsFollow`
+enters, transitively, each once), reports a read of a global `init` sets
+(`ErrorSetupReadsInit`: setups run before `init`), and orders the setups depth
+first from declaration order: each after the setups it reads, a stable order
+otherwise. A setup reached again while its reads are placed is `ErrorSetupCycle`,
+at the global the round returns to. Only a module with neither is built:
+the ordered assignments become the body of `-setups`, a function of the module
+built pre-lowered as `drop` is (a name no source can write), whose flow pass is
+run at once with the setups' `VarInitialized` cleared, so flow judges each
+assignment as it judges a first assignment in `init` and a read of a setup global
+before its assignment is its own refusal. `init` calls it first: a call node put at the
+head of the body of the module's own `init`, or, where the module writes none, in an
+`init` made for it (`DclInitPure | DclLifecycle`, not in the module's namespace), which
+`mod->initfn` then is. So the program's stitched init, the C-named constructors and a
+package's exported `init` need nothing new; the include file declares the made `init`
+(`incAssemble`: `extern fn @initpure init();` at the module's end), since no
+source text does. `modGiveDrop` puts the setups, in the order they run, between the
+constant-valued globals and those `init` assigns, so rule 6's reverse holds. A
+generic module's instance is checked like any module and has setups of its own.
+
+**A setup's store is judged as `init`'s is.** Its value is type checked at scope 0,
+but it runs in a function, so `borrowTempScope` gives a borrow of a temporary the
+main block's scope there (2), as it has in `init`, and `assignBorrowLifetimeCheck`
+refuses a store of it into the global (`ErrorInvType`, 1013) when `-setups` is
+flowed. `modSetupBuild` also runs the loan walk on `-setups` where flow's gate asks
+for one (`flowPathWalk`, as `fnDclFlow` does for any function), which is what
+refuses a borrow of a temporary carried inside a struct value (`ErrorEscape`,
+1064). A borrow of another global is scope 0 and stays legal.
+What is not followed passes until `trust` is built, as in `init`'s check.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
 Where any global the module declares has anything to do as it dies
@@ -1970,7 +2174,16 @@ Where any global the module declares has anything to do as it dies
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
 the module's own `final`, if it has one, and then finalizing each such global
-**in declaration order**, as a type drops its fields. The globals are its
+**in the reverse of the order they are set** (rule 6). The setup order is
+built in `modGiveDrop`: first the globals `init` never assigns that hold a constant,
+in declaration order, then the module's setups in the order they run
+(`mod->setups`, ordered by `modSetupBuild`; below), then those `init` assigns, in
+the order the flow pass first met an assignment to each (`modInitNoteSet`,
+called from `assignlvalrtype` while `init` is walked; kept in `mod->setorder`).
+Flow walks text order, so a branch whose arms set the same globals in different
+orders takes the first written, and a global's direct reads were assigned
+earlier in the text. A global with a value that `init` also assigns is one
+`init` sets. The globals are its
 return's release list, built as flow builds a scope's for its locals
 (`flowVarRelease`): a struct or an enum listed as a call to its drop function
 over `&uni` the global, anything else — an owning reference, plain or virtual,
@@ -1997,7 +2210,7 @@ bodies. **The entry runs them** [Jon 23 Sep]: for an executable the compiler
 builds the C `main` itself (`genlEntry`), which calls `cone.initAll`, the
 program's own `main` and `cone.finalAll`, and returns what `main` returned; the
 program's `main` is internal under the symbol `cone.main`. The program's `main`
-is the root's bare Cone-named `main` taking nothing or `(argc i32, argv **u8)`;
+is the root's bare Cone-named `main` taking nothing or `(argc: i32, argv: **u8)`;
 a library compile, a WebAssembly or GPU one, a `main` with a C name (its own C
 entry) and a `main` with other parameters get no entry. A panic (`abort`) or C's
 `exit` ends the process without reaching the final. **A program may still call
@@ -2060,15 +2273,19 @@ calls them without naming them (`module_init_link` drops a `lib.Handle`).
 its place in the order ("The module order"). Across separately compiled
 packages each object's copy of an instance's `init` is the one merged function,
 and the program's stitched init calls it once, where the program names that
-instance itself (`module_generic_link`). ⚠ **An instance only a package uses is
-invisible to the program**: the package's include file says nothing of it, so
-the program's stitched pair makes no call to its `init` or finalizer, and a
-global it would assign keeps the zero it was stored with. Measured at run time
-through Congo, 25 Sep 2026: package `q` uses `g[i64]` and the program imports
-`q` alone; `q`'s `init` runs and `g[i64]`'s does not, its count of inits read
-back as 0, and neither does its `final`. Where the program names `g[i64]`
-itself, it runs once. By the rule above it leaks rather than misbehaves; what
-closes it is open (`Backlog\init-and-final.md`).
+instance itself (`module_generic_link`). **An instance only a package uses is
+recorded by the package's include file** ("Generating the include file",
+`incInstanceUses`), so the program's compile builds it and `pgmInstanceOrder`
+places it: its `init` runs once, before the package's, and its `final` once,
+after. Measured through Congo, 25 Sep 2026, before the record: package `q` uses
+`g[i64]` and the program imports `q` alone; `q`'s `init` ran and `g[i64]`'s did
+not, its count of inits read back as 0, and neither did its `final`. Now it
+reads 1, and where the program, or a second package, names the instance too, it
+still runs once (`module_generic_pkguse`, `module_generic_pkguseonce`). Only an
+instance spelled by a bare generic name and number-type arguments is recorded;
+any other, or one made in a submodule's file, is refused (`ErrorInstanceUnrecorded`)
+where its generic declares an `init` or `final`, else left a comment in the file. A generic struct's statics need none of this: a static takes a literal, so
+nothing runs for it (`module_generic_struct_static`).
 
 ## Principles — the model, as decided
 
@@ -2551,8 +2768,7 @@ Sep]: raw bindings, C names, C types and C strings, with the Cone-flavoured
 layer over them in packages of their own (`fs`, `path` and `env`). Neither
 names a `[link]` library: the C runtime or C library they bind is the one every
 link already names. `libc`, which `core` imports, cannot choose by target; `posix`
-imports `core` and does, by `core.isWindows()` (a C-named module gets no
-prelude), so each of its functions calls the target's own and the other
+imports `core` and does, by `#if #os == .windows`, so each of its functions calls the target's own and the other
 system's calls are not generated (every `extern` is declared on every
 platform). `posix` presents POSIX names. On Linux each is the C library's
 function, bound under a Cone name of its own where the Cone function of the
@@ -2656,14 +2872,14 @@ region promises), and calls them at the reference events only it can see
 
 | Method | Called when | If absent |
 |---|---|---|
-| `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `new R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
-| `fn init(self &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
-| `fn aliasRef(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
-| `fn dealiasRef(self &uni R) bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
-| `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
-| `fn mark(self &uni R, slot *usize)`, or `fn mark(self &uni R, slot *usize, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `self` is the header of what it points at, `slot` the address where the reference is stored (its first word is the address of the value), which a collector that moves the value rewrites; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
-| `fn visit(self &uni R, mode u32) bool`, on a region with several owners | a trace passes through an owning reference of the region (it is not traced) to the value, which holds a traced reference; answers whether this is the first time in the collection whose epoch is `mode` | a trace cannot pass through the region's owners, unless the region is `Move` (`regionCanPassTrace`) |
-| `fn writeBarrier(self &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
+| `fn alloc(size: usize) *u8`, or `fn alloc(size: usize, ty: *TypeRecord) *u8`, static | `R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn init(self: &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
+| `fn aliasRef(self: &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
+| `fn dealiasRef(self: &uni R) bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
+| `fn free(self: &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
+| `fn mark(self: &uni R, slot: *usize)`, or `fn mark(self: &uni R, slot: *usize, perm: u32, mode: u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `self` is the header of what it points at, `slot` the address where the reference is stored (its first word is the address of the value), which a collector that moves the value rewrites; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
+| `fn visit(self: &uni R, mode: u32) bool`, on a region with several owners | a trace passes through an owning reference of the region (it is not traced) to the value, which holds a traced reference; answers whether this is the first time in the collection whose epoch is `mode` | a trace cannot pass through the region's owners, unless the region is `Move` (`regionCanPassTrace`) |
+| `fn writeBarrier(self: &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
 
 Every method but `alloc` is handed the allocation's **header**, the region
 struct at the front of the `{region, permission, value}` layout: `init` the
@@ -2677,7 +2893,7 @@ region counting its owners (`aliasRef` and `dealiasRef`), not `Move`, and
 declaring `ThreadSafe` exactly where the lock does (`refLockCheck`).
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
-`alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
+`alloc` taking `ty: *TypeRecord` after the size is handed, at each allocation,
 the record of the allocated value's type (`genlallocref`, asking
 `regionAllocTakesRecord`). The record is core's
 `TypeRecord`, a constant the compiler builds once per type in each object
@@ -2688,7 +2904,7 @@ the value holds to its region's `mark`), and flags saying whether finalizing
 does anything and whether the value holds a traced reference. With it a region
 that owns death in its own loop, as a collector does, can finalize a value it
 cannot name the type of (`region_typerecord`). An `alloc` taking only the size
-is called with only the size, so a region that does not ask pays nothing: `So`
+is called with only the size, so a region that does not ask pays nothing: `Uni`
 and `Rc` are generated exactly as they were before records existed. The type
 record is recognized as core's struct named `TypeRecord` (`typeRecordIsPtr`),
 as the intrinsics are recognized as core's, and its layout is the one the
@@ -2697,7 +2913,7 @@ module cannot declare its own `TypeRecord`, since core's public names are
 folded into every module.
 
 Whether the region has one owner per value is not read off a missing method
-but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct So is
+but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct Uni is
 RegionRef, Move`. It marks the struct `MoveType` like any type declaring it
 (`structNameRes`), which every reference type into the region asks
 (`refAdoptInfections`), and `regionIsMove` is what a release asks. A missing
@@ -2734,7 +2950,7 @@ held at the declaration (`ErrorRegionMeth`); on a region not declaring
 **A traced reference may be held only where a collector can find it**: a
 local, a parameter, a temporary, a value inline in one of those, a value a
 traced region allocates, or behind what a trace passes through. A trace passes
-through an owning reference of a region that is not traced (`Rc`, `So`) to the
+through an owning reference of a region that is not traced (`Rc`, `Uni`) to the
 value it holds (`genlTraceThrough`: by the value type's own record, so a type
 reaching itself through an owner traces in a finite function; once for each
 collection where the region has several owners, by `visit`, called with the
@@ -2745,8 +2961,7 @@ says how a collector reaches the values it holds where it points. So
 `itypeHoldsTraced` ("needs tracing") looks through owners and such types, and
 `itypeCannotTrace` ("cannot be traced", also infectious) marks a type holding a
 raw pointer to a value that needs tracing and declaring no `GcTraceElements`, or an owner a trace cannot pass through (a
-region with several owners and no `visit`; one whose value is behind an array
-body; a traced region declaring `writeBarrier`, whose stores a value behind an owner
+region with several owners and no `visit`; a traced region declaring `writeBarrier`, whose stores a value behind an owner
 does not make); both are remembered per struct (`holdstraced`, `cannottrace`,
 `holdsbarrier`) and answered where a cycle through an owner is reached again by
 settling the answers that waited on it where it was first asked
@@ -2754,7 +2969,7 @@ settling the answers that waited on it where it was first asked
 owning reference of a region that is not traced to a value holding a traced
 reference where the trace cannot pass through (`ErrorTracedHeld`); a global
 or static holding one (`ErrorTracedGlobal`); a call of `mem.writeRaw` or
-`mem.moveRaw` at a type holding one from a method of a type that declares no
+`mem.moveRaw` or `mem.moveRawInto` at a type holding one from a method of a type that declares no
 `GcTraceElements` (`ErrorTracedRaw`), the way an arena, a pool and a collection place their
 values and say how a collector reaches them, reported at the program's own
 instantiation where it was reached through a generic's body; a root (a local or
@@ -2794,7 +3009,7 @@ an `Rc` (a barrier is told of a store, which a value behind an owner does not ma
 The actor reaches its region by a method of its state, `allocRegion` (a provisional
 name, as is the general rule it carries, that `new x[T](...)` allocates in the region
 `x` leads to), generated for every actor ([Parse](../phases/parse.md), "Actors"), and
-`new self[T](...)` is `self.allocRegion().alloc(new T(...))`
+`new self[T](...)` is `self.allocRegion().alloc(T(...))`
 ([Literals](literals.md), "Construction"). The region is a record the actor's
 `Header` points to (null till the first `allocRegion`) and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
 nothing to import): the runtime asks the region to collect after each message and
@@ -2837,7 +3052,7 @@ private method -- is exported for it the same way: the `collector` package's
 inline `writeBarrier` tests a private global in line and calls its private
 `shade` only while a collection marks.
 
-`So` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
+`Uni` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `alloc` and `free` calling the raw blocks layer, `RawBlocks.alloc` and
 `RawBlocks.release`, by its qualified name, since inside a method named
 `free` a bare `free` is the method. Core is their module wrapper; a region
@@ -2896,10 +3111,11 @@ a reference names is a type, and that is what is built.
   That was stated here and contradicted in the packages backlog item, with
   nothing saying which won.
 - **Module `init` and `final` and the program's entry are built; purity is not** ("Init
-  and final"). What `refmodule.html` specifies and nothing checks is the
-  `initpure` rule that such a function call only `pure` or `initpure` functions,
-  and that one other than `init` read no uninitialized global of its module:
-  `pure` itself is unbuilt. The entry the compiler builds runs the stitched init
+  and final"). What `mod-namespaces.html` specifies and nothing checks is the
+  `initpure` rule that such a function call only `pure` or `initpure` functions:
+  `pure` itself is unbuilt. (That a helper `init` calls reads no global `init` has
+  not yet set is built, by reading the helper's body: "A call `init` makes counts
+  as a read".) The entry the compiler builds runs the stitched init
   and final round `main`. **A package the
   program reaches only through other packages has its `init` and `final` run**:
   an include file imports, and the package lines list the whole closure ("A
@@ -2913,8 +3129,11 @@ a reference names is a type, and that is what is built.
   `test_an_indirect_package_runs_its_init_once`). An include file that does not
   declare an `init` leaves it unrun, as for a direct import. Jon's chaining
   idea (`WI\first-congo-milestone.md`) stays open for the entry-trait
-  conversation; nothing now needs it for a package. ⚠ **A generic instance
-  only a package uses is still not run** ("Init and final").
+  conversation; nothing now needs it for a package. **A generic instance
+  only a package uses is run too**, because the package's include file records
+  it ("Generating the include file": the `__uses` function), so the program's
+  compile builds the instance and `pgmInstanceOrder` places it
+  (`module_generic_pkguse`, `module_generic_pkguseonce`).
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole
@@ -2940,9 +3159,11 @@ a reference names is a type, and that is what is built.
   `init` (`ErrorDupName`). Written private, as the scenarios write them, neither
   leaves its module.
 - **An `init`'s globals are cleared only round its own flow pass.** A function
-  `init` calls reads the module's globals as holding values, whatever `init` has
-  assigned by then: that is the unbuilt `initpure` rule, and reading one early
-  that way reads zeroed storage.
+  `init` calls is itself checked with the module's globals holding values; what
+  it reads is judged at the call in `init` (`modInitCall`), through the module's
+  own functions and methods. A call that cannot be followed (an extern, a
+  function reference, a virtual call, a closure) is not, and reading a global early that way reads
+  zeroed storage.
 - **Where a module's defaults are taken decides who sees them.** A copy made at
   the end of the module's fold pass is read by every module folding from it;
   one the fallback in `pgmNameRes` makes, after the fold passes, is not — no
@@ -2997,8 +3218,8 @@ a reference names is a type, and that is what is built.
   re-export not yet arrived — a field's type, say — is reported missing beside
   the loop, and the fold passes do not retry it: a struct is resolved once.
   Measured: `alpha` imports `beta`, then re-exports `delta`'s `Inner`, and
-  declares `struct Box { pub v Inner use get; }`; `beta` imports `alpha` and
-  writes `mut g alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
+  declares `struct Box { pub v: Inner use get; }`; `beta` imports `alpha` and
+  writes `var g: alpha.Box = alpha.Box(delta.Inner(3i64)) use get;`. The loop is
   reported, then `Inner` unknown in `Box`, and `get` failing to fold: three
   diagnostics where one is the cause. The global's type itself waits
   for a late name (`modFoldAwaits`); what that type's declaration names does not.

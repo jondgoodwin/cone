@@ -39,17 +39,19 @@ typedef struct FoldClause {
 // or another copy, so the chain always ends at a declared field. A copy lives
 // in the type's namespace only, never in its field list.
 typedef struct FieldDclNode {
-    IExpNodeHdr;               // 'vtype': field's type
-    Name *namesym;
+    DclScopeHdr;               // 'vtype': field's type; namesym; scope (unused); index: field's index within the type
     INode *value;              // Default value (NULL if not initialized)
     INode *perm;               // Permission type (often mut or imm)
     FoldClause *fold;          // The field's fold clause, or NULL
     struct FieldDclNode *hop;  // On a folded copy: the field of this type it is reached through; NULL on a declared field
     Name *via;                 // On a type body's 'use' node: the method the body is lent through ('use str via view'); else NULL
-    uint16_t index;           // field's index within the type
     uint16_t vtblidx;          // field's index within the type's vtable
     uint32_t lifeslots;        // The slots of its struct's declared lifetimes it holds (lifeFieldSlots)
     uint8_t lifeknown;         // 'lifeslots' is settled
+    Name *via2;                // On a type body's 'use' node: a second lender ('use Array[T] via view, viewMut, viewUni'); which permission each lends is read from its return type
+    Name *via3;                // ... and a third
+    struct GenName *gen;       // Written in a '#each #f in #fields(T)' in a generic struct's braces, under a name made of the described field's (meta/fields.h): the instance has one of this per field of T. NULL on any other field
+    INode *hashcond;           // Declared under a '#if' on a type parameter of its generic type: the condition ('where' clauses joined by '!', '&&', '||') an instance has the field under, or NULL (parsemeta.c)
 } FieldDclNode;
 
 

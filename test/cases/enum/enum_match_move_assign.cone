@@ -1,0 +1,86 @@
+// A match binding that is moved and then assigned over, finalized the right
+// number of times.
+//
+// 'case var A(a)' binds a place of the arm that holds the variant's payload by
+// value. Moving the payload out of it ('takeA(a)') leaves the place holding
+// nothing, and assigning a new value over the place then has no old value to
+// finalize; assigned over without a move, the old value is finalized first. Every
+// path ends with the arm's place finalized once, so each count below is two:
+// the first value finalized by whoever has it last, the second at the end of the
+// arm. The moved-only arm, which leaves nothing at the end, counts one.
+//
+// The paths are a move then an assignment, a move on one path only (taken
+// and not taken) then an assignment, and, for contrast, an assignment alone.
+
+mod enum_match_move_assign;
+
+import stdio use *;
+
+var @threadlocal fins = 0i64;
+
+struct Fin {
+  pub id: i32;
+  fn final(self: &uni) { fins = fins + 1; }
+}
+
+enum E {
+  struct A { pub f: Fin; }
+  struct B { pub n: i32; }
+}
+use E;
+
+fn takeA(a: A) {}
+
+fn show(label: &str) {
+  printStr(label);
+  printStr(" = ");
+  printInt(fins);
+  printStr("\n");
+  fins = 0;
+}
+
+fn assignOnly() {
+  let e: E = A(Fin(1));
+  match e {
+    case var A(a) { a = A(Fin(2)); }
+    else { }
+  }
+}
+
+fn moveThenAssign() {
+  let e: E = A(Fin(1));
+  match e {
+    case var A(a) { takeA(a); a = A(Fin(2)); }
+    else { }
+  }
+}
+
+fn moveOnOnePath(c: bool) {
+  let e: E = A(Fin(1));
+  match e {
+    case var A(a) { if c { takeA(a); } a = A(Fin(2)); }
+    else { }
+  }
+}
+
+fn moveOnly() {
+  let e: E = A(Fin(1));
+  match e {
+    case var A(a) { takeA(a); }
+    else { }
+  }
+}
+
+fn main() i32 {
+  assignOnly();
+  show("assign only");
+  moveThenAssign();
+  show("moved then assigned");
+  moveOnOnePath(true);
+  show("moved on the path taken, then assigned");
+  moveOnOnePath(false);
+  show("moved on the path not taken, then assigned");
+  moveOnly();
+  show("moved only");
+  0i32
+}

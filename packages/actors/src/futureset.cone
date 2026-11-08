@@ -1,0 +1,584 @@
+// FutureSet[T]: waiting on several futures of one type (the package's header,
+// FUTURES; the design is the work item "waiting on several futures").
+//
+//   var set = actors.FutureSet[u64].make();
+//   set.start(fn() Future[u64] {peer.count(1u64)});  // the form to reach for: dropping the set cancels it
+//   set <- peer.count(2u64);                 // or set.add(fut): returns a SetKey; dropping the set cannot cancel it
+//   while true {
+//     match await set.next() {               // in the order the set learned of them
+//       case let Some((k, r)) { ... }
+//       case is None { break; }              // the set is empty
+//     }
+//   }
+//   let rest = await set;                    // or: every member, in the order added
+//   await actors.allOk(set)                  // or, for a set of Results: all Ok in the order added, or the
+//                                            // first error with the rest cancelled (SetError; nextOk is next())
+//
+// A set belongs to the actor that makes it and stays in it (it is not
+// Sendable: its queue has no lock, because every arrival is appended by that
+// actor's own thread). THE CORE. The set's state is one allocation (SetCore),
+// so that the waiters, which point to it, find it at a stable address while the
+// handle (FutureSet) moves about; the handle owns one count of it and each
+// member not yet arrived owns one. The counts are plain, not atomic: they are
+// changed only by the owning actor, one message at a time. The core is freed
+// when the handle is gone (dropped, or spent by 'await set') and the last late
+// member has been dispatched.
+//
+// ONE WAITER PER MEMBER, registered once, at 'add' (futureJoin): a Waiter whose
+// resume function is setArrive and whose id is the address of the member's
+// record (SetMember: the core and the member's key). Its future's arrival
+// publishes a reply slot in the owning actor's ring as an 'await' parked on the
+// future would, so setArrive runs on that actor's thread, at dispatch, and
+// appends the member to the queue; if a 'next()' or an 'await set' is parked
+// for it, it answers that envelope. A member that has arrived before 'add' goes
+// straight to the queue. A member whose producer ended without answering is
+// resumed as well (Waiter.keep) and comes out as Err(Abandoned): in a set that
+// is an error the caller sees, never a panic.
+//
+// DROPPING THE SET cancels its group, a child of the group the set was made in;
+// members started with 'start' send their request in that group, so a
+// cooperative callee sees the cancel (actors.isCancelled, checkCancelled). A
+// future 'add'ed was sent already, in whatever group sent it: dropping the set
+// does not cancel that one, only drops its reply when it comes late.
+
+// What 'add' gives back: the member's number, from 0, in the order added
+pub struct SetKey {
+  pub n: u64;
+}
+
+// A member's request ended without an answer: the behaviour owing it ended
+// without answering. 'request' is the request's number, as a panic names it
+pub struct Abandoned {
+  pub request: u64;
+}
+
+// A member as it waits: where the set's core is, and which member it is
+struct SetMember {
+  pub core: *u8;
+  pub key: u64;
+}
+
+// A member arrived, in the queue until 'next()' or 'await set' takes it
+struct SetArrival[T] {
+  pub key: u64;
+  pub res: Result[T, Abandoned];
+}
+
+struct SetCore[T] {
+  pub refs: usize;                     // the handle's one, and one for each member not yet arrived
+  pub owner: *Header;                  // the actor the set lives in, once the first member is added
+  pub group: CancelGroup;              // the set's group
+  pub added: u64;
+  pub arrived: u64;
+  pub queue: Deque[SetArrival[T]];     // arrived and not yet taken, in order of arrival
+  pub parked: Option[Reply];           // the envelope of the 'next()' or 'await set' waiting
+  pub parkedAll: bool;                 // ... and which it is
+  pub dead: bool;                      // the handle is gone: late arrivals are dropped
+  pub hook: &fn(c: *u8);               // what an arrival does while 'allOk' or 'nextOk' is parked
+  pub hooked: bool;
+}
+
+pub struct FutureSet[T] is Move {
+  core: *u8;
+
+  // An empty set, in the group the caller works in (a child of it)
+  pub fn make() FutureSet[T] {
+    let core = libc.malloc(mem.sizeof[SetCore[T]]()) as *SetCore[T];
+    if core as usize == 0usize {
+      die("actors: out of memory for a future set");
+    }
+    mem.writeRaw[SetCore[T]](core, SetCore[T](1usize, null, currentGroup().child(), 0u64, 0u64,
+      Deque[SetArrival[T]](), None[Reply], false, false, &noHook, false));
+    FutureSet[T](core as *u8)
+  }
+
+  // The future joins the set; its result will come out of 'next()' or 'await
+  // set'. The key says which one it is. A future that has arrived already is
+  // queued at once. Reach for 'start' first: a future given to 'add' was sent
+  // already, in whatever group sent it, so dropping the set cannot cancel it;
+  // it can only drop its reply when that comes late
+  pub fn add(self: &mut, fut: Future[T]) SetKey {
+    let core = self.core as *SetCore[T];
+    setOwner[T](core);
+    let key = (*core).added;
+    (*core).added = key + 1u64;
+    var f = fut;
+    let at = &mut f as *Future[T] as *u8;
+    if !futureReady(at) {
+      let h = (*core).owner;
+      let m = libc.malloc(mem.sizeof[SetMember]()) as *SetMember;
+      if m as usize == 0usize {
+        die("actors: out of memory for a future set's member");
+      }
+      (*m).core = core as *u8;
+      (*m).key = key;
+      holdHeader(h);
+      var rf = &setArrive[T];
+      let run = mem.readRaw[*u8](&mut rf as *(*u8));
+      if futureJoin(at, h, run, u64.from(m as usize)) {
+        (*core).refs = (*core).refs + 1usize;
+        mem.forget[Future[T]](f);
+        return SetKey(key);
+      }
+      // it arrived meanwhile
+      libc.free(m as *u8);
+      let release = (*h).release;
+      release(h);
+    }
+    setDeliver[T](core, key, at);
+    mem.forget[Future[T]](f);
+    SetKey(key)
+  }
+
+  // The same, written 'set <- fut'
+  pub fn append overload `<-`(self: &mut, fut: Future[T]) {
+    self.add(fut);
+  }
+
+  // A request sent in the set's group and added: 'f' makes the request, and runs
+  // with the set's group as the group it sends in, so that dropping the set
+  // cancels it. 'set.start(fn() Future[u64] {peer.count(1u64)})'
+  pub fn start[F: fn() Future[T]](self: &mut, f: F) SetKey {
+    let core = self.core as *SetCore[T];
+    let prev = curGroup;
+    curGroup = &(*core).group as *CancelGroup as usize;
+    let fut = f();
+    curGroup = prev;
+    self.add(fut)
+  }
+
+  // How many members have been added, and how many have arrived (taken or not)
+  pub fn len(self: &) usize {usize.from((*(self.core as *SetCore[T])).added)}
+  pub fn pending(self: &) usize {
+    let core = self.core as *SetCore[T];
+    usize.from((*core).added - (*core).arrived)
+  }
+
+  // The next result, in the order the set learned of them, with the member's
+  // key; None once every member has been taken. That is not strict completion
+  // order, since no global completion order exists across actors. A member
+  // whose request went unanswered is an Err
+  pub fn next(self: &mut) Awaitable[Option[(SetKey, Result[T, Abandoned])]] {
+    Awaitable[Option[(SetKey, Result[T, Abandoned])]].of(self.core, &nextRun[T], &nextDrop)
+  }
+
+  // 'await set': every member is waited for, and the results not yet taken by
+  // 'next()' come out in the order the members were added. The set is used up
+  pub fn await(self: FutureSet[T]) Awaitable[List[Result[T, Abandoned]]] {
+    var me = self;
+    let core = me.core;
+    me.core = null;
+    Awaitable[List[Result[T, Abandoned]]].of(core, &allRun[T], &allDrop[T])
+  }
+
+  // The handle gone: the group cancelled, what arrives late dropped
+  fn final(self: &uni) {
+    if core as usize != 0usize {
+      setClose[T](core as *SetCore[T]);
+    }
+  }
+}
+
+fn nextDrop(ctx: *u8) {}
+fn noHook(c: *u8) {}
+
+// The actor the set lives in: that of the first member added; a set used from
+// another is a program error
+fn setOwner[T](core: *SetCore[T]) {
+  let h = curActor as *Header;
+  if h as usize == 0usize {
+    die("actors: a FutureSet is used from outside an actor's behaviour");
+  }
+  if (*core).owner as usize == 0usize {
+    (*core).owner = h;
+  } else if (*core).owner != h {
+    die("actors: a FutureSet is used from two actors; it stays in the actor that made it");
+  }
+}
+
+// A member's future has its ending, and lies at 'at': its value or its
+// abandoning is queued under 'key'. The consumer's reference is let go
+fn setDeliver[T](core: *SetCore[T], key: u64, at: *u8) {
+  let c = cellAt(at);
+  let s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
+  let release = (*c).release;
+  let payload = *(at as **u8);
+  if s == futArrived {
+    let v = mem.readRaw[T]((*c).value as *T);
+    if mem.needsFinal[T]() {
+      futureTaken(at);
+    }
+    release(payload);
+    setPush[T](core, key, Ok[T, Abandoned](v));
+  } else {
+    let id = (*c).owesId;
+    release(payload);
+    setPush[T](core, key, Err[T, Abandoned](Abandoned(id)));
+  }
+}
+
+// A reply slot reached the owning actor: the member's future has its ending.
+// The resume function of every member's waiter
+fn setArrive[T](st: *u8, id: u64, data: *u8) {
+  let m = usize.from(id) as *SetMember;
+  let core = (*m).core as *SetCore[T];
+  let key = (*m).key;
+  libc.free(m as *u8);
+  setDeliver[T](core, key, data);
+  setRelease[T](core);
+}
+
+fn setPush[T](core: *SetCore[T], key: u64, res: Result[T, Abandoned]) {
+  (*core).arrived = (*core).arrived + 1u64;
+  if (*core).dead {
+    return;
+  }
+  (*core).queue.push(SetArrival[T](key, res));
+  setWake[T](core);
+}
+
+// An arrival may be what a parked 'next()' or 'await set' waits for
+fn setWake[T](core: *SetCore[T]) {
+  if !(*core).parked.isTrue() {
+    return;
+  }
+  if (*core).hooked {
+    (*core).hooked = false;
+    let f = (*core).hook;
+    f(core as *u8);
+    return;
+  }
+  if (*core).parkedAll {
+    if (*core).arrived != (*core).added {
+      return;
+    }
+    match (*core).parked.take() {
+      case let Some(rp) {
+        answerNow[List[Result[T, Abandoned]]](rp, setCollect[T](core));
+        setRelease[T](core);
+      }
+      case is None {}
+    }
+    return;
+  }
+  match (*core).parked.take() {
+    case let Some(rp) {
+      answerNow[Option[(SetKey, Result[T, Abandoned])]](rp, setTake[T](core));
+    }
+    case is None {}
+  }
+}
+
+// The front of the queue, as 'next()' gives it: None where the queue is empty
+fn setTake[T](core: *SetCore[T]) Option[(SetKey, Result[T, Abandoned])] {
+  match (*core).queue.popFront() {
+    case let Some(a) {
+      Some[(SetKey, Result[T, Abandoned])]((SetKey(a.key), a.res))
+    }
+    case is None {None[(SetKey, Result[T, Abandoned])]}
+  }
+}
+
+// Largest key first
+fn setOrder[T](a: &SetArrival[T], b: &SetArrival[T]) i32 {
+  if a.key < b.key {1i32} else if a.key > b.key {-1i32} else {0i32}
+}
+
+// Every result in the queue, by key: what 'await set' gives
+fn setCollect[T](core: *SetCore[T]) List[Result[T, Abandoned]] {
+  var items = List[SetArrival[T]]();
+  while true {
+    match (*core).queue.popFront() {
+      case let Some(a) {items.push(a);}
+      case is None {break;}
+    }
+  }
+  // largest key first, so that 'pop' gives them in the order added
+  items.sortBy(&setOrder[T]);
+  var out = List[Result[T, Abandoned]]();
+  while true {
+    match items.pop() {
+      case let Some(a) {out.push(a.res);}
+      case is None {break;}
+    }
+  }
+  out
+}
+
+// 'next()' starts: answered at once if the queue holds a result, or the set
+// is empty; else the envelope waits for the next arrival
+fn nextRun[T](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[T];
+  if !(*core).queue.isEmpty() || (*core).arrived == (*core).added {
+    answerNow[Option[(SetKey, Result[T, Abandoned])]](rp, setTake[T](core));
+    return;
+  }
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).parkedAll = false;
+}
+
+// 'await set' starts: answered at once if every member has arrived
+fn allRun[T](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[T];
+  if (*core).arrived == (*core).added {
+    answerNow[List[Result[T, Abandoned]]](rp, setCollect[T](core));
+    setRelease[T](core);
+    return;
+  }
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).parkedAll = true;
+}
+
+// 'await set' died unawaited: the set is dropped as its handle would be
+fn allDrop[T](ctx: *u8) {
+  setClose[T](ctx as *SetCore[T]);
+}
+
+// The handle is gone: what still runs in the group is cancelled, the queue's
+// results are dropped, and so are the results to come
+fn setClose[T](core: *SetCore[T]) {
+  (*core).dead = true;
+  let was = (*core).group.cancel();
+  while true {
+    match (*core).queue.popFront() {
+      case let Some(a) {}
+      case is None {break;}
+    }
+  }
+  setRelease[T](core);
+}
+
+// One count of the core let go; the last frees it
+fn setRelease[T](core: *SetCore[T]) {
+  (*core).refs = (*core).refs - 1usize;
+  if (*core).refs == 0usize {
+    mem.finalize[SetCore[T]](core);
+    libc.free(core as *u8);
+  }
+}
+
+// Park a member's continuation on the future lying at fut: a Waiter whose
+// resume is 'run' with 'id', to the actor h, of which the caller took a count.
+// Whether it parked: not if the future has its ending by now. If it did, the
+// future's reference has moved into the waiter (futureRegister's shape)
+fn futureJoin(fut: *u8, h: *Header, run: *u8, id: u64) bool {
+  let c = cellAt(fut);
+  let wp = &(*c).waiters as **Waiter;
+  var head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire);
+  if head as usize == waitersClosed {
+    return false;
+  }
+  let w = libc.malloc(mem.sizeof[Waiter]()) as *Waiter;
+  if w as usize == 0usize {
+    die("actors: out of memory for a waiter");
+  }
+  waiterAllocs.addOrdered(1u64, MemOrder.Relaxed);
+  (*w).fut = *(fut as **u8);
+  (*w).to = h;
+  (*w).run = run;
+  (*w).id = id;
+  (*w).hasId = true;
+  (*w).keep = true;
+  while head as usize != waitersClosed {
+    (*w).next = head;
+    var seen = head;
+    var done = false;
+    seen, done = mem.atomicCompareSwap[*Waiter](wp, head, w, MemOrder.AcqRel, MemOrder.Acquire);
+    if done {
+      return true;
+    }
+    head = seen;
+  }
+  libc.free(w as *u8);
+  false
+}
+
+// ---------------------------------------------------------------------------
+// allOk and nextOk: a set of Results
+// ---------------------------------------------------------------------------
+
+// Why a member of a set of Results is not a value: its request failed with the
+// member's own error, or ended without an answer (Abandoned). A generic error
+// type cannot be assumed to have a place for the second, so it has its own
+pub use SetError;
+pub enum SetError[E] {
+  MemberFailed(E);
+  MemberGone(Abandoned);
+}
+
+// 'await allOk(set)': every member's value, in the order added, as soon as all
+// have arrived Ok; or, the moment one arrives as an Err (or abandoned), that
+// error, the set dropped as its handle would be: what still runs in the set's
+// group is cancelled and the replies to come are dropped. A member given to
+// 'add' rather than 'start' was sent in another group, so allOk cannot cancel
+// it, only drop its late reply: the same rule as dropping the set. The set is used up
+pub fn allOk[V, E](set: FutureSet[Result[V, E]]) Awaitable[Result[List[V], SetError[E]]] {
+  var me = set;
+  let core = me.core;
+  me.core = null;
+  Awaitable[Result[List[V], SetError[E]]].of(core, &allOkRun[V, E], &allDrop[Result[V, E]])
+}
+
+// 'await nextOk(&mut set)': what 'set.next()' gives, with a member's failure
+// and an abandoned one both on the Err side, as a SetError[E]
+pub fn nextOk[V, E](set: &mut FutureSet[Result[V, E]]) Awaitable[Option[(SetKey, Result[V, SetError[E]])]] {
+  Awaitable[Option[(SetKey, Result[V, SetError[E]])]].of(set.core, &nextOkRun[V, E], &nextDrop)
+}
+
+// An arrival that holds a value goes back to the queue's end; one that does not
+// is the error it comes out as
+fn okVet[V, E](core: *SetCore[Result[V, E]], a: SetArrival[Result[V, E]]) Option[SetError[E]] {
+  let key = a.key;
+  match a.res {
+    case let Ok(inner) {
+      match inner {
+        case let Ok(v) {
+          (*core).queue.push(SetArrival[Result[V, E]](key, Ok[Result[V, E], Abandoned](Ok[V, E](v))));
+          None[SetError[E]]
+        }
+        case let Err(e) {Some[SetError[E]](MemberFailed[E](e))}
+      }
+    }
+    case let Err(ab) {Some[SetError[E]](MemberGone[E](ab))}
+  }
+}
+
+// The queue's arrivals vetted, oldest first (all of them, or only the newest, which
+// is all an arrival while parked needs): the first failure, if any
+fn okScan[V, E](core: *SetCore[Result[V, E]], last: bool) Option[SetError[E]] {
+  if last {
+    match (*core).queue.pop() {
+      case let Some(a) {return okVet[V, E](core, a);}
+      case is None {return None[SetError[E]];}
+    }
+  }
+  var n = (*core).queue.len();
+  while n > 0usize {
+    match (*core).queue.popFront() {
+      case let Some(a) {
+        match okVet[V, E](core, a) {
+          case let Some(err) {return Some[SetError[E]](err);}
+          case is None {}
+        }
+      }
+      case is None {break;}
+    }
+    n = n - 1usize;
+  }
+  None[SetError[E]]
+}
+
+// Every value in the queue, by key (all have arrived Ok)
+fn okCollect[V, E](core: *SetCore[Result[V, E]]) List[V] {
+  var items = List[SetArrival[Result[V, E]]]();
+  while true {
+    match (*core).queue.popFront() {
+      case let Some(a) {items.push(a);}
+      case is None {break;}
+    }
+  }
+  items.sortBy(&setOrder[Result[V, E]]);
+  var out = List[V]();
+  while true {
+    match items.pop() {
+      case let Some(a) {
+        match a.res {
+          case let Ok(inner) {
+            match inner {
+              case let Ok(v) {out.push(v);}
+              case let Err(e) {die("actors: allOk collected a failure");}
+            }
+          }
+          case let Err(ab) {die("actors: allOk collected an abandoned member");}
+        }
+      }
+      case is None {break;}
+    }
+  }
+  out
+}
+
+// The envelope rp is answered if the arrivals decide it; else it waits for the next
+fn allOkStep[V, E](core: *SetCore[Result[V, E]], rp: Reply, last: bool) {
+  match okScan[V, E](core, last) {
+    case let Some(err) {
+      answerNow[Result[List[V], SetError[E]]](rp, Err[List[V], SetError[E]](err));
+      setClose[Result[V, E]](core);
+      return;
+    }
+    case is None {}
+  }
+  if (*core).arrived == (*core).added {
+    answerNow[Result[List[V], SetError[E]]](rp, Ok[List[V], SetError[E]](okCollect[V, E](core)));
+    setRelease[Result[V, E]](core);
+    return;
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).hook = &allOkHook[V, E];
+  (*core).hooked = true;
+}
+
+fn allOkHook[V, E](c: *u8) {
+  let core = c as *SetCore[Result[V, E]];
+  match (*core).parked.take() {
+    case let Some(rp) {allOkStep[V, E](core, rp, true);}
+    case is None {}
+  }
+}
+
+fn allOkRun[V, E](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[Result[V, E]];
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  allOkStep[V, E](core, rp, false);
+}
+
+fn okTake[V, E](core: *SetCore[Result[V, E]]) Option[(SetKey, Result[V, SetError[E]])] {
+  match (*core).queue.popFront() {
+    case let Some(a) {
+      let key = SetKey(a.key);
+      match a.res {
+        case let Ok(inner) {
+          match inner {
+            case let Ok(v) {Some[(SetKey, Result[V, SetError[E]])]((key, Ok[V, SetError[E]](v)))}
+            case let Err(e) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberFailed[E](e))))}
+          }
+        }
+        case let Err(ab) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberGone[E](ab))))}
+      }
+    }
+    case is None {None[(SetKey, Result[V, SetError[E]])]}
+  }
+}
+
+fn nextOkHook[V, E](c: *u8) {
+  let core = c as *SetCore[Result[V, E]];
+  match (*core).parked.take() {
+    case let Some(rp) {
+      answerNow[Option[(SetKey, Result[V, SetError[E]])]](rp, okTake[V, E](core));
+    }
+    case is None {}
+  }
+}
+
+fn nextOkRun[V, E](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[Result[V, E]];
+  if !(*core).queue.isEmpty() || (*core).arrived == (*core).added {
+    answerNow[Option[(SetKey, Result[V, SetError[E]])]](rp, okTake[V, E](core));
+    return;
+  }
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).parkedAll = false;
+  (*core).hook = &nextOkHook[V, E];
+  (*core).hooked = true;
+}

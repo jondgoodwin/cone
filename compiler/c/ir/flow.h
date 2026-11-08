@@ -21,6 +21,7 @@
 
 typedef struct VarDclNode VarDclNode;
 typedef struct FnSigNode FnSigNode;
+typedef struct BlockNode BlockNode;
 
 // Why a function would need a walk that follows borrows along each path: the
 // gate, set as the walk meets each trigger; fnDclTypeCheck reads it, -V 2 counts it.
@@ -28,13 +29,16 @@ enum FlowGate {
     FlowGateHolder = 0x1,   // a local declared, assigned or swapped whose type carries a borrow
     FlowGateResult = 0x2,   // a value a scope hands out carrying a borrow, a bare borrowed reference too
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, or a struct holding
-                            // such a writable borrow, beside another argument carrying one
+                            // such a writable borrow, beside another argument carrying one; or a literal
+                            // of two such values (flowGateJoinAsk)
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
     FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
     FlowGateShape  = 0x20,  // a method call lending a borrow of a value that may change shape (a list, a string)
                             // reached through a reference, transient or not, in a function that also makes a
                             // call with a writable argument: that call could reshape it by another name
                             // (reshape.h). The bodies of the functions called are checked before its walk
+    FlowGateStatic = 0x40,  // a struct or variant literal giving a value carrying a borrow to a field whose
+                            // type holds only ''static' borrows: the loan walk checks its loans are global
 };
 
 // How many operands' borrows the gate remembers waiting at once; past that,
@@ -51,14 +55,17 @@ typedef struct FlowState {
     uint8_t jumped;     // Set by blockFlow and ifFlow: every path through the block or 'if' jumped away
     uint8_t shapelend;  // FlowGateShape: a method lending a borrow of a value that may change shape was met
     uint8_t shapewrite; // FlowGateShape: a call with a writable argument was met
-    uint8_t shapeglobal;    // FlowGateShape: the borrow was lent from a 'mut' global, which any call may write
+    uint8_t shapeglobal;    // FlowGateShape: the borrow was lent from a 'var' global, which any call may write
+    uint8_t inflightkeep;   // FlowGateInCall: the call or literal about to be walked is an operand whose value
+                            // may carry a borrow, so what its own operands lend waits for the one around it too
+    uint8_t intrinsic;  // The function is an '@intrinsic' (a fallback body), which may move a value out through a raw pointer
     Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     Nodes *yields;     // Each 'yield' the walk met, a generator's seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
 
-// The walk's conditional depth: how many 'if' arms, later 'elif' conditions,
-// right operands of 'and' or 'or', and loop bodies enclose the node being
+// The walk's conditional depth: how many 'if' arms, later 'else if' conditions,
+// right operands of '&&' or '||', and loop bodies enclose the node being
 // walked. A variable records it as it is declared (VarDclNode.flowdepth); a
 // tracked variable changed deeper than that may differ by path (flowDropNote).
 extern uint16_t flowDepth;
@@ -78,6 +85,15 @@ void flowVarRollback(uint32_t mark);
 // Join the paths that went on after the fork -- 'npaths' of them, those that
 // changed nothing left out of 'paths' -- into the state at the fork
 void flowVarJoin(FlowVarPath *paths, uint32_t npaths);
+// A loop's body is being walked: each 'break' or 'continue' to it ends its path
+// there, and hands the loop the state it leaves (flowLoopJump: 0 when 'target'
+// is no loop being walked, and the path goes on). At the loop's end the breaks'
+// states are joined into the state after the loop, a variable a break's path did
+// not write taking the head's state: the entry's, the continues' and the body's
+// end's, when 'bodylive' says it is reached
+void flowLoopBegin(BlockNode *loop);
+int flowLoopJump(BlockNode *target, int iscontinue);
+void flowLoopEnd(int bodylive);
 
 // Is this variable one whose state the path walk follows for drop flags: a local
 // or a parameter whose value moves or has something to do as it dies?
@@ -158,11 +174,27 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args);
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
 // A conversion may make an owning virtual reference of a value holding a borrow
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
+// A literal may give a field holding only ''static' borrows a value holding one
+void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val);
+// A literal of two or more values that may hold borrows, one a way to store
+void flowGateJoinAsk(FlowState *fstate, Nodes *elems);
 // A call returns a borrow and may be a method lending from a value that changes shape
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
-#define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
+// A call's or literal's operands are about to be walked: whether it is itself an
+// operand whose value may carry a borrow (flowGateOperandNext), read once and cleared
+static inline uint8_t flowGateOperandsKeep(FlowState *fstate) {
+    uint8_t keep = fstate->inflightkeep;
+    fstate->inflightkeep = 0;
+    return keep;
+}
+// Its operands were walked: what they lend stops waiting, unless its own value
+// may carry one of those borrows into the operands after it ('keep'): an argument
+// whose value is a borrow into a source ('s.view()', 'first(&mut b)') keeps that
+// source borrowed through the later arguments and the call they are made for
+#define flowGateOperandsEnd(fstate, mark, keep) \
+    do { if (!(keep)) (fstate)->inflightcnt = (mark); } while (0)
 
 // A variable is named while an operand's borrow waits: gate trigger when it is
 // the one borrowed. Called only when 'inflightcnt' is not zero.
@@ -182,14 +214,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep);
 // read when the reference's permission grants none
 void flowLoadThroughRef(FlowState *fstate, INode **refp);
 
-// An initializer's 'self &new' (doc/reference/refinitdrop.html). It is reached
+// An initializer's 'self: &new' (doc/manual/rec-methods.html#initfinal). It is reached
 // only through itself -- '*self', a field, a method called on it -- and only
 // once '*self = value' has filled it on every path; the init returns only once
 // it is filled. 'flowThroughSelf' is set while a use through it is walked, so
 // that nameuseFlow refuses every other use, which would let it escape.
 // The variable an expression names when it is an init's 'self', or NULL
 VarDclNode *flowNewSelf(INode *node);
-// Is a variable an init's 'self &new'?
+// Is a variable an init's 'self: &new'?
 int flowNewSelfVar(VarDclNode *var);
 extern int flowThroughSelf;
 // Walk a use through 'self' (its node at 'selfp'), refused before it is filled
@@ -227,7 +259,18 @@ typedef struct {
     INode *exp;
     int16_t *counts;   // points to array of counts. NULL if not tuple
     int16_t amt;       // count nbr if not a tuple, # of counts if tuple
+    uint8_t cand;      // a local's or parameter's read that may be its last use (RefCand...), see flowHandleMoveOrCopyLast
 } RefCountNode;
+
+// RefCountNode.cand: a kept read of a whole counted local or parameter, handed to a new holder, is a
+// candidate to be that variable's last use, and so a move. The path walk decides (flowpath.c); a
+// candidate never confirmed stays the counted copy it is
+enum {
+    RefCandNone = 0,
+    RefCandOpen = 1,        // asked, not decided
+    RefCandFailed = 2,      // some path reads the variable again, or a live borrow of it conflicts: stays a copy
+    RefCandMoved = 3,       // decided: the node was removed and the name use marked FlagMoveOut
+};
 
 // Hollow release: 'var' holds a sole owning reference whose referent, or an
 // element of it, was moved out, and this releases it without what moved.
@@ -269,15 +312,16 @@ INode *flowLockGive(VarDclNode *guard, INode *at);
 // read or thrown away (flowTempRead), or borrowed (flowTempBorrowed); generation
 // keeps the value in a slot of its own and finalizes it, newest first, at the
 // end of the statement that made it, or of the 'if' or 'while' condition, or
-// of the right operand of 'and' or 'or', that made it.
+// of the right operand of '&&' or '||', that made it.
 // A borrow of it may not be used once it is gone: the loan walk roots a borrow
 // of it in 'walkvar', a stand-in variable that ends where it dies
 // (flowpath.c), so a variable holding the borrow and used later is refused.
 // 'moved' holds each move-source expression that took its referent, or an
 // element of it, out through it, as a HollowNode's does: it is released
-// hollow. 'kept' says it is never finalized: a pointer into it may outlive
-// its statement (flowTempEscape), or a value moved out of it by value left it
-// with a hole, as a local array is left when an element moves out of it.
+// hollow. 'kept' says it is never finalized by its statement: a value moved
+// out of it by value left it with a hole, as a local array is left when an
+// element moves out of it, or an extending borrow made it a hidden local of
+// its block (varDclExtend).
 typedef struct {
     IExpNodeHdr;
     INode *exp;
@@ -294,13 +338,6 @@ void flowTempRead(INode **nodep);
 // slot, and the loan walk a root to end with its statement. One whose death
 // does nothing is 'kept', as nothing finalizes it.
 void flowTempBorrowed(INode **nodep);
-// How many temporaries flow has made: a statement that made none needs no walk
-extern uint32_t flowTempCount;
-// The walk over a statement that made temporaries, once flow has walked it:
-// each temporary that a pointer going out of the statement may point into is
-// kept. 'out' says the value of 'node' goes out of the statement: stored, or
-// handed back.
-void flowTempEscape(INode *node, int out);
 
 // What a drop flag holds at run time: which value, if any, its variable holds
 enum DropFlagState {
@@ -323,6 +360,12 @@ HollowNode *flowNewHollow(VarDclNode *var);
 
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
+
+// As flowHandleMoveOrCopy, for a value handed to one new holder (a call's argument, an initializer, a
+// single assignment's value, an allocation's value, a struct literal's field): a kept read of a whole
+// counted local or parameter is also a candidate for the variable's last use, which the path walk may
+// turn into a move
+void flowHandleMoveOrCopyLast(INode **nodep);
 
 // Deactivate the source of a value moved to a new holder (or say the move is illegal)
 void flowHandleMove(INode *node);

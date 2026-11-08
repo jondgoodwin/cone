@@ -1,0 +1,33 @@
+// A name only a function's result writes is unresolved until brand agreement binds it, and binds once: the
+// first arena's brand is what `'=a` stands for after `head = Some(ar.alloc(..))`, and a value of the second
+// arena's brand then meeting it is two brands, never one.
+//
+// Verdict: refuse, ErrorInvType (1013) at the second assignment.
+// Basis: an unresolved name may bind once; two names already bound to different brands never match. Both
+// arenas are locals of `build`, so each call to `alloc` mints a brand of its own.
+
+mod lifetime_inv_result_name_binds_once_refused;
+
+import stdio use *;
+import arena use *;
+
+struct Node['=a] {
+  pub val: i64;
+  pub next: Option[&'=a mut Node['=a]];
+}
+
+struct Chain['=a] {
+  pub ar: DynArena['=a];
+  pub first: Option[&'=a mut Node['=a]];
+}
+
+fn build() Chain['=a] {
+  var ar = DynArena.empty();
+  var br = DynArena.empty();
+  var head: Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+  head = Some(ar.alloc(Node(0, head)));
+  head = Some(br.alloc(Node(1, head)));   //~ ErrorInvType
+  Chain(ar, head)
+}
+
+fn main() {}

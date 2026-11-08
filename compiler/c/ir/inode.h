@@ -51,6 +51,15 @@ typedef struct INode {
     INodeHdr; \
     INode *vtype
 
+// What a name table slot's node must share, whether a variable or a field: the table may hold
+// either where a variable is expected, and varDclHook reads 'scope' through a VarDclNode.
+// VarDclNode and FieldDclNode both begin with this, so the overlay is by construction.
+#define DclScopeHdr \
+    IExpNodeHdr; \
+    Name *namesym; \
+    uint16_t scope; \
+    uint16_t index
+
 // The four groups a node can belong to
 typedef enum NodeGroup {
     StmtGroup,      // Statement nodes that return no value
@@ -143,7 +152,7 @@ enum NodeTags {
     AndLogicTag,    // and
     IsTag,          // ~~
     BlockTag,       // Block (list of statements)
-    IfTag,          // if .. elif .. else statement
+    IfTag,          // if .. else if .. else statement
     RefCountTag,    // (injected) adds holders to a counted reference's count
     HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
     DropFlagTag,    // (injected) a release that runs only when a variable's drop flag says it holds that value
@@ -158,13 +167,15 @@ enum NodeTags {
     AwaitReplyTag,  // (injected) the envelope of a request an 'await' sends, made where the seam's id is (AwaitReplyNode)
     YieldTag,       // 'yield x': a generator's seam, where its body hands the caller a value and waits to be resumed (YieldNode)
     SelfActorTag,   // 'selfactor': the actor's own handle, lowered at type check (SelfActorNode)
-    ClosureTag,     // 'fn (x i32) [n = 0] { ... }' or 'x => x * 2': a closure literal, lowered at type check to a value of a hidden struct (ClosureNode)
+    ClosureTag,     // 'fn (x: i32) [n = 0] { ... }' or 'x => x * 2': a closure literal, lowered at type check to a value of a hidden struct (ClosureNode)
+    DestructTag,    // 'x.(a, b)': the named fields of a value (DestructNode); type check lowers it to field accesses where the value stays whole
     AbsenceTag,   // unique, unclonable node for absence of info
 
     // Unnamed type node
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
-    RefTag,         // Reference (could become borrowtag/alloctag)
+    VectorTag,      // SIMD vector, 'Vector[T, N]' (VectorNode): a type that supports methods, lowered to LLVM's <N x T>
+    RefTag,        // Reference (could become borrowtag/alloctag)
     ArrayRefTag,    // Borrowed array reference, the slice ref (could become arrborrow tag)
     VirtRefTag,     // Virtual reference
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
@@ -219,6 +230,27 @@ enum NodeTags {
 // nothing can change; the refusal of a write to it says how to change the items instead.
 // 0x0800 is free on a variable as 0x0200 and 0x0400 are.
 #define FlagEachVar   0x0800        // VarDcl: a variable of an 'each' pass over a source (not a range)
+// The variable a macro's expansion binds a plain parameter's argument to,
+// '{ let a: T = arg; body }' (macroExpand): the parameter is evaluated once,
+// and the refusal of a write to it says that one the macro writes must be
+// 'lazy'. 0x0100 is free on a variable: the type flag that shares it is read
+// on types alone.
+#define FlagMacroBind 0x0100        // VarDcl: a macro's plain parameter, bound once by its expansion
+// A name of a declaration of several, 'let q, r = divmod(7, 2);' (parseDestructDcl). The parser
+// declares each name with no value, then the assignment that gives them their values, flagged
+// FlagDestructAssign. A name is not hooked until that assignment's values are resolved, so a value
+// cannot name a variable of the same declaration, and a name with no declared type takes the type
+// of the value it is given. 0x2000 is free on a variable: it is a name use's FlagHollowOut.
+#define FlagDestructDcl 0x2000      // VarDcl: a name of 'let a, b = values;', hooked and typed by its assignment
+#define FlagDestructAssign 0x2000   // Assign: the assignment that declares the names before it ('let a, b = values;')
+
+// A macro's value parameter written 'a: lazy T': its argument is substituted
+// whole wherever the parameter appears, rather than evaluated once
+#define FlagLazy      0x0001        // GenVarDcl: a macro parameter marked 'lazy'
+// A trait's associated type, 'type Cursor: Iterator[T];': a parameter of the
+// trait that no use writes, whose argument the type meeting it says, by an
+// alias it declares or by the shape of its methods (generic.c)
+#define FlagAssocType 0x0002        // GenVarDcl: a trait's associated type
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
@@ -268,29 +300,32 @@ enum NodeTags {
 // private member exactly where the method it stands in for could. Set only by
 // cloneFnCallNode, during a macro method's expansion.
 #define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
+#define FlagEachFailed 0x8000       // FnCall: a '#each #f in #fields(T)' among its arguments failed when the call was cloned (and said why); the call is not checked further
 // An index whose argument is a range, 'x[a..<b]', which a borrow makes a slice of
 // part of an array. Its arguments are the start and, unless the range runs to
-// the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '..',
+// the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '..=',
 // which includes it. Set only by the parser (parseIndexArgs). 0x0080 and 0x0100
 // are free on a FnCall: FirstAssign is a name use's, and the type flags that
 // use them are never read off an expression.
 #define FlagRange     0x0080        // FnCall: index argument is a range
-#define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('..')
+#define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('..=')
 // A literal written in brackets that a '+' allocation takes as its value,
 // '+Rc-mut Node[1]'. The allocation is refused by allocateTypeCheck itself
-// (ErrorPlusAlloc, naming 'new Rc[mut, Node](...)'), so a struct's literal is
+// (ErrorPlusAlloc, naming 'Rc[mut, Node](...)'), so a struct's literal is
 // not refused again as any other bracket construction is (ErrorStructBracket).
 // Set by allocateTypeCheck. 0x0200 is a declaration's
 // FlagPub, and a FnCall is no declaration.
 #define FlagAllocValue 0x0200       // FnCall: a struct literal that is an allocation's value
-// A construction written with 'new', 'new Point(1, 2)'. Set by the parser
-// (parseNew) on the node holding the type and the arguments; type check keeps it
+// A construction, 'Point(1, 2)': a type's name with parentheses, or 'new a[T](1)'
+// in a dynamic region. Set by the parser (parseNew) for 'new' and 'trynew', and by
+// name resolution (fnCallConstructNameRes) on a call of a type, on the node
+// holding the type and the arguments; type check keeps it
 // on what the construction is lowered to: the struct's literal (TypeLitTag) for
 // its implicit 'init', or a call of a declared 'init' that fills the value in
 // place (FnCallTag), whose 'self' generation supplies (genlNew). 0x0800 because
 // a FnCall's own flags stop below it and the type flags that use it are never
 // read off an expression.
-#define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'new T(...)'
+#define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'T(...)'
 // An allocation that may fail, 'trynew Rc[mut, Node](1)', set by the parser
 // (parseNew) beside FlagNew. Name resolution hands the construction the
 // resolved 'Option' in its methfld, which a construction has no other use for
@@ -302,7 +337,19 @@ enum NodeTags {
 // fnCallMethodTypeArgs asking what the name before an index of numbers is. Its
 // own check does not walk the receiver a second time, and clears this.
 // 0x2000 is free on a FnCall: FlagHollowOut is a name use's.
+// SHARES ITS BIT with FlagQuesProvisional (below), because a FnCall's 16 flag bits
+// are all taken. They cannot meet: only a member access (a node with a methfld)
+// is given this flag, and a '?' node has no methfld.
 #define FlagRcvChecked 0x2000       // FnCall: the receiver (objfn) is already type checked
+// A '?a' whose operand was a generic or macro parameter when name resolution met
+// it, so that '?' could not yet be told to be an Option type or the refused
+// spelling of an allocation (allocateQuesNameRes). The instance's clone
+// substitutes the argument, and fnCallTypeCheck asks again then.
+// SHARES ITS BIT with FlagRcvChecked (above), because a FnCall's 16 flag bits are
+// all taken. They cannot meet: FlagRcvChecked is given only to a node with a
+// methfld, and this node has none (allocateQuesNameRes asserts it where it sets
+// this flag).
+#define FlagQuesProvisional 0x2000  // FnCall: '?' over a parameter, to be told from a type once substituted
 // A variant is constructed with parentheses, 'Some(5)', and an empty one by its name
 // alone, 'None', 'Lamp.Red', 'None[i32]'; written in square brackets, 'Some[5]',
 // it is refused. Both are built as the one literal, a FnCall with FlagIndex
@@ -321,6 +368,8 @@ enum NodeTags {
 // 0x1000 on a FnCall: FlagPartNoPrior is flow's, long after type check clears it.
 #define FlagValueTermCall 0x1000    // FnCall: the last suffix of a value term, which may be an empty variant's construction
 #define FlagValueTermName 0x0002    // NameUse: a value term that is this name alone, which may be an empty variant's construction
+#define FlagInterpString 0x0008     // NameUse: the 'String' the parser wrote for an interpolated string `$"..."` met as a value; if no String is in scope, the diagnostic says what to import
+#define FlagTextLowered 0x0010      // NameUse (the methfld of a `<-`): the text lowering has decided this send's `wants` guard (it made the send, or wrapped it in the guard), so type check does not guard it again
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop
@@ -332,7 +381,7 @@ enum NodeTags {
 // A flag rather than a pointer field, because cloneBlockNode memcpy's the flags
 // and clones 'stmts', so a pointer would be left aimed into the original.
 #define FlagLoopStep  0x0002        // Block: last statement is 'each's synthesized step
-// An operator changing its operand in place is rewritten to a block, '{imm tmp
+// An operator changing its operand in place is rewritten to a block, '{let tmp
 // = &mut x; *tmp = *tmp + 1}' (fnCallOpAssgn, contentsLower), which was one
 // statement as written: a temporary its operand's place is rooted in ('mk().n
 // += 1', or the guard of '(&mut *p).n += 1', which holds a lock) lives to the
@@ -356,14 +405,35 @@ enum NodeTags {
 // this one: name resolution reads it with that loop as the innermost (blockNameRes).
 // The 'break' ending it is aimed at the loop it leaves from the start (FlagBreakAimed).
 #define FlagLoopElse  0x0100        // Block: the 'else' of the loop it stands in
+// The block ends in ';' after an expression or a statement that ends in a block, so its
+// last statement is an empty one and the block is void. The parser has judged whether
+// that is where the ';' belongs (parseTailCheck); the flag is kept for a closure, whose
+// return type is read off its paths: a closure that ends so returns nothing, and one
+// whose last line has no ';' returns it (closureImplicitReturn)
+#define FlagTailSemi  0x0080        // Block: its last statement is empty, after an expression or a block-ending statement
+#define FlagTailOpen  0x0200        // Block: its last statement is an expression statement with no ';'
+// The block 'x?' is parsed to (parsePropagate): 'x' in a hidden variable, its only
+// statement. Whether 'x' is a Result or an Option, and what the function returns,
+// only type check knows, so type check builds the rest (propagateLower) once the
+// variable is checked, and clears the flag.
+#define FlagPropagate 0x0400        // Block: a '?' whose test and early return type check has yet to build
+// A 'try' block (parseTry): a '?' inside leaves it, not the function, by a 'break'
+// aimed at it carrying the failure, and its last value is wrapped as the success
+// (propagate.h). Kept through generation, where the block's own value joins its
+// breaks' at its end.
+#define FlagTry       0x0800        // Block: a 'try' block
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
+// The dereference fnCallTypeCheck puts round a plain index lowered to a type's
+// '[]' that lends a borrow: 'x[i]' is the place '*x.`[]`(i)', as an array's
+// element is a place (fncall.md, "An index through a type's '[]' is a place")
+#define FlagIndexPlace 0x0001       // Deref: injected over a '[]' call's borrow
 
 #define FlagLockGive  0x0001        // DropFlag: a statement giving a lock's guard back at its borrow's last use
 
 #define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
-// An allocation whose value is an array's contents, 'new Rc[mut, Array[i32, 4]]
+// An allocation whose value is an array's contents, 'Rc[mut, Array[i32, 4]]()
 // <- fill 0': the array literal is not made before 'alloc' and stored, but
 // filled in place in the region's memory once it is had (genlallocref). Set by
 // typeLitNewFilled. 0x0002 is free on an allocation: no type flag uses it.
@@ -379,6 +449,10 @@ enum NodeTags {
 // wanted and its value is ASCII (litAdoptCharAsByte). The parser sets it on the
 // literal only; a char made any other way is never taken for a byte.
 #define FlagCharLit   0x0004        // ULit: a character literal as written
+// An integer literal no digits were written for: the value of an expression of
+// untyped literals, folded where it was type checked (litFoldUntyped). 0x0008 is
+// FlagMatchAny on a ULit.
+#define FlagLitFolded 0x0010        // ULit: the value an expression of untyped integer literals came to
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
 // Flow's marks for drop flags (compiler/c/doc/phases/flow.md, "Drop flags"). A
@@ -402,7 +476,7 @@ enum NodeTags {
 // NameUseNode is neither.
 #define FlagQualified 0x0001        // NameUse: reached through a namespace, not written bare
 // A bare name at the root of a pattern -- 'Red' in 'case is Red', 'Circle' in
-// 'case imm c &Circle' -- is looked up in the enum of the value being matched
+// 'case let &Circle(c)' -- is looked up in the enum of the value being matched
 // before it is looked up lexically, and that value's type is known only at type
 // check. So the parser marks the name (castPatternMark), name resolution leaves
 // it unbound rather than reporting it when nothing lexical answers, and
@@ -419,6 +493,10 @@ enum NodeTags {
 // payload that is plain data, it holds the variant alone (castBindProject), so the
 // place is not moved from.
 #define FlagMatchArm  0x1000        // VarDcl: the matched place's copy or move, made by the arm that binds it
+// The hidden variable holding a '?' operand (parsePropagate). Many hidden variables
+// are named '_', so the name alone does not say this one belongs to a '?'. 0x0040
+// because it is a type flag on a type, and a variable is not one.
+#define FlagQuesHeld  0x0040        // VarDcl: holds the operand of a '?'
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
@@ -546,6 +624,9 @@ int inodeIsError(INode *node);
 // Verify IR well-formedness across the whole program (--checktree)
 void inodeCheckTree(INode *pgm);
 
+// List the program's unconstrained operations (--report-trust, ir/trustreport.c)
+void trustReport(INode *pgm);
+
 // Dispatch a node walk for the name resolution pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
@@ -557,6 +638,10 @@ void inodeNameRes(NameResState *pstate, INode **pgm);
 // - expectType is the type expected of an expression node (or unknownType)
 // See conec.c for high-level info about the type checking pass
 void inodeTypeCheck(TypeCheckState *pstate, INode **pgm, INode *expectType);
+
+// The state of the innermost inodeTypeCheck still running, or NULL when no type
+// check is: what a type comparison reads to know which code is asking
+extern TypeCheckState *inodeCheckState;
 
 // Perform a node walk for the current semantic analysis pass (w/ no type expected)
 // - pstate is helpful state info for node traversal

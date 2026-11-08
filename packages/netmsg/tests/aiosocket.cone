@@ -1,0 +1,213 @@
+// What the endpoint's move onto aio's UdpSocket changed, pinned:
+//
+// 1. A flood of datagrams longer than the receive buffer (each fails as Truncated)
+//    does not stop the endpoint receiving: 1,100 of them, more than the 1,000
+//    failures in a row that end the receive, and then a client connects and
+//    exchanges a message with the server.
+// 2. shutdown() closes the socket: the server's port can be bound again, and a
+//    second shutdown() is harmless.
+// 3. Many endpoints at once (they share aio's one I/O thread, no thread each): 12
+//    servers and a client of each all join, and all shut down.
+
+mod aiosocket;
+
+import testing use *;
+import collections use *;
+import sync use *;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use UdpSocket;
+import netmsg use *;
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// Sends 'count' datagrams of 'size' bytes to 'port' from a socket of its own
+actor Blaster {
+
+  pub async fn blast(self, port: u16, count: u32, size: usize, done: OneshotSender[u32]) {
+    let s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let to = SocketAddr.localhost(port);
+    var sent = 0u32;
+    while sent < count {
+      var b = IoBuf(size);
+      let w = b.whole();
+      var j = 0usize;
+      while j < size {
+        w[j] = 7u8;
+        j = j + 1usize;
+      }
+      b.setLen(size);
+      let r = await s.sendTo(to, b);
+      sent = sent + 1u32;
+      // A pause every few datagrams, so that the server's socket (which the system
+      // bounds to a few of these) is emptied and none is dropped on the way
+      if sent % 4u32 == 0u32 {
+        let z = await aio.sleep(Duration.fromMillis(1i64));
+      }
+    }
+    var d = done;
+    d.send(sent);
+  }
+}
+
+fn bytes(s: &str) List[u8] {
+  var b = List[u8]();
+  putBytes(&mut b, s);
+  b
+}
+
+// The next event of rx within 3 s: its text, "" if none came
+fn next(rx: &mut Receiver[NetEvent], conn: &mut List[Connection]) String {
+  var s = String();
+  match rx.recvTimeout(Duration.fromSeconds(3i64)) {
+    case let Some(e) {
+      match e {
+        case let Joined(j) { s.append("J"); conn.push(j.conn); }
+        case let Message(m) { s.append("M:"); s.append(String.fromBytes(m.data.view()).view()); }
+        else { s.append("other"); }
+      }
+    }
+    case is None[NetEvent] {}
+  }
+  s
+}
+
+fn flood() {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  var txC: Sender[NetEvent];
+  var rxC: Receiver[NetEvent];
+  txC, rxC = Channel[NetEvent].make();
+  let cfg = NetConfig.defaults();
+  let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+  var txB: OneshotSender[u32];
+  var rxB: OneshotReceiver[u32];
+  txB, rxB = Oneshot[u32].make();
+  {
+    let blaster = Blaster();
+    blaster.blast(server.port, 1100u32, 9000usize, txB);
+  }
+  match rxB.recv() {
+    case let Some(n) { expectUInt(u64.from(n), 1100u64, "1,100 oversized datagrams were sent"); }
+    case is None[u32] { expect(false, "the blaster finished"); }
+  }
+  let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+  var cs = List[Connection]();
+  var cc = List[Connection]();
+  expectStr(next(&mut rxS, &mut cs).view(), "J", "after the flood the server still takes a client");
+  expectStr(next(&mut rxC, &mut cc).view(), "J", "and the client joins");
+  require(cs.len() == 1usize && cc.len() == 1usize, "both have a connection");
+  cc[0usize].sendReliable(bytes("after the flood"));
+  expectStr(next(&mut rxS, &mut cs).view(), "M:after the flood", "a message crosses");
+  client.endpoint.shutdown();
+  server.endpoint.shutdown();
+}
+
+// Whether an UDP socket can be bound at 'port' within 3 s
+fn canBind(port: u16) bool {
+  var tx: OneshotSender[bool];
+  var rx: OneshotReceiver[bool];
+  tx, rx = Oneshot[bool].make();
+  let b = Binder();
+  b.tryBind(port, tx);
+  rx.recvTimeout(Duration.fromSeconds(5i64)) || false
+}
+
+actor Binder {
+  pub async fn tryBind(self, port: u16, done: OneshotSender[bool]) {
+    var tx = done;
+    var ok = false;
+    let until = Instant.now() + Duration.fromSeconds(3i64);
+    while !ok && Instant.now() < until {
+      let s = udpOf(await aio.bindUdp(SocketAddr.localhost(port)));
+      if !s.isNone() {
+        ok = true;
+      } else {
+        let z = await aio.sleep(Duration.fromMillis(20i64));
+      }
+    }
+    tx.send(ok);
+  }
+}
+
+// Whether listening at 'port' gives an error (the port is taken)
+fn bindRefused(port: u16) bool {
+  var tx: Sender[NetEvent];
+  var rx: Receiver[NetEvent];
+  tx, rx = Channel[NetEvent].make();
+  let r = listen(SocketAddr.localhost(port), NetConfig.defaults(), channelHandler(tx));
+  match &r {
+    case let &Err(e) { true }
+    else { false }
+  }
+}
+
+fn released() {
+  var txS: Sender[NetEvent];
+  var rxS: Receiver[NetEvent];
+  txS, rxS = Channel[NetEvent].make();
+  let server = mustListen(SocketAddr.localhost(0u16), NetConfig.defaults(), channelHandler(txS));
+  let port = server.port;
+  expect(bindRefused(port), "while the server holds its port, listening on it again is refused with an error");
+  server.endpoint.shutdown();
+  server.endpoint.shutdown();
+  expect(canBind(port), "after shutdown the server's port can be bound again");
+}
+
+fn many() {
+  let n = 12usize;
+  var servers = List[BoundEndpoint]();
+  var clients = List[BoundEndpoint]();
+  var rxS = List[Receiver[NetEvent]]();
+  var rxC = List[Receiver[NetEvent]]();
+  let cfg = NetConfig.defaults();
+  var i = 0usize;
+  while i < n {
+    var txS: Sender[NetEvent];
+    var rS: Receiver[NetEvent];
+    txS, rS = Channel[NetEvent].make();
+    var txC: Sender[NetEvent];
+    var rC: Receiver[NetEvent];
+    txC, rC = Channel[NetEvent].make();
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    servers.push(server);
+    clients.push(client);
+    rxS.push(rS);
+    rxC.push(rC);
+    i = i + 1usize;
+  }
+  var joined = 0usize;
+  i = 0usize;
+  while i < n {
+    var dummy = List[Connection]();
+    if next(&mut rxS[i], &mut dummy).view() == "J" {joined = joined + 1usize;}
+    if next(&mut rxC[i], &mut dummy).view() == "J" {joined = joined + 1usize;}
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(joined), u64.from(2usize * n), "every server and every client joined");
+  i = 0usize;
+  while i < n {
+    clients[i].endpoint.shutdown();
+    servers[i].endpoint.shutdown();
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  flood();
+  released();
+  many();
+  done()
+}

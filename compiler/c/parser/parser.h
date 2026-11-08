@@ -75,7 +75,10 @@ typedef struct DclTexts {
     uint32_t awaits;        // How many 'await's the actor's body holds so far
     Nodes *awaiting;        // Each function of the body whose own body holds an 'await' (parseFn)
     uint32_t selfactors;    // How many times the actor's body writes 'selfactor'
-    Nodes *behaviours;      // Each function of the body declared 'async do', a behaviour (parseStruct)
+    Nodes *behaviours;      // Each function of the body declared 'async fn', a behaviour (parseStruct)
+    char *tparms, *tparmsend; // Where the declaration's type parameters are written, between its brackets; NULL where it has none (parseStruct)
+    char *istext, *isend;   // Where its 'is' list is written, after the 'is'; NULL where it has none (parseStruct)
+    uint32_t isnames;       // How many abstractions the list names
 } DclTexts;
 
 typedef struct ParseState {
@@ -124,6 +127,10 @@ typedef struct ParseState {
     GenCtx *genctx;
     int library;            // The package is being compiled as a library, whose include file declares what it exports
     int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
+    int awaitoperand;       // Non-zero as the operand of 'await' is begun: its suffixes stop before a '?', which
+                            // applies to what the wait gives, 'await x?' being '(await x)?' (parsePrefix)
+    int trydepth;           // How many 'try' blocks of the body being read enclose what is read: a '?' there leaves
+                            // the innermost, not the function (parseTry). A function or closure in one starts at none
     // The struct being read: where its type parameters are written, between its
     // '[' and ']', which a generator method copies (parsegen.c); NULL where none
     char *tparms, *tparmsend;
@@ -136,15 +143,14 @@ void parseDclText(ParseState *parse, INode *dcl, char *type, char *typeend, char
 // actor: 'actor Name { ... }', with the lexer on 'actor' (parseactor.c)
 void parseActor(ParseState *parse, uint16_t pubflag);
 
-// With the lexer on 'async' or 'do': read 'async do' up to the 'do', which
-// parseFn then skips as it does 'fn'. Where the two are not written together,
-// or 'where' is not an actor's body ('where' names what is being declared
-// into, NULL in an actor's), each is reported, and the declaration is read as
-// a function where one follows. Returns whether parseFn should read one
-// (parseactor.c)
+// With the lexer on 'async': read 'async fn' up to the 'fn', which parseFn
+// then reads. Where 'async' stands without 'fn', or 'where' is not an actor's
+// body ('where' names what is being declared into, NULL in an actor's), it is
+// reported and the declaration passed over. Returns whether parseFn should
+// read one (parseactor.c)
 int parseBehaviourWords(char *where);
 
-// parsegen.c: generators, 'fn walk(t &Tree) yields &Node { ... yield n; ... }'
+// parsegen.c: generators, 'fn walk(t: &Tree) yields &Node { ... yield n; ... }'
 //
 // Called by parseFn, a generator's signature read: its body is read with the
 // generator's context set (parseGenBegin), and then parseGenFinish makes the
@@ -152,6 +158,8 @@ int parseBehaviourWords(char *where);
 // the function that makes the generator, in place of the one parseFn read
 GenCtx *parseGenBegin(ParseState *parse, FnDclNode *fn);
 FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx *ctx, BlockNode *body);
+// Does a type declare an invariant lifetime, which a generator method of it cannot yet hold?
+int parseGenTypeInvariant(StructNode *type);
 // In a generator's body, 'self' is its method's receiver and 'Self' the type it is a method of,
 // where the generator is a struct of its own: the name use as it is to be read (parsegen.c)
 INode *parseGenName(ParseState *parse, NameUseNode *use);
@@ -170,7 +178,8 @@ enum ParseFlags {
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
     ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
     ParseMayThreadLocal = 0x0100, // The variable may be '@threadlocal' or '@workgroup': a module's global
-    ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'imm rest using prefix("GET ") = line'
+    ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'let rest using prefix("GET ") = line'
+    ParseMemberEnd = 0x0040,      // A member of a type's braces: a signature's ';' may be left off before the '}'
 };
 
 // parsebuild.c
@@ -213,8 +222,8 @@ void parseSkipDclBody();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse);
+// Parse a macro declaration; 'member' when it is declared in a type
+MacroDclNode *parseMacro(ParseState *parse, int member);
 // Parse a list of generic variables and add to the genericnode; a struct's
 // lifetimes among them go to '*lifes' (NULL refuses them), and a type
 // parameter's lifetime bounds, '[T + 'a]', to '*bounds' (NULL refuses them)
@@ -236,7 +245,7 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 // and the value each pass appends. An EachEntryTag holding the loop.
 INode *parseEachEntry(ParseState *parse);
 // The same entry with 'parallel' before its 'each' (the lexer on the 'each'): the
-// parallel builder, 'new List[T] <- parallel each x in src [if c] yield v'
+// parallel builder, 'List[T]() <- parallel each x in src [if c] yield v'
 INode *parseParallelEachEntry(ParseState *parse);
 // The filter of a loop header, 'if cond', after the source: the condition, or
 // NULL where the lexer is not on an 'if'. A header that takes one reads it with
@@ -246,14 +255,24 @@ INode *parseEachFilter(ParseState *parse);
 INode *parseEachFilterStmt(INode *condexp, Name *lifesym);
 // Parse an expression block
 INode *parseExprBlock(ParseState *parse, int isloop);
+// Where a block stands, for the ';' of its last line: its value is used (no ';'), is not
+// used (the ';' stays), or is read off the line (a closure's, either)
+enum { TailUnused = 0, TailUsed = 1, TailFree = 2 };
+void parseTailCheck(INode *node, int used);
 INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
 // Report '...' (the lexer on it) as the retired range operator it is
 void parseRangeEllipsis(void);
+void parseRangeBare(void);
 // Parse an operand of a comparison: everything that binds tighter than one
 INode *parseOr(ParseState *parse);
+// Parse an operand that binds tighter than bitwise or, '|': a case's patterns are
+// joined by a top-level '|'
+INode *parseXor(ParseState *parse);
+// The arguments inside the '(' or '[' the lexer is on, through the closing token
+Nodes *parseArgs(ParseState *parse);
 // Finish a simple expression whose first operand parseOr has already parsed
 INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode);
 // The method a comparison token names ("==", "<", ...), or NULL
@@ -280,6 +299,7 @@ INode *parseUsingSome(FnCallNode *call);
 INode *parsePerm();
 
 // Parse the permission a declaration carries, defaulting to 'defperm'
+INode *parseDclWord();
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 // Consume a '@threadlocal' or '@workgroup', if the lexer is on one, returning
@@ -305,7 +325,7 @@ INode *parseFnSig(ParseState *parse, int reftype);
 // ('istype': no body follows) or an anonymous function's
 void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype);
 // Parse a signature written bare, with the lexer on its 'fn', as a generic
-// bound or a 'where' clause's: 'F fn(a &T, b &T) i32'
+// bound or a 'where' clause's: 'F: fn(a: &T, b: &T) i32'
 INode *parseFnBound(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
@@ -324,6 +344,8 @@ void parseSkipToNextStmt();
 int parseIsEndOfStatement();
 // Require the ';' that ends every statement not ending in a block
 void parseEndOfStatement();
+// The end of a member of a type's braces: its ';', or the '}' that closes the body
+void parseEndOfMember();
 // Return true if a block starts here: '{', or the ':' the language no longer has
 int parseHasBlock();
 // Expect '{' and consume it
@@ -337,5 +359,71 @@ void parseCloseTok(uint16_t closetok);
 // list '*listp' points to. A function's or variable's body is the one parseFn or
 // parseVarDcl just read
 DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start, char *kw, uint16_t kind);
+
+// parsemeta.c: '#if' on facts of the build, resolved while parsing. The four
+// places a list of items is read (a module, a type's braces, an 'extern' block,
+// a block of statements) each give parseHashIf the function that reads their
+// items. It is called with the lexer after a branch's '{', and reads through the
+// matching '}'; 'mode' says what the build does with the branch. When it does not
+// take it (MetaUntaken), parse->mod is a scratch module that keeps and binds
+// nothing, and the function reads into scratch of its own for anything else it
+// would add to. A condition that asks what a type parameter is leaves the choice
+// to a generic's clone (MetaDeferred): the branch is read as real code. A place
+// that holds its branches in a list of their own (a block's statements) returns
+// the branch as a block, and one that keeps them in the enclosing list (a type's
+// braces) returns NULL and asks parseMetaMemberCond for the condition each member
+// it added exists under.
+#define MetaUntaken  0
+#define MetaTaken    1
+#define MetaDeferred 2
+typedef INode *(*MetaBranchFn)(ParseState *parse, void *ctx, int mode);
+// The options the facts come from
+void parseMetaInit(ConeOptions *opt);
+// A chain, with the lexer on its '#if'. A place that cannot hold a question about a
+// type gives 'nodefer', what is said of one; the deferred chain, if any, is returned
+INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix);
+// What a function body's '#if' chain is told when it asks about both the build and a type
+extern const char parseMixBodyMsg[];
+// The condition a member added by a deferred branch exists under (a fresh copy for each call)
+INode *parseMetaMemberCond(void);
+// A chain that gives a value, with the lexer on its '#if'
+INode *parseHashIfExpr(ParseState *parse);
+// A '#elif' or '#else' met where no chain is waiting for it: reported and read past
+void parseMetaStray(ParseState *parse);
+// '#size(T)' or '#align(T)' in expression position, with the lexer on the word
+INode *parseMetaLayout(ParseState *parse);
+// '#os', '#arch', '#debug', '#defined' or '#define' met outside a '#if' condition: reported and passed
+void parseMetaFactStray(void);
+
+// parsemeta.c: '#each' and the meta variables, in a function body. '#each #x in list { body }'
+// reads its body again for each item of the list with '#x' bound to it, each pass a block of its
+// own added to 'blk'; the lexer is on the '#each'. A list is '[a, b]' of values, '(T, U)' of types or
+// a meta constant. 'let #n = 3;' and 'var #i = 0;' declare numbers (or lists) that '#i += 1;' changes
+// as the passes are read, in order; a '#name' used as a value is what it holds then
+void parseHashEach(ParseState *parse, BlockNode *blk);
+// Is the lexer on the 'let' or 'var' of a meta variable, 'let #n'?
+int parseMetaIsDecl(void);
+void parseMetaDecl(ParseState *parse);
+// Is the lexer on a meta variable being given a value, '#i += 1'?
+int parseMetaIsAssign(void);
+void parseMetaAssign(ParseState *parse);
+// A meta variable met as a term
+INode *parseMetaTerm(ParseState *parse);
+// Is a meta variable the '#f' of a '#each #f in #fields(T)' being read? 'x.#f' splices its field
+int parseMetaIsFieldVar(Name *name);
+// '#each #f in #fields(T) { members }' in a generic struct's braces, the lexer on the '#each': 'items'
+// reads the members through the '}', and each is marked as the loop's (made once per field of T)
+typedef void (*MetaMembersFn)(ParseState *parse, void *ctx);
+INode *parseHashEachArg(ParseState *parse);
+INode *parseArgValue(ParseState *parse);
+void parseHashEachMembers(ParseState *parse, StructNode *strnode, MetaMembersFn items, void *ctx);
+// Does a generated member's name begin here ('#f' of a loop, or '#name(...)'), and reading it:
+// the name the template holds it under, and what the instance joins to a field's name
+int parseMetaIsGenName(void);
+Name *parseMetaGenName(ParseState *parse, GenName **out);
+// A block of statements keeps the meta variables it declares to itself: the mark taken as it
+// begins is given back as it ends
+uint32_t parseMetaScope(void);
+void parseMetaScopeEnd(uint32_t mark);
 
 #endif

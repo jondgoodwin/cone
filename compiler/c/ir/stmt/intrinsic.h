@@ -40,6 +40,12 @@ enum IntrinsicFn {
     SGtIntrinsic,
     SGeIntrinsic,
 
+    // Three-way comparison, '<=>': an i32 -1, 0 or 1 as the first operand is
+    // less than, equal to or greater than the second. Two floats that are
+    // unordered (a NaN among them) answer 0
+    CmpIntrinsic,
+    SCmpIntrinsic,
+
     // An enum's equivalence, which reads the discriminant. Distinct from
     // EqIntrinsic because both arrive on a struct-shaped LLVM value, where a
     // slice's equality compares two words and an enum's compares one field.
@@ -53,11 +59,25 @@ enum IntrinsicFn {
     // generated: type check replaces the call.
     NoEqIntrinsic,
 
+    // A bool's '&&' and '||', declared on bool so that the operators are methods of the
+    // left operand's type like any other's. The logic node stays their body (logicTypeCheck
+    // finds these and goes on with it), so narrowing, folding and code generation are
+    // the node's. Never generated: no call of them is made
+    LogicAndIntrinsic,
+    LogicOrIntrinsic,
+
     // An integer's or bool's 'hash': what core's Hash requires of every type that
     // is Hash, declared on each of them so that 'key.hash(h)' on a generic's key
     // reaches a method. Never generated: the call is rewritten at type check to
     // core's 'Hasher.writeU64' of the value's bits (fnCallHashNumber)
     HashNbrIntrinsic,
+
+    // A number's, bool's or char's 'toText(self, out &uni TextOut)': the text of
+    // the value, written into core's TextOut. Declared on each of them so that
+    // 'x.toText(out)' in a generic, or written by hand, reaches a method. Never
+    // generated: the call is rewritten at type check to the TextOut method that
+    // writes that kind of value (fnCallTextNumber)
+    TextNbrIntrinsic,
 
     // Bitwise
     NotIntrinsic,
@@ -76,13 +96,38 @@ enum IntrinsicFn {
     SinIntrinsic,
     CosIntrinsic,
 
+    // A float's encoding, built in C beside the float type's other methods
+    // (corenumber.c): no Cone declaration, since the integer type of the bits
+    // follows the float's width. 'x.bits()', 'f32.fromBits(b)', 'x.exponent()',
+    // 'x.mantissa()' and 'x.signBit()'. Each is one bit operation
+    FloatBitsIntrinsic,
+    FloatFromBitsIntrinsic,
+    FloatExponentIntrinsic,
+    FloatMantissaIntrinsic,
+    FloatSignBitIntrinsic,
+
+    // A vector's reductions and mask tests, over its lanes: built in C beside the
+    // number types' (Vector[T, N] has no Cone declaration, being a type of the
+    // compiler's own), and decided by the LLVM vector type of the argument.
+    // The signed minimum and maximum are told apart from the unsigned
+    VecSumIntrinsic,        // v.sum()
+    VecProductIntrinsic,    // v.product()
+    VecMinIntrinsic,        // v.min()
+    VecSMinIntrinsic,
+    VecMaxIntrinsic,        // v.max()
+    VecSMaxIntrinsic,
+    VecAnyIntrinsic,        // mask.any()
+    VecAllIntrinsic,        // mask.all()
+    VecLoadIntrinsic,       // Vector[T, N].load(s, at): the lanes at s[at..at+N], bounds checked once
+    VecStoreIntrinsic,      // v.store(s, at)
+
     // The program's stitched lifecycle (genlStitch): every module's 'init' in
     // dependency order, and every module's finalizer in exactly the reverse.
     // Functions of no parameters, not methods, so no first argument decides them
     InitAllIntrinsic,
     FinalAllIntrinsic,
 
-    // Declared in Cone, in core, with '@intrinsic' (refintrinsic.html), and
+    // Declared in Cone, in core, with '@intrinsic' (safe-intrinsics.html), and
     // defined by the registry in intrinsic.c in Cone's terms. Unlike the kinds
     // above, generation never asks the LLVM type of an argument what one of
     // these means: the type it acts on is the Cone type its node carries
@@ -90,60 +135,49 @@ enum IntrinsicFn {
     SizeofIntrinsic,        // sizeof[T]() usize
     AlignofIntrinsic,       // alignof[T]() usize
     NeedsFinalIntrinsic,    // needsFinal[T]() bool
-    FinalizeIntrinsic,      // finalize[T](p *T)
-    SliceFromPartsIntrinsic,    // sliceFromParts[T](p *T, len usize) &Array[T]
-    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &mut Array[T]
-    SliceFromPartsUniIntrinsic, // sliceFromPartsUni[T](p *T, len usize) &uni Array[T]
-    ReadRawIntrinsic,       // readRaw[T](p *T) T
-    WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
-    MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
+    FinalizeIntrinsic,      // finalize[T](p: *T)
+    SliceFromPartsIntrinsic,    // sliceFromParts[T](p: *T, len: usize) &Array[T]
+    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p: *T, len: usize) &mut Array[T]
+    SliceFromPartsUniIntrinsic, // sliceFromPartsUni[T](p: *T, len: usize) &uni Array[T]
+    ReadRawIntrinsic,       // readRaw[T](p: *T) T
+    WriteRawIntrinsic,      // writeRaw[T](p: *T, value: T)
+    MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
+    MoveRawIntoIntrinsic,   // moveRawInto[T](to: *T, from: *T, count: usize)
+    ForgetIntrinsic,        // forget[T](value: T)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() bool
-    TraceIntrinsic,         // trace[T](p *T, mode u32)
-    TraceRootsIntrinsic,    // traceRoots(mode u32)
+    TraceIntrinsic,         // trace[T](p: *T, mode: u32)
+    TraceRootsIntrinsic,    // traceRoots(mode: u32)
     // The atomic operations: each takes its ordering as a constant MemOrder,
     // read at the call (intrinsicCallOrders), not from its instance
-    AtomicLoadIntrinsic,    // atomicLoad[T](p *T, order MemOrder) T
-    AtomicStoreIntrinsic,   // atomicStore[T](p *T, value T, order MemOrder)
-    AtomicSwapIntrinsic,    // atomicSwap[T](p *T, value T, order MemOrder) T
-    AtomicAddIntrinsic,     // atomicAdd[T](p *T, value T, order MemOrder) T
-    AtomicSubIntrinsic,     // atomicSub[T](p *T, value T, order MemOrder) T
-    AtomicAndIntrinsic,     // atomicAnd[T](p *T, value T, order MemOrder) T
-    AtomicOrIntrinsic,      // atomicOr[T](p *T, value T, order MemOrder) T
-    AtomicXorIntrinsic,     // atomicXor[T](p *T, value T, order MemOrder) T
-    AtomicMinIntrinsic,     // atomicMin[T](p *T, value T, order MemOrder) T: signed for a signed T
-    AtomicMaxIntrinsic,     // atomicMax[T](p *T, value T, order MemOrder) T: signed for a signed T
-    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, bool
+    AtomicLoadIntrinsic,    // atomicLoad[T](p: *T, order: MemOrder) T
+    AtomicStoreIntrinsic,   // atomicStore[T](p: *T, value: T, order: MemOrder)
+    AtomicSwapIntrinsic,    // atomicSwap[T](p: *T, value: T, order: MemOrder) T
+    AtomicAddIntrinsic,     // atomicAdd[T](p: *T, value: T, order: MemOrder) T
+    AtomicSubIntrinsic,     // atomicSub[T](p: *T, value: T, order: MemOrder) T
+    AtomicAndIntrinsic,     // atomicAnd[T](p: *T, value: T, order: MemOrder) T
+    AtomicOrIntrinsic,      // atomicOr[T](p: *T, value: T, order: MemOrder) T
+    AtomicXorIntrinsic,     // atomicXor[T](p: *T, value: T, order: MemOrder) T
+    AtomicMinIntrinsic,     // atomicMin[T](p: *T, value: T, order: MemOrder) T: signed for a signed T
+    AtomicMaxIntrinsic,     // atomicMax[T](p: *T, value: T, order: MemOrder) T: signed for a signed T
+    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p: *T, expected: T, desired: T, success: MemOrder, failure: MemOrder) T, bool
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
     SrcFileIntrinsic,       // srcFile() &str
     SrcLineIntrinsic,       // srcLine() u32
-    // Whether this is a debug build ('conec --debug', or 'build: debug' in a
-    // build description): a constant, so only the side of an 'if' on it that
-    // the build takes is generated (genlIf)
-    IsDebugBuildIntrinsic,  // isDebugBuild() bool
-    // TEMPORARY, a provisional mechanism whose final design is open: constants
-    // of the build like isDebugBuild, the target's OS from its triple, and
-    // what '-D' defined (intrinsicBuildConst)
-    IsWindowsIntrinsic,     // isWindows() bool
-    IsLinuxIntrinsic,       // isLinux() bool
-    IsMacOSIntrinsic,       // isMacOS() bool
-    IsWasmIntrinsic,        // isWasm() bool
-    IsDefinedIntrinsic,     // isDefined(name &Array[u8]) bool
-    DefinedIntIntrinsic,    // definedInt(name &Array[u8]) i64
     // An integer's bits. Each is also a method of every integer type
     // (corenumber.c), its node carrying that type as its typearg, which is how
     // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
     // does. A count of the bits of 0 is defined: the width
-    CountOnesIntrinsic,     // countOnes[T](x T) u32
-    LeadingZerosIntrinsic,  // leadingZeros[T](x T) u32
-    TrailingZerosIntrinsic, // trailingZeros[T](x T) u32
+    CountOnesIntrinsic,     // countOnes[T](x: T) u32
+    LeadingZerosIntrinsic,  // leadingZeros[T](x: T) u32
+    TrailingZerosIntrinsic, // trailingZeros[T](x: T) u32
     // The amount taken modulo the width
-    RotateLeftIntrinsic,    // rotateLeft[T](x T, n u32) T
-    RotateRightIntrinsic,   // rotateRight[T](x T, n u32) T
-    ShlMaskedIntrinsic,     // shlMasked[T](x T, n u32) T
-    ShrMaskedIntrinsic,     // shrMasked[T](x T, n u32) T: arithmetic for a signed T
+    RotateLeftIntrinsic,    // rotateLeft[T](x: T, n: u32) T
+    RotateRightIntrinsic,   // rotateRight[T](x: T, n: u32) T
+    ShlMaskedIntrinsic,     // shlMasked[T](x: T, n: u32) T
+    ShrMaskedIntrinsic,     // shrMasked[T](x: T, n: u32) T: arithmetic for a signed T
     // A GPU workgroup's barriers: every invocation of the workgroup waits there,
     // and what each wrote before it to the workgroup's memory, or to the storage
     // buffers, every other reads after it. The CPU runs a kernel one invocation
@@ -152,7 +186,22 @@ enum IntrinsicFn {
     StorageBarrierIntrinsic,    // storageBarrier()
     // The 128-bit product of two 64-bit numbers, its two halves xored: the
     // mixing step of the wyhash family, one instruction on a 64-bit target
-    MulFoldIntrinsic            // mulFold(a u64, b u64) u64
+    MulFoldIntrinsic,           // mulFold(a: u64, b: u64) u64
+    // A number's, and a vector's lane by lane: each is also a method of the
+    // number types it applies to (corenumber.c) and of a vector of them
+    // (vector.c), its node carrying that type, a vector type among them, as its
+    // typearg. 'abs' of a signed integer or a float; 'min' and 'max' of an
+    // integer or a float, a NaN in either of a float's giving a NaN; 'clamp' of
+    // the same, min(max(x, lo), hi); 'floor', 'ceil' and 'round' (half away
+    // from zero) of a float; 'fma', x * y + z fused, of a float
+    AbsIntrinsic,               // abs[T](x: T) T
+    MinIntrinsic,               // min[T](a: T, b: T) T
+    MaxIntrinsic,               // max[T](a: T, b: T) T
+    FloorIntrinsic,             // floor[T](x: T) T
+    CeilIntrinsic,              // ceil[T](x: T) T
+    RoundIntrinsic,             // round[T](x: T) T
+    FmaIntrinsic,               // fma[T](x: T, y: T, z: T) T
+    ClampIntrinsic              // clamp[T](x: T, lo: T, hi: T) T
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
@@ -180,7 +229,7 @@ typedef struct IntrinsicNode {
 
 // Set by '--intrinsic-fallback': every intrinsic declared with a body uses that
 // body, even where the back end lowers it itself, so the bodies can be tested
-// against the lowerings (refintrinsic.html, "Fallback bodies")
+// against the lowerings (safe-intrinsics.html#fallback, "Fallback bodies")
 extern int intrinsicForceFallback;
 
 IntrinsicNode *newIntrinsicNode(int16_t intrinsicFn);
@@ -199,6 +248,9 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl);
 // whose value is an IntrinsicNode of a kind declared in Cone
 int intrinsicIsDeclared(FnDclNode *fndcl);
 
+// The registry's name for a function that is an intrinsic marked 'trust', else NULL (--report-trust)
+char *intrinsicTrustName(FnDclNode *fndcl);
+
 // Whether a type is '*TypeRecord', a pointer to core's type record: the struct
 // named TypeRecord that the core package declares, whose constants the
 // compiler builds (genlTypeRecord). A template may still hold the '*' as a
@@ -214,13 +266,28 @@ int invocationIsCore(INode *type);
 // gives them their 'hash' (nbrAddHashMethods) and supplies the 'hash' of a
 // struct that declares Hash and writes none (structSupplyHash)
 int coreIsHashTrait(INode *dcl);
+// Core's Eq trait, known the same way; a struct that declares it and writes no
+// '==' is given one (structEqCheck)
+int coreIsEqTrait(INode *dcl);
+// Core's Clone trait, known the same way; every Copy type meets it by grant
+// (genericTypeIs), and a struct that declares it and writes no 'clone' is given
+// one (structCloneCheck)
+int coreIsCloneTrait(INode *dcl);
+// Core's Default trait, known the same way; every number type and bool meet it by
+// grant (genericTypeIs): `T()` is 0 or false. A struct that declares it is made by
+// `T()` from its fields' defaults or their types' own `T()` (structDefaultCheck)
+int coreIsDefaultTrait(INode *dcl);
 // Core's Iterator trait, known by its name and its package; the compiler keeps the
 // declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
 // does not declare it, that the shared methods come with the declaration
 int coreIsIteratorTrait(INode *dcl);
 extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
-// Core's Erased struct, '{p *u8, rec *TypeRecord}': a value known only by its type
+// Core's TextOut, the writer a text send writes into (contents.c), known the same way
+int coreIsTextOut(INode *dcl);
+// Core's marker trait DebugText, which makes a text sink take its values in the debug form
+int coreIsDebugText(INode *dcl);
+// Core's Erased struct, '{p *u8, rec: *TypeRecord}': a value known only by its type
 // record, which a trace of it calls (genlTraceErased). Known by its name, its two
 // fields and its package.
 int coreIsErased(INode *dcl);
@@ -235,7 +302,12 @@ StructNode *typeRecordStruct(void);
 // hold it to its signature and remember it for sliceEqFn
 void sliceEqDclNameRes(FnDclNode *fndcl);
 
-// Core's generic 'mem.sliceEq[T](a &Array[T], b &Array[T]) bool', which '==' and '!=' on
+// Likewise core's 'mem.tupleEq2' to 'mem.tupleEq4', and the one for 'arity'
+// elements (NULL if the core found declares none), which '==' on two tuples calls
+void tupleEqDclNameRes(FnDclNode *fndcl);
+FnDclNode *tupleEqFn(uint32_t arity);
+
+// Core's generic 'mem.sliceEq[T](a: &Array[T], b: &Array[T]) bool', which '==' and '!=' on
 // two slices call (fnCallLowerSliceCompare); NULL before core's declaration is
 // name resolved, or in a compile whose core declares none
 FnDclNode *sliceEqFn(void);
@@ -295,19 +367,5 @@ int intrinsicIsSrcDefault(INode *node);
 // A copy of a call to 'srcFile()' or 'srcLine()' placed at 'site': a
 // parameter's default value, taken by the call 'site', answers where that call is
 INode *intrinsicSrcCallAt(INode *call, INode *site);
-
-// TEMPORARY, a provisional mechanism whose final design is open. The options
-// the build constants are read from: the build, the target triple and each
-// '-D'. Set once by main; the triple is read only once generation's setup has
-// filled in the host's
-struct ConeOptions;
-void intrinsicBuildSetup(struct ConeOptions *opt);
-
-// Whether a node is a constant of the build, and its value: a call to
-// isDebugBuild, isWindows, isLinux, isMacOS, isWasm, isDefined or definedInt
-// (whose argument type check held to a string literal), or '!', 'and' or 'or'
-// of such constants. Generation reads it to generate only the side of an 'if'
-// the build takes (genlIf), and as the value of each call (genlFnCall)
-int intrinsicBuildConst(INode *node, int64_t *value);
 
 #endif

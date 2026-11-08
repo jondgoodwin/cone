@@ -1,0 +1,452 @@
+# meta - the '#' layer that runs while a program is read (mod-generativity.html#meta).
+# Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# What is built is '#if', '#elif' and '#else' on the facts of the build -- #os,
+# #arch, #debug, #defined("NAME") and #define("NAME") -- resolved while parsing
+# (compiler/c/doc/phases/parse.md, "The meta layer"). The macros and generics the
+# manual also describes under metaprogramming are the `generic` group's.
+
+support = []
+
+# The construct in each place a list of items is read, and as a value, on the
+# hosts the suite runs on. A release and a debug build alike, '-D' facts in both
+[scenario.meta_if_build]
+category = "run"
+description = "'#if' in a module, a type's braces, an 'extern' block and a block of statements, and giving a value: the taken branch joins the enclosing list (a declaration of it belongs there, a last expression is the block's value), untaken branches naming nothing that exists compile, '#elif' chains and nested '#if', '-D' facts (#defined, #define), '!', '&&', '||', '==' and '!='"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.meta_if_build.run]]
+name = "release"
+options = ["-D", "FAST", "-DLEVEL=3", "--define=NEG=-7"]
+
+[[scenario.meta_if_build.run]]
+name = "debug"
+options = ["--debug", "-D", "FAST", "-DLEVEL=3", "--define=NEG=-7"]
+
+# One source, a run per target: '-D' tells each what to expect, so one set of
+# checks holds for every run. A debug build is among them (a GPU target, which
+# cannot call what the calls here are, is meta_if_gpu)
+[scenario.meta_if_facts]
+category = "compile"
+description = "#os and #arch read the target triple (x86_64 Windows, Linux and macOS, WebAssembly, each one member and no other), #debug the kind of build, #defined and #define the '-D' options: the call a run expects is the only one in the code"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_facts.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc", "-D", "LEVEL=3", "-D", "EXPECT_WINDOWS", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu", "-D", "LEVEL=3", "-D", "EXPECT_LINUX", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "macos"
+options = ["--triple=x86_64-apple-macosx14.0", "-D", "LEVEL=3", "-D", "EXPECT_MACOS", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "wasm"
+options = ["--wasm", "-D", "LEVEL=3", "-D", "EXPECT_WASM", "-D", "EXPECT_WASM32"]
+
+[[scenario.meta_if_facts.run]]
+name = "debug"
+options = ["--debug", "-D", "LEVEL=3", "-D", "EXPECT_DEBUG", "-D", "EXPECT_WINDOWS", "-D", "EXPECT_X64", "--triple=x86_64-pc-windows-msvc"]
+
+[[scenario.meta_if_facts.check]]
+name = "the-expected-facts-alone-hold"
+target = "preir"
+contains = ["call %void @matchedOs(", "call %void @matchedArch(", "call %void @matchedDebug(", "call %void @matchedDefine("]
+excludes = ["call %void @mismatched("]
+
+[scenario.meta_if_gpu]
+category = "compile"
+description = "A SPIR-V target is #os .gpu and #arch .spirv: the branch for them is the only one in the code, and a branch calling what a GPU cannot call compiles, for it is read for syntax alone"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_gpu.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.meta_if_gpu.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.meta_if_gpu.check]]
+name = "the-gpu-branch-alone-is-generated"
+target = "preir"
+contains = ["ret i32 7"]
+excludes = ["call i32 @hostOnlyDefinedNowhere("]
+
+# The extern declarations of a branch the build does not take are not declared:
+# not even a 'declare' is left in the object for a symbol only another platform defines
+[scenario.meta_if_extern]
+category = "compile"
+description = "An 'extern' block and a lone 'extern fn' in a '#if' branch: the taken branch's functions are declared and called, the others' are declared nowhere"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_extern.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc"]
+
+[[scenario.meta_if_extern.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu"]
+
+[[scenario.meta_if_extern.check]]
+name = "only-the-taken-declarations-exist"
+target = "preir"
+contains = ["call i32 @takenInBlockDefinedNowhere(", "call i32 @takenAloneDefinedNowhere("]
+excludes = ["otherInBlock", "otherAlone", "macInBlock"]
+
+[scenario.meta_if_reject_parse]
+category = "reject"
+description = "A syntax error in a branch the build does not take; a fact outside the closed vocabulary or used wrongly (a member the fact lacks, unlike kinds, a name for a string literal, a call, a fact outside a condition); '#elif' and '#else' with no '#if' or after an '#else'; a '#if' giving a value with no '#else'"
+tags = ["parse"]
+
+# A package whose include file holds '#if': q is compiled alone and writes it, the
+# program compiles against it. The golden file under include/ is that file byte for
+# byte; the program evaluates its '#if' for its own target
+[scenario.meta_if_include]
+category = "run"
+description = "An include file holds the branch of each of a package's '#if' that was taken, with no '#if' around it, and cuts its declarations as it cuts any (a public function an 'extern', a private one and a private member left out); a program imports it, links and runs"
+tags = ["parse", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# An actor's declarations are generated from the text of its fields; a branch not
+# taken adds none, and a behaviour is one the taken branch declares
+[scenario.meta_if_actor]
+category = "run"
+description = "'#if' in an actor's body, a field and a behaviour: the taken branch's join the actor and reach the declarations generated from its text, the untaken branch's (a field of an undeclared type, a behaviour naming nothing) leave no trace"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.meta_if_actor.run]]
+name = "fast"
+options = ["-D", "FAST"]
+
+# The hazard: a package built with one set of facts and a program built with
+# others. The include file is the package's, so it holds the branch the package
+# took, and the program agrees with the object it links (a layout, a definition)
+[scenario.meta_if_include_facts]
+category = "run"
+description = "A package built with '-D WIDE' and a program built without it: the include file holds only the branch taken (a struct of three fields, a function, a member, a body's own '#if'), so the program reads the layout and the definitions q's object has, and not the branch its own facts would choose"
+tags = ["parse", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+link_options = ["-D", "WIDE"]
+include = ["include/q.cone"]
+
+# An import is allowed in a '#if' where it would be allowed anyway
+[scenario.meta_if_import]
+category = "run"
+description = "'#if' around imports in a module's header: the taken branch's import is the module's, an untaken branch's names a package that exists nowhere and is never looked for, and a branch of imports alone does not end the header"
+tags = ["parse", "nameres", "genllvm", "runtime"]
+
+[scenario.meta_if_reject_import]
+category = "reject"
+description = "An import in a '#if' branch past the header (after a declaration, or after a branch that declares) is refused as an import is anywhere else, whether or not the build takes the branch"
+tags = ["parse"]
+
+# '#if' on what a type parameter is, decided when a generic is cloned for its arguments
+[scenario.meta_typefact_fn]
+category = "run"
+description = "'#if' on a type parameter in a generic function, a method and a generic struct's braces: 'T is Float', 'T == bool', '!', '&&', '||', '#elif' chains, nested with a build fact, statement blocks with locals of their own, a value in expression position, a conditional field and method; only the branch the instance takes is type checked (an integer-only call in the integer branch compiles for a float)"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_typefact_reject_parse]
+category = "reject"
+description = "A '#if' on what a type parameter is is refused in a struct with no type parameters, at a module's level, in an 'extern' block, in an enum's braces, around a static in a generic struct, a condition that is no question, and a value with no '#else'; a chain in a generic struct's braces that asks about the build and about a type (joined, in an '#elif', or an earlier branch) is refused, while a type question alone or a build question around or inside it is not"
+tags = ["parse"]
+
+[scenario.meta_typefact_reject_nameres]
+category = "reject"
+description = "A '#if' on what a type parameter is is refused about a name that is no type parameter; both branches are name resolved where the generic is written, so a name that exists nowhere is reported in the branch no instance takes as in the one it does, and so is a trait that does not exist"
+tags = ["nameres"]
+
+[scenario.meta_typefact_reject_check]
+category = "reject"
+description = "The branch an instance takes is type checked: the integer branch of a generic is refused for the integer instance and never read by the float one"
+tags = ["typecheck"]
+
+# A package's generic holding '#if' on a type parameter: the include file keeps the chain
+# whole, and the program that clones the generic decides it for its own types
+[scenario.meta_typefact_include]
+category = "run"
+description = "An include file keeps a '#if' chain that asks what a type parameter is whole (a chain on the build's facts alone is cut to the branch taken); a program imports it, clones the generic function and struct for its own types, links and runs"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# A build question nested in a type question is decided by the package that wrote it: the include
+# file holds the branch the package took, so an importer built differently shares the package's static
+[scenario.meta_typefact_include_nested]
+category = "run"
+description = "A '#if' on a build fact inside a '#if' on a type, in a generic function with a static of a different type in each branch: the package (built -D WIDE, release) cuts it, the program built without WIDE clones the branch the package took, and the two objects' one shared static has one type"
+tags = ["parse", "genllvm", "runtime"]
+link_options = ["-D", "WIDE"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# A generic body holding an interpolated string is read again by the importer from the include file
+[scenario.meta_text_interp_include]
+category = "run"
+description = "A package whose generic functions hold '$\"...\"', sent directly to a String and stored as one, compiled into its include file; a program with only that file expands each instance (a number and a struct with a toText) and prints the text"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild", "coll/collections.conebuild"]
+include = ["include/q.cone"]
+
+# The names of a log send's fields survive a package's include file
+[scenario.meta_trace_log_include]
+category = "run"
+description = "A package whose generic function sends '$\"...\"' to a trace Log, compiled into its include file; a program with only that file expands two instances, and a sink prints each event's kind and field names, which are the braces' source text read again from the include file"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild", "trace/trace.conebuild"]
+include = ["include/q.cone"]
+
+# '#each' over a constant list: the parser reads the body again for each item, with '#x' standing
+# for it, and each pass is a block of its own
+[scenario.meta_each_basic]
+category = "run"
+description = "'#each' over a list of values, of types, and of a meta constant: a loop unrolled over constants, a block of its own for each pass, 'var #i' counting across the passes, a body over a list of types, nested loops, floats, negative and typed literals, and an empty list"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# --meta-ir: the loops as the parser expanded them
+[scenario.meta_each_dump]
+category = "compile"
+description = "--meta-ir writes each outermost '#each' with the IR of every pass: the item each pass was given, and the statements with it substituted; an inner loop is part of its outer pass"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_each_dump.check]]
+name = "each-pass-is-written-with-its-item"
+target = "meta"
+contains = ["#each #x: 2 items", "pass 1 of 2, #x = 3", "pass 2 of 2, #x = 5", "3i32", "5i32", "#each #T: 2 items", "pass 2 of 2, #T = u16", "imm v u16 = 1i32"]
+excludes = ["#each #k"]
+
+[scenario.meta_each_reject_parse]
+category = "reject"
+description = "A '#each' with no name, no 'in', no list, no block or an unclosed list; a '#each' at a module's level, in a type's braces, in an 'extern' block or inside an expression; a meta 'let' or a '#each' variable given a new value, a list used as a value, a meta number built from something that is no number, a division by zero, and a meta declaration with no value"
+tags = ["parse"]
+
+[scenario.meta_each_reject_check]
+category = "reject"
+description = "An error inside a pass is reported as any is and says which pass of which '#each' it was in, the inner loop's pass first: the second of three items, the second pass of the inner loop in the second of the outer, and the instance of a generic that cannot take the second item"
+tags = ["typecheck"]
+notes = [
+  "in pass 2 of 3 of this '#each', where #v is 2.5",
+  "in pass 2 of 2 of this '#each', where #b is 200",
+  "in pass 2 of 2 of this '#each', where #a is 2",
+  "in pass 2 of 2 of this '#each', where #k is 2.5",
+  "as instantiated by this part of the source code",
+]
+
+# The step quota: --meta-steps lowers it so a short program passes it
+[scenario.meta_each_reject_quota]
+category = "reject"
+description = "A '#each' over more items than the step quota, and nested loops whose passes together pass it: the error names the loop and the pass it stopped at, once, and the passes after it are not read; a loop under the quota after them is expanded"
+tags = ["parse"]
+
+[[scenario.meta_each_reject_quota.run]]
+name = "ten-steps"
+options = ["--meta-steps=10"]
+
+# A package's generic holding a '#each': the include file keeps the loop whole, and the program that
+# clones the generic reads it again; a build fact inside the loop is the package's, cut once
+[scenario.meta_each_include]
+category = "run"
+description = "An include file keeps a generic's '#each' whole (a 'var #i' count, a loop over types, a loop holding a '#if' on a fact of the build) and cuts the build's '#if' to the branch the package took, once however many passes read it; a program built without the package's -D imports it, clones the generics, makes the passes itself, links and runs"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+link_options = ["-D", "WIDE"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# '#each #f in #fields(T)': a generic's body walks the declared fields of the type it is cloned for
+[scenario.meta_fields_basic]
+category = "run"
+description = "'#each #f in #fields(T)' in generic functions: the proposal's equals over a nested struct, a count of fields, '#f.name' as text, '#f.type' as a local's type, '#f.pub' as a condition, and 'v.#f' as the field of a value"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# What '#fields' lists depends on who asks: the module that declares the type sees every field, another module every field of an '@reflect' type, and is refused a type with a private field that is not
+[scenario.meta_fields_private]
+category = "run"
+description = "'#fields(T)' lists what the reflecting code could name: a generic written in the type's own module (a free function, and a method of a generic type) sees its private fields; a generic written in another module sees them once the type opts in with '@reflect' (without it, meta_fields_reject_private)"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_fields_reject_parse]
+category = "reject"
+description = "A bare '#f', a property a field description does not have, and '#f.attrs' (field attributes are not built) are each refused where they stand"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.meta_fields_reject_nameres]
+category = "reject"
+description = "'#fields(Point)' of a name that is no type parameter of the generic it is written in"
+tags = ["nameres"]
+diagnostics = 1
+
+[scenario.meta_fields_reject_type]
+category = "reject"
+description = "A generic with a '#fields(T)' cloned for a type that has no fields to describe (a number): the error is at the loop and names the call that made the instance"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.meta_fields_perm_region]
+category = "run"
+description = "'#f.perm' and '#f.region' stand as the permission and region of a region reference type: a value made as '#f.region[#f.perm, i32]' is accepted where the field's own type goes, for an Rc field and an Arc field"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_fields_reject_perm]
+category = "reject"
+description = "'#f.perm' of a field written 'let' is imm: a value made with it cannot be written through, and the error names the pass"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.meta_fields_self]
+category = "run"
+description = "'#fields(Self)' in a trait default written in one module, taken into a type of another: the default sees the type's private fields, as the type's own scope"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_fields_reject_private]
+category = "reject"
+description = "'#fields(T)' of a type declared in another module, with a private field and no '@reflect': refused at the loop, naming the type, the field and the opt-in, not listed without the field"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_basic]
+category = "run"
+description = "Layout facts: #size(T), #align(T) and #f.offset agree with mem.sizeof, mem.alignof and the addresses of a padded struct's fields; #f.type is Move / is Copy picks the branch that exists"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_layout_reject_cycle]
+category = "reject"
+description = "A layout fact asked of a type whose layout is still in flight is refused, naming the cycle"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_chain]
+category = "run"
+description = "Layout facts through a chain of by-value fields (A holds B holds C): #size, #align and #f.offset agree with mem.sizeof, mem.alignof and the addresses of a real value, and with the layout worked out by hand"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_layout_reject_chain]
+category = "reject"
+description = "A layout fact asked of a type in flight through a chain of by-value fields is refused, and the message names the types of the cycle"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_if]
+category = "reject"
+description = "A '#if' decided by '#size' is refused with a clear error: the size is the code generator's constant, not yet the front end's"
+tags = ["parse", "typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_array_len]
+category = "reject"
+description = "An array length written as '#size(T)' is refused with a clear error"
+tags = ["parse", "typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_const]
+category = "reject"
+description = "A 'const' initialized by '#align(T)' is refused with a clear error"
+tags = ["parse", "typecheck"]
+diagnostics = 1
+
+[scenario.meta_layout_if_generic]
+category = "reject"
+description = "A '#if' in a generic function decided by '#size(T)' of its type parameter is refused where it is written, with ErrorMetaLayoutConst"
+tags = ["parse", "typecheck"]
+diagnostics = 1
+
+# Step 5: '#each #f in #fields(T)' in a generic struct's braces makes fields and methods for each field of T
+[scenario.meta_gen_basic]
+category = "run"
+description = "'#each #f in #fields(T)' in a generic struct's braces: each instance holds the loop's fields and methods once per field of T, named '#f' or '#name(\"old_\", #f)', in the loop's order; the methods read and write the field of the same pass; two columns of one value are borrowed together, one &uni and one &imm"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_list]
+category = "run"
+description = "'pub #f: List[#f.type]' in a generic struct's braces: one List column per field of T, of that field's type, pushed to, read by a method of the same loop, indexed, and borrowed together"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_nested]
+category = "run"
+description = "a generic struct's loop reached through other generics: Cols[U] held by a generic struct, two generics up, passed through a generic function, and made for two different types"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_undecided]
+category = "run"
+description = "a loop kept undecided: a generic type in a generic module, its loop over its own still-open parameter, copied by the module's instance and decided by each instance of the copy, fields and methods; a loop over the module's parameter is decided by the module's instance"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_reject_parse]
+category = "reject"
+description = "A generated member refused while the file is read: a loop in a type that is no generic struct, a member of the loop whose name is not made of '#f', '#name' malformed (one part, two strings, no comma, no ')'), a static in the loop, a '#each' inside it, '#name' outside any loop, and a '#each' over a list in a type's braces"
+tags = ["parse"]
+
+[scenario.meta_gen_reject_check]
+category = "reject"
+description = "An instance with generated members refused: a generated field named as a written one, two generated names that join to one word, a generated method named as a written one, and a type parameter that is no struct"
+tags = ["typecheck"]
+
+# A package's generic struct holding a '#each #f in #fields(T)': the include file keeps the loop whole
+# (and the file-level meta constant a body reads), and the program that imports it makes the members
+[scenario.meta_gen_include]
+category = "run"
+description = "A package's generic struct with fields and a method made for each field of T, and a method reading a module-level 'let #bumps', compiled into its include file; a program imports it, clones the struct for its own type, links and runs"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+[scenario.meta_each_module]
+category = "run"
+description = "'let #n' and 'let #xs' at a module's level: held to the end of the file, read by the functions and generics below as by one declared in its own body"
+tags = ["parse", "runtime"]
+
+[scenario.meta_each_reject_module]
+category = "reject"
+description = "A meta 'var' at a module's level, and a meta 'let' at a module's level whose value is no number or list"
+tags = ["parse"]
+
+[scenario.meta_each_arg_basic]
+category = "run"
+description = "'#each #f in #fields(T) { #f: value }' as a call's arguments: T built from another value's fields, by a generic function for two structs, from a narrower source, with a computed value, and with a field that moves (no double finalize)"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_undecided]
+category = "run"
+description = "a loop among a call's arguments kept undecided: a generic type and a generic function in a generic module, their loops over their own still-open parameter, copied by the module's instance and decided by each instance of the copy"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_private]
+category = "run"
+description = "a loop among a call's arguments written in the module that declares the type: it describes and names the private field, so the value is built whole"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_reject_private]
+category = "reject"
+description = "a loop among a call's arguments, written in another module than the type's, over a type with a private field and no '@reflect': refused at the loop, as a loop of statements is; and for a type that opted in, a private field is described but not given a value from outside (the constructor's own rule, twice)"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.meta_each_arg_reject_parse]
+category = "reject"
+description = "A '#each' among a call's arguments whose block is not one named argument '#f: value' (not named, '#f' alone, two arguments, no value), one named by a written name, and a '#each' over a list there or in any other expression position: each refused where it stands"
+tags = ["parse"]
+
+[scenario.meta_each_arg_reject_check]
+category = "reject"
+description = "A loop among a call's arguments is checked as the written-out arguments are, in the instance that has them: named arguments to a function are refused, and a value that does not suit its field is the construction's own error, both naming the pass"
+tags = ["typecheck"]
+
+[scenario.meta_each_arg_reject_type]
+category = "reject"
+description = "A loop among a call's arguments whose value does not suit a field: the construction's own error, in the instance that has it"
+tags = ["typecheck"]
+
+# SoaList[T]'s whole-row 'push' on a SoaList of a move type. (A T with a field named 'len' is also
+# refused, but inside collections.cone, where this runner cannot take an annotation: see the PR.)
+[scenario.meta_soalist_reject]
+category = "reject"
+description = "SoaList[T]'s whole-row 'push' refused where T is a move type (the 'where T is Copy' unmet): ErrorWhereAbsent at the call"
+tags = ["typecheck"]

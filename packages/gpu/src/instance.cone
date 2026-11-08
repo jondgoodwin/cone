@@ -1,139 +1,219 @@
 // ---- Instance ----
 
 struct InstanceBackend {
-  handle vulkan.Instance;
-  messenger vulkan.DebugUtilsMessengerEXT;
-  loaded bool;             // SDL loaded the Vulkan loader for it
-  fns InstFns;             // the instance's functions, found when it was made
+  handle: vulkan.Instance;
+  messenger: vulkan.DebugUtilsMessengerEXT;
+  loaded: bool;             // SDL loaded the Vulkan loader for it
+  fns: InstFns;             // the instance's functions, found when it was made
+  usesSdl: bool = true;     // made for windows: SDL's video subsystem was started for it
+}
+
+// What makes the Vulkan instance from the create-info the layer assembled
+// (the layer's extensions, validation layer and debug messenger, chained):
+// 'createWith's hook for a runtime that makes the instance itself, as OpenXR's
+// XR_KHR_vulkan_enable2 does (xrCreateVulkanInstanceKHR adds the extensions a
+// headset needs). 'user' is whatever the caller gave 'createWith'; the
+// answer is the VkResult.
+pub alias InstanceMaker = &fn(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32;
+
+// The maker of every instance but a runtime's: vkCreateInstance
+fn makeInstanceDirect(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32 {
+  vulkan.createInstance(createInfo, nullp(), instance)
 }
 
 // The entry point: Vulkan loaded, an instance made with what a window's
 // surface needs, and validation and debug messages on where they are offered
 pub struct Instance {
-  backend InstanceBackend;
-  pub validation bool;         // the Khronos validation layer is on
-  pub syncValidation bool;     // and its synchronization validation
-  pub debugMessages bool;      // the loader's and layers' warnings and errors are reported
+  backend: InstanceBackend;
+  pub validation: bool;         // the Khronos validation layer is on
+  pub syncValidation: bool;     // and its synchronization validation
+  pub debugMessages: bool;      // the loader's and layers' warnings and errors are reported
 
   // Make an instance for 'appName'. The vulkan package found the Vulkan
   // loader when the program started; SDL loads its own copy (the OS counts
   // both) to name the surface extensions and make surfaces. Check
   // 'isValid': without a Vulkan 1.3 loader it is not, and why has gone to
   // stderr.
-  pub fn create(appName &str) Instance {
-    mut result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false,
-      noInstFns()), false, false, false);
+  pub fn create(appName: &str) Instance {
+    Instance.createWindowed(appName, true)
+  }
+
+  // The same, with the Khronos validation layer (and its synchronization checks) asked for or not, where it is
+  // installed: 'create' always asks. The layer costs every Vulkan call, so a program that draws every frame for
+  // someone who is not debugging it makes its instance with 'false' and asks for the layer in the runs whose
+  // verdict wants it ('validation' says what was made). The loader's and layers' debug messages are
+  // reported either way. Check 'isValid'.
+  pub fn createWindowed(appName: &str, validation: bool) Instance {
+    Instance.build(appName, &makeInstanceDirect, nullp(), true, validation)
+  }
+
+  // An instance made by 'maker' (a runtime's, OpenXR's: see InstanceMaker),
+  // for a program that draws to something other than a window: no SDL, no
+  // surface extensions, so no surface can be made of it. 'validation' asks for
+  // the Khronos validation layer where it is installed (some runtimes, Meta's
+  // PC simulator, leak memory under it). The one place the layer's API names
+  // Vulkan's types, since the runtime that makes the instance does. Check
+  // 'isValid'.
+  pub fn createWith(appName: &str, maker: InstanceMaker, user: *u8, validation: bool) Instance {
+    Instance.build(appName, maker, user, false, validation)
+  }
+
+  // The same, for a program that also shows a window (a headset program that
+  // mirrors an eye into one): SDL's video subsystem and Vulkan loader are
+  // started and the instance carries the extensions a window's surface needs,
+  // which a runtime that makes the instance (OpenXR's
+  // XR_KHR_vulkan_enable2) adds to its own, so 'createSurface' works on it.
+  // Check 'isValid'.
+  pub fn createWithWindow(appName: &str, maker: InstanceMaker, user: *u8, validation: bool) Instance {
+    Instance.build(appName, maker, user, true, validation)
+  }
+
+  // An instance for a program with no window, made directly (vkCreateInstance): no SDL, no surface
+  // extensions, so no surface can be made of it (request the adapter with 'Surface.none()'). Whether the
+  // Khronos validation layer is on, where it is installed, is the caller's choice: 'create' always asks for
+  // it, and a compute program that runs for its results pays for it in every Vulkan call (a language model's
+  // 722 dispatches a token took 11 ms to record with it and 1 to 3 ms without). The layer finds fault with
+  // a device made on such an instance (the device enables VK_KHR_swapchain, whose instance extension
+  // VK_KHR_surface is not here): a program that wants validation uses 'create'. Check 'isValid'.
+  pub fn createHeadless(appName: &str, validation: bool) Instance {
+    Instance.build(appName, &makeInstanceDirect, nullp(), false, validation)
+  }
+
+  // The instance's Vulkan handle, for a runtime that is told it (OpenXR's
+  // session binding); 0 for an instance that is not valid
+  pub fn vulkanHandle(self: &) vulkan.Instance { backend.handle }
+
+  // No instance: what a field holds before one is made for it (not valid)
+  pub fn none() Instance {
+    Instance(InstanceBackend(0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT(0u64), false, noInstFns(), false),
+      false, false, false)
+  }
+
+  fn build(appName: &str, maker: InstanceMaker, user: *u8, window: bool, wantValidation: bool) Instance {
+    var result = Instance(InstanceBackend(0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT(0u64), false,
+      noInstFns(), window), false, false, false);
     if !vulkan.available() {
       fail("no Vulkan loader (vulkan-1.dll) was found, or it lacks its global functions");
       return result;
     }
-    if !sdl.InitSubSystem(sdl.INIT_VIDEO) {
-      fail("SDL's video subsystem did not start");
-      return result;
+    if window {
+      if !sdl.InitSubSystem(sdl.INIT_VIDEO) {
+        fail("SDL's video subsystem did not start");
+        return result;
+      }
+      if !sdl.Vulkan_LoadLibrary(nullp()) {
+        fail("SDL could not load the Vulkan loader");
+        return result;
+      }
+      result.backend.loaded = true;
     }
-    if !sdl.Vulkan_LoadLibrary(nullp()) {
-      fail("SDL could not load the Vulkan loader");
-      return result;
-    }
-    result.backend.loaded = true;
-    mut version = 0u32;
+    var version = 0u32;
     if !check(vulkan.enumerateInstanceVersion(&mut version), "vkEnumerateInstanceVersion") { return result; }
     if version < vulkan.API_VERSION_1_3 {
       fail("the Vulkan loader is older than Vulkan 1.3");
       return result;
     }
 
-    // The extensions a surface needs (SDL's answer for this platform), and
-    // debug utils if the loader has them
-    mut exts = new Array[*u8, 12] <- fill null;
-    mut count = 0u32;
-    imm surfaceExts = sdl.Vulkan_GetInstanceExtensions(&mut count);
-    if !surfaceExts or count > 10u32 {
-      fail("SDL could not name the surface extensions");
-      return result;
-    }
-    mut next = 0u32;
-    while next < count {
-      exts[usize.from(next)] = *(surfaceExts + usize.from(next));
-      next = next + 1u32;
+    // The extensions a surface needs (SDL's answer for this platform; none
+    // when there is no window), and debug utils if the loader has them
+    var exts = Array[*u8, 12]() <- fill null;
+    var count = 0u32;
+    var next = 0u32;
+    if window {
+      let surfaceExts = sdl.Vulkan_GetInstanceExtensions(&mut count);
+      if !surfaceExts || count > 10u32 {
+        fail("SDL could not name the surface extensions");
+        return result;
+      }
+      while next < count {
+        exts[usize.from(next)] = *(surfaceExts + usize.from(next));
+        next = next + 1u32;
+      }
     }
     result.debugMessages = hasInstanceExtension(nullp(), "VK_EXT_debug_utils");
     if result.debugMessages {
       exts[usize.from(next)] = &"VK_EXT_debug_utils" as *u8;
       next = next + 1u32;
     }
-    imm layerName = &"VK_LAYER_KHRONOS_validation" as *u8;
-    result.validation = hasInstanceLayer(cstr.fromPtr(layerName));
-    imm layers Array[*u8, 1] = [layerName];
+    let layerName = &"VK_LAYER_KHRONOS_validation" as *u8;
+    result.validation = wantValidation && hasInstanceLayer(cstr.fromPtr(layerName));
+    let layers: Array[*u8, 1] = [layerName];
 
     // Synchronization validation, set through the layer's settings: it checks
     // every barrier and semaphore for a hazard between commands. Its shader
     // accesses heuristic makes it see what shaders read and write through
     // storage buffers and storage textures, from the SPIR-V: without it,
     // a compute pass's writes are invisible to it.
-    result.syncValidation = result.validation and hasInstanceExtension(layerName, "VK_EXT_layer_settings");
+    result.syncValidation = result.validation && hasInstanceExtension(layerName, "VK_EXT_layer_settings");
     if result.syncValidation {
       exts[usize.from(next)] = &"VK_EXT_layer_settings" as *u8;
       next = next + 1u32;
     }
-    imm on Array[u32, 1] = [vulkan.TRUE];
-    imm setting = [new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
+    let on: Array[u32, 1] = [vulkan.TRUE];
+    let setting = [vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
         valueCount: 1u32, pValues: &on as *u8),
-      new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
+      vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
         valueCount: 1u32, pValues: &on as *u8)];
-    imm settings = new vulkan.LayerSettingsCreateInfoEXT(settingCount: 2u32,
+    let settings = vulkan.LayerSettingsCreateInfoEXT(settingCount: 2u32,
       pSettings: &setting as *vulkan.LayerSettingEXT);
-    mut chain = nullp();
+    var chain = nullp();
     if result.syncValidation { chain = &settings as *u8; }
 
     // The messenger's create-info, chained, catches instance creation's own
     // messages; the messenger itself is made from one with nothing chained
-    imm severities = vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    imm types = vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+    let severities = vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    let types = vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
       | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    imm dbg = new vulkan.DebugUtilsMessengerCreateInfoEXT(messageSeverity: severities,
+    let dbg = vulkan.DebugUtilsMessengerCreateInfoEXT(messageSeverity: severities,
       messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
-    imm dbgChained = new vulkan.DebugUtilsMessengerCreateInfoEXT(pNext: chain, messageSeverity: severities,
+    let dbgChained = vulkan.DebugUtilsMessengerCreateInfoEXT(pNext: chain, messageSeverity: severities,
       messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
     if result.debugMessages { chain = &dbgChained as *u8; }
-    mut name = String.from(appName);
-    imm app = new vulkan.ApplicationInfo(pApplicationName: name.cstr().ptr(), pEngineName: &"Cone gpu" as *u8);
-    mut layerCount = 0u32;
+    var name = String.from(appName);
+    let app = vulkan.ApplicationInfo(pApplicationName: name.cstr().ptr(), pEngineName: &"Cone gpu" as *u8);
+    var layerCount = 0u32;
     if result.validation { layerCount = 1u32; }
-    imm ci = new vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
+    let ci = vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
       enabledLayerCount: layerCount, ppEnabledLayerNames: &layers as **u8,
       enabledExtensionCount: next, ppEnabledExtensionNames: &exts as **u8);
-    mut handle = 0usize as vulkan.Instance;
-    if !check(vulkan.createInstance(&ci, nullp(), &mut handle), "vkCreateInstance") { return result; }
+    var handle = 0usize as vulkan.Instance;
+    if !check(maker(user, &ci, &mut handle), "vkCreateInstance") { return result; }
     result.backend.handle = handle;
-    result.backend.fns = new Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns.load(handle));
-    imm ifns = result.backend.fns;
-    if ifns.missing != 0u32 {
+    result.backend.fns = Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns.load(handle));
+    let ifns = result.backend.fns;
+    if ifns.missing != 0u32 || (window && !ifns.hasSurface()) {
       fail("the Vulkan instance lacks some of its functions");
       return result;
     }
-    if result.debugMessages and ifns.hasDebugUtils() {
-      mut messenger = new vulkan.DebugUtilsMessengerEXT(0u64);
+    if result.debugMessages && ifns.hasDebugUtils() {
+      var messenger = vulkan.DebugUtilsMessengerEXT(0u64);
       if check(ifns.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
         result.backend.messenger = messenger;
       }
     }
-    result;
+    result
   }
 
   // Whether the instance was made
-  pub fn isValid(self &) bool { (backend.handle as *u8 as usize) != 0usize; }
+  pub fn isValid(self: &) bool { (backend.handle as *u8 as usize) != 0usize }
 
   // The surface of a window made for Vulkan (window's 'openVulkan', whose
   // 'sdlHandle' this takes). Check 'isValid'.
-  pub fn createSurface(self &, window *sdl.Window) Surface {
-    mut surface = new vulkan.SurfaceKHR(0u64);
+  pub fn createSurface(self: &, window: *sdl.Window) Surface {
+    var surface = vulkan.SurfaceKHR(0u64);
     if self.isValid() {
       if !sdl.Vulkan_CreateSurface(window, backend.handle as *u8, nullp(), &mut surface.h) {
         fail("SDL could not make a Vulkan surface of the window");
       }
     }
-    new Surface(new SurfaceBackend(backend.handle, surface, backend.fns));
+    Surface(SurfaceBackend(backend.handle, surface, backend.fns))
+  }
+
+  // The same for a window named by its SDL handle as a number (what an
+  // actor, which cannot carry a raw pointer, or a package that does not
+  // import sdl, has of it)
+  pub fn createSurfaceOf(self: &, window: usize) Surface {
+    self.createSurface(window as *u8 as *sdl.Window)
   }
 
   // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
@@ -143,23 +223,23 @@ pub struct Instance {
   // (WebGPU's) chooses: POWER_PREFERENCE_HIGH_PERFORMANCE a discrete GPU
   // before an integrated one, POWER_PREFERENCE_LOW_POWER the other way round.
   // Check 'isValid'.
-  pub fn requestAdapter(self &, surface &Surface, powerPreference u32) Adapter {
-    mut chosen = 0usize as vulkan.PhysicalDevice;
-    mut chosenFamily = 0u32;
-    mut chosenScore = 0;
+  pub fn requestAdapter(self: &, surface: &Surface, powerPreference: u32) Adapter {
+    var chosen = 0usize as vulkan.PhysicalDevice;
+    var chosenFamily = 0u32;
+    var chosenScore = 0;
     if self.isValid() {
       // How many devices, asked first; every one is considered
-      mut n = 0u32;
-      imm counted = check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
-      mut devices = List[vulkan.PhysicalDevice].empty();
+      var n = 0u32;
+      let counted = check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
+      var devices = List[vulkan.PhysicalDevice]();
       devices.resize(usize.from(n), 0usize as vulkan.PhysicalDevice);
-      if counted and check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut() as *vulkan.PhysicalDevice),
+      if counted && check(backend.fns.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut() as *vulkan.PhysicalDevice),
           "vkEnumeratePhysicalDevices") {
         devices.truncate(usize.from(n));
-        mut i = 0usize;
+        var i = 0usize;
         while i < devices.len() {
-          mut family = 0u32;
-          imm score = adapterScore(&backend.fns, *devices[i], surface.backend.surface, powerPreference, &mut family);
+          var family = 0u32;
+          let score = adapterScore(&backend.fns, *devices[i], surface.backend.surface, powerPreference, true, &mut family);
           if score > chosenScore {
             chosen = *devices[i];
             chosenFamily = family;
@@ -171,68 +251,113 @@ pub struct Instance {
     }
     if chosenScore == 0 {
       fail("no GPU supports Vulkan 1.3 with dynamic rendering and synchronization2 (and presents to the surface)");
-      return new Adapter(new AdapterBackend(chosen, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
+      return Adapter(AdapterBackend(chosen, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
     }
-    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+    self.describeAdapter(chosen, chosenFamily)
+  }
+
+  // The adapter for the GPU 'physical', one a runtime has chosen (OpenXR's
+  // xrGetVulkanGraphicsDevice2KHR answers which one a headset is on), if it
+  // supports what this layer needs (Vulkan 1.3, dynamic rendering,
+  // synchronization2, a queue that draws); the same checks 'requestAdapter'
+  // makes of each GPU, with no surface. Check 'isValid'.
+  pub fn requestAdapterFor(self: &, physical: vulkan.PhysicalDevice) Adapter {
+    var family = 0u32;
+    let score = if self.isValid() {
+      adapterScore(&backend.fns, physical, vulkan.SurfaceKHR(0u64), POWER_PREFERENCE_HIGH_PERFORMANCE, false, &mut family)
+    } else {
+      0
+    };
+    if score == 0 {
+      fail("the GPU the runtime chose does not support Vulkan 1.3 with dynamic rendering and synchronization2");
+      return Adapter(AdapterBackend(0usize as vulkan.PhysicalDevice, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN,
+        String.from(""), 0u32, 0u32);
+    }
+    self.describeAdapter(physical, family)
+  }
+
+  // The same, for a program that also presents to a window (a headset's
+  // mirror): the GPU the runtime chose must also offer swapchains and have a
+  // queue that draws and presents to 'surface'. Check 'isValid'.
+  pub fn requestAdapterForSurface(self: &, physical: vulkan.PhysicalDevice, surface: &Surface) Adapter {
+    var family = 0u32;
+    let score = if self.isValid() {
+      adapterScore(&backend.fns, physical, surface.backend.surface, POWER_PREFERENCE_HIGH_PERFORMANCE, true, &mut family)
+    } else {
+      0
+    };
+    if score == 0 {
+      fail("the GPU the runtime chose cannot present to the window (no swapchains, or no queue that draws and presents)");
+      return Adapter(AdapterBackend(0usize as vulkan.PhysicalDevice, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN,
+        String.from(""), 0u32, 0u32);
+    }
+    self.describeAdapter(physical, family)
+  }
+
+  // The Adapter record of the GPU 'chosen', whose graphics queue family is 'chosenFamily'
+  fn describeAdapter(self: &, chosen: vulkan.PhysicalDevice, chosenFamily: u32) Adapter {
+    var props = zeroed[vulkan.PhysicalDeviceProperties]();
     backend.fns.getPhysicalDeviceProperties(chosen, &mut props);
-    mut name = String.empty();
+    var name = String();
     appendCStr(&mut name, &mut props.deviceName as *u8);
-    mut version = String.empty();
+    var version = String();
     version <- u64.from(vulkan.apiVersionMajor(props.apiVersion));
     version.appendByte('.');
     version <- u64.from(vulkan.apiVersionMinor(props.apiVersion));
     version.appendByte('.');
     version <- u64.from(vulkan.apiVersionPatch(props.apiVersion));
-    mut kind = ADAPTER_TYPE_UNKNOWN;
+    var kind = ADAPTER_TYPE_UNKNOWN;
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { kind = ADAPTER_TYPE_DISCRETE_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { kind = ADAPTER_TYPE_INTEGRATED_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_CPU { kind = ADAPTER_TYPE_CPU; }
-    new Adapter(new AdapterBackend(chosen, chosenFamily, backend.fns), name, kind, version, props.vendorID, props.deviceID);
+    Adapter(AdapterBackend(chosen, chosenFamily, backend.fns), name, kind, version, props.vendorID, props.deviceID)
   }
 
   // Its end, after every object made from it
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if self.isValid() {
       if backend.messenger.h != 0u64 { backend.fns.destroyDebugUtilsMessengerEXT(backend.handle, backend.messenger, nullp()); }
       backend.fns.destroyInstance(backend.handle, nullp());
     }
     if backend.loaded { sdl.Vulkan_UnloadLibrary(); }
-    sdl.QuitSubSystem(sdl.INIT_VIDEO);
+    if backend.usesSdl { sdl.QuitSubSystem(sdl.INIT_VIDEO); }
   }
 }
 
 // How well 'physical' suits: 0 if it cannot be used, else higher for the
 // kind of GPU 'powerPreference' prefers; 'family' gets the queue family that
-// draws and presents
-fn adapterScore(ifns &InstFns, physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, powerPreference u32, family &mut u32) i32 {
-  mut discrete = 3;
-  mut integrated = 2;
+// draws and presents. 'swapchain': the GPU must offer VK_KHR_swapchain (one that
+// draws to a window must; one that draws to a headset's images need not)
+fn adapterScore(ifns: &InstFns, physical: vulkan.PhysicalDevice, surface: vulkan.SurfaceKHR, powerPreference: u32, swapchain: bool,
+    family: &mut u32) i32 {
+  var discrete = 3;
+  var integrated = 2;
   if powerPreference == POWER_PREFERENCE_LOW_POWER {
     discrete = 2;
     integrated = 3;
   }
-  mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+  var props = zeroed[vulkan.PhysicalDeviceProperties]();
   ifns.getPhysicalDeviceProperties(physical, &mut props);
   if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
-  if !hasDeviceExtension(ifns, physical, "VK_KHR_swapchain") { return 0; }
+  if swapchain && !hasDeviceExtension(ifns, physical, "VK_KHR_swapchain") { return 0; }
 
-  mut f13 = new vulkan.PhysicalDeviceVulkan13Features();
-  mut f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+  var f13 = vulkan.PhysicalDeviceVulkan13Features();
+  var f2 = vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
   ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
-  if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
+  if f13.dynamicRendering != vulkan.TRUE || f13.synchronization2 != vulkan.TRUE { return 0; }
 
   // How many families, asked first, then all of them
-  mut n = 0u32;
+  var n = 0u32;
   ifns.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, null);
-  mut families = List[vulkan.QueueFamilyProperties].empty();
+  var families = List[vulkan.QueueFamilyProperties]();
   families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
   ifns.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
   families.truncate(usize.from(n));
-  mut i = 0u32;
+  var i = 0u32;
   while i < n {
-    mut presents = vulkan.TRUE;       // with no surface, any queue family that draws
+    var presents = vulkan.TRUE;       // with no surface, any queue family that draws
     if surface.h != 0u64 { ifns.getPhysicalDeviceSurfaceSupportKHR(physical, i, surface, &mut presents); }
-    if (families[usize.from(i)].queueFlags & vulkan.QUEUE_GRAPHICS_BIT) != 0u32 and presents == vulkan.TRUE {
+    if (families[usize.from(i)].queueFlags & vulkan.QUEUE_GRAPHICS_BIT) != 0u32 && presents == vulkan.TRUE {
       *family = i;
       if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { return discrete; }
       if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { return integrated; }
@@ -240,28 +365,28 @@ fn adapterScore(ifns &InstFns, physical vulkan.PhysicalDevice, surface vulkan.Su
     }
     i = i + 1u32;
   }
-  0;
+  0
 }
 
 // ---- Surface ----
 
 struct SurfaceBackend {
-  instance vulkan.Instance;
-  surface vulkan.SurfaceKHR;
-  fns InstFns;                 // its instance's functions
+  instance: vulkan.Instance;
+  surface: vulkan.SurfaceKHR;
+  fns: InstFns;                 // its instance's functions
 }
 
 // A window's surface, which a SwapChain presents to
 pub struct Surface {
-  backend SurfaceBackend;
+  backend: SurfaceBackend;
 
-  pub fn isValid(self &) bool { backend.surface.h != 0u64; }
+  pub fn isValid(self: &) bool { backend.surface.h != 0u64 }
 
   // No surface: for 'requestAdapter' when nothing is to be presented
   // (WebGPU's compatibleSurface left out)
-  pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64), noInstFns())); }
+  pub fn none() Surface { Surface(SurfaceBackend(0usize as vulkan.Instance, vulkan.SurfaceKHR(0u64), noInstFns())) }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if self.isValid() { backend.fns.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
   }
 }
@@ -269,95 +394,239 @@ pub struct Surface {
 // ---- Adapter ----
 
 struct AdapterBackend {
-  physical vulkan.PhysicalDevice;
-  queueFamily u32;
-  fns InstFns;                 // its instance's functions
+  physical: vulkan.PhysicalDevice;
+  queueFamily: u32;
+  fns: InstFns;                 // its instance's functions
+}
+
+// What makes the Vulkan device from the create-info the layer assembled (its
+// queue, its features, its extensions): 'requestDeviceVia's hook for a runtime
+// that makes the device itself, as OpenXR's XR_KHR_vulkan_enable2 does
+// (xrCreateVulkanDeviceKHR adds the extensions a headset needs). 'user' is
+// whatever the caller gave 'requestDeviceVia'; the answer is the VkResult.
+pub alias DeviceMaker = &fn(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
+  device: &mut vulkan.Device) i32;
+
+// What the layer's own path passes where a maker is asked for: it makes the
+// device itself, with vkCreateDevice, and never calls this
+fn makeDeviceDirect(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
+    device: &mut vulkan.Device) i32 {
+  vulkan.ERROR_INITIALIZATION_FAILED
 }
 
 // A GPU, and what it is
 pub struct Adapter {
-  backend AdapterBackend;
-  pub name String;             // "Intel(R) UHD Graphics 770"
-  pub adapterType u32;         // ADAPTER_TYPE_...
-  pub backendVersion String;   // the version of the API underneath: "1.3.290" (Vulkan)
-  pub vendorID u32;
-  pub deviceID u32;
+  backend: AdapterBackend;
+  pub name: String;             // "Intel(R) UHD Graphics 770"
+  pub adapterType: u32;         // ADAPTER_TYPE_...
+  pub backendVersion: String;   // the version of the API underneath: "1.3.290" (Vulkan)
+  pub vendorID: u32;
+  pub deviceID: u32;
 
-  pub fn isValid(self &) bool { (backend.physical as *u8 as usize) != 0usize; }
+  pub fn isValid(self: &) bool { (backend.physical as *u8 as usize) != 0usize }
+
+  // No adapter: what a field holds before one is chosen for it (not valid)
+  pub fn none() Adapter {
+    Adapter(AdapterBackend(0usize as vulkan.PhysicalDevice, 0u32, noInstFns()), String.from(""), ADAPTER_TYPE_UNKNOWN,
+      String.from(""), 0u32, 0u32)
+  }
 
   // The API underneath
-  pub fn backendName(self &) &str { "Vulkan"; }
+  pub fn backendName(self: &) &str { "Vulkan" }
 
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
-  pub fn requestDevice(self &) Device {
-    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily),
-      new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
+  pub fn requestDevice(self: &) Device { self.requestDeviceWith(true) }
+
+  // The same, made by 'maker' (a runtime's, OpenXR's: see DeviceMaker), with
+  // the features and extensions every drawing device has and no ray tracing.
+  // Check 'isValid'.
+  pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8) Device {
+    self.makeDevice(false, &ComputeRequest(), maker, user, true, false)
+  }
+
+  // The same with VK_KHR_swapchain enabled besides what the runtime adds, for
+  // a program that also presents to a window (a headset's mirror): the device
+  // can make a swapchain of a surface ('createSwapChain' and
+  // 'createMirrorSwapChain'). Needs an adapter from
+  // 'Instance.requestAdapterForSurface'.
+  pub fn requestDeviceViaWindow(self: &, maker: DeviceMaker, user: *u8) Device {
+    self.makeDevice(false, &ComputeRequest(), maker, user, true, true)
+  }
+
+  // The GPU's Vulkan handle and the queue family its device draws with, for a
+  // runtime that is told them (OpenXR's session binding)
+  pub fn vulkanPhysicalDevice(self: &) vulkan.PhysicalDevice { backend.physical }
+  pub fn vulkanQueueFamily(self: &) u32 { backend.queueFamily }
+
+  // Whether this GPU can build acceleration structures and cast rays from shaders (ray queries):
+  // VK_KHR_acceleration_structure, VK_KHR_ray_query and buffer device addresses, each with its
+  // feature. Ray tracing here is ray query, not the ray-tracing pipeline (see raytracing.cone).
+  pub fn supportsRayTracing(self: &) bool {
+    if !self.isValid() { return false; }
+    if !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_acceleration_structure")
+        || !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_ray_query")
+        || !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_deferred_host_operations") {
+      return false;
+    }
+    var rq = vulkan.PhysicalDeviceRayQueryFeaturesKHR();
+    var accel = vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rq as *u8);
+    var address = vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accel as *u8);
+    var available = vulkan.PhysicalDeviceFeatures2(pNext: &mut address as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
+    address.bufferDeviceAddress == vulkan.TRUE && accel.accelerationStructure == vulkan.TRUE && rq.rayQuery == vulkan.TRUE
+  }
+
+  // The same, with ray tracing asked for or not: a device made with 'false' draws as one on a GPU
+  // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
+  // ray tracing either; check 'device.rayTracing'.
+  pub fn requestDeviceWith(self: &, rayTracing: bool) Device {
+    self.makeDevice(rayTracing, &ComputeRequest(), &makeDeviceDirect, nullp(), false, true)
+  }
+
+  // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
+  // the subgroup, and its buffer and memory limits, as a plain value
+  pub fn computeCapabilities(self: &) ComputeCapabilities {
+    if !self.isValid() { return ComputeCapabilities(); }
+    queryCompute(&backend.fns, backend.physical)
+  }
+
+  // The GPU's memory heaps, in the order Vulkan lists them
+  pub fn memoryHeaps(self: &) List[MemoryHeapInfo] {
+    var heaps = List[MemoryHeapInfo]();
+    if !self.isValid() { return heaps; }
+    var memory = zeroed[vulkan.PhysicalDeviceMemoryProperties]();
+    backend.fns.getPhysicalDeviceMemoryProperties(backend.physical, &mut memory);
+    var h = 0usize;
+    while h < usize.from(memory.memoryHeapCount) && h < 16usize {
+      heaps.push(MemoryHeapInfo(memory.memoryHeaps[h].size, (memory.memoryHeaps[h].flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32));
+      h = h + 1usize;
+    }
+    heaps
+  }
+
+  // A device made with the compute features 'request' asks for, each enabled if this GPU has it
+  // (features.cone says what, and what 'device.compute' then answers). Ray tracing is not asked for.
+  // Check 'isValid'.
+  pub fn requestComputeDevice(self: &, request: &ComputeRequest) Device {
+    self.makeDevice(false, request, &makeDeviceDirect, nullp(), false, true)
+  }
+
+  // 'external': the device is made by 'maker'. 'swapchain': VK_KHR_swapchain is enabled (always, for a device the layer makes
+  // itself; asked for, for a runtime's, whose own extensions are the runtime's to add)
+  fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest, maker: DeviceMaker, user: *u8, external: bool,
+      swapchain: bool) Device {
+    var result = Device(DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
+      vulkan.RayFns()), CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
 
-    imm priorities Array[f32, 1] = [1.];
-    imm qci = new vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
+    let priorities: Array[f32, 1] = [1.];
+    let qci = vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
       pQueuePriorities: &priorities as *f32);
-    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(synchronization2: vulkan.TRUE,
-      dynamicRendering: vulkan.TRUE);
-    imm exts Array[*u8, 1] = [&"VK_KHR_swapchain" as *u8];
+    let useRay = rayTracing && self.supportsRayTracing();
+    var rqf = vulkan.PhysicalDeviceRayQueryFeaturesKHR(rayQuery: vulkan.TRUE);
+    var accelf = vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rqf as *u8, accelerationStructure: vulkan.TRUE);
+    var addressf = vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accelf as *u8, bufferDeviceAddress: vulkan.TRUE);
+
+    // The compute features: those asked for that the GPU has (features.cone). Vulkan 1.1 and 1.2's feature
+    // structures are chained only when one is asked for, so a device asking for none is made exactly as it
+    // always was (and, as Vulkan 1.2's structure includes bufferDeviceAddress, never together with ray
+    // tracing's own structure: 'requestComputeDevice' asks for no ray tracing).
+    let has = queryCompute(&backend.fns, backend.physical);
+    let on = enabledCompute(&has, request);
+    let chained = request.wantsFeatures() && !useRay;
+    var f12 = vulkan.PhysicalDeviceVulkan12Features(
+      storageBuffer8BitAccess: vkBool(on.storage8Bit), uniformAndStorageBuffer8BitAccess: vkBool(on.storage8Bit),
+      shaderFloat16: vkBool(on.float16Arithmetic), shaderInt8: vkBool(on.int8Arithmetic),
+      shaderSubgroupExtendedTypes: vkBool(on.subgroupExtendedTypes));
+    var f11 = vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
+      storageBuffer16BitAccess: vkBool(on.storage16Bit), uniformAndStorageBuffer16BitAccess: vkBool(on.storage16Bit));
+    let f13 = vulkan.PhysicalDeviceVulkan13Features(
+      pNext: if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null },
+      synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
+    let exts: Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
+      &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8];
     // Anisotropic filtering, the one optional core feature asked for: on
     // where the GPU has it (every desktop one does), else samplers filter
     // trilinearly only ('Device.maxAnisotropy' is 0)
-    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+    var props = zeroed[vulkan.PhysicalDeviceProperties]();
     backend.fns.getPhysicalDeviceProperties(backend.physical, &mut props);
-    mut available = new vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    var available = vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
     backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
-    mut enabled = zeroed[vulkan.PhysicalDeviceFeatures]();
-    if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE and props.limits.maxSamplerAnisotropy >= 1. {
+    var enabled = zeroed[vulkan.PhysicalDeviceFeatures]();
+    if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE && props.limits.maxSamplerAnisotropy >= 1. {
       enabled.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] = vulkan.TRUE;
       result.maxAnisotropy = props.limits.maxSamplerAnisotropy;
     }
-    imm dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
+    if on.int16Arithmetic { enabled.raw[vulkan.FEATURE_SHADER_INT16] = vulkan.TRUE; }
+    // What the device is made with and held to (features.cone): the layer's WebGPU-default limits, or with
+    // 'largeBuffers' the GPU's own; never above what the GPU allows
+    result.compute = on;
+    result.maxStorageBufferBindingSize = if request.largeBuffers { has.maxStorageBufferRange } else { MAX_STORAGE_BUFFER_BINDING_SIZE };
+    if result.maxStorageBufferBindingSize > has.maxStorageBufferRange { result.maxStorageBufferBindingSize = has.maxStorageBufferRange; }
+    result.maxStorageBuffersPerStage = if request.largeBuffers { has.maxPerStageDescriptorStorageBuffers } else { MAX_STORAGE_BUFFERS_PER_SHADER_STAGE };
+    if result.maxStorageBuffersPerStage > has.maxPerStageDescriptorStorageBuffers {
+      result.maxStorageBuffersPerStage = has.maxPerStageDescriptorStorageBuffers;
+    }
+    if request.largeBuffers && result.maxStorageBuffersPerStage > MAX_BIND_GROUPS * MAX_BINDINGS {
+      result.maxStorageBuffersPerStage = MAX_BIND_GROUPS * MAX_BINDINGS;       // a layer has at most 4 groups of 16 bindings
+    }
+    let dci = vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
-      enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
+      enabledExtensionCount: if useRay { 4u32 } else if swapchain { 1u32 } else { 0u32 }, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
-    mut device = 0usize as vulkan.Device;
-    if !check(backend.fns.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
+    var device = 0usize as vulkan.Device;
+    let made = if external {
+      maker(user, backend.physical, &dci, &mut device)
+    } else {
+      backend.fns.createDevice(backend.physical, &dci, nullp(), &mut device)
+    };
+    if !check(made, "vkCreateDevice") { return result; }
     result.backend.device = device;
-    result.backend.fns = new Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
+    result.backend.fns = Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
     result.queue.fns = result.backend.fns;
-    imm fns = result.backend.fns;
-    if fns.missing != 0u32 {
+    let fns = result.backend.fns;
+    if fns.missing != 0u32 || (swapchain && !fns.hasSwapchain()) {
       fail("the Vulkan device lacks some of its functions");
       return result;
     }
-    mut queue = 0usize as vulkan.Queue;
+    if useRay {
+      result.backend.ray = vulkan.RayFns.load(&*backend.fns, device);
+      result.rayTracing = result.backend.ray.found;
+    }
+    var queue = 0usize as vulkan.Queue;
     fns.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
     result.queue.backend.handle = queue;
     result.queue.backend.device = device;
     backend.fns.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
 
     // Timestamps, if the queue keeps time: a tick's length
-    mut n = 0u32;
+    var n = 0u32;
     backend.fns.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
-    mut families = List[vulkan.QueueFamilyProperties].empty();
+    var families = List[vulkan.QueueFamilyProperties]();
     families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
     backend.fns.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
     families.truncate(usize.from(n));
-    if backend.queueFamily < n and families[usize.from(backend.queueFamily)].timestampValidBits > 0u32 {
+    if backend.queueFamily < n && families[usize.from(backend.queueFamily)].timestampValidBits > 0u32 {
       result.timestampPeriod = props.limits.timestampPeriod;
     }
 
     // Each frame in flight: its fence, and thread 0's command pool
-    imm fci = new vulkan.FenceCreateInfo();
-    imm pci = new vulkan.CommandPoolCreateInfo(flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT,
+    let fci = vulkan.FenceCreateInfo();
+    // (a command buffer that begins again after a flush has run it resets itself)
+    let pci = vulkan.CommandPoolCreateInfo(
+      flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT | vulkan.COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
       queueFamilyIndex: backend.queueFamily);
-    mut i = 0usize;
+    var i = 0usize;
     while i < 2usize {
-      mut fence = new vulkan.Fence(0u64);
+      var fence = vulkan.Fence(0u64);
       check(fns.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
       result.queue.backend.frames[i].fence = fence;
-      mut pool = new vulkan.CommandPool(0u64);
+      var pool = vulkan.CommandPool(0u64);
       check(fns.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
       result.queue.backend.frames[i].pool = pool;
       i = i + 1usize;
     }
-    result;
+    result
   }
 }

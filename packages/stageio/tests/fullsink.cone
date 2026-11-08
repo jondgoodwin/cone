@@ -1,0 +1,114 @@
+// A FileSink whose write FAILS (filestages.cone in src, a write answering Err): on Linux, /dev/full opens
+// and every write to it fails (ENOSPC). A file of 300,000 bytes (more than the 256 KiB window) goes
+// FileSource -> Watch -> FileSink("/dev/full"). The failed write loses the chunk's buffer, so the sink gives
+// the source's credit back with an empty buffer of the same capacity; if it did not, the source would wait
+// on the window for ever. The test needs:
+//
+//   1. 'done' says Err;
+//   2. the source finishes, and its end arrives (Watch hears it: a test that hangs here is the failure);
+//   3. every buffer is back in the pool.
+//
+// Only Linux runs it (other systems have no /dev/full): elsewhere the checks pass without a stream, so the
+// blessed output is the same everywhere.
+
+mod fullsink;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+// Passes chunks and credit through, and tells 'seen' when the stream's end passes
+actor Watch is ChunkSink, ChunkSource {
+  down: ChunkSink;
+  up: Option[ChunkSource];
+  seen: Option[OneshotSender[bool]];
+
+  pub fn init(self: &new, down: ChunkSink, seen: OneshotSender[bool]) {
+    *self = Self(down: down, up: None[ChunkSource], seen: Some[OneshotSender[bool]](seen));
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    down <- c;
+  }
+
+  pub async fn end(self, how: Ending) {
+    down.end(how);
+    up = None[ChunkSource];
+    var t = None[OneshotSender[bool]];
+    t <-> seen;
+    match t {
+      case let Some(s) { var tell = s; tell.send(true); }
+      case is None {}
+    }
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(b); }
+      case is None { }
+    }
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+}
+
+// The stream into /dev/full: whether done said Err and the source's end arrived
+fn runFull() bool {
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  var stx: OneshotSender[bool];
+  var srx: OneshotReceiver[bool];
+  stx, srx = Oneshot[bool].make();
+  {
+    let sink = FileSink(String.from("/dev/full"), tx);
+    let watch = Watch(sink, stx);
+    let src = FileSource(watch, String.from("stages_full_in.tmp"));
+    src.start();
+  }
+  let r = rx.recv();
+  let s = srx.recv();
+  var erred = false;
+  match r {
+    case let Some(x) {
+      match x {
+        case is Ok {}
+        case is Err { erred = true; }
+      }
+    }
+    case is None {}
+  }
+  var ended = false;
+  match s {
+    case let Some(b) { ended = b; }
+    case is None {}
+  }
+  erred && ended
+}
+
+fn main() i32 {
+  initAll();
+  var data = List[u8].withCapacity(300000usize);
+  while data.len() < 300000usize { data.push(97u8 + u8.from(data.len() % 26usize)); }
+  match fs.writeFile(&Path.from("stages_full_in.tmp"), data.view()) {
+    case is Ok {}
+    case is Err { return skip("cannot write the temporary file"); }
+  }
+  let ok = #if #os == .linux { runFull() } #else { true };
+  finalAll();
+  expect(ok, "1: a write that fails ends the stream: done says Err, and the source's end arrives");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  _ = fs.removeFile(&Path.from("stages_full_in.tmp"));
+  done()
+}

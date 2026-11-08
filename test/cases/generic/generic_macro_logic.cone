@@ -1,0 +1,102 @@
+// '||' and '&&' are methods of the left operand's type: any type may declare them, as a
+// macro method (the right operand 'lazy', so it runs only where it is the answer) or
+// as a function method (an ordinary call, so the right operand runs first).
+//
+// The left operand is evaluated once however the body names it: a call, a method call
+// and a chain of the operators all work as the receiver. A bool's own '||' and '&&'
+// are unchanged.
+//
+// Every function with a side effect counts itself in 'calls', so what is printed says
+// how many ran. The expected lines are worked out by hand in the comments.
+
+mod generic_macro_logic;
+
+import stdio use *;
+
+var @threadlocal calls = 0i64;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr(", ran ");
+  printInt(calls);
+  printStr("\n");
+  calls = 0i64;
+}
+
+// Macro methods: the first nonzero for '||', the first zero for '&&'
+struct Lazy {
+  pub n: i64;
+
+  pub macro `||`[self, other: lazy Lazy] {
+    let first: Lazy = self;
+    if first.n != 0 { first } else { other }
+  }
+
+  pub macro `&&`[self, other: lazy Lazy] {
+    let first: Lazy = self;
+    if first.n == 0 { first } else { other }
+  }
+
+  pub fn again(self: &) Lazy {
+    calls = calls + 1i64;
+    Lazy(n: n)
+  }
+}
+
+// A function method: an ordinary call, so the right operand has run when it is called
+struct Strict {
+  pub n: i64;
+
+  pub fn `||`(self, other: Strict) Strict {
+    if self.n != 0 { self } else { other }
+  }
+}
+
+fn mk(n: i64) Lazy {
+  calls = calls + 1i64;
+  Lazy(n: n)
+}
+
+fn ms(n: i64) Strict {
+  calls = calls + 1i64;
+  Strict(n: n)
+}
+
+fn flag(b: bool) bool {
+  calls = calls + 1i64;
+  b
+}
+
+// A 'where' condition joins its clauses with '&&' and '||', compile-time ones, as before
+fn both[T](x: T) i64 where T is Integer && T is Copy { 5 }
+fn either[T](x: T) i64 where T is Integer || T is bool { 6 }
+
+fn main() {
+  show("lazy || lazy", (mk(1) || mk(2)).n);            // 1, ran 1
+  show("zero || lazy", (mk(0) || mk(2)).n);            // 2, ran 2
+  show("zero && lazy", (mk(0) && mk(2)).n);            // 0, ran 1
+  show("one && lazy", (mk(3) && mk(2)).n);             // 2, ran 2
+  show("chain", (mk(0) || mk(0) || mk(5)).n);          // 5, ran 3
+  show("mixed", (mk(0) && mk(9) || mk(4)).n);          // 4, ran 2
+
+  // The receiver is a method call, and its value is held once
+  let l = Lazy(n: 6);
+  show("method receiver", (l.again() || mk(8)).n);     // 6, ran 1
+  let z = Lazy(n: 0);
+  show("method receiver zero", (z.again() || mk(8)).n);  // 8, ran 2
+
+  // A function method is called with both operands evaluated
+  show("strict first", (ms(1) || ms(2)).n);            // 1, ran 2
+  show("strict second", (ms(0) || ms(2)).n);           // 2, ran 2
+
+  // A bool's own
+  if flag(false) && flag(true) { printStr("no\n"); } else { printStr("short\n"); }  // short
+  show("bool", 0);                                     // 0, ran 1
+  if flag(true) || flag(false) { printStr("yes\n"); }  // yes
+  show("bool or", 0);                                  // 0, ran 1
+  show("where &&", both(3i32));                        // 5, ran 0
+  show("where ||", either(true));                      // 6, ran 0
+  calls = 0i64;
+}

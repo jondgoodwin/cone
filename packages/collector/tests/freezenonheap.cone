@@ -1,0 +1,109 @@
+// Bug 32 follow-up: List.freeze of an ARENA-region list of Gc elements while the collector is
+// marking. freeze.cone covers the heap path (the block is resized in place, no moveRaw). A list
+// whose region is not the heap's cannot hand its block over, so List.freeze allocates a fresh
+// heap block and mem.moveRaw's the elements into it, then gives the old block back to the region
+// (an arena's release does nothing). The elements were reachable from the list when it was
+// scanned; the store that matters is the frozen array into its new holder (Bug 29, #860). This
+// pins that path against a collection under way.
+//
+// The heap, with the automatic work stopped (as freeze.cone):
+//   a: an Arena, a local of the case; it holds the source list's block
+//   h: a Shelf holding an empty frozen array, a local of the case
+//   c: a Hop2 -> a Hop -> a Box w holding a List of three Leaves made in a (the source)
+// Gc.step(0) twice marks h black while c, the Hop and w are unmarked. The list is then
+// taken out of w, frozen (moveRaw into a fresh heap block), and stored in h; the function
+// returns, so no stack slot holds a leaf. The collection is finished a step at a time: no
+// leaf is finalized, and each still reads its number (10, 20, 30), reached only through
+// h's frozen array.
+
+mod freezenonheap;
+
+import testing use *;
+import collector;
+import collections use *;
+import arena use *;
+
+var @threadlocal finals = 0i64;
+struct LeafValue {
+  pub n: i64;
+  fn final(self: &uni) { finals = finals + 1; }
+}
+alias Leaf = Gc[mut, LeafValue];
+struct ShelfValue { pub frozen: Uni[Array[Leaf]]; }
+alias Shelf = Gc[mut, ShelfValue];
+struct BoxValue { pub src: List[Leaf]; }
+alias Box = Gc[mut, BoxValue];
+struct HopValue { pub to: Box; }
+alias Hop = Gc[mut, HopValue];
+struct Hop2Value { pub to: Hop; }
+alias Hop2 = Gc[mut, Hop2Value];
+
+fn settle() {
+  Gc.collect();
+  Gc.collect();
+}
+
+fn emptyShelf() Shelf {
+  Shelf(List[Leaf]().freeze())
+}
+fn chain(a: &Arena) Hop2 {
+  var l = List[Leaf](a.region);
+  l.push(Leaf(10));
+  l.push(Leaf(20));
+  l.push(Leaf(30));
+  Hop2(Hop(Box(l)))
+}
+
+fn isBlack(p: *u8) bool {
+  ((p as usize - mem.sizeof[Gc]()) as &Gc).marked & 4u32 != 0u32
+}
+fn markedH(h: Shelf, c: Hop2) bool {
+  let w = c.to.to;
+  Gc.phase() == 1u32 && isBlack(&*h as *u8) && !isBlack(&*c as *u8) && !isBlack(&*w as *u8)
+}
+fn finish(f0: i64) bool {
+  while !Gc.step(0usize) { }
+  finals == f0
+}
+
+fn viaFreeze(h: Shelf, c: Hop2) {
+  let w = c.to.to;
+  let taken = w.src := List[Leaf]();
+  h.frozen = taken.freeze();
+}
+
+fn sumOf(h: Shelf) i64 {
+  var t = 0i64;
+  var i = 0usize;
+  while i < h.frozen.len {
+    let l = h.frozen[i];
+    t = t + l.n;
+    i = i + 1usize;
+  }
+  t
+}
+
+fn caseFreeze() {
+  var a = Arena();
+  let c = chain(&a);
+  let h = emptyShelf();
+  Gc.step(0usize);
+  Gc.step(0usize);
+  expect(markedH(h, c), "freeze: h black, the leaves' holders not yet marked");
+  let f0 = finals;
+  viaFreeze(h, c);
+  expect(finish(f0), "no leaf frozen into black h is finalized");
+  expectUInt(u64.from(h.frozen.len), 3, "h's frozen array holds three");
+  expectInt(sumOf(h), 60, "and each reads its number: 10 + 20 + 30");
+}
+
+fn main() i32 {
+  Gc.stop();
+  settle();
+  caseFreeze();
+  settle();
+  Gc.start();
+  expectInt(finals, 3, "the three leaves, each finalized once, after the case");
+  expectUInt(u64.from(Gc.liveObjects()), 0, "and everything freed");
+  done()
+}

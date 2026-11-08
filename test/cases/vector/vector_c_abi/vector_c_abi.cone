@@ -1,0 +1,64 @@
+// SIMD vectors across the C boundary: a vector passed and returned by value to
+// and from C, checked against C compiled by the platform's own C compiler
+// (cside.c, which the scenario links). Vector[f32, 4] is C's __m128,
+// Vector[i32, 4] its __m128i and Vector[f64, 2] its __m128d. Each is
+// exercised both ways: Cone calling C, and C calling Cone's own C-named
+// functions; and a vector among the arguments beside integers, floats and a second
+// vector, where registers are taken in an order that a wrong rule would break.
+// The values are hand-worked.
+
+mod vector_c_abi;
+
+import stdio use *;
+
+extern {
+  fn @c cv_add(a: Vector[f32, 4], b: Vector[f32, 4]) Vector[f32, 4];
+  fn @c cv_sum(v: Vector[f32, 4]) f32;
+  fn @c cv_iadd(a: Vector[i32, 4], b: Vector[i32, 4]) Vector[i32, 4];
+  fn @c cv_dscale(v: Vector[f64, 2], k: f64) Vector[f64, 2];
+  fn @c cv_mixed(n: i32, a: Vector[f32, 4], d: f64, b: Vector[f32, 4], f: f32) f32;
+  fn @c c_via_cone_scale() f32;
+  fn @c c_via_cone_ibump() i32;
+}
+
+// Cone's own C-named functions, which C calls
+pub fn @c cone_scale(v: Vector[f32, 4], k: f32) Vector[f32, 4] {
+  v * k
+}
+
+pub fn @c cone_ibump(v: Vector[i32, 4]) Vector[i32, 4] {
+  let ones = Vector[i32, 4]() <- 1, 2, 3, 4;
+  v + ones * 100
+}
+
+fn showF(label: &str, x: f32) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(f64.from(x));
+  printStr("\n");
+}
+
+fn main() {
+  let a = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  let b = Vector[f32, 4]() <- 10.0, 20.0, 30.0, 40.0;
+  let sum = cv_add(a, b);
+  showF("C adds lane 0", sum[0usize]);
+  showF("C adds lane 3", sum[3usize]);
+  showF("C sums the lanes", cv_sum(a));
+  let i = Vector[i32, 4]() <- 1, 2, 3, 4;
+  let j = Vector[i32, 4]() <- 100, 200, 300, 400;
+  let isum = cv_iadd(i, j);
+  printStr("C adds ints = ");
+  printInt(i64.from(isum[0usize]));
+  printStr(" ");
+  printInt(i64.from(isum[3usize]));
+  printStr("\n");
+  let d = Vector[f64, 2]() <- 1.5, 2.5;
+  let scaled = cv_dscale(d, 4.0);
+  showF("C scales doubles", f32.from(scaled[0usize] + scaled[1usize]));
+  showF("mixed arguments", cv_mixed(1, a, 0.5, b, 0.25));
+  showF("C calls Cone", c_via_cone_scale());
+  printStr("C calls Cone with ints = ");
+  printInt(i64.from(c_via_cone_ibump()));
+  printStr("\n");
+}

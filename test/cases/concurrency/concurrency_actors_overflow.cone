@@ -8,7 +8,7 @@
 // turn and message counted. A target's state is empty: an actor need have no
 // fields.
 //
-// The actors are declared. A target has no 'init', and 'new Target()' makes
+// The actors are declared. A target has no 'init', and 'Target()' makes
 // an actor of no fields.
 
 mod concurrency_actors_overflow;
@@ -23,22 +23,22 @@ const many = 3000u64;
 const moment = 1000u64;
 
 struct Results {
-  pub done Atomic[u64];
-  pub check Atomic[u64];
+  pub done: Atomic[u64];
+  pub check: Atomic[u64];
 }
 
-imm results Results;
+let results: Results;
 
 fn @initpure init() {
-  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 // ---- Target: does some work when asked ----
 
 actor Target {
-  pub async do work(self, n u64) {
-    mut x = 1u64;
-    mut i = 0u64;
+  pub async fn work(self, n: u64) {
+    var x = 1u64;
+    var i = 0u64;
     while i < n {
       x = x * 6364136223846793005u64 + i;
       i = i + 1u64;
@@ -51,18 +51,18 @@ actor Target {
 // ---- Spreader: sends every target it holds one message ----
 
 actor Spreader {
-  held List[Target];
+  held: List[Target];
 
-  fn init(self &new) {
-    *self = new Self(List[Target].empty());
+  fn init(self: &new) {
+    *self = Self(List[Target]());
   }
 
-  pub async do add(self, t Target) {
+  pub async fn add(self, t: Target) {
     held.push(t);
   }
 
-  pub async do go(self, n u64) {
-    mut i = 0usize;
+  pub async fn go(self, n: u64) {
+    var i = 0usize;
     while i < held.len() {
       held[i].work(n);
       i = i + 1usize;
@@ -72,12 +72,12 @@ actor Spreader {
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 1u32));
+  actors.configure(actors.Options(workers: 1u32));
   {
-    imm s = new Spreader();
-    mut i = 0u64;
+    let s = Spreader();
+    var i = 0u64;
     while i < many {
-      s.add(new Target());
+      s.add(Target());
       i = i + 1u64;
     }
     s.go(moment);
@@ -86,7 +86,7 @@ fn main() {
     thread.sleep(time.Duration.fromMillis(1));
   }
   finalAll();
-  imm st = actors.stats();
+  let st = actors.stats();
   printStr("more targets than a run queue holds, run "); printUInt(results.done.load()); printStr("\n");
   printStr("workers "); printUInt(u64.from(st.workers)); printStr("\n");
   printStr("steals "); printUInt(st.steals); printStr("\n");

@@ -146,9 +146,10 @@ Put these first, because every one of them is load-bearing.
    therefore not compared by scope number (`assignIsLocalPlace`).
 4. **The main walk joins an `if`'s arms but does not iterate.** No CFG, no
    fixed point. `ifFlow` walks each arm from the state its conditions leave and
-   joins them after: a variable moved on any arm that did not return counts as
-   moved from there on, so a move in both arms compiles and a use after a move
-   in one is refused. A loop body is walked once. The path walk is the other
+   joins them after: a variable moved on any arm that did not jump away counts
+   as moved from there on, so a move in both arms compiles and a use after a
+   move in one is refused. A loop body is walked once, and the state after it
+   is the join of every path that leaves its body. The path walk is the other
    kind: it keeps its state per path, joins the arms of an `if` and the paths
    into a loop's head and out of a block, and walks a loop body again until its
    head stops growing — but only for a function one of its gates marked, and
@@ -158,13 +159,13 @@ Put these first, because every one of them is load-bearing.
    outgrown — the block-structured IR is held to be easy enough to follow
    directly, joins and all.
 5. **Ownership is not one model, and flow reads which one from the region
-   ref.** One with `aliasRef` (`Rc`) is counted; one declaring `Move` (`So`) has a
+   ref.** One with `aliasRef` (`Rc`) is counted; one declaring `Move` (`Uni`) has a
    single owner, and a copy of a reference to it is a move; one with neither
    (a collector's shape) shares its references for nothing; `borrowRef` is a
    sentinel node, not a struct, and is a reference's default region. No region
    is known by name ([What a region is](../nodes/module.md)).
 6. **Permission belongs to the reference, not the binding.**
-   `imm fixed = &mut target` is a writable target through an unrebindable name.
+   `let fixed = &mut target` is a writable target through an unrebindable name.
 7. **`&uni` is not `&mut` with extra rules.** `uni` lacks `MayAlias`, which is
    exactly what makes a reference carrying it a move type.
 
@@ -178,9 +179,11 @@ Put these first, because every one of them is load-bearing.
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
 | `gate` | `fnDclTypeCheck`, which runs the loan walk on a function it marks; `flowGateCount` tallies it for `-V 2` (below, "The gate") |
 | `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
-| `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked returned, so it takes no part in the join |
+| `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked jumped away (a `return`, or a `break` or `continue` that handed its state to its loop), so it takes no part in the join; and `blockFlow` of a loop, whose body's end is then not reached |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
+| `inflightkeep` | `flowGateOperandsKeep`, at the start of `fnCallFlow`, `typeLitFlow`, `arrayLitFlow` and a value tuple's walk: set by `flowGateOperandNext` for an operand whose value may carry a borrow, so its operands' lends stay waiting for the call or literal around it |
 | `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
+| `intrinsic` | `flowRefuseMoveThrough`: the function carries `DclIntrinsic` (set by `fnDclTypeCheck`), so a move out through a raw pointer is let through — `mem.readRaw`'s fallback body `{*p}` ("Only a sole owner may be moved out of", below) |
 
 ### The gate
 
@@ -196,10 +199,11 @@ one bit per trigger:
 | --- | --- | --- |
 | `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was). The temporary an operator changing its operand in place borrows it through (`x += 1`, `v <- (a, b)`; named `tempName`) is not asked: it is the operator's, as a method's receiver is, and the loan walk holds nothing in it |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow, a bare borrowed reference too: its scope number does not follow a borrow through a variable, a value holding it, or a call's by-value argument |
-| `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
-| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
-| `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`So[Trait]` from a `So[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
-| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `mut` global's own place is no plain local, and a container some `mut` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
+| `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or a struct, tuple or array literal (a closure's) of two values that may hold borrows, one of them a way to store (`flowGateJoinAsk`, from `typeLitFlow`, the value tuple and `arrayLitFlow`); or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
+| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`), the borrow made inside an operand that is itself a call or literal whose value may carry it included (`both(s.view(), &mut s)`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
+| `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
+| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
+| `FlowGateStatic` | `typeLitFlow` (`flowGateStatic`, `flowGateStaticAsk`) | a struct or variant literal giving a value carrying a borrow to a field whose type holds borrows but only `'static` ones, whose loans the loan walk checks are global (`pwStaticOnly`, section 6, "Named lifetimes"): `stash(H(&v))` holds nothing in a local, returns nothing, and is otherwise no trigger |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
 an owning reference, pointer, array, tuple or struct (an enum's variants
@@ -213,9 +217,16 @@ one, or through one, is a place assigned.
 For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
 `ArrayBorrowTag`, through casts), or an owner lent by a recast to a borrowed
 reference of its kind (`flowGateIsOwnedLent`, the recast `pwOwnedLent` reads:
-`both(a, a)` for `a` a `So[R]` or a `So[App]`, and a lent receiver), pushes
+`both(a, a)` for `a` a `Uni[R]` or a `Uni[App]`, and a lent receiver), pushes
 the variable at the root of its place onto `inflight` once it is walked, and
-the call or literal pops back to where it started. A lend the compiler makes
+the call or literal pops back to where it started -- unless it is itself an
+operand whose value may carry a borrow (`flowGateOperandNext`, a call, struct or
+array literal or value tuple whose type is not one `flowGateCarriesNone`
+dismisses: `FlowState.inflightkeep`, read by `flowGateOperandsKeep`), when what
+its own operands lent stays waiting for the call or literal around it: in
+`both(s.view(), &mut s)` the receiver `view` borrowed waits for `both`, and
+`&mut s` names it. `both(len(s.view()), &mut s)` passes a number, and `len`'s
+lends end with it. A lend the compiler makes
 must trigger it exactly as a written borrow does: a function holding no other
 borrow is otherwise never walked, and its conflicts pass unseen. A name use checks the list only when it is not empty, so a function
 with nothing waiting pays one test per name use. More than `FlowInflightMax`
@@ -232,14 +243,15 @@ of line in `flow.c`. Asked through calls that resolved each type first, the same
 triggers cost flow 25–30% on code holding no borrow; inline, about 4%. An
 ordinary compile stops asking once any bit is set; `-V 2` asks every trigger to
 the end, so that it can count each, and prints
-`Flow gate: G of N functions (holder …, result …, store …, in-call …, boxed …, shape …)`
+`Flow gate: G of N functions (holder …, result …, store …, in-call …, boxed …, shape …, static …)`
 (`flowGatePrint`). The loan walk holds loans in every local whose type carries
 a borrow, which the holder trigger is for; puts what a call may store through
 a `&mut X` argument, or a struct holding one, into the local it reaches, the
 store trigger's; checks
 a call's arguments against each other, the in-call trigger's; checks what
-a function returns, the result trigger's; and checks what a value made an
-owning virtual reference holds, the boxed trigger's.
+a function returns, the result trigger's; checks what a value made an
+owning virtual reference holds, the boxed trigger's; and checks what a
+`'static` field is given, the static trigger's.
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
@@ -259,18 +271,47 @@ The live state is on the declarations, in `VarDclNode.flowtempflags`:
 | `VarDropFlag` | the drop-flag client (`dropWalkEnd`), for a variable whose state differs by path at a release | never: generation reads it |
 
 **They are the state along the path being walked, in source order.** Every
-change goes through `flowVarSetFlags`, which logs the old flags while an `if` is
-being walked, for a variable declared outside its innermost conditional part
-(`VarDclNode.flowdepth`, below `flowDepth`); `ifFlow` walks each arm from the
-state its conditions leave, takes what each arm that did not return changed
-(`flowVarPathTake`), rolls it back, and joins them (`flowVarJoin`): each flag
-any of them set is set, an arm that did not change a variable contributing what
-it had at the fork, and a missing `else` is an arm. A flag set means "on some
-path": a variable moved on one arm may not be used after the `if`, and one
-given a value on one arm is taken as given one, for its use. A loop body is
-walked once, so what a later pass sees is not here: the path walk's. And whether
-a variable holds its value at each of its releases is not decided here where
-that may differ by path ("Drop flags").
+change goes through `flowVarSetFlags`, which logs the old flags while an `if` or
+a loop is being walked, for a variable declared outside its innermost
+conditional part (`VarDclNode.flowdepth`, below `flowDepth`); `ifFlow` walks
+each arm from the state its conditions leave, takes what each arm that did not
+jump away changed (`flowVarPathTake`), rolls it back, and joins them
+(`flowVarJoin`): each flag any of them set is set, an arm that did not change a
+variable contributing what it had at the fork, and a missing `else` is an arm.
+A flag set means "on some path": a variable moved on one arm may not be used
+after the `if`, and one given a value on one arm is taken as given one, for its
+use.
+
+**What ends a path.** A `return`, a `break` and a `continue` each end the path
+they finish: an arm ending in one, or in an `if` or a block every path through
+which does (`FlowState.jumped`), takes no part in the join after its `if`, so a
+value moved on it is not moved for the code after the `if`. A `return` leaves
+the function. A `break` or `continue` goes to the loop it names, the innermost
+or a labelled one: `blockFlow` opens a frame for each loop it walks
+(`flowLoopBegin`, the log's position at the loop's start), and each jump to it
+takes what its path wrote since then (`flowLoopJump`, the breaks and the
+continues apart). Inside a loop a store that leaves a variable's flags as they
+were is logged too (`flowVarSetFlags`), so that a path's record says what it
+wrote, not only what it changed. Where the loop's body ends, `flowLoopEnd` rolls
+back to the start and makes the state after the loop. Only a `break` leaves a
+loop, and the walk met each one in the first pass only; in a later pass the path
+to it starts from the head, whose state joins the loop's entry, each `continue`
+and the body's end when it is reached. So the head's state is joined first, and
+then the breaks over it: for each variable, the join of what each break's path
+left it, or the head's where that path wrote nothing. A `while`'s condition, the
+`break` at the top of its body, writes nothing, so what a `continue` moved is
+moved after the loop; a `break` reached only after the pass gave the value a new
+one finds it there. So a value moved before a `break` is moved after the loop,
+also after an inner loop it leaves, and one moved before a `continue` is moved
+after the loop unless every path to every `break` gives it a new value first. A
+loop no `break` leaves keeps the state as it stands: no path reaches the code
+after it. A jump whose loop no frame holds (its target failed to resolve) stays
+on its path and is joined. A loop body is walked once, so what a later pass
+sees inside it — a value declared before the loop, moved on a path that reached
+the head again — is not here: the path walk's, which every such move gates
+(`flowDropNote`: it is deeper than the variable's declaration). And whether a
+variable holds its value at each of its releases is not decided here where that
+may differ by path ("Drop flags").
 
 A file-static variable stack (`gVarFlowStackp`) records which declarations are
 in scope. It is global mutable state, safe only because flow never runs
@@ -287,7 +328,7 @@ does. A type acquires it from `is Move`, a finalizer, a move-typed field or
 array element, a move-typed tuple element, and — for references —
 `refAdoptInfections`: **a reference is a move type when its permission lacks
 `MayAlias` or its region ref is itself a move type**, which a region ref is by
-declaring `is Move`, as `So` does. That sentence is why an `Rc[T]` moves while
+declaring `is Move`, as `Uni` does. That sentence is why an `Rc[T]` moves while
 an `Rc[mut, T]` copies, on the same region, and why a reference into a region ref
 declaring neither `Move` nor `aliasRef` copies freely under any aliasable
 permission.
@@ -300,15 +341,22 @@ dereference arms that walk inwards to the variable.
 **Nothing moves out of an element of an array.** The index arm refuses a
 move-typed element whose array is a variable, a parameter or a temporary
 (`a[0]`, `make()[1]`, `grid[1][0]`, an array literal's element), or the array a
-local or temporary sole owner points at (`s[0]` and `(*s)[0]` for `s` a `So`,
+local or temporary sole owner points at (`s[0]` and `(*s)[0]` for `s` a `Uni`,
 also by a variable index) with `ErrorMoveElem`, at the move: the array would be
 left with a hole in it, and the elements that stayed would never be finalized
 (a sole owner's hollow death frees without finalizing). The refused move
 deactivates nothing, so the array stays usable. An array reached through a
 field, a dereference or another element is refused by the arm that walks it
-(`ErrorMoveField`, `ErrorMoveOut`, or this one at the inner element); an element
-read straight through a borrowed or shared owning reference is refused by the
-rules below.
+(`ErrorMoveField`, `ErrorMoveOut`, or this one at the inner element). An element
+reached through a borrow is an indexed element too, which the collection still
+holds (Rust's "cannot move out of index"): an element of a slice or of an array a
+borrow points at (the index arm), and the place a type's `[]` lends, `l[0]` of a
+`List[String]` (the dereference arm, on the `FlagIndexPlace` dereference type
+check puts round the `[]` call: [fncall](../nodes/fncall.md), "An index through a
+type's `[]` is a place"), are refused with `ErrorMoveElem` by
+`flowRefuseMoveIndexed`, whose message names `&x[i]`, a swap and `remove`. An
+element read straight through a shared owning reference is refused by the rules
+below.
 
 **Nothing moves out of a field.** The walk's field arm walks no further: a
 move-typed value that is a field — of a struct or a tuple, wherever the struct
@@ -318,8 +366,11 @@ is — or that is reached through one (`*b.r`, what an owning field points at;
 struct would be left with a hole in it: usable neither whole nor field by field,
 and with no answer to what its death finalizes. The refused move deactivates
 nothing. Swap and left-assignment take a value out of a field, and moving the
-whole struct takes every field with it. A copy-typed field is never walked, so it
-reads out freely.
+whole struct takes every field with it, which is what a field list, `x.(a, b)`,
+does: it moves the whole value into a `DestructNode`, whose operand is moved as a
+call's argument is (`flowLoadValue`, then `flowHandleMoveOrCopy`), so the struct is
+never left with a hole and the node needs no walk of its own for the fields. A
+copy-typed field is never walked, so it reads out freely.
 
 The one exception is a variant's only field (all of a variant declared as a type,
 which a binding reads through the hidden local castBindProject declares), read
@@ -333,7 +384,19 @@ value's drop flag says it no longer holds its payload, and the value cannot be
 used or taken again (`ErrorMove`). A variant with two fields, or a finalizer of
 its own, is refused as before.
 
-**Only a sole owner may be moved out of.** The same inward walk refuses three
+That payload moves even when it is not a move type, if it has a death of its
+own (a counted reference, or a value holding one: `flowIsSolePayloadTake`, asked
+by `flowHandleMoveOrCopy`). Nothing names the matched value's variable but the
+pattern, and the pattern reads the payload once, so the read is the last of it:
+the binding takes the arm's holder whole instead of gaining a holder of the
+counted reference that the matched value's own release would then give back. An
+arm on a place copies it into its own holder first, as an initializer copies a
+place (a counted local or parameter dead after the match is a last-use move
+there, "Candidates for a last use"); so a match on an owned parameter, a dead
+local or a call's result counts nothing, and one on a field, or on a local read
+again afterwards, counts the one holder the copy into the arm is.
+
+**Only a sole owner may be moved out of.** The same inward walk refuses four
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an
 element read straight through one, as a slice's element is (not a borrow of
@@ -346,13 +409,25 @@ while it lives, and still does not own it. A place reached the same way through
 a **shared owning reference** — one that is not a move type, so may be aliased:
 `Rc[mut, T]`, `Rc[imm, T]`, `Rc[ro, T]`, `Rc[mut1, T]`, single or virtual — is one of possibly
 many holders of the value, and the others still point at it after the move, so
-it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
-owning reference — any `So`, and `Rc[uni, T]` (what `Rc` means) — is not
+it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A place
+reached through a **raw pointer** — `*p`, an element `p[i]`, what a pointer to
+an owning reference points at (`*p` of a `*Uni[T]`), and a field list
+`(*p).(a)`, which moves `*p` whole — owns nothing either: whatever holds the
+place (a variable the pointer was made from, a collection's slot) still
+finalizes it, so the value would be finalized twice (`ErrorMoveRawPtr`,
+`flowRefuseMoveThrough`, which names `mem.readRaw(p)`). That intrinsic moves a
+value out of raw memory for good, leaving the place holding nothing, and its
+fallback body `{*p}` is the one move through a pointer let through: the walk of
+a function carrying `DclIntrinsic` (`FlowState.intrinsic`, set by
+`fnDclTypeCheck`) is not refused, and only core may declare one. Whether the
+place still held a value, or is read out twice, is not flow's to know: raw
+pointers belong to `trust`, which is not built. A **sole**
+owning reference — any `Uni`, and `Rc[uni, T]` (what `Rc` means) — is not
 refused, and moving out through one held in a local variable **hollows** the
 variable, below. Copy values are never
-walked, so they read out through a borrow or a shared owner freely, and swap
-and left-assignment take a move value out of either because they leave it
-holding one.
+walked, so they read out through a borrow, a shared owner or a raw pointer
+freely, and swap and left-assignment take a move value out of a borrow or a
+shared owner because they leave it holding one.
 
 The walk has two entries. `flowHandleMove` is the one `flowHandleMoveOrCopy`
 takes, for a value going to a new holder, and it deactivates the source.
@@ -364,9 +439,9 @@ goes on into what it hands back — a block's final expression and the value of
 each `break` that leaves it (not a loop's final expression, which loops back),
 each branch of an `if` — checking every one of those values. Through
 `flowHandleMove` it deactivates every variable any one of them moves out of,
-and marks each name use a value leaves by (`FlagMoveOut`): `imm y = {a;}`,
-`if c {a;} else {a;}` and a loop whose only exits all `break a` leave their
-source moved on every path, exactly as `imm y = a` does, so it is finalized
+and marks each name use a value leaves by (`FlagMoveOut`): `let y = {a}`,
+`if c {a} else {a}` and a loop whose only exits all `break a` leave their
+source moved on every path, exactly as `let y = a` does, so it is finalized
 once, by the new holder. A variable moved out of by only some of them is a
 conditional move: it may not be used again, and whether its scope's end
 releases it is its drop flag's to say, cleared where the value left — the
@@ -385,8 +460,8 @@ of that scope handed over whole (`flowScopeHandsBack`, the same
 the receiver as it is. Anything else it can be read from is still held where it
 was after the scope ends: a field or an element of a local, which the scope's
 release then releases with the local; a value read through a borrow (a field of
-a borrowed `self`); a variable of an enclosing scope (`imm y = {r;}`); a
-global; an assignment's target (`{b = make();}`, `flowIsKeptRead`). A tuple
+a borrowed `self`); a variable of an enclosing scope (`let y = {r}`); a
+global; an assignment's target (`{b = make()}`, `flowIsKeptRead`). A tuple
 literal handed back is counted element by element (`return h.r, 3`). A
 temporary is not an lvalue and hands over the holder it was born
 with. The copy's receiver counts nothing more: a block, an `if` or a call is
@@ -425,11 +500,11 @@ as its enrichment or base is still the scope's result). Missing any one of them
 leaves one value under two names: finalized or freed twice, or counted once for
 two holders. A converting cast (`FlagConvert`) makes a new value and is not
 looked through, but for one: **a conversion into an owning virtual reference
-carries its operand's owner** (`So[App]` from a `So[Spinner]`), adding a vtable
+carries its operand's owner** (`Uni[App]` from a `Uni[Spinner]`), adding a vtable
 to the one owner, so these walks, and `blockResultMove` and the path walk's
 `pwValue`, look through it as through a recast (`flowCastCarries`).
 
-**A match's binding is the matched value.** `case imm c Circle` desugars to a
+**A match's binding is the matched value.** `case let Circle(c)` desugars to a
 variable initialized with the matched value converted to its variant (a
 `CastTag` carrying `FlagMatchBind`), and the matched value is held in a variable
 of its own: the match's, for a value that is not a place or a match with a bound
@@ -456,7 +531,7 @@ that variable, so whether the old value is released follows its state on each
 path and its drop flag, and generation tests and sets that flag, `genlStoreTo`).
 A binding by reference holds a copy of the matched
 reference, and a store over it releases nothing. A guard's binding
-(`case imm c Circle if g`) is a second binding of the same value, and owns
+(`case let Circle(c) if g`) is a second binding of the same value, and owns
 nothing either. The match's own variable
 (`_`) is named by one name use that every pattern and binding shares (an arm's own
 by the one binding that reads it), so no
@@ -465,25 +540,25 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 **The count counts holders.** From the ownership work:
 
-- `new Rc[mut, Pt](2)` creates the object *and* the first reference. Born at 1.
-- `imm a = new Rc[mut, Pt](2)` adds no holder — the temporary hands over the reference it
+- `Rc[mut, Pt](2)` creates the object *and* the first reference. Born at 1.
+- `let a = Rc[mut, Pt](2)` adds no holder — the temporary hands over the reference it
   was born with. Still 1.
-- `imm b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
-- A tuple is one holder of each counted reference it carries. `imm t = pair()`
-  adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per Rc
+- `let b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
+- A tuple is one holder of each counted reference it carries. `let t = pair()`
+  adds nothing (a temporary again); `a, b = t` and `let u = t` add one per Rc
   element, and `t` releases each at scope exit.
 - A struct, an enum, a tuple or an array is one holder of each counted
   reference its death releases (`flowHeldCounted`), however deep: a struct's
   drop releases what its fields own, an enum's what its variant's fields own,
-  and a tuple or an array dies element by element. So `imm s2 = s` over a
-  struct with a `Rc[mut, T]` field adds one, `imm o2 = o` over an
+  and a tuple or an array dies element by element. So `let s2 = s` over a
+  struct with a `Rc[mut, T]` field adds one, `let o2 = o` over an
   `Option[Rc[mut, T]]` adds one through the variant the tag picks, and a copy of
   an array of them adds one per element.
 - A tuple literal holds its elements' values, each moved or copied into it on
   its own, as a struct literal's fields are: `(r, 5)` over a counted variable
   `r` adds one.
 - An assignment's value is what it stored, and its target keeps it:
-  `a = b = new Rc[mut, Pt](2)` adds one for `a`, `b` holding the first.
+  `a = b = Rc[mut, Pt](2)` adds one for `a`, `b` holding the first.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
@@ -511,6 +586,24 @@ more holder, and the fill form holds only a constant. Past 16 copies the second
 stands for every later element and is generated in a loop, so the holder
 injected around it is added once per pass.
 
+**The last read of a counted local is a move.** Five of those seven places
+(`varDclFlow`, `assignSingleFlow`, `fnCallFlow`, `allocateFlow`, `typeLitFlow`)
+call `flowHandleMoveOrCopyLast`, which does what `flowHandleMoveOrCopy` does and
+also marks the `RefCountNode` it injected for a *candidate* (`RefCountNode.cand`
+= `RefCandOpen`, and `dropgate` set so that the path walk runs). A candidate is a
+bare name use of a whole local or parameter that is not a move type, is
+tracked for drops (`flowDropTracked`) and has something to do as it dies
+(`itypeNeedsFinal`), and that is not a tuple, a global, a static, a match's
+variable or a match's binding; the other two places, and every read that is not
+a bare name use (a field, an element, a deref, a recast), stay copies. The main
+walk cannot tell whether the read is the variable's last: the path walk decides
+("The loan walk", "Candidates for a last use"). A candidate it confirms loses its
+`RefCountNode` (so no holder is added) and its name use is marked `FlagMoveOut`
+(so the variable is not released at its scope's end on that path, and a drop flag
+says where the paths differ), exactly as a conditional `uni` move is; one it does
+not confirm stays the counted copy. The only thing a program can see is that a
+value reaches count zero earlier than the variable's scope ends.
+
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` (or `FlagPartNoPrior`) says there was none, and a value's
@@ -531,13 +624,13 @@ depends on:
 | `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `aliasRef`, once per owner added |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode`; rebuilt by the drop-flag client (`dropApplyExit`) for each exit of a function it walked | `genlDealiasNodes` replays them |
 | `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed, or is a match's binding by reference; set or cleared by the drop-flag client from each path's state | `genlStore` skips releasing a previous value the variable does not hold whole |
-| `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local holds nothing (or is a match's binding by reference); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
+| `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local is hollowed (or is a match's binding by reference); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
 | `FlagDropTest` | the drop-flag client, on a store's target where whether its variable holds its value differs by path | `genlStore` releases the previous value only when the variable's drop flag says it is there |
 | `FlagMoveOut`, `FlagHollowOut` | `flowMoveSource`, on the name use a value moves out of, or out through | the path walk follows the move along each path; `genlDropFlagUse` clears, or sets hollow, the variable's drop flag there |
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
 | `DropFlagTag` | the drop-flag client, in a `dealias` list, round the release of a variable whose state differs by path there | the release runs only when the variable's drop flag holds the state it names |
 | `VarDropFlag` | the drop-flag client, on a variable given a flag | `genlDropFlagBegin` makes the flag where the variable begins; each store over it, and each marked move, updates it |
-| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by `flowTempEscape` (a raw pointer into it going out) or a move out of it by value ("Temporaries", below); `walkvar` by the loan walk (§6) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
+| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by a move out of it by value or an extending borrow ("Temporaries", below); `walkvar` by the loan walk (§6) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -550,7 +643,7 @@ per element that is or holds a counted reference and `0` per other element,
 owners to each such element after an `extractvalue`. The struct, enum and array
 arm (`genlAliasHeld`) mirrors the death: through each field of a struct, the
 variant an enum's tag picks, and each element of an array. A reference into a
-`Move` region (`So`) and a `uni`-permissioned reference into one with `aliasRef`
+`Move` region (`Uni`) and a `uni`-permissioned reference into one with `aliasRef`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
 
@@ -595,7 +688,7 @@ back no value; anything else with anything to do as it dies
 own such a reference —
 is added to the list itself, and generation finalizes it in place
 (`genlFinalizeAt`), a tuple element by element, an array in element order. A
-tuple carrying a `So` reference is a move type, so destructuring or copying it
+tuple carrying a `Uni` reference is a move type, so destructuring or copying it
 deactivates the variable and the scope releases nothing of it.
 
 **The result expression is walked before the list is built.** `blockFlow` calls
@@ -621,7 +714,7 @@ A temporary is a value an expression makes that nothing takes — not bound,
 stored, passed by value, handed back or moved — whose death does something
 (`itypeNeedsFinal`), or which a borrow points at, whatever its type; it dies at
 the end of the statement that made it, newest first
-(`doc/reference/refinitdrop.html`). Flow finds each where it is read or
+(`doc/manual/rec-methods.html#initfinal`). Flow finds each where it is read or
 thrown away and wraps it in a `TempNode` (`flowTempRead`); generation keeps it
 in a slot and finalizes it at the end of its part ([Generation](generation.md),
 "Temporaries"). A temporary is never a variable here, so it has no flags and
@@ -632,7 +725,7 @@ flow's time: type check made it a hidden local of the block
 ([VarDcl](../nodes/vardcl.md), "Temporaries an initializer extends").
 
 **An operator's rewrite is one statement.** An operator changing its operand
-in place is rewritten to a block, `{imm tmp = &mut x; *tmp = *tmp + 1}`
+in place is rewritten to a block, `{let tmp = &mut x; *tmp = *tmp + 1}`
 (`fnCallOpAssgn`; `contentsLower` for `<-`), flagged `FlagKeepTemps`: a
 temporary its first statement makes (`mk().n += 1`, or the guard of
 `(&mut *p).n += 1`, which holds a lock) dies at the block's end, after the
@@ -704,24 +797,15 @@ is. Reaching one by value marks it `kept`, as a local array an element moved
 out of is left unreleased.
 
 **A borrow of a temporary does not keep it.** A borrow of a temporary that
-outlives its statement — `imm r = id(mkso())`, `imm r = mkso().me()`, a
+outlives its statement — `let r = id(mkso())`, `let r = mkso().me()`, a
 `return` or a store of one — is the loan walk's to refuse where it is used
 after the temporary dies (§6, "Temporaries"), so the temporary is finalized at
-its statement's end all the same. **A temporary a raw pointer outlives is
-kept**, since nothing follows a pointer. Once a statement that made a
-temporary is walked, `blockTempEscape` walks it again (`flowTempEscape`),
-carrying down how the value at each node goes out of the statement — a
-variable's initializer, an assignment's value, a returned, broken-out or
-handed-back value — through values that can hold a borrow or a raw pointer
-(`flowTempOut`: `itypeCarriesBorrow`, or a pointer within a few levels): a
-call's arguments when its result can, every argument of a call that could
-store one (`flowTempCallStores`: a `&mut` or a pointer argument to something
-that can hold one), a literal's or an allocation's elements, a cast's operand,
-a field's or an element's base, a borrow's place. Out becomes `TempOutPtr` at
-the first value on the way that holds a pointer, and a `TempNode` reached so
-is set `kept`: never finalized, which leaks it rather than leave the pointer
-dangling. So `imm p = id(mkso()) as *R` keeps the owner; `imm r =
-id(mkso())`, `g(mkso())` and `imm n = mkso().n` do not.
+its statement's end all the same. So is a temporary a raw pointer was made
+from: nothing follows a pointer, and `let p = id(mkso()) as *R` leaves `p`
+dangling once the statement ends, as a pointer to a local does after its
+block. Keeping it valid is the programmer's job. No walk keeps a temporary;
+only a move out of it by value or an extending borrow (`varDclExtend`) sets
+`kept`.
 
 ## 6. The loan walk
 
@@ -755,7 +839,7 @@ are disjoint. Nothing is tracked through a raw pointer.
 
 **Cone's `mut` is not Rust's `&mut`.** `uni` is Rust's `&mut` (one active
 reference); `mut` is shared mutable within a thread, `ro` a view others may
-change (`refperm.html`). So how a place is reached decides what a borrow of it
+change (`mem-permissions.html`). So how a place is reached decides what a borrow of it
 may freeze. A place is reached **as `uni`** when no reference on the way to it
 may alias: a local (its only owner is the stack, whatever its declaration says),
 a field of one, or what a `uni` reference points at. It is reached through a
@@ -814,7 +898,7 @@ what an expression does to a place:
 | a read, a copy out | exclusive |
 | a read-only borrow (`&`, `&ro`) | exclusive |
 | an `&imm` borrow | exclusive, alias |
-| a write — `=`, an operator changing it in place (`+=`, `++`, `<-`), one side of `<=>` — or a `&mut`/`&mut1` borrow | shared or exclusive |
+| a write — `=`, an operator changing it in place (`+=`, `++`, a `<-` whose method takes `self: &mut`; one taking `self: &` is a read-only borrow), one side of `<->` — or a `&mut`/`&mut1` borrow | shared or exclusive |
 | a `&uni` borrow | any but a pin |
 | a move, a replacement of the whole (its old value finalized), the end of its scope | any, a pin too |
 | an `&opaq` borrow | none |
@@ -825,7 +909,7 @@ anyway, so freezing it against them would protect nothing. But the part of the
 path *before* the shared reference — the field of a local holding a `Rc[mut, T]`
 owner — is reached as `uni`, and the loan reads it: an access to a place with
 fewer steps than the loan's `sharedlen` meets an alias loan as a shared one, so
-`h.p = new Rc[mut, Pt](..)` or `&mut h.p` while `&mut h.p.x` is live is refused,
+`h.p = Rc[mut, Pt](..)` or `&mut h.p` while `&mut h.p.x` is live is refused,
 since either could release what the borrow points into. A source reached
 through a borrowed reference is never ended by anything done here — reassigning
 `r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a
@@ -887,9 +971,9 @@ the value read can hold a borrow; a cast whose type can hold one, what its
 operand carries — a recast, a borrow coerced to a virtual reference, and the
 conversion a `case` binding makes of the matched value alike; an `if`, a
 block, and a tuple, struct or array literal, the union of theirs; a call,
-below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
-`u` a `So[Pt]`: a recast from an owning to a borrowed reference; or `imm b
-&<App = v`, `v` a `So[App]`, between virtual references) is a borrow of
+below. An owning reference coerced to a borrowed one (`let b: &Pt = u`,
+`u` a `Uni[Pt]`: a recast from an owning to a borrowed reference; or `let b
+&<App = v`, `v` a `Uni[App]`, between virtual references) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a
@@ -906,7 +990,7 @@ through another variable); moving it away whole leaves it holding nothing.
 (`LoanFar`, a bit on the loan's id there): a *near* loan is of a place the
 value's own borrows point at — what a reference points at, what a struct's
 borrow fields do — and a *far* loan is one those places hold in turn, a borrow
-or more further on. `mut q = r; mut p = &mut q` for a parameter `r`: `p`'s
+or more further on. `var q = r; var p = &mut q` for a parameter `r`: `p`'s
 loan of `q` is near, and the caller loan `q` holds is far, since `p` points at
 `q`, the function's own, and reaches the caller's place only through it. Where
 the walk cannot tell which a loan is -- a call's result, what a call may store
@@ -929,6 +1013,16 @@ borrow is a reborrow of it, which lasts no longer than the outer borrow (Rust's
 reborrow through `&'a mut &'b mut`, `'a`), and keeps every loan, both near and
 far.
 
+A borrow copied out of what a call lent (`*(&mut b.kids[i])`, `*l.at(i)`, a
+deref of the call's result or of a reborrow of it, the value read being a
+borrow itself) carries what the call's receiver holds, not the loans the call
+made of the receiver or of the references it was lent (`pwSlotRead`, with
+`pwOwnCall` and `pwOwnLoans` recording them as `pwCall` ends). The copy points
+at what the slot holds, not into the list's block, so a later push does not
+move it. A call's result is unsure (near and far), so `pathSetThrough` could not
+tell this loan from the receiver's. Only a deref of the call's own result is
+read so; the reference to the slot and a name holding it keep the loan.
+
 **Slots.** A struct declaring lifetimes keeps its loans by lifetime, each
 lifetime a *slot*: an entry of a loan set may carry a slot's tag (bits beside
 `LoanFar`, `flowloan.h`), relative to the struct the holder's own type is, or,
@@ -941,7 +1035,7 @@ those its struct's `where` clause lets into them (`lifeSlotsReach`), and those
 with no tag, which may be anywhere (`pwSlotStep`, `pwPlaceSlots`); it drops
 every tag once the value is no longer of the struct, as does a call's result,
 a cast and any value built of others but a struct literal of a struct
-declaring lifetimes. So `p.word()` for `word(self &mut) &'src Array[u8]` on a
+declaring lifetimes. So `p.word()` for `word(self: &mut) &'src Array[u8]` on a
 `Parser['src, 'ar]` carries what `p` holds in `'src`, not what it holds in
 `'ar`. A callee may move a borrow from one slot to another where its signature
 names them as one, or orders them beyond the struct's own order
@@ -953,7 +1047,7 @@ holder (`h.r = &x`) adds its loans to what the holder holds. Stored through a
 borrowed reference (`*r = v`, `r.f = v`), its loans go where the reference
 points: into what `r` holds, as far loans, since what is read back through `r`
 carries them, and into each holder a near loan of `r` borrows from — every
-loan, for a far place — so that after `imm r = &mut o; *r = Some[&R](&x)` a use
+loan, for a far place — so that after `let r = &mut o; *r = Some[&R](&x)` a use
 of `o` uses `x`'s loan (`pwStoreLands`). A call handed a
 writable borrow of a place that can hold a borrow (`l.push(&x)`, `stash(&mut
 o, &x)`, `fill(r, v)` for `r &mut Option[&T]`) may store there anything its
@@ -970,9 +1064,40 @@ v`), or through one a struct handed by value holds (`st(w, &x)`, `w` holding a
 borrows past it, and each place in that range is checked and takes the loans
 as a store through a reference there would: a borrow past the target is where
 its near loans point, two or more, anywhere its loans reach. An argument the
-walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
+walk cannot key (`st(W(&mut q), &x)`) is gone by through its own loans.
+
+The same question is asked wherever borrows are made one value, since the
+borrows of a struct without lifetimes named, a tuple, an array and a closure
+(whose captures are the fields of its hidden struct) share one lifetime, and a
+later store through the value, or the holder's `final`, has no call to check
+(`pwJoinStores`, which asks `pwPartsStore`, the body of `pwCallStores`, of the
+parts). It is asked at a struct, tuple or array literal (`pwValue`; a closure
+literal is the struct literal of its captures), and at a value stored in a
+field or element of a local aggregate, or swapped into one, where the parts
+are that value and the aggregate with what it holds (`pwJoinField`, from
+`pwStore` and `pwSwap`), in both directions. A literal of a struct declaring
+lifetimes is not asked: its slots say which field holds which. A part
+carrying no loan reaches nothing and is not asked. A literal that is the
+value an arena's method is handed, or a part of it, whose death reads no
+borrow (`itypeDropReadsBorrow`, the test `pwPartsStore` applies to an arena's
+values) is not asked: the arena takes it as no store (`pwArenaValue`, set by
+`pwCall`). A closure's capture of a
+variable is read-only when the body only reads it, yet the body writes through
+a `&mut` the variable holds, so a capture counts as a way to store where the
+variable's type reaches a writable borrow (`RefNode.capture` in
+`itypeWritableBorrowDepth`; a plain `&ro &mut H` field does not). The report
+is `ErrorCallEscape` worded for the value (`LoanEscapeJoin`). A struct or
+closure that only reads the younger borrow is refused as well: the rule asks
+whether it could store it. A value holding both whose store is in a callee
+that is handed only the holder is caught here, where the value is made;
+`pwCallStores` returns at once for a call of one argument. What is not caught:
+a closure whose body gives a captured `var` an arena node and stores another
+parameter's borrow in it (both read through the closure's `self`, Bug 48's
+exception admits it).
+
+A value may not be stored
 into what a reference points at when it carries a borrow of part of what that *same* reference
-points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h &mut H`, or
+points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h: &mut H`, or
 `words.push(text.view())` into a list field): the caller lent the whole value, can change or move
 the part the borrow points into after the call, and is told of no store by a call that is handed
 one argument (the call-site check above sees only the other arguments' loans). Written in one
@@ -991,16 +1116,16 @@ nothing of `seen`, a `List[&Array[u8]]`, and each is free while the other is use
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
 carries the loans of every argument: Cone's rule for a signature without
 lifetime annotations is that every borrowed reference in it shares one
-lifetime (`reflifefn.html`), which `fnCallFinalizeArgs` already applies to the
+lifetime (`mem-lifetimes.html`), which `fnCallFinalizeArgs` already applies to the
 result's scope. So a borrow a method returns keeps its receiver loaned while
 it is used, the Rust way — the loan is the receiver's own: `list[0usize]`'s
 `&list`, read-only, lets `list` be read but not pushed onto; a method taking
-`self &mut` and returning a borrow freezes its receiver entirely. A receiver
+`self: &mut` and returning a borrow freezes its receiver entirely. A receiver
 taken by reference is a loan whether the call borrows it (`list.push(x)` is
 `(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
-for `r &uni List` reborrows `*r`, with the permission the method declares for
-`self`), or is an owner type check lent to a `self &` or `self &mut` method (a
-`So[R]`, or a `So[App]` dispatched through: the recast `pwOwnedLent` reads,
+for `r: &uni List` reborrows `*r`, with the permission the method declares for
+`self`), or is an owner type check lent to a `self: &` or `self: &mut` method (a
+`Uni[R]`, or a `Uni[App]` dispatched through: the recast `pwOwnedLent` reads,
 a loan of `*a` reached as its owner reaches it, so `a.absorb(a)` moving `a`
 conflicts) (`pwReceiver`). A message names the method: "'list' is borrowed (by
 '[]' at 5:15)".
@@ -1016,7 +1141,7 @@ variable handed as the argument borrows), so each reference layer's lifetime
 governs what is read through it -- and of a struct declaring lifetimes only
 the slots that flow, and what has no tag; or nothing. `pick(a &i64, b &'b i64) &i64`
 keeps `a`'s source frozen while its result is used, and `b`'s free; `c.next()`
-for `next(self &mut) Option[&'a R]` in `Cursor['a]` keeps what `c` holds, not
+for `next(self: &mut) Option[&'a R]` in `Cursor['a]` keeps what `c` holds, not
 `c`. A store through a writable argument takes of the others what flows to
 what it points at (`pwCallStores`), and an argument for a `'static` parameter
 may carry no loan but of a global (`pwStaticArgs`), nor, for a part a type
@@ -1042,7 +1167,7 @@ callers assume. Two names flow only where they are one, or the signature's
 `FnSigNode.lifeorder`), or a struct a parameter or the result uses orders
 them in its own, or a type in the signature implies it: a borrow of a value
 holding lifetimes cannot outlast them, so `&'a Pair['b]` and `&'a &'b T`
-order `'b >= 'a`, and `self &` in a struct declaring `'a` orders `'a` over
+order `'b >= 'a`, and `self: &` in a struct declaring `'a` orders `'a` over
 the unnamed lifetime, which is a name like any other there (Rust's implied
 bounds; `lifeSigCheck`, `lifeImplied`), or a type parameter's lifetime bound
 says it: `T + 'a` is the pair `'+T >= 'a`, `'+T` the one name every borrow of
@@ -1050,6 +1175,42 @@ says it: `T + 'a` is the pair `'+T >= 'a`, `'+T` the one name every borrow of
 "Lifetime bounds"). A lookup in a small order, no solver, and nothing else
 inferred. Both sides read one order, so a bound the callee relies on is one
 its callers carry loans by.
+
+**`'static` borrows.** A `'static` borrow lends nothing of a caller's, of a
+local or of what a reference points at, at whatever depth of a type it sits
+(a `&'static str` field, an `Option` of a struct holding one). So every
+question a signature is asked of what a type holds -- what the result may
+carry, what a parameter lends beyond its own reference, what may be stored
+where it points -- reads `itypeCarriesEndingBorrow`, which passes a
+`'static` borrow as it passes a key or a function's (`lifeGather`,
+`lifeHeld`, `lifeParmStores`, `lifeRenamed`). That holds only because a
+place whose type holds borrows but only `'static` ones takes only a global's
+borrow wherever it is given a value, as a `'static` parameter does
+(`pwStaticOnly`): each field of a struct or variant literal (`H(&v)`,
+`Some(h)`, at any depth, since each level is a literal of its own), each
+store (`h.r = &v`, through a reference, by a swap; `pwStoreEscapes`) and each
+local's initializer. A value carrying a loan that is not global
+(`loanNotGlobalIn`: a caller loan, or one of the function's own storage) is
+refused at the value put in (`ErrorEscape`, `loanNotGlobalStatic`, which
+gives the spelling for a struct holding a borrow that ends,
+`struct H['a] { r: &'a ...; }`), and the loans refused are dropped from what
+it carries, so no enclosing literal or later store reports them again. A
+type reaching a raw pointer by value or through an owning reference is not
+asked whole (`pwReachesPtr`): a pointer's loans are its own, of what it was
+made from; its `'static` fields are asked where each is given a value. A
+function whose only such literal hands its value straight to a call holds
+nothing else that gates it, so the literal is a trigger
+(`FlowGateStatic`). Whether a value a body makes holds loans is still
+`itypeCarriesBorrow`. Unnamed signatures too: the result of a call whose
+type holds a borrow but none that ends carries of its arguments, the
+receiver included, only the loans rooted at a global (`pwCall`'s
+`globalonly`, `pwArgCarriesTo`, `loanOfGlobal`), so a global stays frozen
+while it is used; and a `&mut` argument to such a type, with no writable
+borrow past it, takes of the others only those (`pwCallStores`). The callee
+is held to the same: naming no lifetimes, it may return no caller loan in a
+result of such a type (`loanNotGlobalIn`), nor store one where a parameter
+points at one (`loanStoredStatic`, from `pwStoreApart`): `ErrorEscape` or
+`ErrorCallEscape` (`loanApart`).
 
 A value returned, or stored through `*p`, where the type the function's own
 names give that place is a virtual reference bounded by `'a`
@@ -1071,7 +1232,7 @@ without a bound. The bound adds `'a` to what the type holds
 an `'a` borrow's are, and `'a >= 'r` to the order of a signature naming
 `&<'r Trait + 'a` (`lifeImplied`).
 
-An owning virtual reference (`So[Trait]`, `Rc[Trait]`, `Arc[Trait]`) takes
+An owning virtual reference (`Uni[Trait]`, `Rc[Trait]`, `Arc[Trait]`) takes
 no bound and names no lifetime, so it carries no borrow (`itypeCarriesBorrow`
 answers for its trait) and no holder follows what its value holds: it is
 bounded by `'static`, Rust's `Box<dyn Trait>`. Wherever a value is made one,
@@ -1089,8 +1250,66 @@ carries only a *pin* of the receiver's place — it may not be moved, replaced
 or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
-`&mut a` may live at once and `a.alloc(new Spawner(2, &mut a))` is one call. The
-third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
+`&mut a` may live at once and `a.alloc(Spawner(2, &mut a))` is one call. The
+arena holds what is stored in it through raw memory its fields do not show,
+and reads it only when it finalizes it. So a by-value argument to a method of a
+`NoLoanMut` receiver is a *store into the arena* where the value's death may
+read a borrow it holds (`itypeDropReadsBorrow`, which answers yes for a type it
+cannot see all of), wherever the receiver was reached (a local, a `&mut`
+parameter, a struct's field, a closure's capture, `new a[T](...)`):
+`pwCallStores`, with the receiver as the only place (`arenaplace`). Any other
+value is no store: the handle `alloc` returns carries its borrows, as any
+result does, and a local that dies before the handle's last use is
+`ErrorFrozen`. A body may store such a value into an arena only
+what outlives it: a global, what the arena already owns, and, for an arena
+local to the body, locals declared before it (the arena variable is a holder,
+and its death reads what it holds, `itypeDropReadsBorrow`, so a local declared
+after it is `ErrorFrozen`). Reached through a reference, it takes of the
+caller's loans only the reference's own parameter's (`loanArenaApart`: Bug 48's
+exception, the stored loan and the place are one parameter that points at a
+`NoLoanMut` container); a borrow from another parameter, a second arena's
+node included, is `ErrorCallEscape`, even under one lifetime name. A later
+store through a node `alloc` returned (`f.p = Some(x)`) takes the same where
+the arena is a caller's and a body would otherwise see no ordering: the
+function names no lifetime, or the arena was reached through a struct's field
+(`loanArenaNodeBarred`, from `pwStoreApart`). The field route is seen by the
+pin an arena's method made of its receiver's place in the body, or, where a
+helper made the node and left no pin, by a far caller loan of a parameter whose
+type holds an arena in a field. The second is asked only of a reference not
+reached from a parameter that is not assignable (`let`) by field steps and
+dereferences alone: such a path lands only in a place the parameter's type
+shows, which the caller's check refuses (`ErrorCallEscape` at the call); the
+arena hides a node only from a reference that came out of a call, held in a
+local or in a `var` parameter given one (`pwByParm`). A local copy of such a parameter
+(`let s2 = s;`) is not told apart from that, so a store through it of another
+parameter's borrow, into a struct holding an arena, is refused though it lands
+in no arena node. Where the arena is
+`ar: &'a mut Arena`, such a node takes what is named `'a` as well
+(`loanStoredApart`): a finalizer elsewhere in the arena may reach the node, and
+the body cannot know, so each call of that function counts as a store into the
+arena at the caller (`pwCallStores`, `arenaparm`) and the arena's death is
+checked against the argument. Other stores are checked in the body, so a caller
+trusts the signature: a free function handed a `&mut Arena` with no lifetime
+named on it is no store at its caller. A function whose result goes
+back into the arena, in a value whose death reads a borrow, names which
+parameter the result comes from (`ar: &'a mut Arena` and `&'a mut Node['a]`,
+the node type naming `'a` too: unnamed, a result's held part may come from an
+unnamed parameter and the store is refused, the message saying to name which
+parameter). A raw pointer in a stored value is outside this rule, as it is
+everywhere: nothing is tracked through one, and `trust` vouches for what it
+reaches. Only a reference to the
+arena made by a cast from a raw pointer is trusted: it carries no loan but
+what was stored through it (`loanArenaChecked`), so its stores are unseen, and
+the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
+tests). Any other reference whose origin the walk cannot place (an arena
+reached through a method's result) may point anywhere, so no local's borrow is
+stored in it. A value and the receiver reached by one path (`home.alloc(Chain(
+n + 1, home))`: `pwStoredOnlyBy`, the same field path, nothing between that
+assigns or calls) stays in its arena; a copy of the path in another variable,
+or a second arena's path, is not exempt. A type that holds no
+borrow anywhere (`itypeHoldsNoBorrow`) is no place a borrow lands in
+(`loanStoredApart`). The third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
 called from `pwCall`): see "What is not held". A type need not declare it: the
 compiler finds a type shape-changing from its methods (`shapeinfer.c`, "Which
@@ -1106,14 +1325,32 @@ so an access conflicting with a loan in flight is reported at once
 `PlaceStepElem`, whatever its value), so a `&uni` of an element or a sub-slice
 beside any other borrow of the same slice in one call is refused, `f(&uni s[0],
 &uni s[1])` and two ranges that do not overlap included; only distinct fields
-are apart (`placeOverlaps`). Two `&mut`, two `&`, are not refused: a `&mut` of a
-shared path is an alias loan, which meets no `&mut`. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
+are apart (`placeOverlaps`). So an argument whose *value* is a borrow into a
+source's contents -- a view, an element borrow, a call or literal returning one
+(`first(s.view())`, `H(b.view())`) -- freezes that source through the later
+arguments and the call, exactly as a `let` holding it would:
+`both(s.view(), &mut s)` and `two(first(&mut b), &mut b)` are refused at the
+later argument (`collection_flow_args_borrow`), since the callee could grow the
+source through its `&mut` parameter and then read through the other, which it
+cannot know points into what it grew. The freeze follows the value, not every
+borrow made computing it: `both(len(s.view()), &mut s)` passes a number. The
+other order, `both2(&mut s, s.view())`, is the shape check's (below). Two
+borrows of the *whole* source, `two(&mut b, &mut b)` or `both(&s, &mut s)`, are
+not refused: a `&mut` of a shared path, or of a place reached as `uni`, is an
+alias loan, which meets no `&mut`, and a `&` beside a `&mut` of one local in one
+call is an alias loan too (`loanFlightOwnRo`). That is safe because both point at
+the collection itself, never into its storage, and the callee treats every
+reference parameter as a path other references share: a borrow it takes into
+what one parameter reaches is refused across a call that could grow what another
+reaches (`ErrorShapeReshape`, `collection_flow_args_borrow_callee`). Held in a
+`let` first, `let r = &s; both(r, &mut s)` is refused all the same: the call form
+is the lenient one. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
 *reserved* while the arguments are walked, it accesses its place as a
 read-only borrow would and meets their accesses as one, so `v.push(v.len())`
 compiles and `v.push(takeLast(&mut v))` does not; then *activated* at the
 call, where it is checked against what every other argument carries
 (`loanFlightActivate`) and then accessed as what it is, against the loans
-still held — so a holder whose last use is an argument (`imm last = v[0];
+still held — so a holder whose last use is an argument (`let last = v[0];
 v.push(*last)`) is dead by then. An explicit `(&mut v).m(…)` is a receiver too,
 and two-phase with it, a leniency beyond Rust's.
 
@@ -1136,8 +1373,8 @@ arm's end takes what the arm changed (`pathDelta`) and rolls back; the join sets
 each fact any arm changed to the union over the arms (`pathJoin`), an arm that
 did not change it contributing its value at the fork, so a join costs what the
 arms changed rather than the state's size. An `if`'s branches are paths from
-the state its conditions leave, a missing `else` a path of its own; an `and`'s
-or `or`'s right operand is an arm; a `break` or `continue` ends the blocks it
+the state its conditions leave, a missing `else` a path of its own; a `&&`'s
+or `||`'s right operand is an arm; a `break` or `continue` ends the blocks it
 leaves and deposits its path with the block it names (`pwJump`), and a block
 joins its fall-through end with every `break` that left it; a `return` ends
 every scope of the function, as a jump ends the blocks it leaves, and then the
@@ -1146,12 +1383,20 @@ through.
 
 **Loops.** A loop body is walked from the state at its head; the paths back to
 the head — its end, each `continue` — join into it, and if that added anything
-the body is walked again from the grown head. Facts only grow, so it settles,
-nearly always on the first walk. An error fires on whichever walk first meets
-it, once. A loop still growing after four walks has each holder that changed
-around it widened to every loan (`pathSetAll`): conservative, and then it
-settles. The paths out are its `break`s. `-V 2` prints
-`Path walk: F functions (L for loans), L loops, W walked again, C widened`
+the body is walked again from the grown head. `pathJoin` unions each changed
+fact with the head's own, so facts only grow, and they are drawn from a finite
+set (loans and pending conflicts are each made once per site or key, a state is
+a few bits): the walk ends when a walk finds nothing new, nearly always the
+second. A reference rotated through k variables takes k+1 walks, one step of
+the chain a walk. An error fires on whichever walk first meets it, once. A loop
+that would need more than `PathLoopCap` (24) walks is refused with
+`ErrorLoopTangled` (`pwLoopRefuse`): no holder is widened, no set stands for "any
+loan", and the function's walk stops there (`pwRefused`: no statement, value or
+scope end after it is walked, so nothing is judged from half-walked state). In a
+generic function the loop is walked for each type it is made for, so the
+refusal is reported at the loop with the instantiation named. The paths out
+are its `break`s. `-V 2` prints
+`Path walk: F functions (L for loans), L loops, W walked again, most walks of one loop M`
 (`flowPathPrint`).
 
 **Scope ends.** As a block ends, at its end, at a jump leaving it or at a
@@ -1167,13 +1412,13 @@ using nothing, an `H { r &R; fn final … }` uses `r`. Each variable then ends,
 an access conflicting with every loan of it: a holder still alive holding one
 — declared outside the block, or before the variable in it and so finalized
 after it — and used afterwards, is refused. That is the borrow kept past its
-source, `{ mut a = 1i64; mut b &i64 = &zero; b = &a; r = b; } *r`, or `{ mut a
-= Arena.empty(); h = new Holder(a.alloc(v)); } h.r`. A variable's lifetime
+source, `{ var a = 1i64; var b: &i64 = &zero; b = &a; r = b } *r`, or `{ var a
+= Arena(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
 follows what it holds now, so the stores themselves are legal, and so is
 `r` never used again after `a` ends; this is where a borrow kept past its
 source in a variable of the function is refused. A block handing a value on to a holder — its final
 expression, or a `break`'s — keeps what that value carries in flight while its
-variables end (`pwScopeEndHanding`), so `imm h = { imm x = ..; new H(&x); }`
+variables end (`pwScopeEndHanding`), so `let h = { let x = ..; H(&x) }`
 is refused at `x`.
 
 **Temporaries.** A temporary at the root of a place — read through (`*mkso()`,
@@ -1184,12 +1429,12 @@ which holds what that value carries if its type can, and which is pushed on a
 stack of the temporaries the statements being walked made. Where generation
 finalizes them, they end, the newest first (`pwTempsEnd`): at each statement's
 end (`pwStmts`), with a `break`'s or a used block's value still in flight;
-at an `if` condition's end; at the end of an `and`'s or `or`'s right operand.
+at an `if` condition's end; at the end of a `&&`'s or `||`'s right operand.
 Ending is the access a variable's scope end is, so a holder still holding a
-borrow of one and used later is refused at the temporary — `imm r =
+borrow of one and used later is refused at the temporary — `let r =
 id(mkso(3)); r.n` is Rust's E0716 — and a block value carrying one is refused
 at once. A loan of a stand-in is local, so a `return` or a store away of a
-borrow of a temporary (`fn f() &R { mkso(); }`) is an escape. A temporary a
+borrow of a temporary (`fn f() &R { mkso() }`) is an escape. A temporary a
 variable's initializer extends arrives as a hidden local (`tempLocalName`),
 an ordinary variable of its block; the messages name both kinds as
 temporaries (`loanTempKind`).
@@ -1226,7 +1471,7 @@ with it. So a value's lifetime is the shortest root among its loans, and:
   parameter holds no caller loan, so its borrow may go there.
 
 Near and far tell where a reference points from what that place holds:
-`imm q = &mut lh` holds `lh`'s loan near and every loan `lh` holds far, so
+`let q = &mut lh` holds `lh`'s loan near and every loan `lh` holds far, so
 `q.r = &x` through a reference to a local struct holding a parameter's borrow
 is a store into a local, a list node of its own type included; a reference
 that may point at the caller's struct on one path and a local's on another is
@@ -1249,15 +1494,15 @@ is refused there), and into one that may outlive the function it refuses it at
 the call (`pwCallStores`).
 
 **What is not held.** The temporary an operator changing its operand in place
-borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
+borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
 and no holder: `k += k` compiles. What is borrowed through it still carries
 its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
 `r = (v <- (1, 2))` holds `v`'s loan. A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
-shared path (`l &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
-only keeps the source alive (`LoanAlias`), so `imm e = l[0usize]; m.push(p); e.x`
+shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
+only keeps the source alive (`LoanAlias`), so `let e = l[0usize]; m.push(p); e.x`
 compiles when `m` is another reference to the same list, and `e` dangles. For
 a container that changes shape (it declares `ShapeChanging`, or is found to
 be one: `shapeChanging`) the loan the
@@ -1268,11 +1513,11 @@ refused. Where the check does not follow the loan (the path is reached through a
 others do not write by: `imm`, `mut1`), a read-only borrow's loan is made a `LoanShared`
 one and a writing one a `LoanExcl` one (`loanFreezeShared`, `loanFreezeWritable`): the
 path is frozen as a local's is. So
-`imm e = l[0usize]; l.push(p); e.x`, the
+`let e = l[0usize]; l.push(p); e.x`, the
 same through a struct wrapping a `List` (`bag.first(); bag.add(p)` through
-`bag &mut Bag`) and
-a cursor `mut it = dq.items(); dq.push(9); it.next()` are refused, as are a push
-while `imm s = l.viewMut()` or `imm e = &mut l[0usize]` is held (by the shape check:
+`bag: &mut Bag`) and
+a cursor `var it = dq.items(); dq.push(9); it.next()` are refused, as are a push
+while `let s = l.viewMut()` or `let e = &mut l[0usize]` is held (by the shape check:
 `ErrorShapeReshape`, the path itself staying readable and lendable), and a call
 that returns nothing the receiver lent (`self.fill(self.roomFor(h), …)`)
 freezes nothing. That is part (a) of the rule for a shape-changing container —
@@ -1283,10 +1528,10 @@ through another name" below. Refusing every element
 borrow through a shared path would refuse ordinary code — reading a
 `List[String]` element through a `&List` parameter, a method reading its own
 `self` list field — so (b) is a rule on the change, not a refusal of the
-borrow. `collection_flow_freeze_shared` pins the frozen path, and `refborref.html`
+borrow. `collection_flow_freeze_shared` pins the frozen path, and `mem-borrowing.html`
 each shape. A
 borrow of the container itself that is not a method's returned borrow
-(`imm r = &mut *l`) is not frozen, and needs no freeze: it points at the
+(`let r = &mut *l`) is not frozen, and needs no freeze: it points at the
 container's header, which a push through `l` updates in place, not into the
 storage block a push may move.
 
@@ -1311,7 +1556,10 @@ a struct, means **both** hold of its methods (`siInferStruct`):
   storage read from `*self` (or from a local that copied it) to a callee the
   compiler cannot read; or it lends a place of `*self` writable to a callee
   that does either. A cursor advancing writes a number; an element written in
-  place is a write through a pointer, not to it; neither is storage. A
+  place is a write through a pointer, not to it; neither is storage. A `_`
+  target is no place (`assignIsAnon`): it takes its value to drop it and names
+  nothing, so it writes nothing and has no type to ask (`siWriteHits`,
+  `siTypeWriteHits`), and its value, still made, is read as any other. A
   type that owns its block through a member (a `Set`'s `Dict`, a `String`'s
   `List`) has no pointer field of its own and writes through the member's method
   all the same, which is why the test is not "has a pointer field";
@@ -1442,10 +1690,11 @@ locals, which only a call that reaches one of them is asked of):
   — makes the call one that reshapes when its body is not visible, or when the
   callee reshapes a value of the type that is not its own local
   (`shapeTypeReshapes`, `SiModeType`: a whole value replaced, a header field of one
-  written, or a call that reshapes one, asked in turn).
+  written, or a call that reshapes one, asked in turn; a `_` target replaces nothing,
+  and the call whose value it drops is asked as any call is).
 - **A mutable virtual call** (a receiver that is a `&<mut Trait`, which a `&<mut fn` called is:
   `FlagVDisp`, the virtual reference its first argument) hides the type behind it. The trait
-  method's declared `self &mut Trait` names no fields, so `reshapeCall` walks the virtual
+  method's declared `self: &mut Trait` names no fields, so `reshapeCall` walks the virtual
   reference the call was made through instead (`reshapeReachOwnerMode`), and that reaches any
   container (`ReachVirtual`): the call is handed something that may reach it, and its body is not
   visible. A closure that captured the list by `&mut`, or a struct that holds it, is the case; a
@@ -1457,13 +1706,21 @@ locals, which only a call that reaches one of them is asked of):
   reference was held to it where it became one (`shapeKeepsVia`, below), so a borrow into a
   collection survives the call. An unmarked one is the "body is not visible" case above, and its
   message says the mark would keep the borrow.
+- **A virtual reference held as a field, walked for what a type reaches** (`rcWalk`,
+  `reshape.c`): unmarked, it reaches "anything" (`ReachVirtual | ReachBorrowed`: a trait is
+  open, so an implementer may hold a shared owner of the very collection a borrow is into), so
+  every struct holding one, at any depth, reaches every container, and a call to code the
+  compiler cannot read that is handed such a struct is refused. One marked `+ ShapeKeeping`
+  reaches nothing more than the struct's other fields do, on the same promise as the call above,
+  held where the value becomes the reference (Bug 30; cancelgroups' registry of `Uni[Wakeup +
+  Sendable + ShapeKeeping]`). Tests: `collection_flow_traitfield_marked`, `_unmarked`, `_refuse`.
 - **Globals**: handed nothing that reaches the type, a visible callee still
   reshapes if it does so by something that is no parameter of its own
   (`SiModeOut`, which skips what is reached from the callee's parameters).
-- **A borrow into a `mut` global** is asked of every call, whatever the call is handed
+- **A borrow into a `var` global** is asked of every call, whatever the call is handed
   (`ReshapeGlobalView`, from the `globalview` argument of `reshapeCall`): a function may write a
   global by its name, and no summary is kept of which. A loan is a global
-  view (`loanShapeGlobalView`) when its place is rooted at a `mut` global or a static
+  view (`loanShapeGlobalView`) when its place is rooted at a `var` global or a static
   (`loanPlaceInGlobal`: by the name, or through a reference whose own loans were of one, as the
   `[]` of `gl.items[0usize].label.view()` leaves in its stand-in), and `pwShapeLent` marks such a
   loan for the check though its path is not shared (it still freezes against the same name, as any
@@ -1485,13 +1742,13 @@ locals, which only a call that reaches one of them is asked of):
   can write from an `extern` function handed nothing; any other global's symbol is internal
   (`genlLinkage`).
   The call that lends the borrow from the place the loan was reached through (`view` in that chain:
-  the loan is held by its receiver's root) is not asked. An `imm` global is no global view: nothing
+  the loan is held by its receiver's root) is not asked. A `let` global is no global view: nothing
   writes it.
   A borrow reached through a reference a caller lent (a `&mut Ed` parameter that may have been
-  called with `&mut gl`: the loan is `rootsext`) is the same, where some `mut` global reaches the
+  called with `&mut gl`: the loan is `rootsext`) is the same, where some `var` global reaches the
   container's type (`reshapeMutGlobalsReach`; `loanShapeGlobalView` answers 2, `ReshapeGlobalMaybe`):
   the callee cannot tell the reference from the global. `flowGateShapeAsk` sets `shapeglobal` for such
-  a lend too, so the function is walked. A program with no `mut` global of that type is unaffected;
+  a lend too, so the function is walked. A program with no `var` global of that type is unaffected;
   a global whose type is not yet worked out is taken to reach it.
 - The same name changing the collection (`loanShapeSamePlace`) is the loan's own
   freezing, which reports it; the shape check skips it where the loan freezes
@@ -1502,7 +1759,7 @@ locals, which only a call that reaches one of them is asked of):
   named whole is asked for those; `ReshapeStore`, `ErrorShapeStore`). It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`) or through owning references
-  alone (`ReachOwned`: `So`, `Rc`, `Arc` or a region a program declares, with fields and
+  alone (`ReachOwned`: `Uni`, `Rc`, `Arc` or a region a program declares, with fields and
   elements, but no borrow or raw pointer, between: a replaced owner is freed, or
   loses a count, and the last owner's going frees the collection; so a store over the
   owning reference, a field holding it, or a struct holding it is refused), or, for a collection, an element
@@ -1518,7 +1775,7 @@ locals, which only a call that reaches one of them is asked of):
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
 
-**An owner is a shape-changing value too.** Storing over an owning reference (`So`, `Rc`, `Arc`, a
+**An owner is a shape-changing value too.** Storing over an owning reference (`Uni`, `Rc`, `Arc`, a
 program's region) frees what it points at, so a borrow into what an owner owns (`&mut *s`, a field of the
 pointee, an owner lent where a borrow of its contents is wanted: a place that dereferences an owner,
 `Place.ownertype`) is marked for the same check, with the owner's reference type as its container
@@ -1540,13 +1797,13 @@ root variables are listed beside the loan even where the owner is shared (`loanR
 (`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
 only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
 reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
-An owner of a trait object (`So[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
+An owner of a trait object (`Uni[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
 owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
 reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container
 (`ReachVirtual`), an owner included. A call through a mutable virtual reference is then asked as a call whose body
 cannot be read, and replaces any owner of the type a borrow is held into, the object's own other methods
 (`o.bump()` while a borrow `o.count()` lent is held) and the owner lent as `&<mut` beside a `&<` of it included.
-`+ ShapeKeeping` on the owner (`So[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
+`+ ShapeKeeping` on the owner (`Uni[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
 cure, as for a collection.
 
 **A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
@@ -1557,7 +1814,7 @@ stand-in). `ui.items[0usize].label.view()`: a `List`'s `[]` is a call, so the pl
 `view` had no loan on the `String` at all (only the `[]` loan on the `List`, marked for the
 `List`'s shape, which a call that grows a `String` does not change). The stand-in is a
 temporary (`pwTempsEnd`) that holds what the call carries, so the walk goes on as for
-`imm item = ui.items[0usize]; item.label.view()`: the place is the reference's referent,
+`let item = ui.items[0usize]; item.label.view()`: the place is the reference's referent,
 shared and written by the reference's permission, and its loan is marked for the `String`.
 Only a method's receiver is followed so, not a free function's borrowed argument.
 `collection_flow_reshape_through_call` pins the refusals and
@@ -1569,7 +1826,7 @@ alone says another holder may write it (`Place.shwrite` of the reference's type)
 (`Loan.elemview`) when the method returned an element out of the receiver's own block: a
 `&Struct` whose struct the receiver holds only in the block its pointer field points at
 (`pwHoldsElements`), the call handed no other borrow the element could come from, the receiver
-reached through a reference nothing writes by (`shared` and not `shwrite`), and no `mut` global
+reached through a reference nothing writes by (`shared` and not `shwrite`), and no `var` global
 reaching the element's type (`reshapeMutGlobalsReach`: a method with a body of its own could
 return a borrow into one, which is not an `imm` path; this only reads the global-view fact and
 changes no global rule). `pwThrough` then reads a reference variable (a stand-in or a name) that
@@ -1596,11 +1853,22 @@ a field by a struct that is not the owner is another value and is not reached. T
 `dl.text(ui.items[0usize].label.view())` is accepted for a `Dl` that holds a `String` and no
 `Item`, and `ed.grow(...)` for an `Ed` that holds the `List[Item]` is not. No owner is recorded
 (and the check asks for any value of the container's type, as before) for a receiver that is no
-field and no such element (`s.view()`), for a field of a trait or an enum (a type that
+field and no such element (`s.view()`), for a field that holds a reference or pointer
+(`r.s.view()` with `s: &mut String`: the `String` is some other struct's, which the reference may
+point at, so the struct with the reference field is not its owner), for a field of a trait or an enum (a type that
 implements it holds the same field), for an element a call returned from other borrows, and for
 a free function's borrowed argument. The receiver of a call that is the container itself, a
-`String` appended to, is asked as before, and so are stores (`reshapeStoreHits`) and globals.
-`collection_flow_reshape_owner` pins what stays refused, by every route to the owner.
+`String` appended to, is asked as before unless it is another value than the viewed one: it is
+written as a field the struct holds by value (`pwReceiverFieldOwner`: `ui.input.clipboard`, through
+borrows and conversions; not a name, an element a call returned, a field holding a reference, a
+variant of an enum), the viewed value is a field held by value or an element of such a list
+(`loanShapeOwnerByValue`, from `pwViewOwner`), and the two structs differ (`reshapeCall`'s
+`recvowner`): a value is the field of one struct only. Stores (`reshapeStoreHits`) and globals
+are asked as before. `collection_reshape_receiver_other_struct_success` and
+`collection_flow_reshape_receiver_other_struct` pin both sides.
+`collection_flow_reshape_owner` pins what stays refused, by every route to the owner, and
+`collection_flow_reshape_reffield_owner` and `collection_reshape_reffield_owner_success` pin the
+view through a reference field (refused) beside the view through a by-value field (accepted).
 
 **An enum** is a marked loan's container too. A reference narrowed from an enum to one
 of its variants through a path others share, or from a `&mut` borrow of a local (an alias
@@ -1659,7 +1927,7 @@ frozen.
 
 What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
 (the point: it is never a proof of aliasing, only that nothing proves it absent);
-which global a function writes (a borrow a `mut` global could be is refused across a call that
+which global a function writes (a borrow a `var` global could be is refused across a call that
 reshapes its type through any global, or runs code it cannot read, even if the global it writes
 is another: no per-function record of the globals it writes is kept, so this walk cannot say
 which; the one walk that does look for a global written, `parallel each`'s check of the calls in
@@ -1691,7 +1959,7 @@ loans differ point at different places (`loanNearApart`). Three kinds of place:
   `break`s and its end (`pwBlockExits`, `pwLoop`), reported at once, at the
   `if` or the block (`loanChosen`); and a function's returns, each against the
   first (`pwStmts`), reported at the return, so `fn pick(a &f32, b &f32) &f32
-  {if c {a;} else {b;};}` is refused in its own body, wherever it is called
+  {if c {a} else {b}}` is refused in its own body, wherever it is called
   from;
 - a holder at a join (`pathJoin`), loop heads included: a pending conflict of
   its own (`loanChosenPending`, kind `PendingChosen`), fired at the holder's
@@ -1716,6 +1984,48 @@ only a literal or a named constant's index allows.
 A global holding a reference, and recursion, are generation's to refuse,
 where the module's globals and its calls are known.
 
+### Candidates for a last use
+
+[Jon 30 Oct: the last use of a counted local or parameter is a move; Arc parity
+with Rust.] The main walk marks some counted reads as *candidates*
+(`RefCountNode.cand`, "Moves and counting"); this walk decides them, as a
+forward search for a use after the move, with the machinery the drop-flag
+client has for a `uni` move and the loan client has for a move's conflicts, and
+no second analysis. In the walk a candidate is walked as the move it would be:
+`pwCandidate` sets the name use `pwCandUse`, and `pwPlace` then calls `dropMove`
+for it as for a marked move (`FlagMoveOut`) and `pwPlaceValue` makes the access
+`AccessMove`, its site the `RefCountNode`. A candidate *fails*, and stays a copy,
+when
+
+- a later read of the variable meets the state the move left (`dropUse`,
+  `dropMove`, `dropPartUse` call `pathCandFail` before they refuse): this is
+  every read after it on a path, a read in a pass of a loop after the pass that
+  moved it (a variable declared outside the loop), a borrow of it, a field of
+  it, a second candidate of it. The candidate that moved it last fails
+  (`PathVar.lastcand`);
+- the move conflicts with a live borrow of the variable that is used again
+  after it, or with one carried by the call or value still being made
+  (`loanUse`, `loanFlightAccess`: `pathCandFailAccess`). A closure holds the
+  variables it names as borrows, so a closure used after the read fails it.
+
+Whatever fails changes the states the walk had, so `flowPathWalk` walks the
+function again without the failed ones, until none fails (each walk has fewer
+open candidates: it ends). Only the last walk's releases are applied
+(`dropWalkEnd`), and then `pwCandApply` turns each candidate still open into its
+move: the `RefCountNode` leaves the tree and the name use is marked
+`FlagMoveOut`. A walk that reports an error is not made again. The
+walk's records of a seam or a generator's `yield` would be made twice, so a
+function with either keeps its candidates as copies (`pwCandOff`). A
+candidate in code the walk never reaches stays a copy.
+
+What it cannot get wrong is a leak or a double release: a read after the
+move is refused as a use of a moved value would be, and a candidate it
+confirms is moved on every path that reaches it, with the variable's release
+at the exit decided from the paths (the drop flag, where they differ). Cases it
+does not make moves, by construction: a variable read by anything after (even a
+borrow that ends at once), and any read that is not a bare name use of the
+variable.
+
 ### Drop flags
 
 [Jon 26 Sep: runtime drop flags, and conditional handling as a general flow
@@ -1731,12 +2041,12 @@ agrees, there is no flag, and the release is what it is, or nothing.
 change: a *tracked* variable — a local or a parameter whose value moves or has
 anything to do as it dies (`flowDropTracked`; a match's binding stands for the
 matched value's variable, `flowDropOwner`), or a local declared without a value
-whatever its type (`flowDropTrackUninit`, from `varDclFlow`: a number, a
+(no initializer, or `= undef`, which the parser reads as none) whatever its type (`flowDropTrackUninit`, from `varDclFlow`: a number, a
 struct of plain data, a borrowed reference, a raw pointer, which could only ever
 be uninitialized, never moved, and are otherwise untracked, as a local given its
 value where it is declared is) — moved, hollowed or stored over
 deeper in the conditional structure than it was declared (`flowDepth`: an
-`if`'s arms and its later conditions, the right operand of `and` and `or`, a
+`if`'s arms and its later conditions, the right operand of `&&` and `||`, a
 loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
 block or an `if` hands on. A function the gate does not mark keeps the main
 walk's lists, which are right for it: every change to a tracked variable is
@@ -1760,11 +2070,17 @@ the exit's value is walked; at a store over a whole variable, what it held
 before; at a store over a field or an element of a local's own value, what the
 local held. Loop walks gather into one record (`DropSite`), the union.
 
-**Uses it refuses.** A move or a read of a tracked variable some path reaching
-it moved, hollowed or never gave a value (a borrow: moved or hollowed only) is
+**Uses it refuses.** A move, a read or a borrow of a tracked variable some path
+reaching it moved, hollowed or never gave a value is
 `ErrorMove` "may have been moved out" / "may not have been given a value"
 (`dropRefuse`), once per site: a loop moving a variable declared outside it,
-a read in a pass after one that moved it. This holds for every type: a number
+a read in a pass after one that moved it. A field or an element stored into a
+variable some path gave no value, or moved out whole, is refused too
+(`dropPartUse`): the whole variable is given a value first, as nothing tracks
+its parts. A variable only hollowed is not: it still owns its allocation (the
+store has nothing to release, `dropApplyPart`). The main walk meets only the
+first pass of a loop, so a move in an earlier pass reaches the store here alone.
+This holds for every type: a number
 given a value in one arm of an `if`, a borrowed reference or raw pointer
 dereferenced after one (`pwThrough` checks the variable the reference is read
 from, which `pwDropUse` skips for a place reached through a dereference), a
@@ -1805,7 +2121,7 @@ afterwards waits in a continuation, a record, until the reply comes. A seam is
 a return to the *dispatcher*, not to the author: the author wrote one method
 with one scope, so what the author can see -- when a value dies and in which
 order -- is what a method without the seam would do. Type check has placed it
-already, in a behaviour, a method declared `async do`; an actor's `fn` --
+already, in a behaviour, a method declared `async fn`; an actor's `fn` --
 its `init`, its `final`, a synchronous helper -- holds none
 (`ErrorAwaitPlace`), and an `await` on a behaviour returning nothing is
 refused there too (`ErrorAwaitVoid`), so flow never sees either. Every rule
@@ -1943,7 +2259,7 @@ local (`loanIsLocal`), or into the generator itself, reached through its `self`
 (the hidden receiver of `next`) without crossing another reference, where the
 parameters it holds by value are. The generator is a value that moves between
 the calls that resume it, so neither stays put. A reborrow through a reference
-the generator holds (a parameter `t &Tree`, whose referent is the caller's), and
+the generator holds (a parameter `t: &Tree`, whose referent is the caller's), and
 what the caller lent through `self`, last across the seam. A holder of an ended
 borrow gets a pending conflict of kind `AccessYield` (`loanYieldPending`), fired
 by its next use as `ErrorFrozen` at the `yield`, worded for it. A lock's guard, or
@@ -1970,14 +2286,14 @@ shape pass.
 
 A parameter of a generator is a field of the struct that is the generator, named
 by its bare name in the body as a method names its fields: the body may borrow it
-or copy it, or write one declared `mut`, but a move out of it is refused as a
+or copy it, or write one declared `var`, but a move out of it is refused as a
 move out of a field is, worded for it (`flowRefuseMoveField`).
 
 ### An init's self
 
-An init's `self &new` (`fnDclIsInit`) is a reference to memory that holds no
+An init's `self: &new` (`fnDclIsInit`) is a reference to memory that holds no
 value until the init writes one, and that the construction running the init
-holds once it returns (doc/reference/refinitdrop.html). Flow holds it to that
+holds once it returns (doc/manual/rec-methods.html#initfinal). Flow holds it to that
 with one flag and one context:
 
 - **`VarUnfilled`** is set on `self` as the init's flow begins
@@ -2020,12 +2336,12 @@ included) as 1048 "may have been moved out". Fill and use are tracked by
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of an element of an array held by value or by a sole owner, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | |
+| **Move / ownership** | yes | `ErrorMove` on use or borrow of a moved-out or uninitialized variable, and on a field or an element stored into one never given a value or moved out whole (Rust's E0381 and E0382 lines); move out of a field, or of an element of an array held by value or by a sole owner, or of a global, or out through a borrowed or a shared owning reference or a raw pointer (outside an `@intrinsic` body: `mem.readRaw`'s), refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | |
 | **Escape / lifetime** | representation in type check, enforcement here and in the loan walk | storing a bare borrow into a global or through a reference into a longer-lived place, by assignment or by either direction of a swap; any value — bare borrow, struct, `Option`, `Rc` owner, call result, a variable that was given a local's borrow — returned, or stored where it may outlive the function (a global, what a parameter or a copy of one points at, an `Rc`'s referent), or handed to a call that may store it so, while it holds a loan of the function's own storage (the loan walk); returning a borrow of a local, or a local initialized with one, its type declared or not; returning or storing outward a borrow of a by-value parameter, of `self` by value or through an owner passed by value; storing a borrowed parameter's borrow into a global, bare, read through a `&mut &T` parameter, held by a by-value parameter or carried inside a value; a returned `if`, `match` or block, arm by arm, and one used as a value carrying its shortest arm's lifetime; an owner handed back, or stored, as a borrow; a borrow through a borrowed reference held in a local, which has that reference's lifetime; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow — `&T` itself, a struct with a borrow field, an `Option` or `List` of borrows, a slice of them — where that place would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference; with lifetimes named on a signature or a struct, a caller's borrow returned, or stored where a parameter points, as a lifetime its part does not flow to by the `where` clause's order, a struct's field by field, and a borrow not global handed to a `'static` parameter; a type parameter's lifetime bound, by the order an instance's signature carries, a `'static` one's argument checked global; what a virtual reference bounded by `'a` points at holding a borrow not known to last `'a`, returned or stored through `*p`; a value holding a borrow not known to be global made an owning virtual reference, which is bounded by `'static` | a borrow captured; a lifetime bound on a generic type's parameter, or of a lifetime but `'static` on an owning virtual reference, and invariant lifetimes; a struct's tags are dropped wherever a value leaves it, and after a call that may move a borrow between its slots, so what it holds is then kept as one; a store through a reference a call returned, or one read through another, to a local struct of a self-similar type (a list node) holding the caller's borrows is refused |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a container that changes shape (`ShapeChanging`, declared or found) returns, which freezes the path it was reached through as a local's does | an element borrow of a container that changes shape through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
-| **Initialization** | yes | `ErrorMove` "has not been initialized"; for any local declared without a value, of any type, "may not have been given a value" where some path did not (the path walk) | a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
+| **Initialization** | yes | `ErrorMove` "has not been initialized"; for any local declared without a value (`= undef` is that declaration), of any type, "may not have been given a value" where some path did not (the path walk); a read, a borrow — `&c`, `&mut c`, a method's receiver, a field's borrow — and a field or an element stored into the variable are all refused until the whole variable holds a value on every path | per-field initialization: the whole variable is given its value first; the unused-variable warning in `flow.h`'s header does not exist |
 
 Everything else about permissions is type check's: `permMatches` in
 `borrowTypeCheck`, and variance in the reference matchers.
@@ -2036,21 +2352,25 @@ Everything else about permissions is type check's: `permMatches` in
 | --- | --- | --- |
 | `ErrorInvType` | `flowHandleMove`, `flowResultMove` | move out of a global variable |
 | `ErrorMoveOut` | `flowHandleMove`, `flowResultMove` | move out through a borrowed reference, or through a shared (aliasable) owning one |
+| `ErrorMoveRawPtr` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveThrough`) | move out through a raw pointer — `*p`, `p[i]`, a field list `(*p).(a)` — outside an `@intrinsic` function's body; the message names `mem.readRaw(p)` |
 | `ErrorMoveField` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveField`) | move out of a field — a struct's or a tuple's — or out of what is reached through one |
-| `ErrorMoveElem` | `flowHandleMove`, `flowResultMove` (the `ArrIndexTag` arm of `flowMoveSource`) | move out of an element of an array held by value — a variable's, a parameter's or a temporary's — or of the array a local or temporary sole owner points at |
+| `ErrorMoveElem` | `flowHandleMove`, `flowResultMove` (the `ArrIndexTag` arm of `flowMoveSource`; `flowRefuseMoveIndexed` there and in the `DerefTag` arm) | move out of an element of an array held by value — a variable's, a parameter's or a temporary's — or of the array a local or temporary sole owner points at; of a slice's element or of an array reached through a borrow; of the place a type's `[]` lends |
 | `ErrorInvType` | `assignBorrowLifetimeCheck`, from `assignlvalrtype` and `swapFlow` | lval — a global, or a place reached through a reference — outlives the borrowed reference stored into it, or swapped into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
-| `ErrorMove` | `nameuseFlow`, `nameuseFlowBorrowed` | read: uninitialized, or moved out; borrowed: moved out only (`borrowFlow` walks the borrowed place to its variable) |
-| `ErrorMove` | `dropRefuse`, from the path walk | a tracked variable moved, read or borrowed where some path reaching it moved or hollowed it, or (not for a borrow) never gave it a value |
+| `ErrorMove` | `nameuseFlow`, `nameuseFlowBorrowed` | read or borrowed (`borrowFlow` walks the borrowed place to its variable): uninitialized, or moved out |
+| `ErrorMove` | `assignlvalrtype` | a field or an element stored into a variable never given a value, or one whose whole value was moved out |
+| `ErrorMove` | `dropRefuse`, `dropPartUse`, from the path walk | a tracked variable moved, read or borrowed where some path reaching it moved or hollowed it or never gave it a value; a field or an element stored where some path gave the variable none, or moved it out whole |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
 | `ErrorEscape` | `loanEscape`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where it may outlive the function, carries a loan of the function's own storage; or one stored into a global carries a caller loan |
 | `ErrorCallEscape` | `pwCallStores` (the loan walk) | a `&mut` or `&uni` argument, a receiver included, or a writable borrow one reaches, points at a place that may outlive the function and can hold a borrow, and another argument carries a borrow of the function's own storage, or one the caller lent of a lifetime not held there |
 | `ErrorCallEscape` | `loanEscape`, from `pwCallStores` | another argument carries a loan of the function's own storage, and a `&mut X` argument, or a writable borrow reached from one or held by a struct argument, reaches a place that may outlive the function |
+| `ErrorCallEscape` | `loanEscape`, `loanSelfStore`, `loanApart`, from `pwJoinStores` | the same, of the parts of one value: a literal's values, a closure's captures, a value stored in or swapped into a field of a local aggregate and what the aggregate holds (`LoanEscapeJoin`) |
 | `ErrorEscape` | `loanApart`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where a parameter points, carries a caller loan of a lifetime flowing to none the result, or what that parameter points at (the field, for a struct declaring lifetimes), holds (named lifetimes) |
+| `ErrorEscape` | `loanNotGlobalStatic`, from `pwStaticOnly` | a value given to a place whose type holds borrows but only `'static` ones (a literal's field, a store, a local's initializer) carries a loan that is not global |
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
-| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
+| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries (a view or an element borrow, or a call returning one, then a `&mut` of its source: `both(s.view(), &mut s)`), or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight, a plain path |
 | `ErrorFrozen` | `loanUse`, for a generator seam's `AccessYield` conflict | a borrow of a generator's own ground -- one of its locals, or of a parameter it holds by value -- held at a `yield` and used after it, reported at the `yield`; and, from the stand-in for the generator's caller, a change to a place a borrow a `yield` handed out points into, reported at the change |
 | `ErrorGenFrame` | `pwYieldVar` | a lock's guard, or a value holding a traced reference, that would stay in a generator's frame across a `yield`; or, in generation, a `yield` where a temporary of an enclosing statement is still to be dropped |
@@ -2099,7 +2419,9 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 `AwaitNode`'s `seamvars` ([Generation](generation.md), "A split method"): a
 variable `SeamOpen` and `SeamLive` or `SeamDies` travels, so a variable used
 after a seam and noted dead there reads garbage in the second half, and a
-droppable noted as holding nothing is never finalized.
+droppable noted as holding nothing is never finalized. A match's binding by
+value is untracked, so it is always noted `SeamOpen` whatever its owner holds;
+the record takes its owner's state instead, not the binding's.
 
 ## 9. Hazards
 
@@ -2108,7 +2430,19 @@ droppable noted as holding nothing is never finalized.
   no tracked variable changes deeper than its declaration and no block or `if`
   hands a value on from some of its paths. A new way for a variable's state to
   change must note it (`flowDropNote`, or set `dropgate`), or its function's
-  drops are decided on one path's state.
+  drops are decided on one path's state. The same holds for what ends a path:
+  an arm a `break` or `continue` ends is left out of its `if`'s join, which is
+  safe only because whatever it changed of a variable declared outside the arm
+  changed deeper than the declaration, and so gated the function.
+- **The state after a loop reads "wrote nothing" from the first pass.** A
+  `break`'s record holds what its path wrote in the first pass; a variable it
+  holds is taken at that state, though a later pass may reach the `break` by a
+  part of the path that did not write it, still holding the head's state (one
+  arm of an `if` gives it a new value, the other does not). The main walk may so
+  take as held after the loop a value some path moved; the path walk, which that
+  move gated, refuses its use. A new way for a variable's flags to be set must go
+  through `flowVarSetFlags`, or a loop takes a path that wrote it for one that
+  did not.
 - **A move the main walk makes must be marked where the value leaves**
   (`FlagMoveOut`, `FlagHollowOut`), or the path walk and the drop flag do not
   see it. A name use shared by several places in the tree cannot be marked:
@@ -2118,22 +2452,10 @@ droppable noted as holding nothing is never finalized.
   variable carries a pending entry, holder or not, and a new place it is
   stored over whole or ends must drop that entry; otherwise a seam's record
   (§6, "A seam") misses what is live after it, or keeps what is dead.
-- **A value stored into a field of a variable that holds nothing leaks.**
-  `take(e); e.inner = new Inner(2);` and `mut e Holder; e.inner = new Inner(2);`
-  finalize nothing of the old field (there is none), and the variable is not
-  taken to hold a value by having one field given, so the new field is never
-  finalized either. Rust refuses both.
 - **A hollowed variable reassigned by a destructuring of one value**
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
   (`FlagFirstAssign`, nothing released).
-- **A kept temporary leaks.** `flowTempEscape` keeps a temporary that a
-  borrow or a raw pointer going out of its statement may point into, and it
-  is never finalized: `imm r &R = mkso()` leaks the owner, as every temporary
-  did before. The walk is conservative: any value that can hold a borrow or a
-  pointer carries the question on, so `imm n = mkso().me().n` keeps it too.
-  Extending a temporary's life to its borrow's, or refusing the borrow, is the
-  lifetime work's to decide.
 - **A new place a value is consumed without being taken must call
   `flowTempRead`**, or a temporary there is never finalized; and a new place a
   value is taken must not, or it is finalized under its new holder.
@@ -2160,7 +2482,8 @@ droppable noted as holding nothing is never finalized.
 | | `pathSetLoansAs`, `pathSetUnsure`, `pathSetThrough`, `LoanFar`, `loanOf`, `loanThrough` | near and far loans: a set's loans made all far or all near, or both where it is not known which, or read through a reference; a loan's id from a set's entry; whether a loan borrows through its root |
 | | `pathSetRemake`, `pathSetSlots`, `pathSetUntagged`, `pwSlotStep`, `pwPlaceSlots`, `pwStoreTagged`, `pwCallMoves`, `pwUntagHolder`, `loanTag` | slots: a set's entries remade; the loans of some slots; tags dropped; a field of a struct declaring lifetimes as a place's first step; what a read or a borrow of it carries; a store's tag; a call that may move borrows between slots, after which a holder's tags are dropped |
 | | `pwPlaceOutlives`, `pwStoreEscapes` | whether a place stored into may outlive the function; the store refused when it may and the value carries a local loan, or when it is rooted at a global and the value carries a caller loan |
-| | `pwNamedSig`, `pwArgCarries`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs`, `pwBoundHolds` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument, or one a `'static` bound governs; what a bounded virtual reference holds, returned or stored |
+| | `pwStaticOnly`, `pwStoreStatic`, `pwReachesPtr` | a place whose type holds only `'static` borrows given a value carrying a loan that is not global, refused and the loans dropped; a store's field and struct named; a type reaching a raw pointer, not asked whole |
+| | `pwNamedSig`, `pwArgCarries`, `pwArgCarriesTo`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs`, `pwBoundHolds` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry, only a global's loans into a value holding only `'static` borrows; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument, or one a `'static` bound governs; what a bounded virtual reference holds, returned or stored |
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
 | | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
@@ -2173,12 +2496,13 @@ droppable noted as holding nothing is never finalized.
 | | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
 | `ir/flowloan.c` | `loanMake`, `loanCaller`, `loanHeldBy` | a borrow's loan, a parameter's caller loan, and who may hold it |
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
-| | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanApart`, `loanNotGlobal` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or a loan that is not global, and their reports |
+| | `loanCallerApart`, `loanStoredApart`, `loanStoredStatic`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or, unnamed, one stored where a parameter points at a value holding only `'static` borrows; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
 | | `loanLockLive`, `loanLockStillLive`, `loanSetRootedAt`, `loanFlightRootedAt` | a lock's guard given back at its borrow's last use: the live mark of a point (`PendingLockLive`) and whether a use fired it; whether a loan set, or an operand in flight, holds a loan of the guard |
 | | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
+| `ir/flowpath.c` | `pwCandidate`, `pwCandApply`, `pathCandFail`, `pathCandFailAccess`, `flowPathWalkOnce` | walk a counted read marked a candidate for its last use as the move it would be; make the survivors moves; fail the one that moved a variable a later read meets, or one a live borrow conflicts with; the walk made again while one fails |
 | `ir/flowpath.c` | `pwLockPoint`, `pwLockApply`, `pwLockPos` | the points where a guard might give its lock back, a mark on each holder of its borrow; the points never fired made statements (`flowLockGive`, a `DropFlagNode` flagged `FlagLockGive`) |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
 | `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
@@ -2196,15 +2520,15 @@ droppable noted as holding nothing is never finalized.
 | | `shapeWalkReady`, `shapeWalkDefer`, `shapeWalkDeferred`, `shapeDeclared`, `shapeDeclaredCheck`, `shapeRecordable` | a gated function's walk waits for the types it asks about (`fnDclTypeCheck`) and is made at the end of type check (`doAnalysis`) if a body is not checked yet; the types declaring `ShapeChanging` checked against the methods (`ErrorShapeMark`); the include file's record (`incRecordShape`) |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
-| | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |
+| | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self: &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
+| | `flowHandleMoveOrCopyLast`, `flowIsCandidate` | `flowHandleMoveOrCopy` for a value going to one new holder, also marking the counted read of a whole local or parameter a candidate for its last use (`RefCountNode.cand`); the path walk decides it ("Candidates for a last use") |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference or, outside an `@intrinsic` body, a raw pointer (`flowRefuseMoveThrough`) |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead`, `flowIsKeptRead` | the temporary-vs-lvalue test that makes counting correct; the second adds an assignment, whose target keeps its value |
 | | `flowTempRead`, `flowIsTemp`, `flowCastHandsOn` | wrap a temporary whose death does something in a `TempNode`, where it is read or thrown away ("Temporaries") |
 | | `flowTempHollow` | a move out through a temporary sole owner, noted in its `moved` |
-| | `flowTempEscape`, `flowTempCarries`, `flowTempCallStores` | keep each temporary a borrow or a pointer going out of its statement may point into |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a struct, enum, tuple or array whose death releases one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; is it an owning reference, or a tuple of them, that a store releases |
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
@@ -2213,14 +2537,15 @@ droppable noted as holding nothing is never finalized.
 | | `flowLendNote`, `flowLendWritable` | a borrow of a variable's own storage, or a raw pointer made of one, noted on it for generation's lending (`VarFlowLend`); whether a borrow's permission may write |
 | | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
+| | `flowLoopBegin`, `flowLoopJump`, `flowLoopEnd` | a frame for each loop being walked: what each `break` and `continue` to it wrote; where the loop ends, the head's state (entry, continues, body's end) joined, then the breaks over it (§3, "What ends a path") |
 | | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
-| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
-| `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
-| `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
-| | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach |
-| `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper; whether every path returned (`jumped`) |
-| | `blockDiscards`, `blockTempEscape` | a block throwing its final expression's value away; each statement that made a temporary walked by `flowTempEscape` |
-| `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not return joined; later conditions and arms one level deeper |
+| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateStaticAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
+| `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperandNext`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
+| `ir/itype.c` | `itypeCarriesBorrow`, `itypeCarriesEndingBorrow` | may a value of this type hold a borrowed reference; one of a lifetime that ends, not `'static`; a struct's answers remembered in `StructNode.carriesborrow` and `carriesending` |
+| | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check, and whether an `alloc` is a store; a type it cannot see all of, such as a type parameter, an open trait, an opaque struct, a closure or a walk past 16 nested structs, answers yes); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach. The walk stops at 16 nested structs and answers the depth it was asked, so it first asks whether a struct can hold a writable borrow at all (`StructNode.carrieswritable`), and answers 0 for one that cannot, however deep it nests |
+| `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper, with its frame (`flowLoopBegin`, `flowLoopEnd`); a `break` or `continue` handing its state to its loop (`flowLoopJump`); whether every path jumped away (`jumped`) |
+| | `blockDiscards` | a block throwing its final expression's value away |
+| `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not jump away joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck`, `assignIsLocalPlace` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime of a store into a global or through a reference (one into a variable's own storage is the loan walk's) |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |

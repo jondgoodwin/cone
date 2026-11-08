@@ -1,0 +1,108 @@
+// A boat from data (src/boat.cone): the dinghy of BoatSpec.dinghy() (6 m, 600 kg, a 2.2 kN outboard),
+// driven in a World, each check on what it must do.
+//
+// 1. At rest in still water it displaces its own mass (1025 kg/m^3 times the submerged volume within
+//    1.5 percent of 600 kg), floats on an even keel (pitch and roll under 6 degrees) and is not sunk.
+// 2. Full throttle ahead for 40 s: it reaches between 3 and 12 m/s, goes straight (rudder 0: the bow's z
+//    under 0.05), and at the end the horizontal forces (thrust, drag, rudder, and the hydrostatic force,
+//    which must be vertical in flat water) balance to 3 percent of the thrust: it has stopped accelerating.
+// 3. More throttle is faster: the speed at throttle 1 is 1.2 times that at 0.5 or more.
+// 4. The rudder turns it: from a steady 0.6 throttle run, rudder +0.5 for 3 s brings the bow toward +z
+//    (its z component over 0.3) with the yaw rate negative (rotation about +y turns +x toward -z, so +z is
+//    a negative yaw), -0.5 the mirror image, and the turn radius speed / |yaw rate| after 12 s is smaller
+//    at 0.8 than at 0.4.
+// 5. Astern: throttle -0.6 from rest for 6 s moves it backward (the velocity along its heading under -0.5 m/s).
+// 6. On a wave of amplitude 1 m and wavelength 100 m it floats: after 20 s its height is within 1.2 m of the
+//    wave's at its place, and it has not capsized (tilt under 40 degrees).
+
+mod boattest;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import libc;
+import rigiddynamics use *;
+import buoyancy use *;
+
+struct Outcome {
+  speed: f32;               // along the heading
+  forwardZ: f32;            // the bow's z
+  yawRate: f32;
+  tilt: f32;                // degrees from upright
+  displaced: f32;           // kg
+  y: f32;
+  thrust: f32;
+  dragX: f32;               // the hull's drag along the heading plus the rudder's, N
+  offWave: f32;
+}
+
+fn run(throttle: f32, rudder: f32, warm: f32, seconds: f32, wave: bool, preThrottle: f32) Outcome {
+  let props = WaterProps.sea();
+  let dt = 1.f / 60.;
+  var w = World.make();
+  var boat = Boat.create(&mut w, BoatSpec.dinghy(), Vec3(0., -0.2, 0.), Quat.identity());
+  let k = 6.28318530718f / 100.;
+  let om = (9.81 * k).sqrt();
+  var t = 0.f;
+  var step = 0;
+  let total = i32.from((warm + seconds) / dt);
+  while step < total {
+    if t < warm { boat.steer(preThrottle, 0.); } else { boat.steer(throttle, rudder); }
+    if wave {
+      boat.apply(&mut w, (x, z) => 1. * libc.cosf(k * x - om * t), &props, dt);
+    } else {
+      boat.apply(&mut w, (x, z) => 0., &props, dt);
+    }
+    w.step(dt);
+    t = t + dt;
+    step = step + 1;
+  }
+  let q = w.rotationOf(boat.id());
+  let fwd = q * Vec3(1., 0., 0.);
+  let up = q * Vec3(0., 1., 0.);
+  let vel = w.linearVelocity(boat.id());
+  let p = w.positionOf(boat.id());
+  // the horizontal balance, world x: the engine's thrust, the hull's drag, the hydrostatic force (which is
+  // vertical for a closed hull in flat water, so adds nothing) and the rudder's force
+  let dragAlong = boat.thrust * fwd.x + boat.floater.last.drag.x + boat.floater.last.buoyancy.x + boat.rudderForce.x;
+  let surface = if wave { 1. * libc.cosf(k * p.x - om * t) } else { 0. };
+  Outcome(vel.dot(fwd), fwd.z, w.angularVelocity(boat.id()).y, libc.acosf(if up.y > 1. { 1. } else { up.y }) * 57.2958,
+    boat.floater.last.volume * props.density, p.y, boat.thrust, dragAlong, libc.fabsf(p.y - surface))
+}
+
+fn main() i32 {
+  // 1. at rest
+  let rest = run(0., 0., 0., 15., false, 0.);
+  expectFloat(f64.from(rest.displaced), 600.0, 9.0, "at rest the boat displaces its own mass, 600 kg to 1.5 percent");
+  expect(rest.tilt < 6. && rest.y > -1.5, "on an even keel (under 6 degrees) and not sunk");
+
+  // 2. full ahead
+  let full = run(1., 0., 0., 40., false, 0.);
+  expect(full.speed > 3. && full.speed < 12., "full throttle gives between 3 and 12 m/s");
+  expect(libc.fabsf(full.forwardZ) < 0.05, "and goes straight with the rudder at 0");
+  expectFloat(f64.from(full.dragX), 0.0, f64.from(full.thrust) * 0.03, "and the horizontal forces (thrust, drag, rudder, hydrostatic) balance to 3 percent of the thrust");
+
+  // 3. throttle
+  let half = run(0.5, 0., 0., 40., false, 0.);
+  expect(full.speed > 1.2 * half.speed && half.speed > 1., "full throttle is at least 1.2 times as fast as half");
+
+  // 4. the rudder
+  let starboard = run(0.6, 0.5, 15., 3., false, 0.6);
+  let port = run(0.6, -0.5, 15., 3., false, 0.6);
+  expect(starboard.forwardZ > 0.3 && starboard.yawRate < -0.1, "rudder +0.5 for 3 s turns the bow toward +z (its z over 0.3), a negative yaw rate");
+  expect(port.forwardZ < -0.3 && port.yawRate > 0.1, "rudder -0.5 turns it the other way");
+  let hard = run(0.6, 0.8, 15., 12., false, 0.6);
+  let gentle = run(0.6, 0.4, 15., 12., false, 0.6);
+  let rHard = hard.speed / libc.fabsf(hard.yawRate);
+  let rGentle = gentle.speed / libc.fabsf(gentle.yawRate);
+  expect(rHard < rGentle, "the turn radius is smaller at rudder 0.8 than at 0.4");
+
+  // 5. astern
+  let astern = run(-0.6, 0., 0., 6., false, 0.);
+  expect(astern.speed < -0.5, "astern the boat goes backward");
+
+  // 6. waves
+  let waves = run(0., 0., 0., 20., true, 0.);
+  expect(waves.offWave < 1.2 && waves.tilt < 40., "on a wave of 1 m it rides, within 1.2 m of the surface and not capsized");
+  done()
+}

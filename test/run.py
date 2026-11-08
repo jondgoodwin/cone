@@ -117,6 +117,7 @@ TIERS = {
     "struct": 1,
     "enum": 1,
     "array": 1,
+    "vector": 1,
     "closure": 1,
     "ref": 1,
     "move": 1,
@@ -170,12 +171,54 @@ ANNOTATABLE = ("reject", "warn")
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
-    "stderr_mask",
+    "stderr_mask", "timeout", "link_options", "notes",
 }
+
+# Wall-clock seconds per process (R1.3) where neither the command line nor the
+# scenario says otherwise.
+DEFAULT_TIMEOUT = 20.0
 
 
 class SuiteError(Exception):
     """A fault in the suite's own configuration, not in the compiler."""
+
+
+def parse_timeout(where: str, table: dict) -> float | None:
+    """A scenario's own 'timeout' key: seconds, a positive finite number.
+
+    Every category runs at least one process (conec), so the key applies to
+    all six and no category refuses it. TOML would also accept a boolean, a
+    string, 0, a negative, 'inf' and 'nan'; each is refused here, because a
+    key that quietly meant "no limit" or "never" would turn the hang guard the
+    timeout exists to be into a hang.
+    """
+    if "timeout" not in table:
+        return None
+    value = table["timeout"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        kind = {bool: "a boolean", str: "a string", list: "a list", dict: "a table"}.get(
+            type(value), type(value).__name__)
+        raise SuiteError(f"{where}: 'timeout' is a number of seconds, not {kind}")
+    if value != value or value in (float("inf"), float("-inf")):
+        raise SuiteError(f"{where}: 'timeout' is a finite number of seconds, not {value}")
+    if value <= 0:
+        raise SuiteError(f"{where}: 'timeout' is a positive number of seconds, not {value:g}")
+    return float(value)
+
+
+def effective_timeout(scenario_timeout: float | None, command_line: float | None) -> float:
+    """The wall-clock limit for each process one scenario starts (R1.3).
+
+    A scenario's 'timeout' replaces the default; an explicit --timeout replaces
+    the default too, and when a scenario also has a key the larger of the two
+    wins, so a slow machine can lengthen a scenario's limit from the command
+    line but a short --timeout can never cut a scenario below what it asks for.
+    """
+    if scenario_timeout is None:
+        return DEFAULT_TIMEOUT if command_line is None else command_line
+    if command_line is None:
+        return scenario_timeout
+    return max(scenario_timeout, command_line)
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +716,10 @@ class Scenario:
     # 'run' only: sources compiled on their own before the scenario's, each to
     # an object of its own, and linked into the program with it
     link: tuple[Path, ...] = ()
+    # 'run' only: the compiler options the 'link' sources are built with, where
+    # they are not the run's own: a package built with one set of facts and a
+    # program importing it with another
+    link_options: tuple[str, ...] | None = None
     # 'run' only: the include file each package 'link' builds must generate,
     # byte for byte, pinned beside the program, which compiles against it.
     # Named for its package, so 'include/q.cone' is what 'q/q.conebuild' writes
@@ -683,6 +730,12 @@ class Scenario:
     # '<masked>' before it is compared with the .err file: what differs from
     # run to run, such as a thread's identity
     stderr_mask: tuple[str, ...] = ()
+    # 'reject' only: text the compiler's output must contain, for the lines under a diagnostic that
+    # are no diagnostic of their own
+    notes: tuple[str, ...] = ()
+    # Seconds each process of this scenario may run, where the default does not
+    # suit it (a program that is slow under load); see effective_timeout
+    timeout: float | None = None
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
@@ -779,6 +832,12 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                         f"{where}: 'link' names {path.name}, whose object would"
                         f" overwrite the scenario's own")
 
+        link_options: tuple[str, ...] | None = None
+        if "link_options" in table:
+            if not link:
+                raise SuiteError(f"{where}: 'link_options' are the options the 'link' sources are built with, so it needs 'link'")
+            link_options = tuple(table["link_options"])
+
         # The round trip: a package 'link' builds writes its include file, which
         # must be the golden file pinned here, and the program's build
         # description names that golden file, so the program compiles against
@@ -806,6 +865,11 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         elif not isinstance(program_exit, int):
             raise SuiteError(f"{where}: 'program_exit' is an integer, or \"abort\" for a program"
                              f" that panics")
+        notes = table.get("notes", [])
+        if "notes" in table and category != "reject":
+            raise SuiteError(f"{where}: 'notes' pins lines of a rejection's output, and belongs to a 'reject' scenario")
+        if not isinstance(notes, list) or not all(isinstance(n, str) for n in notes):
+            raise SuiteError(f"{where}: 'notes' is a list of strings")
         stderr_mask = table.get("stderr_mask", [])
         if "stderr_mask" in table and category != "run":
             raise SuiteError(f"{where}: only a 'run' scenario's program writes stderr, so"
@@ -817,6 +881,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 re.compile(mask)
             except re.error as exc:
                 raise SuiteError(f"{where}: 'stderr_mask' {mask!r} is not a regular expression: {exc}")
+
+        timeout = parse_timeout(where, table)
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
@@ -834,13 +900,15 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm' or 'stdout'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
             # 'object' reads what a package the scenario links generated
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
+                if entry["target"] == "trust":
+                    raise SuiteError(f"{where}.check: 'trust' reads the scenario's own report, not a linked object's")
                 if entry["target"] == "asm":
                     raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
                 if entry["object"] not in {path.stem for path in link}:
@@ -850,7 +918,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols", "asm") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             checks.append(Check(
@@ -876,9 +944,12 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             unlocated=tuple(table.get("unlocated", [])),
             argv=argv,
             link=link,
+            link_options=link_options,
             includes=includes,
             program_exit=program_exit,
             stderr_mask=tuple(stderr_mask),
+            notes=tuple(notes),
+            timeout=timeout,
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -1963,7 +2034,7 @@ DEMANGLE_OPERATORS = {
     "an": "&", "or": "|", "eo": "^", "ls": "<<", "rs": ">>", "nt": "!", "ng": "-",
     "ix": "[]", "cl": "()", "pp": "++", "mm": "--",
     "pL": "+=", "mI": "-=", "mL": "*=", "dV": "/=", "rM": "%=",
-    "aN": "&=", "oR": "|=", "eO": "^=", "lS": "<<=", "rS": ">>=",
+    "aN": "&=", "oR": "|=", "eO": "^=", "lS": "<<=", "rS": ">>=", "ss": "<=>",
     "la": "<-", "rx": "&[]", "pP": "+++", "mM": "---",
 }
 
@@ -2248,7 +2319,7 @@ DEMANGLE_EXAMPLES = [
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
     ("_CYNt3CarNt7Powered6thrust", "Car as Powered.thrust (thunk)"),
     ("_CLNt5Meter", "Meter (vtable list)"),
-    ("_CINv4pickR2So3mutlE", "pick[So[mut, i32]]"),
+    ("_CINv4pickR3Uni3immlE", "pick[Uni[imm, i32]]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
     ("_CINv4pickS03mutlE", "pick[&mut Array[i32]]"),
     ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),
@@ -2283,6 +2354,119 @@ def demangle_selftest() -> None:
             wrong.append(f"  {symbol}: read {got!r}, expected {reading!r}")
     if wrong:
         raise SuiteError("the demangler disagrees with the worked examples:\n" + "\n".join(wrong))
+
+
+# The scenario 'timeout' key: what parse_timeout accepts, and the fragment of
+# the message for each thing it refuses.
+TIMEOUT_ACCEPTED = [(60, 60.0), (60.0, 60.0), (0.5, 0.5), (1, 1.0)]
+TIMEOUT_REFUSED = [
+    (True, "not a boolean"), (False, "not a boolean"), ("60", "not a string"),
+    ([60], "not a list"), ({"s": 60}, "not a table"),
+    (0, "positive number of seconds, not 0"), (0.0, "positive number of seconds, not 0"),
+    (-1, "positive number of seconds, not -1"), (-0.5, "positive number of seconds, not -0.5"),
+    (float("inf"), "finite number of seconds"), (float("-inf"), "finite number of seconds"),
+    (float("nan"), "finite number of seconds"),
+]
+# (the scenario's key, an explicit --timeout) -> the limit each process gets
+TIMEOUT_EFFECTIVE = [
+    ((None, None), DEFAULT_TIMEOUT), ((None, 5.0), 5.0), ((None, 90.0), 90.0),
+    ((60.0, None), 60.0), ((5.0, None), 5.0),
+    ((60.0, 30.0), 60.0), ((60.0, 60.0), 60.0), ((60.0, 90.0), 90.0),
+]
+
+
+def timeout_selftest() -> int:
+    """The scenario 'timeout' key: accepted, refused, and the limit chosen.
+
+    Returns how many checks ran. Like the demangler's, it runs before any case
+    does, so a runner that mishandles the key stops as one fault rather than
+    as a slow scenario timing out for no visible reason.
+    """
+    import tempfile
+    import types
+
+    wrong = []
+    where = "selftest: [scenario.x]"
+    if parse_timeout(where, {}) is not None:
+        wrong.append("  no key: expected None")
+    for value, expected in TIMEOUT_ACCEPTED:
+        got = parse_timeout(where, {"timeout": value})
+        if got != expected or not isinstance(got, float):
+            wrong.append(f"  timeout = {value!r}: read {got!r}, expected {expected!r}")
+    for value, fragment in TIMEOUT_REFUSED:
+        try:
+            got = parse_timeout(where, {"timeout": value})
+        except SuiteError as refusal:
+            if f"{where}: 'timeout' is" not in str(refusal) or fragment not in str(refusal):
+                wrong.append(f"  timeout = {value!r}: refused as {str(refusal)!r}, expected {fragment!r}")
+        else:
+            wrong.append(f"  timeout = {value!r}: accepted as {got!r}, expected a refusal")
+    for (key, command_line), expected in TIMEOUT_EFFECTIVE:
+        got = effective_timeout(key, command_line)
+        # Through the runner's own method, so its use of the pair is checked too
+        via = Runner.timeout_for(types.SimpleNamespace(args=types.SimpleNamespace(timeout=command_line)),
+                                 types.SimpleNamespace(timeout=key))
+        if got != expected or via != expected:
+            wrong.append(f"  key {key!r}, --timeout {command_line!r}: chose {got!r} (runner {via!r}),"
+                         f" expected {expected!r}")
+
+    # Through cases.toml itself: the key is in the schema, reaches the
+    # scenario, and a bad one is refused by the loader with the scenario named.
+    # The group is 'core' only to have a tier; the files are in a temporary folder.
+    checks = 0
+    with tempfile.TemporaryDirectory(prefix="cone-timeout-selftest-") as tmp:
+        group = Path(tmp) / "core"
+        group.mkdir()
+        (group / "core_slow.cone").write_text("fn main() {}\n", encoding="utf-8")
+
+        def load(body: str):
+            (group / "cases.toml").write_text(
+                "[scenario.core_slow]\ncategory = \"compile\"\n" + body, encoding="utf-8")
+            return load_group(group, {})
+
+        checks += 1
+        if load("")[0].timeout is not None:
+            wrong.append("  cases.toml without a key: timeout is not None")
+        for body, expected in (("timeout = 60\n", 60.0), ("timeout = 2.5\n", 2.5)):
+            checks += 1
+            if load(body)[0].timeout != expected:
+                wrong.append(f"  cases.toml {body.strip()!r}: scenario.timeout is not {expected!r}")
+        for body, fragment in (
+                ("timeout = 0\n", "positive number of seconds"),
+                ("timeout = -3\n", "positive number of seconds"),
+                ("timeout = \"60\"\n", "not a string"),
+                ("timeout = true\n", "not a boolean"),
+                ("timeout = [60]\n", "not a list"),
+                ("timeout = inf\n", "finite number of seconds")):
+            checks += 1
+            try:
+                load(body)
+            except SuiteError as refusal:
+                if "[scenario.core_slow]: 'timeout' is" not in str(refusal) or fragment not in str(refusal):
+                    wrong.append(f"  cases.toml {body.strip()!r}: refused as {str(refusal)!r}")
+            else:
+                wrong.append(f"  cases.toml {body.strip()!r}: accepted, expected a refusal")
+        # Every category runs a process, so each takes the key
+        for category, before, after in (
+                ("compile", "", ""), ("run", "", ""), ("reject", "", ""),
+                ("recover", "diagnostics = 1\n", ""),
+                ("warn", "", "[[scenario.core_slow.unlocated]]\ncode = \"ErrorX\"\n")):
+            checks += 1
+            (group / "cases.toml").write_text(
+                f"[scenario.core_slow]\ncategory = \"{category}\"\n{before}timeout = 7\n{after}",
+                encoding="utf-8")
+            if load_group(group, {})[0].timeout != 7.0:
+                wrong.append(f"  category {category}: timeout = 7 did not reach the scenario")
+        checks += 1
+        (group / "core_slow.cone").unlink()
+        (group / "cases.toml").write_text(
+            "[scenario.core_driver]\ncategory = \"driver\"\nargv = []\nexit = 0\ntimeout = 7\n", encoding="utf-8")
+        if load_group(group, {})[0].timeout != 7.0:
+            wrong.append("  category driver: timeout = 7 did not reach the scenario")
+
+    if wrong:
+        raise SuiteError("the scenario 'timeout' key misbehaves:\n" + "\n".join(wrong))
+    return (1 + len(TIMEOUT_ACCEPTED) + len(TIMEOUT_REFUSED) + len(TIMEOUT_EFFECTIVE) + checks)
 
 
 # What LLVM prints between 'define'/'declare' (or a global's '=') and the type:
@@ -2363,6 +2547,11 @@ class Runner:
         self.linker = linker
         self.out_root = REPO / "build" / "testrun"
 
+    def timeout_for(self, scenario: Scenario) -> float:
+        """Every process the scenario starts (a linked package's compile, its
+        own compile, the link, the program) gets this many seconds."""
+        return effective_timeout(scenario.timeout, self.args.timeout)
+
     def run(self, scenario: Scenario, spec: RunSpec) -> Result:
         # A fault in the runner fails its own case rather than the whole run, so
         # one bad case still leaves the other results readable.
@@ -2406,6 +2595,8 @@ class Runner:
             options.append("--llvmir")
         if any(c.target == "asm" for c in scenario.checks):
             options.append("--asm")
+        if any(c.target == "meta" for c in scenario.checks):
+            options.append("--meta-ir")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
 
@@ -2427,7 +2618,7 @@ class Runner:
                     lib, out_dir / f"{lib.stem}.{object_extension(spec.options)}")
                 result.commands.append(quote(lib_cmd))
                 built = execute(lib_cmd, REPO, out_dir, f"cc-{lib.stem}",
-                                self.args.timeout, self.args.max_output, env=self.linker.env)
+                                self.timeout_for(scenario), self.args.max_output, env=self.linker.env)
                 if built.killed or built.code != 0:
                     result.status = FAIL
                     result.problems.append(
@@ -2437,13 +2628,14 @@ class Runner:
                     result.seconds = time.monotonic() - started
                     return result
                 continue
-            lib_cmd = [str(self.conec), *spec.options, "--checktree", "--verify",
+            lib_options = spec.options if scenario.link_options is None else scenario.link_options
+            lib_cmd = [str(self.conec), *lib_options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
             if any(c.object == lib.stem for c in scenario.checks):
                 lib_cmd.insert(-3, "--llvmir")
             result.commands.append(quote(lib_cmd))
             built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
-                            self.args.timeout, self.args.max_output)
+                            self.timeout_for(scenario), self.args.max_output)
             if built.killed or built.code != 0 or parse_diagnostics(built.stderr):
                 result.status = FAIL
                 result.problems.append(
@@ -2480,7 +2672,7 @@ class Runner:
         cmd = [str(self.conec), *options, "-o", out_rel, scenario.source_rel]
         result.commands.append(quote(cmd))
         compiled = execute(cmd, REPO, out_dir, "conec",
-                           self.args.timeout, self.args.max_output)
+                           self.timeout_for(scenario), self.args.max_output)
         result.compiled = compiled
 
         if compiled.killed:
@@ -2494,6 +2686,12 @@ class Runner:
         self.check_exit(result, scenario, compiled)
         if scenario.category == "reject":
             self.check_rejection(result, scenario, diagnostics)
+            # The lines under a diagnostic that are no diagnostic of their own -- which pass of a
+            # '#each' it was in -- are pinned by the text they must contain
+            for note in scenario.notes:
+                if note not in compiled.stderr:
+                    result.status = FAIL
+                    result.problems.append(f"the compiler's output lacks the note {note!r}")
         elif scenario.category == "warn":
             self.check_warning(result, scenario, diagnostics)
         elif scenario.category == "recover":
@@ -2509,6 +2707,22 @@ class Runner:
             self.check_artifacts(result, scenario, out_dir, "preir")
             self.check_artifacts(result, scenario, out_dir, "symbols")
             self.check_artifacts(result, scenario, out_dir, "asm")
+            self.check_artifacts(result, scenario, out_dir, "meta")
+            # 'trust': what --report-trust prints for the same source, from a
+            # run of its own because the option generates no code
+            if any(c.target == "trust" for c in scenario.checks):
+                trust_cmd = [str(self.conec), *spec.options, "--report-trust", "-o", out_rel, scenario.source_rel]
+                result.commands.append(quote(trust_cmd))
+                trust = execute(trust_cmd, REPO, out_dir, "conec-trust",
+                                self.timeout_for(scenario), self.args.max_output)
+                if trust.killed or trust.code != 0:
+                    result.status = FAIL
+                    result.problems.append("--report-trust "
+                                           + (f"was {trust.killed}" if trust.killed else f"exited {trust.code}")
+                                           + "\n" + indent(trust.stdout + trust.stderr))
+                else:
+                    (out_dir / f"{scenario.source.stem}.trust").write_text(trust.stdout, encoding="utf-8")
+                    self.check_artifacts(result, scenario, out_dir, "trust")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -2694,7 +2908,7 @@ class Runner:
         cmd = [str(self.conec), *scenario.argv]
         result.commands.append(quote(cmd))
         invoked = execute(cmd, REPO, out_dir, "conec",
-                          self.args.timeout, self.args.max_output)
+                          self.timeout_for(scenario), self.args.max_output)
         result.compiled = invoked
         if invoked.killed:
             result.status = FAIL
@@ -2726,7 +2940,7 @@ class Runner:
             [obj, *(out_dir / f"{lib.stem}.{ext}" for lib in scenario.link)], exe)
         result.commands.append(quote(link_cmd))
         linked = execute(link_cmd, REPO, out_dir, "link",
-                         self.args.timeout, self.args.max_output, env=self.linker.env)
+                         self.timeout_for(scenario), self.args.max_output, env=self.linker.env)
         if linked.code != 0:
             result.status = FAIL
             result.problems.append(
@@ -2736,7 +2950,7 @@ class Runner:
 
         result.commands.append(quote([str(exe)]))
         ran = execute([str(exe)], REPO, out_dir, "program",
-                      self.args.timeout, self.args.max_output, env=self.linker.env,
+                      self.timeout_for(scenario), self.args.max_output, env=self.linker.env,
                       debuggee=True)
         if ran.killed:
             result.status = FAIL
@@ -2834,6 +3048,17 @@ class Runner:
                     (out_dir / f"{stem}.symbols").write_text(
                         symbols[stem], encoding="utf-8")
                 text = symbols[stem]
+            elif check.target == "trust":
+                text = normalize((out_dir / f"{stem}.trust").read_text(encoding="utf-8", errors="replace"))
+            elif check.target == "meta":
+                # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
+                artifact = out_dir / f"{stem}.meta"
+                if not artifact.exists():
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r}: no '#each' dump at {artifact.name}")
+                    continue
+                text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
             elif check.target == "asm":
                 # What --asm wrote: the target's own assembly, named as its
                 # tools name it (genlOut)
@@ -3640,8 +3865,10 @@ def main(argv: list[str]) -> int:
                         help="conestd library to link run scenarios against")
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4,
                         help="cases to run at once (R1.5)")
-    parser.add_argument("--timeout", type=float, default=20.0,
-                        help="wall-clock seconds per process (R1.3)")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help=f"wall-clock seconds per process (R1.3; default"
+                             f" {DEFAULT_TIMEOUT:g}). A scenario with its own"
+                             f" 'timeout' key keeps the larger of the two")
     parser.add_argument("--max-output", type=int, default=8 * 1024 * 1024,
                         help="bytes of output before a process is killed")
     args = parser.parse_args(argv)
@@ -3657,8 +3884,10 @@ def main(argv: list[str]) -> int:
         # demangler produces, so a demangler that has drifted from the scheme
         # is reported here as one fault rather than as many failed checks.
         demangle_selftest()
+        timeout_checks = timeout_selftest()
         if args.selftest:
             print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
+            print(f"scenario timeout: {timeout_checks} checks of the key and the limit it chooses hold")
             return 0
         codes = parse_error_codes(ERROR_H)
         if args.bless_codes:

@@ -35,15 +35,16 @@
 //
 // Its WAITERS are the continuations parked on it: each 'await' on a future
 // still Pending parks its behaviour as an awaited request's does, its record
-// in its actor's pending table, and builds the message that will resume it
-// -- the reply's node, its resume message written -- at once. That node is
-// the waiter: in its data it holds the consumer's reference the 'await' took,
-// a link to the next waiter, and the actor to push it to (Waiter). The future
-// holds the list's head, so registering allocates nothing more, and
-// completing allocates nothing at all: the producer stores the state, closes
-// the list with one swap, and pushes each node to its actor's mailbox. When
-// the node is dispatched, the second half opens the future through the
-// reference in it.
+// in its actor's pending table, and a Waiter is allocated (futureRegister)
+// holding the consumer's reference the 'await' took, a link to the next
+// waiter, the actor to resume, and its resume function and record id. The
+// future holds the list's head. The Waiter is the one allocation an await
+// makes, and only when the future has not arrived (an await on one that has
+// parks nothing); completing allocates nothing: the producer stores the
+// state, closes the list with one swap, and for each waiter publishes a reply
+// slot in its actor's mailbox ring (pushFuture), carrying the consumer's
+// reference, and frees the waiter. When the slot is dispatched, the second
+// half opens the future through the reference in it.
 //
 // ABANDONED, a future ends its waiters' behaviours quietly: each parked one
 // is abandoned as a behaviour paused on the request itself would be when its
@@ -71,18 +72,18 @@
 // of reference to the future hold. Arc's count, written again: so that the
 // region is the futures' alone, and is allocated only here
 struct Futures is RegionRef, ThreadSafe {
-  cnt usize;
-  fn alloc(size usize) *u8 inline {libc.malloc(size);}
-  fn init(self &new) inline {*self = new Futures(1usize);}
-  fn aliasRef(self &uni Futures) inline {
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline {libc.malloc(size)}
+  fn init(self: &new) inline {*self = Futures(1usize);}
+  fn aliasRef(self: &uni Futures) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
   }
-  fn dealiasRef(self &uni Futures) bool inline {
-    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
+  fn dealiasRef(self: &uni Futures) bool inline {
+    let last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release) == 1usize;
     if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire);}
-    last;
+    last
   }
-  fn free(self &uni Futures) {
+  fn free(self: &uni Futures) {
     futuresLive.subOrdered(1usize, MemOrder.Relaxed);
     libc.free(self as *u8);
   }
@@ -90,14 +91,14 @@ struct Futures is RegionRef, ThreadSafe {
 
 // How many futures are allocated and not yet freed: for tests, and for
 // finding leaks. Futures are made and freed on any worker, so it is an atomic
-// held by an 'imm' global, set to 0 in the module's 'init' (actors.cone)
-imm futuresLive Atomic[usize];
+// held by a 'let' global, set to 0 in the module's 'init' (actors.cone)
+let futuresLive: Atomic[usize];
 
 // The number given the next future's request, for 'owes': an atomic too
-imm futuresMade Atomic[u64];
+let futuresMade: Atomic[u64];
 
 pub fn liveFutures() usize {
-  futuresLive.loadOrdered(MemOrder.Acquire);
+  futuresLive.loadOrdered(MemOrder.Acquire)
 }
 
 // A future's state
@@ -117,27 +118,32 @@ const waitersClosed = 1usize;
 // its word, where T is (an instance is Sendable only where its type
 // arguments are)
 struct FutureCell[T] is Sendable {
-  pub state u32;            // atomic
-  pub waiters *Waiter;      // atomic: the parked continuations, or waitersClosed
-  pub value *u8;            // where the value is
-  pub owesActor usize;      // the actor that owes it, its address: for diagnostics only
-  pub owesId u64;           // and the request's number
-  pub release &fn(c *u8);   // futureRelease[T]: lets go of one count, without naming T
+  pub state: u32;            // atomic
+  pub waiters: *Waiter;      // atomic: the parked continuations, or waitersClosed
+  pub value: *u8;            // where the value is
+  pub owesActor: usize;      // the actor that owes it, its address: for diagnostics only
+  pub owesId: u64;           // and the request's number
+  pub release: &fn(c: *u8);   // futureRelease[T]: lets go of one count, without naming T
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if state == futArrived {
       mem.finalize[T](value as *T);
     }
   }
 }
 
-// A continuation parked on a future: the data of the reply's node an 'await'
-// made, its resume message in the node before it
+// A continuation parked on a future: allocated when the 'await' parks on a
+// future not yet arrived (futureRegister), freed when the future ends. The one
+// allocation an await makes, and only for a future that has not arrived: an
+// await on a future that has, or on a reply, makes none
 struct Waiter {
-  pub fut *u8;              // the consumer's reference the 'await' took
-  pub next *Waiter;
-  pub to *Header;           // the actor that awaits, of which the reply holds a count
-  pub node *Link;
+  pub fut: *u8;              // the consumer's reference the 'await' took
+  pub next: *Waiter;
+  pub to: *Header;           // the actor that awaits, of which the reply holds a count
+  pub run: *u8;              // its resume function
+  pub id: u64;               // and the record's id, where it has one
+  pub hasId: bool;
+  pub keep: bool;            // a FutureSet's member (futureset.cone): resumed even if the future is abandoned, for the set to say so
 }
 
 // The consumer's reference to a future whose value is a T: what a call of a
@@ -145,126 +151,166 @@ struct Waiter {
 // to wait for, now or later, here or in another actor. It moves when T
 // moves and copies when T copies; each copy is counted
 pub struct Future[T] is Move if T is Move {
-  cell Futures[opaq, FutureCell[T]];
+  cell: Futures[opaq, FutureCell[T]];
 }
 
 // Where after its header a future's payload is
 fn cellOffset[T]() usize {
-  roundUp(mem.sizeof[Futures](), mem.alignof[FutureCell[T]]());
+  roundUp(mem.sizeof[Futures](), mem.alignof[FutureCell[T]]())
 }
 
 // A new future, Pending, owed by the actor whose Mailbox mb is: its one
 // count the consumer's reference this answers
-pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
-  imm off = cellOffset[T]();
-  imm voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
-  imm block = libc.malloc(off + voff + mem.sizeof[T]());
+pub fn futureFor[T, M: Sendable](mb: &opaq Mailbox[M]) Future[T] {
+  let off = cellOffset[T]();
+  let voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
+  let block = libc.malloc(off + voff + mem.sizeof[T]());
   if block as usize == 0usize {
     die("actors: out of memory for a future");
   }
   futuresLive.addOrdered(1usize, MemOrder.Relaxed);
   *(block as *usize) = 1usize;
-  imm c = (block + off) as *FutureCell[T];
+  let c = (block + off) as *FutureCell[T];
   (*c).state = futPending;
   (*c).waiters = null;
   (*c).value = block + off + voff;
   (*c).owesActor = mb as *Header as usize;
   (*c).owesId = futuresMade.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
   (*c).release = &futureRelease[T];
-  new Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]]);
+  Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]])
 }
 
 // The producer's reference to future f, counted: the envelope its request
 // carries, into which the behaviour answering writes its value
-pub fn futureReply[T](f &Future[T]) Reply {
-  imm c = *(f as *Future[T] as **u8);
+pub fn futureReply[T](f: &Future[T]) Reply {
+  let c = *(f as *Future[T] as **u8);
   mem.atomicAdd[usize]((c - cellOffset[T]()) as *usize, 1usize, MemOrder.Relaxed);
-  new Reply(cell: c, data: (*(c as *FutureCell[T])).value);
+  Reply(cell: c, at: (*(c as *FutureCell[T])).value)
 }
 
 // One count of the future whose payload is at c let go: a reference remade
 // from the address, uncounted, and dropped
-fn futureRelease[T](c *u8) {
-  mut slot = c;
-  imm f = mem.readRaw[Futures[opaq, FutureCell[T]]](&mut slot as *(Futures[opaq, FutureCell[T]]));
+fn futureRelease[T](c: *u8) {
+  var slot = c;
+  let f = mem.readRaw[Futures[opaq, FutureCell[T]]](&mut slot as *(Futures[opaq, FutureCell[T]]));
 }
 
 // The future whose payload is at c has its ending, s: Arrived, its value
 // written, or Abandoned. The state is stored, the waiter list closed, and
 // the producer's count let go last. Arrived, each waiter is pushed to its
 // actor, to resume. Abandoned, each is abandoned (ABANDONED, above) as an
-// envelope dropped unanswered is (Reply's final): its node freed, the
-// future's reference it held and its actor's count let go, its record left
-// parked for its actor's death to drop
-fn futureEnd(c *u8, s u32) {
-  imm cell = c as *FutureCell[u8];
-  imm release = (*cell).release;
+// envelope dropped unanswered is (Reply's final): the future's reference it
+// held and its actor's count let go, its record left parked for its actor's
+// death to drop
+fn futureEnd(c: *u8, s: u32) {
+  let cell = c as *FutureCell[u8];
+  let release = (*cell).release;
   mem.atomicStore[u32](&(*cell).state as *u32, s, MemOrder.Release);
-  mut w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel);
+  var w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel);
   while w as usize != 0usize {
-    imm next = (*w).next;
-    imm to = (*w).to;
-    imm node = (*w).node;
-    if s == futArrived {
-      pushReply(to, node);
+    let next = (*w).next;
+    let to = (*w).to;
+    if s == futArrived || (*w).keep {
+      pushFuture(w);
     } else {
       release(c);
-      libc.free(node as *u8);
-      imm letgo = (*to).release;
+      let letgo = (*to).release;
       letgo(to);
     }
+    libc.free(w as *u8);
     w = next;
   }
   release(c);
 }
 
+// Resume a behaviour parked on a future that has arrived: a reply's slot in
+// its actor's ring, its payload the resume function, the id, and the
+// consumer's reference to the future, which the second half opens the value
+// out of. The count the waiter held becomes the scheduler's owner when the
+// publication takes the idle mark, else is let go
+fn pushFuture(w: *Waiter) {
+  let h = (*w).to;
+  if running.load() == 0usize {
+    die("actors: a reply sent after the runtime stopped");
+  }
+  let c = claim(h);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindReply);
+  }
+  mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
+  let p = payloadOf(c.slot);
+  *(p as **u8) = (*w).run;
+  *((p + 8usize) as *u64) = (*w).id;
+  *((p + replyHead) as **u8) = (*w).fut;
+  var kind = kindReply;
+  if (*w).hasId {kind = kind + 1u64;}
+  let waited = publish(c, kind);
+  if wakeAfter(h, c, waited) {
+    schedule(h);
+  } else {
+    let release = (*h).release;
+    release(h);
+  }
+}
+
 // The payload of the future lying at fut
-fn cellAt(fut *u8) *FutureCell[u8] {
-  *(fut as **FutureCell[u8]);
+fn cellAt(fut: *u8) *FutureCell[u8] {
+  *(fut as **FutureCell[u8])
 }
 
 // Whether the future lying at fut has its ending, so that an 'await' on it
 // need not park: its value arrived, or it never will
-pub fn futureReady(fut *u8) bool {
-  mem.atomicLoad[u32](&(*cellAt(fut)).state as *u32, MemOrder.Acquire) != futPending;
+pub fn futureReady(fut: *u8) bool {
+  mem.atomicLoad[u32](&(*cellAt(fut)).state as *u32, MemOrder.Acquire) != futPending
 }
 
 // Park a continuation on the future lying at fut: rp is the envelope its
-// 'await' made, whose data is room for a Waiter. Whether it parked: if the
-// future has its ending by now, it does not, and rp is dropped, its node
-// freed and its count let go, the future left where it lay. If it parked, the
-// future's reference has moved into the waiter, and the node is pushed when
-// the future has its ending
-pub fn futureRegister(fut *u8, rp Reply) bool {
-  imm c = cellAt(fut);
-  imm w = rp.data as *Waiter;
+// 'await' made. Whether it parked: if the future has its ending by now, it
+// does not, and rp is dropped, its count let go, the future left where it
+// lay. If it parked, a Waiter was allocated, the future's reference has moved
+// into it, and the resume is published to the awaiting actor's ring when the
+// future has its ending
+pub fn futureRegister(fut: *u8, rp: Reply) bool {
+  let c = cellAt(fut);
+  let wp = &(*c).waiters as **Waiter;
+  var head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire);
+  if head as usize == waitersClosed {
+    return false;
+  }
+  let w = libc.malloc(mem.sizeof[Waiter]()) as *Waiter;
+  if w as usize == 0usize {
+    die("actors: out of memory for a waiter");
+  }
+  waiterAllocs.addOrdered(1u64, MemOrder.Relaxed);
   (*w).fut = *(fut as **u8);
   (*w).to = rp.to;
-  (*w).node = rp.node;
-  imm wp = &(*c).waiters as **Waiter;
-  mut head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire);
+  (*w).run = rp.at;
+  (*w).id = rp.id;
+  (*w).hasId = (rp.meta & replyHasId) != 0u64;
+  (*w).keep = false;
   while head as usize != waitersClosed {
     (*w).next = head;
-    mut seen = head;
-    mut done = false;
+    var seen = head;
+    var done = false;
     seen, done = mem.atomicCompareSwap[*Waiter](wp, head, w, MemOrder.AcqRel, MemOrder.Acquire);
     if done {
-      mut r = rp;
+      var r = rp;
       r.to = null;
-      r.node = null;
       return true;
     }
     head = seen;
   }
-  false;
+  libc.free(w as *u8);
+  false
 }
 
 // Where the value is in the future lying at fut, which has its ending, for
 // the 'await' at file and line to read it out. A panic there if it never
 // arrived
-pub fn futureOpen(fut *u8, file &str, line u32) *u8 {
-  imm c = cellAt(fut);
-  imm s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
+pub fn futureOpen(fut: *u8, file: &str, line: u32) *u8 {
+  let c = cellAt(fut);
+  let s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
   if s == futArrived {
     return (*c).value;
   }
@@ -275,23 +321,23 @@ pub fn futureOpen(fut *u8, file &str, line u32) *u8 {
   if s == futTaken {
     dieOwed("actors: an awaited future's value was taken already (request ", (*c).owesId, ")", file, line);
   }
-  dieOwed("actors: an awaited future has not arrived (request ", (*c).owesId, ")", file, line);
+  dieOwed("actors: an awaited future has not arrived (request ", (*c).owesId, ")", file, line)
 }
 
 // A move value read out of the future lying at fut: it is Taken, so that it
 // is not finalized again when the future goes
-pub fn futureTaken(fut *u8) {
+pub fn futureTaken(fut: *u8) {
   mem.atomicStore[u32](&(*cellAt(fut)).state as *u32, futTaken, MemOrder.Relaxed);
 }
 
 // A panic at file and line, its message 'before', the request's number, 'after'
-fn dieOwed(before &str, id u64, after &str, file &str, line u32) Never {
-  imm buf = libc.malloc(before.len + after.len + 24usize);
-  mut n = putText(buf, 0usize, before);
-  mut digits Array[u8, 20] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+fn dieOwed(before: &str, id: u64, after: &str, file: &str, line: u32) Never {
+  let buf = libc.malloc(before.len + after.len + 24usize);
+  var n = putText(buf, 0usize, before);
+  var digits: Array[u8, 20] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
     0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
-  mut k = 0usize;
-  mut v = id;
+  var k = 0usize;
+  var v = id;
   while true {
     digits[k] = u8.from(v % 10u64) + 48u8;
     k = k + 1usize;
@@ -304,14 +350,14 @@ fn dieOwed(before &str, id u64, after &str, file &str, line u32) Never {
     n = n + 1usize;
   }
   n = putText(buf, n, after);
-  panic(mem.sliceFromParts[u8](buf, n) as &str, file, line);
+  panic(mem.sliceFromParts[u8](buf, n) as &str, file, line)
 }
 
-fn putText(buf *u8, at usize, s &str) usize {
-  mut i = 0usize;
+fn putText(buf: *u8, at: usize, s: &str) usize {
+  var i = 0usize;
   while i < s.len {
     *(buf + at + i) = s[i];
     i = i + 1usize;
   }
-  at + s.len;
+  at + s.len
 }

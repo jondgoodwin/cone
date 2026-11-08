@@ -23,9 +23,9 @@ import sdf use *;
 import sdfmesh use *;
 import mesh;
 
-imm net = surfaceNet(&horn, horn.bounds(), 0.01, 1u32, true);   // cells of 0.01, relaxed once, sparse
-imm m = net.toMesh();                                             // a mesh.Mesh, gradient normals
-imm h = mesh.meshHash(&m);                                        // the same on every run and build
+let net = surfaceNet(&horn, horn.bounds(), 0.01, 1u32, true);   // cells of 0.01, relaxed once, sparse
+let m = net.toMesh();                                             // a mesh.Mesh, gradient normals
+let h = mesh.meshHash(&m);                                        // the same on every run and build
 ```
 
 `sdf/examples/hornmesh.cone` meshes the horn at four levels of detail and
@@ -105,12 +105,12 @@ samples go from that job to the mesher without leaving the GPU.
 `packages/meshedpart` is the sample of the whole pipeline.
 
 ```cone
-mut mesher = GridMesher.make(&device);              // reads sdfmesh.spv beside the program
-imm grid = SampleGrid.covering(box, 0.03);           // surfaceNet's grid for this box and cell
+var mesher = GridMesher.make(&device);              // reads sdfmesh.spv beside the program
+let grid = SampleGrid.covering(box, 0.03);           // surfaceNet's grid for this box and cell
 // ... a part's kernel writes grid.sampleCount() distances into 'samples' ...
-mut net = mesher.mesh(&mut device, grid, samples);   // a GridNet: buffers left on the GPU
-imm cpu = net.readBack(&mut device);                 // a SurfaceNet, if wanted
-imm tris = net.readBackMesh(&mut device);            // or a mesh.Mesh, the GPU's own triangles
+var net = mesher.mesh(&mut device, grid, samples);   // a GridNet: buffers left on the GPU
+let cpu = net.readBack(&mut device);                 // a SurfaceNet, if wanted
+let tris = net.readBackMesh(&mut device);            // or a mesh.Mesh, the GPU's own triangles
 ```
 
 | Name | What it is |

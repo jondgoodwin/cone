@@ -1,0 +1,691 @@
+// ======== An archive read as its bytes arrive ========
+//
+// 'Archive.open' wants the whole archive in memory, since the central directory is at its end. An
+// ArchiveStream works through the archive from its front instead: each entry's local header, then the
+// entry's data, decompressed (stored, deflate, zstd) and handed on as it comes, so that the first file
+// of an archive being fetched can be used before the last byte has arrived. Like a codec of package
+// streams it holds no I/O: bytes in with 'feed', output out with 'pull', 'finish' for the end of the
+// input. Unlike one, its output has a shape: entries, each beginning with a Step.Begin and ending with a
+// Step.End, with the entry's data in between.
+//
+//   var arch = ArchiveStream.make();
+//   arch.feed(bytesThatArrived);              // any size, split anywhere (a copy is kept of what is not used yet)
+//   var out = IoBuf(65536usize);
+//   while true {
+//     let s = arch.pull(&mut out);            // fills out's spare room: out must have some
+//     if s == Step.Begin     { ... arch.current().name ...; }
+//     else if s == Step.Data { ... out.view() ...; out.clear(); }
+//     else if s == Step.End  { ... the entry is complete and checked ... }
+//     else if s == Step.NeedInput { break; }        // feed more, or 'finish' and pull again
+//     else { break; }                                // Done, or Failed: arch.error() says why
+//   }
+//
+// WHAT IS CHECKED WHEN. The local header is read for what it says: the name, the method, the flags
+// and (unless the entry has a data descriptor) the sizes and the CRC-32. As an entry streams by, the
+// output may not pass its declared size (bytes out are bounded, as everywhere), and at its end the size
+// and the CRC-32 must be what the local header (or, with a data descriptor, the descriptor) says: the entry
+// is then complete and good, and Step.End says so. The central directory is last, so what it says is
+// compared only when it arrives: every local header must agree with it on the name, the method, the sizes
+// and the CRC-32, and it must list exactly the entries that were streamed, at the offsets they were found
+// at. Any disagreement ends the stream Failed (Corrupt, or BadChecksum), AFTER the entries have been
+// handed on. Entries already delivered each passed their own checks; what the end adds is that the
+// archive is the archive its directory describes (no entry hidden from a reader that starts at the
+// directory, none listed that was not there). A caller that acts on an entry before the end is acting on
+// data that was whole and checked but not yet confirmed to be in the archive a directory-first reader
+// (Archive.open) would see; one that cannot live with that waits for Done.
+//
+// A CALLER THAT NEEDS THE DIRECTORY'S VERDICT therefore acts on the entries only after the end (Done). The
+// local headers and the central directory disagreeing is how an archive hides things (an entry the directory
+// does not list, or lists differently, is read by one kind of reader and not by the other), and a stream can
+// only compare them when the directory, which is last, arrives. Step.End says an entry is whole and
+// matches its own header, never that the archive agrees with itself.
+//
+// AN ENTRY WITH A DATA DESCRIPTOR (flag bit 3) has no sizes in its local header, so where its data ends is
+// not told. A deflate or zstd entry ends where its own stream ends (the leftover bytes are put back,
+// the descriptor read after them in any of its four shapes, the width the local header's zip64 field points
+// to tried first, and required to match what was seen). A STORED entry with a data descriptor cannot be
+// framed (where its data ends would be a guess) and is refused (Unsupported), unless it is empty (what
+// Python writes for a folder or an empty file), which its descriptor coming at once shows. An encrypted
+// entry and any method but stored, deflate and zstd are refused too. An entry without a descriptor is
+// read for exactly its compressed size.
+//
+// WHAT IS NOT SUPPORTED, because the bytes come in order: bytes in front of the archive (a
+// self-extractor), anything between the last entry and the central directory, several disks. The first
+// is NotZip, the others Corrupt or Unsupported. A zip64 local header is read.
+//
+// BOUNDS. The central directory and the end records are held (about 60 bytes an entry) up to
+// 'setMaxDirectory' (16 MiB at first); an entry's decompressed size is bounded by its header, or by
+// 'setEntryLimit' (1 GiB at first) when it has no sizes in it. Between a feed and the pulls that use it the
+// stream holds what was fed, so pull until NeedInput before feeding more.
+
+// What a pull found
+pub enum Step {
+  // Everything fed is used: feed more, or 'finish' and pull again
+  NeedInput;
+  // An entry begins: 'current()' describes it
+  Begin;
+  // The buffer was given decompressed data of the entry (at least one byte); pull again
+  Data;
+  // The entry is complete, its size and CRC-32 checked
+  End;
+  // The archive is complete and its central directory agrees with every entry
+  Done;
+  // The archive is not good: 'error()' says why
+  Failed;
+}
+
+// What an entry's local header says
+pub struct Local {
+  pub name: String;
+  pub rawName: List[u8];
+  pub method: u16;
+  pub flags: u16;
+  // The CRC-32 and sizes the header gives (zero for an entry with a data descriptor)
+  pub crc: u32;
+  pub compressedSize: u64;
+  pub size: u64;
+  // Where the local header starts in the archive
+  pub offset: u64;
+  // The header has a zip64 extra field (so a data descriptor after the data has 8-byte sizes)
+  pub zip64: bool;
+
+  pub fn blank() Local {
+    Local(String(), List[u8](), 0u16, 0u16, 0u32, 0u64, 0u64, 0u64, false)
+  }
+
+  // Whether the sizes and CRC-32 follow the data, in a data descriptor
+  pub fn hasDescriptor(self: &) bool { (flags & 8u16) != 0u16 }
+}
+
+// What an entry turned out to be, kept to compare with the central directory
+struct Seen {
+  rawName: List[u8];
+  method: u16;
+  offset: u64;
+  crc: u32;
+  size: u64;
+  compressed: u64;
+}
+
+enum Mode {
+  Head;
+  Body;
+  Skip;
+  Finish;
+  Descriptor;
+  Tail;
+  Over;
+}
+
+// A local header, parsed out of the bytes it was peeked in ('v' holds the header, name and extra field)
+fn parseHeader(v: &Array[u8], at: u64) Result[Local, ZipError] {
+  let nlen = usize.from(le16(v, 26usize));
+  let elen = usize.from(le16(v, 28usize));
+  let flags = le16(v, 6usize);
+  let method = le16(v, 8usize);
+  let crc = le32(v, 14usize);
+  let csize32 = le32(v, 18usize);
+  let size32 = le32(v, 22usize);
+  var csize = u64.from(csize32);
+  var size = u64.from(size32);
+  let raw = &v[30usize ..< 30usize + nlen];
+  let extraAt = 30usize + nlen;
+  var name = String();
+  var named = false;
+  var bad = None[ZipError];
+  var wide64 = false;
+  var p = 0usize;
+  while p + 4usize <= elen {
+    let tag = le16(v, extraAt + p);
+    let sz = usize.from(le16(v, extraAt + p + 2usize));
+    let body = extraAt + p + 4usize;
+    if p + 4usize + sz > elen {
+      bad = Some[ZipError](ZipError.make(ErrorKind.Corrupt, at, "an extra field passes the end of its local header"));
+      break;
+    }
+    if tag == 0x0001u16 {
+      wide64 = true;
+      var k = 0usize;
+      if size32 == 0xFFFFFFFFu32 {
+        if k + 8usize > sz { bad = Some[ZipError](ZipError.make(ErrorKind.Corrupt, at, "a zip64 extra field is too short")); break; }
+        size = le64(v, body + k);
+        k += 8usize;
+      }
+      if csize32 == 0xFFFFFFFFu32 {
+        if k + 8usize > sz { bad = Some[ZipError](ZipError.make(ErrorKind.Corrupt, at, "a zip64 extra field is too short")); break; }
+        csize = le64(v, body + k);
+        k += 8usize;
+      }
+    } else if tag == 0x7075u16 {
+      if sz >= 5usize && v[body] == 1u8 {
+        let utf = &v[body + 5usize ..< body + sz];
+        let table = deflate.Crc32.make();
+        if table.update(0u32, raw, 0usize, raw.len) == le32(v, body + 1usize) && validUtf8(utf) {
+          name = String.fromBytes(utf);
+          named = true;
+        }
+      }
+    }
+    p += 4usize + sz;
+  }
+  if !named { name = decodeText(raw); }
+  match bad {
+    case let Some(e) { Err[Local, ZipError](e) }
+    case is None[ZipError] { Ok[Local, ZipError](Local(name, copyBytes(raw), method, flags, crc, csize, size, at, wide64)) }
+  }
+}
+
+// The Inflater's failure as this package's
+fn inflateFault(label: &str, inf: &deflate.Inflater, at: u64) ZipError {
+  if inf.error().kind == deflate.ErrorKind.TooLarge {
+    return ZipError.make(ErrorKind.TooLarge, at, about("the entry", label, "inflates to more than its header says").view());
+  }
+  var why = about("the compressed data of", label, "is bad: ");
+  why.append(inf.error().reason.view());
+  ZipError.make(ErrorKind.BadData, at, why.view())
+}
+
+// The zstd Decompressor's failure as this package's (as EntryReader's)
+fn zstdFaultOf(label: &str, zd: &zstd.Decompressor, at: u64) ZipError {
+  match zd.error() {
+    case let Some(ze) {
+      var kind = ErrorKind.BadData;
+      var why = about("the compressed data of", label, "is bad: ");
+      if ze.kind == zstd.ErrorKind.TooLarge {
+        kind = ErrorKind.TooLarge;
+        why = about("the entry", label, "decompresses to more than its header says: ");
+      } else if ze.kind == zstd.ErrorKind.WindowTooLarge {
+        kind = ErrorKind.TooLarge;
+        why = about("the entry", label, "asks for a zstd window that is too large: ");
+      } else if ze.kind == zstd.ErrorKind.BadChecksum {
+        kind = ErrorKind.BadChecksum;
+        why = about("the zstd frame of", label, "fails its own check: ");
+      } else if ze.kind == zstd.ErrorKind.NeedsDictionary {
+        kind = ErrorKind.Unsupported;
+        why = about("the entry", label, "needs a zstd dictionary: ");
+      }
+      why.append(ze.reason.view());
+      ZipError.make(kind, at, why.view())
+    }
+    case is None { ZipError.make(ErrorKind.BadData, at, "the compressed data is bad") }
+  }
+}
+
+// An archive being read as it arrives. See the top of this file.
+pub struct ArchiveStream is Move {
+  rd: Reader;
+  ended: bool;
+  mode: Mode;
+  err: Option[ZipError];
+  // Archive offset of the next byte not yet taken off the reader
+  pos: u64;
+  seen: List[Seen];
+  cur: Local;
+  table: deflate.Crc32;
+  crc: u32;
+  got: u64;
+  // The entry's compressed bytes still to feed (an entry without a descriptor), and fed so far
+  left: u64;
+  fedTotal: u64;
+  // What the entry's data came to in the archive (known once its data is over)
+  comp: u64;
+  told: bool;
+  inf: deflate.Inflater;
+  zd: zstd.Decompressor;
+  entryLimit: u64;
+  maxTail: usize;
+  tail: List[u8];
+  tailStart: u64;
+  dir: Option[Archive];
+
+  // A stream at the start of an archive
+  pub fn make() ArchiveStream {
+    ArchiveStream(Reader.make(16777216usize), false, Mode.Head, None[ZipError], 0u64, List[Seen](), Local.blank(),
+      deflate.Crc32.make(), 0u32, 0u64, 0u64, 0u64, 0u64, false, deflate.Inflater.make(deflate.Format.Raw),
+      zstd.Decompressor.make(), 1073741824u64, 16777216usize, List[u8](), 0u64, None[Archive])
+  }
+
+  // The most an entry without sizes in its header may decompress to
+  pub fn setEntryLimit(self: &mut, bytes: u64) { entryLimit = bytes; }
+
+  // The most the end records and the central directory may come to
+  pub fn setMaxDirectory(self: &mut, bytes: usize) { maxTail = bytes; }
+
+  // More of the archive's bytes, of any size, split anywhere. They are copied, so the caller's are its own
+  // again on return. Bytes fed after 'finish' are ignored.
+  pub fn feed(self: &mut, input: &Array[u8]) {
+    if ended || err is Some { return; }
+    var at = 0usize;
+    while at < input.len {
+      // First into the room the last segment has (each byte copied once): a peer's tiny pieces then do not
+      // each hold a pool block
+      at += rd.appendLast(&input[at ..< input.len]);
+      if at >= input.len { break; }
+      let n = if input.len - at < 65536usize { input.len - at } else { 65536usize };
+      var b = match IoBuf.tryMake(n) {
+        case var Some(m) { m }
+        else {
+          err = Some[ZipError](ZipError.make(ErrorKind.Overloaded, pos, "the buffer pool has no room for more of the archive"));
+          return;
+        }
+      };
+      let k = b.append(&input[at ..< at + n]);
+      at += k;
+      match rd.push(b) {
+        case let Some(refused) {
+          err = Some[ZipError](ZipError.make(ErrorKind.TooLarge, pos, "more archive was fed than is held; pull until NeedInput before feeding more"));
+          return;
+        }
+        case is None[IoBuf] {}
+      }
+    }
+  }
+
+  // Says that no more bytes will come: an archive that is not complete is then a Truncated failure
+  pub fn finish(self: &mut) { ended = true; }
+
+  // The entry that began last (after Step.Begin; it stays until the next)
+  pub fn current(self: &) &Local { &cur }
+
+  // How many entries are complete
+  pub fn entriesDone(self: &) usize { seen.len() }
+
+  // Why a pull answered Failed (a copy); None until it has
+  pub fn error(self: &) Option[ZipError] {
+    match &err {
+      case let Some(e) { Some[ZipError](e.clone()) }
+      case is None { None[ZipError] }
+    }
+  }
+
+  // After Done: the archive's central directory, as Archive.open would have read it (taken out)
+  pub fn directory(self: &mut) Option[Archive] { dir.take() }
+
+  fn fail(self: &mut, kind: ErrorKind, at: u64, reason: &str) Option[Step] {
+    if err is None { err = Some[ZipError](ZipError.make(kind, at, reason)); }
+    Some[Step](Step.Failed)
+  }
+
+  // The pool would not give the buffer that bytes held in pieces need (a peer's bytes cause it): the read ends
+  fn overloaded(self: &mut) Option[Step] {
+    self.fail(ErrorKind.Overloaded, pos, "the archive's bytes came in pieces too small to hold together, and the buffer pool is full; the read is refused")
+  }
+
+  fn failWith(self: &mut, e: ZipError) Option[Step] {
+    if err is None { err = Some[ZipError](e); }
+    Some[Step](Step.Failed)
+  }
+
+  // Not enough bytes yet: more are wanted, or the archive is cut
+  fn needMore(self: &mut, what: &str) Option[Step] {
+    if ended { return self.fail(ErrorKind.Truncated, pos, about("the archive ends inside", what, "(truncated?)").view()); }
+    Some[Step](Step.NeedInput)
+  }
+
+  // Appends output to 'out', into its spare room, and says what happened. 'out' must have room.
+  pub fn pull(self: &mut, out: &mut IoBuf) Step {
+    while true {
+      if err is Some { return Step.Failed; }
+      var r = None[Step];
+      if mode == Mode.Head { r = self.stepHead(); }
+      else if mode == Mode.Body { r = self.stepBody(out); }
+      else if mode == Mode.Skip { r = self.stepSkip(); }
+      else if mode == Mode.Finish { r = self.stepFinish(); }
+      else if mode == Mode.Descriptor { r = self.stepDescriptor(); }
+      else if mode == Mode.Tail { r = self.stepTail(); }
+      else { return Step.Done; }
+      match r {
+        case let Some(s) { return s; }
+        case is None[Step] {}
+      }
+    }
+    Step.Done
+  }
+
+  fn stepHead(self: &mut) Option[Step] {
+    if rd.len() < 4usize { return self.needMore("the archive's records"); }
+    if !rd.tryReserve(4usize) { return self.overloaded(); }
+    var sig = 0u32;
+    match rd.peek(4usize) {
+      case let Some(v) { sig = le32(v, 0usize); }
+      case is None[&Array[u8]] {}
+    }
+    if sig == sigCentral || sig == sigEnd || sig == sigEnd64 {
+      tailStart = pos;
+      mode = Mode.Tail;
+      return None[Step];
+    }
+    if sig != sigLocal {
+      if seen.len() == 0usize && pos == 0u64 {
+        return self.fail(ErrorKind.NotZip, 0u64, "not a zip file: it does not begin with an entry");
+      }
+      return self.fail(ErrorKind.Corrupt, pos, "something that is not an entry or the central directory is where one should be");
+    }
+    if rd.len() < 30usize { return self.needMore("a local header"); }
+    if !rd.tryReserve(30usize) { return self.overloaded(); }
+    var total = 0usize;
+    match rd.peek(30usize) {
+      case let Some(v) { total = 30usize + usize.from(le16(v, 26usize)) + usize.from(le16(v, 28usize)); }
+      case is None[&Array[u8]] {}
+    }
+    if rd.len() < total { return self.needMore("a local header"); }
+    if !rd.tryReserve(total) { return self.overloaded(); }
+    var res = Err[Local, ZipError](ZipError.make(ErrorKind.Corrupt, pos, "a local header could not be read"));
+    match rd.peek(total) {
+      case let Some(v) { res = parseHeader(v, pos); }
+      case is None[&Array[u8]] {}
+    }
+    rd.consume(total);
+    pos += u64.from(total);
+    match res {
+      case let Err(e) { self.failWith(e) }
+      case var Ok(l) { self.begin(l) }
+    }
+  }
+
+  fn begin(self: &mut, l: Local) Option[Step] {
+    let at = l.offset;
+    if (l.flags & 0x0041u16) != 0u16 || l.method == 99u16 {
+      return self.fail(ErrorKind.Encrypted, at, about("the entry", l.name.view(), "is encrypted; this package does not decrypt").view());
+    }
+    if l.method != methodStored() && l.method != methodDeflate() && l.method != methodZstd() {
+      var why = about("the entry", l.name.view(), "uses compression method ");
+      why.appendUInt(u64.from(l.method));
+      why.append("; only stored, deflate and zstd are read");
+      return self.fail(ErrorKind.Unsupported, at, why.view());
+    }
+    let desc = l.hasDescriptor();
+    if !desc {
+      if l.method == methodStored() && l.compressedSize != l.size {
+        return self.fail(ErrorKind.Corrupt, at, about("the stored entry", l.name.view(), "has a compressed size that differs from its size").view());
+      }
+      if l.size > entryLimit {
+        return self.fail(ErrorKind.TooLarge, at, about("the entry", l.name.view(), "declares more data than the limit allows").view());
+      }
+    }
+    let limit = if desc { entryLimit } else { l.size };
+    cur = l;
+    crc = 0u32;
+    got = 0u64;
+    left = if desc { 0u64 } else { cur.compressedSize };
+    fedTotal = 0u64;
+    comp = 0u64;
+    told = false;
+    if cur.method == methodDeflate() {
+      inf = deflate.Inflater.make(deflate.Format.Raw);
+      inf.setLimit(limit);
+      inf.setMultiMember(false);
+    } else if cur.method == methodZstd() {
+      zd = zstd.Decompressor.make();
+      zd.setLimit(limit);
+      // Without a descriptor the entry is all the frames in its compressed bytes, as EntryReader reads it;
+      // with one, the first frame, since what follows is the descriptor
+      zd.setMultiFrame(!desc);
+    }
+    if cur.method == methodStored() {
+      comp = cur.compressedSize;
+      // A stored entry with a data descriptor has no end to find in a stream; only an empty one (what Python
+      // writes for a folder or an empty file) is read, by its descriptor coming at once
+      if desc { mode = Mode.Descriptor; return Some[Step](Step.Begin); }
+    }
+    mode = Mode.Body;
+    Some[Step](Step.Begin)
+  }
+
+  fn stepBody(self: &mut, out: &mut IoBuf) Option[Step] {
+    if out.room() == 0usize { return Some[Step](Step.Data); }
+    let before = out.len();
+    let desc = cur.hasDescriptor();
+    if cur.method == methodStored() {
+      var n = out.room();
+      if u64.from(n) > left { n = usize.from(left); }
+      if n > rd.len() { n = rd.len(); }
+      if n == 0usize {
+        if left == 0u64 { mode = Mode.Finish; return None[Step]; }
+        return self.needMore(about("the data of", cur.name.view(), "").view());
+      }
+      let k = rd.copyOut(0usize, &mut out.spare()[0usize ..< n]);
+      rd.consume(k);
+      out.setLen(before + k);
+      pos += u64.from(k);
+      left -= u64.from(k);
+      fedTotal += u64.from(k);
+      self.counted(out, before);
+      return Some[Step](Step.Data);
+    }
+    let zst = cur.method == methodZstd();
+    let s = if zst { zd.pull(out) } else { inf.pull(out) };
+    let made = out.len() > before;
+    if made { self.counted(out, before); }
+    if s == deflate.Status.MoreOutput { return Some[Step](Step.Data); }
+    if s == deflate.Status.Failed {
+      if made { return Some[Step](Step.Data); }
+      if zst { return self.failWith(zstdFaultOf(cur.name.view(), &zd, pos)); }
+      return self.failWith(inflateFault(cur.name.view(), &inf, pos));
+    }
+    if s == deflate.Status.Done {
+      if desc {
+        // Put back what was fed past the end of the stream, to be read as the descriptor and the next header
+        let rest = if zst { zd.takeRest() } else { inf.takeRest() };
+        comp = fedTotal - u64.from(rest.len());
+        if !self.putBack(rest) { return self.overloaded(); }
+        mode = Mode.Descriptor;
+      } else {
+        comp = cur.compressedSize;
+        mode = if left > 0u64 { Mode.Skip } else { Mode.Finish };
+      }
+      if made { return Some[Step](Step.Data); }
+      return None[Step];
+    }
+    // NeedInput
+    if made { return Some[Step](Step.Data); }
+    if !desc && left == 0u64 {
+      if told { return self.fail(ErrorKind.BadData, pos, about("the compressed data of", cur.name.view(), "ends before its stream does").view()); }
+      if zst { zd.finish(); } else { inf.finish(); }
+      told = true;
+      return None[Step];
+    }
+    // What lies in the first segment, fed as it arrives: nothing is copied, so no buffer is wanted
+    var n = rd.contiguousLen();
+    if n > 65536usize { n = 65536usize; }
+    if !desc && u64.from(n) > left { n = usize.from(left); }
+    if n == 0usize { return self.needMore(about("the data of", cur.name.view(), "").view()); }
+    match rd.peek(n) {
+      case let Some(v) {
+        if zst { zd.feed(v); } else { inf.feed(v); }
+      }
+      case is None[&Array[u8]] {}
+    }
+    rd.consume(n);
+    pos += u64.from(n);
+    fedTotal += u64.from(n);
+    if !desc { left -= u64.from(n); }
+    None[Step]
+  }
+
+  // 'out' grew from 'before': count it
+  fn counted(self: &mut, out: &IoBuf, before: usize) {
+    crc = table.update(crc, out.view(), before, out.len());
+    got += u64.from(out.len() - before);
+  }
+
+  // Bytes taken off the reader and not wanted: they are first again
+  // False, with nothing changed, when the pool will not give the buffer for 'rest'
+  fn putBack(self: &mut, rest: List[u8]) bool {
+    var nr = Reader.make(16777216usize);
+    if rest.len() > 0usize {
+      var b = match IoBuf.tryMake(rest.len()) {
+        case var Some(m) { m }
+        else { return false; }
+      };
+      b.append(rest.view());
+      nr.push(b);
+    }
+    while true {
+      match rd.popFront() {
+        case let Some(b) { nr.push(b); }
+        case is None[IoBuf] { break; }
+      }
+    }
+    rd = nr;
+    pos -= u64.from(rest.len());
+    true
+  }
+
+  // The deflate or zstd stream is over, and the entry had more compressed bytes than it used
+  fn stepSkip(self: &mut) Option[Step] {
+    var n = rd.len();
+    if u64.from(n) > left { n = usize.from(left); }
+    if n == 0usize {
+      if left == 0u64 { mode = Mode.Finish; return None[Step]; }
+      return self.needMore(about("the data of", cur.name.view(), "").view());
+    }
+    rd.consume(n);
+    pos += u64.from(n);
+    left -= u64.from(n);
+    None[Step]
+  }
+
+  // An entry without a descriptor is over: its size and CRC-32 against the header's
+  fn stepFinish(self: &mut) Option[Step] {
+    if got != cur.size {
+      var why = about("the entry", cur.name.view(), "gives ");
+      why.appendUInt(got);
+      why.append(" bytes, its header says ");
+      why.appendUInt(cur.size);
+      return self.fail(ErrorKind.BadChecksum, cur.offset, why.view());
+    }
+    if crc != cur.crc {
+      return self.fail(ErrorKind.BadChecksum, cur.offset, about("the CRC-32 of the data of", cur.name.view(), "does not match the entry's").view());
+    }
+    self.record()
+  }
+
+  fn record(self: &mut) Option[Step] {
+    seen.push(Seen(copyBytes(cur.rawName.view()), cur.method, cur.offset, crc, got, comp));
+    mode = Mode.Head;
+    Some[Step](Step.End)
+  }
+
+  // After a descriptor entry's data: the descriptor, in any of its four shapes, must say what was seen
+  fn stepDescriptor(self: &mut) Option[Step] {
+    if rd.len() < 24usize && !ended { return Some[Step](Step.NeedInput); }
+    let avail = rd.len();
+    let max = if avail < 24usize { avail } else { 24usize };
+    if !rd.tryReserve(max) { return self.overloaded(); }
+    var used = 0usize;
+    var tried = false;
+    match rd.peek(max) {
+      case let Some(v) {
+        // the width the local header's zip64 field points to is tried first: with a 16-byte (narrow) reading an
+        // empty entry's wide descriptor would match too, and leave 8 bytes behind
+        var j = 0usize;
+        while j < 4usize && used == 0usize {
+          let k = if cur.zip64 { (if j == 0usize { 1usize } else if j == 1usize { 3usize } else if j == 2usize { 0usize } else { 2usize }) } else { j };
+          let sig = k < 2usize;
+          let wide = (k % 2usize) == 1usize;
+          let n = (if sig { 4usize } else { 0usize }) + 4usize + (if wide { 16usize } else { 8usize });
+          if n <= max {
+            tried = true;
+            var p = 0usize;
+            var ok = true;
+            if sig {
+              if le32(v, 0usize) != sigDescriptor { ok = false; }
+              p = 4usize;
+            }
+            if ok {
+              let c = le32(v, p);
+              let cs = if wide { le64(v, p + 4usize) } else { u64.from(le32(v, p + 4usize)) };
+              let us = if wide { le64(v, p + 12usize) } else { u64.from(le32(v, p + 8usize)) };
+              if c == crc && cs == comp && us == got { used = n; }
+            }
+          }
+          j += 1usize;
+        }
+      }
+      case is None[&Array[u8]] {}
+    }
+    if used == 0usize {
+      if cur.method == methodStored() && tried {
+        return self.fail(ErrorKind.Unsupported, cur.offset,
+          about("the stored entry", cur.name.view(), "has a data descriptor and data: its local header gives no sizes, so where its data ends cannot be framed in a stream").view());
+      }
+      if !tried { return self.fail(ErrorKind.Truncated, pos, about("the archive ends inside the data descriptor of", cur.name.view(), "").view()); }
+      return self.fail(ErrorKind.BadChecksum, pos,
+        about("the data descriptor of", cur.name.view(), "disagrees with the data that came before it").view());
+    }
+    rd.consume(used);
+    pos += u64.from(used);
+    self.record()
+  }
+
+  // The central directory and the end records: held, and compared with the entries when all have arrived
+  fn stepTail(self: &mut) Option[Step] {
+    while true {
+      match rd.popFront() {
+        case let Some(b) {
+          if tail.len() + b.len() > maxTail {
+            return self.fail(ErrorKind.TooLarge, pos, "the central directory is larger than the limit allows");
+          }
+          tail.appendSlice(b.view());
+          pos += u64.from(b.len());
+        }
+        case is None[IoBuf] { break; }
+      }
+    }
+    if !ended { return Some[Step](Step.NeedInput); }
+    mode = Mode.Over;
+    var ar = openTail(tail.view(), tailStart);
+    match ar {
+      case let Err(e) {
+        // nothing of an end record: the archive was cut inside its directory
+        if e.kind == ErrorKind.NotZip {
+          return self.fail(ErrorKind.Truncated, pos, "the archive ends before its end-of-central-directory record (truncated?)");
+        }
+        return self.failWith(e);
+      }
+      case var Ok(a) {
+        match self.compare(&a) {
+          case let Some(e) { return self.failWith(e); }
+          case is None[ZipError] {}
+        }
+        dir = Some[Archive](a);
+      }
+    }
+    Some[Step](Step.Done)
+  }
+
+  // The central directory against the entries that were streamed
+  fn compare(self: &, a: &Archive) Option[ZipError] {
+    if a.prefix != 0u64 {
+      return Some[ZipError](ZipError.make(ErrorKind.Corrupt, 0u64, "the central directory's offsets count bytes before the archive, which a stream cannot have read"));
+    }
+    if a.count() != seen.len() {
+      var why = String.from("the central directory lists ");
+      why.appendUInt(u64.from(a.count()));
+      why.append(" entries, ");
+      why.appendUInt(u64.from(seen.len()));
+      why.append(" were streamed");
+      return Some[ZipError](ZipError.make(ErrorKind.Corrupt, tailStart, why.view()));
+    }
+    var i = 0usize;
+    while i < seen.len() {
+      let s = &seen.view()[i];
+      let e = a.entry(i);
+      if e.offset != s.offset || e.rawName.view() != s.rawName.view() || e.method != s.method {
+        return Some[ZipError](ZipError.make(ErrorKind.Corrupt, s.offset,
+          about("the central directory's record for", e.name.view(), "is not the local header streamed at that place").view()));
+      }
+      if e.size != s.size || e.compressedSize != s.compressed {
+        return Some[ZipError](ZipError.make(ErrorKind.BadChecksum, s.offset,
+          about("the central directory gives other sizes for", e.name.view(), "than the entry came to").view()));
+      }
+      if e.crc != s.crc {
+        return Some[ZipError](ZipError.make(ErrorKind.BadChecksum, s.offset,
+          about("the central directory gives another CRC-32 for", e.name.view(), "than the entry came to").view()));
+      }
+      i += 1usize;
+    }
+    None[ZipError]
+  }
+}

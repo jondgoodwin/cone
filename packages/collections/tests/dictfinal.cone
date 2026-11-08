@@ -16,21 +16,21 @@ import collections use *;
 
 // Whether an insert replaced an entry: the old value came back. It is dropped here,
 // so a value with a finalizer dies here
-fn wasHeld[T](old Option[T]) bool {
+fn wasHeld[T](old: Option[T]) bool {
   match old {
-    case is Some {true;}
-    case is None {false;}
+    case is Some {true}
+    case is None {false}
   }
 }
 
-mut @threadlocal keySerial = 0u64;
-mut @threadlocal valSerial = 0u64;
-mut @threadlocal keyDeaths = 0i64;
-mut @threadlocal keyMask = 0u64;
-mut @threadlocal keyTwice = 0i64;
-mut @threadlocal valDeaths = 0i64;
-mut @threadlocal valMask = 0u64;
-mut @threadlocal valTwice = 0i64;
+var @threadlocal keySerial = 0u64;
+var @threadlocal valSerial = 0u64;
+var @threadlocal keyDeaths = 0i64;
+var @threadlocal keyMask = 0u64;
+var @threadlocal keyTwice = 0i64;
+var @threadlocal valDeaths = 0i64;
+var @threadlocal valMask = 0u64;
+var @threadlocal valTwice = 0i64;
 
 fn reset() {
   keySerial = 0u64;
@@ -45,14 +45,14 @@ fn reset() {
 
 // Equal by id alone, so a later key with the same id replaces an earlier one
 struct Key is Hash {
-  pub id u64;
-  pub tag u64;
-  pub fn `==`(self &, o &Key) bool {id == o.id;}
-  pub fn hash(self &, h &mut Hasher) { h.writeU64(id); }
-  fn final(self &uni) {
+  pub id: u64;
+  pub tag: u64;
+  pub fn `==`(self: &, o: &Key) bool {id == o.id}
+  pub fn hash(self: &, h: &mut Hasher) { h.writeU64(id); }
+  fn final(self: &uni) {
     if tag != 0u64 {
       keyDeaths = keyDeaths + 1i64;
-      imm bit = 1u64 << tag;
+      let bit = 1u64 << tag;
       if (keyMask & bit) != 0u64 { keyTwice = keyTwice + 1i64; }
       keyMask = keyMask | bit;
     }
@@ -60,30 +60,30 @@ struct Key is Hash {
 }
 
 struct Val {
-  pub tag u64;
-  fn final(self &uni) {
+  pub tag: u64;
+  fn final(self: &uni) {
     if tag != 0u64 {
       valDeaths = valDeaths + 1i64;
-      imm bit = 1u64 << tag;
+      let bit = 1u64 << tag;
       if (valMask & bit) != 0u64 { valTwice = valTwice + 1i64; }
       valMask = valMask | bit;
     }
   }
 }
 
-fn key(id u64) Key {
+fn key(id: u64) Key {
   keySerial = keySerial + 1u64;
-  new Key(id, keySerial);
+  Key(id, keySerial)
 }
 
 fn val() Val {
   valSerial = valSerial + 1u64;
-  new Val(valSerial);
+  Val(valSerial)
 }
 
-fn probe(id u64) Key { new Key(id, 0u64); }
+fn probe(id: u64) Key { Key(id, 0u64) }
 
-fn counts(keys i64, vals i64, label &Array[u8]) {
+fn counts(keys: i64, vals: i64, label: &Array[u8]) {
   expectInt(keyDeaths, keys, label);
   expectInt(valDeaths, vals, label);
   expectInt(keyTwice + valTwice, 0, label);
@@ -92,7 +92,7 @@ fn counts(keys i64, vals i64, label &Array[u8]) {
 // A replacing insert finalizes the old key and the old value, and the new pair
 // is the one held
 fn overwrite() {
-  mut d = Dict[Key, Val].empty();
+  var d = Dict[Key, Val]();
   expectBool(wasHeld(d.insert(key(1u64), val())), false, "a new key");
   counts(0, 0, "nothing dies on a new key");
   expectBool(wasHeld(d.insert(key(1u64), val())), true, "the same key replaces");
@@ -103,11 +103,11 @@ fn overwrite() {
 }
 
 fn removed() {
-  mut d = Dict[Key, Val].empty();
+  var d = Dict[Key, Val]();
   d.insert(key(1u64), val());
   d.insert(key(2u64), val());
   match d.remove(&probe(1u64)) {
-    case imm v Some {
+    case let Some(v) {
       counts(1, 0, "the key died on remove; the value is in hand");
       expectUInt(v.tag, 1, "it is the value of key 1 (made first)");
     }
@@ -120,8 +120,8 @@ fn removed() {
 }
 
 fn cleared() {
-  mut d = Dict[Key, Val].empty();
-  mut i = 1u64;
+  var d = Dict[Key, Val]();
+  var i = 1u64;
   while i <= 20u64 {
     d.insert(key(i), val());
     i = i + 1u64;
@@ -136,9 +136,9 @@ fn cleared() {
   counts(20, 20, "the new pair is alive");
 }
 
-fn dies(n u64) {
-  mut d = Dict[Key, Val].empty();
-  mut i = 1u64;
+fn dies(n: u64) {
+  var d = Dict[Key, Val]();
+  var i = 1u64;
   while i <= n {
     d.insert(key(i), val());
     i = i + 1u64;
@@ -152,15 +152,15 @@ fn dies(n u64) {
 // by rebuilding the table. Whichever, the 12 died on remove and nothing else
 // died until the end.
 fn churn() {
-  mut d = Dict[Key, Val].empty();
-  mut i = 1u64;
+  var d = Dict[Key, Val]();
+  var i = 1u64;
   while i <= 14u64 {
     d.insert(key(i), val());
     i = i + 1u64;
   }
   i = 1u64;
   while i <= 12u64 {
-    expect(not isNone(d.remove(&probe(i))), "removed one of the first twelve");
+    expect(!isNone(d.remove(&probe(i))), "removed one of the first twelve");
     i = i + 1u64;
   }
   counts(12, 12, "twelve pairs died on remove");
@@ -180,8 +180,8 @@ fn churn() {
 // later goes in, over removed buckets, and a table rebuilt at its own size when
 // they are most of what fills it
 fn rolling() {
-  mut d = Dict[Key, Val].empty();
-  mut i = 1u64;
+  var d = Dict[Key, Val]();
+  var i = 1u64;
   while i <= 60u64 {
     d.insert(key(i), val());
     if i > 8u64 {
@@ -198,19 +198,19 @@ fn rolling() {
 }
 
 fn getOrInsert() {
-  mut d = Dict[Key, Val].empty();
+  var d = Dict[Key, Val]();
   d.getOrInsert(key(1u64), val());
   counts(0, 0, "a missing key is inserted, the pair kept");
   d.getOrInsert(key(1u64), val());
   counts(1, 1, "a held key: the pair given dies, the held one stays");
   expectUInt(u64.from(d.len()), 1, "one held");
-  expectUInt(d.getOrInsert(probe(1u64), new Val(0u64)).tag, 1, "the first value is still the one held");
+  expectUInt(d.getOrInsert(probe(1u64), Val(0u64)).tag, 1, "the first value is still the one held");
 }
 
-fn isNone(o Option[Val]) bool {
+fn isNone(o: Option[Val]) bool {
   match o {
-    case is Some[Val] {false;}
-    case is None[Val] {true;}
+    case is Some[Val] {false}
+    case is None[Val] {true}
   }
 }
 
@@ -219,10 +219,10 @@ fn isNone(o Option[Val]) bool {
 // its binding ends, once; an insert whose answer is ignored kills it at the end
 // of the statement. Serials: keys 1, 2, 3 and values 1, 2, 3 in the order made.
 fn returnsOld() {
-  mut d = Dict[Key, Val].empty();
+  var d = Dict[Key, Val]();
   d.insert(key(1u64), val());
   match d.insert(key(1u64), val()) {
-    case imm old Some {
+    case let Some(old) {
       counts(1, 0, "the old key died inside insert; the old value is still alive");
       expectUInt(old.tag, 1, "the value that comes back is the first one");
     }
@@ -262,5 +262,5 @@ fn main() i32 {
   // four keys and four values were made, two pairs died during the test, and the
   // two held die with the dictionary
   counts(4, 4, "the held pairs died with the dictionary, once each");
-  done();
+  done()
 }

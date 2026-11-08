@@ -7,7 +7,7 @@
  *   xs <- 4 of 0;                   // n values, the value evaluated for each
  *   xs <- fill 0;                   // values until the collection is full
  *   dict <- "a": 1, "b": 2;         // pairs, given to a two-value append
- *   imm ys = new List[i32](8) <- fill 0;    // a construction's contents
+ *   let ys = List[i32](8) <- fill 0;    // a construction's contents
  *
  * Every entry lowers to applications of the receiver's '<-' method, against
  * one borrow of the receiver. A construction's contents are appended to the
@@ -23,6 +23,7 @@
 #include "../ir.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 // Create an entry node: 'n of x', 'fill x', 'k: v', an each or a yield, its value filled in after
@@ -95,9 +96,15 @@ void entryNameRes(NameResState *pstate, EntryNode *node) {
     inodeNameRes(pstate, &node->val);
 }
 
-// Is this a construction, 'new T(...)' or 'trynew T(...)', not yet lowered?
+// Is this a construction, 'T(...)', 'new a[T](...)' or 'trynew T(...)', not yet
+// lowered? A call of a generic parameter that substitution made a type is one
+// too, and is marked here as name resolution marks the others.
 static int contentsIsConstruction(INode *node) {
-    return node->tag == FnCallTag && (node->flags & FlagNew)
+    if (node->tag != FnCallTag)
+        return 0;
+    if (fnCallIsTypeCall((FnCallNode*)node))
+        fnCallMarkConstruction((FnCallNode*)node);
+    return (node->flags & FlagNew)
         && !nameUseNames(((FnCallNode*)node)->objfn, FnDclTag);
 }
 
@@ -154,6 +161,7 @@ static FnCallNode *contentsAppend(VarDclNode *recv, INode *value) {
     deref->vtexp = contentsVarUse(recv, value);
     FnCallNode *append = newFnCallOpnameLower(value, (INode*)deref, lessDashName, 2);
     append->flags |= FlagOpAssgn | FlagLvalOp;
+    append->methfld->flags |= FlagTextLowered;
     nodesAdd(&append->args, value);
     return append;
 }
@@ -240,7 +248,7 @@ static int contentsHasPairAppend(INode *colltype) {
 }
 
 // 'n of x':
-//   { imm count usize = n; mut i = 0usize; loop { if i >= count {break}; *recv <- x; i++ } }
+//   { let count usize = n; var i = 0usize; loop { if i >= count {break}; *recv <- x; i++ } }
 // n is evaluated once, x once for each value. The block is a statement of the
 // block holding recv, so it opens the scope two past the one lowering it.
 static INode *contentsRepeat(TypeCheckState *pstate, VarDclNode *recv, EntryNode *entry) {
@@ -425,14 +433,23 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
 
 // The entries of a '<-' on a value that is not a construction become a block
 // that borrows the receiver once and applies each entry against that borrow:
-//   { imm recv = &mut xs; *recv <- 1; ... }
-// A receiver that is already a reference is held as it is, so its permission,
+//   { let recv = &mut xs; *recv <- 1; ... }
+// The borrow is as strong as the type's '<-' methods need (fnCallAppendBorrowPerm),
+// and each application takes of it what its own method's 'self' declares. A
+// receiver that is already a reference is held as it is, so its permission,
 // not the binding's, is what each application is checked against.
 //
 // This is lowering, so it belongs to type check: the borrow needs the
 // receiver's type. See compiler/c/doc/phases/type-check.md, "Order of resolution".
+static int contentsTextList = 0;
 static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
+    // The list sent to a text sink (a String) is written one piece at a time:
+    // each piece's writer, a temporary, dies at its own statement's end
+    // (textSendLower), not the block's. Taken before anything is checked, so
+    // that no send inside the receiver sees it
+    int eachTemps = contentsTextList;
+    contentsTextList = 0;
 
     // A receiver with no type was reported where it was made
     inodeTypeCheckAny(pstate, &node->objfn);
@@ -443,14 +460,17 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     INode *lval = node->objfn;
     INode *lvaltype = iexpGetTypeDcl(node->objfn);
-    if (!(lvaltype->tag == RefTag || lvaltype->tag == VirtRefTag || lvaltype->tag == ArrayRefTag))
-        borrowMutRef(&lval, lvaltype, (INode*)mutPerm);
     // The type whose methods the entries are applied through
     INode *colltype = lvaltype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)lvaltype)->vtexp) : lvaltype;
+    // The borrow is as strong as the strongest 'self' of the type's '<-' methods
+    // needs, so each entry takes from it what its own method declares
+    if (!(lvaltype->tag == RefTag || lvaltype->tag == VirtRefTag || lvaltype->tag == ArrayRefTag))
+        borrowMutRef(&lval, lvaltype, newPermUseNode(fnCallAppendBorrowPerm(lval, colltype)));
 
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
-    blk->flags |= FlagKeepTemps;
+    if (!eachTemps)
+        blk->flags |= FlagKeepTemps;
     // An operator's temporary holds no borrow past the statement (flowpath.c), and
     // that is all the other entries need. A loop appends across its passes while
     // it reads its source, and the receiver's borrow must be held through them for
@@ -545,7 +565,7 @@ static Name *contentsBuiltName() {
 
 // A construction's contents are appended to the value it builds, which is
 // then the value of the whole:
-//   { mut built = new T(...); built <- contents; built }
+//   { var built = T(...); built <- contents; built }
 // The construction fills the variable in place; the block hands it on.
 static void contentsLowerConstruction(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
@@ -640,7 +660,11 @@ static int contentsArrayShape(ArrayNode *arraydcl, INode *lexnode, uint32_t *lev
     return 1;
 }
 
-// An array's contents are its elements: 'new Array[f32, 4] <- 1.0, fill 0.0'.
+// Set while the contents of a vector are lowered as the array they stand for
+// (contentsLowerVector), so the messages name a vector
+static int contentsVectorOf;
+
+// An array's contents are its elements: 'Array[f32, 4]() <- 1.0, fill 0.0'.
 // An array has no '<-' and no 'init', and its size is fixed, so the contents
 // must give exactly that many values, every count known at compile time. They
 // lower to an array literal of the array's type, which fills the destination
@@ -661,8 +685,12 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
     FnCallNode *ctor = (FnCallNode*)node->objfn;
     ArrayNode *arraydcl = (ArrayNode*)itypeGetTypeDcl(arraytype);
     if (ctor->args && ctor->args->used > 0) {
-        errorMsgNode((INode*)ctor, ErrorArrayContents,
-            "An array has no init to take arguments: its contents follow '<-', as 'new Array[f32, 4] <- fill 0.0'.");
+        if (contentsVectorOf)
+            errorMsgNode((INode*)ctor, ErrorArrayContents,
+                "A vector has no init to take arguments: its contents follow '<-', as 'Vector[f32, 4]() <- fill 0.0'.");
+        else
+            errorMsgNode((INode*)ctor, ErrorArrayContents,
+                "An array has no init to take arguments: its contents follow '<-', as 'Array[f32, 4]() <- fill 0.0'.");
         return NULL;
     }
     uint32_t levels;
@@ -717,6 +745,10 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
             errorMsgNode((INode*)node, ErrorArrayContents,
                 "These contents give %llu values, and the array holds %llu scalars of %s: an array written with several sizes is filled exactly, with its scalars, row by row.",
                 (unsigned long long)(given + filled), (unsigned long long)size, itypeName(elemtype));
+        else if (contentsVectorOf)
+            errorMsgNode((INode*)node, ErrorArrayContents,
+                "These contents give %llu values, and the vector holds %llu lanes: a vector's contents fill it exactly.",
+                (unsigned long long)(given + filled), (unsigned long long)size);
         else
             errorMsgNode((INode*)node, ErrorArrayContents,
                 "These contents give %llu values, and the array holds %llu: an array's contents fill it exactly.",
@@ -803,7 +835,29 @@ static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
     *((INode**)nodep) = lit ? lit : newErrorNode((INode*)*nodep);
 }
 
-// An allocation of an array with its contents, 'new Rc[mut, Array[i32, 4]] <-
+// A vector's contents are its lanes, written as an array's are ('Vector[f32,
+// 4]() <- 1.0, 3 of 0.0', 'fill x'): they lower to the array literal of the
+// lanes, an array of the vector's lane type and count, and the vector is that
+// array converted, which costs nothing (genlVectorConvert). So every form an
+// array's contents take, and the way an entry repeating a value evaluates it
+// once for each element, are the vector's. A vector has no size to disagree
+// with the array's: its count is the array's.
+static void contentsLowerVector(TypeCheckState *pstate, FnCallNode **nodep, INode *vectype) {
+    FnCallNode *node = *nodep;
+    // A vector type refused (its lane type or count) has been reported, and
+    // has no mask to show it was made: its contents say nothing more of it
+    if (((VectorNode*)vectype)->mask == NULL) {
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+    ArrayNode *arraytype = newArrayNodeTyped((INode*)node, vectorLanes(vectype), vectorElemType(vectype));
+    contentsVectorOf = 1;
+    INode *lit = contentsArrayLit(pstate, node, (INode*)arraytype);
+    contentsVectorOf = 0;
+    *((INode**)nodep) = lit ? (INode*)vectorNewConvert(vectype, lit, (INode*)node) : newErrorNode((INode*)node);
+}
+
+// An allocation of an array with its contents, 'Rc[mut, Array[i32, 4]]() <-
 // fill 0', is the allocation whose value is the literal of those contents,
 // which generation fills in place in the region's memory once it is had, an
 // element at a time (genlallocref): no array is built elsewhere and copied in.
@@ -844,7 +898,7 @@ static void contentsRefuseTryNew(TypeCheckState *pstate, FnCallNode **nodep, INo
     inodeTypeCheckAny(pstate, &node->objfn);
     if (isExpNode(node->objfn) && !inodeIsError(node->objfn) && iexpGetTypeDcl(node->objfn) != errorType)
         errorMsgNode((INode*)node, ErrorTryNewContents,
-            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'imm maybe = trynew R[perm, T](...); match maybe { case imm s Some[R[perm, T]] { s <- ...; } else {...} }'.",
+            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'let maybe = trynew R[perm, T](...); match maybe { case let Some[R[perm, T]](s) { s <- ...; } else {...} }'.",
             built && built->tag == RefTag ? itypeName(((RefNode*)built)->vtexp) : "this value");
     *((INode**)nodep) = newErrorNode((INode*)node);
 }
@@ -865,9 +919,795 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
             contentsRefuseTryNew(pstate, nodep, built);
         else if (built && built->tag == ArrayTag)
             contentsLowerArray(pstate, nodep);
+        else if (built && built->tag == VectorTag)
+            contentsLowerVector(pstate, nodep, built);
         else
             contentsLowerConstruction(pstate, nodep);
         return;
     }
     contentsLowerEntries(pstate, nodep);
+}
+
+// ---------------------------------------------------------------------------
+// Text sends
+//
+// A value writes its text into a writer, core's TextOut, with its own
+// 'toText(self: &, out: &uni TextOut)'. A '<-' whose receiver takes text goes
+// through that, for three kinds of receiver:
+//
+// - A writer (core's TextOut, held in a variable or lent as '&uni'): a text goes
+//   in by the writer's own '<-', and any other value by its own toText.
+// - A record maker (a type with 'record(self: &) TextOut', the console): the
+//   whole send is one record. A list of pieces is a block holding the writer in
+//   a variable, so it is finalized at the statement's end if an early exit
+//   leaves first, and 'finish' after the last piece hands the finished record to
+//   the function its maker supplied, before the statement's temporaries die:
+//       { var -w = receiver.record(); -w <- piece; -w <- piece; ...; -w.finish() }
+//   A single piece is the maker's own '<-' when it takes it (a text), and
+//   otherwise  piece.toText(&uni receiver.record())  with the writer a
+//   temporary, finalized at the end of the statement.
+// - A text sink (a type with 'textOut(self: &mut) TextOut', a String): a piece
+//   its own '<-' takes (a text) goes in as it always did, and any other is
+//   written through a writer the sink lends, a temporary finalized at the end
+//   of the statement:  piece.toText(&uni receiver.textOut())
+//   A list is sent a piece at a time, each statement ending its own writer.
+//
+// A receiver's own '<-' is always tried first, so a List's element append stays
+// one. The single piece no '<-' took is lowered where the choice failed
+// (textSendFallback); a list is lowered before its pieces are looked at
+// (textSendLower), on what the receiver is, which is looked at on a copy,
+// checked as a trial, so that what is not text's is checked once, as written.
+// ---------------------------------------------------------------------------
+
+enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink, TextSite };
+
+static int textOpensSite(INode *base);
+static Name *textSiteWriterName();
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base);
+
+static Name *textName(const char *name) {
+    return nametblFind((char*)name, strlen(name));
+}
+
+// A method of this name, taking self, that answers core's TextOut; its
+// signature is read as written, so the type need not be checked yet
+static int textAnswersWriter(INode *type, const char *name) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, textName(name));
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)found)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || ((FnSigNode*)sig)->rettype == NULL)
+        return 0;
+    return coreIsTextOut(itypeGetTypeDcl(((FnSigNode*)sig)->rettype));
+}
+
+// The type a text send's receiver is, through one borrow
+static INode *textReceiverBase(INode *type) {
+    if (type->tag == RefTag) {
+        RefNode *ref = (RefNode*)type;
+        if (itypeGetTypeDcl(ref->region) != borrowRef)
+            return NULL;
+        return itypeGetTypeDcl(ref->vtexp);
+    }
+    return type;
+}
+
+static enum TextKind textKindOf(INode *base) {
+    if (base == NULL || base->tag != StructTag || (base->flags & (TraitType | EnumType)) || !isMethodType(base))
+        return TextNone;
+    if (coreIsTextOut(base))
+        return TextWriter;
+    if (textAnswersWriter(base, "record"))
+        return TextRecord;
+    if (textAnswersWriter(base, "textOut"))
+        return TextSink;
+    if (textOpensSite(base))
+        return TextSite;
+    return TextNone;
+}
+
+// A receiver of any kind that declares 'wants(self: &) bool' is asked first, ahead of
+// all of the above (textGuardLower): the pieces of a send to a receiver that declines
+// are not evaluated.
+
+// The TextOut type a method of this name answers
+static INode *textOutOf(INode *base, const char *name) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName(name));
+    return itypeGetTypeDcl(((FnSigNode*)((FnDclNode*)found)->vtype)->rettype);
+}
+
+// A copy of an expression not yet checked, checked as a trial, so that its type
+// can be asked. Answers the checked copy, or NULL when it did not check (the
+// real one reports why, when it is checked)
+static INode *textTrial(TypeCheckState *pstate, INode *node) {
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+    uint32_t closures = closuresCloned;
+    INode *probe = cloneNode(&cstate, node);
+    clonePopState();
+    cloneDclPop(dclpos);
+    // A closure literal written inside is not checked twice: the trial would
+    // leave the function it makes declared and never defined
+    if (closuresCloned != closures)
+        return NULL;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerialNow());
+    inodeTypeCheck(pstate, &probe, unknownType);
+    int ok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe)
+        && iexpGetTypeDcl(probe) != errorType && iexpGetTypeDcl(probe) != unknownType;
+    genericTrialPurge();
+    return ok ? probe : NULL;
+}
+
+// A name only the lowering writes, for the writer a record's variable holds
+static Name *textWriterName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-w", 2);
+    return name;
+}
+
+// 'recv <- piece', one send of one piece
+static INode *textSend(INode *lex, INode *recv, INode *piece) {
+    FnCallNode *send = newFnCallOpnameLower(lex, recv, lessDashName, 2);
+    send->flags |= FlagOpAssgn | FlagLvalOp;
+    send->methfld->flags |= FlagTextLowered;
+    nodesAdd(&send->args, piece);
+    return (INode*)send;
+}
+
+// The `wants` guard: a text send to a receiver with `wants(self: &) bool` is
+//   { [var -g = receiver]; if -g.wants() { -g <- pieces } }
+// so a receiver that declines runs none of the pieces. The receiver is evaluated
+// once: a name, or fields of one, is read again for the test (a read harms
+// nothing); anything else is held first in a variable.
+
+// A method of this name that answers bool and takes only self, as declared
+static int textWantsOf(INode *base) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("wants"));
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)found)->vtype;
+    return sig != NULL && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used == 1
+        && ((FnSigNode*)sig)->rettype != NULL && itypeGetTypeDcl(((FnSigNode*)sig)->rettype) == (INode*)boolType;
+}
+
+// A name of a variable, or a field read off one: reading it twice is the same as once
+static int textIsPlain(INode *node) {
+    if (node->tag == NameUseTag)
+        return nameUseNames(node, VarDclTag);
+    if (node->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)node;
+        return call->methfld != NULL && isNameUseNode(call->methfld) && call->args == NULL
+            && !(call->flags & (FlagIndex | FlagOperator)) && textIsPlain(call->objfn);
+    }
+    return 0;
+}
+
+// The first thing in a checked expression that changes state: an assignment, a
+// swap, a change in place or send, a borrow that is '&mut' or '&uni'. What a call does behind
+// its own body is not seen.
+static INode *textChangesState(INode *node) {
+    if (node == NULL)
+        return NULL;
+    INode *found;
+    switch (node->tag) {
+    case AssignTag:
+        return node;
+    case SwapTag:
+        return node;
+    case FnCallTag:
+        if (node->flags & FlagOpAssgn)
+            return node;
+        // fall through
+    case TypeLitTag: case FldAccessTag: case ArrIndexTag: {
+        FnCallNode *call = (FnCallNode*)node;
+        if ((found = textChangesState(call->objfn)) != NULL)
+            return found;
+        if (call->args) {
+            uint32_t cnt;
+            INode **argp;
+            for (nodesFor(call->args, cnt, argp))
+                if ((found = textChangesState(*argp)) != NULL)
+                    return found;
+        }
+        return NULL;
+    }
+    case BorrowTag: case ArrayBorrowTag: {
+        RefNode *ref = (RefNode*)node;
+        INode *perm = ref->perm ? itypeGetTypeDcl(ref->perm) : NULL;
+        if (perm == (INode*)mutPerm || perm == (INode*)uniPerm)
+            return node;
+        return textChangesState(ref->vtexp);
+    }
+    case DerefTag:
+        return textChangesState(((StarNode*)node)->vtexp);
+    case CastTag:
+        return textChangesState(((CastNode*)node)->exp);
+    case VarDclTag:
+        return textChangesState(((VarDclNode*)node)->value);
+    case TempTag:
+        return textChangesState(((TempNode*)node)->exp);
+    case NamedValTag:
+        return textChangesState(((NamedValNode*)node)->val);
+    case VTupleTag: case BlockTag: case IfTag: {
+        Nodes *list = node->tag == VTupleTag ? ((TupleNode*)node)->elems
+            : node->tag == BlockTag ? ((BlockNode*)node)->stmts : ((IfNode*)node)->condblk;
+        uint32_t cnt;
+        INode **p;
+        for (nodesFor(list, cnt, p))
+            if ((found = textChangesState(*p)) != NULL)
+                return found;
+        return NULL;
+    }
+    case OrLogicTag: case AndLogicTag:
+        if ((found = textChangesState(((LogicNode*)node)->lexp)) != NULL)
+            return found;
+        return textChangesState(((LogicNode*)node)->rexp);
+    case NotLogicTag:
+        return textChangesState(((LogicNode*)node)->lexp);
+    default:
+        return NULL;
+    }
+}
+
+static INode *textTrial(TypeCheckState *pstate, INode *node);
+
+// Warn of each piece that changes state, for it may not run
+static void textWarnEffects(TypeCheckState *pstate, FnCallNode *node) {
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        if (isEntryNode(piece)) {
+            EntryNode *entry = (EntryNode*)piece;
+            // 'n of x', 'k: v': the values written in it
+            INode *parts[2] = { entry->first, entry->val };
+            for (int p = 0; p < 2; ++p) {
+                INode *probe = parts[p] && isExpNode(parts[p]) ? textTrial(pstate, parts[p]) : NULL;
+                INode *bad = probe ? textChangesState(probe) : NULL;
+                if (bad)
+                    errorMsgNode(parts[p], WarnTextEffect, "This changes state, and the receiver has `wants`: when it says no, this does not run. Do it in a statement before the send.");
+            }
+            continue;
+        }
+        if (litIsLiteral(piece))
+            continue;
+        INode *probe = textTrial(pstate, piece);
+        if (probe && textChangesState(probe))
+            errorMsgNode(piece, WarnTextEffect, "This changes state, and the receiver has `wants`: when it says no, this does not run. Do it in a statement before the send.");
+    }
+}
+
+// Name only the guard writes, for the receiver it holds once
+static Name *textGuardName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-g", 2);
+    return name;
+}
+
+// 'recv.method()'
+static FnCallNode *textAsk(INode *lex, INode *recv, const char *method) {
+    FnCallNode *call = newFnCallLower(lex, recv, 1);
+    call->methfld = (INode*)newMemberUseNode(textName(method));
+    inodeLexCopy(call->methfld, lex);
+    return call;
+}
+
+// A list of pieces sent to a writer or a record maker, one send after another:
+//   { [pieces made before an 'await'] [var -w = receiver.record()] -w <- piece; ... }
+// Answers 1 when it took the send, 0 to leave it to the general list lowering.
+// otype is the receiver's type, from its copy; lval whether the receiver is a place.
+static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKind kind, INode *base,
+        INode *otype, int lval) {
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    int hasentry = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        hasentry |= isEntryNode(piecep[i]);
+    // A list with an entry that is not a plain value ('3 of "ab"', 'fill', 'each')
+    // is the general list lowering's, a piece at a time, into a writer in hand.
+    // For a record maker it is still one record: the whole list is sent to the
+    // record's writer (which lowers as a writer's list does) and the record is
+    // finished after it.
+    if (hasentry && kind != TextRecord)
+        return 0;
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+
+    // A piece holding an 'await' is made before the writer is, with every piece
+    // written before it, in the order written, so no borrow spans the seam
+    uint32_t lastawait = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (awaitWithin(piecep[i]))
+            lastawait = i + 1;
+    if (hasentry)
+        lastawait = 0;
+    for (uint32_t i = 0; i < lastawait; ++i) {
+        if (litIsLiteral(piecep[i]))
+            continue;
+        VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, piecep[i], scope, piecep[i]);
+        nodesAdd(&blk->stmts, (INode*)part);
+        piecep[i] = contentsVarUse(part, (INode*)part);
+    }
+
+    // The writer the pieces are sent to, a variable holding it or a reference to it
+    VarDclNode *w;
+    if (kind == TextRecord) {
+        FnCallNode *make = textAsk(lex, node->objfn, "record");
+        w = contentsVar(textWriterName(), unknownType, mutPerm, (INode*)make, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)w);
+    }
+    else if (nameUseNames(node->objfn, VarDclTag)) {
+        w = (VarDclNode*)((NameUseNode*)node->objfn)->dclnode;
+    }
+    else {
+        // A writer reached some other way, a field or a call: lent once, to a variable
+        INode *held = node->objfn;
+        if (otype->tag != RefTag) {
+            if (!lval) {
+                errorMsgNode(held, ErrorNoText, "A send into a writer needs the writer in a variable or a place, or lent as '&uni'.");
+                *nodep = (FnCallNode*)newErrorNode(lex);
+                return 1;
+            }
+            borrowMutRef(&held, otype, newPermUseNode(uniPerm));
+        }
+        w = contentsVar(tempLocalName, unknownType, immPerm, held, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)w);
+    }
+    if (hasentry) {
+        // The writer is lent '&uni' to the general list lowering, as a writer in
+        // hand is, which then sends each entry to it
+        INode *whole = nodesGet(node->args, 0);
+        INode *lent = contentsVarUse(w, lex);
+        borrowMutRef(&lent, textOutOf(base, "record"), newPermUseNode(uniPerm));
+        VarDclNode *ref = contentsVar(tempLocalName, unknownType, immPerm, lent, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)ref);
+        nodesAdd(&blk->stmts, textSend(whole, contentsVarUse(ref, lex), whole));
+    }
+    else for (uint32_t i = 0; i < npieces; ++i)
+        nodesAdd(&blk->stmts, textSend(piecep[i], contentsVarUse(w, lex), piecep[i]));
+    // The record ends with its last piece, before the statement's temporaries
+    // are finalized (a finalizer that prints comes after the pieces before it)
+    if (kind == TextRecord)
+        nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// The send wrapped in the receiver's 'wants'. Answers 1 when it replaced the send
+static int textGuardLower(TypeCheckState *pstate, FnCallNode **nodep, INode *recvcopy, INode *otype) {
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+    INode *asked;
+    if (textIsPlain(node->objfn)) {
+        CloneState cstate;
+        uint32_t dclpos = cloneDclPush();
+        clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+        asked = cloneNode(&cstate, node->objfn);
+        clonePopState();
+        cloneDclPop(dclpos);
+    }
+    else {
+        // Evaluated once, lent once to a variable (as a writer reached some other way is)
+        INode *held = node->objfn;
+        if (otype->tag != RefTag) {
+            if (!iexpIsLval(recvcopy)) {
+                errorMsgNode(held, ErrorNoText, "A send into a writer needs the writer in a variable or a place, or lent as '&uni'.");
+                *nodep = (FnCallNode*)newErrorNode(lex);
+                return 1;
+            }
+            borrowMutRef(&held, otype, newPermUseNode(uniPerm));
+        }
+        VarDclNode *g = contentsVar(textGuardName(), unknownType, immPerm, held, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)g);
+        node->objfn = contentsVarUse(g, lex);
+        asked = contentsVarUse(g, lex);
+    }
+    node->methfld->flags |= FlagTextLowered;
+    IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, lex);
+    nodesAdd(&ifnode->condblk, (INode*)textAsk(lex, asked, "wants"));
+    BlockNode *then = newBlockNode();
+    inodeLexCopy((INode*)then, lex);
+    nodesAdd(&then->stmts, (INode*)node);
+    nodesAdd(&ifnode->condblk, (INode*)then);
+    nodesAdd(&blk->stmts, (INode*)ifnode);
+    // The statement has no value: the guard's 'if' has no 'else' to give one
+    INode *nothing = (INode*)newNilLitNode();
+    inodeLexCopy(nothing, lex);
+    nodesAdd(&blk->stmts, nothing);
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// A log receiver (a type whose 'open(self: &, site: &mut S, spec: &str, file: &str,
+// line: u32)' answers a record): one call site of a '<-' to it is one kind of event.
+//   { static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
+//     -lw.text("fixed"); { -lw.value(n) }; { -lw.value(other) }; ...; -lw.finish() }
+// The compiler makes the site's storage (zeroed, one per call site, filled on the
+// first event) and the 'spec' text: the fixed text with each value as '{name}', then
+// each name after a \x01. A name is the brace's own source text (the lexer of an
+// interpolated string's brace remembers it), or the value's number in a plain send
+// list. A value goes to the record's overloaded 'value(x)', which keeps it typed; one
+// no overload takes goes by '<-' (textValueFallback), which a record declaring
+// DebugText takes as the value's debug text. Answers 1 when it replaced the send.
+static Name *textSiteWriterName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-lw", 3);
+    return name;
+}
+
+// The type of the parameter at this index of a signature, as declared
+static INode *textParmType(FnSigNode *sig, uint32_t index) {
+    return itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, index))->vtype);
+}
+
+// Is this type '&str'?
+static int textIsStrRef(INode *type) {
+    return type != NULL && type->tag == RefTag
+        && itypeGetTypeDcl(((RefNode*)type)->vtexp) == (INode*)strTypeDcl;
+}
+
+// A type that has a method of this name
+static int textHasMethod(INode *type, const char *name) {
+    if (type == NULL || !isMethodType(type))
+        return 0;
+    // An overloaded name ('value') is found as its set of methods, not as one
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, textName(name));
+    return found != NULL && (found->tag == FnDclTag || found->tag == FnOverloadDclTag);
+}
+
+// A method 'open(self, site: &mut S, spec: &str, file: &str, line: u32)' that
+// answers a type with 'text', 'value' and 'finish', all as declared
+static int textOpensSite(INode *base) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("open"));
+    // A method (it takes self), not a function that happens to be named 'open'
+    if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld))
+        return 0;
+    INode *vtype = ((FnDclNode*)found)->vtype;
+    if (vtype == NULL || vtype->tag != FnSigTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode*)vtype;
+    if (sig->parms->used != 5 || sig->rettype == NULL)
+        return 0;
+    INode *site = textParmType(sig, 1);
+    if (site == NULL || site->tag != RefTag || ((RefNode*)site)->perm == NULL
+        || itypeGetTypeDcl(((RefNode*)site)->perm) != (INode*)mutPerm)
+        return 0;
+    if (!textIsStrRef(textParmType(sig, 2)) || !textIsStrRef(textParmType(sig, 3))
+        || textParmType(sig, 4) != (INode*)u32Type)
+        return 0;
+    INode *rec = itypeGetTypeDcl(sig->rettype);
+    return textHasMethod(rec, "text") && textHasMethod(rec, "value") && textHasMethod(rec, "finish");
+}
+
+// A brace's source text, trimmed, as a field name; NULL when the piece is not from a brace
+static int textBraceName(INode *piece, char *out, size_t size) {
+    if (piece->lexer == NULL || piece->lexer->interpend == NULL)
+        return 0;
+    char *from = piece->lexer->interpstart;
+    char *to = piece->lexer->interpend;
+    while (from < to && (*from == ' ' || *from == '\t' || *from == '\r' || *from == '\n'))
+        ++from;
+    while (to > from && (to[-1] == ' ' || to[-1] == '\t' || to[-1] == '\r' || to[-1] == '\n'))
+        --to;
+    size_t n = 0;
+    for (; from < to && n + 1 < size; ++from)
+        out[n++] = (unsigned char)*from < 0x20 ? ' ' : *from;
+    out[n] = '\0';
+    return n > 0;
+}
+
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base) {
+    static unsigned serial = 0;
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (isEntryNode(piecep[i]))
+            return 0;
+    // The call site's kind is a static: an inline function's body is copied to each caller, so it would
+    // be one kind per caller of the function, not one for the call site written
+    if (pstate->fn && (pstate->fn->flags & FlagInline)) {
+        errorMsgNode(lex, ErrorBadStatic, "A log send in an inline function would make one kind per caller, not one for this call site. Log from a function that is not inline, or take the logging out of this one.");
+        node->vtype = errorType;
+        return 1;
+    }
+    FnSigNode *sig = (FnSigNode*)((FnDclNode*)iNsTypeFindFnField((INsTypeNode*)base, textName("open")))->vtype;
+    INode *sref = itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, 1))->vtype);
+    if (sref == NULL || sref->tag != RefTag)
+        return 0;
+    INode *sitetype = itypeGetTypeDcl(((RefNode*)sref)->vtexp);
+
+    // What each piece is: fixed text, a typed value, or a value kept as debug text
+    size_t cap = 64;
+    for (uint32_t i = 0; i < npieces; ++i)
+        cap += (piecep[i]->tag == StringLitTag ? ((SLitNode*)piecep[i])->strlen : 0) + 200;
+    char *spec = (char*)memAllocBlk(cap);
+    char *names = (char*)memAllocBlk(cap);
+    size_t slen = 0, nlen = 0;
+    uint32_t fields = 0;
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        if (piece->tag == StringLitTag) {
+            memcpy(spec + slen, ((SLitNode*)piece)->strlit, ((SLitNode*)piece)->strlen);
+            slen += ((SLitNode*)piece)->strlen;
+            continue;
+        }
+        char name[80];
+        if (!textBraceName(piece, name, sizeof(name)))
+            snprintf(name, sizeof(name), "%u", fields);
+        ++fields;
+        slen += (size_t)snprintf(spec + slen, 100, "{%s}", name);
+        nlen += (size_t)snprintf(names + nlen, 100, "\x01%s", name);
+    }
+    memcpy(spec + slen, names, nlen);
+    slen += nlen;
+
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+    uint32_t lastawait = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (awaitWithin(piecep[i]))
+            lastawait = i + 1;
+    for (uint32_t i = 0; i < lastawait; ++i) {
+        if (litIsLiteral(piecep[i]))
+            continue;
+        VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, piecep[i], scope, piecep[i]);
+        nodesAdd(&blk->stmts, (INode*)part);
+        piecep[i] = contentsVarUse(part, (INode*)part);
+    }
+
+    char sname[32];
+    snprintf(sname, sizeof(sname), "-site%u", ++serial);
+    VarDclNode *site = contentsVar(nametblFind(sname, strlen(sname)), sitetype, mutPerm, NULL, scope, lex);
+    site->flags |= FlagStatic;
+    site->flowtempflags |= VarInitialized;      // zeroed storage, a value to borrow
+    nodesAdd(&blk->stmts, (INode*)site);
+
+    FnCallNode *open = textAsk(lex, node->objfn, "open");
+    INode *siteref = contentsVarUse(site, lex);
+    borrowMutRef(&siteref, sitetype, newPermUseNode(mutPerm));
+    nodesAdd(&open->args, siteref);
+    SLitNode *speclit = newSLitNode(memAllocStr(spec, (uint32_t)slen), (uint32_t)slen);
+    inodeLexCopy((INode*)speclit, lex);
+    nodesAdd(&open->args, (INode*)speclit);
+    const char *url = node->lexer && node->lexer->url ? node->lexer->url : "";
+    SLitNode *filelit = newSLitNode(memAllocStr((char*)url, (uint32_t)strlen(url)), (uint32_t)strlen(url));
+    inodeLexCopy((INode*)filelit, lex);
+    nodesAdd(&open->args, (INode*)filelit);
+    ULitNode *linelit = newULitNodeTC(node->linenbr, (INode*)u32Type);
+    inodeLexCopy((INode*)linelit, lex);
+    nodesAdd(&open->args, (INode*)linelit);
+    VarDclNode *w = contentsVar(textSiteWriterName(), unknownType, mutPerm, (INode*)open, scope, lex);
+    nodesAdd(&blk->stmts, (INode*)w);
+
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        FnCallNode *call = textAsk(piece, contentsVarUse(w, lex), piece->tag == StringLitTag ? "text" : "value");
+        nodesAdd(&call->args, piece);
+        if (piece->tag == StringLitTag)
+            nodesAdd(&blk->stmts, (INode*)call);
+        else {
+            // No overload of 'value' taking it: its debug text (textValueFallback)
+            call->methfld->flags |= FlagTextLowered;
+            // A block of its own: a debug-text writer the piece makes dies here, with its piece written
+            BlockNode *one = newBlockNode();
+            inodeLexCopy((INode*)one, piece);
+            nodesAdd(&one->stmts, (INode*)call);
+            nodesAdd(&blk->stmts, (INode*)one);
+        }
+    }
+    nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// A '<-' sending a list to a text receiver is lowered here (see the comment
+// above), before its pieces are looked at. Answers 1 when it replaced the send,
+// 0 when the send is not a text list's
+int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lessDashName || !(node->flags & FlagOpAssgn)
+        || node->args == NULL || node->args->used != 1 || node->objfn == NULL)
+        return 0;
+    INode *arg = nodesGet(node->args, 0);
+    int guarded = isNameUseNode(node->methfld) && (node->methfld->flags & FlagTextLowered);
+    int single = arg->tag != VTupleTag && !isEntryNode(arg);
+    // A single plain value is the ordinary send, whose failing to find a '<-' that
+    // takes it comes to textSendFallback (unless the receiver has 'wants')
+    // (the pieces a log receiver's lowering sends to its record are its own: textSiteLower)
+    if (single && guarded && isNameUseNode(node->objfn) && ((NameUseNode*)node->objfn)->namesym == textSiteWriterName())
+        return 0;
+    if (contentsIsConstruction(node->objfn))
+        return 0;
+    INode *recvcopy = textTrial(pstate, node->objfn);
+    if (recvcopy == NULL)
+        return 0;
+    INode *otype = iexpGetTypeDcl(recvcopy);
+    INode *base = textReceiverBase(otype);
+    enum TextKind kind = base ? textKindOf(base) : TextNone;
+    if (kind == TextNone)
+        return 0;
+    // A receiver with 'wants' decides first, for the single piece and the list alike
+    if (!guarded && textWantsOf(base)) {
+        textWarnEffects(pstate, node);
+        if (textGuardLower(pstate, nodep, recvcopy, otype))
+            return 1;
+    }
+    if (kind == TextSite) {
+        if (textSiteLower(pstate, nodep, base))
+            return 1;
+        return 0;
+    }
+    if (single)
+        return 0;
+    // A list sent to a sink is the general list's, one application each against
+    // one borrow of the sink, with each piece's writer finished before the next
+    // begins
+    if (kind == TextSink) {
+        contentsTextList = 1;
+        contentsLowerEntries(pstate, nodep);
+        return 1;
+    }
+    if (textListLower(pstate, nodep, kind, base, otype, iexpIsLval(recvcopy)))
+        return 1;
+    // A list with an entry that is not a plain value ('3 of "ab"') is sent a piece at a time too
+    contentsTextList = 1;
+    contentsLowerEntries(pstate, nodep);
+    return 1;
+}
+
+// A single piece that no '<-' of a text receiver took becomes the piece's own
+// toText, written into the writer the receiver is or lends:
+//   piece.toText(&uni receiver)   piece.toText(&uni receiver.textOut())   piece.toText(&uni receiver.record())
+// The call is rewritten in place, its receiver and piece already checked.
+// Answers 1 when it rewrote the call (or reported that the piece has no toText),
+// 0 when the receiver is not text's
+static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *recv, int debug) {
+    if (callnode->args == NULL || callnode->args->used != 1 || !isExpNode(recv))
+        return 0;
+    INode *rtype = iexpGetTypeDcl(recv);
+    INode *base = textReceiverBase(rtype);
+    enum TextKind kind = base ? textKindOf(base) : TextNone;
+    INode *piece = nodesGet(callnode->args, 0);
+    if (kind == TextNone || !isExpNode(piece))
+        return 0;
+    INode *ptype = iexpGetTypeDcl(piece);
+    if (ptype == errorType || ptype == unknownType)
+        return 0;
+    // Has the piece a toText: a number, bool or char always has; a type has if it declares one
+    INode *pbase = ptype;
+    while (pbase->tag == RefTag && itypeGetTypeDcl(((RefNode*)pbase)->region) == borrowRef)
+        pbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
+    // A virtual reference ('&<Error', 'Uni[Error + Sendable]') has the toText its trait
+    // declares, called through the vtable
+    INode *hasbase = pbase;
+    if (pbase->tag == VirtRefTag)
+        hasbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
+    if (!debug && !isNbr(pbase) && pbase != (INode*)boolType && pbase != (INode*)charType
+        && !(isMethodType(hasbase) && iNsTypeFindFnField((INsTypeNode*)hasbase, textName("toText")) != NULL)) {
+        errorMsgNode(piece, ErrorNoText,
+            "%s cannot be written as text: it has no `toText(self: &, out: &uni TextOut)`. Give it one that writes its text with `out <- ...`.",
+            pbase->tag == PtrTag ? "a raw pointer" : itypeName(ptype));
+        callnode->vtype = errorType;
+        return 1;
+    }
+    // The value itself, read through any borrows of it: its own toText, not a borrow's
+    for (INode *t = ptype; t->tag == RefTag && itypeGetTypeDcl(((RefNode*)t)->region) == borrowRef;
+            t = itypeGetTypeDcl(((RefNode*)t)->vtexp))
+        derefInject(&piece);
+    INode *writer;
+    if (kind == TextWriter) {
+        writer = recv;
+        if (rtype->tag != RefTag) {
+            if (iexpIsLval(recv))
+                borrowMutRef(&writer, rtype, newPermUseNode(uniPerm));
+            else
+                borrowTempRef(&writer, rtype, newPermUseNode(uniPerm), borrowTempScope(pstate));
+        }
+    }
+    else {
+        // The writer the receiver lends or makes, a temporary finalized at the end of
+        // the statement, borrowed '&uni' for the piece's write
+        const char *method = kind == TextRecord ? "record" : "textOut";
+        writer = (INode*)textAsk((INode*)callnode, recv, method);
+        // (A debug piece is checked once, with the generated call: debugfn.c)
+        if (debug != 2)
+            inodeTypeCheckAny(pstate, &writer);
+        if (debug != 2 && (!isExpNode(writer) || iexpGetTypeDcl(writer) == errorType)) {
+            callnode->vtype = errorType;
+            return 1;
+        }
+        borrowTempRef(&writer, textOutOf(base, method), newPermUseNode(uniPerm), borrowTempScope(pstate));
+    }
+    NameUseNode *meth = newMemberUseNode(textName(debug ? "toDebug" : "toText"));
+    inodeLexCopy((INode*)meth, (INode*)callnode);
+    callnode->objfn = piece;
+    callnode->methfld = (INode*)meth;
+    callnode->args = newNodes(1);
+    nodesAdd(&callnode->args, writer);
+    callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    // Called on a virtual reference, as a call on one is: through the vtable
+    if (pbase->tag == VirtRefTag)
+        callnode->flags |= FlagVDisp;
+    if (debug)
+        callnode->flags &= ~FlagOperator;
+    return 1;
+}
+
+// A log record's 'value(x)' that no overload takes is the debug text of x, sent as '<-'
+int textValueFallback(TypeCheckState *pstate, FnCallNode *callnode) {
+    (void)pstate;
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld) || !(callnode->methfld->flags & FlagTextLowered)
+        || ((NameUseNode*)callnode->methfld)->namesym != textName("value")
+        || callnode->args == NULL || callnode->args->used != 1)
+        return 0;
+    NameUseNode *meth = newMemberUseNode(lessDashName);
+    inodeLexCopy((INode*)meth, (INode*)callnode);
+    meth->flags |= FlagTextLowered;
+    callnode->methfld = (INode*)meth;
+    callnode->flags |= FlagOpAssgn | FlagLvalOp;
+    return 1;
+}
+
+int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+    return textSendPiece(pstate, callnode, recv, 0);
+}
+
+// Does this text receiver's type declare core's DebugText?
+static int textTakesDebug(INode *base) {
+    if (base == NULL || base->tag != StructTag || ((StructNode*)base)->traits == NULL)
+        return 0;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)base)->traits, cnt, traitp))
+        if (coreIsDebugText(itypeGetTypeDcl(*traitp)))
+            return 1;
+    return 0;
+}
+
+int textSendDebug(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+    if (callnode->args == NULL || callnode->args->used != 1 || !isExpNode(recv))
+        return 0;
+    INode *base = textReceiverBase(iexpGetTypeDcl(recv));
+    if (base == NULL || textKindOf(base) == TextNone || !textTakesDebug(base))
+        return 0;
+    INode *piece = nodesGet(callnode->args, 0);
+    if (!isExpNode(piece) || litIsLiteral(piece))
+        return 0;
+    int generated = debugWillGenerate(piece);
+    return textSendPiece(pstate, callnode, recv, generated ? 2 : 1) ? (generated ? 2 : 1) : 0;
+}
+
+// Is this type, a method's declared 'self', a text receiver or a borrow of one
+// (a writer, a record maker or a text sink)? The type is read as declared, so
+// the method need not be checked yet.
+int textIsReceiver(INode *type) {
+    if (type == NULL)
+        return 0;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    INode *base = textReceiverBase(dcl);
+    return base != NULL && textKindOf(base) != TextNone;
 }

@@ -1,4 +1,4 @@
-// Thread-local globals: '@threadlocal' after a module global's permission
+// Thread-local globals: '@threadlocal' after a module global's 'let' or 'var'
 // gives every thread its own copy of it, each starting from the initial value.
 //
 // The first half reads and writes thread-locals on the one thread every
@@ -13,7 +13,7 @@ mod core_threadlocal;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
@@ -21,49 +21,49 @@ fn show(label &str, n i64) {
 }
 
 struct Pair {
-  pub a i64;
-  pub b i64;
+  pub a: i64;
+  pub b: i64;
 }
 
-mut @threadlocal slot i64 = 0i64;
-mut @threadlocal inferred = 40i64;
-static mut @threadlocal counted i64 = 100i64;
-pub mut @threadlocal pair Pair = new Pair(3i64, 4i64);
-mut plain i64 = 7i64;
+var @threadlocal slot: i64 = 0i64;
+var @threadlocal inferred = 40i64;
+static var @threadlocal counted: i64 = 100i64;
+pub var @threadlocal pair: Pair = Pair(3i64, 4i64);
+var plain: i64 = 7i64;
 
-fn bump(n &mut i64) {
+fn bump(n: &mut i64) {
   *n = *n + 1i64;
 }
 
 // A thread's entry, as CreateThread calls it: its argument, and the exit code.
 // pthread_create takes the same function, which returns a pointer where this
 // returns 32 bits; nothing reads what it returns
-alias ThreadStart = &fn(arg usize) u32;
+alias ThreadStart = &fn(arg: usize) u32;
 
-extern fn @c(system) CreateThread(attrs usize, stack usize, start ThreadStart, arg usize, flags u32, id usize) usize;
-extern fn @c(system) WaitForSingleObject(handle usize, ms u32) u32;
-extern fn @c(system) CloseHandle(handle usize) i32;
+extern fn @c(system) CreateThread(attrs: usize, stack: usize, start: ThreadStart, arg: usize, flags: u32, id: usize) usize;
+extern fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
+extern fn @c(system) CloseHandle(handle: usize) i32;
 
 // The same on POSIX: the C library's own, declared on every platform and
 // called only on the one that has it
-extern fn @c pthread_create(thread *usize, attr usize, start ThreadStart, arg usize) i32;
-extern fn @c pthread_join(thread usize, result usize) i32;
+extern fn @c pthread_create(thread: *usize, attr: usize, start: ThreadStart, arg: usize) i32;
+extern fn @c pthread_join(thread: usize, result: usize) i32;
 
 // Start a thread running 'worker' and wait for it to end
 fn runWorker() {
-  if isWindows() {
-    imm handle = CreateThread(0usize, 0usize, &worker, 0usize, 0u32, 0usize);
+  #if #os == .windows {
+    let handle = CreateThread(0usize, 0usize, &worker, 0usize, 0u32, 0usize);
     WaitForSingleObject(handle, 0xFFFFFFFFu32);
     CloseHandle(handle);
   }
-  else {
-    mut handle = 0usize;
+  #else {
+    var handle = 0usize;
     pthread_create(&mut handle as *usize, 0usize, &worker, 0usize);
     pthread_join(handle, 0usize);
   }
 }
 
-fn worker(arg usize) u32 {
+fn worker(arg: usize) u32 {
   show("thread slot starts", slot);
   show("thread counted starts", counted);
   slot = 2i64;
@@ -71,7 +71,7 @@ fn worker(arg usize) u32 {
   show("thread slot", slot);
   show("thread counted", counted);
   plain = plain + 1i64;
-  0u32;
+  0u32
 }
 
 fn main() i32 {
@@ -94,5 +94,5 @@ fn main() i32 {
   show("slot after join", slot);
   show("counted after join", counted);
   show("plain after join", plain);
-  0i32;
+  0i32
 }

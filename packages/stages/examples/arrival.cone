@@ -1,0 +1,912 @@
+// arrival: how a world made of many small text files reaches a program, and what a shared dictionary would
+// add (streams proving, PR C). About forty small text files (pegasus3d's horseworld, spacewar and
+// spacewar-duel examples, the .acn files of 64 KiB or less: Acorn text, right for size and shape, not syntax)
+// are served by a loopback HTTPS server that offers HTTP/2, and fetched three ways, each file reaching a
+// counting sink that checks every byte (size and a running hash):
+//
+//   zip-stream   ONE archive (zipfile, entries in zstd or deflate) fetched with Client.streamTo into an
+//                archivestage.ArchiveStage: each file is out of the archive, decompressed, as its bytes
+//                arrive, and reaches a counting sink of its own
+//   zip-whole    the same archive fetched whole (Client.get), then opened and read (what a program does
+//                without a stream)
+//   files        every file a fetch of its own over the ONE HTTP/2 connection of the client (and so its one
+//                shared buffer ChunkPool), each with Content-Encoding zstd or gzip, decoded by httpdecode.Decoder
+//
+// for the two codecs, 'zstd' (entries of method 93 / Content-Encoding zstd) and 'gzip' (entries of method 8 /
+// Content-Encoding gzip). A run of each is timed from asking for the fetch to
+//   first   the first file complete and checked,
+//   all     the last,
+// and reports the peak of the buffer pool's bytes lent (what both ends hold, sampled by the sinks; for
+// zip-whole the archive held whole is added), and the bytes the server wrote as bodies (headers and the
+// framing of TLS and HTTP/2 are not in it). 'rounds' rounds, each running every (mode, codec) in turn, so the modes
+// alternate in the same minute; a table of medians ends the run.
+//
+//   congo run --release packages/stages/examples/arrival.cone -- all 5
+//
+// The arguments are the part to run ('run' the timings, 'dict' the dictionary measurement, 'cancel' the
+// cancelled runs, 'all' for all three; 'all' at first), the rounds (5), the folder holding pegasus3d's
+// examples (C:/src/pegasus3d/examples) and the folder of the tls package's test certificates
+// (packages/tls/tests/certs, from the repository's root). Run it on a QUIET machine: the server and the client
+// share it, and the times of a busy one say nothing. 'dict' and 'cancel' are not timings and mean the
+// same on any machine.
+//
+// THE DICTIONARY QUESTION. zstd's raw-content dictionary (Decompressor.setDictionary) is the bytes a frame may
+// match from before its own start. package zstd's Compressor cannot make a frame that uses one, so 'dict'
+// estimates the compressed size of a file with a dictionary D as zstd(D ++ file) - zstd(D), which is what
+// the compressor would spend on the file's bytes with D in front as history; it is an estimate (a frame has
+// its own block boundaries and header), not a measurement of a frame made with a dictionary. The dictionary
+// is the horseworld files, the files measured the spacewar ones, so it was not made from what it is
+// tested on; shader files that are the same in every world are in both (counted apart).
+
+mod arrival;
+
+import stdio use *;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String, AnyError;
+import time use Instant, Duration;
+import thread;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Request;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending;
+import httpdecode use Decoder;
+import archivestage use ArchiveStage;
+import zipfile;
+import deflate;
+import zstd;
+
+const blockSize = 16384usize;
+
+// ---------------------------------------------------------------------------
+// The files
+// ---------------------------------------------------------------------------
+
+struct Corpus {
+  names: List[String];
+  data: List[List[u8]];
+}
+
+fn bytesOfStr(s: &str) List[u8] {
+  var out = List[u8].withCapacity(s.len);
+  var k = 0usize;
+  while k < s.len { out.push(s[k]); k += 1usize; }
+  out
+}
+
+fn endsWith(s: &str, tail: &str) bool {
+  s.len >= tail.len && &s[s.len - tail.len ..< s.len] == tail
+}
+
+// Every .acn file of 64 KiB or less under 'dir', named 'prefix' + its path below
+fn collect(dir: &Path, prefix: &str, c: &mut Corpus) {
+  match fs.readDir(dir) {
+    case let Err(e) {}
+    case let Ok(entries) {
+      var i = 0usize;
+      while i < entries.len() {
+        let e = &entries.view()[i];
+        var name = String.from(prefix);
+        name.append(e.name.view());
+        if e.isDir {
+          name.append("/");
+          collect(&e.path, name.view(), c);
+        } else if e.isFile && endsWith(e.name.view(), ".acn") {
+          match fs.readFile(&e.path) {
+            case let Ok(text) {
+              if text.len() <= 65536usize {
+                c.names.push(name);
+                c.data.push(bytesOfStr(text.view()));
+              }
+            }
+            case let Err(er) {}
+          }
+        }
+        i += 1usize;
+      }
+    }
+  }
+}
+
+fn load(root: &str) Corpus {
+  var c = Corpus(List[String](), List[List[u8]]());
+  let worlds: Array[&str, 3] = ["horseworld", "spacewar", "spacewar-duel"];
+  var w = 0usize;
+  while w < 3usize {
+    var dir = String.from(root);
+    dir.append("/");
+    dir.append(worlds[w]);
+    var prefix = String.from(worlds[w]);
+    prefix.append("/");
+    collect(&Path.fromString(dir), prefix.view(), &mut c);
+    w += 1usize;
+  }
+  c
+}
+
+// A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
+fn mix(h: u64, b: u8) u64 { (h * 1000003u64 + u64.from(b)) % 4294967291u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 0u64;
+  var i = 0usize;
+  while i < v.len { h = mix(h, v[i]); i += 1usize; }
+  h
+}
+
+fn total(c: &Corpus) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < c.data.len() { n += c.data.view()[i].len(); i += 1usize; }
+  n
+}
+
+// ---------------------------------------------------------------------------
+// The dictionary question
+// ---------------------------------------------------------------------------
+
+fn zlen(d: &Array[u8]) usize { zstd.compress(d, 3i32).len() }
+
+fn glen(d: &Array[u8]) usize { deflate.gzipCompress(d, 6i32).len() }
+
+fn cat(a: &Array[u8], b: &Array[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len + b.len);
+  out.appendSlice(a);
+  out.appendSlice(b);
+  out
+}
+
+fn line(what: &str, n: usize, base: usize) {
+  printStr(what);
+  printStr(": ");
+  printUInt(u64.from(n));
+  printStr(" bytes");
+  if base > 0usize {
+    printStr(" (");
+    printUInt(u64.from(n * 1000usize / base / 10usize));
+    printStr(".");
+    printUInt(u64.from(n * 1000usize / base % 10usize));
+    printStr("% of the text)");
+  }
+  printStr("\n");
+}
+
+fn baseOf(n: &str) &str {
+  var i = n.len;
+  while i > 0usize && n[i - 1usize] != 47u8 { i -= 1usize; }
+  &n[i ..< n.len]
+}
+
+fn dictionary(c: &Corpus, maxFile: usize) List[u8] {
+  var d = List[u8]();
+  var i = 0usize;
+  while i < c.names.len() {
+    let n = c.names.view()[i].view();
+    if n.len > 10usize && &n[0usize ..< 10usize] == "horseworld" && c.data.view()[i].len() <= maxFile {
+      d.appendSlice(c.data.view()[i].view());
+    }
+    i += 1usize;
+  }
+  d
+}
+
+fn dictMeasure(c: &Corpus) {
+  printStr("-- the dictionary question --\n");
+  // the files measured: the spacewar worlds'
+  var test = Corpus(List[String](), List[List[u8]]());
+  var dups = 0usize;
+  let dict = dictionary(c, 65536usize);
+  var i = 0usize;
+  while i < c.names.len() {
+    let n = c.names.view()[i].view();
+    if n.len > 9usize && &n[0usize ..< 9usize] == "spacewar/" || n.len > 14usize && &n[0usize ..< 14usize] == "spacewar-duel/" {
+      test.names.push(c.names.view()[i].clone());
+      test.data.push(c.data.view()[i].clone());
+    }
+    i += 1usize;
+  }
+  printStr("files measured: ");
+  printUInt(u64.from(test.names.len()));
+  printStr(", the dictionary ");
+  printUInt(u64.from(dict.len()));
+  printStr(" bytes (the horseworld files)\n");
+  let text = total(&test);
+  line("text", text, 0usize);
+  var plainZ = 0usize;
+  var plainG = 0usize;
+  var withDictBig = 0usize;
+  var withDictSmall = 0usize;
+  var distinctText = 0usize;
+  var distinctZ = 0usize;
+  var distinctBig = 0usize;
+  var novelText = 0usize;
+  var novelZ = 0usize;
+  var novelBig = 0usize;
+  var novelSmall = 0usize;
+  let small = dictionary(c, 4096usize);
+  let baseBig = zlen(dict.view());
+  let baseSmall = zlen(small.view());
+  var solid = List[u8]();
+  var k = 0usize;
+  while k < test.data.len() {
+    let f = test.data.view()[k].view();
+    let z = zlen(f);
+    let db = cat(dict.view(), f);
+    let ds = cat(small.view(), f);
+    let zb = zlen(db.view());
+    let zs = zlen(ds.view());
+    let wb = if zb > baseBig { zb - baseBig } else { 0usize };
+    let ws = if zs > baseSmall { zs - baseSmall } else { 0usize };
+    plainZ += z;
+    plainG += glen(f);
+    withDictBig += wb;
+    withDictSmall += ws;
+    // the same text as a dictionary file? then it is no test of a dictionary
+    var same = false;
+    var j = 0usize;
+    while j < c.names.len() {
+      let n = c.names.view()[j].view();
+      if n.len > 10usize && &n[0usize ..< 10usize] == "horseworld" && c.data.view()[j].view() == f { same = true; }
+      j += 1usize;
+    }
+    // a file whose name no dictionary file has: nothing in the dictionary is a version of it
+    let mine = baseOf(test.names.view()[k].view());
+    var named = false;
+    var q = 0usize;
+    while q < c.names.len() {
+      let n = c.names.view()[q].view();
+      if n.len > 10usize && &n[0usize ..< 10usize] == "horseworld" && baseOf(n) == mine { named = true; }
+      q += 1usize;
+    }
+    if !named {
+      novelText += f.len;
+      novelZ += z;
+      novelBig += wb;
+      novelSmall += ws;
+    }
+    if same { dups += 1usize; } else {
+      distinctText += f.len;
+      distinctZ += z;
+      distinctBig += wb;
+    }
+    solid.appendSlice(f);
+    k += 1usize;
+  }
+  line("each file gzip -6 alone", plainG, text);
+  line("each file zstd -3 alone", plainZ, text);
+  line("each file zstd -3 with the whole dictionary as history (estimate)", withDictBig, text);
+  line("each file zstd -3 with only the dictionary's files of 4 KiB or less (estimate)", withDictSmall, text);
+  line("all the files as one zstd -3 frame (the most a dictionary could hope for from these files themselves)", zlen(solid.view()), text);
+  printStr("of the files measured, ");
+  printUInt(u64.from(dups));
+  printStr(" are byte for byte a dictionary file (the shaders). Without them: text ");
+  printUInt(u64.from(distinctText));
+  printStr(", alone ");
+  printUInt(u64.from(distinctZ));
+  printStr(", with the dictionary ");
+  printUInt(u64.from(distinctBig));
+  printStr(" bytes\n");
+  printStr("the files whose name no dictionary file has (nothing in the dictionary is a version of them): text ");
+  printUInt(u64.from(novelText));
+  printStr(", alone ");
+  printUInt(u64.from(novelZ));
+  printStr(", with the whole dictionary ");
+  printUInt(u64.from(novelBig));
+  printStr(", with the small-files dictionary ");
+  printUInt(u64.from(novelSmall));
+  printStr(" bytes\n");
+  printStr("the archive's cost in headers: about ");
+  printUInt(u64.from(30usize + 46usize + 40usize));
+  printStr(" bytes a file, so a dictionary saves more than that or it does not pay\n");
+}
+
+// ---------------------------------------------------------------------------
+// The server: GET /zip/<z|g> is the archive; /file/<z|g>/<i> is file i with its Content-Encoding
+// ---------------------------------------------------------------------------
+
+let wire: Atomic[u64];
+let peak: Atomic[u64];
+
+fn @initpure init() {
+  wire = Atomic[u64].of(0u64);
+  peak = Atomic[u64].of(0u64);
+}
+
+fn sample(extra: u64) {
+  let l = u64.from(iobuf.stats().lentBytes) + extra;
+  if l > peak.load() { peak.store(l); }
+}
+
+actor Handler {
+  ex: Exchange;
+  body: List[u8];
+  coding: String;
+
+  pub async fn run(self) {
+    var head = ResponseHead.make(200u16);
+    if coding.len() > 0usize { head.headers.add("Content-Encoding", coding.view()); }
+    ex.start(head, BodyLength.sized(u64.from(body.len())));
+    var at = 0usize;
+    var going = true;
+    while going && at < body.len() {
+      let left = body.len() - at;
+      let m = if left < blockSize { left } else { blockSize };
+      let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
+      match w {
+        case is Ok { at += m; wire.add(u64.from(m)); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  zipZ: List[u8];
+  zipG: List[u8];
+  zipBig: List[u8];
+  filesZ: List[List[u8]];
+  filesG: List[List[u8]];
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) { server <-> *ok; }
+      case let &mut Err(e) { printStr("listen failed\n"); }
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let path = String.from(ok.request.path());
+          let p = path.view();
+          var body = List[u8]();
+          var coding = String();
+          if p == "/zip/z" { body = zipZ.clone(); }
+          else if p == "/zip/g" { body = zipG.clone(); }
+          else if p == "/zip/big" { body = zipBig.clone(); }
+          else if p.len > 8usize && &p[0usize ..< 8usize] == "/file/z/" {
+            let i = usize.from(u64.parse(&p[8usize ..]) || 0u64);
+            body = filesZ.view()[i].clone();
+            coding = String.from("zstd");
+          } else if p.len > 8usize && &p[0usize ..< 8usize] == "/file/g/" {
+            let i = usize.from(u64.parse(&p[8usize ..]) || 0u64);
+            body = filesG.view()[i].clone();
+            coding = String.from("gzip");
+          }
+          let h = Handler(ok, body, coding);
+          h.run();
+        }
+        case let Err(e) { break; }
+      }
+    }
+  }
+
+  pub async fn stop(self) { server.close(); }
+}
+
+// ---------------------------------------------------------------------------
+// Where the results are collected
+// ---------------------------------------------------------------------------
+
+// Counts files as they complete (good or not) and sends, when all are in or the run is abandoned:
+// the time of the first, the time of the last (ns), bytes counted, files wrong or missing
+actor Collector {
+  t0: Instant;
+  expected: usize;
+  seen: usize;
+  first: u64;
+  last: u64;
+  bytes: u64;
+  bad: u64;
+  sent: bool;
+  quit: Option[CancelGroup];
+  quitAt: usize;
+  out: Sender[u64];
+
+  pub fn init(self: &new, expected: usize, quit: Option[CancelGroup], quitAt: usize, out: Sender[u64]) {
+    *self = Self(t0: Instant.now(), expected: expected, seen: 0usize, first: 0u64, last: 0u64, bytes: 0u64, bad: 0u64,
+      sent: false, quit: quit, quitAt: quitAt, out: out);
+  }
+
+  // Restarts the clock at a time the caller took, so set-up the other modes lack (the watcher thread) stays out of it
+  pub async fn start(self, at: Instant) {
+    t0 = at;
+  }
+
+  fn report(self: &mut) {
+    if sent { return; }
+    sent = true;
+    out.send(first);
+    out.send(last);
+    out.send(bytes);
+    out.send(bad + u64.from(expected - seen));
+  }
+
+  pub async fn file(self, ok: bool, n: u64) {
+    let ns = u64.from(t0.elapsed().nanos());
+    seen += 1usize;
+    if ok {
+      if first == 0u64 { first = ns; }
+      last = ns;
+      bytes += n;
+    } else {
+      bad += 1u64;
+    }
+    if seen == quitAt {
+      match &quit {
+        case let &Some(g) { g.cancel(); }
+        case is None {}
+      }
+    }
+    if seen >= expected { self.report(); }
+  }
+
+  // The run ended without all its files (cancelled, or failed): report what there is
+  pub async fn abandoned(self) { self.report(); }
+}
+
+// ---------------------------------------------------------------------------
+// The sinks
+// ---------------------------------------------------------------------------
+
+// The archive's files go to a CheckSink each, made by this function for the n-th entry: the n-th file's
+// hash and size, or ones that no file has when the archive holds more entries than the corpus
+fn entryOpener(hashes: List[u64], sizes: List[u64], col: Collector) Uni[fn(e: &zipfile.Local) ChunkSink + Sendable] {
+  Uni[fn(e: &zipfile.Local) ChunkSink + Sendable](fn(e: &zipfile.Local) [hashes, sizes, col, var next = 0usize] ChunkSink {
+    let k = next;
+    next += 1usize;
+    if k < hashes.len() {
+      asSink(CheckSink(*hashes[k], *sizes[k], col.clone()))
+    } else {
+      asSink(CheckSink(1u64, 1u64, col.clone()))
+    }
+  })
+}
+
+fn asSink(s: ChunkSink) ChunkSink { s }
+
+// Waits, on a thread, for the archive stage's one answer: an archive that failed leaves the run
+// abandoned (its remaining files will never come)
+struct Watch {
+  rx: OneshotReceiver[Result[u64, AnyError]];
+  col: Collector;
+}
+
+fn watch(var w: Watch) u64 {
+  match w.rx.recv() {
+    case let Some(r) {
+      match r {
+        case is Ok {}
+        case is Err { w.col.abandoned(); }
+      }
+    }
+    case is None { w.col.abandoned(); }
+  }
+  0u64
+}
+
+// One file's chunks, checked
+actor CheckSink is ChunkSink {
+  want: u64;
+  size: u64;
+  col: Collector;
+  up: Option[ChunkSource];
+  h: u64;
+  n: u64;
+
+  pub fn init(self: &new, want: u64, size: u64, col: Collector) {
+    *self = Self(want: want, size: size, col: col, up: None[ChunkSource], h: 0u64, n: 0u64);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    let v = c.view();
+    var i = 0usize;
+    while i < v.len { h = mix(h, v[i]); i += 1usize; }
+    n += u64.from(v.len);
+    sample(0u64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    var ok = n == size && h == want;
+    match how {
+      case is Finished {}
+      case is Failed { ok = false; }
+    }
+    col.file(ok, n);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The fetchers
+// ---------------------------------------------------------------------------
+
+actor ZipStreamer {
+  client: Client;
+
+  pub async fn run(self, url: String, sink: ChunkSink, g: CancelGroup, lim: bool, col: Collector) {
+    var req = Request.get(url.view());
+    let r = await client.streamToIn(req, sink, if lim { IoLimits.within(g) } else { IoLimits.none() });
+    match r {
+      case is Ok {}
+      case is Err { col.abandoned(); }
+    }
+  }
+}
+
+actor ZipWhole {
+  client: Client;
+
+  pub async fn run(self, url: String, hashes: List[u64], sizes: List[u64], col: Collector) {
+    let r = await client.get(url.view());
+    match &r {
+      case let &Ok(resp) {
+        sample(u64.from(resp.body.len()));
+        match zipfile.Archive.open(resp.body.view()) {
+          case let Ok(ar) {
+            var i = 0usize;
+            while i < ar.count() {
+              match ar.read(resp.body.view(), i) {
+                case let Ok(bytes) {
+                  col.file(i < hashes.len() && u64.from(bytes.len()) == *sizes[i] && hashOf(bytes.view()) == *hashes[i], u64.from(bytes.len()));
+                }
+                case let Err(e) { col.file(false, 0u64); }
+              }
+              i += 1usize;
+            }
+          }
+          case let Err(e) { col.abandoned(); }
+        }
+      }
+      case let &Err(e) { col.abandoned(); }
+    }
+  }
+}
+
+actor FileFetcher {
+  client: Client;
+
+  pub async fn run(self, url: String, d: Decoder, g: CancelGroup, lim: bool) {
+    var req = Request.get(url.view());
+    if lim { req.group = Some[CancelGroup](g); }
+    let r = await d.open(client.clone(), req);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One run
+// ---------------------------------------------------------------------------
+
+struct Result3 {
+  first: u64;
+  last: u64;
+  bytes: u64;
+  bad: u64;
+  peak: u64;
+  wire: u64;
+  ok: bool;
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn fileUrl(port: u16, z: bool, i: usize) String {
+  var p = String.from(if z { "/file/z/" } else { "/file/g/" });
+  p.appendUInt(u64.from(i));
+  url(port, p.view())
+}
+
+fn lent() u64 { u64.from(iobuf.stats().lentBytes) }
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit { thread.sleep(Duration.fromMillis(5i64)); }
+  lent() == 0u64
+}
+
+// mode 0 zip-stream, 1 zip-whole, 2 files. cancelAt 0: no cancel
+fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], sizes: &List[u64], cancelAt: usize) Result3 {
+  peak.store(0u64);
+  wire.store(0u64);
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let g = CancelGroup.make();
+  let n = hashes.len();
+  let col = Collector(n, if cancelAt > 0usize { Some[CancelGroup](g) } else { None[CancelGroup] }, cancelAt, tx);
+  if mode == 0u32 {
+    var atx: OneshotSender[Result[u64, AnyError]];
+    var arx: OneshotReceiver[Result[u64, AnyError]];
+    atx, arx = Oneshot[Result[u64, AnyError]].make();
+    // The watcher's thread starts before the clock: the timed window holds the stage, as the other modes hold their fetch
+    let th = thread.start(Watch(arx, col.clone()), &watch);
+    th.detach();
+    col.start(Instant.now());
+    let sink = ArchiveStage(entryOpener(hashes.clone(), sizes.clone(), col.clone()), atx);
+    let f = ZipStreamer(client.clone());
+    f.run(url(port, if cancelAt > 0usize { "/zip/big" } else if z { "/zip/z" } else { "/zip/g" }), sink, g, cancelAt > 0usize, col);
+  } else if mode == 1u32 {
+    let f = ZipWhole(client.clone());
+    f.run(url(port, if z { "/zip/z" } else { "/zip/g" }), hashes.clone(), sizes.clone(), col);
+  } else {
+    var i = 0usize;
+    while i < n {
+      let d = Decoder(CheckSink(*hashes[i], *sizes[i], col), 1073741824usize);
+      let f = FileFetcher(client.clone());
+      f.run(fileUrl(port, z, i), d, g, cancelAt > 0usize);
+      i += 1usize;
+    }
+  }
+  let first = rx.recv() || 0u64;
+  let last = rx.recv() || 0u64;
+  let bytes = rx.recv() || 0u64;
+  let bad = rx.recv() || 0u64;
+  let pk = peak.load();
+  let w = wire.load();
+  Result3(first, last, bytes, bad, pk, w, bad == 0u64)
+}
+
+fn modeName(m: u32) &str { if m == 0u32 { "zip-stream" } else if m == 1u32 { "zip-whole " } else { "files     " } }
+
+fn median(v: &List[u64]) u64 {
+  var s = List[u64]();
+  var q = 0usize;
+  while q < v.len() { s.push(*v[q]); q += 1usize; }
+  var i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && *s[j - 1usize] > *s[j] { s.swap(j - 1usize, j); j -= 1usize; }
+    i += 1usize;
+  }
+  if s.len() == 0usize { 0u64 } else { *s[s.len() / 2usize] }
+}
+
+fn certs(dir: &str, name: &str) Path {
+  var p = String.from(dir);
+  p.append("/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn trusting(dir: &str) Client {
+  var text = String();
+  match fs.readFile(&certs(dir, "ca.pem")) {
+    case var Ok(r) { text <-> r; }
+    case let Err(e) { printStr("cannot read the test certificates\n"); }
+  }
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(text.view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = true;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn cstring(p: *u8) String {
+  var b = List[u8]();
+  var q = p;
+  while *q != 0u8 { b.push(*q); q = q + 1usize; }
+  String.fromBytes(b.view())
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var part = 97u8;
+  var rounds = 5u32;
+  var root = String.from("C:/src/pegasus3d/examples");
+  var certDir = String.from("packages/tls/tests/certs");
+  if argc > 1i32 { part = **(argv + 1usize); }
+  if argc > 2i32 { rounds = digits(*(argv + 2usize)); }
+  if argc > 3i32 { root = cstring(*(argv + 3usize)); }
+  if argc > 4i32 { certDir = cstring(*(argv + 4usize)); }
+  let corpus = load(root.view());
+  if corpus.names.len() == 0usize {
+    printStr("no files found under ");
+    printStr(root.view());
+    printStr("\n");
+    return 1i32;
+  }
+  printStr("files: ");
+  printUInt(u64.from(corpus.names.len()));
+  printStr(", ");
+  printUInt(u64.from(total(&corpus)));
+  printStr(" bytes of text\n");
+  let wantDict = part == 97u8 || part == 100u8;
+  let wantRun = part == 97u8 || part == 114u8;
+  let wantCancel = part == 97u8 || part == 99u8;
+  if wantDict { dictMeasure(&corpus); }
+  if !wantRun && !wantCancel { return 0i32; }
+
+  // what the server holds, and what the sinks check
+  var hashes = List[u64]();
+  var sizes = List[u64]();
+  var wz = zipfile.ZipWriter.make();
+  var wg = zipfile.ZipWriter.make();
+  var filesZ = List[List[u8]]();
+  var filesG = List[List[u8]]();
+  var i = 0usize;
+  while i < corpus.names.len() {
+    let d = corpus.data.view()[i].view();
+    hashes.push(hashOf(d));
+    sizes.push(u64.from(d.len));
+    _ = wz.add(corpus.names.view()[i].view(), d, &zipfile.EntryOptions.zstd(3i32));
+    _ = wg.add(corpus.names.view()[i].view(), d, &zipfile.EntryOptions.deflated(2i32));
+    filesZ.push(zstd.compress(d, 3i32));
+    filesG.push(deflate.gzipCompress(d, 6i32));
+    i += 1usize;
+  }
+  // the cancelled archive run: the corpus eight times over, the files named by round
+  var bigHashes = List[u64]();
+  var bigSizes = List[u64]();
+  var wb = zipfile.ZipWriter.make();
+  var rep = 0u32;
+  while rep < 8u32 {
+    var k = 0usize;
+    while k < corpus.names.len() {
+      var nm = String.from("r");
+      nm.appendUInt(u64.from(rep));
+      nm.append("/");
+      nm.append(corpus.names.view()[k].view());
+      _ = wb.add(nm.view(), corpus.data.view()[k].view(), &zipfile.EntryOptions.zstd(3i32));
+      bigHashes.push(*hashes[k]);
+      bigSizes.push(*sizes[k]);
+      k += 1usize;
+    }
+    rep += 1u32;
+  }
+  var zipBig = List[u8]();
+  match wb.bytes() { case let Ok(b) { zipBig = b; } case let Err(e) { printStr("big archive failed\n"); return 1i32; } }
+  var zipZ = List[u8]();
+  var zipG = List[u8]();
+  match wz.bytes() { case let Ok(b) { zipZ = b; } case let Err(e) { printStr("zstd archive failed\n"); return 1i32; } }
+  match wg.bytes() { case let Ok(b) { zipG = b; } case let Err(e) { printStr("deflate archive failed\n"); return 1i32; } }
+  printStr("archive: zstd ");
+  printUInt(u64.from(zipZ.len()));
+  printStr(" bytes, deflate ");
+  printUInt(u64.from(zipG.len()));
+  printStr(" bytes\n");
+
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var failed = false;
+  var firsts = List[List[u64]]();
+  var alls = List[List[u64]]();
+  var peaks = List[List[u64]]();
+  var wires = List[List[u64]]();
+  var c = 0usize;
+  while c < 6usize { firsts.push(List[u64]()); alls.push(List[u64]()); peaks.push(List[u64]()); wires.push(List[u64]()); c += 1usize; }
+  {
+    let certFile = certs(certDir.view(), "server.pem");
+    let keyFile = certs(certDir.view(), "server.key");
+    let acceptor = Acceptor(Server.none(), zipZ, zipG, zipBig, filesZ, filesG);
+    acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2(), ptx);
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    let client = trusting(certDir.view());
+    // one throwaway fetch: the connection is made and the first-use costs paid before any run is timed
+    if wantRun {
+      var r = 0u32;
+      while r <= rounds {
+        var m = 0u32;
+        while m < 3u32 {
+          var cz = 0u32;
+          while cz < 2u32 {
+            let res = runOnce(&client, port, m, cz == 0u32, &hashes, &sizes, 0usize);
+            if !res.ok { failed = true; }
+            if r > 0u32 {
+              let slot = usize.from(m * 2u32 + cz);
+              firsts[slot].push(res.first / 1000u64);
+              alls[slot].push(res.last / 1000u64);
+              peaks[slot].push(res.peak / 1024u64);
+              wires[slot].push(res.wire);
+            }
+            printStr(if r == 0u32 { "(warm-up) " } else { "" });
+            printStr(modeName(m));
+            printStr(if cz == 0u32 { " zstd" } else { " gzip" });
+            printStr(": first ");
+            printUInt(res.first / 1000u64);
+            printStr(" us, all ");
+            printUInt(res.last / 1000u64);
+            printStr(" us, peak lent ");
+            printUInt(res.peak / 1024u64);
+            printStr(" KiB, body bytes on the wire ");
+            printUInt(res.wire);
+            printStr(", files wrong or missing ");
+            printUInt(res.bad);
+            printStr("\n");
+            cz += 1u32;
+          }
+          m += 1u32;
+        }
+        r += 1u32;
+      }
+      printStr("-- medians of ");
+      printUInt(u64.from(rounds));
+      printStr(" rounds (microseconds, KiB, bytes) --\n");
+      var m = 0u32;
+      while m < 3u32 {
+        var cz = 0u32;
+        while cz < 2u32 {
+          let slot = usize.from(m * 2u32 + cz);
+          printStr(modeName(m));
+          printStr(if cz == 0u32 { " zstd" } else { " gzip" });
+          printStr("  first ");
+          printUInt(median(&firsts[slot]));
+          printStr("  all ");
+          printUInt(median(&alls[slot]));
+          printStr("  peak ");
+          printUInt(median(&peaks[slot]));
+          printStr("  wire ");
+          printUInt(median(&wires[slot]));
+          printStr("\n");
+          cz += 1u32;
+        }
+        m += 1u32;
+      }
+    }
+    if wantCancel {
+      printStr("-- cancelled half-way (the group cancelled when half the files are in) --\n");
+      var m = 0u32;
+      while m < 3u32 {
+        if m != 1u32 {
+          // the archive run uses the corpus eight times over (a body well past the window), the fetches the corpus
+          let big = m == 0u32;
+          let hs = if big { &bigHashes } else { &hashes };
+          let ss = if big { &bigSizes } else { &sizes };
+          let res = runOnce(&client, port, m, true, hs, ss, hs.len() / 2usize);
+          let home = allHome();
+          printStr(modeName(m));
+          printStr(": files good before the end ");
+          printUInt(u64.from(hs.len()) - res.bad);
+          printStr(" of ");
+          printUInt(u64.from(hs.len()));
+          printStr(", every buffer home ");
+          printStr(if home { "yes" } else { "NO" });
+          printStr(" (");
+          printUInt(lent());
+          printStr(" bytes lent)");
+          printStr("\n");
+          if !home { failed = true; }
+        }
+        m += 1u32;
+      }
+    }
+    acceptor.stop();
+  }
+  finalAll();
+  if failed {1i32} else {0i32}
+}

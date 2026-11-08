@@ -26,7 +26,7 @@ claim that these rule rather than describe.**
    list (parameters, arguments, a tuple, type arguments, an array literal) and
    cleared inside a block: a comma after a signature's return type there
    continues the list, so `(f &fn(u32) u32, x u32)` is two parameters, while
-   outside every list it adds a return type (`fn ceil(x i32) i32, i32`).
+   outside every list it adds a return type (`fn ceil(x: i32) i32, i32`).
 2. **The lexer is line-blind.** It counts lines for diagnostics and nothing
    else: a block is delimited by braces and a statement ends at `;`, so
    indentation, line ends and columns carry no meaning to the grammar. ▸
@@ -39,19 +39,23 @@ claim that these rule rather than describe.**
 3. **The parser desugars.** `match`, `each` over a numeric range, `while`,
    `with`, bound patterns and several prefix forms are lowered here into blocks
    and `if` chains. ▸ **Settles** that later phases never see those forms, so a
-   new sugar costs no node, no dispatch arm and no phase work. The one sugar that
-   cannot be finished here is an `each` over anything but a range: how it walks
+   new sugar costs no node, no dispatch arm and no phase work. Two sugars
+   cannot be finished here. An `each` over anything but a range: how it walks
    its source is the source's type's to say, so the parser builds a block marked
    `FlagEach` that type check finishes ([Block](../nodes/block.md), "Type check").
+   And `x?`: whether `x` is a Result or an Option, and what the function returns,
+   say what its test and early return are, so the parser builds a block marked
+   `FlagPropagate` holding `x` in a hidden variable, which type check finishes
+   (`propagateLower`, `ir/exp/propagate.h`). A `try` block is that too: its type
+   is what is wanted of it or what its `?`s take, so the parser marks the block
+   `FlagTry` (`parseTry`) and type check wraps its success and aims its `?`s at it.
    A header `if`, a trailing `if` on `break`, `continue` and `return`, and a
    loop's `else` are desugared here too, into `continue`, an `if` arm and the
    loop's exit ([Block](../nodes/block.md), "Parse").
    `parallel each` is the same block with `FlagParallel` beside it; `parallel` is
    the word only where `each` directly follows it, and a name anywhere else.
-   The one thing the parser refuses of a source is its spelling: `&mut src`
-   written as the source of any `each` is `ErrorEachMutSource`, since the
-   spelling alone says the loop is meant to change items, which only
-   `src.mutItems()` does.
+   The parser takes any expression as the source; what a borrow written there
+   means is type check's (`eachLower`).
 4. **The parser binds module-level names.** Module namespaces are populated,
    hooked into the global name table, and duplicate-checked *during* parsing. ▸
    **This is what lets name resolution have no lookup routine** — by the time it
@@ -66,8 +70,8 @@ boundary with name resolution earlier than expected.
 one current token — `toktype`, a value union, and `langtype` for a literal's
 explicit type suffix. There is no peek, no pushback, no token buffer. The parser
 is strictly LL(1) at the token level. What lookahead exists is character-level
-inside the scanner: a few characters for maximal-munch operators (`<=>`, `+[]`,
-`&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
+inside the scanner: a few characters for maximal-munch operators (`<->`, `<=>`,
+`+[]`, `&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
 run and then checks for a closing `'` to tell a lifetime (`'a`) from a character
 literal. Two reach past the current token, still at the character level and
 lexing nothing. `lexNextIsWord` reads the source after it for a keyword, which
@@ -77,24 +81,26 @@ next statement after a missing `;`, which is still reported as the missing `;`.
 Only white space may come between the two words. The other is
 `lexIdentOpensType`, asked of a name in a `&fn` signature's parameter list,
 where a parameter may be written as its type alone: a name followed by `.` or
-by a `[` whose brackets hold no `;` of their own begins a type (`geomath.Vec3`,
-`List[i32]`, `Array[i32, 4]`) rather than naming a parameter followed by the
-old array type's brackets (`xs [4; i32]`, which name resolution refuses as a
-type). A third, `lexNextOpensValue`, is asked of `fill` at the start of an
+by a `[` begins a type (`geomath.Vec3`, `List[i32]`, `Array[i32, 4]`), since a
+parameter that is named has a `:` after its name. A third, `lexNextOpensValue`, is asked of `fill` at the start of an
 entry after `<-` (section 3): it is the word when white space and then
 something that begins a value follow it, so `fill(3)`, `fill[0]`, `fill.n`,
 `fill + 1` and `fill of 3` keep `fill` a name; after the space, a token that
 could go either way (`-`, `*`, `&`, `(`, `[`) is taken as the value's.
 
-**`..` and `..<` are the range tokens** (`DotDotToken`, `DotDotLessToken`), read by a
+**`..=` and `..<` are the range tokens** (`DotDotEqToken`, `DotDotLessToken`), read by a
 match's range pattern, by an index (`parseIndexArgs`) and by an `each` over a number
-range: `..` runs through its end and `..<` stops before it. `x[a..b]` is held as the
+range: `..=` runs through its end and `..<` stops before it. `x[a..=b]` is held as the
 index with `FlagRange`, its arguments the start (a `usize` 0 when none is written) and
-the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..`;
-`x[a..]` runs to the end, and `x[a..<]` is `ErrorBadIndex`. `...` is lexed
-(`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
-on as `..`. A number stops scanning at a `..`, so `0..<3` is two integers and a range, not
-the float `0.`.
+the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..=`;
+`x[a..]` runs to the end, and `x[a..<]` and `x[a..=]` are `ErrorBadIndex`. A bare `..`
+(`DotDotToken`) is lexed and says nothing about its end, so it is a range operator only
+where no end follows (`x[a..]` runs to the end, `x[..]` is the whole); before an end, in an
+index (`x[a..b]`, `x[..b]`), a pattern or an `each`, it is `ErrorRangeBare`
+(`parseRangeBare`), pointed at the `..` and read on as `..=`. `...` is
+lexed (`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
+on as `..=`. A number stops scanning at a `..`, so `0..<3` and `0..=3` are two integers and
+a range, not the float `0.`.
 
 **A number straight after a `.` is an integer only.** `lexScanNumber` looks at
 the token before it: after a `DotToken` the number names a tuple element, so it
@@ -106,8 +112,8 @@ stops at a `.` and reads no exponent, and `t.1.0` is element 0 of element 1 and
 taken a decimal point or an exponent (`isFloat` is set) a further `.` ends the number, so the
 `.` of `25.0.sqrt()`, `1e2.sqrt()` and `0x1p4.sqrt()` is the method call's. A `.` straight
 after integer digits is a decimal point (`3.` is the float 3.0) unless `lexDotStartsMember`
-sees another `.` or a name after it: `1..4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
-are calls. A float suffix is no name (`1.d`, `0.f`, `1.f32` and `1.f64` stay floats, which
+sees another `.` or a name after it: `1..=4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
+are calls. A float suffix is no name (`0.f`, `1.f32` and `1.f64` stay floats, which
 packages use widely). In a hex literal a name of hex digits alone is a call (`0x1f.foo`)
 unless the hex float's `p` follows it (`0x1.Ep2` is a float). `lexical_float_method` holds
 the floats and `lexical_reject_int_method` the calls (integers have no such methods, so it
@@ -159,16 +165,36 @@ carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
 `lexical_reject_overflow` holds the boundary in both bases.
 
-**A float literal must fit the type its suffix gives it.** Its type is decided
-here — `f32` unless suffixed `d` or `f64` — and nothing later changes it, so a
-value past that type's range would be generated as infinity. `lexScanNumber`
+**`0b` and `0o` are integer prefixes beside `0x`, on the same scan.** `lexScanNumber` sets
+`base` to 2 or 8 (and `radix`, the word the messages use) and runs the loop it runs for 16:
+the same `_` separators, the same accumulation and overflow rule, the same suffixes, and an
+upper-case prefix letter as `0X` is. What the radix adds is refusals, each at the character
+that causes it through `lexRadixError`, which moves the token position there for the report:
+a digit past the radix, and no digit at all (`ErrorRadixDigit`, the latter at the prefix's
+letter), and a `.` that is no member access or range, an `e`/`E` that a digit follows, a `p`/`P`
+or an `f` suffix (`ErrorRadixFloat`), which would otherwise make a float read back from
+the literal's own spelling (`atof("0o7")` is 0). Hex's `e` is a digit and its `p` an
+exponent; a binary or octal literal has neither. A literal reported once is finished as the
+integer 0 with an unsuffixed type, so nothing after it is reported twice, and the digits
+are still all consumed so the token ends where it should. `lexDotStartsMember` needs no case
+for them: a `.` before a name is a call and `..=` or `..<` a range, as after any integer.
+`lexical_literals_radix` holds the values and `lexical_reject_radix` the refusals;
+`typemgmt_typecheck_litrange` holds the range rule, which reads the spelling.
+
+**A float literal must fit the type its suffix gives it.** With a suffix its type is
+decided here — `f32` for `f` and `f32`, `f64` for `f64` — and nothing later changes it, so
+a value past that type's range would be generated as infinity. `lexScanNumber`
 refuses one (`ErrorFloatRange`), rounding to `f32` as generation does, so a
-value just past `f32`'s maximum that rounds down to it still fits.
+value just past `f32`'s maximum that rounds down to it still fits. With no suffix the lexer
+passes `unknownType` on and the literal is an `f64` that a place may make an `f32`
+(literals.md), so only `f64`'s range is judged here. The retired `d` suffix is not
+read: the `d` is a name after a finished number, and refused where a name cannot follow
+(`lexical_reject_d_suffix`).
 `lexical_reject_float_range` holds the boundary. A value too small for the type
 is not refused: it rounds to zero or to a subnormal.
 
 **A string literal whose opening quote ends its line is a multi-line string
-literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
+literal**, read by the rules of `doc/manual/syntax-lexical.html#multiline`, "Multi-line String
 Literals". `lexScanString` finds the closing quote first, stepping over each
 escape sequence whole, and takes its indentation — the spaces and tabs before it
 on its line — as the literal's margin. `lexStringMargin` reads the start of
@@ -188,9 +214,17 @@ margin is then empty. This replaced stripping whatever indentation a line had,
 up to the closing quote's count with a tab counted as one. `lexical_mlstring`
 and `lexical_mlstring_crlf` hold the rules, `lexical_mlstring_margin` the
 margin; `lexical_reject_mlstring` and `lexical_reject_mlstring_margin` the
-refusals. A literal that spans lines
-without its opening quote ending one is read as before: its line ends and the
-spaces and tabs that begin each next line are dropped.
+refusals. A literal with text after its
+opening quote that runs on to another line is neither a multi-line literal nor a
+one-line one: `lexScanString` reports `ErrorBadTok` at the opening quote, saying
+the text must start on the next line, found by the same sizing walk that finds
+the closing quote (an escape stepped over whole, so an escaped quote is not taken
+for it). The build still reads the literal as it did, dropping its line ends and
+the spaces and tabs that begin each next line, so what follows lexes unchanged.
+A backslash at a line's end inside the literal already has its own error
+(`lexScanEscape`), and the walk stops there without adding this one: one mistake,
+one diagnostic. `lexical_reject_mlstring_open` holds the refusal and
+`lexical_mlstring_open` the legal forms beside it.
 
 **A raw tab in a literal is content; every other raw control character is
 refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
@@ -204,9 +238,9 @@ control character 0x01 raw, where it cannot be seen: write it as \x01". The
 string leaves it out; the character literal takes it as its value, so the
 literal still closes. Before, a one-line string dropped every control
 character silently, a tab included, but kept 0x7F; a character literal took
-any as its value. A line end is not in this rule: a string that spans lines
-drops it (above), a multi-line string makes it a new-line, and a character
-literal refuses it in its own words (below). Dropping the white space after a
+any as its value. A line end is not in this rule: a multi-line string makes it
+a new-line, text after the opening quote that runs on to another line is
+refused (above), and a character literal refuses it in its own words (below). Dropping the white space after a
 line end used to skip further line ends uncounted as well, so a blank line
 inside such a string put every later diagnostic a line early; the white space
 dropped is now spaces and tabs only, and each line is counted. `lexical_raw_tab`
@@ -342,8 +376,13 @@ token type. Permissions reach the same effect by a different route:
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
 keyword tokens — copy the right one of these two patterns if you add a third
-family. The permission `new` is the exception: `new` is a keyword token
-(`NewToken`), since it also begins a construction, and `newPerm` is not bound
+family. `let` and `var` are keywords (`LetToken`, `VarToken`): the words a
+declaration begins with, which `parseDclWord` turns into the `imm` and `mut`
+permissions the rest of the compiler knows. Every place that decides a declaration
+starts here asks `lexIsDclStart`, which also accepts a `PermToken`, so that an
+`imm` or `mut` written where a declaration's word belongs is reported with the
+word to write instead (`ErrorDclWord`) and the declaration still parses. The permission `new` is the exception: `new` is a keyword token
+(`NewToken`), since it also names a dynamic region, and `newPerm` is not bound
 to its name. Being no identifier, a permission is no term either: inside `[...]`,
 where `Rc[mut, Node]` writes one, `parseIndexArg` takes it as the permission
 it names. To the language they are reserved words all the same: the manual lists
@@ -356,16 +395,24 @@ by it.
 **Every token the lexer returns has a reader.** A spelling no feature reads is
 reported in the lexer and never reaches the parser, because a token nothing
 consumes is a cascade of parse errors behind it. Three are refused this way, each
-with one diagnostic. An attribute is a keyword (`@opaque`, `@unsized`, `@c`, `@initpure`, `@intrinsic`, `@threadlocal`, `@workgroup`, `@compute`),
+with one diagnostic. An attribute is a keyword (`@opaque`, `@unsized`, `@mustUse`, `@c`, `@initpure`, `@intrinsic`, `@threadlocal`, `@workgroup`, `@compute`),
 so any other `@` word is `ErrorUnkAttr` and is dropped, the declaration read
 without it. Two get their own wording because they were once attributes:
 `@samesize`, since an enum is same-size by default and `@unsized` declines it,
 and `@move`, since move-ness became the built-in trait `Move`, declared with
 `is`. **An attribute is an instruction to the compiler about representation or
 linkage that no code asks about; a fact other code may ask about or constrain
-on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays. A `#` word is held for metaprogramming:
-`ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
-was followed by is not reported again. `?.` is held for None propagation:
+on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays.
+`@mustUse` [Jon 26 Oct] is the one that asks nothing of layout: after a struct's or
+an enum's keyword (`parseStruct`, `StructNode.mustuse`), it asks the compiler to
+warn at a statement that drops a value of the type (`discard.h`). A `#` word is a keyword
+where the meta layer means it (`#if`, `#elif`, `#else`, `#os`, `#arch`, `#debug`, `#defined`,
+`#define`, section 6) and is held for metaprogramming anywhere else:
+`ErrorReserved`, and it is dropped with the rest of its line, so what `#each`
+was followed by is not reported again. In a `#if` condition only the word is dropped
+(`lexInHashCond`), since the block the condition ends in is on its line, and the
+condition's reader goes on quietly past it (`lexHashDropped`). `?.` is held [Jon 26 Oct]: a member of
+what `?` gives is written `(a?).b`, which the message says. It is
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
 `lexical_reject_unbuilt` holds all three.
@@ -380,8 +427,9 @@ tells apart by the word after `mod` and hands to `parseModTrait`
 ([module](../nodes/module.md), "Module traits").
 `actor` builds one too, the declarations an actor stands for (section 6),
 and its arm tells `actor trait`, the actor's abstraction, apart by the word
-after `actor` and reports it `ErrorUnbuiltKind` where it is written. An in-file
-`mod name { ... }` block is refused in source under that code too, though it is
+after `actor` and hands it to `parseActorTrait`, which builds the declarations
+an actor trait stands for (section 6). An in-file
+`mod name { ... }` block is refused in source with `ErrorUnbuiltKind`, though it is
 no unbuilt shape: it does not exist there, since a nested module is a file of
 its own or a subfolder. A generated include file alone writes one, for each of
 the package's submodules it reaches, and `parseModuleBlock` parses it as a
@@ -405,28 +453,55 @@ read the rest through as the thin form.
 
 ### Blocks and statement ends
 
-A block is `{`, statements, `}`. A statement that does not end in a block ends
-at `;`, and nothing stands in for the `;`: not the end of a line, not the `}`
-that closes the block, not the end of the file. The lexer records no
+A block is `{`, statements, `}`. A `;` is a delimiter between statements: `A; B; C`
+is three statements, and the block's value is the last, C. A statement that does not
+end in a block is delimited by a `;`, and nothing stands in for the `;`: not the end
+of a line, not the end of the file, and, but for a block's last line (below), not the
+`}` that closes the block. The lexer records no
 indentation and no column; `lexNewLine` counts the line for diagnostics and
 that is all, so a statement runs on across lines until its `;` arrives, and an
 operator that starts a line — `-`, `*`, `&`, `.`, `(`, `[`, each of which also
-reads as a prefix — continues the expression before it. The `;` before a
-closing `}` is required like any other; a block's value is its last
-statement's value with or without one (see [block](../nodes/block.md)), so
-requiring it costs nothing.
+reads as a prefix — continues the expression before it.
 
-**Whose rule, and why.** Every statement terminated and nothing inferred is
+**The last line of a block, and its `;`.** In `A; B;` the last statement is empty, and an
+empty statement's value is void; in `A; B` it is B. So the one place the `}` does stand
+in for the `;` is after an expression that is a block's last line, and there it is not
+optional either way: a `;` makes the block's last statement an empty one, so it is left
+off where the block's value is used and kept everywhere else. A statement that ends in a
+block delimits itself and takes no `;`, but a `;` written after one is a `;` all the same,
+and makes an empty last statement: `{ if c {1} else {2}; }` is void. Mid-block, or where
+no value is used, that empty statement is harmless and is accepted without a word. Where
+a block stands decides it, never the type of the line: `print <- "hi"` ending a function that
+returns nothing is refused (`ErrorTailOpen`) as `5;` ending one that returns an
+`i32` is (`ErrorTailSemi`). A block's value is used when it is
+a function body whose signature writes a return type, a macro's body, an operand of an
+expression (after `=`, an argument, an operand, after `return` or `break`), an arm of an `if`
+or `match` whose value is used, the `else` of a loop whose value is used, or the last
+line of a block whose own value is used. It is not used in a function body that writes no
+return type (a generator's included), an `if`, `match`, `with` or block that is a
+statement, any statement but the last of a block, or a loop's body. A closure that writes
+no return type reads it off its body, so its last line goes either way: with a `;` it
+returns nothing, without one it returns the value. `parseExprBlock` records on the
+block, by `FlagTailSemi` (the last statement is empty, after an expression or a
+block-ending statement) or `FlagTailOpen` (the last statement is an expression with no
+`;`) and `tailmark`, where to point; `parseTailCheck` walks the finished construct once it is
+known where it stands, handing the last statement of a block on with the block's use and
+every other statement `TailUnused`, and reports. The check is the parser's because the
+rule depends on position alone: it judges a generic function that is never instanced and
+an `inline` body as it does any other, and a generic whose result type becomes `void` when
+instanced (the signature wrote a type, so its last line gives the value) as it does one
+instanced with a number. A statement that ends in a block takes no `;` and is not judged
+itself, only its arms.
+Reading a closure's body, type check has the rest of the rule (`closureContextTail`, for a
+closure whose type comes from where it is given).
+
+**Whose rule, and why.** Every statement terminated and nothing inferred from layout is
 Jon's ruling [Jon 18 Sep]: *"I think the semicolon has to come back in… But I
 think that's necessary."* It went with the off-side rule because inference in
 Cone was an indentation feature — the old `lexIsStmtBreak` ended a statement at a
 token first on its line and not indented past the statement's start. In his
 words: *"I don't think you can do semicolon
-inference without the off-side stuff. They go together hand in glove."* Rust's
-rule is not taken [Jon 18 Sep]: *"I don't really want to follow Rust's rule of the
-semicolon not being needed on the last statement. That just feels a little bit
-confusing. Just always put it there."* Position yields and punctuation
-terminates, so a `;` must never become what discards a block's value. Go's rule,
+inference without the off-side stuff. They go together hand in glove."* Go's rule,
 inferring from a line's last token, was considered and closed: Go leans on a
 universal formatter to make its rule a convention, and Cone has none. *Jon's
 reasons for dropping indentation as syntax* [Jon 18 Sep]: one consistent style
@@ -434,8 +509,7 @@ beats the flexibility of two; he put the case for indentation first — vertical
 density, *"I really prefer that conciseness"* — which an editor can give by
 hiding a closing brace; the compiler cost was not the reason (*"It's not a big
 problem for the compiler to do it both ways, and I'm particularly proud of the
-elegant way I found to do it"*); and it frees the colon, which stays unassigned
-until a grammar pass spends it. Penny's addition, accepted: two block syntaxes
+elegant way I found to do it"*); and it frees the colon, which goes between a declared name and its type. Penny's addition, accepted: two block syntaxes
 tax the ecosystem — every tutorial, sample and reader — more than the compiler.
 His 2020 post on semicolon inference stands unedited (*"I don't actually disagree
 with my blog post"*); he declined a postscript.
@@ -444,13 +518,12 @@ with my blog post"*); he declined a postscript.
 `each`, `match`, `with`, a bare block, a `fn` or type with a body — **is Penny's
 default from the build, not Jon's ruling** [Penny 19 Sep], standing unless he
 objects. Measured 25 Sep: `if … {…}` needs none and tolerates one;
-`imm x = if … {…} else {…};` requires one, as in Rust; and a block's last
-statement needs its own `;`, unlike Rust.
+`let x = if … {…} else {…};` requires one, as in Rust.
 
-**Layout is a documented style, not enforced** [Jon 25 Sep]: `else` and `elif`
-join the closing brace, `} else {` and `} elif x {`, as Rust, Go, Swift, Java
+**Layout is a documented style, not enforced** [Jon 25 Sep]: `else` and `else if`
+join the closing brace, `} else {` and `} else if x {`, as Rust, Go, Swift, Java
 and JavaScript write them. A chain written one branch per line — `if a {x;}`,
-`elif b {y;}`, `else {z;}` — stays as written, since the rule is about a `}`
+`else if b {y;}`, `else {z;}` — stays as written, since the rule is about a `}`
 standing alone on its line; and a `match`'s `else` arm is a different construct
 and keeps a line of its own.
 
@@ -462,6 +535,23 @@ lexer keeps in `prevend`, so the diagnostic lands at the end of the statement
 rather than on whatever the next line happens to start with. A `:` where a
 block should start is `ErrorColonBlock`, reported by name because that is the
 one syntax a reader of older Cone will reach for.
+
+A type's braces (`parseStruct`: a struct, a trait, an actor, an enum) delimit
+their declarations with `;` rather than ending each with one, so the body's last
+declaration needs none: `parseEndOfMember` accepts the `}` that closes the body
+in place of the `;` and otherwise is `parseEndOfStatement`. A `fn` read in such a
+body is passed `ParseMemberEnd` so that a signature with no body (a trait's
+requirement) ends the same way. A lone `;` at the start of a member is an empty
+declaration, skipped. Between two declarations that do not end in a block the
+`;` is still required. An enum's variant list is comma-separated, each item read
+by `parseVariantItem` (a bare name, or a name and a type in parentheses, then an
+optional tag value), and ends as one declaration.
+
+A module trait's body (`parseModTrait`) and an `extern { }` block
+(`parseGlobalStmts`) follow the same rule: a lone `;` is skipped as an empty
+declaration, a function is read with `ParseMemberEnd`, and a global ends with
+`parseEndOfMember` (an extern block's items go through `parseFnOrVarIn` with its
+`member` set; a module's own statements keep `parseEndOfStatement`).
 
 ## 3. The precedence cascade
 
@@ -478,15 +568,26 @@ tightest, in `parseexpr.c`:
 
 - **Bitwise binds tighter than comparison.** `a | b == c` is `a | (b == c)`
   in C and `(a | b) == c` here.
-- **`not` binds looser than comparison**, and `parseCmp` is non-associative —
+- **`!` binds looser than comparison**, and `parseCmp` is non-associative —
   one comparison per level, so `a < b < c` does not chain.
 - **Assignment is right-associative.** `parseAssign` does not loop; it recurses
-  into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
+  into `parseAnyExpr` for the right-hand side, as do `:=`, `<->` and every
   op-assign form.
 
+**`&&` is the logical and where an operand precedes it.** The lexer keeps `&&` as
+two `AmperToken`s, because it is two borrows in a type or before an operand
+(`&&Pt`, `&&x`). `parseAnd` leaves `lexIsAmpAmp` (a `&` with another directly
+against it) unconsumed, and `parseAndLogicFrom` takes it as the logical and,
+consuming both tokens. `a & &b` (a space) and `a & (&b)` stay a bitwise and of a
+borrow. The same test keeps a `match` pattern's `case x && y` on the path that
+reports a condition as a pattern. `||` is one token (`OrOrToken`), the logical
+or, and `!` the one `NotToken`; `and`, `or` and `not` are ordinary names.
+
 `parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
-`===`, `!==` and the four orderings — and a `match` pattern reads the same list
-(section 6). The lexer takes `===` and `!==` whole ahead of `==` and `!=`.
+`===`, `!==`, the four orderings and the three-way `<=>` — and a `match` pattern
+reads the same list (section 6). The lexer takes `===` and `!==` whole ahead of
+`==` and `!=`, `<=>` whole ahead of `<=`, and `<->` (the swap, a `SwapToken`) whole
+ahead of `<-`: a `<-` directly followed by `>` is the swap, never a send.
 
 Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what
@@ -516,11 +617,12 @@ other), so `(1, 2 of 0)` is a list and `(a + b) of 2` a parenthesized count.
 A construction followed by `<-` inside a comma list -- an argument, a named
 value, an array literal's element, an entry -- takes one entry
 (`parseContentsAfter`), leaving the comma to the list it is in; several are
-parenthesized, `draw(new List[i32] <- (1, 2), x)`. At a statement's level the
+parenthesized, `draw(List[i32]() <- (1, 2), x)`. At a statement's level the
 construction is the left of an ordinary `<-` and takes the whole list.
 
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
-by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
+by `parseOr` (a match's pattern reads its operand with `parseXor`, so that a `|` is
+left for the joiner): the comparison, `&&` and `||` levels each have a `...From` form
 taking their left operand. It exists for a match's pattern, which cannot tell a
 range (`0 ..< 3`) from a value alone (`3`) or a condition (`n > 3`, refused as
 `ErrorPatBare`) until it has read the first operand and seen what follows it.
@@ -574,13 +676,13 @@ settles them once it is: in a type, a parameter written as a lone name is an
 unnamed parameter of the type the name names (`&fn(Vec3) f32`); in an anonymous
 function it stays a parameter's name, with a method's `Self` inference, and a
 parameter written as its type alone is `ErrorNoIdent`. **A closure literal** is a
-value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
+value, with no `&`: `fn (u: f32) [ribs, var n = 0] f32 { ... }`, read by
 `parseTerm` where a term begins with `fn`, and the short form `x => x * 2` (and
 `(a, b) => ...`, `() => ...`), read where a name or a parenthesised list is
 followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
 ([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not. **A bare `fn(sig)`
 where a type is written** is a signature, read as a generic bound is
-(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `So[fn(i32) i32]`,
+(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `Uni[fn(i32) i32]`,
 `Applied[fn(i32) i32]`, since nothing indexes by a closure), as a term while
 `ParseState.intype` is set, and as an alias's target (`parseAlias`). **A `+` after a
 virtual reference's pointee** is read by `parseRefBounds` (`&<Trait + 'a + Shareable`):
@@ -588,7 +690,7 @@ a lifetime bound (`RefNode.bound`), or one of the markers `Sendable`, `Shareable
 `ShapeKeeping` (`RefNode.marks`, `refMarkOfName`), in either order; another name is
 `ErrorMarkUse`. A `&<fn(...)` that returns nothing takes its marker straight after the
 parameters: `parseFnSig` does not read a `+` and a marker's name there as the start of a
-return type. In brackets, `So[Shape + Sendable]` parses as the sum it looks like
+return type. In brackets, `Uni[Shape + Sendable]` parses as the sum it looks like
 (a plus-operator call, `parseAdd`), and a bare signature takes its markers the same way
 (`parseIndexArg` builds the sum), for `fnCallMarkSplit` to take apart where the managed
 reference type is lowered.
@@ -621,23 +723,52 @@ such a declaration end without a body.
 
 ## 6. What the parser decides that you would expect it not to
 
-**`new` is two things, told by where it is.** In a value it begins a
-construction, a term (`parseNew`): the type -- a name, `.` paths, bracketed
-type arguments -- then the init's arguments in parentheses, left off when
-there are none, into one `FnCallNode` flagged `FlagNew`; the suffixes after
-the parentheses apply to the value. Whether it constructs a value or
-allocates, `new Rc[mut, Node](1)`, is type check's to say, from the type.
-`trynew` is the same term flagged `FlagTryNew` too, wrapped in the `Option`
-node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` inside a type
+**`new` is two things, told by where it is.** In a value it names a dynamic
+region, a term (`parseNew`): the region -- a name, `.` paths -- and the type
+made in it in brackets, `new a[Node](1)`, then the init's arguments in
+parentheses, left off when there are none, into one `FnCallNode` flagged
+`FlagNew`; the suffixes after the parentheses apply to the value. The parser
+cannot tell a region from a type, so a type written after `new` parses the same,
+and is refused by name resolution (`ErrorNewNotRegion`). A construction of a
+type has no word at all: `Point(1, 2)`, `List[i32](100)` and `Rc[mut, Node](1)`
+parse as the calls they look like, and name resolution marks the calls whose
+callee is a type. For the same reason `parseIsConstruction`, which lets a `<-`
+follow a construction inside a comma list, takes any plain call for one.
+`trynew` is the same term as `new` flagged `FlagTryNew` too, wrapped in the
+`Option` node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` inside a type
 (`ParseState.intype`, which `parseType` sets) it is the permission of an
-init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
+init's `self`, `&new`; in a value, `&Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
-`x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
+`x` in an actor's behaviour; the behaviour is cut there, a seam. The keyword is
+also a method's name, right after `fn` (`parseFn`) and right after `.`
+(`parseDotCall`): no expression can begin in either place, so nothing is
+ambiguous (a type is awaitable by such a method, `ir/exp/await.c`). Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
-the wait gives and `await` binds no looser than `-` does. It builds an
-`AwaitNode` and nothing more; where it may stand is type check's
+the wait gives and `await` binds no looser than `-` does. **The one exception
+is the suffix `?`** [Jon 26 Oct]: `await x?` is `(await x)?`. `parsePrefix`
+reads its operand with `ParseState.awaitoperand` set, which the operand's own
+`parsePrefix` takes and clears, so only a term written directly after `await`
+stops its suffixes before a `?` (`parseSuffixUntil`); the `?` and the suffixes
+after it then apply to the `AwaitNode`. A prefix operator in between takes the
+`?` after its own operand, as everywhere else: `await -x?` awaits `-(x?)`.
+Everywhere but there, `?` is a suffix like `[]`, Rust's precedence:
+`-x?` is `-(x?)`, `f()?[0]` indexes what `f()?` gives (`parsePropagate`). It is
+not a suffix where a type is read (`ParseState.intype`), whose `?` is an
+Option's prefix sugar, and `?.` never reaches it (the lexer holds it, above).
+`?` in a generator's body is refused here (`ErrorQuesReturn`): a generator's
+`return` ends its walk and it has no Result or Option of its own. Inside a `try`
+block it is not: the block takes the failure. `ParseState.trydepth` counts the
+try blocks of the body being read, and a function or closure body read inside
+one starts again at none.
+`try` is a keyword and begins a term (`parseTry`): the block after it, marked
+`FlagTry` with its `breaks` made, positioned on the word. It counts as an
+operand block for a generator's `yield` (`genoperand`), as a `{...}` term does.
+Its last line is judged `TailFree` wherever the block stands
+(`parseTailCheckBlock`): with no `;` it is the success, with one the success is
+nil, as a closure's last line is read when its return type is not written.
+`await` builds an `AwaitNode` and nothing more; where it may stand is type check's
 (`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
 ([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
 anything `await`. Inside an actor's body, each function whose own body holds
@@ -651,25 +782,25 @@ function the actor's declaration generated for it (`selfActorTypeCheck`,
 (`DclTexts.selfactors`): an actor that writes none, and has no behaviour to
 send through `self.m()`, generates no function for it.
 
-**`async do` is one keyword of two words.** `async` and `do` are each a token
-(`AsyncToken`, `DoToken`), and neither means anything alone. In an actor's
-body, `parseStruct` reads `async do` up to the `do` (`parseBehaviourWords`),
-then the method as a function, `parseFn` skipping the `do` as it skips `fn`,
-and notes it a behaviour (`DclTexts.behaviours`). Either word without the
-other, `async fn`, and `async do` anywhere but an actor's body -- another
-type's body, a module's top level, a function's body -- are
-`ErrorBehaviourWords`, reported at the word, and the declaration is passed over
-whole (to its `;`, or through its `{ ... }`), so nothing in it is reported
-again.
+**`async fn` declares a behaviour.** `async` is a token (`AsyncToken`) that means
+nothing alone. In an actor's body, `parseStruct` reads `async fn` up to the `fn`
+(`parseBehaviourWords`), then the method as a function by `parseFn`, and notes
+it a behaviour (`DclTexts.behaviours`). `async` without `fn`, and `async fn`
+anywhere but an actor's body -- another type's body, a module's top level, a
+function's body -- are `ErrorBehaviourWords`, reported at the word, and the
+declaration is passed over whole (to its `;`, or through its `{ ... }`), so
+nothing in it is reported again.
 
 **It desugars.** `match` becomes a block holding an `if` chain and, for a matched
 value that is not a place, an anonymous capture variable before it (a place is read
 where it stands, a copy of it written into each test), each case's patterns becoming
 its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the matched value on
-the left, `a .. b` and `a ..< b` two calls joined by `and`, `or` between patterns
-a logical `or`, and an `if` guard an `and` after them. `match a, b` takes a matchee for each
-value and a pattern for each in a case, `_` for any, the patterns of a row joined by `and`
+the left, `a ..= b` and `a ..< b` two calls joined by `&&`, a `|` between patterns
+a logical `||` of their conditions, and an `if` guard a `&&` after them. A pattern's
+value is read by `parseXor`, one level above bitwise or, so that a top-level `|` is
+the joiner; a bitwise or meant as a value is written in parentheses. `match a, b` takes a matchee for each
+value and a pattern for each in a case, `_` for any, the patterns of a row joined by `&&`
 ([if](../nodes/if.md)). A pattern a function runs, `using f(args)`, is the call of `f` with the matched value
 inserted as its first argument, a test as the condition itself and a binding as the value of a bound `if`
 over the call, which the cases after it go on in ([if](../nodes/if.md), "Parse").
@@ -680,8 +811,8 @@ block whose last statement is the synthesized step,
 flagged `FlagLoopStep`. That step is a block that carries the guard wherever the
 value it steps to could wrap past the type's extreme and pass the loop's guard
 again. For an inclusive range
-without `by` (`a .. b`) it is `{ if x == b {break}; x++ }`, with the
-bound cloned for the second comparison. With `by` it is `{ imm prev = x; x += s;
+without `by` (`a ..= b`) it is `{ if x == b {break}; x++ }`, with the
+bound cloned for the second comparison. With `by` it is `{ let prev = x; x += s;
 if x < prev {break} }`, `>` for a range counting down, since a step of more than
 one need not land on the bound and the wrap is only visible after the step, as a
 move against the range's direction; `prev` is a phantom variable the parser
@@ -693,7 +824,7 @@ from an integer one, so the step is a call of a private name that type check fin
 ([block](../nodes/block.md), `eachRangeStepLower`). The comparison forms the range was once
 written in, `a < b`, are refused, `ErrorEachCompare`, and `...` is refused,
 `ErrorRangeEllipsis`. `with e {…}` becomes a block with a `this` declaration
-first. Prefix `.f` becomes `this.f`. `else if` folds into `elif`. Unary minus on
+first. Prefix `.f` becomes `this.f`. Unary minus on
 a literal is constant-folded in place, and an integer literal records it
 (`FlagLitNeg`), because its range check needs the digits written
 ([literals](../nodes/literals.md)).
@@ -712,7 +843,8 @@ written `&'static P T` is let through, and `actorCheckAll` asks its permission a
 what it reaches; the reply's type is spelled into the generated calls without
 `'static`, since no lifetime is named among a call's type arguments and
 instancing erases it), a bare `self` becomes
-`self &mut`, and the other three declarations are written as Cone source and
+`self: &uni` (written, `&`, `&mut`, `&imm`, `&opaq` or `&uni` are taken as they are, so a method
+with a weaker `self` cannot call a helper with a bare one), and the other three declarations are written as Cone source and
 parsed from a lexer of their own: the handle under the actor's own name (one
 field owning the mailbox, an initializer per one of the state's or the
 implicit one's fields, a send method per behaviour, as public as the
@@ -726,7 +858,7 @@ through a reference, which lays out nothing of its target. A method declared
 **The actor is real before its state's `init` runs.** Each of the handle's
 initializers makes the actor's block first (`actors.makeActor`, its mailbox
 busy), writes the state's construction into it raw, `` `#mem`.writeRaw(st,
-new Counter.State(args)) ``, which generation fills in place
+Counter.State(args)) ``, which generation fills in place
 ([Generation](generation.md), `genlFnCall`), so the state's init runs on the
 state where it stays, and then starts the actor (`actors.startActor`), which
 queues it if the init sent it anything. So `selfactor` and `self.m()` are good
@@ -734,7 +866,7 @@ in the init and in what it calls, and the init's messages run after it.
 `` `#mem` `` is core's `mem`, bound privately, so that an initializer's
 parameter named `mem` does not hide it, and `` `#state'` `` the local holding the
 block. The state is constructed nowhere else, by an init or by its fields'
-names, but by the init filling its `self`, `*self = new Self(field: value)`
+names, but by the init filling its `self`, `*self = Self(field: value)`
 (`ErrorActorStateInit`, `typeLitNewChecked`, which `assignTypeCheck` tells of
 the fill through `typeLitSelfFill`); and it is a move type whatever its fields
 (`structTypeCheck`), so its value is never copied out of the actor.
@@ -743,7 +875,7 @@ A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
-(`actors.answerNow`); sent with no `await`, its value is dropped. It has a
+(`actors.answerNow`); sent with no `await`, its value is dropped (the unasked arm writes `_ = self.f(...)`, so a `Result` there is not warned as thrown away). It has a
 third send method too (`fetch'future`), which makes an `actors.Future` of the
 returned type, written as the behaviour's return type was (its text recorded
 by `parseFnSig`), sends the request awaited with the future's producer's
@@ -754,23 +886,42 @@ whose body holds an `await` gets two hidden fields in its state, after those
 written and each with a default, so a construction as written leaves them to
 it -- its pending table, and, where a behaviour returning a value holds an
 `await`, the Answer slot that behaviour's envelope waits in while it runs (read
-as a struct's fields, `Counter.hidden'`, and moved into the state) -- two
-resume variants (`resume'`, `resumeid'`: the seam's resume function, the
-record's id where it has a record, and where the value returned is) with
-their dispatch arms, and the two functions that make a request's envelope
-(`Counter.reply'`, `Counter.replyid'`). Such a behaviour returning a value is
-dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
+as a struct's fields, `Counter.hidden'`, and moved into the state) -- and
+the two functions that make a request's envelope (`Counter.reply'`,
+`Counter.replyid'`, each one call of `actors.replyFor`, which allocates
+nothing). A reply to an `await` is no variant of the message enum: it is a
+slot of its own kind in the awaiting actor's mailbox, which the actors package
+resumes ([Generation](generation.md), "A message's reply"). Such a behaviour returning a value is
+dispatched through the Answer slot (`actors.ask`, `askNone`,
 `answerAt`). An actor with a behaviour, or writing `selfactor`, gets
 `Counter.self'`, which makes the handle from the state
 ([Generation](generation.md), "A message's reply"). Every actor's state has one
 more method, `allocRegion`, read as a hidden struct's
-and moved into the state like the hidden fields: `fn allocRegion(self &mut
+and moved into the state like the hidden fields: `fn allocRegion(self: &mut
 Counter.State) &'static mut actors.ActorRegion`, which is the `actors` package's
 `regionOf` for this state and its message enum (the region's record is made at the first call and kept by the actor's
 Header, so no import beyond `actors` is needed). It is the way `new self[T](...)`
 finds the actor's own region ([Literals](../nodes/literals.md), "Construction"). What
 the compiler needs of all this later is recorded in the actor's `ActorInfo`
 (`ir/types/actor.h`).
+
+**A generic actor** (`actor Stage[T: Transform] {...}`) is generated by the same
+text, with its type parameters, as written (`DclTexts.tparms`, as an actor
+trait's), declared on the handle and the message enum (the state, parsed from
+the body, has them already) and followed by the parameters' names at every use
+of the state, the enum, the handle and a variant (`genSlotUse`, `genTraitUse`):
+`Stage.Msg[T]`, `Stage.Msg.accept[T]`, `Stage[T](mailbox: ...)`. What a plain
+actor gets as module functions -- the dispatcher, the envelope makers
+(`reply'`, `replyid'`), `selfactor`'s function and the `is` list's -- a generic
+one gets as **statics of its handle** (named as the others, their first
+parameter `st`, the dispatcher's address taken as `&Self.dispatch`), so that
+each instance of the handle, a clone, has its own, found by name, where a
+generic function would have to be instanced at a call; the handle's text is
+therefore put together last (`handletext`, the statics, the enum). The
+`ActorInfo` registered is the template's, its nodes in the type parameters;
+`ir/types/actor.c` makes an instance's from it when asked (`actorInstance`;
+[Type check](type-check.md), the `actor.c` row). A lifetime among the type
+parameters is refused (`ErrorActorMember`): no borrow leaves its thread.
 
 The derived names -- `Counter.State`, `Counter.Msg`, `Counter.dispatch`, the
 handle's field, the hidden fields, variants and functions above, and the
@@ -790,7 +941,85 @@ So the state's methods are expanded bodies (`fnDclNameRes` records what they
 name), and the include-file generator walks each actor's state, public or not
 (`incSeedActors`): a private type, function or method the state names goes into
 the file beside the actor, still private, and need not be made `pub`. What crosses to the actor, and what a behaviour returns, is checked after type
-check (`actorCheckAll`, `ir/types/actor.c`).
+check (`actorCheckAll`, `ir/types/actor.c`). The handle has a `==` of its own, two
+handles being equal where they own the one mailbox; the names of the handle's
+awaited and future-giving methods (`fetch'ask`, `fetch'future`) are one pair for
+each behaviour name in the whole compile (`parseBehaviourName`), not one for each
+actor, which is what lets an actor trait's handle declare methods by the same names.
+
+**It generates an actor trait's declarations** (`parseActorTrait`). `actor trait
+ChunkSink { pub async fn accept(self, c: Chunk); }` is read as a trait body with
+its behaviours noted, as an actor's body is (`ParseState.dcltexts`), and kept as a
+private trait of the requirements (`ChunkSink.behaviours`, an `ActorTraitInfo`'s
+`body`); a field, a `fn`, a body, a behaviour that is not `pub` or has no `self`,
+a macro, a static, a lifetime among its type parameters and an `is` are refused
+(`ErrorActorTraitMember`), and a parameter that cannot cross threads is refused as
+an actor's is. A behaviour's `overload` name is carried to the trait's handle's send
+method alone (the virtual trait's methods are called by the behaviour's own name, and
+`actorTraitConforms` matches by that name), so `s <- c` works on a trait handle and an
+actor that conforms need not repeat the overload name. The trait may be generic, `actor trait Subscriber[Event]`: the
+parameters are kept as written (`DclTexts.tparms`, which `parseStruct` records) and
+declared again on the virtual trait and the handle, so the handle is a generic
+struct and each of its instances has its own methods, table and `wrap`. Written as
+source and parsed, as the actor's are: an ordinary trait
+`ChunkSink.vt` declaring, for each behaviour, the three methods an actor's handle
+has for it (the send, and for one returning a value the awaited send and the
+future-giving one, by the same private names); `ChunkSink.fat`, the two words of a
+virtual reference; the handle under the trait's name, `is Sendable`, whose fields
+are the mailbox, `Arc[opaq, actors.Mailbox[u8]]` (the type erased: the allocation's
+first part is the Mailbox, which names no message, and the handle's copy and drop
+count it without saying which actor it is), and `table`, the virtual reference's
+vtable word, and, as a function of the handle's own, `ChunkSink.wrap`, which is how
+an instance of a generic trait's handle has one at its own arguments. A method of the handle sends through the
+virtual reference rebuilt from the mailbox's place in the handle (an actor's
+handle is that one field) and the table, so a send through the trait's handle is
+one indirect call of the actor's own handle method that sends the message. The
+table is the compiler's vtable of the actor's handle as `ChunkSink.vt`, made where
+the conversion is, one for each (actor, trait) pair, as any trait's is.
+
+Conformance is structural and is judged where a handle is converted: `iexpMatches`
+answers `ConvByMeth` for an actor's handle where an actor trait's handle is wanted
+(`actorTraitWanted`), and `iexpCoerce` calls `actorTraitCoerce`, which asks of each
+behaviour of the trait that the actor has one by the name, `pub`, with the same
+parameter types and returned type (`ErrorActorTraitConform`, naming each that it
+does not), and rewrites the value to a call of `ChunkSink.wrap` on a borrow of the
+handle, which the call's argument coercion makes a virtual reference to the trait
+(`fnCallFinalizeArgs`). A value that is no place is lent as a temporary, so the
+conversion needs a check state, as a string literal lent as a borrow does. The
+include file keeps the trait whole, as it does an actor, and walks its body
+(`incSeedActors`). `actorMessageOfSend` finds a trait's handle's methods as it does
+an actor's, so `await`, a kept call's future and the thread check
+(`actorCheckAll`) treat a call through the trait as they do a direct one. For an
+instance of a generic trait's handle the messages are made of the instance's own
+methods, once (`actorTraitMessages`): what the trait asks is read off its send and
+future-giving methods at the instance's arguments, and what an `await` on one
+gives is what the future holds (`actorMessageReturns`); a generic trait's
+parameters are judged where each actor that conforms is, not at the trait.
+
+**A bound may name an actor trait.** `fn connect[S: ChunkSink](s: S)` and
+`[S: Subscriber[Click]]` read as a type, not a trait, since an actor trait's name is
+its handle, a struct (`genericNamedActorTrait`, so the bound is kept as a condition
+and not refused as `ErrorGenParmConstr`). A type is met by itself alone, and an
+actor's handle that conforms meets it too (`actorTraitMeets`, the same check as the
+conversion's, silent); a generic body is cloned at its arguments, so it calls the
+actor's own methods directly, and no handle and no table are made.
+An actor that does not conform is `ErrorWhereUnmet`, as for any bound.
+
+**An actor's `is` list is an assertion, taken out of the state.** `actor Counter is
+ChunkSink` is read by `parseStruct` as a struct's `is` (a base and placeholder
+fields), and where it is written is kept (`DclTexts.istext`, `isend`, `isnames`).
+`parseActorHeader` removes both from the state, which is no type that conforms to
+anything, and `parseActor` generates a function `Counter.is'` of one parameter whose
+type is a pointer to the list as written (to a tuple where it names more than one),
+so that the names are resolved and type checked as any type's are, and nothing is
+asked of the size of what they name, which an ordinary trait would be refused for
+(`ActorInfo.isfn`). After
+type check `actorCheckAll` reads the parameter's type back (`actorCheckIs`): each
+name must be an actor trait's handle (else `ErrorActorMember`), and the actor must
+conform to it, with the conversion's own check and words (`actorTraitConforms`,
+`ErrorActorTraitConform`, "which it says it is"), reported at the actor. Nothing
+else of the actor depends on the list. `extends`, or an `is` on a condition, is
+still refused at parse (`ErrorActorMember`).
 
 **It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
 yields &Node { ... yield n; ... }` is read as a function, `yields` being a word
@@ -804,24 +1033,30 @@ value and hands back a call of `walk.none`. A `yield` met as a term's operand
 `ParseState.genoperand`) is refused (`ErrorYieldPlace`), so no value made before
 a seam is in flight across it. An `inline`, `where`, anonymous or bodiless
 generator, one whose type parameters name lifetimes, and a method of a trait, of
-an enum, of an actor (`ParseState.dcltexts`) or of a type that declares lifetimes,
-are refused (`ErrorGenForm`). A `pub` one in a library is not: its include file
+an enum, of an actor (`ParseState.dcltexts`) or of a type that declares an
+invariant lifetime, are refused (`ErrorGenForm`). A `pub` one in a library is not: its include file
 carries the declaration whole (see "It generates a generator's declarations,
 across packages", below). Then `parseGenFinish` re-reads the parameter
 list from its text (`parseGenParms`), and writes as Cone source, parsed from a
 lexer of its own with private names (`Lexer.gennames`, as an actor's):
 
 ```
-struct walk.Gen { imm t &'a Tree; state' u32;
-                  pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {}
-                  fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v);}
+struct walk.Gen { let t: &'a Tree; state': u32;
+                  pub fn next(self: &mut) Option[&'a Node] {}  fn final(self: &uni) {}
+                  fn walk.yield(v: &Node) Option[&Node] inline {Some[&Node](v);}
                   fn walk.none() Option[&Node] {None[&Node];} }
-fn walk(t &Tree) walk.Gen {new walk.Gen(t, 0u32);}
+fn walk(t: &Tree) walk.Gen {walk.Gen(t, 0u32);}
 ```
 
 and gives `next` the author's body, ended with a call of `walk.none` unless it
-ends in a `return`. The parameters are the struct's fields, so the body names
-them as a method names its fields, and a diagnostic names the value `walk.Gen`.
+ends in a `return`. The parameters are the struct's fields, each under a private
+name that reads as the parameter's own (`GenInfo.parmhidden`, written `` `#n` ``
+in the text, as the state's is), so that none collides with a member of `Iterator`
+or of the struct: a parameter may be called `count`, `map` or `next`; only `self`
+is refused. `nameUseNameRes` (`nameUseGenParm`) binds a bare name in the body
+that names a parameter, and that no local of the body shadows, to its field and
+gives the use the field's name, which type check reads as `self.field`. A
+diagnostic names the value `walk.Gen`, and the parameter as the author wrote it.
 `yield` and `none` are functions of the struct so that each instance of a generic
 generator has its own; the body names them bare, as any method names its type's
 functions.
@@ -831,7 +1066,7 @@ given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borro
 of what the generator was lent, not of the generator. `final` is an empty method
 that makes the struct need finalizing; generation hangs the frame's drop on it.
 `yield each src` is written as text too (`parseYieldEach`): a block holding
-`mut sub = src;` and a loop of `match sub.next()` that `yield`s each item
+`var sub = src;` and a loop of `match sub.next()` that `yield`s each item
 the `Some` binding holds, which the `yield` wraps in a `Some` of its own. What the compiler needs later is recorded in a
 `GenInfo` (`ir/exp/yield.h`).
 
@@ -842,8 +1077,8 @@ receiver (`ParseState.typenode`'s `self` parameter, first) is held as a field un
 a private name that reads `self` (`GenCtx.recv`), and `parseNameUse`, while the
 body is read, makes `self` name it (`parseGenName`) and `Self` name the type
 (written with its own parameters: `Tree[T]`), since in `next` both would mean the
-struct. Where the receiver's type was left to be inferred (`self`, `self &`,
-`self &mut`) its field has the type written out. A bare field name of the
+struct. Where the receiver's type was left to be inferred (`self`, `self: &`,
+`self: &mut`) its field has the type written out. A bare field name of the
 receiver's type is read as it is in any method, `self.name`, though `next` is in
 the generator's struct, whose scope holds the parameters and not the type's
 fields: `nameUseNameRes` (`nameUseGenMember`) rewrites a bare name that no
@@ -856,13 +1091,28 @@ of a generic type finds its own. A bare *method* name is refused
 **A generic generator** copies the type parameters as they are written, the type's
 (`ParseState.tparms`, recorded by `parseStruct`) and then the function's (`GenSig`),
 onto the struct, and passes them by name where the struct is written: the
-constructor is `fn walk[T](l &List[T]) walk.Gen[T]` and makes `new walk.Gen[T](l, 0u32)`.
+constructor is `fn walk[T](l: &List[T]) walk.Gen[T]` and makes `walk.Gen[T](l, 0u32)`.
 An instance of the struct is cloned from this template like any generic type's
 (`cloneStructNode`), and `yieldGenCloned` gives the clone its own `GenInfo`, its
 `next`, `none` and state found in the clone by name, which is why a generator
 instance is looked up by its struct (`yieldGenOfStruct`) and its step
 (`yieldGenOf`) and not through the template. Each instance's `next` is checked
 and generated when it is used, as a generic type's methods are.
+
+**A method of a type that declares lifetimes** (`parseGenTypeLifes`: those in its
+brackets, or the one its fields write where it declares none) gives the struct the
+same lifetimes, copied with the type parameters, so that the receiver's field can
+be written `` &'a View['a] `` and holds what the receiver holds. The borrows the
+struct takes are given a lifetime of their own, `'a` unless the type declares one
+so named (`parseGenBorrowLife`), declared first in the struct's brackets. The
+constructor then names the lifetimes too: each borrow it takes is given that
+lifetime, a receiver written `self: &` is written out with the type's lifetimes, and
+its result is `walk.Gen['b, 'a]` (`['a]` where no borrow is taken, as for a
+receiver taken by value), so that the flow walk's lifetime accounting carries what
+the receiver lent and what it holds into the generator. A type that declares an
+invariant lifetime is refused, as is a free generator whose parameter is a type
+that declares lifetimes (`ErrorLifetimeUndeclared`, from the struct's check, not
+`ErrorGenForm`).
 
 **Across packages** (`pub` in a library). A generator is declared once in the
 source and made again from that text wherever the declaration is read, so the
@@ -943,6 +1193,195 @@ a name a submodule put in the namespace is there before any statement can collid
 with it. [module](../nodes/module.md), "The folder tree", owns the rules and the
 diagnostics.
 
+**And it decides which code exists: `#if` on the facts of the build** (`parser/parsemeta.c`).
+The facts are known before a line is parsed (`genSetup` has set the triple, `gpu`
+and `vulkan`; the options hold `release` and each `-D`), so a chain
+`#if c {..} #elif c {..} #else {..}` is resolved here, not later: the taken
+branch is parsed into the enclosing list as though it were written there, and
+every other branch is parsed only to be sure it is well formed, then dropped.
+Nothing in it is looked up, since nothing of it reaches name resolution.
+
+- **The vocabulary is closed**, so a misspelling is an error and never deleted
+  code: `#os` (`.windows`, `.linux`, `.macos`, `.wasm`, `.gpu`), `#arch` (`.x64`,
+  `.arm64`, `.wasm32`, `.spirv`), `#debug`, `#defined("NAME")` and `#define("NAME")`,
+  compared with `==` and `!=`, joined with `!`, `&&`, `||` and parentheses. A
+  `.name` is checked against the fact it is compared with (`ErrorMetaFact`); the
+  OS and architecture are read off the target triple, a SPIR-V one being `.gpu` and a
+  `wasm` one `.wasm` whatever else it says. Every condition of a chain is read, the
+  ones after the branch taken included.
+- **Four places read a list of items**, and each hands `parseHashIf` the function that reads its own
+  items to the matching `}`: `parseGlobalStmts` (the module), `parseStructItems` (a struct's,
+  trait's, enum's or actor's braces), `parseExternItems` (an `extern` block) and
+  `parseBlockStmts` (a block of statements). A taken branch calls that function again on the same
+  list, so the braces open no scope: what it declares is the module's, the type's or the block's,
+  and a block's last expression without its `;` is the block's value. In expression position
+  (`parseTerm`) `parseHashIfExpr` reads the chain, which must end in an `#else`, as blocks, and
+  gives the taken one: a block of one expression is that expression, so `const sep = #if .. {47}
+  #else {92}` is a constant.
+- **An untaken branch is read into scratch.** Its module-level names must not reach the global
+  name table, so `parse->mod` is swapped for a scratch module (`ModuleNode.scratch`) that
+  `modAddNode`, `modAddNamedNode` and `modAddFn` ignore, a type's items go to a stand-in struct of
+  the same kind, a block's statements to a block of their own, and an `extern` block's spans to
+  none. The notes the parser takes of a body that outlive it -- an actor's field text, `await`s and
+  `selfactor`s, a generator's `yield` count -- are put back as they were (`MetaScratch`).
+  Its syntax errors are real. A last expression with no `;` in any branch, taken or not, is
+  `ErrorNoSemi` unless the block ends there, so a mistake shows on every build.
+- **Imports are branch material in the header alone.** A branch is read as `parseGlobalStmts` with
+  `AtInHashIfHeader` where the `#if` stands in the header (after the `mod` line, before any other
+  statement), and an `import` in it is the module's, as it would be written there; a branch that
+  holds any other statement ends the header, taken or not, and a later `import` is `ErrorImportLate`
+  (`AtInHashIf`, or `AtInHashIfNoMod` in a file with no `mod` line). The `mod` line is not branch
+  material. An import in a branch not taken is read for syntax and never found or loaded
+  (`parseImport` returns at once when `parse->mod->scratch`).
+- **A `return` in a taken branch** is spliced into the enclosing block, so it must be the block's
+  last statement (`return` may only end a block): a guard `#if c { return x; }` followed by more
+  statements is written `#if c { x } #else { the rest }`.
+- **Spans and the include file.** Each declaration of a taken branch records its span as any
+  statement does. The chain itself is recorded as cuts (`dclCutAdd`, `DclCut`): the `#if cond {`
+  before the taken branch, the `}` and everything after it to the chain's end, or the whole chain
+  where no branch is taken. `incEditCuts` makes them edits, so the include file holds the branch
+  taken and no `#if`, and an importer reads the layout and the definitions the package's object
+  holds whatever its own facts are. In expression position the taken value is kept in parentheses
+  (a single expression) or as its block. Cuts are also made in bodies the file keeps (a generic
+  function's). A cut with its lines to itself takes them.
+- **A condition that asks what a type parameter is** (`T is Float`, `T == i32`, `T != i32`, which
+  `metaTypeFact` reads as the `where` clause's `IsTag` node, `!=` and `!` as a `NotLogicTag` over it)
+  cannot be decided here; it is the second kind of `MetaVal` (`MetaType`) and carries its clauses. The
+  build's facts in the same condition fold (`metaJoin`: a fact decides a `&&` false or a `||` true, or
+  drops out), and what is left is the clauses, as a `where` condition holds them. `metaCond` answers
+  `MetaDeferred`, and `parseHashIf` reads that chain's branches as real code (`MetaDeferred` mode of the
+  branch function) rather than scratch, in the places that can hold one. A block's branches come back
+  as blocks, and `parseHashIf` returns the chain as an `IfNode` with `FlagIfHash` (and `FlagIfHashExpr`
+  for `parseHashIfExpr`), conditions and blocks alternating as in any `if`, that the block adds as one
+  statement. A generic struct's branches are read into the struct itself and each member added takes
+  the condition (`parseMetaMemberCond`: its branch's clauses and the negation of the chain's earlier
+  ones, a fresh copy for each member): a field in `FieldDclNode.hashcond`, a method in its `where`. The
+  deferral is refused (`ErrorMetaTypeFact`) at a module's level, in an `extern` block and in a struct with
+  no type parameters, an enum or a trait, whose branches are then read as ones not taken; a static,
+  macro or alias in a deferred branch of a struct is refused too. Name resolution and the clone are
+  `ifNameRes`/`ifHashClone` ([if](../nodes/if.md), [generic](../nodes/generic.md), "A `#if` on a type
+  parameter"). The include file keeps such a chain whole (no cuts), so an importer decides it, and reads
+  the build's facts in it for its own build. Because of that, a chain in a generic struct's braces that
+  reads a fact of the build and asks about a type (in one condition or across `#elif`/`#else`, folded
+  away or not) is refused (`ErrorMetaMixFact`): `parseHashIf` counts the build facts and notes the first
+  type question per condition (`metaBuildReads`, `metaTypeAt`) and the struct's caller passes the message
+  (`nomix`). A function body's chain is refused the same way, statement or value (`parseMixBodyMsg`):
+  the importer could choose a different branch from the package's, and a per-instance `static` that
+  differs between branches is one symbol (`linkonce_odr`) shared by both objects, so one side would
+  write through the other's smaller one. A build `#if` nested in a type question's branch, or around
+  the chain, is a chain of its own: the package decides it and the include file is cut to the branch
+  taken (test `meta_typefact_include_nested`).
+- **`#each #x in list { body }`** among a block's statements (`parseHashEach`, called from
+  `parseBlockStmts`) is expanded here, by reading the body again. `lexMarkSave` records everything the
+  lexer holds of where it stands at the body's `{`; for each item the lexer is put back there
+  (`lexMarkRestore`), `#x` is bound to the item and `parseExprBlock` reads the body as a block of its own,
+  which becomes a statement of the enclosing block. Name resolution and the checks see ordinary blocks and
+  never a loop. A list is `[a, b]` read as expressions, `(T, U)` read as types, or a meta variable that
+  holds one (`MetaItems`); the items are nodes copied wherever the variable is used (`metaCopy`), so
+  `#x` in a value position is a copy of the item's expression, and in a type position a copy of its
+  type (`parseTerm` hands a `MetaVarToken` to `parseMetaTerm`, which `parseIsTypeStart` admits too).
+  The empty list reads its body past (`metaEachSkip`) and makes none.
+  - **Meta variables** are held by the parser alone (`metaEnv`, a stack scoped by `parseMetaScope` in
+    `parseBlockStmts`, so a block's own are gone at its end). `let #n = 3;` / `var #i = 0;` declare a
+    number (`metaIntRead`: integer literals, meta variables that hold one, `+ - * / %`, parentheses,
+    unary `-`); `let #xs = [1, 2];` or `(i32, i64)` a list (a `(` is a list only if a comma stands in it at
+    its own depth, `metaParenHasComma`); `#i += 1;` (`parseMetaAssign`) changes a `var` as it is read, so
+    a count accumulates over the passes in order. A number used as a term is an untyped integer literal.
+    The lexer turns a `#` word into `MetaVarToken` only where it is bound or being declared
+    (`parseMetaIsBound`, `lexMetaDecl`); anywhere else it is `ErrorReserved` as before, so a
+    misspelling is still reported.
+  - **The step quota** (`--meta-steps`, default 10000) is counted over an outermost `#each` and the
+    ones inside it, a step being a pass; the pass over it is `ErrorMetaQuota`, naming the loop, and the
+    rest of the loops in that outermost one are read past. A pass that reports an error ends the loop,
+    since the rest would say the same again.
+  - **Which pass an error was in.** Each pass block carries an `EachPass` (`BlockNode.eachpass`),
+    which `errorEachPass` is set to while the pass is read (here) and while `blockNameRes`,
+    `blockTypeCheck` and `blockFlow` handle the block, so an error in any phase is followed by
+    `... in pass 2 of 3 of this '#each', where #x is 2.5`, the outer passes after the inner. A generic
+    body's instance copies the block with the pointer, so an instance's error names the pass too.
+  - **`--meta-ir`** writes `<name>.meta`: each outermost `#each`, with the IR of each pass as it stands
+    after the parse (`metaEachDump`).
+  - **The include file.** A generic's body is copied as written, `#each` and meta variables included, and
+    the importer reads and expands it again, so the expansion may depend on nothing outside the body: a
+    meta variable is block-scoped for that reason, and a list is literal or such a variable. A build
+    `#if` inside the body is cut once: a pass after the first reads the same text, so `metaRepeat` keeps
+    it from noting the same cut again. A chain mixing a build fact and a type fact is refused inside a
+    pass as anywhere. The quota is the one option that can differ between a package's build and its
+    importer's, and it can only refuse an expansion, not change one.
+  - **Where it is not built.** A `#each` at a module's level, in a type's braces (but a generic struct's,
+    below), in an `extern` block or in expression position is `ErrorMetaEachPlace` (`parseMetaStray`),
+    its header and block read past. A `#if` condition cannot ask about a meta variable (`ErrorMetaFact`).
+  - **A module's level.** `let #sizes = [8, 16];` between a file's declarations (`parseGlobalStmtsIn`,
+    `parseMetaIsDecl`, `parseMetaDecl`) is held until the end of the file (`parseGlobalStmts` takes the
+    `parseMetaScope` mark), so the functions and generics below read it as one declared in their own
+    bodies. Only `let` (a `var` is `ErrorMetaVar`). Its statement has a `SpanOther` span with no node, which the
+    include file leaves as written, so an importer that reads a generic's body again finds the constant.
+- **`#each #f in #fields(T) { body }`** (`parseHashFields`, called by `parseHashEach` when the list is
+  `HashFieldsToken`) cannot be expanded by reading the body again: T's fields are known only when the
+  generic is cloned. The body is read **once**, with `#f` bound as `MetaBindField`, and the loop is a
+  `BlockNode` with `fieldeach` set (`ir/meta/fields.c`) whose one statement is the body. `#f.name`,
+  `.type`, `.region`, `.perm` and `.pub` are name uses pre-resolved to a pseudo generic parameter of
+  the loop (`fieldEachProp`), so name resolution leaves them and the clone's existing substitution of a
+  parameter's use puts the field's answer there; `value.#f` is a member name `#f` that
+  `cloneNameUseNode` turns into the field's (`fieldEachSplice`). `cloneBlockNode` hands a loop to
+  `cloneFieldEach`, which makes one clone of the body per field of the instance of T, each a block with an
+  `EachPass` (so an error names its pass), and decides what T's fields are to the reflecting code:
+  every field when the loop is written in the module that declares the type, or in a trait default taken
+  into it (`cstate->selftype`), or the type is `@reflect` (`StructNode.reflect`, a placeholder spelling);
+  else a private field is `ErrorMetaFieldsPrivate`, never left out. `#fields(Self)` in a trait default
+  is accepted at name resolution (`fieldEachNameRes`) and decided when the default is cloned into a type,
+  where `Self` is repointed at it; cloned with no type to take it, it is the trait and is refused as a
+  non-struct. A loop cloned while T is still
+  a parameter of another generic is copied whole to be decided later. The `--meta-ir` dump does not
+  show these loops. Not built: `#f.attrs` (there are no field attributes), `#fields` outside a `#each`.
+  `cloneFieldEach` is `fieldEachOpen` (T and its visible fields, once per loop and instance),
+  `fieldEachPassBegin`/`End` (the hooks of one field) and the clone of the body between them; a generic
+  struct's loop (next) uses the same three.
+- **`#each #f in #fields(T) { members }` in a generic struct's braces** makes fields and methods
+  (`parseHashEachMembers`, called from `parseStructItems` when the struct is generic and not an enum or
+  trait; `parseHashFields` with a struct instead of a block). The members are read once, by the same
+  `parseStructItems` (`StructItems.inloop`), and join the struct as its own; each is marked with a
+  `GenName` (`FieldDclNode.gen`, `FnDclNode.gen`, `ir/meta/fields.h`): the loop, and a fixed `prefix` or
+  `suffix` to join to the described field's name. A member's name is `#f` (the field's) or
+  `#name("get_", #f)` / `#name(#f, "_x")` (`HashNameToken`, `parseMetaGenName`: one string literal and `#f`
+  in either order; nothing else is computed); the template holds it under that spelling as a `Name`, so the
+  template's namespace sees a duplicate spelling. `metaGenMark` refuses a member of the loop not named from
+  `#f` (a fixed name would be made for every field and clash), a static, a macro or an alias
+  (`ErrorMetaGenName`); a nested `#each` and a type-fact `#if` inside the loop are refused as well.
+  Name resolution resolves the loop's `T` at the first member that carries it (`fieldEachSubjectNameRes`).
+  The instance is made in `cloneStructNode` (`struct.c`): the template's fields are walked in order and a
+  run of fields of one loop is made pass by pass (`structCloneGenFields`: for each field of T the
+  pass's hooks are set, each field of the run cloned and named `genNameFor`); the loop's methods get
+  shells appended after the written ones (`genfill`), and are filled while their field's hooks are set,
+  after the written members' bodies. `structGenClash` refuses a name already in the instance's namespace
+  (`ErrorMetaGenClash`), generated or written. A loop whose T is still a parameter of an enclosing generic
+  is kept as written (`undecided`), as `cloneFieldEach` does. Indices of fields are renumbered by the
+  instance's type check as for any struct. The include file copies the struct's text as written, loop and
+  all (every member of a generic type travels), and the importer expands it.
+- **`#each #f in #fields(T) { #f: value }` among a call's arguments** (`parseHashEachArg`, called from
+  `parseArgs` for a parenthesised list only; an index's brackets get `ErrorMetaEachPlace` from `parseMetaStray`)
+  makes one named argument per field. The body is read by `metaArgBodyRead`, not as a block: it is exactly
+  `#f: value` (`ErrorMetaEachArg`; a written name is `ErrorMetaEachArgName`), held as a `NamedValNode` whose name
+  is a use of `#f` that `fieldEachSplice` turns into the field's name when cloned. The loop is a `BlockNode`
+  with `fieldeach` among the call's arguments, name-resolved as any block. `cloneFnCallNode` clones the
+  arguments with `cloneFieldEachArgs`, which expands such a block in place (`fieldEachClone` with an argument
+  list to add to: one cloned `NamedValNode` per pass, `errorEachPass` set so an error names its pass) and
+  keeps an undecided one as written, as a statement loop is, to be decided per instance. A loop may stand
+  beside other arguments; the parser cannot tell a construction from a call, so the loop is accepted in any
+  parenthesised list and a call of a function is refused later by the ordinary named-argument rule
+  (`namedValRefuseArgs`). A clone that reported an error leaves `FlagEachFailed` on the call, which type check
+  replaces by an error node rather than report the missing arguments (`ErrorBadArray`).
+- **Layout facts.** `#size(T)` and `#align(T)` (`parseMetaLayout`, `HashSizeToken`/`HashAlignToken`) are a
+  `SizeofNode` with `what` set; `#f.offset` is a `SizeofNode` of kind `SizeofOffset`, made by the clone
+  (`fieldPropAnswer`) with the instance's type and field. None is folded by the front end: the code
+  generator reads the answer from the layout it generated (`genlexpr.c`, `SizeofTag`). Asked of a type whose
+  layout is in flight (`structLayoutUnsettled`), the question is `ErrorMetaLayout` (`sizeofLayoutRefused`),
+  naming the by-value cycle where `itypeNoSizeCause` finds one. Because the front end holds no number, a
+  `#size`/`#align` that needs it now is `ErrorMetaLayoutConst` (`sizeofConstRefused`): in a `#if` condition
+  (`metaCond`), as an array length (`arrayTypeCheck`) or as a `const` initializer (`constDclTypeCheck`). A type-fact `#if` whose subject is a
+  `#f.type` (`metaFieldSubject`) is decided like any other, with `Copy` and `Move` guarded the same way
+  (`genericHashAsking`).
+
 ## 7. Contract
 
 **True when `parsePgm` returns:**
@@ -992,7 +1431,7 @@ never be analyzed.
 | --- | --- |
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor trait` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. the refused in-file `mod name { … }` block uses it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
 | the retired `into` | `parseRetiredInto` reports `ErrorInto` at the word, then reads the type after it if one begins there, and `parseCast` goes on with the operand it had, so each use is one diagnostic and what follows parses as written |
@@ -1000,7 +1439,9 @@ never be analyzed.
 | an `alias` with no `=` | `parseAlias` reports `ErrorAliasEq` just after the name, and still reads the type that follows, so the statement ends where it was written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
-| `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
+| `parseTerm` default | reports `ErrorBadTerm`, consumes the offending token to avoid an infinite loop unless it is the `;` that ends the statement, and returns `NULL`; every parser that takes a term's result (the operand of a prefix `-`, the entries of a `<-` and their nest count, the entry before `of` or `:`) treats `NULL` as already reported |
+| `parseEntry` after a first expression that gave `NULL` | an entry whose first expression `parseTerm` refused (`x <- else of 3`, `x <- else: 3`) is already reported; `parseEntry` reads past the `of` or `:` and the value after it and returns `NULL`, as `parseArg` does |
+| `parseArg` after a name that gave `NULL` | an argument whose name `parseTerm` refused (a keyword before its `:`) is already reported; `parseArg` reads the `:` and the value so the list stays in step, and returns `NULL` as a refused term does, so the argument is one diagnostic and nothing looks at a node that is not there |
 | `parseTypeReq` | reports `ErrorNoType` where a required type is missing, consumes nothing, and returns `unknownType`, which nothing analyzes |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |
 | `parseModuleFilesParse`'s end-of-file test | `ErrorNoEof` when a module file's global statements stopped short of EOF — the file the compiler was given or one the folder swept in; a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |
@@ -1037,9 +1478,11 @@ numbers.
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
+| | `lexScanStr` (interpolated) | `$"..."` as one `InterpToken`: the text read as a plain literal's, `{{`/`}}` for a brace, and each brace's expression left as source (`InterpPart`, found by `lexInterpSkipBraces`, which steps over strings and characters inside); an open brace no close brace closes ends the literal at the line's last quote, so the rest of the file lexes as before |
+| | `parseInterpPieces`, `parseEntries` (`parseexpr.c`) | an interpolated string's expressions read by a lexer of their own over the brace's source (`lexPush`/`lexPop`); a whole entry of a `<-` list splices its pieces into the list, anywhere else it is `String() <- pieces` |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
-| | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.`, or by type arguments told from an array type by the absence of a `;`), read off the text with nothing lexed (section 2) |
+| | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.` or by type arguments), read off the text with nothing lexed (section 2) |
 | | `lexNextOpensValue` | whether white space and a value follow the name the lexer is on, which makes `fill` the word in an entry after `<-` (section 2) |
 | | `lexEachHasVars` | whether the `each` the lexer is on, an entry after `<-`, names loop variables and `in` (`each x in src`) or only a source (`each src`) |
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
@@ -1049,7 +1492,7 @@ numbers.
 | | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `@c` after `mod` that makes the module C-named (its `DclCName`, `DclSystemCC` and prefix, given only where the declaration is accepted), the `extends` and the `is` it records for name resolution to resolve, in the order `extends`, `is`, `use` (`ErrorModIs`, `ErrorBadFold` otherwise), and the refusal of the in-file block, which does not exist |
 | | `parseModTrait` | `mod trait Name { ... }`, a module trait: a function or a global per member, a requirement without a body or initialiser and a default with one; anything else, a generic fn and an overload name `ErrorModTraitBody`, skipped whole (`parseModTraitSkipMember`); no body makes a marker |
 | | `parseCAttr` | `@c`, `@c("str")`, `@c(system)`, `@c("str", system)` after `mod` or `fn`, written onto a `DclInfo`: the string is a module's prefix or a function's whole symbol. A malformed one is `ErrorCAttr` and dropped whole |
-| | `parseFnOrVar`, `parseExternFnCheck` | a module's `fn` or global, with `extern` (single or block) meaning only "defined elsewhere": a body-less signature, refused on an `inline` or generic fn (`ErrorBadExtern`). A bare `@c` on a fn its C-named module already names is `ErrorCNameTwice`. The retired `extern system` is `ErrorCAttr`, naming `@c(system)` |
+| | `parseFnOrVar`, `parseExternFnCheck` | a module's `fn` or global, with `extern` (single or block) meaning only "defined elsewhere": a body-less signature, refused on an `inline` or generic fn (`ErrorBadExtern`). A bare `@c` on a fn its C-named module already names is `ErrorCNameTwice`. A fn or global whose final C name begins `llvm.` (its own string, or its module's prefix and its name: `parseLlvmNameCheck`) is `ErrorLlvmName`. The retired `extern system` is `ErrorCAttr`, naming `@c(system)` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile`, `parseLoadModulePath` | per-module unit: locate beside the importer and then on the search path, `FlagGenMod` for what the search path found, register by path, naming (a package's `src/name.cone` the designated file of `src`, named for the package), the folder sweep, the `core` import, `modHook`, and a parse per file |
 | | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, each read into its block as it is found, which files are one-file modules and which subfolders draw submodules, in the order of their names, and the refusals — a designated file or one-file module too deep to be a module, a one-file module beside a module folder of its name |
@@ -1059,39 +1502,42 @@ numbers.
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form — a name or a path, `as` and a name to bind it under (`ErrorNoIdent` where no name follows), then a `use` clause — and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
 | `parser/parsegen.c` | `parseGenBegin`, `parseGenFinish`, `parseGenParms`, `parseGenAnnotate`, `parseYield`, `parseYieldEach`, `parseGenNone` | a generator: its parameter list read again for where each parameter is written, the struct, `walk.yield`, `walk.none` and the function that makes the generator written as source and parsed with the author's body in `next`, a `yield` and `yield each` read as statements, a `return` made to hand back None (section 6) |
-| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
-| | `parseBehaviourWords` | `async do`, read up to the `do` in an actor's body; either word alone, `async fn`, and `async do` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
+| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorTrait`, `parseActorRuntime`, `parseDclText`, `parseBehaviourName` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; an actor trait: its body read and checked, and the virtual trait, the two-word handle and the conversion's function written and parsed, recorded in its `ActorTraitInfo` |
+| | `parseBehaviourWords` | `async fn`, read up to the `fn` in an actor's body; `async` alone, and `async fn` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
-| | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
+| | `parseEndOfStatement`, `parseEndOfMember`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`; the member of a type's braces, whose last needs none before the `}`; and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
-| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike. The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
-| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
+| | `parseSuffix`, `parseSuffixUntil`, `parsePropagate`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`, `?` (the block marked `FlagPropagate`); named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
+| | `parseTerm`, `parseNameUse`, `parseArrayLit`, `parseTry` | literals, parens, blocks-as-expressions (a `try` block among them, marked `FlagTry`), names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
 | | `parseTypeReq` | a type the grammar requires: after `as`, an alias's `=`, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
-| | `parseAlias` | `alias Name = target;`: an `AliasDclNode` with `FlagTypeAlias`, its target read as a type expression, the one target built. The statement's shape — a name, `=`, and an expression resolved at compile time — is the one every target takes |
+| | `parseAlias` | `alias Name = target;`: an `AliasDclNode` with `FlagTypeAlias`, its target read as a type expression, the one target built. The statement's shape — a name, `=`, and an expression resolved at compile time — is the one every target takes. In a struct's or a variant's body too (not a trait's or an enum's), where it is a member, in the type's namespace and member list: how a type says a trait's associated type outright |
+| | `parseAssocType` | a trait's associated type, `type Cursor: Iterator[T];`, read where a trait's body has `type` before a name (a contextual word, so a field may still be named `type`): a `GenVarDclNode` marked `FlagAssocType` appended to the trait's type parameters, its bound `+`-joined in `annot` as a type parameter's, none written allowed ([generic](../nodes/generic.md), "Associated types"). A `:` with no trait after it is `ErrorNoType`. A bracketed type argument written `Name = Type`, an equality constraint, is refused at the `=` by `parseIndexArg` (`ErrorAssocEquality`) |
 | | `parseStruct` | struct/trait/enum: the optional `trait` modifier on the kind, generics, the base clauses — the `is` list (an entry followed by `if` and a condition held apart in `condis`, never the base) and the `extends` base, read in a loop so that a type may write both, each once, with `extends` refused on a trait and meaning *the enum whose variants join this one's set* on an enum — fields, methods, macros (a method when parameter 0 is `self`), `extern fn` methods and functions with no body (refused in a trait or a generic type, and before anything but `fn`: `ErrorBadExtern`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant; `@c` on a type is `ErrorCAttr` |
-| | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
+| | `parseVariantItem`, `parseAddVariant`, `parseVariantTagPin` | one item of an enum's comma-separated variant list, a bare name or a name with a type in parentheses, read the same for the first and for each after a comma; joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
-| | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
+| | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written, after the `:`, and nowhere else, so it is not a reserved word |
 | | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type; several return types separated by commas only outside every list (`ParseState.inlist`, section 1), a signature inside one returning several values parenthesising them. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
-| | `parseVarDcl`, `parseStorageAttr`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the permission is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `imm` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's permission it is `ErrorThreadLocalPlace`, reported and dropped. `@workgroup` is read in the same places, `DclWorkgroup`, and refused in the same with `ErrorWorkgroupPlace` (beside `@threadlocal` too), on an `imm` global with `ErrorWorkgroupImm`, and with an initial value with `ErrorWorkgroupInit` (`parseFnOrVar`). A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
+| | `parseVarDcl`, `parseStorageAttr`, `parseFieldDclBody`, `parseConstDcl`, `parseDclWord` | the declaration forms; a name is followed by `:` and its type, and a type without the `:` is left where it stands, for the statement or the list around it to refuse (`ErrorNoSemi`, `ErrorNoRParen`) as it refuses any stray token. A local that a variant pattern binds, `let Ok(n) = r else {...};`, is not read here: `parseExprBlock` sends it to `parseLetPattern` when `lexNextOpensPattern` sees a reference mark, or a name followed by `(`, `.` or type arguments and then `(` or `.`, none of which a declared name may be followed by. A declaration followed by `else` that is not a function's pattern is refused (`ErrorPatBindForm`). A field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the `let` or `var` is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `let` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's `let` or `var` it is `ErrorThreadLocalPlace`, reported and dropped. `@workgroup` is read in the same places, `DclWorkgroup`, and refused in the same with `ErrorWorkgroupPlace` (beside `@threadlocal` too), on a `let` global with `ErrorWorkgroupImm`, and with an initial value with `ErrorWorkgroupInit` (`parseFnOrVar`). A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, its `@intrinsic`, recorded as `DclIntrinsic` and letting the declaration end without a body, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, an intrinsic, a trait's or a generic type's method (`ErrorCAttr`), and its `@compute(x, y, z)` (`parseComputeAttr`), first or after the others: constant sizes, at least 1, at most 256 invocations and 64 along z (`ErrorComputeSize`), on no method, generic, `inline` fn, intrinsic, `@c` fn or anonymous one (`ErrorComputeAttr`), its signature left to type check (`fnDclComputeCheck`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
-| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
+| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `mod`: comma-separated names, each a generic's followed by a `:` and `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`||` there is `ErrorGenParmOr`), and a module's refused an annotation as `ErrorGenParmConstr`; a macro's own one or two lists (`parseMacroParmList`): `[a: T, b: lazy T]`, or type parameters first, `[T][a: T]`, a value parameter untyped `ErrorMacroParmType`, a method's `self` typed `ErrorMacroSelfType`, a type parameter constrained `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `&&` and `||`, `&&` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
-| | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`elif`/`else` and the `match`-to-`if` desugaring, and a local declaration followed by `else` (`imm n Ok = r else {...};`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
-| | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `or`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
+| | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`else if`/`else` and the `match`-to-`if` desugaring, and a local `let` followed by a variant pattern and `else` (`let Ok(n) = r else {...};`, `parseLetPattern`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
+| | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `|`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
+| | `parseBindVarDcl`, `parseLetPattern`, `lexNextOpensPattern` | the pattern after the `let` or `var` that is in front of the whole of it, in a case, an `if`, an `else if` and a statement `let`: a variant with the one name that takes its contents inside its parentheses, `case let Some(n)`, `var Some(n)`, `if let &mut Err(e) = r`, `let Shape.Circle(c) = s else {...};`. It is read as the type expression it looks like (`parseType` reads a name or path with `(` after it as a call) and taken apart: through any reference or pointer written around it, a name or path with type arguments called with exactly one name, which becomes the binding's variable, the callee being the variant's type; none or several names is `ErrorPatBindCount`, anything else in them `ErrorPatBindNested`, and anything that is not that shape `ErrorPatBindForm`. A `_` as the name declares nothing, as it does in `let _, r = f()`: the case, `if` or let-else only tests the variant (`parseBoundMatch`, `parseLetElse`), with a guard allowed. A name and then a variant in a statement `let` that ends in `else` is refused once and read past whole (`lexStatementHasElse`). Without the `let` or `var`, a call-shaped pattern is a value alone, compared by equality (`parseMatchPattern`), and the parse depends on no type. `let name using f(...)` is the function's pattern and is told from the variant by the `using` after the name |
 | | `parseUsingCall`, `parseUsingMatchee`, `parseUsingSome` | a function's pattern after `using` (`UsingToken`): the call, the matched value put in as its first argument, and the `Some` a binding takes; not a call is `ErrorUsingForm`, a match with one that does not end in `else` is `ErrorMatchUsing` |
-| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |
+| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`!b`, `n > 3`), at the start of a case or after a `|`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
-| | `parseRangeEllipsis` | `...` is refused, `ErrorRangeEllipsis`, wherever a range operator is read (an index, a pattern, an `each`) |
+| | `parseRangeEllipsis`, `parseRangeBare` | `...` is refused, `ErrorRangeEllipsis`, and a bare `..` before an end, `ErrorRangeBare`, wherever a range operator is read (an index, a pattern, an `each`) |
 | | `parseEachEntry`, `parseEachLoop`, `parseEachYield` | an `each` as an entry of `<-`: the same loop parse as `parseEach`, its body the `yield` (or the pass variable, for a drain) as a `YieldEntryTag` entry |
+| `parser/parsemeta.c` | `parseHashIf`, `parseHashIfExpr`, `parseMetaStray`, `parseMetaFactStray`, `parseMetaInit` | `#if` on the facts of the build (section 6): the condition (`metaCond`, the closed vocabulary, `ErrorMetaFact`), the chain (`ErrorMetaIf`) with each branch read by the function of the list it stands in, the scratch an untaken branch is read into (`MetaScratch`), the chain that gives a value, and a `#elif` or `#else` or a fact met where none is read. `parseGlobalStmts`, `parseExternItems`, `parseStructItems` and `parseBlockStmts` call it |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |

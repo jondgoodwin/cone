@@ -1,0 +1,16 @@
+// Bug 51: the arena captured by a closure, a reference the closure is handed stored through it in a node whose
+// 'final' reads it: the closure's caller owns what it lent, and the arena may outlive it. Refuse.
+mod lifetime_arena_refuse_closure;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct H { pub p: &mut T; fn final(self: &uni) { print <- "finalizer reads ", self.p.v, "\n"; } }
+fn run[F: fn(x: &mut T) i64](f: &mut F) i64 {
+  var t = T(77);
+  f(&mut t)
+}
+fn main() {
+  var a = Arena();
+  var f = fn(x: &mut T) i64 { let n = a.alloc(H(x)); n.p.v };  //~ ErrorCallEscape
+  print <- run(&mut f), "\n";
+}

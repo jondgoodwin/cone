@@ -1,0 +1,86 @@
+// Making a small model, writing it as GGUF bytes, reading it back: its
+// metadata, the tensor table, a tensor as f32 and a row of a quantised one.
+// Nothing here touches a file; a real model's bytes come from a read buffer or
+// a mapped file and go to 'parse' the same way. Every line printed is the same
+// on every machine.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import gguf;
+
+fn main() i32 {
+  // A writer for a toy model: two metadata entries and two tensors
+  var w = gguf.Writer.make();
+  w.putText("general.architecture", "toy");
+  w.putU32("toy.block_count", 2u32);
+  let eye = [1.0f, 0.0, 0.0, 1.0];
+  let one = w.addValues("eye", gguf.TensorType.F32, &[2u64, 2u64], &eye);
+  var ramp = List[f32]();
+  var i = 0usize;
+  while i < 64usize { ramp.push(f32.from(i32.from(i)) / 8.0 - 4.0); i = i + 1usize; }
+  let two = w.addValues("ramp", gguf.TensorType.Q8_0, &[32u64, 2u64], ramp.view());
+
+  var file = List[u8]();
+  match w.finish() {
+    case var Ok(ok) { file <-> ok; }
+    case let Err(e) {
+      let m = String() <- e;
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  printStr("file: ");
+  printInt(i64.from(file.len()));
+  printStr(" bytes\n");
+
+  // Reading it back
+  match gguf.parse(file.view()) {
+    case let Ok(model) {
+      match model.text("general.architecture") {
+        case let Some(arch) { printStr("architecture "); printStr(arch); printStr("\n"); }
+        case is None { printStr("no architecture\n"); }
+      }
+      match model.uint("toy.block_count") {
+        case let Some(n) { printStr("blocks "); printInt(i64.from(n)); printStr("\n"); }
+        case is None { printStr("no block count\n"); }
+      }
+      each t in &model.tensors {
+        printStr(t.name.view());
+        printStr(" ");
+        print <- t.kind;
+        printStr(" elements ");
+        printInt(i64.from(t.elements));
+        printStr(" bytes ");
+        printInt(i64.from(t.bytes));
+        printStr("\n");
+      }
+      // Row 1 of "ramp": 32 numbers, quantised to Q8_0 and read back
+      match model.find("ramp") {
+        case let Some(t) {
+          var row = List[f32]();
+          match gguf.rowToF32(&model, file.view(), t, 1u64, &mut row) {
+            case is Ok {
+              printStr("ramp row 1: ");
+              printInt(i64.from(row.len()));
+              printStr(" numbers, the first about ");
+              printInt(i64.from(*row[0usize] * 8.0));
+              printStr("/8\n");
+            }
+            case is Err { printStr("could not read the row\n"); }
+          }
+        }
+        case is None { printStr("no ramp\n"); }
+      }
+    }
+    case let Err(e) {
+      let m = String() <- e;
+      printStr(m.view());
+      return 1i32;
+    }
+  }
+  0i32
+}

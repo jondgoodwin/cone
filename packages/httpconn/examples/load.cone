@@ -23,6 +23,11 @@
 // Every connection is on 127.0.0.1 (never 0.0.0.0, so the firewall is never
 // asked). Connections are opened a batch at a time, within the listener's
 // backlog.
+//
+// Each run leaves a few thousand of the machine's ephemeral ports in
+// TIME_WAIT (Windows: two minutes). Runs back to back can use them up; then
+// connects fail (Windows: ERROR_DUP_NAME, 52, the local address in use), and
+// each part says how many did and ends NOT DONE rather than reading as clean.
 
 mod load;
 
@@ -33,14 +38,14 @@ import sync use *;
 import collections use List, String;
 import time use Instant, Duration;
 import iobuf use *;
-import iocore use Loop, SocketAddr, forever;
+import iocore use Loop, SocketAddr, IoError, forever;
 import diag use Histogram;
 import http use *;
 import httpconn use *;
 
 extern {
   fn @c(system) GetCurrentProcess() usize;
-  fn @c(system) K32GetProcessMemoryInfo(process usize, counters *u8, cb u32) i32;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
 }
 
 const tokServer = 0x10000000u64;      // the server's sink
@@ -50,63 +55,63 @@ const tokReq = 0x30000000u64;         // a request's: + its connection's number
 // The bytes the process has committed for itself: Windows' PrivateUsage
 // (PROCESS_MEMORY_COUNTERS_EX), Linux's data size (VmData)
 fn privateBytes() u64 {
-  if isWindows() {
-    mut c = new Array[usize, 10] <- fill 0usize;
-    imm p = &mut c as *u8;
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
     *(p as *u32) = 80u32;
     K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
-    u64.from(c[9usize]);
-  } else {
-    dataBytes();
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
   }
 }
 
 // Linux: the sixth number of /proc/self/statm (size resident shared text lib
 // data dt), in 4096-byte pages: the process's writable private memory
 fn dataBytes() u64 {
-  imm f = libc.fopen("/proc/self/statm", "rb");
+  let f = libc.fopen("/proc/self/statm", "rb");
   if f == null {return 0u64;}
-  mut buf = new Array[u8, 256] <- fill 0u8;
-  imm bp *u8 = &[]buf as *u8;
-  imm n = libc.fread(bp, 1usize, 255usize, f);
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
   libc.fclose(f);
-  mut field = 0u32;
-  mut value = 0u64;
-  mut k = 0usize;
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
   while k < n {
-    imm c = buf[k];
-    if c >= '0' and c <= '9' {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
       if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
     } else {
       field = field + 1u32;
     }
     k = k + 1usize;
   }
-  value * 4096u64;
+  value * 4096u64
 }
 
 // Answer a server's request: 200 and 64 bytes
-fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
+fn answer(drv: &mut Driver, e: &mut Event) {
   drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-  mut b = pool.mustTake(64usize);
+  var b = IoBuf(64usize);
   b.setLen(64usize);
   drv.sendData(e.req, b);
   drv.finish(e.req);
 }
 
 // The listening driver's port
-fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
-  mut port = 0u16;
+fn listenOn(drv: &mut Driver, lp: &mut Loop) u16 {
+  var port = 0u16;
   match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case imm r Ok {
+    case let Ok(r) {
       match drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
       }
     }
-    case imm e Error {}
+    case let Err(e) {}
   }
-  port;
+  port
 }
 
 // ---------------------------------------------------------------------------
@@ -114,45 +119,83 @@ fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
 // on each, one after another; time each
 // ---------------------------------------------------------------------------
 
-struct Run {
-  pub conns u64;
-  pub perConn u64;
-  pub lat Histogram;
-  pub done u64;
-  pub bad u64;
-  pub took Duration;
+// The connects that failed, and the first one's error
+struct ConnectFails {
+  pub count: u64;
+  pub code: u32;
+
+  pub fn none() ConnectFails {ConnectFails(0u64, 0u32)}
+
+  // Counts e if it is a connection's Closed because its connect failed
+  pub fn see(self: &mut, e: &Event) bool {
+    if e.kind != EventKind.Closed || e.clean || e.failure.stage != Stage.Connect {return false;}
+    if count == 0u64 {code = e.failure.code;}
+    count = count + 1u64;
+    true
+  }
+
+  pub fn add(self: &mut, o: &ConnectFails) {
+    if count == 0u64 {code = o.code;}
+    count = count + o.count;
+  }
+
+  // ', N connects failed (address in use, OS error C)', or nothing
+  pub fn print(self: &) {
+    if count == 0u64 {return;}
+    printStr(", ");
+    printUInt(count);
+    printStr(if count == 1u64 {" connect failed"} else {" connects failed"});
+    if code != 0u32 {
+      printStr(" (");
+      let failKind = IoError(code).kind();
+      printStr((String() <- toText(&failKind)).view());
+      printStr(", OS error ");
+      printUInt(u64.from(code));
+      printStr(")");
+    }
+  }
 }
 
-fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perConn u64, serveHere bool) Run {
-  mut run = new Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero());
-  mut cs = List[ConnId].empty();
-  mut made = List[u64].empty();
-  mut busy = List[bool].empty();
-  mut connected = 0u64;
-  mut events = List[Event].empty();
-  imm batch = 64u64;
-  mut t0 = Instant.now();
-  mut started = false;
-  mut finished = 0u64;
+struct Run {
+  pub conns: u64;
+  pub perConn: u64;
+  pub lat: Histogram;
+  pub done: u64;
+  pub bad: u64;
+  pub took: Duration;
+  pub fails: ConnectFails;
+}
+
+fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64, serveHere: bool) Run {
+  var run = Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero(), ConnectFails.none());
+  var cs = List[ConnId]();
+  var made = List[u64]();
+  var busy = List[bool]();
+  var connected = 0u64;
+  var events = List[Event]();
+  let batch = 64u64;
+  var t0 = Instant.now();
+  var started = false;
+  var finished = 0u64;
   while finished < conns {
     // More connections, a batch at a time
-    if u64.from(cs.len()) < conns and u64.from(cs.len()) < connected + batch {
-      imm k = u64.from(cs.len());
+    if u64.from(cs.len()) < conns && u64.from(cs.len()) < connected + batch {
+      let k = u64.from(cs.len());
       cs.push(drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn + k)));
       made.push(0u64);
       busy.push(false);
       continue;
     }
-    if not started and connected == conns {
+    if !started && connected == conns {
       started = true;
       t0 = Instant.now();
     }
     // Each free connection's next request, once all are connected
     if started {
-      mut k = 0usize;
+      var k = 0usize;
       while k < cs.len() {
-        if not *busy[k] and *made[k] < perConn {
-          drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+        if !*busy[k] && *made[k] < perConn {
+          drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength(),
             Sink.Here(tokReq + u64.from(k)));
           busy.set(k, true);
           made.set(k, *made[k] + 1u64);
@@ -160,30 +203,31 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
         k = k + 1usize;
       }
     }
-    drv.poll(lp, forever(), &mut events);
-    mut j = 0usize;
+    drv.poll(lp, forever(), &uni events);
+    var j = 0usize;
     while j < events.len() {
-      imm e = &mut events[j];
+      let e = &mut events[j];
       j = j + 1usize;
       if e.token == tokServer {
-        if serveHere and e.kind == EventKind.Request {answer(drv, e, pool);}
-      } elif e.token >= tokReq {
-        imm k = usize.from(e.token - tokReq);
+        if serveHere && e.kind == EventKind.Request {answer(drv, e);}
+      } else if e.token >= tokReq {
+        let k = usize.from(e.token - tokReq);
         if e.kind == EventKind.Data {
           drv.release(e.req, e.buf.len());
-        } elif e.kind == EventKind.Done {
+        } else if e.kind == EventKind.Done {
           run.lat.record((e.timing.ended - e.timing.submitted).nanos());
           run.done = run.done + 1u64;
           busy.set(k, false);
           if *made[k] == perConn {finished = finished + 1u64;}
-        } elif e.isTerminal() {
+        } else if e.isTerminal() {
           run.bad = run.bad + 1u64;
           busy.set(k, false);
           if *made[k] == perConn {finished = finished + 1u64;}
         }
-      } elif e.token >= tokConn {
+      } else if e.token >= tokConn {
         if e.kind == EventKind.Connected {connected = connected + 1u64;}
-        elif e.kind == EventKind.Closed and not started {
+        else if e.kind == EventKind.Closed && !started {
+          run.fails.see(e);
           run.bad = run.bad + 1u64;
           connected = connected + 1u64;
         }
@@ -193,20 +237,20 @@ fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perCo
   }
   run.took = Instant.now() - t0;
   // Close them all, and let the closes finish
-  mut k = 0usize;
+  var k = 0usize;
   while k < cs.len() {
     drv.close(lp, *cs[k]);
     k = k + 1usize;
   }
-  imm until = Instant.now() + Duration.fromSeconds(5i64);
-  while drv.live() > 0u32 and Instant.now() < until {
-    drv.poll(lp, until, &mut events);
+  let until = Instant.now() + Duration.fromSeconds(5i64);
+  while drv.live() > 0u32 && Instant.now() < until {
+    drv.poll(lp, until, &uni events);
     events.clear();
   }
-  run;
+  run
 }
 
-fn report(label &str, r &Run) {
+fn report(label: &str, r: &Run) {
   printStr(label);
   printStr(": ");
   printUInt(r.conns);
@@ -219,6 +263,7 @@ fn report(label &str, r &Run) {
   printStr(" ms, ");
   if r.took.nanos() > 0i64 {printUInt(u64.from(i64.from(r.done) * 1000000000i64 / r.took.nanos()));}
   printStr(" requests/s");
+  r.fails.print();
   if r.bad > 0u64 {
     printStr(", ");
     printUInt(r.bad);
@@ -233,24 +278,23 @@ fn report(label &str, r &Run) {
 // ---------------------------------------------------------------------------
 
 struct ServerArgs {
-  pub portTx Sender[u16];
-  pub stop Arc[imm, Atomic[bool]];
+  pub portTx: Sender[u16];
+  pub stop: Arc[imm, Atomic[bool]];
 }
 
-fn serve(a ServerArgs) u64 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
+fn serve(a: ServerArgs) u64 {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
   a.portTx.send(listenOn(&mut drv, &mut lp));
-  mut events = List[Event].empty();
-  mut served = 0u64;
-  while not a.stop.load() {
-    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &mut events);
-    mut j = 0usize;
+  var events = List[Event]();
+  var served = 0u64;
+  while !a.stop.load() {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    var j = 0usize;
     while j < events.len() {
-      imm e = &mut events[j];
+      let e = &mut events[j];
       if e.kind == EventKind.Request {
-        answer(&mut drv, e, &pool);
+        answer(&mut drv, e);
         served = served + 1u64;
       }
       j = j + 1usize;
@@ -258,121 +302,142 @@ fn serve(a ServerArgs) u64 {
     events.clear();
   }
   drv.abortAll(&mut lp);
-  served;
+  served
 }
 
 // ---------------------------------------------------------------------------
 // Memory per idle connection
 // ---------------------------------------------------------------------------
 
-fn idleMemory(n u64, readyIdle bool) {
-  imm pool = Pool.make(268435456usize, 268435456usize);
-  mut lp = Loop.mustMake();
-  mut cfg = Config.make();
+fn idleMemory(n: u64, readyIdle: bool) {
+  // Every other row runs under the buffer pool's default bound (64 MiB).
+  // This one holds a 16 KiB receive buffer at each end of each idle
+  // connection by design, 2,000 x 2 x 16 KiB = 62.5 MiB, at that bound
+  if !readyIdle {setLimits(268435456usize, 268435456usize);}
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
   cfg.idleRecvReady = readyIdle;
   cfg.acceptDepth = 64u32;
-  mut drv = Driver.make(cfg, pool);
-  imm port = listenOn(&mut drv, &mut lp);
+  var drv = Driver.make(cfg);
+  let port = listenOn(&mut drv, &mut lp);
   // Warm: the tables and the pool's first blocks
+  var fails = ConnectFails.none();
   {
-    mut w = clients(&mut drv, &mut lp, &pool, port, 64u64, 1u64, true);
+    var w = clients(&mut drv, &mut lp, port, 64u64, 1u64, true);
+    fails.add(&w.fails);
   }
-  pool.trim();
-  imm before = privateBytes();
-  imm heldBefore = pool.stats().heldBytes - pool.stats().idleBytes;
-  // n connections, one GET each, then left idle
-  mut cs = List[ConnId].empty();
-  mut connected = 0u64;
-  mut dones = 0u64;
-  mut failed = 0u64;
-  mut events = List[Event].empty();
+  trim();
+  let before = privateBytes();
+  let heldBefore = stats().heldBytes - stats().idleBytes;
+  // n connections, one GET each, then left idle. A connection is settled
+  // once it is Connected or Closed (its connect failed, or it broke): no
+  // more than 64 are opened beyond those
+  var cs = List[ConnId]();
+  var connected = 0u64;
+  var closed = 0u64;
+  var dones = 0u64;
+  var failed = 0u64;
+  var events = List[Event]();
   while dones + failed < n {
-    if u64.from(cs.len()) < n and u64.from(cs.len()) < connected + 64u64 {
-      imm k = u64.from(cs.len());
-      imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
-      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq + k));
+    if u64.from(cs.len()) < n && u64.from(cs.len()) < connected + closed + 64u64 {
+      let k = u64.from(cs.len());
+      let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength(), Sink.Here(tokReq + k));
       cs.push(c);
       continue;
     }
-    drv.poll(&mut lp, forever(), &mut events);
-    mut j = 0usize;
+    drv.poll(&mut lp, forever(), &uni events);
+    var j = 0usize;
     while j < events.len() {
-      imm e = &mut events[j];
+      let e = &mut events[j];
       j = j + 1usize;
-      if e.token == tokServer and e.kind == EventKind.Request {answer(&mut drv, e, &pool);}
-      elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
-      elif e.kind == EventKind.Connected {connected = connected + 1u64;}
-      elif e.token >= tokReq and e.kind == EventKind.Done {dones = dones + 1u64;}
-      elif e.token >= tokReq and e.isTerminal() {failed = failed + 1u64;}
+      if e.token == tokServer && e.kind == EventKind.Request {answer(&mut drv, e);}
+      else if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
+      else if e.kind == EventKind.Connected {connected = connected + 1u64;}
+      else if e.token >= tokConn && e.token < tokReq && e.kind == EventKind.Closed {
+        fails.see(e);
+        closed = closed + 1u64;
+      }
+      else if e.token >= tokReq && e.kind == EventKind.Done {dones = dones + 1u64;}
+      else if e.token >= tokReq && e.isTerminal() {failed = failed + 1u64;}
     }
     events.clear();
   }
   // Settle: every connection idle at both ends
-  imm settle = Instant.now() + Duration.fromMillis(200i64);
+  let settle = Instant.now() + Duration.fromMillis(200i64);
   while Instant.now() < settle {
-    drv.poll(&mut lp, settle, &mut events);
+    drv.poll(&mut lp, settle, &uni events);
     events.clear();
   }
-  pool.trim();
-  imm after = privateBytes();
-  imm heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  trim();
+  let after = privateBytes();
+  let heldAfter = stats().heldBytes - stats().idleBytes;
   printStr("idle connections, ");
-  printStr(if readyIdle {"waiting by zero-byte receives (the default)";} else {"each holding a receive buffer";});
+  printStr(if readyIdle {"waiting by zero-byte receives (the default)"} else {"each holding a receive buffer"});
   printStr(": ");
-  printUInt(n);
+  // Each open connection is two of the driver's, its client's and its server's
+  let open = u64.from(drv.live()) / 2u64;
+  printUInt(open);
+  if open != n {
+    printStr(" of ");
+    printUInt(n);
+  }
   printStr(" open (");
   printUInt(u64.from(drv.live()));
   printStr(" driver connections, both ends; ");
   printUInt(failed);
-  printStr(" requests not Done)\n  private bytes +");
+  printStr(" requests not Done");
+  fails.print();
+  printStr(")");
+  if open != n || failed > 0u64 || fails.count > 0u64 {printStr(" NOT DONE");}
+  let per = if open > 0u64 {open} else {1u64};
+  printStr("\n  private bytes +");
   printUInt((after - before) / 1024u64);
   printStr(" KiB: ");
-  printUInt((after - before) / n);
+  printUInt((after - before) / per);
   printStr(" bytes a connection (both ends); pool buffers lent +");
   printUInt(u64.from(heldAfter - heldBefore) / 1024u64);
   printStr(" KiB: ");
-  printUInt(u64.from(heldAfter - heldBefore) / n);
+  printUInt(u64.from(heldAfter - heldBefore) / per);
   printStr(" bytes a connection\n");
   drv.abortAll(&mut lp);
-  drv.pump(&mut lp, &mut events);
+  drv.pump(&mut lp, &uni events);
 }
 
 fn main() {
   // 1a. One thread: server and clients on one Loop and one Driver
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut cfg = Config.make();
+    var lp = Loop.mustMake();
+    var cfg = Config.make();
     cfg.acceptDepth = 64u32;
-    mut drv = Driver.make(cfg, pool);
-    imm port = listenOn(&mut drv, &mut lp);
-    imm r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, true);
+    var drv = Driver.make(cfg);
+    let port = listenOn(&mut drv, &mut lp);
+    let r1 = clients(&mut drv, &mut lp, port, 1u64, 10000u64, true);
     report("one thread", &r1);
-    imm r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, true);
+    let r2 = clients(&mut drv, &mut lp, port, 256u64, 200u64, true);
     report("one thread", &r2);
-    imm r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, true);
+    let r3 = clients(&mut drv, &mut lp, port, 1000u64, 50u64, true);
     report("one thread", &r3);
   }
   // 1b. Two threads: the server's own
   {
-    mut portTx Sender[u16];
-    mut portRx Receiver[u16];
+    var portTx: Sender[u16];
+    var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    imm stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
-    imm server = thread.start(new ServerArgs(portTx, stop), &serve);
-    mut port = 0u16;
+    let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+    let server = thread.start(ServerArgs(portTx, stop), &serve);
+    var port = 0u16;
     match portRx.recv() {
-      case imm p Some {port = p;}
+      case let Some(p) {port = p;}
       case is None[u16] {}
     }
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut drv = Driver.make(Config.make(), pool);
-    imm r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, false);
+    var lp = Loop.mustMake();
+    var drv = Driver.make(Config.make());
+    let r1 = clients(&mut drv, &mut lp, port, 1u64, 10000u64, false);
     report("two threads", &r1);
-    imm r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, false);
+    let r2 = clients(&mut drv, &mut lp, port, 256u64, 200u64, false);
     report("two threads", &r2);
-    imm r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, false);
+    let r3 = clients(&mut drv, &mut lp, port, 1000u64, 50u64, false);
     report("two threads", &r3);
     stop.store(true);
     server.join();

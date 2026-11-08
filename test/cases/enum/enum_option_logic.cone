@@ -1,0 +1,144 @@
+// '||' and '&&' on an Option and on a Result: methods of the left operand's type.
+//
+// An Option is true when it is a Some, a Result when it is an Ok. The right operand
+// is 'lazy': it runs only where it is the answer. With the same type on the right,
+// '||' gives the first that is true and '&&' the first that is false. With a plain
+// value of the payload's type on the right, '||' unwraps: 'opt || 0' is what the
+// Some holds, else 0. A bool's own '||' and '&&' are unchanged, and so is the
+// narrowing a test joined by '&&' gives the right side.
+//
+// Every function with a side effect counts itself in 'calls', so what is printed says
+// how many ran. The expected lines are worked out by hand in the comments.
+
+mod enum_option_logic;
+
+import stdio use *;
+
+var @threadlocal calls = 0i64;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr(", ran ");
+  printInt(calls);
+  printStr("\n");
+  calls = 0i64;
+}
+
+fn some(n: i64) Option[i64] {
+  calls = calls + 1i64;
+  Some(n)
+}
+
+fn none() Option[i64] {
+  calls = calls + 1i64;
+  None
+}
+
+fn okv(n: i64) Result[i64, i64] {
+  calls = calls + 1i64;
+  Ok(n)
+}
+
+fn errv(n: i64) Result[i64, i64] {
+  calls = calls + 1i64;
+  Err(n)
+}
+
+fn num(n: i64) i64 {
+  calls = calls + 1i64;
+  n
+}
+
+fn flag(b: bool) bool {
+  calls = calls + 1i64;
+  b
+}
+
+fn b2i(b: bool) i64 {
+  if b { 1 } else { 0 }
+}
+
+fn parse(n: i64) Result[i64, i64] {
+  if n > 0 { Ok(n) } else { Err(n) }
+}
+
+// What an Option holds, or -1 for None
+fn optv(o: Option[i64]) i64 {
+  match o {
+    case let Some(v) { v }
+    case is None { -1 }
+  }
+}
+
+// What a Result holds: Ok(v) is v, Err(e) is 100 + e
+fn resv(r: Result[i64, i64]) i64 {
+  match r {
+    case let Ok(v) { v }
+    case let Err(e) { 100 + e }
+  }
+}
+
+enum Shape {
+  struct Circle { pub radius: i64; }
+  struct Dot {}
+}
+use Shape;
+
+fn main() {
+  // A plain value on the right unwraps. 'num' is lazy: it does not run when the left holds a value
+  show("some || 7", some(5) || 7);                  // 5, ran 1
+  show("none || 7", none() || 7);                   // 7, ran 1
+  show("some || num", some(5) || num(9));           // 5, ran 1
+  show("none || num", none() || num(9));            // 9, ran 2
+  show("parse(4) || 0", parse(4) || 0);             // 4
+  show("parse(-4) || 0", parse(-4) || 0);           // 0
+  show("ok || num", okv(3) || num(8));              // 3, ran 1
+  show("err || num", errv(3) || num(8));            // 8, ran 2
+
+  // The same type on the right: '||' is the first that is true
+  show("some || some", optv(some(1) || some(2)));   // 1, ran 1
+  show("none || some", optv(none() || some(2)));    // 2, ran 2
+  show("none || none", optv(none() || none()));     // -1, ran 2
+  show("ok || ok", resv(okv(1) || okv(2)));         // 1, ran 1
+  show("err || ok", resv(errv(1) || okv(2)));       // 2, ran 2
+  show("err || err", resv(errv(1) || errv(2)));     // 102, ran 2
+
+  // '&&' is the first that is false
+  show("some && some", optv(some(1) && some(2)));   // 2, ran 2
+  show("none && some", optv(none() && some(2)));    // -1, ran 1
+  show("ok && ok", resv(okv(1) && okv(2)));         // 2, ran 2
+  show("err && ok", resv(errv(1) && okv(2)));       // 101, ran 1
+  show("ok && err", resv(okv(1) && errv(5)));       // 105, ran 2
+
+  // Chained: '&&' binds tighter, so the first that is true, or the last false one
+  show("none || ok chain", optv(none() || some(3) && some(4)));  // 4, ran 3
+  show("a || b || c", optv(none() || none() || some(6)));        // 6, ran 3
+
+  // A bool's own: the right side runs only where the left leaves the answer open
+  show("false && flag", b2i(flag(false) && flag(true)));    // 0, ran 1
+  show("true && flag", b2i(flag(true) && flag(true)));      // 1, ran 2
+  show("true || flag", b2i(flag(true) || flag(true)));      // 1, ran 1
+  show("false || flag", b2i(flag(false) || flag(true)));    // 1, ran 2
+
+  // A value in a variable is the receiver as well
+  let held = some(8);
+  show("held || 1", held || 1);                      // 8, ran 1
+  let empty: Option[i64] = None;
+  show("empty || 1", empty || 1);                    // 1, ran 0
+
+  // A test joined by '&&' tells the right side which variant the left found
+  let c: Shape = Shape.Circle(7);
+  let d: Shape = Shape.Dot;
+  let r1 = if c is Circle && c.radius > 5 { c.radius } else { 0 };
+  let r2 = if d is Circle && d.radius > 5 { 1 } else { 0 };
+  show("narrowed true", r1);                         // 7, ran 0
+  show("narrowed false", r2);                        // 0, ran 0
+
+  // A condition may join Options and bools: an Option is true when it is a Some
+  if some(1) && some(2) { printStr("both\n"); }      // both
+  if none() || some(2) { printStr("either\n"); }     // either
+  if none() && some(2) { printStr("no\n"); } else { printStr("not both\n"); }  // not both
+  calls = 0i64;
+}

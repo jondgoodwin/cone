@@ -20,58 +20,57 @@ import iobuf use *;
 import iocore use *;
 import diag;
 
-fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
-  while out.len() < n and Instant.now() < limit {
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
     lp.poll(limit, out);
   }
 }
 
-fn pair(lp &mut Loop) Handle, Handle {
-  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-  mut port = 0u16;
+fn pair(lp: &mut Loop) Handle, Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
   match lp.localAddr(listener) {
-    case imm a Ok {port = a.port();}
-    case imm e Error {}
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
   }
   lp.submit(Op.Accept(listener), Target.Here(9001u64));
   lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
-  mut out = List[Completion].empty();
+  var out = List[Completion]();
   waitFor(lp, &mut out, 2usize);
-  mut a = Handle.none();
-  mut b = Handle.none();
-  mut k = 0usize;
+  var a = Handle.none();
+  var b = Handle.none();
+  var k = 0usize;
   while k < out.len() {
     if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
     k = k + 1usize;
   }
   lp.close(listener);
-  a, b;
+  a, b
 }
 
 // Cancel twice from this thread, after a while
-fn cancelLater(r Request) bool {
-  mut q = r;
+fn cancelLater(r: Request) bool {
+  var q = r;
   thread.sleep(Duration.fromMillis(20i64));
-  imm first = q.cancel();
-  imm second = q.cancel();
-  first and second;
+  let first = q.cancel();
+  let second = q.cancel();
+  first && second
 }
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
-    mut a = Handle.none();
-    mut b = Handle.none();
+    var lp = Loop.mustMake();
+    var out = List[Completion]();
+    var a = Handle.none();
+    var b = Handle.none();
     a, b = pair(&mut lp);
 
     // 1. Dropped
     {
-      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64));
       {
-        imm r = lp.request(id);
+        let r = lp.request(id);
         expect(r.id() == id, "the request names its operation");
         lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
         expectUInt(u64.from(out.len()), 0u64, "in flight while its request lives");
@@ -86,8 +85,8 @@ fn main() i32 {
 
     // 2. From another thread
     {
-      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(2u64));
-      imm t = thread.start(lp.request(id), &cancelLater);
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(2u64));
+      let t = thread.start(lp.request(id), &cancelLater);
       lp.poll(forever(), &mut out);
       expect(t.join(), "both cancels reached the loop");
       requireUInt(u64.from(out.len()), 1u64, "the idle loop woke with one answer");
@@ -99,20 +98,20 @@ fn main() i32 {
 
     // 3. Detached
     {
-      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(3u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(3u64));
       {
-        mut r = lp.request(id);
+        var r = lp.request(id);
         r.detach();
       }
       lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "a detached request's death cancels nothing");
-      mut x = pool.mustTake(1usize);
+      var x = IoBuf(1usize);
       x.append("q");
       lp.submit(Op.Send(b, x), Target.Here(4u64));
       waitFor(&mut lp, &mut out, 2usize);
-      mut k = 0usize;
+      var k = 0usize;
       while k < out.len() {
-        if out[k].token == 3u64 {expect(out[k].isDone() and out[k].count() == 1usize, "the receive Done");}
+        if out[k].token == 3u64 {expect(out[k].isDone() && out[k].count() == 1usize, "the receive Done");}
         k = k + 1usize;
       }
       out.clear();
@@ -120,9 +119,9 @@ fn main() i32 {
 
     // 4. After the answer
     {
-      imm id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(5u64));
-      imm r = lp.request(id);
-      mut x = pool.mustTake(1usize);
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(5u64));
+      let r = lp.request(id);
+      var x = IoBuf(1usize);
       x.append("w");
       lp.submit(Op.Send(b, x), Target.Here(6u64));
       waitFor(&mut lp, &mut out, 2usize);
@@ -132,11 +131,12 @@ fn main() i32 {
     lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "a request dropped after its answer: nothing more");
 
-    imm cs = lp.counters();
+    let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
+  trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");
-  done();
+  done()
 }

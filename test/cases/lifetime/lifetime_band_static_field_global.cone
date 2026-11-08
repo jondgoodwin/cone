@@ -1,0 +1,104 @@
+// A ''static' field given a global's borrow, a literal string, or a borrow
+// already ''static' (another value's field, read through a borrowed
+// parameter) is accepted: built, stored into a local's field and through a
+// '&mut' parameter, nested in an Option, a variant and a struct, and kept in a
+// global through a by-value parameter, where it still reads what it points at.
+//
+// Verdict: accept; prints 777, "literal", 42 three times, 777, 42, 777, 42
+// and 777.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a ''static'
+// field holds only a global borrow).
+// Master ce306fc05: accepted, the same output.
+
+mod lifetime_band_static_field_global;
+
+import stdio use *;
+
+struct H {
+  pub r: &'static i64;
+}
+
+struct S {
+  pub name: &'static str;
+  pub n: i64;
+}
+
+struct W {
+  pub h: H;
+  pub n: i64;
+}
+
+enum E {
+  struct A { pub h: H; }
+  struct B { pub r: &'static i64; }
+}
+
+let D: i64 = 777;
+let D2: i64 = 42;
+var G: H;
+var GS: S;
+
+fn @initpure init() {
+  G = H(&D);
+  GS = S("init", 0);
+}
+
+fn stash(h: H) {
+  G = h;
+}
+
+fn stashS(s: S) {
+  GS = s;
+}
+
+fn copyOf(hp: &H) H {
+  H(hp.r)
+}
+
+fn copyWhole(hp: &H) W {
+  W(*hp, 1)
+}
+
+fn reborrow(hp: &H) H {
+  H(&*hp.r)
+}
+
+fn wrap(h: H) Option[H] {
+  Some(h)
+}
+
+fn store(hp: &mut H) {
+  hp.r = &D2;
+}
+
+fn put() {
+  stash(H(&D));
+  stashS(S("literal", 3));
+}
+
+fn main() {
+  put();
+  printInt(*G.r); printStr("\n");
+  printStr(GS.name); printStr("\n");
+  var h = H(&D2);
+  let c = copyOf(&h);
+  printInt(*c.r); printStr("\n");
+  let w = copyWhole(&h);
+  printInt(*w.h.r); printStr("\n");
+  let r = reborrow(&h);
+  printInt(*r.r); printStr("\n");
+  h.r = &D;
+  printInt(*h.r); printStr("\n");
+  store(&mut h);
+  stash(h);
+  printInt(*G.r); printStr("\n");
+  let a = E.A(H(&D));
+  printInt(*a.h.r); printStr("\n");
+  let b = E.B(&D2);
+  printInt(*b.r); printStr("\n");
+  let o = wrap(H(&D));
+  match o {
+    case let Some(x) { printInt(*x.r); printStr("\n"); }
+    case None {}
+  }
+}

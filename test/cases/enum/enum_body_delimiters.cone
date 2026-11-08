@@ -1,0 +1,123 @@
+// Where an enum body ends its declarations. In a body ';' delimits declarations, so
+// the last one needs none and a trailing ';' is an empty declaration: the plain
+// 'enum Size { Small, Medium, Large }' and the 'enum Size { Small, Medium, Large; }'
+// that was the only spelling are the same enum. A variant list is comma-separated
+// and ANY variant in it may carry a payload; a struct variant ends in its block and
+// delimits itself, so nothing follows it but the next declaration.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_body_delimiters;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The list ends at the '}', or at a ';' that is still accepted there
+enum Size { Small, Medium, Large }
+enum SizeSemi { Small, Medium, Large; }
+
+// Any variant of a list may carry a payload, the first and the last among them
+enum Fault { SoldOut, NoSuchCode(i32), Jammed(i64) }
+enum Coded { Code(i32), Plain, Wide(i64) = 20, Last }
+
+// A list is a declaration like any other, so it can follow another, and a ';'
+// ends it where a member comes after it
+enum Lamp {
+  Red, Green;
+  Blink(i32), Steady(i32);
+  fn level(self: Lamp) i64 {
+    match self {
+      case is Red {1}
+      case is Green {2}
+      case let Blink(n) {i64.from(n)}
+      case let Steady(n) {i64.from(n) + 100}
+    }
+  }
+}
+
+// A common field, bare variants and a struct variant: the struct variant delimits
+// itself, and the body's last declaration, here a bare variant, needs no ';'
+enum Drink {
+  pub size: i32;
+  Espresso;
+  struct Latte { pub shots: i32 }
+  Tea
+}
+
+// An empty declaration is harmless wherever one appears
+enum Stray {
+  ;
+  One, Two;;
+  struct Three { pub n: i32 };
+  ;
+  Four
+}
+
+fn describe(f: Fault) i64 {
+  match f {
+    case is SoldOut {1}
+    case let NoSuchCode(c) {i64.from(c)}
+    case let Jammed(j) {j}
+  }
+}
+
+fn coded(c: Coded) i64 {
+  match c {
+    case let Code(n) {i64.from(n)}
+    case is Plain {0}
+    case let Wide(w) {w}
+    case is Last {-1}
+  }
+}
+
+fn drink(d: Drink) i64 {
+  match d {
+    case is Espresso {i64.from(d.size) * 10}
+    case let Latte(l) {i64.from(d.size) * 10 + i64.from(l.shots)}
+    case is Tea {i64.from(d.size) * 10 + 5}
+  }
+}
+
+fn stray(s: Stray) i64 {
+  match s {
+    case is One {1}
+    case is Two {2}
+    case let Three(t) {i64.from(t.n)}
+    case is Four {4}
+  }
+}
+
+fn main() {
+  show("size", if Size.Large == Size.Large {1} else {0});
+  show("size differs", if Size.Large == Size.Small {1} else {0});
+  show("semi", if SizeSemi.Medium == SizeSemi.Medium {1} else {0});
+
+  show("sold", describe(Fault.SoldOut));         // 1
+  show("none", describe(Fault.NoSuchCode(7)));   // 7
+  show("jam", describe(Fault.Jammed(900)));      // 900
+
+  show("code", coded(Coded.Code(5)));            // 5
+  show("plain", coded(Coded.Plain));             // 0
+  show("wide", coded(Coded.Wide(40)));           // 40
+  show("last", coded(Coded.Last));               // -1
+
+  show("red", Lamp.Red.level());                 // 1
+  show("green", Lamp.Green.level());             // 2
+  show("blink", Lamp.Blink(9).level());          // 9
+  show("steady", Lamp.Steady(3).level());        // 103
+
+  show("espresso", drink(Drink.Espresso(2)));    // 20
+  show("latte", drink(Drink.Latte(3, 4)));       // 34
+  show("tea", drink(Drink.Tea(1)));              // 15
+
+  show("one", stray(Stray.One));                 // 1
+  show("two", stray(Stray.Two));                 // 2
+  show("three", stray(Stray.Three(33)));         // 33
+  show("four", stray(Stray.Four));               // 4
+}

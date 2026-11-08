@@ -1,0 +1,172 @@
+// LivingHumanoid on the 1.75 m figure standing: the pieces together.
+//
+// THE BASE is the rest pose with the pelvis 2.5 cm lower (so the legs have slack to let a weight shift happen: the rest
+// pose has them straight). Both ankles are pinned where they stand.
+//
+// ONE CLOCK. After a frame the face rig's breath is the body's fill, exactly (breathExternal == state.fill), and the rig's
+// depth is the body's.
+//
+// PLANTED FEET. Over 60 s of idle (weight shifts, gestures), each ankle stays within 1.5 mm of its place in every frame: the
+// layers move the pelvis (up to 3.5 cm) and the pins bring the feet back.
+//
+// THE CHEST breathes: its rotation changes by about a degree and a bit between empty and full lungs, and the figure's
+// shoulders (clavicles) rise only when winded.
+//
+// LOOKING. The head turns: over 60 s its forward direction reaches at least 15 degrees of yaw each side of ahead, and never
+// more than 80 (the clamp), and the head's turn is shared (the neck and head turn more than the spine).
+//
+// EXERTION. 'tick' with work 0.9 for 20 s makes the face rig open its mouth (AU25 lips part is hand-set to 0.55 x winded).
+//
+// POSTURE. A posture layer that bends the spine 30 degrees forward, faded in over a second: after 1 s the layer's weight is
+// within 1% of in (e^-4.6 = 0.01 left); the legs are untouched (the mask is everything but the two legs' subtrees).
+
+mod living;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import bonepose use *;
+import poseik use *;
+import facerig use *;
+import animlayers use *;
+import livingbody use *;
+
+fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label)
+}
+
+fn angleOf(q: Quat) f32 { 2. * acos(clampf(q.w.abs(), 0., 1.)) }
+
+fn makeLife(skel: &Skeleton, restModels: &List[Transform3]) LivingHumanoid {
+  var regions = List[SoftRegion]();
+  let tg = buildRegionTargets(&Mesh(), restModels, &regions);
+  let sr = SoftRegions.make(regions, tg, restModels);
+  LivingHumanoid.make(skel, 1.75, ExertionParams.quick(), 4u32, sr)
+}
+
+fn testStanding() {
+  let skel = humanoid(1.75);
+  let rp = skel.restPose();
+  var restModels = List[Transform3]();
+  skel.modelTransforms(&rp, &mut restModels);
+  var life = makeLife(&skel, &restModels);
+  var base = skel.restPose();
+  base.setTranslation(PELVIS, (*base.locals[PELVIS]).translation + Vec3(0., -0.025, 0.));
+  // the feet are pinned where they stand at rest, 2.5 cm of slack below the lowered pelvis
+  var pins = List[LimbPin]();
+  pins.push(LimbPin(THIGH_L, (*restModels[FOOT_L]).translation, (*restModels[FOOT_L]).rotation, Vec3(0., 0., -1.), 0.5236, 1.));
+  pins.push(LimbPin(THIGH_R, (*restModels[FOOT_R]).translation, (*restModels[FOOT_R]).rotation, Vec3(0., 0., -1.), 0.5236, 1.));
+  let ankleL = (*restModels[FOOT_L]).translation;
+  let ankleR = (*restModels[FOOT_R]).translation;
+  var pose = skel.restPose();
+  var models = List[Transform3]();
+  let world = Transform3.identity();
+  var worstFoot = 0.f;
+  var minYaw = 0.f;
+  var maxYaw = 0.f;
+  var minChest = 10.f;
+  var maxChest = -10.f;
+  var shared = true;
+  var clampedBad = false;
+  var sameFill = true;
+  var t = 0;
+  while t < 60 * 60 {
+    life.tick(&skel, 1. / 60., 0., 1.);
+    life.compose(&skel, &base, &world, &pins, &mut pose, &mut models);
+    let dl = ((*models[FOOT_L]).translation - ankleL).length();
+    let dr = ((*models[FOOT_R]).translation - ankleR).length();
+    if dl > worstFoot { worstFoot = dl; }
+    if dr > worstFoot { worstFoot = dr; }
+    let f = (*models[HEAD]).rotation * Vec3(0., 0., -1.);
+    let yaw = atan2(-f.x, -f.z);
+    if yaw < minYaw { minYaw = yaw; }
+    if yaw > maxYaw { maxYaw = yaw; }
+    if yaw.abs() > radians(80.1) { clampedBad = true; }
+    let ch = angleOf(pose.rotation(CHEST));
+    if t > 60 && ch < minChest { minChest = ch; }
+    if t > 60 && ch > maxChest { maxChest = ch; }
+    if (life.face.breathExternal - life.state.fill).abs() > 0.000001 || (life.face.breathDepth - life.state.depth).abs() > 0.000001 { sameFill = false; }
+    if life.lookCfg.maxYaw.abs() > 0. && t % 600 == 0 {
+      // the share: with the head turned, the neck and head turned more than the spine
+      let sa = angleOf(pose.rotation(SPINE));
+      let ha = angleOf(pose.rotation(HEAD));
+      let yawAbs = yaw.abs();
+      if yawAbs > radians(25.) && ha < sa { shared = false; }
+    }
+    t = t + 1;
+  }
+  expectBool(worstFoot < 0.0015, true, "every ankle stays within 1.5 mm of its place");
+  expectBool(sameFill, true, "the face rig breathes the body's breath: one clock");
+  expectBool(maxYaw > radians(15.) && minYaw < -radians(15.), true, "the head looks 15 degrees or more to each side");
+  expectBool(!clampedBad, true, "and never past the 80 degree clamp");
+  expectBool(shared, true, "the neck and head turn more than the spine");
+  expectBool(maxChest - minChest > radians(0.8), true, "the chest rocks by about a degree with the breath");
+}
+
+fn testWinded() {
+  let skel = humanoid(1.75);
+  let rp = skel.restPose();
+  var restModels = List[Transform3]();
+  skel.modelTransforms(&rp, &mut restModels);
+  var life = makeLife(&skel, &restModels);
+  var t = 0;
+  while t < 60 * 20 { life.tick(&skel, 1. / 60., 0.9, 0.); t = t + 1; }
+  expectBool(life.state.winded > 0.9, true, "twenty seconds of work: winded");
+  let iLips = findUnit(&life.face.units, AU_LIPS_PART, SIDE_RIGHT);
+  expectBool(iLips >= 0i32, true, "the lips-part unit exists");
+  near(*life.face.manual[usize.from(iLips)], 0.55 * life.state.winded, 0.01, "the mouth is open");
+  // the shoulders lift with the breath
+  var maxLift = 0.f;
+  t = 0;
+  while t < 60 * 6 {
+    life.tick(&skel, 1. / 60., 0.9, 0.);
+    let d = *life.layers.layers[life.iBreath].pose.locals[CLAVICLE_L];
+    if d.translation.y > maxLift { maxLift = d.translation.y; }
+    t = t + 1;
+  }
+  expectBool(maxLift > 0.008, true, "the clavicles lift more than 8 mm winded");
+  // at rest they do not
+  var calm = makeLife(&skel, &restModels);
+  var restLift = 0.f;
+  t = 0;
+  while t < 60 * 20 {
+    calm.tick(&skel, 1. / 60., 0., 1.);
+    let d = *calm.layers.layers[calm.iBreath].pose.locals[CLAVICLE_L];
+    if d.translation.y > restLift { restLift = d.translation.y; }
+    t = t + 1;
+  }
+  expectBool(restLift < 0.0001, true, "at rest they stay put");
+}
+
+fn testPosture() {
+  let skel = humanoid(1.75);
+  let rp = skel.restPose();
+  var restModels = List[Transform3]();
+  skel.modelTransforms(&rp, &mut restModels);
+  var life = makeLife(&skel, &restModels);
+  var d = zeroPose(skel.boneCount());
+  deltaRotate(&mut d, SPINE, Quat.angleAxis(radians(-30.), Vec3(1., 0., 0.)));
+  life.setPosture(d);
+  life.fadePosture(1., 1.);
+  var base = skel.restPose();
+  var pose = skel.restPose();
+  var models = List[Transform3]();
+  var pins = List[LimbPin]();
+  let world = Transform3.identity();
+  var t = 0;
+  // the idle layers add their own few degrees; measure the posture layer alone through the stack
+  while t < 60 { life.tick(&skel, 1. / 60., 0.5, 0.); t = t + 1; }
+  near(life.layers.layers[life.iPosture].weight, 0.99, 0.01, "after a second the posture is within 1% of in");
+  let composed = life.layers.compose(&base);
+  expectBool(angleOf(composed.rotation(SPINE)) > radians(27.), true, "the spine is bent about 30 degrees forward");
+  near(angleOf(composed.rotation(THIGH_L)), 0., 0.00001, "the legs are untouched");
+  near(angleOf(composed.rotation(PELVIS)), 0., 0.00001, "and so is the pelvis (calm 0: no weight shift)");
+}
+
+fn main() i32 {
+  testStanding();
+  testWinded();
+  testPosture();
+  done()
+}

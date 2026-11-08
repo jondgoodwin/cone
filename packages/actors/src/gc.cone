@@ -15,14 +15,14 @@
 //   actor Keeper {
 //     head Option[NodeRef];
 //
-//     fn init(self &new) { *self = new Self(None[NodeRef]); }
+//     fn init(self: &new) { *self = Self(None[NodeRef]); }
 //
-//     pub async do push(self, n i64) {
+//     pub async fn push(self, n i64) {
 //       head = Some[NodeRef](new self[Node](n, head));   // in the actor's region
 //     }
 //   }
 //
-// 'new self[T](args)' is 'self.allocRegion().alloc(new T(args))': the compiler
+// 'new self[T](args)' is 'self.allocRegion().alloc(T(args))': the compiler
 // gives the state of every actor a method 'allocRegion', answering the actor's
 // 'ActorRegion' (regionOf, below), and a value that has one leads to a region
 // ('new x[T](...)', compiler/c/doc/nodes/literals.md, "Construction"). Only the
@@ -63,7 +63,10 @@
 // region's 'mark' reference by reference; 'mark' copies the object it finds
 // into new chunks and rewrites the slot the reference was stored in; the new
 // chunks are scanned in order, each object's references marked in turn, until
-// nothing is left to scan. The old chunks are then freed whole. A large
+// nothing is left to scan. The old chunks are then kept whole on a SPARE list,
+// up to twice the bytes that survived, and the rest freed; the next chunk a region needs is
+// drawn from the list before the raw blocks layer, so a steady region does not fault fresh pages
+// in every cycle. A large
 // object is marked in place and scanned from a list; the unmarked ones are
 // freed. There is no write barrier: nothing runs while it does.
 //
@@ -82,7 +85,7 @@
 // collection: the epoch is 1, 2, 3 ... never 0), so a cycle of them ends.
 //
 // A COLLECTION'S BLOCK. The region is also a MemRegion: its first field, 'region',
-// points at the three functions (allocate, resize, release) that sit in the
+// points at the functions (allocate, resize, release, and core's exact size) that sit in the
 // actor's Header beside the rest of the region, which never moves. A type
 // declaring CarriesRegion, made in the region ('new self[List[i64]](16)'), is
 // handed that region and takes its block from it, so the block is the actor's
@@ -121,22 +124,22 @@ const maxChunkBytes = 1048576usize;
 const largeBytes = 4096usize;
 
 // Every worker reads these after each message while the program may write them,
-// so each is an atomic held by an 'imm' global: a plain 'mut' one would be a
+// so each is an atomic held by a 'let' global: a plain 'var' one would be a
 // data race. 'floorBytes' starts at 'defaultFloor', all three set in the module's
 // 'init' (actors.cone)
-imm floorBytes Atomic[usize];
-imm stressOn Atomic[bool];
+let floorBytes: Atomic[usize];
+let stressOn: Atomic[bool];
 
 // The environment is read once, by whichever comes first of the first actor and
 // a call to 'setFloor' or 'setStress'. Those two settle it without reading it,
 // so a program's own choice is not overwritten by the environment. A thread
 // that arrives while another is doing this waits until it is done
-imm envOnce sync.Once;
+let envOnce: sync.Once;
 
 fn envSettled() {}
 
 fn readEnvOnce() {
-  imm val = libc.getenv("CONE_ACTORGC_STRESS");
+  let val = libc.getenv("CONE_ACTORGC_STRESS");
   if val as usize != 0usize {
     stressOn.store(true);
   }
@@ -145,7 +148,7 @@ fn readEnvOnce() {
 // Collect no sooner than after this many bytes are allocated: the floor under
 // the rule "allocated since the last collection exceeds what survived it".
 // For the process, before the first actor allocates
-pub fn setFloor(bytes usize) {
+pub fn setFloor(bytes: usize) {
   envOnce.callOnce(&envSettled);
   floorBytes.store(bytes);
 }
@@ -153,7 +156,7 @@ pub fn setFloor(bytes usize) {
 // Collect after every message, whatever was allocated: for tests, which find a
 // reference a collection missed, a stale one a move left behind, at once. The
 // environment variable CONE_ACTORGC_STRESS does the same for a whole run
-pub fn setStress(on bool) {
+pub fn setStress(on: bool) {
   envOnce.callOnce(&envSettled);
   stressOn.store(on);
 }
@@ -173,28 +176,28 @@ const flagMarked = 4u32;     // a large object reached in this collection
 // The header before every value. It is a collector's data, so its fields are
 // public, but a program never holds one.
 pub struct ActorGc is RegionRef, Traced, ActorLocal {
-  pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
-  pub link usize;      // a large object: the next one; a forwarded one: its copy
-  pub size u32;        // the object's bytes, header included, a multiple of 16
-  pub flags u32;
+  pub ty: *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
+  pub link: usize;      // a large object: the next one; a forwarded one: its copy
+  pub size: u32;        // the object's bytes, header included, a multiple of 16
+  pub flags: u32;
 
-  // 'new ActorGc[mut, T](v)', made through the actor's region ('alloc' of
+  // 'ActorGc[mut, T](v)', made through the actor's region ('alloc' of
   // ActorRegion), which names the actor's region first
-  fn alloc(size usize, ty *TypeRecord) *u8 {
-    imm sp = target;
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
+    let sp = target;
     target = null;
     if sp == null {
-      panic("ActorGc: a value is made in an actor's region by 'new self[T](...)', never by 'new ActorGc[...]' on its own");
+      panic("ActorGc: a value is made in an actor's region by 'new self[T](...)', never by 'ActorGc[...]()' on its own");
     }
-    (sp as &mut ActorRegion).allocate(size, ty);
+    (sp as &mut ActorRegion).allocate(size, ty)
   }
 
   // A reference was found, by the state, a parked record or an object being
   // scanned: 'slot' is where it is stored. The object is copied into the new
   // chunks, once, and the slot rewritten to point at the copy; a large object
   // stays where it is and is marked
-  fn mark(self &uni ActorGc, slot *usize) {
-    imm sp = curActorRegion;
+  fn mark(self: &uni ActorGc, slot: *usize) {
+    let sp = curActorRegion;
     if sp == null {
       return;
     }
@@ -208,31 +211,32 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
 
 // The space a collection is in, for 'mark'; and the space the next allocation is
 // for. Thread-local: workers run actors, and so collect and allocate, at once
-mut @threadlocal curActorRegion *ActorRegion = null;
-mut @threadlocal target *ActorRegion = null;
+var @threadlocal curActorRegion: *ActorRegion = null;
+var @threadlocal target: *ActorRegion = null;
 
 // A chunk of the region: this header, then objects, each a multiple of 16
 // bytes. 'next' is the next newer chunk.
 struct Chunk {
-  pub next *Chunk;
-  pub bytes usize;     // the chunk's size, this header included
-  pub used usize;      // the offset of its first unused byte
-  pub pad usize;
+  pub next: *Chunk;
+  pub bytes: usize;     // the chunk's size, this header included
+  pub used: usize;      // the offset of its first unused byte
+  pub pad: usize;
 }
 
 // What a test or a tuning run reads of an actor's region
 pub struct GcStats {
-  pub collections usize;    // collections run
-  pub objects usize;        // objects the region holds now, garbage not yet collected too
-  pub bytes usize;          // their bytes, headers included
-  pub chunks usize;         // chunks the region holds
-  pub large usize;          // of the objects, the large ones
-  pub copied usize;         // objects copied, in all the collections
-  pub finalized usize;      // finals run, in all the collections and at death
-  pub freed usize;          // large objects freed, in all
-  pub allocated usize;      // bytes allocated since the last collection
-  pub survived usize;       // bytes that survived the last collection
-  pub blocks usize;         // bytes held now in the blocks of collections made in the region
+  pub collections: usize;    // collections run
+  pub objects: usize;        // objects the region holds now, garbage not yet collected too
+  pub bytes: usize;          // their bytes, headers included
+  pub chunks: usize;         // chunks the region holds
+  pub large: usize;          // of the objects, the large ones
+  pub copied: usize;         // objects copied, in all the collections
+  pub finalized: usize;      // finals run, in all the collections and at death
+  pub freed: usize;          // large objects freed, in all
+  pub allocated: usize;      // bytes allocated since the last collection
+  pub survived: usize;       // bytes that survived the last collection
+  pub blocks: usize;         // bytes held now in the blocks of collections made in the region
+  pub spare: usize;          // bytes of old chunks kept for the next allocations (the SPARE list)
 }
 
 // An actor's region: its chunks, its large objects, its final list, and what
@@ -243,53 +247,55 @@ pub struct GcStats {
 // collections made in it draw their blocks from: its own 'vt', the allocate,
 // resize and release below, which sit beside it IN THIS RECORD, so the address
 // the collections hold is the record's and lasts as long as the actor), and
-// 'new self[T](...)', which is 'self.allocRegion().alloc(new T(...))', is the
+// 'new self[T](...)', which is 'self.allocRegion().alloc(T(...))', is the
 // allocation below.
 pub struct ActorRegion {
-  pub region *MemRegion;         // what collections made here get their blocks from: 'vt', below
-  vt MemRegion;                  // the region's three functions: SECOND, at the offset of one pointer (blockRegion)
-  first *Chunk = null;           // the oldest chunk
-  last *Chunk = null;            // the newest: allocation bumps here
-  scanChunk *Chunk = null;       // a collection's scan: the chunk it is in
-  scanAt usize = 0usize;         // and the offset in it
-  large usize = 0usize;          // the newest large object's header, or 0
-  finals *usize = null;          // the headers of the objects with a final, oldest first
-  nfinals usize = 0usize;
-  capfinals usize = 0usize;
-  gray *usize = null;            // large objects reached in this collection, not yet scanned
-  ngray usize = 0usize;
-  capgray usize = 0usize;
-  allocated usize = 0usize;      // bytes allocated since the last collection
-  live usize = 0usize;           // bytes that survived the last one
-  liveNow usize = 0usize;        // bytes a collection in progress has kept
-  nobjects usize = 0usize;
-  nlarge usize = 0usize;
-  nchunks usize = 0usize;
-  bytes usize = 0usize;
-  ncollections usize = 0usize;
-  ncopied usize = 0usize;
-  nfinalized usize = 0usize;
-  nfreed usize = 0usize;
-  blocks usize = 0usize;         // bytes held in the blocks of collections made here
-  epoch u32 = 0u32;
+  pub region: *MemRegion;         // what collections made here get their blocks from: 'vt', below
+  vt: MemRegion;                  // the region's three functions: SECOND, at the offset of one pointer (blockRegion)
+  first: *Chunk = null;           // the oldest chunk
+  last: *Chunk = null;            // the newest: allocation bumps here
+  scanChunk: *Chunk = null;       // a collection's scan: the chunk it is in
+  scanAt: usize = 0usize;         // and the offset in it
+  large: usize = 0usize;          // the newest large object's header, or 0
+  finals: *usize = null;          // the headers of the objects with a final, oldest first
+  nfinals: usize = 0usize;
+  capfinals: usize = 0usize;
+  gray: *usize = null;            // large objects reached in this collection, not yet scanned
+  ngray: usize = 0usize;
+  capgray: usize = 0usize;
+  allocated: usize = 0usize;      // bytes allocated since the last collection
+  live: usize = 0usize;           // bytes that survived the last one
+  liveNow: usize = 0usize;        // bytes a collection in progress has kept
+  nobjects: usize = 0usize;
+  nlarge: usize = 0usize;
+  nchunks: usize = 0usize;
+  bytes: usize = 0usize;
+  spare: *Chunk = null;           // old chunks kept for reuse, linked by 'next' (the SPARE list)
+  nspare: usize = 0usize;         // their bytes
+  ncollections: usize = 0usize;
+  ncopied: usize = 0usize;
+  nfinalized: usize = 0usize;
+  nfreed: usize = 0usize;
+  blocks: usize = 0usize;         // bytes held in the blocks of collections made here
+  epoch: u32 = 0u32;
 
   // A region holding nothing, made where it will stay: its three functions set
   // and its 'region' pointed at them
   fn create() *ActorRegion {
-    imm g = libc.malloc(mem.sizeof[ActorRegion]()) as *ActorRegion;
+    let g = libc.malloc(mem.sizeof[ActorRegion]()) as *ActorRegion;
     if g == null {
       panic("ActorGc: out of memory for an actor's region");
     }
-    mem.writeRaw(g, new ActorRegion(null, new MemRegion(&blockAlloc, &blockResize, &blockRelease)));
+    mem.writeRaw(g, ActorRegion(null, MemRegion(&blockAlloc, &blockResize, &blockRelease, &blockSize)));
     (*g).region = (&mut (*g).vt) as *MemRegion;
-    g;
+    g
   }
 
   // A value made in the actor's region: 'new self[T](v)'. The next ActorGc
   // value made on this thread is in this region
-  pub fn alloc[T](self &mut, v T) ActorGc[mut, T] {
+  pub fn alloc[T](self: &mut, v: T) ActorGc[mut, T] {
     target = self as *ActorRegion;
-    new ActorGc[mut, T](v);
+    ActorGc[mut, T](v)
   }
 
   // A value made in the actor's region that nothing changes: the reference is
@@ -298,15 +304,15 @@ pub struct ActorRegion {
   // 'mut', all a region value lends; this is the way to a read-only one.
   // PROVISIONAL: the spelling (the design chat is to say whether a permission
   // goes in the brackets, 'new self[imm, T]', or this stays)
-  pub fn allocImm[T](self &mut, v T) ActorGc[imm, T] {
+  pub fn allocImm[T](self: &mut, v: T) ActorGc[imm, T] {
     target = self as *ActorRegion;
-    new ActorGc[imm, T](v);
+    ActorGc[imm, T](v)
   }
 
   // What the region holds and has done, for tests and tuning
-  pub fn stats(self &) GcStats {
-    new GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
-      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks);
+  pub fn stats(self: &) GcStats {
+    GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
+      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks, self.nspare)
   }
 
   // ---- A collection's block: the region's allocate, resize and release ----
@@ -314,34 +320,34 @@ pub struct ActorRegion {
   // A block of 'bytes' bytes for a collection made in the region. Not in the
   // chunks, and never moved (A COLLECTION'S BLOCK, above): the raw blocks layer's, counted
   // against the bytes allocated since the last collection
-  fn blockNew(self &mut, bytes usize, align usize) *u8 {
+  fn blockNew(self: &mut, bytes: usize, align: usize) *u8 {
     if align > 16usize {
       panic("ActorGc: a collection's block aligned past 16 bytes is not supported");
     }
-    mut n = bytes;
+    var n = bytes;
     if n == 0usize {
       n = 1usize;
     }
-    imm p = RawBlocks.alloc(n, align);
+    let p = RawBlocks.alloc(n, align);
     if p == null {
       return null;
     }
     self.blocks = self.blocks + bytes;
     self.allocated = self.allocated + bytes;
-    p;
+    p
   }
 
   // The block, 'old' bytes long, made 'new': in place or not. A
   // growth is counted as allocated, as much as it grew
-  fn blockGrow(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  fn blockGrow(self: &mut, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
     if block == null {
       return self.blockNew(newBytes, align);
     }
-    mut n = newBytes;
+    var n = newBytes;
     if n == 0usize {
       n = 1usize;
     }
-    imm p = RawBlocks.resize(block, oldBytes, n, align);
+    let p = RawBlocks.resize(block, oldBytes, n, align);
     if p == null {
       return null;
     }
@@ -351,11 +357,11 @@ pub struct ActorRegion {
     } else {
       self.blocks = self.blocks - (oldBytes - newBytes);
     }
-    p;
+    p
   }
 
   // The block given back: by the collection's own 'final'
-  fn blockGive(self &mut, block *u8, bytes usize) {
+  fn blockGive(self: &mut, block: *u8, bytes: usize) {
     if block == null {
       return;
     }
@@ -368,51 +374,57 @@ pub struct ActorRegion {
   }
 
   // n rounded up to a multiple of a, a power of two
-  fn roundUp(n usize, a usize) usize {
-    (n + a - 1usize) & (0usize - a);
+  fn roundUp(n: usize, a: usize) usize {
+    (n + a - 1usize) & (0usize - a)
   }
 
   // Where the value of an object with this type record sits after its header:
   // the {region, permission, value} layout the compiler lays out
-  fn valueOffset(rec &TypeRecord) usize {
-    ActorRegion.roundUp(mem.sizeof[ActorGc](), rec.align);
+  fn valueOffset(rec: &TypeRecord) usize {
+    ActorRegion.roundUp(mem.sizeof[ActorGc](), rec.align)
   }
 
   // Room for an object of 'bytes' bytes (a multiple of 16): the newest chunk's
   // next bytes, or a chunk made for it
-  fn bump(self &mut, bytes usize) *u8 {
-    mut c = self.last;
-    if c == null or (c as &Chunk).bytes - (c as &Chunk).used < bytes {
+  fn bump(self: &mut, bytes: usize) *u8 {
+    var c = self.last;
+    if c == null || (c as &Chunk).bytes - (c as &Chunk).used < bytes {
       c = self.newChunk(bytes);
       if c == null {
         return null;
       }
     }
-    imm chunk = c as &mut Chunk;
-    imm at = (c as *u8) + chunk.used;
+    let chunk = c as &mut Chunk;
+    let at = (c as *u8) + chunk.used;
     chunk.used = chunk.used + bytes;
-    at;
+    at
   }
 
   // A new newest chunk with room for 'bytes': the first is small, each next
   // twice the last, to a most, unless the object needs more
-  fn newChunk(self &mut, bytes usize) *Chunk {
-    mut size = firstChunkBytes;
+  fn newChunk(self: &mut, bytes: usize) *Chunk {
+    var size = firstChunkBytes;
     if self.last != null {
       size = (self.last as &Chunk).bytes * 2usize;
       if size > maxChunkBytes {
         size = maxChunkBytes;
       }
     }
-    imm need = bytes + mem.sizeof[Chunk]();
+    let need = bytes + mem.sizeof[Chunk]();
     if size < need {
       size = ActorRegion.roundUp(need, 4096usize);
     }
-    imm c = RawBlocks.alloc(size, 16usize) as *Chunk;
+    var c = self.takeSpare(size);
     if c == null {
-      return null;
+      c = RawBlocks.alloc(size, 16usize) as *Chunk;
+      if c == null {
+        return null;
+      }
+    } else {
+      size = (c as &Chunk).bytes;
     }
-    mem.writeRaw(c, new Chunk(null, size, mem.sizeof[Chunk](), 0usize));
+    // A fresh chunk and a reused one are set up alike: nothing in it counts as used
+    mem.writeRaw(c, Chunk(null, size, mem.sizeof[Chunk](), 0usize));
     if self.last == null {
       self.first = c;
     } else {
@@ -421,23 +433,86 @@ pub struct ActorRegion {
     self.last = c;
     self.nchunks = self.nchunks + 1usize;
     self.bytes = self.bytes + size;
-    c;
+    c
+  }
+
+  // The spare chunk that fits 'want' bytes best (the smallest at least that
+  // large), off the list, or null
+  fn takeSpare(self: &mut, want: usize) *Chunk {
+    var best: *Chunk = null;
+    var bestPrev: *Chunk = null;
+    var prev: *Chunk = null;
+    var c = self.spare;
+    while c != null {
+      let b = (c as &Chunk).bytes;
+      if b >= want && (best == null || b < (best as &Chunk).bytes) {
+        best = c;
+        bestPrev = prev;
+      }
+      prev = c;
+      c = (c as &Chunk).next;
+    }
+    if best == null {
+      return null;
+    }
+    let next = (best as &Chunk).next;
+    if bestPrev == null {
+      self.spare = next;
+    } else {
+      (bestPrev as &mut Chunk).next = next;
+    }
+    self.nspare = self.nspare - (best as &Chunk).bytes;
+    best
+  }
+
+  // The old chunks of a collection, 'oldChunks' and the next ones linked after
+  // it, join the spare list; then the list is cut to 'keep' bytes (the rest is
+  // given back to the raw blocks layer), so a region that shrank gives memory back
+  fn spareOld(self: &mut, oldChunks: *Chunk, keep: usize) {
+    var c = oldChunks;
+    while c != null {
+      let next = (c as &Chunk).next;
+      (c as &mut Chunk).next = self.spare;
+      self.spare = c;
+      self.nspare = self.nspare + (c as &Chunk).bytes;
+      c = next;
+    }
+    var kept = 0usize;
+    var tail: *Chunk = null;
+    c = self.spare;
+    while c != null {
+      let next = (c as &Chunk).next;
+      let b = (c as &Chunk).bytes;
+      if kept + b <= keep {
+        kept = kept + b;
+        tail = c;
+      } else {
+        if tail == null {
+          self.spare = next;
+        } else {
+          (tail as &mut Chunk).next = next;
+        }
+        RawBlocks.release(c as *u8);
+      }
+      c = next;
+    }
+    self.nspare = kept;
   }
 
   // A new object: 'size' is the compiler's, the header and the value. Null if
   // memory is out, or the value wants an alignment past 16
-  fn allocate(self &mut, size usize, ty *TypeRecord) *u8 {
-    imm rec = ty as &TypeRecord;
+  fn allocate(self: &mut, size: usize, ty: *TypeRecord) *u8 {
+    let rec = ty as &TypeRecord;
     if rec.align > 16usize {
       return null;
     }
-    imm bytes = ActorRegion.roundUp(size, 16usize);
+    let bytes = ActorRegion.roundUp(size, 16usize);
     if bytes > 4294967295usize {
       return null;
     }
-    mut p *u8 = null;
-    mut flags = 0u32;
-    mut link = 0usize;
+    var p: *u8 = null;
+    var flags = 0u32;
+    var link = 0usize;
     if bytes > largeBytes {
       p = RawBlocks.alloc(bytes, 16usize);
       flags = flagLarge;
@@ -448,7 +523,7 @@ pub struct ActorRegion {
     if p == null {
       return null;
     }
-    mem.writeRaw(p as *ActorGc, new ActorGc(ty, link, u32.from(bytes), flags));
+    mem.writeRaw(p as *ActorGc, ActorGc(ty, link, u32.from(bytes), flags));
     if flags == flagLarge {
       self.large = p as usize;
       self.nlarge = self.nlarge + 1usize;
@@ -458,17 +533,17 @@ pub struct ActorRegion {
     }
     self.allocated = self.allocated + bytes;
     self.nobjects = self.nobjects + 1usize;
-    p;
+    p
   }
 
   // The object with a final at 'header', put last on the final list
-  fn pushFinal(self &mut, header usize) {
+  fn pushFinal(self: &mut, header: usize) {
     if self.nfinals == self.capfinals {
-      mut cap = 16usize;
+      var cap = 16usize;
       if self.capfinals != 0usize {
         cap = self.capfinals * 2usize;
       }
-      imm grown = libc.realloc(self.finals as *u8, cap * mem.sizeof[usize]()) as *usize;
+      let grown = libc.realloc(self.finals as *u8, cap * mem.sizeof[usize]()) as *usize;
       if grown == null {
         panic("ActorGc: out of memory for the final list");
       }
@@ -480,13 +555,13 @@ pub struct ActorRegion {
   }
 
   // A large object reached, not yet scanned
-  fn pushGray(self &mut, header usize) {
+  fn pushGray(self: &mut, header: usize) {
     if self.ngray == self.capgray {
-      mut cap = 16usize;
+      var cap = 16usize;
       if self.capgray != 0usize {
         cap = self.capgray * 2usize;
       }
-      imm grown = libc.realloc(self.gray as *u8, cap * mem.sizeof[usize]()) as *usize;
+      let grown = libc.realloc(self.gray as *u8, cap * mem.sizeof[usize]()) as *usize;
       if grown == null {
         panic("ActorGc: out of memory for a collection");
       }
@@ -500,8 +575,8 @@ pub struct ActorRegion {
   // ---- The collection ----
 
   // A reference to the object at 'header' was found at 'slot'
-  fn markObject(self &mut, header *ActorGc, slot *usize) {
-    imm h = header as &mut ActorGc;
+  fn markObject(self: &mut, header: *ActorGc, slot: *usize) {
+    let h = header as &mut ActorGc;
     if h.flags & flagLarge != 0u32 {
       if h.flags & flagMarked == 0u32 {
         h.flags = h.flags | flagMarked;
@@ -518,9 +593,9 @@ pub struct ActorRegion {
 
   // Copy the object into the new chunks, and leave its forwarding address in
   // the old header
-  fn copyObject(self &mut, h &mut ActorGc) {
-    imm bytes = usize.from(h.size);
-    imm dst = self.bump(bytes);
+  fn copyObject(self: &mut, h: &mut ActorGc) {
+    let bytes = usize.from(h.size);
+    let dst = self.bump(bytes);
     if dst == null {
       panic("ActorGc: out of memory for a collection");
     }
@@ -529,42 +604,43 @@ pub struct ActorRegion {
     h.link = dst as usize;
     self.liveNow = self.liveNow + bytes;
     self.ncopied = self.ncopied + 1usize;
+    self.nobjects = self.nobjects + 1usize;
   }
 
   // Hand the references the object at 'header' holds to the region's 'mark'
-  fn scanObject(self &mut, header usize) {
-    imm h = header as &ActorGc;
-    imm rec = h.ty as &TypeRecord;
+  fn scanObject(self: &mut, header: usize) {
+    let h = header as &ActorGc;
+    let rec = h.ty as &TypeRecord;
     if rec.flags & 2u32 != 0u32 {
-      imm trace = rec.trace;
+      let trace = rec.trace;
       trace((header + ActorRegion.valueOffset(rec)) as *u8, self.epoch);
     }
   }
 
   // Scan the new chunks in order, and the large objects reached, until nothing
   // is left to scan (Cheney's scan: copying appends to the chunks being scanned)
-  fn drain(self &mut) {
-    mut going = true;
+  fn drain(self: &mut) {
+    var going = true;
     while going {
       going = false;
-      if self.scanChunk == null and self.first != null {
+      if self.scanChunk == null && self.first != null {
         self.scanChunk = self.first;
         self.scanAt = mem.sizeof[Chunk]();
       }
       if self.scanChunk != null {
-        imm c = self.scanChunk as &Chunk;
+        let c = self.scanChunk as &Chunk;
         if self.scanAt < c.used {
-          imm at = (self.scanChunk as usize) + self.scanAt;
+          let at = (self.scanChunk as usize) + self.scanAt;
           self.scanAt = self.scanAt + usize.from((at as &ActorGc).size);
           self.scanObject(at);
           going = true;
-        } elif c.next != null {
+        } else if c.next != null {
           self.scanChunk = c.next;
           self.scanAt = mem.sizeof[Chunk]();
           going = true;
         }
       }
-      if !going and self.ngray > 0usize {
+      if !going && self.ngray > 0usize {
         self.ngray = self.ngray - 1usize;
         self.scanObject(*(self.gray + self.ngray));
         going = true;
@@ -573,37 +649,37 @@ pub struct ActorRegion {
   }
 
   // Has a collection found the object at 'header'?
-  fn reached(header usize) bool {
-    ((header as &ActorGc).flags & (flagForwarded | flagMarked)) != 0u32;
+  fn reached(header: usize) bool {
+    ((header as &ActorGc).flags & (flagForwarded | flagMarked)) != 0u32
   }
 
   // The object's header now: where it was copied, or where it stayed
-  fn moved(header usize) usize {
+  fn moved(header: usize) usize {
     if (header as &ActorGc).flags & flagLarge != 0u32 {
       return header;
     }
-    (header as &ActorGc).link;
+    (header as &ActorGc).link
   }
 
   // The objects with a final that nothing reached: each is kept one more
   // cycle, copied with all it reaches, and its death run on the copy, newest
   // first, once. Those that were reached stay on the list, at their new
   // addresses.
-  fn finalizeDead(self &mut) {
+  fn finalizeDead(self: &mut) {
     if self.nfinals == 0usize {
       return;
     }
     // Which are dead is judged before any is kept: keeping one reaches the
     // others. The list keeps those reached, in order, at their new addresses
-    imm dead = libc.malloc(self.nfinals * mem.sizeof[usize]()) as *usize;
+    let dead = libc.malloc(self.nfinals * mem.sizeof[usize]()) as *usize;
     if dead == null {
       panic("ActorGc: out of memory for a collection");
     }
-    mut ndead = 0usize;
-    mut kept = 0usize;
-    mut i = 0usize;
+    var ndead = 0usize;
+    var kept = 0usize;
+    var i = 0usize;
     while i < self.nfinals {
-      imm header = *(self.finals + i);
+      let header = *(self.finals + i);
       if ActorRegion.reached(header) {
         *(self.finals + kept) = ActorRegion.moved(header);
         kept = kept + 1usize;
@@ -617,8 +693,8 @@ pub struct ActorRegion {
     // Keep the dead, with what they reach
     i = 0usize;
     while i < ndead {
-      imm header = *(dead + i);
-      imm h = header as &mut ActorGc;
+      let header = *(dead + i);
+      let h = header as &mut ActorGc;
       if h.flags & flagLarge != 0u32 {
         h.flags = h.flags | flagMarked;
         self.liveNow = self.liveNow + usize.from(h.size);
@@ -633,9 +709,9 @@ pub struct ActorRegion {
     i = ndead;
     while i > 0usize {
       i = i - 1usize;
-      imm header = ActorRegion.moved(*(dead + i));
-      imm rec = (header as &ActorGc).ty as &TypeRecord;
-      imm fin = rec.finalize;
+      let header = ActorRegion.moved(*(dead + i));
+      let rec = (header as &ActorGc).ty as &TypeRecord;
+      let fin = rec.finalize;
       fin((header + ActorRegion.valueOffset(rec)) as *u8);
       self.nfinalized = self.nfinalized + 1usize;
     }
@@ -644,13 +720,13 @@ pub struct ActorRegion {
 
   // A collection: the state at 'st', whose type record is 'rec', and what the
   // pending table parks with it, are the roots
-  fn collect(self &mut, st *u8, rec *TypeRecord) {
+  fn collect(self: &mut, st: *u8, rec: *TypeRecord) {
     self.epoch = self.epoch + 1u32;
     if self.epoch == 0u32 {
       self.epoch = 1u32;
     }
     curActorRegion = self as *ActorRegion;
-    imm oldChunks = self.first;
+    let oldChunks = self.first;
     self.first = null;
     self.last = null;
     self.scanChunk = null;
@@ -658,22 +734,24 @@ pub struct ActorRegion {
     self.nchunks = 0usize;
     self.bytes = 0usize;
     self.liveNow = 0usize;
+    // Objects are counted as they are kept: each copy here, and below the large ones
+    self.nobjects = 0usize;
     // The state: its type's trace hands every reference it holds, among them
     // the records parked by 'await', to 'mark'
-    imm r = rec as &TypeRecord;
+    let r = rec as &TypeRecord;
     if r.flags & 2u32 != 0u32 {
-      imm trace = r.trace;
+      let trace = r.trace;
       trace(st, self.epoch);
     }
     self.drain();
     self.finalizeDead();
     // The large objects: freed unless reached; those kept are unmarked again
-    mut prev = 0usize;
-    mut at = self.large;
-    mut nlive = 0usize;
+    var prev = 0usize;
+    var at = self.large;
+    var nlive = 0usize;
     while at != 0usize {
-      imm h = at as &mut ActorGc;
-      imm next = h.link;
+      let h = at as &mut ActorGc;
+      let next = h.link;
       if h.flags & flagMarked == 0u32 {
         if prev == 0usize {
           self.large = next;
@@ -690,60 +768,46 @@ pub struct ActorRegion {
       at = next;
     }
     self.nlarge = nlive;
-    // The old chunks, whole
-    mut c = oldChunks;
-    while c != null {
-      imm next = (c as &Chunk).next;
-      RawBlocks.release(c as *u8);
-      c = next;
-    }
+    // The old chunks, whole, nothing points into them now: kept for the next
+    // allocations up to twice what survived (the copy to come and the allocation
+    // before the next collection), the rest given back
+    self.spareOld(oldChunks, self.liveNow * 2usize);
     self.ncollections = self.ncollections + 1usize;
     self.live = self.liveNow + self.blocks;
     self.allocated = 0usize;
-    // Objects: those copied this collection, the large ones and the revived ones
-    // are counted as they were kept
-    self.nobjects = self.countObjects();
+    self.nobjects = self.nobjects + self.nlarge;
     curActorRegion = null;
-  }
-
-  // The objects the region holds: those in the chunks, found by walking them,
-  // and the large ones
-  fn countObjects(self &mut) usize {
-    mut n = self.nlarge;
-    mut c = self.first;
-    while c != null {
-      mut at = mem.sizeof[Chunk]();
-      imm used = (c as &Chunk).used;
-      while at < used {
-        at = at + usize.from(((c as usize + at) as &ActorGc).size);
-        n = n + 1usize;
-      }
-      c = (c as &Chunk).next;
-    }
-    n;
   }
 
   // The actor has died, its state finalized: every object on the final list
   // finalized, newest first, and the region freed
-  fn die(self &mut) {
-    mut i = self.nfinals;
+  fn die(self: &mut) {
+    var i = self.nfinals;
     while i > 0usize {
       i = i - 1usize;
-      imm header = *(self.finals + i);
-      imm rec = (header as &ActorGc).ty as &TypeRecord;
-      imm fin = rec.finalize;
+      let header = *(self.finals + i);
+      let rec = (header as &ActorGc).ty as &TypeRecord;
+      let fin = rec.finalize;
       fin((header + ActorRegion.valueOffset(rec)) as *u8);
       self.nfinalized = self.nfinalized + 1usize;
     }
-    mut c = self.first;
+    var c = self.first;
     while c != null {
-      imm next = (c as &Chunk).next;
+      let next = (c as &Chunk).next;
       RawBlocks.release(c as *u8);
       c = next;
     }
-    mut at = self.large;
+    c = self.spare;
+    while c != null {
+      let next = (c as &Chunk).next;
+      RawBlocks.release(c as *u8);
+      c = next;
+    }
+    self.spare = null;
+    self.nspare = 0usize;
+    var at = self.large;
     while at != 0usize {
-      imm next = (at as &ActorGc).link;
+      let next = (at as &ActorGc).link;
       RawBlocks.release(at as *u8);
       at = next;
     }
@@ -759,29 +823,32 @@ pub struct ActorRegion {
 // The region functions a collection made in the region calls, each handed the
 // MemRegion it holds, which is the 'vt' field of the actor's ActorRegion: one
 // pointer past its start
-fn blockRegion(r *MemRegion) &mut ActorRegion {
-  ((r as usize - mem.sizeof[usize]()) as *ActorRegion) as &mut ActorRegion;
+fn blockRegion(r: *MemRegion) &mut ActorRegion {
+  ((r as usize - mem.sizeof[usize]()) as *ActorRegion) as &mut ActorRegion
 }
 
-fn blockAlloc(r *MemRegion, bytes usize, align usize) *u8 {
-  blockRegion(r).blockNew(bytes, align);
+fn blockAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
+  blockRegion(r).blockNew(bytes, align)
 }
 
-fn blockResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
-  blockRegion(r).blockGrow(block, oldBytes, newBytes, align);
+fn blockResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  blockRegion(r).blockGrow(block, oldBytes, newBytes, align)
 }
 
-fn blockRelease(r *MemRegion, block *u8, bytes usize) {
+fn blockRelease(r: *MemRegion, block: *u8, bytes: usize) {
   blockRegion(r).blockGive(block, bytes);
 }
+
+// The actor's region gives exactly what is asked
+fn blockSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
 
 // A message has finished: collect, if the bytes allocated since the last
 // collection exceed what survived it, and are not under the floor (or if stress
 // is on). Only an actor that has asked for its region comes here
-fn collectIfDue(g &mut ActorRegion, st *u8, rec *TypeRecord) {
-  mut want = stressOn.load();
+fn collectIfDue(g: &mut ActorRegion, st: *u8, rec: *TypeRecord) {
+  var want = stressOn.load();
   if !want {
-    mut threshold = floorBytes.load();
+    var threshold = floorBytes.load();
     if g.live > threshold {
       threshold = g.live;
     }
@@ -794,10 +861,10 @@ fn collectIfDue(g &mut ActorRegion, st *u8, rec *TypeRecord) {
 
 // The actor's region, for the state's generated 'allocRegion': made now, the
 // first time it is asked for, and kept by the actor's Header until its death
-pub fn regionOf[S, M Sendable](st &mut S) &'static mut ActorRegion {
-  imm h = headerOf[S, M](st);
+pub fn regionOf[S, M: Sendable](st: &mut S) &'static mut ActorRegion {
+  let h = headerOf[S, M](st);
   if (*h).gc as usize == 0usize {
     (*h).gc = ActorRegion.create();
   }
-  (*h).gc as &mut ActorRegion;
+  (*h).gc as &mut ActorRegion
 }

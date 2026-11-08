@@ -1,0 +1,244 @@
+// The autolod package's impostor on a real GPU with no window, with validation on.
+// An asymmetric test subject (a textured sphere with a cube on one side and a post on
+// top; one material) is baked into an octahedral impostor, and the impostor card is
+// drawn from several directions beside the subject itself, the same camera and the
+// same light, into 160 x 160 sRGB targets that are read back and compared:
+//
+// - the covered pixels (anything that is not the background) must overlap: the
+//   intersection over the union of the two silhouettes at least MIN_IOU;
+// - the mean absolute difference of the colour over the pixels both cover, in 0..255, at most
+//   MAX_DIFF at a frame's own direction and MAX_DIFF_BLEND between frames.
+//
+// The directions: a frame's own (3, 4) of the 8-by-8 hemispherical grid; a direction
+// between frames; one near the horizon; one nearly straight above; the same with the
+// subject turned 40 degrees about y, scaled 1.7 and moved (the card works in the
+// object's space). It then checks the numbers of the bake itself: the atlas is 8 x
+// 128 square, the coverage of the frame looking at the subject from above is the
+// disc and cube seen from above, no coverage outside the padded sphere's square.
+// Pass the environment variable AUTOLOD_SHOTS=<folder> to save the pictures as .bmp.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll. Only a failure prints.
+
+mod impostorgpu;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import autolod use *;
+import path as filepath;
+
+const SIZE = 160u32;
+const MIN_IOU = 0.93f;
+const MAX_DIFF = 10.f;
+const MAX_DIFF_BLEND = 22.f;
+
+fn subject() Mesh {
+  var m = Mesh.sphere(1., 28);
+  var cube = Mesh.cube(0.9);
+  cube.transform(Mat4.fromTranslation(Vec3(0.75, 0.1, 0.2)));
+  m.append(&cube);
+  var post = Mesh.cube(0.2);
+  post.transform(Mat4.fromTrs(Vec3(-0.1, 1.15, -0.2), Quat.identity(), Vec3(1., 2.2, 1.)));
+  m.append(&post);
+  m.transform(Mat4.fromTranslation(Vec3(0., 1.4, 0.)));
+  m
+}
+
+struct Rig {
+  color: Texture;
+  depth: Texture;
+  readback: Buffer;
+}
+
+fn shoot(device: &mut Device, renderer: &mut Renderer, rig: &Rig, camera: &Camera, light: &Light, list: &DrawList) Image {
+  var encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &rig.color, &rig.depth, camera, light, list);
+  encoder.copyTextureToBuffer(&rig.color, &rig.readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  Image.fromTexels(rig.readback.mappedRange(), i32.from(SIZE), i32.from(SIZE), false)
+}
+
+// Is the pixel not the background (0.2, 0.4, 0.6 linear: sRGB 124, 170, 203)?
+
+fn covered(img: &Image, x: i32, y: i32) bool {
+  (i32.from(img.at(x, y, 0)) - 124).abs() + (i32.from(img.at(x, y, 1)) - 170).abs() + (i32.from(img.at(x, y, 2)) - 203).abs() > 6
+}
+
+struct Compare {
+  iou: f32;
+  diff: f32;
+}
+
+fn compare(a: &Image, b: &Image) Compare {
+  var both = 0i32;
+  var either = 0i32;
+  var sum = 0.f;
+  var y = 0;
+  while y < i32.from(SIZE) {
+    var x = 0;
+    while x < i32.from(SIZE) {
+      let ca = covered(a, x, y);
+      let cb = covered(b, x, y);
+      if ca || cb { either = either + 1; }
+      if ca && cb {
+        both = both + 1;
+        var c = 0;
+        while c < 3 {
+          sum = sum + f32.from((i32.from(a.at(x, y, c)) - i32.from(b.at(x, y, c))).abs());
+          c = c + 1;
+        }
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  Compare(if either > 0 { f32.from(both) / f32.from(either) } else { 0. }, if both > 0 { sum / f32.from(both * 3) } else { 0. })
+}
+
+fn save(name: &str, img: &Image) {
+  let folder = libc.getenv("AUTOLOD_SHOTS");
+  if (folder as usize) == 0usize { return; }
+  var path = String();
+  var k = 0usize;
+  while *(folder + k) != 0u8 {
+    path.appendByte(*(folder + k));
+    k = k + 1usize;
+  }
+  path <- "/";
+  path <- name;
+  path <- ".bmp";
+  img.save(&filepath.Path.from(path.view()));
+}
+
+fn main() i32 {
+  var instance = Instance.create("autolod impostor");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  var adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  let target = TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let depthDesc = TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let rig = Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+    device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+
+  // the subject, textured
+  let image = Image.checker(64, 64, 8, 8, Color(0.9, 0.5, 0.2, 1.), Color(0.2, 0.5, 0.9, 1.));
+  let tex = renderer.addTexture(&mut device, &image);
+  let material = Material.textured(Color(1., 1., 1., 1.), tex);
+  let subjectMesh = subject();
+  let mesh = renderer.addMesh(&mut device, &subjectMesh);
+  let matHandle = renderer.addMaterial(&mut device, &material);
+
+  // the impostor
+  var baker = ImpostorBaker.create(&mut device, 128u32);
+  require(baker.isValid(), "a baker");
+  var parts = List[BakePart]();
+  parts.push(BakePart(subject(), material, image));
+  var box = subjectMesh.bounds();
+  let center = box.center();
+  var r2 = 0.f;
+  var i = 0usize;
+  while i < subjectMesh.positions.len() {
+    let d = (*subjectMesh.positions[i]).distanceSquared(center);
+    if d > r2 { r2 = d; }
+    i = i + 1usize;
+  }
+  let radius = r2.sqrt();
+  let settings = ImpostorSettings();
+  // The baker's materials hold the texture handle of the main renderer: the bake takes the image and makes its own
+  let atlas = baker.bake(&mut device, &parts, center, radius, &settings);
+  expectUInt(u64.from(atlas.albedo.width), 1024u64, "the atlas is 8 x 128 across");
+  expectUInt(u64.from(atlas.albedo.height), 1024u64, "and as high");
+  expectFloat(f64.from(atlas.radius), f64.from(radius * 1.0625), 0.0001, "the frames are framed at the padded radius");
+  // The frame looking down from above (the hemisphere's middle, cell (3.5, 3.5)) has no cell of its own in an even
+  // grid: check the cell nearest, (3, 3), has some covered texels and its corner texel none
+  var covered3 = 0u32;
+  var y = 0;
+  while y < 128 {
+    var x = 0;
+    while x < 128 {
+      if atlas.albedo.at(3 * 128 + x, 3 * 128 + y, 3) > 0u8 { covered3 = covered3 + 1u32; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(covered3 > 2000u32 && covered3 < 12000u32, "a cell has the subject's silhouette in it, not the whole square");
+  expectUInt(u64.from(atlas.albedo.at(3 * 128 + 1, 3 * 128 + 1, 3)), 0u64, "its corner texel is empty");
+
+  var pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  require(pipe.isValid(&renderer), "the impostor pipeline");
+  let impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
+  require(!impostor.material.isNone(), "the impostor material");
+
+  let light = Light.directional(Vec3(-0.5, -0.8, -0.35), Color(2.6, 2.4, 2.0, 1.), Color(0.35, 0.4, 0.5, 1.));
+  var worst = 0.f;
+  var caseNumber = 0;
+  while caseNumber < 5 {
+    var dir = Vec3(0., 1., 0.);
+    var model = Mat4.identity();
+    var name = String.from("case");
+    var limit = MAX_DIFF_BLEND;
+    if caseNumber == 0 { dir = frameDirection(3u32, 4u32, 8u32, true); limit = MAX_DIFF; name <- "0-frame"; }
+    if caseNumber == 1 { dir = Vec3(0.4, 0.6, 0.7).normalize(); name <- "1-between"; }
+    if caseNumber == 2 { dir = Vec3(0.9, 0.06, 0.4).normalize(); name <- "2-horizon"; }
+    if caseNumber == 3 { dir = Vec3(0.05, 1., 0.1).normalize(); name <- "3-above"; }
+    if caseNumber == 4 {
+      dir = Vec3(0.4, 0.6, 0.7).normalize();
+      model = Mat4.fromTrs(Vec3(0.5, 0., -0.3), Quat.angleAxis(radians(40.), Vec3(0., 1., 0.)), Vec3(1.7, 1.7, 1.7));
+      name <- "4-turned";
+    }
+    let world = model * center;
+    let worldRadius = radius * (if caseNumber == 4 { 1.7 } else { 1. });
+    // The camera: a direction in the OBJECT's space (case 4: carried to the world by the turn)
+    let worldDir = if caseNumber == 4 { model.transformVector(dir).normalize() } else { dir };
+    var camera = Camera.make();
+    camera.fov = radians(30.);
+    camera.near = 0.5;
+    camera.far = 200.;
+    camera.background = Color(0.2, 0.4, 0.6, 1.);
+    camera.lookAt(world + worldDir * (worldRadius * 5.), world, Vec3(0., 1., 0.));
+    var refList = DrawList();
+    refList.add(mesh, matHandle, model);
+    var impList = DrawList();
+    impList.add(impostor.card, impostor.material, model);
+    let a = shoot(&mut device, &mut renderer, &rig, &camera, &light, &refList);
+    let b = shoot(&mut device, &mut renderer, &rig, &camera, &light, &impList);
+    let c = compare(&a, &b);
+    save(name.view(), &a);
+    var named = name.clone();
+    named <- "-impostor";
+    save(named.view(), &b);
+    var label = String.from("silhouette overlap, ");
+    label <- name.view();
+    expect(c.iou >= MIN_IOU, label.view());
+    var label2 = String.from("colour difference, ");
+    label2 <- name.view();
+    expect(c.diff <= limit, label2.view());
+    if c.diff > worst { worst = c.diff; }
+    // (the numbers are for the person developing it)
+    if (libc.getenv("AUTOLOD_VERBOSE") as usize) != 0usize {
+      print <- name.view(); print <- ": overlap "; print <- c.iou; print <- ", difference "; print <- c.diff; print <- "\n";
+    }
+    caseNumber = caseNumber + 1;
+  }
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}

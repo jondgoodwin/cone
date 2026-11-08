@@ -1,0 +1,520 @@
+// The body as one mesh: the sculpted surface and the head, triangulated, with normals, uvs and skin.
+
+// Copies (the lists are owned, so a copy is made element by element)
+pub fn copyMesh(m: &Mesh) Mesh {
+  var out = Mesh();
+  out.append(m);
+  out
+}
+
+pub fn copySkin(s: &Skin) Skin {
+  var out = Skin();
+  var i = 0usize;
+  while i < s.joints.len() { out.joints.push(*s.joints[i]); out.weights.push(*s.weights[i]); i = i + 1usize; }
+  out
+}
+
+pub fn copySkeleton(s: &Skeleton) Skeleton {
+  var out = Skeleton();
+  var i = 0usize;
+  while i < s.bones.len() { out.bones.push(*s.bones[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < s.sockets.len() { out.sockets.push(*s.sockets[i]); i = i + 1usize; }
+  out
+}
+
+// A quad cut along its shorter diagonal, wound as the quad is
+fn quadTriangles(out: &mut List[u32], p: &List[Vec3], a: u32, b: u32, c: u32, d: u32) {
+  let ac = (*p[usize.from(a)] - *p[usize.from(c)]).lengthSquared();
+  let bd = (*p[usize.from(b)] - *p[usize.from(d)]).lengthSquared();
+  if ac <= bd {
+    out.push(a); out.push(b); out.push(c);
+    out.push(a); out.push(c); out.push(d);
+  } else {
+    out.push(a); out.push(b); out.push(d);
+    out.push(b); out.push(c); out.push(d);
+  }
+}
+
+// The surface's quads as a triangle mesh, smooth normals, no uvs yet
+pub fn surfaceMesh(s: &BodySurface) Mesh {
+  var m = Mesh();
+  var v = 0usize;
+  while v < s.positions.len() { m.positions.push(*s.positions[v]); v = v + 1usize; }
+  var q = 0usize;
+  while q + 3usize < s.quads.len() {
+    quadTriangles(&mut m.indices, &s.positions, *s.quads[q], *s.quads[q + 1usize], *s.quads[q + 2usize], *s.quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  m.computeSmoothNormals();
+  m
+}
+
+// The gains that bring the sculpted body to its measures: the body is sculpted, measured (measure.cone),
+// and each measure's gain multiplied by the ratio of what it should be to what it is, 'rounds' times
+pub fn fitGains(m: &Measures, levels: u32, rounds: i32) List[f32] {
+  var gains = unitGains();
+  let skel = personSkeleton(m);
+  let models = restModels(&skel);
+  let cage = bodyCage(m, &models);
+  var r = 0;
+  while r < rounds {
+    var s = subdivideCage(&cage, levels);
+    let forms = bodyForms(m, &models, &gains);
+    projectSurface(&mut s, &forms, 2);
+    let meas = measuredOf(&s.positions, &s.quads, &s.weights, m);
+    var i = 1usize;
+    while i < 14usize {
+      let got = meas.measure(i, &models);
+      // (the neck's girth is the survey's below the larynx, on the head's part of the mesh: its form is set from it
+      // directly, not fitted; the body's slice that high meets the seam)
+      if got > 0.01 && i != 8usize {
+        let want = measureAt(m, i);
+        let ratio = clampf(want / got, 0.6, 1.6);
+        gains.set(i, *gains[i] * libc.powf(ratio, 0.9));
+      }
+      i = i + 1usize;
+    }
+    r = r + 1;
+  }
+  gains
+}
+
+// The body's measures as sculpted with 'gains', measure by measure (biacromial and head: 0)
+pub fn measureBody(m: &Measures, gains: &List[f32], levels: u32) List[f32] {
+  let skel = personSkeleton(m);
+  let models = restModels(&skel);
+  let cage = bodyCage(m, &models);
+  var s = subdivideCage(&cage, levels);
+  let forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  let meas = measuredOf(&s.positions, &s.quads, &s.weights, m);
+  var out = List[f32]();
+  var i = 0usize;
+  while i < MEASURE_COUNT { out.push(meas.measure(i, &models).max(0.)); i = i + 1usize; }
+  out
+}
+
+// The bones a body is skinned to: the humanoid's 19, then the jaw and the eyes facerig's attachFace adds
+pub const JAW = 19usize;
+pub const EYE_L = 20usize;
+pub const EYE_R = 21usize;
+pub const BODY_BONES = 22usize;
+
+// The named points a body carries beside its vertices: the 19 joints' rest positions (by bone number), then
+pub const POINT_HEAD = 19usize;       // the head frame's origin
+pub const POINT_EYE_R = 20usize;      // the eyeballs' centres
+pub const POINT_EYE_L = 21usize;
+pub const POINT_JAW = 22usize;        // the jaw's hinge
+pub const POINT_MOUTH = 23usize;      // the mouth's line at the middle, at the lips' front
+pub const POINT_COUNT = 24usize;
+
+fn namedPoints(models: &List[Transform3], head: &Head) List[Vec3] {
+  var out = List[Vec3]();
+  var b = 0usize;
+  while b < HUMANOID_BONES { out.push((*models[b]).translation); b = b + 1usize; }
+  let o = head.origin;
+  let s = &head.shape;
+  let ft = &head.ft;
+  out.push(o);
+  out.push(o + Vec3(s.ipd * 0.5, 0., ft.eyeZ));
+  out.push(o + Vec3(0. - s.ipd * 0.5, 0., ft.eyeZ));
+  out.push(o + Vec3(0., -0.024 * s.sF, 0.008));
+  out.push(o + Vec3(0., ft.yg, ft.lipZ));
+  out
+}
+
+// The whole body as one mesh, in the bind pose (the skeleton's rest pose), with everything made from it
+pub struct Body {
+  pub measures: Measures;
+  pub skeleton: Skeleton;           // the person's 19 bones (face.cone adds the jaw and the eyes)
+  pub mesh: Mesh;                   // positions, normals, uvs, triangles
+  pub weights: List[f32];           // BODY_BONES a vertex
+  pub headStart: usize;             // the head's vertices are from here on
+  pub head: Head;
+  pub surfaceQuads: List[u32];      // the body's quads (for measuring and wireframes)
+  pub headQuads: List[u32];         // the head's, numbered in the mesh
+  pub gains: List[f32];
+  pub points: List[Vec3];           // the named points (POINT_*): the joints at rest, the head's frame, the eyes,
+                                   // the jaw's hinge, the mouth; blended with the mesh (blends.cone)
+  pub seamRing: List[u32];          // the body's vertices on the neck's seam (each lies on the head's bottom row)
+
+  pub fn vertexCount(self: &) usize { mesh.positions.len() }
+
+  // The render skin: each vertex's four heaviest bones
+  pub fn skin(self: &) Skin {
+    var s = Skin();
+    var v = 0usize;
+    while v < mesh.positions.len() {
+      var j = [0u32, 0u32, 0u32, 0u32];
+      var w = [0.f, 0., 0., 0.];
+      var b = 0usize;
+      while b < BODY_BONES {
+        let x = *weights[v * BODY_BONES + b];
+        if x > w[3] {
+          var k = 3usize;
+          while k > 0usize && x > w[k - 1usize] { w[k] = w[k - 1usize]; j[k] = j[k - 1usize]; k = k - 1usize; }
+          w[k] = x;
+          j[k] = u32.from(b);
+        }
+        b = b + 1usize;
+      }
+      s.push(j[0], j[1], j[2], j[3], w[0], w[1], w[2], w[3]);
+      v = v + 1usize;
+    }
+    s
+  }
+}
+
+// The angle of a point round a vertical axis through 'axis': 0 in front (-z), positive towards +x
+fn aroundAxis(p: Vec3, axis: Vec3) f32 { atan2(p.x - axis.x, axis.z - p.z) }
+
+// The point of the head's bottom row at an angle round the neck (between its columns)
+fn bottomAt(head: &Head, th: f32) Vec3 {
+  let n = head.bottom.len();
+  var c = 0usize;
+  while c + 2usize < n && *head.bottomAngles[c + 1usize] < th { c = c + 1usize; }
+  let a0 = *head.bottomAngles[c];
+  let a1 = *head.bottomAngles[c + 1usize];
+  let t = clampf((th - a0) / (a1 - a0).max(0.000001), 0., 1.);
+  let p0 = *head.positions[usize.from(*head.bottom[c])];
+  let p1 = *head.positions[usize.from(*head.bottom[c + 1usize])];
+  p0 + (p1 - p0) * t
+}
+
+// A triangle wound to face away from 'axis' (a point on the neck's axis at its height)
+fn outwardTri(out: &mut List[u32], pos: &List[Vec3], a: u32, b: u32, c: u32, axis: Vec3) {
+  let pa = *pos[usize.from(a)];
+  let pb = *pos[usize.from(b)];
+  let pc = *pos[usize.from(c)];
+  let n = (pb - pa).cross(pc - pa);
+  let mid = (pa + pb + pc) * (1. / 3.);
+  let away = Vec3(mid.x - axis.x, 0., mid.z - axis.z);
+  if n.dot(away) >= 0. { out.push(a); out.push(b); out.push(c); } else { out.push(a); out.push(c); out.push(b); }
+}
+
+// The seam's two rings lie on one curve but are not the same vertices: each ring vertex's normal becomes the mean of
+// its own and the other ring's nearest two, so the light does not see the seam
+pub fn weldSeamNormals(mesh: &mut Mesh, ring: &List[u32], bottom: &List[u32]) {
+  var fromRing = List[Vec3]();
+  var i = 0usize;
+  while i < ring.len() {
+    let v = usize.from(*ring[i]);
+    let p = *mesh.positions[v];
+    var n = *mesh.normals[v];
+    var k = 0usize;
+    var d1 = 1000.f;
+    var d2 = 1000.f;
+    var n1 = n;
+    var n2 = n;
+    while k < bottom.len() {
+      let b = usize.from(*bottom[k]);
+      let d = (*mesh.positions[b] - p).lengthSquared();
+      if d < d1 { d2 = d1; n2 = n1; d1 = d; n1 = *mesh.normals[b]; } else if d < d2 { d2 = d; n2 = *mesh.normals[b]; }
+      k = k + 1usize;
+    }
+    fromRing.push((n + n1 + n2).normalize());
+    i = i + 1usize;
+  }
+  var fromBottom = List[Vec3]();
+  i = 0usize;
+  while i < bottom.len() {
+    let b = usize.from(*bottom[i]);
+    let p = *mesh.positions[b];
+    var best = 1000.f;
+    var nb = *mesh.normals[b];
+    var k = 0usize;
+    while k < ring.len() {
+      let d = (*mesh.positions[usize.from(*ring[k])] - p).lengthSquared();
+      if d < best { best = d; nb = *fromRing[k]; }
+      k = k + 1usize;
+    }
+    fromBottom.push((*mesh.normals[b] + nb).normalize());
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < ring.len() { mesh.normals.set(usize.from(*ring[i]), *fromRing[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < bottom.len() { mesh.normals.set(usize.from(*bottom[i]), *fromBottom[i]); i = i + 1usize; }
+}
+
+// The shoulders' caps: the arm grows from a patch of the trunk's side, and where the arm's vertices (projected on the
+// deltoid) meet the trunk's (on the trapezius and the acromion) the cap turns a corner; a person whose blends widen the
+// deltoid over a slim arm (the tall slim man) wore it as a square epaulette, and a shirt made from the body follows it.
+// A few passes of Taubin's smoothing (lambda then mu, so the cap keeps its size) within a hand's breadth of each
+// shoulder joint round the corner off.
+fn smoothShoulders(s: &mut BodySurface, models: &List[Transform3]) {
+  let n = s.positions.len();
+  let a = (*models[UPPER_ARM_L]).translation;
+  let b = (*models[UPPER_ARM_R]).translation;
+  var wt = List[f32]();
+  var i = 0usize;
+  while i < n {
+    let p = *s.positions[i];
+    let d = minf((p - a).length(), (p - b).length());
+    // (down to the armpit, where the arm's first ring folds against the trunk's side)
+    wt.push(1. - smoothstep(0.07, 0.14, d));
+    i = i + 1usize;
+  }
+  var pass = 0;
+  while pass < 16 {
+    let lam = if pass % 2 == 0 { 0.5f } else { -0.53 };
+    var next = List[Vec3]();
+    i = 0usize;
+    while i < n {
+      let p = *s.positions[i];
+      let lo = usize.from(*s.nbrStart[i]);
+      let hi = usize.from(*s.nbrStart[i + 1usize]);
+      if *wt[i] > 0. && hi > lo {
+        var sum = Vec3(0., 0., 0.);
+        var k = lo;
+        while k < hi { sum = sum + *s.positions[usize.from(*s.nbr[k])]; k = k + 1usize; }
+        next.push(p + (sum * (1. / f32.from(hi - lo)) - p) * (lam * *wt[i]));
+      } else {
+        next.push(p);
+      }
+      i = i + 1usize;
+    }
+    s.positions = next;
+    pass = pass + 1;
+  }
+}
+
+// The body of measures 'm' sculpted with 'gains': the surface, the head stitched on, the weights and uvs
+// The neck's join: the head's neck and the body's neck and trapezius are separate forms that meet at the seam ring
+// with different slopes, a ring-shaped step however well the ring itself matches. A band 'reach' above and below the
+// seam is smoothed (Taubin's lambda and mu, over the mesh's edges, fading to nothing at the band's ends), so the two
+// slopes run into each other. The head's seam column is two copies of one column; they are moved together.
+fn smoothSeamBand(mesh: &mut Mesh, ring: &List[u32], headStart: usize, cols: usize, rows: usize, seamY: f32, axis: Vec3, reach: f32,
+    passes: i32) {
+  let n = mesh.positions.len();
+  var wt = List[f32]();
+  var i = 0usize;
+  while i < n {
+    // the neck only: not the shoulders' tops beside it
+    let p = *mesh.positions[i];
+    let r = Vec3(p.x - axis.x, 0., p.z - axis.z).length();
+    wt.push((1. - smoothstep(0., reach, (p.y - seamY).abs())) * (1. - smoothstep(0.095, 0.135, r)));
+    i = i + 1usize;
+  }
+  // the seam itself is held (the body's ring lies on the head's bottom row; the zipper's triangles between them are
+  // slivers that take their uvs from both halves of the texture, and must stay slivers)
+  i = 0usize;
+  while i < ring.len() { wt.set(usize.from(*ring[i]), 0.); i = i + 1usize; }
+  var c = 0usize;
+  while c < cols { wt.set(headStart + (rows - 1usize) * cols + c, 0.); c = c + 1usize; }
+  var pass = 0;
+  while pass < passes * 2 {
+    let lam = if pass % 2 == 0 { 0.5f } else { -0.53 };
+    var acc = List[Vec3]();
+    var deg = List[f32]();
+    acc.resize(n, Vec3(0., 0., 0.));
+    deg.resize(n, 0.);
+    var t = 0usize;
+    while t + 2usize < mesh.indices.len() {
+      var e = 0usize;
+      while e < 3usize {
+        let a = usize.from(*mesh.indices[t + e]);
+        let b = usize.from(*mesh.indices[t + (e + 1usize) % 3usize]);
+        if *wt[a] > 0. || *wt[b] > 0. {
+          acc.set(a, *acc[a] + *mesh.positions[b]);
+          deg.set(a, *deg[a] + 1.);
+          acc.set(b, *acc[b] + *mesh.positions[a]);
+          deg.set(b, *deg[b] + 1.);
+        }
+        e = e + 1usize;
+      }
+      t = t + 3usize;
+    }
+    // the seam column's two copies: one sum
+    var r = 0usize;
+    while r < rows {
+      let a = headStart + r * cols;
+      let b = a + cols - 1usize;
+      let sa = *acc[a] + *acc[b];
+      let da = *deg[a] + *deg[b];
+      acc.set(a, sa); acc.set(b, sa);
+      deg.set(a, da); deg.set(b, da);
+      r = r + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      if *wt[i] > 0. && *deg[i] > 0. {
+        // out from the neck's axis only: the points keep their heights and their places round the neck, so the
+        // zipper's narrow triangles cannot fold over one another
+        let p = *mesh.positions[i];
+        let out = Vec3(p.x - axis.x, 0., p.z - axis.z);
+        if out.length() > 1e-6 {
+          let rd = out.normalize();
+          let lap = *acc[i] * (1. / *deg[i]) - p;
+          mesh.positions.set(i, p + rd * (rd.dot(lap) * lam * *wt[i]));
+        }
+      }
+      i = i + 1usize;
+    }
+    pass = pass + 1;
+  }
+}
+
+pub fn assembleBody(m: &Measures, gains: &List[f32], levels: u32) Body {
+  let skel = personSkeleton(m);
+  let models = restModels(&skel);
+  let cage = bodyCage(m, &models);
+  var s = subdivideCage(&cage, levels);
+  let forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  smoothShoulders(&mut s, &models);
+  let seamY = seamHeight(m);
+  let head = buildHead(m, seamY);
+  let nb = s.positions.len();
+  // the body's seam ring onto the head's bottom row, each at its angle round the neck
+  var ringAngles = List[f32]();
+  var i = 0usize;
+  while i < s.seam.len() {
+    let v = usize.from(*s.seam[i]);
+    let th = aroundAxis(*s.positions[v], head.neckAxis);
+    ringAngles.push(th);
+    s.positions.set(v, bottomAt(&head, th));
+    i = i + 1usize;
+  }
+  var mesh = Mesh();
+  i = 0usize;
+  while i < nb { mesh.positions.push(*s.positions[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < head.positions.len() { mesh.positions.push(*head.positions[i]); i = i + 1usize; }
+  // the body's triangles, the head's, the crown's fan
+  var q = 0usize;
+  while q + 3usize < s.quads.len() {
+    quadTriangles(&mut mesh.indices, &mesh.positions, *s.quads[q], *s.quads[q + 1usize], *s.quads[q + 2usize], *s.quads[q + 3usize]);
+    q = q + 4usize;
+  }
+  let off = u32.from(nb);
+  var headQuads = List[u32]();
+  q = 0usize;
+  while q + 3usize < head.quads.len() {
+    let a = *head.quads[q] + off;
+    let b = *head.quads[q + 1usize] + off;
+    let c = *head.quads[q + 2usize] + off;
+    let d = *head.quads[q + 3usize] + off;
+    headQuads.push(a); headQuads.push(b); headQuads.push(c); headQuads.push(d);
+    quadTriangles(&mut mesh.indices, &mesh.positions, a, b, c, d);
+    q = q + 4usize;
+  }
+  q = 0usize;
+  while q < head.tris.len() { mesh.indices.push(*head.tris[q] + off); q = q + 1usize; }
+  // the zipper between the seam ring (sorted by angle) and the head's bottom row (its columns but the
+  // seam's copy): each step joins the ring's next point or the row's, whichever is nearer round the neck
+  let nr = s.seam.len();
+  var order = List[usize]();
+  i = 0usize;
+  while i < nr { order.push(i); i = i + 1usize; }
+  order.sortByKey(fn(r: &usize) f32 { *ringAngles[*r] });
+  let nh = head.bottom.len() - 1usize;
+  // unwrapped angles: the ring's from its first, the row's from -pi
+  var ia = 0usize;
+  var ib = 0usize;
+  let baseA = *ringAngles[*order[0usize]];
+  // start the row at the column nearest the ring's first point
+  var start = 0usize;
+  var cbest = 1000.f;
+  var c = 0usize;
+  while c < nh {
+    let dd = (*head.bottomAngles[c] - baseA).abs();
+    if dd < cbest { cbest = dd; start = c; }
+    c = c + 1usize;
+  }
+  let axis = head.neckAxis;
+  while ia < nr || ib < nh {
+    let ra = u32.from(*s.seam[*order[ia % nr]]);
+    let hb = *head.bottom[(start + ib) % nh] + off;
+    // the angles of the next points, unwrapped from the start
+    var angA = *ringAngles[*order[(ia + 1usize) % nr]];
+    if ia + 1usize >= nr { angA = angA + 2. * pi; }
+    var angB = *head.bottomAngles[(start + ib + 1usize) % nh];
+    if start + ib + 1usize >= nh { angB = angB + 2. * pi; }
+    if (angA <= angB && ia < nr) || ib >= nh {
+      let ra2 = u32.from(*s.seam[*order[(ia + 1usize) % nr]]);
+      outwardTri(&mut mesh.indices, &mesh.positions, ra, ra2, hb, axis);
+      ia = ia + 1usize;
+    } else {
+      let hb2 = *head.bottom[(start + ib + 1usize) % nh] + off;
+      outwardTri(&mut mesh.indices, &mesh.positions, ra, hb2, hb, axis);
+      ib = ib + 1usize;
+    }
+  }
+  // the weights: the body's from its cage, the head's neck, head and jaw
+  var w = List[f32]();
+  i = 0usize;
+  while i < nb {
+    var b = 0usize;
+    while b < BODY_BONES {
+      w.push(if b < HUMANOID_BONES { *s.weights[i * HUMANOID_BONES + b] } else { 0. });
+      b = b + 1usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < head.positions.len() {
+    let hw = *head.headWeight[i];
+    let jw = *head.jawWeight[i];
+    var b = 0usize;
+    while b < BODY_BONES {
+      var x = 0.f;
+      if b == NECK { x = 1. - hw; }
+      if b == HEAD { x = hw * (1. - jw); }
+      if b == JAW { x = hw * jw; }
+      w.push(x);
+      b = b + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // the uvs: the body seen from the front in the bottom of the texture, the head's grid in its top half
+  let su = 0.44 / seamY;
+  i = 0usize;
+  while i < nb {
+    let p = *mesh.positions[i];
+    mesh.uvs.push(Vec2(0.5 + p.x * su, p.y * su));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < head.uvs.len() { mesh.uvs.push(*head.uvs[i]); i = i + 1usize; }
+  smoothSeamBand(&mut mesh, &s.seam, nb,head.cols, head.rows, seamY, head.neckAxis, 0.05, 20);
+  mesh.computeSmoothNormals();
+  // the head's seam column: one normal for its two copies
+  let hc = head.cols;
+  var r = 0usize;
+  while r < head.rows {
+    let a = nb + r * hc;
+    let b = nb + r * hc + hc - 1usize;
+    let nn = (*mesh.normals[a] + *mesh.normals[b]).normalize();
+    mesh.normals.set(a, nn);
+    mesh.normals.set(b, nn);
+    r = r + 1usize;
+  }
+  var sq = List[u32]();
+  q = 0usize;
+  while q < s.quads.len() { sq.push(*s.quads[q]); q = q + 1usize; }
+  var gs = List[f32]();
+  q = 0usize;
+  while q < gains.len() { gs.push(*gains[q]); q = q + 1usize; }
+  let points = namedPoints(&models, &head);
+  var ring = List[u32]();
+  i = 0usize;
+  while i < s.seam.len() { ring.push(*s.seam[i]); i = i + 1usize; }
+  var bottom = List[u32]();
+  i = 0usize;
+  while i < head.bottom.len() { bottom.push(*head.bottom[i] + off); i = i + 1usize; }
+  weldSeamNormals(&mut mesh, &ring, &bottom);
+  Body(*m, skel, mesh, w, nb, head, sq, headQuads, gs, points, ring)
+}
+
+// The body of measures 'm' without its head: cage, subdivision, projection
+pub fn sculptBody(m: &Measures, gains: &List[f32], levels: u32) BodySurface {
+  let skel = personSkeleton(m);
+  let models = restModels(&skel);
+  let cage = bodyCage(m, &models);
+  var s = subdivideCage(&cage, levels);
+  let forms = bodyForms(m, &models, gains);
+  projectSurface(&mut s, &forms, 3);
+  s
+}

@@ -1,0 +1,265 @@
+// Cancelled work stops: a consumer that quits stops every stage above it. A
+// source that sends 2,000 chunks and NEVER looks at its group (so that it is the
+// stages that stop the stream, not a polite source) feeds a pipeline of three
+// stages and a sink:
+//
+//   source -> TransformStage[Deflater] -> TransformStage[Inflater] -> HashStage[Sha256] -> sink
+//
+// The consumer's group is Gc; the source runs in Gs, a child of Gc (the chunks
+// carry Gs down the pipeline, and what the consumer gives back carries it up).
+//
+//   0. the sink quits by itself: on its 10th chunk it cancels Gc;
+//   1. main cancels Gc from outside after the sink has taken 10 chunks (a stream
+//      abandoned half-way), and the producer NEVER sends an 'end' (the done-test: a
+//      producer that never ends; each stage drops its upstream handle at the cancel,
+//      so the actors do not keep each other alive and LSan finds nothing).
+//
+// Checked for each: the sink took only a few chunks past the cancel, where 2,000
+// would reach it if the stages did not stop, and the source, which never looks at
+// its group, is left with no buffers back and stalls within its window; the sink's
+// 'end' is Failed (the first stage ended downstream when it
+// saw the cancel); the hash stage answered its digest sink once, with an error;
+// and every buffer is back in the pool (LSan checks the rest on Linux). A third
+// pipeline with no group at all runs to its end beside them and finishes: a stage
+// in no group never sees a cancel.
+
+mod cancelstages;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Instant, Duration;
+import actors;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+fn chunkBytes() usize { 65536usize }
+
+struct Seen {
+  pub sent: Atomic[u64];        // chunks the source sent
+  pub received: Atomic[u64];    // chunks the sink took
+  pub failed: Atomic[u64];      // end(Failed) at the sink
+  pub finished: Atomic[u64];    // end(Finished) at the sink
+  pub digestErr: Atomic[u64];
+  pub digestOk: Atomic[u64];
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let s0: Seen;
+let s1: Seen;
+let s2: Seen;
+
+fn @initpure init() {
+  s0 = newSeen();
+  s1 = newSeen();
+  s2 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&s0} else if slot == 1usize {&s1} else {&s2}
+}
+
+fn block() List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(chunkBytes() + 16usize);
+  var s = 7u64;
+  while d.len() < chunkBytes() {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(chunkBytes());
+  d
+}
+
+// Sends the same 64 KiB block 'left' times through a window of four buffers. It
+// NEVER looks at its group, so the stages above the sink are what stop the stream:
+// they hand back what they are sent and send nothing on
+actor Source is ChunkSource {
+  slot: usize;
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  left: u64;
+  over: bool;
+  noEnd: bool;                  // after its last chunk it sends no 'end': a producer that never ends
+
+  pub fn init(self: &new, slot: usize, down: ChunkSink, data: List[u8], left: u64, noEnd: bool) {
+    *self = Self(slot: slot, down: down, link: ChunkWindow.own(262144usize), data: data, left: left, over: false, noEnd: noEnd);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if left == 0u64 {
+        over = true;
+        if !noEnd { down.end(Ending.Finished); }
+        more = false;
+      } else {
+        match link.take(chunkBytes()) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - 1u64;
+            seenOf(slot).sent.add(1u64);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Takes chunks and gives each back at once. At its 'quitAt'th it cancels 'gc' (the
+// consumer's group): it quits. It goes on giving back what still arrives
+actor Sink is ChunkSink {
+  slot: usize;
+  gc: CancelGroup;
+  quitAt: u64;
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, gc: CancelGroup, quitAt: u64, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, gc: gc, quitAt: quitAt, up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    let n = s.received.add(1u64) + 1u64;
+    if n == quitAt { gc.cancel(); }
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) { s.failed.add(1u64); }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+actor Checker is DigestSink[Array[u8, 32]] {
+  slot: usize;
+
+  pub fn init(self: &new, slot: usize) {
+    *self = Self(slot: slot);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    let s = seenOf(slot);
+    match r {
+      case is Ok { s.digestOk.add(1u64); }
+      case is Err { s.digestErr.add(1u64); }
+    }
+  }
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while c.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+
+  let gc0 = CancelGroup.make();
+  let gc1 = CancelGroup.make();
+  {
+    // 0. the sink quits at its 10th chunk
+    let gs0 = gc0.child();
+    let sink0 = Sink(0usize, gc0, 10u64, tx0);
+    let hash0 = HashStage[cryptohash.Sha256](sink0, cryptohash.Sha256.make(), Checker(0usize));
+    let inf0 = TransformStage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib));
+    let def0 = TransformStage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let src0 = Source(0usize, def0, block(), 2000u64, false);
+
+    // 1. main cancels the consumer's group from outside
+    let gs1 = gc1.child();
+    let sink1 = Sink(1usize, gc1, 0u64, tx1);
+    let hash1 = HashStage[cryptohash.Sha256](sink1, cryptohash.Sha256.make(), Checker(1usize));
+    let inf1 = TransformStage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib));
+    let def1 = TransformStage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let src1 = Source(1usize, def1, block(), 2000u64, true);
+
+    // 2. no group at all: runs to its end
+    let sink2 = Sink(2usize, gc0, 0u64, tx2);
+    let hash2 = HashStage[cryptohash.Sha256](sink2, cryptohash.Sha256.make(), Checker(2usize));
+    let inf2 = TransformStage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
+    let def2 = TransformStage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let src2 = Source(2usize, def2, block(), 200u64, false);
+
+    actors.withGroup(&gs0, fn() [src0] { src0.start(); });
+    actors.withGroup(&gs1, fn() [src1] { src1.start(); });
+    src2.start();
+    waitFor(&s1.received, 10u64);
+    gc1.cancel();
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  finalAll();
+
+  expect(s0.received.load() >= 10u64, "0: the sink took its 10 chunks");
+  expect(s0.received.load() < 100u64, "0: and few past them, where 2,000 would reach it were the stages not stopped");
+  expect(s0.sent.load() < 100u64, "0: the source, given no more buffers back, stalled within its window (it never looked at its group)");
+  expectUInt(s0.failed.load(), 1u64, "0: the sink's end is Failed (a stage above it was cancelled)");
+  expectUInt(s0.finished.load(), 0u64, "0: and never Finished");
+  expectUInt(s0.digestErr.load(), 1u64, "0: the hash stage answered its digest sink once, with an error");
+  expectUInt(s0.digestOk.load(), 0u64, "0: and not with a digest");
+
+  expect(s1.received.load() >= 10u64, "1: the sink took at least 10 chunks before the cancel");
+  expect(s1.received.load() < 100u64, "1: and few past it");
+  expect(s1.sent.load() < 100u64, "1: the source stalled within its window");
+  expectUInt(s1.failed.load(), 1u64, "1: the sink's end is Failed");
+  expectUInt(s1.digestErr.load(), 1u64, "1: the digest sink got one error");
+
+  expectUInt(s2.sent.load(), 200u64, "2: a pipeline in no group sent every chunk");
+  expectUInt(s2.finished.load(), 1u64, "2: ... and finished");
+  expectUInt(s2.failed.load(), 0u64, "2: ... without a failure");
+  expectUInt(s2.digestOk.load(), 1u64, "2: ... with its digest");
+  expect(gc0.isCancelled() && gc1.isCancelled(), "both consumers' groups were cancelled");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

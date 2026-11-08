@@ -11,50 +11,50 @@ mod corout_success;
 import stdio use *;
 
 struct Node {
-  pub val i64;
-  pub left i64;
-  pub right i64;
+  pub val: i64;
+  pub left: i64;
+  pub right: i64;
 }
 
 // ---- Consumers: generic over the iterator, so any generator fits ----------
 
-fn sumAll[S Iterator[i64]](s &mut S) i64 {
-  mut total = 0i64;
+fn sumAll[S: Iterator[i64]](s: &mut S) i64 {
+  var total = 0i64;
   while true {
     match s.next() {
-      case imm v Some { total = total + v; }
+      case let Some(v) { total = total + v; }
       case is None { break; }
     }
   }
-  total;
+  total
 }
 
-fn sumVirtual(s &<mut Iterator[i64]) i64 {
-  mut total = 0i64;
+fn sumVirtual(s: &<mut Iterator[i64]) i64 {
+  var total = 0i64;
   while true {
     match s.next() {
-      case imm v Some { total = total + v; }
+      case let Some(v) { total = total + v; }
       case is None { break; }
     }
   }
-  total;
+  total
 }
 
-fn countAll[T, S Iterator[T]](s &mut S) usize {
-  mut n = 0usize;
+fn countAll[T, S: Iterator[T]](s: &mut S) usize {
+  var n = 0usize;
   while true {
     match s.next() {
-      case imm v Some { n = n + 1usize; }
+      case let Some(v) { n = n + 1usize; }
       case is None { break; }
     }
   }
-  n;
+  n
 }
 
-fn show[S Iterator[i64]](s &mut S) {
+fn show[S: Iterator[i64]](s: &mut S) {
   while true {
     match s.next() {
-      case imm v Some { printInt(v); printStr(" "); }
+      case let Some(v) { printInt(v); printStr(" "); }
       case is None { break; }
     }
   }
@@ -62,15 +62,15 @@ fn show[S Iterator[i64]](s &mut S) {
 }
 
 // A generator taken by value
-fn showOwned[S Iterator[i64]](mut s S) {
+fn showOwned[S: Iterator[i64]](var s: S) {
   show(&mut s);
 }
 
 // ---- Generators ----------------------------------------------------------
 
 // Counting: a local that lives across each yield, the body a loop
-fn count(n i64) yields i64 {
-  mut i = 0i64;
+fn count(n: i64) yields i64 {
+  var i = 0i64;
   while i < n {
     yield i;
     i = i + 1i64;
@@ -78,8 +78,8 @@ fn count(n i64) yields i64 {
 }
 
 // 'return' ends the walk; 'continue' goes on in the loop
-fn evens(limit i64) yields i64 {
-  mut i = 0i64;
+fn evens(limit: i64) yields i64 {
+  var i = 0i64;
   while true {
     i = i + 1i64;
     if i > limit { return; }
@@ -89,10 +89,10 @@ fn evens(limit i64) yields i64 {
 }
 
 // Loops inside loops, a local in each
-fn triangle(n i64) yields i64 {
-  mut i = 0i64;
+fn triangle(n: i64) yields i64 {
+  var i = 0i64;
   while i < n {
-    mut j = 0i64;
+    var j = 0i64;
     while j < i {
       yield i * 10i64 + j;
       j = j + 1i64;
@@ -102,7 +102,7 @@ fn triangle(n i64) yields i64 {
 }
 
 // A parameter written to, as in a function: the generator holds it
-fn bump(mut n i64) yields i64 {
+fn bump(var n: i64) yields i64 {
   yield n;
   n = n + 5i64;
   yield n;
@@ -111,7 +111,7 @@ fn bump(mut n i64) yields i64 {
 }
 
 // The arms of an 'if' and a 'match' are statements a yield may stand in
-fn arms(c bool, k i64) yields i64 {
+fn arms(c: bool, k: i64) yields i64 {
   if c { yield 1i64; } else { yield 2i64; }
   match k {
     case 0i64 { yield 10i64; }
@@ -122,7 +122,7 @@ fn arms(c bool, k i64) yields i64 {
 }
 
 // A generator writing through a reference it was lent
-fn tick(out &mut i64) yields i64 {
+fn tick(out: &mut i64) yields i64 {
   *out = *out + 1i64;
   yield *out;
   *out = *out + 1i64;
@@ -133,18 +133,18 @@ fn tick(out &mut i64) yields i64 {
 
 // What the generator yields and keeps across its yields are borrows of what it
 // was lent, a parameter: they outlive the generator's own steps
-fn pair(nodes &Array[Node], at usize) yields &Node {
-  imm n = &nodes[at];
+fn pair(nodes: &Array[Node], at: usize) yields &Node {
+  let n = &nodes[at];
   yield n;
   yield &nodes[at + 1usize];
   yield n;
 }
 
 // Words of a text: each a borrow of the text, so several are held at once
-fn words(text &str) yields &str {
-  imm bytes &Array[u8] = text;
-  mut start = 0usize;
-  mut i = 0usize;
+fn words(text: &str) yields &str {
+  let bytes: &Array[u8] = text;
+  var start = 0usize;
+  var i = 0usize;
   while i < bytes.len {
     if bytes[i] == 32u8 {
       if i > start { yield &text[start ..< i]; }
@@ -158,7 +158,7 @@ fn words(text &str) yields &str {
 // ---- yield each: a sub-generator's values, then this one's ----------------
 
 // Joined: the values of count(a), a value of its own, and the values of count(b)
-fn joined(a i64, b i64) yields i64 {
+fn joined(a: i64, b: i64) yields i64 {
   yield each count(a);
   yield 99i64;
   yield each count(b);
@@ -166,8 +166,8 @@ fn joined(a i64, b i64) yields i64 {
 
 // Recursive: a walk of a tree held in an array, in order. The sub-generator is
 // of the walk's own kind, so it lives on the heap
-fn inorder(nodes &Array[Node], at usize) yields &Node {
-  imm n = &nodes[at];
+fn inorder(nodes: &Array[Node], at: usize) yields &Node {
+  let n = &nodes[at];
   if n.left >= 0i64 {
     yield each inorder(nodes, usize.from(n.left));
   }
@@ -178,109 +178,109 @@ fn inorder(nodes &Array[Node], at usize) yields &Node {
 }
 
 // Mutually recursive: each holds the other
-fn down(n i64) yields i64 {
+fn down(n: i64) yields i64 {
   yield n;
   if n > 0i64 { yield each up(n - 1i64); }
 }
 
-fn up(n i64) yields i64 {
+fn up(n: i64) yields i64 {
   yield n * 10i64;
   if n > 0i64 { yield each down(n - 1i64); }
 }
 
 fn main() {
   // Counting, through each consumer
-  mut c = count(4i64);
+  var c = count(4i64);
   show(&mut c);
 
-  mut e = evens(10i64);
+  var e = evens(10i64);
   printInt(sumAll(&mut e)); printStr("\n");
-  mut e2 = evens(10i64);
+  var e2 = evens(10i64);
   printInt(sumVirtual(&mut e2)); printStr("\n");
-  mut e3 = evens(7i64);
+  var e3 = evens(7i64);
   printInt(i64.from(countAll(&mut e3))); printStr("\n");
   showOwned(triangle(4i64));
 
   // A walk with nothing in it: 'next' answers None, and goes on answering it
-  mut nothing = count(0i64);
-  match nothing.next() { case imm v Some { printStr("some\n"); } case is None { printStr("none "); } }
-  match nothing.next() { case imm v Some { printStr("some\n"); } case is None { printStr("none\n"); } }
+  var nothing = count(0i64);
+  match nothing.next() { case let Some(v) { printStr("some\n"); } case is None { printStr("none "); } }
+  match nothing.next() { case let Some(v) { printStr("some\n"); } case is None { printStr("none\n"); } }
 
   // A parameter written to; the generator moved between calls
-  mut b = bump(1i64);
-  match b.next() { case imm v Some { printInt(v); printStr(" "); } case is None {} }
-  mut moved = b;
+  var b = bump(1i64);
+  match b.next() { case let Some(v) { printInt(v); printStr(" "); } case is None {} }
+  var moved = b;
   show(&mut moved);
 
   // Arms
-  mut a1 = arms(true, 0i64); show(&mut a1);
-  mut a2 = arms(false, 1i64); show(&mut a2);
-  mut a3 = arms(true, 7i64); show(&mut a3);
+  var a1 = arms(true, 0i64); show(&mut a1);
+  var a2 = arms(false, 1i64); show(&mut a2);
+  var a3 = arms(true, 7i64); show(&mut a3);
 
   // Through a reference: the generator holds the borrow until it dies
-  mut counter = 10i64;
+  var counter = 10i64;
   {
-    mut t = tick(&mut counter);
+    var t = tick(&mut counter);
     show(&mut t);
   }
   printInt(counter); printStr("\n");
 
   // Two walks, one step at a time each
-  mut g1 = evens(6i64);
-  mut g2 = triangle(3i64);
-  mut k = 0;
+  var g1 = evens(6i64);
+  var g2 = triangle(3i64);
+  var k = 0;
   while k < 4 {
-    match g1.next() { case imm v Some { printInt(v); } case is None { printStr("-"); } }
+    match g1.next() { case let Some(v) { printInt(v); } case is None { printStr("-"); } }
     printStr("/");
-    match g2.next() { case imm v Some { printInt(v); } case is None { printStr("-"); } }
+    match g2.next() { case let Some(v) { printInt(v); } case is None { printStr("-"); } }
     printStr(" ");
     k = k + 1;
   }
   printStr("\n");
 
   // Borrows
-  imm nodes Array[Node, 7] = [
-    new Node(40i64, 1i64, 2i64),
-    new Node(20i64, 3i64, 4i64),
-    new Node(60i64, 5i64, 6i64),
-    new Node(10i64, -1i64, -1i64),
-    new Node(30i64, -1i64, -1i64),
-    new Node(50i64, -1i64, -1i64),
-    new Node(70i64, -1i64, -1i64)];
-  mut p = pair(&nodes, 0usize);
+  let nodes: Array[Node, 7] = [
+    Node(40i64, 1i64, 2i64),
+    Node(20i64, 3i64, 4i64),
+    Node(60i64, 5i64, 6i64),
+    Node(10i64, -1i64, -1i64),
+    Node(30i64, -1i64, -1i64),
+    Node(50i64, -1i64, -1i64),
+    Node(70i64, -1i64, -1i64)];
+  var p = pair(&nodes, 0usize);
   while true {
     match p.next() {
-      case imm v Some { printInt(v.val); printStr(" "); }
+      case let Some(v) { printInt(v.val); printStr(" "); }
       case is None { break; }
     }
   }
   printStr("\n");
 
-  mut w = words("alpha beta  gamma");
-  imm w1 = w.next();
-  imm w2 = w.next();
-  imm w3 = w.next();
-  match w1 { case imm v Some { printStr(v); } case is None {} }
+  var w = words("alpha beta  gamma");
+  let w1 = w.next();
+  let w2 = w.next();
+  let w3 = w.next();
+  match w1 { case let Some(v) { printStr(v); } case is None {} }
   printStr("/");
-  match w2 { case imm v Some { printStr(v); } case is None {} }
+  match w2 { case let Some(v) { printStr(v); } case is None {} }
   printStr("/");
-  match w3 { case imm v Some { printStr(v); } case is None {} }
+  match w3 { case let Some(v) { printStr(v); } case is None {} }
   printStr("\n");
 
   // yield each
-  mut j = joined(3i64, 2i64);
+  var j = joined(3i64, 2i64);
   show(&mut j);
 
-  mut tree = inorder(&nodes, 0usize);
+  var tree = inorder(&nodes, 0usize);
   while true {
     match tree.next() {
-      case imm v Some { printInt(v.val); printStr(" "); }
+      case let Some(v) { printInt(v.val); printStr(" "); }
       case is None { break; }
     }
   }
   printStr("\n");
 
-  mut d = down(3i64);
+  var d = down(3i64);
   show(&mut d);
 
   // 'each' walks a generator: a call, a borrowing walk, a variable, with 'break'
@@ -293,7 +293,7 @@ fn main() {
   printStr("\n");
   each n in inorder(&nodes, 0usize) { printInt(n.val); printStr(" "); }
   printStr("\n");
-  mut cg = count(3i64);
+  var cg = count(3i64);
   each x in cg { printInt(x); printStr(" "); }
   printStr("\n");
 }

@@ -7,8 +7,8 @@
 // broken lock many chances to show itself. Then tryLock, on one thread:
 // it fails while the Mutex is held, by anyone, and succeeds once it is not.
 //
-// The Mutex is an 'imm' global, which changes only inside its atomic word;
-// the List is a 'mut' global, which nothing yet stops two threads writing at
+// The Mutex is a 'let' global, which changes only inside its atomic word;
+// the List is a 'var' global, which nothing yet stops two threads writing at
 // once: the lock is the program's own discipline, unchecked.
 
 mod mutex;
@@ -21,17 +21,17 @@ import sync use *;
 const perThread = 2000u64;
 const threads = 4u64;
 
-imm lock Mutex;
-mut items List[u64];
+let lock: Mutex;
+var items: List[u64];
 
 // The starting gate: each thread counts itself ready, then waits for 'go',
 // so the four push at once rather than one after another as they start
-imm ready Atomic[u32];
-imm go Atomic[u32];
+let ready: Atomic[u32];
+let go: Atomic[u32];
 
 fn @initpure init() {
   lock = Mutex.make();
-  items = List[u64].empty();
+  items = List[u64]();
   ready = Atomic[u32].of(0u32);
   go = Atomic[u32].of(0u32);
 }
@@ -43,7 +43,7 @@ fn atGate() {
   }
 }
 
-fn openGate(n u32) {
+fn openGate(n: u32) {
   while ready.load() < n {
     thread.yieldNow();
   }
@@ -52,16 +52,16 @@ fn openGate(n u32) {
 }
 
 // Push perThread numbers, thread k's being k * 1000000 + i
-fn pushMany(k u64) u64 {
+fn pushMany(k: u64) u64 {
   atGate();
-  mut i = 0u64;
+  var i = 0u64;
   while i < perThread {
     lock.lock();
     items.push(k * 1000000u64 + i);
     lock.unlock();
     i = i + 1u64;
   }
-  i;
+  i
 }
 
 // One race: whether the List came out whole
@@ -69,34 +69,34 @@ fn race() bool {
   items.clear();
   ready.store(0u32);
   go.store(0u32);
-  imm a = thread.start(0u64, &pushMany);
-  imm b = thread.start(1u64, &pushMany);
-  imm c = thread.start(2u64, &pushMany);
-  imm d = thread.start(3u64, &pushMany);
+  let a = thread.start(0u64, &pushMany);
+  let b = thread.start(1u64, &pushMany);
+  let c = thread.start(2u64, &pushMany);
+  let d = thread.start(3u64, &pushMany);
   openGate(4u32);
-  imm made = a.join() + b.join() + c.join() + d.join();
-  if made != threads * perThread or items.len() != usize.from(threads * perThread) {
+  let made = a.join() + b.join() + c.join() + d.join();
+  if made != threads * perThread || items.len() != usize.from(threads * perThread) {
     return false;
   }
   // Each thread's numbers appear in order, and all of them do
-  mut next = new Array[u64, 4] <- fill 0u64;
-  mut i = 0usize;
+  var next = Array[u64, 4]() <- fill 0u64;
+  var i = 0usize;
   while i < items.len() {
-    imm v = *items[i];
-    imm k = v / 1000000u64;
-    if k >= threads or v % 1000000u64 != next[k] {
+    let v = *items[i];
+    let k = v / 1000000u64;
+    if k >= threads || v % 1000000u64 != next[k] {
       return false;
     }
     next[k] = next[k] + 1u64;
     i = i + 1usize;
   }
-  next[0] == perThread and next[1] == perThread and next[2] == perThread and next[3] == perThread;
+  next[0] == perThread && next[1] == perThread && next[2] == perThread && next[3] == perThread
 }
 
 fn main() i32 {
   initAll();
-  mut whole = 0u64;
-  mut run = 0;
+  var whole = 0u64;
+  var run = 0;
   while run < 25 {
     if race() { whole = whole + 1u64; }
     run = run + 1;
@@ -105,7 +105,7 @@ fn main() i32 {
   expectUInt(u64.from(items.len()), 8000u64, "the last race's List");
 
   // tryLock
-  imm m = Mutex.make();
+  let m = Mutex.make();
   expect(m.tryLock(), "tryLock takes an unlocked Mutex");
   expect(!m.tryLock(), "tryLock fails while it is held");
   m.unlock();
@@ -114,5 +114,5 @@ fn main() i32 {
   m.lock();
   expect(!m.tryLock(), "tryLock fails while lock() holds it");
   m.unlock();
-  done();
+  done()
 }

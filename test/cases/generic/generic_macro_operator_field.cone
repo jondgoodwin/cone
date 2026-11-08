@@ -1,0 +1,105 @@
+// A macro operator applied to a type's own FIELD, written by its bare name or
+// through 'self', expands the macro either way. Inside a method, 'total' is
+// 'self.total', and 'total += x' is as much the operator on that field as
+// 'self.total += x' is; the bare name used to be left to the lookup that
+// finds no operator on a name that is not a variable ("Method or field `+`
+// not found").
+//
+// Checked in a plain type's method and in an actor's behaviours, since an
+// actor's fields are reached the same way. 'Money' declares '+' as a macro (a
+// plain operand, evaluated once) and nothing else, so '+=' is '+' stored back
+// and '-' reads its operand lazily. Each operand counts itself, so what the
+// program prints says how many times it ran.
+
+mod generic_macro_operator_field;
+
+import stdio use *;
+import actors;
+
+var @threadlocal calls = 0i64;
+
+struct Money {
+  pub cents: i64;
+
+  macro `+`[self, o: Money] {
+    Money(cents: self.cents + o.cents + o.cents - o.cents)
+  }
+
+  macro `-`[self, o: lazy Money] {
+    Money(cents: self.cents - o.cents)
+  }
+}
+
+fn mk(n: i64) Money {
+  calls = calls + 1i64;
+  Money(cents: n)
+}
+
+struct Till {
+  pub total: Money;
+
+  fn bare(self: &mut, x: Money) {
+    total += x;
+  }
+
+  fn viaSelf(self: &mut, x: Money) {
+    self.total += x;
+  }
+
+  fn bareSum(self: &, x: Money) Money {
+    total + x
+  }
+
+  fn bareDiff(self: &, x: Money) Money {
+    total - x
+  }
+}
+
+actor Bank {
+  total: Money;
+
+  fn init(self: &new) {
+    *self = Self(total: Money(cents: 100));
+  }
+
+  pub async fn bare(self, x: Money) {
+    total += x;
+  }
+
+  pub async fn viaSelf(self, x: Money) {
+    self.total += x;
+  }
+
+  pub async fn report(self: &) {
+    printStr("bank = "); printInt(total.cents); printStr("\n");
+  }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  var t = Till(total: Money(cents: 10));
+  calls = 0i64;
+  t.bare(mk(5));
+  show("bare", t.total.cents);
+  t.viaSelf(mk(7));
+  show("via self", t.total.cents);
+  show("calls", calls);
+  show("bare sum", t.bareSum(Money(cents: 1)).cents);
+  show("bare diff", t.bareDiff(Money(cents: 2)).cents);
+
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let b = Bank();
+    b.bare(Money(cents: 5));
+    b.viaSelf(Money(cents: 7));
+    b.report();
+  }
+  finalAll();
+}

@@ -26,13 +26,13 @@ extern Name *anonName;  // "_" - the absence of a name
 
 // Is this the name of a hidden variable a match or a bound 'if' keeps its matched value
 // in? '_' is the one of a match or an 'if' statement, each a block of its own. A
-// let-else, 'imm n Ok = r else {...};', stands in the block with other statements,
+// let-else, 'let Ok(n) = r else {...};', stands in the block with other statements,
 // which may be another let-else, so each of its hidden variables is named for itself,
 // "-held1" for a value it holds and "-arm2" for the place its binding takes from.
 int nameIsMatchHolder(Name *name);
 extern Name *tempName;    // "-_"
 // "-temp": the hidden local of a block that a temporary its borrow extends
-// becomes ('imm r = &make();', varDclExtend). No source can spell it.
+// becomes ('let r = &make();', varDclExtend). No source can spell it.
 extern Name *tempLocalName;
 // "-bound": the hidden local a pattern binding to a type-variant's contents
 // reads them from: the matched value under the variant's name, declared just
@@ -61,13 +61,15 @@ extern Name *finalName; // "final": a type's finalizer method, and a module's ow
 // so it collides with no method a variant declares and no name reaches it.
 extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
+extern Name *lazyName;   // "lazy": before a macro parameter's type, it marks the parameter substituted whole (a contextual word)
+extern Name *typeWordName; // "type": in a trait's body, before a name, it declares an associated type (a contextual word)
 extern Name *yieldsName; // "yields": after a function's parameters, it makes the function a generator (a contextual word)
 extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 
 // "tag" -- the discriminant's type. Recognized where a field's type is written
-// and nowhere else, so 'pub tag i32' still declares a field named 'tag'. An
+// and nowhere else, so 'pub tag: i32' still declares a field named 'tag'. An
 // enum places its own discriminant explicitly, for alignment, by writing
-// '_ tag' for it.
+// '_: tag' for it.
 extern Name *tagName;
 
 extern Name *plusEqName;   // "+="
@@ -90,6 +92,8 @@ extern Name *divName;      // "/"
 extern Name *remName;      // "%"
 extern Name *orName;       // "|"
 extern Name *andName;      // "&"
+extern Name *logicOrName;  // "||"
+extern Name *logicAndName; // "&&"
 extern Name *xorName;      // "^"
 extern Name *shlName;      // "<<"
 extern Name *shrName;      // ">>"
@@ -107,6 +111,7 @@ extern Name *leName;       // "<="
 extern Name *ltName;       // "<"
 extern Name *geName;       // ">="
 extern Name *gtName;       // ">"
+extern Name *threeWayName; // "<=>", three-way comparison
 
 extern Name *parensName;   // "()"
 extern Name *indexName;    // "[]"
@@ -114,9 +119,16 @@ extern Name *refIndexName; // "&[]"
 
 extern Name *optionName;   // "Option"
 
-extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
+extern Name *parseName;    // "parse", a number type's reading of text: 'i32.parse(s)'
+extern Name *tryFromName;  // "tryFrom", a number type's checked conversion: 'u8.tryFrom(x)'
+extern Name *fromName;    // "from", a number type's conversion: 'u64.from(count)'
+extern Name *selectName;   // "select", a mask's choice between two vectors: 'm.select(a, b)'
+extern Name *joinName;     // "join", two vectors laid end to end: 'a.join(b)'
 extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
 extern Name *hashTraitName;  // "Hash", core's trait of a value that feeds a hasher
+extern Name *cloneTraitName; // "Clone", core's trait of a value that can be duplicated on request
+extern Name *defaultTraitName; // "Default", core's trait of a type made by `T()`, with no arguments
+extern Name *eqTraitName;   // "Eq", core's trait of a value that has '=='
 extern Name *iteratorTraitName; // "Iterator", core's trait of a cursor, whose shared methods come with its declaration
 extern Name *hasherName;     // "Hasher", core's hasher, the algorithm a Hash feeds
 extern Name *writeU64Name;   // "writeU64", the Hasher method an integer's hash feeds its bits through
@@ -141,6 +153,13 @@ extern Name *parallelName; // "parallel"
 extern Name *splitName;    // "split"
 extern Name *someName;     // "Some"
 extern Name *noneName;     // "None"
+// What '?' asks of the value it is given and of the function it is in
+// (propagate.c): core's Result and its two variants, matched by name; and the
+// method a 'main' that returns a Result prints its error with
+extern Name *resultName;   // "Result"
+extern Name *okName;       // "Ok"
+extern Name *errorVariantName; // "Err", Result's failure
+extern Name *reportName;   // "report"
 
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait
@@ -171,6 +190,10 @@ extern Name *gcTraceElementsMethodName; // "gcTraceElements", the method such a 
 extern Name *visitMethodName;    // "visit", which a counted region's trace calls to trace an object once per collection
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
+extern Name *floatTraitName;     // "Float", f32 and f64
+extern Name *signedTraitName;    // "Signed", the signed integers and the floats
+extern Name *unsignedTraitName;  // "Unsigned", the unsigned integers
+extern Name *numericTraitName;   // "Numeric", every number type: the integers and the floats
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for
 extern Name *sendableTraitName;  // "Sendable", a type whose values may cross to another thread, which a constraint may ask for
 extern Name *shareableTraitName; // "Shareable", a type a borrow of which may be held by several threads at once, which a constraint may ask for

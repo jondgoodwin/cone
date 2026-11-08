@@ -90,7 +90,7 @@ use a git-ignored directory such as `build/probe/`.
 
 Counting adjustments in `.preir` is how ownership questions get settled: an
 allocation that emits `call ptr @cone_rawBlockAlloc` (the raw blocks layer's
-allocate, which `So`, `Rc` and `Arc` call) and no matching `cone_rawBlockRelease`, or no count
+allocate, which `Uni`, `Rc` and `Arc` call) and no matching `cone_rawBlockRelease`, or no count
 decrement (`sub i64 ..., 1`) for an `Rc` one, leaks.
 
 ## Running the suite

@@ -140,7 +140,7 @@ enum SiMode {
     SiModeField,
     SiModeType,
     SiModeOut,
-    // SiModeType and SiModeOut, for a borrow into a 'mut' global (shapeTypeWritesGlobal): a call
+    // SiModeType and SiModeOut, for a borrow into a 'var' global (shapeTypeWritesGlobal): a call
     // that could run any code (through a virtual reference or a function pointer) is taken to write
     // any global, whatever it is handed
     SiModeTypeG,
@@ -283,6 +283,8 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
         return siVisit(((RefNode *)node)->vtexp, fn, ctx);
     case NotLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx);
+    case DestructTag:
+        return siVisit(((DestructNode *)node)->exp, fn, ctx);
     case OrLogicTag:
     case AndLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx) || siVisit(((LogicNode *)node)->rexp, fn, ctx);
@@ -381,9 +383,10 @@ static int siReadsStorage(INode *e, SiCtx *c) {
 }
 
 // Does a write to this place write storage of the parameter's pointee: a place in
-// it, or all of it, that holds storage?
+// it, or all of it, that holds storage? A '_' target is no place: it takes its
+// value and drops it (assignIsAnon), and, naming nothing, has no type to ask
 static int siWriteHits(INode *lval, SiCtx *c) {
-    if (!c->isref)
+    if (!c->isref || assignIsAnon(lval))
         return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
@@ -443,8 +446,11 @@ static int siPlaceInCont(INode *e, INode *cont) {
 }
 
 // A write at this place, in a type mode: a place of the collection's type, that is
-// not a local of the function's own, and, in SiModeOut, one reached from a global
+// not a local of the function's own, and, in SiModeOut, one reached from a global.
+// A '_' target writes no place (siWriteHits)
 static int siTypeWriteHits(INode *lval, SiCtx *c) {
+    if (assignIsAnon(lval))
+        return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
         uint32_t cnt;
@@ -617,7 +623,7 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
+    // Into a borrow of a 'var' global: a virtual call, or a call of a function value (a '&fn' held in
     // a field, a parameter, a global or a local), runs code that is not known, which may write any
     // global without being handed it; so does an 'extern' function handed anything that can reach
     // something callable (a '&fn', a virtual reference, a closure an owner holds), which C may call
@@ -927,7 +933,7 @@ int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
 }
 
 // Can a value of this type reach anything callable: a '&fn' (a reference to a function), a virtual
-// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('So[fn]',
+// reference ('&<Trait', '&<fn', '&<mut ...'), or a closure or trait object an owner holds ('Uni[fn]',
 // 'Rc[Trait]')? By containment, a field, an element, or through a pointer or a reference: the same
 // idea as reshapeReach, with code to call as the thing wanted. A type graph too large to follow is
 // taken as reaching one. Only a positive answer is kept, for a struct, for a negative one found
@@ -1049,7 +1055,7 @@ int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
     return 0;
 }
 
-// The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,
+// The same, asked of a call made while a borrow into a 'var' global is held (reshape.h,
 // 'globalview'): only through a global, with a call into unknown code (a virtual call, a function
 // value) taken to write any
 int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {

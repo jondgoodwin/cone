@@ -1,0 +1,13 @@
+// Bug 61: a node from a helper held in a struct's field, stored through it: the arena was reached through a struct a caller lent. Refuse.
+mod lifetime_arena_refuse_held_helper_field;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+struct H2 { pub h: &mut Hd; }
+struct Box { pub f: &mut F; }
+fn mkB(a: &mut Hd) Box { Box(a.ar.alloc(F(None))) }
+fn stash(a: &mut Hd, x: &mut T) { let b = mkB(a); b.f.p = Some(x); }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Hd(q); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); }

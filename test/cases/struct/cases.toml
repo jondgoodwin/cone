@@ -101,10 +101,10 @@
 #   so; struct_flow_new refuses a field written before an init's self is
 #   filled.
 #
-# Initializers -- construction, 'new T(...)', and the inits it runs -- are
+# Initializers -- construction, 'T(...)', and the inits it runs -- are
 # struct_new, struct_typecheck_new and struct_flow_new.
 
-support = ["structmeter.cone"]
+support = ["structmeter.cone", "struct_fields_vault.cone"]
 
 # -------- success --------
 
@@ -168,20 +168,33 @@ tags = ["typecheck", "runtime"]
 
 [scenario.struct_index_place_chain_refused]
 category = "reject"
-description = "A written-to place through an index and a field is still refused through a '&' parameter and an 'imm' local (a push, a store, '+=', a '&mut' borrow, a 'self &mut' method), and a borrow into a list held while another name reshapes it through such a place is still refused (1339)"
+description = "A written-to place through an index and a field is still refused through a '&' parameter and a 'let' local (a push, a store, '+=', a '&mut' borrow, a 'self &mut' method), and a borrow into a list held while another name reshapes it through such a place is still refused (1339)"
 tags = ["typecheck", "flow"]
 diagnostics = 10
 
 [scenario.struct_index_swap]
 category = "run"
-description = "'<=>' on a place through an index, one level or two -- a field of one element against a field of another, a list's own elements, an element against a local, a whole element with a 'final' -- goes through each index's '&[]', on a local, a '&mut' parameter and self"
+description = "'<->' on a place through an index, one level or two -- a field of one element against a field of another, a list's own elements, an element against a local, a whole element with a 'final' -- goes through each index's '&[]', on a local, a '&mut' parameter and self"
 tags = ["typecheck", "flow", "runtime"]
 
 [scenario.struct_index_swap_refused]
 category = "reject"
-description = "'<=>' on a place through an index is still refused through a '&' parameter and an 'imm' local, on either side, and for sides of different types or a side that is no place"
+description = "'<->' on a place through an index is still refused through a '&' parameter and a 'let' local, on either side, and for sides of different types or a side that is no place"
 tags = ["typecheck", "flow"]
 diagnostics = 8
+
+# '<=>' is the three-way comparison, an operator method a type may declare as it
+# may declare '==' (the built-in numbers and text are core_threeway_compare's).
+[scenario.struct_threeway_operator]
+category = "run"
+description = "A struct declaring `<=>` on values, on references (read through by a comparison of references), built from its fields' own '<=>', and answering something other than an i32"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.struct_threeway_refused]
+category = "reject"
+description = "'<=>' on two places of a type that declares none is the ordinary missing-operator refusal, not a word about swapping; declaring '<=>' gives no '<'; references, slices and bool have none; a '<=>' declared for references is not reached by values"
+tags = ["typecheck"]
+diagnostics = 7
 
 [scenario.struct_autoborrow]
 category = "run"
@@ -342,7 +355,17 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # reference is written first, are struct_typecheck_layout_reference.
 [scenario.struct_layout_reference_order]
 category = "run"
-description = "Laying out a reference does not lay out its target: two actors' handles held through owning references and Option, a variant's '&W' and 'So[W]' with W holding the enum, a ring of three owners, a function reference taking its holder's holder by value, a reference to an array of its holder's holder, and a raw pointer to a generic instance holding the pointer's holder, each in both declaration orders"
+description = "Laying out a reference does not lay out its target: two actors' handles held through owning references and Option, a variant's '&W' and 'Uni[W]' with W holding the enum, a ring of three owners, a function reference taking its holder's holder by value, a reference to an array of its holder's holder, and a raw pointer to a generic instance holding the pointer's holder, each in both declaration orders"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A generic's written type argument is named, not held. A List[V] in a struct
+# above V's enum, whose variant holds that struct, was refused as a by-value
+# cycle (the argument V was laid out inside the struct's layout) and compiled
+# with the struct below. The by-value cycles through a generic that does hold
+# its argument stay refused: struct_typecheck_generic_arg_cycle.
+[scenario.struct_layout_generic_arg_order]
+category = "run"
+description = "A List of an enum named in a struct the enum's variant holds, in both declaration orders: directly, inside an Option, two structs down, through a generic of our own holding the argument behind a pointer, and a List of the struct in the variant's struct; built, walked and dropped"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.struct_fold]
@@ -391,6 +414,22 @@ name = "thunk-tail-calls-the-folded-method"
 target = "preir"
 contains = ["tail call i32 @_CNvNt6Engine5power("]
 
+# A struct's or a trait's body ends like an enum's (enum_body_delimiters): ';'
+# delimits the declarations, the last needs none, and an empty declaration is
+# harmless. Held with the struct group because the body is one construct for a
+# struct, a trait and an actor; the refusals of a missing ';' between two
+# declarations are struct_parse_delimiters's.
+[scenario.struct_body_delimiters]
+category = "run"
+description = "A struct's last field or static, a trait's last requirement, without a ';', and empty declarations beside methods"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.struct_parse_delimiters]
+category = "reject"
+description = "A struct or trait body that leaves the ';' out between two declarations that do not end in a block, or writes a comma for it"
+tags = ["parse"]
+diagnostics = 6
+
 # The run is the whole claim: each function's finalizer count is 0 or 1 (10
 # for the '@move' struct) and a count of 2 or a count on a never-assigned
 # variable is the defect. It cannot be read from the IR, because the drop call
@@ -412,7 +451,12 @@ tags = ["flow", "genllvm", "runtime"]
 
 [scenario.struct_final_temporary]
 category = "run"
-description = "A temporary is finalized at the end of the statement that made it, newest first, or of the 'if' or 'while' condition or the right operand of 'and' or 'or' that made it: thrown away, a field read, read through, lent to a call, tested; a sole owner freed, hollow where its value moved out, a counted owner's count back to zero; nothing bound, passed by value or returned; and one a local's initializer borrows kept to the block's end"
+description = "A temporary is finalized at the end of the statement that made it, newest first, or of the 'if' or 'while' condition or the right operand of '&&' or '||' that made it: thrown away, a field read, read through, lent to a call, tested; a sole owner freed, hollow where its value moved out, a counted owner's count back to zero; nothing bound, passed by value or returned; and one a local's initializer borrows kept to the block's end"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.struct_final_temporary_pointer]
+category = "run"
+description = "A temporary is finalized at its statement's end whatever is made from it: one a raw pointer was made from, and one lent to a call whose '&mut' receiver holds a raw pointer"
 tags = ["flow", "genllvm", "runtime"]
 
 [scenario.struct_final_temporary_opassign]
@@ -422,7 +466,7 @@ tags = ["flow", "genllvm", "runtime"]
 
 [scenario.struct_final_reassign]
 category = "run"
-description = "A value stored over is finalized as it is replaced -- a struct, a field, an element, a tuple, an enum, a parameter, in a loop, in a parallel assignment, through a reference -- on the paths where its holder holds it, and nothing is finalized where the holder, or the variable a field is part of, holds nothing"
+description = "A value stored over is finalized as it is replaced -- a struct, a field, an element, a tuple, an enum, a parameter, in a loop, in a parallel assignment, through a reference -- on the paths where its holder holds it, and nothing is finalized where the holder holds nothing; a field of a variable moved out and given a whole value again"
 tags = ["flow", "genllvm", "runtime"]
 
 # A value too large to carry as one LLVM value is copied in memory wherever it
@@ -560,7 +604,7 @@ excludes = [
 # element, an assignment in a later argument, a place through a reference.
 [scenario.struct_pass_lend]
 category = "run"
-description = "A struct of more than 16 bytes is passed as a pointer to its caller's storage where nothing can change it during the call (an 'imm' local, a field or element of one, a parameter, a local nothing borrows to write and no other argument assigns), and to a copy otherwise: a '&mut' route beside it, a global the callee writes, a 'mut' slice element beside the slice, an assignment in a later argument, an 'imm' reference whose owner a later argument consumes; a 'mut' parameter assigned, recursion, a parameter returned and stored, a '&fn', a vtable, a generic"
+description = "A struct of more than 16 bytes is passed as a pointer to its caller's storage where nothing can change it during the call (a 'let' local, a field or element of one, a parameter, a local nothing borrows to write and no other argument assigns), and to a copy otherwise: a '&mut' route beside it, a global the callee writes, a 'mut' slice element beside the slice, an assignment in a later argument, an 'imm' reference whose owner a later argument consumes; a 'var' parameter assigned, recursion, a parameter returned and stored, a '&fn', a vtable, a generic"
 tags = ["genllvm", "runtime"]
 
 [[scenario.struct_pass_lend.run]]
@@ -614,7 +658,7 @@ excludes = [
 # optimizer does with the pointer around a call it cannot see into.
 [scenario.struct_pass_lend_link]
 category = "run"
-description = "Structs of more than 16 bytes passed to a package compiled on its own, optimised: an 'imm' local lent and lent on by a recursing callee, and copied where a '&mut' route is beside it, where it is a global the callee writes, where it is a 'mut' slice element beside the slice, and before a later argument assigns it; a 'mut' parameter assigned, a parameter returned"
+description = "Structs of more than 16 bytes passed to a package compiled on its own, optimised: a 'let' local lent and lent on by a recursing callee, and copied where a '&mut' route is beside it, where it is a global the callee writes, where it is a 'mut' slice element beside the slice, and before a later argument assigns it; a 'var' parameter assigned, a parameter returned"
 tags = ["genllvm", "runtime"]
 link = ["lendee/lendee.conebuild"]
 include = ["include/lendee.cone"]
@@ -839,7 +883,7 @@ contains = [
   "@table = internal constant [3 x %Shape] [%Shape { i8 1, [3 x i8] zeroinitializer, i32 0, [8 x i8] zeroinitializer, [0 x i64] zeroinitializer }, %Shape { i8 2,",
 ]
 
-# Construction, 'new T(...)', and the inits it runs: the implicit field-wise
+# Construction, 'T(...)', and the inits it runs: the implicit field-wise
 # one and those a struct declares, which fill the value in place. Its own file
 # because its claims are which init the arguments selected and where the value
 # was built, which no other success file asks.
@@ -869,6 +913,11 @@ category = "reject"
 description = "A fold clause written where none may be, and the shapes neither the field form nor the body form may take"
 tags = ["parse"]
 diagnostics = 18
+
+[scenario.struct_parse_nametype]
+category = "reject"
+description = "A field's name and its type with no ':' between them are refused, in a struct, as a static and in a variant struct"
+tags = ["parse"]
 
 # -------- name resolution stage --------
 
@@ -920,7 +969,7 @@ diagnostics = 20
 category = "reject"
 description = "What a type body's 'use T via m' may lend: a method the type declares, the body of a struct that is not the type itself, no name left unfolded or missing"
 tags = ["nameres"]
-diagnostics = 8
+diagnostics = 10
 
 # A pub field of a pub type is reached from outside the module, so a private
 # type it names is refused, however the field's type names it. A private
@@ -945,9 +994,9 @@ diagnostics = 2
 # on every path, no return before then, and nothing but reach through it after
 [scenario.struct_flow_new]
 category = "reject"
-description = "An init's self read, written or called on before it is filled, an init that can return unfilled, and self passed or copied, which would let it outlive the init"
+description = "An init's self read, written or called on before it is filled, an init that can return unfilled (filled on one branch, or only in a loop that may not run), and self passed or copied, which would let it outlive the init"
 tags = ["flow"]
-diagnostics = 6
+diagnostics = 7
 
 # Separate from the type-check scenarios because ErrorNoMut on an assignment is
 # a data-flow diagnostic, and separate from struct_parse because that one is
@@ -969,7 +1018,7 @@ diagnostics = 13
 category = "reject"
 description = "A field or method named like an imported module hides it inside its type: the module written in a method's signature, a field's default or a body is refused rather than crashing, the signature's refusal naming both fixes (rename the import, or reach the module through this module's own name), the module's own name where the import renamed it; a static function calling a method bare is refused; what a failed signature returns is not walked by flow"
 tags = ["typecheck", "flow"]
-diagnostics = 10
+diagnostics = 11
 
 [scenario.struct_member_module_outside]
 category = "run"
@@ -992,6 +1041,12 @@ description = "A by-value cycle through three structs and through an enum's vari
 tags = ["typecheck", "flow"]
 diagnostics = 14
 
+[scenario.struct_typecheck_generic_arg_cycle]
+category = "reject"
+description = "By-value cycles that stay refused beside a List of the enum: a struct holding itself, and a generic that holds its argument by value, the struct written above the enum and below it"
+tags = ["typecheck"]
+diagnostics = 5
+
 [scenario.struct_typecheck_construct]
 category = "reject"
 description = "Struct constructors that do not agree with the type's fields"
@@ -1000,12 +1055,130 @@ diagnostics = 4
 
 [scenario.struct_typecheck_new]
 category = "reject"
-description = "Constructions refused: the bracket form, a type called, 'new' on what is not a struct, arguments no init or several declared inits take, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
+description = "Constructions refused: the bracket form, a number or an enum constructed, a value called, arguments no init or several declared inits take, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
 tags = ["typecheck"]
-diagnostics = 20
+diagnostics = 18
 
 [scenario.struct_typecheck_methods]
 category = "reject"
-description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to bool injects a call to, and a '&mut'-self method on an immutable variable; a private member reached from elsewhere in its module is not refused"
+description = "Method, field and operator accesses a struct's type cannot answer, and a '&mut'-self method on an immutable variable; a private member reached from elsewhere in its module is not refused, a private 'isTrue' a coercion to bool injects a call to included"
 tags = ["typecheck"]
-diagnostics = 21
+diagnostics = 13
+
+# 'new' takes a dynamic region and nothing else: before a type it is refused
+# once, at the 'new', whatever the type is and wherever it is allocated, and the
+# construction goes on as the call of the type it is. Name resolution stage, so
+# a program refused here reaches no type check: every line is that refusal.
+[scenario.struct_nameres_new]
+category = "reject"
+description = "'new' written before a type is refused at the 'new', once: a struct, one with no parentheses, a generic struct with its type arguments written or inferred, a collection with a size and with contents, an owner of a region and an alias of one, a type through a module, a generic's parameter, a borrow of a construction, an array, a number, an enum's variant, and a construction among another's arguments"
+tags = ["nameres"]
+diagnostics = 16
+
+# A construction is a type's name with parentheses, for every type, and the
+# compiler decides from the type whether a region allocates: a struct by
+# position and by name, a type with a '()' method told from its value called, a
+# declared init, a generic with its type arguments written and inferred, a
+# generic's parameter called, a variant, collections and arrays with contents,
+# an owner of a region written out and through an alias, a borrow of a
+# construction, constructions inside constructions, and 'trynew'.
+[scenario.struct_construct_name]
+category = "run"
+description = "A construction is the type's name with parentheses for every type: a struct, a type with a '()' method, a declared init, a generic struct, a generic's parameter, a variant, a collection with a size and with contents, an array, an owner of a region and an alias of one, a borrow of a construction, a construction among another's arguments and as a receiver, and 'trynew'"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A value taken apart, `x.(a, b)`: the named fields of a struct, or the numbered
+# elements of a tuple, `t.(0, 2)`. One name gives the field, two or more give a
+# tuple. Where the value is owned the fields move out and the rest dies with the
+# statement in the order the struct's own drop uses; through a reference, or from
+# a copy kept in a place, the fields are read as `x.a` reads them.
+# struct_fields_take runs every shape; the rest are what is refused: the parse
+# stage, the type check stage, the flow stage (a move out of what does not own
+# its value, a variable used after it was taken apart), and from outside the
+# type's module, which struct_fields_outside compiles and
+# struct_fields_outside_refused refuses.
+
+[scenario.struct_fields_take]
+category = "run"
+description = "Field lists on a local, a temporary, a by-value self and a thrown-away result, a tuple's positions, one name and several, the rest dying with the statement in the struct's own drop order (a whole value dying beside it), a value moved on one path, in a loop, a variant bound whole, as an argument, through references and copies, a private field inside its module, and a generic's"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.struct_fields_parse]
+category = "reject"
+description = "A field list that is empty, holds an expression, a call, a number first and a string"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.struct_fields_typecheck]
+category = "reject"
+description = "A field list naming a field twice, a field the struct has not (the message lists its fields), a field held through another, a tuple element past the end, names and numbers mixed or on the wrong type, a type with a finalizer (a struct, a temporary, an enum's variant; a struct that only holds one is not refused), and a value with no fields (a number, an array, a generic's number)"
+tags = ["typecheck"]
+diagnostics = 16
+
+[scenario.struct_fields_flow]
+category = "reject"
+description = "A value taken apart is moved whole: its variable is dead after, a second list on it, a use on a path after it was taken on another, in a loop; what does not own its value is refused as `x.a` is -- a field of another struct, a reference, a sole owner's referent, a global -- while a copy field read through a reference or an owner is not"
+tags = ["flow"]
+diagnostics = 11
+
+[scenario.struct_fields_outside]
+category = "compile"
+description = "Another module's struct taken apart by its public fields: the private fields it holds are not named and die with the statement"
+tags = ["nameres", "typecheck", "genllvm"]
+
+[scenario.struct_fields_outside_refused]
+category = "reject"
+description = "From outside the type's module a private field may not be named in a field list, and a type with a finalizer may not be taken apart, which is no different outside"
+tags = ["typecheck"]
+diagnostics = 3
+
+# A field list on a value holding a counted reference: a copy kept in a place copies
+# the field named, one more holder; a value no place keeps moves the reference named
+# out with its one holder and lets go the one it does not name with the statement.
+[scenario.struct_fields_counted]
+category = "run"
+description = "A field list on a struct holding a counted reference: the copy kept in a place adds a holder for the field it names and none for the field it does not, and a temporary gives up the reference it names with its one holder and releases the one it does not at the statement's end"
+tags = ["flow", "genllvm", "runtime"]
+
+# A lend names a lender for each permission a folded method's receiver may ask
+# ('use Block via view, viewMut, viewUni'), and each method is reached through the
+# one matching its receiver; core's Array[T].reverse, which asks for '&mut', is
+# reached on a List the same way.
+[scenario.struct_use_lend_perm]
+category = "run"
+description = "A lend through three lenders: a '&' method through the lender that returns '&', a '&mut' method through the one returning '&mut', a '&uni' one through '&uni', whatever the lenders are named or ordered; 'but' leaves a name out; a List reverses in place through viewMut"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A method whose receiver asks for a permission no lender gives is not folded:
+# no error of its own, the call finds no such method.
+[scenario.struct_typecheck_use_lend_perm]
+category = "reject"
+description = "A method whose receiver asks for a permission the lend has no lender for is not folded: '&mut' on a lend through 'view' alone, and on one through 'view' and 'viewUni'"
+tags = ["typecheck"]
+diagnostics = 2
+
+# Bug 31: a fold's 'but' names a member the folded type declares even when the
+# instance's 'where' left it out (Cells[Token] has no 'dup', which exists only
+# where V is Copy), so a type can fold the rest and write its own.
+[scenario.struct_fold_but_where]
+category = "run"
+description = "A fold's 'but' tolerates a member the folded instance's 'where' left out"
+tags = ["nameres", "typecheck", "runtime"]
+
+# ... and a name the folded type never declares is still refused
+[scenario.struct_nameres_fold_but_typo]
+category = "reject"
+description = "A fold's 'but' still refuses a name the folded type never declares, beside a 'where' that leaves another out"
+tags = ["nameres"]
+diagnostics = 1
+
+[scenario.struct_typecheck_extends_final]
+category = "reject"
+description = "An enrichment's own 'final' is skipped by a conversion by value into its base: refused for an initialiser, a move, an argument, a return, a field, an assignment, a chain, a sibling, a sibling with a different 'final', an array and an owning reference"
+tags = ["typecheck"]
+diagnostics = 15
+
+[scenario.struct_extends_final_borrow]
+category = "run"
+description = "What an enrichment's own 'final' does not refuse: a borrowed reference to the base, an enrichment without a 'final', the base into the enrichment"
+tags = ["typecheck", "flow", "genllvm", "runtime"]

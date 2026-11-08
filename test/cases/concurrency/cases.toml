@@ -2,7 +2,7 @@
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
-# The chapter is doc/reference/refconc.html, "Atomic values".
+# The chapter is doc/manual/conc-primitives.html#atomic, "Atomic values".
 #
 # What the compiler knows of concurrency today is atomic values and the thread
 # check. Atomic values: the built-in marker 'AtomicValue', which core's
@@ -12,7 +12,7 @@
 # 'Sendable', asked by thread.start and sync's channel types, granted to what
 # holds nothing bound to its thread (concurrency_sendable) and refused, naming
 # the culprit, to what does (concurrency_typecheck_sendable); the chapter is
-# doc/reference/refconccomm.html, "Race condition safety".
+# doc/manual/conc-sharing.html#race, "Race safety: what the compiler promises".
 # The operations themselves are core's mem intrinsics, which the intrinsic
 # group owns; the sync package's own behaviour, threads included, is tested by
 # its tests/ folder under 'congo test'. Atomic[T] is core's, so the atomic
@@ -22,14 +22,14 @@
 # synchronization.lib.
 #
 # Actors: the 'actor' declaration (compiler/c/parser/parseactor.c; the chapter
-# is doc/reference/refactor.html), and the actors package's
+# is doc/manual/conc-actors.html), and the actors package's
 # runtime it generates declarations for (mailbox, work-stealing scheduler,
 # quiescence, handles counted through 'Arc'). The concurrency_actor_*
 # scenarios are the declaration: what 'new' makes, a behaviour's arguments
 # moved in, many threads sending to one actor, actors made in a loop, a
 # behaviour's four shapes (concurrency_actor_shapes), 'self.m()' a send
 # (concurrency_actor_selfsend), and the refusals at parse
-# (concurrency_actor_parse, and concurrency_behaviour_words for 'async do'
+# (concurrency_actor_parse, and concurrency_behaviour_words for 'async fn'
 # itself), at type check (concurrency_actor_typecheck) and without the package
 # (concurrency_actor_runtime). The concurrency_actors_* scenarios are the
 # runtime, driven by declared actors: the scheduler's paths, the counting
@@ -48,6 +48,28 @@
 # written above an actor that lay its handle out first are
 # concurrency_actor_order's; concurrency_actors_stress declares the collector,
 # holding nodes, above the nodes, whose message carries a node.
+#
+# 'actor trait' (compiler/c/parser/parseactor.c, parseActorTrait; the chapter is
+# doc/manual/conc-actors.html#actortrait): behaviours only, conformed to
+# structurally, a trait's name a two-word handle of the mailbox and a table of
+# the actor's own sending methods. The concurrency_actor_trait_* scenarios are
+# the declaration's refusals at parse (_parse), the conversion's at type check
+# (_conform, naming what an actor lacks), and the runs: two actors in one list
+# sent through and awaited (_sink), a one-behaviour trait passed as the reply
+# address (_reply), a behaviour's parameter defaults and returned tuple
+# (_shapes), the trait declared in another module (_module), a handle's
+# identity and its keeping its actor alive (_identity), a generic trait at two
+# types (_generic), and a trait as a bound on a type parameter (_bound), which
+# makes no table (_static, whose named checks read the dump). An actor's own
+# 'is' list is an assertion checked once types are known (_is, and _is_refused,
+# which lists what an actor that falls short lacks).
+#
+# A generic actor, 'actor Counter[T]' (concurrency_actor_generic*): at two
+# types (the plain case), bounded by a trait (_bound), meeting a generic actor
+# trait (_trait), awaiting, returning and sending to itself (_await), two type
+# parameters, an init overload and selfactor (_forms), and what is refused at
+# the instance that causes it: a T that is not Sendable, a bound not met, an
+# 'is' list not met, a private field (_refused).
 #
 # 'await' in an actor's behaviour: a seam, where the behaviour returns to the
 # actor's dispatcher to wait. An 'await' on a behaviour of an actor that
@@ -72,7 +94,7 @@
 # another message changes the state, and concurrency_await_expr_refused is a
 # borrow or a place a call made to the left of the 'await'
 # (ErrorAwaitLeftCall). The chapter
-# is doc/reference/refactor.html and refawait.html, whose
+# is doc/manual/conc-actors.html and conc-await.html, whose
 # examples are concurrency_actor_manual's, _shapes' and _selfsend's and
 # concurrency_await_manual's (run) and concurrency_await_manual_refused's
 # (refused), copied from them; flow's note is
@@ -97,17 +119,17 @@
 #
 # Not covered, with reasons:
 #
-# - The 'atomic' permission, and plain writes of an atomic value only through a
-#   unique path: not built (the next steps of the atomics design). Today a
-#   plain whole-value write through '&mut' compiles.
-# - An 'imm' global of a tuple or an enum holding an atomic value: a global
+# - The 'atomic' permission: not built (the next step of the atomics design).
+#   Plain writes of an atomic value only through a unique path are built and
+#   pinned by concurrency_typecheck_atomic_write.
+# - A 'let' global of a tuple or an enum holding an atomic value: a global
 #   may be initialized only with a literal, and neither is one yet, so the
 #   mark's reach through them is pinned by the const refusal instead.
 # - Threads: the thread package is library code, and sync's tests/threads.cone
 #   is where Atomic[T] is changed from several at once (flag.cone for an
 #   Atomic[bool], treiber.cone for an Atomic[*Node]). concurrency_sendable
 #   starts threads only to show that what the check lets through runs.
-# - Sendable through an 'or' or 'and' condition: it is evaluated as any
+# - Sendable through a '||' or '&&' condition: it is evaluated as any
 #   marker is, and refused with ErrorWhereUnmet; the judging again after type
 #   check is only for a lone 'T is Sendable'.
 # - An open trait behind a reference, refused as bound (its implementers are
@@ -131,7 +153,7 @@ options = ["--intrinsic-fallback"]
 
 [scenario.concurrency_atomic_global]
 category = "run"
-description = "An imm global holding an atomic value in a field, a field's field or an array is never a constant: it is changed atomically and read back changed; the same shapes holding none stay constants"
+description = "A let global holding an atomic value in a field, a field's field or an array is never a constant: it is changed atomically and read back changed; the same shapes holding none stay constants"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [[scenario.concurrency_atomic_global.check]]
@@ -155,7 +177,7 @@ contains = ["@held = internal global %Holder { i32 7, %Flag { i32 5 } }"]
 
 [scenario.concurrency_sendable]
 category = "run"
-description = "The thread check's step-6 program: a uni owner sent over a channel to a consumer thread, an Arc[imm, String] read by a thread and by main, a number in a mut local handed to a thread; and the types granted Sendable without running: numbers, structs, arrays, enums, a struct reaching itself through So, owners that move, Arc[imm, T] and Arc[opaq, T], a function reference, a struct declaring Sendable, List, Dict, String, a channel's ends, a ThreadRef"
+description = "The thread check's step-6 program: a uni owner sent over a channel to a consumer thread, an Arc[imm, String] read by a thread and by main, a number in a var local handed to a thread; and the types granted Sendable without running: numbers, structs, arrays, enums, a struct reaching itself through Uni, owners that move, Arc[imm, T] and Arc[opaq, T], a function reference, a struct declaring Sendable, List, Dict, String, a channel's ends, a ThreadRef"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # A kernel's barriers on the CPU, with a workgroup's invocations on threads:
@@ -171,8 +193,30 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_counter]
 category = "run"
-description = "A declared actor made by 'new Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state 'mut', calling a synchronous helper; the total is exact at quiescence"
+description = "A declared actor made by 'Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state '&uni', calling a synchronous helper; the total is exact at quiescence"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_self_uni]
+category = "run"
+description = "A behaviour's bare 'self' is '&uni': it lends '&uni self.field' and a struct field on to helpers taking '&uni'; '&', '&mut', '&imm', '&opaq' and '&uni' written on 'self' are each accepted and run; a behaviour that awaits uses 'self' afresh after the 'await'; the behaviour's state parameter is noalias"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[[scenario.concurrency_actor_self_uni.check]]
+name = "a-behaviours-state-parameter-is-noalias-by-its-permission"
+target = "preir"
+contains = [
+  "define internal %void @Ledger.dispatch(ptr noalias nonnull align 8 dereferenceable(56) %0, ptr %1)",
+  "i3add(ptr noalias nonnull align 8 dereferenceable(56) %0, i64 %1)",
+  "i6viaUni(ptr noalias nonnull align 8 dereferenceable(56) %0, i64 %1)",
+  "i6viaImm(ptr noalias nonnull readonly align 8 dereferenceable(56) %0)",
+  "i6viaMut(ptr %0, i64 %1)",
+  "i7viaRead(ptr %0)",
+]
+
+[scenario.concurrency_actor_self_uni_reject]
+category = "reject"
+description = "With a behaviour's 'self' '&uni', a borrow of the state made before an 'await' is ended by the seam (ErrorFrozen, unchanged)"
+tags = ["parse", "flow"]
 
 [scenario.concurrency_actor_manual]
 category = "run"
@@ -183,6 +227,93 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "A behaviour that is not 'pub' is sent from its own module and refused from another, as a private member is; a synchronous method is refused through the handle from any module"
 tags = ["typecheck"]
+
+[scenario.concurrency_actor_trait_sink]
+category = "run"
+description = "An actor trait 'ChunkSink' of two behaviours; two actors that conform with nothing written on either (one with a behaviour more) converted where a handle of the trait is wanted, held in one list, sent through it, and one of them handed to a function by its own handle; each total awaited through the trait's handle"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_overload]
+category = "run"
+description = "An actor trait's behaviour declared 'overload' on the operator <-: sent through a handle of the trait to two actors (one repeating the overload name, one not), and on the first actor's own handle"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_overload_name]
+category = "reject"
+description = "An actor trait's overload names belong to the trait's handle: an actor that conforms without repeating them does not gain them on its own handle"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_trait_reply]
+category = "run"
+description = "'Reply to whoever asked' with no closure: a one-behaviour actor trait passed as a parameter, copied on to a second actor and sent to from both; and a trait handle's behaviours in their four shapes: sent, sent for a future, sent awaited, sent with the value dropped"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_identity]
+category = "run"
+description = "A trait's handle keeps its actor alive as an actor's handle does, and two handles are equal where they name the one actor: four actors listed by trait handles only, one removed from the list by equality, each finalizer run exactly once and not before its last handle went"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_is_refused]
+category = "reject"
+description = "An actor's 'is' list checked: an actor that lacks the behaviours, has one for another event, or is the first of two and not the second, each refused at the actor listing what is missing; an ordinary trait and a struct named refused"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_trait_parse]
+category = "reject"
+description = "What an actor trait's declaration may not say: a field, a static, a macro, a 'fn', a behaviour with a body, not 'pub', without 'self' or generic, a behaviour carrying a borrow, a trait with a lifetime among its type parameters, one naming an abstraction"
+tags = ["parse"]
+
+[scenario.concurrency_actor_trait_conform]
+category = "reject"
+description = "An actor's handle converted to an actor trait's where the actor lacks a behaviour, takes other parameters, returns another type or has it not 'pub': refused at the conversion, naming each, in an argument, a 'let', a field's value and a return; one that conforms, with a behaviour more, converts; a generic trait judged at the instance asked for; a bound met by a conforming actor and refused for another"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_trait_module]
+category = "run"
+description = "An actor trait declared 'pub' in a submodule, with an actor conforming in the submodule and another in the main module, neither naming the trait: both converted where the submodule's handle is wanted, sent through it by the submodule's function and awaited through it by an actor"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_shapes]
+category = "run"
+description = "A trait's behaviour with a default for a parameter, a returned tuple awaited through the handle, and one that takes only its defaults"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_generic]
+category = "run"
+description = "A generic actor trait 'Subscriber[Event]' at two event types: actors that conform to an instance (one conforming to neither, one to a second instance), a list of handles of an instance holding two kinds of actor, sent through, and a returned value awaited through a handle of an instance"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_bound]
+category = "run"
+description = "An actor trait as a bound, '[S: ChunkSink]' and '[S: Subscriber[Click]]': the generic body calls the argument's own methods, for two kinds of actor and for the trait's own handle, and the totals are the same as if each had been called directly"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_static]
+category = "run"
+description = "A bound on an actor trait dispatches statically: the instance of 'connect' at a Counter calls the Counter's own sending method directly, and no table is made for the pair"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# The IR text is pinned, so the build is stripped: module_debug_info pins the locations a release build adds
+[[scenario.concurrency_actor_trait_static.run]]
+name = "default"
+options = ["--strip"]
+
+[[scenario.concurrency_actor_trait_static.check]]
+name = "the-bound-makes-no-table"
+target = "symbols"
+contains = ["define internal connect[Counter] comdat nodeduplicate", "define internal Counter.accept comdat nodeduplicate"]
+excludes = ["Counter as `ChunkSink.vt`"]
+
+[[scenario.concurrency_actor_trait_static.check]]
+name = "the-instance-calls-the-actor-directly"
+target = "preir"
+# the argument's chunk made, then a call of a named function (an indirect call is `call %void %5(...)`)
+contains = ["%literal = insertvalue %Chunk undef, i64 %n1, 0\n  %2 = call %void @"]
+
+[scenario.concurrency_actor_trait_is]
+category = "run"
+description = "An actor that says what it is, 'actor Counter is ChunkSink' and 'actor Both is ChunkSink, Subscriber[Click]': checked as an assertion, and used where each trait's handle is wanted"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_shapes]
 category = "run"
@@ -216,7 +347,7 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_moves]
 category = "run"
-description = "Messages carrying an Arc[Mutex, T], added to under the lock by three actors and kept, finalized once after its last owner; and So owners moved into an actor's state, each finalized once, with the actor"
+description = "Messages carrying an Arc[Mutex, T], added to under the lock by three actors and kept, finalized once after its last owner; and Uni owners moved into an actor's state, each finalized once, with the actor"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_order]
@@ -226,12 +357,18 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_parse]
 category = "reject"
-description = "What an actor's declaration may not say: a behaviour carrying a borrow, generic, or taking 'self &uni'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a behaviour without 'self'; 'init' or 'final' as a behaviour; a 'pub fn' method, which is synchronous; a generic actor; one naming an abstraction"
+description = "What an actor's declaration may not say: a behaviour carrying a borrow, generic, or taking 'self: &new'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a behaviour without 'self'; 'init' or 'final' as a behaviour; a 'pub fn' method, which is synchronous; an actor with a lifetime parameter; one extending a base"
 tags = ["parse"]
+
+[scenario.concurrency_behaviour_dupparm]
+category = "reject"
+description = "A behaviour's parameter named twice is refused at the actor, as a function's is (core_nameres_dupparm); a behaviour of distinct names is accepted"
+tags = ["parse"]
+diagnostics = 1
 
 [scenario.concurrency_behaviour_words]
 category = "reject"
-description = "'async' or 'do' without the other, and 'async fn', are ErrorBehaviourWords in an actor's body; so is 'async do' in a struct's, a trait's or an enum's body, at a module's top level and in a function's body"
+description = "'async' without 'fn', 'async do' among them, is ErrorBehaviourWords in an actor's body; so is 'async fn' in a struct's, a trait's or an enum's body, at a module's top level and in a function's body"
 tags = ["parse"]
 
 [scenario.concurrency_actor_typecheck]
@@ -241,7 +378,7 @@ tags = ["typecheck"]
 
 [scenario.concurrency_actor_state_confined]
 category = "reject"
-description = "An actor's state is constructed only as the actor is made: 'new Self(...)', by its fields' names or by its init, in a behaviour, a synchronous method, its init beside the fill, or as an allocation's value, is ErrorActorStateInit (a helper's 'selfactor' made from such a state was an access violation); and the state is a move type, so its value taken through a method's borrow -- a copy, an argument, a return, an allocation's value, through a generic, in the final -- is ErrorMoveOut"
+description = "An actor's state is constructed only as the actor is made: 'Self(...)', by its fields' names or by its init, in a behaviour, a synchronous method, its init beside the fill, or as an allocation's value, is ErrorActorStateInit (a helper's 'selfactor' made from such a state was an access violation); and the state is a move type, so its value taken through a method's borrow -- a copy, an argument, a return, an allocation's value, through a generic, in the final -- is ErrorMoveOut"
 tags = ["typecheck", "flow"]
 
 [scenario.concurrency_actor_init_unfilled]
@@ -270,6 +407,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "run"
 description = "Four producer actors, driven from main through the inject queue, send 20000 numbered messages each to one consumer; each producer's order holds, the sum is exact, and every actor dies once its handles and mailbox are gone"
 tags = ["typecheck", "genllvm", "runtime"]
+timeout = 60   # 9-10 s alone, over 20 s when the machine is loaded: bugs list group 2, still open
 
 [scenario.concurrency_actors_lifetime]
 category = "run"
@@ -308,7 +446,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_rcstate]
 category = "run"
-description = "An actor whose state holds 'Rc[mut, T]' data, a 'So' owner and borrows in its methods, and declares nothing about Sendable: its handle is sent in a message to another actor, kept in that actor's state and used there, and handed to a thread that sends through it; every note arrives and both Rc owners agree"
+description = "An actor whose state holds 'Rc[mut, T]' data, a 'Uni' owner and borrows in its methods, and declares nothing about Sendable: its handle is sent in a message to another actor, kept in that actor's state and used there, and handed to a thread that sends through it; every note arrives and both Rc owners agree"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_state_unsendable]
@@ -471,6 +609,18 @@ name = "release"
 name = "debug"
 options = ["--debug"]
 
+[scenario.concurrency_await_reply_final]
+category = "run"
+description = "A value an actor method with an 'await' returns is moved into its reply and finalized exactly once, after the reply is consumed: returned after a seam, before one, and sent with no 'await' (dropped by the dispatcher)"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_reply_final.run]]
+name = "release"
+
+[[scenario.concurrency_await_reply_final.run]]
+name = "debug"
+options = ["--debug"]
+
 [scenario.concurrency_await_reply]
 category = "run"
 description = "An 'await' on a message to another actor waits for its reply, the envelope in the message: the worked example (Page.load awaits Fetcher.fetch, whose record holds 'conn' and Page's envelope), an empty record with no slot and no id, one returning before its seam, droppables across two seams, an actor awaiting one parked on it, an actor awaiting itself, a seam in a loop; then 20 continuations parked at once in one pending table, and returned values dropped where nothing awaits them"
@@ -512,7 +662,7 @@ tags = ["typecheck", "flow"]
 
 [scenario.concurrency_iobuf_loan]
 category = "reject"
-description = "A buffer is lent by moving it: a borrow of an iobuf IoBuf is refused where an IoBuf is wanted and where it would cross a thread, while the IoBuf, its frozen Bytes, a Chain and the Pool handle cross; a frozen one, an Arc[imm, IoBuf], refuses the methods that write"
+description = "A buffer is lent by moving it: a borrow of an iobuf IoBuf is refused where an IoBuf is wanted and where it would cross a thread, while the IoBuf, its frozen Bytes and a Chain cross; a frozen one, an Arc[imm, IoBuf], refuses the methods that write"
 tags = ["typecheck"]
 
 [scenario.concurrency_iocore_submit]
@@ -564,14 +714,24 @@ category = "reject"
 description = "AtomicValue on anything but a struct of one integer, bool or raw pointer field; with Copy; in a const, however deep; Atomic[T] of a type its 'where' clause refuses, just those the marker does; an Atomic[bool]'s add and sub, and an atomic raw pointer's add and bit operations, which exist only where their clauses hold"
 tags = ["typecheck"]
 
+[scenario.concurrency_typecheck_atomic_write]
+category = "reject"
+description = "A plain write of an atomic value, or of a struct holding one, through a '&mut' (the whole value, the atomic field, a holder one level up) is refused; the atomic's own store, a write of a non-atomic field of the same struct, and writes through '&uni', a local and a variable are accepted"
+tags = ["typecheck"]
+
+[scenario.concurrency_typecheck_owner_spelling]
+category = "reject"
+description = "An owning reference named in a message: its default permission left out ('Uni[Holds]', 'Rc[Holds]') and any other written ('Uni[imm, Holds]', 'Rc[mut, Holds]')"
+tags = ["typecheck"]
+
 [scenario.concurrency_typecheck_sendable]
 category = "reject"
 description = "What may not cross threads, refused where a generic asks for Sendable and naming what binds it and where: a borrow of any permission, in a field, deeper down, behind a uni owner or an Arc[imm, T]; Rc[mut, T] and Arc[mut, T]; Rc[imm, T]; a traced reference; a raw pointer, in an enum's variant, beside a struct's owner of itself; a borrow in Option's variant and in an array; a declared-Sendable type's bound argument; thread.start given a borrow of a local, and a thread returning Rc[imm, T]; a channel of borrows; and one judged after type check, a struct asking for a channel of itself while it is laid out"
 tags = ["typecheck"]
 
 # A borrow that lives for the whole program crosses threads and actors in the
-# two cases its rule allows (refperm.html, "Borrows that cross threads"), and
-# in no other; the chapter is doc/reference/refconccomm.html.
+# two cases its rule allows (conc-sharing.html#static-borrow, "A borrow that lasts the whole program"), and
+# in no other; the chapter is doc/manual/conc-sharing.html.
 [scenario.concurrency_static_borrow_send]
 category = "run"
 description = "A borrow of the whole program crossing: '&imm' borrows of a global number and array, an '&opaq' one, a struct holding one and an Option of one handed to threads through thread.start's 'A Sendable + 'static'; an actor's initializer and behaviours taking '&'static imm', '&'static opaq' and '&'static uni' parameters, a struct holding one, sent from main and from a thread; a '&'static uni' parameter handed on to a thread; and the types asked of the marker without running"
@@ -614,7 +774,7 @@ tags = ["flow"]
 
 [scenario.concurrency_await_manual]
 category = "run"
-description = "The reference manual's examples of 'await' in an actor's methods, run one after another: the worked example (Page, Fetcher, Net), one scope's drop timing and order, a ''static' borrow and a lock given back across an 'await', 'selfactor' awaited, one request answered once, a loop holding an 'await', and the rest of a statement run after its 'await' (a place's index, a receiver, a compound assignment), and several awaits in one place, both sides of a swap, a parallel assignment, a '<-' and a slice's bounds; and refpermlock.html's lock borrowed for a statement, given back at an 'await' within it, which another actor then takes"
+description = "The reference manual's examples of 'await' in an actor's methods, run one after another: the worked example (Page, Fetcher, Net), one scope's drop timing and order, a ''static' borrow and a lock given back across an 'await', 'selfactor' awaited, one request answered once, a loop holding an 'await', and the rest of a statement run after its 'await' (a place's index, a receiver, a compound assignment), and several awaits in one place, both sides of a swap, a parallel assignment, a '<-' and a slice's bounds; and conc-locks.html's lock borrowed for a statement, given back at an 'await' within it, which another actor then takes"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_manual.run]]
@@ -663,9 +823,29 @@ contains = [
   "@_CNvC6actors10startAwait(ptr %awaitable, ptr %agg",
 ]
 
+[scenario.concurrency_await_replyof]
+category = "run"
+description = "The closure of Awaitable.make is handed an actors.ReplyOf[R], and answers an R through it (the truthful twin of concurrency_await_replyof_refused): a value and a Uni answered and awaited; an envelope handed on to another actor, which answers it; an operation never awaited dies with what its closure holds, once"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.concurrency_await_replyof_refused]
+category = "reject"
+description = "Bug 38: Awaitable[R].make hands its closure an actors.ReplyOf[R] whose 'answer' takes an R, so an answer of another type than the Awaitable promises (a u64 for an Awaitable[Uni[Pair]], which compiled and crashed at the 'await' when the closure was handed an untyped Reply), and a closure taking an envelope of another type, do not compile"
+tags = ["typecheck"]
+
 [scenario.concurrency_await_operation_unused]
 category = "warn"
-description = "What an awaited operation (an actors.Awaitable, an I/O operation) answers with should be used: an 'await' on one that is a statement of its own, in the middle of a behaviour or as the last statement of one returning nothing, is warned, WarnAwaitUnused, and compiles, the answer dropped; bound to a local and matched nothing is said, and an 'await' on a behaviour's reply whose value is unused is not touched"
+description = "What an awaited operation (an actors.Awaitable, an I/O operation) answers with should be used: an 'await' on one that is a statement of its own, in the middle of a behaviour or as the last statement of one returning nothing, is warned, WarnDiscard, and compiles, the answer dropped; bound to a local and matched nothing is said, and an 'await' on a behaviour's reply whose value is unused is not touched"
+tags = ["typecheck"]
+
+[scenario.concurrency_aio_udp_wrong_kind]
+category = "reject"
+description = "The aio package's UdpSocket is a kind of its own beside Socket and File: a stream operation (read, write, accept) on a UdpSocket, a datagram operation (recvFrom, sendTo) on a Socket or a File, and a Socket where a UdpSocket is asked for, do not compile; the right kind does"
+tags = ["typecheck"]
+
+[scenario.concurrency_aio_host_wrong_service]
+category = "reject"
+description = "The aio package's hosted-service seam is typed by the service: a Host[Right] refuses, where it is posted or awaited, a job whose 'run' takes another type of service, and aio.host refuses a service type that does not comply with Hosted; a job for the right service compiles, through a global Host[Right] declared above the service type"
 tags = ["typecheck"]
 
 # -------- futures: a behaviour's value stored, awaited later --------
@@ -717,7 +897,7 @@ contains = [
 
 [scenario.concurrency_future_abandoned]
 category = "run"
-description = "A future whose callee dies without answering -- its behaviour parked on an operation that dropped its envelope, its record dropped with the actor -- is Abandoned, and an 'await' that finds it so (handed over once all is quiet) panics, at the 'await''s line, naming the request"
+description = "A future whose callee dies without answering -- its behaviour parked on an operation that dropped its envelope, its record dropped with the actor -- is Abandoned, and an 'await' that finds it so (handed over once all is quiet, the callee's one handle gone with the helper that made it) panics, at the 'await''s line, naming the request"
 tags = ["genllvm", "runtime"]
 program_exit = "abort"
 stderr_mask = ['(?<=panic in thread )\d+']
@@ -760,7 +940,7 @@ options = ["--debug"]
 # chosen for the workers): the body
 # is outlined into a function the workers run, finding what it reads outside
 # the loop through a record of pointers to those variables. The chapter is
-# doc/reference/refparallel.html; what the body may do is concurrency_parallel_each_refused's.
+# doc/manual/conc-parallel.html; what the body may do is concurrency_parallel_each_refused's.
 
 [scenario.concurrency_parallel_each]
 category = "run"
@@ -788,7 +968,7 @@ diagnostics = 6
 
 [scenario.concurrency_parallel_iterable]
 category = "run"
-description = "ParallelIterable[T, P], met by shape: the len and split a list folds in from Array cut it in two, a function bounded by ParallelIterable takes a list and a struct of one's own and halves each, cuts at the ends, and the pieces are the two sides of the same elements"
+description = "ParallelIterable[T], its Piece an associated type, met by shape: the len and split a list folds in from Array cut it in two, a function bounded by ParallelIterable takes a list and a struct of one's own and halves each, cuts at the ends, and the pieces are the two sides of the same elements"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_parallel_each_runtime]
@@ -900,7 +1080,7 @@ tags = ["typecheck"]
 
 [scenario.concurrency_parallel_root]
 category = "run"
-description = "What a parallel each that changes the items of a source may lend them from, which is something exclusive: a zip reading one list beside the one it writes, taken as a &uni parameter (pass k reads a[k], writes b[2k] and b[2k+1]), a local, a field of a local held by value, a struct lent &uni and its field, an array lent &uni as a slice, and a cursor made in an imm variable from a local, which the loop follows to the call that made it; sums worked out by hand"
+description = "What a parallel each that changes the items of a source may lend them from, which is something exclusive: a zip reading one list beside the one it writes, taken as a &uni parameter (pass k reads a[k], writes b[2k] and b[2k+1]), a local, a field of a local held by value, a struct lent &uni and its field, an array lent &uni as a slice, and a cursor made in a let variable from a local, which the loop follows to the call that made it; sums worked out by hand"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_parallel_root.run]]
@@ -947,7 +1127,7 @@ tags = ["typecheck"]
 
 [scenario.concurrency_parallel_each_virtual]
 category = "run"
-description = "A parallel each body names a reference to a trait or a callable from outside only if it is marked '+ Shareable' (or '+ Sendable'): a '&<Shape + Shareable' over two implementers (9000, 12000), a '&<fn(u64) u64 + Shareable' over a closure listing a number (14850) and a 'So[Shape + Sendable]' (2000), each read by every pass; the unmarked ones are refused (closure_typecheck_shareable)"
+description = "A parallel each body names a reference to a trait or a callable from outside only if it is marked '+ Shareable' (or '+ Sendable'): a '&<Shape + Shareable' over two implementers (9000, 12000), a '&<fn(u64) u64 + Shareable' over a closure listing a number (14850) and a 'Uni[Shape + Sendable]' (2000), each read by every pass; the unmarked ones are refused (closure_typecheck_shareable)"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_parallel_each_virtual.run]]
@@ -1117,10 +1297,10 @@ tags = ["typecheck"]
 
 # What an actor's own region, the actors package's ActorGc, refuses: a reference
 # into it is never Sendable; a parallel each in a behaviour allocates nothing in
-# it ('new self[T]' or a direct 'new ActorGc'); ActorLocal only on a traced region
+# it ('new self[T]' or a direct 'ActorGc()'); ActorLocal only on a traced region
 [scenario.concurrency_actorgc_refused]
 category = "reject"
-description = "A reference into an actor's own region (ActorGc) is not Sendable and stays in its actor (ErrorNotSendable); a parallel each in a behaviour may not allocate in the actor's region, by 'new self[T](...)' or a direct 'new ActorGc[...]' (ErrorActorGcPiece, each reported once however the body was checked); ActorLocal declared by what is not a traced region ref is ErrorActorLocalUse"
+description = "A reference into an actor's own region (ActorGc) is not Sendable and stays in its actor (ErrorNotSendable); a parallel each in a behaviour may not allocate in the actor's region, by 'new self[T](...)' or a direct 'ActorGc[...]()' (ErrorActorGcPiece, each reported once however the body was checked); ActorLocal declared by what is not a traced region ref is ErrorActorLocalUse"
 tags = ["typecheck"]
 
 [scenario.concurrency_actorgc_state_root]
@@ -1174,7 +1354,7 @@ diagnostics = 4
 
 # -------- the parallel builder --------
 #
-# 'new List[T] <- parallel each x in src [if c] yield v': each piece of the loop
+# 'List[T]() <- parallel each x in src [if c] yield v': each piece of the loop
 # appends to a list of its own, and the lists are joined in the order of the
 # passes after the loop (List's pieceBag, newPiece and joinPieces, which the
 # compiler calls). The body's rules are the parallel each's.
@@ -1217,6 +1397,146 @@ diagnostics = 4
 
 [scenario.concurrency_parallel_each_global_helper]
 category = "reject"
-description = "A parallel each body may not call a function (whose body the compiler can read) that writes a 'mut' global, itself or through the functions it calls (ErrorParWrite): a helper assigning it, one reaching it through one or two helpers, a method, an element or a field of a global, a swap, a method that grows a global list, and recursion on the way; the direct write is still refused, and so is a helper writing through a '&mut' parameter; allowed are helpers that only read a 'mut' or an 'imm' global, count in an Atomic, write a '@threadlocal' global, write their own local or the pass's own item, and the same writers called outside a parallel loop"
+description = "A parallel each body may not call a function (whose body the compiler can read) that writes a 'var' global, itself or through the functions it calls (ErrorParWrite): a helper assigning it, one reaching it through one or two helpers, a method, an element or a field of a global, a swap, a method that grows a global list, and recursion on the way; the direct write is still refused, and so is a helper writing through a '&mut' parameter; allowed are helpers that only read a 'mut' or a 'let' global, count in an Atomic, write a '@threadlocal' global, write their own local or the pass's own item, and the same writers called outside a parallel loop"
 tags = ["typecheck"]
 diagnostics = 10
+
+[scenario.concurrency_parallel_destructure]
+category = "run"
+description = "A declaration of several names and '_' as a target in the body of a 'parallel each' and of an actor's behaviour: the names are the body's, not the loop's variables, and the value a '_' takes is dropped"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_destructure.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_destructure.run]]
+name = "debug"
+options = ["--debug"]
+
+# A field list, `x.(a, b)` (struct_fields_take), across a seam: on what is awaited,
+# before a seam with a field in flight in the same call, and a field kept across
+# one. The fields not named die with the statement, after the seam where it holds
+# one. Each behaviour beside its twin with no 'await', with the same trace.
+[scenario.concurrency_await_fields]
+category = "run"
+description = "Under --await-direct a field list on what is awaited, with a field taken before the seam in flight in the same call, and a field kept across a seam, each printing what its twin with no 'await' prints"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_fields.run]]
+name = "direct"
+options = ["--await-direct"]
+
+[[scenario.concurrency_await_fields.run]]
+name = "direct-debug"
+options = ["--await-direct", "--debug"]
+
+[scenario.concurrency_await_propagate]
+category = "run"
+description = "'await x?' is '(await x)?': the '?' takes the Result the wait gives and returns its error from the behaviour, which answers its awaiting caller with it"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_await_try]
+category = "run"
+description = "'await x?' in a try block: the failure of the Result the wait gives leaves the block, not the behaviour, across the seam the wait cuts, and what follows it in the block does not run"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# The last use of a counted local or parameter is a move, where the holder is
+# an actor: an Arc sent in a message and not read again, one read after the
+# send, and a behaviour storing its parameter. Each Note is finalized once.
+[scenario.concurrency_actor_counted_last_use]
+category = "run"
+description = "An Arc sent to an actor as its last use moves into the message; one read after the send is copied; a behaviour storing its parameter takes the message's owner; each Note is finalized exactly once"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.concurrency_streams_reader_view]
+category = "reject"
+description = "A streams Reader lends a view of its bytes with 'peek' and changes them with 'consume': a 'consume', a 'popFront' or a second 'peek' while the view is live is refused (ErrorShapeReshape), while the same calls with the view dead compile"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_generic]
+category = "run"
+description = "A generic actor Counter[T] at i32 and f64: init, a behaviour taking T and one returning T awaited by another actor, each instance its own actor; totals worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_generic_bound]
+category = "run"
+description = "A generic actor bounded by a trait, Tally[S: Scorer], at two types that meet it: each calls the bound's method on the items sent, and is asked for its total and count by an actor that awaits both; totals worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_generic_trait]
+category = "run"
+description = "A generic actor that meets a generic actor trait, Collector[E: Coded] is Sink[E]: two instances conforming to two instances of the trait, one list of Sink[Click] holding a Collector[Click] and a plain actor, sent through the trait handle and a returned value awaited through it; totals worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_generic_refused]
+category = "reject"
+description = "What a generic actor is refused at the instance that causes it: a T that is not Sendable in a behaviour parameter, an initializer parameter and a returned value (each naming the instance), a type argument that does not meet the actor's bound, an 'is' list judged at the instance, and a field reached through an instance's handle"
+tags = ["parse", "typecheck"]
+
+[scenario.concurrency_actor_generic_await]
+category = "run"
+description = "A generic actor's behaviour that awaits another generic actor's value and returns it, and sends itself two messages (self.m()), at two instances side by side, a Relay[u64] over a Counter[u64] and a Relay[f64] over a Counter[f64]; values worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_print_await]
+category = "run"
+description = "A send statement to the console with awaits among its pieces: the awaited pieces are made first, in the order written, and the statement is then one whole record"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.concurrency_actor_generic_forms]
+category = "run"
+description = "Forms a generic actor takes: two type parameters, an init overload with another argument, a final, and selfactor sending to the instance itself, at Swap[u64, bool] and Swap[i32, f64]; values worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_await_method]
+category = "run"
+description = "A value is awaitable by the method its type declares, 'fn await(self)', which gives the Awaitable[R] or Future[T] to wait on: 'await x' is 'await x.await()'. A library type built on Awaitable.make, one returning the future a behaviour's call gave, and the method found on a field and on a call's result, each awaited with a value kept across the seam and one in flight"
+tags = ["parser", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_method.run]]
+name = "release"
+
+[[scenario.concurrency_await_method.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_await_method_nested]
+category = "run"
+description = "'await' on a value with the 'await' method, nested in the argument of another: each operand is checked once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_method_nested.run]]
+name = "release"
+
+[scenario.concurrency_futureset_stays]
+category = "reject"
+description = "A FutureSet is not Sendable: it stays in the actor that made it, so a behaviour taking one is refused"
+tags = ["typecheck"]
+
+[scenario.concurrency_await_method_refused]
+category = "reject"
+description = "The convention method is checked: an 'await' method taking more than 'self', or giving neither an Awaitable[R] nor a Future[T], is ErrorAwaitMethod; a type without one is still ErrorAwaitNotFuture, the message naming the method"
+tags = ["typecheck", "flow"]
+
+[scenario.concurrency_actor_trait_in_place]
+category = "run"
+description = "An actor made in place converts to an actor trait's handle as a literal's field value, in a Some and in a struct field, where no variable names it: both listeners hear and finalize once their only handles drop"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_in_place_refused]
+category = "reject"
+description = "An actor made in place that does not conform to the trait is still refused as a literal's field value, and a value that is no handle of the trait reports a literal-field mismatch, not an array error"
+[scenario.concurrency_behaviour_result_nowarn]
+category = "run"
+description = "A behaviour that answers a Result compiles with no WarnDiscard: the dispatch code the compiler writes replies with the Result and does not throw it away"
+tags = ["typecheck", "runtime"]
+
+[scenario.concurrency_behaviour_result_dropped]
+category = "warn"
+description = "A Result a reader's own statement drops inside an actor, a call to a behaviour that answers one, is still warned, WarnDiscard; the behaviour's own dispatch draws nothing"
+tags = ["typecheck"]
+
+[scenario.concurrency_aio_host_reply_refused]
+category = "reject"
+description = "Bug 46: a hosted job an actor awaits answers through an actors.ReplyOf[R] (HostReplyJob[S, R]), so a job whose 'run' answers another type than the Awaitable's R, takes the envelope of another type, or still takes the untyped actors.Reply, does not compile"
+tags = ["typecheck"]

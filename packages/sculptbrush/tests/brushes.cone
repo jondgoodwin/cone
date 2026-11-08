@@ -1,0 +1,789 @@
+// sculptbrush's brushes, one dab or stroke each on a plate or a sphere, checked
+// with the testing package against values worked out by hand; only a failure
+// prints, so brushes.out holds the summary alone.
+//
+// The plate is a square grid 4 x 4 (side 2, 81 vertices... see 'plate') lying
+// in y = 0 facing +y. Where a number is derived it is in the check's label.
+// Draw at the plate's centre, radius 0.5, strength 1: the vertex under the
+// dab is moved by sign x strength x radius x 0.012 x weight, the weight at
+// distance 0 being 1: 0.006 up. Subtract: 0.006 down. A vertex farther than the
+// radius does not move, bit for bit.
+
+mod brushes;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import sculptbrush use *;
+
+let near = 0.00001;
+
+
+fn cp(src: &List[Vec3]) List[Vec3] {
+  var out = List[Vec3]();
+  var i = 0usize;
+  while i < src.len() { out.push(*src[i]); i = i + 1usize; }
+  out
+}
+
+// A grid of n x n quads over [-size/2, size/2]^2 at height 'height(i, j)', facing +y
+fn plate(n: u32, size: f32, bumpy: bool) PolyMesh {
+  var pos = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      let x = (f32.from(i) / f32.from(n) - 0.5) * size;
+      let z = (f32.from(j) / f32.from(n) - 0.5) * size;
+      let hv = f32.from((i * 7919u32 + j * 104729u32 + i * j * 31u32) % 1000u32) / 1000.;
+      pos.push(Vec3(x, if bumpy {(hv - 0.5) * 0.04} else {0.}, z));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = j * (n + 1u32) + i;
+      let b = a + 1u32;
+      let c = a + n + 2u32;
+      let d = a + n + 1u32;
+      // a, d, c, b runs counterclockwise seen from +y
+      counts.push(4u32);
+      idx.push(a);
+      idx.push(d);
+      idx.push(c);
+      idx.push(b);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn sphere(levels: u32) PolyMesh {
+  let cube = PolyMesh.cube(1.);
+  subdivide(&cube, levels)
+}
+
+// The vertex nearest a point
+fn nearestVertex(m: &PolyMesh, p: Vec3) usize {
+  var best = 0usize;
+  var bd = 3.0e38f;
+  var v = 0usize;
+  while v < m.positions.len() {
+    let d = (*m.positions[v] - p).lengthSquared();
+    if d < bd { bd = d; best = v; }
+    v = v + 1usize;
+  }
+  best
+}
+
+fn moved(a: &PolyMesh, b: &PolyMesh, v: usize) Vec3 { *b.positions[v] - *a.positions[v] }
+
+fn countMoved(a: &PolyMesh, b: &PolyMesh) usize {
+  var n = 0usize;
+  var v = 0usize;
+  while v < a.positions.len() {
+    if (*b.positions[v] - *a.positions[v]).lengthSquared() > 0. { n = n + 1usize; }
+    v = v + 1usize;
+  }
+  n
+}
+
+// The farthest from c any moved vertex was, before it moved
+fn farthestMoved(a: &PolyMesh, b: &PolyMesh, c: Vec3) f32 {
+  var far = 0.f;
+  var v = 0usize;
+  while v < a.positions.len() {
+    if (*b.positions[v] - *a.positions[v]).lengthSquared() > 0.000000000001 {
+      let d = (*a.positions[v] - c).length();
+      if d > far { far = d; }
+    }
+    v = v + 1usize;
+  }
+  far
+}
+
+fn one(kind: u32, at: Vec3, radius: f32, strength: f32) Stroke {
+  Stroke.dab(Brush.of(kind), at, radius, strength)
+}
+
+fn draw() {
+  let p = plate(20u32, 2., false);
+  let c = Vec3(0., 0., 0.);
+  let st = one(BrushDraw, c, 0.5, 1.);
+  let q = sculptStroke(&p, &st);
+  let v = nearestVertex(&p, c);
+  expectFloat(f64.from(moved(&p, &q, v).y), 0.006, near, "draw: the vertex under the dab rises radius x 0.012");
+  expectFloat(f64.from(moved(&p, &q, v).x), 0., near, "draw: along the normal only");
+  expect(farthestMoved(&p, &q, c) < 0.5, "draw: nothing at or past the radius moves");
+  var st2 = one(BrushDraw, c, 0.5, 1.);
+  st2.subtract = true;
+  let q2 = sculptStroke(&p, &st2);
+  expectFloat(f64.from(moved(&p, &q2, v).y), -0.006, near, "draw, subtract: lowers by the same");
+  let st3 = one(BrushDraw, c, 0.5, 0.5);
+  let q3 = sculptStroke(&p, &st3);
+  expectFloat(f64.from(moved(&p, &q3, v).y), 0.003, near, "draw: half the strength, half the height");
+  // The sphere: along the area normal, outward
+  let s = sphere(3u32);
+  let top = Vec3(0., 1., 0.);
+  let tv = nearestVertex(&s, top);
+  let st4 = Stroke.dab(Brush.of(BrushDraw), *s.positions[tv], 0.3, 1.);
+  let q4 = sculptStroke(&s, &st4);
+  expect(moved(&s, &q4, tv).y > 0., "draw on a sphere: the top vertex moves outward");
+}
+
+fn drawSharp() {
+  let p = plate(20u32, 2., false);
+  let c = Vec3(0., 0., 0.);
+  // Many dabs in one place do not pile up: the height is held to the target
+  var pts = List[Vec3]();
+  pts.push(c);
+  pts.push(c);
+  pts.push(c);
+  pts.push(c);
+  pts.push(c);
+  pts.push(c);
+  var st = Stroke.make(Brush.of(BrushDrawSharp), pts, 0.5, 1.);
+  st.method = StrokeDots;
+  let q = sculptStroke(&p, &st);
+  let v = nearestVertex(&p, c);
+  expectFloat(f64.from(moved(&p, &q, v).y), 0.075, 0.002, "draw sharp: six dabs reach the target 0.15 x radius and stay (0.5 x 0.15)");
+  var st1 = Stroke.dab(Brush.of(BrushDrawSharp), c, 0.5, 1.);
+  let q1 = sculptStroke(&p, &st1);
+  expectFloat(f64.from(moved(&p, &q1, v).y), 0.0375, 0.0001, "draw sharp: one dab goes half way to the target");
+}
+
+fn clay() {
+  // A bumpy plate under a clay stroke: the hollows fill, the peaks stay
+  let p = plate(40u32, 2., true);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.5, 0., 0.));
+  pts.push(Vec3(0.5, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushClay), pts, 0.3, 1.);
+  st.project = false;
+  let q = sculptStroke(&p, &st);
+  var low = 0;
+  var raisedLow = 0;
+  var lowered = 0;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let d = moved(&p, &q, v);
+    if d.y < -0.0000001 { lowered = lowered + 1; }
+    if (*p.positions[v]).y < -0.01 && (*p.positions[v]).x > -0.3 && (*p.positions[v]).x < 0.3
+        && (*p.positions[v]).z.abs() < 0.1 {
+      low = low + 1;
+      if d.y > 0.001 { raisedLow = raisedLow + 1; }
+    }
+    v = v + 1usize;
+  }
+  expectInt(i64.from(lowered), 0i64, "clay: nothing is pushed down");
+  expect(low > 0 && raisedLow * 2 > low, "clay: most of the hollows under the stroke rise");
+}
+
+fn clayStrips() {
+  // The strip is a rectangle along the stroke: a vertex a quarter radius across moves
+  // when the strip's width allows it, not one beyond the aspect
+  let p = plate(40u32, 2., false);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.5, 0., 0.));
+  pts.push(Vec3(0.5, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushClayStrips), pts, 0.4, 1.);
+  st.project = false;
+  let q = sculptStroke(&p, &st);
+  var maxZ = 0.f;
+  var maxX = 0.f;
+  var v = 0usize;
+  while v < p.positions.len() {
+    if (*q.positions[v] - *p.positions[v]).lengthSquared() > 0. {
+      let z = (*p.positions[v]).z.abs();
+      let x = (*p.positions[v]).x.abs();
+      if z > maxZ { maxZ = z; }
+      if x > maxX { maxX = x; }
+    }
+    v = v + 1usize;
+  }
+  expect(maxZ <= 0.4 * 0.35 + 0.0001, "clay strips: the strip is aspect x radius (0.35 x 0.4) wide");
+  expect(maxX > 0.5 + 0.2, "clay strips: and its length reaches the radius past the ends");
+}
+
+fn layer() {
+  let p = plate(40u32, 2., false);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.5, 0., 0.));
+  pts.push(Vec3(0.5, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushLayer), cp(&pts), 0.3, 1.);
+  st.project = false;
+  var s = Sculptor.of(&p);
+  s.captureBase();
+  s.stroke(&st);
+  s.stroke(&st);
+  s.stroke(&st);
+  let q = s.finish();
+  var top = 0.f;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let h = (*q.positions[v]).y;
+    if h > top { top = h; }
+    v = v + 1usize;
+  }
+  expectFloat(f64.from(top), 0.024, 0.0001, "layer: held at height 0.08 x radius 0.3 over a persistent base however many strokes");
+  // Without a persistent base each stroke raises from where it began: two strokes reach twice
+  var s2 = Sculptor.of(&p);
+  s2.stroke(&st);
+  s2.stroke(&st);
+  let q2b = s2.finish();
+  var top2 = 0.f;
+  var w = 0usize;
+  while w < p.positions.len() {
+    if (*q2b.positions[w]).y > top2 { top2 = (*q2b.positions[w]).y; }
+    w = w + 1usize;
+  }
+  expectFloat(f64.from(top2), 0.048, 0.0002, "layer: with no persistent base each stroke raises from where it began");
+  // Subtract digs to the same depth
+  var st2 = Stroke.make(Brush.of(BrushLayer), cp(&pts), 0.3, 1.);
+  st2.project = false;
+  st2.subtract = true;
+  let q2 = sculptStroke(&p, &st2);
+  var low = 0.f;
+  v = 0usize;
+  while v < p.positions.len() {
+    let h = (*q2.positions[v]).y;
+    if h < low { low = h; }
+    v = v + 1usize;
+  }
+  expect(low < -0.01 && low >= -0.0241, "layer, subtract: digs, to no more than the cap");
+}
+
+fn inflate() {
+  let s = sphere(3u32);
+  let tv = nearestVertex(&s, Vec3(0., 1., 0.));
+  let c = *s.positions[tv];
+  let st = Stroke.dab(Brush.of(BrushInflate), c, 0.4, 1.);
+  let q = sculptStroke(&s, &st);
+  var outward = 0;
+  var inward = 0;
+  var v = 0usize;
+  while v < s.positions.len() {
+    let d = moved(&s, &q, v);
+    if d.lengthSquared() > 0. {
+      if d.dot(*s.positions[v]) > 0. { outward = outward + 1; } else { inward = inward + 1; }
+    }
+    v = v + 1usize;
+  }
+  expect(outward > 5 && inward == 0, "inflate: every vertex moves out along its own normal");
+  let sd = Stroke.dab(Brush.of(BrushInflate), c, 0.4, -1.);
+  expect(sd.strength == -1., "inflate: a negative strength is stored");
+}
+
+fn blob() {
+  let s = sphere(3u32);
+  let tv = nearestVertex(&s, Vec3(0., 1., 0.));
+  let c = *s.positions[tv];
+  let st = Stroke.dab(Brush.of(BrushBlob), c, 0.4, 1.);
+  let q = sculptStroke(&s, &st);
+  expect(moved(&s, &q, tv).y > 0., "blob: the middle rises");
+  var moved_ = 0;
+  var v = 0usize;
+  while v < s.positions.len() {
+    if moved(&s, &q, v).lengthSquared() > 0. { moved_ = moved_ + 1; }
+    v = v + 1usize;
+  }
+  expect(moved_ > 5, "blob: a patch moves");
+}
+
+fn crease() {
+  // A stroke along x on the plate: the line of the stroke goes down; a vertex off to the side
+  // is pulled towards the line, so its z shrinks in size
+  let p = plate(40u32, 2., false);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.6, 0., 0.));
+  pts.push(Vec3(0.6, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushCrease), cp(&pts), 0.3, 1.);
+  st.project = false;
+  let q = sculptStroke(&p, &st);
+  let mid = nearestVertex(&p, Vec3(0., 0., 0.));
+  expect(moved(&p, &q, mid).y < -0.001, "crease: the stroke line is pushed in");
+  let side = nearestVertex(&p, Vec3(0., 0., 0.15));
+  let ds = moved(&p, &q, side);
+  expect(ds.z < -0.0001, "crease: a vertex to the side is pinched towards the line");
+  let sideN = nearestVertex(&p, Vec3(0., 0., -0.15));
+  expect(moved(&p, &q, sideN).z > 0.0001, "crease: and so is one on the other side");
+  var stI = Stroke.make(Brush.of(BrushCrease), cp(&pts), 0.3, 1.);
+  stI.project = false;
+  stI.subtract = true;
+  let qi = sculptStroke(&p, &stI);
+  expect(moved(&p, &qi, mid).y > 0.001, "crease, subtract: a ridge");
+}
+
+fn dam() {
+  let p = plate(60u32, 2., false);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.6, 0., 0.));
+  pts.push(Vec3(0.6, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushDam), pts, 0.3, 1.);
+  st.project = false;
+  let q = sculptStroke(&p, &st);
+  let mid = nearestVertex(&p, Vec3(0., 0., 0.));
+  expect(moved(&p, &q, mid).y < -0.002, "dam: the line goes down hard");
+  // Narrower than crease: a vertex 0.2 across is outside the dam's ellipse (0.35 x 0.3 = 0.105)
+  let far = nearestVertex(&p, Vec3(0., 0., 0.2));
+  expectFloat(f64.from(moved(&p, &q, far).lengthSquared()), 0., near, "dam: a narrow groove: 0.2 off the line is untouched");
+}
+
+fn smoothing() {
+  let p = plate(30u32, 2., true);
+  let c = Vec3(0., 0., 0.);
+  var energy0 = 0.;
+  var energy1 = 0.;
+  let st = Stroke.dab(Brush.of(BrushSmooth), c, 0.5, 1.);
+  let q = sculptStroke(&p, &st);
+  var v = 0usize;
+  while v < p.positions.len() {
+    let d = (*p.positions[v] - c).length();
+    if d < 0.25 {
+      energy0 = energy0 + (*p.positions[v]).y * (*p.positions[v]).y;
+      energy1 = energy1 + (*q.positions[v]).y * (*q.positions[v]).y;
+    }
+    v = v + 1usize;
+  }
+  expect(energy1 < energy0 * 0.8, "smooth: a dab lowers the roughness under it");
+  expect(farthestMoved(&p, &q, c) < 0.5, "smooth: and reaches no farther than the radius");
+  // A flat plate does not change
+  let flat = plate(30u32, 2., false);
+  let q2 = sculptStroke(&flat, &st);
+  expectFloat(f64.from(farthestMoved(&flat, &q2, c)), 0., near, "smooth: a flat plate stays flat");
+  // Taubin keeps more of the height than the plain Laplacian over many passes (it does not shrink)
+  var plain = Brush.of(BrushSmooth);
+  plain.taubin = false;
+  plain.iterations = 6u32;
+  var tb = Brush.of(BrushSmooth);
+  tb.iterations = 6u32;
+  let sp = Stroke.dab(plain, c, 0.9, 1.);
+  let stb = Stroke.dab(tb, c, 0.9, 1.);
+  let qp = sculptStroke(&p, &sp);
+  let qt = sculptStroke(&p, &stb);
+  // The sphere shrinks under plain smoothing more than under Taubin
+  let sph = sphere(3u32);
+  let sa = Stroke.dab(plain, *sph.positions[nearestVertex(&sph, Vec3(0., 1., 0.))], 1.5, 1.);
+  let sb = Stroke.dab(tb, *sph.positions[nearestVertex(&sph, Vec3(0., 1., 0.))], 1.5, 1.);
+  let qa = sculptStroke(&sph, &sa);
+  let qb = sculptStroke(&sph, &sb);
+  var ra = 0.;
+  var rb = 0.;
+  v = 0usize;
+  while v < sph.positions.len() {
+    ra = ra + (*qa.positions[v]).length();
+    rb = rb + (*qb.positions[v]).length();
+    v = v + 1usize;
+  }
+  expect(rb > ra, "smooth: Taubin's step back out shrinks a sphere less than the plain Laplacian");
+  expect(countMoved(&p, &qp) > 0 && countMoved(&p, &qt) > 0, "smooth: both moved something");
+}
+
+fn plane() {
+  let p = plate(30u32, 2., true);
+  let c = Vec3(0., 0., 0.);
+  // Flatten: heights under the dab move towards a common plane, all of them (the spread shrinks)
+  let stF = Stroke.dab(Brush.of(BrushPlane), c, 0.5, 1.);
+  let qf = sculptStroke(&p, &stF);
+  var sp0 = 0.;
+  var sp1 = 0.;
+  var v = 0usize;
+  while v < p.positions.len() {
+    if (*p.positions[v] - c).length() < 0.3 {
+      sp0 = sp0 + (*p.positions[v]).y.abs();
+      sp1 = sp1 + (*qf.positions[v]).y.abs();
+    }
+    v = v + 1usize;
+  }
+  expect(sp1 < sp0 * 0.7, "plane, flatten: the heights under the dab move towards one plane");
+  // Fill: only what lies below the plane moves, and up
+  var bf = Brush.of(BrushPlane);
+  bf.planeMode = PlaneFill;
+  let stFill = Stroke.dab(bf, c, 0.5, 1.);
+  let qfill = sculptStroke(&p, &stFill);
+  var down = 0;
+  var up = 0;
+  v = 0usize;
+  while v < p.positions.len() {
+    let dy = moved(&p, &qfill, v).y;
+    if dy < -0.0000001 { down = down + 1; }
+    if dy > 0.0000001 { up = up + 1; }
+    v = v + 1usize;
+  }
+  expect(down == 0 && up > 0, "plane, fill: vertices only rise");
+  var bs = Brush.of(BrushPlane);
+  bs.planeMode = PlaneScrape;
+  let stScrape = Stroke.dab(bs, c, 0.5, 1.);
+  let qs = sculptStroke(&p, &stScrape);
+  down = 0;
+  up = 0;
+  v = 0usize;
+  while v < p.positions.len() {
+    let dy = moved(&p, &qs, v).y;
+    if dy < -0.0000001 { down = down + 1; }
+    if dy > 0.0000001 { up = up + 1; }
+    v = v + 1usize;
+  }
+  expect(up == 0 && down > 0, "plane, scrape: vertices only fall");
+  // The plane lifted by 'height' x radius: a flat plate flattened to it rises towards it
+  var bh = Brush.of(BrushPlane);
+  bh.height = 0.2;
+  let flat = plate(30u32, 2., false);
+  let stH = Stroke.dab(bh, c, 0.5, 1.);
+  let qh = sculptStroke(&flat, &stH);
+  let cv = nearestVertex(&flat, c);
+  expectFloat(f64.from(moved(&flat, &qh, cv).y), 0.6 * 0.1, 0.0001, "plane: a plane 0.2 x 0.5 above the surface pulled 0.6 of the way");
+  // A limit on depth: vertices farther than depth x radius from the plane are left
+  var bd = Brush.of(BrushPlane);
+  bd.depth = 0.01;
+  let qd = sculptStroke(&p, &Stroke.dab(bd, c, 0.5, 1.));
+  expect(countMoved(&p, &qd) < countMoved(&p, &qf), "plane: a depth limit leaves the vertices farthest from the plane");
+}
+
+fn pinch() {
+  let p = plate(30u32, 2., false);
+  let c = Vec3(0., 0., 0.);
+  let st = Stroke.dab(Brush.of(BrushPinch), c, 0.5, 1.);
+  let q = sculptStroke(&p, &st);
+  var allIn = true;
+  var any = false;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let d = moved(&p, &q, v);
+    if d.lengthSquared() > 0. {
+      any = true;
+      if (*q.positions[v] - c).length() > (*p.positions[v] - c).length() { allIn = false; }
+    }
+    v = v + 1usize;
+  }
+  expect(any && allIn, "pinch: every moved vertex ends nearer the centre");
+  var sm = Stroke.dab(Brush.of(BrushPinch), c, 0.5, 1.);
+  sm.subtract = true;
+  let qm = sculptStroke(&p, &sm);
+  var allOut = true;
+  v = 0usize;
+  while v < p.positions.len() {
+    if moved(&p, &qm, v).lengthSquared() > 0. {
+      if (*qm.positions[v] - c).length() < (*p.positions[v] - c).length() { allOut = false; }
+    }
+    v = v + 1usize;
+  }
+  expect(allOut, "pinch, subtract (Magnify): every moved vertex ends farther");
+}
+
+fn grab() {
+  let p = plate(30u32, 2., false);
+  let cv = nearestVertex(&p, Vec3(0., 0., 0.));
+  let c = *p.positions[cv];
+  var pts = List[Vec3]();
+  pts.push(c);
+  pts.push(c + Vec3(0.1, 0.3, 0.));
+  let st = Stroke.make(Brush.of(BrushGrab), cp(&pts), 0.4, 1.);
+  let q = sculptStroke(&p, &st);
+  let d = moved(&p, &q, cv);
+  expectFloat(f64.from(d.x), 0.1, near, "grab: the vertex under the click follows the drag in x");
+  expectFloat(f64.from(d.y), 0.3, near, "grab: and in y");
+  expect(farthestMoved(&p, &q, c) < 0.4, "grab: nothing past the radius");
+  // Strength 0.5: half
+  let st2 = Stroke.make(Brush.of(BrushGrab), cp(&pts), 0.4, 0.5);
+  let q2 = sculptStroke(&p, &st2);
+  expectFloat(f64.from(moved(&p, &q2, cv).y), 0.15, near, "grab: strength 0.5 follows half the drag");
+  // A neighbour moves less
+  let nv = nearestVertex(&p, c + Vec3(0.1, 0., 0.));
+  expect(moved(&p, &q, nv).y > 0. && moved(&p, &q, nv).y < d.y, "grab: a neighbour follows by its weight");
+}
+
+fn elastic() {
+  let p = plate(40u32, 2., false);
+  let cv = nearestVertex(&p, Vec3(0., 0., 0.));
+  let c = *p.positions[cv];
+  var pts = List[Vec3]();
+  pts.push(c);
+  pts.push(c + Vec3(0., 0.2, 0.));
+  let st = Stroke.make(Brush.of(BrushElastic), pts, 0.3, 1.);
+  let q = sculptStroke(&p, &st);
+  let d = moved(&p, &q, cv);
+  expectFloat(f64.from(d.y), 0.2, 0.0005, "elastic: the point of the force moves by the drag");
+  expectFloat(f64.from(d.x), 0., near, "elastic: and only along it");
+  // The field falls off smoothly and has reach beyond the radius (a Kelvinlet, not a disc)
+  let n1 = nearestVertex(&p, c + Vec3(0.3, 0., 0.));
+  let n2 = nearestVertex(&p, c + Vec3(0.6, 0., 0.));
+  let n3 = nearestVertex(&p, c + Vec3(0.9, 0., 0.));
+  let d1 = moved(&p, &q, n1).length();
+  let d2 = moved(&p, &q, n2).length();
+  let d3 = moved(&p, &q, n3).length();
+  expect(d1 > d2 && d2 > d3 && d2 > 0.0001, "elastic: it falls off with distance and reaches past the radius");
+  // And it has the sideways pull a solid has: the neighbours draw in a little in x
+  let side = moved(&p, &q, n1);
+  expect(side.x < 0.0001 && side.x > -0.05, "elastic: the sideways component is small");
+  expect(farthestMoved(&p, &q, c) <= 0.3 * 3.5 + 0.0001, "elastic: nothing past 3.5 radii");
+}
+
+fn moveTopological() {
+  // Two plates 0.04 apart: a grab at the top plate takes the bottom one too; move topological does not
+  let top = plate(20u32, 2., false);
+  let bottomRaw = plate(20u32, 2., false);
+  let bottom = deform(&bottomRaw, p => Vec3(p.x, p.y - 0.04, p.z));
+  var parts = List[PolyMesh]();
+  parts.push(smooth(&top, 0., 0u32));
+  parts.push(smooth(&bottom, 0., 0u32));
+  var problems = List[String]();
+  let both = join(&parts, &mut problems);
+  var pts = List[Vec3]();
+  pts.push(Vec3(0., 0., 0.));
+  pts.push(Vec3(0., 0.3, 0.));
+  let sg = Stroke.make(Brush.of(BrushGrab), cp(&pts), 0.5, 1.);
+  let qg = sculptStroke(&both, &sg);
+  let sm = Stroke.make(Brush.of(BrushMoveTopological), cp(&pts), 0.5, 1.);
+  let qm = sculptStroke(&both, &sm);
+  var bottomGrab = 0;
+  var bottomTopo = 0;
+  var topTopo = 0;
+  var v = 0usize;
+  while v < both.positions.len() {
+    let isTop = (*both.positions[v]).y > -0.02;
+    if !isTop && moved(&both, &qg, v).lengthSquared() > 0. { bottomGrab = bottomGrab + 1; }
+    if !isTop && moved(&both, &qm, v).lengthSquared() > 0. { bottomTopo = bottomTopo + 1; }
+    if isTop && moved(&both, &qm, v).lengthSquared() > 0. { topTopo = topTopo + 1; }
+    v = v + 1usize;
+  }
+  expect(bottomGrab > 0, "move topological: a plain grab takes the plate beneath along");
+  expectInt(i64.from(bottomTopo), 0i64, "move topological: the plate beneath, not connected, stays");
+  expect(topTopo > 0, "move topological: the connected plate moves");
+}
+
+fn snakeHook() {
+  let s = sphere(4u32);
+  let top = *s.positions[nearestVertex(&s, Vec3(0., 1., 0.))];
+  // A short pull: no warning. A long pull: the surface is stretched thin and the report says so
+  let shortPath = bezierPoints(top, top + Vec3(0., 0.05, 0.), top + Vec3(0., 0.1, 0.), top + Vec3(0., 0.15, 0.), 6u32);
+  let st1 = Stroke.make(Brush.of(BrushSnakeHook), shortPath, 0.4, 1.);
+  var sc1 = Sculptor.of(&s);
+  let r1 = sc1.stroke(&st1);
+  let longPath = bezierPoints(top, top + Vec3(0., 0.5, 0.), top + Vec3(0., 1.0, 0.), top + Vec3(0., 1.6, 0.), 20u32);
+  var st2 = Stroke.make(Brush.of(BrushSnakeHook), longPath, 0.4, 1.);
+  st2.method = StrokeSpace;
+  var sc2 = Sculptor.of(&s);
+  let r2 = sc2.stroke(&st2);
+  expect(!r1.needsDensity, "snake hook: a short pull does not ask for density");
+  expect(r2.needsDensity, "snake hook: a long pull reports that it needs more density");
+  expect(r2.edgeToRadius > r1.edgeToRadius, "snake hook: the longer pull stretches the edges more");
+  let out = sc2.finish();
+  expect(out.positions.len() == s.positions.len(), "snake hook: topology kept");
+  let tv = nearestVertex(&s, top);
+  expect((*out.positions[tv]).y > 1.4, "snake hook: the vertex under the cursor follows it up the path");
+}
+
+fn thumbNudge() {
+  let p = plate(40u32, 2., true);
+  let flat = plate(40u32, 2., false);
+  var pts = List[Vec3]();
+  pts.push(Vec3(-0.4, 0., 0.));
+  pts.push(Vec3(0.4, 0., 0.));
+  var st = Stroke.make(Brush.of(BrushNudge), cp(&pts), 0.3, 1.);
+  st.project = false;
+  let q = sculptStroke(&flat, &st);
+  var sumX = 0.;
+  var sumY = 0.;
+  var sumZ = 0.;
+  var v = 0usize;
+  while v < flat.positions.len() {
+    let d = moved(&flat, &q, v);
+    sumX = sumX + d.x;
+    sumY = sumY + d.y.abs();
+    sumZ = sumZ + d.z.abs();
+    v = v + 1usize;
+  }
+  expect(sumX > 0.1 && sumY < 0.000001 && sumZ < 0.000001, "nudge: vertices move along the stroke direction and nowhere else");
+  var st2 = Stroke.make(Brush.of(BrushThumb), cp(&pts), 0.3, 1.);
+  st2.project = false;
+  let q2 = sculptStroke(&p, &st2);
+  var sx = 0.;
+  v = 0usize;
+  while v < p.positions.len() { sx = sx + moved(&p, &q2, v).x; v = v + 1usize; }
+  expect(sx > 0.05, "thumb: smears along the stroke");
+  var e0 = 0.;
+  var e1 = 0.;
+  v = 0usize;
+  while v < p.positions.len() {
+    if (*p.positions[v]).z.abs() < 0.2 && (*p.positions[v]).x.abs() < 0.3 {
+      e0 = e0 + (*p.positions[v]).y.abs();
+      e1 = e1 + (*q2.positions[v]).y.abs();
+    }
+    v = v + 1usize;
+  }
+  expect(e1 < e0, "thumb: and flattens");
+}
+
+fn rotateBrush() {
+  let s = sphere(3u32);
+  let tv = nearestVertex(&s, Vec3(0., 1., 0.));
+  let c = *s.positions[tv];
+  var b = Brush.of(BrushRotate);
+  b.angle = 0.3;
+  let st = Stroke.dab(b, c, 0.5, 1.);
+  let q = sculptStroke(&s, &st);
+  // The dab's normal is straight up (the top of a symmetric shape): a turned vertex keeps its height
+  // over the centre and its distance from the axis, and has turned the right way (counterclockwise seen from above)
+  var turned = 0;
+  var kept = true;
+  var sense = 0.;
+  var v = 0usize;
+  while v < s.positions.len() {
+    let d = moved(&s, &q, v);
+    if d.lengthSquared() > 0. {
+      turned = turned + 1;
+      let a = *s.positions[v] - c;
+      let b = *q.positions[v] - c;
+      let ra = (a.x * a.x + a.z * a.z).sqrt();
+      let rb = (b.x * b.x + b.z * b.z).sqrt();
+      if (ra - rb).abs() > 0.003 * (1. + ra) || (a.y - b.y).abs() > 0.006 { kept = false; }
+      // Counterclockwise seen from +y: the cross product a x b points up
+      sense = sense + a.cross(b).y;
+    }
+    v = v + 1usize;
+  }
+  expect(turned > 5, "rotate: vertices under the dab turn");
+  expect(kept, "rotate: each keeps its height over the centre and its distance from the axis (to the surface's tilt)");
+  expect(sense > 0., "rotate: counterclockwise seen from outside, for a positive angle");
+}
+
+fn slideRelax() {
+  let p = plate(30u32, 2., true);
+  let flat = plate(30u32, 2., false);
+  // Give the plate's x and z some irregularity by moving the grab... instead: relax moves x/z only
+  let st = Stroke.dab(Brush.of(BrushSlideRelax), Vec3(0., 0., 0.), 0.5, 1.);
+  let q = sculptStroke(&p, &st);
+  var maxDy = 0.f;
+  var maxDx = 0.f;
+  var v = 0usize;
+  while v < p.positions.len() {
+    let d = moved(&p, &q, v);
+    if d.y.abs() > maxDy { maxDy = d.y.abs(); }
+    if d.x.abs() > maxDx { maxDx = d.x.abs(); }
+    v = v + 1usize;
+  }
+  // The plate is bumpy, so its vertex normals tilt a little: the height may change a little, much less than smoothing would
+  let sm = sculptStroke(&p, &Stroke.dab(Brush.of(BrushSmooth), Vec3(0., 0., 0.), 0.5, 1.));
+  var maxSmDy = 0.f;
+  v = 0usize;
+  while v < p.positions.len() {
+    let d = moved(&p, &sm, v);
+    if d.y.abs() > maxSmDy { maxSmDy = d.y.abs(); }
+    v = v + 1usize;
+  }
+  expect(maxDy < maxSmDy * 0.3, "slide relax: moves the surface far less across its normals than smoothing does");
+  // A regular grid does not change under it
+  let qf = sculptStroke(&flat, &st);
+  expectFloat(f64.from(farthestMoved(&flat, &qf, Vec3(0., 0., 0.))), 0., near, "slide relax: a regular grid stays");
+}
+
+fn maskBrush() {
+  let p = plate(30u32, 2., false);
+  let c = Vec3(0., 0., 0.);
+  var sc = Sculptor.of(&p);
+  let st = Stroke.dab(Brush.of(BrushMask), c, 0.5, 1.);
+  sc.stroke(&st);
+  let q = sc.finish();
+  let ch = q.findFloatChannel(VertexDomain, "mask");
+  expect(ch != NoIndex, "mask: the stroke makes the 'mask' channel");
+  let cv = nearestVertex(&q, c);
+  expectFloat(f64.from(q.float(ch, u32.from(cv))), 0.25, near, "mask: one dab paints 0.25 at the middle");
+  // Painting 4 times saturates, and masked vertices then resist a draw
+  sc.stroke(&st);
+  sc.stroke(&st);
+  sc.stroke(&st);
+  sc.stroke(&st);
+  let q2 = sc.finish();
+  expectFloat(f64.from(q2.float(ch, u32.from(cv))), 1., near, "mask: five dabs saturate at 1");
+  var draw_ = Stroke.dab(Brush.of(BrushDraw), c, 0.5, 1.);
+  let q3 = sculptStroke(&q2, &draw_);
+  expectFloat(f64.from(moved(&q2, &q3, cv).lengthSquared()), 0., near, "mask: a fully masked vertex does not move under a draw");
+  draw_.useMask = false;
+  let q4 = sculptStroke(&q2, &draw_);
+  expect(moved(&q2, &q4, cv).y > 0.005, "mask: unless the stroke ignores the mask");
+  // Subtract erases
+  var er = Stroke.dab(Brush.of(BrushMask), c, 0.5, 1.);
+  er.subtract = true;
+  let q5 = sculptStroke(&q2, &er);
+  expectFloat(f64.from(q5.float(ch, u32.from(cv))), 0.75, near, "mask, subtract: erases 0.25");
+}
+
+fn pose() {
+  // A rod along z from 0 to 2, radius 0.2: pose the far end 90 degrees about a fixed pivot at z = 1
+  let prof = Profile.circle(12u32, 0.2);
+  let rod = extrude(&prof, Vec3(0., 0., 2.), 20u32, true);
+  var b = Brush.of(BrushPose);
+  b.fixedPivot = true;
+  b.pivot = Vec3(0., 0., 1.);
+  b.reach = 1.;
+  var pts = List[Vec3]();
+  pts.push(Vec3(0., 0.2, 2.));
+  pts.push(Vec3(0., 1., 1.));    // a quarter turn about the pivot: the tip is dragged to above the pivot
+  var st = Stroke.make(b, pts, 1.2, 1.);
+  st.project = false;
+  let q = sculptStroke(&rod, &st);
+  // The tip (the end cap's vertices, z = 2, within 0.5 x 1.2 of the click) is rigidly rotated: its distance from the pivot is kept
+  var kept = true;
+  var count = 0;
+  var v = 0usize;
+  while v < rod.positions.len() {
+    let p0 = *rod.positions[v];
+    if p0.z > 1.99 {
+      count = count + 1;
+      let d0 = (p0 - Vec3(0., 0., 1.)).length();
+      let d1 = (*q.positions[v] - Vec3(0., 0., 1.)).length();
+      if (d0 - d1).abs() > 0.003 { kept = false; }
+    }
+    v = v + 1usize;
+  }
+  expect(count > 0 && kept, "pose: the tip turns rigidly about the pivot (distances to it kept)");
+  let tipC = nearestVertex(&rod, Vec3(0., 0., 2.));
+  expect((*q.positions[tipC]).y > 0.5, "pose: the tip has been brought up towards the cursor");
+  expectFloat(f64.from((*q.positions[nearestVertex(&rod, Vec3(0., 0., 0.))] - *rod.positions[nearestVertex(&rod, Vec3(0., 0., 0.))]).length()), 0., near, "pose: the far end, beyond the reach, stays");
+  // The automatically found pivot: the middle of the vertices at the far edge of the segment
+  var b2 = Brush.of(BrushPose);
+  b2.reach = 1.;
+  var pts2 = List[Vec3]();
+  pts2.push(Vec3(0., 0.2, 2.));
+  pts2.push(Vec3(0., 1.0, 1.2));
+  var st2 = Stroke.make(b2, pts2, 0.9, 1.);
+  st2.project = false;
+  let q2 = sculptStroke(&rod, &st2);
+  expect((*q2.positions[tipC]).y > 0.3, "pose: with the pivot found automatically, the tip still comes up");
+  expectFloat(f64.from(farthestMoved(&rod, &q2, Vec3(0., 0.2, 2.))), 0.9, 0.12, "pose: the segment reaches about the radius along the surface");
+}
+
+fn main() i32 {
+  draw();
+  drawSharp();
+  clay();
+  clayStrips();
+  layer();
+  inflate();
+  blob();
+  crease();
+  dam();
+  smoothing();
+  plane();
+  pinch();
+  grab();
+  elastic();
+  moveTopological();
+  snakeHook();
+  thumbNudge();
+  rotateBrush();
+  slideRelax();
+  maskBrush();
+  pose();
+  done()
+}

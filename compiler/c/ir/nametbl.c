@@ -180,6 +180,8 @@ void nametblInit() {
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);
+    lazyName = nametblFind("lazy", 4);
+    typeWordName = nametblFind("type", 4);
     yieldsName = nametblFind("yields", 6);
     nextName = nametblFind("next", 4);
     tagName = nametblFind("tag", 3);
@@ -204,6 +206,8 @@ void nametblInit() {
     remName = nametblFind("%", 1);
     orName = nametblFind("|", 1);
     andName = nametblFind("&", 1);
+    logicOrName = nametblFind("||", 2);
+    logicAndName = nametblFind("&&", 2);
     xorName = nametblFind("^", 1);
     shlName = nametblFind("<<", 2);
     shrName = nametblFind(">>", 2);
@@ -221,6 +225,7 @@ void nametblInit() {
     ltName = nametblFind("<", 1);
     geName = nametblFind(">=", 2);
     gtName = nametblFind(">", 1);
+    threeWayName = nametblFind("<=>", 3);
 
     parensName = nametblFind("()", 2);
     indexName = nametblFind("[]", 2);
@@ -228,8 +233,15 @@ void nametblInit() {
 
     optionName = nametblFind("Option", 6);
     fromName = nametblFind("from", 4);
+    parseName = nametblFind("parse", 5);
+    tryFromName = nametblFind("tryFrom", 7);
+    selectName = nametblFind("select", 6);
+    joinName = nametblFind("join", 4);
     hashName = nametblFind("hash", 4);
     hashTraitName = nametblFind("Hash", 4);
+    eqTraitName = nametblFind("Eq", 2);
+    cloneTraitName = nametblFind("Clone", 5);
+    defaultTraitName = nametblFind("Default", 7);
     hasherName = nametblFind("Hasher", 6);
     iteratorTraitName = nametblFind("Iterator", 8);
     writeU64Name = nametblFind("writeU64", 8);
@@ -243,6 +255,10 @@ void nametblInit() {
     splitName = nametblFind("split", 5);
     someName = nametblFind("Some", 4);
     noneName = nametblFind("None", 4);
+    resultName = nametblFind("Result", 6);
+    okName = nametblFind("Ok", 2);
+    errorVariantName = nametblFind("Err", 3);
+    reportName = nametblFind("report", 6);
 
     allocMethodName = nametblFind("alloc", 5);
     allocRegionMethodName = nametblFind("allocRegion", 11);
@@ -268,6 +284,10 @@ void nametblInit() {
     visitMethodName = nametblFind("visit", 5);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
+    floatTraitName = nametblFind("Float", 5);
+    signedTraitName = nametblFind("Signed", 6);
+    unsignedTraitName = nametblFind("Unsigned", 8);
+    numericTraitName = nametblFind("Numeric", 7);
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
     shareableTraitName = nametblFind("Shareable", 9);

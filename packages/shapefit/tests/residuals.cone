@@ -1,0 +1,125 @@
+// shapefit's residual maps and per-region statistics: the signed distance of
+// vertices from a fitted form and from another mesh, the nearest point on a
+// mesh, and the statistics of a field per region.
+
+mod residuals;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import shapefit use *;
+
+fn main() i32 {
+  let none = List[f32]();
+  // A sphere of radius 1 against a fine sphere of radius 1.2: every vertex is 0.2 inside it
+  let small = sphereMesh(1., 12usize, 16usize);
+  let big = sphereMesh(1.2, 32usize, 48usize);
+  let r = residualToMesh(&small, &big);
+  var worst = 0.f;
+  var i = 0usize;
+  while i < r.len() {
+    let d = *r[i] + 0.2;
+    worst = if d > worst { d } else if -d > worst { -d } else { worst };
+    i += 1usize;
+  }
+  expect(worst < 0.004, "a sphere inside a sphere is 0.2 below its surface everywhere");
+  // and the other way round it is 0.2 above
+  let r2 = residualToMesh(&big, &small);
+  expectFloat(f64.from(*r2[100usize]), 0.2, 0.004, "the larger sphere stands 0.2 proud of the smaller");
+
+  // Against a fitted sphere: the same signs
+  let pts = gather(&small, allVertices(&small).view());
+  let fit = fitSphere(pts.view(), none.view());
+  let rf = residualToForm(&big, &fit);
+  expectFloat(f64.from(*rf[100usize]), 0.2, 0.001, "residual to a fitted sphere");
+
+  // The nearest point on a surface: a flat grid, a point above its middle
+  let flat = gridMesh(8usize, 4., (x, z) => 0.);
+  let s = Surface.of(&flat);
+  var tri = NoIndex;
+  var w = DVec3(0.0, 0.0, 0.0);
+  let d2 = s.nearest(DVec3(0.3, 2.0, -0.7), &mut tri, &mut w);
+  expectFloat(d2, 4.0, 0.000000001, "squared distance to the plane");
+  let q = s.pointAt(tri, w);
+  expectFloat(q.x, 0.3, 0.000001, "nearest point x");
+  expectFloat(q.z, -0.7, 0.000001, "nearest point z");
+  expectFloat(s.signedDistance(DVec3(0.0, 2.0, 0.0)), 2.0, 0.000001, "above the normals' side");
+  expectFloat(s.signedDistance(DVec3(0.0, -1.0, 0.0)), -1.0, 0.000001, "below it");
+  // off the edge of the grid: nearest point on the border
+  expectFloat(s.nearest(DVec3(5.0, 0.0, 0.0), &mut tri, &mut w), 9.0, 0.000001, "beyond the border");
+  // brute force agrees on many points of a sphere mesh
+  let ss = Surface.of(&big);
+  var bad = 0;
+  i = 0usize;
+  while i < 60usize {
+    let p = DVec3(f64.from(f32.from(i) * 0.037 - 1.1), f64.from(f32.from(i % 7usize) * 0.31 - 1.), f64.from(f32.from(i % 5usize) * 0.4 - 0.8));
+    var t = NoIndex;
+    var ww = DVec3(0.0, 0.0, 0.0);
+    let tree = ss.nearest(p, &mut t, &mut ww);
+    var best = 1.0e30;
+    var k = 0usize;
+    while k < ss.triangleCount() {
+      var w2 = DVec3(0.0, 0.0, 0.0);
+      let a = *ss.pos[usize.from(*ss.tri[3usize * k])];
+      let b = *ss.pos[usize.from(*ss.tri[3usize * k + 1usize])];
+      let c = *ss.pos[usize.from(*ss.tri[3usize * k + 2usize])];
+      nearestOnTriangle(p, a, b, c, &mut w2);
+      let qq = a * w2.x + b * w2.y + c * w2.z;
+      best = if (p - qq).lengthSquared() < best { (p - qq).lengthSquared() } else { best };
+      k += 1usize;
+    }
+    if (best - tree).abs() > 0.0000000001 { bad += 1; }
+    i += 1usize;
+  }
+  expectInt(i64.from(bad), 0, "the tree finds what brute force finds");
+
+  // Region statistics: values 1, 2, 3 in region 5 and -4, 4 in region 2; one element in none
+  var vals = List[f32]();
+  var regs = List[u32]();
+  vals.push(1.); regs.push(5u32);
+  vals.push(2.); regs.push(5u32);
+  vals.push(3.); regs.push(5u32);
+  vals.push(-4.); regs.push(2u32);
+  vals.push(4.); regs.push(2u32);
+  vals.push(100.); regs.push(NoIndex);
+  let st = regionStats(&vals, &regs);
+  expectInt(i64.from(st.len()), 2, "two regions");
+  expectInt(i64.from(st[0usize].region), 2, "ordered by region number");
+  expectInt(i64.from(st[0usize].count), 2, "region 2 count");
+  expectFloat(st[0usize].mean, 0., 0.00001, "region 2 mean");
+  expectFloat(st[0usize].meanAbs, 4., 0.00001, "region 2 mean abs");
+  expectFloat(st[0usize].rms, 4., 0.00001, "region 2 rms");
+  expectFloat(st[0usize].stdDev, 4., 0.00001, "region 2 std dev");
+  expectFloat(st[0usize].min, -4., 0.00001, "region 2 min");
+  expectFloat(st[1usize].mean, 2., 0.00001, "region 5 mean");
+  expectFloat(st[1usize].stdDev, 0.8164966, 0.00001, "region 5 std dev");
+  expectFloat(st[1usize].max, 3., 0.00001, "region 5 max");
+  expectFloat(st[1usize].p95, 3., 0.00001, "region 5 p95");
+
+  // Regions from a face set: the left half of a grid is set 1, the right set 2
+  var g = gridMesh(4usize, 4., (x, z) => 0.);
+  let fs = g.addFloatChannel(FaceDomain, "set", 0.);
+  var f = 0usize;
+  while f < g.faceCount() {
+    g.setFloat(fs, u32.from(f), if g.faceCentroid(u32.from(f)).x < 0. { 1. } else { 2. });
+    f += 1usize;
+  }
+  let vr = vertexRegions(&g, FaceDomain, "set");
+  expectInt(i64.from(*vr[0usize]), 1, "left corner is in set 1");
+  expectInt(i64.from(*vr[4usize]), 2, "right corner is in set 2");
+  // the middle column touches both sets: the lower number
+  expectInt(i64.from(*vr[2usize]), 1, "a vertex between sets takes the lowest");
+  expectInt(i64.from(*vertexRegions(&g, FaceDomain, "nothing")[0usize]), i64.from(NoIndex), "no such channel");
+
+  // storing and loading a field, face means
+  var field = List[f32]();
+  i = 0usize;
+  while i < g.vertexCount() { field.push(f32.from(i)); i += 1usize; }
+  storeField(&mut g, "resid", &field);
+  expectFloat(*loadField(&g, "resid")[7usize], 7., 0.00001, "stored field comes back");
+  expectFloat(*faceValues(&g, &field)[0usize], (0. + 1. + 6. + 5.) / 4., 0.00001, "a face's mean");
+  expectInt(i64.from(regionByBall(&g, Vec3(0., 0., 0.), 1.1).len()), i64.from(g.vertexCount()), "ball region has an entry per vertex");
+  done()
+}
+

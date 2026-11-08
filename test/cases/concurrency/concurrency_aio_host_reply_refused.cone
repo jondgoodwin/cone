@@ -1,0 +1,96 @@
+// Bug 46. A hosted job an actor awaits (Host.awaitable) answers through an
+// actors.ReplyOf[R], R the Awaitable's: a job whose 'run' answers another type
+// than the Awaitable promises is refused when it is compiled, and a job whose
+// 'run' takes the envelope of another type than the Awaitable's R is refused
+// where it is awaited. Before, 'run' was handed an untyped actors.Reply and R
+// was free, so a host-package author could answer the wrong type and the
+// 'await' read it back as another (a crash). The truthful twin is in the aio
+// package's tests (hosted: SumJob answers a u64 through its ReplyOf[u64]).
+
+mod concurrency_aio_host_reply_refused;
+
+import time use Instant;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+fn @initpure init() {
+  h = aio.host[Svc](&makeSvc);
+}
+
+fn makeSvc() Svc {Svc(0u64)}
+
+let h: Host[Svc];
+
+struct Svc {
+  n: u64;
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct Pair {
+  pub a: u64;
+  pub b: u64;
+}
+
+// Promised a u64, a Pair answered
+struct AnswersWrong {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u64]) {
+    rp.answer(Pair(1u64, 2u64));   //~ ErrorNoCandidate "No method declared by `answer`"
+  }
+}
+
+// Awaited as an Awaitable[u64], though its envelope is a u32's
+struct TakesWrongEnvelope {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u32]) {
+    rp.answer(1u32);
+  }
+}
+
+fn awaitWrongEnvelope() actors.Awaitable[u64] {
+  h.awaitable[TakesWrongEnvelope, u64](TakesWrongEnvelope())   //~ ErrorWhereUnmet:4 "TakesWrongEnvelope is not HostReplyJob[Svc, u64]"
+}
+
+// A job still written against the untyped reply
+struct TakesUntyped {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.Reply) {}
+}
+
+fn awaitUntyped() actors.Awaitable[u64] {
+  h.awaitable[TakesUntyped, u64](TakesUntyped())   //~ ErrorWhereUnmet:4 "TakesUntyped is not HostReplyJob[Svc, u64]"
+}
+
+// Parked in a record as a ReplyOf[u64], answered a Pair later: the compiler
+// checks the parked answer as it checks the immediate one
+struct Parked {
+  r: Option[actors.ReplyOf[u64]];
+}
+
+struct ParksThenAnswersWrong {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u64]) {
+    var p = Parked(Some[actors.ReplyOf[u64]](rp));
+    match p.r {
+      case let Some(r) {r.answer(Pair(1u64, 2u64));}   //~ ErrorNoCandidate "No method declared by `answer`"
+      else {}
+    }
+  }
+}
+
+// No way back from the envelope to the untyped Reply, by any name. This is
+// Bug 38's lie (an Awaitable[Pair] answering a u64 through the raw Reply),
+// which a public 'raw' reopened in #962; a later way back fails here
+fn bug38Lie() actors.Awaitable[Pair] {
+  actors.Awaitable[Pair].make(fn(rp: actors.ReplyOf[Pair]) {
+    actors.answerNow[u64](rp.raw(), 1u64);   //~ ErrorNoMbr "Method or field `raw` not found"
+    //~^ ErrorInvType
+  })
+}
+
+// ...nor by reading the envelope's field from outside the actors package
+fn readsField(rp: actors.ReplyOf[u64]) {
+  let r = rp.reply;   //~ ErrorNotPublic "May not access the private method/field `reply`"
+}
+
+fn main() {}

@@ -22,7 +22,7 @@ static int flowIsBorrowedRef(INode *exp) {
 
 // The value a match binds this variable to -- the matched value, which the
 // match holds in a variable of its own -- or NULL for any other variable.
-// 'case imm c Circle' binds 'c' to the matched value converted to its variant,
+// 'case let Circle(c)' binds 'c' to the matched value converted to its variant,
 // which is the same value under the variant's name, not a second one: the
 // matched value's variable owns it, and is what releases it as its scope ends,
 // as the enum, so that whichever arm runs it is finalized once. So the binding
@@ -58,7 +58,7 @@ int flowMatchInPlace(VarDclNode *var) {
 // may be sharing? An owning reference that may be aliased ('Rc[mut, T]', 'Rc[imm, T]',
 // 'Rc[ro, T]', and every 'Rc' form but 'Rc[uni, T]') is one of possibly many holders
 // counting the same value, so it does not solely own it. An owning reference
-// that is a move type -- a 'uni' one, or any in the 'Move' region 'So' -- is
+// that is a move type -- a 'uni' one, or any in the 'Move' region 'Uni' -- is
 // the only holder, and may give the value up. One into a region that is
 // neither counted nor 'Move' -- a collector's -- is shared freely, and is
 // refused too.
@@ -70,8 +70,18 @@ static int flowIsSharedOwner(INode *exp) {
 }
 
 // Refuse a move out through a reference that does not solely own what it points
-// at. Returns 1 when it refused.
+// at, or through a raw pointer, which owns nothing: what holds the place it
+// points at still finalizes it, so the value moved out would be finalized
+// twice. Moving a value out of raw memory for good, leaving the place holding
+// nothing, is 'mem.readRaw', whose fallback body '{*p}' is an '@intrinsic'
+// one, let through. Returns 1 when it refused.
 static int flowRefuseMoveThrough(INode *node, INode *ref) {
+    if (iexpGetTypeDcl(ref)->tag == PtrTag) {
+        if (flowCurrent && flowCurrent->intrinsic)
+            return 0;
+        errorMsgNode(node, ErrorMoveRawPtr, "May not move a value out through a raw pointer, which does not own it. Use 'mem.readRaw(p)', which leaves the place holding nothing.");
+        return 1;
+    }
     if (flowIsBorrowedRef(ref)) {
         errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
         return 1;
@@ -83,6 +93,19 @@ static int flowRefuseMoveThrough(INode *node, INode *ref) {
     return 0;
 }
 
+// Refuse a move out of an indexed element reached through a borrow: of a
+// slice, of an array a borrow points at, or the place a type's '[]' lends
+// ('let s = l[0]' of a 'List[String]', FlagIndexPlace). The collection still
+// holds the element, as Rust's "cannot move out of index" says; the remedies
+// are a borrow of it, a swap, or a method taking it out. Returns 1 when it refused.
+static int flowRefuseMoveIndexed(INode *node, INode *ref) {
+    if (!flowIsBorrowedRef(ref))
+        return 0;
+    errorMsgNode(node, ErrorMoveElem,
+        "May not move a value out of an indexed element, which the collection still holds. Borrow it, '&x[i]'; swap a value in, '<->' or 'swap'; or take it out, 'remove'.");
+    return 1;
+}
+
 // *********************
 // Variable state along each path, for the main walk
 //
@@ -90,17 +113,20 @@ static int flowRefuseMoveThrough(INode *node, INode *ref) {
 // state as it goes. An 'if' walks each arm from the state its conditions leave
 // and joins them after (ifFlow): a flag any live arm set is set, so a value moved
 // on some arm counts as moved -- it may not be used again -- while an arm that
-// jumped away contributes nothing. So every change goes through
-// flowVarSetFlags, which logs the old flags while an 'if' is being walked and the
-// variable was declared outside the innermost conditional part (a variable
-// declared inside an arm leaves scope with it). Whether a variable holds its
-// value at a scope's end on every path is the path walk's to say, when the flags
-// could differ by path (flowDropNote); this state only says what may be used.
+// jumped away contributes nothing. A 'return' leaves the function; a 'break' or
+// 'continue' goes to its loop, which gathers the state each one leaves and joins
+// them, with its body's end, where the loop ends (flowLoopEnd). So every change
+// goes through flowVarSetFlags, which logs the old flags while an 'if' or a loop
+// is being walked and the variable was declared outside the innermost
+// conditional part (a variable declared inside an arm leaves scope with it).
+// Whether a variable holds its value at a scope's end on every path is the path
+// walk's to say, when the flags could differ by path (flowDropNote); this state
+// only says what may be used.
 // *********************
 
 uint16_t flowDepth = 0;
 FlowState *flowCurrent = NULL;
-static uint32_t flowForks = 0;     // how many 'if's are being walked
+static uint32_t flowForks = 0;     // how many 'if's and loops are being walked
 
 typedef struct {
     VarDclNode *var;
@@ -118,8 +144,25 @@ static FlowVarEnt *flowVarLog = NULL;
 static uint32_t flowVarLogN = 0;
 static uint32_t flowVarLogCap = 0;
 
+// The loops being walked, innermost last: where each began in the log, and the
+// state each 'break' and each 'continue' to it left
+typedef struct {
+    BlockNode *loop;
+    struct FlowVarPath *breaks;     // only the jumps whose path wrote something
+    struct FlowVarPath *conts;
+    uint32_t mark;
+    uint32_t nbreaks;               // every jump
+    uint32_t nconts;
+} FlowLoopFrame;
+
+static FlowLoopFrame *flowLoops = NULL;
+static uint32_t flowLoopN = 0;
+static uint32_t flowLoopCap = 0;
+
 void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed) {
-    if (var->flowtempflags == flags && var->hollowed == hollowed)
+    // Inside a loop a store that changes nothing is logged too: a loop's end
+    // asks which variables each path to a 'break' wrote (flowLoopEnd)
+    if (var->flowtempflags == flags && var->hollowed == hollowed && flowLoopN == 0)
         return;
     if (flowForks > 0 && var->flowdepth < flowDepth) {
         if (flowVarLogN == flowVarLogCap) {
@@ -144,6 +187,7 @@ void flowFnBegin(FlowState *fstate) {
     flowCurrent = fstate;
     flowVarLogN = 0;
     flowForks = 0;
+    flowLoopN = 0;
 }
 
 uint32_t flowVarLogPos() {
@@ -229,6 +273,70 @@ void flowVarJoin(FlowVarPath *paths, uint32_t npaths) {
     }
 }
 
+void flowLoopBegin(BlockNode *loop) {
+    if (flowLoopN == flowLoopCap) {
+        uint32_t oldcap = flowLoopCap;
+        flowLoopCap = oldcap ? oldcap << 1 : 16;
+        FlowLoopFrame *grown = (FlowLoopFrame *)memAllocBlk(flowLoopCap * sizeof(FlowLoopFrame));
+        if (oldcap)
+            memcpy(grown, flowLoops, oldcap * sizeof(FlowLoopFrame));
+        flowLoops = grown;
+    }
+    FlowLoopFrame *frame = &flowLoops[flowLoopN++];
+    frame->loop = loop;
+    frame->breaks = NULL;
+    frame->conts = NULL;
+    frame->mark = flowVarLogMark();
+    frame->nbreaks = 0;
+    frame->nconts = 0;
+}
+
+int flowLoopJump(BlockNode *target, int iscontinue) {
+    uint32_t f = flowLoopN;
+    while (f > 0 && flowLoops[f - 1].loop != target)
+        --f;
+    if (f == 0 || target == NULL)
+        return 0;
+    FlowLoopFrame *frame = &flowLoops[f - 1];
+    if (iscontinue) {
+        if (flowVarLogPos() > frame->mark)
+            frame->conts = flowVarPathTake(frame->mark, frame->conts);
+        ++frame->nconts;
+    }
+    else {
+        if (flowVarLogPos() > frame->mark)
+            frame->breaks = flowVarPathTake(frame->mark, frame->breaks);
+        ++frame->nbreaks;
+    }
+    return 1;
+}
+
+// The walk is at the end of the loop's body, having walked it once. Only a
+// 'break' leaves the loop, and each was walked in the first pass only: in a
+// later one it starts from the head, whose state joins the loop's entry, each
+// 'continue' and the body's end. So the state after the loop is, for each
+// variable, the join over the breaks of what the path to each left it, or, where
+// the path did not write it, of what it held at the head
+void flowLoopEnd(int bodylive) {
+    FlowLoopFrame *frame = &flowLoops[--flowLoopN];
+    // No break: nothing reaches the code after the loop, and the state stands
+    if (frame->nbreaks == 0) {
+        --flowForks;
+        return;
+    }
+    FlowVarPath *head = frame->conts;
+    uint32_t nhead = frame->nconts + 1;
+    if (bodylive) {
+        if (flowVarLogPos() > frame->mark)
+            head = flowVarPathTake(frame->mark, head);
+        ++nhead;
+    }
+    flowVarRollback(frame->mark);
+    ++flowForks;    // each join closes one
+    flowVarJoin(head, nhead);
+    flowVarJoin(frame->breaks, frame->nbreaks);
+}
+
 // The variable owning a variable's value: a match's binding stands for the
 // matched value, whose variable owns it
 VarDclNode *flowDropOwner(VarDclNode *var) {
@@ -258,7 +366,7 @@ int flowNoDeath(INode *type) {
 // Asked once per variable, and remembered: at every store in a loop or a
 // branch the question would otherwise walk the type again
 //
-// An init's 'self &new' is never tracked: it is a reference that is reached only
+// An init's 'self: &new' is never tracked: it is a reference that is reached only
 // through itself (flowNewSelf) and never moved, passed, or dropped, whatever the
 // use that hands it to a method or to 'selfactor' looks like to the move rules.
 // Tracked, a use inside a branch or a loop would turn the drop walk on for it
@@ -438,7 +546,7 @@ static int flowTakesSoleField(FnCallNode *fld) {
 // field's own or one reached through it -- an element of an array field, what
 // an owning reference field points at -- the struct or tuple holding the field
 // would be left with a hole in it, which it could neither be used with nor
-// finalized with. So nothing moves out of a field: '<=>' swaps a value in and
+// finalized with. So nothing moves out of a field: '<->' swaps a value in and
 // out of it, and moving the whole struct takes every field with it.
 static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
     INode *methfld = fld->methfld;
@@ -447,8 +555,8 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
         whole = ((CastNode *)whole)->exp;
     if (methfld->tag == ULitTag) {
         errorMsgNode(top, ErrorMoveField,
-            (INode *)fld == whole ? "May not move element %d out of the tuple that holds it. Swap a value in with '<=>', or move the whole tuple."
-                : "May not move a value out through element %d of a tuple, which would be left with a hole in it. Swap a value in with '<=>', or move the whole tuple.",
+            (INode *)fld == whole ? "May not move element %d out of the tuple that holds it. Swap a value in with '<->', or move the whole tuple."
+                : "May not move a value out through element %d of a tuple, which would be left with a hole in it. Swap a value in with '<->', or move the whole tuple.",
             (int)((ULitNode *)methfld)->uintlit);
         return;
     }
@@ -457,13 +565,13 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
     // reaches by their names: it may borrow or copy one, not move it out
     if (yieldAny() && (INode *)fld == whole && yieldGenOfStruct(iexpGetDerefTypeDcl(fld->objfn))) {
         errorMsgNode(top, ErrorMoveField,
-            "May not move '%s' out of the generator that holds it: a generator keeps its parameters in the value it is, so its body may borrow or copy one, or swap a value in with '<=>', but not move it out.",
+            "May not move '%s' out of the generator that holds it: a generator keeps its parameters in the value it is, so its body may borrow or copy one, or swap a value in with '<->', but not move it out.",
             name);
         return;
     }
     errorMsgNode(top, ErrorMoveField,
-        (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<=>', or move the whole struct."
-            : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<=>', or move the whole struct.",
+        (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<->', or move the whole struct."
+            : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<->', or move the whole struct.",
         name);
 }
 
@@ -592,7 +700,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         if (((FnCallNode*)node)->flags & FlagBorrow)
             break;
         INode *objfn = ((FnCallNode*)node)->objfn;
-        if (flowRefuseMoveThrough(node, objfn))
+        if (flowRefuseMoveIndexed(node, objfn) || flowRefuseMoveThrough(node, objfn))
             return;
         // An element of the array a local or temporary sole owner points at,
         // 'a[0]' or '(*a)[0]': moving it out would leave that array with a hole
@@ -600,14 +708,15 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         // stayed without finalizing them. Only the whole array moves out.
         {
             INode *soleref = objfn->tag == DerefTag ? ((StarNode *)objfn)->vtexp : objfn;
-            if (soleref != objfn && flowRefuseMoveThrough(node, soleref))
+            if (soleref != objfn
+                && (flowRefuseMoveIndexed(node, soleref) || flowRefuseMoveThrough(node, soleref)))
                 return;
             INode *reftype = iexpGetTypeDcl(soleref);
             if (reftype->tag == RefTag
                 && (flowOwningLocal(soleref) || soleref->tag == TempTag)
                 && itypeGetTypeDcl(((RefNode *)reftype)->vtexp)->tag == ArrayTag) {
                 errorMsgNode(top, ErrorMoveElem,
-                    "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+                    "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<->', or move the whole array.");
                 return;
             }
         }
@@ -630,7 +739,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             && !(isNameUseNode(objfn) && isExpNode(objfn)
                 && ((VarDclNode *)((NameUseNode *)objfn)->dclnode)->scope == 0)) {
             errorMsgNode(top, ErrorMoveElem,
-                "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+                "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<->', or move the whole array.");
             return;
         }
         flowMoveSource(objfn, moved, top, parts);
@@ -639,6 +748,8 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     case DerefTag:
     {
         INode *ref = ((StarNode*)node)->vtexp;
+        if ((node->flags & FlagIndexPlace) && flowRefuseMoveIndexed(node, ref))
+            return;
         if (flowRefuseMoveThrough(node, ref))
             return;
         VarDclNode *owner = flowOwningLocal(ref);
@@ -961,7 +1072,7 @@ void flowInjectRefCount(INode **nodep) {
 
 // Does this cast hand on what its operand holds? A recast is its operand under
 // another type name. A conversion makes a new value, except one into an owning
-// virtual reference ('So[App]' from a 'So[Spinner]', or from a virtual 'So' of
+// virtual reference ('Uni[App]' from a 'Uni[Spinner]', or from a virtual 'Uni' of
 // a trait it extends): that adds a vtable to the operand's one owner and keeps
 // it, so the operand is moved out of, or counted, as a recast's would be.
 int flowCastCarries(INode *cast) {
@@ -997,10 +1108,22 @@ int flowIsLvalRead(INode *node) {
 // placeholder keeps nothing.
 int flowIsKeptRead(INode *node) {
     if (node->tag == AssignTag) {
-        INode *lval = ((AssignNode *)node)->lval;
-        return !(isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->namesym == anonName);
+        return !assignIsAnon(((AssignNode *)node)->lval);
     }
     return flowIsLvalRead(node);
+}
+
+// The payload a match's binding reads out of the matched value, where that is
+// the match's own hidden variable and the variant has no other field
+// (flowTakesSoleField), and the payload has a death of its own -- a counted
+// reference, or a value holding one -- though it is not a move type. Nothing
+// names the hidden variable but the pattern, and the pattern reads the payload
+// once, so this read is the last of it: the payload moves out with the matched
+// value instead of gaining a holder that the matched value's own release then
+// undoes. (A read of a plain number copies, as it did.)
+static int flowIsSolePayloadTake(INode *node) {
+    return node->tag == FldAccessTag && isExpNode(node) && itypeNeedsFinal(((IExpNode *)node)->vtype)
+        && flowTakesSoleField((FnCallNode *)node);
 }
 
 void flowHandleMoveOrCopy(INode **nodep) {
@@ -1014,7 +1137,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
             flowHandleMoveOrCopy(elemp);
         return;
     }
-    if (iexpIsMove(*nodep)) {
+    if (iexpIsMove(*nodep) || flowIsSolePayloadTake(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }
@@ -1029,20 +1152,50 @@ void flowHandleMoveOrCopy(INode **nodep) {
     }
 }
 
+// Is this expression a candidate to be a variable's last use: a name use of a
+// whole local or parameter that is not a move type, holds counted references
+// and has something to do as it dies? Only the path walk can tell whether it
+// is the last use on every path (flowpath.c, pwCandidate); a match's variable
+// and its bindings, a global and a static are never candidates.
+static int flowIsCandidate(INode *node) {
+    if (!isNameUseNode(node) || !isExpNode(node))
+        return 0;
+    INode *dcl = ((NameUseNode *)node)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag)
+        return 0;
+    VarDclNode *var = (VarDclNode *)dcl;
+    if (var->scope == 0 || (var->flags & FlagStatic) || var->vtype == NULL)
+        return 0;
+    if (flowMatchBound(dcl) || nameIsMatchHolder(var->namesym))
+        return 0;
+    if (itypeGetTypeDcl(var->vtype)->tag == TTupleTag)
+        return 0;
+    return flowDropTracked(var) && itypeNeedsFinal(var->vtype);
+}
+
+void flowHandleMoveOrCopyLast(INode **nodep) {
+    INode *node = *nodep;
+    int cand = flowCurrent && !iexpIsMove(node) && flowIsCandidate(node);
+    flowHandleMoveOrCopy(nodep);
+    if (cand && (*nodep)->tag == RefCountTag && ((RefCountNode *)*nodep)->exp == node
+        && ((RefCountNode *)*nodep)->counts == NULL) {
+        ((RefCountNode *)*nodep)->cand = RefCandOpen;
+        flowCurrent->dropgate = 1;
+    }
+}
+
 // *********************
 // Temporaries
 //
 // A value an expression makes and nothing takes -- a call's result whose field
 // is read, a sole owner read through, an owner lent to a call as a borrow, a
 // value thrown away -- dies at the end of the statement that made it, newest
-// first, as a scope's locals do at its end (doc/reference/refinitdrop.html).
+// first, as a scope's locals do at its end (doc/manual/rec-methods.html#initfinal).
 // Flow finds each where it is read or thrown away and wraps it in a TempNode;
 // generation keeps it and finalizes it there. A temporary in an 'if' or
 // 'while' condition dies at the condition's end, and one in the right operand
-// of 'and' or 'or' at that operand's end, since each runs on some paths only.
+// of '&&' or '||' at that operand's end, since each runs on some paths only.
 // *********************
-
-uint32_t flowTempCount = 0;
 
 // Is this expression a temporary whose death does something: a value made
 // here -- a call's result, a literal, an allocation, a block's or an 'if''s
@@ -1090,7 +1243,6 @@ static void flowTempWrap(INode **nodep) {
     temp->walkvar = NULL;
     temp->kept = 0;
     *nodep = (INode *)temp;
-    ++flowTempCount;
 }
 
 void flowTempRead(INode **nodep) {
@@ -1126,217 +1278,6 @@ static int flowCastHandsOn(INode *cast) {
         && itypeGetTypeDcl(((RefNode *)to)->region) == borrowRef);
 }
 
-// Does a value of this type hold a raw pointer, anywhere in it, through owning
-// references too? A few levels are looked at; a type nested deeper is taken
-// as holding none.
-static int flowTempHoldsPtr(INode *type, int depth) {
-    if (type == NULL || depth > 6)
-        return 0;
-    INode *typedcl = itypeGetTypeDcl(type);
-    INode **nodesp;
-    uint32_t cnt;
-    switch (typedcl->tag) {
-    case PtrTag:
-        return 1;
-    case RefTag:
-    case ArrayRefTag:
-    case VirtRefTag:
-        return flowTempHoldsPtr(((RefNode *)typedcl)->vtexp, depth + 1);
-    case ArrayTag:
-        return flowTempHoldsPtr(arrayElemType(typedcl), depth + 1);
-    case TTupleTag:
-        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
-            if (flowTempHoldsPtr(*nodesp, depth + 1))
-                return 1;
-        }
-        return 0;
-    case StructTag:
-    {
-        StructNode *strnode = (StructNode *)typedcl;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            if (flowTempHoldsPtr(((IExpNode *)*nodesp)->vtype, depth + 1))
-                return 1;
-        }
-        if (strnode->derived) {
-            for (nodesFor(strnode->derived, cnt, nodesp)) {
-                if (flowTempHoldsPtr(*nodesp, depth + 1))
-                    return 1;
-            }
-        }
-        return 0;
-    }
-    default:
-        return 0;
-    }
-}
-
-// How a value goes out of its statement (flowTempEscape's 'out'): not at all;
-// through values that may hold a borrow, which the loan walk follows; or, at
-// some step, through a value holding a raw pointer, which nothing follows
-enum {
-    TempOutNone = 0,
-    TempOutBorrow = 1,
-    TempOutPtr = 2,
-};
-
-// How a part of a value going out as 'out' goes out, the part of type 'type':
-// not at all, if it can hold neither a borrow nor a pointer
-static int flowTempOut(int out, INode *type) {
-    if (out == TempOutNone || type == NULL)
-        return TempOutNone;
-    if (flowTempHoldsPtr(type, 0))
-        return TempOutPtr;
-    return itypeCarriesBorrow(type) ? out : TempOutNone;
-}
-
-// May this call keep what an argument points at beyond itself: is an argument
-// a '&mut' reference, or a pointer, to something that can hold a borrow or a
-// pointer? Returns how what it keeps goes out.
-static int flowTempCallStores(FnCallNode *call) {
-    INode **argsp;
-    uint32_t cnt;
-    int out = TempOutNone;
-    for (nodesFor(call->args, cnt, argsp)) {
-        INode *type = iexpGetTypeDcl(*argsp);
-        int stores = TempOutNone;
-        if (type->tag == PtrTag)
-            stores = flowTempOut(TempOutBorrow, ((StarNode *)type)->vtexp);
-        else if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-            && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
-            && (permGetFlags(((RefNode *)type)->perm) & MayWrite))
-            stores = flowTempOut(TempOutBorrow, ((RefNode *)type)->vtexp);
-        if (stores > out)
-            out = stores;
-    }
-    return out;
-}
-
-// A temporary is finalized at its statement's end. A borrow of it may outlive
-// the statement only in what its value goes into -- a call's result that can
-// hold one, an aggregate, a store, a value the statement hands back -- and the
-// loan walk refuses any use of that after the temporary is gone (flowpath.c);
-// where Rust's rule extends a temporary, it is a hidden local of the block
-// already (varDclExtend). A raw pointer into it nothing follows: so the walk
-// here carries 'out' down from where a value leaves the statement, through
-// values that can hold a borrow or a pointer, and a temporary it reaches
-// through a value holding a pointer is kept -- never finalized, which leaks
-// it, as every temporary once was, rather than leave the pointer dangling.
-// Not a lock's guard (FlagLockAcquire): kept, it would hold its lock forever,
-// and every later borrow through the reference would wait for it. A guard
-// gives its lock and its owner back at its statement's end whatever pointer
-// into the value is made, which is unchecked, as a raw pointer is anywhere.
-void flowTempEscape(INode *node, int out) {
-    if (isNameUseNode(node))
-        return;
-    INode **nodesp;
-    uint32_t cnt;
-    switch (node->tag) {
-    case TempTag:
-    {
-        TempNode *temp = (TempNode *)node;
-        if (out == TempOutPtr
-            && !(temp->exp->tag == CastTag && (temp->exp->flags & FlagLockAcquire)))
-            temp->kept = 1;
-        flowTempEscape(temp->exp, out);
-        return;
-    }
-    case FnCallTag:
-    {
-        FnCallNode *call = (FnCallNode *)node;
-        int argsout = flowTempOut(out, call->vtype);
-        int stores = flowTempCallStores(call);
-        if (stores > argsout)
-            argsout = stores;
-        if (!isNameUseNode(call->objfn))
-            flowTempEscape(call->objfn, TempOutNone);
-        for (nodesFor(call->args, cnt, nodesp))
-            flowTempEscape(*nodesp, argsout);
-        return;
-    }
-    case FldAccessTag:
-    case ArrIndexTag:
-    {
-        FnCallNode *access = (FnCallNode *)node;
-        flowTempEscape(access->objfn, flowTempOut(out, access->vtype));
-        if (node->tag == ArrIndexTag) {
-            for (nodesFor(access->args, cnt, nodesp))
-                flowTempEscape(*nodesp, TempOutNone);
-        }
-        return;
-    }
-    case DerefTag:
-        flowTempEscape(((StarNode *)node)->vtexp, flowTempOut(out, ((StarNode *)node)->vtype));
-        return;
-    case BorrowTag:
-    case ArrayBorrowTag:
-        flowTempEscape(((RefNode *)node)->vtexp, out);
-        return;
-    case CastTag:
-        flowTempEscape(((CastNode *)node)->exp, flowTempOut(out, ((CastNode *)node)->vtype));
-        return;
-    case IsTag:
-        flowTempEscape(((CastNode *)node)->exp, TempOutNone);
-        return;
-    case NotLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
-        return;
-    case OrLogicTag:
-    case AndLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
-        flowTempEscape(((LogicNode *)node)->rexp, TempOutNone);
-        return;
-    case VTupleTag:
-    case ArrayLitTag:
-    {
-        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
-        Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((ArrayNode *)node)->elems;
-        for (nodesFor(elems, cnt, nodesp))
-            flowTempEscape(*nodesp, elemout);
-        return;
-    }
-    case TypeLitTag:
-    {
-        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
-        for (nodesFor(((FnCallNode *)node)->args, cnt, nodesp))
-            flowTempEscape((*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp, elemout);
-        return;
-    }
-    case AllocateTag:
-        flowTempEscape(((RefNode *)node)->vtexp, flowTempOut(out, ((RefNode *)node)->vtype));
-        return;
-    case AssignTag:
-        flowTempEscape(((AssignNode *)node)->lval, TempOutNone);
-        flowTempEscape(((AssignNode *)node)->rval, TempOutBorrow);
-        return;
-    case RefCountTag:
-        flowTempEscape(((RefCountNode *)node)->exp, out);
-        return;
-    case AwaitTag:
-        flowTempEscape(((AwaitNode *)node)->exp, flowTempOut(out, ((AwaitNode *)node)->vtype));
-        return;
-    // The result a yield hands the caller goes out, as a return's does
-    case YieldTag:
-        flowTempEscape(((YieldNode *)node)->exp, TempOutBorrow);
-        return;
-    case HollowTag:
-        if (((HollowNode *)node)->exp)
-            flowTempEscape(((HollowNode *)node)->exp, out);
-        return;
-    // A branch's statements are walked as their block's; only the conditions
-    // are this statement's
-    case IfTag:
-        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
-            if (*nodesp != elseCond)
-                flowTempEscape(*nodesp, TempOutNone);
-            nodesp++; cnt--;
-        }
-        return;
-    default:
-        return;
-    }
-}
-
-
 // Load a reference that a value is about to be read through, and refuse the
 // read when the reference's permission grants none. The reference's own
 // permission governs what may be done through it, whatever the permission of
@@ -1357,7 +1298,7 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp) {
     }
 }
 
-// An initializer's 'self &new' is the one path to memory that holds no value
+// An initializer's 'self: &new' is the one path to memory that holds no value
 // until the init writes one, and that the construction running the init holds
 // once it returns. So it is reached only through itself, and only once filled:
 // '*self' read or written, a field of it, a method called on it, each refused
@@ -1445,11 +1386,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         uint32_t cnt;
         uint32_t index = 0;
         uint16_t inflight = fstate->inflightcnt;
+        uint8_t keep = flowGateOperandsKeep(fstate);
         for (nodesFor(((TupleNode *)*nodep)->elems, cnt, nodesp)) {
+            flowGateOperandNext(fstate, *nodesp);
             flowLoadValue(fstate, nodesp);
             flowGateOperand(fstate, *nodesp);
         }
-        flowGateOperandsEnd(fstate, inflight);
+        flowGateJoin(fstate, ((TupleNode *)*nodep)->elems);
+        flowGateOperandsEnd(fstate, inflight, keep);
         break;
     }
     case DerefTag:
@@ -1518,6 +1462,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     }
     case NotLogicTag:
         flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp);
+        break;
+    // A value taken apart: all of it moves into the node (a variable holding it
+    // is dead afterwards, and nothing that does not own it may be taken apart),
+    // and the fields not named die with the statement (generation)
+    case DestructTag:
+        flowLoadValue(fstate, &((DestructNode *)*nodep)->exp);
+        flowHandleMoveOrCopy(&((DestructNode *)*nodep)->exp);
         break;
     case OrLogicTag: case AndLogicTag:
     {
@@ -1603,7 +1554,7 @@ void flowAddVar(VarDclNode *varnode) {
     varnode->flowdepth = flowDepth;
     varnode->flowlend |= VarLendSeen;
     // A match's binding by value may be the matched variable's own storage
-    // (flowMatchInPlace), which one declared 'mut' writes: so the matched
+    // (flowMatchInPlace), which one declared 'var' writes: so the matched
     // variable is noted as if borrowed to write
     INode *matched = flowMatchBound((INode *)varnode);
     if (matched && ((NameUseNode *)matched)->dclnode && ((NameUseNode *)matched)->dclnode->tag == VarDclTag)
@@ -1957,7 +1908,7 @@ int flowGpuExternRefused(FnDclNode *callee, unsigned nargs) {
 // Whether 'node' is written in GPU code that the refusal of what a GPU lacks
 // reads: any code of a GPU compile but core's own, whose regions are written
 // with the owners and the allocator that a kernel is refused (core's
-// 'inline fn alloc', 'So' and 'Rc' themselves), and are reached only by an
+// 'inline fn alloc', 'Uni' and 'Rc' themselves), and are reached only by an
 // allocation or an owner that is refused where it is written
 int flowGpuRefuses(INode *node) {
     if (!flowGpu)
@@ -1985,7 +1936,7 @@ int flowGpuRefuses(INode *node) {
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;
-static uint32_t flowGateByTrigger[6] = { 0, 0, 0, 0, 0, 0 };
+static uint32_t flowGateByTrigger[7] = { 0, 0, 0, 0, 0, 0, 0 };
 
 // Is this type (a declaration) a bare borrowed reference?
 static int flowGateIsBorrowRef(INode *typedcl) {
@@ -2005,8 +1956,10 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->scope = 1;
     fstate->gate = 0;
     fstate->inflightcnt = 0;
+    fstate->inflightkeep = 0;
     fstate->dropgate = 0;
     fstate->jumped = 0;
+    fstate->intrinsic = 0;
     fstate->awaits = NULL;
     fstate->yields = NULL;
     fstate->shapelend = 0;
@@ -2033,7 +1986,8 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args) {
             continue;
         RefNode *argtype = (RefNode *)flowGateTypeDcl(type);
         if (argtype->tag == RefTag && itypeGetTypeDcl(argtype->region) == borrowRef
-            && (permGetFlags(argtype->perm) & MayWrite) && itypeCarriesBorrow(argtype->vtexp)) {
+            && (permGetFlags(argtype->perm) & MayWrite)
+            && (itypeCarriesBorrow(argtype->vtexp) || itypeIsArena(argtype->vtexp))) {
             storer = *argsp;
             break;
         }
@@ -2129,6 +2083,50 @@ void flowGateBoxedAsk(FlowState *fstate, INode *cast) {
         fstate->gate |= FlowGateBoxed;
 }
 
+// A value carrying a borrow given to a field whose type holds only ''static'
+// borrows: the loan walk checks that every borrow it holds is global
+// (pwStaticOnly)
+void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val) {
+    StructNode *strnode = (StructNode *)itypeGetTypeDcl(((IExpNode *)lit)->vtype);
+    if (strnode == NULL || strnode->tag != StructTag || i >= strnode->fields.used)
+        return;
+    INode *fieldtype = ((IExpNode *)nodelistGet(&strnode->fields, i))->vtype;
+    if (itypeCarriesBorrow(((IExpNode *)val)->vtype) && itypeCarriesBorrow(fieldtype)
+            && !itypeCarriesEndingBorrow(fieldtype))
+        fstate->gate |= FlowGateStatic;
+}
+
+// A literal (a struct, a tuple, an array, a closure's captures) of two or more
+// values that may hold borrows, one of them a way to store (a writable borrow
+// of something that can hold one, or a struct holding such): the loan walk
+// asks what a call's arguments are asked (pwJoinStores)
+void flowGateJoinAsk(FlowState *fstate, Nodes *elems) {
+    uint32_t carrying = 0;
+    int storer = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(elems, cnt, nodesp)) {
+        INode *elem = (*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp;
+        INode *type = ((IExpNode *)elem)->vtype;
+        if (type == NULL || !itypeCarriesBorrow(type))
+            continue;
+        ++carrying;
+        INode *dcl = flowGateTypeDcl(type);
+        if (itypeWritableBorrowDepth(dcl, 1))
+            storer = 1;
+        else if (dcl->tag == RefTag) {
+            // a closure's capture of a variable holding a '&mut'
+            INode *core = elem;
+            while (core->tag == CastTag)
+                core = ((CastNode *)core)->exp;
+            if (core->tag == BorrowTag && ((RefNode *)core)->capture && itypeWritableBorrowDepth(((RefNode *)dcl)->vtexp, 1))
+                storer = 1;
+        }
+    }
+    if (carrying >= 2 && storer)
+        fstate->gate |= FlowGateStore;
+}
+
 // A method called on a value that may change shape (a list, a string, a struct
 // holding one: shapeinfer.h), returning a borrow, whose receiver is reached
 // through a reference (or is one): another name for the value may change it
@@ -2180,7 +2178,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             if (dcl && dcl->tag == VarDclTag) {
                 VarDclNode *var = (VarDclNode *)dcl;
                 INode *vt = ((IExpNode *)dcl)->vtype ? flowGateTypeDcl(((IExpNode *)dcl)->vtype) : NULL;
-                // A 'mut' global is no plain local: any call may write it by its name
+                // A 'var' global is no plain local: any call may write it by its name
                 if ((var->scope == 0 || (var->flags & FlagStatic)) && var->perm && (permGetFlags(var->perm) & MayWrite))
                     fstate->shapeglobal = 1;
                 // (an actor's 'self' is a value that is reached through its handle)
@@ -2190,7 +2188,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             }
         }
     }
-    // Reached through a reference, of a type some 'mut' global reaches: the reference may be that
+    // Reached through a reference, of a type some 'var' global reaches: the reference may be that
     // global, so the borrow is asked of every call (loanShapeGlobalView)
     if (reshapeMutGlobalsReach(container))
         fstate->shapeglobal = 1;
@@ -2239,14 +2237,15 @@ void flowGateCount(FlowState *fstate) {
     ++flowGateFns;
     if (fstate->gate)
         ++flowGateGated;
-    for (int bit = 0; bit < 6; ++bit) {
+    for (int bit = 0; bit < 7; ++bit) {
         if (fstate->gate & (1 << bit))
             ++flowGateByTrigger[bit];
     }
 }
 
 void flowGatePrint() {
-    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u, shape %u)\n\n",
+    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u, shape %u, static %u)\n\n",
         flowGateGated, flowGateFns, flowGateByTrigger[0], flowGateByTrigger[1],
-        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4], flowGateByTrigger[5]);
+        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4], flowGateByTrigger[5],
+        flowGateByTrigger[6]);
 }

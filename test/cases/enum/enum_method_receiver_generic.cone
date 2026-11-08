@@ -1,0 +1,126 @@
+// A generic enum's method whose receiver names the enum with its type arguments
+// ('self: Opt[T]', '&Opt[T]', '&mut Opt[T]') is one function over the whole enum,
+// as a plain enum's is (enum_method_receiver), and is not inline: it is generated
+// once for each instance. The bare name inside the braces is the same instance
+// ('self: &Opt'), and so is a receiver of an enum with two parameters. Each is
+// called on a value typed as the enum and on a variant's value, which is widened to
+// the enum. A generic method whose receiver names the enum is one function too, so
+// a variant's value reaches it, in a generic enum and in a plain one.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_method_receiver_generic;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+enum Opt[T] {
+  Nada;
+  Algo(T);
+
+  pub fn get(self: Opt[T], d: T) T {
+    match self {
+      case let Algo(v) { v }
+      case is Nada { d }
+    }
+  }
+  pub fn peek(self: &Opt[T], d: T) T {
+    match *self {
+      case let Algo(v) { v }
+      case is Nada { d }
+    }
+  }
+  pub fn isSome(self: &Opt[T]) bool { *self is Algo }
+  pub fn clear(self: &mut Opt[T]) { *self = Nada[T]; }
+  pub fn put(self: &mut Opt[T], v: T) { *self = Algo[T](v); }
+  pub fn peekBare(self: &Opt, d: T) T {
+    match *self {
+      case let Algo(v) { v }
+      case is Nada { d }
+    }
+  }
+  pub fn mapOr[U, F: fn(x: T) U](self: Opt[T], d: U, f: F) U {
+    match self {
+      case let Algo(v) { f(v) }
+      case is Nada { d }
+    }
+  }
+}
+use Opt;
+
+enum Pair[A, B] {
+  Left(A);
+  Right(B);
+
+  pub fn side(self: &Pair[A, B]) i32 {
+    match *self {
+      case is Left { 1 }
+      case is Right { 2 }
+    }
+  }
+  pub fn leftOr(self: Pair[A, B], d: A) A {
+    match self {
+      case let Left(a) { a }
+      case is Right { d }
+    }
+  }
+  pub fn toLeft(self: &mut Pair[A, B], a: A) { *self = Left[A, B](a); }
+}
+use Pair;
+
+enum Lamp {
+  Red;
+  Green;
+  pub fn pick[U](self: &Lamp, a: U, b: U) U { if *self is Red { a } else { b } }
+}
+
+fn mk() Opt[bool] { Algo[bool](true) }
+
+fn main() {
+  // The repro: a by-value receiver on an enum's value
+  let o = mk();
+  let x = o.get(false);
+  show("repro", if x { 1 } else { 0 });
+
+  // On a variant's value, each receiver form
+  let a = Algo[i32](7);
+  show("variantGet", a.get(0));
+  show("variantPeek", a.peek(0));
+  show("variantSome", if a.isSome() { 1 } else { 0 });
+  show("variantBare", a.peekBare(0));
+  let n = Nada[i32];
+  show("nadaPeek", n.peek(-1));
+
+  // On a value typed as the enum, '&mut' included
+  var m: Opt[i32] = Algo[i32](7);
+  m.clear();
+  show("cleared", m.peek(-1));
+  m.put(42);
+  show("put", m.get(0));
+
+  // A generic method of the generic enum, on a variant's value and the enum's
+  show("mapOr", a.mapOr(0, fn(v: i32) i32 { v * 3 }));
+  show("mapOrNada", n.mapOr(-5, fn(v: i32) i32 { v * 3 }));
+  show("mapOrEnum", m.mapOr(0, fn(v: i32) i32 { v + 1 }));
+
+  // Two type parameters
+  var p: Pair[i32, f64] = Right[i32, f64](2.5);
+  show("side", p.side());
+  show("leftOrRight", p.leftOr(9));
+  p.toLeft(5);
+  show("sideAfter", p.side());
+  show("leftOrLeft", p.leftOr(9));
+  let l = Left[i32, f64](11);
+  show("variantSide", l.side());
+
+  // A plain enum's generic method on a variant's value
+  let r = Lamp.Red;
+  show("pickRed", r.pick(1, 2));
+  show("pickGreen", Lamp.Green.pick(1, 2));
+}

@@ -5,24 +5,24 @@
 
 mod ref_gpu_choice_held;
 
-mut @threadlocal total f32 = 0.0;
-mut @threadlocal scale f32 = 1.0;
+var @threadlocal total: f32 = 0.0;
+var @threadlocal scale: f32 = 1.0;
 
 // Given another place on one arm of an 'if'
-fn afterIf(c bool, x f32) f32 {
-  imm a = x;
-  mut r = &a;
+fn afterIf(c: bool, x: f32) f32 {
+  let a = x;
+  var r = &a;
   if c {
     r = &scale;
   }
-  *r;  //~ ErrorGpuRefChoice "'r', used here"
+  *r  //~ ErrorGpuRefChoice "'r', used here"
 }
 
 // Two locals, one per arm, with no reference to a global at all
-fn bothArms(c bool, x f32) f32 {
-  mut a = x;
-  mut b = x;
-  mut r = &mut a;
+fn bothArms(c: bool, x: f32) f32 {
+  var a = x;
+  var b = x;
+  var r = &mut a;
   if c {
     r = &mut a;
   }
@@ -30,19 +30,30 @@ fn bothArms(c bool, x f32) f32 {
     r = &mut b;
   }
   *r = 2.0;  //~ ErrorGpuRefChoice
-  a + b;
+  a + b
 }
 
 // Reassigned in a loop, and used on the next pass
-fn aroundLoop(n u32) f32 {
-  imm a = 1.0;
-  mut r = &a;
-  mut sum = 0.0;
-  mut i = 0u32;
+fn aroundLoop(n: u32) f32 {
+  let a = 1.0f;
+  var r = &a;
+  var sum = 0.0f;
+  var i = 0u32;
   while i < n {
     sum = sum + *r;  //~ ErrorGpuRefChoice
     r = &total;
     i = i + 1;
   }
-  sum;
+  sum
+}
+
+// The refusals are for the code a kernel runs: this kernel reaches every
+// function above
+fn @compute(64) reaches(inv: Invocation, xs: &Array[f32], out: &mut Array[f32]) {
+  let i = usize.from(inv.globalId[0]);
+  if i < out.len && i < xs.len {
+    let c = i % 2usize == 0usize;
+    let x = xs[i];
+    out[i] = afterIf(c, x) + bothArms(c, x) + aroundLoop(inv.globalId[0]);
+  }
 }

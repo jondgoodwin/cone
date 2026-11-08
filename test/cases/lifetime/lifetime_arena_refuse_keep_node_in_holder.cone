@@ -1,0 +1,11 @@
+// Bug 51 (design chat probe f2): a node holding a parameter's borrow is kept in a holder that outlives the local. Refuse.
+mod lifetime_arena_refuse_keep_node_in_holder;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct H { pub p: &mut T; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct Holder { pub ar: &mut Arena; pub keep: Option[&mut H]; }
+fn stash(h: &mut Holder, x: &mut T) { let n = h.ar.alloc(H(x)); h.keep = Some(n); }
+fn scope(h: &mut Holder) { var t = T(77); stash(h, &mut t); }  //~ ErrorCallEscape
+fn main() { var a = Arena(); var h = Holder(&mut a, None); scope(&mut h); print <- clobber(3), " ", h.keep.unwrap().p.v, "\n"; }

@@ -1,0 +1,84 @@
+// Kinds, layers, levels and the mask. The actors' four kinds are registered
+// (ids 1 to 4, layer 0, high); a program registers its own from 16. A layer at
+// levelOff has its bit clear in the runtime's mask and records nothing; at
+// levelLow its events are counted but not recorded (the counting method:
+// 'methodCount' records nothing anyway, so the counters are what is read);
+// at levelHigh counted and recorded. The same 30 messages run at each level and
+// the counts show it. A record of the program's own kind (emit) follows its
+// layer's level, from an actor.
+
+mod levels;
+
+import testing use *;
+import actors;
+import actortrace;
+
+actor Echo {
+  heard: u64 = 0u64;
+  kind: u32 = 0u32;
+
+  pub async fn setKind(self, k: u32) {
+    kind = k;
+  }
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+    let k = actortrace.Kind(kind, actortrace.layerUser, actortrace.levelHigh);
+    actortrace.emit(&k, 0u32, n, n);
+  }
+}
+
+fn burst(e: &Echo, k: u32) {
+  var i = 0u64;
+  while i < 30u64 {
+    e.hear(i);
+    i = i + 1u64;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let mine = actortrace.register("mine", actortrace.layerUser, actortrace.levelHigh);
+  let fine = actortrace.register("fine", actortrace.layerUser, actortrace.levelHigh);
+  expectUInt(u64.from(mine.id), 16u64, "a program's first kind is 16");
+  expectUInt(u64.from(fine.id), 17u64, "and its second 17");
+  actortrace.nameLayer(actortrace.layerUser, "mine");
+  expect(actortrace.start(actortrace.methodCount, cstr.fromLiteral("unused"), actortrace.Options()), "started");
+  expectUInt(u64.from(actortrace.level(actortrace.layerActors)), 0u64, "every layer starts off");
+  expectUInt(u64.from(actors.traceMaskNow()), 0u64, "the mask starts clear");
+
+  let e = Echo();
+  e.setKind(mine.id);
+  actors.waitUntilIdle();
+  burst(&e, mine.id);
+  actors.waitUntilIdle();
+  expectUInt(actortrace.eventsCounted(), 0u64, "off: nothing counted");
+
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelLow);
+  expectUInt(u64.from(actors.traceMaskNow()), 1u64, "layer 0 on: bit 0 set");
+  burst(&e, mine.id);
+  actors.waitUntilIdle();
+  expectUInt(actortrace.counts(1u32), 30u64, "low: 30 sends counted");
+  expectUInt(actortrace.counts(3u32), 30u64, "low: 30 runs counted");
+  expectUInt(actortrace.counts(mine.id), 0u64, "the user layer is still off: its emit counted nothing");
+
+  actortrace.setLevel(actortrace.layerUser, actortrace.levelHigh);
+  expectUInt(u64.from(actors.traceMaskNow()), 3u64, "layers 0 and 1 on");
+  burst(&e, mine.id);
+  actors.waitUntilIdle();
+  expectUInt(actortrace.counts(1u32), 60u64, "high: 30 more sends");
+  expectUInt(actortrace.counts(mine.id), 30u64, "the program's own kind counted 30 times from the actor");
+
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  expectUInt(u64.from(actors.traceMaskNow()), 2u64, "layer 0 off again: bit 1 only");
+  burst(&e, mine.id);
+  actors.waitUntilIdle();
+  expectUInt(actortrace.counts(1u32), 60u64, "off: no more sends counted");
+  expectUInt(actortrace.counts(mine.id), 60u64, "the user layer went on counting");
+  expectUInt(actortrace.counts(fine.id), 0u64, "a kind never emitted is never counted");
+  actortrace.stop();
+  expectUInt(u64.from(actors.traceMaskNow()), 0u64, "stop clears the mask");
+  finalAll();
+  done()
+}

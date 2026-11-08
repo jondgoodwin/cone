@@ -116,8 +116,8 @@ lowers to a zero-field struct.
 
 **2. Nothing allocates unless you write an allocation.** There is no garbage
 collector, no hidden boxing, no implicit copy of a large value. An allocation
-is a `new` whose type is a managed reference type — `new Rc[Node](1)`, or
-`new Node(1)` through an alias that names the region once, where the data's
+is a construction whose type is a managed reference type — `Rc[Node](1)`, or
+`Node(1)` through an alias that names the region once, where the data's
 architecture is declared — so allocation is a lexical event, not an inference.
 
 **3. Ownership is declared, so release is static.** Because a region and a
@@ -160,7 +160,7 @@ checking if it ever stops being true.
 | Construct | Cost | Visible as |
 | --- | --- | --- |
 | **`Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `Rc[...]` in the type allocated |
-| **`So` reference** | no header bytes; a `free` at release | the `So[...]` |
+| **`Uni` reference** | no header bytes; a `free` at release | the `Uni[...]` |
 | **slice `&Array[T]`** | two words, passed by value | the `[]` |
 | **virtual reference `&<Trait`** | two words; an indirect call through a loaded slot | the `<` |
 | **array or slice index** | a compare and branch per dimension | the `[i]` |
@@ -174,7 +174,7 @@ work: there is no construct in the table whose cost is invisible at the point
 you write it.
 
 The two that surprise people are the fat pointers — a slice, a virtual
-reference, and a reference to a body whose length it carries (`&str`, `So[str]`)
+reference, and a reference to a body whose length it carries (`&str`, `Uni[str]`)
 are twice the size of a plain reference and are passed by value, so a
 function taking `&Array[T]` moves two words per call.
 

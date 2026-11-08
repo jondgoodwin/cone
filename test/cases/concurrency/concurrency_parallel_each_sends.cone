@@ -27,83 +27,83 @@ import collections use *;
 import actors;
 
 struct Probe {
-  pub handled Atomic[u64];      // messages any Log has handled
-  pub early Atomic[u64];        // passes that found one handled while their loop ran
-  pub verdict Array[Atomic[u64], 6];    // each Log's report: its messages * 2, and 1 if in order
+  pub handled: Atomic[u64];      // messages any Log has handled
+  pub early: Atomic[u64];        // passes that found one handled while their loop ran
+  pub verdict: Array[Atomic[u64], 6];    // each Log's report: its messages * 2, and 1 if in order
 }
 
-imm probe Probe;
+let probe: Probe;
 
 fn @initpure init() {
-  probe = new Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  probe = Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     [Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
      Atomic[u64].of(0u64), Atomic[u64].of(0u64)]);
 }
 
 actor Log {
-  seen List[u64];
+  seen: List[u64];
 
-  fn init(self &new) {
-    *self = new Self(seen: new List[u64]);
+  fn init(self: &new) {
+    *self = Self(seen: List[u64]());
   }
 
-  pub async do note(self, n u64) {
+  pub async fn note(self, n: u64) {
     seen.push(n);
     probe.handled.add(1u64);
   }
 
   // mode 0: the numbers 0, 1, 2 ...; 1: 0 to 4, 10 to 14, 20 to 24 ...;
   // 2: the even numbers; 3: the odd numbers
-  pub async do report(self &, label u64, mode u64) {
-    mut ok = true;
-    mut k = 0usize;
-    each n in seen {
-      imm want = if mode == 0u64 {u64.from(k);}
-        else if mode == 1u64 {u64.from(k / 5usize) * 10u64 + u64.from(k % 5usize);}
-        else if mode == 2u64 {u64.from(k) * 2u64;}
-        else {u64.from(k) * 2u64 + 1u64;};
+  pub async fn report(self: &, label: u64, mode: u64) {
+    var ok = true;
+    var k = 0usize;
+    each n in &seen {
+      let want = if mode == 0u64 {u64.from(k)}
+        else if mode == 1u64 {u64.from(k / 5usize) * 10u64 + u64.from(k % 5usize)}
+        else if mode == 2u64 {u64.from(k) * 2u64}
+        else {u64.from(k) * 2u64 + 1u64};
       if *n != want {
         ok = false;
       }
       k = k + 1usize;
     }
-    probe.verdict[usize.from(label)].store(u64.from(seen.len) * 2u64 + (if ok {1u64;} else {0u64;}));
+    probe.verdict[usize.from(label)].store(u64.from(seen.len) * 2u64 + (if ok {1u64} else {0u64}));
   }
 }
 
-fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+fn mix(i: u64, n: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
   }
-  x;
+  x
 }
 
 // Very uneven cost, so passes end out of order
-fn weigh(i u64) u64 {
-  mix(i, (i * i) % 97u64 * 40u64);
+fn weigh(i: u64) u64 {
+  mix(i, (i * i) % 97u64 * 40u64)
 }
 
-fn sendAlso(log Log, n u64) {
+fn sendAlso(log: Log, n: u64) {
   log.note(n);
 }
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   {
-    imm one = new Log();
-    imm two = new Log();
-    imm three = new Log();
-    imm four = new Log();
-    imm silent = new Log();
+    let one = Log();
+    let two = Log();
+    let three = Log();
+    let four = Log();
+    let silent = Log();
 
     // One message a pass
     parallel each i in 0usize ..< 400usize {
-      imm w = weigh(u64.from(i));
-      if w != 1u64 and probe.handled.load() != 0u64 {
+      let w = weigh(u64.from(i));
+      if w != 1u64 && probe.handled.load() != 0u64 {
         probe.early.add(1u64);
       }
       one.note(u64.from(i));
@@ -115,7 +115,7 @@ fn main() {
 
     // Two actors, one message of each a pass, one from the body, one from a function
     parallel each i in 0usize ..< 300usize {
-      imm w = weigh(u64.from(i));
+      let w = weigh(u64.from(i));
       two.note(u64.from(i) * 2u64 + (w & 0u64));
       sendAlso(three, u64.from(i) * 2u64 + 1u64 + (w & 0u64));
     }
@@ -125,7 +125,7 @@ fn main() {
     // A loop in a loop
     parallel each r in 0usize ..< 12usize {
       parallel each c in 0usize ..< 5usize {
-        imm w = weigh(u64.from(r) * 5u64 + u64.from(c));
+        let w = weigh(u64.from(r) * 5u64 + u64.from(c));
         four.note(u64.from(r) * 10u64 + u64.from(c) + (w & 0u64));
       }
     }
@@ -139,17 +139,17 @@ fn main() {
     }
     silent.report(5u64, 0u64);
     parallel each i in 0usize ..< 50usize {
-      imm w = weigh(u64.from(i));
+      let w = weigh(u64.from(i));
     }
   }
   finalAll();
   // Once the actors have handled everything: what each saw
-  mut label = 1usize;
+  var label = 1usize;
   while label <= 5usize {
-    imm v = probe.verdict[label].load();
+    let v = probe.verdict[label].load();
     printStr("log "); printUInt(u64.from(label));
     printStr(": "); printUInt(v / 2u64); printStr(" messages, ");
-    printStr(if v % 2u64 == 1u64 {"in order\n";} else {"OUT OF ORDER\n";});
+    printStr(if v % 2u64 == 1u64 {"in order\n"} else {"OUT OF ORDER\n"});
     label = label + 1usize;
   }
   printStr("handled in all: ");

@@ -19,13 +19,13 @@ import stdio use *;
 import process;
 import collections use List, String;
 import time use Instant, Duration;
-import iobuf use Pool;
+import iobuf use IoBuf;
 import iocore use Loop, forever;
 import http use *;
 import httpclient use *;
 
-fn millis(d Duration) {
-  imm tenths = d.nanos() / 100000i64;
+fn millis(d: Duration) {
+  let tenths = d.nanos() / 100000i64;
   printInt(tenths / 10i64);
   printStr(".");
   printInt(tenths % 10i64);
@@ -33,25 +33,25 @@ fn millis(d Duration) {
 }
 
 fn main() i32 {
-  imm args = process.args();
+  let args = process.args();
   if args.len() < 2usize {
     printStr("usage: fetch <url>\n");
     return 2i32;
   }
-  mut lp = Loop.mustMake();
-  mut client = Client.make(Config.make(), Pool.make());
-  mut req = Request.get(args[1usize].view());
+  var lp = Loop.mustMake();
+  var client = Client.make(Config.make());
+  var req = Request.get(args[1usize].view());
   req.deadline = Instant.now() + Duration.fromSeconds(30i64);
   client.send(&mut lp, req, Sink.Here(1u64));
-  mut events = List[Event].empty();
-  mut bytes = 0u64;
-  mut status = 1i32;
-  mut going = true;
+  var events = List[Event]();
+  var bytes = 0u64;
+  var status = 1i32;
+  var going = true;
   while going {
-    client.poll(&mut lp, forever(), &mut events);
-    mut k = 0usize;
+    client.poll(&mut lp, forever(), &uni events);
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.kind == EventKind.Response {
         printStr(e.url.view());
@@ -60,7 +60,7 @@ fn main() i32 {
         printStr(" ");
         printStr(reasonPhrase(e.response.status));
         printStr("\n");
-        mut j = 0usize;
+        var j = 0usize;
         while j < e.response.headers.len() {
           printStr(e.response.headers.nameAt(j));
           printStr(": ");
@@ -68,10 +68,10 @@ fn main() i32 {
           printStr("\n");
           j = j + 1usize;
         }
-      } elif e.kind == EventKind.Data {
+      } else if e.kind == EventKind.Data {
         bytes = bytes + u64.from(e.buf.len());
         client.release(e.id, e.buf.len());
-      } elif e.kind == EventKind.Done {
+      } else if e.kind == EventKind.Done {
         printStr("\n");
         printUInt(bytes);
         printStr(" bytes of body; first byte after ");
@@ -85,11 +85,11 @@ fn main() i32 {
         printStr(" redirect(s)\n");
         status = 0i32;
         going = false;
-      } elif e.isTerminal() {
-        printStr(eventName(e.kind));
+      } else if e.isTerminal() {
+        print <- toDebug(&e.kind);
         if e.kind == EventKind.Failed {
           printStr(": ");
-          printStr(e.failure.message().view());
+          print <- e.failure;
         }
         printStr("\n");
         going = false;
@@ -98,6 +98,6 @@ fn main() i32 {
     events.clear();
   }
   client.abortAll(&mut lp);
-  client.pump(&mut lp, &mut events);
-  status;
+  client.pump(&mut lp, &uni events);
+  status
 }

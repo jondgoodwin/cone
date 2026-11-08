@@ -3,7 +3,7 @@
 // parameter or a temporary, or of the array a sole owner points at, may not be
 // moved out of it: the array would be left with a hole in
 // it, which it could neither be used with nor finalized with, and the elements
-// that stayed would never be finalized. Swap a value in with '<=>', or move the
+// that stayed would never be finalized. Swap a value in with '<->', or move the
 // whole array, which takes every element with it.
 //
 // The refusal is the same wherever the value is going -- a variable, a call, back
@@ -15,40 +15,40 @@
 mod move_flow_elem;
 
 struct Handle is Move {
-  pub id i32;
+  pub id: i32;
 }
 
-fn take(h Handle) {}
-fn make() Array[Handle, 2] { [new Handle(1), new Handle(2)]; }
-fn makeSole() So[Array[Handle, 2]] { new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]); }
+fn take(h: Handle) {}
+fn make() Array[Handle, 2] { [Handle(1), Handle(2)] }
+fn makeSole() Uni[Array[Handle, 2]] { Uni[Array[Handle, 2]]([Handle(1), Handle(2)]) }
 
 fn intoLocal() i32 {
-  mut arr Array[Handle, 2] = [new Handle(1), new Handle(2)];
-  imm first = arr[0];        //~ ErrorMoveElem:18 "element of an array"
-  arr[1].id;
+  var arr: Array[Handle, 2] = [Handle(1), Handle(2)];
+  let first = arr[0];        //~ ErrorMoveElem:18 "element of an array"
+  arr[1].id
 }
 
 fn intoCall() {
-  mut arr Array[Handle, 2] = [new Handle(1), new Handle(2)];
+  var arr: Array[Handle, 2] = [Handle(1), Handle(2)];
   take(arr[1]);              //~ ErrorMoveElem:11 "element of an array"
   take(arr[0]);              //~ ErrorMoveElem:11 "element of an array"
 }
 
-fn fromParam(arr Array[Handle, 2]) {
+fn fromParam(arr: Array[Handle, 2]) {
   take(arr[0]);              //~ ErrorMoveElem:11 "element of an array"
 }
 
-fn handedBack(arr Array[Handle, 2]) Handle {
-  arr[1];                    //~ ErrorMoveElem:6 "element of an array"
+fn handedBack(arr: Array[Handle, 2]) Handle {
+  arr[1]                    //~ ErrorMoveElem:6 "element of an array"
 }
 
 fn fromTemporary() {
-  take([new Handle(1), new Handle(2)][0]); //~ ErrorMoveElem:38 "element of an array"
+  take([Handle(1), Handle(2)][0]); //~ ErrorMoveElem:30 "element of an array"
   take(make()[1]);           //~ ErrorMoveElem:14 "element of an array"
 }
 
 fn nested() {
-  mut grid Array[Array[Handle, 2], 2] = [[new Handle(1), new Handle(2)], [new Handle(3), new Handle(4)]];
+  var grid: Array[Array[Handle, 2], 2] = [[Handle(1), Handle(2)], [Handle(3), Handle(4)]];
   take(grid[1][0]);          //~ ErrorMoveElem:15 "element of an array"
 }
 
@@ -58,23 +58,23 @@ fn nested() {
 // a temporary, and however the element is reached -- by index, by a variable
 // index, through the dereference, or as an element of a nested array.
 fn soleOwner() {
-  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  let a = Uni[Array[Handle, 2]]([Handle(1), Handle(2)]);
   take(a[0]);                //~ ErrorMoveElem:9 "element of an array"
-  imm first = a[1];          //~ ErrorMoveElem:16 "element of an array"
+  let first = a[1];          //~ ErrorMoveElem:16 "element of an array"
 }
 
 fn soleOwnerDeref() {
-  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+  let a = Uni[Array[Handle, 2]]([Handle(1), Handle(2)]);
   take((*a)[0]);             //~ ErrorMoveElem:12 "element of an array"
 }
 
-fn soleOwnerIndex(i usize) {
-  imm a = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
+fn soleOwnerIndex(i: usize) {
+  let a = Uni[Array[Handle, 2]]([Handle(1), Handle(2)]);
   take(a[i]);                //~ ErrorMoveElem:9 "element of an array"
 }
 
-fn soleOwnerParam(a So[Array[Handle, 2]]) Handle {
-  a[1];                      //~ ErrorMoveElem:4 "element of an array"
+fn soleOwnerParam(a: Uni[Array[Handle, 2]]) Handle {
+  a[1]                      //~ ErrorMoveElem:4 "element of an array"
 }
 
 fn soleOwnerTemporary() {
@@ -82,24 +82,24 @@ fn soleOwnerTemporary() {
 }
 
 fn soleOwnerNested() {
-  imm grid = new So[Array[Array[Handle, 2], 2]]([[new Handle(1), new Handle(2)], [new Handle(3), new Handle(4)]]);
+  let grid = Uni[Array[Array[Handle, 2], 2]]([[Handle(1), Handle(2)], [Handle(3), Handle(4)]]);
   take(grid[1][0]);          //~ ErrorMoveElem:15 "element of an array"
 }
 
 // What is not a move out of an element
 fn allowed() i32 {
-  mut nums = [1, 2, 3];
-  imm n = nums[1];
-  mut arr Array[Handle, 2] = [new Handle(1), new Handle(2)];
-  mut out = new Handle(9);
-  arr[0] <=> out;
-  imm id = arr[1].id;
-  imm both = arr;
-  imm sole = new So[Array[Handle, 2]]([new Handle(1), new Handle(2)]);
-  imm whole = *sole;
-  n + id + out.id;
+  var nums = [1, 2, 3];
+  let n = nums[1];
+  var arr: Array[Handle, 2] = [Handle(1), Handle(2)];
+  var out = Handle(9);
+  arr[0] <-> out;
+  let id = arr[1].id;
+  let both = arr;
+  let sole = Uni[Array[Handle, 2]]([Handle(1), Handle(2)]);
+  let whole = *sole;
+  n + id + out.id
 }
 
 fn main() i32 {
-  0i32;
+  0i32
 }

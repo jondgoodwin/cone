@@ -25,6 +25,9 @@
 
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
+int lexInHashCond = 0;    // A '#if' condition is being read (parsemeta.c)
+int lexMetaDecl = 0;      // A meta variable is being declared (parsemeta.c)
+uint32_t lexHashDropped = 0; // How many '#' words the lexer has reported and dropped
 
 // A lexer block for a source, positioned at its start and not yet current.
 //
@@ -119,6 +122,7 @@ void keywordInit() {
     keyAdd("trait", TraitToken);
     keyAdd("@opaque", OpaqueToken);
     keyAdd("@unsized", UnsizedToken);
+    keyAdd("@mustUse", MustUseToken);
     keyAdd("@c", CAttrToken);
     keyAdd("@initpure", InitPureToken);
     keyAdd("@intrinsic", IntrinsicAttrToken);
@@ -136,7 +140,6 @@ void keywordInit() {
     keyAdd("return", RetToken);
     keyAdd("with", WithToken);
     keyAdd("if", IfToken);
-    keyAdd("elif", ElifToken);
     keyAdd("else", ElseToken);
     keyAdd("case", CaseToken);
     keyAdd("match", MatchToken);
@@ -146,20 +149,21 @@ void keywordInit() {
     keyAdd("by", ByToken);
     keyAdd("break", BreakToken);
     keyAdd("continue", ContinueToken);
-    keyAdd("not", NotToken);
-    keyAdd("or", OrToken);
-    keyAdd("and", AndToken);
     keyAdd("as", AsToken);
     keyAdd("is", IsToken);
     keyAdd("into", IntoToken);
     keyAdd("inline", InlineToken);
     keyAdd("where", WhereToken);
-    // A construction, 'new Point(1, 2)', and the permission of an
+    // A construction, 'Point(1, 2)', and the permission of an
     // initializer's 'self', '&new'
     keyAdd("new", NewToken);
     // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
     // reference, None when memory runs out
     keyAdd("trynew", TrynewToken);
+    // A block whose '?' leaves the block with the failure, not the function,
+    // and whose value is that failure or its own last value wrapped,
+    // 'try { a? + b? }' (ir/exp/propagate.h)
+    keyAdd("try", TryToken);
     // In an actor's behaviour, wait for what is awaited: the behaviour is cut
     // there, a seam where it returns to the actor's dispatcher
     keyAdd("await", AwaitToken);
@@ -169,12 +173,10 @@ void keywordInit() {
     // In an actor's method, the actor's own handle: 'self' is its state,
     // which never leaves it
     keyAdd("selfactor", SelfActorToken);
-    // 'async do' declares an actor's behaviour, a method its handle sends as
-    // a message and its dispatcher runs later. The two words are one keyword
-    // phrase: neither means anything alone, and the parser says so where one
-    // is written without the other (parseBehaviourWords)
+    // 'async fn' declares an actor's behaviour, a method its handle sends as
+    // a message and its dispatcher runs later. 'async' means nothing alone,
+    // and the parser says so where it stands without 'fn' (parseBehaviourWords)
     keyAdd("async", AsyncToken);
-    keyAdd("do", DoToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);
@@ -184,12 +186,35 @@ void keywordInit() {
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);
     keyAdd("using", UsingToken);
+    // The words a declaration begins with: 'let' never gives its name a new
+    // value, 'var' may. 'imm' and 'mut' are permissions, written on references
+    keyAdd("let", LetToken);
+    keyAdd("var", VarToken);
+
+    // The meta layer (parsemeta.c): '#' words, held in the name table with the
+    // '#', as an attribute is held with its '@'. The vocabulary is closed, so any
+    // other '#' word is reported where it is written (lexScanIdent), never read
+    // as the start of code that is then deleted
+    keyAdd("#if", HashIfToken);
+    keyAdd("#elif", HashElifToken);
+    keyAdd("#else", HashElseToken);
+    keyAdd("#os", HashOsToken);
+    keyAdd("#arch", HashArchToken);
+    keyAdd("#debug", HashDebugToken);
+    keyAdd("#defined", HashDefinedToken);
+    keyAdd("#define", HashDefineToken);
+    keyAdd("#each", HashEachToken);
+    keyAdd("#fields", HashFieldsToken);
+    keyAdd("#size", HashSizeToken);
+    keyAdd("#align", HashAlignToken);
+    keyAdd("#name", HashNameToken);
+    keyAdd("@reflect", ReflectToken);
 
     // Words the language claims but has not implemented yet. Holding them now
     // costs one rename in a program written today; letting a program bind one
     // costs that program a rewrite when the feature arrives.
     //
-    // The first group is every keyword reftoken.html already publishes as
+    // The first group is every keyword syntax-lexical.html already publishes as
     // reserved that is not a token above. 'self' and 'this' are on that list too
     // and are deliberately absent here: both already work, as a method's first
     // parameter and as a 'with' block's value, so they are implemented rather
@@ -201,8 +226,8 @@ void keywordInit() {
     keyAdd("wait", ReservedToken);
 
     // The second group spells the syntax of features the reference describes but
-    // reftoken.html has not caught up with: refexcept.html for error handling,
-    // refcorout.html for coroutines, refconccomm.html for actors. 'actor' itself
+    // syntax-lexical.html has not caught up with: safe-panics.html for error handling,
+    // rec-generators.html for coroutines, conc-sharing.html for actors. 'actor' itself
     // is not here: it names a kind of declaration, so it is a token above and
     // the parser reports it where the declaration is written. 'panic' and
     // 'assert' are not here: they are core's functions, not syntax.
@@ -578,7 +603,7 @@ static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
 }
 
 // A string literal whose opening quote ends its line is a multi-line string
-// literal (doc/reference/reftoken.html, "Multi-line String Literals"). The
+// literal (doc/manual/syntax-lexical.html#multiline, "Multi-line String Literals"). The
 // end of line after the opening quote is not content. The closing quote must
 // begin a later line, after any spaces or tabs, and those are the literal's
 // margin: a content line of nothing but spaces and tabs is an empty line, and
@@ -586,12 +611,90 @@ static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
 // and C# rule, Jon's ruling of 24 September 2026). Each content line's end of
 // line becomes one new-line character, whether written LF or CRLF, unless a
 // backslash precedes it, which joins the line to the next.
-void lexScanString(char *srcp) {
+//
+// An interpolated string, $"moved {n} files", is read the same way, with '{{' and
+// '}}' for the braces and a brace's expression left as source for the parser (an
+// InterpToken). The text between expressions is read exactly as a plain
+// literal's is.
+
+// The close brace of the expression whose open brace p follows, or NULL where
+// none closes it. Strings and characters inside are stepped over, so a brace or
+// a quote in them closes nothing.
+static char *lexInterpSkipStr(char *p, int interp);
+static char *lexInterpSkipBraces(char *p) {
+    int depth = 1;
+    while (*p) {
+        if (*p == '"')
+            p = lexInterpSkipStr(p + 1, p > lex->source && p[-1] == '$');
+        else if (*p == '\'' && p[1] == '\\') {
+            // '\n', '\'', '\u{..}'
+            p += 2;
+            while (*p && *p != '\'' && *p != '\n')
+                ++p;
+            if (*p == '\'')
+                ++p;
+            continue;
+        }
+        else if (*p == '\'' && p[1] && p[1] != '\'' && p[1] != '\n') {
+            // 'x', 'é': a character literal; 'a (a lifetime) has no closing quote
+            char *q = p + 2;
+            while (((unsigned char)*q & 0xC0) == 0x80)
+                ++q;
+            p = *q == '\'' ? q + 1 : p + 1;
+            continue;
+        }
+        else if (*p == '{') {
+            ++depth;
+            ++p;
+        }
+        else if (*p == '}') {
+            if (--depth == 0)
+                return p;
+            ++p;
+        }
+        else
+            ++p;
+        if (p == NULL)
+            return NULL;
+    }
+    return NULL;
+}
+
+// The place after the closing quote of the string whose opening quote p follows,
+// or NULL where it has none. Inside an interpolated string a brace's expression
+// is stepped over whole.
+static char *lexInterpSkipStr(char *p, int interp) {
+    while (*p) {
+        if (*p == '\\' && p[1])
+            p += 2;
+        else if (*p == '"')
+            return p + 1;
+        else if (interp && *p == '{') {
+            if (p[1] == '{')
+                p += 2;
+            else {
+                p = lexInterpSkipBraces(p + 1);
+                if (p == NULL)
+                    return NULL;
+                ++p;
+            }
+        }
+        else
+            ++p;
+    }
+    return NULL;
+}
+
+static void lexScanStr(char *srcp, int interp) {
     uint64_t uchar;
     lex->tokp = srcp++;
+    if (interp)
+        ++srcp;  // past the '"' after the '$'
     int multiline = lexEolLen(srcp) != 0;
     char *margin = srcp;
     uint32_t marginlen = 0;
+    char *badbrace = NULL;    // An open brace that never closes
+    uint32_t nbraces = 0;
 
     // Conservatively count the size of the string: the bytes of source up to
     // the closing quote, found as the build below finds it, by stepping over
@@ -603,14 +706,66 @@ void lexScanString(char *srcp) {
     while (*endp && *endp != '"') {
         if (*endp == '\\' && *(endp + 1))
             ++endp;
+        else if (interp && *endp == '{') {
+            if (endp[1] == '{')
+                ++endp;
+            else {
+                char *close = lexInterpSkipBraces(endp + 1);
+                if (close == NULL) {
+                    // Reported at the brace by the build below; the literal ends at the
+                    // first quote after the brace on its line, or with the line, so
+                    // the rest of the file is read as it would have been
+                    badbrace = endp;
+                    while (*endp && *endp != '"' && *endp != '\n') {
+                        if (*endp == '\\' && endp[1] && endp[1] != '\n')
+                            ++endp;
+                        ++endp;
+                    }
+                    break;
+                }
+                ++nbraces;
+                endp = close;
+            }
+        }
         ++endp;
     }
     uint32_t srclen = (uint32_t)(endp - srcp);
 
     // No closing quote before the source's end. Reported here, at the opening
     // quote, before the build below counts the lines the literal runs over
-    if (*endp != '"')
+    if (*endp != '"' && !badbrace)
         errorMsgLex(ErrorBadTok, "String literal is never closed: no closing quote before the end of the file");
+    // Text follows the opening quote and the literal runs on to another line.
+    // The manual's multi-line literal ends its line right after the opening
+    // quote, so this is neither that nor a one-line literal. Reported at the
+    // opening quote, before the build counts the lines; the build below still
+    // reads the literal as it always has, so the rest of the file lexes as before
+    else if (!multiline) {
+        for (char *p = srcp; p < endp; ++p) {
+            if (*p == '\\' && p + 1 < endp) {
+                // An escape is stepped over whole, as the count above does. A
+                // backslash at a line's end is an error of its own (the build
+                // below reports it), and one mistake gets one diagnostic
+                if (lexEolLen(p + 1))
+                    break;
+                ++p;
+            }
+            else if (interp && *p == '{') {
+                // A brace's expression may run over lines
+                if (p[1] == '{')
+                    ++p;
+                else {
+                    char *close = lexInterpSkipBraces(p + 1);
+                    if (close)
+                        p = close;
+                }
+            }
+            else if (*p == '\n') {
+                errorMsgLex(ErrorBadTok, "Text after the opening quote of a multi-line string literal must start on the next line: end the line right after the opening quote, or write a one-line string and spell a line's end as '\\n'");
+                break;
+            }
+        }
+    }
 
     if (multiline) {
         // The closing quote's indentation, which must be all its line holds before it
@@ -628,13 +783,80 @@ void lexScanString(char *srcp) {
     }
 
     // Build string literal
-    char *newp = memAllocStr(NULL, srclen);
+    char *newp = memAllocStr(NULL, srclen + (interp ? nbraces + 2 : 0));
     srclen = 0;
     lex->val.strlit = newp;
-    srcp = lex->tokp+1;
+    InterpLit *ilit = NULL;
+    uint32_t iparts = 0;
+    char *segstart = newp;
+    if (interp) {
+        ilit = (InterpLit*)memAllocBlk(sizeof(InterpLit) + sizeof(InterpPart) * (2 * nbraces + 1));
+        lex->val.interp = ilit;
+    }
+    srcp = lex->tokp + (interp ? 2 : 1);
     if (multiline)
         srcp = lexStringNewLine(srcp, margin, marginlen);  // the opening quote's end of line is not content
     while (*srcp != '"' && *srcp) {
+        if (interp && *srcp == '{' && srcp[1] != '{') {
+            // A brace's expression: the text before it ends as a part of its own
+            char *close = badbrace == srcp ? NULL : lexInterpSkipBraces(srcp + 1);
+            if (close == NULL) {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp;
+                errorMsgLex(ErrorInterpBrace, "This '{' opens an expression in an interpolated string, but no '}' closes it. For a brace in the text, write '{{'.");
+                lex->tokp = tokp;
+                srcp = endp;
+                break;
+            }
+            if (newp > segstart) {
+                *newp++ = '\0';
+                ilit->parts[iparts].text = segstart;
+                ilit->parts[iparts].len = (uint32_t)(newp - 1 - segstart);
+                ilit->parts[iparts].exprp = NULL;
+                ++iparts;
+                segstart = newp;
+            }
+            char *ep = srcp + 1;
+            while (ep < close && (*ep == ' ' || *ep == '\t' || *ep == '\r' || *ep == '\n'))
+                ++ep;
+            if (ep == close) {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp;
+                errorMsgLex(ErrorInterpBrace, "Nothing between the braces of this interpolation: put an expression between '{' and '}'. For a brace in the text, write '{{'.");
+                lex->tokp = tokp;
+            }
+            else {
+                InterpPart *part = &ilit->parts[iparts++];
+                part->text = NULL;
+                part->len = 0;
+                part->exprp = srcp + 1;
+                part->exprend = close;
+                part->linep = lex->linep;
+                part->linenbr = lex->linenbr;
+            }
+            // The expression's lines are counted as they pass
+            for (char *p = srcp; p < close; ++p)
+                if (*p == '\n') {
+                    ++lex->linenbr;
+                    lex->linep = p + 1;
+                }
+            srcp = close + 1;
+            continue;
+        }
+        if (interp && (*srcp == '{' || *srcp == '}')) {
+            if (srcp[1] == *srcp) {  // '{{' and '}}' are the brace itself
+                *newp++ = *srcp;
+                srclen++;
+                srcp += 2;
+            }
+            else {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp++;
+                errorMsgLex(ErrorInterpBrace, "A '}' with no '{' before it in an interpolated string. For a brace in the text, write '}}'.");
+                lex->tokp = tokp;
+            }
+            continue;
+        }
         if (multiline) {
             // A line's end is a new-line in the content; a backslash before it joins the lines
             if (lexEolLen(srcp)) {
@@ -711,8 +933,23 @@ void lexScanString(char *srcp) {
         srcp++;        // Move past terminating " character
 
     lex->strlen = srclen;  // Count of all characters of string, except final null char.
-    lex->toktype = StringLitToken;
     lex->srcp = srcp;
+    if (!interp) {
+        lex->toktype = StringLitToken;
+        return;
+    }
+    if (newp > segstart) {
+        ilit->parts[iparts].text = segstart;
+        ilit->parts[iparts].len = (uint32_t)(newp - segstart);
+        ilit->parts[iparts].exprp = NULL;
+        ++iparts;
+    }
+    ilit->nparts = iparts;
+    lex->toktype = InterpToken;
+}
+
+void lexScanString(char *srcp) {
+    lexScanStr(srcp, 0);
 }
 
 // Convert ascii float number to double float
@@ -737,17 +974,17 @@ double lexToFloat(char *srcp, char *srcend) {
  * UTF-8 lead byte). In a hex literal the letters a-f are digits, so a name that
  * is hex digits only starts a member access too, unless the 'p' of a hex float's
  * exponent follows them: '0x1.Ep2' is a float, '0x1f.abs' a call on 0x1f.
- * A decimal's float suffix is no name: '1.d', '0.f' and '1.f32' stay floats. */
+ * A decimal's float suffix is no name: '0.f', '1.f32' and '1.f64' stay floats. */
 static int lexDotStartsMember(char *p, uint64_t base) {
     char *q = p + 1;
     if (!((*q>='a' && *q<='z') || (*q>='A' && *q<='Z') || *q=='_' || (unsigned char)*q>=0x80))
         return 0;
     if (base == 10) {
-        // '1.d', '0.f32': the point and a float suffix, which is a float
-        // literal and not a call of a method named d or f32
+        // '0.f', '0.f32': the point and a float suffix, which is a float
+        // literal and not a call of a method named f or f32
         char *r = q + 1;
-        if (*q=='d' || *q=='f') {
-            if (*q=='f' && ((r[0]=='3' && r[1]=='2') || (r[0]=='6' && r[1]=='4')))
+        if (*q=='f') {
+            if ((r[0]=='3' && r[1]=='2') || (r[0]=='6' && r[1]=='4'))
                 r += 2;
             if (!((*r>='a' && *r<='z') || (*r>='A' && *r<='Z') || (*r>='0' && *r<='9') || *r=='_' || (unsigned char)*r>=0x80))
                 return 0;
@@ -763,15 +1000,36 @@ static int lexDotStartsMember(char *p, uint64_t base) {
     return 1;
 }
 
+/** Report a malformed binary or octal literal at the character that makes it so.
+ * Errors name the token's start, so the position is moved to 'at' for the report
+ * and put back; the token's own start is where its node is positioned. */
+static void lexRadixError(int code, char *at, const char *msg, const char *radix, char *srcbeg) {
+    int octal = *radix == 'o';
+    lex->tokp = at;
+    if (code == ErrorRadixDigit && msg == NULL)
+        errorMsgLex(code, "%s %s literal needs at least one %s digit after its '%.2s' prefix",
+            octal ? "An" : "A", radix, radix, srcbeg);
+    else if (code == ErrorRadixDigit)
+        errorMsgLex(code, "'%c' is not %s %s digit; %s %s literal holds only %s", *at,
+            octal ? "an" : "a", radix, octal ? "an" : "a", radix, octal ? "0 to 7" : "0 and 1");
+    else
+        errorMsgLex(code, "%s %s literal is a whole number and takes no %s",
+            octal ? "An" : "A", radix, msg);
+    lex->tokp = srcbeg;
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
     char *srcbeg;        // Pointer to the start of the token
-    uint64_t base;        // Radix for integer (10 or 16)
+    uint64_t base;        // Radix for integer (2, 8, 10 or 16)
     uint64_t intval;    // Calculated integer value for integer literal
     uint64_t digit;     // Value of the digit being accumulated
     char isFloat;        // nonzero when number token is a float, 'e' when in exponent
     char overflow;      // nonzero once the digits no longer fit in intval
+    char badRadix = '\0';   // nonzero once a binary or octal literal has been reported
+    int ndigits = 0;     // digits taken after a binary or octal prefix
+    const char *radix = NULL;  // "binary" or "octal" for those literals
 
     lex->tokp = srcbeg = srcp;
 
@@ -786,6 +1044,16 @@ void lexScanNumber(char *srcp) {
         base = 16;
         srcp += 2;
     }
+    else if (*srcp=='0' && (*(srcp+1)=='b' || *(srcp+1)=='B')) {
+        base = 2;
+        radix = "binary";
+        srcp += 2;
+    }
+    else if (*srcp=='0' && (*(srcp+1)=='o' || *(srcp+1)=='O')) {
+        base = 8;
+        radix = "octal";
+        srcp += 2;
+    }
 
     // Validate and process remaining numeric digits
     isFloat = '\0';
@@ -793,8 +1061,16 @@ void lexScanNumber(char *srcp) {
     intval = 0;
     while (1) {
         // Only one exponent allowed. In a hex literal 'e' and 'E' are digits,
-        // so only 'p' or 'P' can begin its exponent
-        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P')) {
+        // so only 'p' or 'P' can begin its exponent. A binary or octal literal has
+        // none: its 'e' is not a digit, so an 'e' that a digit follows is an exponent
+        // written where there can be none, and so is a 'p'
+        if (!afterDot && isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P'
+            || (radix && (*srcp=='e' || *srcp=='E')
+                && ((srcp[1]>='0' && srcp[1]<='9') || ((srcp[1]=='-' || srcp[1]=='+') && srcp[2]>='0' && srcp[2]<='9'))))) {
+            if (radix && !badRadix) {
+                lexRadixError(ErrorRadixFloat, srcp, "exponent", radix, srcbeg);
+                badRadix = '\1';
+            }
             isFloat = 'e';
             if (*++srcp == '-' || *srcp == '+')
                 srcp++;
@@ -816,13 +1092,27 @@ void lexScanNumber(char *srcp) {
             // ('4.sqrt()', '3.e5'), not a decimal point; '3.' alone is a float
             if (lexDotStartsMember(srcp, base))
                 break;
+            if (radix && !badRadix) {
+                lexRadixError(ErrorRadixFloat, srcp, "fraction", radix, srcbeg);
+                badRadix = '\1';
+            }
             srcp++;
             isFloat = '.';
             continue;
         }
         // Extract a number digit value from the character
-        if (*srcp>='0' && *srcp<='9')
-            digit = *srcp++ - '0';
+        if (*srcp>='0' && *srcp<='9') {
+            digit = *srcp - '0';
+            // A digit the radix does not have is refused where it stands, and the
+            // scan goes on through the rest of the number so one literal is
+            // reported once
+            if (radix && digit >= base && !badRadix) {
+                lexRadixError(ErrorRadixDigit, srcp, radix, radix, srcbeg);
+                badRadix = '\1';
+            }
+            srcp++;
+            ndigits++;
+        }
         else if (*srcp=='_') {
             srcp++;
             continue;
@@ -833,6 +1123,8 @@ void lexScanNumber(char *srcp) {
             digit = *srcp++ - 'a'+10;
         else
             break;
+        if (radix && digit >= base)
+            digit = 0;
         // Accumulate the digit unless it would carry past 64 bits. The digits
         // are still consumed so the token ends where it should, and an integer
         // that overflowed is reported once, below, once its suffix is known.
@@ -842,12 +1134,21 @@ void lexScanNumber(char *srcp) {
             intval = intval*base + digit;
     }
 
+    // A binary or octal literal needs a digit. The report is at the prefix's
+    // letter: the character after it may be a space or the line's end
+    if (radix && !badRadix && ndigits == 0) {
+        lexRadixError(ErrorRadixDigit, srcbeg + 1, NULL, radix, srcbeg);
+        badRadix = '\1';
+    }
+
     // Process number's explicit type as part of the token
-    if (*srcp=='d') {
-        isFloat = 'd';
-        srcp++;
-        lex->langtype = (INode*)f64Type;
-    } else if (*srcp=='f') {
+    if (*srcp=='f') {
+        // A float suffix on a binary or octal literal would make it the float read
+        // from its own spelling, which is no number
+        if (radix && !badRadix) {
+            lexRadixError(ErrorRadixFloat, srcp, "float suffix", radix, srcbeg);
+            badRadix = '\1';
+        }
         isFloat = 'f';
         lex->langtype = (INode*)f32Type;
         if (*(++srcp)=='6' && *(srcp+1)=='4') {
@@ -884,22 +1185,34 @@ void lexScanNumber(char *srcp) {
         }
     }
     else
-        lex->langtype = isFloat ? (INode*)f32Type : unknownType;
+        // With no suffix a float takes the type of the place it is written into,
+        // as an integer does (litAdoptNumberType), and is an f64 where nothing
+        // says: unknownType here is newFLitNode's cue
+        lex->langtype = unknownType;
+
+    // A binary or octal literal that was reported is a plain integer, so nothing
+    // after it reads a float or a value read from its spelling
+    if (badRadix) {
+        isFloat = '\0';
+        intval = 0;
+        overflow = '\0';
+        lex->langtype = unknownType;
+    }
 
     // Set value and type
     if (isFloat) {
         lex->val.floatlit = lexToFloat(srcbeg, srcp);
         lex->toktype = FloatLitToken;
-        // A float literal is never context-typed, so the type decided here is
-        // the one it is generated at, and a value past its range was generated
-        // as infinity: '1e39' is an f32 and printed inf, even as an f64's
-        // initializer. Rounded as generation rounds it, so a value just past
-        // f32's maximum that rounds down to it still fits
+        // A suffixed literal has its type from here and is generated at it, so a
+        // value past its range was generated as infinity. Rounded as generation
+        // rounds it, so a value just past f32's maximum that rounds down to it
+        // still fits. An unsuffixed literal must fit f64 here; the f32 it may be
+        // given is judged where it is given (litAdoptNumberType)
         int f32lit = lex->langtype == (INode*)f32Type;
         double value = lex->val.floatlit;
         if (isinf(value) || (f32lit && isinf((float)value)))
             errorMsgLex(ErrorFloatRange, f32lit
-                ? "Float literal '%.*s' does not fit f32, the type of a float literal with no suffix or 'f'. An f64 is written with the 'd' suffix."
+                ? "Float literal '%.*s' does not fit f32, the type its 'f' suffix gives it."
                 : "Float literal '%.*s' does not fit f64.",
                 (int)(srcp - srcbeg), srcbeg);
     }
@@ -975,6 +1288,7 @@ int lexScanIdent(char *srcp) {
                 // absent. An attribute is an instruction about representation
                 // or linkage that no code asks about; a fact other code may ask
                 // about is a trait, which is what move-ness became [Jon 26 Sep].
+                // ('@mustUse' asks only the compiler's diagnostics.)
                 else if (*srcbeg == '@') {
                     if (strcmp(&lex->val.ident->namestr, "@samesize") == 0)
                         errorMsgLex(ErrorUnkAttr,
@@ -988,15 +1302,29 @@ int lexScanIdent(char *srcp) {
                     lex->srcp = srcp;
                     return 0;
                 }
-                // '#' is held for metaprogramming. A '#' word is reported and
-                // dropped with the rest of its line, so that what is written
-                // after it ('#if x') is not reported as well.
+                // The '#' words the language means are keywords (keywordInit).
+                // Any other is held for metaprogramming: reported and dropped
+                // with the rest of its line, so that what is written after it
+                // ('#each x in xs') is not reported as well. In a '#if'
+                // condition only the word is dropped: the block that follows
+                // the condition is on the same line, and a misspelt fact must
+                // not take it along (parseHashIf reads the condition on and
+                // refuses it quietly, for the word was refused here).
                 else if (*srcbeg == '#') {
+                    // A meta variable: one being declared, or one a declaration the parser is
+                    // inside has made (parsemeta.c). The same word is reserved anywhere else
+                    if (lexMetaDecl || parseMetaIsBound(lex->val.ident)) {
+                        lex->toktype = MetaVarToken;
+                        lex->srcp = srcp;
+                        return 1;
+                    }
                     errorMsgLex(ErrorReserved,
-                        "'%s': '#' is reserved for metaprogramming, which is not implemented yet",
+                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #each, #fields, #size, #align, #os, #arch, #debug, #defined and #define are built",
                         &lex->val.ident->namestr);
-                    while (*srcp && *srcp != '\n')
-                        srcp++;
+                    ++lexHashDropped;
+                    if (!lexInHashCond)
+                        while (*srcp && *srcp != '\n')
+                            srcp++;
                     lex->srcp = srcp;
                     return 0;
                 }
@@ -1158,6 +1486,17 @@ void lexNextTokenx() {
             lexScanString(srcp);
             return;
 
+        // $" " - an interpolated string; a '$' not before a quote is no token
+        case '$':
+            if (srcp[1] == '"') {
+                lexScanStr(srcp, 1);
+                return;
+            }
+            lex->tokp = srcp;
+            errorMsgLex(ErrorBadTok, "Bad character '$' starting unknown token: an interpolated string is $\"...\", the quote directly after the '$'");
+            srcp++;
+            break;
+
         // Identifier
         case 'a': case 'b': case 'c': case 'd': case 'e':
         case 'f': case 'g': case 'h': case 'i': case 'j':
@@ -1185,15 +1524,18 @@ void lexNextTokenx() {
             lexScanTickedIdent(srcp);
             return;
 
-        // A range operator is two or three periods. Only a match's range
-        // pattern reads one today (refmatch.html); an integer literal already
-        // stops at '..', so '0..3' is a range and not a float.
+        // A range operator is '..<' or '..='; a bare '..' is lexed to be refused
+        // between a start and an end (it ends an open range too, 's[a..]'), and
+        // '...' to be refused. An integer literal already stops at '..', so
+        // '0..=3' is a range and not a float.
         case '.':
             if (*(srcp + 1) == '.') {
                 if (*(srcp + 2) == '.')
                     lexReturnPuncTok(EllipsisToken, 3);
                 if (*(srcp + 2) == '<')
                     lexReturnPuncTok(DotDotLessToken, 3);
+                if (*(srcp + 2) == '=')
+                    lexReturnPuncTok(DotDotEqToken, 3);
                 lexReturnPuncTok(DotDotToken, 2);
             }
             lexReturnPuncTok(DotToken, 1);
@@ -1266,9 +1608,13 @@ void lexNextTokenx() {
                 lexReturnPuncTok(AmperToken, 1);
             }
 
-        case '|': 
+        // '|', '|=' and '||'
+        case '|':
             if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(OrEqToken, 2);
+            }
+            else if (*(srcp + 1) == '|') {
+                lexReturnPuncTok(OrOrToken, 2);
             }
             else {
                 lexReturnPuncTok(BarToken, 1);
@@ -1305,14 +1651,19 @@ void lexNextTokenx() {
                 lexReturnPuncTok(NotToken, 1);
             }
 
-        // '<' and '<='
+        // '<', '<=', '<=>' (three-way comparison), '<-' (send) and '<->' (swap)
         case '<':
             if (*(srcp + 1) == '-') {
-                lexReturnPuncTok(LessDashToken, 2);
+                if (*(srcp + 2) == '>') {
+                    lexReturnPuncTok(SwapToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(LessDashToken, 2);
+                }
             }
             else if (*(srcp + 1) == '=') {
                 if (*(srcp + 2) == '>') {
-                    lexReturnPuncTok(SwapToken, 3);
+                    lexReturnPuncTok(ThreeWayToken, 3);
                 }
                 else {
                     lexReturnPuncTok(LeToken, 2);
@@ -1347,13 +1698,14 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GtToken, 1);
             }
 
-        // '?.' is held for None propagation (refoption.html). It is reported
-        // and read as '.', so the member it reaches is parsed as it was meant.
+        // '?.' is held (syntax-lexical.html#held): a member of what '?' gives is
+        // reached as '(a?).b'. It is reported and read as '.', so the member it
+        // reaches is parsed as it was meant.
         case '?':
             if (*(srcp + 1) == '.') {
                 lex->tokp = srcp;
                 errorMsgLex(ErrorReserved,
-                    "'?.' is reserved for None propagation, which is not implemented yet");
+                    "'?.' is reserved. To reach a member of what '?' gives, write '(a?).b'");
                 lexReturnPuncTok(DotToken, 2);
             }
             else
@@ -1452,7 +1804,43 @@ void lexNextTokenx() {
 void lexNextToken() {
     timerBegin(LexTimer);
     lexNextTokenx();
+    lexMetaDecl = 0;
     timerBegin(ParseTimer);
+}
+
+int lexNextIsHash() {
+    char *srcp = lex->srcp;
+    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
+        srcp++;
+    return *srcp == '#';
+}
+
+void lexMarkSave(LexMark *mark) {
+    memcpy(mark->val, &lex->val, sizeof(mark->val));
+    mark->strlen = lex->strlen;
+    mark->langtype = lex->langtype;
+    mark->srcp = lex->srcp;
+    mark->tokp = lex->tokp;
+    mark->linep = lex->linep;
+    mark->prevend = lex->prevend;
+    mark->prevlinep = lex->prevlinep;
+    mark->linenbr = lex->linenbr;
+    mark->prevlinenbr = lex->prevlinenbr;
+    mark->toktype = lex->toktype;
+}
+
+void lexMarkRestore(LexMark *mark) {
+    memcpy(&lex->val, mark->val, sizeof(mark->val));
+    lex->strlen = mark->strlen;
+    lex->langtype = mark->langtype;
+    lex->srcp = mark->srcp;
+    lex->tokp = mark->tokp;
+    lex->linep = mark->linep;
+    lex->prevend = mark->prevend;
+    lex->prevlinep = mark->prevlinep;
+    lex->linenbr = mark->linenbr;
+    lex->prevlinenbr = mark->prevlinenbr;
+    lex->toktype = mark->toktype;
 }
 
 // Is the token after the current one the keyword 'word'? A look at the source
@@ -1477,6 +1865,10 @@ int lexNextIsWord(char *word) {
     while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
         srcp++;
     return lexIsWordAt(srcp, word);
+}
+
+int lexIsAmpAmp() {
+    return lex->toktype == AmperToken && *lex->srcp == '&';
 }
 
 // Pass over the white space and comments in front of a token, on text that is
@@ -1523,10 +1915,15 @@ static char *lexSkipTrivia(char *srcp) {
     }
 }
 
+int lexInterpEndsEntry() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    return *srcp == ',' || *srcp == ';' || *srcp == ')' || *srcp == '}' || *srcp == '\0';
+}
+
 // With the lexer on a name, does what follows it begin a value rather than
 // continue an expression the name begins? Asked of 'fill' at the start of an
 // entry after '<-', which is the contextual word when space and then a value
-// follow it ('xs <- fill 0', 'fill -1', 'fill (a, b)', 'fill new Point(1, 2)')
+// follow it ('xs <- fill 0', 'fill -1', 'fill (a, b)', 'fill Point(1, 2)')
 // and the name otherwise ('xs <- fill;', 'fill(1)', 'fill[0]', 'fill.len()',
 // 'fill + 1', 'fill of 3'). After the space, a token that can do either --
 // '-', '*', '&', '(' and '[' -- is taken as beginning the value, so a variable
@@ -1540,7 +1937,7 @@ int lexNextOpensValue() {
     char c = *srcp;
     if (isalpha((unsigned char)c) || c == '_' || (c & 0x80)) {
         // A name opens a value, unless it is a word that continues an expression
-        static char *infix[] = {"and", "or", "as", "into", "is", "of", NULL};
+        static char *infix[] = {"as", "into", "is", "of", NULL};
         for (char **word = infix; *word; ++word) {
             if (lexIsWordAt(srcp, *word))
                 return 0;
@@ -1600,30 +1997,64 @@ int lexPeekIsIdent() {
     return isalpha((unsigned char)srcp[0]) || srcp[0] == '_';
 }
 
-int lexIdentOpensType() {
-    char *srcp = lexSkipTrivia(lex->srcp);
-    if (*srcp == '.')
+// With the lexer on a 'let' or 'var' that begins a local, does what follows begin a pattern that
+// binds, rather than a declaration of a name? It does when a reference mark begins it ('&mut Err(e)')
+// or a name on the same line is followed by '(', '.' or '[' ('Some(n)', 'Shape.Circle(c)',
+// 'Option[i32](n)'), none of which a declared name may be followed by. Read off the text as
+// lexNextIsWord is.
+int lexNextOpensPattern() {
+    char *srcp = lex->srcp;
+    while (*srcp == ' ' || *srcp == '\t')
+        srcp++;
+    if (*srcp == '&' || *srcp == '*' || *srcp == '+')
         return 1;
+    if (!(isalpha((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80)))
+        return 0;
+    while (isalnum((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80))
+        ++srcp;
+    while (*srcp == ' ' || *srcp == '\t')
+        srcp++;
+    if (*srcp == '(' || *srcp == '.')
+        return 1;
+    // Type arguments, 'Option[i32](n)': the brackets are followed by the binding's parentheses or by
+    // a path's next name. A name and the brackets of an array type, 'xs [4; i32]', are no pattern.
     if (*srcp != '[')
         return 0;
     int depth = 0;
-    while (*srcp) {
-        switch (*srcp) {
-        case '[': case '(': case '{':
+    for (; *srcp && *srcp != '\n'; ++srcp) {
+        if (*srcp == '[')
             ++depth;
-            break;
-        case ']': case ')': case '}':
-            if (--depth == 0)
-                return 1;
-            break;
-        case ';':
-            if (depth == 1)
-                return 0;
+        else if (*srcp == ']' && --depth == 0) {
+            ++srcp;
             break;
         }
-        srcp = lexSkipTrivia(srcp + 1);
     }
-    return 1;
+    return depth == 0 && (*srcp == '(' || *srcp == '.');
+}
+
+int lexStatementHasElse() {
+    int depth = 0;
+    for (char *srcp = lex->tokp; *srcp; ++srcp) {
+        char c = *srcp;
+        if (c == '(' || c == '[' || c == '{')
+            ++depth;
+        else if (c == ')' || c == ']' || c == '}') {
+            if (--depth < 0)
+                return 0;
+        }
+        else if (c == ';' && depth == 0)
+            return 0;
+        else if (c == 'e' && depth == 0 && strncmp(srcp, "else", 4) == 0
+            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_' || srcp[-1] == '#'))
+            && !(isalnum((unsigned char)srcp[4]) || srcp[4] == '_'))
+            return 1;
+    }
+    return 0;
+}
+
+int lexIdentOpensType() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    return *srcp == '.' || *srcp == '[';
 }
 
 // Does this source's first statement begin 'mod' or 'pub mod'? The folder sweep

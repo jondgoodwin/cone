@@ -4,48 +4,42 @@
 // 'start', a whole number of triangles, with the material in slot 'material'
 // (three.js's group, glTF's primitive)
 pub struct Group {
-  pub start u32;
-  pub count u32;
-  pub material u32;
+  pub start: u32;
+  pub count: u32;
+  pub material: u32;
 }
 
 // Triangles over vertices. Every list of vertex data that is not empty has
 // one value per position. 'indices' holds three per triangle, each triangle
 // facing the side from which it runs counterclockwise. 'groups' is empty when
 // the whole mesh is one material, slot 0.
-pub struct Mesh {
-  pub positions List[Vec3];
-  pub normals List[Vec3];     // unit length, or empty
-  pub uvs List[Vec2];         // texture coordinates, or empty
-  pub colors List[Color];     // or empty
-  pub tangents List[Vec4];    // xyz along u, w the handedness (1 or -1), or empty
-  pub indices List[u32];
-  pub groups List[Group];
+pub struct Mesh is Default {
+  pub positions: List[Vec3];
+  pub normals: List[Vec3];     // unit length, or empty
+  pub uvs: List[Vec2];         // texture coordinates, or empty
+  pub colors: List[Color];     // or empty
+  pub tangents: List[Vec4];    // xyz along u, w the handedness (1 or -1), or empty
+  pub indices: List[u32];
+  pub groups: List[Group];
 
-  // A mesh with nothing in it
-  pub fn empty() Mesh {
-    new Mesh(List[Vec3].empty(), List[Vec3].empty(), List[Vec2].empty(), List[Color].empty(),
-      List[Vec4].empty(), List[u32].empty(), List[Group].empty());
-  }
-
-  pub fn vertexCount(self &) usize {positions.len();}
-  pub fn triangleCount(self &) usize {indices.len() / 3usize;}
+  pub fn vertexCount(self: &) usize {positions.len()}
+  pub fn triangleCount(self: &) usize {indices.len() / 3usize}
 
   // The smallest box holding every position; empty when there are none
-  pub fn bounds(self &) Aabb3 {Aabb3.fromPoints(positions.view());}
+  pub fn bounds(self: &) Aabb3 {Aabb3.fromPoints(positions.view())}
 
   // Add a material group: 'count' indices from 'start', in slot 'material'
-  pub fn addGroup(self &mut, start u32, count u32, material u32) {
-    groups.push(new Group(start, count, material));
+  pub fn addGroup(self: &mut, start: u32, count: u32, material: u32) {
+    groups.push(Group(start, count, material));
   }
 
   // The unit normal of triangle t, by the right-hand rule on its corners;
   // (0, 0, 0) when it has no area
-  pub fn triangleNormal(self &, t usize) Vec3 {
-    imm a = *positions[usize.from(*indices[3usize * t])];
-    imm b = *positions[usize.from(*indices[3usize * t + 1usize])];
-    imm c = *positions[usize.from(*indices[3usize * t + 2usize])];
-    unitOrZero((b - a).cross(c - a));
+  pub fn triangleNormal(self: &, t: usize) Vec3 {
+    let a = *positions[usize.from(*indices[3usize * t])];
+    let b = *positions[usize.from(*indices[3usize * t + 1usize])];
+    let c = *positions[usize.from(*indices[3usize * t + 2usize])];
+    unitOrZero((b - a).cross(c - a))
   }
 
   // Flat shading: every triangle gets three vertices of its own, each with
@@ -53,23 +47,23 @@ pub struct Mesh {
   // one, and the indices become 0, 1, 2, ... (the vertex count is three per
   // triangle). Uvs, colors and tangents are carried to the split vertices;
   // the groups still cover the same triangles.
-  pub fn computeFlatNormals(self &mut) {
-    imm nt = indices.len() / 3usize;
-    imm hasUv = uvs.len() > 0usize;
-    imm hasColor = colors.len() > 0usize;
-    imm hasTangent = tangents.len() > 0usize;
-    mut np = List[Vec3].withCapacity(3usize * nt);
-    mut nn = List[Vec3].withCapacity(3usize * nt);
-    mut nu = List[Vec2].empty();
-    mut nc = List[Color].empty();
-    mut ng = List[Vec4].empty();
-    mut ni = List[u32].withCapacity(3usize * nt);
-    mut t = 0usize;
+  pub fn computeFlatNormals(self: &mut) {
+    let nt = indices.len() / 3usize;
+    let hasUv = uvs.len() > 0usize;
+    let hasColor = colors.len() > 0usize;
+    let hasTangent = tangents.len() > 0usize;
+    var np = List[Vec3].withCapacity(3usize * nt);
+    var nn = List[Vec3].withCapacity(3usize * nt);
+    var nu = List[Vec2]();
+    var nc = List[Color]();
+    var ng = List[Vec4]();
+    var ni = List[u32].withCapacity(3usize * nt);
+    var t = 0usize;
     while t < nt {
-      imm normal = self.triangleNormal(t);
-      mut k = 0usize;
+      let normal = self.triangleNormal(t);
+      var k = 0usize;
       while k < 3usize {
-        imm v = usize.from(*indices[3usize * t + k]);
+        let v = usize.from(*indices[3usize * t + k]);
         np.push(*positions[v]);
         nn.push(normal);
         if hasUv { nu.push(*uvs[v]); }
@@ -95,31 +89,31 @@ pub struct Mesh {
   // change with how a polygon was cut into triangles. Vertices are not
   // merged: two vertices at one place (a uv seam) keep their own normals,
   // each from its own triangles. A vertex no triangle uses gets (0, 0, 0).
-  pub fn computeSmoothNormals(self &mut) {
-    imm n = positions.len();
-    mut acc = List[Vec3].withCapacity(n);
-    mut v = 0usize;
+  pub fn computeSmoothNormals(self: &mut) {
+    let n = positions.len();
+    var acc = List[Vec3].withCapacity(n);
+    var v = 0usize;
     while v < n {
-      acc.push(new Vec3(0., 0., 0.));
+      acc.push(Vec3(0., 0., 0.));
       v = v + 1usize;
     }
-    imm nt = indices.len() / 3usize;
-    mut t = 0usize;
+    let nt = indices.len() / 3usize;
+    var t = 0usize;
     while t < nt {
-      imm normal = self.triangleNormal(t);
-      mut k = 0usize;
+      let normal = self.triangleNormal(t);
+      var k = 0usize;
       while k < 3usize {
-        imm i0 = usize.from(*indices[3usize * t + k]);
-        imm i1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
-        imm i2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
-        imm p = *positions[i0];
-        imm w = cornerAngle(p, *positions[i1], *positions[i2]);
+        let i0 = usize.from(*indices[3usize * t + k]);
+        let i1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
+        let i2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
+        let p = *positions[i0];
+        let w = cornerAngle(p, *positions[i1], *positions[i2]);
         acc.set(i0, *acc[i0] + normal * w);
         k = k + 1usize;
       }
       t = t + 1usize;
     }
-    mut out = List[Vec3].withCapacity(n);
+    var out = List[Vec3].withCapacity(n);
     v = 0usize;
     while v < n {
       out.push(unitOrZero(*acc[v]));
@@ -128,38 +122,111 @@ pub struct Mesh {
     normals = out;
   }
 
+  // Tangents, per vertex: the direction of increasing u along the surface, the
+  // basis a normal map's tangent space and an anisotropic highlight's grain are
+  // measured in (Lengyel, "Computing Tangent Space Basis Vectors for an
+  // Arbitrary Mesh", Terathon 2001). Each triangle gives the direction its
+  // uvs run in its plane (the solution of its two edges as combinations of du
+  // and dv); a vertex sums its triangles', each weighted by the triangle's angle
+  // there, and the sum is made perpendicular to the vertex's normal (Gram-Schmidt)
+  // and unit. The fourth component is the handedness: -1 if the normal crossed
+  // with the tangent points against increasing v, else 1. Needs normals and uvs
+  // (none, if either is missing: 'tangents' is left empty). A vertex whose
+  // triangles give no direction (a pole, a degenerate uv) gets any direction
+  // perpendicular to its normal.
+  pub fn computeTangents(self: &mut) {
+    let n = positions.len();
+    tangents.clear();
+    if normals.len() != n || uvs.len() != n || n == 0usize { return; }
+    var tan = List[Vec3].withCapacity(n);
+    var bit = List[Vec3].withCapacity(n);
+    var v = 0usize;
+    while v < n {
+      tan.push(Vec3(0., 0., 0.));
+      bit.push(Vec3(0., 0., 0.));
+      v = v + 1usize;
+    }
+    let nt = indices.len() / 3usize;
+    var t = 0usize;
+    while t < nt {
+      let i0 = usize.from(*indices[3usize * t]);
+      let i1 = usize.from(*indices[3usize * t + 1usize]);
+      let i2 = usize.from(*indices[3usize * t + 2usize]);
+      let e1 = *positions[i1] - *positions[i0];
+      let e2 = *positions[i2] - *positions[i0];
+      let uv0 = *uvs[i0];
+      let uv1 = *uvs[i1];
+      let uv2 = *uvs[i2];
+      let du1 = uv1.x - uv0.x;
+      let dv1 = uv1.y - uv0.y;
+      let du2 = uv2.x - uv0.x;
+      let dv2 = uv2.y - uv0.y;
+      let det = du1 * dv2 - du2 * dv1;
+      if det > 1e-12 || det < -1e-12 {
+        let r = 1. / det;
+        let tu = (e1 * dv2 - e2 * dv1) * r;
+        let tv = (e2 * du1 - e1 * du2) * r;
+        var k = 0usize;
+        while k < 3usize {
+          let c0 = usize.from(*indices[3usize * t + k]);
+          let c1 = usize.from(*indices[3usize * t + (k + 1usize) % 3usize]);
+          let c2 = usize.from(*indices[3usize * t + (k + 2usize) % 3usize]);
+          let w = cornerAngle(*positions[c0], *positions[c1], *positions[c2]);
+          tan.set(c0, *tan[c0] + tu * w);
+          bit.set(c0, *bit[c0] + tv * w);
+          k = k + 1usize;
+        }
+      }
+      t = t + 1usize;
+    }
+    v = 0usize;
+    while v < n {
+      let nv = *normals[v];
+      var tv = *tan[v] - nv * nv.dot(*tan[v]);
+      if tv.length() <= 1e-9 {
+        // Any direction across the normal
+        let other = if nv.y > 0.99 || nv.y < -0.99 { Vec3(1., 0., 0.) } else { Vec3(0., 1., 0.) };
+        tv = other - nv * nv.dot(other);
+      }
+      tv = unitOrZero(tv);
+      let w = if nv.cross(tv).dot(*bit[v]) < 0. { -1.f } else { 1. };
+      tangents.push(Vec4(tv.x, tv.y, tv.z, w));
+      v = v + 1usize;
+    }
+  }
+
   // Add another mesh's vertices and triangles to this one's; its indices are
   // moved past this mesh's vertices. A list of vertex data only one of the two
   // has is filled for the other: normals (0, 0, 0), uvs (0, 0), colors white,
   // tangents (1, 0, 0, 1). When either has groups, both get them, the one
   // without becoming a single group in slot 0.
-  pub fn append(self &mut, o &Mesh) {
-    imm n0 = positions.len();
-    imm n1 = o.positions.len();
-    imm base = u32.from(n0);
-    imm istart = u32.from(indices.len());
-    appendStream[Vec3](&mut normals, n0, &o.normals, n1, new Vec3(0., 0., 0.));
-    appendStream[Vec2](&mut uvs, n0, &o.uvs, n1, new Vec2(0., 0.));
-    appendStream[Color](&mut colors, n0, &o.colors, n1, new Color(1., 1., 1., 1.));
-    appendStream[Vec4](&mut tangents, n0, &o.tangents, n1, new Vec4(1., 0., 0., 1.));
-    mut i = 0usize;
+  pub fn append(self: &mut, o: &Mesh) {
+    let n0 = positions.len();
+    let n1 = o.positions.len();
+    let base = u32.from(n0);
+    let istart = u32.from(indices.len());
+    appendStream[Vec3](&mut normals, n0, &o.normals, n1, Vec3(0., 0., 0.));
+    appendStream[Vec2](&mut uvs, n0, &o.uvs, n1, Vec2(0., 0.));
+    appendStream[Color](&mut colors, n0, &o.colors, n1, Color(1., 1., 1., 1.));
+    appendStream[Vec4](&mut tangents, n0, &o.tangents, n1, Vec4(1., 0., 0., 1.));
+    var i = 0usize;
     while i < n1 {
       positions.push(*o.positions[i]);
       i = i + 1usize;
     }
-    if groups.len() > 0usize or o.groups.len() > 0usize {
-      if groups.len() == 0usize and istart > 0u32 {
-        groups.push(new Group(0u32, istart, 0u32));
+    if groups.len() > 0usize || o.groups.len() > 0usize {
+      if groups.len() == 0usize && istart > 0u32 {
+        groups.push(Group(0u32, istart, 0u32));
       }
       if o.groups.len() == 0usize {
         if o.indices.len() > 0usize {
-          groups.push(new Group(istart, u32.from(o.indices.len()), 0u32));
+          groups.push(Group(istart, u32.from(o.indices.len()), 0u32));
         }
       } else {
-        mut g = 0usize;
+        var g = 0usize;
         while g < o.groups.len() {
-          imm og = *o.groups[g];
-          groups.push(new Group(og.start + istart, og.count, og.material));
+          let og = *o.groups[g];
+          groups.push(Group(og.start + istart, og.count, og.material));
           g = g + 1usize;
         }
       }
@@ -177,9 +244,9 @@ pub struct Mesh {
   // kept. A placement that mirrors (its determinant is negative) would turn
   // every triangle inside out, so each triangle's winding is reversed too,
   // as glTF does.
-  pub fn transform(self &mut, m Mat4) {
-    imm nm = Mat3.normalMatrix(m);
-    mut i = 0usize;
+  pub fn transform(self: &mut, m: Mat4) {
+    let nm = Mat3.normalMatrix(m);
+    var i = 0usize;
     while i < positions.len() {
       positions.set(i, m * *positions[i]);
       i = i + 1usize;
@@ -191,12 +258,12 @@ pub struct Mesh {
     }
     i = 0usize;
     while i < tangents.len() {
-      imm t = *tangents[i];
+      let t = *tangents[i];
       tangents.set(i, unitOrZero(m.transformVector(t.xyz())).extend(t.w));
       i = i + 1usize;
     }
     if m.determinant() < 0. {
-      mut t = 0usize;
+      var t = 0usize;
       while t + 2usize < indices.len() {
         indices.swap(t + 1usize, t + 2usize);
         t = t + 3usize;
@@ -205,7 +272,7 @@ pub struct Mesh {
   }
 
   // The same, by a translation, rotation and scale
-  pub fn transformBy(self &mut, t Transform3) {self.transform(t.toMat4());}
+  pub fn transformBy(self: &mut, t: Transform3) {self.transform(t.toMat4());}
 
   // A sphere of 'radius' centred at the origin, by longitude and latitude:
   // 'nsegments' slices around and as many from pole to pole. The normals point
@@ -216,36 +283,36 @@ pub struct Mesh {
   // the n - 2 bands between circles, 2n(n - 1) triangles. Fewer than 3
   // segments gives an empty mesh. (Pegasus3D's sphere, with its joining of
   // the circles and its vertex count corrected.)
-  pub fn sphere(radius f32, nsegments i32) Mesh {
-    mut s = Mesh.empty();
-    imm n = nsegments;
+  pub fn sphere(radius: f32, nsegments: i32) Mesh {
+    var s = Mesh();
+    let n = nsegments;
     if n <= 2 { return s; }
-    imm nverts = (n + 1) * (n - 1) + 2;
+    let nverts = (n + 1) * (n - 1) + 2;
     s.positions.reserve(usize.from(nverts));
     s.normals.reserve(usize.from(nverts));
     s.uvs.reserve(usize.from(nverts));
     s.indices.reserve(usize.from(6 * n * (n - 1)));
 
     // Top pole vertex
-    s.positions.push(new Vec3(0., radius, 0.));
-    s.normals.push(new Vec3(0., 1., 0.));
-    s.uvs.push(new Vec2(0., 1.));
+    s.positions.push(Vec3(0., radius, 0.));
+    s.normals.push(Vec3(0., 1., 0.));
+    s.uvs.push(Vec2(0., 1.));
 
     // Each circle of latitude, top to bottom, and each vertex around it:
     // circle i's vertex j is vertex (i - 1)(n + 1) + j + 1
-    imm stride = n + 1;
-    mut i = 1;
+    let stride = n + 1;
+    var i = 1;
     while i < n {
-      imm mang = pi * f32.from(i) / f32.from(n);
-      mut j = 0;
+      let mang = pi * f32.from(i) / f32.from(n);
+      var j = 0;
       while j < n {
-        imm nang = 2. * pi * f32.from(j) / f32.from(n);
-        imm x = -cos(nang) * sin(mang);
-        imm y = cos(mang);
-        imm z = sin(nang) * sin(mang);
-        s.normals.push(new Vec3(x, y, z));
-        s.positions.push(new Vec3(x * radius, y * radius, z * radius));
-        s.uvs.push(new Vec2(f32.from(j) / f32.from(n), f32.from(n - i) / f32.from(n)));
+        let nang = 2. * pi * f32.from(j) / f32.from(n);
+        let x = -cos(nang) * sin(mang);
+        let y = cos(mang);
+        let z = sin(nang) * sin(mang);
+        s.normals.push(Vec3(x, y, z));
+        s.positions.push(Vec3(x * radius, y * radius, z * radius));
+        s.uvs.push(Vec2(f32.from(j) / f32.from(n), f32.from(n - i) / f32.from(n)));
 
         // Two triangles per segment; one where the circle meets the pole
         if i == 1 {
@@ -253,10 +320,10 @@ pub struct Mesh {
           s.indices.push(u32.from(j + 1));
           s.indices.push(u32.from(j + 2));
         } else {
-          imm v0 = (i - 2) * stride + j + 1;
-          imm v1 = (i - 2) * stride + j + 2;
-          imm v2 = (i - 1) * stride + j + 2;
-          imm v3 = (i - 1) * stride + j + 1;
+          let v0 = (i - 2) * stride + j + 1;
+          let v1 = (i - 2) * stride + j + 2;
+          let v2 = (i - 1) * stride + j + 2;
+          let v3 = (i - 1) * stride + j + 1;
           s.indices.push(u32.from(v0));
           s.indices.push(u32.from(v3));
           s.indices.push(u32.from(v2));
@@ -267,29 +334,29 @@ pub struct Mesh {
         j = j + 1;
       }
       // The circle's first vertex again, at u = 1
-      imm x = -sin(mang);
-      imm y = cos(mang);
-      s.normals.push(new Vec3(x, y, 0.));
-      s.positions.push(new Vec3(x * radius, y * radius, 0.));
-      s.uvs.push(new Vec2(1., f32.from(n - i) / f32.from(n)));
+      let x = -sin(mang);
+      let y = cos(mang);
+      s.normals.push(Vec3(x, y, 0.));
+      s.positions.push(Vec3(x * radius, y * radius, 0.));
+      s.uvs.push(Vec2(1., f32.from(n - i) / f32.from(n)));
       i = i + 1;
     }
 
     // Bottom pole vertex
-    s.positions.push(new Vec3(0., -radius, 0.));
-    s.normals.push(new Vec3(0., -1., 0.));
-    s.uvs.push(new Vec2(0., 0.));
+    s.positions.push(Vec3(0., -radius, 0.));
+    s.normals.push(Vec3(0., -1., 0.));
+    s.uvs.push(Vec2(0., 0.));
 
     // The bottom circle joined to it
-    imm pole = (n - 1) * stride + 1;
-    mut j = 0;
+    let pole = (n - 1) * stride + 1;
+    var j = 0;
     while j < n {
       s.indices.push(u32.from((n - 2) * stride + j + 1));
       s.indices.push(u32.from(pole));
       s.indices.push(u32.from((n - 2) * stride + j + 2));
       j = j + 1;
     }
-    s;
+    s
   }
 
   // A flat square in y = 0 from -1 to 1 in x and z, facing up (+y), cut into
@@ -297,32 +364,32 @@ pub struct Mesh {
   // row by row along x from z = -1. The uv (0, 0) is the corner at (-1, 0, 1),
   // and 'uvrepeat' is how many times the texture repeats across it. Fewer than
   // 1 segment gives an empty mesh.
-  pub fn plane(nsegments i32, uvrepeat f32) Mesh {
-    mut s = Mesh.empty();
-    imm n = nsegments;
+  pub fn plane(nsegments: i32, uvrepeat: f32) Mesh {
+    var s = Mesh();
+    let n = nsegments;
     if n < 1 { return s; }
-    imm nverts = (n + 1) * (n + 1);
+    let nverts = (n + 1) * (n + 1);
     s.positions.reserve(usize.from(nverts));
     s.normals.reserve(usize.from(nverts));
     s.uvs.reserve(usize.from(nverts));
     s.indices.reserve(usize.from(6 * n * n));
 
-    mut segz = 0;
+    var segz = 0;
     while segz <= n {
-      mut segx = 0;
+      var segx = 0;
       while segx <= n {
-        imm x = 2. * f32.from(segx) / f32.from(n) - 1.;
-        imm z = 2. * f32.from(segz) / f32.from(n) - 1.;
-        s.positions.push(new Vec3(x, 0., z));
-        s.normals.push(new Vec3(0., 1., 0.));
-        s.uvs.push(new Vec2(uvrepeat * f32.from(segx) / f32.from(n), uvrepeat * (1. - f32.from(segz) / f32.from(n))));
+        let x = 2. * f32.from(segx) / f32.from(n) - 1.;
+        let z = 2. * f32.from(segz) / f32.from(n) - 1.;
+        s.positions.push(Vec3(x, 0., z));
+        s.normals.push(Vec3(0., 1., 0.));
+        s.uvs.push(Vec2(uvrepeat * f32.from(segx) / f32.from(n), uvrepeat * (1. - f32.from(segz) / f32.from(n))));
 
         // Two triangles per square
-        if segx > 0 and segz > 0 {
-          imm v0 = (segz - 1) * (n + 1) + segx - 1;
-          imm v1 = (segz - 1) * (n + 1) + segx;
-          imm v2 = segz * (n + 1) + segx;
-          imm v3 = segz * (n + 1) + segx - 1;
+        if segx > 0 && segz > 0 {
+          let v0 = (segz - 1) * (n + 1) + segx - 1;
+          let v1 = (segz - 1) * (n + 1) + segx;
+          let v2 = segz * (n + 1) + segx;
+          let v3 = segz * (n + 1) + segx - 1;
           s.indices.push(u32.from(v0));
           s.indices.push(u32.from(v3));
           s.indices.push(u32.from(v2));
@@ -334,7 +401,7 @@ pub struct Mesh {
       }
       segz = segz + 1;
     }
-    s;
+    s
   }
 
   // A cube centred at the origin, reaching 'size' along each axis each way:
@@ -343,36 +410,36 @@ pub struct Mesh {
   // two triangles each. Each face's uvs run from (0, 0) at its lower left to
   // (1, 1) at its upper right, seen from outside (the top seen with -z up,
   // the bottom with +z up).
-  pub fn cube(size f32) Mesh {
-    mut s = Mesh.empty();
+  pub fn cube(size: f32) Mesh {
+    var s = Mesh();
     s.positions.reserve(24usize);
     s.normals.reserve(24usize);
     s.uvs.reserve(24usize);
-    mut v = 0usize;
+    var v = 0usize;
     while v < 24usize {
-      imm f = 3usize * (v / 4usize);
-      imm p = new Vec3(cubePositions[3usize * v], cubePositions[3usize * v + 1usize],
+      let f = 3usize * (v / 4usize);
+      let p = Vec3(cubePositions[3usize * v], cubePositions[3usize * v + 1usize],
         cubePositions[3usize * v + 2usize]);
-      imm right = new Vec3(cubeRights[f], cubeRights[f + 1usize], cubeRights[f + 2usize]);
-      imm up = new Vec3(cubeUps[f], cubeUps[f + 1usize], cubeUps[f + 2usize]);
+      let right = Vec3(cubeRights[f], cubeRights[f + 1usize], cubeRights[f + 2usize]);
+      let up = Vec3(cubeUps[f], cubeUps[f + 1usize], cubeUps[f + 2usize]);
       s.positions.push(p * size);
       s.normals.push(right.cross(up));
-      s.uvs.push(new Vec2((p.dot(right) + 1.) * 0.5, (p.dot(up) + 1.) * 0.5));
+      s.uvs.push(Vec2((p.dot(right) + 1.) * 0.5, (p.dot(up) + 1.) * 0.5));
       v = v + 1usize;
     }
     s.indices.reserve(36usize);
-    mut i = 0usize;
+    var i = 0usize;
     while i < 36usize {
       s.indices.push(cubeIndices[i]);
       i = i + 1usize;
     }
-    s;
+    s
   }
 }
 
 // Pegasus3D's cube: the four corners of each face (top, bottom, back, front,
 // left, right)
-imm cubePositions Array[f32, 72] = [
+let cubePositions: Array[f32, 72] = [
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  -1f, 1f, 1f,
   -1f, -1f, -1f,  1f, -1f, -1f,  1f, -1f, 1f,  -1f, -1f, 1f,
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, -1f, -1f,  -1f, -1f, -1f,
@@ -382,20 +449,20 @@ imm cubePositions Array[f32, 72] = [
 // Two triangles for each face, counterclockwise seen from outside.
 // (Pegasus3D's ran (0, 1, 2), (0, 2, 3) on every face, which is clockwise on
 // the top, front and left ones.)
-imm cubeIndices Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
+let cubeIndices: Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
   8u32, 9u32, 10u32, 8u32, 10u32, 11u32, 12u32, 14u32, 13u32, 12u32, 15u32, 14u32,
   16u32, 18u32, 17u32, 16u32, 19u32, 18u32, 20u32, 21u32, 22u32, 20u32, 22u32, 23u32];
 // Each face's directions across and up it, seen from outside: their cross
 // product is its outward normal
-imm cubeRights Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
-imm cubeUps Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
+let cubeRights: Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
+let cubeUps: Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
 
 // Extend 'dst', which holds data for 'n0' vertices or none, by 'src''s data
 // for 'n1' more, filling for whichever lacks it; nothing when both lack it
-fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
-  if dst.len() == 0usize and src.len() == 0usize { return; }
+fn appendStream[T](dst: &mut List[T], n0: usize, src: &List[T], n1: usize, fill: T) {
+  if dst.len() == 0usize && src.len() == 0usize { return; }
   while dst.len() < n0 { dst.push(fill); }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n1 {
     if i < src.len() { dst.push(*src[i]); } else { dst.push(fill); }
     i = i + 1usize;
@@ -403,40 +470,40 @@ fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
 }
 
 // The vector made unit length, or (0, 0, 0) if it has none
-fn unitOrZero(v Vec3) Vec3 {
-  imm len = v.length();
-  if len > 0. { v * (1. / len); } else { new Vec3(0., 0., 0.); };
+fn unitOrZero(v: Vec3) Vec3 {
+  let len = v.length();
+  if len > 0. { v * (1. / len) } else { Vec3(0., 0., 0.) }
 }
 
 // The angle at corner p of the triangle p, a, b, in radians; 0 when an edge
 // has no length
-fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
-  imm e1 = a - p;
-  imm e2 = b - p;
-  imm l = e1.length() * e2.length();
+fn cornerAngle(p: Vec3, a: Vec3, b: Vec3) f32 {
+  let e1 = a - p;
+  let e2 = b - p;
+  let l = e1.length() * e2.length();
   if l <= 0. { return 0.; }
-  mut c = e1.dot(e2) / l;
+  var c = e1.dot(e2) / l;
   if c > 1. { c = 1.; }
   if c < -1. { c = -1.; }
-  acos(c);
+  acos(c)
 }
 
 // The normal of a polygon by Newell's method, of length twice its area
 // (unnormalized): exact for a flat polygon, convex or not, and the best-fit
 // plane's normal for one that is not quite flat
-fn newellNormal(pts &List[Vec3]) Vec3 {
-  mut nx f32 = 0.;
-  mut ny f32 = 0.;
-  mut nz f32 = 0.;
-  imm n = pts.len();
-  mut i = 0usize;
+fn newellNormal(pts: &List[Vec3]) Vec3 {
+  var nx: f32 = 0.;
+  var ny: f32 = 0.;
+  var nz: f32 = 0.;
+  let n = pts.len();
+  var i = 0usize;
   while i < n {
-    imm a = *pts[i];
-    imm b = *pts[(i + 1usize) % n];
+    let a = *pts[i];
+    let b = *pts[(i + 1usize) % n];
     nx = nx + (a.y - b.y) * (a.z + b.z);
     ny = ny + (a.z - b.z) * (a.x + b.x);
     nz = nz + (a.x - b.x) * (a.y + b.y);
     i = i + 1usize;
   }
-  new Vec3(nx, ny, nz);
+  Vec3(nx, ny, nz)
 }

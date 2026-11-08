@@ -1,0 +1,141 @@
+// Segment reclaim, coming to rest and shrinkChain with grouped messages (two
+// positions each) in the mailbox: actors.cone, THE GROUP TRAVELS and THE MAILBOX.
+//
+// Forty rounds. In each, four sender actors send a sink 6,000 messages apiece at
+// once, in runs of grouped and ungrouped sends (the ring grows to segments of
+// hundreds of slots), then the sink drains and falls quiet (a rest; every second
+// round main also waits, so that a calm rest comes and the ring shrinks back).
+// Checked after every round: all 24,000 messages arrived once, each sender's in
+// order, each in its group or none; and at the end the segments the mailbox
+// holds do not grow with the rounds (the most held at a round's end in the last
+// twenty rounds is within 8 of the most in the first twenty; the count at any one
+// round's end is NOT compared, since it swings between about 5 and 25 with whether a
+// calm rest has come yet, on a loaded 2-core box more than on a quiet one) and total
+// under a megabyte, and every group handle was let go (the group's timer, a far
+// deadline, is disarmed once the sink has taken the last).
+
+mod ringgroupsrest;
+
+import testing use *;
+import collections use *;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub got: Atomic[u64];
+  pub badOrder: Atomic[u64];
+  pub badGroup: Atomic[u64];
+  pub wantGid: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Sink {
+  next: List[u64];
+
+  fn init(self: &new) {
+    var l = List[u64]();
+    var k = 0usize;
+    while k < 8usize { l.push(0u64); k += 1usize; }
+    *self = Self(next: l);
+  }
+
+  pub async fn reset(self) {
+    var k = 0usize;
+    while k < 8usize { next[k] = 0u64; k += 1usize; }
+  }
+
+  pub async fn rec(self, sid: u64, i: u64, grouped: u64, pad: u64) {
+    let at = usize.from(sid);
+    if next[at] != i || pad != i + sid {
+      seen.badOrder.add(1u64);
+    }
+    next[at] = i + 1u64;
+    let inG = actors.currentGroup().id() == seen.wantGid.load();
+    if grouped == 1u64 {
+      if !inG {seen.badGroup.add(1u64);}
+    } else if inG {
+      seen.badGroup.add(1u64);
+    }
+    seen.got.add(1u64);
+  }
+}
+
+actor Sender {
+  pub async fn run(self, sink: Sink, sid: u64, n: u64, g: CancelGroup) {
+    var i = 0u64;
+    while i < n {
+      let phase = (i + sid * 3u64) % (sid + 5u64);
+      if phase < sid + 2u64 {
+        let ii = i;
+        actors.withGroup(&g, fn() [sink, sid, ii] { sink.rec(sid, ii, 1u64, ii + sid); });
+      } else {
+        sink.rec(sid, i, 0u64, i + sid);
+      }
+      i += 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let before = armedTimers();
+  let sink = Sink();
+  var senders = List[Sender]();
+  var s = 0usize;
+  while s < 4usize {
+    senders.push(Sender());
+    s += 1usize;
+  }
+  let per = #if #debug {2000u64} #else {6000u64};
+  let rounds = 40usize;
+  var bad = 0u64;
+  var earlyMax = 0u64;
+  var lateMax = 0u64;
+  var r = 0usize;
+  {
+    // a group whose far deadline arms a timer: held only by the messages in flight and here
+    let g = CancelGroup.until(Instant.now() + Duration.fromMillis(600000i64));
+    seen.wantGid.store(g.id());
+    while r < rounds {
+      seen.got.store(0u64);
+      sink.reset();
+      s = 0usize;
+      while s < 4usize {
+        senders[s].run(sink, u64.from(s), per, g);
+        s += 1usize;
+      }
+      actors.waitQuiet();
+      if seen.got.load() != 4u64 * per || seen.badOrder.load() != 0u64 || seen.badGroup.load() != 0u64 {
+        bad += 1u64;
+      }
+      if r % 2usize == 1usize {
+        thread.sleep(Duration.fromMillis(20i64));
+      }
+      // the segments held at the end of the round: the most in each half of the run
+      let held = u64.from(actors.liveSegments());
+      if r < 20usize {
+        if held > earlyMax {earlyMax = held;}
+      } else if held > lateMax {
+        lateMax = held;
+      }
+      r += 1usize;
+    }
+  }
+  actors.waitQuiet();
+  expectUInt(bad, 0u64, "forty rounds: each had every message once, in order, in its group or none");
+  expectUInt(seen.badOrder.load(), 0u64, "none out of order, none twice");
+  expectUInt(seen.badGroup.load(), 0u64, "none in the wrong group");
+  expect(lateMax <= earlyMax + 8u64, "the segments held at the end of a round do not grow with the rounds: the most in the last twenty is within 8 of the most in the first twenty");
+  expect(u64.from(actors.liveSegments()) <= earlyMax + 8u64, "and at the end no more are held than the first twenty rounds ever held, plus a few");
+  expect(actors.liveSegmentBytes() < 1048576usize, "and a quiet mailbox holds under a megabyte");
+  expectUInt(u64.from(armedTimers()), u64.from(before), "every copy of the group was let go: its timer is disarmed");
+  done()
+}

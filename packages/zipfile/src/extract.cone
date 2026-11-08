@@ -1,0 +1,394 @@
+// ======== Extracting to a folder, safely ========
+//
+// "Zip slip": an archive is data from someone else, and an entry's name is a path it chooses. Extracting
+// without looking lets 'ok.txt' be followed by '../../.ssh/authorized_keys'. So:
+//
+//   - every entry is checked before the first byte is written, and one that fails ends the whole
+//     extraction with nothing made: its name, its kind, its method, its place, the limits;
+//   - a name is refused if it is empty, holds a NUL, is absolute ('/etc/x', '\x'), starts with a drive
+//     letter ('C:x'), or has a '..' component. A '\' is a separator, as it is to Windows tools and to
+//     Info-ZIP's unzip, so '..\x' is a '..' component too. '.' and empty components are dropped.
+//   - on Windows, a name is also refused if a component holds one of < > : " | ? * or a control
+//     character (':' names a drive, or a stream of a file), ends in a space or a dot, or is a device
+//     (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, with any extension). Other systems take those
+//     names, so they are not refused there.
+//   - a symbolic-link entry (a Unix mode of type 0120000) is refused, never made. So is an entry that is
+//     encrypted, or uses a method this package does not read.
+//   - a name on the way to an entry in the destination, the entry's own included, that is a link is not
+//     written through, because a link the archive did not make could lead anywhere. A link that leads
+//     nowhere is a link all the same: 'fs.isLink' looks at the name and follows nothing, where 'fs.stat'
+//     and 'fs.exists' follow it and see no file, which is what writing "through" would have made. On
+//     Windows a link is any reparse point (a symbolic link, a junction, a cloud-storage placeholder).
+//     Every entry's way is looked at before the first byte is written, and again as each is written.
+//     The destination itself, and what lies above it, is the caller's to name and is not looked at.
+//   - a file already there is not replaced unless 'overwrite' is set; a folder in a file's way never is.
+//   - an entry that comes out wrong (a bad CRC, data that does not inflate) removes the file it was
+//     writing; files written before it stay.
+//
+// What is given back besides the bytes, by 'ExtractOptions':
+//
+//   - 'restoreTimes' (on): a file's and a folder's modified (and access) time is set from its entry's
+//     'modified'. A file's is set when it is written; a folder's after every entry is written, since the
+//     files made in it change its time.
+//   - 'restoreMode' (off): the nine permission bits of an entry's Unix mode are set with 'fs.chmod', again
+//     a folder's after everything is written, since a folder that forbids writing would stop its files.
+//     Setuid, setgid and sticky are never set. An entry with no Unix mode gets none. On Windows 'chmod'
+//     reads only the owner-write bit: a mode without it makes the file read-only, and no other bit means
+//     anything there, the execute bit included; a folder's mode is not applied at all.
+//   - what cannot be set (a file system that keeps no modes or times) is counted in 'Extracted.unrestored'
+//     and is not a failure. The destination folder itself (an entry './') and folders made only because a
+//     file's name goes through them are left as made. A failed extraction leaves its folders as made.
+
+// Windows reserves these as device names, whatever the extension
+fn isDeviceName(comp: &str) bool {
+  // The part before the first dot, in capitals
+  var base = String();
+  var i = 0usize;
+  while i < comp.len() && comp[i] != '.' {
+    var b = comp[i];
+    if b >= 'a' && b <= 'z' { b = b - 32u8; }
+    base.appendByte(b);
+    i += 1usize;
+  }
+  if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" { return true; }
+  if base.len() == 4usize && (base.startsWith("COM") || base.startsWith("LPT")) {
+    let d = base[3usize];
+    return d >= '1' && d <= '9';
+  }
+  false
+}
+
+// Whether one component of a name cannot be a file on Windows
+fn badOnWindows(comp: &str) bool {
+  var i = 0usize;
+  while i < comp.len() {
+    let b = comp[i];
+    if b < 32u8 || b == '<' || b == '>' || b == ':' || b == '"' || b == '|' || b == '?' || b == '*' { return true; }
+    i += 1usize;
+  }
+  let last = comp[comp.len() - 1usize];
+  if last == ' ' || last == '.' { return true; }
+  isDeviceName(comp)
+}
+
+// An entry's name as a relative path of '/'-separated names that stays inside the folder: '' for the
+// folder itself ('./'), else the names. Or why it is refused.
+fn safeName(name: &str) Result[String, ZipError] {
+  let n = name.len();
+  if n == 0usize { return refusal[String](ErrorKind.UnsafePath, 0u64, "an entry has an empty name"); }
+  var i = 0usize;
+  while i < n {
+    if name[i] == 0u8 {
+      return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "holds a NUL byte").view());
+    }
+    i += 1usize;
+  }
+  let first = name[0usize];
+  if first == '/' || first == '\\' {
+    return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "is an absolute path").view());
+  }
+  let lower = first | 32u8;
+  if n >= 2usize && name[1usize] == ':' && lower >= 'a' && lower <= 'z' {
+    return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "starts with a drive letter").view());
+  }
+  var out = String();
+  var comp = String();
+  var k = 0usize;
+  while k <= n {
+    let b = if k < n { name[k] } else { 47u8 };   // a '/' ends the last component
+    if b == '/' || b == '\\' {
+      if comp.len() == 0usize || comp == "." {
+        // nothing, or the folder itself
+      } else if comp == ".." {
+        return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "has a '..' component").view());
+      } else {
+        #if #os == .windows {
+          if badOnWindows(comp.view()) {
+            return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "is not a name a Windows file can have").view());
+          }
+        }
+        if out.len() > 0usize { out.appendByte('/'); }
+        out.append(comp.view());
+      }
+      comp.clear();
+    } else {
+      comp.appendByte(b);
+    }
+    k += 1usize;
+  }
+  Ok[String, ZipError](out)
+}
+
+fn ioFault(e: &fs.FsError) ZipError {
+  let why = String() <- e;
+  ZipError.make(ErrorKind.Io, 0u64, why.view())
+}
+
+// Checks entry 'i' on its own: its name, kind, method and place in the archive. The cleaned name, or
+// the refusal.
+fn checkEntry(ar: &Archive, data: &Array[u8], i: usize) Result[String, ZipError] {
+  let e = ar.entry(i);
+  let clean = safeName(e.name.view())?;
+  if e.isSymlink() {
+    return refusal[String](ErrorKind.SymlinkEntry, e.offset, about("the entry", e.name.view(), "is a symbolic link; links are not extracted").view());
+  }
+  if e.isDir() { return Ok[String, ZipError](clean); }
+  if clean.len() == 0usize {
+    return refusal[String](ErrorKind.UnsafePath, e.offset, about("the entry", e.name.view(), "names no file").view());
+  }
+  locate(ar, data, i)?;
+  Ok[String, ZipError](clean)
+}
+
+// Refuses a folder or file in the destination that is a link (see the top of this file), a link that
+// leads nowhere as much as one that leads somewhere: 'fs.isLink' looks at the name itself and follows
+// nothing. 'verified' holds the paths looked at already.
+fn linkFault(p: &Path, verified: &mut Set[String]) Option[ZipError] {
+  if verified.contains(p.view()) { return None[ZipError]; }
+  if fs.isLink(p) {
+    return Some[ZipError](ZipError.make(ErrorKind.UnsafePath, 0u64,
+      about("the path", p.view(), "is a link, and is not written through").view()));
+  }
+  verified.insert(String.from(p.view()));
+  None[ZipError]
+}
+
+// Looks at every name on the way to 'clean' under 'base', the last one (the file or folder the entry
+// makes) included: none may be a link.
+fn linkOnWay(base: &Path, clean: &str, verified: &mut Set[String]) Option[ZipError] {
+  var walk = base.clone();
+  var comp = String();
+  var k = 0usize;
+  while k <= clean.len() {
+    let b = if k < clean.len() { clean[k] } else { 47u8 };   // a '/' ends the last component
+    if b == '/' {
+      if comp.len() > 0usize {
+        walk = walk.join(comp.view());
+        match linkFault(&walk, verified) {
+          case let Some(f) { return Some[ZipError](f); }
+          case is None {}
+        }
+        comp.clear();
+      }
+    } else {
+      comp.appendByte(b);
+    }
+    k += 1usize;
+  }
+  None[ZipError]
+}
+
+// A folder made by an entry, whose time and mode are set at the end: files made in it change its time,
+// and a mode without write or search permission would stop them being made at all
+struct Pending {
+  path: String;
+  index: usize;
+}
+
+// Longer paths first, so a folder is done before the one that holds it
+fn deeperFirst(a: &Pending, b: &Pending) i32 {
+  if a.path.len() > b.path.len() { -1i32 } else if a.path.len() < b.path.len() { 1i32 } else { 0i32 }
+}
+
+// The permission bits of a mode the options may apply
+const permissionBits = 0x1FFu32;
+
+// Sets the time and the mode the options ask for on 'path', made from entry 'e'. False if any that was
+// asked for failed. The time goes first: on Windows a read-only file still takes a time, but it is
+// simpler not to depend on it.
+fn restoreOne(e: &Entry, path: &Path, folder: bool, opts: &ExtractOptions) bool {
+  var ok = true;
+  if opts.restoreTimes {
+    let t = time.Timestamp.fromUnixSeconds(e.modified);
+    if fs.utime(path, t, t) is Err { ok = false; }
+  }
+  let mode = e.unixMode();
+  // On Windows a folder's read-only attribute asks nothing of anyone and gets in the way of removing it
+  let skipFolder = #if #os == .windows { folder } #else { false };
+  if opts.restoreMode && mode != 0u32 && !skipFolder {
+    if fs.chmod(path, mode & permissionBits) is Err { ok = false; }
+  }
+  ok
+}
+
+// Extracts entry 'i', whose cleaned name is 'clean', under 'base' (absolute). Adds to 'got'; a folder
+// is added to 'pending' to have its time and mode set after everything is written.
+fn writeOne(ar: &Archive, data: &Array[u8], i: usize, clean: &str, base: &Path, opts: &ExtractOptions,
+    verified: &mut Set[String], pending: &mut List[Pending], got: &mut Extracted) Option[ZipError] {
+  let e = ar.entry(i);
+  // Every name on the way, from the destination down, must not be a link
+  match linkOnWay(base, clean, verified) {
+    case let Some(f) { return Some[ZipError](f); }
+    case is None {}
+  }
+  let walk = if clean.len() == 0usize { base.clone() } else { base.join(clean) };
+  if e.isDir() {
+    match fs.makeDirAll(&walk) {
+      case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
+      case is Ok {}
+    }
+    got.folders += 1usize;
+    // The destination itself is the user's, not the archive's to give a mode or a time
+    if clean.len() > 0usize && (opts.restoreTimes || opts.restoreMode) {
+      pending.push(Pending(String.from(walk.view()), i));
+    }
+    return None[ZipError];
+  }
+  // 'walk' is the file's own path; its folder is made, then it is written
+  let up = walk.parent();
+  match fs.makeDirAll(&up) {
+    case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
+    case is Ok {}
+  }
+  if fs.exists(&walk) {
+    if fs.isDir(&walk) {
+      return Some[ZipError](ZipError.make(ErrorKind.Exists, 0u64, about("a folder is where the file", walk.view(), "would go").view()));
+    }
+    if !opts.overwrite {
+      return Some[ZipError](ZipError.make(ErrorKind.Exists, 0u64, about("the file", walk.view(), "is already there").view()));
+    }
+    // A file this package made read-only (a restored mode) would refuse the new data; the entry's own mode
+    // is put back after. Only where the entry has a mode to put back.
+    if opts.restoreMode && e.unixMode() != 0u32 { _ = fs.chmod(&walk, 0x180u32); }
+  }
+  let wrote = writeData(ar, data, i, &walk, got);
+  if wrote is Some { return wrote; }
+  if (opts.restoreTimes || opts.restoreMode) && !restoreOne(e, &walk, false, opts) { got.unrestored += 1usize; }
+  None[ZipError]
+}
+
+// Sets the time and mode of the folders in 'pending', the deepest first
+fn restoreFolders(ar: &Archive, opts: &ExtractOptions, pending: &mut List[Pending], got: &mut Extracted) {
+  pending.sortBy(&deeperFirst);
+  var k = 0usize;
+  while k < pending.len() {
+    let p = &pending[k];
+    if !restoreOne(ar.entry(p.index), &Path.from(p.path.view()), true, opts) { got.unrestored += 1usize; }
+    k += 1usize;
+  }
+}
+
+// Writes the data of entry 'i' to the file 'path': the first piece makes the file, the rest are added.
+// A failure removes the file.
+fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Extracted) Option[ZipError] {
+  match ar.reader(data, i) {
+    case let Err(e) { return Some[ZipError](e); }
+    case var Ok(r) {
+      var piece = List[u8]();
+      var first = true;
+      while true {
+        piece.clear();
+        let s = r.pull(data, &mut piece, 1048576usize);
+        if s == Status.Failed {
+          if !first { _ = fs.removeFile(path); }
+          match r.error() {
+            case let Some(e) { return Some[ZipError](e); }
+            case is None { return Some[ZipError](ZipError.make(ErrorKind.Corrupt, 0u64, "the entry failed")); }
+          }
+        }
+        // A piece that does not fail is written at once; the CRC-32 is known good only at Done, so a
+        // last piece that fails removes the file
+        let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
+        match wrote {
+          case let Err(fe) {
+            _ = fs.removeFile(path);
+            return Some[ZipError](ioFault(&fe));
+          }
+          case is Ok {}
+        }
+        first = false;
+        got.bytes += u64.from(piece.len());
+        if s == Status.Done { break; }
+      }
+    }
+  }
+  got.files += 1usize;
+  None[ZipError]
+}
+
+// The destination as an absolute path, or why not
+fn baseOf(dest: &Path) Result[Path, ZipError] {
+  Ok[Path, ZipError](fs.absolute(dest)?)
+}
+
+fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+  let base = baseOf(dest)?;
+  // First every entry is looked at, and nothing is written
+  var plan = List[String].withCapacity(ar.count());
+  var seen = Set[String]();
+  var looked = Set[String]();
+  var total = 0u64;
+  var i = 0usize;
+  while i < ar.count() {
+    let e = ar.entry(i);
+    let clean = checkEntry(ar, data, i)?;
+    // A link on the entry's way, seen now, refuses the extraction with nothing written (it is looked
+    // for again as each entry is written)
+    match linkOnWay(&base, clean.view(), &mut looked) {
+      case let Some(f) { return Err[Extracted, ZipError](f); }
+      case is None {}
+    }
+    if !e.isDir() {
+      if opts.maxTotal > 0u64 && (e.size > opts.maxTotal || total > opts.maxTotal - e.size) {
+        return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "takes the entries past the limit on the total size").view());
+      }
+      total += e.size;
+      if !opts.overwrite && clean.len() > 0usize {
+        // Two entries for one file would be the second finding the first (a name differing only in
+        // case is not seen here; the second then fails as Exists where the system folds case)
+        if !seen.insert(clean.clone()) {
+          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the name", e.name.view(), "is used by a second entry").view());
+        }
+        let target = base.join(clean.view());
+        if fs.exists(&target) {
+          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", target.view(), "is already there").view());
+        }
+      }
+    }
+    plan.push(clean);
+    i += 1usize;
+  }
+  fs.makeDirAll(&base)?;
+  var verified = Set[String]();
+  var pending = List[Pending]();
+  var got = Extracted(0usize, 0usize, 0u64, 0usize);
+  i = 0usize;
+  while i < ar.count() {
+    match writeOne(ar, data, i, plan[i].view(), &base, opts, &mut verified, &mut pending, &mut got) {
+      case let Some(f) { return Err[Extracted, ZipError](f); }
+      case is None {}
+    }
+    i += 1usize;
+  }
+  restoreFolders(ar, opts, &mut pending, &mut got);
+  Ok[Extracted, ZipError](got)
+}
+
+fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+  if i >= ar.count() {
+    return refusal[Extracted](ErrorKind.NotFound, 0u64, "there is no entry with that index");
+  }
+  let base = baseOf(dest)?;
+  let e = ar.entry(i);
+  let clean = checkEntry(ar, data, i)?;
+  if opts.maxTotal > 0u64 && !e.isDir() && e.size > opts.maxTotal {
+    return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "is larger than the limit").view());
+  }
+  var verified = Set[String]();
+  match linkOnWay(&base, clean.view(), &mut verified) {
+    case let Some(f) { return Err[Extracted, ZipError](f); }
+    case is None {}
+  }
+  if !e.isDir() && !opts.overwrite && fs.exists(&base.join(clean.view())) {
+    return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", base.join(clean.view()).view(), "is already there").view());
+  }
+  fs.makeDirAll(&base)?;
+  var pending = List[Pending]();
+  var got = Extracted(0usize, 0usize, 0u64, 0usize);
+  match writeOne(ar, data, i, clean.view(), &base, opts, &mut verified, &mut pending, &mut got) {
+    case let Some(f) { return Err[Extracted, ZipError](f); }
+    case is None {}
+  }
+  restoreFolders(ar, opts, &mut pending, &mut got);
+  Ok[Extracted, ZipError](got)
+}

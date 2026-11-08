@@ -1,0 +1,132 @@
+// A ChunkInbox's states, one thread and no actor (chunkinbox.cone tests it under actors,
+// with a sink that awaits). The ChunkInbox here has no upstream attached, so a buffer
+// it gives back simply dies, and the buffer pool's count of lent buffers says
+// whether any was stranded.
+//
+//   1. a chunk is handed out at once; the ones that arrive while it is in hand
+//      queue, in order; the end that arrives meanwhile waits behind them all and
+//      comes out of 'finished' after the last; nothing is handled after the end;
+//   2. a sink that never waits: the chunk comes out, 'finished' says Wait, and
+//      the end comes out at once;
+//   3. a sink that fails: the chunk in hand and every queued one go back, the
+//      chunks that arrive later are refused, the upstream's end is swallowed;
+//   4. a ChunkInbox dropped with chunks queued frees them.
+
+mod chunkinboxstate;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import stages use *;
+
+// A chunk whose one byte is n
+fn chunkOf(n: u8) IoBuf {
+  var b = IoBuf(16usize);
+  let room = b.spare();
+  room[0usize] = n;
+  b.setLen(1usize);
+  b
+}
+
+// The chunk a Turn hands out (an empty buffer if it hands out none)
+fn take(t: Turn) IoBuf {
+  match t {
+    case let Chunk(b) { b }
+    else { IoBuf() }
+  }
+}
+
+fn isWait(t: Turn) bool {
+  match t {
+    case is Wait { true }
+    else { false }
+  }
+}
+
+fn endOf(t: Turn) bool {
+  match t {
+    case let End(how) { true }
+    else { false }
+  }
+}
+
+fn finishedEnd(t: Turn) bool {
+  match t {
+    case let End(how) {
+      match how {
+        case is Finished { true }
+        else { false }
+      }
+    }
+    else { false }
+  }
+}
+
+fn main() i32 {
+  let before = iobuf.stats().lent;
+
+  // 1. chunks queue behind the one in hand; the end waits behind them all
+  {
+    var rx = ChunkInbox.make();
+    expect(!rx.isBusy(), "1: idle at first");
+    let c1 = take(rx.arrive(chunkOf(1u8)));
+    expectUInt(u64.from(c1.view()[0usize]), 1u64, "1: the first chunk is handed out at once");
+    expect(rx.isBusy(), "1: and the ChunkInbox is busy");
+    expect(isWait(rx.arrive(chunkOf(2u8))), "1: a chunk that arrives meanwhile waits");
+    expect(isWait(rx.arrive(chunkOf(3u8))), "1: and so does the next");
+    expectUInt(u64.from(rx.queued()), 2u64, "1: two are queued");
+    expect(isWait(rx.arriveEnd(Ending.Finished)), "1: the end waits behind them");
+    let c2 = take(rx.finished(c1));
+    expectUInt(u64.from(c2.view()[0usize]), 2u64, "1: when the first is finished the second comes out (in order)");
+    expect(rx.isBusy(), "1: still busy");
+    let c3 = take(rx.finished(c2));
+    expectUInt(u64.from(c3.view()[0usize]), 3u64, "1: then the third");
+    expectUInt(u64.from(rx.queued()), 0u64, "1: nothing queued");
+    expect(finishedEnd(rx.finished(c3)), "1: and when the third is finished the end comes out, Finished");
+    expect(!rx.isBusy(), "1: idle again");
+    expectUInt(u64.from(rx.peakQueued()), 2u64, "1: the queue peaked at two");
+    expectUInt(rx.waits(), 2u64, "1: two chunks had to wait");
+    expect(isWait(rx.arrive(chunkOf(4u8))), "1: a chunk after the end is refused");
+    expect(isWait(rx.arriveEnd(Ending.Finished)), "1: and a second end");
+  }
+
+  // 2. a sink that never waits
+  {
+    var rx = ChunkInbox.make();
+    let c = take(rx.arrive(chunkOf(7u8)));
+    expectUInt(u64.from(c.view()[0usize]), 7u64, "2: the chunk comes out");
+    expect(isWait(rx.finished(c)), "2: finished with nothing behind it: Wait");
+    expect(!rx.isBusy(), "2: idle");
+    expect(finishedEnd(rx.arriveEnd(Ending.Finished)), "2: the end comes out at once");
+    expectUInt(rx.waits(), 0u64, "2: nothing had to wait");
+  }
+
+  // 3. a sink that fails on the chunk in hand
+  {
+    var rx = ChunkInbox.make();
+    let c1 = take(rx.arrive(chunkOf(1u8)));
+    expect(isWait(rx.arrive(chunkOf(2u8))), "3: queued");
+    expect(isWait(rx.arrive(chunkOf(3u8))), "3: queued");
+    expect(isWait(rx.arriveEnd(Ending.Finished)), "3: the end waits");
+    rx.fail(c1);
+    expect(rx.hasFailed(), "3: failed");
+    expect(!rx.isBusy(), "3: not busy");
+    expectUInt(u64.from(rx.queued()), 0u64, "3: the queue was given back");
+    expect(isWait(rx.arrive(chunkOf(4u8))), "3: a chunk that arrives later is refused (given back unhandled)");
+    expectUInt(u64.from(rx.queued()), 0u64, "3: and not queued");
+    expect(isWait(rx.arriveEnd(Ending.Finished)), "3: the upstream's end is swallowed");
+  }
+
+  // 4. dropped with chunks queued
+  {
+    var rx = ChunkInbox.make();
+    let c1 = take(rx.arrive(chunkOf(1u8)));
+    rx.arrive(chunkOf(2u8));
+    rx.arrive(chunkOf(3u8));
+    expectUInt(u64.from(rx.queued()), 2u64, "4: two queued");
+    expect(iobuf.stats().lent >= before + 3u64, "4: three buffers are lent");
+  }
+  expectUInt(iobuf.stats().lent, before, "4: the ChunkInbox dropped with chunks queued freed them, and the one in hand died too");
+  expectUInt(iobuf.stats().lent, before, "every buffer is back in the buffer pool");
+  done()
+}

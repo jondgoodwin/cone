@@ -37,6 +37,22 @@ int iexpCharNumberMismatch(INode *from, INode *totypedcl);
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
+// Coerce a condition's operand to bool. Only here, and under '!', does an Option
+// or Result convert to bool (through isTrue). The check state is the one under way:
+// the isTrue it injects borrows a temporary receiver for the statement being checked
+int iexpCoerceCondition(TypeCheckState *pstate, INode **from);
+// Type check an operand of '!' and coerce it to bool, as a condition
+int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from);
+// Is the expression's type Option or Result, or a variant of one?
+int iexpIsOptionOrResult(INode *node);
+
+// A 'var' declaration (variable or field) that takes its type from a type checked
+// initializer which is a variant of an enum ('var st = Status.Done') holds the
+// enum, so it may be given another variant later. The initializer is coerced to the
+// enum, and the enum type is the answer. NULL, changing nothing, for any other
+// declaration: a 'let' keeps the variant's type, as does a declared type (which
+// this is never asked of).
+INode *iexpMutDclEnum(INode *perm, INode **valuep);
 
 // The type a value coerced to 'totypedcl' carries: a borrowed reference keeps
 // the lifetime (scope) it was borrowed with, and an owner lent as a borrowed
@@ -62,6 +78,10 @@ uint16_t iexpNarrowerScope(uint16_t scope, INode *exp);
 // Return 1 if type "matches", 0 otherwise
 int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
 
+// iexpTypeCheckCoerce for a type a body states ('let x: T = ..', an assignment's
+// target): a generic call whose value is wanted as it may take its brands
+int iexpTypeCheckCoerceStated(TypeCheckState *pstate, INode *to, INode **from);
+
 // iexpTypeCheckCoerce for a node already type checked
 int iexpCheckedCoerce(INode *to, INode **from);
 int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *to, INode **from);
@@ -70,6 +90,7 @@ int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *to, INode **from);
 // as a temporary needs (slitBorrowCoerce): it is made where a function's body
 // wants a read-only borrow of a type that declares 'fromLiteral'
 int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *to);
+int iexpCoerceActorIn(TypeCheckState *pstate, INode **from, INode *to);
 
 // Used by 'if' and 'loop' to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.
@@ -93,6 +114,11 @@ int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode *
 // says in 'msg' -- unless the two are function references that differ only in
 // the calling convention they are marked for, which ErrorFnRefConv says
 void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg);
+
+// The hint iexpMismatchMsg appends when a plain '&' borrow was given where an
+// '&imm' reference is wanted ("; ...write `&imm n`..."), or "" when that is not
+// the cause. For a refusal reported without iexpMismatchMsg.
+const char *iexpImmBorrowHint(INode *node, INode *totype);
 
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);

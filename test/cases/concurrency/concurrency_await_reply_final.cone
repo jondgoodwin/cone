@@ -1,0 +1,106 @@
+// A value an actor method returns, and that method holds an 'await', is
+// moved into its reply by the dispatcher: it is finalized exactly once, after
+// the reply is consumed -- never before, as a temporary the dispatcher took a
+// raw pointer to would be -- and a value the method did not return, because a
+// seam parked it, is finalized by no one.
+//
+// Each Val counts its own death. Mid.get awaits Net.make, so it parks, and
+// the second half returns the value; Mid.direct returns before its seam, so
+// the dispatcher answers at once. Driver awaits each and prints the value's
+// number, then the block's end finalizes it ("final n"), in that order.
+// Mid.drop is sent with no 'await': its value has no one to answer and dies
+// in the dispatcher. Main counts what was made and what died after
+// finalAll: 4 each, so nothing was finalized twice and nothing leaked.
+
+mod concurrency_await_reply_final;
+
+import stdio use *;
+import actors;
+
+struct Counts {
+  pub made: Atomic[u64];
+  pub died: Atomic[u64];
+}
+
+let counts: Counts;
+
+fn @initpure init() {
+  counts = Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Val {
+  pub n: u64;
+  fn final(self: &uni) {counts.died.add(1u64); say("  final", n);}
+}
+
+fn mk(n: u64) Val {
+  counts.made.add(1u64);
+  Val(n)
+}
+
+actor Net {
+  pub async fn make(self, n: u64) Val {mk(n)}
+}
+
+actor Mid {
+  net: Net;
+
+  pub async fn get(self, n: u64) Val {
+    let v = await net.make(n);
+    v
+  }
+
+  pub async fn direct(self, n: u64) Val {
+    if n > 0u64 {
+      return mk(n);
+    }
+    let v = await net.make(n);
+    v
+  }
+
+  pub async fn drop(self, n: u64) Val {
+    if n > 0u64 {
+      return mk(n);
+    }
+    let v = await net.make(n);
+    v
+  }
+}
+
+actor Driver {
+  mid: Mid;
+
+  pub async fn go(self) {
+    {
+      let a = await mid.get(1u64);
+      say("got", a.n);
+    }
+    say("after", 1u64);
+    {
+      let b = await mid.direct(2u64);
+      say("got", b.n);
+    }
+    say("after", 2u64);
+    mid.drop(3u64);
+    {
+      let c = await mid.get(4u64);
+      say("got", c.n);
+    }
+    say("after", 4u64);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let net = Net();
+    let mid = Mid(net);
+    let d = Driver(mid);
+    d.go();
+  }
+  finalAll();
+  say("made", counts.made.load());
+  say("died", counts.died.load());
+}

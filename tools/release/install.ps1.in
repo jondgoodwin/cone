@@ -1,0 +1,118 @@
+# Cone for Windows x64: download, verify and install the compiler and Congo.
+#
+#     irm https://cone.jondgoodwin.com/install.ps1 | iex
+#
+# This script belongs to one release (commit @HASH@): it downloads that
+# release's zip and refuses it unless its SHA-256 is the one written below.
+# It installs for the current user only (no administrator rights), puts the
+# bin folder on your user PATH, and checks for Microsoft's C++ Build Tools,
+# which Congo needs for the linker. Nothing is changed outside the install
+# folder and your user PATH.
+#
+# Settings, as environment variables (a piped script takes no parameters):
+#     CONE_HOME      the install folder (default %LOCALAPPDATA%\Cone)
+#     CONE_NO_PATH   set to 1 to leave your PATH alone
+#     CONE_ARCHIVE   a local zip (or another URL) to install instead of downloading;
+#                    its SHA-256 must still match
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+$release = '@HASH8@'
+$url     = '@BASE@/@WIN_FILE@'
+$sha256  = '@WIN_SHA256@'
+
+function Say($text) { Write-Host "cone: $text" }
+
+if (-not [Environment]::Is64BitOperatingSystem) { throw 'Cone needs 64-bit Windows.' }
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+$dest = if ($env:CONE_HOME) { $env:CONE_HOME } else { Join-Path $env:LOCALAPPDATA 'Cone' }
+$source = if ($env:CONE_ARCHIVE) { $env:CONE_ARCHIVE } else { $url }
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ("cone-install-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $scratch | Out-Null
+
+try {
+    # Fetch
+    $zip = Join-Path $scratch 'cone.zip'
+    if ($source -match '^https?://') {
+        Say "downloading $source"
+        Invoke-WebRequest -UseBasicParsing -Uri $source -OutFile $zip
+    } else {
+        Say "using $source"
+        Copy-Item -LiteralPath $source -Destination $zip
+    }
+
+    # Verify
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+    if ($actual -ne $sha256) {
+        throw "the download is not the release's file (SHA-256 $actual, expected $sha256). Nothing was installed."
+    }
+    Say 'SHA-256 verified'
+
+    # Unpack beside the old install, then swap, so a failed unpack leaves the old one
+    $unpacked = Join-Path $scratch 'unpacked'
+    Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
+    $root = Join-Path $unpacked 'cone'
+    if (-not (Test-Path (Join-Path $root 'bin\conec.exe'))) { throw 'the archive holds no cone\bin\conec.exe' }
+
+    if (Test-Path -LiteralPath $dest) {
+        Say "replacing the install in $dest"
+        $old = "$dest.old"
+        if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
+        Move-Item -LiteralPath $dest -Destination $old
+    }
+    $parent = Split-Path -Parent $dest
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
+    Move-Item -LiteralPath $root -Destination $dest
+    if (Test-Path -LiteralPath "$dest.old") { Remove-Item -LiteralPath "$dest.old" -Recurse -Force }
+    Say "installed Cone $release in $dest"
+} finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# PATH (user): add the bin folder once
+$bin = Join-Path $dest 'bin'
+if ($env:CONE_NO_PATH -eq '1') {
+    Say "left your PATH alone; add $bin to it to type conec and congo"
+} else {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @(); if ($userPath) { $entries = $userPath -split ';' | Where-Object { $_ } }
+    if (-not ($entries | Where-Object { $_.TrimEnd('\') -ieq $bin.TrimEnd('\') })) {
+        [Environment]::SetEnvironmentVariable('Path', (($entries + $bin) -join ';'), 'User')
+        Say "added $bin to your user PATH (open a new terminal to use it)"
+    }
+    if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $bin.TrimEnd('\') })) {
+        $env:Path = "$env:Path;$bin"
+    }
+}
+
+# Microsoft's C++ Build Tools: Congo links with Microsoft's linker
+function Find-BuildTools {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $found = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        if ($found) { return $true }
+    }
+    foreach ($edition in 'Community', 'Professional', 'Enterprise', 'BuildTools') {
+        if (Test-Path -LiteralPath "${env:ProgramFiles}\Microsoft Visual Studio\2022\$edition\VC\Auxiliary\Build\vcvars64.bat") { return $true }
+    }
+    return $false
+}
+
+if (Find-BuildTools) {
+    Say 'found the Microsoft C++ build tools'
+} else {
+    Write-Host ''
+    Write-Host 'cone: Microsoft''s C++ Build Tools (the linker) are not installed. Congo needs them to link programs.'
+    Write-Host '      Install them once, from an administrator prompt:'
+    Write-Host ''
+    Write-Host '        winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+    Write-Host ''
+    Write-Host '      or download "Build Tools for Visual Studio 2022" from https://visualstudio.microsoft.com/downloads/'
+    Write-Host '      and tick "Desktop development with C++".'
+}
+
+Write-Host ''
+Say 'try it:   congo new hello; cd hello; congo run'
+Say 'Windows may warn about an unrecognised app the first time conec.exe runs: the executables are not code-signed.'

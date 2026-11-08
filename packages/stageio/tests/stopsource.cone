@@ -1,0 +1,225 @@
+// The upstream stop (ChunkSource.stop) on the two sources of this package, each checked in a pipeline of
+// its own, into a sink that counts what it gets and gives every buffer back:
+//
+//   0. FileSource over a 3,000,000-byte file (46 chunks): the sink stops it at its 2nd chunk. The sink
+//      takes far fewer than 46, hears one end, Finished (it stopped with Finished), and the file is closed (the
+//      source's file is removed afterwards, which a file still open would refuse on Windows);
+//   1. SocketSource: a server sends 196,608 bytes and then keeps the connection open for 4 seconds. Main
+//      stops the source once the sink has a chunk and the source is waiting for more: the read in flight
+//      ends (it has a cancel group of its own), the sink hears one end, Failed with the reason, well
+//      before the server lets go (a source whose read the stop did not reach would wait for the server).
+//
+// Every buffer is back in its pool at the end.
+
+mod stopsource;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import iocore use SocketAddr, IoError;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+struct Seen {
+  pub received: Atomic[u64];    // chunks the sink took
+  pub failed: Atomic[u64];      // end(Failed) at the sink
+  pub finished: Atomic[u64];    // end(Finished) at the sink
+  pub reasonOk: Atomic[u64];    // Failed ends whose reason reads "enough"
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let s0: Seen;
+let s1: Seen;
+
+fn @initpure init() {
+  s0 = newSeen();
+  s1 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen { if slot == 0usize {&s0} else {&s1} }
+
+// Takes chunks and gives each back at once. At its 'stopAt'th (0: never) it stops its source
+actor Stopper is ChunkSink {
+  slot: usize;
+  stopAt: u64;
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, stopAt: u64, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, stopAt: stopAt, up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    let n = s.received.add(1u64) + 1u64;
+    match &up {
+      case let &Some(u) {
+        u.giveBack(c);
+        if n == stopAt { u.stop(Ending.Finished); }
+      }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) {
+        s.failed.add(1u64);
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        if bytesEqual(text.view(), "enough") { s.reasonOk.add(1u64); }
+      }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) { s <-> *ok; }
+    else {}
+  }
+  s
+}
+
+// Listens, tells main the port, sends the bytes to the first connection, keeps it open for 'idle'
+// milliseconds, then lets it go
+actor Server {
+  data: List[u8];
+
+  pub fn init(self: &new, data: List[u8]) {
+    *self = Self(data: data);
+  }
+
+  pub async fn serve(self, port: OneshotSender[u16], idle: i64) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var at = 0usize;
+    var more = true;
+    while more && at < data.len() {
+      let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
+      var buf = IoBuf(n);
+      buf.append(&data.view()[at ..< at + n]);
+      at = at + n;
+      let sent = await conn.write(buf);
+      match sent {
+        case is Err { more = false; }
+        else {}
+      }
+    }
+    if idle > 0i64 { _ = await aio.sleep(Duration.fromMillis(idle)); }
+  }
+}
+
+fn portOf(rx: OneshotReceiver[u16]) u16 {
+  var r = rx;
+  match r.recv() {
+    case let Some(p) { p }
+    case is None { 0u16 }
+  }
+}
+
+fn gone(name: &str) { _ = fs.removeFile(&Path.from(name)); }
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while c.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn main() i32 {
+  initAll();
+  match fs.writeFile(&Path.from("stages_stop_in.tmp"), corpus(3000000usize).view()) {
+    case is Ok {}
+    case is Err { return skip("cannot write the temporary file"); }
+  }
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+
+  let t0 = Instant.now();
+  {
+    // 0. a FileSource stopped at the sink's 2nd chunk
+    let sink0 = Stopper(0usize, 2u64, tx0);
+    let src0 = FileSource(sink0, String.from("stages_stop_in.tmp"));
+    src0.start();
+
+    // 1. a SocketSource stopped by main while it waits for bytes
+    var p1Tx: OneshotSender[u16];
+    var p1Rx: OneshotReceiver[u16];
+    p1Tx, p1Rx = Oneshot[u16].make();
+    let server1 = Server(corpus(196608usize));
+    server1.serve(p1Tx, 4000i64);
+    let sink1 = Stopper(1usize, 0u64, tx1);
+    let src1 = SocketSource(sink1);
+    src1.start(SocketAddr.localhost(portOf(p1Rx)));
+    waitFor(&s1.received, 1u64);
+    thread.sleep(Duration.fromMillis(500i64));
+    src1.stop(Ending.Failed(AnyError.msg("enough")));
+  }
+  rx0.recv();
+  rx1.recv();
+  let took = t0.elapsed().nanos();
+  finalAll();
+
+  expect(s0.received.load() < 46u64, "0: the sink took far fewer than all 46 chunks");
+  expectUInt(s0.finished.load(), 1u64, "0: and heard one end, Finished (the sink stopped with Finished: it had what it needed)");
+  expectUInt(s0.failed.load(), 0u64, "0: and no failure");
+  expect(fs.removeFile(&Path.from("stages_stop_in.tmp")) is Ok, "0: the source closed the file (it could be removed)");
+
+  expect(s1.received.load() >= 1u64, "1: the sink took the bytes that had come");
+  expectUInt(s1.failed.load(), 1u64, "1: and heard one end, Failed");
+  expectUInt(s1.finished.load(), 0u64, "1: and never Finished");
+  expectUInt(s1.reasonOk.load(), 1u64, "1: with the stop's reason");
+  expect(took < 3500000000i64, "1: and it came before the server let go of the connection");
+
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  gone("stages_stop_in.tmp");
+  done()
+}

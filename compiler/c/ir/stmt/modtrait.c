@@ -269,7 +269,11 @@ void modTraitConform(NameResState *pstate, ModuleNode *mod, int report) {
 // The one candidate under a module's binding for a function member whose
 // signature is the member's, or NULL. Each candidate is analyzed first, since it
 // may not have been reached yet
-static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *member) {
+// Where none does, and a candidate's signature is the member's but for a
+// parameter or the result held by value that is not one layout, 'layout' says
+// where (fnSigLayoutDiff; its 'req' stays NULL otherwise).
+static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *member, FnSigLayoutDiff *layout) {
+    layout->req = NULL;
     INode **candidatep;
     uint32_t cnt;
     if (dcl->tag == FnDclTag) {
@@ -282,6 +286,8 @@ static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *
         candidatep = cnt ? &nodesGet(overloads, 0) : NULL;
     }
     FnDclNode *found = NULL;
+    FnDclNode *loose = NULL;
+    int nloose = 0;
     TypeCheckState tstate;
     tstate.typenode = NULL;
     tstate.fn = NULL;
@@ -296,8 +302,17 @@ static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *
         inodeTypeCheckAny(&tstate, &node);
         if (fnSigEqual((FnSigNode*)candidate->vtype, (FnSigNode*)member->vtype))
             found = candidate;
+        else if (fnSigMeets((FnSigNode*)candidate->vtype, (FnSigNode*)member->vtype)) {
+            loose = candidate;
+            ++nloose;
+        }
+        else if (layout->req == NULL)
+            fnSigLayoutDiff((FnSigNode*)candidate->vtype, (FnSigNode*)member->vtype, NULL, ReceiverNone, 1, layout);
     }
-    return found;
+    // A candidate of exactly the member's signature meets it. Only where the name
+    // has none does the sole candidate whose signature is a subtype of the
+    // member's (fnSigMeets), the way a struct's method meets a trait's
+    return found ? found : (nloose == 1 ? loose : NULL);
 }
 
 // Check the shape of what the module declares for each member (modtrait.h).
@@ -331,10 +346,20 @@ void modTraitCheck(TypeCheckState *pstate, ModuleNode *mod) {
             continue;
         }
         if (member->tag == FnDclTag) {
-            if (modTraitFindFn(pstate, dcl, (FnDclNode*)member) == NULL)
-                errorMsgNode(mod->traitname, ErrorModTraitMismatch,
-                    "Module %s declares %s, but not with the signature module trait %s requires of it.",
-                    &mod->namesym->namestr, &name->namestr, &trait->namesym->namestr);
+            FnSigLayoutDiff layout;
+            if (modTraitFindFn(pstate, dcl, (FnDclNode*)member, &layout) == NULL) {
+                if (layout.req) {
+                    char why[700];
+                    fnSigLayoutSpell(why, sizeof(why), &layout, "the module trait", "the module trait");
+                    errorMsgNode(mod->traitname, ErrorFnRefByValue,
+                        "Module %s declares %s, but not with the signature module trait %s requires of it: %s Write a wrapper function that converts, and declare that.",
+                        &mod->namesym->namestr, &name->namestr, &trait->namesym->namestr, why);
+                }
+                else
+                    errorMsgNode(mod->traitname, ErrorModTraitMismatch,
+                        "Module %s declares %s, but not with the signature module trait %s requires of it.",
+                        &mod->namesym->namestr, &name->namestr, &trait->namesym->namestr);
+            }
             continue;
         }
         VarDclNode *global = (VarDclNode*)dcl;

@@ -19,8 +19,50 @@ IfNode *newIfNode() {
     return ifnode;
 }
 
+// The branch of a type-fact '#if' the clone takes: a copy of its block, and of a
+// block that is one expression, that expression
+static INode *ifHashTaken(CloneState *cstate, IfNode *node, INode *branch) {
+    INode *copy = cloneNode(cstate, branch);
+    BlockNode *blk = (BlockNode*)copy;
+    if ((node->flags & FlagIfHashExpr) && blk->tag == BlockTag && blk->stmts->used == 1
+        && (blk->flags & FlagTailOpen))
+        return nodesGet(blk->stmts, 0);
+    return copy;
+}
+
+// Clone a type-fact '#if'. Cloning for an instance has put the instance's types where
+// the parameters were, so each condition can be asked in turn and the first that holds
+// names the branch that exists: the rest are never copied, so never checked. With no
+// branch taken nothing exists (an empty block). A condition still turning on a parameter
+// bound elsewhere (this is a copy of a template inside another generic) is not decided:
+// the chain is copied whole, to be decided for that generic's instances.
+static INode *ifHashClone(CloneState *cstate, IfNode *node) {
+    Nodes *condblk = node->condblk;
+    for (uint32_t i = 0; i + 1 < condblk->used; i += 2) {
+        INode *cond = nodesGet(condblk, i);
+        if (cond == elseCond)
+            return ifHashTaken(cstate, node, nodesGet(condblk, i + 1));
+        int holds = genericHashCondHolds(cloneNode(cstate, cond));
+        if (holds < 0)
+            break;
+        if (holds)
+            return ifHashTaken(cstate, node, nodesGet(condblk, i + 1));
+        if (i + 2 >= condblk->used) {
+            BlockNode *none = newBlockNode();
+            inodeLexCopy((INode*)none, (INode*)node);
+            return (INode*)none;
+        }
+    }
+    IfNode *newnode = memAllocBlk(sizeof(IfNode));
+    memcpy(newnode, node, sizeof(IfNode));
+    newnode->condblk = cloneNodes(cstate, condblk);
+    return (INode*)newnode;
+}
+
 // Clone if
 INode *cloneIfNode(CloneState *cstate, IfNode *node) {
+    if (node->flags & FlagIfHash)
+        return ifHashClone(cstate, node);
     IfNode *newnode;
     newnode = memAllocBlk(sizeof(IfNode));
     memcpy(newnode, node, sizeof(IfNode));
@@ -45,7 +87,7 @@ void ifPrint(IfNode *ifnode) {
             if (*nodesp == elseCond)
                 inodeFprint("else");
             else {
-                inodeFprint("elif ");
+                inodeFprint("else if ");
                 inodePrintNode(*nodesp);
             }
         }
@@ -71,12 +113,61 @@ void ifRemoveReturns(IfNode *ifnode) {
 }
 
 // Does a type-checked block end by jumping away, so give its 'if' no value?
-// Generation reads the same three tags (genlIf).
 int ifBlockJumps(BlockNode *blk) {
     if (blk->tag != BlockTag || blk->stmts == NULL || blk->stmts->used == 0)
         return 0;
     uint16_t last = nodesLast(blk->stmts)->tag;
     return last == ReturnTag || last == BreakTag || last == ContinueTag;
+}
+
+// Where a path through a type-checked block goes on past its end, or NULL when every
+// path leaves: the block ends in a jump (ifBlockJumps), or in an 'if' or 'match' with
+// an 'else' each of whose blocks leaves, or in a plain block that leaves, written or
+// wrapped around a 'match' or a bound 'if' (the block holding its matched value). The 'else' of
+// 'let Some(n) = x else {...};' is held to this, as Rust holds it to diverge. A loop ends
+// when its condition fails or a 'break' leaves it, so it is a path that goes on. '*why'
+// says what the spot returned lacks. A match left without an 'else' has had its missing
+// cases reported (ifMatchCover), so it is not reported again.
+static INode *ifBlockFallsOut(BlockNode *blk, char **why) {
+    if (ifBlockJumps(blk))
+        return NULL;
+    // The statement the type check adds after a last statement that gives no value
+    uint32_t used = blk->stmts == NULL ? 0 : blk->stmts->used;
+    if (used > 0 && nodesLast(blk->stmts)->tag == BlockRetTag)
+        --used;
+    if (used == 0) {
+        *why = "this block is empty";
+        return (INode*)blk;
+    }
+    INode *last = nodesGet(blk->stmts, used - 1);
+    if (last->tag == BlockTag && !(((BlockNode*)last)->flags & FlagLoop))
+        return ifBlockFallsOut((BlockNode*)last, why);
+    if (last->tag == IfTag) {
+        IfNode *ifnode = (IfNode*)last;
+        int hasElse = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            if (*nodesp == elseCond)
+                hasElse = 1;
+            cnt--; nodesp++;
+            if ((*nodesp)->tag != BlockTag)
+                continue;
+            INode *out = ifBlockFallsOut((BlockNode*)*nodesp, why);
+            if (out != NULL)
+                return out;
+        }
+        if (hasElse || (ifnode->flags & (FlagIfMatch | FlagIfMatchTail)))
+            return NULL;
+        *why = "this 'if' has no 'else', so the path where its conditions are false goes on past it";
+        return last;
+    }
+    if (last->tag == BlockTag) {
+        *why = "this loop ends when its condition fails or a 'break' leaves it, and the path goes on past it";
+        return last;
+    }
+    *why = "the path goes on past this, its last statement";
+    return last;
 }
 
 // Does every path through a type-checked 'if' jump away?
@@ -98,6 +189,16 @@ int ifAllPathsJump(IfNode *ifnode) {
 void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
+    // A type-fact '#if': each condition is a 'where' clause's kind, and every branch
+    // is resolved, whichever an instance will take, so a name in any of them must exist
+    if (ifnode->flags & FlagIfHash) {
+        for (uint32_t i = 0; i + 1 < ifnode->condblk->used; i += 2) {
+            if (nodesGet(ifnode->condblk, i) != elseCond)
+                genericHashCondNameRes(pstate, nodesGet(ifnode->condblk, i));
+            inodeNameRes(pstate, &nodesGet(ifnode->condblk, i + 1));
+        }
+        return;
+    }
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }
@@ -174,6 +275,9 @@ static int ifTestsVariant(CastNode *isnode, INode *variant) {
 // Detect when all closed variants are matched, and turn last match into 'else'
 // We know the condition is an 'is' node
 void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
+    // A value to the left that is no expression (a type) has been reported, and has no variants
+    if (!isExpNode(condition->exp))
+        return;
     StructNode *strnode = (StructNode*)iexpGetDerefTypeDcl(condition->exp);
 
     // Exhaustiveness check only on closed variants against a base trait
@@ -224,12 +328,15 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // A match covers what simple, clear logic can show it covers, and the writer says the
 // rest with 'else' (possibly that it cannot happen). The values that can be counted are
 // an enum's variants and a bool's two; a match on several values, 'match a, b', counts
-// the combinations of its columns. Every other test (a comparison, a range, a number or
-// text equal to a value) matches some values and says which of them only by running.
+// the combinations of its columns. A number or character written out is counted only to
+// find one named twice: a column of them counts the values the cases name, and one more
+// for every other value, which only '_' or 'else' takes, so they never cover a match.
+// Every other test (a comparison, a range, text equal to a value) matches some values
+// and says which of them only by running.
 //
 // Each case is a row of cells, one for each value matched: '_' is a wild cell, a variant
-// (or 'or' of variants, or 'true' / 'false') the set of values it names, and anything
-// else an "other" cell. A row with an "other" cell is not counted toward covering, or
+// (or '|' of variants, or 'true' / 'false', or a number or character written out) the
+// set of values it names, and anything else an "other" cell. A row with an "other" cell is not counted toward covering, or
 // toward making a later case unreachable. A guarded case is not counted toward covering.
 
 #define MatchCellWild  0    // takes any value
@@ -245,6 +352,10 @@ typedef struct {
     StructNode *enumdcl;    // the closed enum whose variants the column counts; NULL for a bool or no type yet
     int isbool;             // the column counts true and false
     uint32_t nvalues;       // how many values the column counts; 0 for a type it cannot count
+    int isint;              // the column counts the numbers the cases name, and one more for the rest
+    int intsigned;          // ... and they are signed
+    uint64_t *ints;         // ... in the order they are first named
+    uint32_t nints;
 } MatchCol;
 
 typedef struct {
@@ -262,6 +373,69 @@ static StructNode *matchClosedEnum(INode *dcl) {
         || strnode->derived == NULL)
         return NULL;
     return strnode;
+}
+
+// Is this the test of a number or character written out, 'matched == 5'? That is what
+// 'case 5' and 'case ==5' make. Gives the value, and whether the matched type is signed.
+static int matchIntTest(INode *cond, uint64_t *value, int *isSigned) {
+    if (cond->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)cond;
+    if (!(call->flags & FlagOperator) || call->methfld != NULL || call->objfn == NULL || !isNameUseNode(call->objfn)
+        || call->args == NULL || call->args->used != 2)
+        return 0;
+    INode *callee = ((NameUseNode*)call->objfn)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || ((FnDclNode*)callee)->namesym != eqName)
+        return 0;
+    INode *matched = nodesGet(call->args, 0);
+    INode *lit = nodesGet(call->args, 1);
+    if (lit->tag != ULitTag || (lit->flags & (FlagMatchAny | FlagUnkType)) || !isExpNode(matched))
+        return 0;
+    INode *typedcl = iexpGetDerefTypeDcl(matched);
+    if (typedcl == NULL || typedcl == (INode*)boolType || iexpGetDerefTypeDcl(lit) != typedcl
+        || (typedcl->tag != IntNbrTag && typedcl->tag != UintNbrTag && typedcl != (INode*)charType))
+        return 0;
+    *value = ((ULitNode*)lit)->uintlit;
+    *isSigned = typedcl->tag == IntNbrTag;
+    return 1;
+}
+
+// Note the numbers a case names in a column (matchIntCell counts them)
+static void matchCollectInts(INode *cond, MatchCol *col) {
+    if (cond->tag == OrLogicTag) {
+        matchCollectInts(((LogicNode*)cond)->lexp, col);
+        matchCollectInts(((LogicNode*)cond)->rexp, col);
+        return;
+    }
+    uint64_t value;
+    int isSigned;
+    if (!matchIntTest(cond, &value, &isSigned))
+        return;
+    for (uint32_t k = 0; k < col->nints; ++k)
+        if (col->ints[k] == value)
+            return;
+    col->ints = realloc(col->ints, sizeof(uint64_t) * (col->nints + 1));
+    col->ints[col->nints++] = value;
+    col->isint = 1;
+    col->intsigned = isSigned;
+    col->nvalues = col->nints + 1;
+}
+
+// A set of one number of a column of numbers
+static MatchCell matchIntCell(MatchCol *col, uint64_t value) {
+    MatchCell cell;
+    cell.kind = MatchCellOther;
+    cell.has = NULL;
+    if (!col->isint)
+        return cell;
+    uint32_t k = 0;
+    while (col->ints[k] != value)
+        ++k;
+    cell.kind = MatchCellSet;
+    cell.has = memAllocBlk(col->nvalues);
+    memset(cell.has, 0, col->nvalues);
+    cell.has[k] = 1;
+    return cell;
 }
 
 // A set of one value of a column's type, which gives the column that type if it has none yet.
@@ -348,8 +522,14 @@ static MatchCell matchClassify(INode *cond, MatchCol *col, int *unsure) {
         INode *matched = nodesGet(call->args, 0);
         INode *value = nodesGet(call->args, 1);
         if (value->tag != ULitTag || (value->flags & FlagMatchAny) || ((ULitNode*)value)->uintlit > 1
-            || iexpGetDerefTypeDcl(value) != (INode*)boolType || iexpGetDerefTypeDcl(matched) != (INode*)boolType)
+            || iexpGetDerefTypeDcl(value) != (INode*)boolType || iexpGetDerefTypeDcl(matched) != (INode*)boolType) {
+            // A number or character written out
+            uint64_t number;
+            int isSigned;
+            if (matchIntTest(cond, &number, &isSigned))
+                return matchIntCell(col, number);
             break;
+        }
         return matchValueCell(col, NULL, 1, 2, (uint32_t)((ULitNode*)value)->uintlit);
     }
     default:
@@ -365,7 +545,7 @@ static INode *matchCaseStart(INode *cond) {
     return cond;
 }
 
-// The columns of a case's condition, left to right: a row joins them with 'and'
+// The columns of a case's condition, left to right: a row joins them with '&&'
 static int matchFlattenRow(INode *cond, INode **out, int max) {
     if (cond->tag == AndLogicTag && (cond->flags & FlagMatchRow)) {
         int n = matchFlattenRow(((LogicNode*)cond)->lexp, out, max);
@@ -391,8 +571,11 @@ static int matchFilter(MatchRow **rows, int *idx, int n, int c, int k, int *out)
 // Do these counted rows cover every combination of the columns from c on? When they do
 // not, witness holds the values of a combination they leave out (-1: any).
 static int matchCovers(MatchRow **rows, int *idx, int n, int c, int ncols, MatchCol *cols, int *witness) {
-    if (n == 0)
+    if (n == 0) {
+        for (int j = c; j < ncols; ++j)
+            witness[j] = -1;
         return 0;
+    }
     while (c < ncols) {
         int allwild = 1;
         for (int i = 0; i < n && allwild; ++i)
@@ -442,8 +625,10 @@ static int matchUseless(MatchRow **rows, int *idx, int n, MatchRow *r, int c, in
 
 // The name of a column's k-th value, as a pattern writes it
 static void matchValueName(MatchCol *col, int k, char *buf, size_t size) {
-    if (k < 0)
+    if (k < 0 || (col->isint && (uint32_t)k >= col->nints))
         snprintf(buf, size, "_");
+    else if (col->isint)
+        snprintf(buf, size, col->intsigned ? "%lld" : "%llu", (long long)col->ints[k]);
     else if (col->isbool)
         snprintf(buf, size, k ? "true" : "false");
     else {
@@ -491,6 +676,17 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
     }
     MatchCol cols[MatchMaxColumns];
     memset(cols, 0, sizeof(cols));
+    // The numbers the cases name, in each column of numbers
+    for (uint32_t a = 0; a < narms; ++a) {
+        INode *cond = nodesGet(ifnode->condblk, a * 2);
+        if (cond == elseCond)
+            continue;
+        if (cond->tag == AndLogicTag && (cond->flags & FlagMatchGuard))
+            cond = ((LogicNode*)cond)->lexp;
+        if (matchFlattenRow(cond, colconds, MatchMaxColumns) == ncols)
+            for (int c = 0; c < ncols; ++c)
+                matchCollectInts(colconds[c], &cols[c]);
+    }
     MatchRow **rows = malloc(sizeof(MatchRow*) * narms);
     int haselse = 0, unsure = 0;
     uint32_t nrows = 0;
@@ -561,7 +757,7 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
         else {
             result = MatchCoverMissing;
             char msg[400] = "";
-            if (ncols == 1 && cols[0].nvalues > 0) {
+            if (ncols == 1 && cols[0].nvalues > 0 && !cols[0].isint) {
                 // The values no counted case takes
                 matchAppend(msg, sizeof(msg), "This match does not cover ");
                 int missing = 0;
@@ -605,6 +801,8 @@ static int ifMatchCover(IfNode *ifnode, int clean) {
         free(rows[i]);
     }
     free(rows);
+    for (int c = 0; c < ncols; ++c)
+        free(cols[c].ints);
     return result;
 }
 
@@ -615,6 +813,71 @@ static NarrowEnv *ifNarrowAfter(NarrowEnv *armends, int livearms, NarrowEnv *pat
     if (fallthrough)
         return livearms ? narrowJoin(armends, pathenv) : pathenv;
     return livearms ? armends : pathenv;
+}
+
+// Is this branch one whose value is a number literal with no suffix, so that the branches
+// that are not literals may type it?
+static int ifArmIsLiteral(INode *arm) {
+    if (arm->tag != BlockTag || ifBlockJumps((BlockNode *)arm) || ((BlockNode *)arm)->stmts->used == 0)
+        return 0;
+    return litIsUntypedNumber(nodesLast(((BlockNode *)arm)->stmts));
+}
+
+// An 'if' or 'match' whose value goes to no place that names its type: a branch that
+// is a number literal with no suffix takes the type of the branches that are not,
+// as a literal beside an operator takes the other operand's. 'if c {0.} else {d}' is
+// d's type, an f32 say, and 'match n { case 1 {0} case 2 {1} else {b} }' is the u8 b is.
+// This applies when every branch that is no such literal has the one same number type;
+// where they differ, or there are none, the branches are joined as ever and literals
+// alone are the default of their kind. A float literal beside integer branches is not
+// taken up, and is refused as it has been.
+static void ifLiteralArmsFollow(IfNode *ifnode, INode **maybeType, TypeCompare *match) {
+    int floats = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    // The type the branches that are no literal came to in common, if there is one
+    INode *common = *maybeType == unknownType ? NULL : itypeGetTypeDcl(*maybeType);
+    int usable = common != NULL
+        && (common->tag == IntNbrTag || common->tag == UintNbrTag || common->tag == FloatNbrTag)
+        && common != (INode*)boolType && common != (INode*)charType;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if (ifArmIsLiteral(*nodesp) && nodesLast(((BlockNode *)*nodesp)->stmts)->tag == FLitTag)
+            ++floats;
+    }
+    // A float literal beside integer branches is not taken up, nor is a branch
+    // that is no number: the literals are joined with the others as ever
+    int follow = common != NULL && usable && !(floats && common->tag != FloatNbrTag);
+    if (!follow) {
+        // The branches are joined in the order written, as if none had waited. The ones that
+        // are no literal were joined without a complaint (else it was made, and stands), so a
+        // mismatch is the literals' to bring, and is reported at the branch that brings it
+        if (*match == NoMatch)
+            return;
+        TypeCompare joined = EqMatch;
+        *maybeType = unknownType;
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            if ((*nodesp)->tag != BlockTag || ifBlockJumps((BlockNode *)*nodesp))
+                continue;
+            switch (iexpMultiInfer(unknownType, maybeType, nodesp)) {
+            case NoMatch: joined = NoMatch; break;
+            case ConvSubtype: if (joined != NoMatch) joined = ConvSubtype; break;
+            case CastSubtype: if (joined != NoMatch) joined = CastSubtype; break;
+            default: break;
+            }
+        }
+        *match = joined;
+        return;
+    }
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if (!ifArmIsLiteral(*nodesp))
+            continue;
+        BlockNode *blk = (BlockNode *)*nodesp;
+        if (litAdoptNumberType(&nodesLast(blk->stmts), common))
+            blk->vtype = common;
+    }
 }
 
 // Type check the if statement node
@@ -635,6 +898,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     NarrowEnv *armends = NULL;          // where the branches that do not leave end, met
     int livearms = 0;
     int direct = narrowIsStmt((INode*)ifnode);  // a statement of its block
+    char *leavewhy = NULL;                      // what a let-else's 'else' lacks (unused here)
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         narrowRestore(pathenv);
 
@@ -649,12 +913,16 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
         if (*nodesp != elseCond) {
-            if (0 == iexpCoerce(nodesp, (INode*)boolType)) {
-                // A case that tests with a function's pattern, 'case using f()', wants a bool; an Option is bound
-                INode *given = isExpNode(*nodesp) ? iexpGetTypeDcl(*nodesp) : NULL;
+            // A case that tests with a function's pattern, 'case using f()', wants a bool;
+            // an Option is bound. Option and Result answer isTrue, so a case's Option or
+            // Result is refused here, before the coercion would take it.
+            INode *given = isExpNode(*nodesp) ? iexpGetTypeDcl(*nodesp) : NULL;
+            int caseoptional = (ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag
+                && (((StructNode*)given)->namesym == optionName || ((StructNode*)given)->namesym == resultName);
+            if (caseoptional || 0 == iexpCoerceCondition(pstate, nodesp)) {
                 if ((ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag && ((StructNode*)given)->namesym == optionName)
                     errorMsgNode(*nodesp, ErrorUsingForm,
-                        "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case imm x using f()'.");
+                        "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case let x using f()'.");
                 else
                     errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
             }
@@ -686,6 +954,13 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             if (nodesLast(((BlockNode *)*nodesp)->stmts)->tag != ContinueTag)
                 narrowKillDrop(killmark);
         }
+        // The 'else' of a let-else that leaves on every path, the last of them through an
+        // inner 'if' or block, is no path out either, so the variant is known after it, as
+        // after one that ends in a jump. Its changes are kept, as a 'continue' keeps them,
+        // since some of its paths may continue a loop.
+        else if ((ifnode->flags & FlagIfLetElse) && *(nodesp - 1) == elseCond && armblk
+            && ifBlockFallsOut(armblk, &leavewhy) == NULL)
+            ;
         else {
             NarrowEnv *end = narrowSave();
             armends = livearms++ ? narrowJoin(armends, end) : end;
@@ -700,6 +975,9 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
         // A block that jumps away -- a 'return', or a call that does not
         // return -- gives the 'if' no value, so has no say in its type
         else if (ifBlockJumps((BlockNode *)*nodesp))
+            ;
+        // A branch that is a literal waits for the others to say its type (ifLiteralArmsFollow)
+        else if (expectType == unknownType && ifArmIsLiteral(*nodesp))
             ;
         else {
             switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
@@ -734,13 +1012,19 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     narrowRestore(ifNarrowAfter(armends, livearms, pathenv, !hasElse));
     narrowAnchorAfter((INode*)ifnode, pstate->scope, direct);
 
-    // 'imm n Ok = r else {...};' goes on to take the variant its test found, so its
-    // 'else' must leave
-    if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2) {
+    // 'let Ok(n) = r else {...};' goes on to take the variant its test found, so its
+    // 'else' must leave on every path (ifBlockFallsOut), and the error points at the
+    // path that does not, saying what it lacks
+    if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2 && !condErrors) {
         INode *elseblk = nodesGet(ifnode->condblk, ifnode->condblk->used - 1);
-        if (!ifBlockJumps((BlockNode *)elseblk) && !condErrors)
+        char *why = NULL;
+        INode *out = elseblk->tag == BlockTag ? ifBlockFallsOut((BlockNode *)elseblk, &why) : NULL;
+        if (out == elseblk)
             errorMsgNode(elseblk, ErrorLetElse,
-                "The 'else' of a binding like this must leave: end it with 'return', 'break', 'continue' or a call that does not return. Otherwise the binding after it would take a variant that was not there.");
+                "The 'else' of a binding like this must leave, and %s. End it with 'return', 'break', 'continue' or a call that does not return, such as 'panic(...)': otherwise the binding after it would take a variant that was not there.", why);
+        else if (out != NULL)
+            errorMsgNode(out, ErrorLetElse,
+                "The 'else' of a binding like this must leave on every path, and here %s. End that path with 'return', 'break', 'continue' or a call that does not return, such as 'panic(...)': otherwise the binding after it would take a variant that was not there.", why);
     }
 
     if (expectType == noCareType)
@@ -756,6 +1040,8 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     if (expectType != unknownType)
         ifnode->vtype = expectType;
     else {
+        // A branch that is a literal follows the others' number type
+        ifLiteralArmsFollow(ifnode, &maybeType, &match);
         // If expected type is unknown, set the inferred type
         ifnode->vtype = maybeType;
 

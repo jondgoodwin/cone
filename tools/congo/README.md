@@ -19,15 +19,26 @@ congo test vec             only the tests and examples with 'vec' in their name
 congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
-congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
+congo run -D FAST -D N=2   a constant for #defined and #define
+congo build --no-cache     compile everything, whatever an earlier build left
+congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo publish              point an index registry at this package's current commit
 ```
 
 `-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
 every `conec` compile of the build, the packages it imports included, where
-core's `isDefined` and `definedInt` read them. They are a provisional
-mechanism whose final design is open (`doc/reference/refintrinsic.html`,
-"Constants of the build").
+`#defined("NAME")` and `#define("NAME")` read them in an `#if`
+(`doc/manual/mod-generativity.html#meta`).
+
+A native build carries debug information, release or debug: each function the
+program defines, with its file and lines, so that a profiler can name the
+functions of a release program. On Windows a link (`/DEBUG`), debug or release, writes it
+as a `.pdb` beside the `.exe` (`build\release\hello.pdb`), which the program
+does not read and a profiler (WPA, `llvm-pdbutil`) does; on Linux it stays in
+the ELF. `--strip`, given to `build`, `run` or `test`, passes `--strip` to every
+`conec` compile, so the objects carry none, and writes no `.pdb` (and removes
+the one an earlier link left). A
+WebAssembly or SPIR-V release build carries none either way.
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
@@ -80,7 +91,8 @@ There is no include file to write: a library's build generates it (below,
   description, and the root's name comes from the manifest, not the folder.
 - **Build output goes in the package, in `build/<mode>/`**: each package's build
   description, each package's object, each library's generated include file,
-  and the executable, `build/debug/<name>.exe`. The packages a program imports
+  each compile's key (below, "What a build does"), and the executable,
+  `build/debug/<name>.exe`. The packages a program imports
   are compiled into the program's `build/<mode>/` too, so a registry folder is
   only ever read. `congo clean` deletes the folder, include files and all.
 - **A package's example programs live in its `examples/` folder**, which no
@@ -108,6 +120,7 @@ output = "executable"
 | `name` | the package's name, a Cone name; the root is `src/<name>.cone` |
 | `version` | `MAJOR.MINOR.PATCH`. Recorded and checked for form; never compared yet |
 | `output` | `"executable"` or `"library"`: what the package builds into |
+| `quiet` | a list of the package's test names (`quiet = ["pipeline"]`) that depend on timing and fail when the machine is loaded. `congo test` runs them last, one at a time, with nothing else running (below, "Testing a package"). Optional; each name must be a file in `tests/` |
 | `targets` | what the package may be compiled for: `"native"`, the machine Congo runs on, and `"gpu"`. `["native", "gpu"]` marks a library for the GPU, all of it (below, "Kernels for the GPU"); a package with GPU code beside the rest puts it in its `gpu/` folder instead, and names no target for it. Optional: `["native"]` where it is not written |
 
 A package that needs C libraries linked adds a `[link]` table (below, "C
@@ -180,7 +193,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render`, `window` and `frame` are
+   `sdl`, `vulkan`, `openxr`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render`, `window` and `frame` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -302,8 +315,8 @@ an importer needs to see it, with a banner saying it is generated:
   body) — is written whole;
 - a private name that such a body reaches is declared too;
 - a global whose members the package folds into its namespace
-  (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
-  clause (`pub extern mut config Config pub use *;`), so an importer reaches
+  (`pub var config: Config = ... pub use *;`) is declared `extern` with the same
+  clause (`pub extern var config: Config pub use *;`), so an importer reaches
   the folded names as the package does;
 - what the root reaches in one of the package's submodules — a type a public
   function names, what an `inline` body calls, what a `pub use` re-exports — is
@@ -324,7 +337,7 @@ mod a;
 
 import b;
 
-pub extern fn start(n i64) b.Counter;
+pub extern fn start(n: i64) b.Counter;
 ```
 
 A program that imports `a` alone can then use the `b.Counter` that `start`
@@ -348,7 +361,7 @@ manifest names the library:
 ```
 winstr/
     congo.toml          [package] ... and [link] libraries = ["shlwapi"]
-    src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s *u8) i32; }
+    src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s: *u8) i32; }
 ```
 
 - **Its include file is generated, as any package's is.** A C library's
@@ -425,6 +438,20 @@ it, synchronization validation included, and fail on any message.
 `render`'s example `pipevk.cone`, the pipe demo, imports `sculpt` and
 `window` besides.
 
+`openxr` binds OpenXR the way `vulkan` binds Vulkan and links nothing: the
+first use of the package (`openxr.load()`, which `openxr.available()` calls)
+opens `openxr_loader.dll` at run time, so a program that never opens a headset
+never asks for it, every function is found through `xrGetInstanceProcAddr`,
+and `openxr.available()` is false on a machine without the loader. No loader,
+header or runtime is in the repository. Its tests (`layout`, checked against
+the C compiler's layout of Khronos's own headers, `constants`, `loader`,
+`noruntime`, `lazy`) need neither a loader nor a runtime. `render` imports it
+for `Headset`, which draws into a headset's swapchain images and can mirror
+the left eye into a window; that and `openxr`'s `probe` example need a runtime
+to run, so `congo test` only builds them: run them by hand, for Meta's PC
+simulator with `XR_RUNTIME_JSON` and `PATH` set for that one process
+(`xrstereo --mirror` opens a small window).
+
 `sync` (the futex and the locks built on it, which `thread` imports) is Cone
 code over `extern` declarations of the C runtime and Windows, not a C package.
 Its futex calls `WaitOnAddress` and its wakes on Windows, which the Windows
@@ -435,7 +462,12 @@ that imports nothing that needs it takes nothing from it. The same goes for
 and `iocore` (`ws2_32` and `ntdll`, Winsock and the wait completion packet): each names its Windows
 SDK libraries in its own `[link.windows]`. Congo's Windows link line adds
 only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
-belong to the toolchain and not to any package. `tls` is the example of a
+belong to the toolchain and not to any package. A release link on Windows also
+says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the build
+is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
+identical functions: the net under the compiler's size gate on a release
+program's generic instances, which keeps each small one as the program's own
+copy (`--private-instances`). `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).
@@ -508,7 +540,7 @@ that is GPU-safe throughout (`noise`, `geomath`, `sdf`, `libc`); a package
 whose GPU code sits beside code that is not uses a `gpu/` folder instead.
 
 **A marked package's kernels are its compute entry points**, written in its
-`src/` like any function (`fn @compute(64) shade(inv Invocation, ...)`; the
+`src/` like any function (`fn @compute(64) shade(inv: Invocation, ...)`; the
 reference manual's *GPU Compute* page). There is no list of them: Congo reads
 a marked package's source to its end, with the header scan's tokens, for
 `fn @compute`, so one in a comment or a string does not count. Compiled for
@@ -584,8 +616,8 @@ so a program that imports `gpusample` needs nothing more. `gpuwork`'s
 run from:
 
 ```
-imm spirv = readSpirv("gpusample.spv");
-mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
+let spirv = readSpirv("gpusample.spv");
+var kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
 ```
 
 A kernel binds its buffers in the order of its parameters, and its error
@@ -727,7 +759,7 @@ packages/geomath/
    the registries, so a package in no registry can be tested where it stands,
    and a test reaches the copy being tested. Each test is built in
    `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
-   for at most 60 seconds. On Windows it runs as Congo's debuggee, so that a
+   for at most 180 seconds. On Windows it runs as Congo's debuggee, so that a
    crash, a panic's fail-fast above all, ends at once with the exit status
    Windows would have given it, rather than being held by Windows Error
    Reporting, which takes many seconds when many programs crash at once
@@ -765,6 +797,12 @@ so, and still builds its examples.
   line of it by hand against the source before committing it.** A value worked
   out from the math catches what a copied run cannot (`geomath`'s first test
   found two errors in the Pegasus code it was ported from that way).
+- **A quiet test** is one the package's `congo.toml` lists under `quiet`: a
+  test whose result depends on the wall clock, which another test running
+  beside it can disturb. In one package it runs after the package's other
+  tests; over a folder of packages, after every package's other tests, one at a
+  time, so no other test is running beside it. `congo test <text>` orders them
+  the same way.
 - **At a folder of packages**, such as the repository's `packages/`, `congo
   test` tests each package in it in turn, and ends with a summary of them all.
   Each package's builds go in its own `build/` folder, as a build of it would.
@@ -785,6 +823,19 @@ so, and still builds its examples.
 
   A skipped test is not a failure. Where nothing is skipped, the summary
   reads as before.
+- **A test that skips itself** cannot run its checks on this machine (a file
+  it needs is absent) and returns `testing.skip(reason)`, which prints
+  `skipped: <reason>` and exits with status 77. `congo test` compares nothing
+  for it and blesses nothing, and reports it as skipped with the last line it
+  printed, so a passing run never counts checks that did not run:
+
+  ```
+          test tokenizer ... skipped (the model files in C:/src/llm-models are absent)
+        Result llmrun: 5 tests: 2 passed, 0 failed, 3 skipped (the model files in C:/src/llm-models are absent); ...
+  ```
+
+  A test whose `.exit` holds 77 is compared as any other (a test of `skip`
+  itself).
 
 ### Writing checks with `testing`
 
@@ -800,11 +851,11 @@ import testing use *;
 import geomath use *;
 
 fn main() i32 {
-  imm q = Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.));
-  requireFloat(q.dot(q), 1., 0.00001d, "a unit quaternion");
-  expectFloat(q.rotate(new Vec3(1., 0., 0.)).y, 1., 0.00001d, "x turns to y");
-  expectInt(new IRect(10, 20, 640, 480).w, 640, "width");
-  done();
+  let q = Quat.angleAxis(pi / 2., Vec3(0., 0., 1.));
+  requireFloat(q.dot(q), 1., 0.00001, "a unit quaternion");
+  expectFloat(q.rotate(Vec3(1., 0., 0.)).y, 1., 0.00001, "x turns to y");
+  expectInt(IRect(10, 20, 640, 480).w, 640, "width");
+  done()
 }
 ```
 
@@ -873,11 +924,13 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    imports, which is where an include file's own imports are found, and, for
    `core`, where the prelude is loaded from. The package's own modules import
    only what their own lines give them. The format is the compiler's:
-   `compiler/c/doc/nodes/module.md`, "A described build".
+   `compiler/c/doc/nodes/module.md`, "A described build". **The compile is
+   skipped when its key is unchanged** (below).
 5. **Compile the kernels** of each package marked for the GPU whose source
    holds compute entry points, and of each package whose `gpu/` folder holds
    them, into `build/<mode>/<name>.spv`, once its imports are known to be
-   marked (above, "Kernels for the GPU" and "A package's gpu/ folder").
+   marked (above, "Kernels for the GPU" and "A package's gpu/ folder"),
+   skipped too when its key is unchanged.
 6. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
    into `build/<mode>/<name>.exe`, and copy beside it the DLLs their `[link]
@@ -885,7 +938,69 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    kernels. A library stops at its object, `build/<mode>/<name>.obj`, and its
    kernels.
 
-Everything is rebuilt every time.
+**A compile is skipped when nothing it reads has changed** since the last
+compile of it that succeeded in that build folder, and each of its outputs is
+still the file that compile wrote; it prints no `Compiling` line then. Each
+compile has a **key**, a SHA-256 over:
+
+- the content of every file `conec` reads: the package's source files, its
+  `congo.toml`, the build description Congo wrote for it (which names its
+  modules, its files and the include files of what it imports), and the
+  include file of every package the description names. So a change to an
+  import's interface compiles its importers again, while a change to a body
+  that leaves its include file byte for byte the same compiles the import
+  alone, and the program links its new object. Where `conec` loads the
+  prelude from its packages folder rather than from `core`'s include file
+  (`core`'s own compile, and `libc`'s), `core`'s source is read too;
+- the content of `conec` and of `conestd`, never their times: a rebuilt
+  compiler compiles everything again;
+- `conec`'s whole command line, which holds the mode, every `-D` define and
+  every path, and the environment variables `conec` reads (`CONE_PACKAGES`,
+  `CONE_LLVM_OPTIONS`).
+
+The key, the hashes it was made from and the hash of each output are written
+beside the outputs, `build/<mode>/<package>.key` (a test's or an example's in
+its own folder), only after the compile succeeds; the one there before is
+removed before `conec` starts, so a compile that fails or is killed leaves no
+key and is done again. Debug and release have folders of their own, so a
+cache each; a build with other `-D` defines compiles everything again in the
+same folder. A GPU build's key is
+`build/<mode>/gpu/<name>/<name>_gpu.key`: as `conec` finds and compiles the
+packages a kernel reaches from their source, it holds every `.cone` file in
+the `src/` and `gpu/` of each, more than `conec` reads, never less. A build
+whose order holds no `core` (`libc` built on its own) is never skipped, since
+Congo then cannot say where `conec` loads the prelude from.
+
+**`congo test` over a folder of packages shares its libraries (congo.py only;
+the Cone Congo has not been given it yet).** Each package's own build is in
+its `build/<mode>/` as above, but every other package that build reaches
+(`core`, `libc`, `stdio`, `collections`, whatever it imports) is compiled into
+`.congo-shared/<mode>-<hash>/<name>-<hash>/` in the folder tested, once for the
+run, and each package's description names those include files. The folder
+name holds the mode, the `-D` defines and `--strip`, and each library's own
+folder the name and root of its package; and the key, which holds every path
+and define as above, still decides, so a library whose key differs is built
+afresh, and a build whose key cannot be worked out is never shared. A library
+that failed to compile is reported once, and each package needing it fails
+without running `conec` on it again. One package's `congo test` or `congo build`
+is unchanged. The shared folder is in the folder tested, so two runs in
+different checkouts share nothing, and it is kept as `build/` is.
+`.congo-shared` is git-ignored.
+
+Linking (step 6) always runs (on Windows in the environment `vcvars64.bat`
+sets, which Congo keeps: below, "What Congo needs on the machine").
+`congo clean` deletes the keys with the folder,
+and `--no-cache`, given to `build`, `run` or `test`, compiles everything as if
+no build had been there before, and records the keys of what it compiled; on
+Windows it captures Visual Studio's environment again too. If a build seems
+to use what it should not, `--no-cache` is the check.
+
+Every compile's cache is in a build folder: a package's `build/`, in whatever
+copy of the repository it is built, or a lone file's in the Congo home
+(below), which every copy of the repository shares for a lone file of one
+path; a key holding `conec`'s content, a compiler of another copy compiles
+everything again there. The one thing kept for every build on the machine is
+Visual Studio's environment, in the Congo home (below).
 
 ## What Congo needs on the machine
 
@@ -907,6 +1022,23 @@ Everything is rebuilt every time.
   puts its x64 folders in front of what `LIB` still lists. When no Microsoft
   `link.exe` is found even so, the error names the `vcvars64.bat` run, the end
   of what it printed, and the folders searched. Elsewhere, `cc` or `gcc`.
+
+  **What `vcvars64.bat` sets is captured once and kept**, in
+  `msvc-env.json` in the Congo home, since each run of it takes seconds and
+  every build folder's link needed one. The file holds each variable it sets
+  as it set it, with a mark where the value before it ran goes, so that a
+  link's environment is Congo's own with Visual Studio's folders around what
+  `PATH`, `LIB` and the rest already list, as a run would make it, and no
+  batch file runs. Its key is `vcvars64.bat`'s path and the content of the
+  files that decide what it sets (`vcvars64.bat`, `vcvarsall.bat`,
+  `VsDevCmd.bat`, the default tools version beside them) and the Windows SDK
+  versions installed, so a Visual Studio update captures it again. So does a
+  folder its `LIB` names that is gone, no Microsoft `link.exe` found with it,
+  a link that fails as a stale environment makes one fail (`link.exe` could
+  not run, or could not open a library no package of the build names; the
+  link is then done once more, and its error says so), and `--no-cache`.
+  An inherited x64 environment is used as it is, and an x86 one is converted
+  by a run of `vcvars64.bat` each time, as before.
 
 What these tools print, Congo reads in the encoding each writes: `conec`'s
 messages, and `vswhere`'s answer (asked with `-utf8`), as UTF-8; what
@@ -967,7 +1099,20 @@ entry point read back, and the `.spv` beside an importer; `gpu/` refused its
 use of `src/` three ways, an unmarked import, a function calling itself, and
 the layout's refusals; no `.spv` without an entry point; and, where SDL3's
 `lib` folder is on `LIB`, `packages/gpupart` run on the GPU, every word
-identical).
+identical), and the build cache (exactly the compiles that read a change done
+again: a line of the program, a body of an import whose include file stays
+the same, an import's interface, a manifest, a file added; an object, an
+include file or a key gone or changed; debug, release and `-D` defines;
+`conec` and `conestd` changed where they stand; a compile that fails, and
+Congo killed while `conec` runs, leaving no key; `--no-cache`; `congo clean`;
+a test program compiled only when it changes; and a kernel compiled again when
+the source of a package it inlines changes, though its own object is not), and
+the kept Visual Studio environment (Windows: a variable's template keeping
+what the environment lists around Visual Studio's folders; the key following
+an update of the batch files or the tools version; captured once, then used
+with no run of `vcvars64.bat`, and captured again for another key, a `LIB`
+folder gone, no `link.exe`, a link that cannot open the C runtime's libraries,
+and `--no-cache`, but not for a library a package names that is missing).
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo, and does not run
 the packages' tests: `congo test` in `packages/` does.
@@ -978,7 +1123,7 @@ Congo is being ported to Cone, in stages, so that nothing needs Python. The
 port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
 `src/congo.cone` (the only file that imports) and the files joining its module
 (`commands.cone`, `header.cone`, `paths.cone`, `registry.cone`, `modules.cone`,
-`index.cone`, `order.cone`, `linker.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
+`index.cone`, `order.cone`, `linker.cone`, `msvcenv.cone`, `cache.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
 builds it first:
 
 ```
@@ -997,11 +1142,12 @@ build folder while it runs from it; `congo.py clean` can. Windows only, as its
 
 **It does everything `congo.py` does:** `congo new` (the manifest and the
 template, byte for byte), `congo build` (debug and `--release`, `-D`, a
-program linked or a library's object, the build folder, the descriptions),
+program linked or a library's object, the build folder, the descriptions, the
+build cache and `--no-cache`, and the kept Visual Studio environment),
 `congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
 compared with its `.out`, `.exit` and `.err`, a `.debug` test skipped in a
-release test, `--bless`, the name filter, the
+release test, a test that skips itself, `--bless`, the name filter, the
 examples built, a folder of packages), a marked package's kernels and a
 `gpu/` folder's (above, "Kernels for the GPU"), and `congo clean` of either, matching
 `congo.py` message for message, file for file and exit status for exit status
@@ -1010,14 +1156,15 @@ examples built, a folder of packages), a marked package's kernels and a
 loop refusals, the registries (the repository's `packages/` and the machine
 config's folders, every manifest in them read and checked), the build order
 and its loop refusals, `conec`, `[link]`, the linker found through
-`vcvars64.bat`, and the program run with its exit status passed back. Like
-`congo.py`, it builds the whole of a build every time. The repository is the
+`vcvars64.bat`, and the program run with its exit status passed back. It keeps
+the build cache of "What a build does" (above) and the Visual Studio
+environment file `congo.py` writes (`msvc-env.json`). The repository is the
 nearest folder above the executable holding `packages/core`, as `conec` finds
 its packages folder.
 
 Cone has no exceptions, so what `congo test` goes on after (a source it
 cannot scan or resolve, a compile or link that fails, no `conec` or linker)
-is answered as a value, a `Result` whose `Error` is the message `congo.py`'s
+is answered as a value, a `Result` whose `Err` is the message `congo.py`'s
 `CongoError` carries; `build` and `run` end on the first, as `congo.py` does.
 As in `congo.py`, a test's build shares one session with the package's: each
 package is compiled into the build folder once, and the linker is found once.
@@ -1028,7 +1175,10 @@ package is compiled into the build folder once, and the linker is found once.
 $env:CONGO_EXE = "tools\congo\build\debug\congo.exe"; python tools/congo/test_congo.py
 ```
 
-runs every scenario against the Cone Congo.
+runs every scenario against the Cone Congo. Without it, `test_congo.py` still
+builds the Cone Congo and runs it over the scenarios where it once fell behind
+`congo.py` (the build cache, a test that skips itself, the kept Visual Studio
+environment): `ConeCongoParity` and `ConeCongoMsvcEnvironment`.
 
 Where it differs from `congo.py`:
 
@@ -1091,4 +1241,6 @@ Where it differs from `congo.py`:
   registration (an index is written by whoever can push to it); `congo update`.
 - An index on Linux with the Cone Congo, which is Windows only; `congo.py` fetches
   on any system with git.
-- Incremental builds: Congo rebuilds everything, every time.
+- Of incremental builds: a cache for each set of `-D` defines (a build with
+  other defines compiles everything again in the same folder); compiles in
+  parallel.

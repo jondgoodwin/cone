@@ -1,0 +1,129 @@
+// The bound on a ChunkPool's memory: at most its cap plus ONE buffer for each link
+// that has nothing in flight when it asks (the floor, chunkpool.cone: a stream is
+// never left with no buffer at all). This runs one thread and no actor.
+//
+//   1. a full pool (cap 16 KiB, lent to one busy link) and four idle links: each
+//      idle link is lent exactly one buffer, counted at its size class (16 KiB for
+//      5,000 bytes), past the cap; a second take of any of them is refused. The
+//      pool's outstanding bytes reach cap + 4 * 16 KiB, and the four lends are
+//      counted as floored;
+//   2. the bound never breaks: six links take and give in a pseudo-random order for
+//      many steps, and after every step the bytes lent are at most the cap plus one
+//      16 KiB buffer for each link with buffers out, and the pool's peak never
+//      passes cap + 6 * 16 KiB;
+//   3. every buffer back: nothing lent.
+
+mod boundtest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import stages use *;
+
+fn take(link: &mut ChunkWindow, want: usize) IoBuf {
+  match link.take(want) {
+    case let Some(b) { b }
+    case is None { expect(false, "a take that should find room does"); IoBuf() }
+  }
+}
+
+fn main() i32 {
+  let cap = 16384usize;
+  let buf = 16384usize;   // the size class of a 5,000-byte take
+  let pool = ChunkPool.make(cap);
+
+  // 1. a full pool and four idle links
+  var busy = ChunkWindow.make(1048576usize, pool);
+  var b1 = take(&mut busy, 4096usize);
+  var b2 = take(&mut busy, 4096usize);
+  var b3 = take(&mut busy, 4096usize);
+  var b4 = take(&mut busy, 4096usize);
+  expectUInt(u64.from(pool.lent()), u64.from(cap), "the pool is full: its cap is lent");
+  expectUInt(pool.floored(), 0u64, "and nothing is yet past it");
+
+  var idle = List[ChunkWindow]();
+  var k = 0usize;
+  while k < 4usize {
+    idle.push(ChunkWindow.make(1048576usize, pool));
+    k += 1usize;
+  }
+  var floor = List[IoBuf]();
+  k = 0usize;
+  while k < 4usize {
+    floor.push(take(&mut idle[k], 5000usize));
+    k += 1usize;
+  }
+  expectUInt(u64.from(pool.lent()), u64.from(cap + 4usize * buf), "four idle links each lent one buffer past the cap, counted at its size class");
+  expectUInt(pool.floored(), 4u64, "the four lends are counted as floored");
+  k = 0usize;
+  while k < 4usize {
+    expect(idle[k].take(100usize) is None, "an idle link that has its one buffer is refused another");
+    k += 1usize;
+  }
+  expect(busy.take(100usize) is None, "and so is the busy link, with the pool over its cap");
+  expectUInt(u64.from(pool.lent()), u64.from(cap + 4usize * buf), "the refusals lent nothing: the pool is at the bound, not past it");
+  expectUInt(u64.from(pool.peak()), u64.from(cap + 4usize * buf), "the bound is reached: the peak is cap + one buffer per idle link");
+
+  // give everything back
+  busy.give(b1);
+  busy.give(b2);
+  busy.give(b3);
+  busy.give(b4);
+  k = 0usize;
+  while k < 4usize {
+    idle[k].give(floor.pop().unwrap());
+    k += 1usize;
+  }
+  expectUInt(u64.from(pool.lent()), 0u64, "1: every byte is back");
+
+  // 2. six links, pseudo-random takes and gives
+  let cap2 = 32768usize;
+  let pool2 = ChunkPool.make(cap2);
+  var links = List[ChunkWindow]();
+  var held = List[List[IoBuf]]();
+  k = 0usize;
+  while k < 6usize {
+    links.push(ChunkWindow.make(1048576usize, pool2));
+    held.push(List[IoBuf]());
+    k += 1usize;
+  }
+  var seed = 12345u64;
+  var step = 0usize;
+  var broke = 0u64;
+  while step < 20000usize {
+    seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+    let who = usize.from((seed >> 33u64) % 6u64);
+    let act = (seed >> 20u64) % 3u64;
+    if act < 2u64 {
+      let want = if (seed >> 40u64) % 2u64 == 0u64 {100usize} else {5000usize};
+      match links[who].take(want) {
+        case let Some(b) { held[who].push(b); }
+        case is None {}
+      }
+    } else if held[who].len() > 0usize {
+      links[who].give(held[who].pop().unwrap());
+    }
+    var busyLinks = 0usize;
+    k = 0usize;
+    while k < 6usize {
+      if held[k].len() > 0usize { busyLinks += 1usize; }
+      k += 1usize;
+    }
+    if pool2.lent() > cap2 + busyLinks * buf { broke += 1u64; }
+    step += 1usize;
+  }
+  expectUInt(broke, 0u64, "2: after every step the bytes lent are at most the cap plus one buffer per link with buffers out");
+  expect(pool2.peak() <= cap2 + 6usize * buf, "and the peak never passes cap + one buffer per link");
+  expect(pool2.floored() > 0u64, "and the floor was used");
+
+  // 3. everything back
+  k = 0usize;
+  while k < 6usize {
+    while held[k].len() > 0usize {
+      links[k].give(held[k].pop().unwrap());
+    }
+    k += 1usize;
+  }
+  expectUInt(u64.from(pool2.lent()), 0u64, "3: every byte is back");
+  done()
+}

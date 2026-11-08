@@ -1,0 +1,605 @@
+// flyover: a procedural mountain range 20 km across, flown over from the
+// ground to 3 km up, drawn by terrainlod with no window. The ground is a
+// closure over the noise package (a ridged multifractal, masked to a range
+// running across the world, with foothills), nothing is stored, and the
+// terrain asks for what it needs as the camera moves.
+//
+//   congo run packages/terrainlod/examples/flyover.cone -- --shots out/fly
+//   congo run packages/terrainlod/examples/flyover.cone -- --cost
+//   congo run packages/terrainlod/examples/flyover.cone -- --cracks
+//
+// '--shots PREFIX' writes the look from seven places on the flight to
+// PREFIX-0.bmp .. PREFIX-6.bmp (1920 x 1080), and the level and morph views
+// of two of them (PREFIX-levels-N.bmp, PREFIX-morph-N.bmp: each level in a
+// colour of its own, and how far each vertex has morphed).
+// '--cost' flies the whole path (2400 frames, about 8 m a frame) and prints,
+// for the frame's parts, the median, 95th percentile and worst: the CPU's
+// update (the walk, and new patches), the CPU's recording and submission, and
+// the GPU's time for the render pass (timestamps); plus nodes, triangles and
+// draw calls per frame and the patches built.
+// '--cracks' draws the flight in a mode that paints every level a colour on
+// a magenta background, and counts the pixels where the background shows
+// below the top of the ground in its column: where there is no ground below
+// a ray that the ground above caught, the surface is cracked. Zero is the
+// pass.
+// There is no GPU pop check here: the pop evidence is the CPU test's exact one (tests/selection.cone:\n// the drawn height at fixed points over 800 steps of 0.25 m, never more than 1 cm apart) and the GPU\n// test's agreement of the picture with the function (tests/gpudraw.cone). A frame-to-frame comparison of\n// pixels was tried and abandoned: a 0.1 m camera move shifts hit points on grazing ground by metres.\n//
+// GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU where there
+// are two. With the Vulkan SDK, validation is on, and must say nothing.
+
+mod flyover;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use *;
+import collections use *;
+import gpu use *;
+import render use *;
+import noise use *;
+import terrainlod use *;
+import time use Instant;
+import path as filepath;
+
+const SEED = 1783u32;
+const DEFAULT_FRAMES = 2400;
+
+// ---- The ground ----
+
+fn smooth(a: f32, b: f32, v: f32) f32 {
+  let t = if v < a { 0. } else if v > b { 1. } else { (v - a) / (b - a) };
+  t * t * (3. - 2. * t)
+}
+
+// The range runs along a line 20 degrees off the x axis. Across it the mask
+// falls off as a Gaussian 5.5 km wide; along it the peaks swell and shrink.
+// The peaks are a ridged multifractal of seven octaves. Foothills and lowland
+// swell under all of it.
+fn mountains(x: f32, z: f32) f32 {
+  let c = 0.9396926f;
+  let s = 0.3420201f;
+  let along = x * c + z * s;
+  let across = -x * s + z * c;
+  let p = Vec2(x, z);
+  let bend = fbm2(Vec2(along * 0.0004, across * 0.0004), SEED + 1u32, 3, 2., 0.5).value * 900.;
+  let a2 = across + bend;
+  let mask = libc.expf(-(a2 / 5500.) * (a2 / 5500.));
+  let swell = 0.55 + 0.45 * (0.5 + 0.5 * fbm2(Vec2(along * 0.00022, 0.), SEED + 2u32, 2, 2., 0.5).value);
+  let ridged = ridged2(p * 0.00026, SEED + 3u32, 6, 2., 0.45).value * 0.54;
+  let foothills = 140. * (0.5 + 0.5 * fbm2(p * 0.0011, SEED + 4u32, 5, 2., 0.5).value) * (0.35 + 0.65 * mask);
+  let lowland = 30. * fbm2(p * 0.0035, SEED + 5u32, 4, 2., 0.5).value;
+  foothills + lowland + 2500. * mask * swell * ridged * ridged
+}
+
+// ---- The look ----
+
+fn makeLook(debug: u32) TerrainLook {
+  var layers = List[TerrainLayer]();
+  layers.push(TerrainLayer.base(Color(0.09, 0.15, 0.045, 1.)));                                    // meadow
+  layers.push(TerrainLayer.band(Color(0.035, 0.075, 0.03, 1.), 60., 1250., 90., -0.1, 0.2, 0.05));       // forest
+  layers.push(TerrainLayer.band(Color(0.16, 0.14, 0.085, 1.), 1250., 100000., 160., -0.1, 0.4, 0.06)); // alpine
+  layers.push(TerrainLayer.band(Color(0.22, 0.2, 0.18, 1.), -100000., 100000., 1., 0.22, 2., 0.06));   // rock
+  layers.push(TerrainLayer.band(Color(0.85, 0.87, 0.92, 1.), 1850., 100000., 140., -0.1, 0.46, 0.08)); // snow
+  var look = TerrainLook.make();
+  look.layers = layers;
+  look.hazeColor = Color(0.52, 0.64, 0.82, 1.);
+  look.hazeDensity = 0.000028;
+  look.hazeFalloff = 0.00035;
+  look.bump = 0.2;
+  look.debug = debug;
+  look
+}
+
+// ---- The flight ----
+
+// The path in the range's own coordinates: along it from -9 km to +9 km, and
+// across it from the southern foothills (-6.5 km) over the crest to 2.5 km
+// beyond, then back to the world's
+fn pathXZ(t: f32) Vec2 {
+  let along = -9000. + 18000. * t;
+  let across = -6500. + 9000. * smooth(0.05, 0.95, t) + 600. * libc.sinf(t * 9.);
+  Vec2(along * 0.9396926 - across * 0.3420201, along * 0.3420201 + across * 0.9396926)
+}
+
+// The eye for each frame: along the path, above the ground by a height that
+// grows from 3 m to 3 km, smoothed so the climb is a glide
+fn flightEyes(frames: i32) List[Vec3] {
+  var raw = List[Vec3]();
+  var i = 0;
+  while i < frames {
+    let t = f32.from(i) / f32.from(frames - 1);
+    let xz = pathXZ(t);
+    let ground = groundHeight(&mountains, 1., xz.x, xz.y);
+    let lift = 3. + 3000. * smooth(0.3, 1., t) * smooth(0.3, 1., t);
+    raw.push(Vec3(xz.x, ground + lift, xz.y));
+    i = i + 1;
+  }
+  // Smoothed by a forward and backward pass of an exponential, then lifted
+  // clear of the ground
+  var a = List[f32]();
+  i = 0;
+  while i < frames { a.push((*raw[usize.from(i)]).y); i = i + 1; }
+  var s = *a[0];
+  i = 0;
+  while i < frames {
+    s = s + (*a[usize.from(i)] - s) * 0.08;
+    a.set(usize.from(i), s);
+    i = i + 1;
+  }
+  s = *a[usize.from(frames - 1)];
+  i = frames - 1;
+  while i >= 0 {
+    s = s + (*a[usize.from(i)] - s) * 0.08;
+    a.set(usize.from(i), s);
+    i = i - 1;
+  }
+  var out = List[Vec3]();
+  i = 0;
+  while i < frames {
+    let r = *raw[usize.from(i)];
+    let ground = groundHeight(&mountains, 1., r.x, r.z);
+    let y = *a[usize.from(i)];
+    out.push(Vec3(r.x, if y < ground + 2.5 { ground + 2.5 } else { y }, r.z));
+    i = i + 1;
+  }
+  out
+}
+
+// The camera for frame 'i' of 'frames': at the eye, looking along the path,
+// the pitch falling from level to 22 degrees down
+fn flightCamera(eyes: &List[Vec3], i: i32, frames: i32, aspectFov: f32) Camera {
+  let t = f32.from(i) / f32.from(frames - 1);
+  let eye = *eyes[usize.from(i)];
+  let ahead = pathXZ(if t + 0.002 > 1. { 1. } else { t + 0.002 });
+  let behind = pathXZ(if t - 0.002 < 0. { 0. } else { t - 0.002 });
+  let heading = Vec2(ahead.x - behind.x, ahead.y - behind.y);
+  let hl = (heading.x * heading.x + heading.y * heading.y).sqrt();
+  let pitch = -radians(1. + 21. * smooth(0.25, 0.95, t));
+  let look = Vec3(heading.x / hl * libc.cosf(pitch), libc.sinf(pitch), heading.y / hl * libc.cosf(pitch));
+  var camera = Camera.make();
+  camera.fov = aspectFov;
+  camera.near = 0.5 + eye.y * 0.0004;
+  camera.far = 120000.;
+  camera.lookAt(eye, eye + look * 100., Vec3(0., 1., 0.));
+  camera.background = Color(1., 0., 1., 1.);
+  camera
+}
+
+// ---- Helpers ----
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+fn argInt(s: *u8) i32 {
+  var v = 0;
+  var i = 0usize;
+  while *(s + i) >= 48u8 && *(s + i) <= 57u8 {
+    v = v * 10 + i32.from(*(s + i) - 48u8);
+    i = i + 1usize;
+  }
+  v
+}
+
+fn cstrToString(s: *u8) String {
+  var out = String();
+  var i = 0usize;
+  while *(s + i) != 0u8 {
+    out.appendByte(*(s + i));
+    i = i + 1usize;
+  }
+  out
+}
+
+// A half float's bits as an f32
+fn halfToFloat(h: u32) f32 {
+  let sign = if ((h >> 15u32) & 1u32) != 0u32 { -1.f } else { 1. };
+  let e = i32.from((h >> 10u32) & 31u32);
+  let m = f32.from(h & 1023u32);
+  if e == 0 { return sign * m * 5.9604645e-8; }
+  if e == 31 { return sign * 65504.; }
+  sign * (1. + m / 1024.) * libc.powf(2., f32.from(e - 15))
+}
+
+// The p-th percentile (0 to 1) of the values, by nearest rank
+fn percentile(values: &List[f64], p: f64) f64 {
+  var v = List[f64]();
+  var i = 0usize;
+  while i < values.len() { v.push(*values[i]); i = i + 1usize; }
+  v.sort();
+  if v.len() == 0usize { return 0.0; }
+  let at = usize.from(p * f64.from(v.len() - 1usize) + 0.5);
+  *v[at]
+}
+
+fn ms(i: Instant) f64 { i.elapsed().secondsF64() * 1000.0 }
+
+// What a frame cost
+struct FrameCost {
+  update: f64;       // CPU: the walk and new patches
+  record: f64;       // CPU: the list, the recording, the submission
+  gpu: f64;          // GPU: the render pass
+}
+
+struct Stage {
+  device: Device;
+  renderer: Renderer;
+  post: Post;
+  out: Texture;
+  hdr: Texture;
+  depth: Texture;
+  queries: QuerySet;
+  resolved: Buffer;
+  readback: Buffer;
+  w: u32;
+  h: u32;
+}
+
+// Update the terrain for 'camera', draw into the HDR frame and the 8-bit
+// output (when 'toOut'), timing the pieces
+fn drawFrame(device: &mut Device, renderer: &mut Renderer, post: &mut Post, terrain: &mut Terrain, out: &Texture,
+    hdr: &Texture, depth: &Texture, queries: &QuerySet, resolved: &Buffer, readback: &Buffer, camera: &Camera,
+    light: &Light, list: &mut DrawList, w: u32, h: u32, raw: bool) FrameCost {
+  let t0 = Instant.now();
+  terrain.update(device, renderer, camera, w, h, &mountains);
+  let update = ms(t0);
+  let t1 = Instant.now();
+  list.clear();
+  terrain.draw(list);
+  var encoder = device.createCommandEncoder();
+  encoder.writeTimestamp(queries, 0u32);
+  if raw {
+    renderer.render(device, &mut encoder, hdr, depth, camera, light, list);
+  } else {
+    renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, list);
+  }
+  encoder.writeTimestamp(queries, 1u32);
+  if !raw { post.apply(&mut encoder, out); }
+  encoder.resolveQuerySet(queries, 0u32, 2u32, resolved, 0u64);
+  encoder.copyBufferToBuffer(resolved, 0u64, readback, 0u64, 16u64);
+  device.queue.submit(encoder.finish());
+  let record = ms(t1);
+  device.endFrame();
+  device.waitIdle();
+  let ticks = readback.mappedRange() as *u64;
+  let gpu = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6;
+  FrameCost(update, record, gpu)
+}
+
+fn saveShot(device: &mut Device, renderer: &mut Renderer, post: &mut Post, terrain: &mut Terrain, out: &Texture, hdr: &Texture,
+    depth: &Texture, queries: &QuerySet, resolved: &Buffer, readback: &Buffer, camera: &Camera, light: &Light,
+    list: &mut DrawList, w: u32, h: u32, name: &String) {
+  // Twice: the first brings in what the camera needs, the second draws it
+  drawFrame(device, renderer, post, terrain, out, hdr, depth, queries, resolved, readback, camera, light, list, w, h, false);
+  var shot = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var encoder = device.createCommandEncoder();
+  list.clear();
+  terrain.update(device, renderer, camera, w, h, &mountains);
+  terrain.draw(list);
+  renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, list);
+  post.apply(&mut encoder, out);
+  encoder.copyTextureToBuffer(out, &shot);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  let image = Image.fromTexels(shot.mappedRange(), i32.from(w), i32.from(h), false);
+  let written = image.save(&filepath.Path.from(name.view()));
+  print <- "Shot: "; printStr(name.view());
+  if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+}
+
+// Read the HDR frame (rgba16float) back into floats, 4 a pixel
+fn readHdr(device: &mut Device, hdr: &Texture, w: u32, h: u32, camera: &Camera, renderer: &mut Renderer, terrain: &mut Terrain,
+    depth: &Texture, light: &Light, list: &mut DrawList, buffer: &Buffer) {
+  list.clear();
+  terrain.update(device, renderer, camera, w, h, &mountains);
+  terrain.draw(list);
+  var encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, hdr, depth, camera, light, list);
+  encoder.copyTextureToBuffer(hdr, buffer);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var shotsPrefix = String();
+  var doCost = false;
+  var doCracks = false;
+  var width = 1920u32;
+  var height = 1080u32;
+  var step = 8;
+  var skirt = true;
+  var pixelsPerCell = 4.f;
+  var nodeCells = 32u32;
+  var frameCount = DEFAULT_FRAMES;
+  var a = 1;
+  while a < argc {
+    let arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") && a + 1 < argc {
+      shotsPrefix = cstrToString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else if cstrEquals(arg, "--cost") {
+      doCost = true;
+    } else if cstrEquals(arg, "--cracks") {
+      doCracks = true;
+    } else if cstrEquals(arg, "--pixels") && a + 1 < argc {
+      pixelsPerCell = f32.from(argInt(*(argv + usize.from(a + 1))));
+      a = a + 1;
+    } else if cstrEquals(arg, "--nodecells") && a + 1 < argc {
+      nodeCells = u32.from(argInt(*(argv + usize.from(a + 1))));
+      a = a + 1;
+    } else if cstrEquals(arg, "--noskirt") {
+      skirt = false;
+    } else if cstrEquals(arg, "--small") {
+      width = 960u32;
+      height = 540u32;
+    } else if cstrEquals(arg, "--frames") && a + 1 < argc {
+      frameCount = argInt(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else if cstrEquals(arg, "--step") && a + 1 < argc {
+      step = argInt(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else {
+      print <- "Use --shots PREFIX, --cost, --cracks, --noskirt, --pixels N, --nodecells N, --small, --frames N, --step N\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  var instance = Instance.create("terrainlod flyover");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  var adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1i32;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; print <- u64.from(if instance.validation { 1u32 } else { 0u32 });
+  print <- "; synchronization validation: "; print <- u64.from(if instance.syncValidation { 1u32 } else { 0u32 }); print <- "\n";
+  var device = adapter.requestDevice();
+  let w = width;
+  let h = height;
+  let outDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var out = device.createTexture(&outDesc);
+  let hdrDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var hdr = device.createTexture(&hdrDesc);
+  let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, w, h);
+  var queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() || !post.isValid() || !queries.isValid() {
+    print <- "The renderer, the post or the timestamps could not be made\n";
+    return 1i32;
+  }
+
+  // A clear day: the sun 38 degrees up, a blue sky paler toward the horizon
+  var sky = Sky.dusk(radians(38.), radians(300.));
+  sky.sunColor = Color(40., 36., 30., 1.);
+  sky.zenith = Color(0.14, 0.32, 0.8, 1.);
+  sky.horizon = Color(0.52, 0.64, 0.82, 1.);
+  sky.horizonSharpness = 3.;
+  sky.glow = Color(0.5, 0.42, 0.3, 1.);
+  sky.glowSharpness = 60.;
+  sky.ground = Color(0.30, 0.34, 0.40, 1.);
+  let light = sky.sunLight(Color(3.4, 3.2, 2.9, 1.), Color(0.30, 0.36, 0.48, 1.));
+  post.bloom = 0.01;
+  if !doCracks { renderer.setSky(&mut device, &sky); }
+  if doCracks {
+    post.toneMapper = TONE_MAP_NONE;
+    post.bloom = 0.;
+  }
+
+  // The terrain
+  var cfg = TerrainConfig.make();
+  cfg.horizon = 60000.;
+  cfg.minHeight = -50.;
+  cfg.maxHeight = 3000.;
+  // The steepest the ground is, measured over the whole range on a 2 m grid, with room
+  var slope = 0.f;
+  {
+    var zz = -9000.f;
+    while zz <= 9000. {
+      var xx = -11000.f;
+      while xx <= 11000. {
+        let h0 = mountains(xx, zz);
+        let dx = libc.fabsf(mountains(xx + 2., zz) - h0) / 2.;
+        let dz = libc.fabsf(mountains(xx, zz + 2.) - h0) / 2.;
+        let sl = (dx * dx + dz * dz).sqrt();
+        if sl > slope { slope = sl; }
+        xx = xx + 23.;
+      }
+      zz = zz + 23.;
+    }
+  }
+  cfg.maxSlope = slope * 1.2;
+  if !skirt { cfg.skirt = 0.; }
+  cfg.pixelsPerCell = pixelsPerCell;
+  cfg.nodeCells = nodeCells;
+  print <- "Steepest ground measured on a 23 m sampling of the range: "; print <- slope;
+  print <- ", declared maxSlope "; print <- cfg.maxSlope; print <- "\n";
+  var terrain = Terrain.create(&mut device, &mut renderer, cfg);
+  terrain.setLook(makeLook(if doCracks { 2u32 } else { 0u32 }));
+  if !terrain.isValid(&renderer) {
+    print <- "The terrain could not be made\n";
+    return 1i32;
+  }
+  var list = DrawList();
+  let FRAMES = frameCount;
+  let eyes = flightEyes(FRAMES);
+  let fov = radians(60.);
+
+  if shotsPrefix.len() > 0usize {
+    var k = 0;
+    while k < 7 {
+      let i = (FRAMES - 1) * k / 6;
+      let camera = flightCamera(&eyes, i, FRAMES, fov);
+      var name = shotsPrefix.clone();
+      name <- "-"; name <- k; name <- ".bmp";
+      saveShot(&mut device, &mut renderer, &mut post, &mut terrain, &out, &hdr, &depth, &queries, &resolved, &readback,
+        &camera, &light, &mut list, w, h, &name);
+      print <- "  frame "; print <- i; print <- ": eye height "; print <- camera.position().y; print <- " m, "; print <- terrain.stats.drawn;
+      print <- " nodes, "; print <- terrain.stats.triangles; print <- " triangles\n";
+      k = k + 1;
+    }
+    // The levels and the morph, from the ground and from the air
+    let views = [2, 5];
+    var v = 0usize;
+    while v < 2usize {
+      let i = (FRAMES - 1) * views[v] / 6;
+      let camera = flightCamera(&eyes, i, FRAMES, fov);
+      terrain.setLook(makeLook(2u32));
+      var name = shotsPrefix.clone();
+      name <- "-levels-"; name <- views[v]; name <- ".bmp";
+      saveShot(&mut device, &mut renderer, &mut post, &mut terrain, &out, &hdr, &depth, &queries, &resolved, &readback,
+        &camera, &light, &mut list, w, h, &name);
+      terrain.setLook(makeLook(3u32));
+      name = shotsPrefix.clone();
+      name <- "-morph-"; name <- views[v]; name <- ".bmp";
+      saveShot(&mut device, &mut renderer, &mut post, &mut terrain, &out, &hdr, &depth, &queries, &resolved, &readback,
+        &camera, &light, &mut list, w, h, &name);
+      terrain.setLook(makeLook(0u32));
+      v = v + 1usize;
+    }
+  }
+
+  if doCost {
+    var updates = List[f64]();
+    var records = List[f64]();
+    var gpus = List[f64]();
+    var nodes = List[f64]();
+    var tris = List[f64]();
+    var built = List[f64]();
+    var uploads = List[f64]();
+    var firstUpdate = 0.0;
+    var worstBuilt = 0u32;
+    var i = 0;
+    while i < FRAMES {
+      let camera = flightCamera(&eyes, i, FRAMES, fov);
+      let c = drawFrame(&mut device, &mut renderer, &mut post, &mut terrain, &out, &hdr, &depth, &queries, &resolved,
+        &readback, &camera, &light, &mut list, w, h, false);
+      if i == 0 { firstUpdate = c.update; }
+      if i >= 3 {
+        uploads.push(terrain.stats.uploadMs);
+        updates.push(c.update);
+        records.push(c.record);
+        gpus.push(c.gpu);
+        nodes.push(f64.from(terrain.stats.drawn));
+        tris.push(f64.from(terrain.stats.triangles));
+        built.push(f64.from(terrain.stats.builtPatches));
+        if terrain.stats.builtPatches > worstBuilt { worstBuilt = terrain.stats.builtPatches; }
+      }
+      i = i + 1;
+    }
+    print <- "Cost over "; print <- FRAMES; print <- " frames at "; print <- w; print <- " x "; print <- h; print <- " (p50 / p95 / max):\n";
+    print <- "  CPU update:      "; print <- percentile(&updates, 0.5); print <- " / "; print <- percentile(&updates, 0.95);
+    print <- " / "; print <- percentile(&updates, 1.0); print <- " ms\n";
+    print <- "    of which putting patches on the GPU: "; print <- percentile(&uploads, 0.5); print <- " / "; print <- percentile(&uploads, 0.95);
+    print <- " / "; print <- percentile(&uploads, 1.0); print <- " ms; the first frame's update "; print <- firstUpdate; print <- " ms\n";
+    print <- "  CPU record+submit: "; print <- percentile(&records, 0.5); print <- " / "; print <- percentile(&records, 0.95);
+    print <- " / "; print <- percentile(&records, 1.0); print <- " ms\n";
+    print <- "  GPU render pass: "; print <- percentile(&gpus, 0.5); print <- " / "; print <- percentile(&gpus, 0.95);
+    print <- " / "; print <- percentile(&gpus, 1.0); print <- " ms\n";
+    print <- "  nodes drawn:     "; print <- percentile(&nodes, 0.5); print <- " / "; print <- percentile(&nodes, 0.95);
+    print <- " / "; print <- percentile(&nodes, 1.0); print <- "\n";
+    print <- "  triangles:       "; print <- percentile(&tris, 0.5); print <- " / "; print <- percentile(&tris, 0.95);
+    print <- " / "; print <- percentile(&tris, 1.0); print <- "\n";
+    print <- "  patches built per frame: p50 "; print <- percentile(&built, 0.5); print <- ", p95 "; print <- percentile(&built, 0.95);
+    print <- ", worst "; print <- worstBuilt; print <- "; resident "; print <- terrain.stats.resident; print <- "\n";
+    print <- "  levels: "; print <- terrain.lod.count; print <- "; last frame's draws by level:";
+    var l = 0usize;
+    while l < usize.from(terrain.lod.count) { print <- " "; print <- terrain.stats.byLevel[l]; l = l + 1usize; }
+    print <- "\n";
+    // The steady-state GPU cost at the seven places of the flight: the same frame 60 times
+    print <- "Steady GPU render pass at the flight's seven places (median of 60 frames of one view):\n";
+    var k = 0;
+    while k < 7 {
+      let at = (FRAMES - 1) * k / 6;
+      let camera = flightCamera(&eyes, at, FRAMES, fov);
+      var times = List[f64]();
+      var rep = 0;
+      while rep < 60 {
+        let c = drawFrame(&mut device, &mut renderer, &mut post, &mut terrain, &out, &hdr, &depth, &queries, &resolved,
+          &readback, &camera, &light, &mut list, w, h, false);
+        if rep >= 10 { times.push(c.gpu); }
+        rep = rep + 1;
+      }
+      print <- "  place "; print <- k; print <- " (frame "; print <- at; print <- ", "; print <- camera.position().y; print <- " m up): ";
+      print <- percentile(&times, 0.5); print <- " ms, "; print <- terrain.stats.drawn; print <- " nodes, ";
+      print <- terrain.stats.triangles; print <- " triangles, "; print <- terrain.stats.visited; print <- " nodes visited\n";
+      k = k + 1;
+    }
+  }
+
+  if doCracks {
+    var buffer = device.createBuffer(u64.from(w) * u64.from(h) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    var total = 0u64;
+    var worst = 0u64;
+    var frames = 0;
+    var i = 0;
+    while i < FRAMES {
+      let camera = flightCamera(&eyes, i, FRAMES, fov);
+      readHdr(&mut device, &hdr, w, h, &camera, &mut renderer, &mut terrain, &depth, &light, &mut list, &buffer);
+      let px = buffer.mappedRange() as *u16;
+      var cracks = 0u64;
+      var x = 0u32;
+      while x < w {
+        // From the bottom up: the ground, then no background until the ground ends
+        var seenGround = false;
+        var y = h;
+        while y > 0u32 {
+          y = y - 1u32;
+          let at = usize.from((y * w + x) * 4u32);
+          let r = halfToFloat(u32.from(*(px + at)));
+          let g = halfToFloat(u32.from(*(px + at + 1usize)));
+          let b = halfToFloat(u32.from(*(px + at + 2usize)));
+          let background = r > 0.9 && g < 0.05 && b > 0.9;
+          if !background { seenGround = true; }
+          else if seenGround {
+            // Background below the top of the ground: count it only if ground lies above
+            var above = false;
+            var yy = y;
+            while yy > 0u32 && !above {
+              yy = yy - 1u32;
+              let at2 = usize.from((yy * w + x) * 4u32);
+              let r2 = halfToFloat(u32.from(*(px + at2)));
+              let g2 = halfToFloat(u32.from(*(px + at2 + 1usize)));
+              let b2 = halfToFloat(u32.from(*(px + at2 + 2usize)));
+              if !(r2 > 0.9 && g2 < 0.05 && b2 > 0.9) { above = true; }
+            }
+            if above { cracks = cracks + 1u64; }
+          }
+        }
+        x = x + 1u32;
+      }
+      total = total + cracks;
+      if cracks > worst { worst = cracks; }
+      frames = frames + 1;
+      if cracks > 0u64 {
+        print <- "  frame "; print <- i; print <- ": "; print <- cracks; print <- " pixels of background below the ground's top\n";
+      }
+      i = i + step;
+    }
+    print <- "Crack check: "; print <- frames; print <- " frames (every "; print <- step; print <- "th), "; print <- total;
+    print <- " pixels of background under the ground in all, worst frame "; print <- worst; print <- "\n";
+  }
+
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32
+}
+

@@ -75,16 +75,23 @@ static int foldStarAdmits(INode *member, int admit) {
 // its values' lifecycle. A module's star clause is made pass by pass instead,
 // since a module whose own folds waited holds more in a later pass
 // (importFoldStar).
-void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base) {
+void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit, StructNode *base, StructNode *src) {
     INode **nodesp;
     uint32_t cnt;
     if (fold->excludes) {
         for (nodesFor(fold->excludes, cnt, nodesp)) {
             Name *name = ((NameUseNode*)*nodesp)->namesym;
             INode *found = namespaceFind(ns, name);
-            if (found == NULL)
-                errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
-                    &srcname->namestr, &name->namestr);
+            if (found == NULL) {
+                // A member this instance's 'where' left out is as absent from it,
+                // but its generic DECLARES it, so leaving it out is a statement
+                // about every instance. A name the generic never declared (a
+                // typo) is still refused.
+                StructNode *tmpl = src ? genericTypeTemplate(src) : NULL;
+                if (tmpl == NULL || namespaceFind(&tmpl->namespace, name) == NULL)
+                    errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
+                        &srcname->namestr, &name->namestr);
+            }
             // Seen from the fold, a private name is as absent as a missing one:
             // the star never admits it, so leaving it out says nothing. A sibling
             // has the base's private members too, but they are the base's, and
@@ -240,7 +247,7 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
         return;
     }
     if (fold->star)
-        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL, src);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))

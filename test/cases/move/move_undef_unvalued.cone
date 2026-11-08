@@ -1,0 +1,129 @@
+// '= undef' declares a variable with no value, exactly as leaving the initializer
+// off does, so the refusals of a local declared without a value apply: it is not
+// read, borrowed, or stored a field or an element into until the whole variable
+// holds a value on every path. (It once marked the variable as holding a value,
+// so a never-written value was read, borrowed, and dropped at the scope's end.)
+// The accepted neighbours, and what is dropped, are in move_undef_unvalued_ok.
+
+mod move_undef_unvalued;
+
+struct Counter {
+  pub n: i32;
+  pub fn bump(self: &mut) { n = n + 1; }
+  pub fn get(self: &) i32 { n }
+}
+
+struct Pair {
+  pub a: i32;
+  pub b: Counter;
+}
+
+struct Noisy {
+  pub n: i64;
+  fn final(self: &uni) { }
+}
+
+fn peek(c: &Counter) i32 { c.get() }
+fn fill(c: &mut Counter) { c.n = 5; }
+fn take(n: i32) i32 { n }
+fn takeNoisy(s: Noisy) { }
+
+// A read of a number
+fn readNumber() i32 {
+  var n: i32 = undef;
+  n                        //~ ErrorMove:3 "has not been initialized"
+}
+
+// A read as an argument
+fn readArgument() i32 {
+  var n: i32 = undef;
+  take(n)                  //~ ErrorMove:8 "has not been initialized"
+}
+
+// A read of a struct with a 'final', as a value
+fn readStruct() {
+  var s: Noisy = undef;
+  takeNoisy(s);            //~ ErrorMove:13 "has not been initialized"
+}
+
+// A mutable borrow, as a call that means to fill it would take
+fn mutBorrow() {
+  var c: Counter = undef;
+  fill(&mut c);            //~ ErrorMove:13 "has not been initialized"
+}
+
+// A shared borrow
+fn sharedBorrow() i32 {
+  var c: Counter = undef;
+  peek(&c)                 //~ ErrorMove:9 "has not been initialized"
+}
+
+// A method called on it
+fn methodCall() {
+  var c: Counter = undef;
+  c.bump();                //~ ErrorMove:3 "has not been initialized"
+}
+
+// A borrow of a plain number
+fn borrowNumber() {
+  var x: i32 = undef;
+  let r = &mut x;          //~ ErrorMove:16 "has not been initialized"
+  *r = 3;
+}
+
+// A borrow of a field
+fn borrowField() i32 {
+  var p: Pair = undef;
+  peek(&p.b)               //~ ErrorMove:9 "has not been initialized"
+}
+
+// A field stored into it
+fn fieldStore() {
+  var p: Pair = undef;
+  p.a = 3;                 //~ ErrorMove:4 "stored only into a variable"
+}
+
+// An element stored into it
+fn elementStore(i: i32) {
+  var a: Array[i32, 4] = undef;
+  a[1] = i;                //~ ErrorMove:4 "stored only into a variable"
+}
+
+// Given a value on one branch only, then read
+fn oneBranchRead(k: bool) i32 {
+  var n: i32 = undef;
+  if k { n = 1; }
+  n                        //~ ErrorMove:3 "may not have been given a value"
+}
+
+// Given a value on one branch only, then borrowed
+fn oneBranchBorrow(k: bool) i32 {
+  var c: Counter = undef;
+  if k { c = Counter(1); }
+  peek(&c)                 //~ ErrorMove:9 "may not have been given a value"
+}
+
+// A loop's first pass reads what only a later pass gives a value: the earlier
+// pass's value is not there to read
+fn loopEarlierPass(n: i32) {
+  var v: i32 = undef;
+  var i = 0;
+  while i < n {
+    take(v);               //~ ErrorMove:10 "has not been initialized"
+    v = i;
+    i = i + 1;
+  }
+}
+
+// A loop that may run no pass gives a value to nothing
+fn loopMayNotRun(n: i32) i32 {
+  var v: i32 = undef;
+  var i = 0;
+  while i < n {
+    v = i;
+    i = i + 1;
+  }
+  v                        //~ ErrorMove:3 "may not have been given a value"
+}
+
+fn main() i32 { 0 }

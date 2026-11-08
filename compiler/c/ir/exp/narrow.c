@@ -29,7 +29,7 @@ typedef struct NarrowFact {
     INode *anchor;          // the branch's block (anchorhead), or the statement the local is declared after
     uint16_t anchorscope;   // the scope the local is declared in
     uint8_t anchorhead;
-    uint8_t transient;      // made inside one condition ('s is Circle and s.radius > 3'): no local, a narrowed copy
+    uint8_t transient;      // made inside one condition ('s is Circle && s.radius > 3'): no local, a narrowed copy
     uint8_t shared;         // the name is a reference other references may share
     // The calls made when it was tested (gEpoch). A reference others may share is held by a
     // local the loan walk follows from where the local is declared, or has no local at all, so
@@ -776,7 +776,7 @@ static void narrowStaleError(FnCallNode *node, VarDclNode *var, Name *member, St
     else
         snprintf(how, sizeof(how), "it was changed at %s", at);
     errorMsgNode(node->objfn, ErrorNarrowStale,
-        "`%s` is not known to be %s here, and `%s` is a member of %s: %s. Test it again with 'is', or bind it with 'if imm x %s = %s'.",
+        "`%s` is not known to be %s here, and `%s` is a member of %s: %s. Test it again with 'is', or bind it with 'if let %s(x) = %s'.",
         &var->namesym->namestr, &was->namesym->namestr, &member->namestr, &was->namesym->namestr, how,
         &was->namesym->namestr, &var->namesym->namestr);
     node->vtype = errorType;

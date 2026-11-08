@@ -1,5 +1,5 @@
 // The examples of the reference manual's section on storing a future
-// (doc/reference/refawait.html, "Futures"), compiled and run, so
+// (doc/manual/conc-await.html#future, "Futures: keeping a call's answer for later"), compiled and run, so
 // the page cannot drift from what the compiler does. Each block the page
 // shows is copied from here verbatim, between the "manual:" lines; what the
 // page leaves out is the scaffolding below them, which runs the examples one
@@ -18,65 +18,65 @@ mod concurrency_future_manual;
 import stdio use *;
 import actors;
 
-fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
 // manual: two in flight
 actor Stock {
-  pub async do price(self, item u64) u64 {item * 3u64;}
+  pub async fn price(self, item: u64) u64 {item * 3u64}
 }
 
 actor Basket {
-  stock Stock;
+  stock: Stock;
 
-  pub async do total(self) u64 {
-    imm apples = stock.price(4u64);     // sent: a future comes back at once
-    imm pears = stock.price(5u64);      // both requests are in flight
-    imm a = await apples;               // waits for the first
-    imm p = await pears;                // then for the second
-    a + p;
+  pub async fn total(self) u64 {
+    let apples = stock.price(4u64);     // sent: a future comes back at once
+    let pears = stock.price(5u64);      // both requests are in flight
+    let a = await apples;               // waits for the first
+    let p = await pears;                // then for the second
+    a + p
   }
 }
 // manual: end
 
 // manual: moved and handed on
 struct Report is Move {
-  pub lines u64;
+  pub lines: u64;
 }
 
 actor Printer {
-  pub async do render(self, n u64) Report {new Report(n * 2u64);}
+  pub async fn render(self, n: u64) Report {Report(n * 2u64)}
 }
 
 actor Archive {
-  pub async do keep(self, f actors.Future[u64]) u64 {
-    imm n = await f;                    // the value arrives here
-    n + 1u64;
+  pub async fn keep(self, f: actors.Future[u64]) u64 {
+    let n = await f;                    // the value arrives here
+    n + 1u64
   }
 }
 
 actor Office {
-  printer Printer;
-  stock Stock;
-  archive Archive;
+  printer: Printer;
+  stock: Stock;
+  archive: Archive;
 
-  pub async do file(self) u64 {
-    imm r = printer.render(10u64);      // a Future[Report], which moves
-    imm report = await r;               // the Report is taken out of it
-    report.lines;
+  pub async fn file(self) u64 {
+    let r = printer.render(10u64);      // a Future[Report], which moves
+    let report = await r;               // the Report is taken out of it
+    report.lines
   }
 
-  pub async do pass(self) u64 {
-    imm f = stock.price(2u64);
-    await archive.keep(f);              // the future goes to Archive
+  pub async fn pass(self) u64 {
+    let f = stock.price(2u64);
+    await archive.keep(f)              // the future goes to Archive
   }
 }
 // manual: end
 
 actor Driver {
-  basket Basket;
-  office Office;
+  basket: Basket;
+  office: Office;
 
-  pub async do go(self) {
+  pub async fn go(self) {
     say("total", await basket.total());
     say("file", await office.file());
     say("pass", await office.pass());
@@ -86,8 +86,8 @@ actor Driver {
 fn main() {
   initAll();
   {
-    imm stock = new Stock();
-    imm d = new Driver(new Basket(stock), new Office(new Printer(), stock, new Archive()));
+    let stock = Stock();
+    let d = Driver(Basket(stock), Office(Printer(), stock, Archive()));
     d.go();
   }
   finalAll();

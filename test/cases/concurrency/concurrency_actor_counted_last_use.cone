@@ -1,0 +1,73 @@
+// The last use of a counted local or parameter is a move (region_counted_last_use_arc
+// has the other shapes), here where the holder is an actor: an 'Arc' handed to a
+// message, and an 'Arc' a behaviour keeps in its state.
+//
+// - main's 'a' is sent to a Keeper, and is not read again: the message takes the
+//   owner 'a' held, and main releases nothing for it.
+// - main's 'b' is sent to the Keeper and read afterwards (its id is printed after
+//   the send): the message is a copy, main still owns 'b', and releases it at the
+//   block's end.
+// - the behaviour 'keep' stores its parameter in the actor's state: the last use
+//   of the parameter, so the state takes the message's owner.
+// - the first Keeper is sent 'b' after 'a': its state is replaced, and 'a' is
+//   finalized then (its last owner), 'b' when the Keeper dies; a second Keeper
+//   keeps a third Note ('c') made in the call.
+//
+// Each Note is finalized exactly once, whichever owner is last: the ids finalized
+// (a=1, b=2, c=3: 6) and how many (3) are printed after finalAll(), which waits
+// for quiescence. Leaks and double releases are what ASan and LSan see.
+
+mod concurrency_actor_counted_last_use;
+
+import stdio use *;
+import sync use Arc;
+import actors;
+
+struct Results {
+  pub finals: Atomic[u64];
+  pub idSum: Atomic[u64];
+}
+
+let results: Results;
+
+fn @initpure init() {
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+struct Note {
+  pub id: u64;
+  fn final(self: &uni) {
+    results.finals.add(1u64);
+    results.idSum.add(id);
+  }
+}
+
+actor Keeper {
+  kept: Option[Arc[imm, Note]];
+
+  fn init(self: &new) {
+    *self = Self(None[Arc[imm, Note]]);
+  }
+
+  pub async fn keep(self, n: Arc[imm, Note]) {
+    kept = Some[Arc[imm, Note]](n);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let keeper = Keeper();
+    let a = Arc[imm, Note](1u64);
+    keeper.keep(a);
+    let b = Arc[imm, Note](2u64);
+    keeper.keep(b);
+    printStr("b still readable "); printUInt(b.id); printStr("\n");
+    let other = Keeper();
+    other.keep(Arc[imm, Note](3u64));
+  }
+  finalAll();
+  printStr("finals "); printUInt(results.finals.load()); printStr("\n");
+  printStr("ids "); printUInt(results.idSum.load()); printStr("\n");
+}

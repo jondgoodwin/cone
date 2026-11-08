@@ -1,0 +1,281 @@
+// ======== Surface: the nearest point on a triangulated mesh ========
+//
+// The residual to another mesh and the ICP need, for a point, the nearest point
+// of a mesh. A Surface holds the mesh's triangles (a polygon as a fan from its
+// first corner) and a bounding volume hierarchy over them: a binary tree of
+// boxes, built top down by splitting each node's triangles at the median of
+// their centres along the axis the centres spread most (ties by triangle
+// number), so the same mesh always gives the same tree. A query descends the
+// nearer child first and prunes boxes farther than the best found; equal
+// distances go to the lower triangle number, so an answer never depends on the
+// order of the traversal.
+//
+// This is a self-contained version: sculpt's bvh answers box overlaps for
+// booleans, and sculpt's remesh keeps its own nearest-point search private. The
+// projection lane exposes one for sculpt; when it lands, this can use it.
+
+pub struct Surface {
+  pub pos: List[DVec3];     // per vertex
+  pub tri: List[u32];       // three vertex numbers per triangle
+  pub nrm: List[DVec3];     // per vertex: its unit normal, to sign a distance
+  lo: List[DVec3];          // per node: its box
+  hi: List[DVec3];
+  first: List[u32];         // per node: a leaf's first item in 'items', an inner node's first child
+  count: List[u32];         // per node: a leaf's item count, 0 for an inner node (children first, first + 1)
+  items: List[u32];
+
+  // The index of a mesh
+  pub fn of(m: &PolyMesh) Surface {
+    var pos = List[DVec3].withCapacity(m.vertexCount());
+    var i = 0usize;
+    while i < m.vertexCount() { pos.push(DVec3.from(*m.positions[i])); i += 1usize; }
+    let tris = fanTriangles(m);
+    let vn = m.vertexNormals();
+    var nrm = List[DVec3].withCapacity(vn.len());
+    i = 0usize;
+    while i < vn.len() { nrm.push(unitd(DVec3.from(*vn[i]))); i += 1usize; }
+    var s = Surface(pos, tris, nrm, List[DVec3](), List[DVec3](), List[u32](), List[u32](), List[u32]());
+    s.build();
+    s
+  }
+
+  pub fn triangleCount(self: &) usize { tri.len() / 3usize }
+
+  fn addNode(self: &mut) u32 {
+    let id = u32.from(lo.len());
+    let z = DVec3(0.0, 0.0, 0.0);
+    lo.push(z); hi.push(z); first.push(0u32); count.push(0u32);
+    id
+  }
+
+  fn build(self: &mut) {
+    let n = triangleCount();
+    items.clear();
+    var i = 0usize;
+    var tlo = List[DVec3].withCapacity(n);
+    var thi = List[DVec3].withCapacity(n);
+    var keys = List[f64].withCapacity(n);
+    while i < n {
+      items.push(u32.from(i));
+      let a = *pos[usize.from(*tri[3usize * i])];
+      let b = *pos[usize.from(*tri[3usize * i + 1usize])];
+      let c = *pos[usize.from(*tri[3usize * i + 2usize])];
+      tlo.push(DVec3(mind(a.x, mind(b.x, c.x)), mind(a.y, mind(b.y, c.y)), mind(a.z, mind(b.z, c.z))));
+      thi.push(DVec3(maxd(a.x, maxd(b.x, c.x)), maxd(a.y, maxd(b.y, c.y)), maxd(a.z, maxd(b.z, c.z))));
+      keys.push(0.0);
+      i += 1usize;
+    }
+    if n == 0usize { return; }
+    var todo = List[u32]();
+    addNode();
+    todo.push(0u32); todo.push(0u32); todo.push(u32.from(n));
+    while todo.len() > 0usize {
+      let cnt = usize.from(*todo[todo.len() - 1usize]);
+      let start = usize.from(*todo[todo.len() - 2usize]);
+      let node = usize.from(*todo[todo.len() - 3usize]);
+      todo.pop(); todo.pop(); todo.pop();
+      var blo = *tlo[usize.from(*items[start])];
+      var bhi = *thi[usize.from(*items[start])];
+      var clo = (blo + bhi) * 0.5;
+      var chi = clo;
+      var k = start;
+      while k < start + cnt {
+        let it = usize.from(*items[k]);
+        let a = *tlo[it];
+        let b = *thi[it];
+        blo = DVec3(mind(blo.x, a.x), mind(blo.y, a.y), mind(blo.z, a.z));
+        bhi = DVec3(maxd(bhi.x, b.x), maxd(bhi.y, b.y), maxd(bhi.z, b.z));
+        let c = (a + b) * 0.5;
+        clo = DVec3(mind(clo.x, c.x), mind(clo.y, c.y), mind(clo.z, c.z));
+        chi = DVec3(maxd(chi.x, c.x), maxd(chi.y, c.y), maxd(chi.z, c.z));
+        k += 1usize;
+      }
+      lo.set(node, blo);
+      hi.set(node, bhi);
+      let ext = chi - clo;
+      if cnt <= 4usize {
+        first.set(node, u32.from(start));
+        count.set(node, u32.from(cnt));
+      } else {
+        let axis = if ext.x >= ext.y && ext.x >= ext.z { 0u32 } else if ext.y >= ext.z { 1u32 } else { 2u32 };
+        k = start;
+        while k < start + cnt {
+          let it = usize.from(*items[k]);
+          let s = *tlo[it] + *thi[it];
+          keys.set(it, if axis == 0u32 { s.x } else if axis == 1u32 { s.y } else { s.z });
+          k += 1usize;
+        }
+        sortItems(&mut items, start, start + cnt, &keys);
+        let half = cnt / 2usize;
+        let left = addNode();
+        addNode();
+        first.set(node, left);
+        count.set(node, 0u32);
+        todo.push(left); todo.push(u32.from(start)); todo.push(u32.from(half));
+        todo.push(left + 1u32); todo.push(u32.from(start + half)); todo.push(u32.from(cnt - half));
+      }
+    }
+  }
+
+  // The squared distance from p to the nearest point of the surface; the triangle
+  // it lies on in 'bestTri' and the point's barycentric weights in that triangle in
+  // 'w' (on its three vertices in order). 'bestTri' is NoIndex if there are no triangles.
+  pub fn nearest(self: &, p: DVec3, bestTri: &mut u32, w: &mut DVec3) f64 {
+    *bestTri = NoIndex;
+    if lo.len() == 0usize { return 0.0; }
+    var best = 1.0e300;
+    var stack = List[u32]();
+    stack.push(0u32);
+    var wts = DVec3(0.0, 0.0, 0.0);
+    while stack.len() > 0usize {
+      let node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      if boxDistance2(p, *lo[node], *hi[node]) <= best {
+        let c = usize.from(*count[node]);
+        let f = *first[node];
+        if c == 0usize {
+          let l = usize.from(f);
+          let dl = boxDistance2(p, *lo[l], *hi[l]);
+          let dr = boxDistance2(p, *lo[l + 1usize], *hi[l + 1usize]);
+          if dl <= dr { stack.push(f + 1u32); stack.push(f); } else { stack.push(f); stack.push(f + 1u32); }
+        } else {
+          var k = 0usize;
+          while k < c {
+            let t = *items[usize.from(f) + k];
+            let tu = usize.from(t);
+            let a = *pos[usize.from(*tri[3usize * tu])];
+            let b = *pos[usize.from(*tri[3usize * tu + 1usize])];
+            let cc = *pos[usize.from(*tri[3usize * tu + 2usize])];
+            nearestOnTriangle(p, a, b, cc, &mut wts);
+            let q = a * wts.x + b * wts.y + cc * wts.z;
+            let d = (p - q).lengthSquared();
+            if d < best || (d == best && t < *bestTri) {
+              best = d;
+              *bestTri = t;
+              *w = wts;
+            }
+            k += 1usize;
+          }
+        }
+      }
+    }
+    best
+  }
+
+  // The point of the surface at the triangle and weights
+  pub fn pointAt(self: &, t: u32, w: DVec3) DVec3 {
+    let tu = usize.from(t);
+    *pos[usize.from(*tri[3usize * tu])] * w.x + *pos[usize.from(*tri[3usize * tu + 1usize])] * w.y
+      + *pos[usize.from(*tri[3usize * tu + 2usize])] * w.z
+  }
+
+  // The surface's unit normal at the triangle and weights (the vertex normals blended)
+  pub fn normalAt(self: &, t: u32, w: DVec3) DVec3 {
+    let tu = usize.from(t);
+    unitd(*nrm[usize.from(*tri[3usize * tu])] * w.x + *nrm[usize.from(*tri[3usize * tu + 1usize])] * w.y
+      + *nrm[usize.from(*tri[3usize * tu + 2usize])] * w.z)
+  }
+
+  // The signed distance from p to the surface: positive on the side its normals
+  // face (the sign from the blended vertex normal at the nearest point)
+  pub fn signedDistance(self: &, p: DVec3) f64 {
+    var t = NoIndex;
+    var w = DVec3(0.0, 0.0, 0.0);
+    let d2 = nearest(p, &mut t, &mut w);
+    if t == NoIndex { return 0.0; }
+    let q = pointAt(t, w);
+    let n = normalAt(t, w);
+    let d = sqrtd(d2);
+    if (p - q).dot(n) < 0.0 { -d } else { d }
+  }
+}
+
+fn boxDistance2(p: DVec3, lo: DVec3, hi: DVec3) f64 {
+  let dx = if p.x < lo.x { lo.x - p.x } else if p.x > hi.x { p.x - hi.x } else { 0.0 };
+  let dy = if p.y < lo.y { lo.y - p.y } else if p.y > hi.y { p.y - hi.y } else { 0.0 };
+  let dz = if p.z < lo.z { lo.z - p.z } else if p.z > hi.z { p.z - hi.z } else { 0.0 };
+  dx * dx + dy * dy + dz * dz
+}
+
+fn segmentParam(p: DVec3, a: DVec3, b: DVec3) f64 {
+  let ab = b - a;
+  let l2 = ab.lengthSquared();
+  if l2 < 1.0e-300 { return 0.0; }
+  let t = (p - a).dot(ab) / l2;
+  if t < 0.0 { 0.0 } else if t > 1.0 { 1.0 } else { t }
+}
+
+// The point of triangle (a, b, c) nearest p, as barycentric weights (on a, b, c in
+// x, y, z): Ericson, "Real-Time Collision Detection" (2005), 5.1.5, by the Voronoi
+// regions of the corners, the sides and the face. A triangle of no area is taken
+// as its three sides.
+pub fn nearestOnTriangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3, wts: &mut DVec3) {
+  let ab = b - a;
+  let ac = c - a;
+  let ap = p - a;
+  let d1 = ab.dot(ap);
+  let d2 = ac.dot(ap);
+  if d1 <= 0.0 && d2 <= 0.0 { *wts = DVec3(1.0, 0.0, 0.0); return; }
+  let bp = p - b;
+  let d3 = ab.dot(bp);
+  let d4 = ac.dot(bp);
+  if d3 >= 0.0 && d4 <= d3 { *wts = DVec3(0.0, 1.0, 0.0); return; }
+  let vc = d1 * d4 - d3 * d2;
+  if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 && d1 - d3 > 0.0 {
+    let v = d1 / (d1 - d3);
+    *wts = DVec3(1.0 - v, v, 0.0);
+    return;
+  }
+  let cp = p - c;
+  let d5 = ab.dot(cp);
+  let d6 = ac.dot(cp);
+  if d6 >= 0.0 && d5 <= d6 { *wts = DVec3(0.0, 0.0, 1.0); return; }
+  let vb = d5 * d2 - d1 * d6;
+  if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 && d2 - d6 > 0.0 {
+    let w = d2 / (d2 - d6);
+    *wts = DVec3(1.0 - w, 0.0, w);
+    return;
+  }
+  let va = d3 * d6 - d5 * d4;
+  if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 && (d4 - d3) + (d5 - d6) > 0.0 {
+    let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    *wts = DVec3(0.0, 1.0 - w, w);
+    return;
+  }
+  let sum = va + vb + vc;
+  if sum > 0.0 {
+    let denom = 1.0 / sum;
+    let v = vb * denom;
+    let w = vc * denom;
+    *wts = DVec3(1.0 - v - w, v, w);
+    return;
+  }
+  var best = DVec3(1.0, 0.0, 0.0);
+  var bestD = (p - a).lengthSquared();
+  let s0 = segmentParam(p, a, b);
+  let q0 = a + (b - a) * s0;
+  if (p - q0).lengthSquared() < bestD { bestD = (p - q0).lengthSquared(); best = DVec3(1.0 - s0, s0, 0.0); }
+  let s1 = segmentParam(p, b, c);
+  let q1 = b + (c - b) * s1;
+  if (p - q1).lengthSquared() < bestD { bestD = (p - q1).lengthSquared(); best = DVec3(0.0, 1.0 - s1, s1); }
+  let s2 = segmentParam(p, c, a);
+  let q2 = c + (a - c) * s2;
+  if (p - q2).lengthSquared() < bestD { best = DVec3(s2, 0.0, 1.0 - s2); }
+  *wts = best;
+}
+
+// Items from 'start' to 'end' sorted by key, ties by item number (a total order, so the
+// result is the same whichever sort does it)
+fn sortItems(items: &mut List[u32], start: usize, end: usize, keys: &List[f64]) {
+  items.sliceMut(start, end).sortBy(&ItemOrder(keys));
+}
+
+// The comparison of sortItems (a struct, since a function literal cannot be given to an Array's sortBy)
+struct ItemOrder['a] {
+  keys: &'a List[f64];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let ka = *keys[usize.from(*a)];
+    let kb = *keys[usize.from(*b)];
+    if ka < kb { -1i32 } else if ka > kb { 1i32 } else { *a <=> *b }
+  }
+}

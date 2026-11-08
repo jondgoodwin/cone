@@ -1,0 +1,34 @@
+// A generic type refused where it is written is reported there, once.
+//
+// 'Box[3]', 'Box' with no arguments, 'Box[i32, i32]' and an array of any of
+// those are each refused where they are written. What the refusal leaves behind
+// stands as an error type, which nothing reached through it reports again: a
+// parameter or an array element made of it is not 'Expected a type' or an element
+// that 'must be a known type' as well, and a field read through a variable
+// declared with it does not 'support calls or field access'. The scenario
+// asserts exactly one message for each declaration.
+
+mod generic_typecheck_refused_type;
+
+struct Box[T] { pub v: T; }
+
+// A value in brackets where a type is wanted
+fn numberArgument(b: Box[3]) { }               //~ ErrorStructBracket:25 "A struct's value is constructed by its name"
+
+// An array's element type
+fn arrayOfBare(a: Array[Box, 2]) { }           //~ ErrorArgCount:25 "is generic, so it is not a type"
+fn arrayOfTooMany(a: Array[Box[i32, i32], 2]) { }   //~ ErrorArgCount:31 "Incorrect number of arguments vs. parameters expected"
+fn arrayLocal() {
+  let a: Array[Box, 2] = [Box(1), Box(2)];     //~ ErrorArgCount:16 "is generic, so it is not a type"
+}
+
+// A variable declared with a refused type is read without a second refusal
+fn tooMany(b: Box[i32, i32]) i32 { b.v }       //~ ErrorArgCount:18 "Incorrect number of arguments vs. parameters expected"
+fn bareLocal() i32 {
+  let b: Box = Box(1);                         //~ ErrorArgCount:10 "is generic, so it is not a type"
+  b.v
+}
+
+// An error reported earlier in the file does not hide a later, unrelated "Expected
+// a type": only what checking this type itself reported is not said again
+fn closureAsType(v: i32, h: &fn(n: i32) i32 {n}) i32 { v }  //~ ErrorNotTyped:29 "Expected a type"

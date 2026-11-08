@@ -1,0 +1,114 @@
+// List.sortBy passes the list's own region as the sort's scratch (Bug 31: List took Array's
+// sort through the fold, whose scratch is the heap's). sort() on integers no longer merges
+// (see sortnumbers), so this checks the stable path through sortBy.
+//
+// Printed lines worked out by hand:
+// - A list of 1,000 u32 in a counting region holds one block of 4,000 bytes (1 allocation).
+//   The values 0..999 in a scrambled order (i * 37 mod 1000, a permutation since 37 and 1000
+//   are coprime) have many ascending runs, so sort() merges, and the merge buffer is half the
+//   list: 500 u32, 2,000 bytes, asked of the list's region and given back: 2 allocations, 1
+//   release, 4,000 live. The heap's region is not the counting one, so a sort that used the
+//   heap would leave the tally at 1 allocation.
+// - Sorting what is in order asks for nothing more.
+// - 20 values sort by insertion with no buffer.
+// - A list made in an Arena sorts, and ends in order.
+
+mod sortlist;
+
+import testing use *;
+import arena use *;
+import collections use *;
+import libc;
+
+struct Counting {
+  header: MemRegion;
+  allocs: usize;
+  releases: usize;
+  live: isize;
+}
+
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
+  (*c).allocs = (*c).allocs + 1usize;
+  (*c).live = (*c).live + isize.from(bytes);
+  libc.malloc(bytes)
+}
+
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
+  let c = r as *Counting;
+  (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
+  libc.realloc(block, newBytes)
+}
+
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
+  if block as usize == 0usize { return; }
+  let c = r as *Counting;
+  (*c).releases = (*c).releases + 1usize;
+  (*c).live = (*c).live - isize.from(bytes);
+  libc.free(block);
+}
+
+fn countSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
+
+fn newCounting() Counting {
+  Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize, 0isize)
+}
+
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
+
+fn tally(c: &Counting, allocs: u64, releases: u64, live: i64, label: &Array[u8]) {
+  let ok = u64.from(c.allocs) == allocs && u64.from(c.releases) == releases && i64.from(c.live) == live;
+  expect(ok, label);
+}
+
+fn natural(a: &u32, b: &u32) i32 { *a <=> *b }
+
+fn inOrder(l: &List[u32]) bool {
+  var i = 1usize;
+  while i < l.len() { if l[i - 1usize] > l[i] { return false; } i = i + 1usize; }
+  true
+}
+
+fn scrambled(c: &mut Counting, n: usize) List[u32] {
+  var l = List[u32](n, regionOf(c));
+  var i = 0usize;
+  while i < n { l.push(u32.from((i * 37usize) % n)); i = i + 1usize; }
+  l
+}
+
+fn counted() {
+  var c = newCounting();
+  {
+    var l = scrambled(&mut c, 1000usize);
+    tally(&c, 1, 0, 4000, "a list of 1,000 u32: its one block of 4,000 bytes");
+    l.sortBy(&natural);
+    tally(&c, 2, 1, 4000, "sortBy asked the list's region for 500 u32 (2,000 bytes) and gave it back");
+    expect(inOrder(&l) && l.len() == 1000usize, "and the list is in order");
+    l.sortBy(&natural);
+    tally(&c, 2, 1, 4000, "sorting what is in order asks for nothing");
+  }
+  tally(&c, 2, 2, 0, "the list's death gave its block back");
+  {
+    var l = scrambled(&mut c, 20usize);
+    l.sortBy(&natural);
+    tally(&c, 3, 2, 80, "20 values: no buffer");
+    expect(inOrder(&l), "20 values in order");
+  }
+  tally(&c, 3, 3, 0, "all gave their blocks back");
+}
+
+fn inArena() {
+  var a = Arena();
+  let l = new a[List[u32]](1000usize);
+  var i = 0usize;
+  while i < 1000usize { l.push(u32.from((i * 37usize) % 1000usize)); i = i + 1usize; }
+  l.sort();
+  expect(inOrder(l) && l.len() == 1000usize, "a list in an arena sorts in order");
+  expect(l[0usize] == 0u32 && l[999usize] == 999u32, "its ends are 0 and 999");
+}
+
+fn main() i32 {
+  counted();
+  inArena();
+  done()
+}

@@ -9,7 +9,6 @@
 //   something with no 'next';
 // - variables that do not unpack the item: two for a borrow, three for a pair,
 //   any number but one for an array or a slice;
-// - an item that moves, unpacked into several variables;
 // - a loop's variable written to, which is a new, unchangeable one on every
 //   pass;
 // - a cursor in a variable that cannot be advanced.
@@ -37,91 +36,74 @@ fn aTypeName() {
 
 // A cursor's 'next' answers an Option, 'Some' item or 'None'
 struct Plain {
-  n i64;
+  n: i64;
 
-  pub fn next(self &mut) i64 { n; }
+  pub fn next(self: &mut) i64 { n }
 }
 
 fn notAnOption() {
-  mut p = new Plain(1i64);
+  var p = Plain(1i64);
   each x in p {          //~ ErrorEachItem:13 "answers an Option"
   }
 }
 
 // An 'iter' gives a cursor, and a cursor has a 'next'
 struct Gives {
-  n i64;
+  n: i64;
 
-  pub fn iter(self &) i64 { n; }
+  pub fn iter(self: &) i64 { n }
 }
 
 fn noNextAfterIter() {
-  mut g = new Gives(1i64);
+  var g = Gives(1i64);
   each x in g {          //~ ErrorEachItem:13 "no 'next' method"
   }
 }
 
 // Two variables unpack a tuple of two: a deque's items are borrows
 fn notATuple() {
-  mut d = new Deque[i64];
+  var d = Deque[i64]();
   each k, v in d {       //~ ErrorEachItem:8 "tuple of 2"
   }
 }
 
 // A dictionary's pairs are of two, so three variables are too many
 fn tooManyVariables() {
-  mut d = new Dict[i64, i64];
+  var d = Dict[i64, i64]();
   each a, b, c in d {    //~ ErrorEachItem:8 "tuple of 3"
   }
 }
 
 // An array, a slice or a list gives one variable
 fn arrayWithTwo() {
-  imm a = [1i64, 2i64];
+  let a = [1i64, 2i64];
   each i, x in a {       //~ ErrorNotIterable:8 "one variable"
   }
 }
 
 fn listWithTwo() {
-  imm l = new List[i64];
+  let l = List[i64]();
   each i, x in l {       //~ ErrorNotIterable:8 "one variable"
-  }
-}
-
-// An item that moves is taken whole by one variable; several variables would
-// take its elements out one by one, and so are refused
-struct Words {
-  i usize;
-
-  pub fn next(self &mut) Option[(String, String)] {
-    if i >= 3usize { return None; }
-    i = i + 1usize;
-    Some[(String, String)]((String.from("w"), String.from("x")));
-  }
-}
-
-fn movingItems() {
-  each w, x in new Words(0usize) {    //~ ErrorEachItem:16 "a type that moves"
   }
 }
 
 // A pass's variable cannot be changed, however it is given its item
 fn writeToAnItem() {
-  mut l = new List[i64];
-  each x in l {
-    x = l[0usize];       //~ ErrorNoMut:5 "To change the items in place, walk src.mutItems()"
+  var l = List[i64]();
+  each x in &l {
+    x = &l[0usize];       //~ ErrorNoMut:5 "To change the items in place, walk src.mutItems()"
   }
 }
 
 fn writeToAPairHalf() {
-  mut d = new Dict[i64, i64];
+  var d = Dict[i64, i64]();
   each k, v in d {
     k = v;               //~ ErrorNoMut:5 "To change the items in place, walk src.mutItems()"
   }
 }
 
 fn writeToANumber() {
-  mut c = new Countdown(3i64);
+  var c = Countdown(3i64);
   each v in c {
     v = 7i64;            //~ ErrorNoMut:5 "To change the items in place, walk src.mutItems()"
   }
@@ -129,27 +111,27 @@ fn writeToANumber() {
 
 // ... and so is a change made in place by an operator
 fn stepAnItem() {
-  mut c = new Countdown(3i64);
+  var c = Countdown(3i64);
   each v in c {
     v += 1i64;           //~ ErrorBadPerm:5 "To change the items in place, walk src.mutItems()"
   }
 }
 
 struct Countdown {
-  n i64;
+  n: i64;
 
-  pub fn next(self &mut) Option[i64] {
+  pub fn next(self: &mut) Option[i64] {
     if n <= 0i64 { return None; }
-    imm v = n;
+    let v = n;
     n = n - 1i64;
-    Some[i64](v);
+    Some[i64](v)
   }
 }
 
 // A cursor held in a variable that cannot change cannot be advanced
 fn unchangeableCursor() {
-  imm d = new Deque[i64];
-  imm cur = d.items();
+  let d = Deque[i64]();
+  let cur = d.items();
   each x in cur {        //~ ErrorBadPerm:13 "not mutable"
   }
 }

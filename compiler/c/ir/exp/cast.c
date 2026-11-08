@@ -131,6 +131,24 @@ static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
     return NULL;
 }
 
+// A variant narrowed to by a bare name keeps the lifetimes the matched value's enum is
+// written with ('E['=a]'): the variant's fields are the enum's, so a key it holds is of the
+// brand the value carries, not of a brand not known. A generic's type arguments come with
+// the instance (the variant is already its own).
+static void castPatternAdoptLifetimes(NameUseNode *name, INode *exp) {
+    if (!lifeInvariantSeen || name->lifeuse != NULL)
+        return;
+    INode *type = ((IExpNode*)exp)->vtype;
+    while (type && (type->tag == RefTag || type->tag == VirtRefTag))
+        type = ((RefNode*)type)->vtexp;
+    while (type && type->tag == AliasDclTag)
+        type = ((AliasDclNode*)type)->target;
+    if (type == NULL || type->tag != NameUseTag || ((NameUseNode*)type)->lifeuse == NULL
+        || (((NameUseNode*)type)->lifeuse->names == NULL && ((NameUseNode*)type)->lifeuse->typeargs == NULL))
+        return;
+    name->lifeuse = ((NameUseNode*)type)->lifeuse;
+}
+
 // Bind a pattern's bare root name against the value being matched. A variant of
 // that value's enum is what the name means, whatever it means lexically, so
 // 'Red' on a 'Lamp' is the Lamp's 'Red' while a 'use' of another enum with a 'Red'
@@ -157,8 +175,10 @@ static int castPatternBindName(CastNode *node, int report) {
         name->flags &= 0xFFFF - FlagPattern;
         StructNode *enumdcl = castMatchedEnum(node->exp);
         INode *variant = castEnumVariant(enumdcl, name->namesym);
-        if (variant && !hasargs)
+        if (variant && !hasargs) {
             name->dclnode = variant;
+            castPatternAdoptLifetimes(name, node->exp);
+        }
         else if (name->dclnode == NULL) {
             if (report && variant)
                 errorMsgNode((INode*)name, ErrorPatArgs,
@@ -234,7 +254,7 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to);
 
 // ---- Trait patterns on an enum [topic 7] ----
 //
-// 'case imm m Measured' on an enum matches every variant that complies with the trait. It is
+// 'case let Measured(m)' on an enum matches every variant that complies with the trait. It is
 // a test of those variants' tags (no run-time cost beyond the tags), counts toward
 // exhaustiveness as the variants it names, and binds a virtual reference to the trait built
 // from the variant the matched reference points at, its vtable chosen by the tag. Only a
@@ -258,7 +278,7 @@ static StructNode *castPatternTrait(INode *typ) {
 // A variant complies with a trait when it can be viewed through it: it declares the trait with
 // 'is' or has what it requires, as a generic's 'where T is Trait' asks, and its methods fit a
 // vtable's slots. Asking registers the variant's vtable for the trait. A method over the whole enum
-// ('self &Lamp') is one function, with no slot in any variant's vtable, so it makes no variant comply.
+// ('self: &Lamp') is one function, with no slot in any variant's vtable, so it makes no variant comply.
 static int castVariantComplies(StructNode *variant, StructNode *trait) {
     if (variant->tag != StructTag)
         return 0;
@@ -348,6 +368,13 @@ static int castTraitIsCheck(CastNode *node) {
 static int castTraitBind(CastNode *node) {
     StructNode *trait = castPatternTrait(node->typ);
     StructNode *enumdcl = trait ? castMatchedEnum(node->exp) : NULL;
+    // A trait named on a virtual reference to an open trait, which the test refuses
+    // (ErrorPatTrait): the variable it would bind says nothing more
+    if (trait && enumdcl == NULL && isExpNode(node->exp) && iexpGetTypeDcl(node->exp)->tag == VirtRefTag
+        && !(itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(node->exp))->vtexp)->flags & HasTagField)) {
+        node->vtype = errorType;
+        return 1;
+    }
     if (enumdcl == NULL)
         return 0;
     INode *fromtype = iexpGetTypeDcl(node->exp);
@@ -391,9 +418,10 @@ static int castTraitBind(CastNode *node) {
 // a reference type rather than a borrow.
 CastNode *newMatchValueNode(INode *matchee, INode *value) {
     CastNode *node = newIsNode(matchee, value);
-    inodeLexCopy((INode*)node, value);
+    if (value)  // NULL where parseTerm refused the pattern and reported it
+        inodeLexCopy((INode*)node, value);
     node->flags |= FlagMatchValue;
-    if (isNameUseNode(value))
+    if (value && isNameUseNode(value))
         value->flags |= FlagPattern;
     return node;
 }
@@ -490,8 +518,8 @@ static char *castPermName(INode *perm) {
 
 // 'as' from one reference to another: reinterpretation is trusted, but a
 // reference's permission is what flow and the race checks rest on, so between
-// references it may only be a legal coercion (reftypesafe.html, "Type
-// Reinterpretation"): the permission is the same or a supertype of the
+// references it may only be a legal coercion (safe-types.html#as, "Reinterpretation: as"):
+// the permission is the same or a supertype of the
 // source's, the same check an implicit coercion asks (permMatches). Anything
 // else needs 'trust', which is not built yet (but for a defaulted 'imm', below). A pointer 'as' a reference, which
 // is where library code trusts memory it manages, and a reference 'as' a
@@ -505,8 +533,8 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
         return 0;
     // The one case let through, until 'trust' is built: a 'ro' reference made
     // the 'imm' a type declaring Immutable gives a reference that writes no
-    // permission, 'bytes as &str', 'p as So[str]' (refarrayref.html, "A String as
-    // a Slice of Bytes"). The permission is the type's default, not written: a
+    // permission, 'bytes as &str', 'p as Uni[str]' (lib-string.html#bytes, "Text and bytes").
+    // The permission is the type's default, not written: a
     // written '&imm' (or '&imm str') is checked as any other. It promises that
     // nothing changes the bytes while the text is used, and that they are text,
     // neither of which is checked.
@@ -518,6 +546,37 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
         castPermName(fromperm), castPermName(toperm),
         itypeGetTypeDcl(fromperm) == (INode*)roPerm && itypeGetTypeDcl(toperm) == (INode*)immPerm
             ? " (The one exception is a type declaring Immutable, whose reference with no permission written is `imm`: `bytes as &str`.)" : "");
+    return 1;
+}
+
+// A struct, an enum or a char made by 'as' from something that is not a coercion
+// to it is refused. Their values are more than their bits: a struct has private
+// fields and may hold a reference, an enum has a tag that names its variant, a
+// char is a code point. Only a coercion that changes just the type is safe (a
+// variant as its enum, or a type as itself); anything else is for 'trust', which
+// is not built yet. Returns whether it reported.
+static int castRecastTargetCheck(CastNode *node, INode *fromtype, INode *totype) {
+    int ischar = totype == (INode*)charType;
+    if (totype->tag != StructTag && !ischar)
+        return 0;
+    INode *srctype = ((IExpNode*)node->exp)->vtype;
+    TypeCompare result = itypeMatches(node->typ, srctype, Coercion);
+    if (result == EqMatch || result == CastSubtype)
+        return 0;
+    char *tonm = itypeName(node->typ);
+    char *fromnm = itypeName(srctype);
+    if (ischar)
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make a char from %s: a char is a code point, and `as` only recasts, as a coercion does. Convert with `char.from(x)`; any other reinterpretation needs `trust`, which is not built yet.",
+            fromnm);
+    else if (fromtype->tag == StructTag && (fromtype->flags & EnumType) && !(totype->flags & EnumType))
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make %s from the enum %s: nothing checks that the value is that variant. Match the enum with a pattern (`case let`) to reach a variant; any other reinterpretation needs `trust`, which is not built yet.",
+            tonm, fromnm);
+    else
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make %s from %s: only a coercion that changes just the type, such as a variant as its enum, is a recast. Make the value with a constructor or a method; any other reinterpretation needs `trust`, which is not built yet.",
+            tonm, fromnm);
     return 1;
 }
 
@@ -646,10 +705,8 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
     if (!castIsSumNarrow(from, to))
         return;
     if (itypeGetTypeDcl(from->region) != borrowRef) {
-        if (permGetFlags(from->perm) & MayIntRefSum) {
-            node->flags |= FlagOwnerNarrow;
+        if (permGetFlags(from->perm) & MayIntRefSum)
             return;
-        }
         PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
         errorMsgNode((INode *)node, ErrorBadPerm,
             "A '%s' reference to %s, held by an owner (an 'Rc'), may not be narrowed to a reference into one of its variants: another owner could change which variant it holds while this one is used. Bind the payload by copy, or match through a borrow of the value, a 'uni' or 'imm' reference, or the value.",
@@ -732,10 +789,91 @@ static void castArmCopies(CastNode *cast, StructNode *variant) {
     armuse->vtype = (INode *)variant;
 }
 
+// The permission a binding through an owning virtual reference borrows with: the owner's
+// as a borrow may hold it ('uni' and 'mut' lend 'mut', 'imm' lends 'imm', anything else
+// 'ro'), and no more than the path to the owner gives: an owner reached through a borrow
+// that only reads lends only '&' of its value (borrowOwnerLendRefused).
+static PermNode *castOwnerLendPerm(INode *place, RefNode *owner) {
+    INode *ownerperm = itypeGetTypeDcl(owner->perm);
+    if (ownerperm->tag != PermTag || permIsLock(ownerperm))
+        return roPerm;
+    if (ownerperm == (INode*)immPerm)
+        return immPerm;
+    if (!(permGetFlags(ownerperm) & MayWrite))
+        return roPerm;
+    if (isExpNode(place) && iexpIsLval(place) && iexpPathThroughBorrow(place)) {
+        INode *lvalperm = (INode*)uniPerm;
+        uint16_t scope = 0;
+        iexpGetLvalInfo(place, &lvalperm, &scope);
+        if (!(permGetFlags(itypeGetTypeDcl(lvalperm)) & MayWrite))
+            return roPerm;
+    }
+    return mutPerm;
+}
+
+// A bound pattern naming a concrete type, matched against an OWNING virtual reference
+// ('Uni[Error]', 'Rc[Shape]'), binds a borrow of the value as that type, never the owner
+// (Rust's downcast_ref and downcast_mut): what the conversion reads is lent from the owner
+// as a borrowed virtual reference ('&<mut Error'), which then narrows as a borrowed one does.
+// Where the arm took the matched place into a hidden variable of its own, that variable
+// holds the borrow instead of the owner, so the place is lent, not moved; a value the
+// match's own hidden variable holds is lent from it. The pattern becomes the borrow the
+// binding is, so castPatternAdoptRef and castGuardBorrow leave it as it is.
+//
+// The matched value is a name here, a hidden variable already checked, whose type is read
+// from its declaration; the conversion itself is checked after this.
+static void castOwnerVirtLend(CastNode *cast) {
+    if (!isNameUseNode(cast->exp))
+        return;
+    NameUseNode *use = (NameUseNode*)cast->exp;
+    if (use->dclnode == NULL || use->dclnode->tag != VarDclTag)
+        return;
+    VarDclNode *held = (VarDclNode*)use->dclnode;
+    if (held->vtype == NULL || held->vtype == unknownType || !isTypeNode(held->vtype))
+        return;
+    INode *fromtype = itypeGetTypeDcl(held->vtype);
+    if (fromtype->tag != VirtRefTag || itypeGetTypeDcl(((RefNode*)fromtype)->region) == (INode*)borrowRef)
+        return;
+    RefNode *owner = (RefNode*)fromtype;
+    use->vtype = held->vtype;
+    // In a clone (a generic instance's body) the conversion's copy of the pattern is
+    // still marked: bind it here, quietly, as its own check would (the test reports)
+    if (castPatternPending(cast->typ) && !castPatternBindName(cast, 0))
+        return;
+    // A pattern written with type arguments is not yet the type it names, and is left
+    if (!(isNameUseNode(cast->typ) || cast->typ->tag == StructTag) || !isTypeNode(cast->typ))
+        return;
+    INode *target = itypeGetTypeDcl(cast->typ);
+    if (target->tag != StructTag || (target->flags & TraitType))
+        return;
+    // The arm's own variable takes the place: it lends from the place instead
+    int arm = (held->flags & FlagMatchArm) && held->value && isExpNode(held->value);
+    INode **lent = arm ? &held->value : &cast->exp;
+    PermNode *perm = castOwnerLendPerm(*lent, owner);
+    RefNode *vref = newRefNodeFull(VirtRefTag, *lent, borrowRef, newPermUseNode(perm), owner->vtexp);
+    if (arm) {
+        if (!iexpCoerce(lent, (INode*)vref))
+            return;
+        held->vtype = ((IExpNode*)held->value)->vtype;
+        use->vtype = held->vtype;
+    }
+    else {
+        use->vtype = held->vtype;
+        if (!iexpCoerce(lent, (INode*)vref))
+            return;
+        // The lending recast is built typed, and is not checked again as a
+        // reinterpretation when the conversion checks what it reads
+        if ((*lent)->tag == CastTag)
+            (*lent)->flags |= FlagMatchChecked;
+    }
+    cast->typ = (INode*)newRefNodeFull(RefTag, cast->typ, borrowRef, newPermUseNode(perm), cast->typ);
+}
+
 int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
     CastNode *cast = (CastNode*)var->value;
     if ((cast->flags & FlagMatchChecked) || pstate->extend == NULL || pstate->extend->var != var)
         return 0;
+    castOwnerVirtLend(cast);
     castGuardBorrow(cast);
     // The conversion is checked here, once, as the variable would have checked it:
     // what it narrows to says whether the pattern named a variant declared as a type
@@ -768,7 +906,7 @@ int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
         RefNode *ref = (RefNode*)type;
         if (itypeGetTypeDcl(ref->region) != borrowRef) {
             errorMsgNode((INode*)var, ErrorTypeVariant,
-                "A reference into a managed value (an Rc, an So) cannot lend the contents of %s as a binding yet: match a borrow of the value, '&', or the value itself.",
+                "A reference into a managed value (an Rc, a Uni) cannot lend the contents of %s as a binding yet: match a borrow of the value, '&', or the value itself.",
                 &variant->namesym->namestr);
             var->vtype = errorType;
             var->value = NULL;
@@ -786,6 +924,7 @@ int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
 
 // Type check cast node:
 // - reinterpret cast types must be same size
+// - a struct, an enum or a char target takes only a coercion (castRecastTargetCheck)
 // - a bound pattern's conversion narrows a reference, or a value of a sum type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     // A bound pattern's conversion castBindProject has checked
@@ -827,6 +966,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
     // Handle reinterpret casts, which must be same size
     if (!(node->flags & FlagConvert)) {
+        if (castRecastTargetCheck(node, fromtype, totype))
+            return;
         if (castRefPermCheck(node, fromtype, totype))
             return;
         // usize and isize are as wide as a pointer, which a fixed-width number
@@ -851,7 +992,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     }
 
     // A pattern's type names the brands the matched value carries, and no others:
-    // 'case imm s Some[&'=a T]' rebrands nothing
+    // 'case let Some[&'=a T](s)' rebrands nothing
     if (lifeInvariantSeen && lifeBrandKnown(node->typ, node->typ))
         lifeBrandsCoerce(((IExpNode*)node->exp)->vtype, node->typ, node->typ);
 
@@ -879,7 +1020,9 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 // This only supports whether downcasting specialization is possible
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
-    iexpTypeCheckAny(pstate, &node->exp);
+    // Not iexpTypeCheckAny: a left side that is no expression is refused below,
+    // once, with this test's own message
+    inodeTypeCheckAny(pstate, &node->exp);
     narrowNoteTest((INode*)node);
     // A value already reported has no variants to name, so the pattern says nothing of it
     if (isExpNode(node->exp) && ((IExpNode*)node->exp)->vtype == errorType) {
@@ -928,6 +1071,14 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         // Note that region/permission downcast covariantly, but the structure is contravariant
         StructNode *fromstr = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->vtexp);
         StructNode *tostr = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
+        // Only a struct meets a trait, so a value seen through one is never anything else
+        if (from->tag == VirtRefTag && fromstr->tag == StructTag && tostr->tag != StructTag
+            && !(fromstr->flags & HasTagField)) {
+            errorMsgNode((INode*)node, ErrorInvType,
+                "%s does not meet %s, so no value seen through %s is one: only a type that meets the trait can be narrowed to.",
+                itypeName((INode*)tostr), &fromstr->namesym->namestr, &fromstr->namesym->namestr);
+            return;
+        }
         if (fromstr->tag == StructTag && tostr->tag == StructTag) {
             if (from->tag == VirtRefTag) {
                 // A virtual reference to an open trait was made from a concrete
@@ -947,6 +1098,14 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
                 }
                 if (structVirtRefMatches(fromstr, tostr))
                     return;
+                // A type that does not meet the trait is never what a virtual
+                // reference to it was made from: there is no tag to miss
+                if (!(fromstr->flags & HasTagField)) {
+                    errorMsgNode((INode*)node, ErrorInvType,
+                        "%s does not meet %s, so no value seen through %s is one: only a type that meets the trait can be narrowed to.",
+                        &tostr->namesym->namestr, &fromstr->namesym->namestr, &fromstr->namesym->namestr);
+                    return;
+                }
             }
             // Downcasting tagged ref-to-trait to ref-to-struct requires tag
             if (!(fromstr->flags & HasTagField)) {

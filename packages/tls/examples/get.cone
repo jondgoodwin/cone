@@ -27,45 +27,45 @@ import httpconn use *;
 import tls;
 
 struct Url {
-  pub secure bool;
-  pub host String;
-  pub port u16;
-  pub path String;
+  pub secure: bool;
+  pub host: String;
+  pub port: u16;
+  pub path: String;
 }
 
 // 'https://host[:port]/path', 'http://...', or a bare host
-fn parseUrl(s &Array[u8]) Url {
-  mut u = new Url(true, String.empty(), 443u16, String.from("/"));
-  mut rest = s;
-  if s.len >= 8usize and &s[0usize ..< 8usize] == "https://" {
+fn parseUrl(s: &Array[u8]) Url {
+  var u = Url(true, String(), 443u16, String.from("/"));
+  var rest = s;
+  if s.len >= 8usize && &s[0usize ..< 8usize] == "https://" {
     rest = &s[8usize ..];
-  } elif s.len >= 7usize and &s[0usize ..< 7usize] == "http://" {
+  } else if s.len >= 7usize && &s[0usize ..< 7usize] == "http://" {
     rest = &s[7usize ..];
     u.secure = false;
     u.port = 80u16;
   }
-  mut end = 0usize;
-  while end < rest.len and rest[end] != '/' {end = end + 1usize;}
-  imm hostPort = &rest[0usize ..< end];
+  var end = 0usize;
+  while end < rest.len && rest[end] != '/' {end = end + 1usize;}
+  let hostPort = &rest[0usize ..< end];
   if end < rest.len {u.path = String.fromBytes(&rest[end ..]);}
-  mut colon = hostPort.len;
-  mut k = 0usize;
+  var colon = hostPort.len;
+  var k = 0usize;
   while k < hostPort.len {
     if hostPort[k] == ':' {colon = k;}
     k = k + 1usize;
   }
   u.host = String.fromBytes(&hostPort[0usize ..< colon]);
   if colon < hostPort.len {
-    match collections.parseUInt(&hostPort[colon + 1usize ..] as &str) {
-      case imm p Some {u.port = u16.from(p);}
-      case is None[u64] {}
+    match u64.parse(&hostPort[colon + 1usize ..] as &str) {
+      case let Ok(p) {u.port = u16.from(p);}
+      case is Err {}
     }
   }
-  u;
+  u
 }
 
-fn millis(d Duration) {
-  imm tenths = d.nanos() / 100000i64;
+fn millis(d: Duration) {
+  let tenths = d.nanos() / 100000i64;
   printInt(tenths / 10i64);
   printStr(".");
   printInt(tenths % 10i64);
@@ -73,30 +73,30 @@ fn millis(d Duration) {
 }
 
 // One GET on a new connection: true when it ended Done
-fn fetch(drv &mut Driver, lp &mut Loop, client &tls.Client, pool Pool, u &Url) bool {
+fn fetch(drv: &mut Driver, lp: &mut Loop, client: &tls.Client, u: &Url) bool {
   // The host is copied: the driver holds Strings, and nothing shows the URL's is none of them
-  imm hostText = u.host.copy();
-  imm host = hostText.view();
-  imm started = Instant.now();
-  mut conn = ConnId.none();
+  let hostText = u.host.clone();
+  let host = hostText.view();
+  let started = Instant.now();
+  var conn = ConnId.none();
   if u.secure {
-    conn = drv.connectWith(lp, host, u.port, new So[tls.Stream](client.stream(host, pool)), Sink.Here(1u64));
+    conn = drv.connectWith(lp, host, u.port, Uni[tls.Stream](client.stream(host)), Sink.Here(1u64));
   } else {
     conn = drv.connect(lp, host, u.port, Sink.Here(1u64));
   }
-  mut req = RequestHead.get(u.path.view(), host);
+  var req = RequestHead.get(u.path.view(), host);
   req.headers.add("User-Agent", "cone-tls-example");
   req.headers.add("Accept", "*/*");
-  drv.requestBy(lp, conn, req, BodyLength.empty(), Sink.Here(2u64), Instant.now() + Duration.fromSeconds(20i64));
-  mut events = List[Event].empty();
-  mut total = 0u64;
-  mut going = true;
-  mut ok = false;
+  drv.requestBy(lp, conn, req, BodyLength(), Sink.Here(2u64), Instant.now() + Duration.fromSeconds(20i64));
+  var events = List[Event]();
+  var total = 0u64;
+  var going = true;
+  var ok = false;
   while going {
-    drv.poll(lp, forever(), &mut events);
-    mut k = 0usize;
+    drv.poll(lp, forever(), &uni events);
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.kind == EventKind.Connected {
         printStr("  connected to ");
@@ -104,7 +104,7 @@ fn fetch(drv &mut Driver, lp &mut Loop, client &tls.Client, pool Pool, u &Url) b
         printStr(" after ");
         millis(Instant.now() - started);
         printStr("\n");
-      } elif e.kind == EventKind.Response {
+      } else if e.kind == EventKind.Response {
         printStr("  ");
         printStr(drv.layerInfo(conn).view());
         printStr("\n  HTTP/1.1 ");
@@ -112,10 +112,10 @@ fn fetch(drv &mut Driver, lp &mut Loop, client &tls.Client, pool Pool, u &Url) b
         printStr(" ");
         printStr(reasonPhrase(e.response.status));
         printStr("\n");
-      } elif e.kind == EventKind.Data {
+      } else if e.kind == EventKind.Data {
         total = total + u64.from(e.buf.len());
         drv.release(e.req, e.buf.len());
-      } elif e.kind == EventKind.Done {
+      } else if e.kind == EventKind.Done {
         printStr("  ");
         printUInt(total);
         printStr(" bytes of body; first byte after ");
@@ -125,11 +125,11 @@ fn fetch(drv &mut Driver, lp &mut Loop, client &tls.Client, pool Pool, u &Url) b
         printStr("\n");
         ok = true;
         going = false;
-      } elif e.isTerminal() {
+      } else if e.isTerminal() {
         printStr("  ");
-        printStr(eventName(e.kind));
+        print <- toDebug(&e.kind);
         printStr(": ");
-        printStr(e.failure.message().view());
+        print <- e.failure;
         printStr("\n");
         going = false;
       }
@@ -137,37 +137,36 @@ fn fetch(drv &mut Driver, lp &mut Loop, client &tls.Client, pool Pool, u &Url) b
     events.clear();
   }
   drv.abort(lp, conn);
-  ok;
+  ok
 }
 
 fn main() i32 {
-  imm args = process.args();
+  let args = process.args();
   if args.len() < 2usize {
     printStr("usage: get <https://host[:port]/path> [--once]\n");
     return 2i32;
   }
-  imm u = parseUrl(args[1usize].view());
-  imm twice = not (args.len() > 2usize and args[2usize].view() == "--once");
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  mut client = tls.Client.make(tls.ClientConfig.make());
-  mut status = 1i32;
+  let u = parseUrl(args[1usize].view());
+  let twice = !(args.len() > 2usize && args[2usize].view() == "--once");
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var client = tls.Client.make(tls.ClientConfig.make());
+  var status = 1i32;
   match client {
-    case imm c Ok {
+    case let Ok(c) {
       printStr(tls.backendVersion());
       printStr(", the OS's verifier\n");
-      if fetch(&mut drv, &mut lp, &c, pool, &u) {status = 0i32;}
-      if twice and status == 0i32 {
+      if fetch(&mut drv, &mut lp, &c, &u) {status = 0i32;}
+      if twice && status == 0i32 {
         printStr("again, on a new connection:\n");
-        if not fetch(&mut drv, &mut lp, &c, pool, &u) {status = 1i32;}
+        if !fetch(&mut drv, &mut lp, &c, &u) {status = 1i32;}
       }
     }
-    case imm e Error {
-      printStr(e.message().view());
+    case let Err(e) {
+      print <- e;
       printStr("\n");
     }
   }
   drv.abortAll(&mut lp);
-  status;
+  status
 }

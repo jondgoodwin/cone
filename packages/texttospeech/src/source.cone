@@ -1,0 +1,282 @@
+// ======== The CPU parts of the vocoder: the harmonic source, the short-time Fourier transform and its inverse ========
+//
+// Kokoro's decoder (iSTFTNet) is driven by a source built from the pitch curve: nine harmonics of F0 as sine waves
+// whose phase is the running sum of the frequency, mixed to one signal, whose STFT (magnitude and phase, 11 bins of a
+// 20-point transform every 5 samples) is fed to the generator at two scales; the generator's last output is a
+// magnitude and a phase for each bin, turned back to samples by the inverse STFT. All of this is irregular (a running
+// sum along time, 20-point transforms) and light, so it is done here on the CPU in the same arithmetic order as
+// PyTorch's (f32 operations, the running sum in f64 as PyTorch's CPU cumsum accumulates) and checked against it.
+//
+// The source has two sources of randomness, both in the model: a random starting phase for each harmonic above the
+// first, and Gaussian noise added to every sample of every harmonic. 'SourceNoise' holds them; a run draws them with
+// 'drawNoise', a test passes the ones PyTorch drew.
+
+pub const HARMONICS: usize = 9usize;
+pub const UPSAMPLE: usize = 300usize;         // F0 samples a second to audio samples: 10 * 6 * 5
+pub const SAMPLE_RATE: u32 = 24000u32;
+pub const N_FFT: usize = 20usize;
+pub const HOP: usize = 5usize;
+pub const BINS: usize = 11usize;
+const PI32: f32 = 3.14159265358979323846f;
+
+pub struct SourceNoise {
+  // the starting phase of each harmonic (the first is 0)
+  pub randIni: List[f32];
+  // N(0, 1) draws, one for each sample of each harmonic: [samples, 9]
+  pub normals: List[f32];
+}
+
+// One draw from the standard normal distribution
+fn normal(rng: &mut Rng) f32 {
+  var u = rng.unit();
+  if u < 1.0e-12 { u = 1.0e-12; }
+  let v = rng.unit();
+  f32.from(libc.sqrt(-2.0 * libc.log(u)) * libc.cos(6.283185307179586 * v))
+}
+
+// The random numbers for a source of 'samples' samples
+pub fn drawNoise(rng: &mut Rng, samples: usize) SourceNoise {
+  var ini = List[f32].withCapacity(HARMONICS);
+  var h = 0usize;
+  while h < HARMONICS {
+    if h == 0usize { ini.push(0.0); } else { ini.push(rng.unitF32()); }
+    h = h + 1usize;
+  }
+  var normals = List[f32].withCapacity(samples * HARMONICS);
+  var i = 0usize;
+  while i < samples * HARMONICS { normals.push(normal(rng)); i = i + 1usize; }
+  SourceNoise(ini, normals)
+}
+
+// torch.remainder(x, 1)
+fn fracPart(x: f32) f32 {
+  let fl = libc.floorf(x);
+  let r = x - fl;
+  if r >= 1.0 { return 0.0; }
+  r
+}
+
+// F.interpolate(mode="linear", align_corners=False) of one row of 'n' values to 'outLen', with the scale PyTorch
+// derives from scale_factor ('scale' is input size over output size as it computes it)
+fn lerpAt(src: &Array[f32], n: usize, dst: usize, scale: f32) f32 {
+  var real = scale * (f32.from(dst) + 0.5) - 0.5;
+  if real < 0.0 { real = 0.0; }
+  var idx = usize.from(real);
+  if idx > n - 1usize { idx = n - 1usize; }
+  var off = 1usize;
+  if idx >= n - 1usize { off = 0usize; }
+  let l1 = real - f32.from(idx);
+  let l0 = 1.0 - l1;
+  l0 * src[idx] + l1 * src[idx + off]
+}
+
+// The source signal: from the pitch curve 'f0' (2F values, one for 300 / 2 ... samples: the curve is held for UPSAMPLE
+// samples each) the harmonic mix, UPSAMPLE * f0.len samples. weights/bias: the model's 9 -> 1 mixing layer.
+pub fn harmonicSource(f0: &Array[f32], noise: &SourceNoise, mixWeights: &Array[f32], mixBias: f32) List[f32] {
+  let frames = f0.len;
+  let n = frames * UPSAMPLE;
+  // rad_values[t, h] = ((f0 * (h + 1)) / 24000) % 1, with the random start added to the first sample
+  var rad = List[f32].withCapacity(n * HARMONICS);
+  var t = 0usize;
+  while t < n {
+    let f = f0[t / UPSAMPLE];
+    var h = 0usize;
+    while h < HARMONICS {
+      let fh = f * f32.from(h + 1usize);
+      var r = fracPart(fh / 24000.0);
+      if t == 0usize { r = r + *noise.randIni[h]; }
+      rad.push(r);
+      h = h + 1usize;
+    }
+    t = t + 1usize;
+  }
+  // down by 300 (linear), then the running sum times 2 pi, times 300, up by 300 (linear), then the sine
+  var sines = List[f32].withCapacity(n * HARMONICS);
+  var k = 0usize;
+  while k < n * HARMONICS { sines.push(0.0); k = k + 1usize; }
+  var h = 0usize;
+  while h < HARMONICS {
+    var column = List[f32].withCapacity(n);
+    t = 0usize;
+    while t < n { column.push(*rad[t * HARMONICS + h]); t = t + 1usize; }
+    var low = List[f32].withCapacity(frames);
+    let downScale = f32.from(UPSAMPLE);
+    t = 0usize;
+    while t < frames { low.push(lerpAt(column.view(), n, t, downScale)); t = t + 1usize; }
+    // the running sum (in f64 as PyTorch's CPU cumsum), times 2, times pi, times 300
+    var phase = List[f32].withCapacity(frames);
+    var acc = 0.0;
+    t = 0usize;
+    while t < frames {
+      acc = acc + f64.from(*low[t]);
+      let c = f32.from(acc);
+      phase.push(((c * 2.0) * PI32) * f32.from(UPSAMPLE));
+      t = t + 1usize;
+    }
+    let upScale = 1.0 / f32.from(UPSAMPLE);
+    t = 0usize;
+    while t < n {
+      let p = lerpAt(phase.view(), frames, t, upScale);
+      sines.set(t * HARMONICS + h, f32.from(libc.sin(f64.from(p))));
+      t = t + 1usize;
+    }
+    h = h + 1usize;
+  }
+  // mix: voiced samples (f0 above 10) keep their sine, the rest are noise only
+  var out = List[f32].withCapacity(n);
+  t = 0usize;
+  while t < n {
+    let voiced = f0[t / UPSAMPLE] > 10.0;
+    var amp = 0.1f / 3.0f;
+    if voiced { amp = 0.003f; }
+    var acc = mixBias;
+    h = 0usize;
+    while h < HARMONICS {
+      var s = *sines[t * HARMONICS + h] * 0.1;
+      if voiced { s = s * 1.0; } else { s = s * 0.0; }
+      let w = s + amp * *noise.normals[t * HARMONICS + h];
+      acc = acc + mixWeights[h] * w;
+      h = h + 1usize;
+    }
+    out.push(f32.from(tanhF64(f64.from(acc))));
+    t = t + 1usize;
+  }
+  out
+}
+
+pub fn tanhF64(v: f64) f64 {
+  if v > 20.0 { return 1.0; }
+  if v < -20.0 { return -1.0; }
+  let e = libc.exp(2.0 * v);
+  (e - 1.0) / (e + 1.0)
+}
+
+// The periodic Hann window of 20: 0.5 - 0.5 cos(2 pi n / 20)
+fn window(n: usize) f64 { 0.5 - 0.5 * libc.cos(6.283185307179586 * f64.from(n) / 20.0) }
+
+// The STFT of the signal (center = True, reflect padding, Hann window of 20, hop 5): [22, frames], the magnitudes of
+// the 11 bins then their phases, frames = 1 + len / 5
+pub fn stft(x: &Array[f32]) List[f32] {
+  let len = x.len;
+  let frames = 1usize + len / HOP;
+  var out = List[f32].withCapacity(2usize * BINS * frames);
+  var k = 0usize;
+  while k < 2usize * BINS * frames { out.push(0.0); k = k + 1usize; }
+  // the reflect-padded signal: 10 on each side
+  let padded = len + N_FFT;
+  var buf = List[f64].withCapacity(padded);
+  var i = 0usize;
+  while i < padded {
+    // index in the unpadded signal, reflected
+    var j = i64.from(i) - 10i64;
+    if j < 0i64 { j = 0i64 - j; }
+    if j >= i64.from(len) { j = 2i64 * (i64.from(len) - 1i64) - j; }
+    buf.push(f64.from(x[usize.from(j)]));
+    i = i + 1usize;
+  }
+  var win = List[f64].withCapacity(N_FFT);
+  i = 0usize;
+  while i < N_FFT { win.push(window(i)); i = i + 1usize; }
+  var cosT = List[f64].withCapacity(N_FFT * BINS);
+  var sinT = List[f64].withCapacity(N_FFT * BINS);
+  var b = 0usize;
+  while b < BINS {
+    i = 0usize;
+    while i < N_FFT {
+      let ang = 6.283185307179586 * f64.from((b * i) % N_FFT) / 20.0;
+      cosT.push(libc.cos(ang));
+      sinT.push(libc.sin(ang));
+      i = i + 1usize;
+    }
+    b = b + 1usize;
+  }
+  var f = 0usize;
+  while f < frames {
+    b = 0usize;
+    while b < BINS {
+      var re = 0.0;
+      var im = 0.0;
+      i = 0usize;
+      while i < N_FFT {
+        let v = *buf[f * HOP + i] * *win[i];
+        re = re + v * *cosT[b * N_FFT + i];
+        im = im - v * *sinT[b * N_FFT + i];
+        i = i + 1usize;
+      }
+      if b == 0usize || b == 10usize { im = 0.0; }
+      out.set(b * frames + f, f32.from(libc.sqrt(re * re + im * im)));
+      out.set((BINS + b) * frames + f, f32.from(libc.atan2(im, re)));
+      b = b + 1usize;
+    }
+    f = f + 1usize;
+  }
+  out
+}
+
+// The inverse STFT of what the generator ends with: x [22, frames], the first 11 rows the logs of the magnitudes and
+// the last 11 the phases' arguments (magnitude = exp(row), phase = sin(row)); the samples, (frames - 1) * 5
+pub fn istft(x: &Array[f32], frames: usize) List[f32] {
+  let total = (frames - 1usize) * HOP + N_FFT;
+  var sum = List[f64].withCapacity(total);
+  var env = List[f64].withCapacity(total);
+  var k = 0usize;
+  while k < total { sum.push(0.0); env.push(0.0); k = k + 1usize; }
+  var win = List[f64].withCapacity(N_FFT);
+  var i = 0usize;
+  while i < N_FFT { win.push(window(i)); i = i + 1usize; }
+  var cosT = List[f64].withCapacity(N_FFT * BINS);
+  var sinT = List[f64].withCapacity(N_FFT * BINS);
+  var b = 0usize;
+  while b < BINS {
+    i = 0usize;
+    while i < N_FFT {
+      let ang = 6.283185307179586 * f64.from((b * i) % N_FFT) / 20.0;
+      cosT.push(libc.cos(ang));
+      sinT.push(libc.sin(ang));
+      i = i + 1usize;
+    }
+    b = b + 1usize;
+  }
+  var re = List[f64].withCapacity(BINS);
+  var im = List[f64].withCapacity(BINS);
+  b = 0usize;
+  while b < BINS { re.push(0.0); im.push(0.0); b = b + 1usize; }
+  var f = 0usize;
+  while f < frames {
+    b = 0usize;
+    while b < BINS {
+      let mag = libc.exp(f64.from(x[b * frames + f]));
+      let ph = libc.sin(f64.from(x[(BINS + b) * frames + f]));
+      re.set(b, mag * libc.cos(ph));
+      im.set(b, mag * libc.sin(ph));
+      b = b + 1usize;
+    }
+    // irfft of 20 points: the imaginary parts of bins 0 and 10 are dropped
+    i = 0usize;
+    while i < N_FFT {
+      var v = *re[0usize];
+      b = 1usize;
+      while b < 10usize {
+        v = v + 2.0 * (*re[b] * *cosT[b * N_FFT + i] - *im[b] * *sinT[b * N_FFT + i]);
+        b = b + 1usize;
+      }
+      v = v + *re[10usize] * *cosT[10usize * N_FFT + i];
+      v = v / 20.0;
+      let w = *win[i];
+      let at = f * HOP + i;
+      sum.set(at, *sum[at] + v * w);
+      env.set(at, *env[at] + w * w);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  // trim the centre padding (10 each side) and divide by the window's envelope
+  var out = List[f32].withCapacity((frames - 1usize) * HOP);
+  i = 0usize;
+  while i < (frames - 1usize) * HOP {
+    let at = i + 10usize;
+    out.push(f32.from(*sum[at] / *env[at]));
+    i = i + 1usize;
+  }
+  out
+}

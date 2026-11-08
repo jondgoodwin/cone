@@ -1,0 +1,70 @@
+// A group's deadline firing ends the operations in it at the deadline, never at
+// their own (later) times. The group's timer (package cancelgroups) cancels the
+// group with the cause TimedOut through the same path 'cancel()' takes, telling
+// every loop with operations in it; the loop answers each of its operations
+// TimedOut from the deadline it took from the group.
+//
+// 1. A timer 10 s off in a group with a 50 ms deadline, and an external
+//    operation with no deadline of its own in the same group, and the same in a
+//    child of it: all three answer TimedOut at 50 ms, not before, and long before
+//    10 s; the poll asked to wait for 5 s returns when they have.
+// 2. The group is then cancelled, with the cause TimedOut; a cancel after it
+//    says false.
+
+mod groupdeadline;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import thread;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion]();
+    let t0 = Instant.now();
+    let g = CancelGroup.until(t0 + Duration.fromMillis(50i64));
+    let child = g.child();
+    lp.afterIn(t0 + Duration.fromSeconds(10i64), Target.Here(1u64), g);
+    let c1 = lp.externalIn(Target.Here(2u64), IoBuf(16usize), g, forever());
+    let c2 = lp.externalIn(Target.Here(3u64), IoBuf(16usize), child, forever());
+    let limit = t0 + Duration.fromSeconds(5i64);
+    while out.len() < 3usize && Instant.now() < limit {
+      lp.poll(limit, &mut out);
+    }
+    let took = Instant.now() - t0;
+    requireUInt(u64.from(out.len()), 3u64, "all three answered");
+    var k = 0usize;
+    while k < 3usize {
+      expectUInt(u64.from(out[k].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expect(out[k].delivered >= t0 + Duration.fromMillis(50i64), "not before the group's deadline");
+      k = k + 1usize;
+    }
+    expect(took < Duration.fromSeconds(2i64), "long before the timer's own 10 s");
+    // The group's own timer thread sets the flag within a tick of the deadline,
+    // which may be just after the loop's answers: wait for it a little
+    let flagLimit = Instant.now() + Duration.fromMillis(500i64);
+    while !g.isCancelled() && Instant.now() < flagLimit {thread.sleep(Duration.fromMillis(1i64));}
+    expect(g.isCancelled() && child.isCancelled(), "the group and its child are cancelled");
+    match g.cause() {
+      case let Some(c) {
+        match c {
+          case Cause.TimedOut {expect(true, "the cause is TimedOut");}
+          case Cause.Cancelled {expect(false, "the cause is TimedOut");}
+          case Cause.SiblingFinished {expect(false, "the cause is TimedOut");}
+          case Cause.Shutdown {expect(false, "the cause is TimedOut");}
+        }
+      }
+      else {expect(false, "a cause is given");}
+    }
+    expect(!g.cancel(), "a cancel after the timeout says false");
+    out.clear();
+    let cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+  }
+  done()
+}

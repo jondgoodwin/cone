@@ -101,8 +101,11 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/literal.h"
 #include "exp/namedval.h"
 #include "exp/contents.h"
+#include "exp/debugfn.h"
 #include "exp/each.h"
 #include "exp/pareach.h"
+#include "exp/propagate.h"
+#include "exp/discard.h"
 #include "exp/arraylit.h"
 #include "exp/typelit.h"
 #include "exp/logic.h"
@@ -111,13 +114,16 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/vtuple.h"
 #include "exp/await.h"
 #include "exp/yield.h"
+#include "exp/destruct.h"
 #include "exp/closure.h"
+#include "types/vector.h"
 
 #include "export.h"
 
 #include "meta/genvardcl.h"
 #include "meta/macro.h"
 #include "meta/generic.h"
+#include "meta/fields.h"
 
 #include "stmt/program.h"
 

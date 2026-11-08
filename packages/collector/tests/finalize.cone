@@ -7,7 +7,7 @@
 //   It is finalized once, however many collections pass;
 // - one object's death is the ruled order: its own 'final', then each
 //   field's, in field order, then the owners its fields hold, released in
-//   field order ('So' finalized and freed, 'Rc' counted down, finalized
+//   field order ('Uni' finalized and freed, 'Rc' counted down, finalized
 //   only if that was the last owner). A 'Gc' field is not released: what
 //   it refers to dies by its own collection;
 // - the objects one collection finds unreachable are finalized newest first,
@@ -25,32 +25,32 @@ mod finalize;
 import testing use *;
 import collector;
 
-mut @threadlocal log = 0i64;
-fn note(d i64) { log = log * 10 + d; }
+var @threadlocal log = 0i64;
+fn note(d: i64) { log = log * 10 + d; }
 
 fn settle() {
   Gc.collect();
   Gc.collect();
 }
-fn live() u64 { u64.from(Gc.liveObjects()); }
+fn live() u64 { u64.from(Gc.liveObjects()) }
 fn reset() {
   settle();
   log = 0;
 }
 
 struct Fin {
-  pub n i64;
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  fn final(self: &uni) { note(n); }
 }
-struct LeafValue { pub n i64; }
+struct LeafValue { pub n: i64; }
 alias Leaf = Gc[mut, LeafValue];
 
 // -- One object: finalized once, freed a cycle later
 fn dropFin() {
-  imm f = new Gc[mut, Fin](1);
+  let f = Gc[mut, Fin](1);
 }
 fn once() {
-  imm before = Gc.finalized();
+  let before = Gc.finalized();
   dropFin();
   Gc.collect();
   expectInt(log, 1, "finalized by the first collection finding it unreachable");
@@ -65,44 +65,46 @@ fn once() {
 
 // -- One object's death, in the ruled order
 struct BigValue {
-  pub n i64;
-  pub f Fin;
-  pub o So[Fin];
-  pub r Rc[mut, Fin];
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  pub f: Fin;
+  pub o: Uni[Fin];
+  pub r: Rc[mut, Fin];
+  fn final(self: &uni) { note(n); }
 }
 alias Big = Gc[mut, BigValue];
 fn dropBig() {
-  imm b = new Big(1, new Fin(2), new So[Fin](3), new Rc[mut, Fin](4));
+  let b = Big(1, Fin(2), Uni[Fin](3), Rc[mut, Fin](4));
 }
 fn ruledOrder() {
   dropBig();
   Gc.collect();
-  expectInt(log, 1234, "its final, its field's, its So owner's value, its last Rc owner's");
+  expectInt(log, 1234, "its final, its field's, its Uni owner's value, its last Rc owner's");
 }
 
 // -- An Rc owner shared outside is counted down, not finalized
 struct HoldsRcValue {
-  pub n i64;
-  pub r Rc[mut, Fin];
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  pub r: Rc[mut, Fin];
+  fn final(self: &uni) { note(n); }
 }
 alias HoldsRc = Gc[mut, HoldsRcValue];
-fn dropHolder(k Rc[mut, Fin]) {
-  imm h = new HoldsRc(1, k);
+fn dropHolder(k: Rc[mut, Fin]) {
+  let h = HoldsRc(1, k);
 }
 fn rcShared() {
-  imm keep = new Rc[mut, Fin](4);
+  let keep = Rc[mut, Fin](4);
   dropHolder(keep);
   settle();
   expectInt(log, 1, "the holder dies; keep still owns the Rc value");
+  // read last, so the call above copies: the last read of a counted local is a move
+  let again = &keep;
 }
 
 // -- Several objects found unreachable together: newest first
 fn dropThree() {
-  imm a = new Gc[mut, Fin](1);
-  imm b = new Gc[mut, Fin](2);
-  imm c = new Gc[mut, Fin](3);
+  let a = Gc[mut, Fin](1);
+  let b = Gc[mut, Fin](2);
+  let c = Gc[mut, Fin](3);
 }
 fn newestFirst() {
   dropThree();
@@ -112,26 +114,26 @@ fn newestFirst() {
 
 // -- A final reads its children. Kid's final spoils its value after noting
 // it, so what Parent's final sees says whether Kid's ran first.
-mut @threadlocal seen = 0i64;
+var @threadlocal seen = 0i64;
 struct KidValue {
-  pub n i64;
-  fn final(self &uni) { note(n); n = 9; }
+  pub n: i64;
+  fn final(self: &uni) { note(n); n = 9; }
 }
 alias Kid = Gc[mut, KidValue];
 struct ParentValue {
-  pub n i64;
-  pub kid Kid;
-  fn final(self &uni) { note(n); seen = kid.n; }
+  pub n: i64;
+  pub kid: Kid;
+  fn final(self: &uni) { note(n); seen = kid.n; }
 }
 alias Parent = Gc[mut, ParentValue];
 // Kid 2 is made first, as the Parent's value, so the Parent is newer
 fn dropFamily() {
-  imm p = new Parent(1, new Kid(2));
+  let p = Parent(1, Kid(2));
 }
 // Kid 4, Parent 3, then Kid 5, which replaces Kid 4 as the Parent's kid
 fn dropFamilyNewKid() {
-  imm p = new Parent(3, new Kid(4));
-  p.kid = new Kid(5);
+  let p = Parent(3, Kid(4));
+  p.kid = Kid(5);
 }
 fn childrenReadable() {
   dropFamily();
@@ -147,45 +149,45 @@ fn childrenReadable() {
 
 // -- A kept object keeps what it holds, through an Option too
 struct HolderValue {
-  pub n i64;
-  pub kid Option[Gc[mut, Fin]];
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  pub kid: Option[Gc[mut, Fin]];
+  fn final(self: &uni) { note(n); }
 }
 alias Holder = Gc[mut, HolderValue];
 fn makeHolder() Holder {
-  new Holder(1, Some[Gc[mut, Fin]](new Gc[mut, Fin](2)));
+  Holder(1, Some[Gc[mut, Fin]](Gc[mut, Fin](2)))
 }
 fn kept() {
-  imm h = makeHolder();
+  let h = makeHolder();
   settle();
   expectInt(log, 0, "the holder and the fin it holds are both alive");
   expectUInt(live(), 2, "both there");
 }
 
 // -- A final that allocates, and one that asks for a collection
-mut @threadlocal made = 0i64;
+var @threadlocal made = 0i64;
 struct MakerValue {
-  pub n i64;
-  fn final(self &uni) {
-    imm l = new Leaf(n);
+  pub n: i64;
+  fn final(self: &uni) {
+    let l = Leaf(n);
     made = l.n;
   }
 }
 alias Maker = Gc[mut, MakerValue];
 fn dropMaker() {
-  imm m = new Maker(7);
+  let m = Maker(7);
 }
 struct CollectsValue {
-  pub n i64;
-  fn final(self &uni) { Gc.collect(); note(n); }
+  pub n: i64;
+  fn final(self: &uni) { Gc.collect(); note(n); }
 }
 alias Collects = Gc[mut, CollectsValue];
 fn dropCollects() {
-  imm c = new Collects(8);
+  let c = Collects(8);
 }
 fn reentry() {
   dropMaker();
-  imm c0 = Gc.collections();
+  let c0 = Gc.collections();
   Gc.collect();
   expectInt(made, 7, "a final may allocate");
   expectUInt(u64.from(Gc.collections() - c0), 1, "and its allocation starts no collection");
@@ -193,7 +195,7 @@ fn reentry() {
   settle();
   expectUInt(live(), 0, "both freed later");
   dropCollects();
-  imm c1 = Gc.collections();
+  let c1 = Gc.collections();
   Gc.collect();
   expectInt(log, 8, "a final asking for a collection");
   expectUInt(u64.from(Gc.collections() - c1), 1, "gets none");
@@ -218,5 +220,5 @@ fn main() i32 {
   reentry();
   settle();
   expectUInt(live(), 0, "nothing left");
-  done();
+  done()
 }

@@ -13,7 +13,7 @@
 // requires every borrow it holds to last ''a', known by band or by the
 // order; a borrowed virtual reference with no bound promises what it points
 // at lasts its own lifetime, Rust's default for '&'r dyn Trait'
-// (refvirtref.html; reflifefn.html, "Lifetime bounds").
+// (mod-substitution.html#virtref; mem-lifetimes.html#bounds, "Lifetime bounds on generics and virtual references").
 // Master 2cb190a1: refused at parse. With the ErrorLifetimeBound refusals
 // turned off, this compiler still refuses main's call of 'leak', since the
 // call carries all of what h holds into slot, and nothing else here reads
@@ -27,51 +27,51 @@ mod lifetime_bound_virt_refused;
 import stdio use *;
 
 trait Show {
-  pub fn show(self &) i64;
+  pub fn show(self: &) i64;
 }
 
 struct R {
-  pub n i64;
-  fn final(self &uni) {
+  pub n: i64;
+  fn final(self: &uni) {
     printStr("final\n");
   }
 }
 
 struct H['b] {
-  pub r &'b R;
-  fn show(self &) i64 {
-    r.n;
+  pub r: &'b R;
+  fn show(self: &) i64 {
+    r.n
   }
 }
 
-fn leak(slot &mut &<'r Show + 'a, h &'r H['b]) {
+fn leak(slot: &mut &<'r Show + 'a, h: &'r H['b]) {
   *slot = h;                 //~ ErrorLifetimeBound "holds the borrow the caller lent through 'h'"
 }
 
-fn forever(h &'r H['b]) &<'r Show + 'static {
-  h;                         //~ ErrorLifetimeBound "bounded by ''static'"
+fn forever(h: &'r H['b]) &<'r Show + 'static {
+  h                         //~ ErrorLifetimeBound "bounded by ''static'"
 }
 
-fn pass(slot &mut &<'r Show + 'a, v &<'r Show) {
+fn pass(slot: &mut &<'r Show + 'a, v: &<'r Show) {
   *slot = v;                 //~ ErrorLifetimeBound "'v' promises only"
 }
 
-fn look(v &<Show + 'static) i64 {
-  v.show();
+fn look(v: &<Show + 'static) i64 {
+  v.show()
 }
 
 fn main() {
-  imm x0 = new R(0);
-  imm h0 = new H(&x0);
-  mut slot &<Show = &h0;
+  let x0 = R(0);
+  let h0 = H(&x0);
+  var slot: &<Show = &h0;
   {
-    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while 'slot'"
-    imm h = new H(&*s);      //~ ErrorFrozen "goes out of scope while 'slot'"
+    let s = Uni[R](42);   //~ ErrorFrozen "goes out of scope while 'slot'"
+    let h = H(&*s);      //~ ErrorFrozen "goes out of scope while 'slot'"
     leak(&mut slot, &h);
   }
   printInt(slot.show());
-  imm x = new R(5);
-  imm hx = new H(&x);
+  let x = R(5);
+  let hx = H(&x);
   printInt(look(&hx));       //~ ErrorLifetimeBound "belongs to this function"
   printStr("\n");
 }

@@ -1,0 +1,458 @@
+// Crystal balls and soap bubbles, drawn two ways: by the raster glass (the frame captured and refracted) and, on a
+// card with ray tracing, by rays cast through the whole scene. Offscreen (no window) in HDR, tone-mapped (AgX).
+//
+//   congo run packages/render/examples/rtglass.cone -- --side both.bmp          raster on the left, rays on the right
+//   congo run packages/render/examples/rtglass.cone -- --shot rays.bmp          the best path the card has
+//   congo run packages/render/examples/rtglass.cone -- --shot raster.bmp --raster
+//   congo run packages/render/examples/rtglass.cone -- --cost                   the GPU time of each path
+//   congo run packages/render/examples/rtglass.cone -- --side both.bmp --view 1 closer on the ball, 2 on the bubbles
+//
+// GPU_POWER_PREFERENCE=low-power picks the Intel GPU, which has no ray tracing: both halves are the raster
+// path, and the run says so. '--noray' makes a device without ray tracing on a card that has it.
+//
+// The scene is a pale-and-dark chequered floor under a dusk sky and a low sun. A plain test figure, a cloaked body, a
+// round head and a two-part arm (surfaces of revolution, nothing more) holds up a crystal ball in its open hand. Behind
+// the ball stand things to see through it: a striped column, a gold ball and a green block. A small cobalt glass ball
+// sits behind the crystal one, so the crystal shows glass through glass. To the right a cluster of soap bubbles
+// drifts, each a single thin shell with a film whose thickness swirls (the material's iridescence, a film
+// over glass of no thickness), the nearest in front of the column. The materials are one description each:
+// the same fields draw with either path.
+
+mod rtglass;
+
+import stdio use *;
+import libc;
+import process;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import path as filepath;
+
+// A surface of revolution about the y axis: 'profile' (radius, height) in order along the
+// curve, 'segments' around, smooth normals or flat ones. The faces are turned to face outward whichever way
+// the profile runs.
+fn lathe(profile: &List[Vec2], segments: i32, smooth: bool) Mesh {
+  var m = Mesh();
+  let rings = profile.len();
+  var i = 0usize;
+  while i < rings {
+    let p = *profile[i];
+    var j = 0;
+    while j <= segments {
+      let a = 2. * pi * f32.from(j) / f32.from(segments);
+      m.positions.push(Vec3(p.x * cos(a), p.y, p.x * sin(a)));
+      m.uvs.push(Vec2(f32.from(j) / f32.from(segments), f32.from(i) / f32.from(rings - 1usize)));
+      j = j + 1;
+    }
+    i = i + 1usize;
+  }
+  let stride = u32.from(segments + 1);
+  i = 0usize;
+  while i + 1usize < rings {
+    var j = 0;
+    while j < segments {
+      let a = u32.from(i) * stride + u32.from(j);
+      let b = a + 1u32;
+      let c = a + stride;
+      let d = c + 1u32;
+      m.indices.push(a);
+      m.indices.push(c);
+      m.indices.push(b);
+      m.indices.push(b);
+      m.indices.push(c);
+      m.indices.push(d);
+      j = j + 1;
+    }
+    i = i + 1usize;
+  }
+  m.addGroup(0u32, u32.from(m.indices.len()), 0u32);
+  if smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
+  var radial = 0.;
+  var v = 0usize;
+  while v < m.positions.len() {
+    let p = *m.positions[v];
+    let n = *m.normals[v];
+    radial = radial + p.x * n.x + p.z * n.z;
+    v = v + 1usize;
+  }
+  if radial < 0. {
+    var t = 0usize;
+    while t + 2usize < m.indices.len() {
+      let second = *m.indices[t + 1usize];
+      m.indices.set(t + 1usize, *m.indices[t + 2usize]);
+      m.indices.set(t + 2usize, second);
+      t = t + 3usize;
+    }
+    if smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
+  }
+  m
+}
+
+fn pt(r: f32, y: f32) Vec2 { Vec2(r, y) }
+
+// A unit cylinder along y (radius 1, from 0 to 1), a limb when placed by 'limb'
+fn cylinderProfile() List[Vec2] {
+  var p = List[Vec2]();
+  p.push(pt(0.001, 0.));
+  p.push(pt(1., 0.));
+  p.push(pt(1., 0.5));
+  p.push(pt(1., 1.));
+  p.push(pt(0.001, 1.));
+  p
+}
+
+// The cloak: a hem on the ground, narrowing to the shoulders and a neck
+fn cloakProfile() List[Vec2] {
+  var p = List[Vec2]();
+  p.push(pt(0.001, 0.));
+  p.push(pt(0.150, 0.));
+  p.push(pt(0.140, 0.05));
+  p.push(pt(0.115, 0.15));
+  p.push(pt(0.088, 0.26));
+  p.push(pt(0.082, 0.34));
+  p.push(pt(0.092, 0.39));
+  p.push(pt(0.070, 0.425));
+  p.push(pt(0.030, 0.445));
+  p.push(pt(0.026, 0.470));
+  p.push(pt(0.001, 0.470));
+  p
+}
+
+// The placement of the unit cylinder as a limb from 'a' to 'b' of radius 'radius'
+fn limb(a: Vec3, b: Vec3, radius: f32) Mat4 {
+  let axis = b - a;
+  let length = axis.length();
+  let y = axis.normalize();
+  let helper = if y.y < 0.9 && y.y > -0.9 { Vec3(0., 1., 0.) } else { Vec3(1., 0., 0.) };
+  let x = helper.cross(y).normalize();
+  let z = y.cross(x);
+  Mat4([x.x * radius, x.y * radius, x.z * radius, 0f, y.x * length, y.y * length, y.z * length, 0f,
+    z.x * radius, z.y * radius, z.z * radius, 0f, a.x, a.y, a.z, 1f])
+}
+
+// A soap bubble's look: a film of glass of no thickness (the index 1.33 of soapy water), its thickness
+// swirling between 'lo' and 'hi' nanometres, noise of 'seed'
+fn bubbleLook(lo: f32, hi: f32, seed: u32, scale: f32) PbrMaterial {
+  var m = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.33, 0., Color(1., 1., 1., 1.), 1., 0.).iridescent(lo, hi, 1.33, seed);
+  m.filmScale = scale;
+  m.filmDrift = 0.12;
+  m.filmWarp = 2.2;
+  m
+}
+
+fn nanosecondsBetween(readback: &Buffer, device: &Device) f64 {
+  let ticks = readback.mappedRange() as *u64;
+  f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod)
+}
+
+// The whole text read as a count, or None when it is not a whole number that fits a u32
+fn parseCount(s: &str) Option[u32] {
+  match u64.parse(s) {
+    case let Ok(n) { if n <= 4294967295u64 { Some[u32](u32.from(n)) } else { None } }
+    case is Err { None }
+  }
+}
+
+// Two images of one size side by side
+fn sideBySide(left: &Image, right: &Image) Image {
+  var img = Image(left.width + right.width, left.height, 3, List[u8].withCapacity(usize.from((left.width + right.width) * left.height * 3)));
+  var y = 0;
+  while y < left.height {
+    var x = 0;
+    while x < left.width * 3 {
+      img.pixels.push(*left.pixels[usize.from(y * left.width * 3 + x)]);
+      x = x + 1;
+    }
+    x = 0;
+    while x < right.width * 3 {
+      img.pixels.push(*right.pixels[usize.from(y * right.width * 3 + x)]);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img
+}
+
+// Draw the list 'frames' times and leave the last in 'readback'; the GPU time of each after the first few into 'samples'
+fn drawFrames(device: &mut Device, renderer: &mut Renderer, post: &mut Post, depth: &Texture, out: &Texture, readback: &Buffer,
+    camera: &Camera, light: &Light, list: &DrawList, frames: u32, queries: &QuerySet, resolved: &Buffer, ticksBack: &Buffer,
+    samples: &mut List[f64]) {
+  let timed = device.timestampPeriod > 0.;
+  var frame = 0u32;
+  while frame < frames {
+    renderer.time = f32.from(frame) * 0.1;
+    var encoder = device.createCommandEncoder();
+    if timed { encoder.writeTimestamp(queries, 0u32); }
+    renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, list);
+    post.apply(&mut encoder, out);
+    if timed {
+      encoder.writeTimestamp(queries, 1u32);
+      encoder.resolveQuerySet(queries, 0u32, 2u32, resolved, 0u64);
+      encoder.copyBufferToBuffer(resolved, 0u64, ticksBack, 0u64, 16u64);
+    }
+    encoder.copyTextureToBuffer(out, readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    if timed && frame >= 8u32 { samples.push(nanosecondsBetween(ticksBack, device) / 1000000.0); }
+    frame = frame + 1u32;
+  }
+}
+
+fn report(label: &str, samples: &mut List[f64]) {
+  if samples.len() == 0usize {
+    print <- label; print <- ": no GPU timestamps\n";
+    return;
+  }
+  samples.sort();
+  print <- label; print <- ": frame on the GPU, p50 of "; print <- samples.len(); print <- ": "; print <- *samples[samples.len() / 2usize];
+  print <- " ms (min "; print <- *samples[0usize]; print <- ", max "; print <- *samples[samples.len() - 1usize]; print <- ")\n";
+}
+
+fn main() i32 {
+  let args = process.args();
+  var shot = String();
+  var side = String();
+  var cost = false;
+  var rasterOnly = false;
+  var noRay = false;
+  var view = 0u32;
+  var frameCount = 0u32;
+  var a = 1usize;
+  while a < args.len() {
+    let arg = args[a].view();
+    var bad = false;
+    if arg == "--cost" {
+      cost = true;
+    } else if arg == "--raster" {
+      rasterOnly = true;
+    } else if arg == "--noray" {
+      noRay = true;
+    } else if arg == "--frames" && a + 1usize < args.len() {
+      match parseCount(args[a + 1usize].view()) {
+        case let Some(n) { frameCount = n; }
+        case is None[u32] { bad = true; }
+      }
+      a = a + 1usize;
+    } else if arg == "--view" && a + 1usize < args.len() {
+      match parseCount(args[a + 1usize].view()) {
+        case let Some(n) { view = n; }
+        case is None[u32] { bad = true; }
+      }
+      a = a + 1usize;
+    } else if arg == "--shot" && a + 1usize < args.len() {
+      shot = String.from(args[a + 1usize].view());
+      a = a + 1usize;
+    } else if arg == "--side" && a + 1usize < args.len() {
+      side = String.from(args[a + 1usize].view());
+      a = a + 1usize;
+    } else {
+      bad = true;
+    }
+    if bad {
+      print <- "Use --shot FILE, --side FILE, --view 0|1|2, --raster, --noray, --frames N and/or --cost\n";
+      return 2;
+    }
+    a = a + 1usize;
+  }
+
+  var instance = Instance.create("render rtglass");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let powerEnv = libc.getenv("GPU_POWER_PREFERENCE");
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(cstr.fromPtr(powerEnv), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  var adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  print <- if adapter.supportsRayTracing() { "  (has ray tracing)\n" } else { "  (no ray tracing)\n" };
+  var device = adapter.requestDeviceWith(!noRay);
+  let w = 1280u32;
+  let h = 800u32;
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, w, h);
+  if !renderer.isValid() || !post.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  let outDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var out = device.createTexture(&outDesc);
+  let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(u64.from(w * h * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  post.bloom = 0.05;
+  post.exposure = 1.7;
+
+  // A low warm sun behind the figure and a dusk sky, which is also what the glass reflects
+  var sky = Sky.dusk(radians(24.), radians(-150.));
+  sky.zenith = Color(0.10, 0.17, 0.40, 1.);
+  sky.horizon = Color(0.60, 0.40, 0.40, 1.);
+  sky.line = Color(1.6, 0.9, 0.55, 1.);
+  sky.lineWidth = 0.03;
+  renderer.setSky(&mut device, &sky);
+  let light = sky.sunLight(Color(3.4, 2.4, 1.7, 1.), Color(0.05, 0.05, 0.07, 1.));
+  renderer.setShadows(&mut device, &ShadowSettings.medium());
+  renderer.setReflections(&if preference == POWER_PREFERENCE_LOW_POWER { ReflectionSettings.low() } else { ReflectionSettings.high() });
+
+  // The materials
+  let chess = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 8, Color(0.60, 0.52, 0.40, 1.),
+    Color(0.10, 0.075, 0.07, 1.)));
+  var floorLook = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.35).coated(1., 0.05).reflective(1.);
+  floorLook.texture = chess;
+  let stripes = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 1, Color(0.80, 0.10, 0.08, 1.),
+    Color(0.88, 0.84, 0.74, 1.)));
+  var columnLook = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.5);
+  columnLook.texture = stripes;
+  let cloakLook = PbrMaterial.standard(Color(0.05, 0.06, 0.20, 1.), 0., 0.85).velvet(Color(0.35, 0.30, 0.70, 1.), 0.5);
+  let skinLook = PbrMaterial.standard(Color(0.80, 0.52, 0.42, 1.), 0., 0.55).scattering(1., Color(3., 1., 0.6, 1.), 1.);
+  let goldLook = PbrMaterial.standard(Color(1.0, 0.72, 0.30, 1.), 1., 0.25).reflective(1.);
+  let greenLook = PbrMaterial.standard(Color(0.08, 0.50, 0.20, 1.), 0., 0.45);
+  let crystalLook = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.5, 0.17, Color(0.96, 0.98, 1., 1.), 1.5, 0.);
+  let cobaltLook = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.5, 0.07, Color(0.15, 0.30, 1., 1.), 0.08, 0.);
+  let floorM = renderer.addPbrMaterial(&mut device, &floorLook);
+  let columnM = renderer.addPbrMaterial(&mut device, &columnLook);
+  let cloakM = renderer.addPbrMaterial(&mut device, &cloakLook);
+  let skinM = renderer.addPbrMaterial(&mut device, &skinLook);
+  let goldM = renderer.addPbrMaterial(&mut device, &goldLook);
+  let greenM = renderer.addPbrMaterial(&mut device, &greenLook);
+  let crystalM = renderer.addPbrMaterial(&mut device, &crystalLook);
+  let cobaltM = renderer.addPbrMaterial(&mut device, &cobaltLook);
+  let bubbleScales: Array[f32, 8] = [1.6, 2.4, 1.2, 2.8, 2.0, 1.4, 2.6, 1.8];
+  let bubbleLows: Array[f32, 8] = [180., 260., 140., 320., 200., 150., 280., 220.];
+  let bubbleHighs: Array[f32, 8] = [720., 640., 800., 760., 580., 700., 900., 640.];
+  var bubbleMaterials = List[MaterialHandle]();
+  var b = 0usize;
+  while b < 8usize {
+    let look = bubbleLook(bubbleLows[b], bubbleHighs[b], 11u32 + u32.from(b) * 7u32, bubbleScales[b]);
+    bubbleMaterials.push(renderer.addPbrMaterial(&mut device, &look));
+    b = b + 1usize;
+  }
+
+  // The meshes: a plane, spheres (smooth, 64 segments), a unit cylinder for limbs and a column, the cloak, a block
+  let plane = renderer.addMesh(&mut device, &Mesh.plane(1, 6.));
+  let ball = renderer.addMesh(&mut device, &Mesh.sphere(1., 64));
+  let cylinder = renderer.addMesh(&mut device, &lathe(&cylinderProfile(), 32, true));
+  let cloak = renderer.addMesh(&mut device, &lathe(&cloakProfile(), 48, true));
+  let block = renderer.addMesh(&mut device, &Mesh.cube(1.));
+
+  // The scene
+  var list = DrawList();
+  list.add(plane, floorM, Mat4.fromTrs(Vec3(0., 0., 0.), Quat.identity(), Vec3(3., 1., 3.)));
+  // Things behind the crystal ball, to be seen through it
+  list.add(cylinder, columnM, Mat4.fromTrs(Vec3(-0.02, 0., -0.34), Quat.identity(), Vec3(0.065, 0.55, 0.065)));
+  list.add(ball, goldM, Mat4.fromTrs(Vec3(0.17, 0.07, -0.26), Quat.identity(), Vec3(0.07, 0.07, 0.07)));
+  list.add(block, greenM, Mat4.fromTrs(Vec3(-0.26, 0.05, -0.22), Quat.angleAxis(radians(25.), Vec3(0., 1., 0.)),
+    Vec3(0.1, 0.1, 0.1)));
+  // The figure
+  let fx = -0.30f;
+  list.add(cloak, cloakM, Mat4.fromTranslation(Vec3(fx, 0., 0.)));
+  list.add(ball, skinM, Mat4.fromTrs(Vec3(fx, 0.515, 0.012), Quat.identity(), Vec3(0.043, 0.050, 0.047)));
+  let shoulder = Vec3(fx + 0.07, 0.40, 0.02);
+  let elbow = Vec3(fx + 0.15, 0.285, 0.085);
+  let hand = Vec3(fx + 0.215, 0.235, 0.12);
+  list.add(cylinder, cloakM, limb(shoulder, elbow, 0.024));
+  list.add(cylinder, cloakM, limb(elbow, hand, 0.019));
+  list.add(ball, skinM, Mat4.fromTrs(hand, Quat.identity(), Vec3(0.024, 0.020, 0.024)));
+  // The crystal ball, resting on the open hand, and the cobalt one behind it
+  let crystalCentre = Vec3(fx + 0.235, 0.325, 0.12);
+  list.add(ball, crystalM, Mat4.fromTrs(crystalCentre, Quat.identity(), Vec3(0.085, 0.085, 0.085)));
+  list.add(ball, cobaltM, Mat4.fromTrs(Vec3(fx + 0.30, 0.255, -0.02), Quat.identity(), Vec3(0.032, 0.032, 0.032)));
+  // The bubbles drifting to the right
+  let bubbleX: Array[f32, 8] = [0.16, 0.27, 0.25, 0.37, 0.33, 0.08, 0.42, -0.04];
+  let bubbleY: Array[f32, 8] = [0.34, 0.27, 0.43, 0.36, 0.21, 0.24, 0.47, 0.46];
+  let bubbleZ: Array[f32, 8] = [0.19, 0.11, 0.21, 0.09, 0.23, 0.31, 0.15, 0.26];
+  let bubbleR: Array[f32, 8] = [0.060, 0.045, 0.034, 0.055, 0.028, 0.022, 0.030, 0.018];
+  b = 0usize;
+  while b < 8usize {
+    list.add(ball, *bubbleMaterials[b], Mat4.fromTrs(Vec3(bubbleX[b], bubbleY[b], bubbleZ[b]), Quat.identity(),
+      Vec3(bubbleR[b], bubbleR[b], bubbleR[b])));
+    b = b + 1usize;
+  }
+
+  var camera = Camera.make();
+  camera.near = 0.05;
+  camera.far = 30.;
+  camera.background = Color(0.02, 0.025, 0.05, 1.);
+  let up = Vec3(0., 1., 0.);
+  if view == 1u32 {
+    camera.fov = radians(26.);
+    camera.lookAt(Vec3(-0.02, 0.36, 0.78), Vec3(fx + 0.235, 0.31, 0.06), up);
+  } else if view == 2u32 {
+    camera.fov = radians(26.);
+    camera.lookAt(Vec3(0.12, 0.34, 0.80), Vec3(0.28, 0.32, 0.12), up);
+  } else {
+    camera.fov = radians(36.);
+    camera.lookAt(Vec3(0.02, 0.40, 1.22), Vec3(0.02, 0.28, 0.), up);
+  }
+
+  // The timing
+  let timed = device.timestampPeriod > 0.;
+  var queries = QuerySet.none();
+  var resolved = Buffer.none();
+  var ticksBack = Buffer.none();
+  if timed {
+    queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+    resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+    ticksBack = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  }
+  let frames = if frameCount > 0u32 { frameCount } else if cost { 400u32 } else { 3u32 };
+  let wantBoth = side.len() > 0usize || cost;
+
+  // The raster path first (unless only the rays are wanted), then the rays
+  var rasterImage = Image();
+  if wantBoth || rasterOnly || !device.rayTracing {
+    renderer.setRayTracing(&mut device, false);
+    var samples = List[f64]();
+    drawFrames(&mut device, &mut renderer, &mut post, &depth, &out, &readback, &camera, &light, &list, frames, &queries,
+      &resolved, &ticksBack, &mut samples);
+    rasterImage = Image.fromTexels(readback.mappedRange(), i32.from(w), i32.from(h), false);
+    print <- "Raster glass: draws "; print <- renderer.drawCalls; print <- ", triangles "; print <- renderer.triangles;
+    print <- ", captures "; print <- renderer.ext[0usize].captures; print <- "\n";
+    if cost { report("Raster glass", &mut samples); }
+    if shot.len() > 0usize && (rasterOnly || !device.rayTracing) {
+      let written = rasterImage.save(&filepath.Path.from(shot.view()));
+      print <- "Screenshot: "; printStr(shot.view()); print <- if written { "\n" } else { " could NOT be written\n" };
+    }
+  }
+  if !rasterOnly {
+    let tracing = renderer.setRayTracing(&mut device, true);
+    if !tracing {
+      print <- "This device has no ray tracing: the raster glass is all there is, and it is drawn as ever.\n";
+    } else {
+      var samples = List[f64]();
+      drawFrames(&mut device, &mut renderer, &mut post, &depth, &out, &readback, &camera, &light, &list, frames, &queries,
+        &resolved, &ticksBack, &mut samples);
+      let traced = Image.fromTexels(readback.mappedRange(), i32.from(w), i32.from(h), false);
+      print <- "Ray-traced glass: draws "; print <- renderer.drawCalls; print <- ", triangles "; print <- renderer.triangles;
+      print <- ", instances in the structure "; print <- renderer.rt[0usize].count; print <- ", left out "; print <- renderer.rt[0usize].skipped;
+      print <- ", meshes built "; print <- renderer.rt[0usize].built; print <- "\n";
+      if cost { report("Ray-traced glass", &mut samples); }
+      if shot.len() > 0usize {
+        let written = traced.save(&filepath.Path.from(shot.view()));
+        print <- "Screenshot: "; printStr(shot.view()); print <- if written { "\n" } else { " could NOT be written\n" };
+      }
+      if side.len() > 0usize {
+        let both = sideBySide(&rasterImage, &traced);
+        let written = both.save(&filepath.Path.from(side.view()));
+        print <- "Side by side (raster, rays): "; printStr(side.view()); print <- if written { "\n" } else { " could NOT be written\n" };
+      }
+    }
+    if !tracing && side.len() > 0usize {
+      let both = sideBySide(&rasterImage, &rasterImage);
+      let written = both.save(&filepath.Path.from(side.view()));
+      print <- "Side by side (raster, raster again): "; printStr(side.view()); print <- if written { "\n" } else { " could NOT be written\n" };
+    }
+  }
+  0
+}

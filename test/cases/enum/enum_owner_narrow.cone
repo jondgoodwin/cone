@@ -13,8 +13,8 @@ mod enum_owner_narrow;
 import stdio use *;
 
 struct Fin {
-  pub id i32;
-  fn final(self &uni) {
+  pub id: i32;
+  fn final(self: &uni) {
     printStr("fin");
     printInt(i64.from(self.id));
     printStr(" ");
@@ -22,12 +22,12 @@ struct Fin {
 }
 
 enum E {
-  struct A { pub f Fin; }
-  struct B { pub n i32; }
+  struct A { pub f: Fin; }
+  struct B { pub n: i32; }
 }
 use E;
 
-fn num(n i32) {
+fn num(n: i32) {
   printInt(i64.from(n));
   printStr(" ");
 }
@@ -37,9 +37,9 @@ fn end() {
 
 // The binding is another owner, released with its arm; the parameter and 'p' are the
 // others, and the value dies when 'p' does, at the end of 'scope'
-fn takes(s Rc[imm, E]) {
+fn takes(s: Rc[imm, E]) {
   match s {
-    case imm a A { printStr("A "); num(a.f.id); }
+    case let A(a) { printStr("A "); num(a.f.id); }
     else { printStr("else "); }
   }
   printStr("end ");
@@ -47,22 +47,23 @@ fn takes(s Rc[imm, E]) {
 
 //   "A 9 end after fin9 |"
 fn scope() {
-  imm p = new Rc[imm, E](A(new Fin(9)));
+  let p = Rc[imm, E](A(Fin(9)));
   takes(p);
   printStr("after ");
+  let again = &p;     // read again, so 'takes(p)' is a copy: the last read of a counted local is a move
 }
 
 // Bound through a bound 'if', and in let-else: the second keeps the owner past the
 // block. "7 7 |"
 fn bound() {
-  imm p = new Rc[imm, E](B(7));
-  if imm b B = p { num(b.n); }
-  imm b B = p else { return; };
+  let p = Rc[imm, E](B(7));
+  if let B(b) = p { num(b.n); }
+  let B(b) = p else { return; };
   num(b.n);
 }
 
 fn main() i32 {
   scope(); end();
   bound(); end();
-  0i32;
+  0i32
 }

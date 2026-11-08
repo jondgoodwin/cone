@@ -21,43 +21,43 @@ const ring = 500u64;          // 50 ms of arms: a timer is cancelled 500 arms la
 
 // xorshift64*, for timeouts the same on every run
 struct Rng {
-  s u64;
-  fn next(self &mut) u64 {
+  s: u64;
+  fn next(self: &mut) u64 {
     s = s ^ (s >> 12u64);
     s = s ^ (s << 25u64);
     s = s ^ (s >> 27u64);
-    s * 2685821657736338717u64;
+    s * 2685821657736338717u64
   }
 }
 
-fn survives(k u64) bool { k % 100u64 == 37u64; }
+fn survives(k: u64) bool { k % 100u64 == 37u64 }
 
 // An instant's nanoseconds, or -1 for None
-fn ns(o Option[Instant]) i64 {
-  mut r = -1i64;
+fn ns(o: Option[Instant]) i64 {
+  var r = -1i64;
   match o {
-    case imm s Some { r = s.nanos(); }
+    case let Some(s) { r = s.nanos(); }
     case is None[Instant] {}
   }
-  r;
+  r
 }
 
 struct Tally {
-  pub fired u64;
-  pub twice u64;
-  pub early u64;
-  pub maxLate i64;
-  pub sumLate i64;
+  pub fired: u64;
+  pub twice: u64;
+  pub early: u64;
+  pub maxLate: i64;
+  pub sumLate: i64;
 }
 
-fn count(out &mut List[Expiry], now Instant, seen &mut List[u8], t &mut Tally) {
-  mut i = 0usize;
+fn count(out: &mut List[Expiry], now: Instant, seen: &mut List[u8], t: &mut Tally) {
+  var i = 0usize;
   while i < out.len() {
-    imm e = out[i];
-    imm k = usize.from(e.token);
+    let e = out[i];
+    let k = usize.from(e.token);
     if *seen[k] != 0u8 { t.twice = t.twice + 1u64; }
     seen.set(k, 1u8);
-    imm late = (now - e.deadline).nanos();
+    let late = (now - e.deadline).nanos();
     if late < 0i64 { t.early = t.early + 1u64; }
     if late > t.maxLate { t.maxLate = late; }
     t.sumLate = t.sumLate + late;
@@ -68,22 +68,22 @@ fn count(out &mut List[Expiry], now Instant, seen &mut List[u8], t &mut Tally) {
 }
 
 fn main() i32 {
-  mut clock = Clock.synth();
-  mut w = Wheel.make(clock.now());
-  mut rng = new Rng(2463534242u64);
-  mut out = new List[Expiry];
-  mut seen = List[u8].withCapacity(usize.from(total));
-  mut ids = List[TimerId].withCapacity(usize.from(ring));
-  mut t = new Tally(0u64, 0u64, 0u64, 0i64, 0i64);
-  mut k = 0u64;
+  var clock = Clock.synth();
+  var w = Wheel.make(clock.now());
+  var rng = Rng(2463534242u64);
+  var out = List[Expiry]();
+  var seen = List[u8].withCapacity(usize.from(total));
+  var ids = List[TimerId].withCapacity(usize.from(ring));
+  var t = Tally(0u64, 0u64, 0u64, 0i64, 0i64);
+  var k = 0u64;
   while k < total { seen.push(0u8); k = k + 1u64; }
   k = 0u64;
   while k < ring { ids.push(TimerId.none()); k = k + 1u64; }
 
-  mut cancels = 0u64;
-  mut refused = 0u64;
-  mut peak = 0usize;
-  mut wakes = 0u64;
+  var cancels = 0u64;
+  var refused = 0u64;
+  var peak = 0usize;
+  var wakes = 0u64;
   k = 0u64;
   while k < total + ring {
     if k % perStep == 0u64 {
@@ -93,11 +93,11 @@ fn main() i32 {
       count(&mut out, clock.now(), &mut seen, &mut t);
     }
     // Cancel the timer armed 50 ms ago, unless it is a survivor
-    if k >= ring and !survives(k - ring) {
+    if k >= ring && !survives(k - ring) {
       if w.cancel(*ids[usize.from(k % ring)]) { cancels = cancels + 1u64; } else { refused = refused + 1u64; }
     }
     if k < total {
-      imm off = Duration.fromSeconds(1) + Duration.fromMicros(i64.from(rng.next() % 29000000u64));
+      let off = Duration.fromSeconds(1) + Duration.fromMicros(i64.from(rng.next() % 29000000u64));
       ids.set(usize.from(k % ring), w.insert(clock.now() + off, k));
       if w.len() > peak { peak = w.len(); }
     }
@@ -109,7 +109,7 @@ fn main() i32 {
 
   // The loop sleeps until the wheel says, until none is left
   while true {
-    imm next = ns(w.nextExpiry());
+    let next = ns(w.nextExpiry());
     if next < 0i64 { break; }
     clock.advance(Duration.fromNanos(next - clock.now().nanos()));
     w.expired(clock.now(), &mut out);
@@ -120,15 +120,15 @@ fn main() i32 {
   expectUInt(t.twice, 0u64, "none twice");
   expectUInt(t.early, 0u64, "none early");
   expect(t.maxLate < tickNanos, "none a tick late");
-  mut missing = 0u64;
+  var missing = 0u64;
   k = 0u64;
   while k < total {
-    if survives(k) and *seen[usize.from(k)] == 0u8 { missing = missing + 1u64; }
-    if !survives(k) and *seen[usize.from(k)] != 0u8 { missing = missing + 1u64; }
+    if survives(k) && *seen[usize.from(k)] == 0u8 { missing = missing + 1u64; }
+    if !survives(k) && *seen[usize.from(k)] != 0u8 { missing = missing + 1u64; }
     k = k + 1u64;
   }
   expectUInt(missing, 0u64, "exactly the survivors fired");
-  imm s = w.stats();
+  let s = w.stats();
   expectUInt(s.armed, total, "100,000 armed");
   expectUInt(s.cancelled, 99000u64, "the wheel counted 99,000 cancels");
   expectUInt(s.fired, 1000u64, "and 1,000 fired");
@@ -147,5 +147,5 @@ fn main() i32 {
   printStr("; cascades ");
   printInt(i64.from(s.cascaded));
   printStr("\n");
-  done();
+  done()
 }

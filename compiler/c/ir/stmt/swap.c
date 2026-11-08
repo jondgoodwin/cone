@@ -30,7 +30,7 @@ INode *cloneSwapNode(CloneState *cstate, SwapNode *node) {
 
 // Serialize swap node
 void swapPrint(SwapNode *node) {
-    inodeFprint("(<=>, ");
+    inodeFprint("(<->, ");
     inodePrintNode(node->lval);
     inodeFprint(", ");
     inodePrintNode(node->rval);
@@ -41,10 +41,13 @@ void swapPrint(SwapNode *node) {
 void swapNameRes(NameResState *pstate, SwapNode *node) {
     inodeNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
+    // In a macro's body, a swap of a plain parameter is refused here
+    macroChangeNameRes(node->lval, node->lval, MacroChangePlace);
+    macroChangeNameRes(node->rval, node->rval, MacroChangePlace);
 }
 
 // Type check one side of a swap as a place stored through. Answer 0 if it is not one.
-// 'x[i] <=> y[j]', 'u.f[i].n <=> u.f[j].n': a swap stores through both of its
+// 'x[i] <-> y[j]', 'u.f[i].n <-> u.f[j].n': a swap stores through both of its
 // sides, so every index in each place is in set position, as an assignment's
 // are (assignTypeCheck): on a type declaring '&[]', each is the element's
 // mutable borrow, and the borrow stands for the place, as on the left of '='
@@ -90,24 +93,31 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
 
     uint16_t lvalscope;
     INode *lvalperm;
-    iexpGetStoreLvalInfo(node->lval, &lvalperm, &lvalscope);
+    INode *lvalvar = iexpGetStoreLvalInfo(node->lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         if (permIsLock(lvalperm))
             permLockRefused(node->lval, lvalperm, "write");
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused(node->lval, (VarDclNode*)lvalvar);
         else
             errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
 
     uint16_t rvalscope;
-    iexpGetStoreLvalInfo(node->rval, &lvalperm, &rvalscope);
+    INode *rvalvar = iexpGetStoreLvalInfo(node->rval, &lvalperm, &rvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         if (permIsLock(lvalperm))
             permLockRefused(node->rval, lvalperm, "write");
+        else if (rvalvar && rvalvar->tag == VarDclTag && (rvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused(node->rval, (VarDclNode*)rvalvar);
         else
             errorMsgNode(node->rval, ErrorNoMut, "You do not have permission to modify rval");
         return;
     }
+
+    if (!assignAtomicStoreCheck(node->lval) || !assignAtomicStoreCheck(node->rval))
+        return;
 
     assignBorrowLifetimeCheck(node->lval, lvalscope, ((IExpNode*)node->rval)->vtype);
     assignBorrowLifetimeCheck(node->rval, rvalscope, ((IExpNode*)node->lval)->vtype);

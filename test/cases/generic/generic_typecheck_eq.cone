@@ -1,0 +1,38 @@
+// Eq is "has ==", and the compiler gives no == where there is nothing to compare
+// by: a struct declaring Eq whose field has no ==, a struct with no == handed to
+// an Eq bound, == on an Option or a List of such a struct, a conditional == on a
+// parameter that is not Eq, and a tuple of five.
+
+mod generic_typecheck_eq;
+
+import collections use *;
+
+// Has no ==
+struct Plain { n: i32 }
+
+// Declares Eq and writes none, but a field has no ==
+struct Holder is Eq { n: i32; p: Plain }       //~ ErrorEqField:31 "Holder declares Eq and writes no `==`, and its field p is Plain, which has no `==`"
+
+// An array field is not compared by the derived ==
+struct Row is Eq { cells: Array[i32, 3] }      //~ ErrorEqField:20 "Row declares Eq and writes no `==`, and its field cells is an array, which has no `==`"
+
+fn same[T: Eq](a: &T, b: &T) bool { a == b }
+
+struct Box[T] {
+  v: T;
+  pub fn `==`(self: &, o: &Box[T]) bool where T is Eq { &v == &o.v }
+}
+
+fn main() {
+  let a = Plain(1);
+  let b = Plain(1);
+  same(&a, &b);                                //~ ErrorWhereUnmet:7 "same requires T is Eq, and Plain is not Eq"
+  let oa: Option[Plain] = Some[Plain](a);
+  let ob: Option[Plain] = Some[Plain](b);
+  &oa == &ob;                                  //~ ErrorEnumEquality:7 "`==` and `!=` on Option compare the variants' own `==`"
+  var xs = List[Plain]();
+  xs.push(Plain(1));
+  xs.contains(&a);                             //~ ErrorWhereAbsent:5 "No method contains for List[Plain]: it exists only where T is Eq, and Plain is not Eq"
+  &Box[Plain](a) == &Box[Plain](b);            //~ ErrorRefNoCompare:18 "`==` on references compares the values they refer to"
+  (1i32, 2i32, 3i32, 4i32, 5i32) == (1i32, 2i32, 3i32, 4i32, 5i32);  //~ ErrorRefNoCompare:34 "`==` compares tuples of two to four elements, and this one has 5"
+}

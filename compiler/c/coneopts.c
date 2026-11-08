@@ -53,12 +53,18 @@ enum
     OPT_VERIFY,
     OPT_FILENAMES,
     OPT_CHECKTREE,
+    OPT_REPORT_TRUST,
     OPT_SPANS,
+    OPT_META_IR,
+    OPT_META_STEPS,
     OPT_EXTFUN,
     OPT_SIMPLEBUILTIN,
     OPT_LINT_LLVM,
     OPT_INTRINSIC_FALLBACK,
     OPT_AWAIT_DIRECT,
+    OPT_WARN_INDEX_STAR,
+    OPT_PRIVATE_INSTANCES,
+    OPT_NO_NOALIAS,
 
     OPT_BNF,
     OPT_ANTLR,
@@ -101,12 +107,18 @@ static opt_arg_t args[] =
     { "verify", '\0', OPT_ARG_NONE, OPT_VERIFY },
     { "files", '\0', OPT_ARG_NONE, OPT_FILENAMES },
     { "checktree", '\0', OPT_ARG_NONE, OPT_CHECKTREE },
+    { "report-trust", '\0', OPT_ARG_NONE, OPT_REPORT_TRUST },
     { "spans", '\0', OPT_ARG_NONE, OPT_SPANS },
+    { "meta-ir", '\0', OPT_ARG_NONE, OPT_META_IR },
+    { "meta-steps", '\0', OPT_ARG_REQUIRED, OPT_META_STEPS },
     { "extfun", '\0', OPT_ARG_NONE, OPT_EXTFUN },
     { "simplebuiltin", '\0', OPT_ARG_NONE, OPT_SIMPLEBUILTIN },
     { "lint-llvm", '\0', OPT_ARG_NONE, OPT_LINT_LLVM },
     { "intrinsic-fallback", '\0', OPT_ARG_NONE, OPT_INTRINSIC_FALLBACK },
     { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
+    { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
+    { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
+    { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
 
     OPT_ARGS_FINISH
 };
@@ -124,9 +136,10 @@ static void usage()
         "  --version, -v   Print the version of the compiler and exit.\n"
         "  --help, -h      Print this help text and exit.\n"
         "  --debug, -d     Don't optimise the output.\n"
-        "  --define, -D    Define a constant, which isDefined and definedInt\n"
-        "    =name         answer (1), or with =123 that integer. Provisional.\n"
-        "  --strip, -s     Strip debug info.\n"
+        "  --define, -D    Define a constant, which #defined and #define\n"
+        "    =name         answer (1), or with =123 that integer.\n"
+        "  --strip, -s     Emit no debug info. A native build otherwise carries\n"
+        "                  function names and line tables, release builds too.\n"
         "  --path, -p      Add folders to the package search path.\n"
         "    =path;path    Searched in order, before the packages folder.\n"
         "                  The packages folder, which holds core and stdio,\n"
@@ -179,8 +192,13 @@ static void usage()
         "    =columns      Defaults to the terminal width.\n"
         "  --immerr        Report errors immediately rather than deferring.\n"
         "  --checktree     Verify IR well-formedness.\n"
+        "  --report-trust  After type checking, list the unconstrained operations; generates no code.\n"
         "  --spans         Print where each of the root module's declarations\n"
         "                  and each of its types' members starts and ends.\n"
+        "  --meta-ir       Write <name>.meta: each '#each' with the IR of every\n"
+        "                  pass the parser made of it.\n"
+        "  --meta-steps    The passes one outermost '#each' may run, those of\n"
+        "    =count        the '#each's inside it counted. Default 10000.\n"
         "  --verify        Verify LLVM IR.\n"
         "  --extfun        Set function default linkage to external.\n"
         "  --simplebuiltin Use a minimal builtin package.\n"
@@ -192,6 +210,17 @@ static void usage()
         "  --await-direct  Test only: split each actor message holding an\n"
         "                  'await', each seam handing its record straight to\n"
         "                  its second half, the awaited value as the result.\n"
+        "  --warn-index-star\n"
+        "                  Warn at each '*x[i]' over an index through a type's\n"
+        "                  '[]', the spelling indexing as a place retires.\n"
+        "  --private-instances=n\n"
+        "                  A release program (not a library) keeps to itself each\n"
+        "                  generic instance of at most n unoptimised LLVM\n"
+        "                  instructions, so it can be inlined; larger ones stay\n"
+        "                  shared, one copy per program. 0 shares them all.\n"
+        "  --no-noalias    Attach no 'noalias' to a unique or immutable borrow\n"
+        "                  parameter (also set by CONE_NO_NOALIAS in the\n"
+        "                  environment): the way to bisect a suspected miscompile.\n"
         ,
         "" // "Runtime options for Cone programs (not for use with Cone compiler):\n"
     );
@@ -353,7 +382,14 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     opt.pic = 1;
 #endif
     opt->release = 1;
+    opt->privateinst = DefaultPrivateInstances;
+    opt->meta_steps = 10000;
     opt->package_search_paths = NULL;
+    {
+        char *nn = getenv("CONE_NO_NOALIAS");
+        if (nn && *nn && strcmp(nn, "0") != 0)
+            opt->no_noalias = 1;
+    }
 
     while ((id = optNext(&s)) != -1) {
         switch (id) {
@@ -415,11 +451,25 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_SIMPLEBUILTIN: opt->simple_builtin = 1; break;
         case OPT_FILENAMES: opt->print_filenames = 1; break;
         case OPT_CHECKTREE: opt->check_tree = 1; break;
+        case OPT_REPORT_TRUST: opt->report_trust = 1; break;
         case OPT_SPANS: opt->print_spans = 1; break;
+        case OPT_META_IR: opt->print_meta = 1; break;
+        case OPT_META_STEPS:
+            opt->meta_steps = atoi(s.arg_val);
+            if (opt->meta_steps < 1)
+                ok = 0;
+            break;
         case OPT_EMIT_INCLUDE: opt->emit_include = 1; break;
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
         case OPT_INTRINSIC_FALLBACK: opt->intrinsic_fallback = 1; break;
         case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
+        case OPT_WARN_INDEX_STAR: opt->warn_index_star = 1; break;
+        case OPT_PRIVATE_INSTANCES:
+            opt->privateinst = atoi(s.arg_val);
+            if (opt->privateinst < 0)
+                ok = 0;
+            break;
+        case OPT_NO_NOALIAS: opt->no_noalias = 1; break;
 
         case OPT_VERBOSE:
         {

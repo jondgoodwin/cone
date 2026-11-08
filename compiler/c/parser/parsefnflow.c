@@ -184,13 +184,6 @@ static INode *parseJumpEnd(ParseState *parse, BreakRetNode *jump, INode *trailin
     return (INode*)parseJumpIf(trailing, 0, (INode*)jump);
 }
 
-// Parse an expression statement within a function
-INode *parseExpStmt(ParseState *parse) {
-    INode *node = parseAnyExpr(parse);
-    parseEndOfStatement();
-    return node;
-}
-
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
     BreakRetNode *stmtnode = newReturnNode();
@@ -212,10 +205,10 @@ INode *parseReturn(ParseState *parse) {
 
 // ---- A pattern a function runs: 'using' [match: topic 8a] ----
 //
-// 'case imm rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
+// 'case let rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
 // tests with it. The function is an ordinary one whose first argument is the matched value, so
 // the call is written without it and the parser puts it in. A binding is de-sugared as
-// 'imm rest Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
+// 'let rest: Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
 // variable; a test is the call itself, a condition like any other.
 
 // After 'using': the call of the pattern, 'prefix("GET ")', 're.find()'. NULL when it is no call.
@@ -245,39 +238,95 @@ INode *parseUsingSome(FnCallNode *call) {
 // Set while the cases of a match are read, when one of them is a 'using' pattern
 static int parseUsingSeen = 0;
 
-// Parses a variable bound to a pattern match on a value
-// (it looks like, and is returned as, a variable declaration). Where 'usingp' is given,
-// the pattern may be a function's, 'imm rest using prefix("GET ")': the call is left in
-// *usingp (NULL when it was no call) and the variable takes the Some of its Option.
+// ---- A variant pattern binds a name inside the variant, after 'let' or 'var' [match: topic 6a] ----
+//
+// 'case let Ok(avg)', 'if let Some(n) = x', 'let Tea(t) = d else {...};', and 'var' for a name that may
+// change. The 'let' or 'var' is in front of the whole pattern, so the line alone says the name in the
+// parentheses is a new binding; without it a call-shaped pattern is a value, compared by equality. The
+// variant may be written as a reference ('let &mut Err(e)') or through its enum or module
+// ('Shape.Circle(c)', 'Some[i32](n)'). It is read as the type expression it looks like (a call) and
+// taken apart here: the parentheses hold exactly one name, and a pattern does not nest.
+
+// Is this a name, or a path through names and type arguments, that could name a type?
+static int parseIsPatternPath(INode *node) {
+    if (node == NULL)
+        return 0;
+    if (node->tag == NameUseTag)
+        return 1;
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->flags & FlagIndex)
+        return call->methfld == NULL && parseIsPatternPath(call->objfn);
+    return call->methfld != NULL && call->args == NULL && !(call->flags & FlagOperator) && parseIsPatternPath(call->objfn);
+}
+
+#define PatBindFormMsg "A pattern that binds names the variant and puts the one name in its parentheses after 'let' or 'var': 'case let Some(n)', 'if let Some(n) = x'. After 'let' may instead go a function's pattern: 'let rest using prefix(\"GET \")'."
+
+// Parses the pattern after the 'let' or 'var' of a binding (it looks like, and is returned as, a
+// variable declaration): a variant with the one name that takes its contents inside its parentheses.
+// Where 'usingp' is given it may instead be a function's pattern, 'let rest using prefix("GET ")': the
+// call is left in *usingp (NULL when it was no call) and the variable takes the Some of its Option.
+// The variable's type is the variant, in the reference that was written around it. A pattern
+// refused has been said once, and comes back as a variable of no type.
 VarDclNode *parseBindVarDcl(ParseState *parse, FnCallNode **usingp) {
-    INode *perm = parsePerm();
-    INode *permdcl = perm==unknownType? unknownType : itypeGetTypeDcl(perm);
-    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(perm, ErrorInvType, "Permission not valid for pattern match binding");
+    INode *perm = parseDclWord();
 
-    // Obtain variable's name
-    if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
-    }
-    VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
-    lexNextToken();
-
-    if (usingp && lexIsToken(UsingToken)) {
+    // A function's pattern names the variable before 'using'
+    if (usingp && lexIsToken(IdentToken) && lexNextIsWord("using")) {
+        VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
+        lexNextToken();
         *usingp = parseUsingCall(parse);
         varnode->vtype = *usingp ? parseUsingSome(*usingp) : unknownType;
         return varnode;
     }
 
-    // Get type
-    INode *vtype;
-    if ((vtype = parseType(parse)) != unknownType)
-        varnode->vtype = vtype;
-    else {
-        errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
-        varnode->vtype = unknownType;
+    VarDclNode *refused = newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
+    INode *value = parseType(parse);
+    if (value == unknownType) {
+        errorMsgLex(ErrorPatBindForm, PatBindFormMsg);
+        return refused;
     }
-
+    // Through the references and pointers written around the variant
+    INode **slot = &value;
+    while (*slot) {
+        INode **pointee = (*slot)->tag == StarTag ? &((StarNode*)*slot)->vtexp
+            : ((*slot)->tag == RefTag || (*slot)->tag == VirtRefTag) ? &((RefNode*)*slot)->vtexp : NULL;
+        if (pointee == NULL || *pointee == NULL)
+            break;
+        slot = pointee;
+    }
+    INode *node = *slot;
+    FnCallNode *call = (node && node->tag == FnCallTag) ? (FnCallNode*)node : NULL;
+    if (call == NULL || call->args == NULL || (call->flags & (FlagIndex | FlagOperator)) || !parseIsPatternPath(call->objfn)) {
+        errorMsgNode(value, ErrorPatBindForm, PatBindFormMsg);
+        // Read past a type left over, so that the rest of the statement parses as written
+        if (parseIsTypeStart())
+            parseType(parse);
+        return refused;
+    }
+    if (call->args->used != 1) {
+        errorMsgNode(node, ErrorPatBindCount,
+            "A variant pattern binds exactly one name: 'case let Some(n)'. To take a struct variant apart, bind it whole and use its fields: 'case let Response(r)', then 'r.head'.");
+        return refused;
+    }
+    INode *arg = nodesGet(call->args, 0);
+    if (arg == NULL)       // the argument has been refused
+        return refused;
+    if (arg->tag != NameUseTag || (arg->flags & FlagQualified)) {
+        errorMsgNode(arg, ErrorPatBindNested,
+            "A pattern binds the contents of a variant whole, to one name; patterns do not nest, and a value does not go in the parentheses. Bind the contents, then match them in the arm: 'case let Some(r)', then 'match r {...}'.");
+        return refused;
+    }
+    VarDclNode *varnode = newVarDclNode(((NameUseNode*)arg)->namesym, VarDclTag, perm);
+    inodeLexCopy((INode*)varnode, arg);
+    // The pattern's type is the variant alone: the call without its parentheses
+    *slot = call->methfld ? (INode*)call : call->objfn;
+    if (call->methfld)
+        call->args = NULL;
+    if ((*slot)->tag == FnCallTag)
+        (*slot)->flags &= ~FlagValueTermCall;
+    varnode->vtype = value;
     return varnode;
 }
 
@@ -368,13 +417,13 @@ static void parseUsingHold(MatchSubject *subject, VarDclNode *holder) {
 // type, after '=', so it is read here and made the subject; the block that 'wrapper'
 // is declares the hidden variable that holds it when it is not a place.
 //
-// A pattern a function runs, 'imm rest using prefix("GET ")' (parseUsingCall), is bound
-// as 'imm rest Some = prefix(matchee, "GET ")' is, the call being the value matched. In
+// A pattern a function runs, 'let rest using prefix("GET ")' (parseUsingCall), is bound
+// as 'let rest: Some = prefix(matchee, "GET ")' is, the call being the value matched. In
 // a bound 'if' that is all it takes. In a match the call must run once, when its case is
-// reached and not before, so the case is nested the way an 'elif' that binds is: the
+// reached and not before, so the case is nested the way an 'else if' that binds is: the
 // match's chain goes on in an 'else' block that holds the call's result in a variable
 // and tests it,
-//   { match-arms... else { { imm -held = prefix(matchee, "GET "); if -held is Some { imm rest = [Some]-held; ... } elif ... } } }
+//   { match-arms... else { { let -held = prefix(matchee, "GET "); if -held is Some { let rest = [Some]-held; ... } else if ... } } }
 // and *nextp is the 'if' the cases after it are added to.
 static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper, IfNode **nextp) {
     // We will desugar a variable declaration into using a pattern match and re-cast.
@@ -431,6 +480,27 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
             nodesInsert(&wrapper->stmts, (INode*)holder, 0);
     }
 
+    // A '_' declares nothing, as in 'let _, r = f()': 'case let Ok(_)' and 'if let Ok(_) = r' test the
+    // variant and bind nothing, and a guard may follow
+    if (varnode->namesym == anonName && usingcall == NULL && varnode->vtype != unknownType) {
+        isnode->exp = parseMatchUse(subject);
+        isnode->typ = varnode->vtype;
+        if (wrapper == NULL && lexIsToken(IfToken)) {
+            lexNextToken();
+            BlockNode *guardblk = newBlockNode();
+            nodesAdd(&guardblk->stmts, parseSimpleExpr(parse));
+            LogicNode *guarded = newLogicNode(AndLogicTag);
+            guarded->flags |= FlagMatchGuard;
+            guarded->lexp = (INode*)isnode;
+            guarded->rexp = (INode*)guardblk;
+            nodesAdd(&ifnode->condblk, (INode*)guarded);
+        }
+        else
+            nodesAdd(&ifnode->condblk, (INode*)isnode);
+        nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+        return;
+    }
+
     // The test reads the matched value where it is. A binding takes from the
     // matched value only in the arm that runs: from the hidden variable that holds
     // it, or, for a place, from a hidden variable of the arm's own that it is
@@ -457,8 +527,8 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
     // a block that binds it again, to the same conversion of the same value:
-    //   'case imm x T if g {...}'  ->  'is T and {imm x = [T]v; g}' then '{imm x = [T]v; ...}'
-    // Being an 'and', the condition is not an 'is', so exhaustiveness does not
+    //   'case let T(x) if g {...}'  ->  'is T && {let x = [T]v; g}' then '{let x = [T]v; ...}'
+    // Being a '&&', the condition is not an 'is', so exhaustiveness does not
     // count the arm, which is right: the guard may fail. The guard reads the
     // binding before the arm is chosen, so it takes nothing from a place the arms
     // after it test: what it binds is copied if it is plain data, and viewed through
@@ -490,8 +560,8 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
 
-// De-sugar a binding that outlives an early exit, 'imm n Ok = r else {...};' [let-else].
-// The variable is the pattern binding of 'if imm n Ok = r', declared where it stands
+// De-sugar a binding that outlives an early exit, 'let Ok(n) = r else {...};' [let-else].
+// The variable is the pattern binding of 'if let Ok(n) = r', declared where it stands
 // in its block, and the 'else' is what runs when the pattern does not match: it must
 // leave, since the binding that follows takes the variant the test found. So it is
 // the test, an 'if' with nothing to run when it holds and the 'else' when it does not
@@ -502,7 +572,7 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
     lexNextToken();
     INode *permdcl = varnode->perm == unknownType ? unknownType : itypeGetTypeDcl(varnode->perm);
     if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
-        errorMsgNode(varnode->perm, ErrorInvType, "Permission not valid for pattern match binding");
+        errorMsgNode(varnode->perm, ErrorInvType, "A pattern match binding is declared with 'let' or 'var'");
     if (varnode->vtype == unknownType || varnode->value == NULL) {
         errorMsgNode((INode*)varnode, ErrorInvType, varnode->value == NULL
             ? "Expected '=' followed by the value to match against, before 'else'"
@@ -525,6 +595,20 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
         nodesAdd(&blk->stmts, (INode*)holder);
     }
     CastNode *isnode = newIsNode(parseMatchUse(&subject), unknownType);
+    // 'let Ok(_) = r else {...};' tests the variant and binds nothing: '_' declares nothing
+    if (varnode->namesym == anonName && !parse->usingdcl) {
+        isnode->typ = varnode->vtype;
+        inodeLexCopy((INode*)isnode, (INode*)varnode);
+        IfNode *testif = newIfNode();
+        testif->flags |= FlagIfLetElse;
+        inodeLexCopy((INode*)testif, (INode*)varnode);
+        nodesAdd(&testif->condblk, (INode*)isnode);
+        nodesAdd(&testif->condblk, (INode*)newBlockNode());
+        nodesAdd(&testif->condblk, elseCond);
+        nodesAdd(&testif->condblk, parseExprBlock(parse, 0));
+        nodesAdd(&blk->stmts, (INode*)testif);
+        return;
+    }
     CastNode *castnode = newConvCastNode(NULL, unknownType);
     VarDclNode *armholder = NULL;
     if (subject.place) {
@@ -558,6 +642,37 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
     nodesAdd(&blk->stmts, (INode*)varnode);
 }
 
+// A statement that binds a variant it leaves unless it matches, 'let Some(n) = x else {...};', with
+// the lexer on its 'let'. The pattern is read as the pattern of an 'if let' is, then the value
+// after '=' and the 'else' (parseLetElse).
+static void parseLetPattern(ParseState *parse, BlockNode *blk) {
+    FnCallNode *usingcall = NULL;
+    parse->usingdcl = 0;
+    VarDclNode *var = parseBindVarDcl(parse, &usingcall);
+    // A pattern refused has been said; the rest of the statement is read past, saying nothing more
+    int refused = var->vtype == unknownType;
+    if (lexIsToken(AssgnToken)) {
+        lexNextToken();
+        var->value = parseAnyExpr(parse);
+    }
+    else if (!refused)
+        errorMsgLex(ErrorPatBindForm, "Expected '=' followed by the value to match against: 'let Some(n) = x else {...};'");
+    if (refused) {
+        if (lexIsToken(ElseToken)) {
+            lexNextToken();
+            parseExprBlock(parse, 0);
+        }
+        return;
+    }
+    if (lexIsToken(ElseToken))
+        parseLetElse(parse, blk, var);
+    else {
+        errorMsgLex(ErrorPatBindForm,
+            "A binding of a variant ends in an 'else' that leaves unless it matches: 'let Some(n) = x else { return; };'. To test and bind in a block, write 'if let Some(n) = x {...}'.");
+        nodesAdd(&blk->stmts, (INode*)var);
+    }
+}
+
 // Parse if statement/expression
 INode *parseIf(ParseState *parse) {
     IfNode *ifnode = newIfNode();
@@ -569,7 +684,7 @@ INode *parseIf(ParseState *parse) {
     // - 'if' is wrapped in a block, where we first capture the value in a variable
     // - The conditional turns into an 'is' check
     // - The first statement in the block actually binds the var to the re-cast value
-    if (lexIsToken(PermToken)) {
+    if (lexIsDclStart()) {
         BlockNode *blknode = newBlockNode();
         nodesAdd(&blknode->stmts, (INode*)ifnode);
         retnode = (INode*)blknode; // return block instead of 'if'!
@@ -587,25 +702,22 @@ INode *parseIf(ParseState *parse) {
     }
     while (1) {
         // Process final else clause and break loop
-        // Note: this code makes "else if" equivalent to "elif"
-        if (lexIsToken(ElseToken)) {
-            lexNextToken();
-            if (!lexIsToken(IfToken)) {
-                nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-                break;
-            }
-        }
-        else if (!lexIsToken(ElifToken))
+        if (!lexIsToken(ElseToken))
             break;
+        lexNextToken();
+        if (!lexIsToken(IfToken)) {
+            nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            break;
+        }
 
-        // Elif processing
+        // 'else if' processing
         lexNextToken();
         // To handle bound pattern match, we need to de-sugar:
         // - 'if' is wrapped in a block, where we first capture the value in a variable
         // - The conditional turns into an 'is' check
         // - The first statement in the block actually binds the var to the re-cast value
-        if (lexIsToken(PermToken)) {
+        if (lexIsDclStart()) {
             BlockNode *blknode = newBlockNode();
             nodesAdd(&ifnode->condblk, elseCond);
             nodesAdd(&ifnode->condblk, (INode*)blknode);
@@ -621,20 +733,23 @@ INode *parseIf(ParseState *parse) {
     return retnode;
 }
 
-// Finish a range pattern, whose lower bound is parsed and whose '..' or '..<'
+// Finish a range pattern, whose lower bound is parsed and whose '..=' or '..<'
 // is the current token. It tests the matched value against both bounds:
-// 'a .. b' is 'v >= a and v <= b', and 'a ..< b' is 'v >= a and v < b'.
+// 'a ..= b' is 'v >= a && v <= b', and 'a ..< b' is 'v >= a && v < b'. A bare
+// '..' is refused and read as '..='.
 static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *lower) {
     // All three nodes take the operator's position, so a matched value that
-    // cannot be ordered is reported at the '..'
+    // cannot be ordered is reported at the operator
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
+    else if (lexIsToken(DotDotToken))
+        parseRangeBare();
     FnCallNode *gecall = newFnCallOp(parseMatchUse(subject), ">=", 2);
     FnCallNode *upcall = newFnCallOp(parseMatchUse(subject), lexIsToken(DotDotLessToken) ? "<" : "<=", 2);
     LogicNode *range = newLogicNode(AndLogicTag);
     lexNextToken();
     nodesAdd(&gecall->args, lower);
-    nodesAdd(&upcall->args, parseOr(parse));
+    nodesAdd(&upcall->args, parseXor(parse));
     range->lexp = (INode *)gecall;
     range->rexp = (INode *)upcall;
     return (INode *)range;
@@ -653,14 +768,17 @@ static INode *parseMatchWild() {
 //   value's enum (castPatternMark)
 // - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
 //   the matched value, the operator's left operand, with the value
-// - 'a .. b' or 'a ..< b' is a range (parseMatchRange)
+// - 'a ..= b' or 'a ..< b' is a range (parseMatchRange)
 // - a value alone, '2', '"s"', 'K', means equality with the matched value; a
 //   bare name is asked of the matched value's enum first, so the test waits for
 //   type check to become '==' or 'is' (newMatchValueNode)
-// A condition, 'not b' or 'n > 3', is refused (ErrorPatBare): as a value alone it
+// A condition, '!b' or 'n > 3', is refused (ErrorPatBare): as a value alone it
 // would be compared with the matched value, and whether it should be is not
-// decided. It is parsed to its end, its own 'or' included, so that it is
+// decided. It is parsed to its end, its own '||' included, so that it is
 // reported once.
+// A pattern's value is read one level above bitwise or, so that a '|' after it
+// joins the next pattern (parseMatchColumn); a bitwise or in a pattern's value
+// is written in parentheses.
 // - '_' takes any value, and is a pattern of 'match a, b' alone (parseMatchWild)
 #define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
 static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
@@ -693,7 +811,7 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
     if (cmpop != NULL) {
         FnCallNode *callnode = newFnCallOp(parseMatchUse(subject), cmpop, 2);
         lexNextToken();
-        nodesAdd(&callnode->args, parseOr(parse));
+        nodesAdd(&callnode->args, parseXor(parse));
         return (INode *)callnode;
     }
     if (lexIsToken(NotToken)) {
@@ -701,7 +819,7 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
         errorMsgNode(cond, ErrorPatBare, PatBareMsg);
         return cond;
     }
-    INode *value = parseOr(parse);
+    INode *value = parseXor(parse);
     // A bare name here may name a variant of the matched value's enum, which is a
     // test and no construction; type check decides (newMatchValueNode)
     if (value && value->tag == NameUseTag)
@@ -710,30 +828,31 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
         value->flags &= ~FlagValueTermCall;
     if (lexIsRangeOp())
         return parseMatchRange(parse, subject, value);
-    if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken)) {
-        errorMsgNode(value, ErrorPatBare, PatBareMsg);
+    if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsAmpAmp() || lexIsToken(OrOrToken)) {
+        if (value)  // NULL where parseTerm refused the value and reported it
+            errorMsgNode(value, ErrorPatBare, PatBareMsg);
         return parseSimpleExprFrom(parse, value);
     }
     return (INode *)newMatchValueNode(parseMatchUse(subject), value);
 }
 
-// The patterns of one value of a match, joined by 'or'. In a column of 'match a, b'
+// The patterns of one value of a match, joined by '|'. In a column of 'match a, b'
 // a pattern binds no variable: whether one should is not decided, so it is refused
 // and read as the 'is' test it would be.
 static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
     INode *cond;
-    if (subject->column && lexIsToken(PermToken)) {
+    if (subject->column && lexIsDclStart()) {
         FnCallNode *usingcall = NULL;
         VarDclNode *var = parseBindVarDcl(parse, &usingcall);
         errorMsgNode((INode*)var, ErrorMatchColumn,
-            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'imm x Some = a'");
+            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'if let Some(n) = a'");
         CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
         castPatternMark(var->vtype);
         cond = (INode *)isnode;
     }
     else
         cond = parseMatchPattern(parse, subject);
-    while (lexIsToken(OrToken)) {
+    while (lexIsToken(BarToken)) {
         LogicNode *ornode = newLogicNode(OrLogicTag);
         lexNextToken();
         ornode->lexp = cond;
@@ -748,7 +867,7 @@ INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
     // - a vardcl that captures the expression in a variable, unless it is a place,
     //   which the cases read where it stands (MatchSubject)
-    // - if .. elif .. else sequence for all the match cases
+    // - if .. else if .. else sequence for all the match cases
     BlockNode *blknode = newBlockNode();
     IfNode *ifnode = newIfNode();
     ifnode->flags |= FlagIfMatch;
@@ -793,14 +912,14 @@ INode *parseMatch(ParseState *parse) {
         if (lexIsToken(CaseToken)) {
             lexNextToken(); // consume the 'case' token
             // Handle bound variable pattern
-            if (ncols == 1 && lexIsToken(PermToken)) {
+            if (ncols == 1 && lexIsDclStart()) {
                 parseBoundMatch(parse, cur, &subjects[0], NULL, &cur);
                 continue;
             }
 
             // Anything else is, for each value matched, one or more patterns joined
-            // by 'or', the values' patterns separated by commas, then an optional
-            // 'if' guard. The columns of a row are joined by 'and' (FlagMatchRow).
+            // by '|', the values' patterns separated by commas, then an optional
+            // 'if' guard. The columns of a row are joined by '&&' (FlagMatchRow).
             INode *cond = NULL;
             int missing = 0;
             for (int i = 0; i < ncols; ++i) {
@@ -891,50 +1010,6 @@ INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag) {
 // clears it before it parses anything else, so that an 'each' in the body is
 // not taken for a parallel one
 static int parseEachParallel = 0;
-
-// A source that is a name or fields named from one ('xs', 'self.items'), spelled as
-// written into 'out'; 0 for any other expression, whose spelling a message cannot repeat
-static int parseEachSpelling(INode *node, char *out, size_t size) {
-    if (node->tag == NameUseTag) {
-        Name *name = ((NameUseNode*)node)->namesym;
-        if (name == NULL || (size_t)name->namesz + 1 > size)
-            return 0;
-        memcpy(out, &name->namestr, name->namesz);
-        out[name->namesz] = '\0';
-        return 1;
-    }
-    if (node->tag == FnCallTag && ((FnCallNode*)node)->args == NULL
-        && ((FnCallNode*)node)->methfld && ((FnCallNode*)node)->methfld->tag == NameUseTag) {
-        FnCallNode *field = (FnCallNode*)node;
-        Name *name = ((NameUseNode*)field->methfld)->namesym;
-        if (!parseEachSpelling(field->objfn, out, size))
-            return 0;
-        size_t used = strlen(out);
-        if (name == NULL || used + 1 + name->namesz + 1 > size)
-            return 0;
-        out[used] = '.';
-        memcpy(out + used + 1, &name->namestr, name->namesz);
-        out[used + 1 + name->namesz] = '\0';
-        return 1;
-    }
-    return 0;
-}
-
-// The source of an 'each' or 'parallel each' written '&mut src' is refused: 'each' reads
-// the items of what it walks, and the way to change them in place is a method that
-// lends them, 'src.mutItems()'
-static void parseEachMutSource(INode *iter, int parallel) {
-    if (iter->tag != RefTag || ((RefNode*)iter)->perm->tag == UnknownTag
-        || itypeGetTypeDcl(((RefNode*)iter)->perm) != (INode*)mutPerm)
-        return;
-    char spelling[96];
-    INode *src = ((RefNode*)iter)->vtexp;
-    if (src == NULL || !parseEachSpelling(src, spelling, sizeof(spelling)))
-        strcpy(spelling, "src");
-    errorMsgNode(iter, ErrorEachMutSource,
-        "%s over '&mut %s' is refused: it reads the items of what it walks. To change the items in place, write '%s.mutItems()'.",
-        parallel ? "A 'parallel each'" : "An 'each'", spelling, spelling);
-}
 
 // The variable of a drain, '<- each src', which no name reaches
 static Name *parseDrainName() {
@@ -1027,7 +1102,7 @@ static INode *parseRangeFlag(VarDclNode *flag, INode *lexnode) {
     return no;
 }
 
-// 'a and b' or 'a or b' of two conditions
+// 'a && b' or 'a || b' of two conditions
 static INode *parseRangeLogic(uint16_t tag, INode *left, INode *right, INode *lexnode) {
     LogicNode *logic = newLogicNode(tag);
     inodeLexCopy((INode*)logic, lexnode);
@@ -1053,7 +1128,7 @@ static INode *parseRangeEndUse(VarDclNode *enddcl, INode *endlit, INode *lexnode
 
 // The test that lets a pass of a range run: the counter has not passed the end
 // in the range's direction ('<=' or '<' going up, '>=' or '>' going down, the end
-// itself passing for '..'). Where the direction is the held step's sign, either way:
+// itself passing for '..='). Where the direction is the held step's sign, either way:
 // '(up and x <= end) or (down and x >= end)'
 static INode *parseRangeGuard(INode *lexnode, VarDclNode *counter, VarDclNode *enddcl, INode *endlit, int incl, int dir,
     VarDclNode *up, VarDclNode *down) {
@@ -1165,7 +1240,16 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             errorMsgLex(ErrorBadTok, "An 'each' unpacks at most %d variables", EachMaxVars);
             return (INode *)outerblk;
         }
-        elemvars[nelems++] = newVarDclNode(lex->val.ident, VarDclTag, (INode*)immPerm);
+        // A '_' is a position the code does not want: a variable of the pass no name reaches,
+        // so any number of them stand in one 'each'
+        Name *varname = lex->val.ident;
+        if (varname == anonName) {
+            static uint32_t skipcount = 0;
+            char skipname[32];
+            int skiplen = snprintf(skipname, sizeof(skipname), "-skip%u", ++skipcount);
+            varname = nametblFind(skipname, (uint32_t)skiplen);
+        }
+        elemvars[nelems++] = newVarDclNode(varname, VarDclTag, (INode*)immPerm);
         lexNextToken();
         if (!lexIsToken(CommaToken))
             break;
@@ -1184,13 +1268,16 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
     INode *iter = parseSimpleExpr(parse);
     if (iter == NULL)       // Not a term, and already reported as such
         return (INode *)outerblk;
-    // A number range: 'a .. b' runs through b, 'a ..< b' stops before it, and a
-    // step after 'by' moves it by that much (a negative step counts down)
+    // A number range: 'a ..= b' runs through b, 'a ..< b' stops before it, and a
+    // step after 'by' moves it by that much (a negative step counts down). A bare
+    // '..' is refused and read as '..='
     INode *rangeend = NULL;
     int rangeincl = 0;
     if (lexIsRangeOp()) {
         if (lexIsToken(EllipsisToken))
             parseRangeEllipsis();
+        else if (lexIsToken(DotDotToken))
+            parseRangeBare();
         rangeincl = !lexIsToken(DotDotLessToken);
         lexNextToken();
         rangeend = parseSimpleExpr(parse);
@@ -1208,16 +1295,14 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             int up = methodnm == ltName || methodnm == leName;
             int incl = methodnm == leName || methodnm == geName;
             errorMsgNode(iter, ErrorEachCompare,
-                "A range is written with '..' or '..<', not as a comparison: 'each i in a %s b' is 'each i in a %s b%s'. '..' runs through its end and '..<' stops before it; counting down takes a negative step.",
-                oldop, incl ? ".." : "..<", up ? "" : " by -1");
+                "A range is written with '..=' or '..<', not as a comparison: 'each i in a %s b' is 'each i in a %s b%s'. '..=' runs through its end and '..<' stops before it; counting down takes a negative step.",
+                oldop, incl ? "..=" : "..<", up ? "" : " by -1");
             rangeincl = incl;
             rangeend = nodesGet(old->args, 0);
             iter = old->objfn;
         }
     }
     int isrange = rangeend != NULL;
-    if (!isrange)
-        parseEachMutSource(iter, parallel);
     INode *step = NULL;
     if (isrange && lexIsToken(ByToken)) {
         lexNextToken();
@@ -1263,7 +1348,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         }
         if (step) {
             errorMsgNode(iter, ErrorParSource,
-                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 ..< n', or '..'): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
+                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 ..< n', or '..='): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
             return (INode *)outerblk;
         }
         parallelEachNames();
@@ -1283,9 +1368,9 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         return (INode *)outerblk;
     }
 
-    // Assemble logic for a range (with optional step), e.g. 'each x in a .. b by s':
-    // { imm first = a; mut counter = first; mut n = 0;
-    //   while counter <= b { imm x = counter; ... ; { n += 1; counter += s } } }
+    // Assemble logic for a range (with optional step), e.g. 'each x in a ..= b by s':
+    // { let first = a; var counter = first; var n = 0;
+    //   while counter <= b { let x = counter; ... ; { n += 1; counter += s } } }
     // The loop's variable is a new one on every pass, which the body cannot
     // change: counting by hand is a 'while'. The counter is the loop's own, a
     // variable no name reaches, its uses bound here. The first value and the count
@@ -1370,7 +1455,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             // range wider than half its type, and whether the step adds or
             // subtracts is not known until it has been evaluated -- but the wrap
             // is plain afterwards: the loop variable moved against the range's
-            // direction. So the step is '{ imm prev = x; x += s; if x < prev
+            // direction. So the step is '{ let prev = x; x += s; if x < prev
             // {break} }', with '>' for a range counting down. The statements stay one
             // statement, because the trailing statement is what a 'continue'
             // carries a copy of, and 'prev' is a phantom variable the copy
@@ -1431,7 +1516,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         // resolution find the step to copy ahead of a 'continue'.
         loopnode->flags |= FlagLoopStep;
         if (donedcl) {
-            // 'if done or !(guard) {...else...}'
+            // 'if done || !(guard) {...else...}'
             LogicNode *notiter = newLogicNode(NotLogicTag);
             inodeLexCopy((INode*)notiter, iter);
             notiter->lexp = guard;
@@ -1530,21 +1615,282 @@ INode *parseWith(ParseState *parse) {
     return (INode *)blk;
 }
 
-// Parse a block of statements/expressions
-INode *parseExprBlock(ParseState *parse, int isloop) {
-    BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
-    if (blk->stmts == NULL)
-        blk->stmts = newNodes(8);
+// An expression statement in a block. A ';' is a delimiter: 'A; B; C' is three statements,
+// and the block's value is the last, C. In 'A; B;' the last statement is empty, and an
+// empty statement's value is void. So the ';' after the block's last expression throws
+// its value away, and the block's value is used or not by the construct it stands in
+// (parseTailCheck). The statement is handed back with a mark to point an error at in
+// *semip: the ';' that follows it, which makes the block's last statement an empty one, or,
+// where the block's '}' stood in its place (*openp set), the line's first token.
+static INode *parseBlockExpStmt(ParseState *parse, INode **semip, int *openp) {
+    char *startp = lex->tokp, *linep = lex->linep;
+    uint32_t linenbr = lex->linenbr;
+    INode *node = parseAnyExpr(parse);
+    *semip = NULL;
+    *openp = 0;
+    if (lexIsToken(RCurlyToken)) {
+        // A mark standing where the line begins, to point an error at
+        *openp = 1;
+        *semip = (INode*)newNilLitNode();
+        (*semip)->srcp = startp;
+        (*semip)->linep = linep;
+        (*semip)->linenbr = linenbr;
+        return node;
+    }
+    if (lexIsToken(SemiToken))
+        *semip = (INode*)newNilLitNode();   // positioned at the ';'
+    parseEndOfStatement();
+    return node;
+}
 
-    // A block's statements stand at the top level, even inside a list: a
-    // comma there belongs to them, not to the list around the block
-    int svinlist = parse->inlist;
-    parse->inlist = 0;
-    parseBlockStart();
+// A block ending in ';' ends in an empty statement, which has no value. So the block's
+// last line has no ';' where the block's value is used, and keeps it everywhere else,
+// whatever type the line has (ErrorTailSemi, ErrorTailOpen).
+// 'used' says where the block stands: TailUnused, TailUsed, or TailFree where the type
+// to give is read off the line, as a closure's is. It follows the block into the
+// statements that end in a block: the last statement of a block hands on what the
+// block has, and any other statement is unused. A statement that ends in a block
+// (an 'if', a 'match', a loop) takes no ';' and is not itself judged, but its arms are.
+// A block that is an operand of an expression is judged where it is parsed.
+static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse);
+
+void parseTailCheck(INode *node, int used) {
+    if (node == NULL)
+        return;
+    if (node->tag == IfTag) {
+        Nodes *arms = ((IfNode *)node)->condblk;
+        for (uint32_t i = 1; i < arms->used; i += 2)
+            parseTailCheck(nodesGet(arms, i), used);
+    }
+    else if (node->tag == BlockTag)
+        parseTailCheckBlock((BlockNode *)node, used, 0);
+}
+
+static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse) {
+    // A loop's 'else' stands inside the loop as an arm of its exit, and is judged
+    // once, from the loop, with the loop's own use
+    if ((blk->flags & FlagLoopElse) && !viaelse)
+        return;
+    uint32_t n = blk->stmts->used;
+    // A 'try' block's last line is its success, read off the body as a closure's
+    // return is: a value without ';', nothing with one. Wherever the block stands
+    if (blk->flags & FlagTry)
+        used = TailFree;
+    if (blk->flags & FlagLoop) {
+        if (blk->elseblk)
+            parseTailCheckBlock(blk->elseblk, used, 1);
+        used = TailUnused;   // a loop's body gives nothing
+    }
+    if (used == TailUsed && (blk->flags & FlagTailSemi))
+        errorMsgNode(blk->tailmark, ErrorTailSemi, TailSemiMsg);
+    else if (used == TailUnused && (blk->flags & FlagTailOpen))
+        errorMsgNode(blk->tailmark, ErrorTailOpen, TailOpenMsg);
+    for (uint32_t i = 0; i < n; ++i)
+        parseTailCheck(nodesGet(blk->stmts, i), i + 1 == n ? used : TailUnused);
+}
+
+// A use of a name as the target of an assignment, positioned at the declaration it came from
+static INode *parseTargetUse(VarDclNode *var) {
+    NameUseNode *use = newNameUseNode(var->namesym);
+    inodeLexCopy((INode*)use, (INode*)var);
+    return (INode*)use;
+}
+
+// A declaration of several names, 'let q, r = divmod(7, 2);' or 'var a: i32, b = x, y;', the
+// lexer on the first comma after the first name, which parseVarDcl has read (with its type,
+// if it has one). It is written as the declaration of each name that is not '_', with no
+// value (flagged FlagDestructDcl), and then the assignment that gives the names their values
+// at once, 'q, r = divmod(7, 2)', flagged FlagDestructAssign: it hooks the names once the
+// values are resolved and gives a name with no type the type of its value. A '_' declares
+// nothing: it is the assignment's target for a value the code does not want, which is dropped
+// at the end of the statement. The names are added to 'blk' in that order.
+static void parseDestructDcl(ParseState *parse, BlockNode *blk, VarDclNode *first) {
+    PermNode *defperm = itypeGetTypeDcl(first->perm) == (INode*)mutPerm ? mutPerm : immPerm;
+    Nodes *vars = newNodes(4);
+    nodesAdd(&vars, (INode*)first);
+    while (lexIsToken(CommaToken)) {
+        lexNextToken();
+        nodesAdd(&vars, (INode*)parseVarDcl(parse, defperm, ParseMaySig | ParseMayImpl));
+    }
+    VarDclNode *last = (VarDclNode*)nodesLast(vars);
+    if (last->value == NULL) {
+        errorMsgNode((INode*)first, ErrorDestructForm,
+            "A declaration of several names takes its values after an '=': 'let a, b = f();'. Write '_' for each value you do not want.");
+        return;
+    }
+    INode *rval = last->value;
+    last->value = NULL;
+    TupleNode *targets = newTupleNode(vars->used);
+    inodeLexCopy((INode*)targets, (INode*)first);
+    INode **varp;
+    uint32_t cnt;
+    for (nodesFor(vars, cnt, varp)) {
+        VarDclNode *var = (VarDclNode*)*varp;
+        if (var->namesym == anonName) {
+            if (var->vtype != unknownType)
+                errorMsgNode((INode*)var, ErrorDestructForm,
+                    "'_' takes a value and drops it, so it has no type to write: write the type on the names you keep.");
+            nodesAdd(&targets->elems, parseTargetUse(var));
+            continue;
+        }
+        var->flags |= FlagDestructDcl;
+        nodesAdd(&blk->stmts, (INode*)var);
+        NameUseNode *use = (NameUseNode*)parseTargetUse(var);
+        use->dclnode = (INode*)var;     // bound to its declaration from the start (nameUseNameRes)
+        nodesAdd(&targets->elems, (INode*)use);
+    }
+    AssignNode *assign = newAssignNode(NormalAssign, (INode*)targets, rval);
+    inodeLexCopy((INode*)assign, (INode*)first);
+    assign->flags |= FlagDestructAssign;
+    nodesAdd(&blk->stmts, (INode*)assign);
+}
+
+// Where a block's reading stands as it goes through its statements: the latest
+// expression statement and the ';' after it, and the latest statement that ends
+// in a block and the ';' after that. They are the block's, not one list of
+// statements', because a '#if' in the block reads its taken branch into the same
+// block, as though the branch's statements were written there
+typedef struct BlockTail {
+    INode *expstmt, *expsemi;
+    int expopen;
+    INode *blockstmt, *blocksemi;
+} BlockTail;
+
+static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail);
+
+typedef struct BlockIf {
+    BlockNode *blk;
+    BlockTail *tail;
+    int open;           // A branch, taken or not, ended in an expression with no ';' before its '}'
+} BlockIf;
+
+// A branch of a '#if' among a block's statements. A taken one joins the block; one
+// the build does not take is read into a block of its own, which is dropped
+static INode *parseBlockBranch(ParseState *parse, void *ctx, int mode) {
+    BlockIf *bif = (BlockIf*)ctx;
+    if (mode == MetaTaken) {
+        parseBlockStmts(parse, bif->blk, bif->tail);
+        if (bif->tail->expopen && bif->blk->stmts->used > 0 && bif->tail->expstmt == nodesLast(bif->blk->stmts))
+            bif->open = 1;
+        return NULL;
+    }
+    // A branch that asks what a type parameter is: a block of its own, which a generic's
+    // clone copies if it is the one an instance takes. Its locals are the block's, since
+    // nothing after the chain can name what only one branch declares
+    if (mode == MetaDeferred) {
+        BlockNode *branch = newBlockNode();
+        if (branch->stmts == NULL)
+            branch->stmts = newNodes(8);
+        BlockTail btail;
+        memset(&btail, 0, sizeof(btail));
+        int svinlist = parse->inlist;
+        parse->inlist = 0;
+        parseBlockStmts(parse, branch, &btail);
+        parse->inlist = svinlist;
+        // Whether the last line is an expression and ends in ';', as parseExprBlock notes it
+        if (btail.blockstmt && btail.blocksemi && nodesLast(branch->stmts) == btail.blockstmt) {
+            branch->tailmark = btail.blocksemi;
+            branch->flags |= FlagTailSemi;
+        }
+        else if (btail.expstmt && branch->stmts->used > 0 && nodesLast(branch->stmts) == btail.expstmt) {
+            branch->tailmark = btail.expsemi;
+            if (btail.expopen)
+                branch->flags |= FlagTailOpen;
+            else if (btail.expsemi)
+                branch->flags |= FlagTailSemi;
+        }
+        if (btail.expopen && branch->stmts->used > 0 && btail.expstmt == nodesLast(branch->stmts))
+            bif->open = 1;
+        return (INode*)branch;
+    }
+    BlockNode *stand = newBlockNode();
+    if (stand->stmts == NULL)
+        stand->stmts = newNodes(8);
+    BlockTail standtail;
+    memset(&standtail, 0, sizeof(standtail));
+    parseBlockStmts(parse, stand, &standtail);
+    if (standtail.expopen && stand->stmts->used > 0 && standtail.expstmt == nodesLast(stand->stmts))
+        bif->open = 1;
+    return NULL;
+}
+
+// Read statements from just after a '{' through the '}' that closes them, into
+// 'blk'. 'tail' carries the block's reading in and out
+static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) {
+    INode *expstmt = tail->expstmt, *expsemi = tail->expsemi;   // the latest expression statement, and its ';'
+    int expopen = tail->expopen;
+    INode *blockstmt = tail->blockstmt, *blocksemi = tail->blocksemi;   // the latest statement that ends in a block, and its ';'
+    uint32_t metamark = parseMetaScope();   // The meta variables this block declares are its own
 
     while (!parseBlockEnd()) {
+        // '#each' repeats the block after it once for each item of a list: each pass is a block of
+        // its own among this block's statements (parsemeta.c), so it ends as any block does
+        if (lexIsToken(HashEachToken)) {
+            uint32_t before = blk->stmts->used;
+            parseHashEach(parse, blk);
+            if (blk->stmts->used > before) {
+                blockstmt = nodesLast(blk->stmts);
+                blocksemi = NULL;
+            }
+            continue;
+        }
+        // '#i += 1;' gives a meta variable a new value, as the passes before it have left it
+        if (lexIsToken(MetaVarToken) && parseMetaIsAssign()) {
+            parseMetaAssign(parse);
+            continue;
+        }
+        // '#if' chooses which statements exist, from the facts of the build. The
+        // branch it takes is read into this block as though it were written here
+        // (parsemeta.c), so a declaration in it is the block's, and a last
+        // expression without its ';' is the block's value
+        if (lexIsToken(HashIfToken)) {
+            tail->expstmt = expstmt;
+            tail->expsemi = expsemi;
+            tail->expopen = expopen;
+            tail->blockstmt = blockstmt;
+            tail->blocksemi = blocksemi;
+            BlockIf bif;
+            bif.blk = blk;
+            bif.tail = tail;
+            bif.open = 0;
+            uint32_t before = blk->stmts->used;
+            INode *deferred = parseHashIf(parse, parseBlockBranch, &bif, NULL, parseMixBodyMsg);
+            // A chain asking what a type parameter is stands in the block as one statement
+            if (deferred)
+                nodesAdd(&blk->stmts, deferred);
+            expstmt = tail->expstmt;
+            expsemi = tail->expsemi;
+            expopen = tail->expopen;
+            blockstmt = tail->blockstmt;
+            blocksemi = tail->blocksemi;
+            // Like any statement that ends in a block, it delimits itself
+            if (blk->stmts->used > before) {
+                blockstmt = nodesLast(blk->stmts);
+                blocksemi = NULL;
+            }
+            // A last line of a branch with no ';' stood at its '}', which
+            // closed the branch and not this block: unless this block ends
+            // here, that line is missing its ';'. The branch that says so is
+            // any of them, taken or not, so a mistake is reported on every build
+            if (bif.open && !lexIsToken(RCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+                errorMsgLexAfter(ErrorNoSemi, "Expected ';' to end the statement");
+                expopen = 0;
+                expsemi = NULL;
+            }
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        int endsinblock = lex->toktype == IfToken || lex->toktype == MatchToken || lex->toktype == WhileToken
+            || lex->toktype == EachToken || lex->toktype == WithToken || lex->toktype == LCurlyToken
+            || lex->toktype == LifetimeToken
+            || (lex->toktype == IdentToken && lex->val.ident == parallelName && lexNextIsWord("each"));
         switch (lex->toktype) {
         case SemiToken:
+            if (blockstmt && blocksemi == NULL && nodesLast(blk->stmts) == blockstmt)
+                blocksemi = (INode*)newNilLitNode();   // positioned at the ';'
             lexNextToken();
             break;
 
@@ -1560,7 +1906,7 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         // literal as a global's is, and the block does not release it.
         case StaticToken: {
             uint16_t staticflag = parseStatic();
-            if (!lexIsToken(PermToken) && !lexIsToken(IdentToken)) {
+            if (!lexIsDclStart() && !lexIsToken(IdentToken)) {
                 parseBadStatic(staticflag);
                 break;
             }
@@ -1610,7 +1956,8 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 nodesAdd(&blk->stmts, parseEach(parse, NULL, 1));
                 break;
             }
-            nodesAdd(&blk->stmts, parseExpStmt(parse));
+            expstmt = parseBlockExpStmt(parse, &expsemi, &expopen);
+            nodesAdd(&blk->stmts, expstmt);
             break;
 
         case LifetimeToken:
@@ -1647,25 +1994,88 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             nodesAdd(&blk->stmts, parseExprBlock(parse, 0));
             break;
 
-        // 'async do' declares an actor's behaviour, in an actor's body: here
-        // it is reported, with either word alone, and the declaration passed
+        // 'async fn' declares an actor's behaviour, in an actor's body: here
+        // it is reported, as 'async' alone is, and the declaration passed
         // over whole
         case AsyncToken:
-        case DoToken:
             parseBehaviourWords("a function's body");
             break;
 
-        // A local variable declaration, if it begins with a permission
+        // A local variable declaration, if it begins with 'let' or 'var'
         case PermToken:
+        case LetToken:
+        case VarToken:
         {
+            // 'let #n = 3;' declares a meta variable, held by the parser and gone from the code
+            if (parseMetaIsDecl()) {
+                parseMetaDecl(parse);
+                break;
+            }
+            // 'let Some(n) = x else {...};' binds a variant or leaves
+            if (!lexIsToken(PermToken) && lexNextOpensPattern()) {
+                parseLetPattern(parse, blk);
+                parseEndOfStatement();
+                break;
+            }
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
-            // 'imm n Ok = r else {...};' binds a variant or leaves
-            if (lexIsToken(ElseToken))
+            // A name and then a variant, 'let n Ok = r else {...};', is no binding: it is refused once and
+            // read past, whole
+            if (var->vtype == unknownType && var->value == NULL && !lexIsToken(CommaToken) && parseIsTypeStart()
+                && lexStatementHasElse()) {
+                errorMsgNode((INode*)var, ErrorPatBindForm,
+                    "A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Tea(t) = d else {...};'.");
+                parseType(parse);
+                if (lexIsToken(AssgnToken)) {
+                    lexNextToken();
+                    parseAnyExpr(parse);
+                }
+                if (lexIsToken(ElseToken)) {
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
+                parseEndOfStatement();
+                break;
+            }
+            // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
+            if (lexIsToken(CommaToken) && !parse->usingdcl) {
+                parseDestructDcl(parse, blk, var);
+                // Names always take their values, so there is nothing for an 'else' to do: it is refused
+                // as it is after one name, and read past, whole
+                if (lexIsToken(ElseToken)) {
+                    errorMsgLex(ErrorPatBindForm,
+                        "A declaration of names takes no 'else': they always take their values. A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Some(n) = x else {...};'.");
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
+                parseEndOfStatement();
+                break;
+            }
+            // 'let _ = f();' declares nothing: the value is taken by '_' and dropped at the statement's end
+            if (var->namesym == anonName && var->value != NULL && !lexIsToken(ElseToken)
+                && !parse->usingdcl) {
+                if (var->vtype != unknownType)
+                    errorMsgNode((INode*)var, ErrorDestructForm,
+                        "'_' takes a value and drops it, so it has no type to write.");
+                AssignNode *drop = newAssignNode(NormalAssign, parseTargetUse(var), var->value);
+                inodeLexCopy((INode*)drop, (INode*)var);
+                nodesAdd(&blk->stmts, (INode*)drop);
+                parseEndOfStatement();
+                break;
+            }
+            // 'let rest using prefix("GET ") = line else {...};' binds what a function's pattern gives or leaves
+            if (lexIsToken(ElseToken) && parse->usingdcl)
                 parseLetElse(parse, blk, var);
+            else if (lexIsToken(ElseToken)) {
+                errorMsgNode((INode*)var, ErrorPatBindForm,
+                    "A declaration of a name takes no 'else'. A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Some(n) = x else {...};'.");
+                nodesAdd(&blk->stmts, (INode*)var);
+                lexNextToken();
+                parseExprBlock(parse, 0);
+            }
             else {
                 if (parse->usingdcl)
                     errorMsgNode((INode*)var, ErrorUsingForm,
-                        "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'imm rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if imm rest using prefix(\"GET \") = line {...}'.");
+                        "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'let rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if let rest using prefix(\"GET \") = line {...}'.");
                 nodesAdd(&blk->stmts, (INode*)var);
             }
             parseEndOfStatement();
@@ -1673,8 +2083,64 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         }
 
         default:
-            nodesAdd(&blk->stmts, parseExpStmt(parse));
+            expstmt = parseBlockExpStmt(parse, &expsemi, &expopen);
+            nodesAdd(&blk->stmts, expstmt);
         }
+        if (endsinblock) {
+            blockstmt = nodesLast(blk->stmts);
+            blocksemi = NULL;
+        }
+    }
+    parseMetaScopeEnd(metamark);
+    tail->expstmt = expstmt;
+    tail->expsemi = expsemi;
+    tail->expopen = expopen;
+    tail->blockstmt = blockstmt;
+    tail->blocksemi = blocksemi;
+}
+
+// Parse a block of statements/expressions
+INode *parseExprBlock(ParseState *parse, int isloop) {
+    BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
+    if (blk->stmts == NULL)
+        blk->stmts = newNodes(8);
+    INode *expstmt = NULL, *expsemi = NULL;   // the latest expression statement, and its ';'
+    int expopen = 0;
+    // The latest statement that ends in a block, and the ';' written directly after it. A
+    // statement that ends in a block delimits itself, so that ';' delimits an empty
+    // statement after it, and the block's last statement is that one
+    INode *blockstmt = NULL, *blocksemi = NULL;
+
+    // A block's statements stand at the top level, even inside a list: a
+    // comma there belongs to them, not to the list around the block
+    int svinlist = parse->inlist;
+    parse->inlist = 0;
+    parseBlockStart();
+
+    BlockTail tail;
+    memset(&tail, 0, sizeof(tail));
+    parseBlockStmts(parse, blk, &tail);
+    expstmt = tail.expstmt;
+    expsemi = tail.expsemi;
+    expopen = tail.expopen;
+    blockstmt = tail.blockstmt;
+    blocksemi = tail.blocksemi;
+
+    // Whether the block's last line is an expression, and whether it ends in ';'. Whether
+    // that is right depends on whether the block's value is used, which the construct the
+    // block stands in tells: parseTailCheck judges it there. The ';' after a statement that
+    // ends in a block makes the block's last statement an empty one, as it does after an
+    // expression. Mid-block, or where no value is used, that empty statement is harmless
+    if (blockstmt && blocksemi && nodesLast(blk->stmts) == blockstmt) {
+        blk->tailmark = blocksemi;
+        blk->flags |= FlagTailSemi;
+    }
+    else if (expstmt && nodesLast(blk->stmts) == expstmt) {
+        blk->tailmark = expsemi;
+        if (expopen)
+            blk->flags |= FlagTailOpen;
+        else if (expsemi)
+            blk->flags |= FlagTailSemi;   // (neither where the ';' was missing and reported)
     }
 
     parse->inlist = svinlist;
@@ -1694,14 +2160,14 @@ static void parseWhereSkip() {
 // only what a refusal calls the condition differs.
 static int parseInIsCond = 0;
 
-// 'not' is not built [Jon 27 Sep]: a clause says what a type is
+// '!' is not built [Jon 27 Sep]: a clause says what a type is
 static void parseWhereNot() {
     errorMsgLex(ErrorWhereForm, parseInIsCond
-        ? "'not' is not built: a condition on an 'is' entry says what a type parameter is, and clauses are joined by 'and' and 'or'."
-        : "'not' is not built: a 'where' clause says what a type parameter is, and clauses are joined by 'and' and 'or'.");
+        ? "'!' is not built: a condition on an 'is' entry says what a type parameter is, and clauses are joined by '&&' and '||'."
+        : "'!' is not built: a 'where' clause says what a type parameter is, and clauses are joined by '&&' and '||'.");
 }
 
-// Join two conditions with 'and' or 'or', positioned where the left one is
+// Join two conditions with '&&' or '||', positioned where the left one is
 static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
     LogicNode *join = newLogicNode(tag);
     // A lifetime comparison stands in a condition as a node with no position
@@ -1714,8 +2180,8 @@ static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
 static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp);
 
 // What a lifetime comparison leaves in a condition: it is recorded in the
-// order as it is read, and stands in the condition only so that an 'or' or a
-// 'not' over it is found and refused
+// order as it is read, and stands in the condition only so that a '||' or a
+// '!' over it is found and refused
 static INode parseLifeClauseNode;
 #define parseLifeClause (&parseLifeClauseNode)
 
@@ -1779,7 +2245,7 @@ static int parseWhereBounds = 0;
 // A type parameter's lifetime bound, with the lexer on the lifetime after its
 // '+': ''+T' >= ''a' in '*orderp', the declaration's order (lifetime.h,
 // "Lifetime bounds"), where 'ok' allows one. Stands in a condition as a
-// lifetime comparison does, so that an 'or' or a 'not' over it is refused.
+// lifetime comparison does, so that a '||' or a '!' over it is refused.
 static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
     INode *at = (INode*)newNameUseNode(lex->val.ident);
     Name *life = lex->val.ident;
@@ -1799,7 +2265,7 @@ static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
 }
 
 // One term of a 'where' condition: 'T is Name', a trait joined to another by
-// '+' as in the inline form (the two clauses joined by 'and'), a lifetime
+// '+' as in the inline form (the two clauses joined by '&&'), a lifetime
 // bound, 'T + 'a' or 'T is Name + 'a', a lifetime comparison, or a condition
 // in parentheses. NULL, reported, for anything else.
 static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
@@ -1826,9 +2292,9 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     if (lexIsToken(LifetimeToken))
         return parseWhereLife(parse, orderp);
     if (lexIsToken(NotToken)) {
-        // Over a lifetime comparison, 'not' is refused for what it would mean
+        // Over a lifetime comparison, '!' is refused for what it would mean
         if (lexPeekIsLifetime()) {
-            errorMsgLex(ErrorLifetimeOr, "A lifetime comparison is never under 'not': a lifetime is never instanced, so the body could rely on nothing it would say.");
+            errorMsgLex(ErrorLifetimeOr, "A lifetime comparison is never under '!': a lifetime is never instanced, so the body could rely on nothing it would say.");
             return NULL;
         }
         parseWhereNot();
@@ -1886,7 +2352,7 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
             errorMsgLex(ErrorWhereForm, lexIsToken(LifetimeToken)
                 ? "A lifetime bound alone is written 'T + 'a': what a type parameter 'is' is a trait, named."
                 : parseInIsCond ? "What a type parameter 'is' in a condition on an 'is' entry is a trait, named."
-                : "What a type parameter 'is' in a 'where' clause is a trait, named, or a function signature, 'where F is fn(a &T) i32'.");
+                : "What a type parameter 'is' in a 'where' clause is a trait, named, or a function signature, 'where F is fn(a: &T) i32'.");
             return NULL;
         }
         // A function signature, written bare, is what the type has a '()' method of
@@ -1904,10 +2370,11 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     }
 }
 
-// Terms joined by 'and', which binds tighter than 'or', as in an expression
+// Terms joined by '&&', which binds tighter than '||', as in an expression
 static INode *parseWhereAnd(ParseState *parse, LifeOrder **orderp) {
     INode *lhs = parseWhereTerm(parse, orderp);
-    while (lhs && lexIsToken(AndToken)) {
+    while (lhs && lexIsAmpAmp()) {
+        lexNextToken();
         lexNextToken();
         INode *rhs = parseWhereTerm(parse, orderp);
         lhs = rhs ? parseWhereJoin(AndLogicTag, lhs, rhs) : NULL;
@@ -1915,18 +2382,18 @@ static INode *parseWhereAnd(ParseState *parse, LifeOrder **orderp) {
     return lhs;
 }
 
-// A whole condition: 'and'-joined terms, joined by 'or'. A lifetime comparison
+// A whole condition: '&&'-joined terms, joined by '||'. A lifetime comparison
 // may not be an alternative: a lifetime is never instanced, so no instance
 // settles which alternative holds, and the body could rely on none of them.
 static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp) {
     INode *lhs = parseWhereAnd(parse, orderp);
-    while (lhs && lexIsToken(OrToken)) {
+    while (lhs && lexIsToken(OrOrToken)) {
         INode *orat = (INode*)newNameUseNode(anonName);
         lexNextToken();
         INode *rhs = parseWhereAnd(parse, orderp);
         if (rhs && (parseWhereHasLife(lhs) || parseWhereHasLife(rhs))) {
             errorMsgNode(orat, ErrorLifetimeOr,
-                "A lifetime comparison is joined to the rest of a 'where' clause by 'and' only: a lifetime is never instanced, so an 'or' would leave the body nothing it could rely on.");
+                "A lifetime comparison is joined to the rest of a 'where' clause by '&&' only: a lifetime is never instanced, so a '||' would leave the body nothing it could rely on.");
             return NULL;
         }
         lhs = rhs ? parseWhereJoin(OrLogicTag, lhs, rhs) : NULL;
@@ -1934,7 +2401,7 @@ static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp) {
     return lhs;
 }
 
-// Append a condition to a 'where' list, each operand of an 'and' at its top
+// Append a condition to a 'where' list, each operand of a '&&' at its top
 // an element of its own, in the order written. A lifetime comparison is in
 // the order already, and is no element.
 static void parseWhereAdd(Nodes **wherep, INode *cond) {
@@ -1954,12 +2421,12 @@ static void parseWhereAdd(Nodes **wherep, INode *cond) {
 // Parse a 'where' clause, with the lexer on 'where', appending its condition
 // to '*wherep' (generic.h), left NULL where it holds no clause about a type:
 // 'T is Name', a trait joined to another by '+' as in the inline form,
-// clauses joined by 'and' and 'or', 'and' binding tighter, and parentheses
+// clauses joined by '&&' and '||', '&&' binding tighter, and parentheses
 // grouping. A lifetime comparison, ''a >= 'b' or ''a == 'b', goes to
 // '*orderp' instead (lifetime.h), NULL where the declaration has no lifetimes
 // to order. What else the manual shows a clause saying -- a relation between
 // two type parameters, 'T < Y', and a constraint on a type expression,
-// 'Option[T] is Node' -- and 'not' are not built, and are refused here: a
+// 'Option[T] is Node' -- and '!' are not built, and are refused here: a
 // refused clause adds nothing, and the rest of it is skipped. A type
 // parameter's lifetime bound, 'T + 'a' or 'T is Name + 'a', goes to
 // '*orderp' as ''+T' >= ''a' where 'bounds' allows one (lifetime.h,
@@ -1978,7 +2445,7 @@ void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bound
 
 // Parse the condition on one entry of a type's 'is' list, with the lexer on
 // its 'if': 'is Move if T is Move'. It is read as a 'where' clause's condition
-// is -- 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or',
+// is -- 'T is Name', '+'-joined traits, clauses joined by '&&' and '||',
 // grouped by parentheses -- and kept whole, since it decides one entry rather
 // than being a list of requirements. No lifetime takes part. NULL, reported,
 // where it is refused; what is left of it is then skipped to the next entry,
@@ -1996,8 +2463,8 @@ INode *parseIsCondition(ParseState *parse) {
     return cond;
 }
 
-// Is this type parameter bound to a function signature, '[F fn(u f32) f32]' or
-// 'where F is fn(u f32) f32'?
+// Is this type parameter bound to a function signature, '[F: fn(u: f32) f32]' or
+// 'where F is fn(u: f32) f32'?
 static int parseGenericParmSigBound(GenVarDclNode *parm, INode *cond) {
     if (cond == NULL)
         return 0;
@@ -2039,7 +2506,7 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
         }
         if (!bound) {
             errorMsgNode((INode*)fnnode, ErrorGenericOverload,
-                "A generic function may join the overload set %s only when every type parameter is bound to a function signature, as in `[F fn(u f32) f32]`, and %s is not. An overload is chosen by what its arguments are, and a generic with another kind of parameter has no rule to rank it against the rest.",
+                "A generic function may join the overload set %s only when every type parameter is bound to a function signature, as in `[F: fn(u: f32) f32]`, and %s is not. An overload is chosen by what its arguments are, and a generic with another kind of parameter has no rule to rank it against the rest.",
                 &fnnode->overloadsym->namestr, &parm->namesym->namestr);
             fnnode->overloadsym = NULL;
             return;
@@ -2049,12 +2516,12 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
 
 // Parse a list of generic variables and add to the genericnode.
 //
-// What follows a parameter's name, before its ',' or ']', is its annotation:
-// '[T Comparable]', '[T Comparable + Float]'. The slot is one, for whatever a
+// What follows a parameter's name and its ':', before its ',' or ']', is its annotation:
+// '[T: Comparable]', '[T: Comparable + Float]'. The slot is one, for whatever a
 // parameter will be annotated with, and it is read as '+'-joined types whose
 // meaning is what each resolves to (genericConstraintsNameRes): a trait
 // constrains a type parameter, which is built; a type would make a value
-// parameter, '[N usize]', and a kind another kind of parameter, '[e Expr]',
+// parameter, '[N: usize]', and a kind another kind of parameter, '[e: Expr]',
 // and neither is. 'annotate' is set for a generic function or type; a macro's
 // parameter and a generic module's take no annotation yet, and it is refused
 // here as it always was.
@@ -2063,7 +2530,7 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
 // type parameters: they go to '*lifes' (lifetime.h), NULL for a declaration
 // that declares none, which refuses them.
 //
-// A type parameter's lifetime bounds, '[T + 'a]', '[T Trait + 'a]', go to
+// A type parameter's lifetime bounds, '[T + 'a]', '[T: Trait + 'a]', go to
 // '*bounds' as ''+T' >= ''a' (lifetime.h, "Lifetime bounds"), for a function
 // to add to its signature's order; NULL refuses them (a generic type's).
 Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, LifeOrder **bounds) {
@@ -2091,10 +2558,15 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
-        // An annotation begins with a name: a trait's, a type's, a kind's;
-        // or, for a bound alone, '[T + 'a]', with the '+'
-        else if (annotate && (lexIsToken(IdentToken) || lexIsToken(FnToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
-            // A bound may be a function signature, written bare: 'F fn(a &T, b &T) i32'
+        // An annotation follows a ':' and begins with a name: a trait's, a type's, a kind's;
+        // or, for a bound alone, '[T + 'a]', with the '+' and no ':'
+        else if (annotate && (lexIsToken(ColonToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
+            if (lexIsToken(ColonToken)) {
+                lexNextToken();
+                if (!lexIsToken(IdentToken) && !lexIsToken(FnToken))
+                    errorMsgLexAfter(ErrorNoType, "Expected a trait or a function signature after ':'");
+            }
+            // A bound may be a function signature, written bare: 'F: fn(a: &T, b: &T) i32'
             if (lexIsToken(FnToken)) {
                 parm->annot = newNodes(2);
                 nodesAdd(&parm->annot, parseFnBound(parse));
@@ -2116,8 +2588,8 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
             // Every trait named here is required; a choice between them is
             // said in a 'where' clause [Jon 27 Sep]. The annotation is
             // dropped, so nothing it only half says is asked of the arguments.
-            if (lexIsToken(OrToken)) {
-                errorMsgLex(ErrorGenParmOr, "The traits after a type parameter are joined with '+', each required. A choice between them is written in a 'where' clause: 'where T is A or T is B'.");
+            if (lexIsToken(OrOrToken)) {
+                errorMsgLex(ErrorGenParmOr, "The traits after a type parameter are joined with '+', each required. A choice between them is written in a 'where' clause: 'where T is A || T is B'.");
                 parm->annot = NULL;
                 while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
                     if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
@@ -2130,13 +2602,18 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
                 break;
             lexNextToken();
         }
-        // A second name straight after the first is what a constraint or a
-        // parameter type is spelled as -- '[a i32]' on a macro. Neither is
-        // implemented there, and reading the two names as two parameters
-        // instead turned that into an arity complaint about a declaration
+        // A constraint or a parameter type is spelled after a ':' -- '[T: Trait]' on a
+        // generic module. Neither is implemented there, and reading what follows as two
+        // parameters instead turned that into an arity complaint about a declaration
         // written in that form. Refuse it here and resync to the next ',' or ']'.
-        else if (lexIsToken(IdentToken) || lexIsToken(FnToken)) {
-            errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
+        // A second name straight after the first is refused the same way
+        else if (lexIsToken(IdentToken) || lexIsToken(FnToken) || lexIsToken(ColonToken)) {
+            if (lexIsToken(ColonToken) && !annotate)
+                lexNextToken();     // the refusal points at what the colon introduces
+            if (annotate)
+                errorMsgLex(ErrorBadTok, "Expected ',' or ']' after a type parameter");
+            else
+                errorMsgLex(ErrorGenParmConstr, "A generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
             // (a signature's own commas are inside its parentheses)
             int depth = 0;
             while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {
@@ -2164,8 +2641,132 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
     return parms;
 }
 
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse) {
+// One bracket list of a macro's: each entry a name, and after a ':' its type,
+// 'lazy' before the type marking a parameter substituted whole, 'a: lazy T'
+// (FlagLazy, the type in 'valtype'). 'lazy' is a contextual word: a name
+// everywhere else. What an entry may be -- a type parameter, a value parameter,
+// 'self' -- depends on which list this turns out to be, so parseMacro decides
+// that; here is refused only what no list holds.
+static Nodes *parseMacroParmList(ParseState *parse) {
+    lexNextToken(); // Go past left square bracket
+    Nodes *parms = newNodes(2);
+    // A ',' after a type continues the list: '[f: &fn(x: i32) i32, b: i32]'
+    // is two parameters, not a signature returning two values
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
+    while (lexIsToken(IdentToken) || lexIsToken(LifetimeToken)) {
+        if (lexIsToken(LifetimeToken)) {
+            errorMsgLex(ErrorLifetimePlace, "Only a struct or an enum declares lifetimes in its brackets: a function names its own in its signature.");
+            lexNextToken();
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+            continue;
+        }
+        GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+        nodesAdd(&parms, (INode*)parm);
+        lexNextToken();
+        if (lexIsToken(ColonToken)) {
+            lexNextToken();
+            if (lexIsToken(IdentToken) && lex->val.ident == lazyName) {
+                parm->flags |= FlagLazy;
+                lexNextToken();
+                parm->valtype = parseTypeReq(parse, "'lazy'");
+            }
+            else
+                parm->valtype = parseTypeReq(parse, "':'");
+        }
+        if (lexIsToken(CommaToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (lexIsToken(RBracketToken))
+            break;
+        // The list left open, '[a: i32 {': the missing ']' is reported below,
+        // and nothing more of this parameter
+        if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken)) {
+            if (parm->valtype == NULL)
+                parm->valtype = unknownType;
+            break;
+        }
+        // '[a i32]': a type written without its ':', or anything else that
+        // does not end the parameter. Reported, and the parameter taken as
+        // typed so that it is not reported again as untyped; recovery resumes
+        // at the next ',' or ']' (a signature's own commas are inside its
+        // parentheses)
+        if (parm->valtype == NULL) {
+            errorMsgLex(ErrorBadTok, "Expected ':' before a macro parameter's type, 'a: i32', or ',' or ']' after the parameter.");
+            parm->valtype = unknownType;
+        }
+        else if (parm->valtype != unknownType)    // (no type is reported already)
+            errorMsgLex(ErrorBadTok, "Expected ',' or ']' after a macro parameter's type.");
+        int depth = 0;
+        while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {
+            if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
+                break;
+            if (lexIsToken(LParenToken))
+                ++depth;
+            else if (lexIsToken(RParenToken) && depth > 0)
+                --depth;
+            lexNextToken();
+        }
+        if (lexIsToken(CommaToken))
+            lexNextToken();
+    }
+    parse->inlist = svinlist;
+    if (lexIsToken(RBracketToken))
+        lexNextToken();
+    else
+        errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
+    return parms;
+}
+
+// A macro's type parameters, the first of its two bracket lists, are names
+// alone: a constraint on one is not built
+static void parseMacroTypeParmsCheck(Nodes *typeparms) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(typeparms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        if (parm->valtype && parm->valtype != unknownType)
+            errorMsgNode(parm->valtype, ErrorGenParmConstr,
+                "A macro's type parameter is a name alone: a constraint on it is not built. Its value parameters' types go in the second brackets, 'macro m[T][a: T]'.");
+    }
+}
+
+// A macro's value parameters are always typed, 'a: T' or 'a: lazy T'. The one
+// exception is a macro method's 'self', the first parameter of a macro declared
+// in a type ('member'): the receiver expression as it is, which takes neither a
+// type nor 'lazy'.
+static void parseMacroValueParmsCheck(Nodes *parms, int member) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t i = 0;
+    for (nodesFor(parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        int isself = parm->namesym == selfName && i == 0 && member;
+        ++i;
+        if (isself) {
+            if (parm->valtype && parm->valtype != unknownType)
+                errorMsgNode(parm->valtype, ErrorMacroSelfType,
+                    "A macro method's 'self' is written bare: it is the receiver expression as it is, so it takes neither a type nor 'lazy'.");
+        }
+        else if (parm->valtype == NULL) {
+            if (parm->namesym == selfName)
+                errorMsgNode((INode*)parm, ErrorMacroParmType,
+                    "'self' is written bare only as the first parameter of a macro declared in a type. Any other macro parameter is typed: 'self: T', or 'self: lazy T'.");
+            else
+                errorMsgNode((INode*)parm, ErrorMacroParmType,
+                    "A macro parameter is typed: '%s: T', or '%s: lazy T' for one substituted whole wherever it appears.",
+                    &parm->namesym->namestr, &parm->namesym->namestr);
+        }
+    }
+}
+
+// Parse a macro declaration: 'macro name', then its value parameters in
+// brackets, 'macro m[a: i32]', or its type parameters and then its value
+// parameters, 'macro m[T][a: T, b: lazy T]'. 'member' says it is declared in
+// a type, where a first parameter 'self' makes it a method.
+MacroDclNode *parseMacro(ParseState *parse, int member) {
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTok, "Expected a macro name");
@@ -2174,9 +2775,22 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse, 0, NULL, NULL);
+        Nodes *first = parseMacroParmList(parse);
+        // An empty list declares nothing: as for a generic, 'macro m[]' is
+        // refused. A second list after the type parameters may be empty, 'macro three[T][]'.
+        if (first->used == 0)
+            errorMsgLex(ErrorNoGenParms, "A type parameter list must declare at least one parameter.");
+        if (lexIsToken(LBracketToken)) {
+            macro->typeparms = first;
+            parseMacroTypeParmsCheck(first);
+            macro->parms = parseMacroParmList(parse);
+        }
+        else
+            macro->parms = first;
+        parseMacroValueParmsCheck(macro->parms, member);
     }
     macro->body = parseExprBlock(parse, 0);
+    parseTailCheck(macro->body, TailUsed);   // a macro is replaced by its value
     return macro;
 }
 
@@ -2256,10 +2870,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // '@c' after the keyword: this function's symbol is a C name, its own name
     // or the string written, and 'system' its calling convention [Jon 23 Sep].
     // '@initpure' there too, before or after it: a function a module's 'init'
-    // may call, as 'init' itself is declared (refmodule.html, "Dynamic
-    // initialization"). Recorded, not yet checked
+    // may call, as 'init' itself is declared (mod-globals.html#dyninit, "The module's initializer").
+    // Recorded, not yet checked
     // '@intrinsic' there too, first or after the others: a function whose meaning
-    // the compiler supplies, declared in core (refintrinsic.html). Where it may
+    // the compiler supplies, declared in core (safe-intrinsics.html). Where it may
     // be and what it must say is checked by intrinsicDclNameRes
     // '@compute(x, y, z)' there too, first or after the others: a compute
     // entry point (fnDclComputeCheck checks its signature)
@@ -2313,10 +2927,24 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // cannot name a function. It is reported once and read past, so the rest of
     // the declaration parses as written instead of cascading from a missing
     // name. The function is left unnamed, which keeps it out of every namespace:
-    // bound, it would also clash with the built-in permission
-    if (lexIsToken(IdentToken) || lexIsToken(PermToken)) {
+    // bound, it would also clash with the built-in permission. 'await' is a keyword,
+    // but nothing that begins an expression can follow 'fn', so it may name the
+    // convention method a type is awaited by (ir/exp/await.c)
+    // In a '#each #f in #fields(T)' in a generic type's braces, a method is named '#f' or
+    // '#name("get", #f)': the template holds it under that spelling, and each instance under the
+    // name made for each field of T
+    if (parseMetaIsGenName()) {
+        fnnode->namesym = parseMetaGenName(parse, &fnnode->gen);
+        if (fnnode->namesym == NULL)
+            fnnode->gen = NULL;
+    }
+    else if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)
+        || lexIsToken(AwaitToken)) {
         if (lexIsToken(PermToken))
             errorMsgLex(ErrorNoName, "'%s' is a permission, so it cannot name a function. Rename it.",
+                &lex->val.ident->namestr);
+        else if (lexIsToken(LetToken) || lexIsToken(VarToken))
+            errorMsgLex(ErrorNoName, "'%s' begins a declaration, so it cannot name a function. Rename it.",
                 &lex->val.ident->namestr);
         else {
             if (!(mayflags&ParseMayName))
@@ -2452,8 +3080,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
                 why = "A trait's or an enum's method cannot be a generator yet: the generator is a struct of its own that holds the method's parameters, 'self' among them, and a trait's method is copied into each implementer. Write a function that takes what the method would.";
             else if (parse->dcltexts)
                 why = "An actor's method cannot be a generator yet: the actor's body is read to generate its mailbox and its state, and a generator's struct is not one of them. Write a function that takes what the method would.";
-            else if (parse->typenode && ((INode*)parse->typenode)->tag == StructTag && ((StructNode*)parse->typenode)->lifeparms)
-                why = "A method of a type that declares lifetimes cannot be a generator yet: the generator is a struct of its own that holds the receiver, and does not declare the type's lifetimes.";
+            else if (parse->typenode && ((INode*)parse->typenode)->tag == StructTag && parseGenTypeInvariant((StructNode*)parse->typenode))
+                why = "A method of a type that declares an invariant lifetime ('=a) cannot be a generator yet: the generator is a struct of its own that holds the receiver, and is not built to declare an invariant lifetime.";
             else if (fnnode->flags & FlagInline)
                 why = "A generator cannot be 'inline': it is a struct and a method, not code expanded where it is called.";
             else if (fnnode->where)
@@ -2468,11 +3096,16 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         GenCtx *genctx = isgen ? parseGenBegin(parse, fnnode) : NULL;
         GenCtx *svgenctx = parse->genctx;
         int svgenoperand = parse->genoperand;
+        int svtrydepth = parse->trydepth;
         parse->genctx = genctx;
         parse->genoperand = 0;
+        parse->trydepth = 0;
         fnnode->value = parseExprBlock(parse, 0);
+        // The body's value is used when the signature writes a return type
+        parseTailCheck(fnnode->value, ((FnSigNode*)fnnode->vtype)->retwritten ? TailUsed : TailUnused);
         parse->genctx = svgenctx;
         parse->genoperand = svgenoperand;
+        parse->trydepth = svtrydepth;
         bodyendp = lex->prevend;
         if (genctx && errors == errorsAtSig) {
             // The declarations the generator stands for are read from text of
@@ -2495,7 +3128,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
                 "A generator is its body: 'yields' declares a function that hands its caller values, so a declaration with no body, an 'extern' one among them, is not built.");
         else if (!(mayflags&ParseMaySig))
             errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
-        if (!(mayflags&ParseEmbedded))
+        if (mayflags & ParseMemberEnd)
+            parseEndOfMember();
+        else if (!(mayflags&ParseEmbedded))
             parseEndOfStatement();
     }
 

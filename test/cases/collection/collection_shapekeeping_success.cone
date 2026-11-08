@@ -18,16 +18,16 @@ mod collection_shapekeeping_success;
 import stdio use *;
 import collections use *;
 
-struct Entity { pub hp i64; }
-struct World { pub score i64; pub entities List[Entity]; }
+struct Entity { pub hp: i64; }
+struct World { pub score: i64; pub entities: List[Entity]; }
 
-trait Scorer { pub fn bump(self &mut, w &mut World); }
+trait Scorer { pub fn bump(self: &mut, w: &mut World); }
 trait Pair {
-  pub fn first(self &mut, w &mut World);
-  pub fn second(self &mut, w &mut World);
+  pub fn first(self: &mut, w: &mut World);
+  pub fn second(self: &mut, w: &mut World);
 }
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
@@ -35,35 +35,35 @@ fn show(label &str, n i64) {
 }
 
 // The element borrowed before the call is read after it
-fn throughFn(w &mut World, f &<fn(x &mut World) + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+fn throughFn(w: &mut World, f: &<fn(x: &mut World) + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
   f(w);
-  e.hp;
+  e.hp
 }
 
 // A closure that changes what it borrows is a '&<mut'
-fn throughMutFn(w &mut World, f &<mut fn(x &mut World) + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+fn throughMutFn(w: &mut World, f: &<mut fn(x: &mut World) + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
   f(w);
-  e.hp;
+  e.hp
 }
 
-fn throughTrait(w &mut World, s &<mut Scorer + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+fn throughTrait(w: &mut World, s: &<mut Scorer + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
   s.bump(w);
-  e.hp;
+  e.hp
 }
 
-fn throughPair(w &mut World, p &<mut Pair + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+fn throughPair(w: &mut World, p: &<mut Pair + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
   p.first(w);
   p.second(w);
-  e.hp;
+  e.hp
 }
 
 struct FieldScorer {
-  pub n i64;
-  pub fn bump(self &mut, w &mut World) {
+  pub n: i64;
+  pub fn bump(self: &mut, w: &mut World) {
     w.score = w.score + n;
     w.entities[0usize].hp = 7;
   }
@@ -71,10 +71,10 @@ struct FieldScorer {
 
 // Its own list, made in the call: nobody else holds a borrow into it
 struct LocalScorer {
-  pub n i64;
-  pub fn bump(self &mut, w &mut World) {
-    mut tmp = new List[i64](4);
-    imm total = w.score + n;
+  pub n: i64;
+  pub fn bump(self: &mut, w: &mut World) {
+    var tmp = List[i64](4);
+    let total = w.score + n;
     tmp.push(total);
     tmp.push(n);
     w.entities[0usize].hp = total + 10;
@@ -82,40 +82,40 @@ struct LocalScorer {
 }
 
 struct ReadScorer {
-  pub n i64;
-  pub fn bump(self &mut, w &mut World) { n = w.score; }
+  pub n: i64;
+  pub fn bump(self: &mut, w: &mut World) { n = w.score; }
 }
 
 struct Halves {
-  pub fn first(self &mut, w &mut World) { w.entities[0usize].hp = 20; }
-  pub fn second(self &mut, w &mut World) { w.score = w.score + 1; }
+  pub fn first(self: &mut, w: &mut World) { w.entities[0usize].hp = 20; }
+  pub fn second(self: &mut, w: &mut World) { w.score = w.score + 1; }
 }
 
-fn setHp(x &mut World) { x.entities[0usize].hp = 31; }
+fn setHp(x: &mut World) { x.entities[0usize].hp = 31; }
 
 fn world() World {
-  mut es = new List[Entity](4);
-  es.push(new Entity(5));
-  new World(1, es);
+  var es = List[Entity](4);
+  es.push(Entity(5));
+  World(1, es)
 }
 
 fn main() {
-  mut w = world();
-  mut count = 0;
-  show("closure-fields", throughFn(&mut w, fn (x &mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; }));
+  var w = world();
+  var count = 0;
+  show("closure-fields", throughFn(&mut w, fn (x: &mut World) { x.score = x.score + 1; x.entities[0usize].hp = 6; }));
   show("score-after", w.score);
-  show("closure-number", throughMutFn(&mut w, fn (x &mut World) { count = count + 1; }));
+  show("closure-number", throughMutFn(&mut w, fn (x: &mut World) { count = count + 1; }));
   show("count", count);
-  mut f = new FieldScorer(10);
+  var f = FieldScorer(10);
   show("field-scorer", throughTrait(&mut w, &mut f));
   show("score-field", w.score);
-  mut l = new LocalScorer(3);
+  var l = LocalScorer(3);
   show("local-scorer", throughTrait(&mut w, &mut l));
-  mut r = new ReadScorer(0);
+  var r = ReadScorer(0);
   show("read-scorer", throughTrait(&mut w, &mut r));
   show("read-n", r.n);
   show("plain-function", throughFn(&mut w, &setHp));
-  mut h = new Halves();
+  var h = Halves();
   show("pair", throughPair(&mut w, &mut h));
   show("score-pair", w.score);
 }

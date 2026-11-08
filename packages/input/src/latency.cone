@@ -15,35 +15,35 @@
 pub const LATENCY_BUCKET_NS = 10000u64;
 const LATENCY_BUCKETS = 25000usize;
 
-pub struct LatencyLog {
-  buckets List[u32];
-  over List[u64];        // samples past the last bucket, whole
-  total u64;
-  maxNs u64;
+pub struct LatencyLog is Default {
+  buckets: List[u32];
+  over: List[u64];        // samples past the last bucket, whole
+  total: u64;
+  maxNs: u64;
 
-  pub fn empty() LatencyLog {
-    mut b = List[u32].withCapacity(LATENCY_BUCKETS);
-    mut i = 0usize;
+  pub fn init(self: &new) {
+    var b = List[u32].withCapacity(LATENCY_BUCKETS);
+    var i = 0usize;
     while i < LATENCY_BUCKETS {
       b.push(0u);
       i = i + 1usize;
     }
-    new LatencyLog(b, List[u64].empty(), 0u64, 0u64);
+    *self = LatencyLog(b, List[u64](), 0u64, 0u64);
   }
 
   // Add a sample: an event at 'eventNs' shown by a present at 'presentNs'.
   // An event stamped after the present (which cannot be) counts as 0.
-  pub fn record(self &mut, eventNs u64, presentNs u64) {
-    mut ns = 0u64;
+  pub fn record(self: &mut, eventNs: u64, presentNs: u64) {
+    var ns = 0u64;
     if presentNs > eventNs { ns = presentNs - eventNs; }
     self.add(ns);
   }
 
   // Add a sample of 'ns' nanoseconds
-  pub fn add(self &mut, ns u64) {
-    imm b = ns / LATENCY_BUCKET_NS;
+  pub fn add(self: &mut, ns: u64) {
+    let b = ns / LATENCY_BUCKET_NS;
     if b < u64.from(LATENCY_BUCKETS) {
-      mut slot = &mut buckets[usize.from(b)];
+      var slot = &mut buckets[usize.from(b)];
       *slot = *slot + 1u;
     } else {
       over.push(ns);
@@ -53,34 +53,34 @@ pub struct LatencyLog {
   }
 
   // The number of samples
-  pub fn count(self &) u64 { total; }
+  pub fn count(self: &) u64 { total }
 
   // The largest sample, in nanoseconds (0 if none)
-  pub fn max(self &) u64 { maxNs; }
+  pub fn max(self: &) u64 { maxNs }
 
   // The 'p'th percentile (0 < p <= 100), in nanoseconds, by nearest rank;
   // 0 if there are no samples
-  pub fn percentile(self &mut, p f64) u64 {
-    assertDebug(p > 0. and p <= 100.);
+  pub fn percentile(self: &mut, p: f64) u64 {
+    assertDebug(p > 0. && p <= 100.);
     if total == 0u64 { return 0u64; }
-    mut rank = u64.from(p / 100. * f64.from(total));
+    var rank = u64.from(p / 100. * f64.from(total));
     if f64.from(rank) < p / 100. * f64.from(total) { rank = rank + 1u64; }
     if rank < 1u64 { rank = 1u64; }
-    mut seen = 0u64;
-    mut i = 0usize;
+    var seen = 0u64;
+    var i = 0usize;
     while i < LATENCY_BUCKETS {
       seen = seen + u64.from(*buckets[i]);
       if seen >= rank { return u64.from(i) * LATENCY_BUCKET_NS; }
       i = i + 1usize;
     }
     // Among the samples kept whole: sorted, the (rank - seen)th
-    sortU64(&mut over);
-    *over[usize.from(rank - seen - 1u64)];
+    over.sort();
+    *over[usize.from(rank - seen - 1u64)]
   }
 
   // Print 'label', then the count, p50, p95, p99 and the maximum in
   // milliseconds: "label: 412 samples; p50 12.34 ms, p95 ..., max 20.01 ms"
-  pub fn report(self &mut, label &str) {
+  pub fn report(self: &mut, label: &str) {
     printStr(label);
     print <- ": "; print <- total; print <- " samples";
     if total > 0u64 {
@@ -95,27 +95,11 @@ pub struct LatencyLog {
 }
 
 // 'ns' as milliseconds to two places
-fn printMs(ns u64) {
-  imm hundredths = (ns + 5000u64) / 10000u64;
+fn printMs(ns: u64) {
+  let hundredths = (ns + 5000u64) / 10000u64;
   print <- hundredths / 100u64;
   print <- ".";
-  imm frac = hundredths % 100u64;
+  let frac = hundredths % 100u64;
   if frac < 10u64 { print <- "0"; }
   print <- frac;
-}
-
-// Sort 'list' ascending, by insertion (it holds only the rare samples of a
-// quarter second or more)
-fn sortU64(list &mut List[u64]) {
-  mut i = 1usize;
-  while i < list.len() {
-    imm v = *list[i];
-    mut j = i;
-    while j > 0usize and *list[j - 1usize] > v {
-      list.set(j, *list[j - 1usize]);
-      j = j - 1usize;
-    }
-    list.set(j, v);
-    i = i + 1usize;
-  }
 }

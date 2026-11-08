@@ -32,54 +32,53 @@ const depth = 4u64;               // reads in flight at once
 
 // What each side tells main
 struct Report {
-  pub count u64;            // messages echoed or checked
-  pub wrong u64;            // messages or chunks with the wrong bytes
-  pub fileBytes u64;        // file bytes read
-  pub notDone u64;          // answers that were not Done
-  pub counters diag.Counters;
+  pub count: u64;            // messages echoed or checked
+  pub wrong: u64;            // messages or chunks with the wrong bytes
+  pub fileBytes: u64;        // file bytes read
+  pub notDone: u64;          // answers that were not Done
+  pub counters: diag.Counters;
 }
 
 struct ServerArgs {
-  pub pool Pool;
-  pub portTx Sender[u16];
+  pub portTx: Sender[u16];
 }
 
 // Echo whatever comes, until the stream ends
-fn serve(a ServerArgs) Report {
-  mut lp = Loop.mustMake();
-  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-  mut port = 0u16;
+fn serve(a: ServerArgs) Report {
+  var lp = Loop.mustMake();
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
   match lp.localAddr(listener) {
-    case imm r Ok {port = r.port();}
-    case imm e Error {}
+    case let Ok(r) {port = r.port();}
+    case let Err(e) {}
   }
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(0u64));
-  mut out = List[Completion].empty();
-  mut conn = Handle.none();
-  mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
-  mut open = true;
+  var out = List[Completion]();
+  var conn = Handle.none();
+  var rep = Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
+  var open = true;
   while open {
     lp.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm c = &mut out[k];
-      if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
+      let c = &mut out[k];
+      if !c.isDone() {rep.notDone = rep.notDone + 1u64;}
       if c.token == 0u64 {
         conn = c.handle;
-        lp.submit(Op.Recv(conn, a.pool.mustTake(4096usize)), Target.Here(1u64));
-      } elif c.token == 1u64 {
+        lp.submit(Op.Recv(conn, IoBuf(4096usize)), Target.Here(1u64));
+      } else if c.token == 1u64 {
         if c.count() == 0usize {
           open = false;
         } else {
-          mut b = IoBuf.empty();
-          b <=> c.buf;
+          var b = IoBuf();
+          b <-> c.buf;
           lp.submit(Op.Send(conn, b), Target.Here(2u64));
         }
       } else {
         rep.count = rep.count + u64.from(c.n);
-        mut b = IoBuf.empty();
-        b <=> c.buf;
+        var b = IoBuf();
+        b <-> c.buf;
         b.clear();
         lp.submit(Op.Recv(conn, b), Target.Here(1u64));
       }
@@ -88,23 +87,22 @@ fn serve(a ServerArgs) Report {
     out.clear();
   }
   rep.counters = lp.counters();
-  rep;
+  rep
 }
 
 struct ClientArgs {
-  pub pool Pool;
-  pub port u16;
+  pub port: u16;
 }
 
 // Message i's byte j
-fn msgByte(i u64, j usize) u8 {u8.from((i * 31u64 + u64.from(j)) % 256u64);}
+fn msgByte(i: u64, j: usize) u8 {u8.from((i * 31u64 + u64.from(j)) % 256u64)}
 
 // The file's byte at offset at
-fn fileByte(at u64) u8 {u8.from((at / 7u64 + at) % 253u64);}
+fn fileByte(at: u64) u8 {u8.from((at / 7u64 + at) % 253u64)}
 
-fn fillMsg(b &mut IoBuf, i u64) {
-  imm room = b.whole();
-  mut j = 0usize;
+fn fillMsg(b: &mut IoBuf, i: u64) {
+  let room = b.whole();
+  var j = 0usize;
   while j < msgSize {
     room[j] = msgByte(i, j);
     j = j + 1usize;
@@ -112,88 +110,88 @@ fn fillMsg(b &mut IoBuf, i u64) {
   b.setLen(msgSize);
 }
 
-fn checkChunk(b &IoBuf, at u64) bool {
-  imm v = b.view();
-  mut j = 0usize;
+fn checkChunk(b: &IoBuf, at: u64) bool {
+  let v = b.view();
+  var j = 0usize;
   while j < v.len {
     if v[j] != fileByte(at + u64.from(j)) {return false;}
     j = j + 1usize;
   }
-  true;
+  true
 }
 
 // Send each message, wait for its echo whole, check it; meanwhile read the
 // file through the same loop
-fn client(a ClientArgs) Report {
-  mut lp = Loop.mustMake();
-  mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
-  mut out = List[Completion].empty();
-  mut fh = Handle.none();
+fn client(a: ClientArgs) Report {
+  var lp = Loop.mustMake();
+  var rep = Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
+  var out = List[Completion]();
+  var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Read) {
-    case imm r Ok {fh = r;}
-    case imm e Error {}
+    case let Ok(r) {fh = r;}
+    case let Err(e) {}
   }
   // Read tokens: 100 + the chunk's number
-  mut nextRead = 0u64;
+  var nextRead = 0u64;
   while nextRead < depth {
-    lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
+    lp.submit(Op.ReadAt(fh, nextRead * chunk, IoBuf(usize.from(chunk))), Target.Here(100u64 + nextRead));
     nextRead = nextRead + 1u64;
   }
   lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(0u64));
-  mut conn = Handle.none();
-  mut sent = 0u64;
-  mut readsOut = depth;
-  while rep.count < messages or readsOut > 0u64 {
+  var conn = Handle.none();
+  var sent = 0u64;
+  var readsOut = depth;
+  while rep.count < messages || readsOut > 0u64 {
     lp.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm c = &mut out[k];
-      if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
+      let c = &mut out[k];
+      if !c.isDone() {rep.notDone = rep.notDone + 1u64;}
       if c.token >= 100u64 {
         // A file chunk
         readsOut = readsOut - 1u64;
-        imm at = (c.token - 100u64) * chunk;
-        if not checkChunk(&c.buf, at) {rep.wrong = rep.wrong + 1u64;}
+        let at = (c.token - 100u64) * chunk;
+        if !checkChunk(&c.buf, at) {rep.wrong = rep.wrong + 1u64;}
         rep.fileBytes = rep.fileBytes + u64.from(c.count());
         if nextRead * chunk < fileSize {
-          mut b = IoBuf.empty();
-          b <=> c.buf;
+          var b = IoBuf();
+          b <-> c.buf;
           b.clear();
           lp.submit(Op.ReadAt(fh, nextRead * chunk, b), Target.Here(100u64 + nextRead));
           nextRead = nextRead + 1u64;
           readsOut = readsOut + 1u64;
         }
-      } elif c.token == 0u64 {
+      } else if c.token == 0u64 {
         // Connected: the first message
         conn = c.handle;
-        mut b = a.pool.mustTake(msgSize);
+        var b = IoBuf(msgSize);
         fillMsg(&mut b, 0u64);
         lp.submit(Op.Send(conn, b), Target.Here(1u64));
         sent = 1u64;
-      } elif c.token == 1u64 {
+      } else if c.token == 1u64 {
         // Sent: its buffer receives the echo
-        mut b = IoBuf.empty();
-        b <=> c.buf;
+        var b = IoBuf();
+        b <-> c.buf;
         b.clear();
         lp.submit(Op.Recv(conn, b), Target.Here(2u64));
       } else {
         // Some of the echo: more to come, or the whole message
-        mut b = IoBuf.empty();
-        b <=> c.buf;
+        var b = IoBuf();
+        b <-> c.buf;
         if c.count() == 0usize {
           rep.wrong = rep.wrong + 1u64;
           rep.count = messages;
-        } elif b.len() < msgSize {
+        } else if b.len() < msgSize {
           lp.submit(Op.Recv(conn, b), Target.Here(2u64));
         } else {
-          imm v = b.view();
-          mut j = 0usize;
-          mut ok = v.len == msgSize;
-          while ok and j < msgSize {
+          let v = b.view();
+          var j = 0usize;
+          var ok = v.len == msgSize;
+          while ok && j < msgSize {
             if v[j] != msgByte(rep.count, j) {ok = false;}
             j = j + 1usize;
           }
-          if not ok {rep.wrong = rep.wrong + 1u64;}
+          if !ok {rep.wrong = rep.wrong + 1u64;}
           rep.count = rep.count + 1u64;
           if sent < messages {
             fillMsg(&mut b, sent);
@@ -208,26 +206,26 @@ fn client(a ClientArgs) Report {
   }
   lp.close(conn);
   rep.counters = lp.counters();
-  rep;
+  rep
 }
 
 // Write the file the client reads, through a loop of main's own
-fn writeFile(pool &Pool) bool {
-  mut lp = Loop.mustMake();
-  mut fh = Handle.none();
+fn writeFile() bool {
+  var lp = Loop.mustMake();
+  var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
-    case imm r Ok {fh = r;}
-    case imm e Error {return false;}
+    case let Ok(r) {fh = r;}
+    case let Err(e) {return false;}
   }
-  mut out = List[Completion].empty();
-  mut at = 0u64;
-  mut pending = 0u64;
-  mut good = true;
-  while at < fileSize or pending > 0u64 {
-    while pending < 8u64 and at < fileSize {
-      mut b = pool.mustTake(usize.from(chunk));
-      imm room = b.whole();
-      mut j = 0usize;
+  var out = List[Completion]();
+  var at = 0u64;
+  var pending = 0u64;
+  var good = true;
+  while at < fileSize || pending > 0u64 {
+    while pending < 8u64 && at < fileSize {
+      var b = IoBuf(usize.from(chunk));
+      let room = b.whole();
+      var j = 0usize;
       while j < room.len {
         room[j] = fileByte(at + u64.from(j));
         j = j + 1usize;
@@ -238,7 +236,7 @@ fn writeFile(pool &Pool) bool {
       pending = pending + 1u64;
     }
     lp.poll(forever(), &mut out);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
       if out[k].count() != usize.from(chunk) {good = false;}
       pending = pending - 1u64;
@@ -246,26 +244,25 @@ fn writeFile(pool &Pool) bool {
     }
     out.clear();
   }
-  good;
+  good
 }
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    require(writeFile(&pool), "the file written");
-    mut portTx Sender[u16];
-    mut portRx Receiver[u16];
+    require(writeFile(), "the file written");
+    var portTx: Sender[u16];
+    var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    imm server = thread.start(new ServerArgs(pool, portTx), &serve);
-    mut port = 0u16;
+    let server = thread.start(ServerArgs(portTx), &serve);
+    var port = 0u16;
     match portRx.recv() {
-      case imm p Some {port = p;}
+      case let Some(p) {port = p;}
       case is None[u16] {}
     }
     require(port != 0u16, "the server is listening");
-    imm cl = thread.start(new ClientArgs(pool, port), &client);
-    imm c = cl.join();
-    imm s = server.join();
+    let cl = thread.start(ClientArgs(port), &client);
+    let c = cl.join();
+    let s = server.join();
 
     expectUInt(c.count, messages, "100,000 messages came back");
     expectUInt(c.wrong, 0u64, "each byte for byte, and every file chunk too");
@@ -276,11 +273,12 @@ fn main() i32 {
     expectUInt(s.counters.delivered, s.counters.submitted, "the server's loop: every operation answered once");
     expectUInt(c.counters.inFlight + s.counters.inFlight, 0u64, "nothing in flight on either");
     expect(c.counters.submitted >= 2u64 * messages + fileSize / chunk, "a send and a receive per message, a read per chunk");
-    imm st = pool.stats();
+    let st = stats();
     expectUInt(st.lent, 0u64, "every buffer back in the pool");
     expectUInt(st.refused, 0u64, "no take refused");
   }
+  trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");
   libc.remove("echo.tmp");
-  done();
+  done()
 }

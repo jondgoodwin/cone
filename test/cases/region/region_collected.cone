@@ -20,59 +20,59 @@ mod region_collected;
 import stdio use *;
 import libc;
 
-fn line(label &str, n i32) {
+fn line(label: &str, n: i32) {
   printStr(label);
   printInt(i64.from(n));
   printStr("\n");
 }
 
 struct Swept is RegionRef {
-  fn alloc(size usize) *u8 inline { printStr("swept alloc\n"); malloc(size); }
+  fn alloc(size: usize) *u8 inline { printStr("swept alloc\n"); malloc(size) }
   // Never called: the compiler frees nothing from a region that is not 'Move'
   // and declares no 'dealiasRef'
-  fn free(self &uni Swept) inline { printStr("swept free\n"); libc.free(self as *u8); }
+  fn free(self: &uni Swept) inline { printStr("swept free\n"); libc.free(self as *u8); }
 }
 
 struct Fin {
-  pub v i32;
-  fn final(self &uni) { line("final ", v); }
+  pub v: i32;
+  fn final(self: &uni) { line("final ", v); }
 }
 
 // A struct holding such references copies too: none of its fields moves
 struct Pair {
-  pub a Swept[mut, i32];
-  pub b Swept[mut, i32];
+  pub a: Swept[mut, i32];
+  pub b: Swept[mut, i32];
 }
 
-fn peek(r Swept[mut, i32]) i32 { *r; }
+fn peek(r: Swept[mut, i32]) i32 { *r }
 
 fn copies() {
   printStr("-- copies\n");
-  imm a = new Swept[mut, i32](5);
-  imm b = a;
-  imm c = a;
+  let a = Swept[mut, i32](5);
+  let b = a;
+  let c = a;
   *b = 6i32;
   line("read through the source after writing through a copy ", *a);
   line("read through the other copy ", *c);
   line("passed to a call ", peek(a));
   line("still held after the call ", *a);
-  imm p = new Pair(a, b);
-  imm q = p;
+  let p = Pair(a, b);
+  let q = p;
   line("through a copied struct ", *q.a + *p.b);
 }
 
 fn neverFinalized() {
   printStr("-- never finalized\n");
-  imm f = new Swept[mut, Fin](7i32);
-  imm g = f;
+  let f = Swept[mut, Fin](7i32);
+  let g = f;
   line("held ", f.v);
   line("held by the copy ", g.v);
 }
 
 fn unique() {
   printStr("-- unique\n");
-  imm u = new Swept[Fin](9i32);
-  imm w = u;
+  let u = Swept[Fin](9i32);
+  let w = u;
   line("moved to ", w.v);
 }
 
@@ -83,5 +83,5 @@ fn main() i32 {
   printStr("never finalized done\n");
   unique();
   printStr("unique done\n");
-  0i32;
+  0i32
 }

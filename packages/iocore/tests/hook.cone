@@ -21,58 +21,57 @@ import diag;
 
 // What one hook saw: written by its functions, read by main
 struct Seen {
-  pub delivered u64;
-  pub dropped u64;
-  pub token u64;
-  pub status u32;
-  pub n usize;
-  pub bufcap usize;
+  pub delivered: u64;
+  pub dropped: u64;
+  pub token: u64;
+  pub status: u32;
+  pub n: usize;
+  pub bufcap: usize;
 }
 
-fn seen() Seen {new Seen(0u64, 0u64, 0u64, 99u32, 0usize, 0usize);}
+fn seen() Seen {Seen(0u64, 0u64, 0u64, 99u32, 0usize, 0usize)}
 
 // What a hook's closure holds besides the place it writes: a value whose death,
 // if the closure never delivered, counts a drop (the way a runtime learns that
 // no answer is coming)
 struct Guard is Sendable, Move {
-  pub s *Seen;
-  pub armed bool;
+  pub s: *Seen;
+  pub armed: bool;
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if armed {
       (*s).dropped = (*s).dropped + 1u64;
     }
   }
 }
 
-fn hookOf(s &mut Seen, token u64) Target {
-  imm place = s as *Seen;
-  Target.Hook(token, Sink.make(new So[fn(c Completion) + Sendable](
-    fn(c Completion) [mut guard = new Guard(place, true)] {
+fn hookOf(s: &mut Seen, token: u64) Target {
+  let place = s as *Seen;
+  Target.Hook(token, Sink.make(Uni[fn(c: Completion) + Sendable](
+    fn(c: Completion) [var guard = Guard(place, true)] {
       guard.armed = false;
-      imm p = guard.s;
+      let p = guard.s;
       (*p).delivered = (*p).delivered + 1u64;
       (*p).token = c.token;
       (*p).status = c.status;
       (*p).n = c.n;
       (*p).bufcap = c.buf.capacity();
-    })));
+    })))
 }
 
 fn main() i32 {
-  mut timer = seen();
-  mut ext = seen();
-  mut late = seen();
-  mut never = seen();
+  var timer = seen();
+  var ext = seen();
+  var late = seen();
+  var never = seen();
   {
-    mut lp = Loop.mustMake();
-    imm pool = Pool.make();
+    var lp = Loop.mustMake();
     lp.after(Instant.now() + Duration.fromMillis(1i64), hookOf(&mut timer, 7u64));
-    mut comp = lp.external(hookOf(&mut ext, 8u64), pool.mustTake(4096usize));
+    var comp = lp.external(hookOf(&mut ext, 8u64), IoBuf(4096usize));
     comp.done(5usize);
-    mut out = List[Completion].empty();
-    imm limit = Instant.now() + Duration.fromSeconds(5i64);
-    while (timer.delivered == 0u64 or ext.delivered == 0u64) and Instant.now() < limit {
+    var out = List[Completion]();
+    let limit = Instant.now() + Duration.fromSeconds(5i64);
+    while (timer.delivered == 0u64 || ext.delivered == 0u64) && Instant.now() < limit {
       lp.poll(limit, &mut out);
     }
     expectUInt(u64.from(out.len()), 0u64, "1: nothing came to poll's own list");
@@ -92,9 +91,9 @@ fn main() i32 {
   expectUInt(late.dropped, 0u64, "2: not dropped");
 
   {
-    imm t = hookOf(&mut never, 10u64);
+    let t = hookOf(&mut never, 10u64);
   }
   expectUInt(never.dropped, 1u64, "3: a Sink that dies undelivered calls drop");
   expectUInt(never.delivered, 0u64, "3: and never deliver");
-  done();
+  done()
 }

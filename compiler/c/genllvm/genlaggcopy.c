@@ -582,12 +582,39 @@ static int genlAggSigByPtr(GenState *gen, LLVMTypeRef fntype) {
     return byptr;
 }
 
+// Is this a slice, or a fat reference: a literal struct of a pointer and a
+// count? Cone's convention passes it as the two, the pointer first, so that
+// the pointer can carry what its permission says ('noalias', which no struct
+// can carry). A literal struct is all a fat reference is made as; a named one
+// is a type of the program's, passed as any aggregate is
+static int genlAggIsSlice(GenState *gen, LLVMTypeRef type) {
+    if (LLVMGetTypeKind(type) != LLVMStructTypeKind || !LLVMIsLiteralStruct(type)
+            || LLVMCountStructElementTypes(type) != 2 || LLVMIsPackedStruct(type))
+        return 0;
+    LLVMTypeRef ptr = LLVMStructGetTypeAtIndex(type, 0);
+    LLVMTypeRef len = LLVMStructGetTypeAtIndex(type, 1);
+    return LLVMGetTypeKind(ptr) == LLVMPointerTypeKind && LLVMGetTypeKind(len) == LLVMIntegerTypeKind
+        && LLVMGetIntTypeWidth(len) == LLVMPointerSize(gen->datalayout) * 8;
+}
+
+// Does a function type take a slice?
+static int genlAggSigSlice(GenState *gen, LLVMTypeRef fntype) {
+    unsigned nparms = LLVMCountParamTypes(fntype);
+    LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms + 1) * sizeof(LLVMTypeRef));
+    LLVMGetParamTypes(fntype, parms);
+    int slice = 0;
+    for (unsigned i = 0; i < nparms && !slice; ++i)
+        slice = genlAggIsSlice(gen, parms[i]);
+    free(parms);
+    return slice;
+}
+
 // Does Cone's convention change a function of this type: does it take an
-// argument as a pointer, return a large value, or return a smaller aggregate
-// otherwise than whole?
+// argument as a pointer or as a slice's two, return a large value, or return
+// a smaller aggregate otherwise than whole?
 static int genlAggSigChanged(GenState *gen, LLVMTypeRef fntype) {
     return genlAggRetClassOf(gen, LLVMGetReturnType(fntype)) != GenlRetWhole || genlAggSigLarge(gen, fntype)
-        || genlAggSigByPtr(gen, fntype);
+        || genlAggSigByPtr(gen, fntype) || genlAggSigSlice(gen, fntype);
 }
 
 // Is this a call LLVM itself defines, whose type no convention changes?
@@ -632,18 +659,26 @@ static LLVMTypeRef genlAggSig(GenState *gen, LLVMTypeRef fntype) {
     GenlRetClass retclass = genlAggRetClass(gen, rettype, &coerced);
     int sret = genlAggRetSret(retclass);
     unsigned nparms = LLVMCountParamTypes(fntype);
-    LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms + 2) * sizeof(LLVMTypeRef));
-    LLVMGetParamTypes(fntype, parms + sret);
+    LLVMTypeRef *oldparms = (LLVMTypeRef *)malloc((nparms + 1) * sizeof(LLVMTypeRef));
+    LLVMGetParamTypes(fntype, oldparms);
+    LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms * 2 + 2) * sizeof(LLVMTypeRef));
+    unsigned n = 0;
     if (sret) {
-        parms[0] = ptr;
+        parms[n++] = ptr;
         rettype = LLVMVoidTypeInContext(gen->context);
     }
     else if (coerced)
         rettype = coerced;
-    for (unsigned i = sret; i < nparms + sret; ++i) {
-        if (genlAggByPtr(gen, parms[i]))
-            parms[i] = ptr;
+    for (unsigned i = 0; i < nparms; ++i) {
+        if (genlAggIsSlice(gen, oldparms[i])) {
+            parms[n++] = ptr;
+            parms[n++] = LLVMStructGetTypeAtIndex(oldparms[i], 1);
+        }
+        else
+            parms[n++] = genlAggByPtr(gen, oldparms[i]) ? ptr : oldparms[i];
     }
+    free(oldparms);
+    nparms = n - sret;
     LLVMTypeRef newtype = LLVMFunctionType(rettype, parms, nparms + sret, LLVMIsFunctionVarArg(fntype));
     free(parms);
     return newtype;
@@ -699,14 +734,36 @@ static void genlAggSigAttrs(GenState *gen, LLVMValueRef from, LLVMValueRef to, L
     unsigned nparms = LLVMCountParamTypes(oldtype);
     LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms + 1) * sizeof(LLVMTypeRef));
     LLVMGetParamTypes(oldtype, parms);
+    unsigned next = 1 + sret;    // the index the parameter being copied has in the new type
     for (unsigned i = 0; i < nparms; ++i) {
+        unsigned idx = next;
+        if (genlAggIsSlice(gen, parms[i])) {
+            // A slice is its pointer then its count. Generation marked the
+            // slice of a unique or immutable borrow (genlBorrowAttrs); its
+            // pointer is what 'noalias' goes on. Not 'nonnull': the pointer
+            // of an empty slice may be null; not 'dereferenceable': the count
+            // is not in the signature
+            next += 2;
+            if (call)
+                continue;
+            size_t keylen = strlen(GenlSliceBorrow);
+            LLVMAttributeRef mark = LLVMGetStringAttributeAtIndex(from, i + 1, GenlSliceBorrow, (unsigned)keylen);
+            if (mark == NULL)
+                continue;
+            unsigned vallen;
+            const char *val = LLVMGetStringAttributeValue(mark, &vallen);
+            LLVMAddAttributeAtIndex(to, idx, genlAggEnumAttr(gen, "noalias"));
+            if (vallen == 3 && memcmp(val, "imm", 3) == 0)
+                LLVMAddAttributeAtIndex(to, idx, genlAggEnumAttr(gen, "readonly"));
+            continue;
+        }
+        ++next;
         if (!genlAggByPtr(gen, parms[i]))
-            genlAggCopyAttrs(from, to, i + 1, i + 1 + sret, call);
+            genlAggCopyAttrs(from, to, i + 1, idx, call);
         else if (!call) {
             // Only read, and kept by nothing past the call: what it points at,
             // its caller's own storage lent (genlLendable) or a copy, nothing
             // else changes until the call returns
-            unsigned idx = i + 1 + sret;
             LLVMAddAttributeAtIndex(to, idx, genlAggEnumAttr(gen, "noalias"));
             LLVMAddAttributeAtIndex(to, idx, genlAggEnumAttr(gen, "readonly"));
             LLVMAddAttributeAtIndex(to, idx, LLVMCreateEnumAttribute(gen->context,
@@ -759,6 +816,26 @@ static LLVMValueRef genlAggParmLoad(GenState *gen, LLVMValueRef fn, LLVMValueRef
     LLVMSetAlignment(load, genlAggAlignOf(gen, type));
     LLVMSetCurrentDebugLocation2(gen->builder, loc);
     return load;
+}
+
+// A slice parameter's value in the body of a function that takes it as its
+// pointer and its count, the two put together as the body begins
+static LLVMValueRef genlAggParmJoin(GenState *gen, LLVMValueRef fn, LLVMValueRef ptr, LLVMValueRef len, LLVMTypeRef type) {
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    while (first && LLVMIsAAllocaInst(first))
+        first = LLVMGetNextInstruction(first);
+    LLVMMetadataRef loc = LLVMGetCurrentDebugLocation2(gen->builder);
+    if (first) {
+        LLVMPositionBuilderBefore(gen->builder, first);
+        LLVMSetCurrentDebugLocation2(gen->builder, LLVMInstructionGetDebugLoc(first));
+    }
+    else
+        LLVMPositionBuilderAtEnd(gen->builder, entry);
+    LLVMValueRef slice = LLVMBuildInsertValue(gen->builder, LLVMGetPoison(type), ptr, 0, "");
+    slice = LLVMBuildInsertValue(gen->builder, slice, len, 1, "");
+    LLVMSetCurrentDebugLocation2(gen->builder, loc);
+    return slice;
 }
 
 // Remake a function genlAggSigChanged names with the type genlAggSig
@@ -814,14 +891,21 @@ static LLVMValueRef genlAggRetype(GenState *gen, LLVMValueRef fn, GenlAggHomes *
     if (sret)
         LLVMSetValueName2(LLVMGetParam(newfn, 0), "sret", 4);
     unsigned nparms = LLVMCountParams(fn);
+    unsigned next = sret;    // the new function's parameter the old one's is
     for (unsigned i = 0; i < nparms; ++i) {
         LLVMValueRef oldparm = LLVMGetParam(fn, i);
-        LLVMValueRef newparm = LLVMGetParam(newfn, i + sret);
+        LLVMValueRef newparm = LLVMGetParam(newfn, next++);
         size_t len;
         const char *pname = LLVMGetValueName2(oldparm, &len);
         LLVMSetValueName2(newparm, pname, len);
         LLVMTypeRef ptype = LLVMTypeOf(oldparm);
-        if (!genlAggByPtr(gen, ptype))
+        if (genlAggIsSlice(gen, ptype)) {
+            LLVMValueRef newlen = LLVMGetParam(newfn, next++);
+            LLVMSetValueName2(newlen, "len", 3);
+            if (LLVMGetFirstUse(oldparm))
+                LLVMReplaceAllUsesWith(oldparm, genlAggParmJoin(gen, newfn, newparm, newlen, ptype));
+        }
+        else if (!genlAggByPtr(gen, ptype))
             LLVMReplaceAllUsesWith(oldparm, newparm);
         else if (LLVMGetFirstUse(oldparm) == NULL || genlAggParmInPlace(gen, oldparm, newparm))
             ;
@@ -1007,21 +1091,27 @@ static void genlAggCall(GenlAggFn *st, LLVMValueRef call) {
     GenlRetClass retclass = genlAggRetClass(gen, rettype, &coerced);
     int sret = genlAggRetSret(retclass);
     unsigned nargs = LLVMGetNumArgOperands(call);
-    LLVMValueRef *args = (LLVMValueRef *)malloc((nargs + 2) * sizeof(LLVMValueRef));
+    unsigned ndecl = LLVMCountParamTypes(oldtype);
+    LLVMValueRef *args = (LLVMValueRef *)malloc((nargs * 2 + 2) * sizeof(LLVMValueRef));
     LLVMValueRef slot = NULL;
+    unsigned n = 0;
     if (sret)
-        args[0] = slot = genlAggSlot(st, rettype);
+        args[n++] = slot = genlAggSlot(st, rettype);
     for (unsigned i = 0; i < nargs; ++i) {
         LLVMValueRef arg = LLVMGetOperand(call, i);
         LLVMTypeRef argtype = LLVMTypeOf(arg);
-        if (!genlAggByPtr(gen, argtype))
-            args[i + sret] = arg;
+        if (i < ndecl && genlAggIsSlice(gen, argtype)) {
+            args[n++] = LLVMBuildExtractValue(gen->builder, arg, 0, "");
+            args[n++] = LLVMBuildExtractValue(gen->builder, arg, 1, "");
+        }
+        else if (!genlAggByPtr(gen, argtype))
+            args[n++] = arg;
         else if (genlAggIsLarge(gen, argtype))
-            args[i + sret] = genlAggHomeOf(st, arg)->home;
+            args[n++] = genlAggHomeOf(st, arg)->home;
         else
-            args[i + sret] = genlAggArgPtr(st, call, arg);
+            args[n++] = genlAggArgPtr(st, call, arg);
     }
-    LLVMValueRef newcall = LLVMBuildCall2(gen->builder, newtype, LLVMGetCalledValue(call), args, nargs + sret, "");
+    LLVMValueRef newcall = LLVMBuildCall2(gen->builder, newtype, LLVMGetCalledValue(call), args, n, "");
     free(args);
     LLVMSetInstructionCallConv(newcall, LLVMGetInstructionCallConv(call));
     genlAggSigAttrs(gen, call, newcall, oldtype, 1);

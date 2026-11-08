@@ -1,0 +1,86 @@
+// An actor made in place converts to an actor trait's handle as a literal's
+// field value, as a variable's would: `Some[Ear](Listener(1))` and
+// `Holder(Listener(2))` have no variable to name the actor, so the conversion
+// lends a temporary to hold it.
+//
+// Both listeners are made that way. One is sent 10 through the Some, the other
+// 5 through the struct's field; when the block ends the only handles drop and
+// both finalize: ids 1+2, heard 10+5.
+
+mod concurrency_actor_trait_in_place;
+
+import stdio use *;
+import thread;
+import time;
+import actors;
+
+struct Results {
+  pub finals: Atomic[u64];
+  pub idsum: Atomic[u64];
+  pub heard: Atomic[u64];
+}
+
+let results: Results;
+
+fn @initpure init() {
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn waitFinals(n: u64) {
+  while results.finals.load() < n {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+}
+
+actor trait Ear {
+  pub async fn hear(self, n: u64);
+}
+
+actor Listener {
+  id: u64;
+  heard: u64;
+
+  fn init(self: &new, id: u64) {
+    *self = Self(id: id, heard: 0u64);
+  }
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+  }
+
+  fn final(self: &uni) {
+    results.idsum.add(id);
+    results.heard.add(heard);
+    results.finals.add(1u64);
+  }
+}
+
+struct Holder {
+  pub ear: Ear;
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  {
+    let opt: Option[Ear] = Some[Ear](Listener(1u64));
+    match &opt {
+      case let &Some(e) {e.hear(10u64);}
+      else {}
+    }
+    let h = Holder(Listener(2u64));
+    h.ear.hear(5u64);
+    thread.sleep(time.Duration.fromMillis(20));
+    // Later statements: the temporaries of the statements above are long gone
+    match &opt {
+      case let &Some(e) {e.hear(10u64);}
+      else {}
+    }
+    h.ear.hear(5u64);
+  }
+  waitFinals(2u64);
+  finalAll();
+  printStr("finalized "); printUInt(results.finals.load());
+  printStr(", ids "); printUInt(results.idsum.load());
+  printStr(", heard "); printUInt(results.heard.load()); printStr("\n");
+}

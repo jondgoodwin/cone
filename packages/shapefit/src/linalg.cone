@@ -1,0 +1,180 @@
+// ======== small dense linear algebra, in f64 ========
+//
+// Everything in shapefit that solves for numbers does so here: the fits, the
+// curvature and the alignments. Matrices are row-major lists of f64. Every loop runs
+// in a fixed order, so the same input gives the same bits on every machine.
+
+fn mind(a: f64, b: f64) f64 { if a < b { a } else { b } }
+fn maxd(a: f64, b: f64) f64 { if a > b { a } else { b } }
+fn sqrtd(a: f64) f64 { if a > 0.0 { libc.sqrt(a) } else { 0.0 } }
+fn sqd(a: f64) f64 { a * a }
+
+fn zeros(n: usize) List[f64] {
+  var out = List[f64].withCapacity(n);
+  var i = 0usize;
+  while i < n { out.push(0.0); i += 1usize; }
+  out
+}
+
+fn crossd(a: DVec3, b: DVec3) DVec3 {
+  DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+}
+
+// The vector made unit length, or (0, 0, 0) if it has none
+fn unitd(v: DVec3) DVec3 {
+  let len = v.length();
+  if len > 0.0 { v * (1.0 / len) } else { DVec3(0.0, 0.0, 0.0) }
+}
+
+// Any unit vector perpendicular to the unit vector n (n's smallest axis crossed with it)
+fn perpendicularTo(n: DVec3) DVec3 {
+  let ax = n.x.abs();
+  let ay = n.y.abs();
+  let az = n.z.abs();
+  let helper = if ax <= ay && ax <= az { DVec3(1.0, 0.0, 0.0) }
+    else if ay <= az { DVec3(0.0, 1.0, 0.0) } else { DVec3(0.0, 0.0, 1.0) };
+  unitd(crossd(n, helper))
+}
+
+// The eigenvalues and eigenvectors of the symmetric n x n matrix 'a' (row-major),
+// by cyclic Jacobi rotations: 'vals' (ascending) and 'vecs', where column k of
+// the row-major n x n 'vecs' (entry i * n + k) is the unit eigenvector of vals[k].
+// 'a' is destroyed. The sweeps run in a fixed order until the off-diagonal is
+// negligible, so the answer is the same bits everywhere; each eigenvector's
+// sign is made to have its largest component positive.
+pub fn jacobiEigen(a: &mut List[f64], n: usize, vals: &mut List[f64], vecs: &mut List[f64]) {
+  vecs.clear();
+  var i = 0usize;
+  while i < n {
+    var j = 0usize;
+    while j < n { vecs.push(if i == j { 1.0 } else { 0.0 }); j += 1usize; }
+    i += 1usize;
+  }
+  var sweep = 0;
+  while sweep < 60 {
+    var off = 0.0;
+    var p = 0usize;
+    while p < n {
+      var q = p + 1usize;
+      while q < n { off = off + sqd(*a[p * n + q]); q += 1usize; }
+      p += 1usize;
+    }
+    if off < 1.0e-30 { sweep = 1000; } else {
+      p = 0usize;
+      while p < n {
+        var q = p + 1usize;
+        while q < n {
+          let apq = *a[p * n + q];
+          if apq.abs() > 1.0e-300 {
+            let theta = (*a[q * n + q] - *a[p * n + p]) / (2.0 * apq);
+            let t = (if theta >= 0.0 { 1.0 } else { -1.0 }) / (theta.abs() + sqrtd(theta * theta + 1.0));
+            let c = 1.0 / sqrtd(t * t + 1.0);
+            let s = t * c;
+            var k = 0usize;
+            while k < n {
+              let akp = *a[k * n + p];
+              let akq = *a[k * n + q];
+              a.set(k * n + p, c * akp - s * akq);
+              a.set(k * n + q, s * akp + c * akq);
+              k += 1usize;
+            }
+            k = 0usize;
+            while k < n {
+              let apk = *a[p * n + k];
+              let aqk = *a[q * n + k];
+              a.set(p * n + k, c * apk - s * aqk);
+              a.set(q * n + k, s * apk + c * aqk);
+              k += 1usize;
+            }
+            k = 0usize;
+            while k < n {
+              let vkp = *vecs[k * n + p];
+              let vkq = *vecs[k * n + q];
+              vecs.set(k * n + p, c * vkp - s * vkq);
+              vecs.set(k * n + q, s * vkp + c * vkq);
+              k += 1usize;
+            }
+          }
+          q += 1usize;
+        }
+        p += 1usize;
+      }
+      sweep += 1;
+    }
+  }
+  // Sort ascending by eigenvalue; ties keep their order (a stable sort of the column numbers, then the
+  // eigenvalues and the columns of 'vecs' are laid out in that order)
+  var diag = List[f64]();
+  i = 0usize;
+  while i < n { diag.push(*a[i * n + i]); i += 1usize; }
+  var order = List[usize]();
+  i = 0usize;
+  while i < n { order.push(i); i += 1usize; }
+  order.sortByKey(fn(c: &usize) f64 { *diag[*c] });
+  var oldVecs = List[f64]();
+  i = 0usize;
+  while i < vecs.len() { oldVecs.push(*vecs[i]); i += 1usize; }
+  vals.clear();
+  i = 0usize;
+  while i < n {
+    let from = *order[i];
+    vals.push(*diag[from]);
+    var r = 0usize;
+    while r < n { vecs.set(r * n + i, *oldVecs[r * n + from]); r += 1usize; }
+    i += 1usize;
+  }
+  // Signs
+  i = 0usize;
+  while i < n {
+    var big = 0usize;
+    var r = 1usize;
+    while r < n { if (*vecs[r * n + i]).abs() > (*vecs[big * n + i]).abs() + 1.0e-12 { big = r; } r += 1usize; }
+    if *vecs[big * n + i] < 0.0 {
+      r = 0usize;
+      while r < n { vecs.set(r * n + i, -*vecs[r * n + i]); r += 1usize; }
+    }
+    i += 1usize;
+  }
+}
+
+// Solve the n x n system a x = b by Gaussian elimination with partial pivoting;
+// the solution replaces b and 'a' is destroyed. False if the matrix is singular.
+pub fn solveLinear(a: &mut List[f64], b: &mut List[f64], n: usize) bool {
+  var col = 0usize;
+  while col < n {
+    var piv = col;
+    var r = col + 1usize;
+    while r < n { if (*a[r * n + col]).abs() > (*a[piv * n + col]).abs() { piv = r; } r += 1usize; }
+    if (*a[piv * n + col]).abs() < 1.0e-300 { return false; }
+    if piv != col {
+      var k = 0usize;
+      while k < n {
+        let t = *a[col * n + k];
+        a.set(col * n + k, *a[piv * n + k]);
+        a.set(piv * n + k, t);
+        k += 1usize;
+      }
+      b.swap(col, piv);
+    }
+    r = col + 1usize;
+    while r < n {
+      let f = *a[r * n + col] / *a[col * n + col];
+      if f != 0.0 {
+        var k = col;
+        while k < n { a.set(r * n + k, *a[r * n + k] - f * *a[col * n + k]); k += 1usize; }
+        b.set(r, *b[r] - f * *b[col]);
+      }
+      r += 1usize;
+    }
+    col += 1usize;
+  }
+  var i = n;
+  while i > 0usize {
+    i -= 1usize;
+    var s = *b[i];
+    var k = i + 1usize;
+    while k < n { s = s - *a[i * n + k] * *b[k]; k += 1usize; }
+    b.set(i, s / *a[i * n + i]);
+  }
+  true
+}

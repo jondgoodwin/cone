@@ -8,7 +8,7 @@ and `+`, `+<` without knowing whether it is a type or a constructor.
 Name resolution decides by asking whether the operand is a type. A managed
 reference *type*, `Rc[mut, Node]`, is not built by the parser at all: it is a
 bracketed call until type check lowers it into this node ("The managed
-reference type", below), and an allocation, `new Rc[mut, Node](1)`, is a
+reference type", below), and an allocation, `Rc[mut, Node](1)`, is a
 construction until type check makes it an `AllocateTag` node
 ("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
@@ -39,7 +39,7 @@ repoint `Self` — so the copy refers to something the original did not, while t
 original's `TypeChecked` mark, so `refTypeCheck` never revisits it to normalize.
 Sharing the record made the memoized LLVM type answer for the original's pointee:
 whichever implementer generated first named it for all of them, so a trait
-default's clones took one another's receiver and `fn f(m &Trait)` took an
+default's clones took one another's receiver and `fn f(m: &Trait)` took an
 implementer's type. `trait_inherited_defaults` pins both.
 
 **A lifetime is two fields, and they answer different questions.** `scope` is
@@ -143,16 +143,16 @@ The differences are worth knowing:
   only the prefixed term instead would make `&x.a` mean `(&x).a` — typed as the
   field but returning the field's address, which generation cannot catch.
 
-An allocation is written `new Rc[mut, Node](1)` or, with a finished value,
-`new Rc[i32](5)` (below, "Allocation"). The `+` spelling, `+Rc-mut 5`, is
+An allocation is written `Rc[mut, Node](1)` or, with a finished value,
+`Rc[i32](5)` (below, "Allocation"). The `+` spelling, `+Rc-mut 5`, is
 refused whatever its value. `parsePlus` builds every `+` node marked
 `plusSpelled`. With a value operand it becomes an `AllocateTag` at name
 resolution, and `allocateTypeCheck` refuses it (`ErrorPlusAlloc`, naming the
-`new` or `trynew` form, with `(...)` for a construction and `(value)` for any
+`Rc[...](...)` or `trynew` form, with `(...)` for a construction and `(value)` for any
 other value, a type with no name of its own written `T`). With a type operand it
 is a `RefTag` or `VirtRefTag` type, which type check refuses
 (`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. A match
-pattern's root, `case imm c +Rc-mut Circle`, is refused at parse by
+pattern's root, `case let +Rc-mut Circle(c)`, is refused at parse by
 `castPatternMark` (`ErrorPatManaged`): a pattern names only the variant, and the
 matched value supplies the managed reference, its region and permission
 (`castPatternAdoptRef`, [cast](cast.md)).
@@ -195,7 +195,7 @@ check lowers it into a `RefNode`. Everything from type check on sees only the
   type, the last argument, is checked first, since whether it is an **open
   trait** (`TraitType` without `HasTagField`) decides the shape: `VirtRefTag`
   for one, `RefTag` for anything else. An enum is a trait to the compiler too,
-  and a thin owning reference to one exists (`So[Option[...]]`), which is why
+  and a thin owning reference to one exists (`Uni[Option[...]]`), which is why
   the test is the open trait's. Then the `RefNode` replaces the call and is
   checked as any reference type is. The arguments are refused as
   `ErrorRefTypeArgs` (other than one or two, or a value where the type goes),
@@ -211,8 +211,13 @@ check lowers it into a `RefNode`. Everything from type check on sees only the
   from the argument's region), a field's fold (`foldSourceDcl`), and a
   global's fold peek (`modFoldPeek`, which peeks the head rather than resolving
   it).
-- **Diagnostics** spell a managed reference as it is written, permission
-  always given: `Rc[mut, Point]` (`itypeSpellCat`, `regionTracedTypeName`).
+- **Diagnostics** spell a managed reference as it is written, the permission
+  left out where it is the one an owner takes unwritten (`refOwnerPermIsDefault`:
+  `uni`, or `imm` over a type declaring `Immutable`) and given otherwise, so a
+  spelling reads back as the same type: `Uni[Point]`, `Rc[mut, Point]`,
+  `Uni[uni, str]` (`itypeSpellCat`, which the shape-change messages' owner
+  name, `loanShapeContName`, calls, and `regionTracedTypeName`). A borrow's
+  permission is always given.
 
 ## Name resolution
 
@@ -239,7 +244,7 @@ what carries `&&T`.
 
 **A virtual reference may not be borrowed or allocated** — `ErrorBadTerm`,
 "Coerce from a regular ref.", and for the retired allocation `+<Rc-mut
-Rect[3]`, `ErrorPlusAlloc`, naming `new Rc[mut, Rect](...)` and the coercion.
+Rect[3]`, `ErrorPlusAlloc`, naming `Rc[mut, Rect](...)` and the coercion.
 There is nothing to construct *from*: the fat
 pointer's second word is a vtable, selected either by scanning the trait's
 implementations for the concrete source struct or, from a reference to an enum, by
@@ -269,7 +274,7 @@ Check](../phases/type-check.md), "A reference does not demand its target".
 `parseAmper` leaves `vtexp` unknown on purpose, because a reference in a
 parameter position may have its pointee inferred, and a method's `Self`
 inference (`parseFnSig`, or `parseFnSigSettle` for an anonymous function's) is
-the only thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`,
+the only thing that ever fills one in. Every other spelling — `fn f(s: &)`, `&&`,
 `*&`, `&[]`, `(&, i32)`, `&fn(&) i32`, a non-`self` parameter inside a method — would otherwise
 reach `genlType` still unknown and hand `LLVMPointerType` a NULL element type.
 Every enclosing type reaches these two guards through `itypeTypeCheck` on its
@@ -277,8 +282,18 @@ own pointee, which is what makes two checks cover all of them.
 
 ### `borrowTypeCheck`
 
+A written `&*s`, `&mut *s` or `&uni *s` on a slice reference borrows what it points
+at, as a slice again: the borrow names its deref operand (`derefSliceBorrowed`), the
+only `*` of a slice reference that `derefTypeCheck` types (as the array it points at,
+`ArrayDerefTag`), and retags itself `ArrayBorrowTag`. Its permission is checked against
+the reference's like any borrow's, so `&uni *s` of a `&mut` slice is `ErrorBadPerm`. Any
+other `*s` stays `ErrorNotPtr`.
+
+
 In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
-type's own `` `&[]` `` method receives the borrowed receiver — but not when its
+type's own indexing method receives the borrowed receiver (`` `[]` `` for a plain
+`&v[i]` where it lends a borrow, `` `&[]` `` otherwise: [fncall](fncall.md), "A
+borrowed index") — but not when its
 list is type arguments (`fnCallHasTypeArgs`): `&half[i64]` borrows the generic's
 instance, and an index of `&half` by a type means nothing; check the operand;
 within a local's declaration, make the temporary the operand's place is rooted
@@ -295,9 +310,9 @@ whole-value `&[]` that dispatches to a method so the checks below are the ones a
 hand-written `&mut value` gets; auto-deref a suffixed borrow through a
 reference; extract lval, permission and scope with `iexpGetLvalInfo`; infer the
 value type; check the requested permission with `permMatches`, or accept `&uni`
-of a `mut` local (`borrowLocalLendsUni`: a variable that is no global, or a part
+of a `var` local (`borrowLocalLendsUni`: a variable that is no global, or a part
 of one held by value, with no reference that is not `uni` on the way,
-`iexpPathNonUniLink`; an `imm` local, a global and a place reached through a `&mut` stay
+`iexpPathNonUniLink`; a `let` local, a global and a place reached through a `&mut` stay
 refused with `ErrorBadPerm`), which the loan walk then freezes as an exclusive loan
 (`ref_unilocal`, `ref_flow_unilocal`, `ref_typecheck_unilocal`); build the result
 `RefNode` carrying `borrowRef` and the lval's scope.
@@ -306,10 +321,10 @@ Two details worth keeping: an unspecified permission becomes `ro` for a concrete
 type and `opaq` otherwise; and `&[]` of a **non-array** is deliberately a
 one-element slice.
 
-### Allocation: `new Rc[mut, Node](1)` and `trynew`
+### Allocation: `Rc[mut, Node](1)` and `trynew`
 
-`new` with a managed reference type, written out or through an alias of one
-(`new Node(1)` for `alias Node = Gc[mut, NodeValue]`), or with a type
+A construction of a managed reference type, written out or through an alias of one
+(`Node(1)` for `alias Node = Gc[mut, NodeValue]`), or of a type
 parameter whose argument is one, allocates. `typeLitNewCheck` checks the
 type, and finding a `RefTag` hands it to `typeLitNewAllocate`, which builds
 the `AllocateTag` node: its region and permission the reference type's, its
@@ -335,7 +350,7 @@ holds the one, and the other's value is a trait's.
   struct declares no init, nothing otherwise), and if its type is the struct
   itself, `itypeIsSame` after aliases, with no coercion, it is the finished
   value and becomes `vtexp` as it is. Otherwise `vtexp` is the construction
-  `new NodeValue(...)`, a new `FlagNew` node over the same arguments, checked
+  `NodeValue(...)`, a new `FlagNew` node over the same arguments, checked
   by `typeLitNewChecked` told the one argument is already checked; its init is
   selected as for any value. A reference to the struct, or another struct,
   is not the struct itself, and goes to the inits.
@@ -352,14 +367,14 @@ holds the one, and the other's value is a trait's.
   length", below).
 
 A generic's instance decides by its own types, since a template is checked
-only as each instance: `new Rc[T](x)` with `x` a `T` is the finished value in
+only as each instance: `Rc[T](x)` with `x` a `T` is the finished value in
 every instance.
 
 Outside an allocation, a struct's construction given its own finished value,
-`new Point(p)`, is `ErrorNewFinished` (`typeLitNewChecked`): a value is
+`Point(p)`, is `ErrorNewFinished` (`typeLitNewChecked`): a value is
 constructed once.
 
-`new Plain[mut, i32](5)`, a permission given to what is no region, is refused
+`Plain[mut, i32](5)`, a permission given to what is no region, is refused
 by `fnCallRefusePermArg` as the same head in a type is (`ErrorPermNotRegion`),
 before `typeLitNewChecked` would report it as no type.
 
@@ -367,14 +382,14 @@ before `typeLitNewChecked` would report it as no type.
 
 `allocateTypeCheck` is the refused `+` spelling: it defaults the permission to
 `uni`, checks the value, reports `ErrorPlusAlloc`, and goes on as
-`allocateValueCheck` so that nothing after it reports again. A `new`
+`allocateValueCheck` so that nothing after it reports again. A constructed
 allocation reaches `allocateValueCheck` directly, its value already checked.
 
 `allocateValueCheck`: default the permission to `uni` (`imm` for a value whose
 type declares `Immutable`); refuse an abstract or
 zero-size value type (an array literal's dimension is a constant there as
 everywhere, so an allocated array is a fixed-size one, reached by a thin
-reference); build the result type, a `RefTag`, unless `new` gave it the one it
+reference); build the result type, a `RefTag`, unless the construction gave it the one it
 wrote; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
@@ -383,7 +398,7 @@ an `alloc` at all (its shape was checked at the region's declaration) and
 validate the permission's `init`.
 
 A region ref is a struct declaring `is RegionRef`, which `refTypeCheck` and
-`refvirtTypeCheck` each require of an owning reference's region (`refRegionCheck`, `ErrorNotRegion`); `So` and `Rc` are
+`refvirtTypeCheck` each require of an owning reference's region (`refRegionCheck`, `ErrorNotRegion`); `Uni` and `Rc` are
 ordinary Cone declarations in the core package, `packages/core/src/core.cone`,
 not compiler built-ins ([What a region is](module.md)). A region slot naming
 something other than a type (a function, say) is reported twice, as no type and
@@ -430,11 +445,16 @@ moves seen as one that copies: `&Rc[mut, T]` (or `imm`, `ro`, `opaq`, `mut1`)
 from `&Rc[T]`, and a slice of them. A read through the outer reference copies
 a copy type out, so the view would make a second owner of a value `uni`
 promised unique. `permMatches` is untouched, and a move of the owner itself
-still coerces `uni` down. A `So[T]` owner keeps its view as `So[mut, T]`, since
-every `So` reference moves and a move out through a borrow is refused in flow.
+still coerces `uni` down. A region declaring `Move` has no shared view to refuse: `mut`
+is not written on its owners (`refSoleOwnerPermCheck`, below).
 
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
-applies **no** value-type variance. Same-struct requires `HasTagField`, since
+applies **no** variance to the value type itself (it is a struct or trait, and the
+view never changes which). The fields the trait requires are another matter: a
+reference whose permission has `MayWrite` stores a value of the trait's field type
+through the view, so it needs each field at exactly that type
+(`structVirtRefFieldVariant`, `ErrorVtableField`), while a read-only one still
+takes a narrower field (a `Shape.Circle` seen as a `Shape`). Same-struct requires `HasTagField`, since
 the tag is what selects the vtable at runtime. A reference to an enum converted
 to a different trait needs the tag for the same reason: `structVirtRefMatches`
 registers each variant's implementation, not the enum's, and the conversion
@@ -454,7 +474,7 @@ is asked for with `as` ([cast](cast.md), `castTypeCheck`).
 Where a reference type acquires `MoveType`: **when its permission lacks
 `MayAlias`, or its region is itself a move type.** Of the six permissions only
 `uni` lacks `MayAlias`, and a region ref is a move type by declaring `is Move`,
-as `So` does ([struct](struct.md), "Move and Copy"). Since a managed reference
+as `Uni` does ([struct](struct.md), "Move and Copy"). Since a managed reference
 type defaults to `uni`, every owning reference written without a permission moves (but
 for one to a type declaring `Immutable`, which defaults to `imm` and copies); one with an
 aliasable permission into a region ref declaring neither `Move` nor `aliasRef`
@@ -476,7 +496,7 @@ says; what it points at is asked separately by the walk (`itypeThreadBound`, in
 | to a function (`&fn`) | crosses, whatever it points at: code every thread shares |
 | a borrow, any permission, or a guard (a lock held, below) | `RefBindsBorrow`: its lifetime is checked in one thread alone |
 | into a region declaring `Traced` | `RefBindsTraced`: the collector is single threaded (an `ActorLocal` region's, the actor's own, is collected between that actor's messages, so its references stay in the actor: the same answer, worded so) |
-| an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`So`) | crosses if what it points at does: it moves, taking its value |
+| an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`Uni`) | crosses if what it points at does: it moves, taking its value |
 | any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a lock permission not declaring `ThreadSafe`) | `RefBindsPerm` |
 | any other owner whose region does not declare `ThreadSafe` (`Rc`) | `RefBindsShared` |
 | otherwise (`Arc[imm, T]`, `Arc[opaq, T]`, `Arc[Mutex, T]`) | crosses if what it points at does |
@@ -502,7 +522,10 @@ who vouches: `StaticVouched` for a generic's parameter bounded `+ 'static`
 (`genericStaticHow`; each call is held to hand it only global borrows, by
 `lifePartStatic`), `StaticWritten` for a signature that writes the borrow
 `'static`, the only form an actor's behaviour or initializer takes, in its
-parameters and its reply. A struct's
+parameters and its reply. `StaticOff`, the strict mode, still lets a borrow
+through that is written `'static` in its type (`ref->lifename == staticLifeName`,
+as Rust's `&'static str` is `Send`): a struct field `&'static str` is Sendable,
+which is what lets http3's `FrameError` convert into an `AnyError`. A struct's
 remembered answer is the strict one: a mode other than `StaticOff` trusts its
 "not bound", asks again where it was "bound", and remembers neither.
 
@@ -515,7 +538,7 @@ region: it calls the methods the struct declares, held to their shapes at the
 declaration (`lockPermCheck`, `ErrorLockPermShape`): `acquireMut` and
 `releaseMut`, required; `acquireRead` and `releaseRead`, both or neither; each
 taking only `self`, a borrowed reference to the lock, and returning nothing,
-but that an acquiring one may take `(file &Array[u8], line u32)` after it and is
+but that an acquiring one may take `(file: &Array[u8], line: u32)` after it and is
 then handed the borrow's place in the source; and `init`, run by an
 allocation on the lock in place (`permInitTypeCheck`). The lock is in the
 header, `{region, lock, value}`.
@@ -527,6 +550,18 @@ and `refvirtTypeCheck`): a struct that does not declare the trait is
 does (a lock for threads, `Mutex`, on `Arc`; one for one thread, `Rwcell`, on
 `Rc`); a virtual reference takes none; each is `ErrorLockRegion`. A traced
 region's refusal is its own rule's (`regionTracedJudgeRef`, `ErrorTracedPerm`).
+
+**Where `mut` is refused on a sole owner** (`refSoleOwnerPermCheck`, beside
+`refLockCheck` in `refTypeCheck` and `refvirtTypeCheck`): `mut` written on an owner
+of a region declaring `Move` is `ErrorSoleOwnerMut`. `mut` is shared mutable, and a
+region whose values have one owner shares nothing. The owner stands as `uni` after, so
+its uses check quietly. Nothing infers or defaults `mut` onto an owner: the default
+is `uni` (`imm` for a target declaring `Immutable`), and every owner type the
+compiler builds takes its permission from a written one, so the written type is the
+only route, an allocation's (`new`, `trynew`) and a cast's included. `imm` stays
+legal, a promise that the value never changes, which `Uni[imm, fn(sig)]`, the owned
+closure that only reads its state, depends on. `mut1`, `ro` and `opaq` are not
+refused.
 
 **The reference reaches nothing.** `permGetFlags` answers a lock permission
 with `MayAlias | MayAliasWrite`, and `RaceSafe` where the lock declares
@@ -586,10 +621,10 @@ first thing in an owner's release when the owner is a guard
 ## Flow
 
 `allocateFlow` loads and move-or-copies the initial value. `borrowFlow` asks
-only that the borrowed place was not moved out: it walks the place to the
-variable at its root, which `nameuseFlowBorrowed` refuses if moved out or
-hollowed, as a read is refused. Unlike a read, a variable never initialized may
-be borrowed, so that a method taking it `&mut` can fill it in. A reference the place is reached through is
+only that the borrowed place held a value: it walks the place to the
+variable at its root, which `nameuseFlowBorrowed` refuses if moved out,
+hollowed or never given a value, as a read is refused (a variable given a value
+on some paths only is the path walk's, `dropUse`). A reference the place is reached through is
 loaded as a value, not read through, and an index is read. A borrow
 deactivates nothing and records nothing, so no aliasing of borrows is tracked.
 
@@ -620,22 +655,22 @@ the arm that would dangle.
 
 **An owner reached through a borrow, or a shared owner, that does not hold it
 alone lends only what it lets.** `iexpGetLvalInfo` takes the permission of a dereference from the
-reference dereferenced, which for an owner (`So`, `Rc`) is its own, `uni` for a
-`So`. Held in a field of a `&Holder`, the owner would lend `&mut` and change what
+reference dereferenced, which for an owner (`Uni`, `Rc`) is its own, `uni` for a
+`Uni`. Held in a field of a `&Holder`, the owner would lend `&mut` and change what
 the borrow was lent to read; held in a field of a `&mut Holder`, it would lend
 `&uni` or `&imm`, promises that another name for the holder breaks by replacing
-the owner ([refborref](../../../../doc/reference/refborref.html), "Freezing access
-to the source of a borrow"). Viewpoint adaptation
-([refperm](../../../../doc/reference/refperm.html)) is the intersection. So where
+the owner ([mem-borrowing](../../../../doc/manual/mem-borrowing.html#freezing), "What a borrow leaves its source free to do").
+Viewpoint adaptation
+([mem-permissions](../../../../doc/manual/mem-permissions.html)) is the intersection. So where
 the owner's place is reached through a borrow, or through an owner whose own
 permission is shared and writable (`Rc[mut, T]`, `Arc[mut, T]`; a lock permission
 is not one), (`iexpPathThroughBorrow`) whose permission is not `uni`, and the
 owner's permission may write, the place keeps that holder's: `ro` or `imm` lend no `&mut`, `mut` lends `&mut` and `&` and no `&uni`
-or `&imm`. An owner whose own permission cannot write (`So[imm, T]`,
+or `&imm`. An owner whose own permission cannot write (`Uni[imm, T]`,
 `Rc[imm, T]`) lends `&imm` through any of them. The refusal is `ErrorBadPerm`,
 reported by `borrowTypeCheck` for a written `&mut *h.app` or `&uni *h.app` and by
 `borrowOwnerLendRefused` for an owner lent implicitly: a method's receiver
-(`borrowMutRef`), an argument or an initializer (`iexpCoerce`), a `So[fn]`
+(`borrowMutRef`), an argument or an initializer (`iexpCoerce`), a `Uni[fn]`
 called. A local, a field of one held by value, or a field reached through a
 `&uni` holder is not held to this and lends as before.
 `ref_typecheck_owner_field`, `ref_typecheck_owner_field_shared` and
@@ -644,13 +679,13 @@ called. A local, a field of one held by value, or a field reached through a
 
 **A borrowed reference that may write, held in a place reached through a borrow
 that only reads, reads and lends only `&`.** The permissions of a path are the
-intersection of every reference gone through ([refperm](../../../../doc/reference/refperm.html),
-"Viewpoint Adaptation"): `car.owner.age = 18` through a `car &Car` is refused
-though `owner` is a `&mut Person`, as is `target.push(x)` in a `self &` method of
-a struct holding `target &mut List`. `iexpReachWrites` asks whether every
+intersection of every reference gone through ([mem-permissions](../../../../doc/manual/mem-permissions.html#view),
+"Viewpoint Adaptation"): `car.owner.age = 18` through a `car: &Car` is refused
+though `owner` is a `&mut Person`, as is `target.push(x)` in a `self: &` method of
+a struct holding `target: &mut List`. `iexpReachWrites` asks whether every
 reference the place is reached through (a borrow, a slice, a virtual reference,
 an owner whose own permission cannot write) grants write, looking at the
-references' permissions and not at the slots holding them: an `imm` field, or a
+references' permissions and not at the slots holding them: a `let` field, or a
 variable, can hold a `&mut` that is written through. `iexpLvalInfo` takes the
 permission of a dereference, an index and a virtual reference's field from
 `iexpViewpointPerm`, which is the reference's own unless the place holding it
@@ -662,14 +697,14 @@ write is wanted — a receiver, an argument, an initializer — is refused by
 by value, or a place reached only through references that write is not held to
 this. The borrow a closure makes of a variable (`RefNode.capture`) does not
 narrow what the variable's own `&mut` writes, so a closure that writes through a
-captured `&mut` parameter takes `self &mut` and not `self &`. `ref_typecheck_viewpoint_borrowed`
+captured `&mut` parameter takes `self: &mut` and not `self: &`. `ref_typecheck_viewpoint_borrowed`
 and `ref_typecheck_autoderef` pin the refusals; `ref_viewpoint_borrowed` what
 runs.
 
 **A `&uni` field or element is seen only through `uni` references, or in a holder
 held by value.** "A shared reference cannot see through a uni reference"
-([refperm](../../../../doc/reference/refperm.html), "Viewpoint Adaptation"), and
-"shared" includes `&mut`: `a.holder` with `holder &uni App`, reached through two
+([mem-permissions](../../../../doc/manual/mem-permissions.html#view), "Viewpoint Adaptation"), and
+"shared" includes `&mut`: `a.holder` with `holder: &uni App`, reached through two
 `&mut Cell` names of one cell, would hand the one reference that promised to be
 unique to both, and the shape check that guards an element borrowed through a
 shared path (`ErrorShapeReshape`) treats a path through a `uni` link as reached
@@ -686,9 +721,9 @@ is not an element) and a tuple element (`fnCallLowerIntField`). An array lent
 whole as a `&mut` is seen the same way where it is indexed. It is the access that
 is refused, whatever is done with the reference (a read, a lend, a write, a copy
 into a local), since every use is a sight of it. A local, a field or element of a
-value held by value, a `&uni` holder and an owner that is `uni` (`So[T]`, `Rc[T]`)
+value held by value, a `&uni` holder and an owner that is `uni` (`Uni[T]`, `Rc[T]`)
 are not refused. A generic type or function instantiated with a `&uni`
-(`List[&uni App]`, whose own methods index their elements through `self &mut`)
+(`List[&uni App]`, whose own methods index their elements through `self: &mut`)
 is refused where its code reaches the `&uni` that way, since the check is on the
 instantiated place's type, as a field of type `T` is. A place in instantiated
 code (its node carries `instnode`; the bare-field lowering in `nameuse.c` copies
@@ -739,7 +774,7 @@ transitions the `uni` to `mut`, is not built. `ref_typecheck_uni_field_shared`,
 - a place reached through an owning reference lives as long as the owner's
   holder, so an owner lent as a borrowed reference — `iexpCoerceType` on the
   recast `iexpCoerce` injects — carries the lifetime of a borrow through it: a
-  `So` parameter handed back as `&R` is refused as `&*s` is.
+  `Uni` parameter handed back as `&R` is refused as `&*s` is.
 
 **A store asks a different question** (`iexpGetStoreLvalInfo`, from
 `assignlvalrtype` and `swapFlow`): how long must what is stored live. The answer
@@ -795,7 +830,7 @@ its value zeroed as soon as `alloc` returns ([Generation](../phases/generation.m
 `alloc` are handed the header instead: `init` the one `genlallocref` reaches
 from the new block, which it fills in place, and the others the one
 `genlRegionHeader` reaches by stepping back the value's offset in `%refstruct`
-— 8 bytes for `Rc`, none for `So` — so nothing assumes a region's size. The region's `free`, where
+— 8 bytes for `Rc`, none for `Uni` — so nothing assumes a region's size. The region's `free`, where
 it has one, is what gives the memory back; the compiler calls no `free` of its
 own ([What a region is](module.md)).
 
@@ -809,7 +844,8 @@ slot of the vtable, a pointer to the implementer's core `TypeRecord`
 (`genlVirtFinalize`), and the header sits before the value at the region and
 permission's size rounded up to the record's `align` (`genlVirtHeader`), which
 `genlOwnerHeader` hands to `aliasRef`, `dealiasRef` and `free` in place of
-`genlRegionHeader`'s static offset. A `So` header is empty, so no alignment is
+`genlRegionHeader`'s static offset. A variant's record carries its enum's
+alignment, as its allocations lay it out. A `Uni` header is empty, so no alignment is
 read for one. **A conversion into an owning virtual reference carries its
 operand's owner** (`flowCastCarries`): unlike any other conversion, which makes
 a new value, flow walks through it as through a recast, so a plain owner
@@ -876,7 +912,7 @@ an `@unsized` enum are neither, and their references are thin.
   address and its length, `slitTypeCheck` types it as that reference, and it is a
   borrow of the whole program (global scope). It is copied into an owner of the
   body wherever one is wanted (`slitCoerce`): the node becomes the allocation
-  `new R[str](lit)` builds, with no `new` written. Only the literal node itself is,
+  `R[str](lit)` builds, with no construction written. Only the literal node itself is,
   never another `&str` ([literals](literals.md)).
 - **Allocation.** There is no value to construct or move in. `typeLitAllocValue`
   takes exactly one argument, coerced to a `&str` borrow, as the allocation's
@@ -928,11 +964,11 @@ apart, so the second can be loosened without touching the first:
   leaves an unwritten permission `unknownType` where it used to write `uni`.
   `allocateValueCheck` asks it for the retired `+` spelling, and `borrowTypeCheck`
   for `&x`, falling back to the ordinary default where the place cannot be
-  borrowed as `imm` (a `mut` variable, a `ro` reference), so reborrowing
+  borrowed as `imm` (a `var` variable, a `ro` reference), so reborrowing
   something already held stays possible. An `imm` owner may be aliased, so
   `refAdoptInfections` leaves it a copy type: `Rc[str]` copies where `Rc[T]`
   moves. The autoborrow of a receiver (`fnCallBorrowReceiver`) tries `imm`
-  between `ro` and `mut` for such a type, since its `self &` is `&imm` and `ro`
+  between `ro` and `mut` for such a type, since its `self: &` is `&imm` and `ro`
   does not coerce to it.
 - **`refImmutableBan(node, perm, target)`, the ban on mutation.** `mut`, `mut1`
   and a lock permission written on a reference to the target are
@@ -942,7 +978,7 @@ apart, so the second can be loosened without touching the first:
   `imm` afterwards so that its uses check quietly. **`uni` is not refused**: a
   `final`'s `self` is `&uni` (structSetDropFn, and the check that a `final` takes
   it), the drop the compiler builds takes one, and a unique owner of a `str`
-  (`So[uni, str]`) is only unique, there being nothing to write through one.
+  (`Uni[str]`) is only unique, there being nothing to write through one.
   What an `Immutable` struct's own methods write through a `uni` receiver, or
   through a variable's name, is not checked: the marker is trusted as `Sendable`
   is. Slices (`&Array[T]` of an Immutable `T`), raw pointers and virtual references to
@@ -968,7 +1004,7 @@ either): such a reference is itself the culprit, and is not followed. `genericTy
 captured variable (`genericNotShareableMsg`, `genericClosureNotShareableCap`).
 
 `RefNode.marks` (`RefMarkSendable`, `RefMarkShareable`) is what a virtual
-reference promises of the value behind it, written `So[fn() + Sendable]`,
+reference promises of the value behind it, written `Uni[fn() + Sendable]`,
 `&<Shape + Shareable`: a `+` after the pointee, in either order with a lifetime
 bound (`parseRefBounds`); in brackets the parser joins a bare signature to its
 markers as a sum, which `fnCallMarkSplit` takes apart when the managed reference

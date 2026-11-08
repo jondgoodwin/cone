@@ -1,0 +1,234 @@
+// FileSource and FileSink, the file ends of a stream (filestages.cone in src), each checked in a pipeline of
+// its own:
+//
+//   0. a file of 300,000 bytes -> FileSource -> FileSink: the copy is the same bytes, and 'done' says
+//      Ok with the count;
+//   1. an empty file -> FileSource -> FileSink: an empty file is made and 'done' says Ok(0);
+//   2. a file that cannot be written (its folder is not there) -> FileSink: 'done' says Err, all five
+//      chunks go back to the source (it reads the whole file), and every buffer is back in the pool;
+//   3. a FileSource over a file that is not there: the sink hears Failed, 'done' says Err, and no file is made;
+//   4. a cancel: a tap between the source and the sink cancels the consumer's group as it passes the
+//      2nd buffer given back (the sink has finished two chunks); the sink stops at its next chunk ('done'
+//      says Err), the copy holds two chunks, or three if the third was being written, and no more, the
+//      source stops reading (it was told by the group on the buffers it got back), and every buffer is
+//      back in the pool.
+//
+// The data is a pseudo-random run of five words (as the other tests use), so a chunk lost, doubled or
+// swapped shows in the compare. Chunks are 64 KiB: 300,000 bytes are four whole chunks and one of
+// 37,856 bytes.
+
+mod filestages;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+// Passes chunks and credit through; cancels 'gc' as it passes the 'at'th buffer given back
+actor Tap is ChunkSink, ChunkSource {
+  down: ChunkSink;
+  up: Option[ChunkSource];
+  gc: CancelGroup;
+  at: u64;
+  n: u64;
+
+  pub fn init(self: &new, down: ChunkSink, gc: CancelGroup, at: u64) {
+    *self = Self(down: down, up: None[ChunkSource], gc: gc, at: at, n: 0u64);
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    down <- c;
+  }
+
+  pub async fn end(self, how: Ending) {
+    down.end(how);
+    up = None[ChunkSource];
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    n = n + 1u64;
+    if n == at { gc.cancel(); }
+    match &up {
+      case let &Some(u) { u.giveBack(b); }
+      case is None { }
+    }
+  }
+
+  // Nothing stops this source (the trait asks for the behaviour)
+  pub async fn stop(self, why: Ending) {}
+}
+
+fn isOk(r: &Option[Result[u64, AnyError]]) bool {
+  match r {
+    case let &Some(x) {
+      match x {
+        case is Ok { true }
+        case is Err { false }
+      }
+    }
+    case is None { false }
+  }
+}
+
+fn isErr(r: &Option[Result[u64, AnyError]]) bool {
+  match r {
+    case let &Some(x) {
+      match x {
+        case is Ok { false }
+        case is Err { true }
+      }
+    }
+    case is None { false }
+  }
+}
+
+fn countOf(r: &Option[Result[u64, AnyError]]) u64 {
+  match r {
+    case let &Some(x) {
+      match x {
+        case let &Ok(n) { *n }
+        case is Err { 0u64 }
+      }
+    }
+    case is None { 0u64 }
+  }
+}
+
+fn bytesOf(name: &str) List[u8] {
+  var out = List[u8]();
+  match fs.readFile(&Path.from(name)) {
+    case let Ok(s) { out.appendSlice(s.view()); }
+    case is Err {}
+  }
+  out
+}
+
+fn gone(name: &str) { _ = fs.removeFile(&Path.from(name)); }
+
+fn main() i32 {
+  initAll();
+  let data = corpus(300000usize);
+  match fs.writeFile(&Path.from("stages_files_in.tmp"), data.view()) {
+    case is Ok {}
+    case is Err { return skip("cannot write the temporary file"); }
+  }
+  match fs.writeFile(&Path.from("stages_files_empty.tmp"), List[u8]().view()) {
+    case is Ok {}
+    case is Err { return skip("cannot write the temporary file"); }
+  }
+  gone("stages_files_out0.tmp");
+  gone("stages_files_out1.tmp");
+  gone("stages_files_out3.tmp");
+  gone("stages_files_out4.tmp");
+
+  var tx0: OneshotSender[Result[u64, AnyError]];
+  var rx0: OneshotReceiver[Result[u64, AnyError]];
+  tx0, rx0 = Oneshot[Result[u64, AnyError]].make();
+  var tx1: OneshotSender[Result[u64, AnyError]];
+  var rx1: OneshotReceiver[Result[u64, AnyError]];
+  tx1, rx1 = Oneshot[Result[u64, AnyError]].make();
+  var tx2: OneshotSender[Result[u64, AnyError]];
+  var rx2: OneshotReceiver[Result[u64, AnyError]];
+  tx2, rx2 = Oneshot[Result[u64, AnyError]].make();
+  var tx3: OneshotSender[Result[u64, AnyError]];
+  var rx3: OneshotReceiver[Result[u64, AnyError]];
+  tx3, rx3 = Oneshot[Result[u64, AnyError]].make();
+  var tx4: OneshotSender[Result[u64, AnyError]];
+  var rx4: OneshotReceiver[Result[u64, AnyError]];
+  tx4, rx4 = Oneshot[Result[u64, AnyError]].make();
+
+  let gc = CancelGroup.make();
+  {
+    // 0. copy
+    let sink0 = FileSink(String.from("stages_files_out0.tmp"), tx0);
+    let src0 = FileSource(sink0, String.from("stages_files_in.tmp"));
+    src0.start();
+
+    // 1. an empty file
+    let sink1 = FileSink(String.from("stages_files_out1.tmp"), tx1);
+    let src1 = FileSource(sink1, String.from("stages_files_empty.tmp"));
+    src1.start();
+
+    // 2. a file that cannot be written
+    let sink2 = FileSink(String.from("stages_files_no_such_folder/out.tmp"), tx2);
+    let src2 = FileSource(sink2, String.from("stages_files_in.tmp"));
+    src2.start();
+
+    // 3. a file that is not there
+    let sink3 = FileSink(String.from("stages_files_out3.tmp"), tx3);
+    let src3 = FileSource(sink3, String.from("stages_files_not_there.tmp"));
+    src3.start();
+
+    // 4. the consumer's group is cancelled as the 3rd chunk passes
+    let gs = gc.child();
+    let sink4 = FileSink(String.from("stages_files_out4.tmp"), tx4);
+    let tap4 = Tap(sink4, gc, 2u64);
+    let src4 = FileSource(tap4, String.from("stages_files_in.tmp"));
+    actors.withGroup(&gs, fn() [src4] { src4.start(); });
+  }
+  let r0 = rx0.recv();
+  let r1 = rx1.recv();
+  let r2 = rx2.recv();
+  let r3 = rx3.recv();
+  let r4 = rx4.recv();
+  finalAll();
+
+  // FileSink gives the source's credit back after a failed write with an empty buffer of the lost one's
+  // capacity (the window counts capacity); that this is the same capacity is what that rests on
+  {
+    let sample = IoBuf(65536usize);
+    expect(IoBuf(sample.capacity()).capacity() == sample.capacity(), "5: a buffer made to a capacity has that capacity");
+  }
+
+  expect(isOk(&r0), "0: done says Ok");
+  expectUInt(countOf(&r0), 300000u64, "0: and counts every byte");
+  expect(bytesOf("stages_files_out0.tmp").view() == data.view(), "0: the copy is the same bytes");
+
+  expect(isOk(&r1), "1: an empty stream says Ok");
+  expectUInt(countOf(&r1), 0u64, "1: with no bytes");
+  expect(fs.exists(&Path.from("stages_files_out1.tmp")), "1: and leaves its file");
+  expectUInt(u64.from(bytesOf("stages_files_out1.tmp").len()), 0u64, "1: which is empty");
+
+  expect(isErr(&r2), "2: a file that cannot be written says Err");
+
+  expect(isErr(&r3), "3: a source that cannot open its file ends the stream Failed, and done says Err");
+  expect(!fs.exists(&Path.from("stages_files_out3.tmp")), "3: and no file is made");
+
+  expect(isErr(&r4), "4: cancelled at the 3rd chunk, done says Err");
+  let part = bytesOf("stages_files_out4.tmp");
+  expect(part.len() == 131072usize || part.len() == 196608usize, "4: the copy holds two whole chunks, or three if the third was being written, and no more");
+  expect(part.view() == &data.view()[0usize ..< part.len()], "4: and they are the first chunks, in order");
+  expect(gc.isCancelled(), "4: the consumer's group was cancelled");
+
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  gone("stages_files_in.tmp");
+  gone("stages_files_empty.tmp");
+  gone("stages_files_out0.tmp");
+  gone("stages_files_out1.tmp");
+  gone("stages_files_out4.tmp");
+  done()
+}

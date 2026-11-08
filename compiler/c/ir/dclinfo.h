@@ -78,10 +78,13 @@ enum DclFacts {
                               // starts. Written by the parser, kept by joining; on a GPU
                               // target generation puts it in the Workgroup storage
                               // class, and on the CPU it is an ordinary global
-    DclBodyTyped  = 0x2000    // Fn only: its body is type checked, without error, so
+    DclBodyTyped  = 0x2000,   // Fn only: its body is type checked, without error, so
                               // that what it does can be read from the tree before its
                               // flow pass and its declaration's check have ended
                               // (shapeinfer.c). Written by fnDclTypeCheck; a clone has none
+    DclSetup      = 0x4000    // Global only: a 'let' given a value that is not a constant,
+                              // set by its module's setups before 'init' (modAddSetup). It
+                              // holds no initial value of its own: the value is the setup's
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

@@ -1,0 +1,173 @@
+// A reply answered in place whose 'take' lets go of the record holding the
+// Reply (answerLentIn, in actors.cone: the Reply is spent before 'take' is
+// called, and nothing touches it after). The aio package's take dissolves its
+// operation's record this way. Each record here is a block of its own, holding
+// the Reply the seam gave and a value; each 'take' moves the value out, then
+// finalizes the record (the spent Reply with it) and frees the block.
+//
+// - Answered from another thread, a value that fits the awaiting actor's slot:
+//   'take' runs on the answering thread, before the push, and frees the record;
+//   it then waits 200 ms before returning. A wait for idle in main must not
+//   return in that time: the operation is held counted until the answer is
+//   pushed, though the Reply's drop has already counted it spent. When the
+//   wait returns, the behaviour has gone on with the value.
+// - A value too large for a slot, lent: 'take' runs on the awaiting actor's
+//   worker as it reaches the reply, and frees the record there.
+// - A Reply that wants no answer: 'take' frees the record, the value is
+//   dropped once.
+
+mod inplacetake;
+
+import testing use *;
+import libc;
+import actors;
+import thread;
+import time;
+
+struct Big {
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+  pub e: u64;
+}
+
+struct Rec {
+  pub reply: actors.Reply;
+  pub big: Big;
+  pub small: u64;
+}
+
+let posted: Atomic[usize];    // the record an operation put its Reply in, for the answering thread
+let freed: Atomic[u64];       // records let go by a take
+let seenSmall: Atomic[u64];
+let seenBig: Atomic[u64];
+let tookOn: Atomic[u64];      // 1 if the lent take ran on another thread than the answerer's
+let answerer: Atomic[u64];    // the answering thread's mark
+let mortals: Atomic[u64];
+
+fn @initpure init() {
+  posted = Atomic[usize].of(0usize);
+  freed = Atomic[u64].of(0u64);
+  seenSmall = Atomic[u64].of(0u64);
+  seenBig = Atomic[u64].of(0u64);
+  tookOn = Atomic[u64].of(0u64);
+  answerer = Atomic[u64].of(0u64);
+  mortals = Atomic[u64].of(0u64);
+}
+
+struct Mortal is Move {
+  pub n: u64;
+  fn final(self: &uni) {mortals.add(self.n);}
+}
+
+var @threadlocal isAnswerer = false;
+
+// The record let go: finalized whole (the spent Reply's drop counts the
+// operation spent) and its block freed
+fn letGo(p: *u8) {
+  mem.finalize[Rec](p as *Rec);
+  libc.free(p);
+  freed.add(1u64);
+}
+
+fn takeSmall(p: *u8, to: *u8) {
+  mem.writeRaw[u64](to as *u64, (*(p as *Rec)).small);
+  letGo(p);
+  // The window: the record and its Reply are gone, the answer not yet pushed
+  thread.sleep(time.Duration.fromMillis(200i64));
+}
+
+fn takeBig(p: *u8, to: *u8) {
+  mem.writeRaw[Big](to as *Big, (*(p as *Rec)).big);
+  if !isAnswerer {tookOn.store(1u64);}
+  letGo(p);
+}
+
+fn takeMortal(p: *u8, to: *u8) {
+  mem.writeRaw[Mortal](to as *Mortal, Mortal(5u64));
+  letGo(p);
+}
+
+fn noBig() Big {Big(0u64, 0u64, 0u64, 0u64, 0u64)}
+
+// The operation's start: its record made, the Reply put in, handed to the answerer
+fn runSmall(ctx: *u8, rp: actors.Reply) {
+  let r = libc.malloc(mem.sizeof[Rec]()) as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, noBig(), 77u64));
+  posted.store(r as usize);
+}
+
+fn runBig(ctx: *u8, rp: actors.Reply) {
+  let r = libc.malloc(mem.sizeof[Rec]()) as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, Big(7u64, 14u64, 21u64, 28u64, 35u64), 0u64));
+  posted.store(r as usize);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn smallOp() actors.Awaitable[u64] {actors.Awaitable[u64].of(1usize as *u8, &runSmall, &dropIt)}
+fn bigOp() actors.Awaitable[Big] {actors.Awaitable[Big].of(1usize as *u8, &runBig, &dropIt)}
+
+actor Prober {
+  pub async fn small(self) {
+    let c = await smallOp();
+    seenSmall.store(c);
+  }
+  pub async fn big(self) {
+    let b = await bigOp();
+    seenBig.store(b.a + b.e);
+  }
+}
+
+// The answering thread: waits for the record, answers in place
+struct AnsArg is Sendable {
+  pub big: bool;
+}
+
+fn answer(a: AnsArg) u32 {
+  isAnswerer = true;
+  while posted.load() == 0usize {
+    thread.yieldNow();
+  }
+  let r = posted.load() as *Rec;
+  posted.store(0usize);
+  if a.big {
+    actors.answerLentIn[Big](&mut (*r).reply, r as *Big, &takeBig);
+  } else {
+    actors.answerLentIn[u64](&mut (*r).reply, r as *u64, &takeSmall);
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let t = thread.startWith(thread.Options(name: "answerer"), AnsArg(false), &answer);
+    let p = Prober();
+    p.small();
+    actors.waitUntilIdle();
+    expectUInt(seenSmall.load(), 77u64, "the wait returned only once the behaviour had gone on with the value");
+    t.join();
+    expectUInt(freed.load(), 1u64, "the take let go of the record holding the Reply");
+  }
+  {
+    let t = thread.startWith(thread.Options(name: "answerer"), AnsArg(true), &answer);
+    let p = Prober();
+    p.big();
+    actors.waitUntilIdle();
+    t.join();
+    expectUInt(seenBig.load(), 42u64, "a lent value arrived");
+    expectUInt(tookOn.load(), 1u64, "its take ran on the awaiting actor's worker");
+    expectUInt(freed.load(), 2u64, "and let go of the record there");
+  }
+  finalAll();
+
+  // A Reply that wants no answer, in a record the take lets go of
+  let r = libc.malloc(mem.sizeof[Rec]()) as *Rec;
+  mem.writeRaw[Rec](r, Rec(actors.Reply(), noBig(), 0u64));
+  actors.answerLentIn[Mortal](&mut (*r).reply, r as *Mortal, &takeMortal);
+  expectUInt(freed.load(), 3u64, "an unwanted answer: the take let go of the record");
+  expectUInt(mortals.load(), 5u64, "and the value was dropped once");
+  done()
+}

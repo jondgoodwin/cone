@@ -1,0 +1,142 @@
+// A rig as text: the same data as a RigSpec, written so a file or a message
+// can carry it.
+//
+//   # a comment, to the end of the line
+//   rig name
+//   chain spine spine                      # chain NAME KIND [parent=CHAIN[@BONE]]
+//     bone pelvis 0 0.9 0   0.16           # bone NAME X Y Z RADIUS
+//     bone mid    0 0 -0.4  0.17
+//   chain foreleg.R leg parent=spine@-1    # hangs from the spine's last bone
+//     bone shoulder 0.12 -0.05 0   0.07
+//   mirror foreleg.R foreleg.L parent=spine@-1
+//
+// KIND is a kind's name (spine neck head tail leg wing arm feather other) or a
+// number. '@BONE' counts from the start of the parent chain, or from its end if
+// negative; without it the parent's last bone. A line's first word says what it
+// is; indentation means nothing.
+
+pub struct RigParse {
+  pub spec: RigSpec;
+  pub ok: bool;
+  pub error: String;
+  pub line: u32;          // the line the error is on (1 is the first)
+}
+
+pub struct Number {
+  pub ok: bool;
+  pub value: f32;
+}
+
+fn blankByte(c: u8) bool { c == ' ' || c == '\t' || c == '\r' }
+fn digitByte(c: u8) bool { c >= '0' && c <= '9' }
+
+// The words of a line, a '#' ending it
+fn words(line: &str) List[String] {
+  let bytes: &Array[u8] = line;
+  var out = List[String]();
+  var i = 0usize;
+  while i < bytes.len {
+    while i < bytes.len && blankByte(bytes[i]) { i = i + 1usize; }
+    if i < bytes.len && bytes[i] == '#' { return out; }
+    let start = i;
+    while i < bytes.len && !blankByte(bytes[i]) && bytes[i] != '#' { i = i + 1usize; }
+    if i > start { out.push(String.fromBytes(&bytes[start..<i])); }
+  }
+  out
+}
+
+// A decimal number: an optional sign, digits, an optional '.' and digits, an optional 'e' and exponent
+// (f32.parse reads it; an 'inf' or 'nan', or a value past the f32 range, is not a number here)
+pub fn parseNumber(s: &str) Number {
+  match f32.parse(s) {
+    case let Ok(v) {
+      if v - v != 0.0f32 { return Number(false, 0.); }
+      return Number(true, v);
+    }
+    case is Err { return Number(false, 0.); }
+  }
+}
+
+fn fail(spec: RigSpec, why: &str, line: usize) RigParse {
+  RigParse(spec, false, String.from(why), u32.from(line))
+}
+
+// "parent=NAME" or "parent=NAME@N" read into (name, bone); bone 0x7fffffff when there is none
+struct ParentRef {
+  ok: bool;
+  name: String;
+  bone: i32;
+}
+
+fn parseParent(word: &str) ParentRef {
+  if !word.startsWith("parent=") { return ParentRef(false, String(), 0i32); }
+  let rest = word.sliceFrom(7usize);
+  let at = rest.find("@");
+  match at {
+    case let Some(k) {
+      let n = parseNumber(rest.sliceFrom(k + 1usize));
+      if !n.ok { return ParentRef(false, String(), 0i32); }
+      ParentRef(true, String.from(rest.slice(0usize, k)), i32.from(n.value))
+    }
+    case is None { ParentRef(true, String.from(rest), -1i32) }
+  }
+}
+
+pub fn parseRig(text: &str) RigParse {
+  var spec = RigSpec.make("rig");
+  let all = String.from(text).lines();
+  var current = -1i32;
+  var ln = 0usize;
+  while ln < all.len() {
+    let w = words(all[ln].view());
+    ln = ln + 1usize;
+    if w.len() == 0usize { continue; }
+    let head = w[0usize].view();
+    if head == "rig" {
+      if w.len() < 2usize { return fail(spec, "rig needs a name", ln); }
+      spec.name = String.from(w[1usize].view());
+    } else if head == "chain" {
+      if w.len() < 3usize { return fail(spec, "chain needs a name and a kind", ln); }
+      var kind = kindFromName(w[2usize].view());
+      if kind < 0i32 {
+        let kn = parseNumber(w[2usize].view());
+        if !kn.ok { return fail(spec, "chain's kind is not a kind's name or a number", ln); }
+        kind = i32.from(kn.value);
+      }
+      var parent = String();
+      var pbone = -1i32;
+      if w.len() >= 4usize {
+        let pr = parseParent(w[3usize].view());
+        if !pr.ok { return fail(spec, "chain's fourth word should be parent=NAME or parent=NAME@N", ln); }
+        parent = pr.name.clone();
+        pbone = pr.bone;
+      }
+      current = i32.from(spec.chain(w[1usize].view(), u32.from(kind), parent.view(), pbone));
+    } else if head == "bone" {
+      if current < 0i32 { return fail(spec, "a bone before any chain", ln); }
+      if w.len() < 6usize { return fail(spec, "bone needs a name, x, y, z and a radius", ln); }
+      let x = parseNumber(w[2usize].view());
+      let y = parseNumber(w[3usize].view());
+      let z = parseNumber(w[4usize].view());
+      let r = parseNumber(w[5usize].view());
+      if !x.ok || !y.ok || !z.ok || !r.ok { return fail(spec, "a bone's numbers are not numbers", ln); }
+      spec.bone(usize.from(current), w[1usize].view(), Vec3(x.value, y.value, z.value), r.value);
+    } else if head == "mirror" {
+      if w.len() < 3usize { return fail(spec, "mirror needs the chain to copy and the new name", ln); }
+      var parent = String();
+      var pbone = -1i32;
+      if w.len() >= 4usize {
+        let pr = parseParent(w[3usize].view());
+        if !pr.ok { return fail(spec, "mirror's fourth word should be parent=NAME or parent=NAME@N", ln); }
+        parent = pr.name.clone();
+        pbone = pr.bone;
+      }
+      let made = spec.mirror(w[1usize].view(), w[2usize].view(), parent.view(), pbone);
+      if made < 0i32 { return fail(spec, "mirror: there is no such chain to copy", ln); }
+      current = made;
+    } else {
+      return fail(spec, "a line must begin with rig, chain, bone or mirror", ln);
+    }
+  }
+  RigParse(spec, true, String(), 0u32)
+}

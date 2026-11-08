@@ -24,7 +24,7 @@ import thread;
 import time use Instant, Duration;
 import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
 import collections use List, String;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use Loop, SocketAddr, CancelGroup, forever;
 import http use *;
 import httpconn;
@@ -46,7 +46,7 @@ import aio use IoLimits;
 //   /hang              nothing at all
 // ---------------------------------------------------------------------------
 
-imm halt Atomic[u32];
+let halt: Atomic[u32];
 
 fn @initpure init() {
   halt = Atomic[u32].of(0u32);
@@ -54,43 +54,37 @@ fn @initpure init() {
 }
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub requests u64;
-  pub reqs List[httpconn.ReqId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub accepted: u64;
+  pub requests: u64;
+  pub reqs: List[httpconn.ReqId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
 struct Report {
-  pub accepted u64;
-  pub requests u64;
+  pub accepted: u64;
+  pub requests: u64;
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
-  if body.len > 0usize and not head {
-    mut b = sv.pool.mustTake(body.len);
+  if body.len > 0usize && !head {
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
   }
 }
 
-fn number(s &str) u64 {
-  match collections.parseUInt(s) {
-    case imm v Some {v;}
-    case is None[u64] {0u64;}
-  }
-}
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
 
-fn dropStream(sv &mut Srv, j usize) {
-  imm last = sv.streams.len() - 1usize;
+fn dropStream(sv: &mut Srv, j: usize) {
+  let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
   sv.totals.swap(j, last);
@@ -100,15 +94,15 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
-  imm req = *sv.streams[j];
+fn pumpStream(sv: &mut Srv, j: usize) {
+  let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
-    imm at = *sv.sent[j];
-    imm left = *sv.totals[j] - at;
-    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
-    mut b = sv.pool.mustTake(n);
-    imm s = b.spare();
-    mut i = 0usize;
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left)} else {65536usize};
+    var b = IoBuf(n);
+    let s = b.spare();
+    var i = 0usize;
     while i < n {
       s[i] = u8.from((at + u64.from(i)) % 251u64);
       i = i + 1usize;
@@ -123,26 +117,26 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
-  mut j = 0usize;
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
+  var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
     j = j + 1usize;
   }
-  sv.streams.len();
+  sv.streams.len()
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
-  mut k = 0usize;
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
+  var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
     k = k + 1usize;
   }
-  sv.reqs.len();
+  sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
-  imm last = sv.reqs.len() - 1usize;
+fn forget(sv: &mut Srv, k: usize) {
+  let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.methods.swap(k, last);
   sv.targets.swap(k, last);
@@ -154,109 +148,108 @@ fn forget(sv &mut Srv, k usize) {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, k usize) {
-  imm req = *sv.reqs[k];
-  imm full = sv.targets[k].copy();
-  imm path = full.view();
-  imm head = *sv.methods[k] == Method.Head;
+fn answer(sv: &mut Srv, k: usize) {
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].clone();
+  let path = full.view();
+  let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    var b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, b.view());
-  } elif path == "/nobody" {
+  } else if path == "/nobody" {
     reply(sv, req, head, 204u16, "");
-  } elif path == "/conns" {
-    mut b = String.empty();
+  } else if path == "/conns" {
+    var b = String();
     b.appendUInt(sv.accepted);
     reply(sv, req, head, 200u16, b.view());
-  } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
-    imm n = number(&path[10usize ..]);
+  } else if path.len > 10usize && &path[0usize ..< 10usize] == "/redirect/" {
+    let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "landed");
     } else {
-      mut loc = String.from("/redirect/");
+      var loc = String.from("/redirect/");
       loc.appendUInt(n - 1u64);
-      mut h = ResponseHead.make(302u16);
+      var h = ResponseHead.make(302u16);
       h.headers.add("Location", loc.view());
       sv.drv.respond(req, h, BodyLength.sized(5u64));
-      mut b = sv.pool.mustTake(5usize);
+      var b = IoBuf(5usize);
       b.append("moved");
       sv.drv.sendData(req, b);
       sv.drv.finish(req);
     }
-  } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
+  } else if path.len > 8usize && &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), "status");
-  } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
-    imm n = number(&path[5usize ..]);
+  } else if path.len > 5usize && &path[0usize ..< 5usize] == "/big/" {
+    let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
     sv.sent.push(0u64);
     sv.totals.push(n);
     pumpStream(sv, sv.streams.len() - 1usize);
-  } elif path == "/hang" {
+  } else if path == "/hang" {
   } else {
     reply(sv, req, head, 200u16, "hello");
   }
 }
 
-fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
-  imm kind = e.kind;
+fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
+  let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
-  } elif kind == httpconn.EventKind.Request {
+  } else if kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
     sv.reqs.push(e.req);
     sv.methods.push(e.request.method);
-    sv.targets.push(e.request.target.copy());
-    sv.bodies.push(String.empty());
-  } elif kind == httpconn.EventKind.Data {
-    imm k = findReq(sv, e.req);
+    sv.targets.push(e.request.target.clone());
+    sv.bodies.push(String());
+  } else if kind == httpconn.EventKind.Data {
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
-  } elif kind == httpconn.EventKind.End {
-    imm k = findReq(sv, e.req);
+  } else if kind == httpconn.EventKind.End {
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, k);}
-  } elif kind == httpconn.EventKind.Writable {
-    imm j = findStream(sv, e.req);
+  } else if kind == httpconn.EventKind.Writable {
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
-  } elif e.isTerminal() {
-    imm k = findReq(sv, e.req);
+  } else if e.isTerminal() {
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {forget(sv, k);}
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {dropStream(sv, j);}
   }
 }
 
-fn url(port u16, path &str) String {
-  mut u = String.from("http://127.0.0.1:");
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
-  u;
+  u
 }
 
-fn serve(portTx Sender[u16]) Report {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
-    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
-    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
-    sent: List[u64].empty(), totals: List[u64].empty());
-  mut port = 0u16;
+fn serve(portTx: Sender[u16]) Report {
+  var lp = Loop.mustMake();
+  var sv = Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
+    requests: 0u64, reqs: List[httpconn.ReqId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), streams: List[httpconn.ReqId](),
+    sent: List[u64](), totals: List[u64]());
+  var port = 0u16;
   match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
-    case imm r Ok {
+    case let Ok(r) {
       match sv.drv.localAddr(&lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
       }
     }
-    case imm e Error {}
+    case let Err(e) {}
   }
   portTx.send(port);
-  mut events = List[httpconn.Event].empty();
+  var events = List[httpconn.Event]();
   while halt.load() == 0u32 {
-    sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
-    mut k = 0usize;
+    sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
+    var k = 0usize;
     while k < events.len() {
       serveEvent(&mut sv, &mut events[k]);
       k = k + 1usize;
@@ -264,17 +257,17 @@ fn serve(portTx Sender[u16]) Report {
     events.clear();
   }
   sv.drv.abortAll(&mut lp);
-  new Report(sv.accepted, sv.requests);
+  Report(sv.accepted, sv.requests)
 }
 
 const rounds = 300u64;
 
 // What spinFor adds to, so that it is not optimised away
-imm spun Atomic[u64];
+let spun: Atomic[u64];
 
 // Wait a while, in a way the compiler leaves alone
-fn spinFor(n u64) {
-  mut k = 0u64;
+fn spinFor(n: u64) {
+  var k = 0u64;
   while k < n {
     spun.add(1u64);
     k = k + 1u64;
@@ -282,80 +275,80 @@ fn spinFor(n u64) {
 }
 
 actor Racer {
-  client Client;
+  client: Client;
 
   // Runs once the behaviour is paused on its fetch, after spinning a while
-  pub async do stop(self, g CancelGroup, spin u64) {
+  pub async fn stop(self, g: CancelGroup, spin: u64) {
     spinFor(spin);
     g.cancel();
   }
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
-    mut answered = 0u64;
-    mut ok = 0u64;
-    mut cancelled = 0u64;
-    mut other = 0u64;
-    mut wrongBody = 0u64;
-    mut round = 0u64;
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    var answered = 0u64;
+    var ok = 0u64;
+    var cancelled = 0u64;
+    var other = 0u64;
+    var wrongBody = 0u64;
+    var round = 0u64;
     while round < rounds {
-      imm g = CancelGroup.make();
-      imm r = client.getIn(url(port, "/hello").view(), IoLimits.within(g));
+      let g = CancelGroup.make();
+      let r = client.getIn(url(port, "/hello").view(), IoLimits.within(g));
       selfactor.stop(g, (round * 911u64) % 40000u64);
-      imm a = await r;
+      let a = await r;
       answered = answered + 1u64;
       match &a {
-        case imm good &Ok {
-          if good.status == 200u16 and good.body.view() == "hello" {ok = ok + 1u64;} else {wrongBody = wrongBody + 1u64;}
+        case let &Ok(good) {
+          if good.status == 200u16 && good.body.view() == "hello" {ok = ok + 1u64;} else {wrongBody = wrongBody + 1u64;}
         }
-        case imm e &Error {
+        case let &Err(e) {
           if e.isCancelled() {cancelled = cancelled + 1u64;} else {other = other + 1u64;}
         }
       }
       round = round + 1u64;
     }
     // One with no group still works after all that
-    imm last = await client.get(url(port, "/hello").view());
-    mut lastGood = false;
+    let last = await client.get(url(port, "/hello").view());
+    var lastGood = false;
     match &last {
-      case imm good &Ok {lastGood = good.body.view() == "hello";}
+      case let &Ok(good) {lastGood = good.body.view() == "hello";}
       else {}
     }
     printStr("every round answered once: ");
-    printStr(if answered == rounds {"yes";} else {"NO";});
+    printStr(if answered == rounds {"yes"} else {"NO"});
     printStr("\n");
     printStr("every answer Done or Cancelled: ");
-    printStr(if ok + cancelled == rounds and other == 0u64 and wrongBody == 0u64 {"yes";} else {"NO";});
+    printStr(if ok + cancelled == rounds && other == 0u64 && wrongBody == 0u64 {"yes"} else {"NO"});
     printStr("\n");
     printStr("a fetch with no group after them: ");
-    printStr(if lastGood {"yes";} else {"NO";});
+    printStr(if lastGood {"yes"} else {"NO"});
     printStr("\n");
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
 
 fn main() i32 {
   initAll();
-  mut portTx Sender[u16];
-  mut portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  imm server = thread.start(portTx, &serve);
-  mut port = 0u16;
+  let server = thread.start(portTx, &serve);
+  var port = 0u16;
   match portRx.recv() {
-    case imm p Some {port = p;}
+    case let Some(p) {port = p;}
     case is None[u16] {}
   }
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm r = new Racer(Client.standard());
+    let r = Racer(Client.standard());
     r.run(port, tx);
   }
   rx.recv();
   halt.store(1u32);
-  imm rep = server.join();
+  let rep = server.join();
   finalAll();
   printStr("end\n");
-  0i32;
+  0i32
 }

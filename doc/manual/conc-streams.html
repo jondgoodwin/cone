@@ -1,0 +1,160 @@
+<html>
+  <head>
+	  <title>Streams in depth - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Streams in depth</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Built: the codec core (the <span class="pre">streams</span> package, with
+		deflate, zstd and the hashes meeting it), the <span class="pre">Reader</span> and <span class="pre">Writer</span> of
+		one actor, and the stages between actors (the <span class="pre">stages</span> package). Not built yet: TLS records
+		and HTTP/1 framing as stages (the sample below starts at the socket), and a stage that serves several streams at
+		once; about thirty packages still have a <span class="pre">feed</span> and <span class="pre">pull</span> of their
+		own, to be refitted onto this.</i></p>
+
+	<p>A file, a socket, a compressed body and a hash all move bytes in pieces, and a program wants to join them without
+		each pair of them meeting in its own way. Cone gives a stream three layers, and one rule that holds in all of them:
+		<b>a buffer is owned by exactly one stage at a time, and moves between stages; it is shared only by saying so</b>.
+		This page takes the layers in turn, each with a small example, and ends with how a stream is cancelled.</p>
+
+	<h2 id="codec">Layer 1: a codec with no I/O in it</h2>
+	<p>A transform takes bytes in and gives bytes out, and knows nothing of where they come from or go. The
+		<span class="pre">streams</span> package's <span class="pre">Transform</span> is three calls and a status:
+		<span class="pre">feed</span> what has arrived, in any pieces; <span class="pre">pull</span> output into a buffer's spare
+		room and learn what it waits for (<span class="pre">NeedInput</span>, <span class="pre">MoreOutput</span>,
+		<span class="pre">Done</span> or <span class="pre">Failed</span>); and <span class="pre">finish</span> when no more input
+		will come. Inflate, deflate, the zstd pair and the hashes meet it, so one loop serves them all:</p>
+<pre>
+var inf = deflate.Inflater.make(deflate.Format.Gzip);
+var out = List[u8].withCapacity(size);
+var at = 0usize;
+while at &lt; gz.len() {
+  let n = if gz.len() - at &lt; 65536usize {gz.len() - at} else {65536usize};
+  inf.feed(&amp;gz.view()[at ..&lt; at + n]);          // 64 KiB of the compressed stream, split anywhere
+  at = at + n;
+  var more = true;
+  while more {
+    let st = inf.pull(&amp;mut out, 65536usize);      // output, until it waits for input
+    if st != Status.MoreOutput { more = false; }
+  }
+}
+</pre>
+	<p>(That is <span class="pre">packages/stages/examples/streamrates.cone</span>, which times each codec alone.) A
+		failure keeps its own type, and <span class="pre">failure()</span> gives it as an
+		<span class="pre">AnyError</span> for whoever passes it on.</p>
+
+	<h2 id="reader">Layer 2: reading and writing inside one actor</h2>
+	<p>Parsing wants a view of the bytes that have arrived, in place, and to say when it has used them. A
+		<span class="pre">Reader</span> holds the unconsumed bytes in the buffers they arrived in. <span class="pre">peek(n)</span>
+		lends the first n bytes as one slice (copying only when they cross the edge between two buffers), and
+		<span class="pre">consume(n)</span> uses them up. Because <span class="pre">peek</span> borrows the reader and
+		<span class="pre">consume</span> changes it, the checker refuses a <span class="pre">consume</span> while the view is
+		alive: a parser cannot read from a buffer that has just gone home.</p>
+<pre>
+var r = Reader.make(65536usize);       // holds at most 64 KiB unconsumed
+r.push(buf);                           // a read completed: its buffer joins
+match r.peek(4usize) {                 // the first four bytes, or None (too few yet)
+  case let Some(v) {
+    let magic = v[0usize];             // the view is a borrow of r...
+    r.consume(4usize);                 // ...so this line is refused: a view is live
+  }
+  case is None {}
+}
+</pre>
+	<p>A <span class="pre">Writer</span> is the other side: <span class="pre">spare()</span> to write into,
+		<span class="pre">advance(n)</span> to say how much was written, and the full buffer handed on. The HTTP/1 header
+		reader is written on a <span class="pre">Reader</span>.</p>
+
+	<h2 id="stages">Layer 3: stages between actors</h2>
+	<p>Between two actors a stream is a run of owned chunks (an <span class="pre">IoBuf</span> each), handed on by a call
+		and given back by another. Two actor traits say what a stage is to its neighbours, and neither names the other's
+		actor: <span class="pre">ChunkSink</span> takes chunks (<span class="pre">accept</span>, which
+		<span class="pre">sink &lt;- chunk</span> spells; <span class="pre">end</span>; <span class="pre">attach</span>) and
+		<span class="pre">ChunkSource</span> gets emptied ones back (<span class="pre">giveBack</span>) and can be told to
+		<span class="pre">stop(why)</span>. The library's own
+		stages are generic actors: <span class="pre">TransformStage[T]</span> for any transform and
+		<span class="pre">HashStage[D]</span> for a digest that passes the chunk on untouched. The ends of a pipeline in the
+		OS are actors too, in their own package, <span class="pre">stageio</span>, so that <span class="pre">stages</span>
+		imports no I/O; they are over <span class="pre">aio</span>: <span class="pre">FileSink</span> writes the chunks to a
+		file and <span class="pre">FileSource</span> reads a file into a stream, <span class="pre">SocketSource</span>
+		reads a connection into one. Each stops when the cancel group it works in is cancelled. A
+		<span class="pre">FileSink</span> that fails (a write, or a cancel) leaves the partly written file as it is, and
+		tells its <span class="pre">Oneshot</span> why. A zip archive arriving as a stream is read by
+		<span class="pre">archivestage</span>'s <span class="pre">ArchiveStage</span>, a sink over <span class="pre">zipfile</span>'s
+		<span class="pre">ArchiveStream</span> that calls a function of the caller's at each entry's start for a
+		<span class="pre">ChunkSink</span> and sends that sink the entry's data and its own <span class="pre">end</span>; the archive's
+		verdict, which only the central directory at the archive's end can give, comes apart from the entries, on a
+		<span class="pre">Oneshot</span>. A consumer that fails, or needs no more, ends the work feeding it
+		by calling <span class="pre">stop(why)</span> on its source: the first terminal event a source sees decides (a stop after
+		the source's end, or a second stop, does nothing), the source still sends its one <span class="pre">end</span>
+		carrying <span class="pre">why</span> (an <span class="pre">Ending</span>: <span class="pre">Finished</span> for "I have
+		what I need", <span class="pre">Failed</span> for "I failed, and why"), the buffers already lent still come back
+		through <span class="pre">giveBack</span>, and a stage in the middle forwards the stop upstream and ends its own
+		downstream once. A stop from an archive entry's sink stops the whole archive. A cancel group stays the way to
+		cancel a whole scope from above; the two arriving together is harmless. (The library's sinks do not call
+		<span class="pre">stop</span> yet.)</p>
+	<p><b>Credit is the buffers.</b> A stage sends only while its window of bytes (256 KiB by default) has room; the
+		buffers come from a pool, are taken only when there is data, and are sized to it; and the consumer gives the same
+		buffer back when it has <i>finished</i> with the chunk, which is the acknowledgement that lets the next go. A slow
+		consumer therefore holds a fast producer to its window; an idle stream holds almost nothing.
+		<b>The end, and an error, travel forward</b> as the call <span class="pre">end(how)</span> after the last chunk:
+		<span class="pre">Finished</span>, or <span class="pre">Failed</span> with an <span class="pre">AnyError</span>.
+		<b>Whoever sends the end lets go of the sink with it</b>, so a sink may keep the source it was attached with
+		(and need not drop it at its own <span class="pre">end</span>) without a reference cycle keeping the pair alive.
+		A stage that awaits in <span class="pre">accept</span> (a file write) keeps its stream's order with an
+		<span class="pre">ChunkInbox</span>, so one stream's chunks are handled in order and a stalled stream holds up no other.</p>
+	<p>A pipeline is built from the sink end back, each stage made with the one after it. Here a gzip stream arrives on a
+		socket, is inflated, hashed and written to a file (<span class="pre">packages/stageio/examples/streamsample.cone</span>,
+		compiled and run):</p>
+<pre>
+let sink = FileSink(String.from(name), fileTx);   // fileTx: OneshotSender[Result[u64, AnyError]]
+let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
+let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+let src = SocketSource(inf);
+src.start(SocketAddr.localhost(port));
+</pre>
+	<p>The same job without a stream reads the whole body, inflates it in one call, hashes the result and writes the file
+		in one call (<span class="pre">streamsample.cone</span> runs both, on the same input). The stream holds a few
+		windows of it at a time instead of the body and its inflated form whole, and it overlaps the inflate with the hash
+		and the write.</p>
+
+	<h2 id="cancel">Cancelling a stream</h2>
+	<p>Work that is cancelled stops, and a stream is no exception. Everything that runs in a
+		<a href="conc-ioloop.html#cancel-groups">cancel group</a> sees its cancel, and a stage works in the group of the
+		message it handles: a chunk and the end arrive in the group the sender works in, a buffer given back in the
+		consumer's. So a pipeline is cancelled from the consumer back by building it so. The consumer has a group, the source
+		runs in a child of it, and the consumer quits by cancelling its own:</p>
+<pre>
+let consumers = CancelGroup.make();
+let upstream = consumers.child();
+actors.withGroup(&amp;upstream, fn() [src] { src.start(port); });
+...
+consumers.cancel();        // the sink quits: from a behaviour, or from outside
+</pre>
+	<p>The next stage up sees the cancelled group on the next buffer given back (or chunk arriving) and stops: it ends
+		downstream with <span class="pre">Failed</span> (a hash stage also answers its digest sink with an error), gives the
+		input it holds back, and lets go of its upstream handle, so the actors do not keep each other alive even when the
+		producer never sends an <span class="pre">end</span>. The stage above sees the chunks it gave back, in the same
+		group, and does the same, all the way to the source. Buffers already out downstream still come home to their
+		pool. A stage in no group never sees a cancel. A source that watches its group
+		(<span class="pre">actors.isCancelled()</span>) can stop sooner; one that does not simply finds, after its window,
+		that no buffers come back.</p>
+	<p>A <span class="pre">parallel each</span> inside a stage's codec runs in a child group of its own, so a piece that
+		finds what it wanted can cancel the loop without cancelling the stream
+		(<a href="conc-actors.html#group-travels">A message carries its sender's cancel group</a>).</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="concurrency.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

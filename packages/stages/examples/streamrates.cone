@@ -1,0 +1,101 @@
+// Each stage of the streams sample alone (streams PR 7, "the proof"), so that a slow codec
+// is not read as the plumbing: the rate of the inflate, the sha256 and the file write
+// that streamsample.cone's pipeline is made of, on the same data, each by itself and
+// in one piece, with no actors and no sockets. Its C# twin is `rates` in
+// tools/streambench/csharp.
+//
+//   congo run --release packages/stages/examples/streamrates.cone -- [MiB of inflated data]
+//
+// The rate is MB/s of inflated data (the gzip stream's own size is printed).
+
+mod streamrates;
+
+import stdio use *;
+import collections use *;
+import fs;
+import path use Path;
+import time use Instant;
+import streams use Status;
+import deflate;
+import cryptohash;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN(x: &mut deflate.Inflater, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn report(what: &str, bytes: usize, ns: u64) {
+  printStr(what); printStr(" "); printUInt(ns / 1000000u64); printStr(" ms, ");
+  printUInt(u64.from(bytes) * 1000u64 / ns); printStr(" MB/s\n");
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var mib = 64u32;
+  if argc > 1i32 { mib = digits(*(argv + 1usize)); }
+  let size = usize.from(mib) * 1048576usize;
+  let data = corpus(size);
+  let gz = deflate.gzipCompress(data.view(), 2);
+  printUInt(u64.from(mib)); printStr(" MiB inflated, "); printUInt(u64.from(gz.len()) / 1048576u64); printStr(" MiB gzip\n");
+
+  var t = Instant.now();
+  match deflate.gzipDecompress(gz.view(), size) {
+    case let Ok(out) { report("inflate alone (one call)  ", size, u64.from(t.elapsed().nanos())); }
+    case is Err { printStr("inflate failed\n"); }
+  }
+  t = Instant.now();
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  var out = List[u8].withCapacity(size);
+  var at = 0usize;
+  while at < gz.len() {
+    let n = if gz.len() - at < 65536usize {gz.len() - at} else {65536usize};
+    inf.feed(&gz.view()[at ..< at + n]);
+    at = at + n;
+    var more = true;
+    while more {
+      let st = pullN(&mut inf, &mut out, 65536usize);
+      if st != Status.MoreOutput { more = false; }
+    }
+  }
+  report("inflate alone (streamed)  ", size, u64.from(t.elapsed().nanos()));
+  t = Instant.now();
+  let d = cryptohash.sha256(data.view());
+  report("sha256 alone              ", size, u64.from(t.elapsed().nanos()));
+  t = Instant.now();
+  match fs.writeFile(&Path.from("streamrates.tmp"), data.view()) {
+    case is Ok { report("file write alone          ", size, u64.from(t.elapsed().nanos())); }
+    case is Err { printStr("write failed\n"); }
+  }
+  _ = fs.removeFile(&Path.from("streamrates.tmp"));
+  0i32
+}

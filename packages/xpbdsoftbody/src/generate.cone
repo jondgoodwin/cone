@@ -9,53 +9,53 @@
 // compliance of 1 or less is a plate. A negative bend compliance leaves bending
 // out.
 pub struct Fabric {
-  pub density f32;
-  pub stretch f32;
-  pub shear f32;
-  pub bend f32;
-  pub thickness f32;       // particle radius for collisions, metres
+  pub density: f32;
+  pub stretch: f32;
+  pub shear: f32;
+  pub bend: f32;
+  pub thickness: f32;       // particle radius for collisions, metres
 
   // Light cloth: a curtain or flag (about 0.2 kg per square metre)
-  pub fn light() Fabric {new Fabric(0.2, 1e-5, 1e-4, 500., 0.01);}
+  pub fn light() Fabric {Fabric(0.2, 1e-5, 1e-4, 500., 0.01)}
 
   // Heavy cloth: canvas, a cloak or a balloon's envelope (about 0.5 kg per square metre)
-  pub fn heavy() Fabric {new Fabric(0.5, 1e-5, 1e-4, 50., 0.01);}
+  pub fn heavy() Fabric {Fabric(0.5, 1e-5, 1e-4, 50., 0.01)}
 }
 
 // ---- building a surface from triangles ----
 
 struct EdgeRec {
-  a u32;
-  b u32;
-  opp0 u32;
-  opp1 u32;
-  count u32;
+  a: u32;
+  b: u32;
+  opp0: u32;
+  opp1: u32;
+  count: u32;
 }
 
-fn edgeKey(a u32, b u32) u64 {
-  if a < b {(u64.from(a) << 32u64) | u64.from(b);}
-  else {(u64.from(b) << 32u64) | u64.from(a);}
+fn edgeKey(a: u32, b: u32) u64 {
+  if a < b {(u64.from(a) << 32u64) | u64.from(b)}
+  else {(u64.from(b) << 32u64) | u64.from(a)}
 }
 
 // Give the body its triangles, particle masses from the triangle areas, a
 // stretch constraint for each edge and a bending constraint for each edge two
 // triangles share, all held at the present shape. 'rest' scales the rest
 // lengths (1: as built). Triangles must be wound the same way throughout.
-fn buildSurface(b &mut SoftBody, tris &Array[u32], f &Fabric, restScale f32) {
-  imm np = b.pos.len();
-  mut area = List[f32].empty();
-  mut i = 0usize;
+fn buildSurface(b: &mut SoftBody, tris: &Array[u32], f: &Fabric, restScale: f32) {
+  let np = b.pos.len();
+  var area = List[f32]();
+  var i = 0usize;
   while i < np {
     area.push(0.);
     i = i + 1usize;
   }
-  mut t = 0usize;
+  var t = 0usize;
   while t + 2usize < tris.len() {
-    imm a = tris[t];
-    imm bb = tris[t + 1usize];
-    imm c = tris[t + 2usize];
-    imm pa = *b.pos[usize.from(a)];
-    imm ar = 0.5 * (*b.pos[usize.from(bb)] - pa).cross(*b.pos[usize.from(c)] - pa).length();
+    let a = tris[t];
+    let bb = tris[t + 1usize];
+    let c = tris[t + 2usize];
+    let pa = *b.pos[usize.from(a)];
+    let ar = 0.5 * (*b.pos[usize.from(bb)] - pa).cross(*b.pos[usize.from(c)] - pa).length();
     area.set(usize.from(a), *area[usize.from(a)] + ar / 3.);
     area.set(usize.from(bb), *area[usize.from(bb)] + ar / 3.);
     area.set(usize.from(c), *area[usize.from(c)] + ar / 3.);
@@ -66,31 +66,31 @@ fn buildSurface(b &mut SoftBody, tris &Array[u32], f &Fabric, restScale f32) {
   }
   i = 0usize;
   while i < np {
-    imm m = fmax(*area[i] * f.density, 1e-5);
+    let m = (*area[i] * f.density).max(1e-5);
     b.mass.set(i, m);
     b.invMass.set(i, 1. / m);
     i = i + 1usize;
   }
-  mut recs = List[EdgeRec].empty();
-  mut index = Dict[u64, u32].deterministic();
+  var recs = List[EdgeRec]();
+  var index = Dict[u64, u32].deterministic();
   t = 0usize;
   while t + 2usize < tris.len() {
-    mut e = 0usize;
+    var e = 0usize;
     while e < 3usize {
-      imm a = tris[t + e];
-      imm bb = tris[t + (e + 1usize) % 3usize];
-      imm opp = tris[t + (e + 2usize) % 3usize];
-      imm key = edgeKey(a, bb);
-      mut found = 0xFFFFFFFFu32;
+      let a = tris[t + e];
+      let bb = tris[t + (e + 1usize) % 3usize];
+      let opp = tris[t + (e + 2usize) % 3usize];
+      let key = edgeKey(a, bb);
+      var found = 0xFFFFFFFFu32;
       match index.getCopy(&key) {
-        case imm h Some { found = h; }
+        case let Some(h) { found = h; }
         case is None { }
       }
       if found == 0xFFFFFFFFu32 {
         index.insert(key, u32.from(recs.len()));
-        recs.push(new EdgeRec(a, bb, opp, 0xFFFFFFFFu32, 1u32));
+        recs.push(EdgeRec(a, bb, opp, 0xFFFFFFFFu32, 1u32));
       } else {
-        imm fi = usize.from(found);
+        let fi = usize.from(found);
         recs[fi].count = recs[fi].count + 1u32;
         if recs[fi].count == 2u32 { recs[fi].opp1 = opp; }
       }
@@ -98,13 +98,13 @@ fn buildSurface(b &mut SoftBody, tris &Array[u32], f &Fabric, restScale f32) {
     }
     t = t + 3usize;
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < recs.len() {
-    imm r = *recs[k];
-    imm pa = *b.pos[usize.from(r.a)];
-    imm pb = *b.pos[usize.from(r.b)];
-    b.dist.push(new DistanceC(r.a, r.b, pa.distance(pb) * restScale, f.stretch, 0.));
-    if r.count == 2u32 and f.bend >= 0. {
+    let r = *recs[k];
+    let pa = *b.pos[usize.from(r.a)];
+    let pb = *b.pos[usize.from(r.b)];
+    b.dist.push(DistanceC(r.a, r.b, pa.distance(pb) * restScale, f.stretch, 0.));
+    if r.count == 2u32 && f.bend >= 0. {
       b.addBend(r.a, r.b, r.opp0, r.opp1, f.bend);
     }
     k = k + 1usize;
@@ -121,31 +121,31 @@ fn buildSurface(b &mut SoftBody, tris &Array[u32], f &Fabric, restScale f32) {
 // constraints (Fabric.shear), the rest stretch (Fabric.stretch); every interior
 // edge is bent (Fabric.bend). Output vertices are the particles, with uvs
 // (0, 0) at 'origin' to (1, 1) at the far corner; v runs along 'down'.
-pub fn clothGrid(origin Vec3, across Vec3, down Vec3, nx u32, ny u32, f &Fabric) SoftBody {
-  mut b = SoftBody.empty();
-  imm cols = nx + 1u32;
-  mut tris = List[u32].empty();
-  mut j = 0u32;
+pub fn clothGrid(origin: Vec3, across: Vec3, down: Vec3, nx: u32, ny: u32, f: &Fabric) SoftBody {
+  var b = SoftBody();
+  let cols = nx + 1u32;
+  var tris = List[u32]();
+  var j = 0u32;
   while j <= ny {
-    mut i = 0u32;
+    var i = 0u32;
     while i <= nx {
-      imm u = f32.from(i) / f32.from(nx);
-      imm v = f32.from(j) / f32.from(ny);
+      let u = f32.from(i) / f32.from(nx);
+      let v = f32.from(j) / f32.from(ny);
       b.addParticle(origin + across * u + down * v, 1.);
       b.vertexMap.push(j * cols + i);
-      b.vertexUvs.push(new Vec2(u, v));
+      b.vertexUvs.push(Vec2(u, v));
       i = i + 1u32;
     }
     j = j + 1u32;
   }
   j = 0u32;
   while j < ny {
-    mut i = 0u32;
+    var i = 0u32;
     while i < nx {
-      imm a = j * cols + i;
-      imm bb = a + 1u32;
-      imm c = a + cols;
-      imm d = c + 1u32;
+      let a = j * cols + i;
+      let bb = a + 1u32;
+      let c = a + cols;
+      let d = c + 1u32;
       // quads split along the bb-c diagonal; both triangles face across x down
       tris.push(a);
       tris.push(bb);
@@ -160,17 +160,17 @@ pub fn clothGrid(origin Vec3, across Vec3, down Vec3, nx u32, ny u32, f &Fabric)
   buildSurface(&mut b, tris.view(), f, 1.);
   b.vertexTris = tris;
   // diagonals are shear
-  mut k = 0usize;
+  var k = 0usize;
   while k < b.dist.len() {
-    imm c = *b.dist[k];
-    imm ra = c.a / cols;
-    imm rb = c.b / cols;
-    imm ca = c.a % cols;
-    imm cb = c.b % cols;
-    if ra != rb and ca != cb { b.dist[k].compliance = f.shear; }
+    let c = *b.dist[k];
+    let ra = c.a / cols;
+    let rb = c.b / cols;
+    let ca = c.a % cols;
+    let cb = c.b % cols;
+    if ra != rb && ca != cb { b.dist[k].compliance = f.shear; }
     k = k + 1usize;
   }
-  b;
+  b
 }
 
 // A soft body from a triangle mesh: vertices at the same place (a uv seam, the
@@ -179,27 +179,27 @@ pub fn clothGrid(origin Vec3, across Vec3, down Vec3, nx u32, ny u32, f &Fabric)
 // ones. 'restScale' scales every rest length (an envelope sewn bigger than the
 // shape it starts in). The output keeps the mesh's own vertices, uvs and
 // indices.
-pub fn fromMesh(m &Mesh, f &Fabric, weld f32, restScale f32) SoftBody {
-  mut b = SoftBody.empty();
-  imm nv = m.positions.len();
-  imm inv = 1. / weld;
-  mut cells = Dict[u64, u32].deterministic();
-  mut i = 0usize;
+pub fn fromMesh(m: &Mesh, f: &Fabric, weld: f32, restScale: f32) SoftBody {
+  var b = SoftBody();
+  let nv = m.positions.len();
+  let inv = 1. / weld;
+  var cells = Dict[u64, u32].deterministic();
+  var i = 0usize;
   while i < nv {
-    imm p = *m.positions[i];
-    imm cx = i32.from(floorf(p.x * inv));
-    imm cy = i32.from(floorf(p.y * inv));
-    imm cz = i32.from(floorf(p.z * inv));
-    mut hit = 0xFFFFFFFFu32;
-    mut dx = -1i32;
-    while dx <= 1i32 and hit == 0xFFFFFFFFu32 {
-      mut dy = -1i32;
-      while dy <= 1i32 and hit == 0xFFFFFFFFu32 {
-        mut dz = -1i32;
-        while dz <= 1i32 and hit == 0xFFFFFFFFu32 {
-          imm wk = weldKey(cx + dx, cy + dy, cz + dz);
+    let p = *m.positions[i];
+    let cx = i32.from((p.x * inv).floor());
+    let cy = i32.from((p.y * inv).floor());
+    let cz = i32.from((p.z * inv).floor());
+    var hit = 0xFFFFFFFFu32;
+    var dx = -1i32;
+    while dx <= 1i32 && hit == 0xFFFFFFFFu32 {
+      var dy = -1i32;
+      while dy <= 1i32 && hit == 0xFFFFFFFFu32 {
+        var dz = -1i32;
+        while dz <= 1i32 && hit == 0xFFFFFFFFu32 {
+          let wk = weldKey(cx + dx, cy + dy, cz + dz);
           match cells.getCopy(&wk) {
-            case imm h Some {
+            case let Some(h) {
               if (*b.pos[usize.from(h)] - p).lengthSquared() <= weld * weld { hit = h; }
             }
             case is None { }
@@ -217,8 +217,8 @@ pub fn fromMesh(m &Mesh, f &Fabric, weld f32, restScale f32) SoftBody {
     b.vertexMap.push(hit);
     i = i + 1usize;
   }
-  mut tris = List[u32].empty();
-  mut t = 0usize;
+  var tris = List[u32]();
+  var t = 0usize;
   while t < m.indices.len() {
     tris.push(*b.vertexMap[usize.from(*m.indices[t])]);
     t = t + 1usize;
@@ -234,12 +234,12 @@ pub fn fromMesh(m &Mesh, f &Fabric, weld f32, restScale f32) SoftBody {
     b.vertexTris.push(*m.indices[i]);
     i = i + 1usize;
   }
-  b;
+  b
 }
 
-fn weldKey(x i32, y i32, z i32) u64 {
-  ((u64.from(x as u32) & 0x1FFFFFu64) << 42u64) | ((u64.from(y as u32) & 0x1FFFFFu64) << 21u64)
-    | (u64.from(z as u32) & 0x1FFFFFu64);
+fn weldKey(x: i32, y: i32, z: i32) u64 {
+  ((u64.from(u32.from(x)) & 0x1FFFFFu64) << 42u64) | ((u64.from(u32.from(y)) & 0x1FFFFFu64) << 21u64)
+    | (u64.from(u32.from(z)) & 0x1FFFFFu64)
 }
 
 // A closed envelope: the mesh 'm' made a soft body that pressure inflates. Its
@@ -250,10 +250,10 @@ fn weldKey(x i32, y i32, z i32) u64 {
 // must be closed and outward-wound. A restScale far from 1 starts the envelope
 // out of its pattern and inflates it in one violent step; to inflate gently
 // build with restScale 1 and call 'scaleRest' a little each step.
-pub fn pressureBody(m &Mesh, f &Fabric, restScale f32, pressure f32, compliance f32) SoftBody {
-  mut b = fromMesh(m, f, 1e-4, restScale);
-  b.pressure = new PressureC(true, b.volume() * restScale * restScale * restScale, pressure, compliance, 0.);
-  b;
+pub fn pressureBody(m: &Mesh, f: &Fabric, restScale: f32, pressure: f32, compliance: f32) SoftBody {
+  var b = fromMesh(m, f, 1e-4, restScale);
+  b.pressure = PressureC(true, b.volume() * restScale * restScale * restScale, pressure, compliance, 0.);
+  b
 }
 
 // ---- ropes and chains ----
@@ -266,15 +266,15 @@ pub fn pressureBody(m &Mesh, f &Fabric, restScale f32, pressure f32, compliance 
 // by about a millimetre). 'linearDensity' is kg per metre, 'radius' the rope's
 // radius for collisions and wind. The first and last particles are free; pin
 // them or attach them as the use asks.
-pub fn rope(points &Array[Vec3], linearDensity f32, stretch f32, bend f32, radius f32) SoftBody {
-  mut b = SoftBody.empty();
-  imm n = points.len();
-  mut i = 0usize;
+pub fn rope(points: &Array[Vec3], linearDensity: f32, stretch: f32, bend: f32, radius: f32) SoftBody {
+  var b = SoftBody();
+  let n = points.len();
+  var i = 0usize;
   while i < n {
-    mut len = 0.;
+    var len = 0.f;
     if i > 0usize { len = len + (points[i] - points[i - 1usize]).length() * 0.5; }
     if i + 1usize < n { len = len + (points[i + 1usize] - points[i]).length() * 0.5; }
-    b.addParticle(points[i], fmax(len * linearDensity, 1e-5));
+    b.addParticle(points[i], (len * linearDensity).max(1e-5));
     i = i + 1usize;
   }
   i = 0usize;
@@ -293,24 +293,24 @@ pub fn rope(points &Array[Vec3], linearDensity f32, stretch f32, bend f32, radiu
   }
   b.thickness = radius;
   b.ropeRadius = radius;
-  b;
+  b
 }
 
 // A rope of 'segments' links hanging in a straight line from 'start' to 'end'
-pub fn ropeBetween(start Vec3, end Vec3, segments u32, linearDensity f32, stretch f32, bend f32, radius f32) SoftBody {
-  mut pts = List[Vec3].empty();
-  mut i = 0u32;
+pub fn ropeBetween(start: Vec3, end: Vec3, segments: u32, linearDensity: f32, stretch: f32, bend: f32, radius: f32) SoftBody {
+  var pts = List[Vec3]();
+  var i = 0u32;
   while i <= segments {
     pts.push(start.lerp(end, f32.from(i) / f32.from(segments)));
     i = i + 1u32;
   }
-  rope(pts.view(), linearDensity, stretch, bend, radius);
+  rope(pts.view(), linearDensity, stretch, bend, radius)
 }
 
 // A chain: a rope with no bending resistance (links turn freely), the form of a
 // hanging lantern's chain
-pub fn chain(points &Array[Vec3], linearDensity f32, stretch f32, radius f32) SoftBody {
-  rope(points, linearDensity, stretch, -1., radius);
+pub fn chain(points: &Array[Vec3], linearDensity: f32, stretch: f32, radius: f32) SoftBody {
+  rope(points, linearDensity, stretch, -1., radius)
 }
 
 // ---- long range attachments ----
@@ -322,13 +322,29 @@ pub fn chain(points &Array[Vec3], linearDensity f32, stretch f32, radius f32) So
 // cloth cannot stretch past its rest length from its pins; 1.02: 2% more).
 // Call it after pinning. Kim, Chentanez and Muller 2012, "Long Range
 // Attachments - a method to simulate inextensible clothing in computer games".
-pub fn addTethers(b &mut SoftBody, slack f32) {
-  imm n = b.pos.len();
-  mut best = List[f32].empty();
-  mut src = List[u32].empty();
-  mut i = 0usize;
+//
+// A particle held to a body that moves (a BodyAnchor of a Coupled with mass) is a
+// tethered particle, not a pin: for the length of a substep it is as heavy as the
+// body, a rope's heavy end, and the tether to the pin it hangs from is what holds
+// it where the rope's length puts it (a Gauss-Seidel pass over a chain does not
+// carry a heavy load's weight down the chain: the stretch it leaves grows with
+// the mass ratio and the links).
+pub fn addTethers(b: &mut SoftBody, slack: f32) {
+  let n = b.pos.len();
+  var held = List[bool]();
+  var i = 0usize;
+  while i < n { held.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < b.bodyAnchors.len() {
+    let a = *b.bodyAnchors[i];
+    if (*b.bodies[usize.from(a.body)]).invMass > 0. { held.set(usize.from(a.particle), true); }
+    i = i + 1usize;
+  }
+  var best = List[f32]();
+  var src = List[u32]();
+  i = 0usize;
   while i < n {
-    if *b.invMass[i] == 0. {
+    if *b.invMass[i] == 0. && !*held[i] {
       best.push(0.);
       src.push(u32.from(i));
     } else {
@@ -337,17 +353,17 @@ pub fn addTethers(b &mut SoftBody, slack f32) {
     }
     i = i + 1usize;
   }
-  imm edges = b.dist.len();
-  mut changed = true;
-  mut pass = 0usize;
-  while changed and pass <= n {
+  let edges = b.dist.len();
+  var changed = true;
+  var pass = 0usize;
+  while changed && pass <= n {
     changed = false;
     pass = pass + 1usize;
-    mut k = 0usize;
+    var k = 0usize;
     while k < edges {
-      imm c = *b.dist[k];
-      imm ia = usize.from(c.a);
-      imm ib = usize.from(c.b);
+      let c = *b.dist[k];
+      let ia = usize.from(c.a);
+      let ib = usize.from(c.b);
       k = k + 1usize;
       if *best[ia] + c.rest < *best[ib] {
         best.set(ib, *best[ia] + c.rest);
@@ -363,8 +379,8 @@ pub fn addTethers(b &mut SoftBody, slack f32) {
   }
   i = 0usize;
   while i < n {
-    if *b.invMass[i] > 0. and *src[i] != 0xFFFFFFFFu32 {
-      b.tethers.push(new TetherC(u32.from(i), *src[i], *best[i] * slack));
+    if (*b.invMass[i] > 0. || *held[i]) && *src[i] != 0xFFFFFFFFu32 {
+      b.tethers.push(TetherC(u32.from(i), *src[i], *best[i] * slack));
     }
     i = i + 1usize;
   }

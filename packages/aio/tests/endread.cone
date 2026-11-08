@@ -11,57 +11,56 @@ mod endread;
 
 import stdio use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket;
 
 struct Note {
-  pub n u64;
-  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
 }
 
-fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
-  s;
+  s
 }
 
 actor Talker {
-  pool Pool;
 
-  pub async do talk(self, ready OneshotSender[u64]) {
-    imm first = new Note(1u64);
-    imm l = await aio.listen(SocketAddr.localhost(0u16));
-    imm ls = socketOf(l);
-    imm a = await ls.localAddr();
-    mut port = 0u16;
+  pub async fn talk(self, ready: OneshotSender[u64]) {
+    let first = Note(1u64);
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
     match a {
-      case imm addr Ok {port = addr.port();}
+      case let Ok(addr) {port = addr.port();}
       else {}
     }
-    imm c = await aio.connect(SocketAddr.localhost(port));
-    imm conn = socketOf(c);
-    imm second = new Note(2u64);
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let conn = socketOf(c);
+    let second = Note(2u64);
     printStr("connected\n");
-    mut r = ready;
+    var r = ready;
     r.send(1u64);
-    imm got = await conn.read(pool.mustTake(4096usize));
+    let got = await conn.read(IoBuf(4096usize));
     printStr("read\n");
   }
 }
 
 fn main() {
   initAll();
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm t = new Talker(Pool.make());
+    let t = Talker();
     t.talk(tx);
   }
   rx.recv();

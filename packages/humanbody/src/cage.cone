@@ -1,0 +1,537 @@
+// The cage: the body's topology, as an artist lays it out before sculpting.
+//
+// A game body is a mesh of quads in RINGS: loops round the trunk and round each limb, with more loops where
+// the body bends (shoulder, elbow, wrist, hip, knee, ankle, neck) so a joint folds instead of creasing. The
+// cage here is that layout at its coarsest, a few hundred faces, made from the skeleton and the measures:
+//
+//   THE TRUNK: rings of 16 from the crotch to the shoulders (crotch, trochanter, waist's two, chest's two,
+//     the armpit, the shoulder line), closed over the top into a ring of 8 for the neck by eight five-sided
+//     faces, then the neck's rings; the top ring is open, the SEAM the head is stitched to.
+//   THE ARMS: each grows out of a 2 x 2 patch of quads in the trunk's side at the shoulder (the patch's
+//     outline is eight vertices, the arm's first ring), turns down along the bones in rings of 8 (three
+//     loops at the elbow, two at the wrist), and closes in a mitten's tip.
+//   THE LEGS: each grows from half of the trunk's bottom ring (nine vertices) and a crotch vertex shared by
+//     both: rings of 10 down the thigh (three loops at the knee and at the ankle), turning forward along the
+//     foot and closing at the toes.
+//
+// Faces are wound counterclockwise seen from outside (each is checked against a point inside the part it
+// belongs to). Each cage vertex carries SKIN WEIGHTS, by the rules an animator paints them with: all of a
+// bone along it, half and half on a joint's ring, the shoulder's top shared with the clavicle; as vertex
+// channels they are subdivided with the surface, so the final weights are as smooth as the surface is.
+//
+// Catmull-Clark subdivision (sculpt's) turns the cage into the body's quads (sculpt.cone): one level gives
+// rings of 32 round the trunk, 16 round an arm and 20 round a leg.
+
+pub const TRUNK_SIDES = 16usize;
+pub const ARM_SIDES = 8usize;
+pub const LEG_SIDES = 10usize;
+
+pub struct Cage is Default {
+  pub positions: List[Vec3];
+  pub counts: List[u32];
+  pub indices: List[u32];
+  pub weights: List[f32];       // HUMANOID_BONES a vertex
+  pub seam: List[u32];          // the neck's open ring, in order round it
+
+  pub fn vertexCount(self: &) usize { positions.len() }
+
+  // A vertex with weights on up to three bones (a bone of HUMANOID_BONES or more is no bone)
+  fn vertex(self: &mut, p: Vec3, b0: usize, w0: f32, b1: usize, w1: f32, b2: usize, w2: f32) u32 {
+    positions.push(p);
+    var k = 0usize;
+    while k < HUMANOID_BONES { weights.push(0.); k = k + 1usize; }
+    let base = (positions.len() - 1usize) * HUMANOID_BONES;
+    if b0 < HUMANOID_BONES { weights.set(base + b0, *weights[base + b0] + w0); }
+    if b1 < HUMANOID_BONES { weights.set(base + b1, *weights[base + b1] + w1); }
+    if b2 < HUMANOID_BONES { weights.set(base + b2, *weights[base + b2] + w2); }
+    u32.from(positions.len() - 1usize)
+  }
+
+  // A face of the vertices 'vs', wound so its normal points away from 'inside'
+  fn face(self: &mut, vs: &List[u32], inside: Vec3) {
+    let n = vs.len();
+    var nrm = Vec3(0., 0., 0.);
+    var c = Vec3(0., 0., 0.);
+    var i = 0usize;
+    while i < n {
+      let a = *positions[usize.from(*vs[i])];
+      let b = *positions[usize.from(*vs[(i + 1usize) % n])];
+      nrm = nrm + Vec3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+      c = c + a;
+      i = i + 1usize;
+    }
+    c = c * (1. / f32.from(n));
+    let flip = nrm.dot(c - inside) < 0.;
+    counts.push(u32.from(n));
+    i = 0usize;
+    while i < n {
+      let j = if flip { n - 1usize - i } else { i };
+      indices.push(*vs[j]);
+      i = i + 1usize;
+    }
+  }
+
+  fn quad(self: &mut, a: u32, b: u32, c: u32, d: u32, inside: Vec3) {
+    var vs = List[u32]();
+    vs.push(a); vs.push(b); vs.push(c); vs.push(d);
+    self.face(&vs, inside);
+  }
+
+  fn tri(self: &mut, a: u32, b: u32, c: u32, inside: Vec3) {
+    var vs = List[u32]();
+    vs.push(a); vs.push(b); vs.push(c);
+    self.face(&vs, inside);
+  }
+
+  // Quads between two rings of the same count, the first's i-th joined to the second's i-th; 'inside' a
+  // point on the axis between them
+  fn strip(self: &mut, a: &List[u32], b: &List[u32], inside: Vec3) {
+    let n = a.len();
+    var i = 0usize;
+    while i < n {
+      let j = (i + 1usize) % n;
+      self.quad(*a[i], *a[j], *b[j], *b[i], inside);
+      i = i + 1usize;
+    }
+  }
+
+  // Every face wound as its neighbours are: where two faces run along a shared edge the same way, the
+  // second is turned over, spreading from the first face; then all are turned over if the whole winds
+  // inward (its signed volume is negative). The winding each face was given by its inside point is only a
+  // first guess, wrong where a face is far from its part's axis (the shoulder's cap).
+  pub fn orient(self: &mut) {
+    let nf = counts.len();
+    var first = List[usize]();
+    var at = 0usize;
+    var f = 0usize;
+    while f < nf { first.push(at); at = at + usize.from(*counts[f]); f = f + 1usize; }
+    // each directed edge: its key (the smaller vertex high, the larger low), its face, whether it runs low to high
+    var keys = List[u64]();
+    var faces = List[usize]();
+    var ups = List[bool]();
+    f = 0usize;
+    while f < nf {
+      let n = usize.from(*counts[f]);
+      var i = 0usize;
+      while i < n {
+        let a = *indices[*first[f] + i];
+        let b = *indices[*first[f] + (i + 1usize) % n];
+        let lo = if a < b { a } else { b };
+        let hi = if a < b { b } else { a };
+        keys.push((u64.from(lo) << 32u64) | u64.from(hi));
+        faces.push(f);
+        ups.push(a < b);
+        i = i + 1usize;
+      }
+      f = f + 1usize;
+    }
+    // sorted by key, equal keys in the order the edges were listed (a stable sort: where more than two
+    // faces share an edge the pairs below depend on that order)
+    var order = List[usize]();
+    var i = 0usize;
+    while i < keys.len() { order.push(i); i = i + 1usize; }
+    order.sortByKey(fn(e: &usize) u64 { *keys[*e] });
+    // each edge's partner (the other face's run along it), or none
+    let NONE = 0xFFFFFFFFusize;
+    var partner = List[usize]();
+    partner.resize(keys.len(), NONE);
+    i = 0usize;
+    while i + 1usize < order.len() {
+      let x = *order[i];
+      let y = *order[i + 1usize];
+      if *keys[x] == *keys[y] { partner.set(x, y); partner.set(y, x); }
+      i = i + 1usize;
+    }
+    // spread the flips from each face not yet reached
+    var flip = List[u8]();
+    flip.resize(nf, 2u8);              // 2: not yet reached
+    var queue = List[usize]();
+    f = 0usize;
+    while f < nf {
+      if *flip[f] == 2u8 {
+        flip.set(f, 0u8);
+        queue.push(f);
+        while queue.len() > 0usize {
+          let g = *queue[queue.len() - 1usize];
+          queue.pop();
+          let n = usize.from(*counts[g]);
+          var e = 0usize;
+          while e < n {
+            let k = *first[g] + e;
+            let p = *partner[k];
+            if p != NONE {
+              let hf = *faces[p];
+              if *flip[hf] == 2u8 {
+                // after the flips, the two must run along the edge opposite ways
+                let gUp = *ups[k] != (*flip[g] == 1u8);
+                let hUp = *ups[p];
+                flip.set(hf, if gUp == hUp { 1u8 } else { 0u8 });
+                queue.push(hf);
+              }
+            }
+            e = e + 1usize;
+          }
+        }
+      }
+      f = f + 1usize;
+    }
+    f = 0usize;
+    while f < nf {
+      if *flip[f] == 1u8 { self.reverseFace(*first[f], usize.from(*counts[f])); }
+      f = f + 1usize;
+    }
+    // outward: the signed volume
+    var vol = 0.;
+    f = 0usize;
+    while f < nf {
+      let n = usize.from(*counts[f]);
+      let p0 = *positions[usize.from(*indices[*first[f]])];
+      i = 1usize;
+      while i + 1usize < n {
+        let p1 = *positions[usize.from(*indices[*first[f] + i])];
+        let p2 = *positions[usize.from(*indices[*first[f] + i + 1usize])];
+        vol = vol + p0.dot(p1.cross(p2));
+        i = i + 1usize;
+      }
+      f = f + 1usize;
+    }
+    if vol < 0. {
+      f = 0usize;
+      while f < nf { self.reverseFace(*first[f], usize.from(*counts[f])); f = f + 1usize; }
+    }
+  }
+
+  fn reverseFace(self: &mut, start: usize, n: usize) {
+    var i = 0usize;
+    while i < n / 2usize {
+      let a = *indices[start + i];
+      indices.set(start + i, *indices[start + n - 1usize - i]);
+      indices.set(start + n - 1usize - i, a);
+      i = i + 1usize;
+    }
+  }
+
+  // A ring closed by a fan to a tip vertex
+  fn capRing(self: &mut, a: &List[u32], tip: u32, inside: Vec3) {
+    let n = a.len();
+    var i = 0usize;
+    while i < n {
+      self.tri(*a[i], *a[(i + 1usize) % n], tip, inside);
+      i = i + 1usize;
+    }
+  }
+}
+
+// A limb's ring frame: its axis and the two directions its ring's angles are measured in, carried from ring
+// to ring by the least turn (so the rings do not twist)
+struct Frame {
+  axis: Vec3;
+  e1: Vec3;      // angle 0
+  e2: Vec3;      // angle a quarter turn on
+}
+
+fn carry(f: &Frame, axis: Vec3) Frame {
+  let q = Quat.fromVectors(f.axis, axis.normalize());
+  Frame(axis.normalize(), (q * f.e1).normalize(), (q * f.e2).normalize())
+}
+
+// The weights of a limb ring: bones a and b mixed, t of b
+struct RingSkin {
+  a: usize;
+  b: usize;
+  t: f32;
+}
+
+fn rs(a: usize, b: usize, t: f32) RingSkin { RingSkin(a, b, t) }
+
+// A ring of points at 'angles' round 'centre' in 'frame', radius 'r1' along e1 and 'r2' along e2
+fn ringPoint(c: Vec3, f: &Frame, ang: f32, r1: f32, r2: f32) Vec3 { c + f.e1 * (cos(ang) * r1) + f.e2 * (sin(ang) * r2) }
+
+fn addRing(cage: &mut Cage, c: Vec3, f: &Frame, angles: &List[f32], r1: f32, r2: f32, sk: RingSkin) List[u32] {
+  var out = List[u32]();
+  var i = 0usize;
+  while i < angles.len() {
+    let p = ringPoint(c, f, *angles[i], r1, r2);
+    out.push(cage.vertex(p, sk.a, 1. - sk.t, sk.b, sk.t, HUMANOID_BONES, 0.));
+    i = i + 1usize;
+  }
+  out
+}
+
+// The angles of a root loop's vertices round 'centre' in the plane of 'e1' and 'e2'
+fn loopAngles(cage: &Cage, loop: &List[u32], centre: Vec3, e1: Vec3, e2: Vec3) List[f32] {
+  var out = List[f32]();
+  var i = 0usize;
+  while i < loop.len() {
+    let r = *cage.positions[usize.from(*loop[i])] - centre;
+    out.push(atan2(r.dot(e2), r.dot(e1)));
+    i = i + 1usize;
+  }
+  out
+}
+
+// A trunk ring: 16 points on an ellipse of half-width a, half-depth b, at height y, its middle at z = zc;
+// point k is at angle k pi / 8 from the front (-z) towards the being's right (+x)
+fn trunkPoint(y: f32, a: f32, b: f32, zc: f32, k: usize) Vec3 {
+  let phi = f32.from(k) * pi / 8.;
+  Vec3(sin(phi) * a, y, zc - cos(phi) * b)
+}
+
+// The height of the neck's seam, where the head is stitched on: under the jaw
+pub fn seamHeight(m: &Measures) f32 { (m.acromionAt + 0.030) * m.height }
+
+// The cage of a body of measures 'm' on the skeleton whose rest pose is 'models'
+pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
+  let h = m.height;
+  let hs = h / 1.75;
+  var cage = Cage();
+  let X = HUMANOID_BONES;
+
+  // ---- the trunk's rings: height, half-width, half-depth, middle's z, and two bones and the share of the second ----
+  let hipW = 0.5 * m.hipBreadth;
+  let buttD = 0.5 * m.buttockDepth;
+  let waistW = 0.5 * m.waistBreadth;
+  let waistD = 0.5 * m.waistDepth;
+  let chestW = 0.5 * m.chestBreadth;
+  let chestD = 0.5 * m.chestDepth;
+  let acrom = 0.5 * m.biacromial;
+  let neckR = m.neckGirth / 6.2831853;
+  let seamY = seamHeight(m);
+  let ys = [(m.crotchAt + 0.022) * h, m.trochanterAt * h, (m.waistAt - 0.045) * h, m.waistAt * h, (m.waistAt + m.chestAt) * 0.5 * h,
+    m.chestAt * h, (m.armpitAt + m.acromionAt) * 0.5 * h, (m.acromionAt - 0.004) * h, (m.acromionAt + 0.014) * h];
+  let aw = [hipW * 0.90, hipW, (hipW + waistW) * 0.5, waistW, (waistW + chestW) * 0.5, chestW, acrom * 0.86, acrom * 0.84, acrom * 0.42];
+  let bs = [buttD * 0.88, buttD, (buttD + waistD) * 0.5, waistD, (waistD + chestD) * 0.5, chestD, chestD * 0.92, chestD * 0.74, chestD * 0.56];
+  let zs = [0.012f, 0.014, 0.008, 0.004, 0.004, 0.006, 0.014, 0.020, 0.022];
+  let b0s = [PELVIS, PELVIS, PELVIS, SPINE, SPINE, CHEST, CHEST, CHEST, CHEST];
+  let b1s = [PELVIS, PELVIS, SPINE, SPINE, CHEST, CHEST, CHEST, CHEST, NECK];
+  let ts = [0.f, 0., 0.5, 0., 0.5, 0., 0., 0., 0.25];
+  var rings = List[List[u32]]();
+  var r = 0usize;
+  while r < 9usize {
+    var ring = List[u32]();
+    var k = 0usize;
+    while k < TRUNK_SIDES {
+      let p = trunkPoint(ys[r], aw[r], bs[r], zs[r], k);
+      // the shoulders' tops lean towards the clavicle of their side
+      let side = p.x.abs() / aw[r].max(0.001);
+      let cl = if r >= 7usize { 0.45 * smoothstep(0.3, 0.9, side) } else if r == 6usize { 0.25 * smoothstep(0.5, 0.95, side) } else { 0. };
+      let clav = if p.x < 0. { CLAVICLE_L } else { CLAVICLE_R };
+      let wb = (1. - cl);
+      ring.push(cage.vertex(p, b0s[r], wb * (1. - ts[r]), b1s[r], wb * ts[r], clav, cl));
+      k = k + 1usize;
+    }
+    rings.push(ring);
+    r = r + 1usize;
+  }
+  // the trunk's quads, but for the arms' patches (rings 5 to 7, columns 3 to 5 and 11 to 13)
+  r = 0usize;
+  while r < 8usize {
+    let inside = Vec3(0., (ys[r] + ys[r + 1usize]) * 0.5, 0.01);
+    var k = 0usize;
+    while k < TRUNK_SIDES {
+      let patch = (r == 5usize || r == 6usize) && (k == 3usize || k == 4usize || k == 11usize || k == 12usize);
+      if !patch {
+        let j = (k + 1usize) % TRUNK_SIDES;
+        cage.quad(*rings[r][k], *rings[r][j], *rings[r + 1usize][j], *rings[r + 1usize][k], inside);
+      }
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  // the neck: the seam's ring of 16 above the shoulder line (the head's grid takes over from it)
+  var seam = List[u32]();
+  var k = 0usize;
+  while k < TRUNK_SIDES {
+    let phi = f32.from(k) * pi / 8.;
+    let p1 = Vec3(sin(phi) * neckR, seamY, 0.012 - cos(phi) * neckR);
+    seam.push(cage.vertex(p1, NECK, 1., X, 0., X, 0.));
+    k = k + 1usize;
+  }
+  cage.strip(&rings[8usize], &seam, Vec3(0., (ys[8] + seamY) * 0.5, 0.012));
+  cage.seam = seam;
+
+  // ---- the arms ----
+  var sideI = 0usize;
+  while sideI < 2usize {
+    let s = if sideI == 0usize { -1.f } else { 1. };
+    let ua = if sideI == 0usize { UPPER_ARM_L } else { UPPER_ARM_R };
+    let cla = ua - 2usize;
+    let fa = ua + 2usize;
+    let ha = ua + 4usize;
+    // the patch's outline: columns c0, c1, c2 round the side (c0 nearest the front), rows 5 to 7
+    let c0 = if sideI == 0usize { 13usize } else { 3usize };
+    let c1 = if sideI == 0usize { 12usize } else { 4usize };
+    let c2 = if sideI == 0usize { 11usize } else { 5usize };
+    var root = List[u32]();
+    root.push(*rings[7usize][c1]); root.push(*rings[7usize][c0]); root.push(*rings[6usize][c0]); root.push(*rings[5usize][c0]);
+    root.push(*rings[5usize][c1]); root.push(*rings[5usize][c2]); root.push(*rings[6usize][c2]); root.push(*rings[7usize][c2]);
+    // the patch's vertices share the upper arm's weight
+    var i = 0usize;
+    while i < root.len() {
+      let v = usize.from(*root[i]) * HUMANOID_BONES;
+      let low = i >= 3usize && i <= 5usize;
+      let share = if low { 0.25f } else { 0.30 };
+      var b = 0usize;
+      while b < HUMANOID_BONES { cage.weights.set(v + b, *cage.weights[v + b] * (1. - share)); b = b + 1usize; }
+      cage.weights.set(v + ua, *cage.weights[v + ua] + share);
+      i = i + 1usize;
+    }
+    let patchC = *cage.positions[usize.from(*rings[6usize][c1])];
+    // angles round the patch: 0 up, a quarter turn to the front
+    let f0 = Frame(Vec3(s, 0., 0.), Vec3(0., 1., 0.), Vec3(0., 0., -1.));
+    let angles = loopAngles(&cage, &root, patchC, f0.e1, f0.e2);
+    let sh = (*models[ua]).translation;
+    let el = (*models[fa]).translation;
+    let wr = (*models[ha]).translation;
+    let d1 = (el - sh).normalize();
+    let d2 = (wr - el).normalize();
+    let lu = (el - sh).length();
+    let lf = (wr - el).length();
+    let armR = m.armGirth / 6.2831853;
+    let foreR = m.forearmGirth / 6.2831853;
+    let wristR = m.wristGirth / 6.2831853;
+    let delt = (0.5 * m.bideltoid - sh.x.abs()).max(0.035);
+    let hl = 0.108 * h;
+    // the stations: centre, axis, radii (along e1, the outside, and e2, the front) and skin
+    var prev = root;
+    var fr = f0;
+    // the shoulder's cap, half turned down
+    let capAxis = (Vec3(s, 0., 0.) + d1 * 1.3).normalize();
+    fr = carry(&fr, capAxis);
+    var ring = addRing(&mut cage, sh + Vec3(s * delt * 0.30, 0.004 * hs, 0.004), &fr, &angles, delt * 0.85, delt * 0.85, rs(ua, cla, 0.35));
+    cage.strip(&prev, &ring, sh - Vec3(s * 0.03, 0., 0.));
+    prev = ring;
+    let uaStations = [0.22f, 0.50, 0.78, 0.93];
+    let uaRadii = [armR * 1.02, armR * 0.98, armR * 0.86, armR * 0.80];
+    let uaSkin = [0.f, 0., 0., 0.25];
+    fr = carry(&fr, d1);
+    i = 0usize;
+    while i < 4usize {
+      let c = sh + d1 * (uaStations[i] * lu);
+      ring = addRing(&mut cage, c, &fr, &angles, uaRadii[i], uaRadii[i], rs(ua, fa, uaSkin[i]));
+      cage.strip(&prev, &ring, c - d1 * 0.03);
+      prev = ring;
+      i = i + 1usize;
+    }
+    // the elbow, then the forearm
+    fr = carry(&fr, (d1 + d2).normalize());
+    ring = addRing(&mut cage, el, &fr, &angles, foreR * 0.88, foreR * 0.86, rs(ua, fa, 0.5));
+    cage.strip(&prev, &ring, el - d1 * 0.03);
+    prev = ring;
+    fr = carry(&fr, d2);
+    let faStations = [0.08f, 0.30, 0.62, 0.88, 1.0];
+    let faRadii = [foreR * 0.96, foreR * 1.0, foreR * 0.80, wristR * 0.95, wristR * 0.92];
+    let faSkin = [0.25f, 0., 0., 0., 0.5];
+    i = 0usize;
+    while i < 5usize {
+      let c = el + d2 * (faStations[i] * lf);
+      let sk = if i < 4usize { rs(ua, fa, 1. - faSkin[i]) } else { rs(fa, ha, 0.5) };
+      ring = addRing(&mut cage, c, &fr, &angles, faRadii[i], faRadii[i] * 1.15, sk);
+      cage.strip(&prev, &ring, c - d2 * 0.03);
+      prev = ring;
+      i = i + 1usize;
+    }
+    // the hand: thin across (e1 is the outside: the palm faces the thigh), wide front to back
+    let hStations = [0.30f, 0.62, 0.88];
+    let hThin = [0.020 * hs, 0.0165 * hs, 0.012 * hs];
+    let hWide = [0.040 * hs, 0.038 * hs, 0.030 * hs];
+    i = 0usize;
+    while i < 3usize {
+      let c = wr + d2 * (hStations[i] * hl);
+      ring = addRing(&mut cage, c, &fr, &angles, hThin[i], hWide[i], rs(ha, ha, 0.));
+      cage.strip(&prev, &ring, c - d2 * 0.02);
+      prev = ring;
+      i = i + 1usize;
+    }
+    let tip = cage.vertex(wr + d2 * hl, ha, 1., X, 0., X, 0.);
+    cage.capRing(&prev, tip, wr + d2 * (0.8 * hl));
+    sideI = sideI + 1usize;
+  }
+
+  // ---- the legs ----
+  // the crotch vertex, shared by both legs, under the middle of the bottom ring
+  let crotch = cage.vertex(Vec3(0., m.crotchAt * h, 0.010), PELVIS, 0.6, THIGH_L, 0.2, THIGH_R, 0.2);
+  sideI = 0usize;
+  while sideI < 2usize {
+    let s = if sideI == 0usize { -1.f } else { 1. };
+    let th = if sideI == 0usize { THIGH_L } else { THIGH_R };
+    let sn = th + 2usize;
+    let ft = th + 4usize;
+    // half the bottom ring, front to back down its own side, and the crotch
+    var root = List[u32]();
+    k = 0usize;
+    while k <= 8usize {
+      let kk = if sideI == 1usize { k } else { (TRUNK_SIDES - k) % TRUNK_SIDES };
+      root.push(*rings[0usize][kk]);
+      k = k + 1usize;
+    }
+    root.push(crotch);
+    let hip = (*models[th]).translation;
+    let kn = (*models[sn]).translation;
+    let an = (*models[ft]).translation;
+    let rootC = Vec3(hip.x, ys[0], 0.012);
+    let f0 = Frame(Vec3(0., -1., 0.), Vec3(s, 0., 0.), Vec3(0., 0., -1.));
+    let angles = loopAngles(&cage, &root, rootC, f0.e1, f0.e2);
+    let d1 = (kn - hip).normalize();
+    let d2 = (an - kn).normalize();
+    let lt = (kn - hip).length();
+    let ls = (an - kn).length();
+    let thighR = m.thighGirth / 6.2831853;
+    let calfR = m.calfGirth / 6.2831853;
+    let kneeR = 0.056 * hs;
+    let ankleR = 0.034 * hs;
+    var prev = root;
+    var fr = carry(&f0, d1);
+    // the thigh's stations from the hip joint down, as fractions of the thigh, radii and skin
+    let tStations = [0.22f, 0.45, 0.68, 0.86, 0.95];
+    let tRadii = [thighR * 0.98, thighR * 0.90, thighR * 0.78, kneeR * 1.18, kneeR * 1.04];
+    let tSkin = [0.0f, 0.0, 0.0, 0.0, 0.3];
+    var i = 0usize;
+    while i < 5usize {
+      let c = hip + d1 * (tStations[i] * lt) + Vec3(s * 0.004, 0., 0.);
+      let sk = if i == 0usize { rs(PELVIS, th, 0.70) } else { rs(th, sn, tSkin[i]) };
+      let ring = addRing(&mut cage, c, &fr, &angles, tRadii[i], tRadii[i], sk);
+      cage.strip(&prev, &ring, c - d1 * 0.04);
+      prev = ring;
+      i = i + 1usize;
+    }
+    fr = carry(&fr, (d1 + d2).normalize());
+    var ring = addRing(&mut cage, kn, &fr, &angles, kneeR, kneeR, rs(th, sn, 0.5));
+    cage.strip(&prev, &ring, kn - d1 * 0.03);
+    prev = ring;
+    fr = carry(&fr, d2);
+    let sStations = [0.06f, 0.24, 0.45, 0.68, 0.86, 0.97];
+    let sRadii = [kneeR * 0.98, calfR * 0.92, calfR * 0.86, calfR * 0.66, ankleR * 1.10, ankleR * 1.05];
+    let sSkin = [0.75f, 1., 1., 1., 1., 0.];
+    i = 0usize;
+    while i < 6usize {
+      let c = kn + d2 * (sStations[i] * ls);
+      let sk = if i < 5usize { rs(th, sn, sSkin[i]) } else { rs(sn, ft, 0.5) };
+      ring = addRing(&mut cage, c, &fr, &angles, sRadii[i], sRadii[i], sk);
+      cage.strip(&prev, &ring, c - d2 * 0.03);
+      prev = ring;
+      i = i + 1usize;
+    }
+    // the foot: the rings turn forward round the heel; radii across (e1) and up (e2, the front become the top)
+    let fwd = Vec3(0., 0., -1.);
+    let footAx = [(d2 + fwd * 0.7).normalize(), (d2 * 0.25 + fwd).normalize(), fwd, fwd];
+    let footC = [Vec3(an.x, 0.040 * hs, an.z - 0.010 * hs), Vec3(an.x + s * 0.004 * hs, 0.034 * hs, an.z - 0.060 * hs),
+      Vec3(an.x + s * 0.008 * hs, 0.026 * hs, an.z - 0.120 * hs), Vec3(an.x + s * 0.010 * hs, 0.018 * hs, an.z - 0.165 * hs)];
+    let footA = [0.038 * hs, 0.042 * hs, 0.046 * hs, 0.042 * hs];
+    let footB = [0.040 * hs, 0.032 * hs, 0.024 * hs, 0.016 * hs];
+    i = 0usize;
+    while i < 4usize {
+      fr = carry(&fr, footAx[i]);
+      ring = addRing(&mut cage, footC[i], &fr, &angles, footA[i], footB[i], rs(ft, ft, 0.));
+      let back = if i == 0usize { an + Vec3(0., 0.01, 0.) } else { footC[i] - footAx[i] * 0.03 };
+      cage.strip(&prev, &ring, back);
+      prev = ring;
+      i = i + 1usize;
+    }
+    let toe = cage.vertex(Vec3(an.x + s * 0.012 * hs, 0.016 * hs, an.z - 0.198 * hs), ft, 1., X, 0., X, 0.);
+    cage.capRing(&prev, toe, footC[3usize] + fwd * 0.005);
+    sideI = sideI + 1usize;
+  }
+  cage.orient();
+  cage
+}

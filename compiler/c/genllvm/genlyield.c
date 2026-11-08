@@ -217,7 +217,7 @@ int genlGenFrameFlag(GenState *gen, VarDclNode *var) {
 // ---- The function ------------------------------------------------------------
 
 static void genlGenDebugAt(GenState *gen, FnDclNode *fnnode) {
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, fnnode->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 }

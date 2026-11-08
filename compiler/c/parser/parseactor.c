@@ -1,27 +1,27 @@
 /** Parse an actor declaration, and generate what it stands for
  *
- * 'actor Counter { count u64; fn init(self &new, n u64) {...}; pub async do
- * bump(self, n u64) {...} }' declares an actor: state that lives on, reached by
+ * 'actor Counter { count: u64; fn init(self: &new, n: u64) {...}; pub async fn
+ * bump(self, n: u64) {...} }' declares an actor: state that lives on, reached by
  * nothing but messages, each a call of one of its behaviours (its methods
- * declared 'async do'), run later, one at a time, on whichever worker thread of
+ * declared 'async fn'), run later, one at a time, on whichever worker thread of
  * the actors package takes it up. Its methods declared 'fn' -- its 'init', its
  * 'final', and helpers -- are synchronous, run inside the actor by whatever
  * calls them. No node stands for an actor. The parser turns its declaration
  * into the four declarations the actors package runs an actor by, generated as
  * Cone source and parsed here, in this order:
  *
- *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
+ *   struct Counter.State {count: u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
- *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
- *     fn init(self &new, n u64) {
- *       imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
- *       mem.writeRaw[Counter.State](st, new Counter.State(n));
- *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
- *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
+ *     mailbox: Arc[opaq, actors.Mailbox[Counter.Msg]];
+ *     fn init(self: &new, n: u64) {
+ *       let st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
+ *       mem.writeRaw[Counter.State](st, Counter.State(n));
+ *       *self = Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
+ *     pub fn bump(self: &, n: u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
- *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
- *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
- *     if &*msg is &Counter.Msg.bump {imm p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
+ *   enum Counter.Msg is Sendable {struct bump {n: u64;}}    one variant per behaviour
+ *   fn Counter.dispatch(self: &uni Counter.State, msg: *Counter.Msg) {
+ *     if &*msg is &Counter.Msg.bump {let p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
  * The handle's initializer makes the actor's block first and constructs the
@@ -37,7 +37,7 @@
  *
  * and, once per module, the helper 'actors.take' (a function of the module's
  * own, named as no source can spell), which moves a field out of a message:
- * 'fn actors.take[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}':
+ * 'fn actors.take[T + 'static](p: &T) T {mem.readRaw[T]((p as *T as usize) as *T)}':
  * what is moved out holds only borrows of the whole program, the only borrows a
  * message carries, and none of the borrow of the node it is read from, which the
  * trip through a number says to the loan walk.
@@ -45,7 +45,7 @@
  * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
  * section 6, and generation.md, "A message's reply"):
  *
- * - a behaviour that returns a value, 'pub async do get(self, k u64) u64', has
+ * - a behaviour that returns a value, 'pub async fn get(self, k: u64) u64', has
  *   a second variant, its request awaited, 'struct get'ask {k u64; reply'
  *   actors.Reply;}', the handle a second method sending it, and the dispatch
  *   an arm that answers it; and the handle a third method, 'get'future',
@@ -54,9 +54,10 @@
  *   call whose value is kept (actorFutureCall);
  * - an actor whose body holds an 'await' (DclTexts.awaiting) has hidden
  *   fields in its state, its pending table and, where a behaviour returning a
- *   value awaits, its Answer slot; two resume variants and their arms; and
- *   'Counter.reply'' and 'Counter.replyid'', which make a request's
- *   envelope;
+ *   value awaits, its Answer slot; and 'Counter.reply'' and
+ *   'Counter.replyid'', which make a request's envelope (one call of
+ *   actors.replyFor: a reply is no variant of the message enum, but a slot of
+ *   its own kind in the actor's mailbox ring);
  * - an actor with a behaviour, or writing 'selfactor', has 'Counter.self'',
  *   its handle from its state.
  *
@@ -78,6 +79,11 @@
  * handles by value, and a handle reaches the enum again only through its
  * owning reference to the Mailbox, which lays out nothing of what it points
  * at, so the handle is laid out whole before the enum is.
+ *
+ * A generic actor, 'actor Stage[T: Transform]', is generated the same way with its
+ * type parameters on the handle and the enum and after each use of them (see "A
+ * generic actor" below), and the dispatcher and the other small functions as
+ * statics of the handle, so that each instance has its own (actor.c, actorInstance).
  *
  * @file
  *
@@ -109,8 +115,6 @@ enum GenSlot {
     GenPending,     // The state's hidden pending table, where the actor awaits
     GenAnswer,      // The state's hidden Answer slot, where a message returning a value awaits
     GenEnvelope,    // A request variant's envelope, its reply
-    GenResume,      // The resume variant whose second half takes no record
-    GenResumeId,    // The resume variant whose second half takes a record, by its id
     GenMem,         // Core's 'mem', whatever the actor's own names hide it
     GenAt,          // The handle's initializer's local: where the state is made
     GenState,      // 'Counter.State'
@@ -121,10 +125,49 @@ enum GenSlot {
     GenReplyId,     // 'Counter.replyid'': the same, naming the record's id
     GenSelf,        // 'Counter.self'': 'selfactor', the handle from the state
     GenAllocs,      // The struct the state's allocator is read from
+    GenIs,          // 'Counter.is'': the function whose one parameter is the actor's 'is' list
     GenSlots
 };
 
 static Name *genShared[GenState];
+
+// The names of the handle methods that send a behaviour awaited ('fetch'ask')
+// and for a future ('fetch'future'), which no source can spell. One pair for
+// each behaviour name in the whole compile, not one for each actor: an actor
+// trait's handle, and the virtual trait it dispatches through, declare methods
+// by these names and an actor's handle meets them by the same names
+typedef struct BehaviourName {
+    Name *method;
+    Name *ask;
+    Name *future;
+} BehaviourName;
+
+static BehaviourName *behaviourNames = NULL;
+static uint32_t behaviourNameCnt = 0;
+static uint32_t behaviourNameMax = 0;
+
+static Name *parseBehaviourName(Name *method, int future) {
+    for (uint32_t i = 0; i < behaviourNameCnt; ++i) {
+        if (behaviourNames[i].method == method)
+            return future ? behaviourNames[i].future : behaviourNames[i].ask;
+    }
+    if (behaviourNameCnt == behaviourNameMax) {
+        uint32_t newmax = behaviourNameMax ? behaviourNameMax * 2 : 32;
+        BehaviourName *grown = (BehaviourName *)memAllocBlk(newmax * sizeof(BehaviourName));
+        if (behaviourNameCnt)
+            memcpy(grown, behaviourNames, behaviourNameCnt * sizeof(BehaviourName));
+        behaviourNames = grown;
+        behaviourNameMax = newmax;
+    }
+    BehaviourName *entry = &behaviourNames[behaviourNameCnt++];
+    char buf[300];
+    entry->method = method;
+    snprintf(buf, sizeof(buf), "%s'ask", &method->namestr);
+    entry->ask = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s'future", &method->namestr);
+    entry->future = nametblPrivate(buf, strlen(buf));
+    return future ? entry->future : entry->ask;
+}
 
 // ---- Text the declaration's members were written with ----------------------
 
@@ -169,7 +212,7 @@ static int parseActorTextHas(char *from, char *to, char *word) {
     return 0;
 }
 
-// ---- 'async do' ----------------------------------------------------------------
+// ---- 'async fn' ----------------------------------------------------------------
 
 // Pass over a declaration that will not be read: up to its ';', or through its
 // '{ ... }', whichever comes first
@@ -183,25 +226,15 @@ static void parseBehaviourSkip() {
 }
 
 int parseBehaviourWords(char *where) {
-    if (lexIsToken(DoToken)) {
+    if (!lexNextIsWord("fn")) {
         errorMsgLex(ErrorBehaviourWords,
-            "'do' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)', and a function 'fn'.");
-        parseBehaviourSkip();
-        return 0;
-    }
-    if (!lexNextIsWord("do")) {
-        if (lexNextIsWord("fn"))
-            errorMsgLex(ErrorBehaviourWords,
-                "'async fn' is not Cone's: 'async' means nothing alone. An actor's behaviour, which runs when the actor is scheduled, is declared 'async do name(self, ...)'; a function, which runs when it is called, is 'fn'.");
-        else
-            errorMsgLex(ErrorBehaviourWords,
-                "'async' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)'.");
+            "'async' means nothing alone: an actor's behaviour is declared 'async fn name(self, ...)'.");
         parseBehaviourSkip();
         return 0;
     }
     if (where) {
         errorMsgLex(ErrorBehaviourWords,
-            "'async do' declares an actor's behaviour, which only an actor's body holds, and this is %s. A function here is declared 'fn'.",
+            "'async fn' declares an actor's behaviour, which only an actor's body holds, and this is %s. A function here is declared 'fn'.",
             where);
         parseBehaviourSkip();
         return 0;
@@ -255,7 +288,7 @@ static void genSlot(GenText *g, uint32_t slot) {
 // A parameter as the author wrote it: its name, its type, and its default
 static void genParm(GenText *g, DclText *text, Name *name) {
     genName(g, name);
-    genPuts(g, " ");
+    genPuts(g, ": ");
     genPutn(g, text->type, text->typeend - text->type);
     if (text->value) {
         genPuts(g, " = ");
@@ -268,37 +301,47 @@ static void genParm(GenText *g, DclText *text, Name *name) {
 // the state constructed in it in place, so that its init runs on the state
 // where it stays, in an actor that is real already, then the actor started
 // (the actors package, A NEW ACTOR)
-static void genStartOpen(GenText *g) {
-    genPuts(g, ") {imm ");
+static void genTraitUse(GenText *g, StructNode *body);
+static void genSlotUse(GenText *g, uint32_t slot, StructNode *state);
+
+static void genStartOpen(GenText *g, StructNode *state) {
+    genPuts(g, ") {let ");
     genSlot(g, GenAt);
     genPuts(g, " = ");
     genSlot(g, GenActors);
     genPuts(g, ".makeActor[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, ", ");
-    genSlot(g, GenMsg);
-    genPuts(g, "](&");
-    genSlot(g, GenDispatch);
+    genSlotUse(g, GenMsg, state);
+    // A generic actor's dispatcher is a static of its handle, which each instance has its own of
+    if (state->genericinfo) {
+        genPuts(g, "](&Self.");
+        genSlot(g, GenDispatch);
+    }
+    else {
+        genPuts(g, "](&");
+        genSlot(g, GenDispatch);
+    }
     genPuts(g, "); ");
     genSlot(g, GenMem);
     genPuts(g, ".writeRaw[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, "](");
     genSlot(g, GenAt);
-    genPuts(g, ", new ");
-    genSlot(g, GenState);
+    genPuts(g, ", ");
+    genSlotUse(g, GenState, state);
     genPuts(g, "(");
 }
 
-static void genStartClose(GenText *g) {
-    genPuts(g, ")); *self = new Self(");
+static void genStartClose(GenText *g, StructNode *state) {
+    genPuts(g, ")); *self = Self(");
     genSlot(g, GenMailbox);
     genPuts(g, ": ");
     genSlot(g, GenActors);
     genPuts(g, ".startActor[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, ", ");
-    genSlot(g, GenMsg);
+    genSlotUse(g, GenMsg, state);
     genPuts(g, "](");
     genSlot(g, GenAt);
     genPuts(g, "));}\n");
@@ -346,11 +389,16 @@ static int parseActorOnlyStatic(char *from, char *to) {
     return 1;
 }
 
+// The permissions a method's 'self' may be written with
+static int parseActorSelfPerm(PermNode *perm) {
+    return perm == uniPerm || perm == mutPerm || perm == roPerm || perm == immPerm || perm == opaqPerm;
+}
+
 static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
 }
 
-// Was this function of the actor's body declared 'async do', a behaviour?
+// Was this function of the actor's body declared 'async fn', a behaviour?
 static int parseActorIsBehaviour(DclTexts *texts, FnDclNode *fn) {
     INode **nodesp;
     uint32_t cnt;
@@ -380,30 +428,32 @@ static int parseActorAwaits(DclTexts *texts, FnDclNode *fn) {
 
 // Check a method's 'self': the state, lent to a behaviour for the message it
 // handles, and to a synchronous method by its caller. Written bare it is the
-// state borrowed 'mut', which the method has alone while it runs; '&' and
-// '&mut' are taken as written; an initializer's is '&new' and the finalizer's
-// '&uni', as any type's are.
+// state borrowed 'uni', which the method has alone while it runs; '&', '&mut',
+// '&imm', '&opaq' and '&uni' are taken as written; an initializer's is '&new'
+// and the finalizer's '&uni', as any type's are.
 static int parseActorSelf(StructNode *state, FnDclNode *fn) {
     VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)fn->vtype)->parms, 0);
     INode *type = self->vtype;
     if (isNameUseNode(type) && ((NameUseNode *)type)->namesym == selfTypeName) {
-        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(mutPerm), type);
+        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(uniPerm), type);
         return 1;
     }
     if (type->tag == RefTag && ((RefNode *)type)->region == borrowRef) {
         PermNode *perm = parseActorPerm((RefNode *)type);
-        if (perm == mutPerm || perm == roPerm)
+        if (parseActorSelfPerm(perm))
             return 1;
         if (perm == newPerm && parseActorIsInit(fn))
             return 1;
-        if (perm == uniPerm && fn->namesym == finalName)
-            return 1;
     }
     errorMsgNode((INode *)self, ErrorActorMember,
-        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'mut', or 'self &' to only read it (an initializer's is 'self &new', the finalizer's 'self &uni').",
+        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'uni', or 'self: &', 'self: &mut', 'self: &imm', 'self: &opaq' or 'self: &uni' (an initializer's is 'self: &new').",
         &fn->namesym->namestr, &state->namesym->namestr);
     return 0;
 }
+
+// What a message about the declaration being read calls it: "Actor", and
+// "Actor trait" while an actor trait's behaviours are read and its runtime found
+static char *parseActorKind = "Actor";
 
 // Check the parameters of a behaviour or an initializer, which cross to the
 // actor's thread, and record each for the thread check (actorCheckAll). What
@@ -426,8 +476,8 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
         if (text == NULL || text->type == NULL
             || parseActorTextHas(text->type, text->typeend, "Self")) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
-                "Actor %s's %s %s takes %s, the actor's own state, which never leaves the actor. %s.",
-                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
+                "%s %s's %s %s takes %s, the actor's own state, which never leaves the actor. %s.",
+                parseActorKind, &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -435,8 +485,8 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
         if ((parseActorIsBorrow(parm->vtype) && !parseActorIsStaticBorrow(parm->vtype))
             || !parseActorOnlyStatic(text->type, text->typeend)) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
-                "Actor %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &'static imm, &'static opaq or &'static uni.",
-                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
+                "%s %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &'static imm, &'static opaq or &'static uni.",
+                parseActorKind, &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -501,11 +551,11 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (!(fn->flags & FlagMethFld)) {
             if (behaviour)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s is declared 'async do', a behaviour of actor %s's, and has no 'self': a behaviour runs on the actor's state, which is its first parameter, 'self'.",
+                    "%s is declared 'async fn', a behaviour of actor %s's, and has no 'self': a behaviour runs on the actor's state, which is its first parameter, 'self'.",
                     &fn->namesym->namestr, &actorname->namestr);
             else if (fn->flags & FlagPub)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s has no 'self', so it would not run on actor %s: only a behaviour is a message, and an actor is made with 'new'. Declare a function that needs no actor outside it.",
+                    "%s has no 'self', so it would not run on actor %s: only a behaviour is a message, and an actor is made by its name with parentheses. Declare a function that needs no actor outside it.",
                     &fn->namesym->namestr, &actorname->namestr);
             continue;
         }
@@ -513,7 +563,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
             continue;
         if (behaviour && (fn->namesym == finalName || parseActorIsInit(fn))) {
             errorMsgNode(node, ErrorActorMember,
-                "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async do', is a message the actor runs when it is scheduled.",
+                "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async fn', is a message the actor runs when it is scheduled.",
                 fn->namesym == finalName ? "'final'" : "initializer",
                 fn->namesym == finalName ? "it runs as the actor dies" : "it runs on the thread making the actor, before the actor takes any message");
             continue;
@@ -531,7 +581,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (!behaviour) {
             if (fn->flags & FlagPub)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s is a 'fn' of actor %s's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async do': 'pub async do %s(...)'.",
+                    "%s is a 'fn' of actor %s's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async fn': 'pub async fn %s(...)'.",
                     &fn->namesym->namestr, &actorname->namestr, &fn->namesym->namestr);
             continue;
         }
@@ -548,9 +598,9 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         }
         VarDclNode *self = (VarDclNode *)nodesGet(sig->parms, 0);
         PermNode *selfperm = parseActorPerm((RefNode *)self->vtype);
-        if (selfperm != mutPerm && selfperm != roPerm) {
+        if (!parseActorSelfPerm(selfperm)) {
             errorMsgNode((INode *)self, ErrorActorMember,
-                "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
+                "A behaviour's 'self' is the actor's state, lent for the message: 'self' (which has it 'uni'), 'self: &', 'self: &mut', 'self: &imm', 'self: &opaq' or 'self: &uni'.");
             ok = 0;
         }
         // The reply goes back in a message too: a borrow of the whole program
@@ -571,30 +621,38 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
 }
 
 // What the declaration itself may not say
-static void parseActorHeader(StructNode *state, Name *actorname) {
-    if (state->genericinfo || state->lifeparms)
+// Returns whether its 'is' list is to be checked (parseActor)
+static int parseActorHeader(DclTexts *texts, StructNode *state, Name *actorname) {
+    int checked = 0;
+    if (state->lifeparms)
         errorMsgNode((INode *)state, ErrorActorMember,
-            "Actor %s takes type parameters, and a generic actor is not built yet.", &actorname->namestr);
-    if (state->basetrait || state->extendsbase) {
-        errorMsgNode((INode *)state, ErrorActorMember,
-            "Actor %s names an abstraction or a base, which an actor does not have yet: 'actor trait' is not built.",
+            "Actor %s names a lifetime among its type parameters, which a message cannot carry: no borrow leaves its thread.",
             &actorname->namestr);
-        return;
+    if (state->extendsbase || state->condis) {
+        errorMsgNode((INode *)state, ErrorActorMember,
+            "Actor %s names a base, or an abstraction on a condition, which an actor does not have: an actor says what it is with 'is' and an actor trait, and has no base to enrich.",
+            &actorname->namestr);
+        return 0;
     }
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(&state->fields, cnt, nodesp)) {
-        if ((*nodesp)->flags & IsMixin) {
-            errorMsgNode((INode *)state, ErrorActorMember,
-                "Actor %s names an abstraction or a base, which an actor does not have yet: 'actor trait' is not built.",
-                &actorname->namestr);
-            return;
+    // Its 'is' list names actor traits, which it asserts it conforms to. They are
+    // no part of the state's: they are taken out of it, and checked once types are
+    // known (the function parseActor generates for the list, actorCheckAll)
+    if (state->basetrait || texts->istext) {
+        checked = texts->istext != NULL && texts->isend != NULL;
+        state->basetrait = NULL;
+        uint32_t kept = 0;
+        for (uint32_t i = 0; i < state->fields.used; ++i) {
+            INode *field = nodelistGet(&state->fields, i);
+            if (!(field->flags & IsMixin))
+                state->fields.nodes[kept++] = field;
         }
+        state->fields.used = kept;
     }
     if (state->flags & DeclaredOpaque)
         errorMsgNode((INode *)state, ErrorActorMember,
             "Actor %s is '@opaque', which says nothing of an actor: its state is reached by nothing outside it already.",
             &actorname->namestr);
+    return checked;
 }
 
 // ---- The runtime it runs on --------------------------------------------------
@@ -645,8 +703,6 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         genShared[GenPending] = nametblPrivate("pending'", 8);
         genShared[GenAnswer] = nametblPrivate("answer'", 7);
         genShared[GenEnvelope] = nametblPrivate("reply'", 6);
-        genShared[GenResume] = nametblPrivate("resume'", 7);
-        genShared[GenResumeId] = nametblPrivate("resumeid'", 9);
         genShared[GenMem] = nametblPrivate("mem", 3);
         genShared[GenAt] = nametblPrivate("state'", 6);
     }
@@ -656,16 +712,16 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     ModuleNode *actorsmod = parseActorFindImport(mod->imports, "actors");
     if (actorsmod == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on the actors package, which module %s does not import: write 'import actors;' after the 'mod' line.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on the actors package, which module %s does not import: write 'import actors;' after the 'mod' line.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     ModuleNode *syncmod = parseActorFindImport(actorsmod->imports, "sync");
     if (syncmod == NULL || namespaceFind(&actorsmod->namespace, nametblFind("startActor", 10)) == NULL
         || namespaceFind(&actorsmod->namespace, nametblFind("makeActor", 9)) == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on the actors package, and the module %s imports as actors is not that package: it has no makeActor or startActor, or does not import sync.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on the actors package, and the module %s imports as actors is not that package: it has no makeActor or startActor, or does not import sync.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     // Core's 'mem', reached by a name of its own, so that an initializer's
@@ -675,8 +731,8 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     INode *memdcl = coremod ? namespaceFind(&coremod->namespace, nametblFind("mem", 3)) : NULL;
     if (memdcl == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on core's 'mem', which module %s does not reach.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on core's 'mem', which module %s does not reach.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     parseActorBind(mod, genShared[GenActors], (INode *)actorsmod, FlagImportName);
@@ -703,8 +759,573 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     // one that is copied
     genPuts(g, "fn ");
     genSlot(g, GenTake);
-    genPuts(g, "[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}\n");
+    genPuts(g, "[T + 'static](p: &T) T {mem.readRaw[T]((p as *T as usize) as *T)}\n");
     return 2;
+}
+
+// ---- 'actor trait' -----------------------------------------------------------
+//
+// 'actor trait ChunkSink { pub async fn accept(self, c: Chunk); }' declares what
+// a sender needs of an actor, behaviours only: nothing outside an actor can run
+// code inside it, so a caller can only send. An actor conforms where it has each
+// behaviour, 'pub', under the name, with the parameter and returned types
+// (actorTraitCoerce asks, where a handle of an actor is converted). The trait's
+// name, used as a type, is a handle of two words, generated as Cone source and
+// parsed here, in this order:
+//
+//   struct trait ChunkSink.vt {                     an ordinary trait, with the three
+//     pub fn accept(self: &, c: Chunk);             methods an actor's handle has for
+//   }                                               each behaviour (send, and for one
+//                                                   returning a value, ask and future)
+//   struct ChunkSink.fat {data: *u8; vt: *u8;}      the two words of a virtual reference
+//   struct ChunkSink is Sendable {
+//     mailbox: Arc[opaq, actors.Mailbox[u8]];       the actor's mailbox, counted
+//     table: *u8;                                   the vtable of the actor's handle as vt
+//     pub fn accept(self: &, c: Chunk) {            sends through the table: one indirect
+//       let v = <the virtual reference made of mailbox and table>;   call of the actor's own
+//       v.accept(c);}                                                 sending method
+//     fn wrap(v: &<ChunkSink.vt) ChunkSink {...}    the conversion, called on a borrow of an
+//   }                                               actor's handle: the handle's mailbox
+//                                                   copied, the virtual reference's table
+//
+// A generic trait, 'actor trait Sink[T]', declares its type parameters, as written,
+// on the virtual trait and the handle (and so on 'wrap', a function of the handle's
+// own, which an instance has at its own arguments); the bracketed names follow
+// each use of either.
+//
+// The table is the compiler's own vtable of the actor's handle as 'vt': one for
+// each (actor, trait) pair, made where the handle is converted, as any trait's
+// is, its methods the handle's own that send a message. The mailbox's type is
+// erased to 'Mailbox[u8]': what a handle of any actor owns is the one allocation
+// whose first part is the Mailbox, which holds no message of its own type, and
+// the handle's copy and drop count it and give it back without naming that
+// type. The virtual reference is rebuilt from the mailbox's place in the
+// handle, which is where an actor's handle is, and the table.
+//
+// The trait as written is kept too ('ChunkSink.behaviours', a trait of the
+// requirements), as the state of an actor is, for the parameter types.
+
+enum TraitSlot {
+    TrVt = GenState,    // 'ChunkSink.vt'
+    TrFat,              // 'ChunkSink.fat'
+    TrWrap,             // 'ChunkSink.wrap'
+    TrBody,             // 'ChunkSink.behaviours'
+    TrTable,            // The handle's second field
+    TrWords,            // A handle's method's local: the virtual reference's two words
+    TrVia,              // and the virtual reference made of them
+    TrSlots             // From here, as GenSlots: each behaviour returning a value, its ask name, then its future's
+};
+
+// Check a behaviour's 'self': an actor trait's is not lent to anything, so any
+// borrowing form is read as the one a sender needs, '&'
+static int parseActorTraitSelf(StructNode *body, FnDclNode *fn) {
+    VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)fn->vtype)->parms, 0);
+    INode *type = self->vtype;
+    if (isNameUseNode(type) && ((NameUseNode *)type)->namesym == selfTypeName) {
+        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(roPerm), type);
+        return 1;
+    }
+    if (type->tag == RefTag && ((RefNode *)type)->region == borrowRef
+        && parseActorSelfPerm(parseActorPerm((RefNode *)type)))
+        return 1;
+    errorMsgNode((INode *)self, ErrorActorTraitMember,
+        "%s's 'self' is whatever actor the trait's handle holds, which a sender only sends to: write 'self'.",
+        &fn->namesym->namestr);
+    return 0;
+}
+
+// The behaviours of an actor trait's body, and what it may not hold at all
+static void parseActorTraitMembers(DclTexts *texts, StructNode *body, Name *traitname, ActorMembers *members) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (body->lifeparms)
+        errorMsgNode((INode *)body, ErrorActorTraitMember,
+            "Actor trait %s names a lifetime among its type parameters, which a message cannot carry: no borrow leaves its thread.", &traitname->namestr);
+    if (body->basetrait || body->extendsbase)
+        errorMsgNode((INode *)body, ErrorActorTraitMember,
+            "Actor trait %s names an abstraction or a base, which an actor trait does not have yet.", &traitname->namestr);
+    for (nodelistFor(&body->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        if (field->flags & IsMixin) {
+            errorMsgNode((INode *)body, ErrorActorTraitMember,
+                "Actor trait %s names an abstraction or a base, which an actor trait does not have yet.", &traitname->namestr);
+            break;
+        }
+        errorMsgNode((INode *)field, ErrorActorTraitMember,
+            "%s is a field, and an actor trait declares behaviours only: the actors that conform have their own state, which only their own methods reach, so a sender can only send them a message.",
+            &field->namesym->namestr);
+    }
+    for (nodelistFor(&body->nodelist, cnt, nodesp)) {
+        INode *node = *nodesp;
+        if (node->tag == MacroDclTag) {
+            errorMsgNode(node, ErrorActorTraitMember, "An actor trait declares behaviours only, and a macro is not one.");
+            continue;
+        }
+        if (node->tag == VarDclTag) {
+            errorMsgNode(node, ErrorActorTraitMember, "An actor trait declares behaviours only, and a 'static' is not one.");
+            continue;
+        }
+        if (node->tag != FnDclTag)
+            continue;
+        FnDclNode *fn = (FnDclNode *)node;
+        if (!parseActorIsBehaviour(texts, fn)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "%s is a 'fn', and an actor trait declares behaviours only: code cannot be run inside an actor by a caller outside it, so all a sender has is a message to send. Declare it 'pub async fn %s(self, ...);' if an actor should take it as one.",
+                &fn->namesym->namestr, &fn->namesym->namestr);
+            continue;
+        }
+        if (fn->value != NULL) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s has a body, and an actor trait declares signatures only: each actor that conforms writes the behaviour itself, with its own state to run it on.",
+                &fn->namesym->namestr);
+            continue;
+        }
+        if (!(fn->flags & FlagMethFld)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s has no 'self': a behaviour is sent to an actor, which is its first parameter, 'self'.",
+                &fn->namesym->namestr);
+            continue;
+        }
+        if (!parseActorTraitSelf(body, fn))
+            continue;
+        int ok = 1;
+        if (!(fn->flags & FlagPub)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s is not 'pub', and an actor trait's behaviours are what a sender outside the actor sends: declare it 'pub async fn %s(...)'.",
+                &fn->namesym->namestr, &fn->namesym->namestr);
+            ok = 0;
+        }
+        if (fn->genericinfo) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s is generic, which a behaviour cannot be yet: each is one variant of the actor's message type.",
+                &fn->namesym->namestr);
+            ok = 0;
+        }
+        FnSigNode *sig = (FnSigNode *)fn->vtype;
+        if (parseActorReturns(fn)) {
+            DclText *rettext = parseActorText(texts, fn->vtype);
+            if (rettext && rettext->type && !parseActorOnlyStatic(rettext->type, rettext->typeend)) {
+                errorMsgNode(sig->rettype, ErrorNotSendable,
+                    "Actor trait %s's behaviour %s returns a type naming a lifetime other than 'static, which is not Sendable: no borrow but one that lives for the whole program, written &'static imm, &'static opaq or &'static uni, goes back in a reply.",
+                    &traitname->namestr, &fn->namesym->namestr);
+                ok = 0;
+            }
+        }
+        parseActorKind = "Actor trait";
+        int parmsok = parseActorParms(texts, body, traitname, fn, &members->crossing);
+        parseActorKind = "Actor";
+        if (parmsok && ok)
+            nodesAdd(&members->messages, node);
+    }
+}
+
+// The parameters of a behaviour as a method of the handle or of the virtual
+// trait declares them, 'self' left out: as the author wrote them, or with their
+// defaults too
+static void genTraitParms(GenText *g, DclTexts *texts, FnDclNode *fn, int defaults) {
+    INode **parmp;
+    uint32_t parmcnt;
+    for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+        VarDclNode *parm = (VarDclNode *)*parmp;
+        if (parm->namesym == selfName)
+            continue;
+        DclText *text = parseActorText(texts, (INode *)parm);
+        genPuts(g, ", ");
+        if (defaults)
+            genParm(g, text, parm->namesym);
+        else {
+            genName(g, parm->namesym);
+            genPuts(g, ": ");
+            genPutn(g, text->type, text->typeend - text->type);
+        }
+    }
+}
+
+// The arguments of a call passing a behaviour's parameters on, each by its name
+static void genTraitArgs(GenText *g, FnDclNode *fn) {
+    int first = 1;
+    INode **parmp;
+    uint32_t parmcnt;
+    for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+        VarDclNode *parm = (VarDclNode *)*parmp;
+        if (parm->namesym == selfName)
+            continue;
+        if (!first)
+            genPuts(g, ", ");
+        first = 0;
+        genName(g, parm->namesym);
+    }
+}
+
+// What a behaviour returns, as the actors package's Future[..] holds it
+static void genTraitFuture(GenText *g, DclTexts *texts, FnDclNode *fn) {
+    DclText *rettext = parseActorText(texts, fn->vtype);
+    int tuple = ((FnSigNode *)fn->vtype)->rettype->tag == TupleTag;
+    genSlot(g, GenActors);
+    genPuts(g, ".Future[");
+    genPuts(g, tuple ? "(" : "");
+    if (rettext)
+        genPutn(g, rettext->type, rettext->typeend - rettext->type);
+    genPuts(g, tuple ? ")]" : "]");
+}
+
+// The virtual reference a handle's method calls through, made of the mailbox's
+// place in the handle (where an actor's handle holds its mailbox, the handle's
+// whole) and the table
+static void genTraitUse(GenText *g, StructNode *body) {
+    if (body->genericinfo == NULL)
+        return;
+    genPuts(g, "[");
+    INode **parmp;
+    uint32_t cnt;
+    int first = 1;
+    for (nodesFor(body->genericinfo->parms, cnt, parmp)) {
+        if (!first)
+            genPuts(g, ", ");
+        first = 0;
+        genName(g, ((GenVarDclNode *)*parmp)->namesym);
+    }
+    genPuts(g, "]");
+}
+
+// A generic trait's type parameters as written, to declare the same on each
+// generated type
+static void genTraitDecl(GenText *g, DclTexts *texts) {
+    if (texts->tparms == NULL)
+        return;
+    genPuts(g, "[");
+    genPutn(g, texts->tparms, texts->tparmsend - texts->tparms);
+    genPuts(g, "]");
+}
+
+static void genTraitVia(GenText *g, StructNode *body) {
+    genPuts(g, " {var ");
+    genSlot(g, TrWords);
+    genPuts(g, " = ");
+    genSlot(g, TrFat);
+    genPuts(g, "(&self.");
+    genSlot(g, GenMailbox);
+    genPuts(g, " as *u8, self.");
+    genSlot(g, TrTable);
+    genPuts(g, "); let ");
+    genSlot(g, TrVia);
+    genPuts(g, " = ");
+    genSlot(g, GenMem);
+    genPuts(g, ".readRaw[&<");
+    genSlot(g, TrVt);
+    genTraitUse(g, body);
+    genPuts(g, "](&mut ");
+    genSlot(g, TrWords);
+    genPuts(g, " as *(&<");
+    genSlot(g, TrVt);
+    genTraitUse(g, body);
+    genPuts(g, "));");
+}
+
+// ---- A generic actor ----------------------------------------------------------
+//
+// 'actor Stage[T: Transform] {...}' declares its type parameters, as written, on
+// each declaration generated (the handle, the message enum; the state already has
+// them, as the author wrote it), and every use of one of them in the generated text
+// is followed by the parameters' names, as an actor trait's is: 'Stage.Msg[T]'. An
+// instance of the handle, 'Stage[Inflater]', then has its own state, message enum,
+// envelopes and futures, cloned as any generic type's are. The functions that are
+// not the handle's methods or the state's -- the dispatcher, the envelope
+// makers, 'selfactor''s and the 'is' list's -- are generated as statics of the
+// handle ('Stage.dispatch'), so that an instance has its own, found by name
+// (actor.c, actorInstance), where a generic function would have to be instanced
+// at a call. A message variant of a generic enum is written with its type
+// arguments after it, 'Stage.Msg.accept[T]'.
+
+// A slot's name, then the actor's type arguments where it is generic
+static void genSlotUse(GenText *g, uint32_t slot, StructNode *state) {
+    genSlot(g, slot);
+    genTraitUse(g, state);
+}
+
+static void parseActorTrait(ParseState *parse, uint16_t pubflag) {
+    ModuleNode *mod = parse->mod;
+
+    // The body, read as a trait's with its behaviours noted, and where each
+    // parameter's and return type is written kept, to be written again
+    DclTexts texts = {NULL, 0, 0, 0, NULL, 0, NULL};
+    texts.awaiting = newNodes(4);
+    texts.behaviours = newNodes(8);
+    DclTexts *svtexts = parse->dcltexts;
+    parse->dcltexts = &texts;
+    StructNode *body = (StructNode *)parseStruct(parse, 0);
+    parse->dcltexts = svtexts;
+    Name *traitname = body->namesym;
+    if (traitname == anonName)
+        return;
+
+    ActorMembers members;
+    members.messages = newNodes(8);
+    members.inits = newNodes(2);
+    members.crossing = newNodes(8);
+    members.declared = 0;
+    parseActorTraitMembers(&texts, body, traitname, &members);
+
+    GenText g = {NULL, 0, 0};
+    genPuts(&g, "");
+    parseActorKind = "Actor trait";
+    int runtime = parseActorRuntime(parse, body, traitname, &g);
+    parseActorKind = "Actor";
+    if (runtime == 0)
+        return;
+
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t nasks = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        if (parseActorReturns((FnDclNode *)*nodesp))
+            ++nasks;
+    }
+
+    uint32_t nnames = TrSlots + 2 * nasks;
+    Name **names = (Name **)memAllocBlk(nnames * sizeof(Name *));
+    for (int i = 0; i < GenState; ++i)
+        names[i] = genShared[i];
+    char buf[300];
+    snprintf(buf, sizeof(buf), "%s.vt", &traitname->namestr);
+    names[TrVt] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.fat", &traitname->namestr);
+    names[TrFat] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.wrap", &traitname->namestr);
+    names[TrWrap] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.behaviours", &traitname->namestr);
+    names[TrBody] = nametblPrivate(buf, strlen(buf));
+    names[TrTable] = nametblPrivate("table", 5);
+    names[TrWords] = nametblPrivate("words'", 6);
+    names[TrVia] = nametblPrivate("via'", 4);
+    uint32_t ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (parseActorReturns(fn)) {
+            names[ask] = parseBehaviourName(fn->namesym, 0);
+            names[ask + nasks] = parseBehaviourName(fn->namesym, 1);
+            ++ask;
+        }
+    }
+    body->namesym = names[TrBody];
+
+    // The virtual trait: the methods of an actor's handle for each behaviour
+    genPuts(&g, "struct trait ");
+    genSlot(&g, TrVt);
+    genTraitDecl(&g, &texts);
+    genPuts(&g, " {\n");
+    ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        int returns = parseActorReturns(fn);
+        genPuts(&g, "  pub fn ");
+        genName(&g, fn->namesym);
+        genPuts(&g, "(self: &");
+        genTraitParms(&g, &texts, fn, 0);
+        genPuts(&g, ");\n");
+        if (returns) {
+            genPuts(&g, "  pub fn ");
+            genSlot(&g, ask);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ", ");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ": ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Reply);\n  pub fn ");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ") ");
+            genTraitFuture(&g, &texts, fn);
+            genPuts(&g, ";\n");
+            ++ask;
+        }
+    }
+    genPuts(&g, "}\n");
+
+    // The two words of a virtual reference
+    genPuts(&g, "struct ");
+    genSlot(&g, TrFat);
+    genPuts(&g, " {data: *u8; vt: *u8;}\n");
+
+    // The handle
+    genPuts(&g, "struct ");
+    genName(&g, traitname);
+    genTraitDecl(&g, &texts);
+    genPuts(&g, " is ");
+    genSlot(&g, GenSendable);
+    genPuts(&g, " {\n  ");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, ": ");
+    genSlot(&g, GenSync);
+    genPuts(&g, ".Arc[opaq, ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".Mailbox[u8]];\n  ");
+    genSlot(&g, TrTable);
+    genPuts(&g, ": *u8;\n  pub fn `==`(self: &, o: ");
+    genName(&g, traitname);
+    genTraitUse(&g, body);
+    genPuts(&g, ") bool {*(&self.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize) == *(&o.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize)}\n");
+    ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        int returns = parseActorReturns(fn);
+        genPuts(&g, "  pub fn ");
+        genName(&g, fn->namesym);
+        if (fn->overloadsym) {
+            genPuts(&g, " overload ");
+            genName(&g, fn->overloadsym);
+        }
+        genPuts(&g, "(self: &");
+        genTraitParms(&g, &texts, fn, 1);
+        genPuts(&g, ")");
+        genTraitVia(&g, body);
+        genPuts(&g, " ");
+        genSlot(&g, TrVia);
+        genPuts(&g, ".");
+        genName(&g, fn->namesym);
+        genPuts(&g, "(");
+        genTraitArgs(&g, fn);
+        genPuts(&g, ");}\n");
+        if (returns) {
+            genPuts(&g, "  pub fn ");
+            genSlot(&g, ask);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ", ");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ": ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Reply)");
+            genTraitVia(&g, body);
+            genPuts(&g, " ");
+            genSlot(&g, TrVia);
+            genPuts(&g, ".");
+            genSlot(&g, ask);
+            genPuts(&g, "(");
+            genTraitArgs(&g, fn);
+            genPuts(&g, ((FnSigNode *)fn->vtype)->parms->used > 1 ? ", " : "");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ");}\n  pub fn ");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ") ");
+            genTraitFuture(&g, &texts, fn);
+            genTraitVia(&g, body);
+            genPuts(&g, " ");
+            genSlot(&g, TrVia);
+            genPuts(&g, ".");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(");
+            genTraitArgs(&g, fn);
+            genPuts(&g, ")}\n");
+            ++ask;
+        }
+    }
+    // The conversion's function, called on a borrow of an actor's handle: a
+    // function of the handle, so that an instance of a generic trait has its own
+    genPuts(&g, "  fn ");
+    genSlot(&g, TrWrap);
+    genPuts(&g, "(v: &<");
+    genSlot(&g, TrVt);
+    genTraitUse(&g, body);
+    genPuts(&g, ") ");
+    genName(&g, traitname);
+    genTraitUse(&g, body);
+    genPuts(&g, " {let f = ");
+    genSlot(&g, GenMem);
+    genPuts(&g, ".readRaw[");
+    genSlot(&g, TrFat);
+    genPuts(&g, "](&v as *");
+    genSlot(&g, TrFat);
+    genPuts(&g, "); let r = f.data as &");
+    genSlot(&g, GenSync);
+    genPuts(&g, ".Arc[opaq, ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".Mailbox[u8]]; ");
+    genName(&g, traitname);
+    genTraitUse(&g, body);
+    genPuts(&g, "(*r, f.vt)}\n}\n");
+
+    // Parse it, as the trait's own source, its diagnostics reported at its name
+    Lexer *gen = lexNew(g.text, lex->url);
+    gen->genat = (INode *)body;
+    gen->gennames = names;
+    gen->ngennames = nnames;
+    uint32_t firstnode = mod->nodes->used;
+    lexPush(gen);
+    if (runtime == 2)
+        parseFnOrVar(parse, 0);
+    modAddNode(mod, names[TrBody], (INode *)body);
+    StructNode *vt = (StructNode *)parseStruct(parse, 0);
+    modAddNode(mod, names[TrVt], (INode *)vt);
+    StructNode *fat = (StructNode *)parseStruct(parse, 0);
+    modAddNode(mod, names[TrFat], (INode *)fat);
+    StructNode *handle = (StructNode *)parseStruct(parse, pubflag);
+    modAddNode(mod, handle->namesym, (INode *)handle);
+    FnDclNode *wrap = NULL;
+    INode **wp;
+    uint32_t wcnt;
+    for (nodelistFor(&handle->nodelist, wcnt, wp)) {
+        if ((*wp)->tag == FnDclTag && ((FnDclNode *)*wp)->namesym == names[TrWrap])
+            wrap = (FnDclNode *)*wp;
+    }
+    if (!lexIsToken(EofToken))
+        errorMsgLex(ErrorNoEof, "The declarations generated for actor trait %s did not parse whole.", &traitname->namestr);
+    lexPop();
+
+    // Every declaration generated here, exported by a library compile whatever
+    // its visibility, since an importer generates them again (dclIsExported)
+    for (uint32_t i = firstnode; i < mod->nodes->used; ++i) {
+        INode *node = nodesGet(mod->nodes, i);
+        DclInfo *dclinfo = inodeGetDclInfo(node);
+        if (dclinfo && (node->tag == StructTag || node->tag == FnDclTag))
+            dclinfo->facts |= DclActorGen;
+    }
+
+    // Each behaviour, and the handle's methods that send it
+    ActorTraitInfo *info = (ActorTraitInfo *)memAllocBlk(sizeof(ActorTraitInfo));
+    memset(info, 0, sizeof(ActorTraitInfo));
+    info->handle = handle;
+    info->body = body;
+    info->vt = vt;
+    info->wrap = wrap;
+    info->crossing = members.crossing;
+    info->nmsgs = members.messages->used;
+    info->msgs = (ActorMessage *)memAllocBlk((info->nmsgs ? info->nmsgs : 1) * sizeof(ActorMessage));
+    ask = TrSlots;
+    uint32_t m = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        ActorMessage *am = &info->msgs[m++];
+        am->method = fn;
+        am->send = NULL;
+        am->ask = NULL;
+        am->future = NULL;
+        am->generic = 0;
+        Name *futurename = parseActorReturns(fn) ? names[ask + nasks] : NULL;
+        Name *askname = parseActorReturns(fn) ? names[ask++] : NULL;
+        INode **hp;
+        uint32_t hcnt;
+        for (nodelistFor(&handle->nodelist, hcnt, hp)) {
+            if ((*hp)->tag != FnDclTag)
+                continue;
+            FnDclNode *hfn = (FnDclNode *)*hp;
+            if (hfn->namesym == fn->namesym && am->send == NULL && (hfn->flags & FlagMethFld))
+                am->send = hfn;
+            else if (askname && hfn->namesym == askname)
+                am->ask = hfn;
+            else if (futurename && hfn->namesym == futurename)
+                am->future = hfn;
+        }
+    }
+    actorTraitRegister(info);
 }
 
 // ---- The declaration ---------------------------------------------------------
@@ -712,15 +1333,9 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
 void parseActor(ParseState *parse, uint16_t pubflag) {
     ModuleNode *mod = parse->mod;
 
-    // 'actor trait', the abstraction of an actor, is admitted and not built
+    // 'actor trait', the abstraction of an actor
     if (lexNextIsWord("trait")) {
-        errorMsgLex(ErrorUnbuiltKind,
-            "'actor trait' is the abstraction of an actor, and the compiler does not build it yet.");
-        lexNextToken();
-        lexNextToken();
-        if (lexIsToken(IdentToken))
-            lexNextToken();
-        parseSkipDclBody();
+        parseActorTrait(parse, pubflag);
         return;
     }
 
@@ -737,7 +1352,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     if (actorname == anonName)
         return;
 
-    parseActorHeader(state, actorname);
+    int checkis = parseActorHeader(&texts, state, actorname);
     ActorMembers members;
     members.messages = newNodes(8);
     members.inits = newNodes(2);
@@ -795,14 +1410,14 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     names[GenSelf] = nametblPrivate(buf, strlen(buf));
     snprintf(buf, sizeof(buf), "%s.allocs'", &actorname->namestr);
     names[GenAllocs] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.is'", &actorname->namestr);
+    names[GenIs] = nametblPrivate(buf, strlen(buf));
     uint32_t ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
         if (parseActorReturns(fn)) {
-            snprintf(buf, sizeof(buf), "%s'ask", &fn->namesym->namestr);
-            names[ask] = nametblPrivate(buf, strlen(buf));
-            snprintf(buf, sizeof(buf), "%s'future", &fn->namesym->namestr);
-            names[ask + nasks] = nametblPrivate(buf, strlen(buf));
+            names[ask] = parseBehaviourName(fn->namesym, 0);
+            names[ask + nasks] = parseBehaviourName(fn->namesym, 1);
             ++ask;
         }
     }
@@ -816,17 +1431,17 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenHidden);
         genPuts(&g, " {\n  ");
         genSlot(&g, GenPending);
-        genPuts(&g, " ");
+        genPuts(&g, ": ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".Pending = new ");
+        genPuts(&g, ".Pending = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Pending();\n");
         if (answers) {
             genPuts(&g, "  ");
             genSlot(&g, GenAnswer);
-            genPuts(&g, " ");
+            genPuts(&g, ": ");
             genSlot(&g, GenActors);
-            genPuts(&g, ".Answer = new ");
+            genPuts(&g, ".Answer = ");
             genSlot(&g, GenActors);
             genPuts(&g, ".Answer();\n");
         }
@@ -836,23 +1451,23 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // The state's way to its own region, which every actor carries (in its
     // Header, made with it): a method 'allocRegion' giving the region the
     // actor's values are allocated in, which is what makes 'new self[T](v)' mean
-    // 'self.allocRegion().alloc(new T(v))' (typelit.c, a value that leads to a
+    // 'self.allocRegion().alloc(T(v))' (typelit.c, a value that leads to a
     // region). Read as a struct's of its own and moved into the state like the
     // hidden fields; the region is found from the state by the actors runtime
     // (actors.regionOf)
     genPuts(&g, "struct ");
     genSlot(&g, GenAllocs);
-    genPuts(&g, " {\n  fn allocRegion(self &mut ");
-    genSlot(&g, GenState);
+    genPuts(&g, " {\n  fn allocRegion(self: &mut ");
+    genSlotUse(&g, GenState, state);
     genPuts(&g, ") &'static mut ");
     genSlot(&g, GenActors);
     genPuts(&g, ".ActorRegion {\n    ");
     genSlot(&g, GenActors);
     genPuts(&g, ".regionOf[");
-    genSlot(&g, GenState);
+    genSlotUse(&g, GenState, state);
     genPuts(&g, ", ");
-    genSlot(&g, GenMsg);
-    genPuts(&g, "](self);\n  }\n}\n");
+    genSlotUse(&g, GenMsg, state);
+    genPuts(&g, "](self)\n  }\n}\n");
 
     // The message enum: a variant per message, its fields the parameters,
     // written after the handle (a reference to it lays out nothing of it).
@@ -863,6 +1478,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     GenText ge = {NULL, 0, 0};
     genPuts(&ge, "enum ");
     genSlot(&ge, GenMsg);
+    genTraitDecl(&ge, &texts);
     genPuts(&ge, " is ");
     genSlot(&ge, GenSendable);
     genPuts(&ge, " {\n");
@@ -890,25 +1506,18 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     continue;
                 DclText *text = parseActorText(&texts, (INode *)parm);
                 genName(&ge, parm->namesym);
-                genPuts(&ge, " ");
+                genPuts(&ge, ": ");
                 genPutn(&ge, text->type, text->typeend - text->type);
                 genPuts(&ge, "; ");
             }
             if (asked) {
                 genSlot(&ge, GenEnvelope);
-                genPuts(&ge, " ");
+                genPuts(&ge, ": ");
                 genSlot(&ge, GenActors);
                 genPuts(&ge, ".Reply; ");
             }
             genPuts(&ge, "}\n");
         }
-    }
-    if (awaits) {
-        genPuts(&ge, "  struct ");
-        genSlot(&ge, GenResume);
-        genPuts(&ge, " {run *u8; data *u8;}\n  struct ");
-        genSlot(&ge, GenResumeId);
-        genPuts(&ge, " {run *u8; id u64; data *u8;}\n");
     }
     genPuts(&ge, "}\n");
 
@@ -916,15 +1525,25 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // a method per message, which sends it
     genPuts(&g, "struct ");
     genName(&g, actorname);
+    genTraitDecl(&g, &texts);
     genPuts(&g, " {\n  ");
     genSlot(&g, GenMailbox);
-    genPuts(&g, " ");
+    genPuts(&g, ": ");
     genSlot(&g, GenSync);
     genPuts(&g, ".Arc[opaq, ");
     genSlot(&g, GenActors);
     genPuts(&g, ".Mailbox[");
-    genSlot(&g, GenMsg);
+    genSlotUse(&g, GenMsg, state);
     genPuts(&g, "]];\n");
+    // Two handles are equal when they are of the one actor: the one mailbox
+    genPuts(&g, "  pub fn `==`(self: &, o: ");
+    genName(&g, actorname);
+    genTraitUse(&g, state);
+    genPuts(&g, ") bool {*(&self.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize) == *(&o.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize)}\n");
     if (members.declared == 0) {
         // The state's implicit initializer: its fields with their types written,
         // in order, the rest taking their defaults. Public where nothing private
@@ -932,7 +1551,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         int hasfields = 0;
         for (nodelistFor(&state->fields, cnt, nodesp))
             hasfields |= !((*nodesp)->flags & IsMixin);
-        genPuts(&g, (pubflag && !hasfields) ? "  pub fn init(self &new" : "  fn init(self &new");
+        genPuts(&g, (pubflag && !hasfields) ? "  pub fn init(self: &new" : "  fn init(self: &new");
         for (nodelistFor(&state->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
             DclText *text = parseActorText(&texts, (INode *)field);
@@ -941,7 +1560,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, text, field->namesym);
         }
-        genStartOpen(&g);
+        genStartOpen(&g, state);
         int first = 1;
         for (nodelistFor(&state->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
@@ -955,7 +1574,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ": ");
             genName(&g, field->namesym);
         }
-        genStartClose(&g);
+        genStartClose(&g, state);
     }
     for (nodesFor(members.inits, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
@@ -965,7 +1584,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, " overload ");
             genName(&g, fn->overloadsym);
         }
-        genPuts(&g, "(self &new");
+        genPuts(&g, "(self: &new");
         INode **parmp;
         uint32_t parmcnt;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -975,7 +1594,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, parseActorText(&texts, (INode *)parm), parm->namesym);
         }
-        genStartOpen(&g);
+        genStartOpen(&g, state);
         int first = 1;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
@@ -986,7 +1605,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             first = 0;
             genName(&g, parm->namesym);
         }
-        genStartClose(&g);
+        genStartClose(&g, state);
     }
     // A behaviour that returns a value is sent awaited by a second method,
     // which an 'await' calls in place of the first (awaitTypeCheck): it takes
@@ -1008,7 +1627,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genName(&g, fn->overloadsym);
                 }
             }
-            genPuts(&g, "(self &");
+            genPuts(&g, "(self: &");
             INode **parmp;
             uint32_t parmcnt;
             for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -1021,7 +1640,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 DclText *text = parseActorText(&texts, (INode *)parm);
                 if (asked) {
                     genName(&g, parm->namesym);
-                    genPuts(&g, " ");
+                    genPuts(&g, ": ");
                     genPutn(&g, text->type, text->typeend - text->type);
                 }
                 else
@@ -1030,14 +1649,14 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             if (asked) {
                 genPuts(&g, ", ");
                 genSlot(&g, GenEnvelope);
-                genPuts(&g, " ");
+                genPuts(&g, ": ");
                 genSlot(&g, GenActors);
                 genPuts(&g, ".Reply");
             }
             genPuts(&g, ") {");
             genSlot(&g, GenActors);
             genPuts(&g, ".send[");
-            genSlot(&g, GenMsg);
+            genSlotUse(&g, GenMsg, state);
             genPuts(&g, "](");
             genSlot(&g, GenMailbox);
             genPuts(&g, ", ");
@@ -1047,6 +1666,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
+            genTraitUse(&g, state);
             // A variant holding values is constructed with parentheses; one that
             // holds none, by its name alone
             int anyparm = 0;
@@ -1108,7 +1728,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         }
         genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
         genSlot(&g, variant + nasks);
-        genPuts(&g, "(self &");
+        genPuts(&g, "(self: &");
         INode **parmp;
         uint32_t parmcnt;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -1118,31 +1738,32 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             DclText *text = parseActorText(&texts, (INode *)parm);
             genPuts(&g, ", ");
             genName(&g, parm->namesym);
-            genPuts(&g, " ");
+            genPuts(&g, ": ");
             genPutn(&g, text->type, text->typeend - text->type);
         }
         genPuts(&g, ") ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Future[");
         genPutn(&g, rt.text, rt.len);
-        genPuts(&g, "] {\n    imm f = ");
+        genPuts(&g, "] {\n    let f = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".futureFor[");
         genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, "](");
         genSlot(&g, GenMailbox);
         genPuts(&g, ");\n    ");
         genSlot(&g, GenActors);
         genPuts(&g, ".send[");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, "](");
         genSlot(&g, GenMailbox);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, variant);
+        genTraitUse(&g, state);
         genPuts(&g, "(");
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
@@ -1154,20 +1775,31 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenActors);
         genPuts(&g, ".futureReply[");
         genPutn(&g, rtx.text, rtx.len);
-        genPuts(&g, "](&f)));\n    f;\n  }\n");
+        genPuts(&g, "](&f)));\n    f\n  }\n");
     }
-    genPuts(&g, "}\n");
-
-    genPutn(&g, ge.text, ge.len);
+    // What is written from here on is the dispatcher, the envelope makers,
+    // 'selfactor''s function and the 'is' list's. Of a generic actor they are
+    // statics of the handle, which an instance has its own of; of any other they
+    // follow the message enum. The handle so far and the enum are put with them
+    // below (assembled)
+    GenText handletext = g;
+    g.text = NULL;
+    g.len = g.avail = 0;
+    int generic = state->genericinfo != NULL;
+    // The name the dispatcher gives the state: 'self' where it is a function of
+    // the module's, which a static of the handle must not call a parameter
+    char *dself = generic ? "st" : "self";
 
     // The dispatch function: the message where it lies in its node, each
     // argument moved out of it into the method's call
     genPuts(&g, "fn ");
     genSlot(&g, GenDispatch);
-    genPuts(&g, "(self &mut ");
-    genSlot(&g, GenState);
-    genPuts(&g, ", msg *");
-    genSlot(&g, GenMsg);
+    genPuts(&g, "(");
+    genPuts(&g, dself);
+    genPuts(&g, ": &uni ");
+    genSlotUse(&g, GenState, state);
+    genPuts(&g, ", msg: *");
+    genSlotUse(&g, GenMsg, state);
     genPuts(&g, ") {\n");
     //
     // A message that returns a value: sent with no 'await', its value is
@@ -1183,7 +1815,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         int slotted = returns && parseActorAwaits(&texts, fn);
         for (int asked = 0; asked <= returns; ++asked) {
             uint32_t variant = asked ? ask++ : 0;
-            genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
+            genPuts(&g, firstarm ? "  if &*msg is &" : "  else if &*msg is &");
             firstarm = 0;
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
@@ -1191,32 +1823,36 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
-            genPuts(&g, " {imm p = (msg as *u8 as usize) as *");
+            genTraitUse(&g, state);
+            genPuts(&g, " {let p = (msg as *u8 as usize) as *");
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
             if (asked)
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
+            genTraitUse(&g, state);
             genPuts(&g, "; ");
             if (slotted) {
                 genSlot(&g, GenActors);
                 if (asked) {
-                    genPuts(&g, ".ask(&mut self.");
+                    genPuts(&g, ".ask(&mut ");
+                    genPuts(&g, dself);
+                    genPuts(&g, ".");
                     genSlot(&g, GenAnswer);
                     genPuts(&g, ", ");
                     genSlot(&g, GenTake);
                     genPuts(&g, "(&(*p).");
                     genSlot(&g, GenEnvelope);
-                    genPuts(&g, ")); imm r = ");
+                    genPuts(&g, ")); let v = ");
                 }
                 else {
-                    genPuts(&g, ".askNone(&mut self.");
+                    genPuts(&g, ".askNone(&mut ");
+                    genPuts(&g, dself);
+                    genPuts(&g, ".");
                     genSlot(&g, GenAnswer);
-                    genPuts(&g, "); imm r = ");
+                    genPuts(&g, "); let v = ");
                 }
-                genSlot(&g, GenActors);
-                genPuts(&g, ".keep(&");
             }
             else if (asked) {
                 genSlot(&g, GenActors);
@@ -1226,7 +1862,10 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, GenEnvelope);
                 genPuts(&g, "), ");
             }
-            genPuts(&g, "self.");
+            else if (returns)
+                genPuts(&g, "_ = "); // sent unasked: nobody waits for the value, and dropping it is meant
+            genPuts(&g, dself);
+            genPuts(&g, ".");
             genName(&g, fn->namesym);
             genPuts(&g, "(");
             int first = 1;
@@ -1245,70 +1884,42 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genPuts(&g, ")");
             }
             if (slotted) {
-                genPuts(&g, ")); ");
+                genPuts(&g, "); ");
                 genSlot(&g, GenActors);
-                genPuts(&g, ".answerAt(&mut self.");
+                genPuts(&g, ".answerAt(&mut ");
+                genPuts(&g, dself);
+                genPuts(&g, ".");
                 genSlot(&g, GenAnswer);
-                genPuts(&g, ", r);}\n");
+                genPuts(&g, ", v);}\n");
             }
             else
                 genPuts(&g, asked ? "));}\n" : ");}\n");
         }
     }
-    // A reply to one of the actor's own requests: its resume function, the
-    // seam's, takes it (the actors package's resume and resumeId)
-    for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
-        genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
-        firstarm = 0;
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, " {imm p = msg as *");
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, "; ");
-        genSlot(&g, GenActors);
-        genPuts(&g, withid ? ".resumeId(self, " : ".resume(self, ");
-        genSlot(&g, GenTake);
-        genPuts(&g, "(&(*p).run), ");
-        if (withid) {
-            genSlot(&g, GenTake);
-            genPuts(&g, "(&(*p).id), ");
-        }
-        genSlot(&g, GenTake);
-        genPuts(&g, "(&(*p).data));}\n");
-    }
+    // (A reply to one of the actor's own requests is no message of the enum: it
+    // arrives as a slot of its own kind in the mailbox's ring, which the actors
+    // package's runBatch resumes through the seam's resume function.)
     genPuts(&g, "}\n");
 
-    // A request's envelope, made by this actor as it awaits, its resume
-    // message written: 'run' is the seam's resume function, 'id' its record's
-    // place in the pending table, and the returned value 'size' bytes aligned
-    // to 'align' (genlawait.c, genlAwaitReply)
+    // A request's envelope, made by this actor as it awaits: 'run' is the
+    // seam's resume function, 'id' its record's place in the pending table, and
+    // the returned value 'size' bytes aligned to 'align' (genlawait.c,
+    // genlAwaitReply). Nothing is allocated: the answer claims a slot in this
+    // actor's ring when it comes
     for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
         genPuts(&g, "fn ");
         genSlot(&g, withid ? GenReplyId : GenReply);
-        genPuts(&g, "(st &");
-        genSlot(&g, GenState);
-        genPuts(&g, withid ? ", run *u8, id u64, size usize, align usize) " : ", run *u8, size usize, align usize) ");
+        genPuts(&g, "(st: &");
+        genSlotUse(&g, GenState, state);
+        genPuts(&g, withid ? ", run: *u8, id: u64, size: usize, align: usize) " : ", run: *u8, size: usize, align: usize) ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".Reply {\n  imm r = ");
+        genPuts(&g, ".Reply {\n  ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".replyNode[");
-        genSlot(&g, GenState);
+        genPuts(&g, ".replyFor[");
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](st, size, align);\n  ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".replyPut[");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](&r, ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, withid ? "(run, id, " : "(run, ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".replyData(&r)));\n  r;\n}\n");
+        genSlotUse(&g, GenMsg, state);
+        genPuts(&g, withid ? "](st, run, id, true, size, align)\n}\n" : "](st, run, 0u64, false, size, align)\n}\n");
     }
 
     // 'selfactor': the actor's own handle, another owner of its mailbox, which
@@ -1317,22 +1928,55 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     if (selfs) {
         genPuts(&g, "fn ");
         genSlot(&g, GenSelf);
-        genPuts(&g, "(st &");
-        genSlot(&g, GenState);
+        genPuts(&g, "(st: &");
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ") ");
         genName(&g, actorname);
-        genPuts(&g, " {new ");
+        genTraitUse(&g, state);
+        genPuts(&g, " {");
         genName(&g, actorname);
+        genTraitUse(&g, state);
         genPuts(&g, "(");
         genSlot(&g, GenMailbox);
         genPuts(&g, ": ");
         genSlot(&g, GenActors);
         genPuts(&g, ".selfOf[");
-        genSlot(&g, GenState);
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](st));}\n");
+        genSlotUse(&g, GenMsg, state);
+        genPuts(&g, "](st))}\n");
     }
+
+    // What the actor says it is, 'actor Counter is ChunkSink': a function of one
+    // parameter whose type is the list as written (a tuple where it names more
+    // than one), so that the names are resolved and checked as any type's are.
+    // Each must be an actor trait the actor conforms to (actorCheckAll)
+    if (checkis) {
+        genPuts(&g, "fn ");
+        genSlot(&g, GenIs);
+        genPuts(&g, "(");
+        genSlot(&g, GenAt);
+        // a pointer to the list, which asks nothing of the size of what it names
+        // (an ordinary trait there is refused by actorCheckIs, once)
+        genPuts(&g, texts.isnames > 1 ? ": *(" : ": *");
+        genPutn(&g, texts.istext, texts.isend - texts.istext);
+        genPuts(&g, texts.isnames > 1 ? ")) {}\n" : ") {}\n");
+    }
+
+    // Assembled: the handle, then (of a generic actor) its statics inside it, and
+    // the message enum; of any other, the statics follow the enum
+    GenText assembled = handletext;
+    if (generic) {
+        genPutn(&assembled, g.text ? g.text : "", g.len);
+        genPuts(&assembled, "}\n");
+        genPutn(&assembled, ge.text, ge.len);
+    }
+    else {
+        genPuts(&assembled, "}\n");
+        genPutn(&assembled, ge.text, ge.len);
+        genPutn(&assembled, g.text ? g.text : "", g.len);
+    }
+    g = assembled;
 
     // Parse it, as the actor's own source, its diagnostics reported at its name
     Lexer *gen = lexNew(g.text, lex->url);
@@ -1366,13 +2010,36 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     modAddNode(mod, handle->namesym, (INode *)handle);
     StructNode *msg = (StructNode *)parseStruct(parse, TraitType | SameSize | EnumType);
     modAddNode(mod, names[GenMsg], (INode *)msg);
-    info->dispatch = (FnDclNode *)parseFnOrVar(parse, 0);
-    if (awaits) {
-        info->replyfn = (FnDclNode *)parseFnOrVar(parse, 0);
-        info->replyidfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    info->msg = msg;
+    if (generic) {
+        // Statics of the handle, found by their names
+        for (nodelistFor(&handle->nodelist, cnt, nodesp)) {
+            if ((*nodesp)->tag != FnDclTag)
+                continue;
+            FnDclNode *hfn = (FnDclNode *)*nodesp;
+            if (hfn->namesym == names[GenDispatch])
+                info->dispatch = hfn;
+            else if (hfn->namesym == names[GenReply])
+                info->replyfn = hfn;
+            else if (hfn->namesym == names[GenReplyId])
+                info->replyidfn = hfn;
+            else if (hfn->namesym == names[GenSelf])
+                info->selffn = hfn;
+            else if (hfn->namesym == names[GenIs])
+                info->isfn = hfn;
+        }
     }
-    if (selfs)
-        info->selffn = (FnDclNode *)parseFnOrVar(parse, 0);
+    else {
+        info->dispatch = (FnDclNode *)parseFnOrVar(parse, 0);
+        if (awaits) {
+            info->replyfn = (FnDclNode *)parseFnOrVar(parse, 0);
+            info->replyidfn = (FnDclNode *)parseFnOrVar(parse, 0);
+        }
+        if (selfs)
+            info->selffn = (FnDclNode *)parseFnOrVar(parse, 0);
+        if (checkis)
+            info->isfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    }
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for actor %s did not parse whole.", &actorname->namestr);
     lexPop();
@@ -1403,6 +2070,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         am->send = NULL;
         am->ask = NULL;
         am->future = NULL;
+        am->generic = 0;
         Name *futurename = parseActorReturns(fn) ? names[ask + nasks] : NULL;
         Name *askname = parseActorReturns(fn) ? names[ask++] : NULL;
         INode **hp;

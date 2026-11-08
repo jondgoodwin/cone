@@ -1,0 +1,215 @@
+// A reply answered IN PLACE (ANSWERED IN PLACE, in actors.cone): answerNowIn and
+// answerLentIn answer a Reply that stays where its answerer keeps it, in a
+// record of its own, and leave it spent. The records here are blocks the test
+// keeps, one per operation, each holding the Reply the seam gave and, for the
+// lent answers, the value. What is checked:
+//
+// - answerNowIn (a u64 into the awaiting actor's slot), answerLentIn of a value
+//   too large for a slot (Big) and of one that fits (a u64) each deliver the
+//   value to the awaiting actor, which goes on to the next operation, while
+//   the Reply is still in its record;
+// - the operation is NOT counted spent by the answer: a wait for idle in main
+//   does not return until the records are let go, from another thread, a
+//   while later; and then it does return, so the Reply's own drop counted each
+//   operation spent exactly once (a second count would not let it return
+//   either, since the counts would differ: the wait is for equal counts);
+// - a Reply never answered, its record let go: the awaiting behaviour is
+//   abandoned (it never goes on), and the operation is spent, as today;
+// - a Reply that wants no answer (made by hand), answered in place: the value
+//   is dropped (answerNowIn) or taken and dropped (answerLentIn), as the
+//   by-value forms do.
+//
+// Answering a spent reply is a panic; inplacetwice and inplacetwicelent are
+// the tests of that.
+
+mod inplace;
+
+import testing use *;
+import libc;
+import actors;
+import thread;
+import time;
+
+struct Big {
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+  pub e: u64;
+}
+
+// An operation's record: the Reply the seam gave, and places for the lent values
+struct Rec {
+  pub reply: actors.Reply;
+  pub big: Big;
+  pub small: u64;
+}
+
+// Counts and marks, written by the actors and the dropping thread, read by main
+let gate: Atomic[u64];       // operations the actors have gone on from, or begun
+let dropping: Atomic[u64];   // 1 once the dropping thread has begun to let go of the records
+let taken: Atomic[u64];
+let seenNow: Atomic[u64];
+let seenBigA: Atomic[u64];
+let seenBigE: Atomic[u64];
+let seenSmall: Atomic[u64];
+let wentOn: Atomic[u64];     // the behaviour that awaited a reply never answered went on
+let mortals: Atomic[u64];
+
+fn @initpure init() {
+  gate = Atomic[u64].of(0u64);
+  dropping = Atomic[u64].of(0u64);
+  taken = Atomic[u64].of(0u64);
+  seenNow = Atomic[u64].of(0u64);
+  seenBigA = Atomic[u64].of(0u64);
+  seenBigE = Atomic[u64].of(0u64);
+  seenSmall = Atomic[u64].of(0u64);
+  wentOn = Atomic[u64].of(0u64);
+  mortals = Atomic[u64].of(0u64);
+}
+
+// A value with a finalizer, to see that a value dropped is finalized once
+struct Mortal is Move {
+  pub n: u64;
+  fn final(self: &uni) {mortals.add(self.n);}
+}
+
+fn takeBig(p: *u8, to: *u8) {
+  mem.writeRaw[Big](to as *Big, mem.readRaw[Big](p as *Big));
+  taken.add(1u64);
+}
+
+fn takeU(p: *u8, to: *u8) {
+  mem.writeRaw[u64](to as *u64, mem.readRaw[u64](p as *u64));
+  taken.add(1u64);
+}
+
+fn takeMortal(p: *u8, to: *u8) {
+  mem.writeRaw[Mortal](to as *Mortal, mem.readRaw[Mortal](p as *Mortal));
+  taken.add(1u64);
+}
+
+fn noBig() Big {Big(0u64, 0u64, 0u64, 0u64, 0u64)}
+
+// The operations: 'ctx' is the operation's record. Each puts the Reply in it,
+// and then answers there
+fn runNow(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, noBig(), 0u64));
+  actors.answerNowIn[u64](&mut (*r).reply, 41u64);
+}
+
+fn runBig(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, Big(7u64, 14u64, 21u64, 28u64, 35u64), 0u64));
+  actors.answerLentIn[Big](&mut (*r).reply, &mut (*r).big as *Big, &takeBig);
+}
+
+fn runSmall(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, noBig(), 77u64));
+  actors.answerLentIn[u64](&mut (*r).reply, &mut (*r).small as *u64, &takeU);
+}
+
+// Never answers: the Reply waits in its record until the record is let go
+fn runNever(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, noBig(), 0u64));
+  gate.add(1u64);
+}
+
+fn dropIt(ctx: *u8) {}
+
+fn nowOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runNow, &dropIt)}
+fn bigOp(r: *Rec) actors.Awaitable[Big] {actors.Awaitable[Big].of(r as *u8, &runBig, &dropIt)}
+fn smallOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runSmall, &dropIt)}
+fn neverOp(r: *Rec) actors.Awaitable[u64] {actors.Awaitable[u64].of(r as *u8, &runNever, &dropIt)}
+
+actor Prober {
+  pub async fn go(self, recs: usize) {
+    let base = recs as *Rec;
+    let a = await nowOp(base);
+    seenNow.store(a);
+    gate.add(1u64);
+    let b = await bigOp(base + 1usize);
+    seenBigA.store(b.a);
+    seenBigE.store(b.e);
+    gate.add(1u64);
+    let c = await smallOp(base + 2usize);
+    seenSmall.store(c);
+    gate.add(1u64);
+  }
+}
+
+actor Lost {
+  pub async fn go(self, recs: usize) {
+    let v = await neverOp((recs as *Rec) + 3usize);
+    wentOn.store(1u64);
+  }
+}
+
+// Lets go of 'n' records from 'first' on, a while after the gate has reached
+// 'want': a record let go is a Reply dropped
+struct DropArg is Sendable {
+  pub recs: usize;
+  pub first: usize;
+  pub n: usize;
+  pub want: u64;
+}
+
+fn dropper(a: DropArg) u32 {
+  while gate.load() < a.want {
+    thread.yieldNow();
+  }
+  thread.sleep(time.Duration.fromMillis(150i64));
+  dropping.store(1u64);
+  var i = 0usize;
+  while i < a.n {
+    mem.finalize[Rec](((a.recs as *Rec) + (a.first + i)));
+    i = i + 1usize;
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  let recs = libc.malloc(mem.sizeof[Rec]() * 4usize);
+  {
+    let t = thread.startWith(thread.Options(name: "dropper"), DropArg(recs as usize, 0usize, 3usize, 3u64), &dropper);
+    let p = Prober();
+    p.go(recs as usize);
+    actors.waitUntilIdle();
+    expectUInt(dropping.load(), 1u64, "the wait did not return while the answered replies were still in their records");
+    t.join();
+    expectUInt(seenNow.load(), 41u64, "answerNowIn: the value arrived");
+    expectUInt(seenBigA.load(), 7u64, "answerLentIn, a large value: the first field arrived");
+    expectUInt(seenBigE.load(), 35u64, "answerLentIn, a large value: the last field arrived");
+    expectUInt(seenSmall.load(), 77u64, "answerLentIn, a small value arrived");
+    expectUInt(taken.load(), 2u64, "each lent value was taken once");
+  }
+  {
+    dropping.store(0u64);
+    let t = thread.startWith(thread.Options(name: "dropper"), DropArg(recs as usize, 3usize, 1usize, 4u64), &dropper);
+    let l = Lost();
+    l.go(recs as usize);
+    actors.waitUntilIdle();
+    expectUInt(dropping.load(), 1u64, "the wait did not return while the unanswered reply was in its record");
+    t.join();
+    expectUInt(wentOn.load(), 0u64, "a reply never answered: the awaiting behaviour was abandoned");
+  }
+  finalAll();
+  libc.free(recs);
+
+  // Replies that want no answer, answered in place: the value is dropped, or taken and dropped
+  var none = actors.Reply();
+  actors.answerNowIn[Mortal](&mut none, Mortal(1u64));
+  expectUInt(mortals.load(), 1u64, "an unwanted answer in place: the value dropped once");
+  let place = libc.malloc(64usize);
+  mem.writeRaw[Mortal](place as *Mortal, Mortal(20u64));
+  var none2 = actors.Reply();
+  actors.answerLentIn[Mortal](&mut none2, place as *Mortal, &takeMortal);
+  expectUInt(mortals.load(), 21u64, "an unwanted lent answer in place: the value taken and dropped once");
+  expectUInt(taken.load(), 3u64, "...and taken once");
+  libc.free(place);
+  done()
+}

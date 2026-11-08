@@ -45,8 +45,18 @@ INode *itypeGetDerefTypeDcl(INode *node) {
 // not yet type checked. A "no" that depended on it is not remembered.
 static int itypeCarriesProvisional = 0;
 
-static int itypeStructCarriesBorrow(StructNode *type) {
-    switch (type->carriesborrow) {
+// What itypeCarriesAt asks: any borrowed reference; one of a lifetime that
+// ends (itypeCarriesEndingBorrow); a writable one a store can go through
+// (itypeCarriesWritableBorrow)
+enum { CarriesAnyBorrow = 0, CarriesEndingBorrow = 1, CarriesWritableBorrow = 2 };
+
+static int itypeCarriesAt(INode *type, int ending);
+
+// 'ending' says which question, each remembered apart
+static int itypeStructCarriesBorrow(StructNode *type, int ending) {
+    uint8_t *memo = ending == CarriesWritableBorrow ? &type->carrieswritable
+        : ending ? &type->carriesending : &type->carriesborrow;
+    switch (*memo) {
     case CarriesBorrowYes:
         return 1;
     case CarriesBorrowNo:
@@ -61,13 +71,13 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     }
     int svprovisional = itypeCarriesProvisional;
     itypeCarriesProvisional = 0;
-    type->carriesborrow = CarriesBorrowAsking;
+    *memo = CarriesBorrowAsking;
 
     int carries = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
-        if (itypeCarriesBorrow(((IExpNode *)*nodesp)->vtype)) {
+        if (itypeCarriesAt(((IExpNode *)*nodesp)->vtype, ending)) {
             carries = 1;
             break;
         }
@@ -77,7 +87,7 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     // only through a reference, which answers for itself.
     if (!carries && type->derived) {
         for (nodesFor(type->derived, cnt, nodesp)) {
-            if (itypeCarriesBorrow(*nodesp)) {
+            if (itypeCarriesAt(*nodesp, ending)) {
                 carries = 1;
                 break;
             }
@@ -89,53 +99,178 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     if (!(type->flags & TypeChecked))
         itypeCarriesProvisional = 1;
     if (carries && (type->flags & TypeChecked))
-        type->carriesborrow = CarriesBorrowYes;
+        *memo = CarriesBorrowYes;
     else if (!carries && !itypeCarriesProvisional)
-        type->carriesborrow = CarriesBorrowNo;
+        *memo = CarriesBorrowNo;
     else
-        type->carriesborrow = CarriesBorrowUnknown;
+        *memo = CarriesBorrowUnknown;
     itypeCarriesProvisional |= svprovisional;
     return carries;
 }
 
-// May a value of this type hold a borrowed reference?
-int itypeCarriesBorrow(INode *type) {
+static int itypeCarriesAt(INode *type, int ending) {
     if (type == NULL)
         return 0;
     switch (type->tag) {
     // A name, or an alias, answers for the type it stands for. One that names
     // no type -- a generic's parameter in its template -- answers nothing.
     case NameUseTag:
-        return isTypeNode(type) ? itypeCarriesBorrow(itypeGetTypeDcl(type)) : 0;
+        return isTypeNode(type) ? itypeCarriesAt(itypeGetTypeDcl(type), ending) : 0;
     case AliasDclTag:
-        return itypeCarriesBorrow(((AliasDclNode *)type)->target);
+        return itypeCarriesAt(((AliasDclNode *)type)->target, ending);
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
         // A borrowed reference to a function is global: a function is never
         // a local, so its borrow can neither dangle nor hold anything frozen.
         // A key is no borrow: its invariant lifetime ends nowhere, and what it
-        // names lives in its arena.
-        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
-            return !lifeIsInvariant(((RefNode *)type)->lifename)
-                && !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
-                && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag == FnSigTag);
-        return itypeCarriesBorrow(((RefNode *)type)->vtexp);
+        // names lives in its arena. A ''static' borrow's lifetime ends nowhere
+        // either: asked of a lifetime that ends, it answers for what it points
+        // at only, as an owning reference does.
+        if (itypeGetTypeDcl(ref->region) == borrowRef) {
+            // A read-only borrow is no way through for a store, nor a virtual one
+            // (a closure's capture of a variable is the one read-only borrow a
+            // store goes through: the body writes through a '&mut' the variable holds)
+            if (ending == CarriesWritableBorrow)
+                return type->tag != VirtRefTag && ((permGetFlags(ref->perm) & MayWrite)
+                    || (ref->capture && itypeCarriesAt(ref->vtexp, ending)));
+            if (ending && ref->lifename == staticLifeName)
+                return itypeCarriesAt(ref->vtexp, ending);
+            return !lifeIsInvariant(ref->lifename)
+                && !(type->tag == RefTag && isTypeNode(ref->vtexp)
+                && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag);
+        }
+        return itypeCarriesAt(ref->vtexp, ending);
+    }
     case PtrTag:
-        return itypeCarriesBorrow(((StarNode *)type)->vtexp);
+        return itypeCarriesAt(((StarNode *)type)->vtexp, ending);
     case ArrayTag:
-        return itypeCarriesBorrow(arrayElemType(type));
+        return itypeCarriesAt(arrayElemType(type), ending);
     case TTupleTag: {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
-            if (itypeCarriesBorrow(*nodesp))
+            if (itypeCarriesAt(*nodesp, ending))
                 return 1;
         }
         return 0;
     }
     case StructTag:
-        return itypeStructCarriesBorrow((StructNode *)type);
+        return itypeStructCarriesBorrow((StructNode *)type, ending);
+    default:
+        return 0;
+    }
+}
+
+// May a value of this type hold a borrowed reference?
+int itypeCarriesBorrow(INode *type) {
+    return itypeCarriesAt(type, 0);
+}
+
+// May a value of this type hold a borrow of a lifetime that ends: one that is
+// not ''static'?
+int itypeCarriesEndingBorrow(INode *type) {
+    return itypeCarriesAt(type, CarriesEndingBorrow);
+}
+
+// May a value of this type hold a writable borrowed reference, one a store
+// can go through (itypeWritableBorrowDepth)? Remembered per struct.
+static int itypeCarriesWritableBorrow(INode *type) {
+    return itypeCarriesAt(type, CarriesWritableBorrow);
+}
+
+int itypeIsArena(INode *type) {
+    INode *dcl = type ? itypeGetTypeDcl(type) : NULL;
+    return dcl && dcl->tag == StructTag && ((StructNode *)dcl)->lends == LendsNoLoanMut;
+}
+
+// Is it certain that no value of this type can hold a borrowed reference, of
+// any lifetime, anywhere a store can reach? Stricter than !itypeCarriesBorrow:
+// a type it cannot see all of answers no -- a type parameter, an open trait
+// (whose implementers may hold anything), an opaque struct, a closure, a
+// virtual reference -- and so does any borrowed reference. A number, and a
+// struct, tuple, array, enum, pointer or owning reference made only of such
+// types, answers yes. Asked only of a call that may store through one of its
+// arguments, so the answer is not remembered.
+#define NoBorrowMaxDepth 16
+static INode *noBorrowAsking[NoBorrowMaxDepth];
+static int noBorrowDepth = 0;
+
+int itypeHoldsNoBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsNoBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeHoldsNoBorrow(((AliasDclNode *)type)->target);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
+            return 0;
+        return itypeHoldsNoBorrow(((RefNode *)type)->vtexp);
+    case PtrTag:
+        return itypeHoldsNoBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return itypeHoldsNoBorrow(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (!itypeHoldsNoBorrow(*nodesp))
+                return 0;
+        }
+        return 1;
+    }
+    case StructTag:
+    {
+        StructNode *st = (StructNode *)type;
+        // An arena ('NoLoanMut') holds what is stored in it through raw memory
+        // its fields do not show (Bug 51)
+        if (st->lends == LendsNoLoanMut)
+            return 0;
+        // An open trait or an opaque struct holds what its implementers or
+        // its hidden fields do, which is not known here
+        if (((st->flags & TraitType) && !(st->flags & EnumType)) || (st->flags & (DeclaredOpaque | OpaqueType)))
+            return 0;
+        if (!(st->flags & TypeChecked) || itypeCarriesBorrow(type))
+            return 0;
+        // Reached again round a cycle: what it holds is found where it was
+        // first asked
+        for (int i = 0; i < noBorrowDepth; ++i) {
+            if (noBorrowAsking[i] == type)
+                return 1;
+        }
+        if (noBorrowDepth == NoBorrowMaxDepth)
+            return 0;
+        noBorrowAsking[noBorrowDepth++] = type;
+        int none = 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (!itypeHoldsNoBorrow(((IExpNode *)*nodesp)->vtype)) {
+                none = 0;
+                break;
+            }
+        }
+        if (none && st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (!itypeHoldsNoBorrow(*nodesp)) {
+                    none = 0;
+                    break;
+                }
+            }
+        }
+        --noBorrowDepth;
+        return none;
+    }
     default:
         return 0;
     }
@@ -251,9 +386,17 @@ int itypeWritableBorrowDepth(INode *type, int most) {
         RefNode *ref = (RefNode *)type;
         if (itypeGetTypeDcl(ref->region) != borrowRef)
             return itypeWritableBorrowDepth(ref->vtexp, most);
-        if (type->tag == VirtRefTag || !(permGetFlags(ref->perm) & MayWrite)
-            || !isTypeNode(ref->vtexp) || !itypeCarriesBorrow(ref->vtexp))
+        if (type->tag == VirtRefTag || !isTypeNode(ref->vtexp) || !itypeCarriesBorrow(ref->vtexp))
             return 0;
+        // A closure's capture of a variable (RefNode.capture) is read-only
+        // when the body only reads the variable, yet it writes through a
+        // '&mut' the variable holds: the way through is one borrow past the
+        // variable, to what the variable's type reaches, and none where it
+        // reaches no writable borrow
+        if (!(permGetFlags(ref->perm) & MayWrite)) {
+            int inner = ref->capture ? itypeWritableBorrowDepth(ref->vtexp, most - 1) : 0;
+            return inner ? 1 + inner : 0;
+        }
         return 1 + itypeWritableBorrowDepth(ref->vtexp, most - 1);
     }
     case PtrTag:
@@ -273,7 +416,9 @@ int itypeWritableBorrowDepth(INode *type, int most) {
     }
     case StructTag:
     {
-        if (!itypeCarriesBorrow(type))
+        // A struct that can hold no writable borrow anywhere is answered at
+        // once, however deep its fields nest (the walk below stops at its cap)
+        if (!itypeCarriesBorrow(type) || !itypeCarriesWritableBorrow(type))
             return 0;
         for (int i = 0; i < writableAskingCnt; ++i) {
             if (writableAsking[i] == type && writableAskingMost[i] == most)
@@ -308,34 +453,44 @@ int itypeWritableBorrowDepth(INode *type, int most) {
 
 // The structs itypeDropReadsBorrow is asking about. A type reaching itself (a
 // node owning the next) adds nothing round the loop: what it reads is found
-// where it was first asked. Asked only where a holder dies with a conflict
-// pending, which is rare, so the answer is not remembered.
+// where it was first asked. The answer decides whether a value stored in an
+// arena is a store at all (alloc), so a type it cannot see all of answers yes.
+// Not remembered.
 #define DropReadsMaxDepth 16
 static StructNode *dropReadsAsking[DropReadsMaxDepth];
 static int dropReadsDepth = 0;
 
 static int itypeStructDropReadsBorrow(StructNode *type) {
+    // An open trait's implementers, or an opaque struct's hidden fields, may
+    // finalize anything; a struct not yet checked shows none of its fields
+    if (((type->flags & TraitType) && !(type->flags & EnumType)) || (type->flags & (DeclaredOpaque | OpaqueType))
+        || !(type->flags & TypeChecked))
+        return 1;
     for (int i = 0; i < dropReadsDepth; ++i) {
         if (dropReadsAsking[i] == type)
             return 0;
     }
     if (dropReadsDepth == DropReadsMaxDepth)
-        return itypeCarriesBorrow((INode *)type);
+        return 1;
     dropReadsAsking[dropReadsDepth++] = type;
     // Its own 'final' may read any borrow it holds but through a raw pointer;
     // what a raw pointer reaches -- a collection's elements -- it finalizes
     INode *final = namespaceFind(&type->namespace, finalName);
     int hasfinal = final && final->tag == FnDclTag;
-    int reads = 0;
+    // An arena ('NoLoanMut') finalizes every value stored in it, and those may
+    // read the borrows they hold, through memory its fields do not show
+    int reads = type->lends == LendsNoLoanMut;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if (reads)
+            break;
         INode *ftype = ((IExpNode *)*nodesp)->vtype;
         INode *fdcl = ftype && isTypeNode(ftype) ? itypeGetTypeDcl(ftype) : NULL;
         if (fdcl && fdcl->tag == PtrTag)
             reads = itypeDropReadsBorrow(((StarNode *)fdcl)->vtexp);
         else
-            reads = hasfinal ? itypeCarriesBorrow(ftype) : itypeDropReadsBorrow(ftype);
+            reads = (hasfinal && itypeCarriesBorrow(ftype)) || itypeDropReadsBorrow(ftype);
         if (reads)
             break;
     }
@@ -352,14 +507,26 @@ static int itypeStructDropReadsBorrow(StructNode *type) {
     return reads;
 }
 
+// May the death of a value of this type read a borrow it holds, in a finalizer
+// of its own or of anything it owns? Only a number, an enum of plain values, a
+// raw pointer (which finalizes nothing itself), a borrowed reference, and a
+// tuple, array, owning reference or struct made only of those answer no. A
+// type it cannot see all of answers yes: a type parameter or a name that is
+// no type, an open trait, an opaque struct, a function or closure type.
 int itypeDropReadsBorrow(INode *type) {
     if (type == NULL)
-        return 0;
+        return 1;
     switch (type->tag) {
     case NameUseTag:
-        return isTypeNode(type) ? itypeDropReadsBorrow(itypeGetTypeDcl(type)) : 0;
+        return isTypeNode(type) ? itypeDropReadsBorrow(itypeGetTypeDcl(type)) : 1;
     case AliasDclTag:
         return itypeDropReadsBorrow(((AliasDclNode *)type)->target);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+    case PtrTag:
+        return 0;
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
@@ -381,7 +548,7 @@ int itypeDropReadsBorrow(INode *type) {
     case StructTag:
         return itypeStructDropReadsBorrow((StructNode *)type);
     default:
-        return 0;
+        return 1;
     }
 }
 
@@ -400,7 +567,7 @@ int itypeDropReadsBorrow(INode *type) {
 // arguments is. An open trait's implementers are not all known, so a
 // reference to one is bound.
 //
-// A type may reach itself through a reference ('next So[Node]'), and a type
+// A type may reach itself through a reference ('next Uni[Node]'), and a type
 // reached through a reference need not be laid out yet, so the walk is the
 // same fixed point as itypeCarriesBorrow's: a struct reached again while it is
 // being asked adds nothing (what it holds is found where it was first asked),
@@ -469,8 +636,11 @@ static int itypeStructThreadBound(StructNode *type) {
     type->threadbound = CarriesBorrowAsking;
 
     int bound = 0;
+    // (a generic actor's message enum is taken at its word whatever its type
+    // arguments, as a non-generic one is: actorCheckAll judges each instance's
+    // parameters, naming the actor and the behaviour)
     if (structDeclaresTrait(type, sendableTrait))
-        bound = itypeArgsThreadBound((INode *)type);
+        bound = actorIsMessage((INode *)type) ? 0 : itypeArgsThreadBound((INode *)type);
     else if (itypeIsOpenTrait(type))
         bound = 1;
     else {
@@ -569,7 +739,8 @@ int itypeThreadBound(INode *type, int *settled) {
 
 // Append to 'buf' a type as the thread check's message spells it: a reference
 // or an array as it is written ('&mut Point', 'Rc[imm, Point]', '*u64',
-// 'Array[u8, 4]'), a permission always spelled out, anything else by its name
+// 'Array[u8, 4]'), a borrow's permission always spelled out and an owner's left
+// out when it is the default ('Uni[Point]'), anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     size_t used = strlen(buf);
     if (!isTypeNode(type)) {
@@ -605,8 +776,12 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
             refMarksCat(buf, size, ref->marks);
             return;
         }
-        // A managed reference: 'Rc[mut, Point]', whether thin or virtual
-        snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
+        // A managed reference: 'Rc[mut, Point]', whether thin or virtual, its
+        // permission left out where it is the one an owner takes unwritten: 'Rc[Point]'
+        if (refOwnerPermIsDefault(ref))
+            snprintf(buf + used, size - used, "%s[", rname);
+        else
+            snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
         itypeSpellCat(buf, size, ref->vtexp, depth + 1);
         refMarksCat(buf, size, ref->marks);
         used = strlen(buf);
@@ -640,6 +815,11 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         char sig[300] = "";
         genericFnSigCat(sig, sizeof(sig), ((StructNode *)dcl)->callsig);
         snprintf(buf + used, size - used, "%s", sig);
+        return;
+    }
+    // 'void' is a type argument as any other ('Result[void, E]') and names itself
+    if (dcl->tag == VoidTag) {
+        snprintf(buf + used, size - used, "void");
         return;
     }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
@@ -717,7 +897,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         // Declared Sendable, and bound only by a type argument
         if (structDeclaresTrait(strnode, sendableTrait)) {
             Nodes *args = itypeInstanceTypeArgs(type);
-            if (args == NULL)
+            if (args == NULL || actorIsMessage(type))
                 return NULL;
             for (nodesFor(args, cnt, nodesp)) {
                 if (!itypeThreadBoundHow(*nodesp, NULL, itypeStaticHow))
@@ -1064,7 +1244,7 @@ int itypeHoldsAtomic(INode *type) {
     }
 }
 
-// An owning reference into a region that is not traced ('Rc', 'So', any
+// An owning reference into a region that is not traced ('Rc', 'Uni', any
 // counted region): a trace passes through it to the value it holds. The type a
 // thin one points at, or the element of the array body a fat one does; NULL
 // where a trace could find nothing there (text, a borrow, a virtual reference,
@@ -1146,15 +1326,17 @@ int itypeCannotTrace(INode *type) {
         if (ref->tag == VirtRefTag || !regionIsRegionRef(ref->region) || regionIsTraced(ref->region))
             return 0;
         INode *behind = itypeBehindOwner(ref);
-        // An array body of values a trace must find: nothing here walks it
-        if (behind == NULL || refIsFat(ref))
-            return refIsFat(ref) && behind != NULL && itypeHoldsTraced(behind);
-        if (!itypeHoldsTraced(behind))
+        if (behind == NULL || !itypeHoldsTraced(behind))
             return 0;
-        // A collector that marks while the program runs must hear of each store
-        // of a reference to a value holding a traced reference, and can hear of
-        // the traced reference only: a value behind an owner is not walked then
-        if (!regionCanPassTrace(ref->region) || itypeHoldsBarriered(behind))
+        // The elements of an array body are walked by the count the owner carries
+        // (genlTraceThrough), for a trace and for a write barrier alike: a store of
+        // the whole owner hands the barrier each element, as a store into the body
+        // does. A collector that marks while the program runs must hear of each store
+        // of a reference to a value holding a traced reference, and can hear of the
+        // traced reference only: a value behind any other owner is not walked then,
+        // so such an owner is refused.
+        int arrayowner = refIsFat(ref) && itypeIsArrayBody(ref->vtexp);
+        if (!regionCanPassTrace(ref->region) || (!arrayowner && itypeHoldsBarriered(behind)))
             return 1;
         return itypeCannotTrace(behind);
     }
@@ -1184,7 +1366,7 @@ static int itypeStructCannotTrace(StructNode *type) {
 
 // Does a value of this type hold a traced reference where it sits: is it a
 // reference into a region declaring 'Traced', or an owning reference of any
-// other region to a value that does (a trace passes through 'Rc' and 'So'), or
+// other region to a value that does (a trace passes through 'Rc' and 'Uni'), or
 // a tuple, array, struct or enum holding one inline, or a type declaring GcTraceElements
 // whose gcTraceElements gives references to values that do? The walk stops at
 // borrows and at raw pointers, which a type covers by declaring it (itypeCannotTrace).
@@ -1229,20 +1411,30 @@ int itypeHoldsTraced(INode *type) {
     }
 }
 
-// itypeHoldsTraced's walk, in two other senses. Collected: looking for a
-// reference into a traced region that is not actor-local. Placed: looking for
+// itypeHoldsTraced's walk, in three other senses. Collected: looking for a
+// reference into a traced region that is not actor-local. Rooted: the same, and
+// an Erased value holds one wherever such a region is declared. Placed: looking for
 // any traced reference, but passing over an actor's state, which the actors
 // runtime hands to the actor's collector between messages wherever it keeps it
 // (an Arc's block, raw memory): a traced reference held there is found. Not
 // remembered, so a struct reached again is passed over.
 typedef enum {
     HoldsWalkCollected,
-    HoldsWalkPlaced
+    HoldsWalkPlaced,
+    HoldsWalkRooted
 } HoldsWalk;
 
+// Set when a walk gave up for want of room to remember structs (more than 60
+// distinct ones): its "no" is then not known (itypeHoldsRooted)
+static int itypeHoldsExhausted = 0;
+
 static int itypeHoldsWalkAt(INode *type, HoldsWalk walk, INode **seen, uint32_t *nseen) {
-    if (type == NULL || *nseen > 60)
+    if (type == NULL)
         return 0;
+    if (*nseen > 60) {
+        itypeHoldsExhausted = 1;
+        return 0;
+    }
     switch (type->tag) {
     case NameUseTag:
         return isTypeNode(type) ? itypeHoldsWalkAt(itypeGetTypeDcl(type), walk, seen, nseen) : 0;
@@ -1269,6 +1461,13 @@ static int itypeHoldsWalkAt(INode *type, HoldsWalk walk, INode **seen, uint32_t 
         return 0;
     }
     case StructTag: {
+        // Core's Erased may hold anything, a collected reference too, wherever
+        // one is declared (as itypeHoldsTraced finds, for any traced one): so a
+        // stack's roots must have it, where the refusal of a collected reference
+        // in an actor (itypeHoldsCollected) must not, or an actor's state holding
+        // one (the actors package's Pending) would be refused beside any Gc
+        if (walk == HoldsWalkRooted && coreIsErased(type))
+            return regionCollectedAnywhere();
         for (uint32_t i = 0; i < *nseen; ++i) {
             if (seen[i] == type)
                 return 0;
@@ -1301,6 +1500,22 @@ int itypeHoldsCollected(INode *type) {
     INode *seen[64];
     uint32_t nseen = 0;
     return itypeHoldsWalkAt(type, HoldsWalkCollected, seen, &nseen);
+}
+
+// Does a value of this type need a slot in a function's root frame: does it hold
+// a traced reference (itypeHoldsTraced) that a stack's roots must find, a
+// collected one, as itypeHoldsCollected finds (and an Erased value, wherever one
+// is declared)? An actor-local reference is found from the actor's state and its
+// parked records, never from a stack. Where the walk ran out of room, a spare
+// frame is the safe answer.
+int itypeHoldsRooted(INode *type) {
+    if (!itypeHoldsTraced(type))
+        return 0;
+    INode *seen[64];
+    uint32_t nseen = 0;
+    itypeHoldsExhausted = 0;
+    int holds = itypeHoldsWalkAt(type, HoldsWalkRooted, seen, &nseen);
+    return holds || itypeHoldsExhausted;
 }
 
 int itypeHoldsTracedPlaced(INode *type) {
@@ -1392,6 +1607,12 @@ int itypeRefuseBareGeneric(INode *type) {
     if (dcl == (INode*)arrayTypeDcl)
         errorMsgNode(type, ErrorArrayTypeArgs,
             "Array is a type only with its element type: 'Array[T]' is the body of a run-time length, 'Array[T, n]' the array of n elements, and 'Array[T, n, m]' one with a size for each dimension.");
+    // A trait whose every parameter is an associated type is written bare, and
+    // names one trait only where a type meeting it says them
+    else if (genericWrittenCount(((StructNode*)dcl)->genericinfo) == 0)
+        errorMsgNode(type, ErrorAssocUnsaid,
+            "%s has an associated type, which the type meeting it says, so it is named where a type meets it: a bound, '[C: %s]', or an 'is' entry. A virtual reference to such a trait is not built yet.",
+            &generic->namestr, &generic->namestr);
     else
         errorMsgNode(type, ErrorArgCount,
             "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",
@@ -1422,6 +1643,7 @@ int itypeRefuseModule(INode *type) {
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
+    int errorsBefore = errors;
     inodeTypeCheckAny(pstate, node);
     // A type that failed as it was checked -- an instance refused where it was
     // asked for -- was reported there, and stands as the error type from here
@@ -1431,7 +1653,12 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
         return 0;
     }
     if (!isTypeNode(*node)) {
-        errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
+        // What checking it refused is the reason it is no type, and is said:
+        // saying that it is no type as well is the same refusal twice
+        if (errors != errorsBefore)
+            *node = errorType;
+        else
+            errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
         return 0;
     }
     if (itypeRefuseBareGeneric(*node) || itypeRefuseModule(*node))
@@ -1465,6 +1692,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case VectorTag:
+        return vectorEqual((VectorNode*)node1, (VectorNode*)node2);
     case TTupleTag:
         return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
     case FnSigTag:
@@ -1529,6 +1758,8 @@ int itypeIsRunSame(INode *node1, INode *node2) {
         return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case VectorTag:
+        return vectorEqual((VectorNode*)node1, (VectorNode*)node2);
     case TTupleTag:
         return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
     case FnSigTag:
@@ -1580,7 +1811,7 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
 
     case FnSigTag:
         if (fromtype->tag == FnSigTag)
-            return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype, constraint);
+            return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype);
         return NoMatch;
 
     case RefTag:
@@ -1791,6 +2022,15 @@ char *itypeName(INode *type) {
         return "a function signature";
     case ArrayTag:
         return "an array";
+    case VectorTag: {
+        // As it is written: its lane type and number of lanes
+        static char vecnames[4][96];
+        static unsigned vecnext;
+        char *buf = vecnames[vecnext++ & 3];
+        snprintf(buf, sizeof(vecnames[0]), "Vector[%s, %llu]", itypeName(vectorElemType(dcltype)),
+            (unsigned long long)vectorLanes(dcltype));
+        return buf;
+    }
     case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag:
         return "a reference";
     case TTupleTag:
@@ -1857,9 +2097,9 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
 
     // A body whose length a reference carries has no size of its own to hold
     if (itypeIsArrayBody(dcltype))
-        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&Array[T]', 'So[Array[T]]', 'Rc[Array[T]]'";
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&Array[T]', 'Uni[Array[T]]', 'Rc[Array[T]]'";
     if (itypeLenBodyElem(dcltype) != NULL)
-        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'So[str]', 'Rc[str]'";
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'Uni[str]', 'Rc[str]'";
 
     if (dcltype->tag == StructTag) {
         // Opacity is infectious. Where a field carried it, this type is not the
@@ -2027,7 +2267,7 @@ int itypeIsGenericType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
     FnCallNode *gentype = (FnCallNode*)type;
-    // 'new Pair[i32, f32](1, 2.)' is a value: its type is its objfn
+    // 'Pair[i32, f32](1, 2.)' is a value: its type is its objfn
     if (!isNameUseNode(gentype->objfn) || (gentype->flags & FlagNew))
         return 0;
     INode *dclnode = nameUseGetDcl((NameUseNode*)gentype->objfn);
@@ -2063,7 +2303,7 @@ INode *itypeManagedRefRegion(INode *type) {
 // (fnCallLowerManagedRef), and is a type all the while, as a generic's
 // instantiation is. A region's head with values in its brackets is no type
 // but the region's value as a struct's literal, 'Rc[1usize]', which type check
-// refuses for 'new Rc(1usize)' (ErrorStructBracket). So
+// refuses for 'Rc(1usize)' (ErrorStructBracket). So
 // every argument must be a type -- a permission is one -- or, in a generic's
 // template, a type parameter still to be substituted.
 // A type with a type joined to it by '+', 'Shape + Sendable', the sum the

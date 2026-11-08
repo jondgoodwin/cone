@@ -1,0 +1,109 @@
+// Slabs are 2 MiB and aligned to 2 MiB, so that a block leads to its slab by its
+// address and a release needs no token. 1100 blocks of 4 KiB are 3 slabs (512 +
+// 512 + 76): every block lies in one of three aligned 2 MiB spans, no two blocks
+// overlap, and the spans are the ones the OS was asked for (the count of
+// allocations). Released in a different order than taken, and from another
+// thread, every block finds its own slab: all home, and a slab goes back to the
+// OS once its blocks are. A slab with one block still lent is not given back.
+
+mod slabs;
+
+import testing use *;
+import thread;
+import libc;
+import bufpool use *;
+
+const slab = 2097152usize;
+const n = 1100usize;
+
+struct Held {
+  pub blocks: usize;      // an array of n block addresses, malloc'd
+}
+
+fn pool() &MemRegion {bufferPool() as &MemRegion}
+
+fn at(base: usize, i: usize) *usize {(base as *usize) + i}
+
+// Release the blocks from the end to the start, on whichever thread runs this
+fn giveBack(base: usize) u64 {
+  let r = pool();
+  var i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    r.release(*at(base, i) as *u8, 4096usize);
+  }
+  u64.from(n)
+}
+
+fn main() i32 {
+  let r = pool();
+  let base = libc.malloc(n * 8usize) as usize;
+  var i = 0usize;
+  while i < n {
+    let p = r.allocate(1usize, 8usize);
+    *p = u8.from(i % 251usize);
+    *at(base, i) = p as usize;
+    i = i + 1usize;
+  }
+  expectUInt(osBlocks(), 3u64, "three slabs for 1100 blocks of 4 KiB");
+  expectUInt(osBytes(), 3u64 * u64.from(slab), "6 MiB");
+  expectUInt(blockStats().osAllocs, 3u64, "three allocations from the OS");
+
+  // Every block is 4 KiB-aligned and in an aligned 2 MiB span; three spans
+  var spans = 0usize;
+  var ok = true;
+  var distinct = true;
+  var seen0 = 0usize;
+  var seen1 = 0usize;
+  var seen2 = 0usize;
+  i = 0usize;
+  while i < n {
+    let a = *at(base, i);
+    if a % 4096usize != 0usize {ok = false;}
+    let s = a & (0usize - slab);
+    if s == seen0 || s == seen1 || s == seen2 {
+      // seen already
+    } else if seen0 == 0usize {seen0 = s; spans = spans + 1usize;}
+    else if seen1 == 0usize {seen1 = s; spans = spans + 1usize;}
+    else if seen2 == 0usize {seen2 = s; spans = spans + 1usize;}
+    else {spans = spans + 1usize;}
+    // no two blocks overlap: a block's content is its own
+    if *(a as *u8) != u8.from(i % 251usize) {distinct = false;}
+    i = i + 1usize;
+  }
+  expect(ok, "every block page-aligned");
+  expectUInt(u64.from(spans), 3u64, "the blocks lie in three aligned 2 MiB spans");
+  expect(distinct, "no block overlaps another: each still holds its own byte");
+  expect(seen0 % slab == 0usize && seen1 % slab == 0usize && seen2 % slab == 0usize, "the spans are 2 MiB-aligned");
+
+  // Released from another thread, in the opposite order
+  var t = thread.start(base, &giveBack);
+  expectUInt(t.join(), u64.from(n), "all released on the other thread");
+  expectUInt(blockStats().lent, 0u64, "all home");
+  trimEverything();
+  expectUInt(osBlocks(), 0u64, "every slab back once its blocks are, whichever thread gave them back");
+  expectUInt(osBytes(), 0u64, "no bytes");
+  expectUInt(blockStats().osAllocs, blockStats().osFrees, "every allocation from the OS freed");
+
+  // A slab with one block still lent is not given back
+  var held = 0usize;
+  i = 0usize;
+  while i < 513usize {                    // 512 fill the first slab, the 513th starts the second
+    let p = r.allocate(1usize, 8usize);
+    if i == 512usize {held = p as usize;} else {*at(base, i) = p as usize;}
+    i = i + 1usize;
+  }
+  expectUInt(osBlocks(), 2u64, "two slabs");
+  i = 0usize;
+  while i < 512usize {
+    r.release(*at(base, i) as *u8, 4096usize);
+    i = i + 1usize;
+  }
+  trimStock();
+  expectUInt(osBlocks(), 1u64, "the first slab goes back; the second holds a lent block");
+  r.release(held as *u8, 4096usize);
+  trimStock();
+  expectUInt(osBlocks(), 0u64, "and then the second");
+  libc.free(base as *u8);
+  done()
+}

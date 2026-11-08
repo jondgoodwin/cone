@@ -1,0 +1,208 @@
+// ======== The Huffman code of RFC 7541, Appendix B ========
+//
+// HPACK's static Huffman code, which HTTP/3's QPACK uses too (RFC 9204,
+// section 4.1.2): a canonical code of 257 symbols, the 256 byte values and
+// EOS, each 5 to 30 bits long. Nothing here knows of HPACK's tables or of a
+// header block; the functions take bytes and give bytes, so another
+// compressor uses them as they are.
+//
+// Encoding packs each byte's code most significant bit first and pads the
+// last byte with the high bits of EOS, which are all ones (section 5.2).
+// Decoding is the canonical code's walk: the next 32 bits of input, read
+// as a number, fall below the first code of exactly one length, and that
+// length's codes are consecutive numbers, so the symbol is found by
+// subtraction. Common bytes have the shortest codes, so most symbols are
+// found at the first or second length tried. The decoder refuses what
+// section 5.2 refuses: padding longer than 7 bits, padding that is not the
+// high bits of EOS, and EOS itself inside a string.
+
+mod huffman;
+
+import collections use List;
+
+// How decoding a string ended
+pub enum HuffmanStatus {
+  Done,         // every symbol decoded, the padding as it must be
+  BadPadding,   // more than 7 bits of padding, or padding not all ones
+  HasEos,       // the EOS symbol inside the string
+  TooLong       // the output would pass the limit asked for
+}
+
+// Why a decoding failed, one line; "" for Done
+pub fn huffmanWhy(s: HuffmanStatus) &str {
+  if s == HuffmanStatus.BadPadding {"a Huffman string's padding is longer than 7 bits or not all ones"}
+  else if s == HuffmanStatus.HasEos {"a Huffman string holds the EOS symbol"}
+  else if s == HuffmanStatus.TooLong {"a Huffman string decodes past the limit"}
+  else {""}
+}
+
+// How many bytes the Huffman coding of s takes
+pub fn huffmanEncodedLen(s: &Array[u8]) usize {
+  var bits = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    bits = bits + u64.from(huffLen[usize.from(s[i])]);
+    i = i + 1usize;
+  }
+  usize.from((bits + 7u64) >> 3u64)
+}
+
+// Append the Huffman coding of s to out
+pub fn huffmanEncode(s: &Array[u8], out: &mut List[u8]) {
+  var acc = 0u64;           // the bits not yet written, in its low 'n' bits
+  var n = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    let c = usize.from(s[i]);
+    let len = u64.from(huffLen[c]);
+    acc = (acc << len) | u64.from(huffCode[c]);
+    n = n + len;
+    while n >= 8u64 {
+      n = n - 8u64;
+      out.push(u8.from(acc >> n));
+    }
+    i = i + 1usize;
+  }
+  if n > 0u64 {
+    // The padding: EOS's first bits, all ones
+    out.push(u8.from(acc << (8u64 - n)) | u8.from(0xFFu64 >> n));
+  }
+}
+
+// Append the bytes the Huffman string src decodes to onto out, at most
+// limit of them: Done, or why not. On a failure, out holds what was decoded
+// before it
+pub fn huffmanDecode(src: &Array[u8], out: &mut List[u8], limit: usize) HuffmanStatus {
+  var acc = 0u64;           // input bits not yet decoded, in its low 'n' bits
+  var n = 0u64;
+  var i = 0usize;
+  var written = 0usize;
+  while true {
+    while n <= 56u64 && i < src.len {
+      acc = (acc << 8u64) | u64.from(src[i]);
+      n = n + 8u64;
+      i = i + 1usize;
+    }
+    if n == 0u64 {return HuffmanStatus.Done;}
+    // The next 32 bits, left-aligned; zeros past the input's end
+    let w = if n >= 32u64 {(acc >> (n - 32u64)) & 0xFFFFFFFFu64} else {(acc << (32u64 - n)) & 0xFFFFFFFFu64};
+    var k = 0usize;
+    while w >= huffLimit[k] {k = k + 1usize;}
+    let len = u64.from(huffLenOf[k]);
+    if len > n {
+      // The input is spent (the loop above keeps more than 30 bits while
+      // there is any), and what is left is no whole code: it must be
+      // padding, at most 7 bits, all ones
+      if n > 7u64 {return HuffmanStatus.BadPadding;}
+      let mask = (1u64 << n) - 1u64;
+      if (acc & mask) != mask {return HuffmanStatus.BadPadding;}
+      return HuffmanStatus.Done;
+    }
+    let code = w >> (32u64 - len);
+    let sym = huffSorted[usize.from(huffOffset[k]) + usize.from(code - u64.from(huffFirst[k]))];
+    if sym == 256u16 {return HuffmanStatus.HasEos;}
+    if written >= limit {return HuffmanStatus.TooLong;}
+    out.push(u8.from(sym));
+    written = written + 1usize;
+    n = n - len;
+    acc = acc & ((1u64 << n) - 1u64);
+  }
+  HuffmanStatus.Done
+}
+
+// ---------------------------------------------------------------------------
+// The tables, from RFC 7541 Appendix B
+// ---------------------------------------------------------------------------
+
+// Each symbol's code, right-aligned, and its length in bits (symbol 256 is EOS)
+let huffCode: Array[u32, 257] = [
+  0x1ff8u32, 0x7fffd8u32, 0xfffffe2u32, 0xfffffe3u32, 0xfffffe4u32, 0xfffffe5u32, 0xfffffe6u32, 0xfffffe7u32,
+  0xfffffe8u32, 0xffffeau32, 0x3ffffffcu32, 0xfffffe9u32, 0xfffffeau32, 0x3ffffffdu32, 0xfffffebu32, 0xfffffecu32,
+  0xfffffedu32, 0xfffffeeu32, 0xfffffefu32, 0xffffff0u32, 0xffffff1u32, 0xffffff2u32, 0x3ffffffeu32, 0xffffff3u32,
+  0xffffff4u32, 0xffffff5u32, 0xffffff6u32, 0xffffff7u32, 0xffffff8u32, 0xffffff9u32, 0xffffffau32, 0xffffffbu32,
+  0x14u32, 0x3f8u32, 0x3f9u32, 0xffau32, 0x1ff9u32, 0x15u32, 0xf8u32, 0x7fau32,
+  0x3fau32, 0x3fbu32, 0xf9u32, 0x7fbu32, 0xfau32, 0x16u32, 0x17u32, 0x18u32,
+  0x0u32, 0x1u32, 0x2u32, 0x19u32, 0x1au32, 0x1bu32, 0x1cu32, 0x1du32,
+  0x1eu32, 0x1fu32, 0x5cu32, 0xfbu32, 0x7ffcu32, 0x20u32, 0xffbu32, 0x3fcu32,
+  0x1ffau32, 0x21u32, 0x5du32, 0x5eu32, 0x5fu32, 0x60u32, 0x61u32, 0x62u32,
+  0x63u32, 0x64u32, 0x65u32, 0x66u32, 0x67u32, 0x68u32, 0x69u32, 0x6au32,
+  0x6bu32, 0x6cu32, 0x6du32, 0x6eu32, 0x6fu32, 0x70u32, 0x71u32, 0x72u32,
+  0xfcu32, 0x73u32, 0xfdu32, 0x1ffbu32, 0x7fff0u32, 0x1ffcu32, 0x3ffcu32, 0x22u32,
+  0x7ffdu32, 0x3u32, 0x23u32, 0x4u32, 0x24u32, 0x5u32, 0x25u32, 0x26u32,
+  0x27u32, 0x6u32, 0x74u32, 0x75u32, 0x28u32, 0x29u32, 0x2au32, 0x7u32,
+  0x2bu32, 0x76u32, 0x2cu32, 0x8u32, 0x9u32, 0x2du32, 0x77u32, 0x78u32,
+  0x79u32, 0x7au32, 0x7bu32, 0x7ffeu32, 0x7fcu32, 0x3ffdu32, 0x1ffdu32, 0xffffffcu32,
+  0xfffe6u32, 0x3fffd2u32, 0xfffe7u32, 0xfffe8u32, 0x3fffd3u32, 0x3fffd4u32, 0x3fffd5u32, 0x7fffd9u32,
+  0x3fffd6u32, 0x7fffdau32, 0x7fffdbu32, 0x7fffdcu32, 0x7fffddu32, 0x7fffdeu32, 0xffffebu32, 0x7fffdfu32,
+  0xffffecu32, 0xffffedu32, 0x3fffd7u32, 0x7fffe0u32, 0xffffeeu32, 0x7fffe1u32, 0x7fffe2u32, 0x7fffe3u32,
+  0x7fffe4u32, 0x1fffdcu32, 0x3fffd8u32, 0x7fffe5u32, 0x3fffd9u32, 0x7fffe6u32, 0x7fffe7u32, 0xffffefu32,
+  0x3fffdau32, 0x1fffddu32, 0xfffe9u32, 0x3fffdbu32, 0x3fffdcu32, 0x7fffe8u32, 0x7fffe9u32, 0x1fffdeu32,
+  0x7fffeau32, 0x3fffddu32, 0x3fffdeu32, 0xfffff0u32, 0x1fffdfu32, 0x3fffdfu32, 0x7fffebu32, 0x7fffecu32,
+  0x1fffe0u32, 0x1fffe1u32, 0x3fffe0u32, 0x1fffe2u32, 0x7fffedu32, 0x3fffe1u32, 0x7fffeeu32, 0x7fffefu32,
+  0xfffeau32, 0x3fffe2u32, 0x3fffe3u32, 0x3fffe4u32, 0x7ffff0u32, 0x3fffe5u32, 0x3fffe6u32, 0x7ffff1u32,
+  0x3ffffe0u32, 0x3ffffe1u32, 0xfffebu32, 0x7fff1u32, 0x3fffe7u32, 0x7ffff2u32, 0x3fffe8u32, 0x1ffffecu32,
+  0x3ffffe2u32, 0x3ffffe3u32, 0x3ffffe4u32, 0x7ffffdeu32, 0x7ffffdfu32, 0x3ffffe5u32, 0xfffff1u32, 0x1ffffedu32,
+  0x7fff2u32, 0x1fffe3u32, 0x3ffffe6u32, 0x7ffffe0u32, 0x7ffffe1u32, 0x3ffffe7u32, 0x7ffffe2u32, 0xfffff2u32,
+  0x1fffe4u32, 0x1fffe5u32, 0x3ffffe8u32, 0x3ffffe9u32, 0xffffffdu32, 0x7ffffe3u32, 0x7ffffe4u32, 0x7ffffe5u32,
+  0xfffecu32, 0xfffff3u32, 0xfffedu32, 0x1fffe6u32, 0x3fffe9u32, 0x1fffe7u32, 0x1fffe8u32, 0x7ffff3u32,
+  0x3fffeau32, 0x3fffebu32, 0x1ffffeeu32, 0x1ffffefu32, 0xfffff4u32, 0xfffff5u32, 0x3ffffeau32, 0x7ffff4u32,
+  0x3ffffebu32, 0x7ffffe6u32, 0x3ffffecu32, 0x3ffffedu32, 0x7ffffe7u32, 0x7ffffe8u32, 0x7ffffe9u32, 0x7ffffeau32,
+  0x7ffffebu32, 0xffffffeu32, 0x7ffffecu32, 0x7ffffedu32, 0x7ffffeeu32, 0x7ffffefu32, 0x7fffff0u32, 0x3ffffeeu32,
+  0x3fffffffu32];
+let huffLen: Array[u8, 257] = [
+  13u8, 23u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 24u8, 30u8, 28u8, 28u8, 30u8, 28u8, 28u8,
+  28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 30u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8, 28u8,
+  6u8, 10u8, 10u8, 12u8, 13u8, 6u8, 8u8, 11u8, 10u8, 10u8, 8u8, 11u8, 8u8, 6u8, 6u8, 6u8,
+  5u8, 5u8, 5u8, 6u8, 6u8, 6u8, 6u8, 6u8, 6u8, 6u8, 7u8, 8u8, 15u8, 6u8, 12u8, 10u8,
+  13u8, 6u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8,
+  7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 7u8, 8u8, 7u8, 8u8, 13u8, 19u8, 13u8, 14u8, 6u8,
+  15u8, 5u8, 6u8, 5u8, 6u8, 5u8, 6u8, 6u8, 6u8, 5u8, 7u8, 7u8, 6u8, 6u8, 6u8, 5u8,
+  6u8, 7u8, 6u8, 5u8, 5u8, 6u8, 7u8, 7u8, 7u8, 7u8, 7u8, 15u8, 11u8, 14u8, 13u8, 28u8,
+  20u8, 22u8, 20u8, 20u8, 22u8, 22u8, 22u8, 23u8, 22u8, 23u8, 23u8, 23u8, 23u8, 23u8, 24u8, 23u8,
+  24u8, 24u8, 22u8, 23u8, 24u8, 23u8, 23u8, 23u8, 23u8, 21u8, 22u8, 23u8, 22u8, 23u8, 23u8, 24u8,
+  22u8, 21u8, 20u8, 22u8, 22u8, 23u8, 23u8, 21u8, 23u8, 22u8, 22u8, 24u8, 21u8, 22u8, 23u8, 23u8,
+  21u8, 21u8, 22u8, 21u8, 23u8, 22u8, 23u8, 23u8, 20u8, 22u8, 22u8, 22u8, 23u8, 22u8, 22u8, 23u8,
+  26u8, 26u8, 20u8, 19u8, 22u8, 23u8, 22u8, 25u8, 26u8, 26u8, 26u8, 27u8, 27u8, 26u8, 24u8, 25u8,
+  19u8, 21u8, 26u8, 27u8, 27u8, 26u8, 27u8, 24u8, 21u8, 21u8, 26u8, 26u8, 28u8, 27u8, 27u8, 27u8,
+  20u8, 24u8, 20u8, 21u8, 22u8, 21u8, 21u8, 23u8, 22u8, 22u8, 25u8, 25u8, 24u8, 24u8, 26u8, 23u8,
+  26u8, 27u8, 26u8, 26u8, 27u8, 27u8, 27u8, 27u8, 27u8, 28u8, 27u8, 27u8, 27u8, 27u8, 27u8, 26u8,
+  30u8];
+
+// The canonical walk, one entry for each length a code has, shortest first:
+// the length, the first code of that length, where its symbols start in
+// huffSorted, and the first 32-bit left-aligned value past its codes
+let huffLenOf: Array[u8, 21] = [
+  5u8, 6u8, 7u8, 8u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 19u8, 20u8, 21u8, 22u8, 23u8, 24u8,
+  25u8, 26u8, 27u8, 28u8, 30u8];
+let huffFirst: Array[u32, 21] = [
+  0x0u32, 0x14u32, 0x5cu32, 0xf8u32, 0x3f8u32, 0x7fau32, 0xffau32, 0x1ff8u32,
+  0x3ffcu32, 0x7ffcu32, 0x7fff0u32, 0xfffe6u32, 0x1fffdcu32, 0x3fffd2u32, 0x7fffd8u32, 0xffffeau32,
+  0x1ffffecu32, 0x3ffffe0u32, 0x7ffffdeu32, 0xfffffe2u32, 0x3ffffffcu32];
+let huffOffset: Array[u16, 21] = [
+  0u16, 10u16, 36u16, 68u16, 74u16, 79u16, 82u16, 84u16, 90u16, 92u16, 95u16, 98u16,
+  106u16, 119u16, 145u16, 174u16, 186u16, 190u16, 205u16, 224u16, 253u16];
+let huffLimit: Array[u64, 21] = [
+  0x50000000u64, 0xb8000000u64, 0xf8000000u64, 0xfe000000u64, 0xff400000u64, 0xffa00000u64,
+  0xffc00000u64, 0xfff00000u64, 0xfff80000u64, 0xfffe0000u64, 0xfffe6000u64, 0xfffee000u64,
+  0xffff4800u64, 0xffffb000u64, 0xffffea00u64, 0xfffff600u64, 0xfffff800u64, 0xfffffbc0u64,
+  0xfffffe20u64, 0xfffffff0u64, 0x100000000u64];
+
+// The symbols in order of code: by length, then by value
+let huffSorted: Array[u16, 257] = [
+  48u16, 49u16, 50u16, 97u16, 99u16, 101u16, 105u16, 111u16, 115u16, 116u16, 32u16, 37u16, 45u16, 46u16, 47u16, 51u16,
+  52u16, 53u16, 54u16, 55u16, 56u16, 57u16, 61u16, 65u16, 95u16, 98u16, 100u16, 102u16, 103u16, 104u16, 108u16, 109u16,
+  110u16, 112u16, 114u16, 117u16, 58u16, 66u16, 67u16, 68u16, 69u16, 70u16, 71u16, 72u16, 73u16, 74u16, 75u16, 76u16,
+  77u16, 78u16, 79u16, 80u16, 81u16, 82u16, 83u16, 84u16, 85u16, 86u16, 87u16, 89u16, 106u16, 107u16, 113u16, 118u16,
+  119u16, 120u16, 121u16, 122u16, 38u16, 42u16, 44u16, 59u16, 88u16, 90u16, 33u16, 34u16, 40u16, 41u16, 63u16, 39u16,
+  43u16, 124u16, 35u16, 62u16, 0u16, 36u16, 64u16, 91u16, 93u16, 126u16, 94u16, 125u16, 60u16, 96u16, 123u16, 92u16,
+  195u16, 208u16, 128u16, 130u16, 131u16, 162u16, 184u16, 194u16, 224u16, 226u16, 153u16, 161u16, 167u16, 172u16, 176u16, 177u16,
+  179u16, 209u16, 216u16, 217u16, 227u16, 229u16, 230u16, 129u16, 132u16, 133u16, 134u16, 136u16, 146u16, 154u16, 156u16, 160u16,
+  163u16, 164u16, 169u16, 170u16, 173u16, 178u16, 181u16, 185u16, 186u16, 187u16, 189u16, 190u16, 196u16, 198u16, 228u16, 232u16,
+  233u16, 1u16, 135u16, 137u16, 138u16, 139u16, 140u16, 141u16, 143u16, 147u16, 149u16, 150u16, 151u16, 152u16, 155u16, 157u16,
+  158u16, 165u16, 166u16, 168u16, 174u16, 175u16, 180u16, 182u16, 183u16, 188u16, 191u16, 197u16, 231u16, 239u16, 9u16, 142u16,
+  144u16, 145u16, 148u16, 159u16, 171u16, 206u16, 215u16, 225u16, 236u16, 237u16, 199u16, 207u16, 234u16, 235u16, 192u16, 193u16,
+  200u16, 201u16, 202u16, 205u16, 210u16, 213u16, 218u16, 219u16, 238u16, 240u16, 242u16, 243u16, 255u16, 203u16, 204u16, 211u16,
+  212u16, 214u16, 221u16, 222u16, 223u16, 241u16, 244u16, 245u16, 246u16, 247u16, 248u16, 250u16, 251u16, 252u16, 253u16, 254u16,
+  2u16, 3u16, 4u16, 5u16, 6u16, 7u16, 8u16, 11u16, 12u16, 14u16, 15u16, 16u16, 17u16, 18u16, 19u16, 20u16,
+  21u16, 23u16, 24u16, 25u16, 26u16, 27u16, 28u16, 29u16, 30u16, 31u16, 127u16, 220u16, 249u16, 10u16, 13u16, 22u16,
+  256u16];

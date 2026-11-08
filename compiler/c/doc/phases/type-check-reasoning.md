@@ -92,11 +92,13 @@ So the normal path is `iexpTypeCheckCoerce`:
    does not carry ([literals](../nodes/literals.md), "A literal and its neighbours").
    `fnCallFinalizeArgs` coerces each argument the same way.
 
-`litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
-a number expected type and keeps it — an integer type by retyping, a float type
-by becoming a float literal — so its constant is built at that width, and one
+`litTypeCheck` uses `expectType` for one case: an untyped number literal takes
+a number expected type and keeps it — an integer literal an integer type by retyping,
+or a float type by becoming a float literal, and a float literal a float type — so its
+constant is built at that width, and one
 whose value an integer type cannot hold is refused there (`ErrorLitRange`), as
-a suffixed literal is against its own type. `iexpCoerce` does the same for a literal that reaches it still untyped, because
+a suffixed literal is against its own type, and a float literal an `f32` cannot hold
+is `ErrorFloatRange`. `iexpCoerce` does the same for a literal that reaches it still untyped, because
 an overload set's, a generic's or an operator's argument is checked before its
 callee is chosen. Neither reaches the branches of an `if` or a block passed as
 such an argument, whose literals keep the `i32` default; generation refuses one
@@ -171,11 +173,13 @@ for anything else.
    a named constant holding one, or a char any other way made, is a `char`. An
    unsuffixed integer literal is no `char` either (`litAdoptNumberType` leaves
    it, as it leaves `bool`).
-2. **Target is `bool`**: look for an `isTrue` method on the source type.
+2. **Target is `bool`**: look for an `isTrue` method on the source type, or,
+   for a variant's value, its enum's (Option's and Result's take the whole enum).
    This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
-   the target is any number type: `ConvSubtype`. Deliberately not a subtype
+   the target is any number type, or **an untyped float literal** (`FLitTag` with
+   `FlagUnkType`) and the target is a float type: `ConvSubtype`. Deliberately not a subtype
    check — a literal goes wherever the author wrote it. `iexpCoerce` retypes
    such a literal before it asks, so this answers only the callers that ask
    without coercing: overload resolution, struct field matching and the branch
@@ -192,7 +196,7 @@ type is interned and shared and cannot hold a lifetime — that is what keeps a
 `&<Trait` or a widening to a base trait's reference from reading as global.
 
 A `&uni` reference held in a place (`borrowUniReborrows`: a single borrowed
-reference or a borrowed slice, not a virtual reference), wanted as a borrowed
+reference, a borrowed slice or a borrowed virtual reference `&<uni`), wanted as a borrowed
 reference of its kind, whatever the permission (`&`, `&imm`, `&mut`, `&mut1`,
 `&opaq`, `&uni`), is an `EqMatch`, and handed over as it is it would be the
 reference itself, moved if its permission is `uni`. `iexpCoerce` rewrites it
@@ -201,7 +205,7 @@ the target's permission, and the lifetime of a borrow of `*p` from
 `iexpGetLvalInfo`, as `borrowTypeCheck` gives a written one; for a slice an
 `ArrayBorrowTag` of the dereference the slice's `ArrayDerefTag` type gives, which
 generation hands on as the slice itself), a fresh and shorter loan, recovered
-after the borrow's last use (`refperm.html`, "Borrowed reference recovery").
+after the borrow's last use (`mem-permissions.html#recovery`, "Getting a permission back").
 Every coercion site gets it: an argument and a method's receiver
 (`fnCallFinalizeArgs`), a declaration or an assignment, a branch's value, a
 return. A local with no declared type, whose initializer is such a reference,
@@ -213,7 +217,7 @@ method's `self` is, so `s.len()` borrows from a `&uni` slice `s` and does not
 move it.
 
 An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
-move-typed owner, a `So` or a `Rc` still `uni`, held in a place), wanted as a
+move-typed owner, a `Uni` or a `Rc` still `uni`, held in a place), wanted as a
 borrowed reference that may not be shared (`&uni`, `&mut1`), is a
 `CastSubtype`, and a recast to a move type would move the owner into a borrow
 that ends nothing. `iexpCoerce` rewrites it to the borrow `&uni *o`
@@ -223,33 +227,59 @@ where the wanted type is an enrichment's. An owner wanted as a `&` or `&mut` is
 left the recast flow analysis reads as a borrow (`pwOwnedLent`). A temporary
 owner is not a place, and is not rewritten.
 
-An owning virtual reference (`So[Trait]`) wanted as a borrowed one (`&<mut
+An owning virtual reference (`Uni[Trait]`) wanted as a borrowed one (`&<mut
 Trait`, `&<Trait`) is the same recast, read as the same borrow. A virtual
 dispatch's receiver is the one argument no coercion reaches — the selected
 method's `self` is a plain reference to the trait, which a virtual reference
 does not match — so `fnCallFinalizeArgs` first recasts an owning receiver to
 the borrowed virtual reference `&<perm Trait`, `perm` the method's own for
 `self` (`fnCallLendVirtOwner`); left alone, the owner was passed as itself and
-moved. Nothing builds `&uni *o` for a virtual reference, which may not be
-dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self &uni`
-receiver, which is not recast) still moves.
+moved. A virtual reference may not be dereferenced in source, but the compiler
+builds the borrow `&perm *v` anyway (`borrowDerefOf`, typed `VirtRefTag`, markers
+kept; generation copies the (data, vtable) pair, forming no object place), so flow
+sees a borrow of `*v`, as for any reference: an owner wanted as a `&<uni` (a
+parameter, a `let`, or a `self: &uni` receiver) is lent by it (`borrowOwnerLendsUni`
+accepts a `VirtRefTag` owner), and a `&<uni` held in a place, wanted as a `&<uni` or
+dispatched through, is reborrowed (`borrowUniReborrows`, and `fnCallLendVirtOwner`
+for the receiver, with the permission `self` declares), so a second call is no use
+after a move (Bug 19). The written spelling `&uni *v` is still refused (1031).
 
-`fnSigMatches` is the one matcher whose variance is easy to get backwards:
-**parameters are contravariant** (it flips `to` and `from`), **the return type is
-covariant**, and the overall verdict is the most expensive of all the parts.
-Lifetimes named on the two signatures match only by agreeing
-(`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
-so `from` must promise exactly that. The same agreement is part of
-`fnSigEqual`, so two signatures that promise differently are two types
-(spelled apart by `lifeSigSpell`). A module's or a struct's method meets a
-trait's requirement (`fnSigVrefEqual`) where it promises at least what the
+**One rule, spelled once, for a callable meeting a signature** (`fnSigMeetKind`):
+a function reference's type (`fnSigMatches`), a callable made of a plain function
+(`&<fn`, `refvirtMatchesRef`), an owner `Uni[fn(sig)]` (`typelit.c`), a generic's
+`fn(sig)` constraint (`genericSigMeets`), a module meeting a module trait
+(`modtrait.c`) and a method meeting a trait's (`fnSigVrefMeets`) all ask it, and
+the variance is easy to get backwards:
+**parameters are contravariant** (`itypeMatches` is asked from the implementation's
+to the requirement's), **the return type is covariant**, and the verdict is the
+most expensive of all the parts. A part that is a `CastSubtype` must also be one
+layout (`fnSigRecastSameLayout`): a call through the requirement passes and reads
+the value as the requirement has it, so a reference or an enrichment and its base
+recasts, and a variant held by value for its enum (or the reverse), or an array
+of them, does not: it would be read as another value, so it does not meet, and the
+mismatch is `ErrorFnRefByValue` on every route (`fnSigLayoutDiff` finds the
+position, `fnSigLayoutSpell` words it; each route puts it in its own message),
+naming the position. A conversion (`ConvSubtype`: a wider number, a value made an
+`Option`, a reference made a virtual one) never meets. The calling convention each
+is marked for must be the same (`ccall`), except for a method's. The lifetimes
+named on the two signatures meet as a method's do (`lifeSigMeets`, below), on
+every route: a plain function reference once demanded that they agree
+exactly (`lifeSigsAgree`), so a function whose result holds fewer borrows than
+the type says was refused where the same function standing as a trait's method
+was not. Two signatures that promise differently are still two types
+(`fnSigEqual` includes `lifeSigsAgree`, spelled apart by `lifeSigSpell`).
+A module's or a struct's method meets a
+trait's requirement (`fnSigVrefEqual`, or `fnSigVrefMeets` where its types are
+a recast's difference from the requirement's: nodes/struct.md, "A method meets a
+requirement as a subtype"; every other route above asks the same test,
+`fnSigMeets`) where it promises at least what the
 requirement does (`lifeSigMeets`), digit by digit of the same promises: its
 result, and what it may store through a writable parameter, holds no part
 the requirement's may not; a parameter is `'static` only where the
 requirement's is; a struct's slots are named apart wherever the requirement's
 are. A parameter is stored through only where another parameter could lend
-something to store, so a lone `self &mut` is not (`lifeSigPromises`): a
-cursor's `next(self &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
+something to store, so a lone `self: &mut` is not (`lifeSigPromises`): a
+cursor's `next(self: &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
 names no lifetime and whose `Self` holds no borrow. So a method may return `'static`, or a longer lifetime, where the trait's
 result may hold its receiver, and take any borrow where the trait asks for a
 `'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
@@ -267,7 +297,7 @@ with every lifetime erased from them (`lifeErased`), a function type's
 promises excepted, and every band an argument inferred from a borrow carries
 (`RefNode.scope`), and the instance's use keeps the arguments as written for
 the lifetimes they name (`NameUseNode.lifeuse`). An invariant lifetime is the
-exception, kept and named by its place ("Invariant lifetimes: brands").
+exception, kept and named by its first occurrence ("Invariant lifetimes: brands").
 
 ## 6. Unifying branches
 
@@ -381,7 +411,7 @@ Three adjustments are worth knowing, two because they are asymmetric on purpose:
   `derefInject` and selects again. It runs *only* when no candidate matched at
   all, so a genuine ambiguity is still reported as one.
 - **The borrow retry.** A receiver held as a value — never a pointer — reaches a
-  method wanting `self &` or `self &mut` by being borrowed, the weakest
+  method wanting `self: &` or `self: &mut` by being borrowed, the weakest
   permission a candidate accepts first (`fnCallBorrowReceiver`,
   [fncall](../nodes/fncall.md)). It runs after the deref retry, so a by-value
   candidate is always preferred, and it borrows through `borrowMutRef`, so the
@@ -404,10 +434,11 @@ Two syntaxes and a pattern's binding, all `CastNode`:
 | --- | --- | --- |
 | `x as T` | `newRecastNode` | reinterpret the bits |
 | `x is T` | `newIsNode` | is this the runtime type? |
-| `case imm c &Circle` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
+| `case let &Circle(c)` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked, and never joins pointer-sized `usize` or `isize` to a
+which is size-checked in generation, and held to a coercion to it (a struct, an
+enum or a `char` target is `ErrorAsTarget` otherwise), and never joins pointer-sized `usize` or `isize` to a
 fixed-width number, whose widths agree on some targets only
 (`ErrorPtrSizedAs`, [cast](../nodes/cast.md)). **Convert**, a bound pattern's, permits reference to
 reference, virtual reference to reference, `SameSize` struct to struct, and a
@@ -470,15 +501,19 @@ there are exactly four helpers — it is a two-by-two:
 | lval | rval | Helper |
 | --- | --- | --- |
 | single | single | `assignSingleCheck` |
-| tuple | tuple | `assignParaCheck` — parallel assignment, element by element |
-| tuple | single | `assignMultRetCheck` — a call returning several values |
-| single | tuple | `assignToOneCheck` |
+| tuple | tuple | `assignParaCheck` — parallel assignment, element by element; as many values as targets |
+| tuple | single | `assignMultRetCheck` — a call returning several values; as many as targets |
+| single | tuple | `assignToOneCheck` — refused, `ErrorOneTarget` |
 
-The single-by-tuple cell splits once more, on the lval's type rather than on a
-tag: an lval whose type resolves to a tuple takes the value tuple whole
-(`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
+Each target takes exactly one value, and a count that is not the targets' is
+`ErrorTargetCount`. The single-by-tuple cell splits once more, on the lval's type
+rather than on a tag: an lval whose type resolves to a tuple takes the value tuple
+whole (`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
 initial value is. The parser cannot tell `p = 5, 6` for a tuple-typed `p` from
-`x = 7, 8`, which stores `7`, so flow and generation ask the same function.
+`x = 7, 8`, which is refused, so flow and generation ask the same function. A `_`
+target is checked by nothing: it takes the type of its value (`assignAnonTypes`).
+The names of a `let a, b = values;` declared with no type are given their types
+first (`assignDestructInfer`), each the type of the value it takes.
 
 A value tuple is typed from its own values (`vtupleTypeCheck` takes no expected
 type), so where a tuple type is wanted `iexpCoerce`'s `NoMatch` arm coerces it
@@ -489,6 +524,14 @@ must agree. A return's value tuple was already coerced element by element, by
 
 The assignment's own type is the rval's type, so an assignment is usable as an
 expression.
+
+A field list, `x.(a, b)`, gives a tuple a value of its own: the named fields of a
+struct, or the numbered elements of a tuple, as a value tuple of their types, or the
+field itself for one name. `destructTypeCheck` lowers it to field accesses, checked
+as `x.a` is, where nothing moves, and keeps it as a `DestructNode` where the value is
+consumed (a move type, or a value no place keeps); [destruct](../nodes/destruct.md)
+says which and why. The tuple it gives is one an assignment's tuple-by-single cell
+takes apart, `let a, b = x.(p, q);`, through `assignMultRetCheck` like a call's.
 
 ## 11. Invariant lifetimes: brands
 
@@ -507,7 +550,7 @@ A raw pointer carries none: it is what a region makes its keys from.
 **Comparison.** Every value meeting a type meets its brands:
 `iexpCoerce` ends in `lifeBrandsCoerce`, as do `iexpMultiInfer` (branches
 joining), `iexpSameType` (a swap), a reinterpret cast neither of whose
-sides is a raw pointer, and a pattern's conversion (`case imm s Some[&'=a T]`
+sides is a raw pointer, and a pattern's conversion (`case let Some[&'=a T](s)`
 names the matched value's brands, no others). Outside a binding, a parameter's name is compared by
 identity (or a `where '=a == '=b` pair), and a name only the result writes is
 bound to the first brand it meets, for the whole function (`lifeBrandAgree`):
@@ -523,7 +566,7 @@ reference's type promises what it does.
 (`lifeBindBegin`) while it coerces the arguments: each name is bound at its
 first meeting and compared after, so an arena and another arena's key are
 refused at the key (`ErrorBrand`). A static function reached through a use
-naming brands (`List[&'=a T].empty()`) is bound to them first
+naming brands (`List[&'=a T]()`) is bound to them first
 (`fnCallBrandPathAdd`, `lifeBindUse`), and so is a generic function's instance
 to the type arguments it was called with (`lifeBindArgs`, from the instance
 use's `lifeuse`). The callee's `where '=a == '=b` pairs are then held to one
@@ -560,15 +603,21 @@ demand its target") — and at a call's result in `lifeKeyBorrow`).
 
 **Generics.** An instance is made with ordinary lifetimes erased, but an
 invariant one kept (`lifeErased`), then every brand its arguments carry
-renamed by its place (`lifeCanonBrands`): `List[&'=a Node['=a]]` is
-`List[&'=1 Node['=2]]`, one instance per shape, assuming no two places alike,
-and the memo compares those names too (`lifeBrandsEqual`). A call through it
-binds each place afresh. A generic's type arguments carrying brands are kept
+renamed by its first occurrence (`lifeCanonBrands`): `List[&'=a Node['=a]]` is
+`List[&'=1 Node['=1]]` and `List[&'=a Node['=b]]` is `List[&'=1 Node['=2]]`,
+one instance per pattern of equal brands (not per brand), and the memo
+compares those names too (`lifeBrandsEqual`). A call through it binds each
+place afresh. A trait method's requirement is met by an instance at that
+pattern: its receiver is the implementor, whatever the trait spells it as,
+so `lifeSigBrandsAgree` reads the requirement's first parameter as the
+implementation's when the two are a method and its requirement
+(`lifeSigMeets`, `lifeSigsAgree` given `recv`); a struct declaring a brand, or
+holding brand-carrying arguments, can then declare `is Trait`. A generic's type arguments carrying brands are kept
 on the instance's use (`lifeUseInstance`), a function's as well as a type's.
 
 **Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,
 a `&mut` borrow of a place through an index, either side of a swap, and a
-`self &mut` method whose receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
+`self: &mut` method whose receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
 mutable borrow, as Rust's `IndexMut` is chosen for a place written to, for
 every index in the chain of field and index steps the place is, whatever its
 depth: `assignTypeCheck`, `swapTypeCheck` (each side), an `FlagLvalOp` call and `borrowTypeCheck` mark the

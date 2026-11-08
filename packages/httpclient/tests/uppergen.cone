@@ -1,0 +1,100 @@
+// A dead client's late timer is not claimed by a later client that took the
+// same driver number.
+//
+// A client's deadline (and its cancel group) is watched by a timer on the
+// loop, submitted with its driver's upperToken. A driver's number is handed
+// out round-robin from 1024, so once 1023 others have come and gone the next
+// driver has a dead driver's number again; and the dead client's timer is
+// still the loop's, to fire at its deadline. That completion carries the dead
+// driver's token. The new client, whose driver has the same number, must not
+// claim it: it was never one of the new client's own timers, and a client
+// that says true of a completion that is not its own hides it from whoever
+// it was meant for.
+//
+// Checked: that the new client's driver took the dead one's number (the
+// probe is sound: its own timer carries the same fetch index and is claimed),
+// that the dead client's timer went unclaimed by it, and that its own timer
+// was claimed and ended its fetch TimedOut once.
+
+mod uppergen;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Completion;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+const tokOld = 100u64;
+const tokNew = 200u64;
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  let t0 = Instant.now();
+
+  // The old client asks for a fetch with a deadline, and dies with its timer
+  // on the loop. It is never pumped, so it opens no connection
+  {
+    var old = Client.make(Config.make());
+    var req = Request.get("http://127.0.0.1:1/old");
+    req.deadline = t0 + Duration.fromMillis(100i64);
+    let id = old.send(&mut lp, req, Sink.Here(tokOld));
+    require(old.isLive(id), "the old client's fetch waits");
+  }
+
+  // 1023 more drivers come and go: the next number is the old client's again
+  {
+    var i = 0u32;
+    while i < 1023u32 {
+      let other = httpconn.Driver.make(httpconn.Config.make());
+      i = i + 1u32;
+    }
+  }
+  var nw = Client.make(Config.make());
+  var req2 = Request.get("http://127.0.0.1:1/new");
+  req2.deadline = t0 + Duration.fromMillis(400i64);
+  let id2 = nw.send(&mut lp, req2, Sink.Here(tokNew));
+  require(nw.isLive(id2), "the new client's fetch waits");
+
+  // The loop's completions, each offered to the new client alone: the old
+  // client's timer first (100 ms), then its own (400 ms)
+  var offered = 0u64;
+  var claimed = 0u64;
+  var firstClaimed = false;
+  var comps = List[Completion]();
+  let giveUp = Instant.now() + Duration.fromSeconds(3i64);
+  while offered < 2u64 && Instant.now() < giveUp {
+    lp.poll(giveUp, &mut comps);
+    var k = 0usize;
+    while k < comps.len() {
+      let c = &mut comps[k];
+      k = k + 1usize;
+      let mine = nw.complete(&mut lp, c);
+      if offered == 0u64 {firstClaimed = mine;}
+      offered = offered + 1u64;
+      if mine {claimed = claimed + 1u64;}
+    }
+    comps.clear();
+  }
+  requireUInt(offered, 2u64, "both timers fired");
+  expect(!firstClaimed, "the new client did not claim the dead client's timer");
+  expectUInt(claimed, 1u64, "the new client claimed its own timer alone");
+
+  var out = List[Event]();
+  nw.pump(&mut lp, &uni out);
+  var timedOut = 0u64;
+  var other = 0u64;
+  var k = 0usize;
+  while k < out.len() {
+    let e = &mut out[k];
+    k = k + 1usize;
+    if e.token == tokNew && e.kind == EventKind.TimedOut {timedOut = timedOut + 1u64;}
+    else {other = other + 1u64;}
+  }
+  expectUInt(timedOut, 1u64, "the new client's fetch ended TimedOut at its own deadline");
+  expectUInt(other, 0u64, "no other event");
+  out.clear();
+  done()
+}

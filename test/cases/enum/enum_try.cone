@@ -1,0 +1,249 @@
+// 'try' blocks [Jon 26 Oct, error-handling issue 3]: a '?' inside exits the block,
+// not the function, and the block's value is the first failure or its last value
+// wrapped ('Ok', 'Some'). Its type: all '?'s on Options give an Option; all on
+// Results with one error type give that Result; otherwise the type it is wanted as
+// (a 'let' with a type, an argument, a 'return'), each '?' converting its error as a
+// function's '?' does (an 'overload from', or the one variant holding it). 'return',
+// 'break' and 'continue' inside still act on the function and its loops: only '?' is
+// captured, by the innermost try block of the function it is written in (a closure's
+// '?' is the closure's). enum_typecheck_try holds the refusals.
+//
+// The finalizer prints its number, so the output asserts what a failing try block
+// drops as it is left; 'noisy' prints, so it asserts that what follows a failure
+// does not run.
+
+mod enum_try;
+
+import stdio use *;
+
+struct Fin {
+  pub id: i32;
+  fn final(self: &uni) {
+    printStr("fin");
+    printInt(i64.from(self.id));
+    printStr(" ");
+  }
+}
+
+struct IoErr { pub code: i32; }
+struct ParseErr { pub line: i32; }
+
+// IoErr is wrapped by its one variant, ParseErr converted by 'from'
+enum ConfigError {
+  Io(IoErr);
+  Parse(ParseErr);
+  fn fromParse overload from(e: ParseErr) ConfigError { Parse(e) }
+}
+
+fn num(n: i64) { printInt(n); printStr(" "); }
+fn end() { printStr("|\n"); }
+
+fn readNum(n: i32) Result[i32, IoErr] {
+  if n < 0 { return Err(IoErr(n)); }
+  Ok(n * 2)
+}
+fn parseNum(n: i32) Result[i32, ParseErr] {
+  if n > 100 { return Err(ParseErr(n)); }
+  Ok(n + 1)
+}
+fn opt(n: i32) Option[i32] {
+  if n < 0 { None } else { Some(n) }
+}
+fn noisy(n: i32) Result[i32, IoErr] {
+  printStr("noisy");
+  printInt(i64.from(n));
+  printStr(" ");
+  readNum(n)
+}
+fn pick(n: u32) Result[u64, u32] {
+  if n == 1u32 { Ok(5u64) } else { Err(13u32) }
+}
+
+fn showR(r: Result[i32, IoErr]) {
+  match r {
+    case let Ok(v) { printStr("ok "); num(i64.from(v)); }
+    case let Err(e) { printStr("err "); num(i64.from(e.code)); }
+  }
+}
+fn showO(o: Option[i32]) {
+  match o {
+    case let Some(v) { printStr("some "); num(i64.from(v)); }
+    case is None { printStr("none "); }
+  }
+}
+fn showC(r: Result[i32, ConfigError]) {
+  match r {
+    case let Ok(v) { printStr("ok "); num(i64.from(v)); }
+    case let Err(ce) {
+      match ce {
+        case let Io(e) { printStr("io "); num(i64.from(e.code)); }
+        case let Parse(e) { printStr("parse "); num(i64.from(e.line)); }
+      }
+    }
+  }
+}
+
+// 'return try {...}' is wanted as what the function returns
+fn viaReturn(n: i32) Result[i32, IoErr] {
+  return try { readNum(n)? + 1 };
+}
+
+// A '?' outside the try block still returns from the function
+fn outside(n: i32) Option[i32] {
+  let inner = try { opt(n)? + 1 };
+  let v = opt(n - 10)?;
+  match inner { case let Some(i) { Some(i + v) } case is None { None } }
+}
+
+// A 'return' in a try block returns from the function
+fn early(n: i32) i32 {
+  let r = try {
+    if n == 0 { return 99; }
+    readNum(n)?
+  };
+  match r { case let Ok(v) { v } case let Err(e) { e.code } }
+}
+
+// A closure's '?' returns from the closure, though the closure is in a try block
+fn closureIn(n: i32) Option[i32] {
+  try {
+    let f = fn (k: i32) Option[i32] { let v = opt(k)?; Some(v + 100) };
+    showO(f(n));
+    opt(n + 1)?
+  }
+}
+
+// A body ending in ';' succeeds with nil: Result[void, u32]
+fn steps(second: u32) Result[void, u32] {
+  try { pick(1u32)?; pick(second)?; }
+}
+
+// A generator's '?' in a try block leaves the block, not the generator
+fn doubled(xs: Option[i64]) yields i64 {
+  let t = try { xs? * 2 };
+  match t { case let Some(x) { yield x; } case is None { yield -1; } }
+}
+
+fn main() {
+  // Every '?' a Result with one error type, or every one an Option: read off the block
+  showR(try { readNum(1)? + readNum(2)? });
+  let r = try { readNum(-3)? + readNum(2)? };
+  showR(r);
+  let o = try { opt(3)? * opt(4)? };
+  showO(o);
+  showO(try { opt(-1)? * opt(4)? });
+  end();
+
+  // Differing error types: the type given, each '?' converting (auto-wrap, 'from')
+  let c: Result[i32, ConfigError] = try { parseNum(readNum(5)?)? };
+  showC(c);
+  let c2: Result[i32, ConfigError] = try { parseNum(readNum(60)?)? };
+  showC(c2);
+  let c3: Result[i32, ConfigError] = try { parseNum(readNum(-7)?)? };
+  showC(c3);
+  end();
+
+  // Evaluation order: what follows the first failure does not run
+  showR(try { noisy(-1)? + noisy(2)? });
+  showR(try { noisy(1)? + noisy(2)? });
+  end();
+
+  // The type from an argument and a return
+  showR(try { readNum(4)? });
+  showR(viaReturn(3));
+  showR(viaReturn(-3));
+  end();
+
+  // No '?': the value is wrapped
+  let w: Result[i32, IoErr] = try { 7 };
+  showR(w);
+  showO(try { 8 });
+  end();
+
+  // Nesting: the innermost try block takes its '?'
+  let n = try {
+    let inner = try { opt(-1)? };
+    showO(inner);
+    opt(5)? + 1
+  };
+  showO(n);
+  showO(outside(15));
+  showO(outside(5));
+  end();
+
+  // 'return' leaves the function
+  num(i64.from(early(0)));
+  num(i64.from(early(2)));
+  num(i64.from(early(-4)));
+  end();
+
+  // 'break' and 'continue' in a try block act on the loop around it
+  var i = 0;
+  var total = 0;
+  while i < 10 {
+    i++;
+    let s = try {
+      if i == 3 { continue; }
+      if i == 6 { break; }
+      readNum(i)?
+    };
+    match s { case let Ok(v) { total = total + v; } case is Err { } }
+  }
+  num(i64.from(total));
+  // ... and a labelled one on the loop it names
+  var k = 0;
+  'outer: while k < 5 {
+    k++;
+    let t = try { if k == 2 { break 'outer; } pick(1u32)? };
+    _ = t;
+  }
+  num(i64.from(k));
+  // A loop's 'break' value inside a try block is the loop's
+  let lv = try {
+    var m = 0;
+    let found = while { m++; if m == 4 { break m * 10; } };
+    opt(found)?
+  };
+  showO(lv);
+  // A try block in a loop in a try block: the inner one takes its '?', the
+  // 'continue' is the loop's
+  let outer = try {
+    var acc = 0;
+    var j = 0;
+    while j < 4 {
+      j++;
+      let step = try { opt(j - 2)? };
+      match step { case let Some(v) { acc = acc + v; } case is None { continue; } }
+    }
+    opt(acc)?
+  };
+  showO(outer);
+  end();
+
+  // A closure's own '?'
+  showO(closureIn(3));
+  showO(closureIn(-5));
+  end();
+
+  // Leaving by a failure drops what the block made so far, and no more
+  let d = try {
+    let a = Fin(1);
+    let v = opt(-1)?;
+    let b = Fin(2);
+    v
+  };
+  showO(d);
+  let d2 = try {
+    let a = Fin(3);
+    opt(2)?
+  };
+  showO(d2);
+  end();
+
+  // A void success, and a generator
+  match steps(1u32) { case is Ok { printStr("steps ok "); } case let Err(e) { num(i64.from(e)); } }
+  match steps(2u32) { case is Ok { printStr("steps ok "); } case let Err(e) { num(i64.from(e)); } }
+  each x in doubled(Some(4)) { num(x); }
+  each x in doubled(None) { num(x); }
+  end();
+}

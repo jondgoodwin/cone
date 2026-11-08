@@ -1,0 +1,176 @@
+// The whole loop on SDL's disk audio driver (no device, no sound): Kokoro says a question, which is laid in a quiet noise
+// bed as the "microphone" file; voicechat.run listens (Parakeet hears it), Qwen3-1.7B answers greedily (thinking off) and
+// Kokoro says the answer into the "speaker" file; then a second Parakeet hears the answer in that file. The checks: the
+// run ends cleanly, the answer's sound begins after the question has ended and is a plausible length, and Parakeet
+// hears the answer's words (the round trip Kokoro, Parakeet, Qwen, Kokoro, Parakeet). At 9 s the microphone holds a
+// second voice saying "Goodbye.": the run must end by itself then (well before its 40 s limit), having said "Goodbye."
+// into the speaker file, which the second Parakeet hears too. What the run prints (what it heard, what it answered) is
+// this test's expected output. Needs the 1.7B in C:\src\llm-models, Parakeet's and
+// Kokoro's converted files in C:\src\speech-models and a GPU; without them it skips. About 20 seconds, in real time,
+// because the disk device runs at the speed of sound.
+//
+// The steps are functions of their own because the test is built without optimisation, where every local lives in
+// its frame for the whole call, and a frame holding Kokoro's engine and Parakeet's as well as the run's overflows the
+// stack.
+mod pipelinetest;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import fs;
+import time use Instant;
+import gpu use *;
+import texttospeech;
+import speechtotext;
+import voiceaudio;
+import voicechat;
+
+const QWEN = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+const MODELS = "C:/src/speech-models/";
+const IN_FILE = "voicechat-test-in.raw";
+const OUT_FILE = "voicechat-test-out.raw";
+
+fn have(p: &str) bool { fs.exists(&Path.from(p)) }
+
+fn modelPath(name: &str) String {
+  var s = String.from(MODELS);
+  s <- name;
+  s
+}
+
+// Kokoro says the question; it is laid at 1.0 s in a quiet room at the disk device's rate and written as the
+// microphone's file. Answers the sample index the question ends at, or 0.
+fn makeMicrophone(device: &mut Device) usize {
+  let kokoro = modelPath("kokoro");
+  var speaker: texttospeech.Speaker = match texttospeech.Speaker.open(device, kokoro.view(), false) {
+    case var Ok(s) { s }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  let voice: texttospeech.Voice = match texttospeech.Voice.load(kokoro.view(), "am_michael") {
+    case var Ok(v) { v }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  speaker.seed(5u64);
+  let said = match speaker.speak(device, "What is the capital of France?", &voice, 1.0f) {
+    case var Ok(s) { s }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  let bye = match speaker.speak(device, "Goodbye.", &voice, 1.0f) {
+    case var Ok(s) { s }
+    case let Err(m) { require(false, (String() <- m).view()); return 0usize; }
+  };
+  let rate = voiceaudio.DISK_RATE;
+  let atRate = voiceaudio.resampleLinear(said.view(), 24000u32, rate);
+  let byeAtRate = voiceaudio.resampleLinear(bye.view(), 24000u32, rate);
+  var mic = voiceaudio.noiseBed(18000u32, rate, 0.002f, 3u32);
+  voiceaudio.addInto(&mut mic, usize.from(rate), atRate.view());
+  voiceaudio.addInto(&mut mic, usize.from(rate) * 9usize, byeAtRate.view());
+  match voiceaudio.writeRawF32(&Path.from(IN_FILE), mic.view()) {
+    case is Ok {}
+    case let Err(e) { require(false, "the microphone file is written"); }
+  }
+  usize.from(rate) + atRate.len()
+}
+
+// Parakeet hears 16 kHz samples
+fn hear(device: &mut Device, samples: &Array[f32]) String {
+  let stt = modelPath("parakeet-tdt-0.6b-v2.f16.safetensors");
+  let vocab = modelPath("parakeet-tdt-0.6b-v2.vocab.txt");
+  var parakeet: speechtotext.Parakeet = match speechtotext.Parakeet.open(device, &Path.from(stt.view()), &Path.from(vocab.view())) {
+    case var Ok(p) { p }
+    case let Err(m) { require(false, (String() <- m).view()); return String(); }
+  };
+  match parakeet.transcribe(device, samples) {
+    case let Ok(t) { t.text.clone() }
+    case let Err(m) { require(false, (String() <- m).view()); String() }
+  }
+}
+
+// Parakeet hears the sound in 'x' (at 'rate') between samples 'first' and 'last', with a third of a second either side
+// (Parakeet normalises over what it is given, and seconds of digital silence around the speech are not what it was made for)
+fn hearSound(device: &mut Device, x: &Array[f32], first: usize, last: usize, rate: u32) String {
+  let margin = usize.from(rate) / 3usize;
+  var from = 0usize;
+  if first > margin { from = first - margin; }
+  var to = last + margin;
+  if to > x.len { to = x.len; }
+  var piece = List[f32]();
+  var k = from;
+  while k < to { piece.push(x[k]); k = k + 1usize; }
+  let at16 = voiceaudio.resampleLinear(piece.view(), rate, 16000u32);
+  hear(device, at16.view())
+}
+
+// The conversation; answers run's exit status
+fn converse(device: &mut Device) i32 {
+  var o = voicechat.VoiceOptions.defaults(QWEN);
+  o.audio = String.from("disk");
+  o.inFile = String.from(IN_FILE);
+  o.outFile = String.from(OUT_FILE);
+  o.temperature = 0.0;
+  o.ctx = 2048usize;
+  o.runSeconds = 40u32;
+  o.echoTimings = false;
+  voicechat.run(device, &o)
+}
+
+fn main() i32 {
+  let stt = modelPath("parakeet-tdt-0.6b-v2.f16.safetensors");
+  let vocab = modelPath("parakeet-tdt-0.6b-v2.vocab.txt");
+  let weights = modelPath("kokoro/kokoro-v1_0.safetensors");
+  if !have(QWEN) || !have(stt.view()) || !have(vocab.view()) || !have(weights.view()) {
+    return skip("the models in C:/src/llm-models and C:/src/speech-models are absent");
+  }
+  var instance = Instance.createHeadless("voicechattest", false);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "a GPU with Vulkan 1.3");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "the GPU opens for compute");
+
+  let questionEnds = makeMicrophone(&mut device);
+  require(questionEnds > 0usize, "the question is made");
+  let began = Instant.now();
+  let status = converse(&mut device);
+  let lasted = Instant.now().since(began).secondsF64();
+  expectInt(i64.from(status), 0i64, "the conversation ends cleanly");
+  // the run's limit is 40 s of listening; "Goodbye." at 9 s ends it a few seconds later (the end-silence, Parakeet, Kokoro,
+  // the speaker's queue), and loading the models took 5 to 10 s before
+  expect(lasted < 28.0, "the spoken goodbye ended the run before its time limit");
+
+  // the speaker file: the answer's sound begins after the question ended; the goodbye's is after 9.3 s
+  var heardAgain = String();
+  var heardBye = String();
+  let rate = voiceaudio.DISK_RATE;
+  match voiceaudio.readRawF32(&Path.from(OUT_FILE)) {
+    case let Ok(raw) {
+      let left = voiceaudio.channel(raw.view(), 2usize, 0usize);
+      let split = usize.from(rate) * 93usize / 10usize;
+      require(left.len() > split, "the speaker file runs past 9.3 s");
+      var head = List[f32]();
+      var tail = List[f32]();
+      var k = 0usize;
+      while k < left.len() {
+        if k < split { head.push(*left[k]); } else { tail.push(*left[k]); }
+        k = k + 1usize;
+      }
+      let first = voiceaudio.firstAbove(head.view(), 0.01f);
+      let last = voiceaudio.endAbove(head.view(), 0.01f);
+      expect(first < head.len(), "the speaker file holds sound");
+      expect(first > questionEnds, "the answer begins after the question ends");
+      let seconds = f64.from(last - first) / f64.from(rate);
+      expect(seconds > 1.0 && seconds < 5.0, "the answer is between one and five seconds long");
+      heardAgain = hearSound(&mut device, head.view(), first, last, rate);
+      let byeFirst = voiceaudio.firstAbove(tail.view(), 0.01f);
+      let byeLast = voiceaudio.endAbove(tail.view(), 0.01f);
+      expect(byeFirst < tail.len(), "the speaker file holds a goodbye after 9.3 s");
+      heardBye = hearSound(&mut device, tail.view(), byeFirst, byeLast, rate);
+    }
+    case let Err(e) { require(false, "the speaker file is read"); }
+  }
+  expectStr(heardAgain.view(), "The capital of France is Paris.", "Parakeet hears the answer");
+  expectStr(heardBye.view(), "Goodbye.", "Parakeet hears the goodbye");
+  _ = fs.removeFile(&Path.from(IN_FILE));
+  _ = fs.removeFile(&Path.from(OUT_FILE));
+  done()
+}

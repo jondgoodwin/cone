@@ -1,0 +1,41 @@
+// The facts of the build, each read from where the compiler knows it: '#os' and
+// '#arch' from the target triple, '#debug' from the build's kind, '#defined' and
+// '#define' from conec's '-D'. Each run names a triple and '-D's the facts it
+// expects; the expectation is a comparison, so a fact that holds the wrong
+// member, or holds two, calls 'mismatched', which is declared 'extern' and defined
+// nowhere. Both sides of every '#if' are not generated, so only the call the
+// facts choose reaches the code (the checks in cases.toml).
+//
+// The OS is one of .windows, .linux, .macos, .wasm and .gpu, and a WebAssembly or
+// SPIR-V target is that and not whatever else its triple says.
+
+mod meta_if_facts;
+
+extern fn matchedOs();
+extern fn matchedArch();
+extern fn matchedDebug();
+extern fn matchedDefine();
+extern fn mismatched();
+
+pub fn check() {
+  #if #os == .windows && #defined("EXPECT_WINDOWS") { matchedOs(); }
+  #elif #os == .linux && #defined("EXPECT_LINUX") { matchedOs(); }
+  #elif #os == .macos && #defined("EXPECT_MACOS") { matchedOs(); }
+  #elif #os == .wasm && #defined("EXPECT_WASM") { matchedOs(); }
+  #elif #os == .gpu && #defined("EXPECT_GPU") { matchedOs(); }
+  #else { mismatched(); }
+
+  #if #arch == .x64 && #defined("EXPECT_X64") { matchedArch(); }
+  #elif #arch == .wasm32 && #defined("EXPECT_WASM32") { matchedArch(); }
+  #elif #arch == .spirv && #defined("EXPECT_SPIRV") { matchedArch(); }
+  #else { mismatched(); }
+
+  // A comparison of two bools: a debug build is exactly when the run says so
+  #if #debug == #defined("EXPECT_DEBUG") { matchedDebug(); } #else { mismatched(); }
+
+  // A '-D' with a value, and the same name read as a bool
+  #if #define("LEVEL") == 3 && #defined("LEVEL") && #define("UNSET") == 0 && !#defined("UNSET") {
+    matchedDefine();
+  }
+  #else { mismatched(); }
+}

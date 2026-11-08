@@ -3,10 +3,18 @@
 // Stuck's 'count' awaits an operation that drops its envelope unanswered, so
 // 'count' stays parked; when Stuck's last handle goes, Stuck dies, its parked
 // record is dropped, and with it the future's producer's reference, which
-// abandons the future. main waits until all is quiet (actors.waitQuiet), so
-// the future is abandoned before it is handed to Asker, whose 'await' finds
-// it so. (A behaviour parked on the future when it is abandoned is ended
-// quietly instead: concurrency_future_abandoned_parked.)
+// abandons the future. Stuck is made and asked inside 'ask', so its one
+// handle goes when 'ask' returns: passing a handle copies it (one more
+// owner, counted), so a handle passed to a function that drops it would
+// leave the caller's own until the end of the caller's block, after the
+// future is handed over. main then waits until all is quiet
+// (actors.waitQuiet), so the future is abandoned before it is handed to
+// Asker, whose 'await' finds it so. main waits again before its block ends,
+// so that Asker's 'await' runs while anything main still holds is held: were
+// Stuck still alive then, the 'await' would park and the program end quietly
+// every time, not only when Asker happened to run first. (A behaviour parked
+// on the future when it is abandoned is ended quietly instead:
+// concurrency_future_abandoned_parked.)
 
 mod concurrency_future_abandoned;
 
@@ -14,20 +22,20 @@ import stdio use *;
 import actors;
 
 fn never() actors.Awaitable[u64] {
-  actors.Awaitable[u64].make(fn(rp actors.Reply) { });
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) { })
 }
 
 actor Stuck {
-  pub async do count(self) u64 {
-    imm n = await never();
-    n;
+  pub async fn count(self) u64 {
+    let n = await never();
+    n
   }
 }
 
 actor Asker {
-  pub async do collect(self, f actors.Future[u64]) {
+  pub async fn collect(self, f: actors.Future[u64]) {
     printStr("awaiting\n");
-    imm n = await f;
+    let n = await f;
     printStr("never printed\n");
   }
 }
@@ -35,15 +43,17 @@ actor Asker {
 fn main() {
   initAll();
   {
-    imm a = new Asker();
-    imm s = new Stuck();
-    imm f = s.count();
-    gone(s);
+    let a = Asker();
+    let f = ask();
     actors.waitQuiet();
     a.collect(f);
+    actors.waitQuiet();
   }
   finalAll();
 }
 
-// Stuck's last handle goes here
-fn gone(s Stuck) {}
+// Stuck's future of its count: Stuck's one handle goes when this returns
+fn ask() actors.Future[u64] {
+  let s = Stuck();
+  s.count()
+}

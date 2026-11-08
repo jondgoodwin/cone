@@ -13,59 +13,59 @@ import time use Duration, Instant, Clock;
 import netmsg use *;
 
 struct Heard {
-  pub next u64;          // the message due next
-  pub wrong u64;
-  pub lastValue u64;
-  pub values u64;
-  pub backwards u64;
+  pub next: u64;          // the message due next
+  pub wrong: u64;
+  pub lastValue: u64;
+  pub values: u64;
+  pub backwards: u64;
 }
 
-fn numberOf(data &Array[u8]) u64 {
-  mut n = 0u64;
-  mut i = 0usize;
+fn numberOf(data: &Array[u8]) u64 {
+  var n = 0u64;
+  var i = 0usize;
   while i < data.len {
     n = (n << 8u64) | u64.from(data[i]);
     i = i + 1usize;
   }
-  n;
+  n
 }
 
-fn numberBytes(n u64) List[u8] {
-  mut b = List[u8].empty();
+fn numberBytes(n: u64) List[u8] {
+  var b = List[u8]();
   putU32(&mut b, u32.from(n));
-  b;
+  b
 }
 
-fn absorb(evs &mut List[CoreEvent], h &mut Heard) {
+fn absorb(evs: &mut List[CoreEvent], h: &mut Heard) {
   each e in evs.drain() {
     match e {
-      case imm r Reliable {
+      case let Reliable(r) {
         if numberOf(r.data.view()) != h.next {h.wrong = h.wrong + 1u64;}
         h.next = h.next + 1u64;
       }
-      case imm l Latest {
-        imm v = numberOf(l.data.view());
-        if h.values > 0u64 and v <= h.lastValue {h.backwards = h.backwards + 1u64;}
+      case let Latest(l) {
+        let v = numberOf(l.data.view());
+        if h.values > 0u64 && v <= h.lastValue {h.backwards = h.backwards + 1u64;}
         h.lastValue = v;
         h.values = h.values + 1u64;
       }
-      case imm c Closed {}
+      case let Closed(c) {}
     }
   }
 }
 
 fn main() i32 {
-  mut cfg = NetConfig.defaults();
+  var cfg = NetConfig.defaults();
   cfg.goodRate = 1000u32;
   cfg.resendMinMs = 10i64;
-  mut clock = Clock.synth();
-  imm link = new LinkConfig(100u32, 5i64, 3i64, 20u32, 20u32, 8i64);
-  mut p = SimPair.make(cfg, link, link, 77u64, clock.now());
-  mut hb = new Heard(0u64, 0u64, 0u64, 0u64, 0u64);
-  mut ha = new Heard(0u64, 0u64, 0u64, 0u64, 0u64);
-  mut sent = 0u64;
-  mut refused = 0u64;
-  mut ms = 0i64;
+  var clock = Clock.synth();
+  let link = LinkConfig(100u32, 5i64, 3i64, 20u32, 20u32, 8i64);
+  var p = SimPair.make(cfg, link, link, 77u64, clock.now());
+  var hb = Heard(0u64, 0u64, 0u64, 0u64, 0u64);
+  var ha = Heard(0u64, 0u64, 0u64, 0u64, 0u64);
+  var sent = 0u64;
+  var refused = 0u64;
+  var ms = 0i64;
   while ms < 70000i64 {
     clock.advance(Duration.fromMillis(1i64));
     ms = ms + 1i64;
@@ -76,7 +76,7 @@ fn main() i32 {
     absorb(&mut p.eventsA, &mut ha);
   }
   // Let the last of them land
-  mut tail = 0i64;
+  var tail = 0i64;
   while tail < 3000i64 {
     clock.advance(Duration.fromMillis(1i64));
     tail = tail + 1i64;
@@ -94,7 +94,7 @@ fn main() i32 {
   expect(p.b.stats().packetsDuplicate > 500u64, "duplicated packets arrived and were counted, not acted on twice");
   expect(p.a.stats().packetsSent > 66000u64, "more than 65536 packets went each way: the sequence wrapped");
   expectUInt(u64.from(p.a.reliablePending()), 0u64, "nothing left waiting for an acknowledgement");
-  expect(p.a.lossPermille() > 40u32 and p.a.lossPermille() < 200u32, "and the loss measure is near the link's 10%");
-  expect(p.a.isActive() and p.b.isActive(), "still connected");
-  done();
+  expect(p.a.lossPermille() > 40u32 && p.a.lossPermille() < 200u32, "and the loss measure is near the link's 10%");
+  expect(p.a.isActive() && p.b.isActive(), "still connected");
+  done()
 }

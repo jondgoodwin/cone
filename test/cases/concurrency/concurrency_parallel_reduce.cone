@@ -26,8 +26,8 @@
 //   - findFirst: the earliest by POSITION, though a later block finds a match
 //     first (a predicate that is slow for the first block); none found is None; a
 //     match at the first and at the last item; many matches; and
-//     the later blocks are given up early (the number of predicate calls is a
-//     small part of the items when the first item matches)
+//     the later blocks are given up early (when the first item matches, no block
+//     makes more than two looks' worth, 64, of predicate calls after the match)
 //   - a reduction written in an actor's behaviour
 
 mod concurrency_parallel_reduce;
@@ -36,12 +36,12 @@ import stdio use *;
 import collections use *;
 import actors;
 
-fn report(name &str, ok bool) {
+fn report(name: &str, ok: bool) {
   printStr(name);
-  printStr(if ok {": ok\n";} else {": FAILED\n";});
+  printStr(if ok {": ok\n"} else {": FAILED\n"});
 }
 
-fn say(name &str, n i64) {
+fn say(name: &str, n: i64) {
   printStr(name);
   printStr(" ");
   printInt(n);
@@ -49,30 +49,30 @@ fn say(name &str, n i64) {
 }
 
 // A list of 0, 1, 2, ... n - 1
-fn counting(n usize) List[i64] {
-  mut l = new List[i64]();
-  mut i = 0i64;
+fn counting(n: usize) List[i64] {
+  var l = List[i64]();
+  var i = 0i64;
   while i < i64.from(n) {
     l.push(i);
     i = i + 1i64;
   }
-  l;
+  l
 }
 
 // What 0 + 1 + ... + (n - 1) is
-fn tri(n usize) i64 {
-  imm m = i64.from(n);
-  m * (m - 1i64) / 2i64;
+fn tri(n: usize) i64 {
+  let m = i64.from(n);
+  m * (m - 1i64) / 2i64
 }
 
 // ---- sums of the sizes around the blocks' ----
 
 fn sums() {
-  imm sizes = [0usize, 1usize, 2usize, 127usize, 128usize, 129usize, 255usize, 256usize, 257usize,
+  let sizes = [0usize, 1usize, 2usize, 127usize, 128usize, 129usize, 255usize, 256usize, 257usize,
     1000usize, 32768usize, 32769usize, 100000usize];
-  mut bad = 0usize;
-  each n in sizes {
-    imm l = counting(*n);
+  var bad = 0usize;
+  each n in &sizes {
+    let l = counting(*n);
     if l.parallel().sum() != tri(*n) {
       printStr("  wrong sum for ");
       printUInt(u64.from(*n));
@@ -87,82 +87,82 @@ fn sums() {
   say("sum of 100000", counting(100000usize).parallel().sum());
 
   // An array, a slice of it, an iter()
-  imm a = [3i64, 1i64, 4i64, 1i64, 5i64, 9i64, 2i64, 6i64];
+  let a = [3i64, 1i64, 4i64, 1i64, 5i64, 9i64, 2i64, 6i64];
   say("array", a.parallel().sum());
-  imm part &Array[i64] = &a;
+  let part: &Array[i64] = &a;
   say("slice", part.parallel().sum());
   say("iter", a.iter().parallel().sum());
-  mut empty = new List[i64]();
+  var empty = List[i64]();
   say("empty list", empty.parallel().sum());
 
   // Other number types
-  mut u = new List[u32]();
-  mut f = new List[f32]();
-  mut d = new List[f64]();
-  mut i = 0u32;
+  var u = List[u32]();
+  var f = List[f32]();
+  var d = List[f64]();
+  var i = 0u32;
   while i < 1000u32 {
     u.push(i);
     f.push(1.0);
-    d.push(0.5d);
+    d.push(0.5);
     i = i + 1u32;
   }
   say("u32", i64.from(u.parallel().sum()));
   report("f32 (1000 ones)", f.parallel().sum() == 1000.0);
-  report("f64 (1000 halves)", d.parallel().sum() == 500.0d);
+  report("f64 (1000 halves)", d.parallel().sum() == 500.0);
 }
 
 // ---- a float sum is the same bits every run, and a tree fixed by the count ----
 
-fn bitsOf(x f64) u64 {
-  mut c = x;
-  mem.readRaw[u64](&mut c as *f64 as *u64);
+fn bitsOf(x: f64) u64 {
+  var c = x;
+  mem.readRaw[u64](&mut c as *f64 as *u64)
 }
 
 // The reference: the same blocks and the same tree, added in one thread. A block is
 // n / blocks items rounded up, the blocks n / 128 rounded up but at most 256; a
 // block is summed from 0 front to back; and the blocks are joined by halving: the
 // left half's total plus the right half's
-fn blockSum(l &List[f64], lo usize, hi usize) f64 {
-  mut s = 0.0d;
-  mut k = lo;
+fn blockSum(l: &List[f64], lo: usize, hi: usize) f64 {
+  var s = 0.0;
+  var k = lo;
   while k < hi {
     s = s + l[k];
     k = k + 1usize;
   }
-  s;
+  s
 }
 
-fn treeSum(l &List[f64], blk usize, b0 usize, b1 usize) f64 {
+fn treeSum(l: &List[f64], blk: usize, b0: usize, b1: usize) f64 {
   if b1 - b0 == 1usize {
-    imm lo = b0 * blk;
-    imm end = lo + blk;
-    return blockSum(l, lo, if end < l.len() { end; } else { l.len(); });
+    let lo = b0 * blk;
+    let end = lo + blk;
+    return blockSum(l, lo, if end < l.len() { end } else { l.len() });
   }
-  imm mid = b0 + (b1 - b0) / 2usize;
-  treeSum(l, blk, b0, mid) + treeSum(l, blk, mid, b1);
+  let mid = b0 + (b1 - b0) / 2usize;
+  treeSum(l, blk, b0, mid) + treeSum(l, blk, mid, b1)
 }
 
-fn referenceSum(l &List[f64]) f64 {
-  imm n = l.len();
-  mut blocks = (n + 127usize) / 128usize;
+fn referenceSum(l: &List[f64]) f64 {
+  let n = l.len();
+  var blocks = (n + 127usize) / 128usize;
   if blocks > 256usize {
     blocks = 256usize;
   }
-  imm blk = (n + blocks - 1usize) / blocks;
-  imm nb = (n + blk - 1usize) / blk;
-  treeSum(l, blk, 0usize, nb);
+  let blk = (n + blocks - 1usize) / blocks;
+  let nb = (n + blk - 1usize) / blk;
+  treeSum(l, blk, 0usize, nb)
 }
 
 fn floatSums() {
-  mut l = new List[f64]();
-  mut k = 0usize;
+  var l = List[f64]();
+  var k = 0usize;
   while k < 100000usize {
-    l.push(1.0d / (f64.from(k) + 1.0d));
+    l.push(1.0 / (f64.from(k) + 1.0));
     k = k + 1usize;
   }
-  imm first = l.parallel().sum();
-  mut same = true;
-  mut run = 0usize;
+  let first = l.parallel().sum();
+  var same = true;
+  var run = 0usize;
   while run < 30usize {
     if bitsOf(l.parallel().sum()) != bitsOf(first) {
       same = false;
@@ -175,10 +175,10 @@ fn floatSums() {
   printUInt(bitsOf(first));
   printStr("\n");
   // 129 items: two blocks of 65, joined once
-  mut m = new List[f64]();
+  var m = List[f64]();
   k = 0usize;
   while k < 129usize {
-    m.push(1.0d / (f64.from(k) + 1.0d));
+    m.push(1.0 / (f64.from(k) + 1.0));
     k = k + 1usize;
   }
   report("129 items are two blocks", bitsOf(m.parallel().sum()) == bitsOf(referenceSum(&m)));
@@ -190,45 +190,45 @@ fn floatSums() {
 // ---- fold ----
 
 struct Bounds {
-  pub lo i64;
-  pub hi i64;
+  pub lo: i64;
+  pub hi: i64;
 }
 
 // The polynomial hash of a sequence, kept as (h, p): h is the hash and p is 31 to
 // the sequence's length, so that two sequences join as (h1 * p2 + h2, p1 * p2).
 // That is associative and NOT commutative, and (0, 1) is its identity
 struct Seq {
-  pub h u64;
-  pub p u64;
+  pub h: u64;
+  pub p: u64;
 }
 
 const modulus = 1000003u64;
 
-fn seqJoin(a Seq, b Seq) Seq {
-  new Seq((a.h * b.p + b.h) % modulus, (a.p * b.p) % modulus);
+fn seqJoin(a: Seq, b: Seq) Seq {
+  Seq((a.h * b.p + b.h) % modulus, (a.p * b.p) % modulus)
 }
 
 fn folds() {
-  imm l = counting(5000usize);
+  let l = counting(5000usize);
   // A running sum
   say("fold running sum", l.parallel().fold(0i64, (acc, x) => acc + *x, (a, b) => a + b));
   // Bounds: the lowest and highest of 7 * k % 1009 - 400 over 5000 items, joined
-  mut vals = new List[i64]();
-  each x in l {
+  var vals = List[i64]();
+  each x in &l {
     vals.push((*x * 7i64) % 1009i64 - 400i64);
   }
-  imm identity = new Bounds(1000000i64, -1000000i64);
-  imm b = vals.parallel().fold(identity,
-    (acc, x) => new Bounds(if *x < acc.lo { *x; } else { acc.lo; }, if *x > acc.hi { *x; } else { acc.hi; }),
-    (p, q) => new Bounds(if q.lo < p.lo { q.lo; } else { p.lo; }, if q.hi > p.hi { q.hi; } else { p.hi; }));
+  let identity = Bounds(1000000i64, -1000000i64);
+  let b = vals.parallel().fold(identity,
+    (acc, x) => Bounds(if *x < acc.lo { *x } else { acc.lo }, if *x > acc.hi { *x } else { acc.hi }),
+    (p, q) => Bounds(if q.lo < p.lo { q.lo } else { p.lo }, if q.hi > p.hi { q.hi } else { p.hi }));
   say("bounds lowest", b.lo);
   say("bounds highest", b.hi);
   // A non-commutative combine: the hash of the items in order
-  imm s = l.parallel().fold(new Seq(0u64, 1u64),
-    (acc, x) => seqJoin(acc, new Seq(u64.from(*x) + 1u64, 31u64)),
+  let s = l.parallel().fold(Seq(0u64, 1u64),
+    (acc, x) => seqJoin(acc, Seq(u64.from(*x) + 1u64, 31u64)),
     (p, q) => seqJoin(p, q));
-  mut h = 0u64;
-  each x in l {
+  var h = 0u64;
+  each x in &l {
     h = (h * 31u64 + u64.from(*x) + 1u64) % modulus;
   }
   report("order-sensitive combine is the in-order hash", s.h == h);
@@ -236,65 +236,65 @@ fn folds() {
   printUInt(s.h);
   printStr("\n");
   // The same with 100 items, a single block, and with none
-  imm few = counting(100usize);
-  imm sf = few.parallel().fold(new Seq(0u64, 1u64),
-    (acc, x) => seqJoin(acc, new Seq(u64.from(*x) + 1u64, 31u64)),
+  let few = counting(100usize);
+  let sf = few.parallel().fold(Seq(0u64, 1u64),
+    (acc, x) => seqJoin(acc, Seq(u64.from(*x) + 1u64, 31u64)),
     (p, q) => seqJoin(p, q));
-  mut hf = 0u64;
-  each x in few {
+  var hf = 0u64;
+  each x in &few {
     hf = (hf * 31u64 + u64.from(*x) + 1u64) % modulus;
   }
   report("one block", sf.h == hf);
-  mut none = new List[i64]();
-  imm sn = none.parallel().fold(new Seq(0u64, 1u64), (acc, x) => seqJoin(acc, new Seq(1u64, 31u64)), (p, q) => seqJoin(p, q));
-  report("no items is the identity", sn.h == 0u64 and sn.p == 1u64);
+  var none = List[i64]();
+  let sn = none.parallel().fold(Seq(0u64, 1u64), (acc, x) => seqJoin(acc, Seq(1u64, 31u64)), (p, q) => seqJoin(p, q));
+  report("no items is the identity", sn.h == 0u64 && sn.p == 1u64);
   // A closure that reads a variable around it
-  imm scale = 3i64;
+  let scale = 3i64;
   say("fold reading a variable", l.parallel().fold(0i64, (acc, x) => acc + *x * scale, (a, b) => a + b));
 }
 
 fn otherSources() {
-  imm l = counting(1000usize);
+  let l = counting(1000usize);
   // The runs of chunks: 1000 items in runs of 64 are 16 runs, the last of 40
-  imm runs = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + 1i64, (a, b) => a + b);
+  let runs = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + 1i64, (a, b) => a + b);
   say("chunk runs", runs);
-  imm items = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + i64.from(c.len), (a, b) => a + b);
+  let items = l.chunks(64usize).parallel().fold(0i64, (acc, c) => acc + i64.from(c.len), (a, b) => a + b);
   say("chunk items", items);
   // indexed(): position times item, 0 * 0 + 1 * 1 + ... = the sum of squares to 999
-  imm sq = l.indexed().parallel().fold(0i64, (acc, p) => acc + i64.from(p.0) * *p.1, (a, b) => a + b);
+  let sq = l.indexed().parallel().fold(0i64, (acc, p) => acc + i64.from(p.0) * *p.1, (a, b) => a + b);
   say("indexed sum of squares", sq);
   // zip of two lists: a dot product of 0..999 with its reverse
-  mut r = new List[i64]();
-  each x in l {
+  var r = List[i64]();
+  each x in &l {
     r.push(999i64 - *x);
   }
-  imm dot = zip(&l, &r).parallel().fold(0i64, (acc, p) => acc + *p.0 * *p.1, (a, b) => a + b);
+  let dot = zip(&l, &r).parallel().fold(0i64, (acc, p) => acc + *p.0 * *p.1, (a, b) => a + b);
   say("zip dot product", dot);
   // the multiples of 7 among 0..999: 0, 7, ... 994 are 143
-  imm sevens = l.parallel().fold(0i64, (acc, x) => acc + (if *x % 7i64 == 0i64 { 1i64; } else { 0i64; }), (a, b) => a + b);
+  let sevens = l.parallel().fold(0i64, (acc, x) => acc + (if *x % 7i64 == 0i64 { 1i64 } else { 0i64 }), (a, b) => a + b);
   say("multiples of 7", sevens);
 }
 
 // A reduction in a method, its closures naming a field and a field's list
 struct Grid {
-  pub cells List[i64];
-  pub scale i64;
+  pub cells: List[i64];
+  pub scale: i64;
 
-  pub fn total(self &) i64 {
-    cells.parallel().fold(0i64, (acc, x) => acc + *x * scale, (a, b) => a + b);
+  pub fn total(self: &) i64 {
+    cells.parallel().fold(0i64, (acc, x) => acc + *x * scale, (a, b) => a + b)
   }
 }
 
 fn nested() {
   // Each of 300 rows folds a list of 1000 in parallel inside a parallel fold:
   // the sum of c * r over c < 1000 and r < 300 is 499500 * 44850
-  imm rows = counting(300usize);
-  imm cols = counting(1000usize);
-  imm outer = rows.parallel().fold(0i64,
+  let rows = counting(300usize);
+  let cols = counting(1000usize);
+  let outer = rows.parallel().fold(0i64,
     (acc, r) => acc + cols.parallel().fold(0i64, (a2, c) => a2 + *c * *r, (p, q) => p + q),
     (a, b) => a + b);
   say("nested folds", outer);
-  mut g = new Grid(counting(5000usize), 3i64);
+  var g = Grid(counting(5000usize), 3i64);
   say("in a method", g.total());
 }
 
@@ -302,10 +302,10 @@ fn nested() {
 
 // A predicate that is slow for the first block's items (the first 128) and
 // fast for the rest, so that a later block finds its match long before the first
-fn slowFor(x i64) bool {
+fn slowFor(x: i64) bool {
   if x < 128i64 {
-    mut n = 0u64;
-    mut k = 0u64;
+    var n = 0u64;
+    var k = 0u64;
     while k < 3000000u64 {
       n = n * 6364136223846793005u64 + k;
       k = k + 1u64;
@@ -314,84 +314,134 @@ fn slowFor(x i64) bool {
       return false;
     }
   }
-  true;
+  true
 }
 
 fn finds() {
-  imm l = counting(100000usize);
+  let l = counting(100000usize);
   match l.parallel().findFirst(x => **x == 77777i64) {
-    case imm s Some { say("found", *s); }
+    case let Some(s) { say("found", *s); }
     case is None { printStr("found none\n"); }
   }
   // Many match: the earliest, though blocks later than it have matches too
   match l.parallel().findFirst(x => **x % 10000i64 == 5i64) {
-    case imm s Some { say("earliest of many", *s); }
+    case let Some(s) { say("earliest of many", *s); }
     case is None { printStr("earliest none\n"); }
   }
   // The first block's match is slow to find, a later block's is fast: the first one wins
-  match l.parallel().findFirst(x => (**x == 5i64 and slowFor(**x)) or **x == 90000i64) {
-    case imm s Some { say("earliest by position", *s); }
+  match l.parallel().findFirst(x => (**x == 5i64 && slowFor(**x)) || **x == 90000i64) {
+    case let Some(s) { say("earliest by position", *s); }
     case is None { printStr("earliest none\n"); }
   }
   match l.parallel().findFirst(x => **x < 0i64) {
-    case imm s Some { say("negative", *s); }
+    case let Some(s) { say("negative", *s); }
     case is None { printStr("no negative: none\n"); }
   }
   match l.parallel().findFirst(x => **x == 0i64) {
-    case imm s Some { say("first item", *s); }
+    case let Some(s) { say("first item", *s); }
     case is None { printStr("first none\n"); }
   }
   match l.parallel().findFirst(x => **x == 99999i64) {
-    case imm s Some { say("last item", *s); }
+    case let Some(s) { say("last item", *s); }
     case is None { printStr("last none\n"); }
   }
-  mut empty = new List[i64]();
+  var empty = List[i64]();
   match empty.parallel().findFirst(x => true) {
-    case imm s Some { printStr("empty found\n"); }
+    case let Some(s) { printStr("empty found\n"); }
     case is None { printStr("empty: none\n"); }
   }
   // Over indexed(): the first position whose item is 97 times 3
   match l.indexed().parallel().findFirst(p => *(*p).1 == 291i64) {
-    case imm s Some { say("indexed position", i64.from(s.0)); }
+    case let Some(s) { say("indexed position", i64.from(s.0)); }
     case is None { printStr("indexed none\n"); }
   }
 }
 
 // ---- the later blocks are given up ----
 
-struct Calls {
-  pub n Atomic[u64];
+// What the predicate of giveUp records. 'found' is set by the matching call itself,
+// so a call that sees it set is a call made after the match; 'after' counts, for
+// each block, the calls made once it was set. Atomics, since the predicate runs on
+// several workers
+struct Gave {
+  pub found: Atomic[bool];
+  pub after: List[Atomic[u64]];
+}
+
+// The blocks findFirst cuts n items into, and how many items each holds: a block
+// holds at least 128 items, a view is cut into at most 256 blocks, and a block
+// holds n / blocks, rounded up (actors' reduce.cone, the header and 'blockLen')
+fn cutBlocks(n: usize) usize, usize {
+  var blocks = (n + 127usize) / 128usize;
+  if blocks > 256usize {
+    blocks = 256usize;
+  }
+  blocks, (n + blocks - 1usize) / blocks
 }
 
 fn giveUp() {
-  imm l = counting(1000000usize);
-  imm calls = new Calls(Atomic[u64].of(0u64));
-  match l.parallel().findFirst(x => { calls.n.add(1u64); **x == 0i64; }) {
-    case imm s Some { say("match at the first item", *s); }
+  let n = 1000000usize;
+  let l = counting(n);
+  let blocks, blk = cutBlocks(n);
+  var slots = List[Atomic[u64]]();
+  var b = 0usize;
+  while b < blocks {
+    slots.push(Atomic[u64].of(0u64));
+    b = b + 1usize;
+  }
+  let gave = Gave(Atomic[bool].of(false), slots);
+  match l.parallel().findFirst(x => {
+    let at = usize.from(**x);
+    if gave.found.load() {
+      gave.after[at / blk].add(1u64);
+    }
+    if at == 0usize {
+      gave.found.store(true);
+    }
+    at == 0usize
+  }) {
+    case let Some(s) { say("match at the first item", *s); }
     case is None { printStr("none\n"); }
   }
-  // The first item matches, so only the blocks already begun, up to their next look
-  // (every 32 items), ran: far fewer than a million
-  report("later blocks given up", calls.n.load() < 500000u64);
+  // The first item matches, so findFirst's promise is that a block begun after the
+  // match is skipped and one under way stops at its next look, every 32 items
+  // (actors' reduce.cone, the comments above 'findFirst' and 'parFindFirst'). So no
+  // block makes more than a look's worth of calls after the match: a look passed
+  // before the match is published lets 32 items through (31 if the block began
+  // part-way into a look), and the bound allows a second look, for one that falls in
+  // the few instructions between the predicate setting 'found' and findFirst
+  // publishing the match. Whatever the workers' timing, that holds; how many blocks
+  // began BEFORE the match does not (under load all 256 may have), and how many
+  // predicate calls there were is no better: neither is checked
+  var most = 0u64;
+  b = 0usize;
+  while b < blocks {
+    let k = gave.after[b].load();
+    if k > most {
+      most = k;
+    }
+    b = b + 1usize;
+  }
+  report("later blocks given up", most <= 64u64);
 }
 
 // ---- in an actor ----
 
 actor Summer {
-  pub async do run(self, n u64) {
-    imm l = counting(usize.from(n));
+  pub async fn run(self, n: u64) {
+    let l = counting(usize.from(n));
     printStr("actor sum ");
     printInt(l.parallel().sum());
     printStr("\n");
     match l.parallel().findFirst(x => **x == 4000i64) {
-      case imm s Some { say("actor found", *s); }
+      case let Some(s) { say("actor found", *s); }
       case is None { printStr("actor none\n"); }
     }
   }
 }
 
 fn main() {
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
   sums();
   floatSums();
   folds();
@@ -400,7 +450,7 @@ fn main() {
   finds();
   giveUp();
   {
-    imm s = new Summer();
+    let s = Summer();
     s.run(6000u64);
   }
   finalAll();

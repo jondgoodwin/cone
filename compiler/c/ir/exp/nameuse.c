@@ -67,6 +67,10 @@ NameUseNode *newMemberUseNode(Name *namesym) {
 
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
+    // The splice 'val.#f' of a '#each #f in #fields(T)' being expanded: the field's name
+    INode *spliced = fieldEachSplice(node);
+    if (spliced)
+        return spliced;
     NameUseNode *newnode;
     newnode = memAllocBlk(sizeof(NameUseNode));
     memcpy(newnode, node, sizeof(NameUseNode));
@@ -189,6 +193,10 @@ void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
         nameUseMarkOne(pstate, dcl);
         break;
     case MacroDclTag:
+        // A use may expand any macro of the name's set, so an importer needs them all
+        for (MacroDclNode *m = (MacroDclNode*)dcl; m; m = m->more)
+            exportReachAdd(pstate->expander, (INode*)m);
+        break;
     case ConstDclTag:
         exportReachAdd(pstate->expander, dcl);
         break;
@@ -213,7 +221,8 @@ static int nameUseGenMember(NameResState *pstate, NameUseNode **namep) {
     GenInfo *info = yieldGenOfStruct(pstate->typenode);
     if (info == NULL || info->recv == NULL || info->recvtype == NULL || name->namesym == info->recv)
         return 0;
-    // A parameter of the generator is a field of its struct; a local has no owner
+    // A member of the generator's struct is the scope's own (a parameter was bound
+    // by nameUseGenParm, before this); a local has no owner
     if (namespaceFind(&((StructNode*)pstate->typenode)->namespace, name->namesym))
         return 0;
     INode *dcl = name->dclnode;
@@ -241,6 +250,53 @@ static int nameUseGenMember(NameResState *pstate, NameUseNode **namep) {
     return 1;
 }
 
+// A generator's parameters are fields of its struct under names no source can
+// spell (GenInfo.parmhidden), so a bare name in the body that the author gave a
+// parameter is not hooked to anything the struct has. It names the parameter's
+// field unless a local of the body (or the step's own receiver) is named so,
+// which shadows it as it shadows any field. Returns whether the use was bound.
+static int nameUseGenParm(NameResState *pstate, NameUseNode *name) {
+    if (pstate->typenode->tag != StructTag)
+        return 0;
+    GenInfo *info = yieldGenOfStruct(pstate->typenode);
+    if (info == NULL)
+        return 0;
+    Name *hidden = yieldGenParmHidden(info, name->namesym);
+    if (hidden == NULL)
+        return 0;
+    INode *dcl = name->dclnode;
+    if (dcl && dcl->tag == VarDclTag && inodeGetDclInfo(dcl)->owner == NULL)
+        return 0;
+    INode *field = namespaceFind(&((StructNode*)pstate->typenode)->namespace, hidden);
+    if (field == NULL || field->tag != FieldDclTag)
+        return 0;
+    // The use is re-read as a member of 'self' by the field's name (type check),
+    // so it takes the hidden one, which reads as the author's in a diagnostic
+    name->dclnode = field;
+    name->namesym = hidden;
+    return 1;
+}
+
+// By declaration, not by DclLifecycle: that mark is made when the module is type
+// checked, which may be after a use of it elsewhere is resolved, and an include
+// file's declaration never gets it. A module-level function under either name
+// is the module's lifecycle function, or malformed and reported as such.
+int nameUseLifecycleNamed(NameUseNode *name) {
+    INode *dcl = name->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag || (dcl->flags & FlagMethFld))
+        return 0;
+    Name *fnname = ((FnDclNode*)dcl)->namesym;
+    if (fnname != initName && fnname != finalName)
+        return 0;
+    INode *owner = inodeGetOwner(dcl);
+    if (owner == NULL || owner->tag != ModuleTag)
+        return 0;
+    errorMsgNode((INode*)name, ErrorLifecycleNamed,
+        "%s is a module's lifecycle function: a module's init and final are run by the runtime, once, and may not be called, borrowed or named.",
+        &fnname->namestr);
+    return 1;
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -262,8 +318,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // scope owns it, innermost last, so this is one pointer read and no walk
     name->dclnode = name->namesym->node;
 
-    // In a generator method's body a bare name may be a field of the receiver
-    if (yieldAny() && pstate->typenode && nameUseGenMember(pstate, namep))
+    // In a generator's body a bare name may be a parameter, which is a field of
+    // the generator's struct; in a generator method's, a field of the receiver
+    int genparm = yieldAny() && pstate->typenode && nameUseGenParm(pstate, name);
+    if (!genparm && yieldAny() && pstate->typenode && nameUseGenMember(pstate, namep))
         return;
 
     if (!name->dclnode) {
@@ -273,8 +331,12 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             return;
         // An import with 'as' binds its module under the new name only
         ImportNode *renaming = pstate->mod ? importRenaming(pstate->mod, name->namesym) : NULL;
+        // An interpolated string met as a value is a String, which collections declares
+        if (name->flags & FlagInterpString)
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "An interpolated string $\"...\" met anywhere but a send is a String, and no String is in scope here: import it with 'import collections use String;'. Sent directly ('out <- $\"...\"') it needs no String.");
         // A closure naming the variable it is the value of: it cannot call itself
-        if (pstate->closure && name->namesym == pstate->declaring)
+        else if (pstate->closure && name->namesym == pstate->declaring)
             errorMsgNode((INode*)name, ErrorClosureSelf,
                 "A closure cannot call itself: %s is not yet a name inside the closure that is its value. For recursion, write a named function.",
                 &name->namesym->namestr);
@@ -282,6 +344,11 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             errorMsgNode((INode*)name, ErrorUnkName,
                 "The name %s does not refer to a declared name: this module imports %s as %s, which is the name it is reached by here.",
                 &name->namesym->namestr, &name->namesym->namestr, &renaming->rename->namestr);
+        // The single-owner region was called 'So' once; no alias is kept, so the old
+        // name is an unknown one, and says what it became
+        else if (strcmp(&name->namesym->namestr, "So") == 0)
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "The name So does not refer to a declared name: So is now Uni, the single-owner region.");
         else
             errorMsgNode((INode*)name, ErrorUnkName,
                 "The name %s does not refer to a declared name", &name->namesym->namestr);
@@ -300,6 +367,9 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             &name->namesym->namestr, &name->namesym->namestr);
 
     nameUseMarkExpandReached(pstate, name);
+
+    // The declaration stays attached after the diagnostic, as a private path's does
+    nameUseLifecycleNamed(name);
 
     // Inside a closure literal, a variable of the code around is one it borrows
     closureNoteUse(pstate, name);
@@ -336,7 +406,7 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
 //
 // A member's name shadows the module's names inside its type, signatures
 // included, as any inner name shadows an outer one. So where the member is named
-// like a module this module binds -- 'fn mesh(self &) mesh.Mesh' -- the author
+// like a module this module binds -- 'fn mesh(self: &) mesh.Mesh' -- the author
 // meant the module, and the diagnostic names the two ways to reach it: bind the
 // import under another name, or walk to it from this module's own name, which
 // no member hides. The first is offered only where an import is what binds the
@@ -533,6 +603,13 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
         *((INode**)namep) = newErrorNode((INode*)name);
         return;
     }
+    // 'Vector' likewise: a type only with its lane type and number of lanes
+    if (name->dclnode == (INode*)vectorTypeDcl) {
+        errorMsgNode((INode*)name, ErrorVectorArgs,
+            "Vector is the SIMD vector type only with its lane type and number of lanes: 'Vector[T, N]', as 'Vector[f32, 4]'.");
+        *((INode**)namep) = newErrorNode((INode*)name);
+        return;
+    }
     inodeTypeCheckAny(pstate, &name->dclnode);
     // A type a fold brought in -- a variant a module's 'use' of its enum folded,
     // or a type an import folded -- is named through an alias, which has nothing
@@ -562,7 +639,7 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
         return;
     if (fstate->inflightcnt)
         flowGateUse(fstate, vardclnode);
-    // An init's 'self &new' is reached only through itself, once filled
+    // An init's 'self: &new' is reached only through itself, once filled
     if (flowNewSelf((INode*)node)) {
         if (!flowThroughSelf)
             errorMsgNode((INode*)node, ErrorInitSelf,
@@ -583,13 +660,19 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
             return;
         lastMovedAt = node->srcp;
         lastMovedVar = vardclnode;
-        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+        if (eachMovedVar((INode*)vardclnode))
+            errorMsgNode((INode*)node, ErrorMove,
+                "This variable's value was moved into an 'each' over it: its items move, so the loop takes them out and the variable is gone. To walk it and keep it, write 'each x in &%s'.",
+                &vardclnode->namesym->namestr);
+        else
+            errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
     }
 }
 
-// Ensure the variable at the root of a borrowed place was not moved out or
-// hollowed. One never initialized is not refused: a borrow of it is what lets a
-// method fill it in.
+// Ensure the variable at the root of a borrowed place holds a value and was not
+// moved out or hollowed: a borrow of a variable never given one would let a
+// method read memory that was never written. (A variable given a value on only
+// some paths is the path walk's, dropUse.)
 void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
     NameUseNode *node = *nodep;
     VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
@@ -601,6 +684,14 @@ void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
     if ((vardclnode->flowtempflags & VarUnfilled) && flowNewSelf((INode*)node))
         errorMsgNode((INode*)node, ErrorInitSelf,
             "self holds no value until '*self = value' fills it, on every path before this borrow.");
-    if (vardclnode->flowtempflags & (VarMoved | VarHollow))
-        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+    if (!(vardclnode->flowtempflags & VarInitialized) && !flowNewSelf((INode*)node))
+        errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to borrow.");
+    else if (vardclnode->flowtempflags & (VarMoved | VarHollow)) {
+        if (eachMovedVar((INode*)vardclnode))
+            errorMsgNode((INode*)node, ErrorMove,
+                "This variable's value was moved into an 'each' over it: its items move, so the loop takes them out and the variable is gone. To walk it and keep it, write 'each x in &%s'.",
+                &vardclnode->namesym->namestr);
+        else
+            errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+    }
 }

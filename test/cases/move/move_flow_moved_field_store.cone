@@ -1,0 +1,143 @@
+// A field or an element is not stored into a variable whose whole value was
+// moved out. The part would hold a value nothing releases (the moved variable is
+// finalized by no one, and the old part belongs to the new owner), and the
+// variable stays unusable whole, so the store is refused as a use of a moved
+// value is: the whole variable is given a value again first. Rust's E0382 line.
+//
+// - A field of a struct, a field of a field, a field of a by-value parameter, an
+//   element of an array, and a field of a match's binding by value, each moved
+//   whole and then stored into.
+// - Moved on one branch only, or on every arm of a 'match': the variable may be
+//   moved out where it is stored into.
+// - Moved in a loop's earlier pass (the main walk sees the first pass only; the
+//   path walk carries the move round to the second). The second pass's move of
+//   it is refused as a use, as it was before.
+//
+// The accepted neighbours are in move_flow_moved_field_store_ok.
+
+mod move_flow_moved_field_store;
+
+struct Inner {
+  pub v: i32;
+  fn final(self: &uni) { }
+}
+
+struct Pair {
+  pub a: i32;
+  pub b: Inner;
+}
+
+struct Outer {
+  pub p: Pair;
+  pub n: i32;
+}
+
+enum E {
+  struct A { pub f: Inner; }
+  struct B { pub n: i32; }
+}
+use E;
+
+enum Dir {
+  Up, Down, Left
+}
+
+fn take(p: Pair) { }
+fn takeOuter(o: Outer) { }
+fn takeArr(a: Array[Inner, 2]) { }
+fn takeA(a: A) { }
+fn cond(b: bool) bool { b }
+fn mkE() E { A(Inner(1)) }
+
+// A number field of a variable moved out
+fn numberField() {
+  var p = Pair(1, Inner(2));
+  take(p);
+  p.a = 3;                 //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// A field that finalizes: the new value would never be dropped
+fn finalizingField() {
+  var p = Pair(1, Inner(2));
+  take(p);
+  p.b = Inner(5);          //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// A field of a field
+fn nestedField() {
+  var o = Outer(Pair(1, Inner(2)), 3);
+  takeOuter(o);
+  o.p.b = Inner(5);        //~ ErrorMove:6 "whose value has been moved out"
+}
+
+// A field of a by-value parameter
+fn parameterField(var o: Outer) {
+  takeOuter(o);
+  o.p.a = 7;               //~ ErrorMove:6 "whose value has been moved out"
+}
+
+// An element of an array
+fn elementStore() {
+  var a = [Inner(1), Inner(2)];
+  takeArr(a);
+  a[0] = Inner(3);         //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// Moved on one branch, stored into after it
+fn oneBranch(k: bool) {
+  var p = Pair(1, Inner(2));
+  if k { take(p); }
+  p.a = 3;                 //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// Moved in every arm of a 'match'
+fn everyArm(d: Dir) {
+  var p = Pair(1, Inner(2));
+  match d {
+    case is Up { take(p); }
+    case is Down { take(p); }
+    else { take(p); }
+  }
+  p.b = Inner(4);          //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// Moved in an arm that does not return
+fn armThenStore(k: bool) {
+  var p = Pair(1, Inner(2));
+  if k { take(p); } else { }
+  p.a = 3;                 //~ ErrorMove:4 "whose value has been moved out"
+}
+
+// A loop's earlier pass moved it: the main walk meets the store before any move,
+// and the path walk is what refuses it. (The move is refused too: a second pass
+// moves a moved value.)
+fn loopEarlierPass(n: i32) {
+  var p = Pair(1, Inner(2));
+  var i = 0;
+  while i < n {
+    p.a = 3;               //~ ErrorMove:6 "may have been moved out"
+    p.b = Inner(7);        //~ ErrorMove:6 "may have been moved out"
+    take(p);               //~ ErrorMove:10 "may have been moved out"
+    i = i + 1;
+  }
+}
+
+// A match's binding by value is the matched value: moved, it takes no field
+fn bindingField() {
+  match mkE() {
+    case var A(a) {
+      takeA(a);
+      a.f = Inner(2);      //~ ErrorMove:8 "whose value has been moved out"
+    }
+    else { }
+  }
+}
+
+// The variable is stored into after a move, then given a value: the store comes
+// first, and is refused
+fn storeThenWhole() {
+  var p = Pair(1, Inner(2));
+  take(p);
+  p.a = 3;                 //~ ErrorMove:4 "whose value has been moved out"
+  p = Pair(4, Inner(5));
+}

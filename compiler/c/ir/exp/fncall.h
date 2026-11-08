@@ -34,6 +34,16 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node);
 // Does this call give type arguments rather than values?
 int fnCallHasTypeArgs(FnCallNode *node);
 
+// Is this a call of a type, a construction written with the type's name and
+// parentheses, 'Point(1, 2)', 'List[i32](100)'? Not a variant's, which is its
+// own. Name resolution marks it FlagNew; type check asks again of a callee only
+// a generic's substitution makes a type, 'T(1)'.
+int fnCallIsTypeCall(FnCallNode *node);
+
+// Mark a call of a type (fnCallIsTypeCall) as the construction it is, standing
+// at the type's name, where 'new' stood
+void fnCallMarkConstruction(FnCallNode *node);
+
 void fnCallPrint(FnCallNode *node);
 
 // Name resolution on 'fncall'
@@ -100,6 +110,11 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
 // generic, now instantiated and the call's callee: the call is then an ordinary
 // call of an instance, which the caller carries on checking.
 int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep);
+
+// The permission of the borrow a '<-' list takes of its receiver, once, for all
+// its entries: what the strongest 'self' among the type's '<-' methods needs,
+// and no more than the receiver may give (contentsLowerEntries).
+PermNode *fnCallAppendBorrowPerm(INode *lval, INode *colltype);
 
 // A properly lowered call -- objfn names a function, args are all given --
 // gets its returned type and its arguments coerced to the parameters. The type

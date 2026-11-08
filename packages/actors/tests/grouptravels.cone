@@ -1,0 +1,224 @@
+// The cancel group travels in a request's envelope (actors.cone, THE GROUP
+// TRAVELS): the group a sender works in is the group its message is handled in.
+//
+// 1. A message sent where no group is current is handled in the process's own
+//    group, which nothing cancels (currentGroup() answers the same group in
+//    main and in the handler; isCancelled() is false).
+// 2. A message sent inside actors.withGroup(g, ...) is handled in g; the
+//    current group in main is back to the process's own after the call.
+// 3. Nesting: a handler that sends on carries its group forward, hop after
+//    hop, with no mention of it.
+// 4. The explicit form inside a handler: the sends in withGroup(g2, ...) carry
+//    g2; the sends after it carry the group the handler runs in.
+// 5. A cancel of the sender's group is seen by the handler while it runs
+//    (isCancelled turns true under a spinning handler).
+// 6. A message queued behind a held one is handled in a group already
+//    cancelled (a parent's cancel reaches the child it was sent in), with the
+//    cause.
+// 7. The envelope owns the group: a requester that has dropped every handle of
+//    a group with a deadline still has the deadline fire before the handler
+//    runs (the timer stays armed by the envelope's copy), and once the
+//    handlers have run every handle and timer is gone (no leaked copy).
+
+mod grouptravels;
+
+import testing use *;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub rootId: Atomic[u64];       // the group id a handler saw, per phase
+  pub rootCancelled: Atomic[u64];
+  pub sentId: Atomic[u64];
+  pub sentLive: Atomic[u64];
+  pub hopsIn: Atomic[u64];       // hops of the chain handled in the group sent in
+  pub hopsTotal: Atomic[u64];
+  pub innerId: Atomic[u64];
+  pub afterId: Atomic[u64];
+  pub started: Atomic[u64];      // the spinning handler began
+  pub sawCancel: Atomic[u64];    // ... and saw the cancel
+  pub held: Atomic[u64];         // a held handler is running
+  pub gate: Atomic[u64];         // set to let it go
+  pub lateCancelled: Atomic[u64];
+  pub lateCause: Atomic[u64];
+  pub lateLive: Atomic[u64];
+  pub dlCancelled: Atomic[u64];
+  pub dlCause: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(1u64), Atomic[u64].of(0u64), Atomic[u64].of(1u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(1u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn causeNum() u64 {
+  match actors.currentGroup().cause() {
+    case let Some(c) {
+      match c {
+        case Cause.Cancelled {1u64}
+        case Cause.TimedOut {2u64}
+        case Cause.SiblingFinished {3u64}
+        case Cause.Shutdown {4u64}
+      }
+    }
+    else {0u64}
+  }
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+actor Probe {
+  pub async fn rootMark(self) {
+    seen.rootId.store(actors.currentGroup().id());
+    seen.rootCancelled.store(if actors.isCancelled() {1u64} else {0u64});
+  }
+
+  pub async fn sentMark(self) {
+    seen.sentId.store(actors.currentGroup().id());
+    seen.sentLive.store(if actors.isCancelled() {0u64} else {1u64});
+  }
+
+  // Handled in the group sent in; passes the ball on, naming no group
+  pub async fn hop(self, next: Probe, left: u64, want: u64) {
+    seen.hopsTotal.add(1u64);
+    if actors.currentGroup().id() == want {seen.hopsIn.add(1u64);}
+    if left > 0u64 {next.hop(next, left - 1u64, want);}
+  }
+
+  // The explicit form in a handler: the first send is in g2, the second in
+  // the group this handler runs in
+  pub async fn both(self, other: Probe, g2: CancelGroup) {
+    actors.withGroup(&g2, fn() [other] { other.innerMark(); });
+    other.afterMark();
+  }
+
+  pub async fn innerMark(self) {seen.innerId.store(actors.currentGroup().id());}
+  pub async fn afterMark(self) {seen.afterId.store(actors.currentGroup().id());}
+
+  // Runs until its group is cancelled (or, so that a failure ends, a second)
+  pub async fn spin(self) {
+    seen.started.store(1u64);
+    let limit = bounded(5000i64);
+    while !actors.isCancelled() && Instant.now() < limit {thread.yieldNow();}
+    if actors.isCancelled() {seen.sawCancel.store(1u64);}
+  }
+
+  // Holds its worker until the gate is set (or five seconds)
+  pub async fn hold(self) {
+    seen.held.store(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+  }
+
+  pub async fn late(self) {
+    seen.lateLive.store(if actors.isCancelled() {0u64} else {1u64});
+    seen.lateCancelled.store(if actors.isCancelled() {1u64} else {0u64});
+    seen.lateCause.store(causeNum());
+  }
+
+  pub async fn deadline(self) {
+    seen.dlCancelled.store(if actors.isCancelled() {1u64} else {0u64});
+    seen.dlCause.store(causeNum());
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 3u32));
+  let p = Probe();
+  let q = Probe();
+
+  // 1. No group current: the process's own
+  let rootId = actors.currentGroup().id();
+  p.rootMark();
+  actors.waitQuiet();
+  expectUInt(seen.rootId.load(), rootId, "no group sent: the handler is in the process's own group");
+  expectUInt(seen.rootCancelled.load(), 0u64, "...which is not cancelled");
+  expect(!actors.isCancelled(), "main is in no cancelled group");
+
+  // 2. A group named at the send
+  let g = CancelGroup.make();
+  actors.withGroup(&g, fn() [p] { p.sentMark(); });
+  actors.waitQuiet();
+  expectUInt(seen.sentId.load(), g.id(), "withGroup: the handler is in the group named");
+  expectUInt(seen.sentLive.load(), 1u64, "...live");
+  expectUInt(actors.currentGroup().id(), rootId, "main's current group is the process's own again after withGroup");
+  let gid = g.id();
+  actors.withGroup(&g, fn() [gid] {
+    expectUInt(actors.currentGroup().id(), gid, "inside withGroup, currentGroup is the group named");
+  });
+
+  // 3. Nesting: five hops, back and forth, all in g
+  actors.withGroup(&g, fn() [p, q, gid] { p.hop(q, 4u64, gid); });
+  actors.waitQuiet();
+  expectUInt(seen.hopsTotal.load(), 5u64, "five hops ran");
+  expectUInt(seen.hopsIn.load(), 5u64, "every hop was handled in the first sender's group");
+
+  // 4. The explicit form in a handler
+  let g1 = CancelGroup.make();
+  let g2 = CancelGroup.make();
+  actors.withGroup(&g1, fn() [p, q, g2] { p.both(q, g2); });
+  actors.waitQuiet();
+  expectUInt(seen.innerId.load(), g2.id(), "a send inside withGroup in a handler carries the group named");
+  expectUInt(seen.afterId.load(), g1.id(), "a send after it carries the group the handler runs in");
+
+  // 5. A cancel is seen by the handler while it runs
+  let g5 = CancelGroup.make();
+  actors.withGroup(&g5, fn() [p] { p.spin(); });
+  let limit = bounded(5000i64);
+  while seen.started.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+  expectUInt(seen.started.load(), 1u64, "the handler is running");
+  expectUInt(seen.sawCancel.load(), 0u64, "...and has seen no cancel");
+  g5.cancel();
+  actors.waitQuiet();
+  expectUInt(seen.sawCancel.load(), 1u64, "the sender's cancel was seen by the running handler");
+
+  // 6. Queued behind a held message, then the parent cancelled
+  let parent = CancelGroup.make();
+  let child = parent.child();
+  p.hold();
+  let limit6 = bounded(5000i64);
+  while seen.held.load() == 0u64 && Instant.now() < limit6 {thread.yieldNow();}
+  actors.withGroup(&child, fn() [p] { p.late(); });
+  parent.cancelWith(Cause.Shutdown);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.lateLive.load(), 0u64, "a child of a cancelled group, queued before the cancel, is handled cancelled");
+  expectUInt(seen.lateCancelled.load(), 1u64, "isCancelled in the handler");
+  expectUInt(seen.lateCause.load(), 4u64, "with the parent's cause (Shutdown)");
+
+  // 7. The envelope owns the group: its deadline fires with no handle left
+  seen.gate.store(0u64);
+  seen.held.store(0u64);
+  p.hold();
+  let limit7 = bounded(5000i64);
+  while seen.held.load() == 0u64 && Instant.now() < limit7 {thread.yieldNow();}
+  {
+    let d = CancelGroup.until(bounded(20i64));
+    actors.withGroup(&d, fn() [p] { p.deadline(); });
+  }
+  thread.sleep(Duration.fromMillis(150i64));
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.dlCancelled.load(), 1u64, "a group whose every handle was dropped still timed out");
+  expectUInt(seen.dlCause.load(), 2u64, "with the cause TimedOut");
+
+  // ... and a deadline far off, sent and handled, leaves no timer armed
+  let before = armedTimers();
+  {
+    let far = CancelGroup.until(bounded(600000i64));
+    expectUInt(u64.from(armedTimers()), u64.from(before) + 1u64, "a far deadline arms a timer");
+    actors.withGroup(&far, fn() [p] { p.deadline(); });
+  }
+  actors.waitQuiet();
+  expectUInt(u64.from(armedTimers()), u64.from(before), "its envelope's copy was dropped with the message: the timer is gone");
+
+  done()
+}

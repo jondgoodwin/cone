@@ -1,0 +1,149 @@
+// lifetime_band_static_holder_deep_call with a service whose chain ends in
+// a '&'a Loop' field: a borrow that ends, of the type the call is lent. 'feed'
+// lends a local to a service that outlives it, which could keep the borrow.
+//
+// Verdict: refuse: ErrorCallEscape at 's.turn(&mut tmp)' in 'feed'.
+// Basis: mem-lifetimes.html (a call may store what it is lent where a
+// '&mut' argument points, which here can hold a borrow of it).
+// Master 6f2481669: refused the same.
+
+mod lifetime_band_static_holder_deep_call_ending;
+
+import stdio use *;
+
+struct Loop {
+  ticks: u32;
+}
+
+struct Fault {
+  code: u32;
+  detail: &'a Loop;
+}
+
+struct Reader {
+  last: Option[Fault];
+  count: u32;
+}
+
+struct Level0 {
+  inner: Reader;
+  tag: u32;
+}
+
+struct Level1 {
+  inner: Level0;
+  tag: u32;
+}
+
+struct Level2 {
+  inner: Level1;
+  tag: u32;
+}
+
+struct Level3 {
+  inner: Level2;
+  tag: u32;
+}
+
+struct Level4 {
+  inner: Level3;
+  tag: u32;
+}
+
+struct Level5 {
+  inner: Level4;
+  tag: u32;
+}
+
+struct Level6 {
+  inner: Level5;
+  tag: u32;
+}
+
+struct Level7 {
+  inner: Level6;
+  tag: u32;
+}
+
+struct Level8 {
+  inner: Level7;
+  tag: u32;
+}
+
+struct Level9 {
+  inner: Level8;
+  tag: u32;
+}
+
+struct Level10 {
+  inner: Level9;
+  tag: u32;
+}
+
+struct Level11 {
+  inner: Level10;
+  tag: u32;
+}
+
+struct Level12 {
+  inner: Level11;
+  tag: u32;
+}
+
+struct Level13 {
+  inner: Level12;
+  tag: u32;
+}
+
+struct Level14 {
+  inner: Level13;
+  tag: u32;
+}
+
+struct Level15 {
+  inner: Level14;
+  tag: u32;
+}
+
+struct Level16 {
+  inner: Level15;
+  tag: u32;
+}
+
+struct Level17 {
+  inner: Level16;
+  tag: u32;
+}
+
+struct Service {
+  drv: Level17;
+  sent: u32;
+
+  fn sendBody(self: &mut, lp: &mut Loop, slot: u32) {
+    lp.ticks = lp.ticks + slot;
+    sent = sent + slot;
+  }
+
+  fn turn(self: &mut, lp: &mut Loop) {
+    self.sendBody(lp, 2u32);
+  }
+}
+
+// A service that outlives this function is lent a local
+fn feed(s: &mut Service) {
+  var tmp = Loop(0u32);
+  s.turn(&mut tmp);           //~ ErrorCallEscape "an argument carries a borrow of 'tmp'"
+}
+
+fn main() {
+  var lp = Loop(0u32);
+  var other = Loop(0u32);
+  var s = Service(Level17(Level16(Level15(Level14(Level13(Level12(Level11(Level10(Level9(Level8(Level7(Level6(Level5(Level4(Level3(Level2(Level1(Level0(Reader(Some[Fault](Fault(1u32, &other)), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32);
+  s.turn(&mut lp);
+  s.turn(&mut lp);
+  feed(&mut s);
+  printInt(i64.from(s.sent));
+  printStr(" ");
+  printInt(i64.from(lp.ticks));
+  printStr("\n");
+}

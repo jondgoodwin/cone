@@ -25,9 +25,9 @@
 // part is checked against the channels of the parts before it, so the first
 // part's form of a name is the one kept. (The edge "crease" and the vertex
 // "crease_vert" are two names, so they never clash.)
-pub fn join(parts &List[PolyMesh], problems &mut List[String]) PolyMesh {
-  imm none = List[Transform3].empty();
-  joinPlaced(parts, &none, problems);
+pub fn join(parts: &List[PolyMesh], problems: &mut List[String]) PolyMesh {
+  let none = List[Transform3]();
+  joinPlaced(parts, &none, problems)
 }
 
 // The same, part k first placed by places[k] (scaled, turned, then moved, as
@@ -37,67 +37,67 @@ pub fn join(parts &List[PolyMesh], problems &mut List[String]) PolyMesh {
 // out (an odd number of negative factors, a reflection) also turns its faces
 // over, each from the same first corner, as 'mirror' turns its copy, so it
 // still faces outward; its corners keep their values, and its edges theirs.
-pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut List[String]) PolyMesh {
-  mut out = PolyMesh.empty();
-  imm np = parts.len();
-  mut flips = List[bool].withCapacity(np);
-  mut k = 0usize;
+pub fn joinPlaced(parts: &List[PolyMesh], places: &List[Transform3], problems: &mut List[String]) PolyMesh {
+  var out = PolyMesh();
+  let np = parts.len();
+  var flips = List[bool].withCapacity(np);
+  var k = 0usize;
   while k < np {
-    imm place = if k < places.len() {*places[k];} else {Transform3.identity();};
-    imm placed = !isIdentity(place);
-    imm flip = placed and place.scale.x * place.scale.y * place.scale.z < 0.;
-    appendPart(&mut out, parts[k], place, placed, flip);
+    let place = if k < places.len() {*places[k]} else {Transform3.identity()};
+    let placed = !isIdentity(place);
+    let flip = placed && place.scale.x * place.scale.y * place.scale.z < 0.;
+    appendPart(&mut out, &parts[k], place, placed, flip);
     flips.push(flip);
     k = k + 1usize;
   }
 
   // The union of the channels: each one by the part and number it is first
   // met at, its type 0 for f32, 1 for Vec2, 2 for Vec3
-  mut uKind = List[u32].empty();
-  mut uPart = List[usize].empty();
-  mut uIdx = List[usize].empty();
+  var uKind = List[u32]();
+  var uPart = List[usize]();
+  var uIdx = List[usize]();
   k = 0usize;
   while k < np {
-    imm before = uKind.len();
-    mut kind = 0u32;
+    let before = uKind.len();
+    var kind = 0u32;
     while kind < 3u32 {
-      mut i = 0usize;
-      while i < channelCount(parts[k], kind) {
-        imm name = channelName(parts[k], kind, i);
-        imm domain = channelDomain(parts[k], kind, i);
-        mut same = false;          // the parts before have it, this type and domain
-        mut clash = NoIndex;       // one of theirs of the name, another type
-        mut other = NoIndex;       // one of theirs of the name, this type, another domain
-        mut u = 0usize;
+      var i = 0usize;
+      while i < channelCount(&parts[k], kind) {
+        let name = channelName(&parts[k], kind, i);
+        let domain = channelDomain(&parts[k], kind, i);
+        var same = false;          // the parts before have it, this type and domain
+        var clash = NoIndex;       // one of theirs of the name, another type
+        var other = NoIndex;       // one of theirs of the name, this type, another domain
+        var u = 0usize;
         while u < before {
-          imm uk = *uKind[u];
-          imm up = *uPart[u];
-          imm ui = *uIdx[u];
-          if channelNameIs(parts[up], uk, ui, name.view()) {
-            imm ud = channelDomain(parts[up], uk, ui);
-            if uk == kind and ud == domain { same = true; }
-            elif uk != kind { if clash == NoIndex { clash = u32.from(u); } }
-            elif other == NoIndex { other = u32.from(u); }
+          let uk = *uKind[u];
+          let up = *uPart[u];
+          let ui = *uIdx[u];
+          if channelNameIs(&parts[up], uk, ui, name.view()) {
+            let ud = channelDomain(&parts[up], uk, ui);
+            if uk == kind && ud == domain { same = true; }
+            else if uk != kind { if clash == NoIndex { clash = u32.from(u); } }
+            else if other == NoIndex { other = u32.from(u); }
           }
           u = u + 1usize;
         }
         if same {
           // matched: its values join the channel's
-        } elif clash != NoIndex {
-          imm u = usize.from(clash);
-          mut s = refusedLine(k, name.view(), kind, domain);
+        } else if clash != NoIndex {
+          let u = usize.from(clash);
+          var s = refusedLine(k, name.view(), kind, domain);
           s.append(": part ");
           s.appendUInt(u64.from(*uPart[u]));
           s.append(" has it as ");
           s.append(kindName(*uKind[u]));
           problems.push(s);
-        } elif other != NoIndex {
-          imm u = usize.from(other);
-          mut s = refusedLine(k, name.view(), kind, domain);
+        } else if other != NoIndex {
+          let u = usize.from(other);
+          var s = refusedLine(k, name.view(), kind, domain);
           s.append(": part ");
           s.appendUInt(u64.from(*uPart[u]));
           s.append(" has it per ");
-          s.append(domainName(channelDomain(parts[*uPart[u]], *uKind[u], *uIdx[u])));
+          s.append(domainName(channelDomain(&parts[*uPart[u]], *uKind[u], *uIdx[u])));
           problems.push(s);
         } else {
           uKind.push(kind);
@@ -112,61 +112,61 @@ pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut
   }
 
   // Each channel's values, part by part: its own, or its fill
-  mut u = 0usize;
+  var u = 0usize;
   while u < uKind.len() {
     if *uKind[u] == 0u32 {
-      imm up = *uPart[u];
-      imm ui = *uIdx[u];
-      imm name = channelName(parts[up], 0u32, ui);
-      imm domain = channelDomain(parts[up], 0u32, ui);
-      imm fill = floatFill(parts[up], ui);
-      mut values = List[f32].withCapacity(out.domainSize(domain));
+      let up = *uPart[u];
+      let ui = *uIdx[u];
+      let name = channelName(&parts[up], 0u32, ui);
+      let domain = channelDomain(&parts[up], 0u32, ui);
+      let fill = floatFill(&parts[up], ui);
+      var values = List[f32].withCapacity(out.domainSize(domain));
       k = 0usize;
       while k < np {
-        appendFloats(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        appendFloats(&mut values, &parts[k], domain, name.view(), fill, *flips[k]);
         k = k + 1usize;
       }
-      out.floats.push(new Channel[f32](String.from(name.view()), domain, values, fill));
+      out.floats.push(Channel[f32](String.from(name.view()), domain, values, fill));
     }
     u = u + 1usize;
   }
   u = 0usize;
   while u < uKind.len() {
     if *uKind[u] == 1u32 {
-      imm up = *uPart[u];
-      imm ui = *uIdx[u];
-      imm name = channelName(parts[up], 1u32, ui);
-      imm domain = channelDomain(parts[up], 1u32, ui);
-      imm fill = vec2Fill(parts[up], ui);
-      mut values = List[Vec2].withCapacity(out.domainSize(domain));
+      let up = *uPart[u];
+      let ui = *uIdx[u];
+      let name = channelName(&parts[up], 1u32, ui);
+      let domain = channelDomain(&parts[up], 1u32, ui);
+      let fill = vec2Fill(&parts[up], ui);
+      var values = List[Vec2].withCapacity(out.domainSize(domain));
       k = 0usize;
       while k < np {
-        appendVec2s(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        appendVec2s(&mut values, &parts[k], domain, name.view(), fill, *flips[k]);
         k = k + 1usize;
       }
-      out.vec2s.push(new Channel[Vec2](String.from(name.view()), domain, values, fill));
+      out.vec2s.push(Channel[Vec2](String.from(name.view()), domain, values, fill));
     }
     u = u + 1usize;
   }
   u = 0usize;
   while u < uKind.len() {
     if *uKind[u] == 2u32 {
-      imm up = *uPart[u];
-      imm ui = *uIdx[u];
-      imm name = channelName(parts[up], 2u32, ui);
-      imm domain = channelDomain(parts[up], 2u32, ui);
-      imm fill = vec3Fill(parts[up], ui);
-      mut values = List[Vec3].withCapacity(out.domainSize(domain));
+      let up = *uPart[u];
+      let ui = *uIdx[u];
+      let name = channelName(&parts[up], 2u32, ui);
+      let domain = channelDomain(&parts[up], 2u32, ui);
+      let fill = vec3Fill(&parts[up], ui);
+      var values = List[Vec3].withCapacity(out.domainSize(domain));
       k = 0usize;
       while k < np {
-        appendVec3s(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        appendVec3s(&mut values, &parts[k], domain, name.view(), fill, *flips[k]);
         k = k + 1usize;
       }
-      out.vec3s.push(new Channel[Vec3](String.from(name.view()), domain, values, fill));
+      out.vec3s.push(Channel[Vec3](String.from(name.view()), domain, values, fill));
     }
     u = u + 1usize;
   }
-  out;
+  out
 }
 
 // m's vertices, half-edges and faces added after out's, every link offset;
@@ -175,21 +175,21 @@ pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut
 // next its prev), a face's half-edge is the next one, so the face keeps its
 // first corner, and a vertex's the one before it, which leaves it and is a
 // boundary one when it was
-fn appendPart(out &mut PolyMesh, m &PolyMesh, place Transform3, placed bool, flip bool) {
-  imm v0 = u32.from(out.positions.len());
-  imm h0 = u32.from(out.hVertex.len());
-  imm f0 = u32.from(out.fHalfedge.len());
-  mut v = 0usize;
+fn appendPart(out: &mut PolyMesh, m: &PolyMesh, place: Transform3, placed: bool, flip: bool) {
+  let v0 = u32.from(out.positions.len());
+  let h0 = u32.from(out.hVertex.len());
+  let f0 = u32.from(out.fHalfedge.len());
+  var v = 0usize;
   while v < m.positions.len() {
-    imm p = *m.positions[v];
+    let p = *m.positions[v];
     if placed { out.positions.push(place.transformPoint(p)); } else { out.positions.push(p); }
-    imm vh = *m.vHalfedge[v];
+    let vh = *m.vHalfedge[v];
     if vh == NoIndex { out.vHalfedge.push(NoIndex); }
-    elif flip { out.vHalfedge.push(h0 + *m.hPrev[usize.from(vh)]); }
+    else if flip { out.vHalfedge.push(h0 + *m.hPrev[usize.from(vh)]); }
     else { out.vHalfedge.push(h0 + vh); }
     v = v + 1usize;
   }
-  mut h = 0usize;
+  var h = 0usize;
   while h < m.hVertex.len() {
     if flip {
       out.hNext.push(h0 + *m.hPrev[h]);
@@ -200,97 +200,97 @@ fn appendPart(out &mut PolyMesh, m &PolyMesh, place Transform3, placed bool, fli
       out.hPrev.push(h0 + *m.hPrev[h]);
       out.hVertex.push(v0 + *m.hVertex[h]);
     }
-    imm f = *m.hFace[h];
+    let f = *m.hFace[h];
     if f == NoIndex { out.hFace.push(NoIndex); } else { out.hFace.push(f0 + f); }
     h = h + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < m.fHalfedge.len() {
-    imm fh = *m.fHalfedge[f];
+    let fh = *m.fHalfedge[f];
     if flip { out.fHalfedge.push(h0 + *m.hNext[usize.from(fh)]); } else { out.fHalfedge.push(h0 + fh); }
     f = f + 1usize;
   }
 }
 
 // Whether a place leaves everything where it is, exactly
-fn isIdentity(t Transform3) bool {
-  t.translation.x == 0. and t.translation.y == 0. and t.translation.z == 0.
-    and t.rotation.x == 0. and t.rotation.y == 0. and t.rotation.z == 0. and t.rotation.w == 1.
-    and t.scale.x == 1. and t.scale.y == 1. and t.scale.z == 1.;
+fn isIdentity(t: Transform3) bool {
+  t.translation.x == 0. && t.translation.y == 0. && t.translation.z == 0.
+    && t.rotation.x == 0. && t.rotation.y == 0. && t.rotation.z == 0. && t.rotation.w == 1.
+    && t.scale.x == 1. && t.scale.y == 1. && t.scale.z == 1.
 }
 
 // One part's values of a channel, added to 'values': the part's own channel
 // of that name and domain, or the fill for each of its elements. A turned
 // part's corner at half-edge h is the corner its prev ended at before.
-fn appendFloats(values &mut List[f32], m &PolyMesh, domain u32, name &str, fill f32, flip bool) {
-  imm ch = m.findFloatChannel(domain, name);
-  imm n = m.domainSize(domain);
-  mut e = 0usize;
+fn appendFloats(values: &mut List[f32], m: &PolyMesh, domain: u32, name: &str, fill: f32, flip: bool) {
+  let ch = m.findFloatChannel(domain, name);
+  let n = m.domainSize(domain);
+  var e = 0usize;
   while e < n {
     if ch == NoIndex { values.push(fill); }
-    elif flip and domain == CornerDomain { values.push(m.float(ch, *m.hPrev[e])); }
+    else if flip && domain == CornerDomain { values.push(m.float(ch, *m.hPrev[e])); }
     else { values.push(m.float(ch, u32.from(e))); }
     e = e + 1usize;
   }
 }
-fn appendVec2s(values &mut List[Vec2], m &PolyMesh, domain u32, name &str, fill Vec2, flip bool) {
-  imm ch = m.findVec2Channel(domain, name);
-  imm n = m.domainSize(domain);
-  mut e = 0usize;
+fn appendVec2s(values: &mut List[Vec2], m: &PolyMesh, domain: u32, name: &str, fill: Vec2, flip: bool) {
+  let ch = m.findVec2Channel(domain, name);
+  let n = m.domainSize(domain);
+  var e = 0usize;
   while e < n {
     if ch == NoIndex { values.push(fill); }
-    elif flip and domain == CornerDomain { values.push(m.vec2(ch, *m.hPrev[e])); }
+    else if flip && domain == CornerDomain { values.push(m.vec2(ch, *m.hPrev[e])); }
     else { values.push(m.vec2(ch, u32.from(e))); }
     e = e + 1usize;
   }
 }
-fn appendVec3s(values &mut List[Vec3], m &PolyMesh, domain u32, name &str, fill Vec3, flip bool) {
-  imm ch = m.findVec3Channel(domain, name);
-  imm n = m.domainSize(domain);
-  mut e = 0usize;
+fn appendVec3s(values: &mut List[Vec3], m: &PolyMesh, domain: u32, name: &str, fill: Vec3, flip: bool) {
+  let ch = m.findVec3Channel(domain, name);
+  let n = m.domainSize(domain);
+  var e = 0usize;
   while e < n {
     if ch == NoIndex { values.push(fill); }
-    elif flip and domain == CornerDomain { values.push(m.vec3(ch, *m.hPrev[e])); }
+    else if flip && domain == CornerDomain { values.push(m.vec3(ch, *m.hPrev[e])); }
     else { values.push(m.vec3(ch, u32.from(e))); }
     e = e + 1usize;
   }
 }
 
 // A mesh's channels of one type (0 f32, 1 Vec2, 2 Vec3), read by number
-fn channelCount(m &PolyMesh, kind u32) usize {
-  if kind == 0u32 { m.floats.len(); } elif kind == 1u32 { m.vec2s.len(); } else { m.vec3s.len(); };
+fn channelCount(m: &PolyMesh, kind: u32) usize {
+  if kind == 0u32 { m.floats.len() } else if kind == 1u32 { m.vec2s.len() } else { m.vec3s.len() }
 }
-fn channelDomain(m &PolyMesh, kind u32, i usize) u32 {
-  if kind == 0u32 { m.floats[i].domain; } elif kind == 1u32 { m.vec2s[i].domain; } else { m.vec3s[i].domain; };
+fn channelDomain(m: &PolyMesh, kind: u32, i: usize) u32 {
+  if kind == 0u32 { m.floats[i].domain } else if kind == 1u32 { m.vec2s[i].domain } else { m.vec3s[i].domain }
 }
-fn channelName(m &PolyMesh, kind u32, i usize) String {
-  if kind == 0u32 { String.from(m.floats[i].name.view()); }
-  elif kind == 1u32 { String.from(m.vec2s[i].name.view()); }
-  else { String.from(m.vec3s[i].name.view()); };
+fn channelName(m: &PolyMesh, kind: u32, i: usize) String {
+  if kind == 0u32 { String.from(m.floats[i].name.view()) }
+  else if kind == 1u32 { String.from(m.vec2s[i].name.view()) }
+  else { String.from(m.vec3s[i].name.view()) }
 }
-fn channelNameIs(m &PolyMesh, kind u32, i usize, name &str) bool {
-  if kind == 0u32 { m.floats[i].name.equals(name); }
-  elif kind == 1u32 { m.vec2s[i].name.equals(name); }
-  else { m.vec3s[i].name.equals(name); };
+fn channelNameIs(m: &PolyMesh, kind: u32, i: usize, name: &str) bool {
+  if kind == 0u32 { m.floats[i].name.equals(name) }
+  else if kind == 1u32 { m.vec2s[i].name.equals(name) }
+  else { m.vec3s[i].name.equals(name) }
 }
-fn floatFill(m &PolyMesh, i usize) f32 {m.floats[i].fill;}
-fn vec2Fill(m &PolyMesh, i usize) Vec2 {m.vec2s[i].fill;}
-fn vec3Fill(m &PolyMesh, i usize) Vec3 {m.vec3s[i].fill;}
+fn floatFill(m: &PolyMesh, i: usize) f32 {m.floats[i].fill}
+fn vec2Fill(m: &PolyMesh, i: usize) Vec2 {m.vec2s[i].fill}
+fn vec3Fill(m: &PolyMesh, i: usize) Vec3 {m.vec3s[i].fill}
 
-fn kindName(kind u32) &str {
-  if kind == 0u32 { "f32"; } elif kind == 1u32 { "Vec2"; } else { "Vec3"; };
+fn kindName(kind: u32) &str {
+  if kind == 0u32 { "f32" } else if kind == 1u32 { "Vec2" } else { "Vec3" }
 }
-fn domainName(domain u32) &str {
-  if domain == VertexDomain { "vertex"; }
-  elif domain == EdgeDomain { "edge"; }
-  elif domain == FaceDomain { "face"; }
-  else { "corner"; };
+fn domainName(domain: u32) &str {
+  if domain == VertexDomain { "vertex" }
+  else if domain == EdgeDomain { "edge" }
+  else if domain == FaceDomain { "face" }
+  else { "corner" }
 }
 
 // The start of a refusal's line: "part k's channel name (type, domain) is
 // left out"
-fn refusedLine(k usize, name &str, kind u32, domain u32) String {
-  mut s = String.from("part ");
+fn refusedLine(k: usize, name: &str, kind: u32, domain: u32) String {
+  var s = String.from("part ");
   s.appendUInt(u64.from(k));
   s.append("'s channel ");
   s.append(name);
@@ -299,5 +299,5 @@ fn refusedLine(k usize, name &str, kind u32, domain u32) String {
   s.append(", ");
   s.append(domainName(domain));
   s.append(") is left out");
-  s;
+  s
 }

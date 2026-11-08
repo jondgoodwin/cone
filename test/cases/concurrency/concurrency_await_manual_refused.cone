@@ -1,5 +1,5 @@
-// The refusals the reference manual's sections on 'await' show (refawait.html,
-// "Awaiting a reply" and "Futures"), each block copied there from
+// The refusals the reference manual's sections on 'await' show (conc-await.html#await,
+// "Awaiting a behaviour's answer" and "Futures"), each block copied there from
 // between the "manual:" lines, verbatim but for each line's diagnostic, which
 // the page writes as a comment saying what is refused. The examples that run
 // are concurrency_await_manual's and concurrency_future_manual's. Last, two
@@ -29,41 +29,41 @@ mod concurrency_await_manual_refused;
 import actors;
 import sync use Arc, Mutex; import collections use List;
 
-struct Count {pub n u64;}
+struct Count {pub n: u64;}
 
 actor Clock {
-  pub async do now(self) u64 {42u64;}
-  pub async do tick(self) {}
+  pub async fn now(self) u64 {42u64}
+  pub async fn tick(self) {}
 }
 
-fn compute() u64 {5u64;}
-fn add(r &u64, n u64) u64 {*r + n;}
+fn compute() u64 {5u64}
+fn add(r: &u64, n: u64) u64 {*r + n}
 
 // manual: borrow
 actor Meter {
-  clock Clock;
-  reading u64;
+  clock: Clock;
+  reading: u64;
 
-  pub async do stale(self) {
-    imm r = &reading;
-    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
+  pub async fn stale(self) {
+    let r = &reading;
+    let t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
     reading = *r + t;
   }
 
-  pub async do fresh(self) {
-    imm t = await clock.now();
-    imm r = &reading;           // borrowed after the 'await'
+  pub async fn fresh(self) {
+    let t = await clock.now();
+    let r = &reading;           // borrowed after the 'await'
     reading = *r + t;
   }
 // manual: end
 
 // manual: from a call
-  pub async do fromCall(self) {
+  pub async fn fromCall(self) {
     reading = add(&compute(), await clock.now());  //~ ErrorAwaitLeftCall "This borrow, written to the left of an 'await' in the same statement, is made by a call or a temporary, and is used after the 'await'. The rest of the statement runs after the 'await', which ends every borrow: only a plain path -- a local, 'self', a field, an element at a plain index -- is reached again there, never what a call made. Bind what the call makes to a local first, and use the local here."
   }
 
-  pub async do bound(self) {
-    imm c = compute();
+  pub async fn bound(self) {
+    let c = compute();
     reading = add(&c, await clock.now());          // c is borrowed after the 'await'
   }
 // manual: end
@@ -71,12 +71,12 @@ actor Meter {
 
 // The page says this one in words, with no example
 actor Tally {
-  count Arc[Mutex, Count];
-  clock Clock;
+  count: Arc[Mutex, Count];
+  clock: Clock;
 
-  pub async do held(self) {
-    imm c = &mut *count;          // takes the lock
-    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
+  pub async fn held(self) {
+    let c = &mut *count;          // takes the lock
+    let t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
     c.n += t;
   }
 }
@@ -84,16 +84,16 @@ actor Tally {
 
 // manual: synchronous
 actor Reporter {
-  clock Clock;
-  last u64;
+  clock: Clock;
+  last: u64;
 
-  pub async do report(self) {
-    imm t = await clock.now();    // the 'await', at the top of the behaviour
+  pub async fn report(self) {
+    let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
 
-  fn format(self &, t u64) u64 {
-    t * 1000u64 + last;
+  fn format(self: &, t: u64) u64 {
+    t * 1000u64 + last
   }
 
   fn stamp(self) {
@@ -104,15 +104,15 @@ actor Reporter {
 
 // manual: nothing returned
 actor Log {
-  pub async do flush(self) {}             // owes its caller nothing
-  pub async do commit(self) bool {true;}  // answers with a status
+  pub async fn flush(self) {}             // owes its caller nothing
+  pub async fn commit(self) bool {true}  // answers with a status
 }
 
 actor Writer {
-  log Log;
-  saved bool;
+  log: Log;
+  saved: bool;
 
-  pub async do save(self) {
+  pub async fn save(self) {
     await log.flush();            //~ ErrorAwaitVoid "flush returns nothing, so it sends none"
     saved = await log.commit();   // waits until commit has run, and learns whether it worked
   }
@@ -121,15 +121,15 @@ actor Writer {
 
 // manual: not built
 actor Waiter {
-  clock Clock;
-  last u64;
+  clock: Clock;
+  last: u64;
 
-  pub async do onFunction(self) {
+  pub async fn onFunction(self) {
     last = await compute();       //~ ErrorAwaitNotFuture "awaits a u64, which is none of them"
   }
 
-  pub async do repeated(self) {
-    mut v = List[u64].empty();
+  pub async fn repeated(self) {
+    var v = List[u64]();
     v <- 3 of await clock.now();  //~ ErrorUnbuiltAwait "it stands among the entries a '<-' appends"
   }
 }
@@ -137,32 +137,32 @@ actor Waiter {
 
 // manual: kept twice
 struct Report is Move {
-  pub lines u64;
+  pub lines: u64;
 }
 
 actor Printer {
-  pub async do render(self, n u64) Report {new Report(n * 2u64);}
+  pub async fn render(self, n: u64) Report {Report(n * 2u64)}
 }
 
 actor Desk {
-  printer Printer;
+  printer: Printer;
 
-  pub async do twice(self) u64 {
-    imm r = printer.render(10u64);
-    imm report = await r;
-    imm again = await r;          //~ ErrorMove "This variable's value has been moved out"
-    report.lines;
+  pub async fn twice(self) u64 {
+    let r = printer.render(10u64);
+    let report = await r;
+    let again = await r;          //~ ErrorMove "This variable's value has been moved out"
+    report.lines
   }
 }
 // manual: end
 
 // manual: nothing to keep
 actor Keeper {
-  log Log;
+  log: Log;
 
-  pub async do keep(self) {
+  pub async fn keep(self) {
     log.flush();                  // sent, and forgotten
-    imm f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
+    let f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
   }
 }
 // manual: end

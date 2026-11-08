@@ -44,11 +44,11 @@ defined and sees advantages in it.** ▸ **For whoever builds it: checking a
 template requires knowing what its parameters guarantee, which is what its
 constraints say.** Constraints are built, and checked at each instance only;
 checking the body against them where it is declared is the part still owed.
-**Under an `or`, the plan is Go's rule** [Jon 27 Sep, accepting Penny's
-proposal]: a body governed by `T is A or T is B` may rely only on what *every*
+**Under a `||`, the plan is Go's rule** [Jon 27 Sep, accepting Penny's
+proposal]: a body governed by `T is A || T is B` may rely only on what *every*
 alternative supports — what `A` and `B` both give — as Go's union constraints
-let a generic body use only the operations every type in the union has. So `or`
-does not stand in the way of declaration checking; `not`, which says nothing of
+let a generic body use only the operations every type in the union has. So `||`
+does not stand in the way of declaration checking; `!`, which says nothing of
 what a type can do, would, and is not built.
 
 **A constraint is checked by evaluating it, once every argument is known**
@@ -73,13 +73,13 @@ every instance, so that a package's and its importers' copies merge
 | `where` | a generic type's constraints, as conditions (below); NULL for a function, whose are its `FnDcl`'s |
 
 **A `where` list holds conditions, every one of which must hold.** Each element
-is one operand of the `and`s at the top of what was written. A condition is a
+is one operand of the `&&`s at the top of what was written. A condition is a
 **clause**, `T is Name` — an `IsTag` `CastNode`, the node `p is Mobile` makes,
 whose `exp` is a use of the type parameter it constrains and whose `typ` is a use
 of the trait or type it `is` — or an `OrLogicTag` or `AndLogicTag` `LogicNode`
 joining two conditions. `where T is A and T is B` is two elements; `where T is A
-or T is B` one, an `or`; `T is A + B` and `[T A + B]` are two clauses, and inside
-an `or` alternative an `and` of them. A generic type's list is its
+or T is B` one, an `or`; `T is A + B` and `[T: A + B]` are two clauses, and inside
+a `||` alternative a `&&` of them. A generic type's list is its
 `GenericInfo`'s; every function's, generic or a generic type's method, is
 `FnDclNode.where`, so a method that is not generic still has one. Being ordinary
 nodes over name uses, the conditions are cloned like any other: in an instance's
@@ -128,10 +128,46 @@ generic type's brackets or `where` clause.
 
 **An invariant lifetime is the exception.** A key stays a key in the
 instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
-renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
-`List[&'=a Node['=a]]` and `List[&'=b Node['=c]]` are one instance,
-`List[&'=1 Node['=2]]`, which assumes no two places one brand; the memo
-compares those names (`lifeBrandsEqual`) as well as the types. A function's
+renames every brand the arguments carry by its first occurrence, `'=1`, `'=2`,
+a brand met again keeping the name it was given. An instance is made at the
+pattern of equal brands its use has, and what it is instanced at is that
+pattern as well as the types: `List[&'=a Node['=a]]` and
+`List[&'=b Node['=b]]` are one instance, `List[&'=1 Node['=1]]`, while
+`List[&'=a Node['=b]]` is another, `List[&'=1 Node['=2]]`. One instance per
+pattern of equal brands, not per brand, and where no invariant lifetime appears
+nothing changes. Two different brands stay two names: a brand equals only
+itself. One name is no brand yet: while a function is checked, a name only its
+result writes and nothing has bound (`lifeBrandFnBindable`) is unresolved, so
+it claims no number of the brands' (`seq`). Each unresolved name has a count of
+its own (`useq`), so the first is `'=1`, the second `'=2`: `Atlas['=t, '=r]`
+keeps its two names two, and `List[&'=r mut Road['=t]]` in `empty()` is the
+field's instance, `List[&'=1 Road['=2]]` (counting every unresolved name as
+`'=1` refused `packages/arena/examples/atlas.cone` with 1588, found by the batch
+gate). `Option[&'=m1 Node['=a]]` (inferred from `Some(ar.alloc(..))`, `m1` the
+local arena's minted brand) and the declared `Option[&'=a Node['=a]]` are still
+one instance, `'=1` for the brand and for the one unresolved name, and brand
+agreement binds `a` to `m1`, once; a name already bound to another brand never
+matches. A value of one unresolved name does not reach the other's place
+(`lifetime_inv_two_result_names_refused`); an unresolved name's number and a
+minted brand's may coincide, and only the pattern is named so: agreement, not
+the instance, decides whether they are one brand. The memo compares those names (`lifeBrandsEqual`) as well as the
+types. **A typed `let` or an assignment's target adopts brands a call minted**
+(Bug 50): `let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a)` has `A`
+from the value, `&'=m1 mut Num`, `m1` minted by `ar.alloc`, and `B` from the
+declared type. `iexpTypeCheckCoerceStated` puts the stated type in
+`genericStatedType` while the value is checked, `fnCallTypeCheck` sets
+`genericExpectStated` for the one call whose `expectType` is that very node,
+and only then (`genericAdoptMode`, with `genericExpectMode`) does
+`genericCaptureType` let the declared argument stand for the inferred one
+where they differ only in minted brands (`lifeBrandsAdopt`: the substitution
+binds each from-brand once, a brand not minted by a call never changes, the
+substituted type must be the declared one), and `genericInferType` reads the
+declared use's written arguments (`lifeuse->typeargs`, the instance holds them
+numbered). A callee's parameter type is also an expectation, and its `'=a` is
+the callee's to bind, not a brand in scope (`usee(Some(t), t)`): it is never
+the stated type, so it adopts nothing. A struct whose arguments are related (`IterIndexed[T, I:
+Iterator[T]]`) is therefore checked, and conforms to its trait, at the
+relation its use has. A function's
 instance use keeps its arguments as written too, where they carry brands,
 for a call to bind the places to ([Type Check
 Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
@@ -142,30 +178,42 @@ brands").
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
 is what makes the casts in the three `*NameRes` functions safe. `annot` is what
 was written after the parameter's name, each `+`-joined name, or NULL. `valtype`
-is the integer type of a **value parameter**, `[N usize]` (below), NULL for a
-type parameter.
+is the type of a **value parameter**, NULL for a type parameter: on a generic the
+integer type of `[N: usize]` (below), a compile-time number; on a macro the type
+written after the `:`, `[a: T]`, a run-time value — one bracket slot, two
+meanings, accepted as such [Jon 26 Oct]. A macro's value parameter written
+`a: lazy T` carries `FlagLazy`; a macro method's `self` has no `valtype`. A
+trait's associated type is a type parameter of the trait marked `FlagAssocType`,
+after the written ones (Associated types, below).
 
-**Why the annotation is one slot, of no fixed meaning.** `[T ___]` is where a
+**Why the annotation is one slot, of no fixed meaning.** `[T: ___]` is where a
 parameter will be annotated with more than a constraint: a type, making a value
-parameter, `[N usize]`, and a kind, `[e Expr]`, `[b Block]`, `[M Module]` — Jon's
+parameter, `[N: usize]`, and a kind, `[e: Expr]`, `[b: Block]`, `[M: Module]` — Jon's
 direction that generic and macro parameters be typed like any parameter, by
 *"the kind of a parameter"* [Jon 26 Sep]. So
 the parser reads whatever names are there into `annot` without deciding, and
 what each **resolves to** decides what it means: a trait is a constraint; an
 integer type makes a value parameter (`valtype`); anything else is a kind
 parameter, refused at name resolution as not built (`ErrorGenParmConstr`). A
-macro's parameter and a generic module's are refused in the parser, as before,
-since neither kind of declaration takes a constraint yet.
+generic module's parameter is refused in the parser, as before, since that
+declaration takes no constraint yet. A macro reads its own brackets
+(`parseMacro`, below): a value parameter's annotation is its type.
 
-**`MacroDclNode`** carries `namesym`, `parms`, `body`, and a `memonodes` that is
-**dead** — macros are never memoized; every expansion is a fresh clone. Declared
+**`MacroDclNode`** carries `namesym`, `typeparms`, `parms`, `body`, and a
+`memonodes` that is **dead** — macros are never memoized; every expansion is a
+fresh clone. `typeparms` are the macro's type parameters, `macro m[T][a: T]`,
+NULL when only one bracket list is written; `parms` are its value parameters,
+each typed (`valtype`, `FlagLazy`) but a method's `self`. Declared
 inside a type it is a member of that type, listed in the type's `nodelist` and
 bound in its `namespace` beside the methods, and it carries `FlagMethFld` when
-its first parameter is `self` — the same rule that makes a `fn` a method.
+its first value parameter is `self` — the same rule that makes a `fn` a method.
 `cloneMacroDclNode` copies it along with the instance's methods when a generic
 type is instantiated, hooking each parameter to its own copy first so that the
 body's uses of them are copied as uses rather than substituted, while the
-enclosing type's parameters *are* substituted.
+enclosing type's parameters *are* substituted — in the body and in each value
+parameter's type, so `macro put[self, x: T]` in `Cell[T]` takes an `x: i64` in
+`Cell[i64]`. The macro's type parameters are hooked first, so a value
+parameter's type naming one names the copy's.
 
 **`CloneState`** carries `instnode` (stamped into every cloned node, and what
 `errorMsgNode` walks to print the instantiation trace), `selftype`, and `scope`.
@@ -175,19 +223,19 @@ globals in `clone.c`.
 ## Parse
 
 `parseGenericParms` is `[ Ident annot? (, Ident annot?)* ]`, where `annot` is a
-type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
+`:` and a type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
 no type after it is `ErrorNoType` (`parseTypeReq`). **No
 defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
 declaration takes annotations: a generic function or type does, and the name
 after the parameter's goes into `annot` (Shape, above); a parameter ends at its
-`,` or the `]`, so `[T A B]` is the unclosed-list `ErrorBadTok` rather than a
-second parameter. A lifetime after a `+`, `[T + 'a]` or `[T A + 'a]`, is a
+`,` or the `]`, so `[T: A B]` is the unclosed-list `ErrorBadTok` rather than a
+second parameter. A lifetime after a `+`, `[T + 'a]` or `[T: A + 'a]`, is a
 lifetime bound, not an annotation (`parseBoundAdd`): a function's go to the
 `bounds` order `parseFn` adds to its signature's, and a generic type's are
 refused, `ErrorLifetimeBound`.
 
 **A function signature is a bound too**, written bare after `fn`: the first
-annotation or one after a `+` (`F fn(a &T, b &T) i32`), and the name after
+annotation or one after a `+` (`F: fn(a: &T, b: &T) i32`), and the name after
 `is` in a `where` clause. `parseFnBound` reads it as the signature after `&fn`
 is read (`parseFnSig` with `reftype` set, then `parseFnSigSettle` as a type: a
 parameter may be written as its type alone), with `inlist` set so that a comma
@@ -197,34 +245,51 @@ bound and not a (retired) plus-term type. It keeps the text it was written as
 (`FnSigNode.spelled`) for messages. The node is a `FnSigNode` in `annot` or as
 the `typ` of the clause's `IsNode`, where a trait's name would be.
 
-**A macro and a generic module take none.** There the comma is required, and a
-second name straight after the first is refused with `ErrorGenParmConstr`,
-reported at that second name: `[a i32]` would be a typed macro parameter, and
-read as two parameters it would become an arity complaint about the macro's
-uses. Recovery skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so
-a whole `+`-combined annotation costs one diagnostic and each parameter carrying
-one is reported (a signature's own parentheses are skipped whole). The parameter survives; whatever followed its name is dropped.
+**A generic module takes none.** There the comma is required, and a second
+name straight after the first is refused with `ErrorGenParmConstr`, reported at
+that second name. Recovery skips to the next `,` or `]`, stopping at `;`, `{`,
+`}` or EOF, so a whole `+`-combined annotation costs one diagnostic and each
+parameter carrying one is reported (a signature's own parentheses are skipped
+whole). The parameter survives; whatever followed its name is dropped.
 Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
+
+**A macro reads its brackets itself** (`parseMacro`, `parseMacroParmList`): one
+list is its value parameters, `macro m[a: i32, b: lazy T]`; two are its type
+parameters and then its value parameters, `macro m[T][a: T]`, the second list
+possibly empty, `macro three[T][]`. Each entry is a name and, after a `:`, a type
+(`parseTypeReq`, with `inlist` set so a comma after a function reference's
+return type ends the parameter), `lazy` before the type setting `FlagLazy` —
+a contextual word, read only there, so a module or a name called `lazy` stays
+legal. What an entry may be is decided once the list it is in is known: a type
+parameter is a name alone (a constraint on one is `ErrorGenParmConstr`, not
+built); a value parameter is typed (`ErrorMacroParmType`), except `self`
+first in a macro declared in a type (`member`), which is the receiver
+expression as it is and takes no type and no `lazy` (`ErrorMacroSelfType`).
+`[a i32]`, the type without its `:`, is `ErrorBadTok` at the second name, the
+parameter taken as typed so that it is not reported again; recovery is the
+module list's, except that a list left open at a `{` ends the parameter
+silently, the missing `]` reported once. An empty first list is
+`ErrorNoGenParms`.
 
 **`parseWhere`** reads the `where` clause, which stands just before the block:
 after a function's signature (and `inline`), and after a type's name, type
 parameters and `is`/`extends` clauses. It is an expression over clauses, as an
-expression is over values: `or` of `and`s of terms (`parseWhereOr`,
-`parseWhereAnd`), so `and` binds tighter, and a term (`parseWhereTerm`) is `(`
+expression is over values: `||` of `&&`s of terms (`parseWhereOr`,
+`parseWhereAnd`), so `&&` binds tighter, and a term (`parseWhereTerm`) is `(`
 a whole condition `)`, `Ident is Name (+ Name)*`, each name read by
 `parseTypeName`, a lifetime comparison, or a lifetime bound, `Ident + 'a`, or a
 lifetime after a `+` in an `is` clause, `T is Name + 'a` (`T is 'a` is
 `ErrorWhereForm`: `T` is no lifetime). A comparison and a bound go to the
 declaration's order and stand in the condition as a marker
-(`parseLifeClause`), so an `or` over one is found and refused,
-`ErrorLifetimeOr`, as is a `not` before a comparison; a `not` before a bound's
-subject is the `not` that is refused everywhere. The condition's top-level `and`s are split into the list's
+(`parseLifeClause`), so a `||` over one is found and refused,
+`ErrorLifetimeOr`, as is a `!` before a comparison; a `!` before a bound's
+subject is the `!` that is refused everywhere. The condition's top-level `&&`s are split into the list's
 elements (`parseWhereAdd`), appended to the function's `where` or the type's
 `GenericInfo.where`. Every other shape is `ErrorWhereForm`, the clause adds
 nothing, and the rest of it is skipped to the block: a subject that is not a
 name followed by `is` (a relation, `T < Y`; a constraint on a type expression,
-`Option[T] is Node`), `not` before a clause or after its `is`, `is` with no name
-after it, an `and` or `or` with no clause after it, and a `(` never closed. A type
+`Option[T] is Node`), `!` before a clause or after its `is`, `is` with no name
+after it, a `&&` or `||` with no clause after it, and a `(` never closed. A type
 with no type parameters writing one is `ErrorWhereNoParms` here; a function's is
 known only at name resolution.
 
@@ -233,15 +298,15 @@ known only at name resolution.
 functions, so it takes the same forms and refuses the same ones, and also a
 lifetime comparison, which no instance could decide; the refusals name it a
 condition on an `is` entry (`parseInIsCond`). It is kept whole, one condition, not
-split at its `and`s, since it decides one entry rather than listing requirements.
+split at its `&&`s, since it decides one entry rather than listing requirements.
 `parseStruct` holds the entry apart, in `StructNode.condis`, as a placeholder
 field whose `vtype` is the trait and whose `value` is the condition; it is never
 the base, wherever it is written. A refused condition drops its entry, and
 recovery skips to the next entry, the type's `where` or its block. A `where` after
 the list is the type's requirement, as it always was.
 
-**The inline form takes no `or`.** `[T A + B]` requires every trait it names, and
-`parseGenericParms` refuses `or` after them, `ErrorGenParmOr`, dropping that
+**The inline form takes no `||`.** `[T: A + B]` requires every trait it names, and
+`parseGenericParms` refuses `||` after them, `ErrorGenParmOr`, dropping that
 parameter's annotation and skipping to its `,` or `]`: a choice is written in a
 `where` clause [Jon 27 Sep].
 
@@ -285,17 +350,19 @@ given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
 condition on an `is` entry), or a type that is neither a generic type nor a trait
 (`genericNamedType`): `where T is bool` [Jon 27 Sep], or a type written out as an
 instance (`genericIsTypeInstance`: a reference type, a call whose head names a
-generic type, or a region applied to a type, `So[str]`, whose declaration is asked
+generic type, or a region applied to a type, `Uni[str]`, whose declaration is asked
 by what its `is` list wrote, `regionStructWritesRegionRef`, since it need not be
 resolved yet), in a `where` clause and not in a condition on an `is` entry. The inline slot takes the
-same, `[T, S Stack[T]]`. The arguments are resolved with every parameter hooked
+same, `[T, S: Stack[T]]`, and a name or instance that is an actor trait's handle
+(`genericNamedActorTrait`), which an actor's handle that conforms meets as well as
+the handle itself (`actorTraitMeets`, in `genericConditionValue`'s last two cases). The arguments are resolved with every parameter hooked
 (`genericParmsNameRes` hooks them all, then resolves what follows each), so a
-bound names a parameter written after it as well as before: `[S Stack[T], T]`. A generic trait named
+bound names a parameter written after it as well as before: `[S: Stack[T], T]`. A generic trait named
 with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTrait`
 in a clause, each saying to give the arguments. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
 that bound nothing was reported as unknown where it was resolved. A condition
-with any clause refused is dropped whole, since an `or` missing a side would say
+with any clause refused is dropped whole, since a `||` missing a side would say
 something else. What is left is the list, the annotations' clauses first. Only
 the `where` clause may name a type; in the inline slot a type means a value
 parameter (Shape, above). A function that is neither generic nor a member of a
@@ -340,7 +407,11 @@ generic parameter (`R[mut, T]`), and `ttupleNameRes` lets it vote with neither
 side (so `(T, i64)` is a type tuple, not a mix) while `allocateQuesNameRes`
 leaves `?T` the `Option[T]` type instead of refusing it. A macro's parameter is
 the same declaration, so a macro given a value still clones a value: every
-re-decision flips only an operand that was not a type and now is.
+re-decision flips only an operand that was not a type and now is. The refusal
+`allocateQuesNameRes` deferred is made at the clone's type check: it marks the `?`
+node `FlagQuesProvisional`, and `fnCallTypeCheckNode` refuses one whose operand
+is still no type once the argument is in (`'?' is not valid here.`), a value
+given to a macro's `?a` among them.
 
 ### How a cloned name gets re-pointed — two independent mechanisms
 
@@ -404,7 +475,7 @@ never misses the memo and never expands again. **A use given type arguments is
 the exception**: `Box[i32]` inside `Box[T]` names another instance, and `Box[T]`
 names this one through the memo, so `cloneFnCallNode` puts the template back as
 the head of any call whose arguments are types (`fnCallHasTypeArgs`). A
-construction or a variant's literal — `new Box(v)`, `Mb.No` — builds this
+construction or a variant's literal — `Box(v)`, `Mb.No` — builds this
 instance and stays mapped. Only a generic
 *type* is reserved: a generic function named bare in its own body is a call whose
 type arguments are inferred, as it is anywhere else. A generic *module* maps its
@@ -412,6 +483,13 @@ own name to the instance too (`modInstantiate`), without a reservation — the
 instance module exists before its declarations are cloned — and
 `cloneFnCallNode` puts the generic back the same way, so `stack[T].count` inside
 `stack[T]` reaches this instance through the memo and `stack[f64]` another.
+A generic *type* the module declares is the exception to the exception: the
+module's instance maps it to the instance's copy, which `cloneStructNode`
+keeps generic (`CloneState.modinst`: its own parameters hooked to themselves,
+a fresh memo, its `where` and conditional `is` entries copied for its own
+instances to decide), so `Pair[i32]` in the module's body stays mapped to that
+copy, the generic its instances are made from, rather than put back to the
+generic module's original.
 
 Not yet built: a generic enum's variant that an **extension** copies
 (`structEnumCopyVariant`). The copy is cloned from the base's variant template
@@ -442,7 +520,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    against its argument's type (`genericInferType`), capturing by `Name` the
    argument's type wherever the parameter's names a generic parameter. The match
    descends through a pointer, a reference and an array reference to what each
-   points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
+   points at (`p: *T` given a `*Fin` captures `Fin`), accepting both the type
    tags and the template's dereference, borrow and allocate tags (Clone,
    above). A managed
    reference type, `Rc[mut, T]`, is still the call it was written as, and
@@ -454,9 +532,12 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    matches an argument that is an instance of the same generic, found in the
    generic's memo, type argument by type argument; a variant passed for its
    enum is matched as its enum's instance. A function signature, reached
-   through a function reference parameter (`f &fn(a A) R`), matches the
+   through a function reference parameter (`f &fn(a: A) R`), matches the
    signature of the function the argument references, each parameter type and
-   then the return type, provided both have as many parameters. An argument
+   then the return type, provided both have as many parameters. A tuple type,
+   `(P, P)`, matches a tuple of as many elements, element by element (a template
+   holds a tuple of type parameters as a value tuple, so both tags are
+   accepted). An argument
    type naming a generic's own type parameter — the signature of `&half`, a
    generic function not instantiated — captures nothing. Region and permission
    otherwise take no part: the instance's own check of the call judges them. Any other
@@ -472,7 +553,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    use keeps the `FlagQualified` of the name it stands for, so the second is
    never rewritten to `self.pick` (`genericKeepQualified`).
 
-   **A type parameter that only a bound names** — `T` in `[T, S Stack[T]]` — is
+   **A type parameter that only a bound names** — `T` in `[T, S: Stack[T]]` — is
    inferred last, from the bound (`genericInferFromBounds`, for a function, a
    generic method and a generic type's literal), when a slot is still empty after
    the arguments. For each clause of the `where` list whose name is a generic trait
@@ -485,16 +566,21 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    capture the function's. It fills empty slots only and ignores a disagreement, so
    the constraint, decided afterwards as ever, is what refuses a type whose
    methods contradict one another, naming the method. A slot an argument already
-   filled stays. No associated type is
-   involved: a structural trait has no impl to look an answer up in, so the
-   methods are the only place it can be read. A signature bound, `F fn() T`, is
+   filled stays. A structural trait has no impl
+   to look an answer up in, so the methods are the only place it can be read;
+   that is also where an associated type is read (Associated types, below), and
+   what its bound says of the trait's other parameters is read in turn off the
+   associated type's own methods (`genericInferFromBoundsDepth`: `Cursor is
+   Iterator[T]` gives T as what the cursor's `next` gives). A method the type
+   has only folded in, a list's `split` lent from its body Array, is matched
+   through its alias (`genericMatchMethodArity`). A signature bound, `F: fn() T`, is
    read the same way off the argument: a function type's signature is matched
    with the bound's whole (`genericInferType`'s signature case), a struct's
    `()` method (the one candidate with the bound's parameters and a receiver)
    after its receiver.
 
    **An array or a slice given for a parameter bounded by a generic trait** —
-   `xs &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
+   `xs: &C` with `C: Iterable[A]`, given `&arr` or a `&Array[T]` slice — has no
    struct for `C` to be: a slice names no type there, and an array has no methods
    of its own to read the bound off. `genericInferArrayBound` captures `C` as the
    body `Array[T]` of the element (`fnCallArrayBody`, the instance core declares,
@@ -504,19 +590,21 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    clause naming a generic trait; any other parameter of the shape `&T`, given a
    slice, is matched as ever.
 
-   **An unsuffixed integer literal passed for a bare type parameter** (`v T`;
-   `ULitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
+   **An unsuffixed number literal passed for a bare type parameter** (`v: T`;
+   a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
-   wanted. `genericInferFnParms` runs in three steps: every other argument, then
+   wanted. `genericInferFnParms` runs in three steps: the receiver, if one is
+   given, and every other argument, then
    the bounds (`genericInferFromBounds`), then the literals. A literal meets a
    slot already given by taking it, where `iexpMatches` accepts it as that type
    (the call's own check then converts it and judges its range,
    `ErrorLitRange`), else `ErrorInvType` "Inconsistent type"; it fills an empty slot
-   with its own type, `i32`, only when nothing else did. So `fill(&mut box, 8)` on
+   with its own type, `i32` or `f64`, only when nothing else did. So `fill(&mut box, 8)` on
    a stack of `i64` types the 8 as `i64`, and `max(big, 6)` follows `big`, in
    either order. Only this shape defers: a literal for `&T` or `Box[T]` matches
-   nothing anyway. A float literal has no such flag and is an `f32`, as it is
-   anywhere. A type literal's values defer the same way
+   nothing anyway. A float literal defers the same way, and
+   `second(x, 0.1)` with an `f64` or `f32` `x` types the 0.1 as `x` is. An expression of
+   literals is one literal (literals.md). A type literal's values defer the same way
    (`genericInferStructParms` leaves such a literal, written by position or by
    name, to `genericInferStructLiterals`, which runs last), so `Some(5)` and
    `Pair[a: 1i64, b: 2]` agree on one type.
@@ -539,8 +627,8 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    expectation the result does not match captures nothing and the call is judged
    as with none. The step sits after the arguments and the bounds and before the
    literals take their default, in a function and in a type literal alike, so
-   `imm n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
-   `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. A slot still
+   `let n: i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
+   `genericMethodInstance`, and `typeLitNewCheck` for `Box(5)`. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
    follows.
@@ -565,11 +653,25 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    or `!=`, is checked after the other operand and wanted as its type, so `None == x`
    types the `None` as `x == None` does.
 
+   **A variant of a non-generic enum given to a generic** (`Err(Fault.SoldOut)`,
+   `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
+   `fnCallArgIsCtor` is true for it too, so long as no function call is among its
+   values (a call would change the order narrowing sees). It names no type parameter of
+   its own, so where the call goes may say its place is the enum: `genericFnArgExpect`
+   / `genericStructArgExpect` answer `Fault`, and `iexpCoerceIn` widens the variant
+   to it before the call's inference reads the argument's type, so `E` is `Fault`
+   and not `Fault.SoldOut`, as when a variant is passed to a parameter of its enum.
+   With no expected type the answer is none, the argument is checked as it always
+   was, and the type argument is the variant's own type.
+
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
 only from the receiver's type ([fncall](fncall.md), "Selecting a candidate"):
-`genericMethodInstance` infers from the arguments after `self`, or takes the
-written type arguments, and memoizes as a call does. A method's instance is
+`genericMethodInstance` infers from the receiver, matched against `self` as the
+call will borrow or dereference it (`genericInferReceiver`), and the arguments
+after `self`, or takes the written type arguments, and memoizes as a call does.
+A method named bare inside its type's braces has no receiver written, and
+infers from its arguments alone. A method's instance is
 type checked with its owner as the walk's type, whatever type the call is in,
 as a method reached by demand is. A generic method copied with its type — into
 a generic type's instance, or a trait's default into an implementer — is still
@@ -597,6 +699,17 @@ A type argument is the use's own source, resolved where it is written: `cloneNod
 clones one substituted for a generic parameter with no `selftype`, so a `Self` in it
 (a default naming `Step[T, Self]`) stays the type the default was taken into and is not
 repointed at the instance being made (`Step`).
+An `inline` default of a trait with a body is a template too, as a generic one is:
+it is not type checked for the trait (`structCheckMembers`: `Self` is the trait there,
+which holds nothing by value, so a default taking `self` by value and naming `Self` in
+its result, `Iterator`'s `indexed`, would be refused), not compared when a type meets
+the trait structurally (`genericDemandMatch`), and its copy in a type that declares the
+trait is type checked when a call reaches it (`structIsInheritedInlineDefault`,
+`fnCallDemandCandidates`), not with the type. Made for every type it would make a cursor of
+every cursor's items (`IterIndexed[T, Self]`, whose own `indexed` is a cursor of it),
+without end, and would refuse a cursor whose items hold a brand (a `List` of
+`&'=a mut R`) for a method nobody called. A method the type declares itself under the
+name still replaces the default, as for a generic one.
 Not yet built: a trait's public generic method met by a generic method the type
 declares itself. `structCheckTraitReqs` compares the requirement with that
 method by `fnSigVrefEqual`, and `itypeIsSame` finds no two
@@ -657,7 +770,7 @@ instance.
 
 ### Value parameters
 
-**`[N usize]` is a generic parameter whose argument is a number.** Name
+**`[N: usize]` is a generic parameter whose argument is a number.** Name
 resolution (`genericConstraintsNameRes`) takes a parameter whose annotation is
 an integer type out of the constraints and records the type in
 `GenVarDclNode.valtype`; a float, `bool` or `char` type, a second annotation
@@ -676,7 +789,7 @@ in the brackets, `dot[3](a, b)`, or inferred: `genericInferType` has an
 captures the number where the parameter's size is a use of a value parameter
 (`genericCaptureValue`; two sizes for one parameter are `ErrorGenValueClash`) and
 goes on into the element types, so nested arrays and a slice of arrays give a
-number each. A value parameter used as a whole type, `x N`, captures nothing
+number each. A value parameter used as a whole type, `x: N`, captures nothing
 (`genericCaptureType`).
 
 **`genericSubstitute` takes the bracketed list of a function with a value
@@ -707,24 +820,83 @@ one finds them (`fnCallSliceBodyOf`) and lowered the same way
 (`fnCallLowerSliceMethod`), so `s.m[3]()` on a slice reaches a generic method of
 `Array[T]` taking a number.
 
+### Associated types
+
+**A trait's `type Cursor: Iterator[T];` is a parameter of the trait that no use
+writes.** `parseAssocType` (a trait's body, `type` a contextual word read only
+before a name) appends a `GenVarDclNode` marked `FlagAssocType` after the written
+parameters, creating the trait's `GenericInfo` if it had none, its bound in
+`annot` as a type parameter's is, so `genericConstraintsNameRes` folds it into
+the trait's `where` (`Cursor is Iterator[T]`); a bound is optional (`type
+Piece;`). Inside the trait it is used as any parameter is. Every instance of
+the trait is made at all its arguments, `Iterable[i64, ListIter[i64]]`, and a
+type meets it, as ever, by fitting that instance (`structMatches`); its name in
+a message leaves the associated ones out (`genericTypeNameCat`).
+
+**A use writes the other arguments alone** (`genericWrittenCount`), `C:
+Iterable[T]`, and **what it leaves out is read off the type meeting the trait**
+(`genericAssocRead`): an alias the type declares under the name, `alias Cursor
+= Up;` in its body (an `AliasDclNode` in its namespace and member list, checked
+where it is asked for), else the type's methods matched with the trait's as a
+bound's are (`genericInferTraitMethods`, the loop `genericInferFromBounds` uses):
+the method mentioning it says it, `iter`'s return type. Nothing is built: it is
+the alias's target or what the method gives, a type the program declares. The
+trait's own constraints are then decided at the full arguments, silently, so a
+cursor that is no `Iterator[T]` is a type that does not meet the trait, and
+`genericAssocWhy` holds why. A trait whose every parameter is associated is
+written bare, `C: Holder`, which `genericAssocBareUse` turns into its use with
+no written arguments wherever it is resolved as a bound or an `is` entry.
+
+Where the type is known, the use is completed (`genericAssocComplete`) and then
+checked as the instance: a clause, at the clause's subject
+(`genericClauseCloneFor`, from `genericConditionValue`, which answers false where
+the subject does not say them, and from the unmet-requirement report, which says
+why); an `is` entry, at the declaring type (`genericAssocCompleteIs`, from
+`structTypeCheck`, `ErrorInvType` where it does not). **`genericMemoize` takes a
+trait's full argument list only from a completed use** (`genericAssocCompleted`,
+the node being checked): one written with the other arguments alone has no type
+to say the rest, which is a virtual reference's case, `&<Iterable[i64]`, refused
+as not built (`ErrorAssocUnsaid`; `itypeRefuseBareGeneric` for a bare `&<Holder`),
+and one written with them all would fix them, an equality constraint, refused by
+count (`ErrorArgCount`, as `genericTraitInstanceVet` refuses it in a bound). The
+named form, `Iterable[i64, Cursor = u8]`, is refused by the parser
+(`parseIndexArg`, `ErrorAssocEquality`).
+
+**Generic code names it through the parameter, `C.Cursor`.** Each kept clause
+whose subject is a type parameter and whose trait declares associated types is
+noted (`genericAssocBoundNote`), and `fnCallNameRes`, meeting `C.Cursor` (a path,
+no call) where C's bounds declare `Cursor`, rewrites it to `Iterable[T].Cursor(C)`
+(`genericAssocPathNameRes`): the bound as written, copied as uses of what it names,
+with the parameter as its one argument. A name no bound declares, or one two
+traits each declare, is `ErrorUnkName`; a parameter whose bounds declare none
+keeps the path as before. In the template the path is a provisional type
+(`inodeIsProvisionalType`); in an instance, its argument substituted, it is a type
+(`genericAssocPathIsType`), so the type-or-value votes the clone takes again
+(`cloneTupleNode`, `fnCallHasTypeArgs`) read it as one; and its type check
+(`genericAssocPathTypeCheck`, first in `fnCallTypeCheckNode`) reads the
+associated type off the argument as above and stands that type in its place. It
+is resolved per instance, as cloning substitutes for name resolution.
+
 ### Constraints
 
 **Evaluated, never solved** (Principles). A clause naming a type, `T is bool`,
 is met by that type alone (`itypeIsSame`); so is one written as an instance,
-`K is So[str]` or `U is Option[T]`, made at the arguments first, as a generic
+`K is Uni[str]` or `U is Option[T]`, made at the arguments first, as a generic
 trait's is (`genericClauseCloneChecked`), so that it is the type the program's
-other uses of the spelling name (`So[imm, str]`, its default permission given).
+other uses of the spelling name (`Uni[imm, str]`, its default permission given).
 Every other question a clause asks is
 `genericTypeIs(type, trait)`, which is what `is` answers of a type:
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
   (`itypeIsMove`); `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
-  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `bool`; and `Pointer`
+  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is neither `bool` nor `char`;
+  `Float` is `f32` and `f64`, `Signed` the signed integers and the floats,
+  `Unsigned` the unsigned integers, `Numeric` all of those; and `Pointer`
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference; and core's `Hash`, a trait with a method, is granted to
   every integer type and `bool` as well (`coreIsHashTrait`; [struct](struct.md),
-  "Hash"), and to an owner of `str`, `So[str]` and `Rc[str]` (`genericIsTextOwner`).
-  `Integer or bool or Pointer` is exactly what an atomic
+  "Hash"), and to an owner of `str`, `Uni[str]` and `Rc[str]` (`genericIsTextOwner`).
+  `Integer || bool || Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
@@ -738,7 +910,7 @@ Every other question a clause asks is
   an unbounded parameter refuses every borrow. A lone `T is Sendable` that
   is unmet is `ErrorNotSendable`, not `ErrorWhereUnmet`: its message names what
   binds the argument and where it sits, which part of the borrow rule a borrow
-  failed (`genericNotSendableWhy`), and says that a local's `mut` is not
+  failed (`genericNotSendableWhy`), and says that a local's `var` is not
   what is checked. One that was met while a struct the argument reaches was
   still being laid out is noted (`genericSendableNote`) and judged again once
   type check has finished (`genericSendableCheckAll`, from `conec.c`).
@@ -750,7 +922,7 @@ Every other question a clause asks is
   requirement and each candidate the type has for it (`fnCallDemandCandidates`),
   since signatures compare only once checked. Under `Monomorph` a requirement's
   `Self` is the type asked about (`fnSigVrefEqual`'s `selftype`), since the
-  instance calls that type's own method: `o &Self` is met by its `o &Self`. The
+  instance calls that type's own method: `o: &Self` is met by its `o: &Self`. The
   match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.
@@ -769,17 +941,20 @@ Every other question a clause asks is
   are different traits, and a type may fit both.
 
 **A signature bound is no trait.** A clause whose `typ` is a `FnSigNode`
-(`F is fn(a &T, b &T) i32`, from the inline slot or a `where`) is resolved as
+(`F is fn(a: &T, b: &T) i32`, from the inline slot or a `where`) is resolved as
 the signature after `&fn` is, its types naming the generic's parameters, and
 vetted by `genericConditionNameRes` (refused in a condition on an `is` entry,
 `ErrorUnbuiltIsCond`). At the arguments `genericConditionValue` makes the
 signature as an instance written out is made (`genericClauseCloneChecked`: the
 parameters substituted, the copy checked) and asks `genericSigMeets`: a function
 type, or a reference to one (`genericFnTypeSig`: what a plain function referenced
-is the argument as through `&F`, and by value), is met by a signature `fnSigEqual`
-to it, a struct by a `pub` `()` method that is not generic and
-whose parameters after the receiver, and whose return type, are `itypeIsSame` to
-the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
+is the argument as through `&F`, and by value), is met by a signature that meets the
+bound's (`fnSigMeets`: the one rule every callable meets a signature by, nodes/struct.md,
+"A method meets a requirement as a subtype"), a struct by a `pub` `()` method that is not
+generic and whose signature after the receiver meets it (`genericParensMethod`,
+`genericMethodTakesSig`, `fnSigMeetsMethod`). A value held by value that is not one
+layout with the bound's (a variant for its enum) is the reason given under
+`ErrorFnRefByValue` (`genericSigMeetWhy`). Nothing else
 meets it, and the receiver's permission is not asked there: where the generic takes
 the parameter as `&F`, the call asks (`genericCallablePermCheck`, after the type
 arguments are inferred and before the instance is made), and a `()` taking `self
@@ -792,19 +967,19 @@ finds the bound (`genericParmBound`: the clause whose subject is the parameter
 the argument's parameter is, or is a reference to), reads the other type
 parameters off the call's other arguments (`genericInferType`), and a parameter
 named only in the bound of another those settled (`T` in `[T, V RandomAccess[T],
-F fn(x &T) bool]`) off that argument's methods (`genericInferFromBounds`, as the
+F: fn(x &T) bool]`) off that argument's methods (`genericInferFromBounds`, as the
 call's own inference reads it), and clones the bound with them
 ([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
 spelling the signature as written (`spelled`), as it comes to here
 (`genericFnSigCat`) and what the argument has instead (`genericSigMeetWhy`).
 
-**A condition is evaluated whole** (`genericConditionValue`), `or` and `and` as
+**A condition is evaluated whole** (`genericConditionValue`), `||` and `&&` as
 in an expression, the right side asked only where the left does not decide it,
 to one of three values: true, false, or unknown — turning on a parameter not
 bound here. A lone clause is decided where its subject is one of the parameters
 being bound, with that parameter's argument; one over a parameter bound earlier
 (its subject substituted by the clone) was decided then, and is unknown here.
-Inside an `or` or an `and` a substituted subject is asked as it stands, since
+Inside a `||` or a `&&` a substituted subject is asked as it stands, since
 the whole is decided here. `genericUnmetCondition` finds the first condition
 that is false; an unknown one is left to where its parameter is bound. So a
 generic method's condition joining its type's parameter and its own, `where T is
@@ -815,27 +990,39 @@ exists there — and decided, as a requirement, at the method's instance.
 `genericMemoize`, on a memo miss and before anything is cloned, asks
 `genericRequirementsMet`: an unmet condition is `ErrorWhereUnmet` at the use
 asking for the instance — the call, the type literal, the type named — naming
-the generic, the clause and the argument, or, for a condition joined by `or` or
-`and`, the whole condition (`genericConditionCat`) and the arguments it turned on
+the generic, the clause and the argument, or, for a condition joined by `||` or
+`&&`, the whole condition (`genericConditionCat`) and the arguments it turned on
 (`genericBindingsCat`), and an error node stands for the instance,
 so nothing inside the generic is checked against arguments it was never meant
 for. A variant answers to its enum's clauses. A type position holding the error
-node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A
+node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet; so
+does one whose check reported something and left no type (a struct in brackets,
+`Box[3]`): `itypeTypeCheck` says "Expected a type" only when checking said
+nothing (judged by the error count around that one type's own check),
+`arrayTypeCheck` says "Element type must be a known type" only when checking the
+element said nothing, and a field
+read through a variable of `errorType` is not refused again
+(`fnCallTypeCheck`). A
 clause naming an instance of a generic trait says why the argument does not fit
 it (`genericFitWhy`): the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to
-(`genericSigCat`: `pop(self &mut) Option[i64]`), then a field likewise; a non-struct
+(`genericSigCat`: `pop(self: &mut) Option[i64]`), then a field likewise; a non-struct
 is told only a struct fits by its methods. A method the type has only as a generic
 one is said so and its signature is not spelled, since it is written in type
 parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
 the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
-unchanged. A failed
+unchanged. A clause naming an instance of a generic enum (`where U is Opt[T]`)
+is named the same way and explained no further: an enum is closed, so a type is
+it only by being it or one of its variants, never by its methods or fields. Its
+methods are no requirements (spelling a whole-enum method, one whose receiver
+names the enum, asks a name of a node that has none, `ErrorUnreachable`), and
+its tag is no field a type could declare (`generic_typecheck_where_enum_instance`). A failed
 instance is never memoized, so each use asking for it is refused where it is.
 **An argument that is `errorType` is refused without a report.** A type
 parameter inferred from a value whose initializer was already refused
-(`imm f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
-`[F fn(a i64, b i64) bool]`) is bound to `errorType`, which meets no clause and
+(`let f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
+`[F: fn(a: i64, b: i64) bool]`) is bound to `errorType`, which meets no clause and
 has no name to say so with: the message asked `inodeGetName` of it and ended in
 `ErrorUnreachable`. `genericRequirementsMetIn` answers 0 for it with nothing
 printed, the report that made the value bad being the one (`closure_typecheck_cascade_imm`).
@@ -860,18 +1047,38 @@ argument is still being laid out** (`structLayoutUnsettled`: a struct whose
 check has not ended, an enum with a variant not yet laid out, or a tuple, an
 array or an instance of a generic holding one in its elements or arguments),
 when whether its
-values move is not yet known: `struct Node { kids List[Node]; }` makes
+values move is not yet known: `struct Node { kids: List[Node]; }` makes
 `List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
-Node that has not yet found it moves. Then `genericAbsentMembers` does not
-decide the members with a clause (`late`, handed on as `CloneState.late`):
-`cloneStructNode` copies them and reports each beside its copy
-(`CloneState.latepairs`), and `genericClone` queues `genericLateWhere` as a
-check that reads layouts (`structDeferCheck`), which runs once no layout is in
-flight and before any member is checked. It lays out an argument no layout has
-reached, evaluates the clauses, and takes the members that fail out of the
-instance (`structRetireMember`: its member list, its namespace, its overload
-set). Nothing else reads those members in between, since members wait for the
-layouts to finish. The `is` entries are not deferred: they are the layout. A call on the instance
+Node that has not yet found it moves. Then `genericAbsentMembers` decides a
+member's clauses only as far as no type is asked what it is
+(`genericMemberWhereNow`): a clause naming a type, `K is String` or `K is
+Uni[str]`, reads no layout and is answered at once, so the member is left out or
+kept as at any other time. A clause naming a trait or a signature waits
+(`WhereLate`), unless the rest of its `||` or `&&` decides it. A member with one
+that waits is not decided (`late`, handed on as `CloneState.late`):
+`cloneStructNode` copies it and reports it beside its copy
+(`CloneState.latepairs`), and `genericClone` points the instance at what waits
+(`StructNode.latewhere`) and queues `genericLateWhere` as a check that reads
+layouts (`structDeferCheck`), which runs once no layout is in flight and before
+any member is checked. It lays out an argument no layout has reached, evaluates
+the clauses, and takes the members that fail out of the instance
+(`structRetireMember`: its member list, its namespace, its overload set).
+
+**Members are read before the queue gets there.** A body can be checked inside
+a layout in flight: deciding a bound a type fits structurally checks its methods
+(`genericDemandMatch`), and that happens wherever the instance is made — a
+field's type, a signature, a global's declared type, each held as a layout in
+flight. `g: Host[Svc]` with `S: Hosted` checks Svc's `turn` there, and a call
+in it on `Cells[Req]`, made while Req was not yet laid out, would select a
+member `V is Copy` leaves out, and check its body at Req
+(`generic_global_where_member`, `generic_field_where_member`). So a read of an
+instance's members decides them first (`genericLateWhereNow`, from
+`iNsTypeFindFnField`, `structMatches` and `genericTypeIsHow`): it lays out each
+argument no layout has reached, as the queue would, and decides them when no
+argument is still unsettled, the instance no longer pointing at what waited, so
+the queued check finds nothing to do. An argument in flight cannot be answered
+yet, and an instance's own members are not changed while it is laid out; then
+they stay undecided until the queue. The `is` entries are not deferred: they are the layout. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
@@ -891,7 +1098,12 @@ declared one, so a type or a constraint asking before the instance is laid out
 is answered. An entry not met leaves the instance without it, and so, for Move,
 copying unless another rule makes it move: the entry can add Move, never remove
 it. `genericConditioned` counts a `condis` as reading the arguments' layouts, so
-an instance made as a reference's target settles its arguments first. An unmet
+an instance made as a reference's target settles its arguments first. When only
+a member's clause reads them (`genericConditioned` with `typelevel` set is false), an
+argument that is itself an instance still waiting to be laid out
+(`genericArgWaiting`: `Option[Node]` in `List[Option[Node]]`, made inside Node's
+own layout) is left unsettled, and the member is decided late as it is for an
+argument in flight: settling it would lay Node out inside itself. An unmet
 requirement whose argument is such an instance says why
 (`genericCondIsWhy`): the entry's condition is false there, or, asked for
 `Copy`, an `is Move if` condition is true.
@@ -905,21 +1117,136 @@ unwound, without reporting again: each level the refusal returns through would
 otherwise start its next expansion down to the limit again, and one that
 expands twice a level would report the limit an exponential number of times.
 
-**Macros differ from generics in three ways**: arguments are never checked for
-being types, never type checked before substitution, and never memoized. That is
-what makes `twice[bump()]` call `bump()` twice, and what lets a macro parameter
-be used in type position. It is also what lets an argument go unevaluated: core's
-`assertDebug[cond]` puts `cond` inside `if isDebugBuild() {...}`, so a release
-build never runs it.
+**Macros differ from generics in three ways**: a value argument is never type
+checked in place before it is substituted or bound, an expansion is never
+memoized, and the type arguments are given at the use — `m[i32](x)`,
+`x.m[i32](y)`, or `three[i64]` where the macro has no value parameters — or
+inferred from the value arguments where the use writes none. Written ones are
+checked only for being types (`macroTypeArgsFit`: some given to a macro without
+type parameters is `ErrorMacroTypeArgs`; the wrong number `ErrorArgCount`; a
+value `ErrorNotType`). Brackets after the macro's name fill its first list: its
+type parameters where it declares them, its value parameters where it does not
+(`twice[x]`, as before). `macroExpand` substitutes the type arguments and the
+`lazy` value arguments together, the type parameters first.
+
+**What the arguments are is asked before the body is expanded**, and never by
+checking an argument twice: type checking lowers and replaces nodes, and an
+expression is checked once.
+
+- **The type arguments a use leaves off are inferred from its plain
+  arguments first, then its lazy ones** (`macroInferTypeArgs`). A plain argument is its binding's
+  initializer, and the binding is a declaration, checked once and marked so.
+  So each binding whose parameter's type names a type parameter is checked
+  first, for real, typed by its argument as `let a = arg` is (marked in
+  `early`), and `genericInferMacroParms` matches those types against the
+  parameters' types as written by the function rule, `genericInferFnParms`
+  itself (a `null` and an unsuffixed number literal wait for the others, then
+  take the literal's own type; their bindings are checked with the block,
+  typed by the parameter). A macro has no return type and no bounds, so
+  nothing else has a say. A binding the type arguments then type otherwise is
+  coerced to its parameter's type (`macroEarlyBindingsFit`; `ErrorMacroArgType`
+  where it does not fit). The block the bindings head passes a checked one by.
+  A type parameter the plain arguments leave open is then said by the lazy
+  arguments whose parameters' types name it: each is checked as a copy
+  (`macroArgTrial`, below), wanting nothing, and a second
+  `genericInferMacroParms` matches the copies' types, starting from what the
+  plain arguments said, so a lazy argument disagreeing with another, or with a
+  plain one, is the same conflict. A copy whose type the trial alone has — a
+  closure's struct, an instance made with one (`closureTrialType`) — says
+  nothing, since the real argument's type is another; a type parameter only
+  such a copy could say is `ErrorMacroLazyInfer`, whose remedy is to write the
+  type arguments or make the parameter plain. A lazy argument whose copy does
+  not check on its own is checked in place, reporting its own error, and the
+  use is not expanded.
+  A type parameter no argument says is `ErrorInvType` ("Could not infer the
+  type parameter T of the macro m", `genericMacroMissingParms`), as is one two
+  arguments say differently ("Inconsistent type for the macro m's type
+  parameters"). A type parameter only ever written
+  (`three[i64]()`) is never inferred. A binding that does not check reports its
+  own error, and the use is not expanded. Since a closure given as a plain
+  argument is checked for real, a type parameter inferred from it is that
+  closure's own struct.
+- **A `lazy` argument is checked against its type on a copy**, once the type
+  arguments are known. `macroArgTrial` clones the argument (`cloneDclPush`, so
+  a declaration inside it is the copy's own) and checks the clone inside a
+  trial (`errorTrialBegin`/`End`, error.h, "A trial": its diagnostics counted
+  and dropped), with narrowing's state saved and restored around it
+  (`narrowFnBegin`/`narrowFnEnd`, the current facts restored inside), so the
+  copy's tests, kills and hidden locals reach nothing outside it. The argument
+  itself is untouched, and is checked where the body puts it. A declaration
+  the copy reaches first — a function not yet checked, a generic's instance for
+  the program's types — is the program's, checked loud and once, and is what
+  the real argument reaches too. What the copy makes for itself — a closure's
+  struct, an instance made with it — is the trial's and is never generated
+  ([type check](../phases/type-check.md), "What a trial makes is not
+  generated"); that is also why a copy whose type is one of those infers
+  nothing.
+
+  The check (`macroLazyArgsFit`): the copy is checked wanting
+  the parameter's type with the type arguments substituted
+  (`macroParmTypeAt`), and coerced to it. One that checks but does not fit is
+  refused at the use, naming the parameter (`ErrorMacroArgType`,
+  `macroArgTypeRefused`), and the use is not expanded; `lazy void` takes a
+  block or statement that gives no value, and refuses a value. One whose copy
+  does not check on its own is left to be checked where the body puts it,
+  which reports it, as before. A plain argument's mismatch is the same
+  diagnostic, reported by its binding's check (`varDclTypeCheck`, for a
+  `FlagMacroBind` variable).
+
+**A plain (not `lazy`) parameter is evaluated once.** `macroExpand` binds its
+argument to a variable first, and the expansion is a block,
+`{ let a: T = arg; body }`, one `let` per plain parameter in the parameters'
+order, so the arguments run once each, left to right, before the body, however
+many times the body names them, and once where it never does. The variable is
+an immutable `VarDcl` of the parameter's name, its type the parameter's with the
+type parameters substituted, its value the argument node itself (not a clone),
+scoped one level in, as the block it heads is, and marked `FlagMacroBind`. The
+parameter is hooked to it rather than to the argument, and `cloneNode` copies a
+use hooked to such a variable as a use of it, keeping the use's own place
+(hygiene costs nothing: the use is bound to the declaration, not to a name).
+The argument is checked against the type as any initializer is, by the `let`
+(`ErrorMacroArgType`, naming the parameter, pointed at the argument), and moved into the
+variable where its type moves. A body that changes the variable — a store into
+it or a part of it, a swap, a borrow to change it, an operator changing it in
+place, a method taking `self: &mut` — is refused with `ErrorMacroParmAssign`,
+since an argument the macro assigns to must be `lazy` [Jon 18 Oct]. Where no
+type is in question it is refused where the macro is declared, so an unused
+macro is refused too: `macroNameRes` sets `macroResolving` for the body, and
+the name resolution of an assignment, a swap, a `&mut` borrow
+(`refNameRes`) and an operator-assign or `<-` (`fnCallNameRes`) calls
+`macroChangeNameRes`, which refuses a change whose place is a plain
+parameter's own storage: the parameter, or a path from it whose every step
+is concretely no reference — a field of a struct value (not a trait, not a
+generic type), an element of an array value (`macroPlaceParm`,
+`macroValueTypeDcl`). An operator changing in place also reaches through a
+reference its operand is, so it is refused there only where the operand's own
+type is such a value. Anything else waits on a type — a step that is a
+reference, a type parameter, an index into anything but an array value, a
+method — and is refused in each expansion where the body writes the change
+(`macroParmAssignRefused`, from the permission refusals in `assign.c`,
+`swap.c` and `borrow.c`). A macro with no plain parameter expands to its body
+alone, as before.
+
+A `lazy` parameter, and a macro method's `self`, are substituted whole: what
+makes `twice[bump()]`, its parameter `lazy`, call `bump()` twice. It is also what
+lets an argument go unevaluated: core's `assertDebug[cond: lazy bool]` puts
+`cond` inside `#if #debug {...}`, so a release build never runs it.
+
+**A parameter typed by a trait is refused**, at name resolution, as
+`ErrorGenParmConstr` (`macroParmTrait`): `[a: Ordered]` or an instance of a
+generic trait, the same refusal as a constraint on the macro's type parameter,
+`[T: Ordered]`, since what either would accept waits for generics [Jon 26 Oct].
+An enum, and a reference to a trait (`&Ordered`), are types like any other.
 
 **`srcFile()` and `srcLine()` in a macro's body answer where it is used.**
 `macroExpand` sets `CloneState.srcsite` to the use before cloning the body, and
 `cloneFnCallNode` gives a call to either that place. The place is the outermost
 use (`macroSrcSite`): every node cloned from a body is marked as instantiated by
 the use it expands (`instnode`), so a macro used in a body climbs that chain
-while each link is a macro's use. An argument is cloned with `srcsite` and
-`instnode` cleared, so it keeps the place it was written at and the chain stops
-at it: a macro passed as an argument answers where it is written. Nothing else
+while each link is a macro's use. A `lazy` argument is cloned with `srcsite`
+and `instnode` cleared, and a plain one is not cloned at all, so either keeps
+the place it was written at and the chain stops at it: a macro passed as an
+argument answers where it is written. Nothing else
 in the body moves: a diagnostic about the body, `ErrorInstDepth`'s included,
 still points into it. `intrinsic_srcloc_macro` pins each case.
 
@@ -929,9 +1256,23 @@ which for a member access checks the receiver *before* the arguments and asks th
 receiver's type what the name binds — a macro's arguments must stay unchecked
 until substituted, so the receiver is the only thing checked ahead of the
 lookup. The receiver is inserted at the front of the argument list and
-`macroExpand` substitutes it for `self` like any other argument: a body naming
-`self` twice evaluates the receiver twice. The call is written with parentheses
-or as the bare member (`x.name`); `x.name[i]` indexes what the member names.
+`macroExpand` substitutes it for `self`, as a `lazy` argument is substituted: a
+body naming `self` twice evaluates the receiver twice (`self` is the receiver
+expression as it is [Jon 26 Oct]). The method's plain parameters after it are
+bound once, as any macro's are. The call is written with parentheses
+or as the bare member (`x.name`); `x.name[i]` indexes what the member names,
+except where the macro declares type parameters and what is in the brackets
+are types: `x.name[i32](args)` is then its use, given them, as a generic
+method's is (`fnCallMethodTypeArgs`, for a macro declared in the receiver's type
+itself; one folded in from a field is not reached that way). An operator reaches a
+macro method the same way, `a + b` expanding the type's `` macro `+`[self, o: T] ``
+with `a` for `self` and `b` bound once (`fnCallOperatorMacro`,
+[fncall](fncall.md), "Type check"); so does `!=` through a macro `==` and `+=`
+through a macro `+` where the type declares no method by the operator's own
+name. The receiver is checked before it is substituted, so its clone is checked
+again inside the body: a node that check lowered into a tag it does not walk
+again (`FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, `inodeTypeCheckWalkNode`) is
+passed by as complete.
 Three things follow the method it stands in for. A bare `name` or `name(args)`
 inside a method of the type is rewritten to `self.name…` from the enclosing
 method's parameter 0, and where no method encloses it — a static function of the
@@ -951,6 +1292,82 @@ expansion into an implementing type or variant (`structInheritTrait`) folds
 only `FnDcl` defaults, so an enum's macro is found on the enum's own namespace,
 which is what lets a `match` on its receiver see the enum rather than one
 variant.
+
+**Macros overload by repeating the name** [Jon 26 Oct]. A macro declared under
+a name another macro holds in the same scope — a module (`modAddNamedNode`) or
+one type's namespace (`iNsTypeAddMacro`) — joins that name's set instead of
+being a duplicate: the name stays bound to the first, and `MacroDclNode.more`
+chains the rest in declaration order (a type's instance, and a generic module's,
+rebuild the chain as they copy their members). A name use finds the first, and
+everything that expands a macro asks `macroSelect` first when `more` is set:
+`macroNameTypeCheck`, `macroCallTypeCheck`, `macroCallTypeArgsTypeCheck` and
+`macroMethodTypeCheck`, so an operator reaches it too. The selection is
+`iNsTypeFindMethod`'s rule applied to macros: every candidate of the use's kind
+(a macro method for a use on a receiver, any other for a use without) is asked,
+none wins for fitting better, and exactly one must fit — no fit is
+`ErrorNoCandidate` listing the candidates, more than one `ErrorAmbigCandidate`
+naming two. A candidate is asked in a trial (`macroCandidateFits`), touching
+nothing of the use: each argument is checked once on a copy with no expected
+type (`macroArgTrial`, the same mechanism a `lazy` argument's check uses), and
+the candidate fits when its parameter's type — made as the expansion will make
+it (`macroParmTypeAt`), the type parameters written or inferred from the copies
+by `genericInferMacroParms` — accepts that copy by `iexpMatches` with
+`Coercion`, as a call's argument is matched to a function's parameter. An
+argument that does not check without being told its type (`None`, a closure) is
+asked of each parameter instead. A string literal is also offered as the
+temporary of a type declaring `fromLiteral` (`slitBorrowFallback`), but in a
+second pass, only when no candidate took the arguments in the first. The
+brackets of `m[...]` with no parentheses are type arguments to a candidate that
+declares type parameters and value arguments to one that does not, so
+`macroSetTypeParms` is what name resolution asks. A single candidate of the
+use's kind is not tried: it is expanded, and its own refusals apply. Only the
+chosen macro expands, so a `lazy` argument of a rejected candidate is never
+substituted. A set exports whole: a body that names one reaches every macro of
+the name (`nameUseMarkOne`/`exportReachAdd`). A macro and a function under one
+name are refused, `ErrorMacroMixedSet`, at the second declaration and again at
+the first; a set holds all macros or all functions (whether a mix should ever be
+allowed is open).
+
+### A `#if` on a type parameter
+
+**The conditions of a constraint, asked of the body.** `#if T is Float { .. } #else { .. }` (in a
+generic function, a method, or the braces of a generic struct) reuses the `where` machinery:
+a condition is the same `IsTag` clauses joined by `&&` and `||`, plus `NotLogicTag` for `!` and `!=`
+(`genericConditionValue`, `genericConditionNameRes` and `genericConditionCat` handle it; `T == U` is
+`T is U` for a type `U`, met by that type alone). The template is name resolved once, every branch
+included, so a name in any branch must exist; it is never type checked.
+
+- **In a body**, the chain is an `IfNode` with `FlagIfHash`. `cloneIfNode` → `ifHashClone` clones each
+  condition with the instance's types in place of the parameters and asks
+  `genericHashCondHolds` (true, false, or unknown while a parameter remains that this clone does not
+  bind), and the instance holds a copy of the first branch that holds. An integer-only call in the
+  branch for floats is never type checked for an integer.
+- **In a struct's braces**, a branch's members are in the template under the branch's condition and
+  the negation of the chain's earlier ones: a field's `hashcond`, a method's `where`. A method's
+  condition is the existing one (the member is absent from an instance whose arguments make it
+  false, `genericAbsentMembersIn`); a field's is added to the same pass, `cloneStructNode` leaves
+  an absent field out and sets the instance's field count to match. A field's condition is decided
+  at once: the wait for a layout in flight (`WhereLate`) is not made for it, and a struct holding one
+  counts at the type level in `genericMembersConditioned`. Only fields and methods carry a condition.
+- **Limits.** The members of two branches share the template's namespace, so their names differ
+  (an `#else` cannot redeclare the field of its `#if`). The locals of a branch are the branch's own
+  block's. Not built: a module's level (a generic module's declarations), an `extern` block, an enum
+  or a trait, and a condition over a region parameter (a region is no generic parameter yet).
+
+### A `#each #f in #fields(T)` in a struct's braces
+
+The template holds each member of the loop once (`FieldDclNode.gen`, `FnDclNode.gen`), under the spelling of
+its name (`#f`, `#name("get_", #f)`), name resolved once like every member (the loop's `T` at the first member:
+`fieldEachSubjectNameRes`). `cloneStructNode` makes the instance's: the fields of a loop pass by pass
+(`structCloneGenFields`), the methods as shells after the written ones and filled afterwards with the pass's
+hooks set. The pass's hooks are the ones a `#each` in a body uses (`fieldEachPassBegin`): `#f.type` and the
+other properties are pseudo generic parameters whose `Name.node` is the field's answer while the member is
+cloned, and `x.#f` is a member name `#f` that `cloneNameUseNode` turns into the field's. A generated member's name
+is the field's with the loop's fixed word (`genNameFor`); a name already in the instance is
+`ErrorMetaGenClash` (`structGenClash`). A generated member's `gen` is cleared in the instance, so the instance is
+an ordinary struct. Not built: a generated member in a plain (non-generic) struct, an enum or a trait, a static,
+macro or alias, a `#if` on a type inside the loop, and a loop inside a loop. An error in a generated member's
+body does not name its pass (a body's loops do, via `EachPass`).
 
 ## Flow
 
@@ -984,7 +1401,9 @@ included), is `linkonce_odr` with
 a COMDAT of kind `any` (`GenlShared`): the package's own instances and each
 importer's are identical, and the linker keeps one copy. A compile with no
 build description is the program's only object, and there an instance is
-internal like every other definition. `dclIsExported` never exports one. What a
+internal like every other definition; so is a small *function* of an instance
+in a release program (`genlInstanceIsPrivate`, generation.md "Linkage"), never
+a global of one. `dclIsExported` never exports one. What a
 library compile does export is each private function, global or type a
 generic's body names (`DclExpandReached`), since the importer's instance calls
 it. `module_build_link` links a package and a program that both instantiate a
@@ -997,7 +1416,7 @@ concrete function's path component is its identifier alone, and so is a trait
 default's cloned into an ordinary implementer — its `instnode` is the
 implementing struct, not a call, so it is a copy rather than an instance. An
 instance's component is wrapped `I…E` around its **type arguments**, never the
-parameter types, so `fn tag[T](a i32)` at `i32` and at `f32` are two symbols;
+parameter types, so `fn tag[T](a: i32)` at `i32` and at `f32` are two symbols;
 and a generic *type*'s instance carries its arguments as an owner, which is why
 `fn tally(self) i64` does not collide across instances. `nameType` spells
 every argument, structural ones included — tuple, array, signature, void, the
@@ -1008,9 +1427,10 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 
 - **`cloneNode`'s generic-parameter substitution re-enters `cloneNode` on a
   *global*** — the parameter name's hooked node — whose value at type-check time
-  need not be what name resolution saw. Its one guard is for the name being
+  need not be what name resolution saw. Its guards are for the name being
   hooked to a `GenVarDclNode` — a template being copied, a macro's or a generic
-  method's — which it copies as a use.
+  method's — or to a macro's binding of a plain parameter (`FlagMacroBind`),
+  either of which it copies as a use.
   Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips
@@ -1035,12 +1455,28 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   use was copied into an instance of that generic.
 - **A `where` list's nodes are expression nodes that are never checked as
   expressions.** Its clauses are the `IsTag` nodes a runtime `p is Mobile`
-  makes, and its joins the `LogicNode`s of `and` and `or`; only name resolution
+  makes, and its joins the `LogicNode`s of `&&` and `||`; only name resolution
   (`genericConditionNameRes`) and the evaluator read them. A walk that type
   checked or generated one would take a compile-time question for a runtime
   test.
-- **Only a struct fits a trait structurally.** A number type meets the markers
-  granted to it and no trait with members.
+- **A struct fits a trait structurally by its declared methods, a number type
+  by its built-in ones** (`genericNumberFits`, `iNsTypeNumberMeets`): `<=>`,
+  `cmp`, `==`, `+` and the rest in corenumber.c. The number's methods hold the
+  number by value and a trait must write `&Self` (Error 1069 refuses `Self` by
+  value), so for number types only a by-value parameter meets a requirement's
+  reference to `Self`, and the call reads the referent. This is interim: the
+  general fix is a by-value `Self` in traits (which `Digester.finish` also
+  wants), and the branch can then go. It is not widened to Copy structs. A
+  trait that requires no method of a value (a marker, or only static functions)
+  is met by a number only by the compiler's grant, so `T.make(x)` through a
+  type parameter whose argument is a number (other than `from`) is still
+  refused (fncall.c, "a number type has 'from'"). `fnSigReqTypeSame` also reads
+  a requirement's default-permission `&Self` as `imm` where `Self` declares
+  Immutable (`str`), as an unwritten permission to such a type is.
+- **A number's `cmp(a, &b)`** is the three-way `<=>` with the second number read
+  through a reference (a `CmpIntrinsic` whose second parameter is a reference;
+  genlexpr.c loads it), so `a.cmp(&b)` in a generic body bounded by `Ordered`
+  reaches it. bool has neither.
 - **A clause naming a generic trait's instance type checks and instantiates
   while the evaluator runs**, so evaluating a condition can instantiate other
   generics and re-enter `genericRequirementsMet`. Whatever it keeps for a
@@ -1048,7 +1484,7 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   call, never cleared; a loop over a list in the evaluator must not share its
   counter with an inner loop (`nodesFor` counts down in `cnt`).
 - **A bounded generic's body is checked against the argument type, not the
-  trait.** In `drain[T, S Stack[T]]`, a call `s.push(v)` is judged in each
+  trait.** In `drain[T, S: Stack[T]]`, a call `s.push(v)` is judged in each
   instance by the argument's own method, which the constraint has already shown
   to have the trait's signature at those arguments. A call of a method the trait
   does not declare is accepted whenever every argument happens to have it.

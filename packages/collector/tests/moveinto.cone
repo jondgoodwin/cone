@@ -1,0 +1,153 @@
+// Bug 32: values moved INTO another container hear the write barrier. List.appendList,
+// List.appendSlice and List.joinPieces move references into a list's block with a block
+// move (mem.moveRaw), which stores them as surely as an assignment does. When that list
+// is held by an object the collector has already marked black, the references are in a
+// holder that will not be traced again, and the object they came from (reached only by
+// the move's source, an unmarked holder) is never shaded: it would be finalized and freed
+// while the list holds it.
+//
+// The same heap as barrier.cone, with the automatic work stopped:
+//   h: a Shelf holding an empty List (with room for the move), a local of the case
+//   c: a Hop2 -> a Hop -> a Box w holding a List of one Leaf (the source); c a local
+// The case starts a collection with Gc.step(0) (the roots: c, then h) and one more step marks
+// h black. c, the Hop and w are still unmarked. The source list is then taken out of w
+// (leaving w holding an empty list) and appended to h's list, or the leaf copied out and
+// appended as a slice, or joined from a piece; the function returns, so no stack slot holds
+// the leaf. The collection is then finished a step at a time. The leaf is reached only
+// through h's list, so it must not be finalized and must still read its number. A Leaf's
+// 'final' counts, so a lost leaf shows as a finalizer run.
+//
+// Without the barrier on the move, every case fails: its leaf is finalized by the
+// collection that should have kept it.
+
+mod moveinto;
+
+import testing use *;
+import collector;
+import collections use *;
+
+var @threadlocal finals = 0i64;
+struct LeafValue {
+  pub n: i64;
+  fn final(self: &uni) { finals = finals + 1; }
+}
+alias Leaf = Gc[mut, LeafValue];
+struct ShelfValue { pub list: List[Leaf]; }
+alias Shelf = Gc[mut, ShelfValue];
+struct BoxValue { pub src: List[Leaf]; }
+alias Box = Gc[mut, BoxValue];
+struct HopValue { pub to: Box; }
+alias Hop = Gc[mut, HopValue];
+struct Hop2Value { pub to: Hop; }
+alias Hop2 = Gc[mut, Hop2Value];
+
+fn settle() {
+  Gc.collect();
+  Gc.collect();
+}
+
+fn emptyShelf() Shelf {
+  Shelf(List[Leaf].withCapacity(4usize))
+}
+// c -> Hop -> w, w's list holding Leaf n: made here, so no frame of the case holds the leaf
+fn chain(n: i64) Hop2 {
+  var l = List[Leaf]();
+  l.push(Leaf(n));
+  Hop2(Hop(Box(l)))
+}
+
+fn firstOf(h: Shelf) i64 {
+  if h.list.len() == 0usize { return -1; }
+  let l = h.list[0usize];
+  l.n
+}
+
+fn isBlack(p: *u8) bool {
+  ((p as usize - mem.sizeof[Gc]()) as &Gc).marked & 4u32 != 0u32
+}
+fn markedH(h: Shelf, c: Hop2) bool {
+  let w = c.to.to;
+  Gc.phase() == 1u32 && isBlack(&*h as *u8) && !isBlack(&*c as *u8) && !isBlack(&*w as *u8)
+}
+fn finish(f0: i64) bool {
+  while !Gc.step(0usize) { }
+  finals == f0
+}
+
+// -- The moves, each in a function of its own, so its stack slots are gone
+// before the collection ends
+fn viaAppendList(h: Shelf, c: Hop2) {
+  let w = c.to.to;
+  let taken = w.src := List[Leaf]();
+  h.list.appendList(taken);
+}
+fn viaAppendSlice(h: Shelf, c: Hop2) {
+  let w = c.to.to;
+  h.list.appendSlice(w.src.view());
+  w.src.clear();
+}
+// The piece, holding a copy of the leaf, is deposited before the collection starts (its
+// own push is then no store the barrier hears of while marking); the bag's node is malloc'd
+// memory no collector traces, so until the join only w's list keeps the leaf alive
+fn deposit(h: Shelf, c: Hop2, bag: &mut PieceBag) {
+  let w = c.to.to;
+  var piece = h.list.emptyPiece();
+  piece.push(w.src[0usize]);
+  h.list.depositPiece(bag, 0usize, piece);
+}
+fn viaJoin(h: Shelf, c: Hop2, bag: &mut PieceBag) {
+  let w = c.to.to;
+  w.src.clear();
+  h.list.joinPieces(bag);
+}
+
+fn caseAppendList() {
+  let c = chain(42);
+  let h = emptyShelf();
+  Gc.step(0usize);
+  Gc.step(0usize);
+  expect(markedH(h, c), "appendList: h black, the leaf's holders not yet marked");
+  let f0 = finals;
+  viaAppendList(h, c);
+  expect(finish(f0), "the leaf appended into black h's list is not finalized");
+  expectInt(firstOf(h), 42, "and h's list holds it");
+}
+fn caseAppendSlice() {
+  let c = chain(43);
+  let h = emptyShelf();
+  Gc.step(0usize);
+  Gc.step(0usize);
+  expect(markedH(h, c), "appendSlice: h black, the leaf's holders not yet marked");
+  let f0 = finals;
+  viaAppendSlice(h, c);
+  expect(finish(f0), "the leaf appended as a slice into black h's list is not finalized");
+  expectInt(firstOf(h), 43, "and h's list holds it");
+}
+fn caseJoin() {
+  let c = chain(44);
+  let h = emptyShelf();
+  var bag = h.list.pieceBag();
+  deposit(h, c, &mut bag);
+  Gc.step(0usize);
+  Gc.step(0usize);
+  expect(markedH(h, c), "joinPieces: h black, the leaf's holders not yet marked");
+  let f0 = finals;
+  viaJoin(h, c, &mut bag);
+  expect(finish(f0), "the leaf joined into black h's list is not finalized");
+  expectInt(firstOf(h), 44, "and h's list holds it");
+}
+
+fn main() i32 {
+  Gc.stop();
+  settle();
+  caseAppendList();
+  settle();
+  caseAppendSlice();
+  settle();
+  caseJoin();
+  settle();
+  Gc.start();
+  expectInt(finals, 3, "the three cases' leaves, each finalized once, after their cases");
+  expectUInt(u64.from(Gc.liveObjects()), 0, "and everything freed");
+  done()
+}

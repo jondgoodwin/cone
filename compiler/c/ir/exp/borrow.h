@@ -21,7 +21,7 @@ int borrowOwnerLendRefused(INode *owner, INode *perm);
 void borrowMutRef(INode **node, INode* type, INode *perm);
 
 // Inject a typed borrow of the temporary at 'node' ('make().get()', for a
-// method taking 'self &'), with the lifetime 'scope' (borrowTempScope): it is
+// method taking 'self: &'), with the lifetime 'scope' (borrowTempScope): it is
 // reached through nothing else, so any permission may be asked
 void borrowTempRef(INode **node, INode *type, INode *perm, uint16_t scope);
 
