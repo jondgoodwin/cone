@@ -346,7 +346,7 @@ pub actor TransformStage[T: Transform] is ChunkSink, ChunkSource {
             self.finish(Ending.Finished);
             go = false;
           } else if st == Status.Failed {
-            self.finish(self.failed());
+            self.failStop();
             go = false;
           } else if st == Status.NeedInput {
             go = self.nextInput();
@@ -383,6 +383,21 @@ pub actor TransformStage[T: Transform] is ChunkSink, ChunkSource {
     }
     dry = true;
     true
+  }
+
+  // The transform failed: the failure goes down as our end and, as a stop (a copy as text:
+  // an AnyError cannot be copied), upstream, so the work feeding us ends at once. The input
+  // held goes back; the upstream handle stays until its 'end' (settle), if that has not come.
+  fn failStop(self: &mut) {
+    let f = self.failed();
+    let w = reasonCopy(&f);
+    self.finish(f);
+    self.flush();
+    if upEnded { return; }
+    match &up {
+      case let &Some(u) { u.stop(w); }
+      case is None {}
+    }
   }
 
   // Our end, once
