@@ -1,4 +1,4 @@
-// A body decoded as it arrives (httpdecode.Decoder over actorhttp's streamTo),
+// A body decoded as it arrives (httpdecode.to over actorhttp's BodyStream),
 // against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
 // (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
 // /zeros/<coding>/<N> answers N zero bytes compressed (a bomb); /bad/gzip/<N> is
@@ -24,7 +24,7 @@ import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHea
 import stages use ChunkSink, ChunkSource, Ending;
 import deflate;
 import zstd;
-import httpdecode use Decoder;
+import httpdecode;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
@@ -38,13 +38,14 @@ struct Tally {
   pub heads: Atomic[u64];
   pub hash: Atomic[u64];   // of every byte the sink saw, in order
   pub sent: Atomic[u64];   // body bytes the server handed to the connection
+  pub attached: Atomic[u64];   // 'attach' calls the sink saw
 }
 
 let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 // A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
@@ -93,6 +94,7 @@ fn reset() {
   tally.finished.store(0u64);
   tally.failed.store(0u64);
   tally.heads.store(0u64);
+  tally.attached.store(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
@@ -241,7 +243,7 @@ actor Count is ChunkSink {
     *self = Self(up: None[ChunkSource], check: check, at: 0u64, msgs: msgs);
   }
 
-  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); tally.attached.add(1u64); }
 
   pub async fn accept(self, c: IoBuf) {
     let v = c.view();
@@ -280,10 +282,13 @@ actor Count is ChunkSink {
 actor Fetcher {
   client: Client;
 
-  pub async fn run(self, u: String, d: Decoder) {
-    let r = await d.open(client.clone(), Request.get(u.view()));
+  pub async fn run(self, u: String, sink: ChunkSink, limit: usize) {
+    let r = await client.stream(httpdecode.request(Request.get(u.view())));
     match r {
-      case is Ok { tally.heads.add(1u64); }
+      case var Ok(body) {
+        tally.heads.add(1u64);
+        httpdecode.to(body, sink, limit);
+      }
       case is Err {}
     }
   }
@@ -298,13 +303,12 @@ fn url(port: u16, path: &str) String {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
-// One fetch of 'path' through a Decoder with 'limit': the sink's message, if it failed
+// One fetch of 'path' through httpdecode.to with 'limit': the sink's message, if it failed
 fn fetch(port: u16, path: &str, check: bool, limit: usize, msgs: &mut Receiver[String], mtx: Sender[String]) String {
   reset();
   let sink = Count(check, mtx.clone());
-  let d = Decoder(sink, limit);
   let f = Fetcher(Client.standard());
-  f.run(url(port, path), d);
+  f.run(url(port, path), sink, limit);
   let limit = Instant.now() + Duration.fromMillis(60000i64);
   while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
   thread.sleep(Duration.fromMillis(30i64));
@@ -403,9 +407,34 @@ fn main() i32 {
     printUInt(tally.failed.load());
     printStr(" finished ");
     printUInt(tally.finished.load());
+    printStr(" attached ");
+    printUInt(tally.attached.load());
     printStr(", ");
     printStr(u.view());
     printStr("\n");
+    // tiny bodies: the end comes right behind the pieces, before or after the choice; the sink has them all, then one end
+    names = List[String]();
+    names.push(String.from("/plain/100"));
+    names.push(String.from("/gzip/100"));
+    names.push(String.from("/zstd/1"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetch(port, p.view(), true, 16777216usize, &mut mrx, mtx.clone());
+      printStr(p.view());
+      printStr(": bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(" attached ");
+      printUInt(tally.attached.load());
+      printStr("\n");
+    }
     printStr("...every buffer home: ");
     printStr(yes(allHome()));
     printStr("\n");
