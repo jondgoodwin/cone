@@ -133,16 +133,22 @@ fn newStream(id: u64, kind: StreamKind, buffer: usize) H3Stream {
 }
 
 // Append bytes to what a stream is to send, gathering small writes in its
-// tail
-fn putBytes(s: &mut H3Stream, bytes: &Array[u8]) {
+// tail. False when the buffer pool refused the tail's buffer (iobuf's
+// tryMake, the pool at the reserve of its maxBytes): the connection is to end
+// Overloaded (Connection.starve), and the bytes after are not kept
+fn putBytes(s: &mut H3Stream, bytes: &Array[u8]) bool {
   var i = 0usize;
   while i < bytes.len {
     if s.tail.room() == 0usize {
       flushTail(s);
-      s.tail = IoBuf(tailSize);
+      match IoBuf.tryMake(tailSize) {
+        case var Some(b) {s.tail = b;}
+        else {return false;}
+      }
     }
     i = i + s.tail.append(&bytes[i ..< bytes.len]);
   }
+  true
 }
 
 // A body buffer: copied in after what is gathered when small, else queued
@@ -168,14 +174,18 @@ fn flushTail(s: &mut H3Stream) {
 // The bytes a stream holds to send
 fn queuedOf(s: &H3Stream) usize {s.out.len() + s.tail.len()}
 
-// A list's bytes as a Chain of one buffer, the list emptied
-fn takeList(l: &mut List[u8]) Chain {
-  var b = IoBuf(l.len());
+// A list's bytes as a Chain of one buffer, the list emptied; None, the list
+// as it was, when the buffer pool refused the buffer (iobuf's tryMake)
+fn takeList(l: &mut List[u8]) Option[Chain] {
+  var b = match IoBuf.tryMake(l.len()) {
+    case var Some(got) {got}
+    else {return None;}
+  };
   b.append(l.view());
   l.clear();
   var c = Chain.make(noBound);
   let refused = c.push(b);
-  c
+  Some[Chain](c)
 }
 
 // The kind of failure an HTTP/3 error code names
@@ -461,12 +471,27 @@ pub struct Connection is Move {
       case is None[Transmit] {}
     }
     if closed || gone {return Transmit.Nothing;}
-    if controlOut.len() > 0usize {return Transmit.Write(controlId, takeList(&mut controlOut), false);}
+    if controlOut.len() > 0usize {
+      match takeList(&mut controlOut) {
+        case var Some(c) {return Transmit.Write(controlId, c, false);}
+        else {return self.starvedTransmit();}
+      }
+    }
     // The encoder stream ahead of the sections that name its inserts
     enc.pollTransmit(&mut encoderOut);
-    if encoderOut.len() > 0usize {return Transmit.Write(encoderId, takeList(&mut encoderOut), false);}
+    if encoderOut.len() > 0usize {
+      match takeList(&mut encoderOut) {
+        case var Some(c) {return Transmit.Write(encoderId, c, false);}
+        else {return self.starvedTransmit();}
+      }
+    }
     dec.pollTransmit(&mut decoderOut);
-    if decoderOut.len() > 0usize {return Transmit.Write(decoderId, takeList(&mut decoderOut), false);}
+    if decoderOut.len() > 0usize {
+      match takeList(&mut decoderOut) {
+        case var Some(c) {return Transmit.Write(decoderId, c, false);}
+        else {return self.starvedTransmit();}
+      }
+    }
     // The request streams take turns, a stream's whole queue at each
     let n = streams.bound();
     var k = 0usize;
@@ -650,7 +675,10 @@ pub struct Connection is Move {
     if q > 0usize && q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
     var head = List[u8]();
     encodeFrameHead(&mut head, frameData, u64.from(n));
-    putBytes(s, head.view());
+    if !putBytes(s, head.view()) {
+      self.starve("the buffer pool is full (iobuf maxBytes): no buffer for a stream's output");
+      return None;
+    }
     putBuf(s, buf);
     if s.wSized {s.wremaining = s.wremaining - u64.from(n);}
     None
@@ -722,6 +750,31 @@ pub struct Connection is Move {
     commands.push(Transmit.Close(code, String.from("aborted"), false));
     failure = Some[HttpError](e);
     closed = true;
+  }
+
+  // End the connection now, Overloaded: the buffer pool (iobuf's maxBytes) had
+  // no room for a buffer this connection needs. Every exchange open fails
+  // Overloaded and the connection closes with H3_INTERNAL_ERROR. The driver
+  // calls it for the buffers it makes (a receive's, a copy's); the connection
+  // calls it for its own
+  pub fn starve(self: &mut, why: &str) {
+    if closed || gone {return;}
+    let e = HttpError.coded(ErrorKind.Overloaded, h3InternalError, ErrorScope.Connection, why);
+    self.failAll(&e, false);
+    commands.clear();
+    commands.push(Transmit.Close(h3InternalError, String.from(why), false));
+    failure = Some[HttpError](e);
+    closed = true;
+  }
+
+  // The close that starve queued, as pollTransmit's answer
+  fn starvedTransmit(self: &mut) Transmit {
+    self.starve("the buffer pool is full (iobuf maxBytes): no buffer for a write");
+    match commands.popFront() {
+      case let Some(c) {return c;}
+      case is None[Transmit] {}
+    }
+    Transmit.Nothing
   }
 
   // How many more bytes sendData takes on a stream before it hands one back
@@ -855,8 +908,9 @@ pub struct Connection is Move {
     enc.encode(s.id, fields.view(), &mut sec);
     var head = List[u8]();
     encodeFrameHead(&mut head, frameHeaders, u64.from(sec.len()));
-    putBytes(s, head.view());
-    putBytes(s, sec.view());
+    if !putBytes(s, head.view()) || !putBytes(s, sec.view()) {
+      self.starve("the buffer pool is full (iobuf maxBytes): no buffer for a stream's output");
+    }
   }
 
   // A server's final response, its body to follow (or not)
@@ -984,7 +1038,7 @@ pub struct Connection is Move {
           continue;
         }
         if s.outstanding >= cfg.bodyWindow {return None;}
-        return Some[Event](self.deliver(s));
+        return self.deliver(s);
       }
       var h = FrameHead(0u64, 0u64, 0usize);
       match peekFrameHead(&s.input) {
@@ -1044,7 +1098,9 @@ pub struct Connection is Move {
   // The next piece of a DATA frame's payload that has arrived: a whole
   // segment of the input moved out where it lies wholly within the frame,
   // or the bytes copied into a buffer of their own where it does not
-  fn deliver(self: &mut, s: &mut H3Stream) Event {
+  // (None when the buffer pool refused the copy's buffer: the connection ends
+  // Overloaded)
+  fn deliver(self: &mut, s: &mut H3Stream) Option[Event] {
     let avail = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
     var buf = IoBuf();
     if s.input.firstLen() <= avail {
@@ -1054,7 +1110,13 @@ pub struct Connection is Move {
       }
     } else {
       let want = if avail > maxCopy {maxCopy} else {avail};
-      buf = IoBuf(want);
+      match IoBuf.tryMake(want) {
+        case var Some(b) {buf = b;}
+        else {
+          self.starve("the buffer pool is full (iobuf maxBytes): no buffer for a body piece");
+          return None;
+        }
+      }
       let room = buf.spare();
       let k = s.input.copyOut(0usize, &mut room[0usize ..< want]);
       buf.setLen(k);
@@ -1064,7 +1126,7 @@ pub struct Connection is Move {
     s.frameLeft = s.frameLeft - u64.from(got);
     s.outstanding = s.outstanding + got;
     if s.hasLength {s.remaining = s.remaining - u64.from(got);}
-    Event.Data(s.id, buf)
+    Some[Event](Event.Data(s.id, buf))
   }
 
   // A whole HEADERS frame: its section decoded, now or once QPACK's inserts

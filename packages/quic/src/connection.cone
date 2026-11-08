@@ -323,7 +323,16 @@ pub struct Connection is Move {
   // with them or alone. A wake time that has come is acted on first
   pub fn pollTransmit(self: &mut, now: Instant) IoBuf {
     self.expire(now);
-    var buf = IoBuf(maxUdp);
+    if closed {return IoBuf();}
+    // A pool that refuses the datagram's buffer (iobuf's tryMake) ends the
+    // connection, as for every buffer it makes
+    var buf = match IoBuf.tryMake(maxUdp) {
+      case var Some(got) {got}
+      else {
+        self.starve();
+        return IoBuf();
+      }
+    };
     let n = self.transmitInto(buf.base(), maxUdp, now);
     if n == 0usize {return IoBuf();}
     buf.setLen(n);
@@ -383,7 +392,13 @@ pub struct Connection is Move {
     var at = 0usize;
     while at < bytes.len {
       let n = if bytes.len - at > writePiece {writePiece} else {bytes.len - at};
-      var b = IoBuf(n);
+      var b = match IoBuf.tryMake(n) {
+        case var Some(got) {got}
+        else {
+          self.starve();
+          return false;
+        }
+      };
       b.append(&bytes[at ..< at + n]);
       self.write(stream, b);
       at = at + n;
@@ -561,9 +576,18 @@ pub struct Connection is Move {
   // chain the server sent and the name asked for, in a buffer, for
   // tls.verifyWork. Its completion goes to verifyDone. Asked for only when
   // wantsVerify says so
+  // When the buffer pool refuses the job's buffer (iobuf's tryMake) the
+  // connection ends at once, Overloaded, and the op that goes does nothing
+  // (as tls's verifyOp does)
   pub fn verifyOp(self: &mut) Op {
     verifyStage = stageRunning;
-    Op.Call(lane, &tls.verifyWork, if offline {1u64} else {0u64}, verifyJob(ssl, host.view()))
+    match verifyJob(ssl, host.view()) {
+      case var Some(job) {return Op.Call(lane, &tls.verifyWork, if offline {1u64} else {0u64}, job);}
+      else {
+        self.starve();
+        return Op.Call(lane, &verifyNothing, 0u64, IoBuf());
+      }
+    }
   }
 
   // The OS's verifier's answer, from the pool
@@ -590,7 +614,13 @@ pub struct Connection is Move {
   pub fn verifyNow(self: &mut) {
     if verifyStage != stageWanted {return;}
     verifyStage = stageRunning;
-    var job = verifyJob(ssl, host.view());
+    var job = match verifyJob(ssl, host.view()) {
+      case var Some(got) {got}
+      else {
+        self.starve();
+        return;
+      }
+    };
     tls.verifyWork(if offline {1u64} else {0u64}, &mut job);
     self.verified(if job.len() >= 4usize {readU32(job.base())} else {tls.genericFailure()});
   }
@@ -785,6 +815,15 @@ pub struct Connection is Move {
     closing = Some(CloseWith(closeLib, 0u64, liberr));
   }
 
+  // The buffer pool (iobuf's maxBytes) had no room for a buffer the connection
+  // needs: it fails with ngtcp2's NOMEM (QuicError.overloaded) and ends at
+  // once, its CONNECTION_CLOSE unsent (that needs a buffer too)
+  fn starve(self: &mut) {
+    if closed {return;}
+    self.failWith(QuicError(errNomem, 0u32, String.from("the buffer pool is full (iobuf maxBytes): no buffer for the connection")));
+    self.ended(false, false, 0u64, false);
+  }
+
   // The connection ended: the Closed event, once
   fn ended(self: &mut, byPeer: bool, app: bool, code: u64, idle: bool) {
     if closed {return;}
@@ -923,7 +962,21 @@ pub struct Connection is Move {
           curFin = fin;
         } else {
           if curOn {events.push(Event.Data(curStream, cur, curFin));}
-          cur = if n == 0usize {IoBuf()} else {IoBuf(n)};
+          if n == 0usize {
+            cur = IoBuf();
+          } else {
+            match IoBuf.tryMake(n) {
+              case var Some(got) {cur = got;}
+              else {
+                // The pool refuses the copy's buffer: the connection ends, the
+                // records after this one unread
+                cur = IoBuf();
+                curOn = false;
+                self.starve();
+                break;
+              }
+            }
+          }
           if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
           curOn = true;
           curStream = r.stream;
