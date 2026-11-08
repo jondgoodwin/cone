@@ -1,0 +1,69 @@
+// A runnable actor left in the queue of a worker whose turn does not end
+// (Bug 2, #989: the scheduler's lost wake). X's turn sends to idle Y, which
+// is pushed on X's own worker's empty queue (a local push), and X
+// then waits inside the turn, without returning, for a flag only Y sets. Every
+// other worker is idle (parked). Y must run on another worker while X waits:
+// the invariant (the header, THE SEARCH INVARIANT) says a worker searches while
+// any queue holds a runnable actor and one sleeps. X gives up after 300 ms
+// of waiting, so a stranded Y shows as a count of rounds, not as a hang.
+//
+// Before the wake rule (duty 3: a push to one's own empty queue wakes a
+// sleeper when none is looking) 19 of 20 rounds stranded (round 1 passes: the
+// workers still spin from the start), on master 79d75ad82 and on #989's head
+// with duties 1 and 2.
+
+mod lostwake;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+let flag: Atomic[u64];
+let seen: Atomic[u64];
+let stranded: Atomic[u64];
+
+fn @initpure init() {
+  flag = Atomic[u64].of(0u64);
+  seen = Atomic[u64].of(0u64);
+  stranded = Atomic[u64].of(0u64);
+}
+
+actor Y {
+  pub async fn set(self) {
+    flag.add(1u64);
+  }
+}
+
+actor X {
+  pub async fn go(self, y: Y, round: u64) {
+    y.set();
+    var tries = 0u32;
+    while flag.load() < round && tries < 300u32 {
+      thread.sleep(time.Duration.fromMillis(1i64));
+      tries = tries + 1u32;
+    }
+    if flag.load() < round {
+      stranded.add(1u64);
+    }
+    seen.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 8u32));
+  var round = 1u64;
+  while round <= 20u64 {
+    thread.sleep(time.Duration.fromMillis(30i64));
+    let x = X();
+    let y = Y();
+    x.go(y, round);
+    actors.waitUntilIdle();
+    round = round + 1u64;
+  }
+  expectUInt(seen.load(), 20u64, "every round's turn ended");
+  expectUInt(stranded.load(), 0u64, "Y ran while X's turn was held, in every round");
+  finalAll();
+  done()
+}

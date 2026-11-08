@@ -698,19 +698,20 @@
 // microseconds have passed; then, or at once if it could not become one, it
 // publishes itself a sleeper (its park word PARKED, the sleepers' count one
 // more), looks once more, and sleeps on its park word. A push to the inject
-// queue, and a push to a worker's own queue that already held another, wakes
-// one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
+// queue, and a push to a worker's own queue (the wake rule: THE SEARCH
+// INVARIANT, duty 3), wakes one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
 // worker is looking already: one spinning (THE SPIN, below), or one woken
 // earlier and still looking (the 'searching' flag). The one woken takes a
 // share and, if more waits, wakes the next, so that a burst of work spreads
 // across the workers a worker at a time rather than waking them all. A push
-// to an empty queue of one's own wakes nobody, so two actors passing
-// messages back and forth stay on one worker. That a queue's work is never
-// left while every worker sleeps is kept by two Dekker pairings on
+// to an empty queue of one's own wakes one only when none is looking, so at
+// high load (a worker spinning, or none asleep) two actors passing messages
+// back and forth stay on one worker. That a queue's work is never
+// left while every worker sleeps is kept by Dekker pairings on
 // sequentially consistent operations: a sleeper publishes itself and clears
-// 'searching', then looks; an inject push adds to the queue's length, then
-// reads the sleepers and swaps 'searching'. A worker's own queue needs no
-// such pairing: only its owner pushes to it, and the owner is awake.
+// 'searching', then looks; a push adds to the queue (its length for the
+// inject queue, its tail for a worker's), then reads the sleepers and swaps
+// 'searching'.
 //
 // THE PARK WORD. Each worker sleeps on a word of its own ('park', on a cache
 // line of its own in the Worker), not on one word all of them share, so that
@@ -823,6 +824,15 @@
 //    left 'spinning', published itself and cleared 'searching', idle looks at
 //    every queue (anyWork) and, seeing work, leaves the park for the loop,
 //    which steals (this already held).
+// 3. A PUSH TO ONE'S OWN QUEUE WAKES ONE WHEN NONE LOOKS (Go's ready, which
+//    calls wakep after runqput). An owner whose queue was empty runs the actor
+//    when its turn ends, but a turn may not end soon, or ever, when the actor
+//    is what that turn waits for. So localPush calls notify even into an empty
+//    queue: notify wakes a sleeper only if one is parked and none spins or
+//    searches, else it costs a load. At high load there is no sleeper to wake
+//    and it does nothing; at light load, where workers park after the spin,
+//    it bounds how long an actor waits behind another's long turn. It costs a
+//    wake per send in a conversation between two actors, when no worker spins.
 //
 // THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
 // time to run again, measured on the 24-thread laptop (Windows) at 4 to 10 us
@@ -4178,8 +4188,16 @@ fn localPush(w: *Worker, h: *Header) {
     let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
     if t - hd < queueCap {
       mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed);
-      mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
       if t != hd {
+        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
+        notify((*w).sched);
+      } else {
+        // Into an empty queue (THE SEARCH INVARIANT, duty 3). Sequentially
+        // consistent, so that notify's read of the sleepers, spinners and
+        // searchers comes after this push is visible to every worker (as a
+        // parking worker's publication precedes its look in idle): else
+        // a push and a worker's park could each miss the other
+        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.SeqCst);
         notify((*w).sched);
       }
       return;
