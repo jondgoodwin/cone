@@ -1079,6 +1079,22 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     genlRootsRestore(gen, &svroots);
 }
 
+// The moves that hollowed 'var' where this seam stands (flow found them,
+// AwaitNode.hollowed); NULL if it is not hollow there. A move written after
+// the seam is not among them. Where flow met the seam with the variable whole
+// but the path walk found it hollow, every move that hollowed it on any path.
+static Nodes *genlSeamMoves(AwaitNode *node, VarDclNode *var) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (node->hollowed) {
+        for (nodesFor(node->hollowed, cnt, nodesp)) {
+            if (((HollowNode *)*nodesp)->var == var)
+                return ((HollowNode *)*nodesp)->moved;
+        }
+    }
+    return var->hollowall;
+}
+
 // A parked record's drop function, '<method>'<n>.drop(record)', which the
 // pending table calls when its actor dies with the record parked, its reply
 // never to come: the continuation is abandoned. Each value the record holds
@@ -1122,7 +1138,8 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
         // An owner hollowed at the seam (flow's SeamHollow) is released as its
         // scope's end releases it: what moved out is left, the allocation goes
         SeamVar *sv = field->kind == GenSeamVar ? genlSeamOfVar(node, field->var) : NULL;
-        int hollow = sv && (sv->flags & SeamHollow) && field->var->hollowed;
+        Nodes *moved = sv && (sv->flags & SeamHollow) ? genlSeamMoves(node, field->var) : NULL;
+        int hollow = moved != NULL;
         if (field->kind == GenSeamVar && i + 1 < seam->nfields && seam->fields[i + 1].kind == GenSeamFlag
             && seam->fields[i + 1].var == field->var) {
             LLVMValueRef flagat = LLVMBuildStructGEP2(gen->builder, seam->record, record, i + 1, "flag");
@@ -1135,7 +1152,7 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
                 LLVMBuildCondBr(gen->builder, ishollow, hollowblk, wholechk);
                 LLVMPositionBuilderAtEnd(gen->builder, hollowblk);
                 LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
-                genlHollowReleaseRef(gen, ref, field->var, field->var->hollowed);
+                genlHollowReleaseRef(gen, ref, field->var, moved);
                 LLVMBuildBr(gen->builder, endblk);
                 LLVMPositionBuilderAtEnd(gen->builder, wholechk);
             }
@@ -1146,7 +1163,7 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
         }
         else if (hollow) {
             LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
-            genlHollowReleaseRef(gen, ref, field->var, field->var->hollowed);
+            genlHollowReleaseRef(gen, ref, field->var, moved);
             continue;
         }
         genlFinalizeAt(gen, at, field->type);

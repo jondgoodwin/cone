@@ -71,6 +71,7 @@ typedef struct SeamVar {
 typedef struct AwaitNode {
     IExpNodeHdr;
     INode *exp;         // What is awaited: evaluated before the seam
+    Nodes *hollowed;    // Flow's: a HollowNode for each variable hollowed where the seam stands, with the moves that reach it
     SeamVar *seamvars;  // The variables in scope at the seam, in the order they were declared:
                         // parameters, then locals, then the statement's temporaries
     uint32_t nseamvars;
