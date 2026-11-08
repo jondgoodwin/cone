@@ -476,6 +476,22 @@ pub struct Chain is Move, Sendable {
     None
   }
 
+  // 'push' for a stream of bytes whose piece boundaries mean nothing: a buffer
+  // that fits in the last segment's room is copied into it and goes back to
+  // its pool, so many small pieces hold one block, not one each. Otherwise (an
+  // empty chain, no room, a bigger buffer) it is 'push'. The same result: None
+  // once it is in, or Some(buf) back, refused, past the bound. No size
+  // threshold. Not for a chain that is popped and pushed back to keep its
+  // segments (iocore's gather), nor for a buffer whose address is tracked
+  pub fn pushJoin(self: &mut, buf: IoBuf) Option[IoBuf] {
+    let n = buf.len();
+    if count > 0usize && n > 0usize && n <= self.lastRoom() {
+      let k = self.appendLast(buf.view());
+      return None;
+    }
+    self.push(buf)
+  }
+
   // How many more bytes the last segment has room for after its own (and
   // the chain's bound allows): what 'appendLast' takes; 0 when it is empty
   pub fn lastRoom(self: &) usize {
