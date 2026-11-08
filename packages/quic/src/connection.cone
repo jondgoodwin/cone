@@ -936,6 +936,36 @@ pub struct Connection is Move {
   // The callback block's records, after each of ngtcp2's calls
   // ---------------------------------------------------------------------------
 
+  // A stream's received bytes as an event: joined into that stream's last Data
+  // event still waiting (no fin yet, room for them) when there is one within
+  // the last 16 events, so small pieces across harvests hold one block; else
+  // queued. A stream sees nothing between its Data events but other streams'
+  // events (no Data follows its Reset), so skipping those keeps its order
+  fn queueData(self: &mut, stream: i64, buf: IoBuf, fin: bool) {
+    let n = buf.len();
+    var joined = false;
+    var k = events.len();
+    var steps = 0usize;
+    while n > 0usize && !joined && k > 0usize && steps < 16usize {
+      k = k - 1usize;
+      steps = steps + 1usize;
+      match &mut events[k] {
+        case let &mut Data(d) {
+          if d.stream == stream {
+            if !d.fin && d.buf.room() >= n {
+              let m = d.buf.append(buf.view());
+              d.fin = fin;
+              joined = true;
+            }
+            steps = 16usize;
+          }
+        }
+        else {}
+      }
+    }
+    if !joined {events.push(Event.Data(stream, buf, fin));}
+  }
+
   fn harvest(self: &mut) {
     let bx = box as *Box;
     var at = 0usize;
@@ -961,7 +991,7 @@ pub struct Connection is Move {
           if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
           curFin = fin;
         } else {
-          if curOn {events.push(Event.Data(curStream, cur, curFin));}
+          if curOn {self.queueData(curStream, cur, curFin);}
           if n == 0usize {
             cur = IoBuf();
           } else {
@@ -984,7 +1014,7 @@ pub struct Connection is Move {
         }
       } else {
         if curOn {
-          events.push(Event.Data(curStream, cur, curFin));
+          self.queueData(curStream, cur, curFin);
           cur = IoBuf();
           curOn = false;
         }
@@ -1012,7 +1042,7 @@ pub struct Connection is Move {
       }
       at = at + mem.sizeof[Rec]() + padded(n);
     }
-    if curOn {events.push(Event.Data(curStream, cur, curFin));}
+    if curOn {self.queueData(curStream, cur, curFin);}
     (*bx).inLen = 0usize;
     // The connection's credit comes back as bytes arrive; a stream's, as its
     // owner releases them (see the package's header, CREDIT)
