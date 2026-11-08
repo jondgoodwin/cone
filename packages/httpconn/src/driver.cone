@@ -1205,13 +1205,13 @@ pub struct Driver {
     let reading = if c.isH2 {c.streams.len() > 0usize}
       else {c.current != noEntry && !(self.reqAt(c.current) as &Req).readDone};
     // A buffered receive left over when nothing is being read any more (a
-    // cancel took the last stream): ask it to end, so its buffer goes home.
-    // It answers Cancelled and the connection is driven again, which then
-    // waits with a zero-byte receive. If it finishes first it answers Done
-    // with its bytes, and they are fed to the core like any other. Client
-    // connections only: a server's receive ends differently (its stream ends
-    // by its own response), a separate matter
-    if !c.server && c.recvOut && c.recvReading && !c.recvAsked && !reading && cfg.idleRecvReady &&
+    // cancel took the last stream, or a server's response finished): ask it
+    // to end, so its buffer goes home. It answers Cancelled and the
+    // connection is driven again, which then waits with a zero-byte receive.
+    // If it finishes first it answers Done with its bytes (a next request's,
+    // say), and they are fed to the core like any other. Client and server
+    // connections alike: an idle one pins no buffer
+    if c.recvOut && c.recvReading && !c.recvAsked && !reading && cfg.idleRecvReady &&
         c.state == cOpen && !c.eof && !c.shut {
       c.recvAsked = true;
       lp.cancel(c.recvOp);

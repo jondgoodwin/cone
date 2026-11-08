@@ -1,0 +1,290 @@
+// A stop from the sink that a body goes to (BodySource.stop, ChunkSource.stop): 'to(sink)' of a 1 GiB body
+// (against a loopback server of the package's own: /big/N answers N bytes), the sink stopping its source
+// at its 2nd chunk:
+//   1. the fetch is cancelled: the server's writes fail, the sink took far fewer than 1 GiB, and it heard
+//      one end, Failed, carrying the sink's own reason ("enough"); a second stop does nothing;
+//   2. every buffer is home (the bytes lent are back to the baseline);
+//   3. the connection is freed: a fetch of 20,000 bytes on the same client afterwards completes;
+//   4. a stop after the body has ended does nothing: a 20,000-byte body, the sink stopping at the end,
+//      hears one clean end, and the buffers are home.
+
+mod bodystop;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError, bytesEqual;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub clean: Atomic[u64];      // clean ends at the sink
+  pub failed: Atomic[u64];     // failed ends at the sink
+  pub reasonOk: Atomic[u64];   // ...of them, with the reason "enough"
+  pub serverStopped: Atomic[u64];
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.bytes.store(0u64);
+  tally.clean.store(0u64);
+  tally.failed.store(0u64);
+  tally.reasonOk.store(0u64);
+  tally.serverStopped.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let left = n - at;
+      let m = if left < 65536u64 {usize.from(left)} else {65536usize};
+      let w = await ex.write(block(m));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    } else {
+      tally.serverStopped.add(1u64);
+    }
+  }
+}
+
+fn block(m: usize) String {
+  var piece = List[u8].withCapacity(m);
+  var i = 0usize;
+  while i < m {
+    piece.push(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A sink that gives every buffer back. At its 'stopAt'th chunk (0: never) it stops its source, twice if
+// 'twice'; with 'afterEnd' it stops its source when the end arrives
+actor StopSink is ChunkSink {
+  up: Option[ChunkSource];
+  n: u64;
+  stopAt: u64;
+  twice: bool;
+  afterEnd: bool;
+
+  pub fn init(self: &new, stopAt: u64, twice: bool, afterEnd: bool) {
+    *self = Self(up: None[ChunkSource], n: 0u64, stopAt: stopAt, twice: twice, afterEnd: afterEnd);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    n = n + 1u64;
+    tally.bytes.add(u64.from(c.len()));
+    match &up {
+      case let &Some(u) {
+        u.giveBack(c);
+        if n == stopAt {
+          u.stop(Ending.Failed(AnyError.msg("enough")));
+          if twice {u.stop(Ending.Failed(AnyError.msg("enough again")));}
+        }
+      }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {tally.clean.add(1u64);}
+      case let Failed(e) {
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        if bytesEqual(text.view(), "enough") {tally.reasonOk.add(1u64);}
+        tally.failed.add(1u64);
+      }
+    }
+    if afterEnd {
+      match &up {
+        case let &Some(u) {u.stop(Ending.Failed(AnyError.msg("too late")));}
+        else {}
+      }
+    }
+  }
+}
+
+actor Chooser {
+  client: Client;
+
+  pub async fn run(self, u: String, stopAt: u64, twice: bool, afterEnd: bool) {
+    let r = await client.stream(Request.get(u.view()));
+    match r {
+      case var Ok(bs) {
+        bs.to(StopSink(stopAt, twice, afterEnd));
+      }
+      case let Err(e) {printStr("the head failed\n");}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    printStr("the server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    // 1. a stop at the 2nd chunk of a 1 GiB body, twice
+    reset();
+    let client = Client.standard();
+    {
+      let c = Chooser(client.clone());
+      c.run(url(port, "/big/1073741824"), 2u64, true, false);
+      waitFor(&tally.failed, 1u64);
+      waitFor(&tally.serverStopped, 1u64);
+      printStr("a stopped 1 GiB body: the server's writes failed ");
+      printStr(yes(tally.serverStopped.load() == 1u64));
+      printStr(", the sink took far less ");
+      printStr(yes(tally.bytes.load() < 134217728u64));
+      printStr(", one Failed end ");
+      printStr(yes(tally.failed.load() == 1u64));
+      printStr(", no clean end ");
+      printStr(yes(tally.clean.load() == 0u64));
+      printStr(", its own reason ");
+      printStr(yes(tally.reasonOk.load() == 1u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 3. the connection is freed: another fetch on the same client completes
+    reset();
+    {
+      let c = Chooser(client.clone());
+      c.run(url(port, "/big/20000"), 0u64, false, false);
+      waitFor(&tally.clean, 1u64);
+      printStr("a fetch on the same client after the stop completes: bytes ");
+      printStr(yes(tally.bytes.load() == 20000u64));
+      printStr(", clean end ");
+      printStr(yes(tally.clean.load() == 1u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 4. a stop after the end
+    reset();
+    {
+      let c = Chooser(client.clone());
+      c.run(url(port, "/big/20000"), 0u64, false, true);
+      waitFor(&tally.clean, 1u64);
+      thread.sleep(Duration.fromMillis(300i64));
+      printStr("a stop after the end does nothing: one clean end ");
+      printStr(yes(tally.clean.load() == 1u64));
+      printStr(", no failed end ");
+      printStr(yes(tally.failed.load() == 0u64));
+      printStr(", all the bytes ");
+      printStr(yes(tally.bytes.load() == 20000u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    acceptor.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}

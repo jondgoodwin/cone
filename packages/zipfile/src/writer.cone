@@ -273,18 +273,23 @@ pub struct ZipWriter {
     Ok[void, ZipError](nil)
   }
 
-  // Appends at most 'max' of the bytes made since the last pull to 'dst'. NeedInput: all pulled, add
-  // another entry or 'finish'. MoreOutput: pull again. Done: finished, and every byte pulled.
-  pub fn pull(self: &mut, dst: &mut List[u8], max: usize) Status {
+  // Appends at most 'max' of the bytes made since the last pull to 'dst', and no more than 'dst' has room
+  // for: each byte is copied once, from the writer's own bytes into the buffer. NeedInput: all pulled, add
+  // another entry or 'finish'. MoreOutput: pull again, into a buffer with room. Done: finished, and every
+  // byte pulled.
+  pub fn pull(self: &mut, dst: &mut IoBuf, max: usize) Status {
     let avail = out.len() - outPos;
-    let n = if avail < max { avail } else { max };
-    // 'dst' may be, to the compiler, the very list 'out' is, so a view of 'out' cannot be lent to
-    // 'dst.appendSlice' (1339); the run goes through a list of this call's own, and is moved on whole
-    var run = List[u8].withCapacity(n);
-    run.appendSlice(&out.view()[outPos..<outPos + n]);
-    dst.appendList(run);
-    outPos += n;
-    // Drop what is pulled when it is at least as much as what is left
+    var n = if avail < max { avail } else { max };
+    if dst.room() < n { n = dst.room(); }
+    if n > 0usize {
+      dst.append(&out.view()[outPos..<outPos + n]);
+      outPos += n;
+    }
+    self.settle()
+  }
+
+  // Drops what is pulled when it is at least as much as what is left; the status after a pull
+  fn settle(self: &mut) Status {
     let left = out.len() - outPos;
     if outPos > 0usize && outPos >= left {
       if left == 0usize {
@@ -306,9 +311,11 @@ pub struct ZipWriter {
     if !finished {
       self.finish()?;
     }
-    var all = List[u8]();
-    var s = Status.MoreOutput;
-    while s == Status.MoreOutput { s = self.pull(&mut all, 1048576usize); }
+    // One copy, straight from the writer's bytes into the answer, with no pooled buffer between
+    var all = List[u8].withCapacity(out.len() - outPos);
+    all.appendSlice(&out.view()[outPos..<out.len()]);
+    outPos = out.len();
+    self.settle();
     Ok[List[u8], ZipError](all)
   }
 
@@ -317,7 +324,7 @@ pub struct ZipWriter {
     if !finished {
       self.finish()?;
     }
-    var piece = List[u8]();
+    var piece = IoBuf(1048576usize);
     var first = true;
     var s = Status.MoreOutput;
     while s == Status.MoreOutput || first {
