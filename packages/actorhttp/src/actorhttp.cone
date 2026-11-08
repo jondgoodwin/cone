@@ -237,8 +237,9 @@
 // than 64 events wait), so a reader that awaits slowly slows the sender through TCP,
 // and what is held is bounded by the fetch's window, in bytes, however small the pieces.
 // THE BODY WAITS FOR THE CALLER'S CHOICE. A BodyStream is answered with the head only: until the
-// caller's first 'read()' (which attaches a ReaderSink) or 'bs.to(sink)' (which attaches the caller's
-// ChunkSink, as streamTo does, and consumes the BodyStream), the pieces that arrive are staged in
+// caller's first 'read()' (which attaches a ReaderSink), 'bs.to(sink)' (which attaches the caller's
+// ChunkSink, as streamTo does, and consumes the BodyStream) or 'bs.events()' (which attaches an
+// EventSink and consumes the BodyStream into the EventStream 'client.events' gives), the pieces that arrive are staged in
 // the stream's record (the staging buffers below), nothing is given back so the peer stops at its
 // credit window, and past the pool's limit the fetch ends Overloaded. The choice is one job to the
 // service thread (BodyChoiceJob): the sink is attached, the staged pieces go to it in order, then
@@ -614,7 +615,7 @@ pub struct Client is Move {
     if !r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
     if !r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
     let group = streamGroup(&mut r);
-    awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r, EventSink(group), group))
+    awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r, EventSink(), group))
   }
 
   fn final(self: &uni) {
