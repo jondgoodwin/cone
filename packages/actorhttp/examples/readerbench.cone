@@ -1,0 +1,844 @@
+// readerbench: the numbers behind step 0 of the ReaderSink refit
+// (Ruminations\brief-reader-sink-refit-2026-11-06.md). Nothing here is a package
+// change: the sink is a throwaway counting sink through Client.streamTo, set
+// against BodyStream.read / EventStream.next as they are today. One loopback
+// server of this package answers every mode; client and server share the
+// process, so a figure carries both, and the comparison between the two client
+// paths is what counts. Run it on a QUIET machine for numbers that decide.
+//
+//   congo run --release packages/actorhttp/examples/readerbench.cone -- <mode> <args>
+//
+//   flood <events> <rounds> <restMs>
+//       The event flood: the server sends <events> small server-sent events as
+//       fast as it can; read through events() (the EventStream) and, as a
+//       control, through stream() with an sse.Reader fed in the reading actor
+//       (what chatapi does). Events per second; the two paths alternate, order
+//       swapped each round, a rest before each run.
+//   tput <pieceBytes> <MiB> <rounds> <restMs>
+//       bodybench's shape at any piece size: the server writes <MiB> in
+//       pieces of <pieceBytes>; read via stream().read() against the counting
+//       sink via streamTo, alternated, order swapped, rests. TCP may join small
+//       writes, so the pieces each side saw are printed beside (bytes per piece).
+//   lat <pieceBytes> <everyMs> <pieces> <rounds> <restMs>
+//       Paced: the server stamps each piece with the steady clock and sends
+//       one every <everyMs> ms (an LLM's tokens). The delay is the stamp to the
+//       reader's read() returning the piece (read path) or to the sink's accept
+//       (sink path): the server's write, the loopback, the service thread and
+//       the hand-over, all in one process. The service thread's arrival is not
+//       stamped (that would change package source), so the common part is in
+//       both and the DIFFERENCE between the paths is the hop. p50 and p99.
+//   mem <r|s> <streams> <busyKiB>
+//       streammemory's pattern: <streams> fetches held open (the server sent a
+//       first small piece and waits), the process's private bytes then; then
+//       each is sent <busyKiB> more and run to its end, the most private bytes
+//       seen. r = a stream() reader actor per stream; s = a counting sink actor
+//       per stream. Server memory is in both: compare r with s, not with zero.
+//
+// Run one mode per process under capped-run.py; the order of the two paths is
+// swapped inside the process, the process-level memory runs are r then s in
+// separate processes.
+
+mod readerbench;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import sse;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
+// ---- shared counters (the actors report here) ----
+
+let opened: Atomic[u64];
+let ended: Atomic[u64];
+let failed: Atomic[u64];
+let gotBytes: Atomic[u64];
+let gotPieces: Atomic[u64];
+let lastEnd: Atomic[u64];
+let latP50: Atomic[u64];
+let latP99: Atomic[u64];
+let latN: Atomic[u64];
+
+fn @initpure init() {
+  opened = Atomic[u64].of(0u64);
+  ended = Atomic[u64].of(0u64);
+  failed = Atomic[u64].of(0u64);
+  gotBytes = Atomic[u64].of(0u64);
+  gotPieces = Atomic[u64].of(0u64);
+  lastEnd = Atomic[u64].of(0u64);
+  latP50 = Atomic[u64].of(0u64);
+  latP99 = Atomic[u64].of(0u64);
+  latN = Atomic[u64].of(0u64);
+}
+
+fn resetCounters() {
+  opened.store(0u64);
+  ended.store(0u64);
+  failed.store(0u64);
+  gotBytes.store(0u64);
+  gotPieces.store(0u64);
+  lastEnd.store(0u64);
+  latP50.store(0u64);
+  latP99.store(0u64);
+  latN.store(0u64);
+}
+
+fn nowNs() u64 { u64.from(Instant.now().nanos()) }
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// ---- private bytes (streammemory's) ----
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+}
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+// ---- stamps: 19-ish digits of the steady clock, a line feed, padding ----
+
+fn stamp(bytes: usize) String {
+  var s = String();
+  s.appendUInt(nowNs());
+  s.append("\n");
+  while s.len() < bytes { s.append("x"); }
+  s
+}
+
+fn parseStamp(b: &Array[u8]) u64 {
+  var v = 0u64;
+  var i = 0usize;
+  while i < b.len && b[i] >= 48u8 && b[i] <= 57u8 {
+    v = v * 10u64 + u64.from(b[i] - 48u8);
+    i = i + 1usize;
+  }
+  v
+}
+
+// delay in microseconds from the piece's stamp to now
+fn delayOf(b: &Array[u8]) u64 {
+  let t = parseStamp(b);
+  let now = nowNs();
+  if now > t {(now - t) / 1000u64} else {0u64}
+}
+
+fn sorted(v: &List[u64]) List[u64] {
+  var s = List[u64]();
+  var q = 0usize;
+  while q < v.len() {
+    s.push(*v[q]);
+    q = q + 1usize;
+  }
+  var i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && *s[j - 1usize] > *s[j] {
+      s.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  s
+}
+
+fn percentile(s: &List[u64], per: usize) u64 {
+  if s.len() == 0usize {return 0u64;}
+  var at = s.len() * per / 100usize;
+  if at >= s.len() {at = s.len() - 1usize;}
+  *s[at]
+}
+
+fn summarize(lat: &List[u64]) {
+  let s = sorted(lat);
+  latP50.store(percentile(&s, 50usize));
+  latP99.store(percentile(&s, 99usize));
+  latN.store(u64.from(s.len()));
+}
+
+fn median(v: &List[u64]) u64 {
+  let s = sorted(v);
+  if s.len() == 0usize {0u64} else {*s[s.len() / 2usize]}
+}
+
+// ---- the server ----
+
+// the k-th '/'-separated number of a path ("/tick/5/300/10": k 2 is 5)
+fn field(p: &str, k: usize) u64 {
+  let b = p as &Array[u8];
+  var idx = 0usize;
+  var i = 0usize;
+  var v = 0u64;
+  while i < b.len {
+    let c = b[i];
+    if c == 47u8 {
+      idx = idx + 1usize;
+    } else if idx == k && c >= 48u8 && c <= 57u8 {
+      v = v * 10u64 + u64.from(c - 48u8);
+    }
+    i = i + 1usize;
+  }
+  v
+}
+
+fn filler(n: usize) String {
+  var s = String();
+  while s.len() < n { s.append("abcdefghijklmnopqrstuvwxyz0123456789 "); }
+  var piece = List[u8].withCapacity(n);
+  var i = 0usize;
+  let b = s.view() as &Array[u8];
+  while i < n { piece.push(b[i]); i = i + 1usize; }
+  String.fromBytes(piece.view())
+}
+
+actor Handler {
+  ex: Exchange;
+
+  // /big/TOTAL/PIECE        TOTAL bytes in pieces of PIECE
+  // /tick/COUNT/BYTES/MS    COUNT stamped pieces, one per MS ms
+  // /sse/COUNT/MS           COUNT events (stamped data), one per MS ms (0: flat out)
+  // /hold/BYTES             a first small piece, then it waits for 'go'
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let b = p as &Array[u8];
+    let kind = if b.len > 1usize {b[1usize]} else {0u8};
+    if kind == 98u8 {            // b
+      let total = field(p, 2usize);
+      let piece = usize.from(field(p, 3usize));
+      let one = filler(piece);
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(total));
+      var at = 0u64;
+      var going = true;
+      while going && at < total {
+        var w = one.clone();
+        if total - at < u64.from(piece) {
+          w = filler(usize.from(total - at));
+        }
+        let r = await ex.write(w);
+        match r {
+          case is Ok { at = at + u64.from(piece); }
+          case is Err { going = false; }
+        }
+      }
+      if going { let f = await ex.finish(); }
+    } else if kind == 116u8 {    // t
+      let count = field(p, 2usize);
+      let bytes = usize.from(field(p, 3usize));
+      let ms = field(p, 4usize);
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      var i = 0u64;
+      var going = true;
+      while going && i < count {
+        if i > 0u64 && ms > 0u64 { thread.sleep(Duration.fromMillis(i64.from(ms))); }
+        let r = await ex.write(stamp(bytes));
+        match r {
+          case is Ok {}
+          case is Err { going = false; }
+        }
+        i = i + 1u64;
+      }
+      if going { let f = await ex.finish(); }
+    } else if kind == 115u8 {    // s
+      let count = field(p, 2usize);
+      let ms = field(p, 3usize);
+      ex.startEvents();
+      var i = 0u64;
+      var going = true;
+      while going && i < count {
+        if i > 0u64 && ms > 0u64 { thread.sleep(Duration.fromMillis(i64.from(ms))); }
+        let e = sse.Event.message(stamp(48usize).view());
+        let r = await ex.sendEvent(&e);
+        match r {
+          case is Ok {}
+          case is Err { going = false; }
+        }
+        i = i + 1u64;
+      }
+      if going { let f = await ex.finish(); }
+    } else if kind == 104u8 {    // h
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      let r = await ex.write(filler(100usize));
+    }
+  }
+
+  // for /hold: send 'total' more bytes in 16 KiB pieces and end
+  pub async fn go(self, total: u64) {
+    let one = filler(16384usize);
+    var at = 0u64;
+    var going = true;
+    while going && at < total {
+      let r = await ex.write(one.clone());
+      match r {
+        case is Ok { at = at + 16384u64; }
+        case is Err { going = false; }
+      }
+    }
+    if going { let f = await ex.finish(); }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  holds: List[Handler];
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let path = String.from(ok.request.path());
+          let isHold = path.view().len > 5usize && (path.view() as &Array[u8])[1usize] == 104u8;
+          let h = Handler(ok);
+          h.run();
+          if isHold { holds.push(h); }
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn releaseHolds(self, total: u64) {
+    var i = 0usize;
+    while i < holds.len() {
+      holds[i].go(total);
+      i = i + 1usize;
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---- the client paths ----
+
+// stream().read(): each piece a String; when 'wantLat', the delay to the piece's stamp
+actor Reader {
+  client: Client;
+
+  pub async fn run(self, url: String, wantLat: bool) {
+    var total = 0u64;
+    var k = 0u64;
+    var lat = List[u64]();
+    var bad = false;
+    let r = await client.stream(Request.get(url.view()));
+    match r {
+      case let Ok(bs) {
+        opened.add(1u64);
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  if wantLat && piece.len() > 0usize { lat.push(delayOf(piece.view() as &Array[u8])); }
+                  total = total + u64.from(piece.len());
+                  k = k + 1u64;
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case is Err {bad = true; going = false;}
+          }
+        }
+      }
+      case is Err {bad = true;}
+    }
+    if wantLat { summarize(&lat); }
+    gotBytes.add(total);
+    gotPieces.add(k);
+    if bad {failed.add(1u64);}
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
+// streamTo: the counting sink, giving each buffer back at once
+actor Counter is ChunkSink {
+  up: Option[ChunkSource];
+  at: u64;
+  k: u64;
+  wantLat: bool;
+  lat: List[u64];
+
+  pub fn init(self: &new, wantLat: bool) {
+    *self = Self(up: None[ChunkSource], at: 0u64, k: 0u64, wantLat: wantLat, lat: List[u64]());
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    if wantLat && c.len() > 0usize { lat.push(delayOf(c.view())); }
+    at = at + u64.from(c.len());
+    k = k + 1u64;
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {}
+      case is Failed { failed.add(1u64); }
+    }
+    up = None[ChunkSource];
+    if wantLat { summarize(&lat); }
+    gotBytes.add(at);
+    gotPieces.add(k);
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
+// ---- the real ReaderSink: streamTo into it, an actor awaiting read() ----
+
+fn mkText(c: &IoBuf) Result[Option[String], AnyError] {
+  Ok[Option[String], AnyError](Some[String](String.fromBytes(c.view())))
+}
+
+fn mkEnd(how: &Ending) Result[Option[String], AnyError] {
+  match how {
+    case is Finished { Ok[Option[String], AnyError](None[String]) }
+    case let &Failed(e) { Err[Option[String], AnyError](AnyError.msg("stream failed")) }
+  }
+}
+
+actor SinkReader {
+  client: Client;
+
+  pub async fn run(self, url: String, wantLat: bool) {
+    var total = 0u64;
+    var k = 0u64;
+    var lat = List[u64]();
+    var bad = false;
+    let rs = ReaderSink[Result[Option[String], AnyError]](&mkText, &mkEnd);
+    let r = await client.streamTo(Request.get(url.view()), rs.clone());
+    match r {
+      case is Ok {
+        opened.add(1u64);
+        var going = true;
+        while going {
+          let n = await readSink(&rs);
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  if wantLat && piece.len() > 0usize { lat.push(delayOf(piece.view() as &Array[u8])); }
+                  total = total + u64.from(piece.len());
+                  k = k + 1u64;
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case is Err {bad = true; going = false;}
+          }
+        }
+      }
+      case is Err {bad = true;}
+    }
+    if wantLat { summarize(&lat); }
+    gotBytes.add(total);
+    gotPieces.add(k);
+    if bad {failed.add(1u64);}
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn run(self, url: String, wantLat: bool) {
+    let r = await client.streamTo(Request.get(url.view()), Counter(wantLat));
+    match r {
+      case is Ok { opened.add(1u64); }
+      case is Err { failed.add(1u64); ended.add(1u64); }
+    }
+  }
+}
+
+// events(): count the events (and their delays when stamped)
+actor EvReader {
+  client: Client;
+
+  pub async fn run(self, url: String, wantLat: bool) {
+    var count = 0u64;
+    var lat = List[u64]();
+    var bad = false;
+    let r = await client.events(Request.get(url.view()));
+    match r {
+      case let Ok(es) {
+        var going = true;
+        while going {
+          let n = await es.next();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  if wantLat { lat.push(delayOf(ev.data.view() as &Array[u8])); }
+                  count = count + 1u64;
+                }
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case is Err {bad = true; going = false;}
+          }
+        }
+      }
+      case is Err {bad = true;}
+    }
+    if wantLat { summarize(&lat); }
+    gotBytes.add(count);
+    if bad {failed.add(1u64);}
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
+// the control: stream() and an sse.Reader fed in the reading actor (chatapi's way)
+actor BodySse {
+  client: Client;
+
+  pub async fn run(self, url: String) {
+    var count = 0u64;
+    var bad = false;
+    var rd = sse.Reader.make();
+    let r = await client.stream(Request.get(url.view()));
+    match r {
+      case let Ok(bs) {
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  var got = List[sse.Event]();
+                  rd.feed(piece.view() as &Array[u8], &mut got);
+                  count = count + u64.from(got.len());
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case is Err {bad = true; going = false;}
+          }
+        }
+      }
+      case is Err {bad = true;}
+    }
+    gotBytes.add(count);
+    if bad {failed.add(1u64);}
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn path3(a: &str, x: u64, y: u64) String {
+  var s = String.from(a);
+  s.appendUInt(x);
+  s.append("/");
+  s.appendUInt(y);
+  s
+}
+
+fn path4(a: &str, x: u64, y: u64, z: u64) String {
+  var s = path3(a, x, y);
+  s.append("/");
+  s.appendUInt(z);
+  s
+}
+
+fn rest(ms: u64) {
+  thread.sleep(Duration.fromMillis(i64.from(ms)));
+  actors.waitQuiet();
+}
+
+// wait for 'n' ended, up to 'limitMs'; false if it ran out
+fn waitEnded(n: u64, limitMs: u64) bool {
+  var waited = 0u64;
+  while ended.load() < n {
+    if waited > limitMs {return false;}
+    thread.sleep(Duration.fromMillis(1i64));
+    waited = waited + 1u64;
+  }
+  true
+}
+
+// ---- one run of each kind; each returns the nanoseconds from asking to the last end (0 if wrong) ----
+
+// mode: 0 read, 1 sink, 2 events, 3 body+sse
+fn oneRun(mode: u32, port: u16, path: &String, wantLat: bool) u64 {
+  resetCounters();
+  let u = url(port, path.view());
+  let t0 = nowNs();
+  if mode == 0u32 {
+    Reader(Client.standard()).run(u, wantLat);
+  } else if mode == 1u32 {
+    SinkReader(Client.standard()).run(u, wantLat);
+  } else if mode == 2u32 {
+    EvReader(Client.standard()).run(u, wantLat);
+  } else {
+    BodySse(Client.standard()).run(u);
+  }
+  if !waitEnded(1u64, 120000u64) { printStr("TIMED OUT\n"); return 0u64; }
+  if failed.load() > 0u64 { printStr("FAILED\n"); return 0u64; }
+  lastEnd.load() - t0
+}
+
+fn modeName(m: u32) &str {
+  if m == 0u32 {"read"} else if m == 1u32 {"sink"} else if m == 2u32 {"events"} else {"body+sse"}
+}
+
+fn ratio(a: u64, b: u64) {
+  // a / b to two places
+  if b == 0u64 { printStr("n/a"); return; }
+  let h = a * 100u64 / b;
+  printUInt(h / 100u64);
+  printStr(".");
+  if h % 100u64 < 10u64 { printStr("0"); }
+  printUInt(h % 100u64);
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var mode = 0u8;
+  if argc > 1i32 { mode = *(*(argv + 1usize)); }
+  var a2 = 0u32; var a3 = 0u32; var a4 = 0u32; var a5 = 0u32; var a6 = 0u32;
+  if argc > 2i32 { a2 = digits(*(argv + 2usize)); }
+  if argc > 3i32 { a3 = digits(*(argv + 3usize)); }
+  if argc > 4i32 { a4 = digits(*(argv + 4usize)); }
+  if argc > 5i32 { a5 = digits(*(argv + 5usize)); }
+  if argc > 6i32 { a6 = digits(*(argv + 6usize)); }
+  var memSink = false;
+  if mode == 109u8 && argc > 2i32 { memSink = *(*(argv + 2usize)) == 115u8; }
+  if mode == 109u8 {
+    // mem <r|s> <streams> <busyKiB>
+    a2 = 0u32;
+    if argc > 3i32 { a2 = digits(*(argv + 3usize)); }
+    if argc > 4i32 { a3 = digits(*(argv + 4usize)); }
+  }
+  actors.configure(actors.Options(workers: 4u32));
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let acceptor = Acceptor(Server.none(), List[Handler]());
+  acceptor.open(ptx);
+  let port = prx.recv() || 0u16;
+  acceptor.serve();
+  var wrong = false;
+
+  if mode == 102u8 {
+    // flood <events> <rounds> <restMs>
+    let count = u64.from(a2); let rounds = a3; let rms = u64.from(a4);
+    let path = path3("/sse/", count, 0u64);
+    var ev = List[u64](); var bs = List[u64]();
+    var k = 0u32;
+    while k < rounds {
+      var order = Array[u32, 2]() <- fill 0u32;
+      if k % 2u32 == 0u32 { order[0usize] = 2u32; order[1usize] = 3u32; } else { order[0usize] = 3u32; order[1usize] = 2u32; }
+      var j = 0usize;
+      while j < 2usize {
+        let m = order[j];
+        rest(rms);
+        let ns = oneRun(m, port, &path, false);
+        printStr(modeName(m)); printStr(": ");
+        if ns == 0u64 || gotBytes.load() != count {
+          printStr("WRONG ("); printUInt(gotBytes.load()); printStr(" of "); printUInt(count); printStr(")\n");
+          wrong = true;
+        } else {
+          let eps = count * 1000000000u64 / ns;
+          printUInt(count); printStr(" events in "); printUInt(ns / 1000000u64); printStr(" ms, ");
+          printUInt(eps); printStr(" events/s\n");
+          if m == 2u32 { ev.push(eps); } else { bs.push(eps); }
+        }
+        j = j + 1usize;
+      }
+      k = k + 1u32;
+    }
+    say("median events/s, events():", median(&ev));
+    say("median events/s, body+sse.Reader:", median(&bs));
+    printStr("ratio events()/body+sse (rate): "); ratio(median(&ev), median(&bs)); printStr("\n");
+  } else if mode == 116u8 {
+    // tput <pieceBytes> <MiB> <rounds> <restMs>
+    let piece = u64.from(a2); let size = u64.from(a3) * 1048576u64; let rounds = a4; let rms = u64.from(a5);
+    let path = path3("/big/", size, piece);
+    var rd = List[u64](); var sk = List[u64]();
+    var k = 0u32;
+    while k < rounds {
+      var j = 0u32;
+      while j < 2u32 {
+        let m = if k % 2u32 == 0u32 {j} else {1u32 - j};
+        rest(rms);
+        let ns = oneRun(m, port, &path, false);
+        printStr(modeName(m)); printStr(": ");
+        if ns == 0u64 || gotBytes.load() != size {
+          printStr("WRONG ("); printUInt(gotBytes.load()); printStr(" of "); printUInt(size); printStr(")\n");
+          wrong = true;
+        } else {
+          printUInt(ns / 1000000u64); printStr(" ms, "); printUInt(size * 1000u64 / ns); printStr(" MB/s, ");
+          printUInt(gotPieces.load()); printStr(" pieces, "); printUInt(size / gotPieces.load()); printStr(" B/piece\n");
+          if m == 0u32 { rd.push(ns); } else { sk.push(ns); }
+        }
+        j = j + 1u32;
+      }
+      k = k + 1u32;
+    }
+    say("median ms, read:", median(&rd) / 1000000u64);
+    say("median ms, sink:", median(&sk) / 1000000u64);
+    printStr("ratio sink/read (time, over 1.3 goes to design chat): "); ratio(median(&sk), median(&rd)); printStr("\n");
+  } else if mode == 108u8 {
+    // lat <pieceBytes> <everyMs> <pieces> <rounds> <restMs>
+    let bytes = u64.from(a2); let every = u64.from(a3); let count = u64.from(a4); let rounds = a5; let rms = u64.from(a6);
+    let path = path4("/tick/", count, bytes, every);
+    var r50 = List[u64](); var r99 = List[u64](); var s50 = List[u64](); var s99 = List[u64]();
+    var k = 0u32;
+    while k < rounds {
+      var j = 0u32;
+      while j < 2u32 {
+        let m = if k % 2u32 == 0u32 {j} else {1u32 - j};
+        rest(rms);
+        let ns = oneRun(m, port, &path, true);
+        printStr(modeName(m)); printStr(": ");
+        if ns == 0u64 || latN.load() == 0u64 {
+          printStr("WRONG\n"); wrong = true;
+        } else {
+          printUInt(latN.load()); printStr(" pieces, p50 "); printUInt(latP50.load()); printStr(" us, p99 ");
+          printUInt(latP99.load()); printStr(" us\n");
+          if m == 0u32 { r50.push(latP50.load()); r99.push(latP99.load()); } else { s50.push(latP50.load()); s99.push(latP99.load()); }
+        }
+        j = j + 1u32;
+      }
+      k = k + 1u32;
+    }
+    say("median of p50 (us), read:", median(&r50));
+    say("median of p50 (us), sink:", median(&s50));
+    say("median of p99 (us), read:", median(&r99));
+    say("median of p99 (us), sink:", median(&s99));
+  } else if mode == 109u8 {
+    // mem <r|s> <streams> <busyKiB>
+    let n = u64.from(a2); let busy = u64.from(a3) * 1024u64;
+    // warm: the workers, the pool, one fetch in the same mode
+    resetCounters();
+    let warm = path3("/big/", 1048576u64, 65536u64);
+    let w = oneRun(if memSink {1u32} else {0u32}, port, &warm, false);
+    rest(500u64);
+    resetCounters();
+    let before = privateBytes();
+    let hold = String.from("/hold/0");
+    var k = 0u64;
+    while k < n {
+      let u = url(port, hold.view());
+      if memSink { Fetcher(Client.standard()).run(u, false); } else { Reader(Client.standard()).run(u, false); }
+      k = k + 1u64;
+    }
+    var waited = 0u64;
+    while opened.load() < n && waited < 60000u64 {
+      thread.sleep(Duration.fromMillis(1i64));
+      waited = waited + 1u64;
+    }
+    let reached = opened.load();
+    thread.sleep(Duration.fromMillis(800i64));
+    let idle = privateBytes();
+    var peak = idle;
+    let t0 = nowNs();
+    acceptor.releaseHolds(busy);
+    var w2 = 0u64;
+    while ended.load() < reached && w2 < 120000u64 {
+      let p = privateBytes();
+      if p > peak { peak = p; }
+      thread.sleep(Duration.fromMillis(1i64));
+      w2 = w2 + 1u64;
+    }
+    let ms = (nowNs() - t0) / 1000000u64;
+    actors.waitQuiet();
+    let after = privateBytes();
+    printStr(if memSink {"sink"} else {"read"}); printStr(" streams "); printUInt(n);
+    printStr(", opened "); printUInt(reached); printStr(", ended "); printUInt(ended.load());
+    printStr(", failed "); printUInt(failed.load()); printStr(", busy phase "); printUInt(ms); printStr(" ms\n");
+    say("private KiB before", before / 1024u64);
+    say("  streams open, idle", idle / 1024u64);
+    say("  at the most while they ran", peak / 1024u64);
+    say("  when over", after / 1024u64);
+    if reached > 0u64 {
+      printStr("per stream, idle "); printUInt((idle - before) / reached); printStr(" B, busy ");
+      printUInt((peak - before) / reached); printStr(" B\n");
+    }
+    if reached < n || ended.load() < reached { wrong = true; }
+  } else {
+    printStr("modes: flood | tput | lat | mem (see the file's header)\n");
+    wrong = true;
+  }
+  acceptor.stop();
+  actors.waitQuiet();
+  finalAll();
+  if wrong {1i32} else {0i32}
+}

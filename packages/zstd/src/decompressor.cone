@@ -115,9 +115,7 @@ pub struct Decompressor {
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
   // next, or the input piles up.
   pub fn feed(self: &mut, chunk: &Array[u8]) {
-    inp.reserve(chunk.len);
-    var i = 0usize;
-    while i < chunk.len { inp.push(chunk[i]); i = i + 1usize; }
+    inp.appendSlice(chunk);
   }
 
   // Says that no more input will come: a frame that is not complete is then
@@ -201,14 +199,13 @@ pub struct Decompressor {
   // failed). Anything pulled before a failure was decoded from blocks that
   // were valid; a frame's checksum is checked only at its end.
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
-    var none = List[u8]();
     let room = out.room();
-    self.pullInto(room, true, out, &mut none)
+    self.pullInto(room, out)
   }
 
   // The loop of both pulls: decode, and hand out at most 'room' bytes, into
-  // 'buf' when 'toBuf', else into 'list' (the other is not touched)
-  fn pullInto(self: &mut, room0: usize, toBuf: bool, buf: &mut IoBuf, list: &mut List[u8]) Status {
+  // 'buf'
+  fn pullInto(self: &mut, room0: usize, buf: &mut IoBuf) Status {
     if self.failed() { return Status.Failed; }
     var room = room0;
     var result: Status = Status.Done;
@@ -218,13 +215,7 @@ pub struct Decompressor {
         if pending > 0usize {
           let n = if pending < room {pending} else {room};
           let stop = mark + n;
-          if toBuf {
-            buf.append(&hist.view()[mark ..< stop]);
-          } else {
-            list.reserve(n);
-            var i = mark;
-            while i < stop { list.push(*hist[i]); i = i + 1usize; }
-          }
+          buf.append(&hist.view()[mark ..< stop]);
           mark = stop;
           room = room - n;
           if mark < hist.len() { result = Status.MoreOutput; break; }

@@ -56,7 +56,8 @@ pub actor Chat {
     // (a transport error becomes the ChatError ChatError.from makes of it)
     let bs = await client.streamIn(hreq, lim)?;
     if !bs.isOk() {
-      // An error status: the body is the API's error object. Read it (the first 64 KiB of it)
+      // An error status: the body is the API's error object. Read the first 64 KiB of it, then
+      // let the body go: dropping it cancels the rest of the fetch
       var body = String();
       var going = true;
       while going {
@@ -65,7 +66,8 @@ pub actor Chat {
           case let Ok(ok) {
             match ok {
               case let Some(piece) {
-                if body.len() < 65536usize {body.append(piece.view());}
+                body.append(piece.view());
+                if body.len() >= 65536usize {going = false;}
               }
               case is None[String] {going = false;}
             }
@@ -73,13 +75,21 @@ pub actor Chat {
           case let Err(er) {going = false;}
         }
       }
+      if body.len() > 65536usize {
+        // cut at a character boundary (a continuation byte is 10xxxxxx)
+        var cut = 65536usize;
+        let bytes = body.view();
+        while cut > 0usize && (bytes[cut] & 0xC0u8) == 0x80u8 {cut = cut - 1usize;}
+        body.truncate(cut);
+      }
       return Err[ChatStream, ChatError](apiError(bs.status, body.view()));
     }
     if !isEventStream(&bs.headers) {
       return Err[ChatStream, ChatError](ChatError.make(ChatErrorKind.Decode,
         "the server answered a streamed request with something that is not an event stream"));
     }
-    let cs = ChatStream(bs, sse.Reader.make(), List[sse.Event](), 0usize, 0u64, false, false, false);
+    // the body goes to actorhttp's event sink: no pump of our own here
+    let cs = ChatStream(bs.events(), 0u64, false, false);
     Ok[ChatStream, ChatError](cs)
   }
 }
@@ -102,60 +112,76 @@ fn isEventStream(h: &http.Headers) bool {
 // The stream
 // ---------------------------------------------------------------------------
 
-// What the next step of reading a stream is
-enum Step {
-  Need;              // the events held are used up: the body has more to give
-  Item(Delta);       // a chunk's delta
-  End;               // the reply is whole
-  Fail(ChatError);   // the stream is broken
-}
 
 // A streamed reply being read (the package's header, STREAM): the response's
-// body arrives to the actor in pieces, the sse package's Reader cuts them into
+// body goes to actorhttp's event sink (BodyStream.events), which cuts it into
 // events whatever the pieces' boundaries, and each event's data is a chunk of
 // the reply. 'next' awaits the next delta, one at a time: it answers
 // Ok(Some(delta)), Ok(None) once the reply is whole ('[DONE]'), or an error,
-// after which it answers Ok(None). Dropping the last handle cancels the rest
-// of the exchange
+// after which it answers Ok(None). Dropping the last handle drops the
+// EventStream, which cancels the rest of the exchange
 pub actor ChatStream {
-  body: actorhttp.BodyStream;
-  reader: sse.Reader;
-  queue: List[sse.Event];     // events cut from the pieces, not yet read
-  at: usize;                  // the next of them
+  events: actorhttp.EventStream;
   chunks: u64;                // chunks read, for the error that names one
   sawFinish: bool;            // a chunk carried a finish reason
-  bodyEnd: bool;              // the body has ended
   over: bool;                 // '[DONE]' or an error was answered: nothing more is read
 
   // The next delta of the reply
   pub async fn next(self) Result[Option[Delta], ChatError] {
     var out: Result[Option[Delta], ChatError] = Ok[Option[Delta], ChatError](None);
-    var going = true;
+    var going = !over;
     while going {
-      match self.step() {
-        case let Item(d) {
-          out = Ok[Option[Delta], ChatError](Some[Delta](d));
-          going = false;
-        }
-        case is End {going = false;}
-        case let Fail(e) {
-          out = Err[Option[Delta], ChatError](e);
-          going = false;
-        }
-        case is Need {
-          let n = await body.read();
-          match n {
-            case let Ok(ok) {
-              match ok {
-                case let Some(piece) {self.feed(piece.view());}
-                case is None[String] {bodyEnd = true;}
+      let n = await events.next();
+      match n {
+        case let Ok(ok) {
+          match ok {
+            case let Some(ev) {
+              let data = ev.data.view().trim();
+              if data.len() == 0usize {continue;}
+              if isDone(data) {
+                over = true;
+                going = false;
+              } else {
+                chunks = chunks + 1u64;
+                match parseChunk(data) {
+                  case let Ok(d) {
+                    if d.finishReason.len() > 0usize {sawFinish = true;}
+                    out = Ok[Option[Delta], ChatError](Some[Delta](d));
+                    going = false;
+                  }
+                  case let Err(e) {
+                    over = true;
+                    var m = e.detail.clone();
+                    m.append(" (chunk ");
+                    m.appendUInt(chunks);
+                    m.append(")");
+                    var c = e.clone();
+                    c.detail = m;
+                    out = Err[Option[Delta], ChatError](c);
+                    going = false;
+                  }
+                }
               }
             }
-            case let Err(er) {
+            case is None[sse.Event] {
+              // the body has ended
               over = true;
-              out = Err[Option[Delta], ChatError](transportError(&er));
               going = false;
+              if !sawFinish {
+                out = Err[Option[Delta], ChatError](ChatError.make(ChatErrorKind.Stream,
+                  "the stream ended before the reply was complete"));
+              }
             }
+          }
+        }
+        case let Err(er) {
+          over = true;
+          going = false;
+          if isLimit(&er) {
+            out = Err[Option[Delta], ChatError](ChatError.make(ChatErrorKind.Stream,
+              "an event of the stream is longer than the limit"));
+          } else {
+            out = Err[Option[Delta], ChatError](transportError(&er));
           }
         }
       }
@@ -187,53 +213,9 @@ pub actor ChatStream {
     }
     if failed {Err[ChatReply, ChatError](why)} else {Ok[ChatReply, ChatError](reply)}
   }
+}
 
-  // Bytes of the body in: the events they complete are queued
-  fn feed(self, piece: &Array[u8]) {
-    reader.feed(piece, &mut queue);
-  }
-
-  // The reading of what is queued: the next delta, or why there is none yet
-  fn step(self) Step {
-    if over {return Step.End;}
-    while at < queue.len() {
-      let k = at;
-      at = at + 1usize;
-      let data = queue[k].data.view().trim();
-      if data.len() == 0usize {continue;}
-      if isDone(data) {
-        over = true;
-        return Step.End;
-      }
-      chunks = chunks + 1u64;
-      match parseChunk(data) {
-        case let Ok(d) {
-          if d.finishReason.len() > 0usize {sawFinish = true;}
-          return Step.Item(d);
-        }
-        case let Err(e) {
-          over = true;
-          var m = e.detail.clone();
-          m.append(" (chunk ");
-          m.appendUInt(chunks);
-          m.append(")");
-          var c = e.clone();
-          c.detail = m;
-          return Step.Fail(c);
-        }
-      }
-    }
-    queue.clear();
-    at = 0usize;
-    if reader.overflowed() {
-      over = true;
-      return Step.Fail(ChatError.make(ChatErrorKind.Stream, "an event of the stream is longer than the limit"));
-    }
-    if bodyEnd {
-      over = true;
-      if sawFinish {return Step.End;}
-      return Step.Fail(ChatError.make(ChatErrorKind.Stream, "the stream ended before the reply was complete"));
-    }
-    Step.Need
-  }
+// Whether a stream's failure is the event sink's limit on one event
+fn isLimit(e: &actorhttp.FetchError) bool {
+  e.kind() == actorhttp.FetchErrorKind.Failed && e.failure.stage == httpclient.Stage.Limit
 }

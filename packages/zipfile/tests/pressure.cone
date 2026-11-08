@@ -1,0 +1,301 @@
+// An archive streamed from a peer cannot kill the process through the buffer pool. A local header can be
+// 30 bytes + a 65535-byte name + a 65535-byte extra field, and when it arrives in small pieces it is looked at
+// as one slice, which copies it into a buffer of the reader's own; with the pool unable to give that buffer the
+// read ends, Overloaded, rather than the pool panicking (Bug 67). The same archive with room is read correctly,
+// fed a byte at a time, and the blocks lent stay in step with the bytes held, not with the number of pieces.
+// Entry data is fed to the decoders where it lies, so one-byte pieces decode (deflate, zstd, stored, and a
+// data descriptor), which this test checks beside the big header.
+
+mod pressure;
+
+import testing use *;
+import collections use *;
+import iobuf use *;
+import zipfile use *;
+
+const nameLen = 65535usize;
+const extraLen = 65535usize;
+
+fn bytesOf(s: &str) List[u8] {
+  var out = List[u8].withCapacity(s.len());
+  var k = 0usize;
+  while k < s.len() { out.push(s[k]); k += 1usize; }
+  out
+}
+
+fn lines(n: i64) List[u8] {
+  var s = String();
+  var i = 0i64;
+  while i < n {
+    s.append("line ");
+    s.appendInt(i);
+    s.append(": the quick brown fox jumps over the lazy dog\n");
+    i += 1i64;
+  }
+  bytesOf(s.view())
+}
+
+// An archive with one stored entry whose name is 65535 bytes, and whose local header carries a 65535-byte extra
+// field (the central directory's record has none: the two are allowed to differ there)
+fn bigHeader() List[u8] {
+  var name = String();
+  var i = 0usize;
+  while i < nameLen { name.append("n"); i += 1usize; }
+  var w = ZipWriter.make();
+  _ = w.add(name.view(), bytesOf("the entry behind a huge header").view(), &EntryOptions.stored());
+  var plain = match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, "making the big-header archive"); return List[u8](); }
+  };
+  var out = List[u8].withCapacity(plain.len() + extraLen);
+  let at = 30usize + nameLen;
+  i = 0usize;
+  while i < at { out.push(plain[i]); i += 1usize; }
+  // the extra field: an unknown id (0x7777) and a size that fills it out
+  out.push(0x77u8); out.push(0x77u8);
+  out.push(u8.from((extraLen - 4usize) & 255usize)); out.push(u8.from((extraLen - 4usize) >> 8usize));
+  i = 4usize;
+  while i < extraLen { out.push(0u8); i += 1usize; }
+  i = at;
+  while i < plain.len() { out.push(plain[i]); i += 1usize; }
+  out[28usize] = 0xFFu8;
+  out[29usize] = 0xFFu8;
+  // the end record: its offset of the directory moves by the extra field's length
+  var e = out.len() - 22usize;
+  while e > 0usize && !(out[e] == 0x50u8 && out[e + 1usize] == 0x4Bu8 && out[e + 2usize] == 5u8 && out[e + 3usize] == 6u8) { e -= 1usize; }
+  let cd = usize.from(out[e + 16usize]) + (usize.from(out[e + 17usize]) << 8usize) + (usize.from(out[e + 18usize]) << 16usize)
+    + (usize.from(out[e + 19usize]) << 24usize) + extraLen;
+  out[e + 16usize] = u8.from(cd & 255usize);
+  out[e + 17usize] = u8.from((cd >> 8usize) & 255usize);
+  out[e + 18usize] = u8.from((cd >> 16usize) & 255usize);
+  out[e + 19usize] = u8.from((cd >> 24usize) & 255usize);
+  out
+}
+
+fn addStr(d: &mut List[u8], s: &str) {
+  var k = 0usize;
+  while k < s.len { d.push(s[k]); k += 1usize; }
+}
+
+// What a stream gave: each entry as name, 0, its data, 1; why it failed
+struct Gave {
+  digest: List[u8];
+  failed: Option[ZipError];
+  done: bool;
+  maxLent: usize;
+}
+
+fn emptyGave() Gave { Gave(List[u8](), None[ZipError], false, 0usize) }
+
+// Pulls until the stream wants input or stops: true if it wants input
+fn drain(s: &mut ArchiveStream, g: &mut Gave, out: &mut IoBuf) bool {
+  while true {
+    out.clear();
+    let st = s.pull(out);
+    if st == Step.Begin {
+      addStr(&mut g.digest, s.current().name.view());
+      g.digest.push(0u8);
+    } else if st == Step.Data {
+      g.digest.appendSlice(out.view());
+    } else if st == Step.End {
+      g.digest.push(1u8);
+    } else if st == Step.NeedInput {
+      return true;
+    } else if st == Step.Done {
+      g.done = true;
+      return false;
+    } else {
+      g.failed = s.error();
+      return false;
+    }
+  }
+  false
+}
+
+// Feeds 'data' in pieces of 'piece' bytes; pulls after every piece when 'eager', else once at the end
+fn feedAll(s: &mut ArchiveStream, data: &Array[u8], piece: usize, eager: bool, g: &mut Gave, out: &mut IoBuf) {
+  var at = 0usize;
+  var more = true;
+  while at < data.len && more {
+    let n = if data.len - at < piece { data.len - at } else { piece };
+    s.feed(&data[at ..< at + n]);
+    at += n;
+    let lent = stats().lentBytes;
+    if lent > g.maxLent { g.maxLent = lent; }
+    if eager { more = drain(s, g, out); }
+    else if s.error() is Some { more = false; }
+  }
+}
+
+fn finishUp(s: &mut ArchiveStream, g: &mut Gave, out: &mut IoBuf) {
+  if g.failed is None && !g.done {
+    s.finish();
+    drain(s, g, out);
+  }
+}
+
+fn digestOf(data: &Array[u8]) List[u8] {
+  var d = List[u8]();
+  match Archive.open(data) {
+    case let Err(e) { expect(false, "Archive.open reads the test archive"); }
+    case let Ok(ar) {
+      var i = 0usize;
+      while i < ar.count() {
+        match ar.read(data, i) {
+          case let Ok(got) {
+            addStr(&mut d, ar.entry(i).name.view());
+            d.push(0u8);
+            d.appendSlice(got.view());
+            d.push(1u8);
+          }
+          case let Err(e) { expect(false, "Archive.read reads the test archive"); }
+        }
+        i += 1usize;
+      }
+    }
+  }
+  d
+}
+
+fn overloaded(g: &Gave) bool {
+  match &g.failed {
+    case let &Some(e) { e.kind == ErrorKind.Overloaded }
+    case is None[ZipError] { false }
+  }
+}
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake every size class from 'first' up until each is refused: the pool then refuses any
+// further tryMake of those classes
+fn hoard(first: u32) Chain {
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var cls = first;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+// Plain constructions until little is left under maxBytes, so that a plain 'IoBuf' for a large copy would panic
+fn eatReserve() Chain {
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  let st = stats();
+  while stats().heldBytes + 2097152usize <= st.maxBytes {
+    var b = IoBuf(4096usize);
+    b.append("x");
+    _ = held.push(b);
+  }
+  held
+}
+
+// The archive is fed in pieces of 'piece' (all of it, no pulls), then the pool is starved of the big blocks and
+// the stream is pulled: the read ends Overloaded
+fn starved(label: &str, data: &Array[u8], piece: usize) {
+  var s = ArchiveStream.make();
+  var g = emptyGave();
+  var out = IoBuf(65536usize);
+  feedAll(&mut s, data, piece, false, &mut g, &mut out);
+  var l1 = String.from(label);
+  l1.append(": fed with room");
+  expect(g.failed is None && s.error() is None, l1.view());
+  let h = hoard(0u32);
+  let e = eatReserve();
+  drain(&mut s, &mut g, &mut out);
+  var l2 = String.from(label);
+  l2.append(": refused, Overloaded");  expect(overloaded(&g), l2.view());
+  var l3 = String.from(label);
+  l3.append(": not done");
+  expect(!g.done, l3.view());
+}
+
+fn main() i32 {
+  let big = bigHeader();
+  let want = digestOf(big.view());
+  expectUInt(u64.from(want.len()), u64.from(nameLen + 30usize + 1usize + 1usize), "the big-header archive holds its entry");
+  let lentBefore = stats().lent;
+
+  // ---- with room: read correctly, a byte at a time ----
+  {
+    var s = ArchiveStream.make();
+    var g = emptyGave();
+    var out = IoBuf(65536usize);
+    let takes0 = stats().takes;
+    feedAll(&mut s, big.view(), 1usize, false, &mut g, &mut out);
+    finishUp(&mut s, &mut g, &mut out);
+    let takes = stats().takes - takes0;
+    expect(g.done && g.failed is None, "a byte at a time, pulled at the end: read");
+    expect(g.digest.view() == want.view(), "...the entry's bytes are right");
+    // each byte is copied once into a block's room (131,100 header bytes: 33 blocks of 4 KiB), and the header once
+    // more into the reader's own copy (one 256 KiB block): so the copying is at most about twice the header, and
+    // the blocks taken follow the bytes, not the 131,100 pieces
+    expect(takes < 80u64, "...taking blocks by the bytes held (about 35), not one per byte");
+    expect(g.maxLent < 600000usize, "...so the blocks lent stayed near the header's size (under 4.6x), not 4 KiB per byte");
+  }
+  {
+    var s = ArchiveStream.make();
+    var g = emptyGave();
+    var out = IoBuf(65536usize);
+    feedAll(&mut s, big.view(), 1usize, true, &mut g, &mut out);
+    finishUp(&mut s, &mut g, &mut out);
+    expect(g.done && g.failed is None, "a byte at a time, pulled after every byte: read");
+    expect(g.digest.view() == want.view(), "...the entry's bytes are right");
+    expect(g.maxLent < 600000usize, "...and the blocks lent stayed near the bytes held");
+  }
+  expectUInt(stats().lent, lentBefore, "every buffer home");
+
+  // ---- one-byte pieces decode: deflate, zstd, stored, with and without a data descriptor ----
+  {
+    var w = ZipWriter.make();
+    let text = lines(300i64);
+    _ = w.add("d.txt", text.view(), &EntryOptions.deflated(2i32));
+    _ = w.add("z.txt", text.view(), &EntryOptions.zstd(3i32));
+    _ = w.add("s.txt", text.view(), &EntryOptions.stored());
+    match w.bytes() {
+      case let Ok(b) {
+        let w2 = digestOf(b.view());
+        var s = ArchiveStream.make();
+        var g = emptyGave();
+        var out = IoBuf(4096usize);
+        feedAll(&mut s, b.view(), 1usize, true, &mut g, &mut out);
+        finishUp(&mut s, &mut g, &mut out);
+        expect(g.done && g.failed is None, "deflate, zstd and stored entries in one-byte pieces: read");
+        expect(g.digest.view() == w2.view(), "...the same bytes as a whole read gives");
+      }
+      case let Err(e) { expect(false, "making the three-method archive"); }
+    }
+  }
+
+  // ---- pool too small for the header: refused, no panic ----
+  // (only the header is fed: it ends the last piece, so it lies across the edge of the pieces that came after the
+  // last join)
+  let headerOnly = &big.view()[0usize ..< 30usize + nameLen + extraLen];
+  starved("a byte at a time", headerOnly, 1usize);
+  starved("in pieces of 997", headerOnly, 997usize);
+  starved("in pieces of 40000", headerOnly, 40000usize);
+  expectUInt(stats().lent, lentBefore, "after the refusals and the hoards' end, every buffer home");
+
+  // and a fresh stream is read
+  {
+    var s = ArchiveStream.make();
+    var g = emptyGave();
+    var out = IoBuf(65536usize);
+    feedAll(&mut s, big.view(), 40000usize, true, &mut g, &mut out);
+    finishUp(&mut s, &mut g, &mut out);
+    expect(g.done && g.digest.view() == want.view(), "once the pool has room again, the same archive is read");
+  }
+  done()
+}

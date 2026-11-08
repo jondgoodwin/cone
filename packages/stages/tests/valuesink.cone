@@ -1,0 +1,506 @@
+// The value streams (valuesink.cone): ValueSink[T], ValueSource, ValueReader[T, R], with a probe source
+// that follows the contract (credit by count, control items, the stop rules) and a generic MapStage
+// [A, B] as the example of a stage in the middle:
+//
+//   0. credit respected: a source with none sends nothing; a CONTROL item goes past zero credit and
+//      arrives in order; credit saturates at the first window (a returned excess does not inflate it);
+//   1. ValueReader under a slow reader: every value arrives in order, and at most the window is
+//      ever outstanding;
+//   2. a sink stops its source while items are in flight: one end, Failed with the sink's reason,
+//      far fewer than all sent, and the credit balances (every item received was credited);
+//   3. a second stop does nothing;
+//   4. a stop after the end does nothing;
+//   5. two MapStages of different types in a chain: values converted, credit passed up through both
+//      (including credit sent before the stage was attached), one end.
+
+mod valuesink;
+
+import testing use *;
+import collections use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Instant, Duration;
+import actors;
+import aio;
+import streams use *;
+import stages use *;
+
+// An item: data, or a control item (ctl), which a source may send with no credit
+struct Item {
+  pub ctl: bool;
+  pub n: u32;
+}
+
+struct Seen {
+  pub sentData: Atomic[u64];   // data items the source sent
+  pub sentCtl: Atomic[u64];    // control items it sent
+  pub credited: Atomic[u64];   // units of credit it was sent, all told
+  pub peak: Atomic[u64];       // most data items outstanding past the first window (sent - returned)
+  pub stopped: Atomic[u64];    // stops the source acted on
+  pub ignored: Atomic[u64];    // stops it ignored (after its end, or a second)
+  pub ends: Atomic[u64];       // ends the source sent
+  pub synced: Atomic[u64];     // 'sync' messages the source has run
+  pub received: Atomic[u64];   // items the sink took
+  pub failed: Atomic[u64];     // end(Failed) at the sink
+  pub finished: Atomic[u64];   // end(Finished) at the sink
+  pub reasonOk: Atomic[u64];   // Failed ends whose reason reads "enough"
+  pub ctlAt: Atomic[u64];      // the place (1-based) in the sink's arrivals where the control item came
+  pub bad: Atomic[u64];        // data items that did not follow the one before
+}
+
+fn z() Atomic[u64] { Atomic[u64].of(0u64) }
+
+fn newSeen() Seen {
+  Seen(z(), z(), z(), z(), z(), z(), z(), z(), z(), z(), z(), z(), z(), z())
+}
+
+let s0: Seen;
+let s1: Seen;
+let s2: Seen;
+let s3: Seen;
+let s4: Seen;
+let s5: Seen;
+
+fn @initpure init() {
+  s0 = newSeen();
+  s1 = newSeen();
+  s2 = newSeen();
+  s3 = newSeen();
+  s4 = newSeen();
+  s5 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&s0} else if slot == 1usize {&s1} else if slot == 2usize {&s2}
+  else if slot == 3usize {&s3} else if slot == 4usize {&s4} else {&s5}
+}
+
+// Sends 'left' data items (n = 1, 2, ...) against credit, and after 'ctlAfter' of them (if not 0) one
+// control item (n = 901) with no credit. Follows the contract: the credit it holds saturates at the
+// first window; the first terminal event decides (its own end or a stop) and it sends its one end,
+// carrying the stop's reason
+actor Src is ValueSource {
+  slot: usize;
+  down: ValueSink[Item];
+  left: u32;
+  ctlAfter: u32;
+  ctlDone: bool;
+  next: u32;
+  avail: u32;
+  cap: u32;
+  returned: u64;
+  over: bool;
+
+  pub fn init(self: &new, slot: usize, down: ValueSink[Item], left: u32, ctlAfter: u32) {
+    *self = Self(slot: slot, down: down, left: left, ctlAfter: ctlAfter, ctlDone: false, next: 1u32, avail: 0u32,
+      cap: 0u32, returned: 0u64, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  // A message that comes after everything sent to this actor before it
+  pub async fn sync(self) { seenOf(slot).synced.add(1u64); }
+
+  pub async fn credit(self, n: u32) {
+    let s = seenOf(slot);
+    s.credited.add(u64.from(n));
+    if cap == 0u32 {
+      cap = n;
+      avail = n;
+    } else {
+      returned += u64.from(n);
+      let sum = avail + n;
+      avail = if sum < cap {sum} else {cap};
+    }
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    let s = seenOf(slot);
+    if over {
+      s.ignored.add(1u64);
+      return;
+    }
+    s.stopped.add(1u64);
+    self.endWith(why);
+  }
+
+  fn endWith(self, how: Ending) {
+    over = true;
+    seenOf(slot).ends.add(1u64);
+    down.end(how);
+  }
+
+  fn pump(self) {
+    let s = seenOf(slot);
+    var more = !over;
+    while more {
+      if ctlAfter != 0u32 && !ctlDone && next == ctlAfter + 1u32 {
+        ctlDone = true;
+        s.sentCtl.add(1u64);
+        down <- Item(true, 901u32);
+      } else if left == 0u32 {
+        self.endWith(Ending.Finished);
+        more = false;
+      } else if avail == 0u32 {
+        more = false;
+      } else {
+        avail = avail - 1u32;
+        left = left - 1u32;
+        let sent = s.sentData.add(1u64) + 1u64;
+        s.peak.max(sent - returned);
+        down <- Item(false, next);
+        next = next + 1u32;
+      }
+    }
+  }
+}
+
+// A sink: grants 'initial' at attach, and one more for each item taken if 'regrant'. At its 'stopAt'th
+// item it stops its source (twice if 'twice'); with 'afterEnd' it stops its source when the end arrives.
+// It keeps taking, and crediting, what still arrives. At the end it sends the order the items came in
+// (their n, a thousand to a place)
+actor Probe is ValueSink[Item] {
+  slot: usize;
+  initial: u32;
+  regrant: bool;
+  stopAt: u64;
+  twice: bool;
+  afterEnd: bool;
+  up: Option[ValueSource];
+  last: u32;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, initial: u32, regrant: bool, stopAt: u64, twice: bool, afterEnd: bool,
+      done: OneshotSender[u64]) {
+    *self = Self(slot: slot, initial: initial, regrant: regrant, stopAt: stopAt, twice: twice, afterEnd: afterEnd,
+      up: None[ValueSource], last: 0u32, done: done);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    if initial > 0u32 { source.credit(initial); }
+  }
+
+  // The test grants more credit by hand
+  pub async fn grant(self, n: u32) {
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else {}
+    }
+  }
+
+  pub async fn accept(self, v: Item) {
+    let s = seenOf(slot);
+    let n = s.received.add(1u64) + 1u64;
+    if v.ctl {
+      s.ctlAt.store(n);
+    } else {
+      if v.n != last + 1u32 { s.bad.add(1u64); }
+      last = v.n;
+    }
+    if regrant && !v.ctl {
+      match &up {
+        case let &Some(u) { u.credit(1u32); }
+        else {}
+      }
+    }
+    if n == stopAt {
+      self.stopUp();
+      if twice { self.stopUp(); }
+    }
+  }
+
+  fn stopUp(self) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Failed(AnyError.msg("enough"))); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) {
+        s.failed.add(1u64);
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        if bytesEqual(text.view(), "enough") { s.reasonOk.add(1u64); }
+      }
+    }
+    if afterEnd { self.stopUp(); }
+    done.send(s.received.load());
+  }
+}
+
+// The example stage in the middle, generic in what it takes and what it makes: it converts each item,
+// passes credit up and a stop up, and ends its own downstream once. Credit sent to it before its
+// 'attach' (a sink end is made first, and grants at once) is kept and passed up when the attach comes
+actor MapStage[A, B] is ValueSink[A], ValueSource {
+  down: Option[ValueSink[B]];
+  up: Option[ValueSource];
+  early: u32;
+  f: &fn(a: A) B;
+
+  pub fn init(self: &new, down: ValueSink[B], f: &fn(a: A) B) {
+    *self = Self(down: Some[ValueSink[B]](down), up: None[ValueSource], early: 0u32, f: f);
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    if early > 0u32 {
+      source.credit(early);
+      early = 0u32;
+    }
+  }
+
+  pub async fn accept(self, v: A) {
+    let g = f;
+    match &down {
+      case let &Some(d) { d.accept(g(v)); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match &down {
+      case let &Some(d) { d.end(how); }
+      else {}
+    }
+    down = None[ValueSink[B]];
+    up = None[ValueSource];
+  }
+
+  pub async fn credit(self, n: u32) {
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else { early = early + n; }
+    }
+  }
+
+  pub async fn stop(self, why: Ending) {
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      else {}
+    }
+  }
+}
+
+fn doubled(i: Item) u64 { u64.from(i.n) * 2u64 }
+fn plusOne(x: u64) u64 { x + 1u64 }
+
+// Sums what it is sent, granting a unit for each
+actor Sum is ValueSink[u64] {
+  up: Option[ValueSource];
+  total: u64;
+  count: u64;
+  ends: u64;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(up: None[ValueSource], total: 0u64, count: 0u64, ends: 0u64, done: done);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(4u32);
+  }
+
+  pub async fn accept(self, v: u64) {
+    total += v;
+    count += 1u64;
+    match &up {
+      case let &Some(u) { u.credit(1u32); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    ends += 1u64;
+    done.send(total * 1000u64 + count);
+  }
+}
+
+fn readerValue(i: Item) i64 { i64.from(i.n) }
+fn readerEnd(how: &Ending) i64 {
+  match how {
+    case is Finished { -1i64 }
+    else { -2i64 }
+  }
+}
+
+// Reads a ValueReader to its end, slowly, and sends the sum of the values and how many it read
+actor Consumer {
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(done: done);
+  }
+
+  pub async fn run(self, vr: ValueReader[Item, i64]) {
+    var total = 0u64;
+    var count = 0u64;
+    var going = true;
+    while going {
+      let r = await readValue(&vr);
+      if r >= 0i64 {
+        total += u64.from(r);
+        count += 1u64;
+        let nap = await aio.sleep(Duration.fromMillis(1i64));
+      } else {
+        going = false;
+      }
+    }
+    done.send(total * 1000u64 + count);
+  }
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while c.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  var tx4: OneshotSender[u64];
+  var rx4: OneshotReceiver[u64];
+  tx4, rx4 = Oneshot[u64].make();
+  var tx5: OneshotSender[u64];
+  var rx5: OneshotReceiver[u64];
+  tx5, rx5 = Oneshot[u64].make();
+  var txc: OneshotSender[u64];
+  var rxc: OneshotReceiver[u64];
+  txc, rxc = Oneshot[u64].make();
+
+  // 0. credit 3, no regrant; a control item after the 3rd data item, at zero credit
+  let sink0 = Probe(0usize, 3u32, false, 0u64, false, false, tx0);
+  let src0 = Src(0usize, sink0, 10u32, 3u32);
+  src0.start();
+  waitFor(&s0.received, 4u64);
+  src0.sync();
+  waitFor(&s0.synced, 1u64);
+  expectUInt(s0.sentData.load(), 3u64, "0: a source with no credit left sent no more data");
+  expectUInt(s0.sentCtl.load(), 1u64, "0: but the control item went past zero credit");
+  expectUInt(s0.received.load(), 4u64, "0: the sink took the three and the control item");
+  sink0.grant(2u32);
+  waitFor(&s0.received, 6u64);
+  sink0.grant(100u32);
+  waitFor(&s0.received, 9u64);
+  src0.sync();
+  waitFor(&s0.synced, 2u64);
+  expectUInt(s0.sentData.load(), 8u64, "0: credit saturates at the first window (3): 100 returned gave only 3");
+  sink0.grant(100u32);
+
+  // 1. ValueReader under a slow reader
+  let vr = ValueReader[Item, i64](4u32, &readerValue, &readerEnd);
+  let src1 = Src(1usize, vr, 200u32, 0u32);
+  let con = Consumer(tx1);
+  con.run(vr);
+  src1.start();
+
+  // 2. a stop while items are in flight
+  let sink2 = Probe(2usize, 4u32, true, 3u64, false, false, tx2);
+  let src2 = Src(2usize, sink2, 40u32, 0u32);
+  src2.start();
+
+  // 3. a second stop
+  let sink3 = Probe(3usize, 4u32, true, 3u64, true, false, tx3);
+  let src3 = Src(3usize, sink3, 40u32, 0u32);
+  src3.start();
+
+  // 4. a stop after the end
+  let sink4 = Probe(4usize, 5u32, true, 0u64, false, true, tx4);
+  let src4 = Src(4usize, sink4, 5u32, 0u32);
+  src4.start();
+
+  // 5. two maps of different types: Item -> u64 -> u64
+  let sum5 = Sum(tx5);
+  let map2 = MapStage[u64, u64](sum5, &plusOne);
+  let map1 = MapStage[Item, u64](map2, &doubled);
+  let src5 = Src(5usize, map1, 50u32, 0u32);
+  src5.start();
+
+  let order0 = rx0.recv();
+  let got1 = rx1.recv();
+  let got2 = rx2.recv();
+  let got3 = rx3.recv();
+  let got4 = rx4.recv();
+  let got5 = rx5.recv();
+  waitFor(&s2.received, s2.sentData.load());
+  waitFor(&s3.received, s3.sentData.load());
+  waitFor(&s4.ignored, 1u64);
+  finalAll();
+
+  expect(order0 is Some, "0: the sink saw the end");
+  expectUInt(s0.ctlAt.load(), 4u64, "0: the control item arrived in order, after the third data item");
+  expectUInt(s0.bad.load(), 0u64, "0: and the data items arrived in order");
+  expectUInt(s0.sentData.load(), 10u64, "0: every data item was sent in the end");
+  expectUInt(s0.finished.load(), 1u64, "0: one end, Finished");
+
+  match got1 {
+    case let Some(g) {
+      expectUInt(g, 20100u64 * 1000u64 + 200u64, "1: the reader got all 200 values, in total 20100");
+    }
+    else { expect(false, "1: the reader finished"); }
+  }
+  expect(s1.peak.load() <= 4u64, "1: at most the window outstanding under a slow reader");
+  expect(s1.peak.load() >= 2u64, "1: and the window was used");
+  expectUInt(s1.sentData.load(), 200u64, "1: the source sent all 200");
+  expectUInt(s1.ends.load(), 1u64, "1: and one end");
+
+  expect(got2 is Some, "2: the sink saw the end");
+  expect(s2.sentData.load() < 40u64, "2: the source sent far fewer than all its items");
+  expectUInt(s2.stopped.load(), 1u64, "2: the source acted on the stop once");
+  expectUInt(s2.ends.load(), 1u64, "2: and sent one end");
+  expectUInt(s2.failed.load(), 1u64, "2: the sink saw one end, Failed");
+  expectUInt(s2.finished.load(), 0u64, "2: and not Finished");
+  expectUInt(s2.reasonOk.load(), 1u64, "2: carrying the sink's reason");
+  expectUInt(s2.received.load(), s2.sentData.load(), "2: every item sent arrived, after the stop too");
+  expectUInt(s2.credited.load(), 4u64 + s2.received.load(), "2: and the credit balances: the window and a unit per item");
+
+  expect(got3 is Some, "3: the sink saw the end");
+  expectUInt(s3.stopped.load(), 1u64, "3: the source acted on the first stop");
+  expectUInt(s3.ignored.load(), 1u64, "3: and ignored the second");
+  expectUInt(s3.ends.load(), 1u64, "3: one end sent");
+  expectUInt(s3.failed.load(), 1u64, "3: the sink saw one end, Failed");
+  expectUInt(s3.credited.load(), 4u64 + s3.received.load(), "3: the credit balances");
+
+  expect(got4 is Some, "4: the sink saw the end");
+  expectUInt(s4.sentData.load(), 5u64, "4: the source sent every item");
+  expectUInt(s4.finished.load(), 1u64, "4: the sink saw one end, Finished");
+  expectUInt(s4.failed.load(), 0u64, "4: and no failure");
+  expectUInt(s4.stopped.load(), 0u64, "4: a stop after the end was not acted on");
+  expectUInt(s4.ignored.load(), 1u64, "4: it was ignored");
+  expectUInt(s4.ends.load(), 1u64, "4: the source sent its one end");
+
+  match got5 {
+    case let Some(g) {
+      // 50 items n = 1..50: each doubled then plus one = 2n + 1; sum 2550 + 50 = 2600, count 50
+      expectUInt(g, 2600u64 * 1000u64 + 50u64, "5: fifty values converted through two maps of different types");
+    }
+    else { expect(false, "5: the sink saw the end"); }
+  }
+  expect(s5.peak.load() <= 4u64, "5: the credit came up through both maps: at most the window outstanding");
+  expectUInt(s5.ends.load(), 1u64, "5: one end");
+  expectUInt(s2.bad.load() + s3.bad.load() + s4.bad.load(), 0u64, "2-4: the items arrived in order");
+  done()
+}

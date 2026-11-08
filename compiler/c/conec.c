@@ -10,6 +10,7 @@
 #include "shared/fileio.h"
 #include "ir/nametbl.h"
 #include "ir/ir.h"
+#include "ir/flowloan.h"
 #include "shared/error.h"
 #include "shared/timer.h"
 #include "parser/lexer.h"
@@ -215,6 +216,10 @@ int main(int argc, char **argv) {
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);
+        // Nothing generated will say what a kernel reaches: report the GPU
+        // refusals held (flowloan.h)
+        if (flowGpu && (errors != 0 || coneopt.report_trust))
+            loanGpuHeldFlush(NULL, NULL);
         if (errors == 0 && coneopt.report_trust) {
             trustReport((INode*)pgmnode);
             // A library's include file is still written, so that what imports it can be
