@@ -410,7 +410,7 @@ static int narrowCallReaches(INode *node, StructNode *enumdcl) {
     {
         uint32_t unsettled = shapeUnsettled;
         ReshapeVerdict verdict;
-        int hit = reshapeCall((FnCallNode *)node, flowCallMethod((FnCallNode *)node), 0, cont, NULL, 2,
+        int hit = reshapeCall((FnCallNode *)node, flowCallMethod((FnCallNode *)node), 0, cont, NULL, NULL, 2,
             &verdict, NULL, 0, 0);
         return hit || shapeUnsettled != unsettled;
     }
