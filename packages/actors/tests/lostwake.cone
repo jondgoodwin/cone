@@ -10,11 +10,16 @@
 // Before the wake rule (duty 3: a push to one's own empty queue wakes a
 // sleeper when none is looking) 19 of 20 rounds stranded (round 1 passes: the
 // workers still spin from the start), on master 79d75ad82 and on #989's head
-// with duties 1 and 2.
+// with duties 1 and 2. With the argument 'off' the rule is switched off
+// (Options.wakeOnPush: false) and the program prints how many rounds stranded
+// instead of checking it (it strands again: 19 of 20). The rule is off by
+// default, so the checked run turns it on explicitly.
 
 mod lostwake;
 
 import testing use *;
+import stdio use *;
+import process;
 import actors;
 import thread;
 import time;
@@ -52,7 +57,12 @@ actor X {
 
 fn main() i32 {
   initAll();
-  actors.configure(actors.Options(workers: 8u32));
+  let args = process.args();
+  let off = match args.get(1) {
+    case let Some(s) {true}
+    else {false}
+  };
+  actors.configure(actors.Options(workers: 8u32, wakeOnPush: !off));
   var round = 1u64;
   while round <= 20u64 {
     thread.sleep(time.Duration.fromMillis(30i64));
@@ -63,7 +73,11 @@ fn main() i32 {
     round = round + 1u64;
   }
   expectUInt(seen.load(), 20u64, "every round's turn ended");
-  expectUInt(stranded.load(), 0u64, "Y ran while X's turn was held, in every round");
+  if off {
+    printStr("stranded "); printUInt(stranded.load()); printStr(" of 20\n");
+  } else {
+    expectUInt(stranded.load(), 0u64, "Y ran while X's turn was held, in every round");
+  }
   finalAll();
   done()
 }
