@@ -1,0 +1,555 @@
+// A sink holds about its window (streamservice.cone's Data arm, 'sinkHeld' and the staging
+// buffers). Against a loopback server of the package's own, 'stream' reading:
+//   - 8-byte writes (a megabyte of them) to a reader that does not read for 700 ms: the bytes
+//     the pool holds from the OS grow by about the window and the connection's credit, not
+//     by a 4 KiB block for each 8-byte piece (which is what the pieces cost without staging);
+//   - the same, ten streams at once, each held to its own window;
+//   - a reader that keeps up with 300-byte writes 3 ms apart gets every piece as its own, at
+//     once, none joined to another (staging stays empty);
+//   - 200 streams of mixed writes (8 bytes to 40,000, some paced, some flooded), read at
+//     three paces, the reader hashing what it gets against the hash of the bytes sent, so a
+//     piece sent past a non-empty staging buffer (out of order) is a wrong hash; each ends
+//     whole, before a deadline, with every buffer back in the pool (the window reopened by
+//     the capacity recorded when a buffer was sent);
+//   - the pool taken (hoarded) while a stream is staging: the fetch ends in a bounded way
+//     (Overloaded, or Closed when the test's own server is refused first), the pool counts a refusal,
+//     nothing stays lent, the process lives, and a new fetch is served.
+// What each stream's reader does is told to the main thread in atomics; 'lentBytes' and
+// 'heldBytes' are the pool's.
+
+mod stagebound;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf, Chain;
+import iocore use SocketAddr;
+import fs;
+import path use Path;
+import http use *;
+import httpclient use Request;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import testing use *;
+
+struct Tally {
+  pub good: Atomic[u64];       // streams that ran whole, the hash right
+  pub wrong: Atomic[u64];      // streams that ended whole with a wrong hash or length
+  pub overloaded: Atomic[u64]; // streams that ended with an Overloaded failure
+  pub failed: Atomic[u64];     // ...any other failure
+  pub ended: Atomic[u64];      // streams that ended in any way
+  pub pieces: Atomic[u64];     // pieces read
+  pub opened: Atomic[u64];     // heads that arrived
+  pub mine: Atomic[u64];       // refusals the hoard itself met (they are in the pool's count)
+  pub kind: Atomic[u64];      // 1 + the ErrorKind of the last failure a reader saw (0 none)
+}
+
+// The name of a kind code kept in Tally.kind
+fn kindName(code: u64) &str {
+  if code == 0u64 {"none"}
+  else if code == 1u64 {"malformed"}
+  else if code == 2u64 {"too large"}
+  else if code == 3u64 {"unsupported"}
+  else if code == 4u64 {"closed"}
+  else if code == 5u64 {"timed out"}
+  else if code == 6u64 {"refused"}
+  else if code == 7u64 {"overloaded"}
+  else if code == 8u64 {"reset"}
+  else {"other"}
+}
+
+fn kindCode(k: ErrorKind) u64 {
+  if k == ErrorKind.Malformed {1u64}
+  else if k == ErrorKind.TooLarge {2u64}
+  else if k == ErrorKind.Unsupported {3u64}
+  else if k == ErrorKind.Closed {4u64}
+  else if k == ErrorKind.TimedOut {5u64}
+  else if k == ErrorKind.Refused {6u64}
+  else if k == ErrorKind.Overloaded {7u64}
+  else if k == ErrorKind.Reset {8u64}
+  else {9u64}
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.good.store(0u64);
+  tally.wrong.store(0u64);
+  tally.overloaded.store(0u64);
+  tally.failed.store(0u64);
+  tally.ended.store(0u64);
+  tally.pieces.store(0u64);
+  tally.opened.store(0u64);
+  tally.kind.store(0u64);
+  tally.mine.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+  c.load() >= n
+}
+
+fn lent() u64 {u64.from(iobuf.stats().lentBytes)}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// The most the pool's held bytes pass 'base' while 'c' reaches 'n' (or 'ms' pass)
+fn peakHeld(c: &Atomic[u64], n: u64, ms: i64, base: u64) u64 {
+  var peak = 0u64;
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit {
+    let h = u64.from(iobuf.stats().heldBytes);
+    if h > base && h - base > peak {peak = h - base;}
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  peak
+}
+
+const hashMod = 1000000007u64;
+
+// Byte i of every body
+fn gen(i: u64) u8 {u8.from((i * 131u64 + i / 128u64 * 17u64 + i / 32768u64) % 251u64)}
+
+fn hashStep(h: u64, b: u8) u64 {(h * 31u64 + u64.from(b) + 1u64) % hashMod}
+
+// The hash of the first n bytes of a body
+fn expected(n: u64) u64 {
+  var h = 0u64;
+  var i = 0u64;
+  while i < n {h = hashStep(h, gen(i)); i = i + 1u64;}
+  h
+}
+
+// m bytes of the body from offset 'at'
+fn pattern(at: u64, m: usize) String {
+  var piece = List[u8].withCapacity(m);
+  var i = 0usize;
+  while i < m {
+    piece.push(gen(at + u64.from(i)));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+// ---------------------------------------------------------------------------
+// The server. /tiny/N: N bytes in 8-byte writes. /mix/N/S: N bytes in writes of
+// sizes chosen from S, some followed by a pause. /paced/C: C writes of 300
+// bytes, 3 ms apart
+// ---------------------------------------------------------------------------
+
+// The number starting at p[from], and where it ends
+fn numberAt(p: &Array[u8], from: usize) (u64, usize) {
+  var v = 0u64;
+  var i = from;
+  while i < p.len && p[i] >= 48u8 && p[i] <= 57u8 {
+    v = v * 10u64 + u64.from(p[i] - 48u8);
+    i = i + 1usize;
+  }
+  (v, i)
+}
+
+fn startsWith(p: &Array[u8], pre: &str) bool {
+  p.len >= pre.len && &p[0usize ..< pre.len] == pre
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if startsWith(p, "/paced/") {
+      let c = numberAt(p, 7usize).0;
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(c * 300u64));
+      var k = 0u64;
+      while k < c {
+        let w = await ex.write(pattern(k * 300u64, 300usize));
+        match w {
+          case is Ok {}
+          case is Err { return; }
+        }
+        let s = await aio.sleep(Duration.fromMillis(3i64));
+        k = k + 1u64;
+      }
+      let f = await ex.finish();
+      return;
+    }
+    if startsWith(p, "/alt/") {
+      // C rounds of: 20 writes of 8 bytes, a write of 40,000, 20 writes of 8 bytes, each 2 ms apart, so that
+      // each arrives as a piece of its own: a reader behind has its window full of small pieces, the big
+      // piece is staged in a block larger than a small piece, and the small pieces after it find room
+      let c = numberAt(p, 5usize).0;
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(c * 40320u64));
+      var at = 0u64;
+      var k = 0u64;
+      while k < c * 41u64 {
+        let m = if k % 41u64 == 20u64 {40000usize} else {8usize};
+        let w = await ex.write(pattern(at, m));
+        match w {
+          case is Ok { at = at + u64.from(m); }
+          case is Err { return; }
+        }
+        let s = await aio.sleep(Duration.fromMillis(2i64));
+        k = k + 1u64;
+      }
+      let f = await ex.finish();
+      return;
+    }
+    var n = 0u64;
+    var seed = 0u64;
+    var tiny = false;
+    if startsWith(p, "/tiny/") {
+      n = numberAt(p, 6usize).0;
+      tiny = true;
+    } else if startsWith(p, "/mix/") {
+      let a = numberAt(p, 5usize);
+      n = a.0;
+      seed = numberAt(p, a.1 + 1usize).0;
+    }
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var rng = seed + 1u64;
+    var going = true;
+    while going && at < n {
+      var m = 8usize;
+      var pause = false;
+      if !tiny {
+        rng = (rng * 1103515245u64 + 12345u64) % 2147483648u64;
+        let c = rng / 256u64 % 6u64;
+        m = if c < 3u64 {8usize} else if c == 3u64 {300usize} else if c == 4u64 {5000usize} else {40000usize};
+        pause = rng / 65536u64 % 11u64 == 0u64;
+      }
+      if u64.from(m) > n - at {m = usize.from(n - at);}
+      let w = await ex.write(pattern(at, m));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+      if pause {
+        let s = await aio.sleep(Duration.fromMillis(1i64));
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// The reader: stream().read() to the end, hashing. 'holdMs' asleep before the first
+// read; 'paceMs' asleep after each piece (0: keeps up)
+// ---------------------------------------------------------------------------
+
+actor Reader {
+  client: Client;
+
+  pub async fn run(self, u: String, n: u64, want: u64, holdMs: i64, paceMs: i64, burst: u64) {
+    let r = await client.stream(Request.get(u.view()));
+    var mine = 0u64;
+    var h = 0u64;
+    var total = 0u64;
+    match r {
+      case let Ok(bs) {
+        tally.opened.add(1u64);
+        if holdMs > 0i64 {
+          let s = await aio.sleep(Duration.fromMillis(holdMs));
+        }
+        var going = true;
+        while going {
+          let x = await bs.read();
+          match x {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  let v = piece.view();
+                  var i = 0usize;
+                  while i < v.len() {h = hashStep(h, v[i]); i = i + 1usize;}
+                  total = total + u64.from(v.len());
+                  tally.pieces.add(1u64);
+                  mine = mine + 1u64;
+                  if paceMs > 0i64 && mine % burst == 0u64 {
+                    let s = await aio.sleep(Duration.fromMillis(paceMs));
+                  }
+                }
+                case is None[String] {
+                  if total == n && h == want {tally.good.add(1u64);} else {tally.wrong.add(1u64);}
+                  going = false;
+                }
+              }
+            }
+            case let Err(e) {
+              tally.kind.store(kindCode(e.failure.error.kind));
+              if e.failure.error.kind == ErrorKind.Overloaded {tally.overloaded.add(1u64);} else {tally.failed.add(1u64);}
+              going = false;
+            }
+          }
+        }
+      }
+      case let Err(e) {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// Take with tryMake, every size class in turn, until each is refused, and keep taking whatever
+// comes back to the pool until a stream has ended (or 30 s pass), so the shortage holds however
+// fast buffers are reused. Each refusal of its own is counted in tally.mine, so a test can tell
+// the refusals of the code under test from these.
+fn hoard() Chain {
+  iobuf.trimAll();
+  var held = Chain.make(unbounded);
+  let limit = Instant.now() + Duration.fromMillis(30000i64);
+  while tally.ended.load() < 1u64 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+    var cls = 5u32;
+    while cls > 0u32 {
+      cls = cls - 1u32;
+      var going = true;
+      while going {
+        match IoBuf.tryMake(iobuf.classSize(cls)) {
+          case var Some(b) {
+            b.append("x");
+            _ = held.push(b);
+          }
+          else {going = false; tally.mine.add(1u64);}
+        }
+      }
+    }
+  }
+  held
+}
+
+const tinyBytes = 1048576u64;
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(ptx.clone());
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the server listens");
+  acceptor.serve();
+
+  let wantTiny = expected(tinyBytes);
+  let wantMix = expected(393216u64);
+  let wantTen = expected(524288u64);
+
+  // 8-byte writes, the reader asleep: memory near the window
+  reset();
+  var window = 0u64;
+  {
+    iobuf.trimAll();
+    let base = u64.from(iobuf.stats().heldBytes);
+    let r = Reader(Client.standard());
+    r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 700i64, 0i64, 1u64);
+    let peak = peakHeld(&tally.ended, 1u64, 600i64, base);
+    window = peak;
+    expect(tally.opened.load() == 1u64, "the head arrived");
+    // (measured: 6 MiB with staging; 48 MiB, the pool's whole bound, and the stream refused, without)
+    expect(peak < 12582912u64, "the pool holds about the window and the credit, not a block per piece");
+    expect(waitFor(&tally.ended, 1u64, 60000i64), "the stream ended");
+    expect(tally.good.load() == 1u64, "...whole, the hash right");
+  }
+  expect(allHome(), "every buffer is home");
+
+  // ten at once
+  reset();
+  {
+    iobuf.trimAll();
+    let base = u64.from(iobuf.stats().heldBytes);
+    var k = 0u64;
+    while k < 10u64 {
+      let r = Reader(Client.standard());
+      r.run(url(port, "/tiny/524288"), 524288u64, wantTen, 900i64, 0i64, 1u64);
+      k = k + 1u64;
+    }
+    let peak = peakHeld(&tally.ended, 10u64, 800i64, base);
+    expect(peak < 25165824u64, "ten streams hold about ten windows");
+    let tenEnded = waitFor(&tally.ended, 10u64, 240000i64);
+    if !tenEnded {
+      printStr("ten: ended ");
+      printUInt(tally.ended.load());
+      printStr(" good ");
+      printUInt(tally.good.load());
+      printStr(" wrong ");
+      printUInt(tally.wrong.load());
+      printStr(" overloaded ");
+      printUInt(tally.overloaded.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(" opened ");
+      printUInt(tally.opened.load());
+      printStr(" lent ");
+      printUInt(lent());
+      printStr("\n");
+    }
+    expect(tenEnded, "all ten ended");
+    expect(tally.good.load() == 10u64, "...whole, the hash right");
+  }
+  expect(allHome(), "every buffer is home after ten");
+
+  // a reader that keeps up: every piece its own
+  reset();
+  {
+    let r = Reader(Client.standard());
+    r.run(url(port, "/paced/200"), 60000u64, expected(60000u64), 0i64, 0i64, 1u64);
+    expect(waitFor(&tally.ended, 1u64, 60000i64), "the paced stream ended");
+    printStr("300-byte writes 3 ms apart, a reader keeping up: pieces ");
+    printUInt(tally.pieces.load());
+    printStr("\n");
+    expect(tally.good.load() == 1u64, "...whole, the hash right");
+    expect(tally.pieces.load() >= 190u64, "...each write its own piece: nothing joined, nothing delayed");
+  }
+  expect(allHome(), "every buffer is home after the paced stream");
+
+  // big writes the reader is behind on (staged), then small ones that arrive while the staged
+  // buffers drain: a small piece has room in the window when the first staged buffer, larger,
+  // has not, and must still join the staging behind it. Four such streams at once
+  reset();
+  {
+    let n = 10u64 * 40320u64;
+    var k = 0u64;
+    while k < 4u64 {
+      let r = Reader(Client.standard());
+      r.run(url(port, "/alt/10"), n, expected(n), 500i64, 3i64, 1u64);
+      k = k + 1u64;
+    }
+    expect(waitFor(&tally.ended, 4u64, 120000i64), "the phased streams ended before their deadline");
+    expect(tally.good.load() == 4u64, "...whole, in order: the hash right");
+  }
+  expect(allHome(), "every buffer is home after the phased streams");
+
+  // 200 streams of mixed writes, three paces of reader, a deadline
+  reset();
+  {
+    let deadline = Instant.now() + Duration.fromMillis(240000i64);
+    var batch = 0u64;
+    while batch < 20u64 {
+      var k = 0u64;
+      while k < 10u64 {
+        let seed = batch * 10u64 + k;
+        let pace = seed % 3u64;
+        let r = Reader(Client.standard());
+        var u = String.from("/mix/393216/");
+        u.appendUInt(seed);
+        r.run(url(port, u.view()), 393216u64, wantMix, if pace == 2u64 {60i64} else {0i64}, if pace == 1u64 {1i64} else {0i64}, 1u64);
+        k = k + 1u64;
+      }
+      while tally.ended.load() < (batch + 1u64) * 10u64 && Instant.now() < deadline {
+        thread.sleep(Duration.fromMillis(2i64));
+      }
+      batch = batch + 1u64;
+    }
+    printStr("200 mixed streams: whole ");
+    printUInt(tally.good.load());
+    printStr(", wrong ");
+    printUInt(tally.wrong.load());
+    printStr(", failed ");
+    printUInt(tally.failed.load() + tally.overloaded.load());
+    printStr("\n");
+    expect(tally.ended.load() == 200u64, "all 200 ended before the deadline");
+    expect(tally.good.load() == 200u64, "...each whole, in order: the hash right");
+  }
+  expect(allHome(), "every buffer is home after 200 streams (no window stayed closed)");
+
+  // the pool taken while a stream stages
+  reset();
+  {
+    let r = Reader(Client.standard());
+    r.run(url(port, "/tiny/1048576"), tinyBytes, wantTiny, 1500i64, 0i64, 1u64);
+    expect(waitFor(&tally.opened, 1u64, 20000i64), "the head arrived");
+    thread.sleep(Duration.fromMillis(300i64));
+    let refusedBefore = iobuf.stats().refused;
+    {
+      // returns when the stream has ended (or 30 s pass), still holding everything it took
+      let h = hoard();
+      expect(tally.ended.load() >= 1u64, "the starved stream ended, it did not hang");
+    }
+    // the hoard's own refusals are in the pool's count: take them out, what is left are the code under test's
+    let refusedAfter = iobuf.stats().refused - tally.mine.load();
+    let kc = tally.kind.load();
+    // the kind of each run, for a person running the test many times: a file in the test's build folder
+    var kindLine = String.from(kindName(kc));
+    kindLine.append("\n");
+    let kindFile = Path.fromString(String.from("lastkind.txt"));
+    _ = fs.writeFile(&kindFile, kindLine.view());
+    // a starved pool ends the fetch in a bounded way: refused by the pool, ended Overloaded or Closed
+    // (the test's own in-process server may be the one refused first, so the client sees Closed)
+    if kc != 7u64 {
+      printStr("the starved stream ended with kind: ");
+      printStr(kindName(tally.kind.load()));
+      printStr(" good ");
+      printUInt(tally.good.load());
+      printStr(" wrong ");
+      printUInt(tally.wrong.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(" pieces ");
+      printUInt(tally.pieces.load());
+      printStr("\n");
+    }
+    expect(kc == 7u64 || kc == 4u64, "...with an Overloaded or Closed failure, no other kind");
+    expect(refusedAfter > refusedBefore, "...the pool refused the client or the server (beyond the hoard's own refusals)");
+  }
+  // the hoard is released: nothing stays lent (the baseline is 0, as before the fetch)
+  expect(allHome(), "...and every buffer is home after the shortage");
+  reset();
+  {
+    let r = Reader(Client.standard());
+    r.run(url(port, "/tiny/65536"), 65536u64, expected(65536u64), 0i64, 0i64, 1u64);
+    expect(waitFor(&tally.ended, 1u64, 30000i64) && tally.good.load() == 1u64, "a new fetch is served once the pool has room");
+  }
+  expect(allHome(), "every buffer is home at the end");
+  done()
+}
