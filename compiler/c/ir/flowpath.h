@@ -162,6 +162,11 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
 extern int flowWalkFinal;
 extern int flowShapeRetry;
 
+// The folder of the compile's root file, with its last separator: a function
+// of a file under it belongs to the package being compiled, one outside it to
+// a package this one imported (WarnLifetimeTie is raised for the first only)
+extern char *flowOwnDir;
+
 // Print the walk's tallies for -V 2
 void flowPathPrint();
 

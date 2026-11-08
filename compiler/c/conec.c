@@ -25,6 +25,18 @@
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
 void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
 
+    // Which functions are this compile's own: those of files beside or under the root file
+    INode *rootmod = (*pgm)->modules && (*pgm)->modules->used ? nodesGet((*pgm)->modules, 0) : NULL;
+    flowOwnDir = NULL;
+    if (rootmod && rootmod->lexer && rootmod->lexer->url) {
+        size_t len = strlen(rootmod->lexer->url);
+        while (len > 0 && rootmod->lexer->url[len - 1] != '/' && rootmod->lexer->url[len - 1] != '\\')
+            --len;
+        flowOwnDir = (char *)memAllocBlk(len + 1);
+        memcpy(flowOwnDir, rootmod->lexer->url, len);
+        flowOwnDir[len] = '\0';
+    }
+
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
     NameResState nstate;

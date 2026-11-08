@@ -1,0 +1,66 @@
+// A signature with no lifetime named ties every borrow in it together. When its body never
+// returns a parameter's borrow, nor stores it, the tie binds the callers for nothing:
+// WarnLifetimeTie says so, giving the signature that separates them. A named lifetime says the
+// tie is meant. The compile succeeds: a warning is never an error.
+mod lifetime_tie_warn;
+import collections use *;
+
+struct M { pub x: i32; pub y: i32;
+  // Warns: the receiver is not returned
+  pub fn first(self: &, key: &i32) &i32 { key }  //~ WarnLifetimeTie:16 "'self' is never returned"
+}
+trait Pick { fn pick(self: &, k: &i32) &i32; }
+struct P is Pick { pub v: i32;
+  fn pick(self: &, k: &i32) &i32 { &self.v }
+}
+
+// Warns: 'key' is never returned
+fn get(m: &M, key: &i32) &i32 { &m.x }  //~ WarnLifetimeTie:15 "'get(m: &'a M, key: &i32) &'a i32' separates it"
+// Warns: both are unused, the result is a global's
+let G: i32 = 3;
+fn glob(a: &i32, b: &i32) &i32 { &G }  //~ WarnLifetimeTie:9 "'a' and 'b' are never returned or stored"
+
+// No warning: returned on one branch only
+fn branch(a: &i32, b: &i32, c: bool) &i32 { if c { a } else { b } }
+// No warning: returned from within a loop, after an early return
+fn loops(a: &i32, b: &i32, n: i32) &i32 {
+  var i = 0;
+  while i < n { if i == 7 { return b; } i += 1; }
+  a
+}
+// No warning: through a helper
+fn id(p: &i32, q: &i32) &i32 { if *p > *q { p } else { q } }
+fn viahelper(a: &i32, b: &i32) &i32 { id(a, b) }
+// Warns: only 'a' goes through the helper
+fn onehelper(a: &i32, b: &i32) &i32 { id(a, a) }  //~ WarnLifetimeTie:23 "'b' is never returned or stored"
+// Warns: only 'x' is stored, 'y' is held beside it for nothing
+fn put(v: &mut List[&i32], x: &i32, y: &i32) { v.push(x); }  //~ WarnLifetimeTie:37 "'y' is never returned or stored"
+// No warning: both are stored
+fn putboth(v: &mut List[&i32], x: &i32, y: &i32) { v.push(x); v.push(y); }
+// No warning: the tie is written, so it is meant
+fn named(a: &'a i32, b: &i32) &'a i32 { a }
+// No warning: nothing is tied to the result
+fn count(a: &i32, b: &i32) usize { 3 }
+// No warning: a method of a trait's implementer, whose signature is the trait's
+// (P.pick above), and a generic, walked once per instance
+fn gen[T](a: &T, b: &T) &T { a }
+
+fn main() i32 {
+  let m = M(1, 2);
+  let k = 5;
+  let r = get(&m, &k);
+  let s = m.first(&k);
+  let b = 4;
+  let t = branch(&k, &b, true);
+  let u = loops(&k, &b, 3);
+  let v = viahelper(&k, &b);
+  let w = onehelper(&k, &b);
+  let x = named(&k, &b);
+  let y = gen(&k, &b);
+  let z = glob(&k, &b);
+  var l = List[&i32]();
+  put(&mut l, &k, &b);
+  putboth(&mut l, &k, &b);
+  let c = count(&k, &b);
+  0
+}
