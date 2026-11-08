@@ -811,6 +811,25 @@
 // - The stop: 'stopping' is stored before the marks, and a worker checks it
 //   after publishing (before its wait) and after every chosen return.
 //
+// THE SEARCH INVARIANT (Go's rule; #989's lost wake, Bug 2). While any queue
+// holds a runnable actor and a worker sleeps, at least one worker is searching
+// (spinning, or woken and not yet done looking) and has not yet looked at every
+// queue. 'Only its owner pushes, and the owner is awake' is not enough: an
+// owner in a turn that does not end is awake and unavailable. Two duties keep it:
+// 1. A SEARCHER THAT FINDS WORK HANDS THE SEARCH ON. A worker that leaves
+//    searching by taking an actor (inject, a steal, a loop piece) wakes one more
+//    if work is queued anywhere, not only in the inject queue and its own
+//    (foundAway; notify itself declines when another worker spins or searches).
+//    So does a woken worker that takes the actor in its own queue (a hook's
+//    answer is pushed there): else 'searching' stays set through that turn.
+// 2. A SEARCHER THAT FINDS NOTHING LOOKS AGAIN BEFORE IT SLEEPS. After it has
+//    left 'spinning', published itself and cleared 'searching', idle looks at
+//    every queue (anyWork) and, seeing work, leaves the park for the loop,
+//    which steals (this already held; nothing changed there).
+// What neither duty covers: a push to an EMPTY queue of the pusher's own wakes
+// nobody (above), so an actor pushed so, with no searcher about, waits for its
+// owner's turn to end (examples/lostwake.cone shows it, and is not yet fixed).
+//
 // THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
 // time to run again, measured on the 24-thread laptop (Windows) at 4 to 10 us
 // (the median, with 23 threads parked on one word and one woken every 15 to
@@ -4055,6 +4074,7 @@ struct Worker {
   pub index: u32;
   pub tick: u32;
   pub rng: u32;
+  pub woken: u32;               // 1 from a worker's return from its park (or its leaving it) until it stops looking (foundAway): it may be the one 'searching' counts
   pub cause: u64;               // the cause id of the message this worker is running, 0 between messages (tracing hooks)
   pub seq: u64;                 // the send ids this worker has made (tracing hooks)
   pub stat: *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
@@ -4441,12 +4461,18 @@ fn parkedBit(w: *Worker) u64 {
 }
 
 // A worker found work away from its own queue: it is no longer the one
-// looking, and if more work is waiting, another is woken to look
+// looking, and if more work is waiting ANYWHERE (the inject queue, a loop
+// piece, any worker's queue, not only its own), another is woken to look: the
+// search is handed on (the header, THE PARK WORD, THE SEARCH INVARIANT, duty
+// 1; Go's resetspinning). Only the taker's own queue and the inject queue
+// counted once, and a chain of wakes could end with an actor left in the queue
+// of a third worker, busy in a turn that does not end
 fn foundAway(w: *Worker) {
   let s = (*w).sched;
+  (*w).woken = 0u32;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if ld64(&(*s).injectLen as *u64) != 0u64 || ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
-      || taskWork(s) {
+      || taskWork(s) || anyWork(s) {
     notify(s);
   }
 }
@@ -4466,6 +4492,12 @@ fn findWork(w: *Worker) *Header {
   }
   let mine = queuePop(w);
   if mine as usize != 0usize {
+    // A worker woken to look that takes its own queue's actor (a hook's answer
+    // pushed there) has stopped looking too, or 'searching' stays set through
+    // the turn and every notify meanwhile wakes nobody (duty 1)
+    if (*w).woken != 0u32 {
+      foundAway(w);
+    }
     return mine;
   }
   let fromInject = injectPop(s, w);
@@ -4702,6 +4734,7 @@ fn idle(w: *Worker) bool {
     // foundAway says, or 'searching' stays set through that work and every
     // notify meanwhile wakes nobody. What the hook left on its queue is its own
     // to run; anything else wakes another
+    (*w).woken = 0u32;
     mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
     if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
       notify(s);
@@ -4728,6 +4761,7 @@ fn idle(w: *Worker) bool {
       parkHoldHere(s, w, 3u32);
     }
     leavePark(s, w);
+    (*w).woken = 1u32;
     return true;
   }
   if ld32(&(*s).stopping as *u32) != 0u32 {
@@ -4754,6 +4788,7 @@ fn idle(w: *Worker) bool {
   // Chosen (NOTIFIED): the notify cleared the bit
   mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
   uncount(s);
+  (*w).woken = 1u32;
   ld32(&(*s).stopping as *u32) == 0u32
 }
 
