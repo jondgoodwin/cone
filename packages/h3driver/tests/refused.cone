@@ -24,7 +24,7 @@ import path use Path;
 import collections use List, String;
 import time use Instant, Duration;
 import iobuf use *;
-import iocore use Loop, Completion, SocketAddr, forever;
+import iocore use Loop, Completion, SocketAddr, Op, Target, forever;
 import http use *;
 import tls;
 import quic;
@@ -128,6 +128,8 @@ struct World {
   accepted: u64;
   served: u64;
   connected: u64;
+  srvClosed: u64;
+  srvClean: u64;
   res: List[Res];       // by request token - 10
   shut: List[Shut];     // by connection token - 2
 }
@@ -148,12 +150,12 @@ fn world() World {
   var res = List[Res]();
   var shut = List[Shut]();
   var i = 0usize;
-  while i < 3usize {
+  while i < 4usize {
     res.push(Res(0u32, ErrorKind.Closed, 0u16, 0u64, 0u64, true));
     shut.push(Shut(0u64, true, ErrorKind.Closed));
     i = i + 1usize;
   }
-  World(lp, Driver.make(clientConfig()), srv, port, 0u64, 0u64, 0u64, res, shut)
+  World(lp, Driver.make(clientConfig()), srv, port, 0u64, 0u64, 0u64, 0u64, 0u64, res, shut)
 }
 
 fn serverEvents(w: &mut World, events: &mut List[Event]) {
@@ -163,6 +165,9 @@ fn serverEvents(w: &mut World, events: &mut List[Event]) {
     k = k + 1usize;
     if e.kind == EventKind.Accepted {
       w.accepted = w.accepted + 1u64;
+    } else if e.kind == EventKind.Closed {
+      w.srvClosed = w.srvClosed + 1u64;
+      if e.clean {w.srvClean = w.srvClean + 1u64;}
     } else if e.kind == EventKind.Request {
       let size = numberAfter(e.request.target.view(), "/get/");
       w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));
@@ -229,7 +234,9 @@ fn spin(w: &mut World, until: Instant) {
   w.lp.poll(limit, &mut cs);
   var j = 0usize;
   while j < cs.len() {
-    if !w.cli.complete(&mut w.lp, &mut cs[j]) {
+    if cs[j].token == 99u64 {
+      // the raw socket's sends (the owed-receive case)
+    } else if !w.cli.complete(&mut w.lp, &mut cs[j]) {
       if !w.srv.complete(&mut w.lp, &mut cs[j]) {printStr("a completion no driver claimed\n");}
     }
     j = j + 1usize;
@@ -285,6 +292,7 @@ fn connect(w: &mut World, token: u64) Result[ConnId, Failure] {
 
 fn main() {
   setLimits(8388608usize, 2097152usize);
+  let lent0 = stats().lent;
   var w = world();
 
   // 1.
@@ -347,6 +355,67 @@ fn main() {
   let r2 = &w.res[2usize];
   printStr("with the pool's room back: accepted "); printUInt(w.accepted); printStr(" connections, the new GET done ");
   printStr(yes(r2.outcome == 1u32 && r2.status == 200u16 && r2.good && r2.got == 5000u64)); printStr("\n");
+
+  // 5. The listener's owed receives. Eight junk datagrams (the listener keeps
+  //    8 receives out) are made first; with the pool full each one's
+  //    receive is refused its re-arm, so the listener is left with none. With
+  //    the pool's room back, a new connection to that listener must be served.
+  var junk = List[IoBuf]();
+  var n = 0u32;
+  while n < 8u32 {
+    var b = IoBuf(1usize);
+    b.append("junk datagram, not QUIC");
+    junk.push(b);
+    n = n + 1u32;
+  }
+  let refusedBefore = w.srv.stats().bufferRefused;
+  held = fill();
+  match w.lp.bindUdp(SocketAddr.localhost(0u16)) {
+    case let Ok(h) {
+      let to = SocketAddr.localhost(w.port);
+      while junk.len() > 0usize {
+        match junk.pop() {
+          case var Some(b) {w.lp.submit(Op.SendTo(h, to, b), Target.Here(99u64));}
+          else {}
+        }
+      }
+      spinFor(&mut w, 300i64);
+      w.lp.close(h);
+    }
+    case let Err(e) {printStr("no raw socket\n");}
+  }
+  printStr("owed: the full pool refused the listener's re-arms: ");
+  printStr(yes(w.srv.stats().bufferRefused - refusedBefore >= 8u64)); printStr("\n");
+  held = Chain.make(noBound);
+  trim();
+  spinFor(&mut w, 300i64);
+  var conn3 = ConnId.none();
+  match connect(&mut w, 4u64) {
+    case let Ok(c) {conn3 = c;}
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  let limit3 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.accepted < 3u64 && Instant.now() < limit3 {spin(&mut w, limit3);}
+  get(&mut w, conn3, 13u64, 3000u64);
+  settle(&mut w, 13u64);
+  let r3 = &w.res[3usize];
+  printStr("owed: a new connection to the same listener: accepted "); printUInt(w.accepted);
+  printStr(", its GET done "); printStr(yes(r3.outcome == 1u32 && r3.status == 200u16 && r3.good && r3.got == 3000u64));
+  printStr("\n");
+
+  // 6. The server side: the live connection closes cleanly, the rest end at
+  //    the drivers' end, and every buffer is home
+  let closed0 = w.srvClosed;
+  let clean0 = w.srvClean;
+  w.cli.close(&mut w.lp, conn3);
+  let limit4 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.srvClosed == closed0 && Instant.now() < limit4 {spin(&mut w, limit4);}
+  printStr("the server's connection to the client that closed: ended "); printStr(yes(w.srvClosed == closed0 + 1u64));
+  printStr(", cleanly "); printStr(yes(w.srvClean == clean0 + 1u64)); printStr("\n");
   w.cli.end(&mut w.lp);
   w.srv.end(&mut w.lp);
+  spinFor(&mut w, 300i64);
+  junk.clear();
+  printStr("every buffer home: lent "); printStr(if stats().lent == lent0 {"as at the start"} else {"NOT as at the start"});
+  printStr("\n");
 }
