@@ -26,13 +26,24 @@
 //
 // WHEN IT FAILS. A file that cannot be opened or written ends the sink's stream: the chunk in hand and
 // each chunk queued go back to the source, chunks that still arrive go back unhandled, the file is closed,
-// and 'done' gets the error. The source is told only through the stream (it sees every buffer come
-// back): a producer that should stop on a failed sink does so through a cancel group its consumer holds.
+// and 'done' gets the error. The source is told to stop (ChunkSource.stop, with the error as text), once, so
+// the work feeding the sink ends at once; buffers still lent keep arriving and go back unhandled, and the
+// sink lets go of the source at the source's end.
 //
 // CANCELLATION. Both work in the cancel group of the message they handle, as a stage does. A FileSink that
 // finds its group cancelled stops as it would for a failed write ('done' gets "streams: cancelled"); a
 // FileSource that finds it cancelled (on a buffer given back) ends its stream Failed and closes the file.
 // A partly written file is left as it is.
+
+// An error's text as an error of its own (an AnyError cannot be copied)
+fn textOf(e: &AnyError) AnyError {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  AnyError.msg(text.view())
+}
 
 // Writes the chunks to a file in the order they arrive
 pub actor FileSink is ChunkSink {
@@ -43,14 +54,25 @@ pub actor FileSink is ChunkSink {
   at: u64;
   reported: bool;
   done: OneshotSender[Result[u64, AnyError]];
+  up: Option[ChunkSource];      // a second handle, to stop the source on a failure; let go at the source's end
 
   pub fn init(self: &new, name: String, done: OneshotSender[Result[u64, AnyError]]) {
     *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, at: 0u64,
-      reported: false, done: done);
+      reported: false, done: done, up: None[ChunkSource]);
   }
 
   pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source.clone());
     rx.attach(source);
+  }
+
+  // The sink failed: the source is told to stop (ChunkSource.stop) with the error as text, since
+  // 'done' takes the error itself. Buffers still lent come back through 'accept' and go back unhandled.
+  fn stopUp(self, reason: AnyError) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Failed(reason)); }
+      case is None {}
+    }
   }
 
   pub async fn accept(self, c: IoBuf) {
@@ -95,6 +117,12 @@ pub actor FileSink is ChunkSink {
           } else {
             rx.fail(cur);
             self.shut();
+            var reason = AnyError.msg("streams: the file sink failed");
+            match &why {
+              case let &Some(e) { reason = textOf(e); }
+              case is None {}
+            }
+            self.stopUp(reason);
             self.fault(why);
             turn = Turn.Wait;
             more = false;
@@ -111,6 +139,7 @@ pub actor FileSink is ChunkSink {
   }
 
   pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
     match rx.arriveEnd(how) {
       case let End(h) {
         // an empty stream that finished still leaves its file

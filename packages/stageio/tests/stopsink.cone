@@ -1,0 +1,134 @@
+// A FileSink that fails stops the work feeding it (FileSink calls ChunkSource.stop on an open or write error).
+// A file of 3,000,000 bytes (46 chunks of 64 KiB) goes FileSource -> Tap -> FileSink, the sink's file in a
+// directory that does not exist, so the open fails at the first chunk. Tap passes everything on, counts the
+// chunks, and passes the stop to the FileSource. Checked:
+//
+//   'done' says Err, and the Tap heard exactly one end, Failed (the source's end carrying the stop's reason);
+//   the stop reached the FileSource: far fewer than 46 chunks were read (a source not stopped reads them all);
+//   the source's file is closed (it can be removed), and every buffer is back in its pool.
+
+mod stopsink;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import actors;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+struct Seen {
+  pub chunks: Atomic[u64];      // chunks that passed the Tap
+  pub stops: Atomic[u64];       // stops that passed it, upstream
+  pub failed: Atomic[u64];      // end(Failed) that passed it
+  pub finished: Atomic[u64];    // end(Finished) that passed it
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Tap is ChunkSink, ChunkSource {
+  down: ChunkSink;
+  up: Option[ChunkSource];
+  seenEnd: Option[OneshotSender[bool]];
+
+  pub fn init(self: &new, down: ChunkSink, seenEnd: OneshotSender[bool]) {
+    *self = Self(down: down, up: None[ChunkSource], seenEnd: Some[OneshotSender[bool]](seenEnd));
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    seen.chunks.add(1u64);
+    down <- c;
+  }
+
+  pub async fn end(self, how: Ending) {
+    match &how {
+      case is Finished { seen.finished.add(1u64); }
+      case is Failed { seen.failed.add(1u64); }
+    }
+    down.end(how);
+    up = None[ChunkSource];
+    var t = None[OneshotSender[bool]];
+    t <-> seenEnd;
+    match t {
+      case let Some(s) { var tell = s; tell.send(true); }
+      case is None {}
+    }
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(b); }
+      case is None {}
+    }
+  }
+
+  pub async fn stop(self, why: Ending) {
+    seen.stops.add(1u64);
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      case is None {}
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var data = List[u8].withCapacity(3000000usize);
+  while data.len() < 3000000usize { data.push(97u8 + u8.from(data.len() % 26usize)); }
+  match fs.writeFile(&Path.from("stages_stopsink_in.tmp"), data.view()) {
+    case is Ok {}
+    case is Err { return skip("cannot write the temporary file"); }
+  }
+  let base = iobuf.stats().lent;
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  var etx: OneshotSender[bool];
+  var erx: OneshotReceiver[bool];
+  etx, erx = Oneshot[bool].make();
+  {
+    let sink = FileSink(String.from("no_such_directory_stopsink/out.bin"), tx);
+    let tap = Tap(sink, etx);
+    let src = FileSource(tap, String.from("stages_stopsink_in.tmp"));
+    src.start();
+  }
+  let r = rx.recvTimeout(Duration.fromMillis(30000i64));
+  let e = erx.recvTimeout(Duration.fromMillis(30000i64));
+  finalAll();
+
+  var erred = false;
+  match &r {
+    case let &Some(x) {
+      match x {
+        case is Err { erred = true; }
+        case is Ok {}
+      }
+    }
+    case is None {}
+  }
+  var ended = false;
+  match &e {
+    case let &Some(b) { ended = *b; }
+    case is None {}
+  }
+  expect(erred, "done says Err");
+  expect(ended, "the source's end arrived");
+  expectUInt(seen.failed.load(), 1u64, "and it was one end, Failed");
+  expectUInt(seen.finished.load(), 0u64, "never Finished");
+  expectUInt(seen.stops.load(), 1u64, "the sink stopped its source once");
+  expect(seen.chunks.load() < 12u64, "the source read far fewer than its 46 chunks");
+  expect(fs.removeFile(&Path.from("stages_stopsink_in.tmp")) is Ok, "the source closed its file (it could be removed)");
+  expectUInt(iobuf.stats().lent, base, "every buffer is back in its pool");
+  done()
+}
