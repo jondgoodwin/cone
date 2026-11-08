@@ -1,0 +1,563 @@
+// The readers of a response, now sinks: 'stream' reads through a stages.ReaderSink and
+// 'events' through the package's EventSink, against a loopback server of the package's
+// own. Checked, in order:
+//   - a body of 24 MiB (ninety times the 256 KiB window) read slowly by 'stream': every
+//     byte arrives, in order, whole; the bytes lent (both ends' buffers) stay far below
+//     the body while the reader sleeps 2 ms a piece, and every buffer is home after.
+//     (A sink that drained by Chain.advance would stop at the window);
+//   - the same body read straight through a ReaderSink with 'streamTo': whole, one end;
+//   - each terminal case read through a ReaderSink: Done (a short body), Cancelled (the
+//     fetch's group cancelled mid-body), TimedOut (a deadline passed while the server
+//     stalls), Failed (a refused connection: the caller's Err and the reader's);
+//   - a BodyStream dropped mid-body (a 1 GiB body, one piece read): the rest of the fetch
+//     is cancelled, the server's writes fail, every buffer home;
+//   - an EventStream dropped mid-stream, the same;
+//   - a flood of tiny events (200,000 of nine bytes) that the reader does not begin to
+//     read for half a second: every event arrives after, and the bytes lent never pass
+//     the bound, which is the window and not the number of events.
+
+mod readersink;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Request;
+import sse;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// ---------------------------------------------------------------------------
+// What the actors tell the main thread
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub bad: Atomic[u64];        // bytes that were not the pattern
+  pub ended: Atomic[u64];      // readers that ran to their end
+  pub clean: Atomic[u64];      // ...of them, Ok(None)
+  pub cancelled: Atomic[u64];  // ...of them, ended by a cancel
+  pub timedOut: Atomic[u64];
+  pub failed: Atomic[u64];     // ...ended by a failure
+  pub headErrs: Atomic[u64];   // opens answered Err
+  pub events: Atomic[u64];
+  pub serverStopped: Atomic[u64];   // handlers whose write failed: the client went away
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.ended.store(0u64);
+  tally.clean.store(0u64);
+  tally.cancelled.store(0u64);
+  tally.timedOut.store(0u64);
+  tally.failed.store(0u64);
+  tally.headErrs.store(0u64);
+  tally.events.store(0u64);
+  tally.serverStopped.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+// The pool's bytes lent now: both ends' buffers
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// Waits for 'c' to reach 'n', noting the most bytes lent meanwhile
+fn waitPeak(c: &Atomic[u64], n: u64) u64 {
+  var peak = 0u64;
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {
+    let l = lent();
+    if l > peak {peak = l;}
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  peak
+}
+
+// ---------------------------------------------------------------------------
+// The server: /big/N answers N bytes, byte i being i % 251; /stall/N sends 1,000
+// of them and then waits 2 s; /events/N sends N events 'data: x'
+// ---------------------------------------------------------------------------
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if p.len > 7usize && &p[0usize ..< 7usize] == "/stall/" {
+      let n = number(&p[7usize ..]);
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+      let w = await ex.write(pattern(0u64, 1000usize));
+      let s = await aio.sleep(Duration.fromMillis(2000i64));
+      return;
+    }
+    if p.len > 8usize && &p[0usize ..< 8usize] == "/events/" {
+      let n = number(&p[8usize ..]);
+      ex.startEvents();
+      var left = n;
+      var going = true;
+      while going && left > 0u64 {
+        let m = if left < 1000u64 {usize.from(left)} else {1000usize};
+        var s = String();
+        var i = 0usize;
+        while i < m {s.append("data: x\n\n"); i = i + 1usize;}
+        let w = await ex.write(s);
+        match w {
+          case is Ok { left = left - u64.from(m); }
+          case is Err { going = false; }
+        }
+      }
+      if !going {tally.serverStopped.add(1u64);}
+      return;
+    }
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let left = n - at;
+      let m = if left < 65536u64 {usize.from(left)} else {65536usize};
+      let w = await ex.write(pattern(at, m));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    } else {
+      tally.serverStopped.add(1u64);
+    }
+  }
+}
+
+// m bytes of the pattern from offset 'at'
+fn pattern(at: u64, m: usize) String {
+  var piece = List[u8].withCapacity(m);
+  var i = 0usize;
+  while i < m {
+    piece.push(u8.from((at + u64.from(i)) % 251u64));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// The readers
+// ---------------------------------------------------------------------------
+
+// Counts what it is given and checks the pattern, from byte 'at'
+fn check(piece: &String, at: u64) {
+  let v = piece.view();
+  var i = 0usize;
+  var bad = 0u64;
+  while i < v.len() {
+    if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+    i = i + 1usize;
+  }
+  tally.bad.add(bad);
+  tally.bytes.add(u64.from(v.len()));
+}
+
+// How a read of the end is told in the tally
+fn noteEnd(e: &FetchError) {
+  if e.isCancelled() {tally.cancelled.add(1u64);}
+  else if e.isTimedOut() {tally.timedOut.add(1u64);}
+  else {tally.failed.add(1u64);}
+}
+
+// stream().read(), 'paceMs' asleep after each piece; 'stopAfter' pieces then the handle is dropped (0: to the end)
+actor Reader {
+  client: Client;
+
+  pub async fn run(self, u: String, paceMs: i64, stopAfter: u64, lim: IoLimits) {
+    let r = await client.streamIn(Request.get(u.view()), lim);
+    var at = 0u64;
+    var pieces = 0u64;
+    match r {
+      case let Ok(bs) {
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  check(&piece, at);
+                  at = at + u64.from(piece.len());
+                  pieces = pieces + 1u64;
+                  if stopAfter > 0u64 && pieces >= stopAfter {
+                    tally.ended.add(1u64);
+                    return;
+                  }
+                  if paceMs > 0i64 {
+                    let s = await aio.sleep(Duration.fromMillis(paceMs));
+                  }
+                }
+                case is None[String] {tally.clean.add(1u64); going = false;}
+              }
+            }
+            case let Err(e) {noteEnd(&e); going = false;}
+          }
+        }
+      }
+      case let Err(e) {tally.headErrs.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// A ReaderSink whose answers keep the ending's text
+fn mkText(c: &IoBuf) Result[Option[String], AnyError] {
+  Ok[Option[String], AnyError](Some[String](String.fromBytes(c.view())))
+}
+
+fn mkEnd(how: &Ending) Result[Option[String], AnyError] {
+  match how {
+    case is Finished { Ok[Option[String], AnyError](None[String]) }
+    case let &Failed(e) {
+      match e.downcastRef[FetchError]() {
+        case let Some(fe) {
+          if fe.isCancelled() { Err[Option[String], AnyError](AnyError.msg("cancelled")) }
+          else if fe.isTimedOut() { Err[Option[String], AnyError](AnyError.msg("deadline passed")) }
+          else { Err[Option[String], AnyError](AnyError.msg("failed")) }
+        }
+        else { Err[Option[String], AnyError](AnyError.msg("not a FetchError")) }
+      }
+    }
+  }
+}
+
+// streamTo into a ReaderSink read here; 'cancelAfter' bytes then the group is cancelled (0: never)
+actor SinkReader {
+  client: Client;
+
+  pub async fn run(self, u: String, lim: IoLimits, cancel: CancelGroup, cancelAfter: u64) {
+    let rs = ReaderSink[Result[Option[String], AnyError]](&mkText, &mkEnd);
+    let r = await client.streamToIn(Request.get(u.view()), rs.clone(), lim);
+    var at = 0u64;
+    match r {
+      case is Ok {
+        var going = true;
+        while going {
+          let n = await readSink(&rs);
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  check(&piece, at);
+                  at = at + u64.from(piece.len());
+                  if cancelAfter > 0u64 && at >= cancelAfter {cancel.cancel();}
+                }
+                case is None[String] {tally.clean.add(1u64); going = false;}
+              }
+            }
+            case let Err(e) {
+              let text = (String() <- e);
+              if text.view() == "cancelled" {tally.cancelled.add(1u64);}
+              else if text.view() == "deadline passed" {tally.timedOut.add(1u64);}
+              else {tally.failed.add(1u64);}
+              going = false;
+            }
+          }
+        }
+      }
+      case let Err(e) {
+        tally.headErrs.add(1u64);
+        // the sink's one end, Failed, is read here too
+        let n = await readSink(&rs);
+        match n {
+          case is Err {tally.failed.add(1u64);}
+          else {}
+        }
+      }
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// events(): counts the events; 'delayMs' asleep before the first; 'stopAfter' events then the handle is dropped (0: to the end)
+actor EvReader {
+  client: Client;
+
+  pub async fn run(self, u: String, delayMs: i64, stopAfter: u64) {
+    let r = await client.events(Request.get(u.view()));
+    match r {
+      case let Ok(es) {
+        if delayMs > 0i64 {
+          let s = await aio.sleep(Duration.fromMillis(delayMs));
+        }
+        var count = 0u64;
+        var going = true;
+        while going {
+          let n = await es.next();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  if ev.data.view() != "x" {tally.bad.add(1u64);}
+                  count = count + 1u64;
+                  if stopAfter > 0u64 && count >= stopAfter {
+                    tally.events.add(count);
+                    tally.ended.add(1u64);
+                    return;
+                  }
+                }
+                case is None[sse.Event] {tally.clean.add(1u64); going = false;}
+              }
+            }
+            case let Err(e) {noteEnd(&e); going = false;}
+          }
+        }
+        tally.events.add(count);
+      }
+      case let Err(e) {tally.headErrs.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+const bound = 2097152u64;
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    printStr("the server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    // (each fetch has a client of its own, dropped with it, so that no connection
+    // kept alive holds a buffer when the buffers are counted)
+    let none = CancelGroup.make();
+
+    // A body ninety times the window, read slowly
+    reset();
+    {
+      let r = Reader(Client.standard());
+      r.run(url(port, "/big/25165824"), 2i64, 0u64, IoLimits.none());
+      let peak = waitPeak(&tally.ended, 1u64);
+      printStr("24 MiB read through stream() 2 ms a piece: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ended clean ");
+      printUInt(tally.clean.load());
+      printStr("\n...the bytes lent never past 2 MiB: ");
+      printStr(yes(peak <= bound && peak > 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // The same body straight through a ReaderSink
+    reset();
+    {
+      let r = SinkReader(Client.standard());
+      r.run(url(port, "/big/25165824"), IoLimits.none(), none, 0u64);
+      waitFor(&tally.ended, 1u64);
+      printStr("24 MiB through a ReaderSink: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ended clean ");
+      printUInt(tally.clean.load());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // Each terminal case through a ReaderSink
+    reset();
+    {
+      let r = SinkReader(Client.standard());
+      r.run(url(port, "/big/5000"), IoLimits.none(), none, 0u64);
+      waitFor(&tally.ended, 1u64);
+      printStr("Done: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", clean ");
+      printUInt(tally.clean.load());
+      printStr(", errors ");
+      printUInt(tally.cancelled.load() + tally.timedOut.load() + tally.failed.load());
+      printStr("\n");
+    }
+    reset();
+    {
+      let g = CancelGroup.make();
+      let r = SinkReader(Client.standard());
+      r.run(url(port, "/big/1073741824"), IoLimits.within(g.clone()), g, 1048576u64);
+      waitFor(&tally.ended, 1u64);
+      printStr("Cancelled mid-body: cancelled ");
+      printUInt(tally.cancelled.load());
+      printStr(", clean ");
+      printUInt(tally.clean.load());
+      printStr(", short of the body ");
+      printStr(yes(tally.bytes.load() < 1073741824u64 && tally.bytes.load() >= 1048576u64));
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr("\n");
+    }
+    reset();
+    {
+      let r = SinkReader(Client.standard());
+      r.run(url(port, "/stall/100000"), IoLimits.until(Instant.now() + Duration.fromMillis(400i64)), none, 0u64);
+      waitFor(&tally.ended, 1u64);
+      printStr("TimedOut mid-body: timed out ");
+      printUInt(tally.timedOut.load());
+      printStr(", bytes ");
+      printUInt(tally.bytes.load());
+      printStr("\n");
+    }
+    reset();
+    {
+      // port 1 on loopback is closed
+      let r = SinkReader(Client.standard());
+      r.run(url(1u16, "/big/10"), IoLimits.none(), none, 0u64);
+      waitFor(&tally.ended, 1u64);
+      printStr("Failed before the head: the caller's Err ");
+      printUInt(tally.headErrs.load());
+      printStr(", the reader's failure ");
+      printUInt(tally.failed.load());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A BodyStream dropped mid-body: the rest of the fetch is cancelled
+    reset();
+    {
+      let r = Reader(Client.standard());
+      r.run(url(port, "/big/1073741824"), 0i64, 3u64, IoLimits.none());
+      waitFor(&tally.ended, 1u64);
+      waitFor(&tally.serverStopped, 1u64);
+      printStr("a BodyStream dropped after 3 pieces of 1 GiB: the server's writes failed ");
+      printStr(yes(tally.serverStopped.load() == 1u64));
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // An EventStream dropped mid-stream
+    reset();
+    {
+      let r = EvReader(Client.standard());
+      r.run(url(port, "/events/100000000"), 0i64, 5u64);
+      waitFor(&tally.ended, 1u64);
+      waitFor(&tally.serverStopped, 1u64);
+      printStr("an EventStream dropped after 5 events: events ");
+      printUInt(tally.events.load());
+      printStr(", the server's writes failed ");
+      printStr(yes(tally.serverStopped.load() == 1u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A flood of tiny events, the reader late to begin
+    reset();
+    {
+      let r = EvReader(Client.standard());
+      r.run(url(port, "/events/200000"), 500i64, 0u64);
+      let peak = waitPeak(&tally.ended, 1u64);
+      printStr("200,000 tiny events, the reader asleep 500 ms: events ");
+      printUInt(tally.events.load());
+      printStr(", wrong ");
+      printUInt(tally.bad.load());
+      printStr(", ended clean ");
+      printUInt(tally.clean.load());
+      printStr("\n...the bytes lent never past 2 MiB, though 200,000 events were sent: ");
+      printStr(yes(peak <= bound && peak > 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    acceptor.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}
