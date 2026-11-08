@@ -453,6 +453,10 @@ LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
 // (GLSL.std.450's instruction), or NULL when the function is no such one
 LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs);
 
+// On a GPU target, note that the body of the inline function 'fndcl' is expanded
+// into the function being generated: it is reached when that one is (genlGpuCalls)
+void genlGpuInlineNote(GenState *gen, FnDclNode *fndcl);
+
 // The node an instruction was made for, as genlGpuSite marked it, or NULL
 INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst);
 
