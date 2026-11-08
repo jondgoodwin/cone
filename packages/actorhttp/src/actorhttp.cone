@@ -236,6 +236,13 @@
 // released to the connection when the piece is read (an event stream: when fewer
 // than 64 events wait), so a reader that awaits slowly slows the sender through TCP,
 // and what is held is bounded by the fetch's window, in bytes, however small the pieces.
+// THE BODY WAITS FOR THE CALLER'S CHOICE. A BodyStream is answered with the head only: until the
+// caller's first 'read()' (which attaches a ReaderSink) or 'bs.to(sink)' (which attaches the caller's
+// ChunkSink, as streamTo does, and consumes the BodyStream), the pieces that arrive are staged in
+// the stream's record (the staging buffers below), nothing is given back so the peer stops at its
+// credit window, and past the pool's limit the fetch ends Overloaded. The choice is one job to the
+// service thread (BodyChoiceJob): the sink is attached, the staged pieces go to it in order, then
+// the end if one was kept. A BodyStream dropped unchosen cancels the fetch and its record is let go.
 // A BODY TO A STAGE. 'client.streamTo(request, sink)' (and 'streamToIn' with an
 // IoLimits) sends the body to a stages.ChunkSink instead: it is answered, as
 // 'stream' is, when the head arrives, with a BodyHead (status, version, headers,
