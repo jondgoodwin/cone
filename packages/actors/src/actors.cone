@@ -2760,7 +2760,7 @@ pub struct Reply is Sendable {
     if to as usize != 0usize {
       // a reply never answered: the group noted at its await goes with it
       if (id & groupBit) != 0u64 {
-        groupForget(to, id ^ groupBit);
+        groupForget(usize.from(id ^ groupBit) as *GNode);
       }
       let release = (*to).release;
       release(to);
@@ -2833,11 +2833,7 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   var word = id;
   let gp = curGroup;
   if gp != 0usize {
-    if !hasId {
-      word = gTicket.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
-    }
-    groupNote(h, word, gp);
-    word = word | groupBit;
+    word = groupNote(h, id, gp);
   }
   Reply(to: h, at: run, id: word, meta: metaOf(size, flags))
 }
@@ -2847,29 +2843,34 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
 // worker takes the actor, long after the behaviour that began it has returned and
 // the frame that held its group has gone. So an await made while a cancel group
 // is current notes a copy of the group's handle (another owner) in a SIDE TABLE,
-// global, keyed by the awaiting actor and a word: the record's id where the
-// await has a record, else a ticket from a counter. The same word, with its top
-// bit set (groupBit), is the Reply's id word, and so the id word of the reply's
-// slot, which nothing else reads except the second half's resume through here.
-// resumeSlot sees the bit, takes the entry, makes the group the current group
-// for the second half and lets go of it after. An await made in no group sets
+// global, in a node that also holds the awaiting actor and the record's id (0
+// where the await has no record). The node's address, with the top bit set
+// (groupBit), is the Reply's id word, and so the id word of the reply's slot,
+// which nothing else reads except the second half's resume through here (an
+// address is below 2^63 on every target, which groupNote checks). resumeSlot sees
+// the bit, takes the node by that address, makes the group the current group for
+// the second half and lets go of it after. An await made in no group sets
 // nothing, notes nothing, and costs the resume one bit test of a word it loads.
-// An entry is removed on every path: by the resume (above); by the drop of a
-// Reply never answered (Reply.final), the reply's hold on its actor let go with
-// it; and by the death of the actor (finalizeState), which sweeps what is
-// left of its entries. Nothing has a timeout or a cancel path of its own that
-// frees a parked record while its reply is in flight, so those are all.
+// The table has a fixed number of buckets (gBuckets), so its chains are doubly
+// linked: whoever holds a node unlinks it in a few stores, whatever the length of
+// its chain, with no search. An entry is removed on every path: by the resume
+// (above); by the drop of a Reply never answered (Reply.final), the reply's hold
+// on its actor let go with it; and by the death of the actor (finalizeState),
+// which sweeps what is left of its entries. Nothing has a timeout or a cancel
+// path of its own that frees a parked record while its reply is in flight, so
+// those are all; each runs once for an entry, so a node's address is good for as
+// long as its id word is in a Reply or a slot.
 const groupBit = 0x8000000000000000u64;
 const gBuckets = 1024usize;
 
 struct GNode {
   pub next: *GNode;
+  pub prev: *usize;     // the word that points at this node: its bucket, or the previous node's 'next'
   pub h: *Header;
-  pub w: u64;
+  pub w: u64;           // the record's id, passed on to the second half (0 where the await has no record)
   pub g: CancelGroup;
 }
 
-let gTicket: Atomic[u64];
 let gLock: Atomic[u32];           // a spin word (0 free, 1 taken) guarding gTable, gCount's writes and the chains in the table
 let gTable: Atomic[usize];        // the buckets, gBuckets pointers, made by the first note; touched only under gLock
 let gCount: Atomic[usize];        // entries in the table; written only under gLock, read without it by groupSweep and groupAwaitsLive
@@ -2906,10 +2907,9 @@ fn fakeActor() *Header {
 pub fn testGroupedReply() Reply {
   let h = fakeActor();
   let gp = curGroup;
-  var word = gTicket.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
+  var word = 0u64;
   if gp != 0usize {
-    groupNote(h, word, gp);
-    word = word | groupBit;
+    word = groupNote(h, 0u64, gp);
   }
   Reply(to: h, at: null, id: word, meta: metaOf(8usize, 0u64))
 }
@@ -2920,7 +2920,7 @@ pub fn testActorWithGroupedAwait() usize {
   let h = fakeActor();
   let gp = curGroup;
   if gp != 0usize {
-    groupNote(h, gTicket.addOrdered(1u64, MemOrder.Relaxed) + 1u64, gp);
+    groupNote(h, 0u64, gp);
   }
   h as usize
 }
@@ -2936,7 +2936,6 @@ fn gBucket(h: *Header, w: u64) usize {
   usize.from((x >> 20u64) % u64.from(gBuckets))
 }
 
-// Note a copy of the group at gp for (h, w)
 // The group table's lock: a spin on gLock's own word. Every section under it is
 // a few loads and stores on the table (the one calloc is the first note's, once)
 // and never blocks, parks, awaits or takes another lock, so a spin costs less
@@ -2963,10 +2962,16 @@ fn gU() {
   gLock.storeOrdered(0u32, MemOrder.Release);
 }
 
-fn groupNote(h: *Header, w: u64, gp: usize) {
+// Note a copy of the group at gp for the awaiting actor h, with the record's id
+// w. Returns the id word the Reply carries: the node's address with groupBit set
+fn groupNote(h: *Header, w: u64, gp: usize) u64 {
   let n = libc.malloc(mem.sizeof[GNode]()) as *GNode;
   if n as usize == 0usize {
     die("actors: out of memory for an await's group");
+  }
+  let addr = u64.from(n as usize);
+  if (addr & groupBit) != 0u64 {
+    die("actors: an address with its top bit set cannot carry a group");
   }
   (*n).h = h;
   (*n).w = w;
@@ -2979,42 +2984,42 @@ fn groupNote(h: *Header, w: u64, gp: usize) {
     }
     gTable.storeOrdered(t as usize, MemOrder.Relaxed);
   }
-  let at = (gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, w);
-  (*n).next = *at as *GNode;
+  let at = (gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, addr);
+  let first = *at as *GNode;
+  (*n).next = first;
+  (*n).prev = at;
+  if first as usize != 0usize {
+    (*first).prev = &(*n).next as *usize;
+  }
   *at = n as usize;
   gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) + 1usize, MemOrder.Relaxed);
   gU();
+  addr | groupBit
 }
 
-// Take the entry for (h, w) out of the table: its node, which the caller moves
-// the group out of and frees, or 0
-fn groupTake(h: *Header, w: u64) *GNode {
+// Unlink n from its chain: a few stores through the links it holds, with gLock held
+fn groupUnlink(n: *GNode) {
+  let nx = (*n).next;
+  *(*n).prev = nx as usize;
+  if nx as usize != 0usize {
+    (*nx).prev = (*n).prev;
+  }
+  gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
+}
+
+// Take the entry n out of the table: the caller moves the group out of it and
+// frees it
+fn groupTake(n: *GNode) {
   gL();
-  var found = null as *GNode;
-  if gTable.loadOrdered(MemOrder.Relaxed) != 0usize {
-    var link = (gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, w);
-    while *link != 0usize && found as usize == 0usize {
-      let n = *link as *GNode;
-      if (*n).h as usize == h as usize && (*n).w == w {
-        *link = (*n).next as usize;
-        found = n;
-        gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
-      } else {
-        link = &(*n).next as *usize;
-      }
-    }
-  }
+  groupUnlink(n);
   gU();
-  found
 }
 
-// Remove the entry for (h, w) and let go of its group
-fn groupForget(h: *Header, w: u64) {
-  let n = groupTake(h, w);
-  if n as usize != 0usize {
-    mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
-    libc.free(n as *u8);
-  }
+// Remove the entry n and let go of its group
+fn groupForget(n: *GNode) {
+  groupTake(n);
+  mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
+  libc.free(n as *u8);
 }
 
 // Remove every entry of actor h (its death), letting go of their groups
@@ -3030,10 +3035,9 @@ fn groupSweep(h: *Header) {
     while *link != 0usize {
       let n = *link as *GNode;
       if (*n).h as usize == h as usize {
-        *link = (*n).next as usize;
+        groupUnlink(n);
         (*n).next = gone;
         gone = n;
-        gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) - 1usize, MemOrder.Relaxed);
       } else {
         link = &(*n).next as *usize;
       }
@@ -3377,11 +3381,9 @@ fn resumeSlot[S](st: *S, h: *Header, p: *u8, kind: u64) {
   // an await made in a cancel group (THE GROUP SURVIVES AN AWAIT): the entry
   // noted at the await is taken, its group made the thread's current group for
   // the second half, and let go after
-  let w = id0 ^ groupBit;
-  let node = groupTake(h, w);
-  if node as usize == 0usize {
-    die("actors: a reply made in a cancel group has no group noted");
-  }
+  let node = usize.from(id0 ^ groupBit) as *GNode;
+  groupTake(node);
+  let w = (*node).w;
   let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
   libc.free(node as *u8);
   curGroup = &g as *CancelGroup as usize;
@@ -4864,7 +4866,6 @@ fn @initpure init() {
   coDoneWaiters = Atomic[u32].of(0u32);
   coLimit = Atomic[usize].of(consoleLimit);
   coStarted = Atomic[bool].of(false);
-  gTicket = Atomic[u64].of(0u64);
   gLock = Atomic[u32].of(0u32);
   gTable = Atomic[usize].of(0usize);
   gCount = Atomic[usize].of(0usize);

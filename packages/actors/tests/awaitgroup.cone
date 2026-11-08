@@ -26,11 +26,13 @@
 //    Err(Cancelled) with the cause, which '?' passes on (as Cancelled, and converted to
 //    an AnyError); the clean-up after it runs once, the parked value is dropped exactly
 //    once, and the side table is empty.
+// 10. Long chains: thousands of entries parked at once (about six to a bucket), removed
+//    by deaths and by dropped Replies in several orders, the count exact.
 
 mod awaitgroup;
 
 import testing use *;
-import collections use AnyError;
+import collections use AnyError, List;
 import thread;
 import actors;
 import cancelgroups use *;
@@ -339,5 +341,40 @@ fn main() i32 {
   expectUInt(markerDrops.load(), 1u64, "9: the parked value was dropped exactly once");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "9: the table is empty");
   expect(actors.checkCancelled() is Ok, "9: outside any group checkCancelled says Ok");
+
+  // 10. long chains (about six entries to a bucket): owed Replies and actors with an entry, interleaved.
+  // The actors' deaths unlink from the middle of chains, then the newest Replies' drops from the heads
+  // and the rest (oldest first) from the tails; the count is exact throughout
+  actors.withGroup(&g, fn() {
+    var rs = List[actors.Reply]();
+    var fakes = List[usize]();
+    var n = 0usize;
+    while n < 3000usize {
+      rs.push(actors.testGroupedReply());
+      fakes.push(actors.testActorWithGroupedAwait());
+      n += 1usize;
+    }
+    expectUInt(u64.from(actors.groupAwaitsLive()), 6000u64, "10: 6000 entries parked");
+    var i = 0usize;
+    var killed = 0usize;
+    while i < 3000usize {
+      let at = (i * 7usize) % 3000usize;
+      if fakes[at] != 0usize {
+        actors.testKillActor(fakes[at]);
+        fakes[at] = 0usize;
+        killed += 1usize;
+      }
+      i += 1usize;
+    }
+    expectUInt(u64.from(killed), 3000u64, "10: every actor was killed once");
+    expectUInt(u64.from(actors.groupAwaitsLive()), 3000u64, "10: the actors' deaths removed only their own entries");
+    var k = 0usize;
+    while k < 1000usize {
+      let r = rs.pop();
+      k += 1usize;
+    }
+    expectUInt(u64.from(actors.groupAwaitsLive()), 2000u64, "10: the newest 1000 replies' drops removed their entries");
+  });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "10: the rest dropped with the list: the table is empty");
   done()
 }
