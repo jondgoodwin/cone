@@ -78,7 +78,8 @@ match r.peek(4usize) {                 // the first four bytes, or None (too few
 		and given back by another. Two actor traits say what a stage is to its neighbours, and neither names the other's
 		actor: <span class="pre">ChunkSink</span> takes chunks (<span class="pre">accept</span>, which
 		<span class="pre">sink &lt;- chunk</span> spells; <span class="pre">end</span>; <span class="pre">attach</span>) and
-		<span class="pre">ChunkSource</span> gets emptied ones back (<span class="pre">giveBack</span>). The library's own
+		<span class="pre">ChunkSource</span> gets emptied ones back (<span class="pre">giveBack</span>) and can be told to
+		<span class="pre">stop(why)</span>. The library's own
 		stages are generic actors: <span class="pre">TransformStage[T]</span> for any transform and
 		<span class="pre">HashStage[D]</span> for a digest that passes the chunk on untouched. The ends of a pipeline in the
 		OS are actors too, in their own package, <span class="pre">stageio</span>, so that <span class="pre">stages</span>
@@ -91,8 +92,15 @@ match r.peek(4usize) {                 // the first four bytes, or None (too few
 		<span class="pre">ArchiveStream</span> that calls a function of the caller's at each entry's start for a
 		<span class="pre">ChunkSink</span> and sends that sink the entry's data and its own <span class="pre">end</span>; the archive's
 		verdict, which only the central directory at the archive's end can give, comes apart from the entries, on a
-		<span class="pre">Oneshot</span>. A source is told of a failed sink only through the stream, by its
-		buffers coming back; a producer that should stop on a failed sink stops through a cancel group its consumer holds.</p>
+		<span class="pre">Oneshot</span>. A consumer that fails, or needs no more, ends the work feeding it
+		by calling <span class="pre">stop(why)</span> on its source: the first terminal event a source sees decides (a stop after
+		the source's end, or a second stop, does nothing), the source still sends its one <span class="pre">end</span>
+		carrying <span class="pre">why</span> (an <span class="pre">Ending</span>: <span class="pre">Finished</span> for "I have
+		what I need", <span class="pre">Failed</span> for "I failed, and why"), the buffers already lent still come back
+		through <span class="pre">giveBack</span>, and a stage in the middle forwards the stop upstream and ends its own
+		downstream once. A stop from an archive entry's sink stops the whole archive. A cancel group stays the way to
+		cancel a whole scope from above; the two arriving together is harmless. (The library's sinks do not call
+		<span class="pre">stop</span> yet.)</p>
 	<p><b>Credit is the buffers.</b> A stage sends only while its window of bytes (256 KiB by default) has room; the
 		buffers come from a pool, are taken only when there is data, and are sized to it; and the consumer gives the same
 		buffer back when it has <i>finished</i> with the chunk, which is the acknowledgement that lets the next go. A slow

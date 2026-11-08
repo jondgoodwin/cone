@@ -42,6 +42,8 @@ struct StreamRec {
   awaiting: bool;
   kept: Option[Ending];
   abandoned: bool;
+  // The reason a consumer stopped the stream (BodySource.stop): the end carries it if the fetch ends cancelled
+  stopWhy: Option[Ending];
 }
 
 // A staging buffer's size (stages' linkBytes, the size a stage makes its chunks): pieces of fewer
@@ -64,7 +66,7 @@ fn openingStream(id: u64) StreamRec {
     openHead: None[actors.ReplyOf[Result[BodyHead, FetchError]]],
     bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[EventSink], group: None[CancelGroup],
     status: 0u16, sink: None[ChunkSink], lent: Dict[usize, usize](), sinkHeld: 0usize, staged: Deque[IoBuf](),
-    tail: IoBuf(), refused: false, awaiting: false, kept: None[Ending], abandoned: false)
+    tail: IoBuf(), refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending])
 }
 
 // A reply kept in a stream's record answered in place, and let go
@@ -190,9 +192,16 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     if s.openHead is Some {
       answerKept[Result[BodyHead, FetchError]](&mut s.openHead, Err[BodyHead, FetchError](endError(k, &e.failure)));
     }
+    var stopWhy = None[Ending];
+    stopWhy <-> s.stopWhy;
     let how = if s.refused {Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure())))}
       else if k == httpclient.EventKind.Done {Ending.Finished}
-      else {Ending.Failed(AnyError.from(endError(k, &e.failure)))};
+      else {
+        match stopWhy {
+          case let Some(w) { w }
+          case is None { Ending.Failed(AnyError.from(endError(k, &e.failure))) }
+        }
+      };
     if s.awaiting && !(s.sink is Some) {
       // the body is not yet chosen: the end is kept, with the staged pieces, for the choice
       // (or, if the BodyStream was dropped, the record is let go)
@@ -490,5 +499,27 @@ struct StreamCancelJob {
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     rec.client.cancel(lp, (s as &StreamRec).fetch);
+  }
+}
+
+// A consumer stopped the stream (BodySource.stop): the first reason is kept, for the
+// end the cancelled fetch sends, and the fetch is ended. A stream that has ended
+// has no record, so a stop after the end does nothing
+struct StreamStopJob {
+  pub client: u64;
+  pub slot: u32;
+  pub id: u64;
+  pub why: Option[Ending];
+
+  pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
+    let k = sv.findClient(client);
+    if k >= sv.clients.bound() {return;}
+    let rec = sv.clientAt(k) as &mut ClientRec;
+    let s = streamOf(rec as &ClientRec, slot, id);
+    if s as usize == 0usize {return;}
+    let st = s as &mut StreamRec;
+    if st.stopWhy is Some {return;}
+    st.stopWhy <-> why;
+    rec.client.cancel(lp, st.fetch);
   }
 }
