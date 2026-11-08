@@ -43,22 +43,55 @@ pub struct BodyStream is Move {
   pub version: Version;     // the protocol that carried it: Http11, or Http2
   pub headers: Headers;
   pub url: String;          // the URL that answered, after any redirects
+  choice: Atomic[u8];       // bodyUnchosen until 'read' or 'to' is the caller's choice
+  client: u64;              // where the stream's record is kept (streamservice.cone)
+  slot: u32;
+  sid: u64;
 
   // The next piece of the body (the bytes of one receive: any size), or None
   // when the body is whole; or why it ended otherwise. A piece is released to
   // the connection as it is taken, so a reader that awaits slowly slows the
   // sender, never fills memory
   pub fn read(self: &) actors.Awaitable[Result[Option[String], FetchError]] {
+    // the first read is the choice: the reader is attached to the stream, which until now has
+    // kept the body staged (streamservice.cone, BodyChoiceJob). Later reads cost one atomic load
+    if choice.load() == bodyUnchosen {
+      if choice.swap(bodyRead) == bodyUnchosen {
+        post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](reader.clone())));
+      }
+    }
     readSink[Result[Option[String], FetchError]](&reader)
+  }
+
+  // The body sent to a sink instead: the sink is told its source, then gets the body's pieces
+  // (those that arrived while the caller was choosing first, in order), then the one end, as
+  // for 'streamTo'. The head is already in hand, so the caller has looked at it before choosing.
+  // The sink's buffers are the fetch's own window; a sink that gives them back slowly slows
+  // the connection. A body already read from cannot be sent: the sink is ended Failed
+  pub fn to(self, sink: ChunkSink) {
+    if choice.swap(bodyTo) == bodyUnchosen {
+      post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](sink)));
+    } else {
+      choice.store(bodyRead);
+      sink.end(Ending.Failed(AnyError.msg("the body was read from, it cannot be sent to a sink")));
+    }
   }
 
   // Whether the status is a 2xx
   pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
 
   fn final(self: &uni) {
-    group.cancel();
+    let c = choice.load();
+    if c != bodyTo {group.cancel();}
+    // never chosen: the service lets go of the body it kept
+    if c == bodyUnchosen {post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, None[ChunkSink]));}
   }
 }
+
+// What a BodyStream's caller has chosen: nothing yet, to 'read', or to send the body 'to' a sink
+const bodyUnchosen = 0u8;
+const bodyRead = 1u8;
+const bodyTo = 2u8;
 
 // A response read as server-sent events (the sse package's): the Reader runs
 // in an EventSink actor as the body arrives, and 'next' awaits the next event
