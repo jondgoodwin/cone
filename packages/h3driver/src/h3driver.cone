@@ -121,6 +121,18 @@
 // the kernel drops). Batching (sendmmsg, GSO, USO) comes later, at the
 // transmit loop.
 //
+// THE BUFFER POOL FULL. Every buffer the stack makes for a peer's bytes (a
+// receive's, a datagram's, a body piece's, HTTP/3's stream output) is made
+// with iobuf's tryMake. A refusal (the pool within its reserve of maxBytes)
+// ends the connection that needed it, Overloaded, and its buffers go back: the
+// requests on it fail Overloaded ('unsent' as before), and its Closed carries
+// Overloaded. Its CONNECTION_CLOSE goes only if a buffer is to be had. Two
+// places end no connection: connect and listen answer Overloaded and make
+// nothing; a listener's receive serves every connection, so one refused a
+// buffer is owed, and the next turn (and a wakeStep later while it is still
+// refused) makes it again. stats().bufferRefused counts the refusals.
+// tests/refused.cone fills the pool.
+//
 // WAKE TIMES. QUIC has no handleTimeout: a connection's wake time
 // (quic's wakeAt) that has come is acted on by the next pollTransmit, which
 // the driver makes at that time, input or none. Under loss ngtcp2 can keep
@@ -546,10 +558,11 @@ pub struct DriverStats {
   pub wakeTurns: u64;      // ...that a connection's wake time asked for
   pub idleWakes: u64;      // ...of those, the ones that sent nothing
   pub clamped: u64;        // wake times moved on to a wakeStep after the turn (WAKE TIMES)
+  pub bufferRefused: u64;  // times the buffer pool refused a buffer (iobuf's tryMake): a connection ended Overloaded, or a listener's receive waits
 
   pub fn zero() DriverStats {
     DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
   }
 }
 

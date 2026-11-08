@@ -386,6 +386,9 @@ static int pathDrops = 0;       // drop flags are walking
 static int pathGpuChoices = 0;  // a reference chosen at run time is refused: a GPU target's loan walk
 static PathSet *pwRetFirst = NULL;  // on a GPU target, what the first 'return' walked carries
 static int pwRetSeen = 0;
+static FnDclNode *pwCurFn = NULL;   // the function being walked
+
+FnDclNode *flowPathCurrentFn(void) { return pwCurFn; }
 
 // Where a lock's guard gives its lock back: a point after a statement, or at
 // the start of a block, with no use of the guard's borrow after it on any path
@@ -4312,6 +4315,7 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
     pwSeams = seams;
     flowShapeRetry = 0;
     pathGpuChoices = flowGpu && loans;
+    pwCurFn = fndcl;
     pwRetFirst = NULL;
     pwRetSeen = 0;
     loanWalkBegin();

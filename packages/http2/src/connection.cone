@@ -537,7 +537,18 @@ pub struct Connection is Move {
     if s.sized && u64.from(n) > s.left {panic("http2: sendData past the body's Content-Length", file, line);}
     if s.outBytes > 0usize && s.outBytes + n > cfg.writeWatermark {return Some[IoBuf](buf);}
     if s.sized {s.left = s.left - u64.from(n);}
-    s.outQ.push(buf);
+    // A piece that fits in the room of the last one queued joins it (its block
+    // goes back to the pool): the watermark counts bytes, and a block each for
+    // 8-byte writes would hold 512 times that
+    var joined = false;
+    if s.outQ.len() > 0usize {
+      let tail = &mut s.outQ[s.outQ.len() - 1usize];
+      if tail.room() >= n {
+        let k = tail.append(buf.view());
+        joined = true;
+      }
+    }
+    if !joined {s.outQ.push(buf);}
     s.outBytes = s.outBytes + n;
     if s.opened {self.makeReady(s);}
     None
@@ -807,7 +818,7 @@ pub struct Connection is Move {
     }
     if n > 0usize {
       s.outstanding = s.outstanding + n;
-      self.emit(s, Event.Data(id, data));
+      self.emitData(s, id, data);
     }
     if endStream {
       s.recvDone = true;
@@ -1352,6 +1363,35 @@ pub struct Connection is Move {
     if gone.len() > goneMax {
       let oldest = gone.popFront();
     }
+  }
+
+  // A stream's received DATA as an event: joined into the stream's last
+  // Data event still waiting when it has room (the arriving block goes back to
+  // the pool), else queued. Looks back over at most 16 events, those of other
+  // streams between; the stream's own order is kept (nothing of its own can
+  // follow a Data but more Data and its End, and the End is queued after)
+  fn emitData(self: &mut, s: &mut Stream, id: u32, data: IoBuf) {
+    let n = data.len();
+    var joined = false;
+    var k = events.len();
+    var steps = 0usize;
+    while !joined && s.events > 0usize && k > 0usize && steps < 16usize {
+      k = k - 1usize;
+      steps = steps + 1usize;
+      match &mut events[k] {
+        case let &mut Data(d) {
+          if d.stream == id {
+            if d.buf.room() >= n {
+              let m = d.buf.append(data.view());
+              joined = true;
+            }
+            steps = 16usize;
+          }
+        }
+        else {}
+      }
+    }
+    if !joined {self.emit(s, Event.Data(id, data));}
   }
 
   fn emit(self: &mut, s: &mut Stream, e: Event) {

@@ -1,43 +1,103 @@
 // The streams an actor reads: a response whose body arrives to the actor as
 // it comes, as chunks of bytes (BodyStream) or as server-sent events
-// (EventStream). The handles are plain data that move; the service thread
-// keeps what they name (streamservice.cone), and actorhttp.cone's header says
-// how the pieces fit (STREAMS).
+// (EventStream). The handles are plain data that move: each holds the sink its
+// body goes to (a stages.ReaderSink, or this package's EventSink) and the
+// cancel group of its fetch, which dropping the handle cancels. The service
+// thread keeps the fetch and sends the pieces (streamservice.cone), and
+// actorhttp.cone's header says how the pieces fit (STREAMS).
+
+// How a stream's end, or a chunk of its body, is told to a reader
+fn copyError(e: &FetchError) FetchError {
+  let k = e.kind();
+  if k == FetchErrorKind.Failed {FetchError.failed(e.failure.clone())}
+  else if k == FetchErrorKind.TimedOut {FetchError.timedOut()}
+  else {FetchError.cancelled()}
+}
+
+// The error an ending carries: the FetchError the service made, else a cancel
+fn errorOfEnding(e: &AnyError) FetchError {
+  match e.downcastRef[FetchError]() {
+    case let Some(fe) {copyError(fe)}
+    else {FetchError.cancelled()}
+  }
+}
+
+fn bodyChunk(c: &IoBuf) Result[Option[String], FetchError] {
+  Ok[Option[String], FetchError](Some[String](String.fromBytes(c.view())))
+}
+
+fn bodyEnd(how: &Ending) Result[Option[String], FetchError] {
+  match how {
+    case is Finished {Ok[Option[String], FetchError](None[String])}
+    case let &Failed(e) {Err[Option[String], FetchError](errorOfEnding(e))}
+  }
+}
 
 // A response being read, body chunk by chunk. The status and header fields
 // are known when it is made; 'read' awaits the next piece of the body.
 // Dropping it before the body has ended cancels the rest of the fetch
 pub struct BodyStream is Move {
-  client: u64;
-  slot: u32;
-  id: u64;
+  reader: ReaderSink[Result[Option[String], FetchError]];
+  group: CancelGroup;
   pub status: u16;
   pub version: Version;     // the protocol that carried it: Http11, or Http2
   pub headers: Headers;
   pub url: String;          // the URL that answered, after any redirects
+  choice: Atomic[u8];       // bodyUnchosen until 'read' or 'to' is the caller's choice
+  client: u64;              // where the stream's record is kept (streamservice.cone)
+  slot: u32;
+  sid: u64;
 
   // The next piece of the body (the bytes of one receive: any size), or None
   // when the body is whole; or why it ended otherwise. A piece is released to
   // the connection as it is taken, so a reader that awaits slowly slows the
   // sender, never fills memory
   pub fn read(self: &) actors.Awaitable[Result[Option[String], FetchError]] {
-    awaitable[StreamReadJob, Result[Option[String], FetchError]](StreamReadJob(client, slot, id))
+    // the first read is the choice: the reader is attached to the stream, which until now has
+    // kept the body staged (streamservice.cone, BodyChoiceJob). Later reads cost one atomic load
+    if choice.load() == bodyUnchosen {
+      if choice.swap(bodyRead) == bodyUnchosen {
+        post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](reader.clone())));
+      }
+    }
+    readSink[Result[Option[String], FetchError]](&reader)
+  }
+
+  // The body sent to a sink instead: the sink is told its source, then gets the body's pieces
+  // (those that arrived while the caller was choosing first, in order), then the one end, as
+  // for 'streamTo'. The head is already in hand, so the caller has looked at it before choosing.
+  // The sink's buffers are the fetch's own window; a sink that gives them back slowly slows
+  // the connection. A body already read from cannot be sent: the sink is ended Failed
+  pub fn to(self, sink: ChunkSink) {
+    if choice.swap(bodyTo) == bodyUnchosen {
+      post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](sink)));
+    } else {
+      choice.store(bodyRead);
+      sink.end(Ending.Failed(AnyError.msg("the body was read from, it cannot be sent to a sink")));
+    }
   }
 
   // Whether the status is a 2xx
   pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
 
   fn final(self: &uni) {
-    post[StreamDropJob](StreamDropJob(client, slot, id));
+    let c = choice.load();
+    if c != bodyTo {group.cancel();}
+    // never chosen: the service lets go of the body it kept
+    if c == bodyUnchosen {post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, None[ChunkSink]));}
   }
 }
 
+// What a BodyStream's caller has chosen: nothing yet, to 'read', or to send the body 'to' a sink
+const bodyUnchosen = 0u8;
+const bodyRead = 1u8;
+const bodyTo = 2u8;
+
 // A response read as server-sent events (the sse package's): the Reader runs
-// on the service thread as the body arrives, and 'next' awaits the next event
+// in an EventSink actor as the body arrives, and 'next' awaits the next event
 pub struct EventStream is Move {
-  client: u64;
-  slot: u32;
-  id: u64;
+  reader: EventSink;
+  group: CancelGroup;
   pub status: u16;
   pub version: Version;     // the protocol that carried it: Http11, or Http2
   pub headers: Headers;
@@ -48,7 +108,11 @@ pub struct EventStream is Move {
   // past the reader's limit). A comment (": ping") is no event; the stream's
   // 'id' is each event's, as the sse package's Reader keeps it
   pub fn next(self: &) actors.Awaitable[Result[Option[sse.Event], FetchError]] {
-    awaitable[EventReadJob, Result[Option[sse.Event], FetchError]](EventReadJob(client, slot, id))
+    let h = reader.clone();
+    actors.Awaitable[Result[Option[sse.Event], FetchError]].make(
+      fn(rp: actors.ReplyOf[Result[Option[sse.Event], FetchError]]) [h] {
+        h.want(rp);
+      })
   }
 
   // Whether the status is a 2xx
@@ -67,7 +131,129 @@ pub struct EventStream is Move {
   }
 
   fn final(self: &uni) {
-    post[StreamDropJob](StreamDropJob(client, slot, id));
+    group.cancel();
+  }
+}
+
+// Events held for a reader before the buffers behind them are given back (the
+// bytes of a buffer are not released to the connection until fewer than this
+// many events wait). The bound in bytes is the fetch's window
+const eventQueueHigh = 64usize;
+
+// How an event stream's reads end once its events are all taken
+fn eventsEnd(limited: bool, how: &Ending) Result[Option[sse.Event], FetchError] {
+  if limited {
+    return Err[Option[sse.Event], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
+      ErrorKind.TooLarge, "an event is longer than the reader's limit")));
+  }
+  match how {
+    case is Finished {Ok[Option[sse.Event], FetchError](None[sse.Event])}
+    case let &Failed(e) {Err[Option[sse.Event], FetchError](errorOfEnding(e))}
+  }
+}
+
+// The sink an EventStream reads: the sse Reader runs over each chunk here, off the
+// service thread, and the events wait for the reader. A chunk's buffer is given
+// back once the events are fewer than eventQueueHigh, so a reader that awaits
+// slowly slows the sender: what is held is at most the window of bytes (and the
+// events parsed from them), however small the events
+actor EventSink is ChunkSink {
+  up: Option[ChunkSource];
+  rd: sse.Reader;
+  events: Deque[sse.Event];                  // parsed events, waiting for the actor
+  held: Deque[IoBuf];                        // buffers whose bytes are not yet released
+  waiting: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]];
+  ended: Option[Ending];
+  limited: bool;                             // an event passed the reader's limit and the fetch was cancelled for it
+  group: CancelGroup;
+
+  pub fn init(self: &new, group: CancelGroup) {
+    *self = Self(up: None[ChunkSource], rd: sse.Reader.make(), events: Deque[sse.Event](), held: Deque[IoBuf](),
+      waiting: None[actors.ReplyOf[Result[Option[sse.Event], FetchError]]], ended: None[Ending], limited: false, group: group);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if limited {
+      self.giveOne(c);
+      return;
+    }
+    var got = List[sse.Event]();
+    rd.feed(c.view(), &mut got);
+    each ev in got.drain() {events.push(ev);}
+    if rd.overflowed() {
+      limited = true;
+      group.cancel();
+    }
+    held.push(c);
+    self.serve();
+    self.release();
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    held = Deque[IoBuf]();
+    ended = Some[Ending](how);
+    self.serve();
+  }
+
+  pub async fn want(self, rp: actors.ReplyOf[Result[Option[sse.Event], FetchError]]) {
+    if waiting is Some {
+      rp.answer(Err[Option[sse.Event], FetchError](FetchError.cancelled()));
+      return;
+    }
+    waiting = Some[actors.ReplyOf[Result[Option[sse.Event], FetchError]]](rp);
+    self.serve();
+    self.release();
+  }
+
+  // An actor awaiting an event gets the next, or the end once the events are all taken
+  fn serve(self) {
+    if waiting is None {return;}
+    var answer: Option[Result[Option[sse.Event], FetchError]] = None;
+    match events.popFront() {
+      case var Some(ev) {answer = Some[Result[Option[sse.Event], FetchError]](Ok[Option[sse.Event], FetchError](Some[sse.Event](ev)));}
+      else {
+        match &ended {
+          case let &Some(how) {answer = Some[Result[Option[sse.Event], FetchError]](eventsEnd(limited, how));}
+          else {}
+        }
+      }
+    }
+    match answer {
+      case let Some(v) {
+        var taken: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]] = None;
+        taken <-> waiting;
+        match taken {
+          case let Some(r) {r.answer(v);}
+          else {}
+        }
+      }
+      else {}
+    }
+  }
+
+  // The buffers held go back once the events waiting are few
+  fn release(self) {
+    if events.len() < eventQueueHigh {
+      var more = true;
+      while more {
+        match held.popFront() {
+          case let Some(b) {self.giveOne(b);}
+          else {more = false;}
+        }
+      }
+    }
+  }
+
+  fn giveOne(self, b: IoBuf) {
+    match &up {
+      case let &Some(u) {u.giveBack(b);}
+      else {}
+    }
   }
 }
 
@@ -89,7 +275,7 @@ pub struct BodyHead is Move {
 // a buffer coming back releases its bytes to the client ('release', on the
 // service thread), which is what lets the connection read on. The chunks
 // themselves are sent from the service thread as the body arrives
-// (streamservice.cone, onSinkEvent). A buffer given back in a cancelled group
+// (streamservice.cone, onStreamEvent). A buffer given back in a cancelled group
 // ends the fetch, so a consumer that quits stops the download
 actor BodySource is ChunkSource {
   client: u64;
@@ -110,5 +296,11 @@ actor BodySource is ChunkSource {
       post[StreamCancelJob](StreamCancelJob(client, slot, id));
     }
     post[StreamReleaseJob](StreamReleaseJob(client, slot, id, b));
+  }
+
+  // The consumer wants no more (ChunkSource.stop): the fetch is ended, and the sink's
+  // one end follows carrying 'why'. After the end, or a second stop, nothing happens.
+  pub async fn stop(self, why: Ending) {
+    post[StreamStopJob](StreamStopJob(client, slot, id, Some[Ending](why)));
   }
 }
