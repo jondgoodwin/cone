@@ -22,6 +22,9 @@
 // The disk driver's device rate
 pub const DISK_RATE = 44100u32;
 
+// Samples the microphone takes from SDL at a time (its scratch buffer, 0.5 s at 16 kHz)
+const MIC_CHUNK = 8192usize;
+
 // Which driver SDL is to use
 pub const DRIVER_DISK = 1u32;
 pub const DRIVER_DUMMY = 2u32;
@@ -111,6 +114,7 @@ pub struct Microphone {
   stream: *sdl.AudioStream;
   pub rate: u32;
   taken: usize;
+  scratch: List[f32];       // SDL writes here, once sized at open (no zero-fill or allocation per read)
 
   pub fn open(driver: &Driver, rate: u32) Result[Microphone, AudioError] {
     driver.acquire()?;
@@ -121,7 +125,27 @@ pub struct Microphone {
       return Err[Microphone, AudioError](audioError(3i32, "the recording stream would not open"));
     }
     sdl.ResumeAudioStreamDevice(stream);
-    Ok[Microphone, AudioError](Microphone(stream, rate, 0usize))
+    var scratch = List[f32]();
+    scratch.resize(MIC_CHUNK, 0.);
+    Ok[Microphone, AudioError](Microphone(stream, rate, 0usize, scratch))
+  }
+
+  // Take up to one chunk of the waiting samples into the scratch buffer (at most 'max'); answers how many.
+  // Allocates and zero-fills nothing: the scratch was sized when the microphone opened.
+  fn take(self: &mut, max: usize) usize {
+    var n = self.available();
+    if n > max { n = max; }
+    if n > MIC_CHUNK { n = MIC_CHUNK; }
+    if n == 0usize { return 0usize; }
+    var got = 0i32;
+    {
+      let m = scratch.viewMut();
+      got = sdl.GetAudioStreamData(stream, (&mut m[0usize] as *u8), i32.from(n * 4usize));
+    }
+    if got <= 0i32 { return 0usize; }
+    let g = usize.from(got) / 4usize;
+    taken = taken + g;
+    g
   }
 
   // Samples ready to read
@@ -133,21 +157,17 @@ pub struct Microphone {
 
   // Append up to 'max' of the waiting samples to 'out'; answers how many were appended
   pub fn read(self: &mut, out: &mut List[f32], max: usize) usize {
-    var n = self.available();
-    if n > max { n = max; }
-    if n == 0usize { return 0usize; }
-    let old = out.len();
-    out.resize(old + n, 0.);
-    var got = 0i32;
-    {
-      let m = out.viewMut();
-      got = sdl.GetAudioStreamData(stream, (&mut m[old] as *u8), i32.from(n * 4usize));
+    var total = 0usize;
+    var more = true;
+    while more && total < max {
+      let g = self.take(max - total);
+      if g == 0usize { more = false; } else {
+        let v = scratch.view();
+        out.appendSlice(mem.sliceFromParts(&v[0usize] as *f32, g));
+        total = total + g;
+      }
     }
-    var g = 0usize;
-    if got > 0i32 { g = usize.from(got) / 4usize; }
-    out.truncate(old + g);
-    taken = taken + g;
-    g
+    total
   }
 
   // Take up to 'n' of the waiting samples into the start of 'out' (no allocation, no zero fill): how many.
@@ -169,10 +189,19 @@ pub struct Microphone {
 
   // Read everything waiting into the detector; the utterances that ended go to 'out'. Answers samples read.
   pub fn pump(self: &mut, vad: &mut Vad, out: &mut List[Utterance]) usize {
-    var buf = List[f32]();
-    let n = self.read(&mut buf, 1000000usize);
-    if n > 0usize { vad.push(buf.view(), out); }
-    n
+    // chunk by chunk through the scratch buffer: the detector gives the same utterances however the
+    // samples arrive (tests/vadpush), and no list is made per call
+    var total = 0usize;
+    var more = true;
+    while more && total < 1000000usize {
+      let g = self.take(1000000usize - total);
+      if g == 0usize { more = false; } else {
+        let v = scratch.view();
+        vad.push(mem.sliceFromParts(&v[0usize] as *f32, g), out);
+        total = total + g;
+      }
+    }
+    total
   }
 
   pub fn close(self: &mut) {
@@ -187,6 +216,9 @@ pub struct Speaker {
   stream: *sdl.AudioStream;
   pub rate: u32;
   queued: usize;
+  gaps: u64;                // see `underruns` and `boundaryGaps`
+  starved: u64;
+  flushed: bool;            // a `flush` or `cutOff` came after the last `queue`: the next gap is a boundary
 
   pub fn open(driver: &Driver, rate: u32) Result[Speaker, AudioError] {
     driver.acquire()?;
@@ -197,12 +229,19 @@ pub struct Speaker {
       return Err[Speaker, AudioError](audioError(3i32, "the playback stream would not open"));
     }
     sdl.ResumeAudioStreamDevice(stream);
-    Ok[Speaker, AudioError](Speaker(stream, rate, 0usize))
+    Ok[Speaker, AudioError](Speaker(stream, rate, 0usize, 0u64, 0u64, false))
   }
 
-  // Append samples to the queue; false if SDL refused them
+  // Append samples to the queue; false if SDL refused them. A `queue` that finds the stream empty after sound
+  // was queued before is a gap in the sound: counted in `underruns` when no `flush` or `cutOff` came between
+  // (the speech ran dry mid-sentence), else in `boundaryGaps` (the silence after a sentence, expected).
   pub fn queue(self: &mut, x: &Array[f32]) bool {
     if x.len == 0usize { return true; }
+    // "empty" is under a millisecond waiting: SDL's converter holds a few samples back until a flush
+    if queued > 0usize && self.waiting() * 1000usize / usize.from(rate) == 0usize {
+      if flushed { gaps = gaps + 1u64; } else { starved = starved + 1u64; }
+    }
+    flushed = false;
     let ok = sdl.PutAudioStreamData(stream, (&x[0usize] as *u8), i32.from(x.len * 4usize));
     if ok { queued = queued + x.len; }
     ok
@@ -210,7 +249,15 @@ pub struct Speaker {
 
   // What was queued is all there is for now (the end of a sentence): SDL's converter, when the stream and the
   // device differ in rate, holds a few samples back until told, so call this after the last `queue` of a sentence
-  pub fn flush(self: &mut) { sdl.FlushAudioStream(stream); }
+  pub fn flush(self: &mut) { sdl.FlushAudioStream(stream); flushed = true; }
+
+  // Times `queue` found the stream empty in the middle of speech (no `flush` or `cutOff` since the last queue):
+  // the producer was too slow. Counted only when `queue` is called; a stream that runs dry and is not queued to
+  // again is not seen.
+  pub fn underruns(self: &) u64 { starved }
+
+  // Times `queue` found the stream empty after a `flush` or a `cutOff`: the expected silence between sentences
+  pub fn boundaryGaps(self: &) u64 { gaps }
 
   // Samples waiting in the stream (not yet taken by the device)
   pub fn waiting(self: &) usize {
@@ -224,7 +271,7 @@ pub struct Speaker {
 
   // Everything waiting is thrown away; the device keeps what it already took, which is its buffer
   // (`Driver.system(frames)` sets how big that is)
-  pub fn cutOff(self: &mut) { sdl.ClearAudioStream(stream); }
+  pub fn cutOff(self: &mut) { sdl.ClearAudioStream(stream); flushed = true; }
 
   // Samples handed to `queue` so far
   pub fn samplesQueued(self: &) usize { queued }
