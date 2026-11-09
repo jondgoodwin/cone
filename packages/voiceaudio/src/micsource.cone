@@ -89,6 +89,7 @@ fn publish(edge: &ValueEdge[AudioBlock], counts: &Arc[imm, MicCounts]) {
 // The capture thread: every 5 ms, move whole blocks out of the SDL stream onto the ring, until told to stop
 fn captureLoop(job: CaptureJob) i32 {
   var mic, var edge, let stop, let counts, let chunk = job.(mic, edge, stop, counts, chunk);
+  var refused = 0u64;
   while stop.load() == 0u32 {
     var more = true;
     while more {
@@ -97,15 +98,27 @@ fn captureLoop(job: CaptureJob) i32 {
         let n = mic.readInto(&mut b.samples, chunk);
         b.len = u32.from(n);
         if n > 0usize {
-          if edge.trySend(b) { counts.captured.add(1u64); }
+          if edge.trySend(b) { counts.captured.add(1u64); } else { refused = refused + 1u64; }
         } else { more = false; }
       } else { more = false; }
     }
     publish(&edge, &counts);
     thread.sleep(Duration.fromMillis(5));
   }
-  edge.finish();
+  // PUBLISH BEFORE THE END. The stream's end is sent by the attendant after `finish`, so the counts must be
+  // exact before it: let the attendant pass on or drop what is on the ring (until the ring's depth is 0 or,
+  // with a sink that gives no credit, the attendant has settled on `keep`, about 200 ms at most), publish,
+  // and only then finish. A reader that has seen the sink's end then reads exact numbers.
+  var settle = 0;
+  while settle < 100 {
+    publish(&edge, &counts);
+    if edge.sent() == edge.passed() + (edge.dropped() - refused) { settle = 100; } else {
+      thread.sleep(Duration.fromMillis(2));
+      settle = settle + 1;
+    }
+  }
   publish(&edge, &counts);
+  edge.finish();
   mic.close();
   0i32
 }
