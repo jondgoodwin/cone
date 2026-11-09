@@ -129,7 +129,7 @@ pub struct GenPool[T] is Move {
   partial: u32;           // head of the list of slabs with free cells
   freePos: u32;           // head of the list of returned positions
   live: u32;
-  empties: u32;           // slabs held with nothing occupied (0 or 1 after any call)
+  spare: u32;             // the slab kept empty as a spare, or noCell. May be stale (the slab has been used since), which only 'emptied' checks
   held: u32;              // slabs held
 
   // An empty pool. 'perSlab' cells to a slab, rounded up to a power of two;
@@ -146,7 +146,7 @@ pub struct GenPool[T] is Move {
     while p < n {p = p * 2u32; sh = sh + 1u32;}
     let words = (usize.from(p) + 63usize) / 64usize;
     let bm = (words * 8usize + 15usize) / 16usize * 16usize;
-    GenPool[T](nullOf[usize](), nullOf[SlabInfo](), 0u32, 0u32, sh, p - 1u32, p, bm, noCell, noCell, 0u32, 0u32, 0u32)
+    GenPool[T](nullOf[usize](), nullOf[SlabInfo](), 0u32, 0u32, sh, p - 1u32, p, bm, noCell, noCell, 0u32, noCell, 0u32)
   }
 
   pub fn len(self: &) usize {usize.from(live)}
@@ -179,14 +179,22 @@ pub struct GenPool[T] is Move {
     ((*(slabs + usize.from(k))) - self.bmBytes) as *u64
   }
 
-  fn setBit(self: &, i: u32) {
-    let w = self.bitmap(i >> self.sh()) + usize.from((i & mask) >> 6u32);
-    *w = *w | (1u64 << u64.from((i & mask) & 63u32));
+  // The bit of cell i, in the slab whose cell 0 is at b (which the caller has
+  // in hand, so the slab table is not read again to find the bitmap)
+  fn setBitIn(self: &, b: usize, i: u32) {
+    let o = i & mask;
+    let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
+    *w = *w | (1u64 << u64.from(o & 63u32));
+  }
+
+  fn clearBitIn(self: &, b: usize, i: u32) {
+    let o = i & mask;
+    let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
+    *w = *w & ~(1u64 << u64.from(o & 63u32));
   }
 
   fn clearBit(self: &, i: u32) {
-    let w = self.bitmap(i >> self.sh()) + usize.from((i & mask) >> 6u32);
-    *w = *w & ~(1u64 << u64.from((i & mask) & 63u32));
+    self.clearBitIn(*(slabs + usize.from(i >> self.sh())), i);
   }
 
   pub fn isLive(self: &, i: u32) bool {
@@ -262,7 +270,6 @@ pub struct GenPool[T] is Move {
     (*inf).used = 0u32;
     (*inf).free = first;
     self.listPush(k);
-    empties = empties + 1u32;
     held = held + 1u32;
   }
 
@@ -288,12 +295,12 @@ pub struct GenPool[T] is Move {
     let k = partial;
     let inf = self.info(k);
     let i = (*inf).free;
-    let c = self.base(k) + usize.from(i & mask);
+    let b = *(slabs + usize.from(k));
+    let c = (b as *Cell[T]) + usize.from(i & mask);
     (*inf).free = (*c).next;
-    if (*inf).used == 0u32 {empties = empties - 1u32;}
     (*inf).used = (*inf).used + 1u32;
     (*c).next = liveMark;
-    self.setBit(i);
+    self.setBitIn(b, i);
     mem.writeRaw[T](&(*c).value as *T, v);
     live = live + 1u32;
     Handle(i, (*c).gen)
@@ -352,8 +359,7 @@ pub struct GenPool[T] is Move {
   // its bit cleared): give it a new generation and free it, or retire it for
   // good if the generation is used up; then return its slab if that was the
   // last occupied cell and a spare is already held
-  fn release(self: &mut, i: u32, c: *Cell[T]) inline {
-    let k = i >> self.sh();
+  fn release(self: &mut, i: u32, k: u32, c: *Cell[T]) inline {
     let inf = self.info(k);
     if (*c).gen == 0xFFFFFFFFu32 {
       (*c).next = deadMark;
@@ -380,12 +386,14 @@ pub struct GenPool[T] is Move {
     self.listPush(k);
   }
 
-  // The slab k has nothing occupied: it is the spare, or goes back
+  // The slab k has nothing occupied: it is the spare, or goes back if another
+  // slab is still the empty spare. ('add' does not note that a slab it fills
+  // was the spare, so the spare is looked at here, where it is rare.)
   fn emptied(self: &mut, k: u32) {
-    if empties == 0u32 {
-      empties = 1u32;
-    } else {
+    if spare != noCell && spare != k && (*self.info(spare)).used == 0u32 {
       self.giveBack(k);
+    } else {
+      spare = k;
     }
   }
 
@@ -411,19 +419,34 @@ pub struct GenPool[T] is Move {
 
   // Finalize the entry in cell i and free the cell: true if there was one
   pub fn removeAt(self: &mut, i: u32) bool inline {
-    let c = self.cellOrNull(i);
-    if c as usize == 0usize || (*c).next != liveMark {return false;}
-    mem.finalize[T](&(*c).value as *T);
-    self.clearBit(i);
-    live = live - 1u32;
-    self.release(i, c);
+    let k = i >> self.sh();
+    if k >= nslabs {return false;}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return false;}
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    if (*c).next != liveMark {return false;}
+    self.dropCell(i, k, b, c);
     true
   }
 
   pub fn remove(self: &mut, h: Handle) bool inline {
-    let c = self.cellOrNull(h.index);
-    if c as usize == 0usize || (*c).next != liveMark || (*c).gen != h.gen {return false;}
-    self.removeAt(h.index)
+    let i = h.index;
+    let k = i >> self.sh();
+    if k >= nslabs {return false;}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return false;}
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    if (*c).next != liveMark || (*c).gen != h.gen {return false;}
+    self.dropCell(i, k, b, c);
+    true
+  }
+
+  // The live entry in cell i, in slab k (cell 0 at b), c its cell: finalized and freed
+  fn dropCell(self: &mut, i: u32, k: u32, b: usize, c: *Cell[T]) inline {
+    mem.finalize[T](&(*c).value as *T);
+    self.clearBitIn(b, i);
+    live = live - 1u32;
+    self.release(i, k, c);
   }
 
   // The live entry in cell i is dead to every handle, not finalized, and its
@@ -448,7 +471,7 @@ pub struct GenPool[T] is Move {
     let c = self.cellOrNull(i);
     if c as usize == 0usize || (*c).next != retiredMark {return false;}
     mem.finalize[T](&(*c).value as *T);
-    self.release(i, c);
+    self.release(i, i >> self.sh(), c);
     true
   }
 
@@ -467,7 +490,7 @@ pub struct GenPool[T] is Move {
     let v = mem.readRaw[T](&(*c).value as *T);
     self.clearBit(h.index);
     live = live - 1u32;
-    self.release(h.index, c);
+    self.release(h.index, h.index >> self.sh(), c);
     Some[T](v)
   }
 
