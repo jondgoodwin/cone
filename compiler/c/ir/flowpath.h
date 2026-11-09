@@ -123,6 +123,8 @@ typedef struct {
     uint8_t holder;    // its type carries a borrow, so it may hold a loan
     uint8_t temp;       // a temporary's stand-in (TempNode.walkvar), ending with its statement
     uint8_t state;     // drop-flag client: what it may hold here (DropState bits)
+    uint32_t hmask;     // drop-flag client: while it may be hollow, the moves that may have hollowed it here (flowdrop.c, dropHollowBit)
+    uint32_t jhmask;    // scratch: a join
     uint8_t jstate;     // scratch: a join
     uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
@@ -141,6 +143,8 @@ extern PathVar *pathVars;
 void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending);
 // The same for its drop state
 void pathSetState(uint32_t var, uint8_t state);
+// The same for the moves that may have hollowed it (the bits dropHollowBit gives)
+void pathSetHollowMask(uint32_t var, uint32_t hmask);
 
 // Grow a buffer the walk keeps from one function to the next: twice the room,
 // from the compiler's arena (a buffer freshly grown from the system costs a
