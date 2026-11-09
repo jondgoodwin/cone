@@ -60,8 +60,17 @@ pub struct Reader is Move {
   }
 
   // Add a filled buffer after the bytes held: None once it is in, or Some(buf)
-  // back, refused, when its bytes would pass the bound (an empty one is dropped)
-  pub fn push(self: &mut, buf: IoBuf) Option[IoBuf] {chain.push(buf)}
+  // back, refused, when its bytes would pass the bound (an empty one is dropped).
+  // A small buffer that fits the last segment's room is copied into it and its
+  // block goes home (Chain.pushJoin), so a peer's tiny pieces do not each hold
+  // a block: a push is NOT kept as a segment of its own. A full block has no
+  // room of its own to waste and is pushed whole, checked first so the common
+  // receive does no more than a push; so is any buffer into an empty reader
+  // or one too big for the room
+  pub fn push(self: &mut, buf: IoBuf) Option[IoBuf] {
+    if buf.room() != 0usize {return chain.pushJoin(buf);}
+    chain.push(buf)
+  }
 
   // How many more bytes the last segment has room for after its own (and the
   // bound allows): what 'appendLast' takes; 0 when the reader is empty
