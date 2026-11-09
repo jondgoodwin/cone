@@ -59,6 +59,7 @@ enum SeamFlags {
     SeamEnds = 0x10,    // it holds a borrow that is not global, which ends at the seam
     SeamParm = 0x20,    // a parameter: it dies as the function ends
     SeamTemp = 0x40,    // a temporary of the statement the seam is in
+    SeamHollow = 0x80,  // a sole owner some of whose referent moved out, on some path here (on all, if it has no drop flag)
 };
 
 typedef struct SeamVar {
@@ -70,6 +71,7 @@ typedef struct SeamVar {
 typedef struct AwaitNode {
     IExpNodeHdr;
     INode *exp;         // What is awaited: evaluated before the seam
+    Nodes *hollowed;    // Flow's: a HollowNode for each variable hollowed where the seam stands, with the moves that reach it
     SeamVar *seamvars;  // The variables in scope at the seam, in the order they were declared:
                         // parameters, then locals, then the statement's temporaries
     uint32_t nseamvars;

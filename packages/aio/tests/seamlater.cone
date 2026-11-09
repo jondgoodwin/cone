@@ -1,0 +1,151 @@
+// A behaviour abandoned at an 'await' holding an owner hollowed there, which is
+// refilled after the 'await' and moved out of in another shape: the record's
+// drop releases the owner without the moves that reached the seam, and not
+// without the ones written after it (seamhollow's rows have none).
+//
+// The behaviour awaits a job of a hosted service, whose reply the service keeps
+// and never answers; main ends the service while the program runs (Host.end),
+// which drops the reply, abandons the behaviour, and drops its parked record
+// (the abandoned record's drop function, genlSeamDrop). The behaviour is never
+// resumed: this runs the abandoned half only, because the resumed half of the
+// same rows loses an allocation of its own (the release of the old hollow owner
+// at its refill is told of every move on any path, flowdrop.c dropApplyAssign).
+//
+// A row's finals are counted in a nibble of the tally: a double drop reads 2, a
+// value left undropped or never made 0. The owners' allocations not yet freed
+// are counted after: 0. The rows, by the nibble they count in:
+//
+//  0-1  hollow at the 'await' by a move through both owners; refilled after it
+//       and moved out of through the outer one only. Nibble 1 is made only if
+//       the behaviour resumes: 0
+//  2-3  hollow at the 'await' by a move through the outer owner only; refilled
+//       after it and moved out of through both. Nibble 3: 0
+
+mod seamlater;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import collections use List;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+let park: Host[Park];
+let tally: Atomic[u64];
+let keptCount: Atomic[u64];     // replies the service holds
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  park = aio.host[Park](&makePark);
+  tally = Atomic[u64].of(0u64);
+  keptCount = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+fn makePark() Park {Park.make()}
+
+// A value whose death is counted: in the nibble 'n' of the tally
+struct Counted {
+  pub n: u64;
+  fn final(self: &uni) {tally.add(1u64 << (n * 4u64));}
+}
+
+// An owner of a value in a region of its own, which counts what it hands out
+// and takes back
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+// A hosted service keeping the replies of the jobs it is asked, none answered
+struct Park {
+  kept: List[actors.ReplyOf[u64]];
+
+  pub fn make() Park {Park(List[actors.ReplyOf[u64]]())}
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct ParkJob {
+  pub fn run(self, lp: &mut Loop, s: &mut Park, rp: actors.ReplyOf[u64]) {
+    s.kept.push(rp);
+    keptCount.add(1u64);
+  }
+}
+
+actor Holder {
+  // 0, 1
+  pub async fn shallower(self, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(0u64)));
+    let c = **o;
+    let n = await park.awaitable[ParkJob, u64](ParkJob());
+    o = One[One[Counted]](One[Counted](Counted(1u64)));
+    let e = *o;
+    if c.n + e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 2, 3
+  pub async fn deeper(self, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(2u64)));
+    let c = *o;
+    let n = await park.awaitable[ParkJob, u64](ParkJob());
+    o = One[One[Counted]](One[Counted](Counted(3u64)));
+    let e = **o;
+    if c.n + e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+const rows = 4u64;
+
+fn report(what: &str, tally: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < rows {
+    printStr(" ");
+    printUInt((tally >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var rxs = List[OneshotReceiver[u64]]();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  rxs.push(rx1);
+  {
+    let h1 = Holder();
+    h1.shallower(tx1);
+  }
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  rxs.push(rx2);
+  {
+    let h2 = Holder();
+    h2.deeper(tx2);
+  }
+  // Both behaviours are parked once the service holds both replies and no actor runs
+  while keptCount.load() < 2u64 {thread.sleep(Duration.fromMillis(1i64));}
+  actors.waitQuiet();
+  park.end();
+  actors.waitQuiet();
+  report("abandoned:", tally.load());
+  finalAll();
+  printStr("end\n");
+}

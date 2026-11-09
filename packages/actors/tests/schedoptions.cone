@@ -1,0 +1,75 @@
+// The scheduler's settings (Options.spinMicros, spinCap, injectEvery,
+// wakeOnPush): each set away from its default, the workload still finishes with
+// every message handled once. The workload is two actors passing a ball back
+// and forth (all on one worker's queue, or wherever the settings put them)
+// and a burst of actors sent to from outside the workers (the inject queue).
+
+mod schedoptions;
+
+import testing use *;
+import actors;
+
+const balls = 20000u64;
+const burst = 2000u64;
+
+let total: Atomic[u64];
+let hits: Atomic[u64];
+
+fn @initpure init() {
+  total = Atomic[u64].of(0u64);
+  hits = Atomic[u64].of(0u64);
+}
+
+actor Player {
+  peer: Option[Player];
+
+  fn init(self: &new) {
+    *self = Self(None[Player]);
+  }
+
+  pub async fn meet(self, p: Player) {
+    peer = Some[Player](p);
+  }
+
+  pub async fn ball(self, n: u64) {
+    total.add(1u64);
+    if n + 1u64 < balls {
+      match peer {
+        case let Some(p) {p.ball(n + 1u64);}
+        case is None[Player] {}
+      }
+    } else {
+      peer = None;
+    }
+  }
+}
+
+actor Counter {
+  pub async fn hit(self) {
+    hits.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32, spinMicros: 0u32, spinCap: 2u32,
+    injectEvery: 3u32, wakeOnPush: true));
+  {
+    let ping = Player();
+    let pong = Player();
+    ping.meet(pong);
+    pong.meet(ping);
+    ping.ball(0u64);
+  }
+  var i = 0u64;
+  while i < burst {
+    let c = Counter();
+    c.hit();
+    i = i + 1u64;
+  }
+  actors.waitUntilIdle();
+  expectUInt(total.load(), balls, "every ball handled once");
+  expectUInt(hits.load(), burst, "every burst message handled once");
+  finalAll();
+  done()
+}
