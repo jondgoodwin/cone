@@ -117,14 +117,23 @@
 //   2 to 9 are the same matcher coded with a dynamic Huffman code per block of
 //   32768 tokens, every position a match covers entered in the chain, and these
 //   candidates a position: 6, 32, 16, 32, 128, 256, 512, 768 (miniz_oxide's
-//   NUM_PROBES for its levels 2 to 9; its levels 4 and up also match lazily,
-//   which this matcher does not, so level 4 finds a little less than level 3).
+//   NUM_PROBES for its levels 2 to 9; a probe here is one chain step, miniz's
+//   counts groups of up to three).
 //   The dynamic code's lengths come from Huffman's merge of the two lightest,
 //   limited to 15 bits (7 for the code-length code) by halving the frequencies
-//   until they fit, run-length coded with symbols 16, 17 and 18. The matcher is
-//   greedy (zlib's deflate_fast without its tuning): the longest match in the
-//   chain, taken if 3 or more; no lazy matching, no chain limit that shrinks
-//   after a good match. The window is 32 KiB. A negative level is zlib's
+//   until they fit, run-length coded with symbols 16, 17 and 18. Levels 1 to 3
+//   match greedily (zlib's deflate_fast without its tuning): the longest match
+//   in the chain, taken if 3 or more. Levels 4 to 9 match lazily, as miniz's
+//   compress_normal does: a match of under 128 bytes is held back one position,
+//   and if the next position has a longer match the byte here is written as a
+//   literal and the longer one is held in its turn (so a run of improving
+//   matches costs a literal each); a match of 128 or more is taken at once.
+//   While a held match is 32 or more long the search for a longer one at the
+//   next position looks at a quarter of the candidates (miniz's second probe
+//   count), and a match of 3 bytes more than 8192 away is dropped (miniz's
+//   far_and_small; only the lazy levels do it, so levels 1 to 3 are as they
+//   were). No chain limit shrinks after a good match, as zlib's does. The
+//   window is 32 KiB. A negative level is zlib's
 //   default, 6 (before levels 3 to 9 existed, the default was 2, and any level
 //   over 2 acted as 2); a level over 9 acts as 9.
 // - A streaming Deflater cannot fall back to stored blocks when the data does
@@ -135,7 +144,7 @@
 //   writer always did), so they never expand by more than 5 bytes a 64 KiB
 //   block and the framing. A block's type is not chosen by cost (zlib picks the
 //   smallest of stored, fixed and dynamic per block): level 1 is always fixed
-//   and levels 2 to 9 always dynamic. Left out: lazy matching, a block type by
+//   and levels 2 to 9 always dynamic. Left out: a block type by
 //   cost, strategies (RLE, Huffman only, fixed), a choice of window
 //   size or memory level, and a sync or full flush (a Deflater ends only with
 //   'finish').
