@@ -392,6 +392,20 @@
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
 // the Response's 'version' says so.
 //
+// REQUEST BODIES AS STREAMS. 'cfg.streamBodies()' has the server deliver every request at its head, with
+// 'request.body' empty, and the actor take the body once with 'ex.body()': 'await body.read()' (a String
+// per piece), 'body.to(sink)' (a stages.ChunkSink) or 'await body.readAll(limit)'. The first is the choice,
+// and answers an 'Expect: 100-continue' (a handler that answers 413 without reading sends no 100). The
+// connection's receive buffers are lent to the reader or sink as a client response body's are, and a
+// buffer's credit returns to the connection or stream when it is given back, so the server holds at
+// most the credit window of a body and 'maxBody' means nothing to it; 'readAll' past its limit has the
+// server answer 413 itself and discard the rest. A body whose actor answers without taking it, or drops
+// it, is not delivered: its staged bytes are released and the rest is read and dropped as it arrives
+// (HTTP/1.1 also closes the connection after the answer; an HTTP/2 or HTTP/3 stream runs on until the
+// client ends it, the core not resetting it when the response is whole). A sink that stops its source
+// ends the request on the wire (HTTP/1.1 closes, HTTP/2 RST_STREAM, HTTP/3 resets). A server without
+// the setting is unchanged. (requestbody.cone; tests/reqbody.cone)
+//
 // 'server.close()' (and the last handle's going) asks the service thread to
 // stop listening, which it does shortly after the call returns: then it answers
 // every 'next' waiting Closed and every request still waiting for an actor 503,
@@ -402,8 +416,7 @@
 // 'clone's.
 //
 // On Windows and Linux, as httpclient and httpconn are. Not here: a request's
-// body streamed to the actor (a request is delivered whole, up to maxBody), a
-// request's body streamed from a client actor (a request carries its body
+// body streamed from a client actor (a request carries its body
 // whole), a client's 'stream' and 'events' reconnecting, SSE's Last-Event-ID
 // resuming on the server (the program reads the field and chooses), WebSocket
 // and other Upgrades, HTTP/3 without TLS, routing (the program matches 'request.path()'),
