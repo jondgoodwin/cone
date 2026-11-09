@@ -4,8 +4,8 @@
 //     the pool holds from the OS grow by about the window and the connection's credit, not
 //     by a 4 KiB block for each 8-byte piece (which is what the pieces cost without staging);
 //   - the same, ten streams at once, each held to its own window;
-//   - a reader that keeps up with 300-byte writes 3 ms apart gets every piece as its own, at
-//     once, none joined to another (staging stays empty);
+//   - a reader that keeps up with 300-byte writes 3 ms apart gets them at once, not held back to
+//     fill a block (staging stays empty); pieces may be joined (Reader.push), so it counts at least 50 of 200;
 //   - 200 streams of mixed writes (8 bytes to 40,000, some paced, some flooded), read at
 //     three paces, the reader hashing what it gets against the hash of the bytes sent, so a
 //     piece sent past a non-empty staging buffer (out of order) is a wrong hash; each ends
@@ -445,11 +445,12 @@ fn main() i32 {
     let r = Reader(Client.standard());
     r.run(url(port, "/paced/200"), 60000u64, expected(60000u64), 0i64, 0i64, 1u64);
     expect(waitFor(&tally.ended, 1u64, 60000i64), "the paced stream ended");
-    printStr("300-byte writes 3 ms apart, a reader keeping up: pieces ");
-    printUInt(tally.pieces.load());
-    printStr("\n");
     expect(tally.good.load() == 1u64, "...whole, the hash right");
-    expect(tally.pieces.load() >= 190u64, "...each write its own piece: nothing joined, nothing delayed");
+    // Reader.push joins a small piece onto the one before it when the reader's input is non-empty, which a
+    // loaded machine makes happen, so the count is not exactly 200. Pacing is bounded by what staging would
+    // do if it broke: holding pieces until a 4 KiB block filled gives about 15 pieces (60,000 bytes), and
+    // holding them to the end of the stream gives one. A join of a few writes leaves well over 50.
+    expect(tally.pieces.load() >= 50u64, "...the writes arrive in pieces, not held back to fill a block");
   }
   expect(allHome(), "every buffer is home after the paced stream");
 

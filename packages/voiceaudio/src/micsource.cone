@@ -1,0 +1,314 @@
+// ======== The microphone as a stream: MicSource, AudioBlock, VadStage ========
+//
+// Capture through the thread edge (stages' ValueEdge; Ruminations/design-audio-streaming-2026-11-09.md, option A).
+// SDL's own audio thread fills a stream and never runs Cone code. A CAPTURE THREAD of ours (a Cone thread, off the
+// worker pool, so a late timer does not touch it) takes the samples from that stream, 20 ms at a time, into fixed
+// `AudioBlock`s and pushes them on the edge's ring; the edge's attendant actor passes them on, against credit, to
+// the stage world: a `VadStage`, or any ValueSink[AudioBlock]. Nothing on SDL's thread allocates or locks.
+//
+//   mic -> capture thread -> [ring] -> attendant -> VadStage -> utterances
+//
+// WHEN THE CONSUMER IS SLOW. The stage world may stall for a second (a model prefilling, a GC); the capture thread
+// never waits for it. A full ring drops the newest block and counts it. With no credit the attendant keeps the
+// newest `keep` blocks and drops the OLDEST whole blocks beyond them, counted, and before the next block it passes
+// on it sends a DISCONTINUITY MARKER: an AudioBlock with `lost` > 0 and no samples (a control item: no credit). A
+// consumer treats it as a reset, so speech is never spliced across the hole; `VadStage` ends the utterance in
+// progress there (as `Vad.flush`).
+//
+// `Microphone.pump` stays for callers who want to poll.
+
+// Samples in a block: 20 ms at 16 kHz. A block holds `len` of them (fewer when a rate gives fewer in `chunkMs`)
+pub const BLOCK_SAMPLES = 320usize;
+
+// A fixed-size run of samples, by value, so that it crosses the ring with no allocation; or, with `lost` > 0 and
+// `len` 0, a discontinuity marker: that many blocks were lost just before the next one
+pub struct AudioBlock is Sendable {
+  pub len: u32;
+  pub lost: u64;
+  pub gen: u32;               // the playback generation it was made for (SpeakerSink.cutOff): 0 for capture
+  pub samples: Array[f32, 320];
+
+  pub fn empty() AudioBlock {
+    AudioBlock(0u32, 0u64, 0u32, [
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+      0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+  }
+
+  // A block of up to 320 samples of x from index `at`, made for playback generation `gen`
+  pub fn of(x: &Array[f32], at: usize, gen: u32) AudioBlock {
+    var b = AudioBlock.empty();
+    var n = 0usize;
+    if at < x.len { n = x.len - at; }
+    if n > BLOCK_SAMPLES { n = BLOCK_SAMPLES; }
+    var i = 0usize;
+    while i < n { b.samples[i] = x[at + i]; i = i + 1usize; }
+    b.len = u32.from(n);
+    b.gen = gen;
+    b
+  }
+
+  // The marker for `lost` blocks dropped
+  pub fn gap(lost: u64) AudioBlock {
+    var b = AudioBlock.empty();
+    b.lost = lost;
+    b
+  }
+
+  // The samples it holds
+  pub fn view(self: &) &Array[f32] { mem.sliceFromParts(&samples[0usize] as *f32, usize.from(len)) }
+}
+
+fn gapMarker(lost: u64) AudioBlock { AudioBlock.gap(lost) }
+
+// What the capture thread counts, shared with the MicSource that reads it
+struct MicCounts is Sendable {
+  captured: Atomic[u64];      // blocks pushed on the ring
+  dropped: Atomic[u64];       // blocks lost (newest at a full ring, oldest at the attendant)
+  passed: Atomic[u64];        // blocks the attendant passed on
+  markers: Atomic[u64];       // discontinuity markers sent
+}
+
+struct CaptureJob is Sendable {
+  mic: Microphone;
+  edge: ValueEdge[AudioBlock];
+  stop: Arc[imm, Atomic[u32]];
+  counts: Arc[imm, MicCounts];
+  chunk: usize;
+}
+
+fn publish(edge: &ValueEdge[AudioBlock], counts: &Arc[imm, MicCounts]) {
+  counts.dropped.store(edge.dropped());
+  counts.passed.store(edge.passed());
+  counts.markers.store(edge.markers());
+}
+
+// The capture thread: every 5 ms, move whole blocks out of the SDL stream onto the ring, until told to stop
+fn captureLoop(job: CaptureJob) i32 {
+  var mic, var edge, let stop, let counts, let chunk = job.(mic, edge, stop, counts, chunk);
+  var refused = 0u64;
+  while stop.load() == 0u32 {
+    var more = true;
+    while more {
+      if mic.available() >= chunk {
+        var b = AudioBlock.empty();
+        let n = mic.readInto(&mut b.samples, chunk);
+        b.len = u32.from(n);
+        if n > 0usize {
+          if edge.trySend(b) { counts.captured.add(1u64); } else { refused = refused + 1u64; }
+        } else { more = false; }
+      } else { more = false; }
+    }
+    publish(&edge, &counts);
+    thread.sleep(Duration.fromMillis(5));
+  }
+  // PUBLISH BEFORE THE END. The stream's end is sent by the attendant after `finish`, so the counts must be
+  // exact before it: let the attendant pass on or drop what is on the ring (until the ring's depth is 0 or,
+  // with a sink that gives no credit, the attendant has settled on `keep`, about 200 ms at most), publish,
+  // and only then finish. A reader that has seen the sink's end then reads exact numbers.
+  var settle = 0;
+  while settle < 100 {
+    publish(&edge, &counts);
+    if edge.sent() == edge.passed() + (edge.dropped() - refused) { settle = 100; } else {
+      thread.sleep(Duration.fromMillis(2));
+      settle = settle + 1;
+    }
+  }
+  publish(&edge, &counts);
+  edge.finish();
+  mic.close();
+  0i32
+}
+
+// A microphone as a stream of AudioBlocks. `start` takes the opened Microphone; the blocks go to `sink` (attach it
+// a source: it is credited as any ValueSink). `stop` ends the capture thread and closes the microphone.
+pub struct MicSource {
+  worker: Option[thread.Thread[i32]];
+  stopFlag: Arc[imm, Atomic[u32]];
+  counts: Arc[imm, MicCounts];
+
+  // chunkMs: the length of a block (20 is the design's; at most 320 samples at the microphone's rate); ringBlocks:
+  // the ring's slots; keep: the blocks the attendant keeps when the sink gives no credit
+  pub fn start(mic: Microphone, chunkMs: u32, ringBlocks: u32, keep: u32, sink: ValueSink[AudioBlock]) MicSource {
+    var chunk = usize.from(mic.rate) * usize.from(chunkMs) / 1000usize;
+    if chunk > BLOCK_SAMPLES { chunk = BLOCK_SAMPLES; }
+    if chunk == 0usize { chunk = 1usize; }
+    let edge = ValueEdge[AudioBlock].fromThread(ringBlocks, keep, &gapMarker);
+    edge.connect(sink);
+    let stopFlag = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let counts = Arc[imm, MicCounts](MicCounts(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)));
+    let t = thread.start(CaptureJob(mic, edge, stopFlag, counts, chunk), &captureLoop);
+    MicSource(Some[thread.Thread[i32]](t), stopFlag, counts)
+  }
+
+  // Stop capturing: the thread ends the stream (the attendant sends the sink its end once the last block is
+  // through), closes the microphone, and is joined. Answers the thread's status (0)
+  pub fn stop(self: &mut) i32 {
+    stopFlag.store(1u32);
+    var w: Option[thread.Thread[i32]] = None;
+    w <-> worker;
+    var status = 0i32;
+    match w {
+      case var Some(t) { status = t.join(); }
+      case is None[thread.Thread[i32]] {}
+    }
+    status
+  }
+
+  // Blocks the capture thread pushed on the ring
+  pub fn captured(self: &) u64 { counts.captured.load() }
+  // Blocks lost: the newest at a full ring, the oldest at the attendant (as of the capture thread's last look)
+  pub fn dropped(self: &) u64 { counts.dropped.load() }
+  // Blocks the attendant passed on
+  pub fn passed(self: &) u64 { counts.passed.load() }
+  // Discontinuity markers sent
+  pub fn markers(self: &) u64 { counts.markers.load() }
+}
+
+// ---- VadStage: AudioBlocks in, utterances out ----
+
+// Feeds blocks to a Vad and passes each utterance on under the sink's credit. It credits its source one block as
+// each is used; a marker (a control item) is not credited. A gap ends the utterance in progress, as `Vad.flush`
+// (the next block starts a fresh one). `stop` is forwarded upstream and the sink is ended once.
+pub actor VadStage is ValueSink[AudioBlock], ValueSource {
+  vad: Vad;
+  up: Option[ValueSource];
+  down: Option[ValueSink[Utterance]];
+  window: u32;
+  waiting: Deque[Utterance];
+  credits: u32;
+  ended: Option[Ending];
+  over: bool;
+
+  // window: how many blocks the source may have outstanding; down: where the utterances go
+  pub fn init(self: &new, cfg: VadConfig, window: u32, down: ValueSink[Utterance]) {
+    *self = Self(vad: Vad.make(cfg), up: None[ValueSource], down: Some[ValueSink[Utterance]](down), window: window,
+      waiting: Deque[Utterance](), credits: 0u32, ended: None[Ending], over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(window);
+  }
+
+  pub async fn accept(self, b: AudioBlock) {
+    var out = List[Utterance]();
+    if b.lost > 0u64 {
+      vad.flush(&mut out);
+    } else {
+      vad.push(b.view(), &mut out);
+      match &up {
+        case let &Some(u) { u.credit(1u32); }
+        else {}
+      }
+    }
+    moveAll(out, &mut waiting);
+    self.send();
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ValueSource];
+    var out = List[Utterance]();
+    vad.flush(&mut out);
+    moveAll(out, &mut waiting);
+    ended = Some[Ending](how);
+    self.send();
+  }
+
+  pub async fn credit(self, n: u32) {
+    credits = credits + n;
+    self.send();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      // an AnyError cannot be copied: the upstream gets the original, the sink the same kind
+      var mine = Ending.Finished;
+      match &why {
+        case is Finished {}
+        case let &Failed(e) { mine = Ending.Failed(AnyError.msg("voiceaudio: the stream was stopped with a failure")); }
+      }
+      match &up {
+        case let &Some(u) { u.stop(why); }
+        else {}
+      }
+      up = None[ValueSource];
+      match &down {
+        case let &Some(d) { d.end(mine); }
+        else {}
+      }
+      down = None[ValueSink[Utterance]];
+    }
+  }
+
+  fn send(self) {
+    if over { return; }
+    var more = true;
+    while more && credits > 0u32 {
+      match waiting.popFront() {
+        case let Some(u) {
+          match &down {
+            case let &Some(d) { d.accept(u); }
+            else {}
+          }
+          credits = credits - 1u32;
+        }
+        else { more = false; }
+      }
+    }
+    if waiting.len() == 0usize && !over {
+      var taken: Option[Ending] = None;
+      taken <-> ended;
+      match taken {
+        case let Some(how) {
+          over = true;
+          match &down {
+            case let &Some(d) { d.end(how); }
+            else {}
+          }
+          down = None[ValueSink[Utterance]];
+        }
+        else {}
+      }
+    }
+  }
+}
+
+// Move every utterance of 'from' to the back of 'to', in order
+fn moveAll(from: List[Utterance], to: &mut Deque[Utterance]) {
+  var l = from;
+  var rev = Deque[Utterance]();
+  var more = true;
+  while more {
+    match l.pop() {
+      case let Some(u) { rev.pushFront(u); }
+      else { more = false; }
+    }
+  }
+  more = true;
+  while more {
+    match rev.popFront() {
+      case let Some(u) { to.push(u); }
+      else { more = false; }
+    }
+  }
+}
