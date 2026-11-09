@@ -1680,7 +1680,7 @@ static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstar
 
         // Named const declaration
         case ConstToken: {
-            ConstDclNode *constnode = parseConstDcl(parse);
+            ConstDclNode *constnode = parseConstDcl(parse, 0);
             constnode->flags |= pubflag;
             modAddNode(parse->mod, constnode->namesym, (INode*)constnode);
             made = (INode*)constnode;

@@ -211,68 +211,124 @@ fn restoreOne(e: &Entry, path: &Path, folder: bool, opts: &ExtractOptions) bool 
   ok
 }
 
-// Extracts entry 'i', whose cleaned name is 'clean', under 'base' (absolute). Adds to 'got'; a folder
-// is added to 'pending' to have its time and mode set after everything is written.
-fn writeOne(ar: &Archive, data: &Array[u8], i: usize, clean: &str, base: &Path, opts: &ExtractOptions,
-    verified: &mut Set[String], pending: &mut List[Pending], got: &mut Extracted) Option[ZipError] {
-  let e = ar.entry(i);
-  // Every name on the way, from the destination down, must not be a link
-  match linkOnWay(base, clean, verified) {
-    case let Some(f) { return Some[ZipError](f); }
-    case is None {}
-  }
-  let walk = if clean.len() == 0usize { base.clone() } else { base.join(clean) };
-  if e.isDir() {
-    match fs.makeDirAll(&walk) {
-      case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
-      case is Ok {}
-    }
-    got.folders += 1usize;
-    // The destination itself is the user's, not the archive's to give a mode or a time
-    if clean.len() > 0usize && (opts.restoreTimes || opts.restoreMode) {
-      pending.push(Pending(String.from(walk.view()), i));
-    }
-    return None[ZipError];
-  }
-  // 'walk' is the file's own path; its folder is made, then it is written
-  let up = walk.parent();
-  match fs.makeDirAll(&up) {
-    case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
-    case is Ok {}
-  }
-  if fs.exists(&walk) {
-    if fs.isDir(&walk) {
-      return Some[ZipError](ZipError.make(ErrorKind.Exists, 0u64, about("a folder is where the file", walk.view(), "would go").view()));
-    }
-    if !opts.overwrite {
-      return Some[ZipError](ZipError.make(ErrorKind.Exists, 0u64, about("the file", walk.view(), "is already there").view()));
-    }
-    // A file this package made read-only (a restored mode) would refuse the new data; the entry's own mode
-    // is put back after. Only where the entry has a mode to put back.
-    if opts.restoreMode && e.unixMode() != 0u32 { _ = fs.chmod(&walk, 0x180u32); }
-  }
-  let wrote = writeData(ar, data, i, &walk, got);
-  if wrote is Some { return wrote; }
-  if (opts.restoreTimes || opts.restoreMode) && !restoreOne(e, &walk, false, opts) { got.unrestored += 1usize; }
-  None[ZipError]
+// One entry of a plan: which entry of the archive, its cleaned name, what it makes
+pub struct PlanItem {
+  // The entry's index in the archive
+  pub index: usize;
+  // Its name as a relative path of '/'-separated names that stays inside the destination ('' for the
+  // destination itself)
+  pub name: String;
+  // A folder: it has no data
+  pub folder: bool;
 }
 
-// Sets the time and mode of the folders in 'pending', the deepest first
-fn restoreFolders(ar: &Archive, opts: &ExtractOptions, pending: &mut List[Pending], got: &mut Extracted) {
-  pending.sortBy(&deeperFirst);
-  var k = 0usize;
-  while k < pending.len() {
-    let p = &pending[k];
-    if !restoreOne(ar.entry(p.index), &Path.from(p.path.view()), true, opts) { got.unrestored += 1usize; }
-    k += 1usize;
+// What 'planExtract' decided: every entry looked at, nothing written. It is the one place the safety
+// rules live: a caller that writes the entries itself (zipfile's own extractAll, or archivestage's actor)
+// goes through it, entry by entry, and does only the writing of each file's data:
+//
+//   var plan = zipfile.planExtract(&ar, bytes, &dest, &opts)?;      // refused: nothing was made
+//   var k = 0usize;
+//   while k < plan.count() {
+//     match plan.begin(&ar, k)? {            // checks again, makes the folders, clears the way
+//       case let Some(path) { ...write the entry's data to 'path', then: plan.written(&ar, k, &path, n); }
+//       case is None {}                      // a folder: made, nothing to write
+//     }
+//     k += 1usize;
+//   }
+//   let got = plan.finish(&ar);              // the folders' times and modes, the totals
+//
+// The file's own data is the caller's to write, and to remove if it comes out wrong.
+pub struct ExtractPlan {
+  // The destination, absolute
+  pub base: Path;
+  // The entries to extract, in the order to extract them
+  pub items: List[PlanItem];
+  opts: ExtractOptions;
+  verified: Set[String];
+  pending: List[Pending];
+  got: Extracted;
+
+  pub fn count(self: &) usize { items.len() }
+
+  pub fn item(self: &, k: usize) &PlanItem { &items.view()[k] }
+
+  // Begins item 'k': the names on its way are looked at again (none may be a link), a folder is made, a
+  // file's folder is made and what is already there is dealt with (refused unless 'overwrite'). Answers
+  // the path of the file whose data is to be written, or None for a folder, which is made and counted.
+  pub fn begin(self: &mut, ar: &Archive, k: usize) Result[Option[Path], ZipError] {
+    let i = items[k].index;
+    let clean = String.from(items[k].name.view());
+    let e = ar.entry(i);
+    // Every name on the way, from the destination down, must not be a link
+    match linkOnWay(&base, clean.view(), &mut verified) {
+      case let Some(f) { return Err[Option[Path], ZipError](f); }
+      case is None {}
+    }
+    let walk = if clean.len() == 0usize { base.clone() } else { base.join(clean.view()) };
+    if e.isDir() {
+      match fs.makeDirAll(&walk) {
+        case let Err(fe) { return Err[Option[Path], ZipError](ioFault(&fe)); }
+        case is Ok {}
+      }
+      got.folders += 1usize;
+      // The destination itself is the user's, not the archive's to give a mode or a time
+      if clean.len() > 0usize && (opts.restoreTimes || opts.restoreMode) {
+        pending.push(Pending(String.from(walk.view()), i));
+      }
+      return Ok[Option[Path], ZipError](None[Path]);
+    }
+    // 'walk' is the file's own path; its folder is made, then it is written
+    let up = walk.parent();
+    match fs.makeDirAll(&up) {
+      case let Err(fe) { return Err[Option[Path], ZipError](ioFault(&fe)); }
+      case is Ok {}
+    }
+    if fs.exists(&walk) {
+      if fs.isDir(&walk) {
+        return refusal[Option[Path]](ErrorKind.Exists, 0u64, about("a folder is where the file", walk.view(), "would go").view());
+      }
+      if !opts.overwrite {
+        return refusal[Option[Path]](ErrorKind.Exists, 0u64, about("the file", walk.view(), "is already there").view());
+      }
+      // A file this package made read-only (a restored mode) would refuse the new data; the entry's own mode
+      // is put back after. Only where the entry has a mode to put back.
+      if opts.restoreMode && e.unixMode() != 0u32 { _ = fs.chmod(&walk, 0x180u32); }
+    }
+    Ok[Option[Path], ZipError](Some[Path](walk))
   }
+
+  // Item 'k's file, 'path', has all its data: 'bytes' are counted and its time and mode are set
+  pub fn written(self: &mut, ar: &Archive, k: usize, path: &Path, bytes: u64) {
+    got.files += 1usize;
+    got.bytes += bytes;
+    let e = ar.entry(items[k].index);
+    if (opts.restoreTimes || opts.restoreMode) && !restoreOne(e, path, false, &opts) { got.unrestored += 1usize; }
+  }
+
+  // Every item is done: the folders' times and modes are set, the deepest first. What was extracted.
+  pub fn finish(self: &mut, ar: &Archive) Extracted {
+    pending.sortBy(&deeperFirst);
+    var k = 0usize;
+    while k < pending.len() {
+      let p = &pending[k];
+      if !restoreOne(ar.entry(p.index), &Path.from(p.path.view()), true, &opts) { got.unrestored += 1usize; }
+      k += 1usize;
+    }
+    Extracted(got.files, got.folders, got.bytes, got.unrestored)
+  }
+}
+
+fn planOf(base: Path, items: List[PlanItem], opts: &ExtractOptions) ExtractPlan {
+  ExtractPlan(base, items, ExtractOptions(opts.overwrite, opts.maxTotal, opts.restoreMode, opts.restoreTimes),
+    Set[String](), List[Pending](), Extracted(0usize, 0usize, 0u64, 0usize))
 }
 
 // Writes the data of entry 'i' to the file 'path': the first piece makes the file, the rest are added.
-// A failure removes the file.
-fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Extracted) Option[ZipError] {
+// A failure removes the file. The bytes written.
+fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path) Result[u64, ZipError] {
+  var total = 0u64;
   match ar.reader(data, i) {
-    case let Err(e) { return Some[ZipError](e); }
+    case let Err(e) { return Err[u64, ZipError](e); }
     case var Ok(r) {
       var piece = List[u8]();
       var first = true;
@@ -282,8 +338,8 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
         if s == Status.Failed {
           if !first { _ = fs.removeFile(path); }
           match r.error() {
-            case let Some(e) { return Some[ZipError](e); }
-            case is None { return Some[ZipError](ZipError.make(ErrorKind.Corrupt, 0u64, "the entry failed")); }
+            case let Some(e) { return Err[u64, ZipError](e); }
+            case is None { return refusal[u64](ErrorKind.Corrupt, 0u64, "the entry failed"); }
           }
         }
         // A piece that does not fail is written at once; the CRC-32 is known good only at Done, so a
@@ -292,18 +348,17 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
         match wrote {
           case let Err(fe) {
             _ = fs.removeFile(path);
-            return Some[ZipError](ioFault(&fe));
+            return Err[u64, ZipError](ioFault(&fe));
           }
           case is Ok {}
         }
         first = false;
-        got.bytes += u64.from(piece.len());
+        total += u64.from(piece.len());
         if s == Status.Done { break; }
       }
     }
   }
-  got.files += 1usize;
-  None[ZipError]
+  Ok[u64, ZipError](total)
 }
 
 // The destination as an absolute path, or why not
@@ -311,10 +366,14 @@ fn baseOf(dest: &Path) Result[Path, ZipError] {
   Ok[Path, ZipError](fs.absolute(dest)?)
 }
 
-fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+// Looks at every entry of the archive 'ar' (whose bytes are 'data') for extracting under 'dest' and writes
+// nothing but the destination folder: every name, kind, method and the limits are checked, and a name that
+// would leave 'dest', a link on the way or a file in the way (unless 'overwrite') refuses it all. The
+// plan is what 'extractAll' runs, and what an extractor that does its own I/O runs (see ExtractPlan).
+pub fn planExtract(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[ExtractPlan, ZipError] {
   let base = baseOf(dest)?;
   // First every entry is looked at, and nothing is written
-  var plan = List[String].withCapacity(ar.count());
+  var items = List[PlanItem].withCapacity(ar.count());
   var seen = Set[String]();
   var looked = Set[String]();
   var total = 0u64;
@@ -325,70 +384,80 @@ fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOpt
     // A link on the entry's way, seen now, refuses the extraction with nothing written (it is looked
     // for again as each entry is written)
     match linkOnWay(&base, clean.view(), &mut looked) {
-      case let Some(f) { return Err[Extracted, ZipError](f); }
+      case let Some(f) { return Err[ExtractPlan, ZipError](f); }
       case is None {}
     }
     if !e.isDir() {
       if opts.maxTotal > 0u64 && (e.size > opts.maxTotal || total > opts.maxTotal - e.size) {
-        return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "takes the entries past the limit on the total size").view());
+        return refusal[ExtractPlan](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "takes the entries past the limit on the total size").view());
       }
       total += e.size;
       if !opts.overwrite && clean.len() > 0usize {
         // Two entries for one file would be the second finding the first (a name differing only in
         // case is not seen here; the second then fails as Exists where the system folds case)
         if !seen.insert(clean.clone()) {
-          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the name", e.name.view(), "is used by a second entry").view());
+          return refusal[ExtractPlan](ErrorKind.Exists, e.offset, about("the name", e.name.view(), "is used by a second entry").view());
         }
         let target = base.join(clean.view());
         if fs.exists(&target) {
-          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", target.view(), "is already there").view());
+          return refusal[ExtractPlan](ErrorKind.Exists, e.offset, about("the file", target.view(), "is already there").view());
         }
       }
     }
-    plan.push(clean);
+    items.push(PlanItem(i, clean, e.isDir()));
     i += 1usize;
   }
   fs.makeDirAll(&base)?;
-  var verified = Set[String]();
-  var pending = List[Pending]();
-  var got = Extracted(0usize, 0usize, 0u64, 0usize);
-  i = 0usize;
-  while i < ar.count() {
-    match writeOne(ar, data, i, plan[i].view(), &base, opts, &mut verified, &mut pending, &mut got) {
-      case let Some(f) { return Err[Extracted, ZipError](f); }
-      case is None {}
-    }
-    i += 1usize;
-  }
-  restoreFolders(ar, opts, &mut pending, &mut got);
-  Ok[Extracted, ZipError](got)
+  Ok[ExtractPlan, ZipError](planOf(base, items, opts))
 }
 
-fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+// The same for the one entry 'i'
+fn planIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &ExtractOptions) Result[ExtractPlan, ZipError] {
   if i >= ar.count() {
-    return refusal[Extracted](ErrorKind.NotFound, 0u64, "there is no entry with that index");
+    return refusal[ExtractPlan](ErrorKind.NotFound, 0u64, "there is no entry with that index");
   }
   let base = baseOf(dest)?;
   let e = ar.entry(i);
   let clean = checkEntry(ar, data, i)?;
   if opts.maxTotal > 0u64 && !e.isDir() && e.size > opts.maxTotal {
-    return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "is larger than the limit").view());
+    return refusal[ExtractPlan](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "is larger than the limit").view());
   }
-  var verified = Set[String]();
-  match linkOnWay(&base, clean.view(), &mut verified) {
-    case let Some(f) { return Err[Extracted, ZipError](f); }
+  var looked = Set[String]();
+  match linkOnWay(&base, clean.view(), &mut looked) {
+    case let Some(f) { return Err[ExtractPlan, ZipError](f); }
     case is None {}
   }
   if !e.isDir() && !opts.overwrite && fs.exists(&base.join(clean.view())) {
-    return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", base.join(clean.view()).view(), "is already there").view());
+    return refusal[ExtractPlan](ErrorKind.Exists, e.offset, about("the file", base.join(clean.view()).view(), "is already there").view());
   }
   fs.makeDirAll(&base)?;
-  var pending = List[Pending]();
-  var got = Extracted(0usize, 0usize, 0u64, 0usize);
-  match writeOne(ar, data, i, clean.view(), &base, opts, &mut verified, &mut pending, &mut got) {
-    case let Some(f) { return Err[Extracted, ZipError](f); }
-    case is None {}
+  var items = List[PlanItem].withCapacity(1usize);
+  items.push(PlanItem(i, clean, e.isDir()));
+  Ok[ExtractPlan, ZipError](planOf(base, items, opts))
+}
+
+// Runs a plan, writing each file's data with the sync calls
+fn runPlan(ar: &Archive, data: &Array[u8], plan: &mut ExtractPlan) Result[Extracted, ZipError] {
+  var k = 0usize;
+  while k < plan.count() {
+    match plan.begin(ar, k)? {
+      case let Some(path) {
+        let n = writeData(ar, data, plan.item(k).index, &path)?;
+        plan.written(ar, k, &path, n);
+      }
+      case is None {}
+    }
+    k += 1usize;
   }
-  restoreFolders(ar, opts, &mut pending, &mut got);
-  Ok[Extracted, ZipError](got)
+  Ok[Extracted, ZipError](plan.finish(ar))
+}
+
+fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+  var plan = planExtract(ar, data, dest, opts)?;
+  runPlan(ar, data, &mut plan)
+}
+
+fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+  var plan = planIndex(ar, data, i, dest, opts)?;
+  runPlan(ar, data, &mut plan)
 }

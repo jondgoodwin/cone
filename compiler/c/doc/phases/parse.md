@@ -1354,7 +1354,8 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   pass's hooks are set, each field of the run cloned and named `genNameFor`); the loop's methods get
   shells appended after the written ones (`genfill`), and are filled while their field's hooks are set,
   after the written members' bodies. `structGenClash` refuses a name already in the instance's namespace
-  (`ErrorMetaGenClash`), generated or written. A loop whose T is still a parameter of an enclosing generic
+  (`ErrorMetaGenClash`), generated or written; a written method named like a generated field is refused
+  the same way (`structMethodFieldClash`), and the instance then has no methods. A loop whose T is still a parameter of an enclosing generic
   is kept as written (`undecided`), as `cloneFieldEach` does. Indices of fields are renumbered by the
   instance's type check as for any struct. The include file copies the struct's text as written, loop and
   all (every member of a generic type travels), and the importer expands it.

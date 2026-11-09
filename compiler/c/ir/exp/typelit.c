@@ -201,8 +201,20 @@ int typeLitStructReorder(TypeCheckState *pstate, FnCallNode *arrlit, StructNode 
             }
             // A private field is given a value only by its type's module
             if (!private && inodeIsPrivate((INode*)field)) {
-                errorMsgNode(*litval, ErrorNotPublic, "May not give a value to the private field %s from outside the module that declares %s.",
-                    &field->namesym->namestr, &strnode->namesym->namestr);
+                // In a generic's instance the literal is not what the user wrote: the generic builds the
+                // value from the fields of its argument (a collection rebuilding a row to finalize it)
+                if ((*litval)->instnode) {
+                    INode *owner = pstate->typenode;
+                    errorMsgNode(*litval, ErrorFieldsRebuild,
+                        "%s%s%s must rebuild a '%s' from each of its fields here, and the field '%s' is private: only the module that declares '%s' may give it a value. It works for a type whose fields are all public.",
+                        owner && owner->tag == StructTag ? "'" : "This generic code",
+                        owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "",
+                        owner && owner->tag == StructTag ? "'" : "",
+                        &strnode->namesym->namestr, &field->namesym->namestr, &strnode->namesym->namestr);
+                }
+                else
+                    errorMsgNode(*litval, ErrorNotPublic, "May not give a value to the private field %s from outside the module that declares %s.",
+                        &field->namesym->namestr, &strnode->namesym->namestr);
                 retcode = 0;
             }
         }

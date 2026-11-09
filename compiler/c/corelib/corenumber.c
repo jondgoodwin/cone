@@ -10,6 +10,7 @@
 #include "../parser/lexer.h"
 #include "../ir/nametbl.h"
 #include <string.h>
+#include <math.h>
 
 // Create a compiler-declared method whose concrete name is private and unique,
 // and which joins the overload set named by the operator it implements.
@@ -389,6 +390,36 @@ static void nbrMathMethods(NbrNode *nbrtype) {
             (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig
                 : mathmeths[i].kind == ClampIntrinsic ? clampsig : fmasig), (INode *)node));
     }
+
+    // A float's transcendental and classifying methods. Rust's names, except
+    // that the predicates are camelCase as the bit methods are ('signBit').
+    // sig: 0 = (self), 1 = (self, other), 2 = (self, n: i32), 3 = (self) bool
+    if (isfloat) {
+        FnSigNode *powisig = newFnSigNode();
+        powisig->rettype = (INode*)selftype;
+        nodesAdd(&powisig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&powisig->parms, (INode *)newVarDclFull(nametblFind("n", 1), VarDclTag, (INode*)i32Type, newPermUseNode(immPerm), NULL));
+        FnSigNode *testsig = newFnSigNode();
+        testsig->rettype = (INode*)boolType;
+        nodesAdd(&testsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        static struct { char *name; int16_t kind; int sig; } floatmeths[] = {
+            {"tan", TanIntrinsic, 0}, {"asin", AsinIntrinsic, 0}, {"acos", AcosIntrinsic, 0},
+            {"atan", AtanIntrinsic, 0}, {"atan2", Atan2Intrinsic, 1},
+            {"exp", ExpIntrinsic, 0}, {"exp2", Exp2Intrinsic, 0}, {"ln", LnIntrinsic, 0},
+            {"log2", Log2Intrinsic, 0}, {"log10", Log10Intrinsic, 0},
+            {"pow", PowIntrinsic, 1}, {"powi", PowiIntrinsic, 2},
+            {"hypot", HypotIntrinsic, 1}, {"cbrt", CbrtIntrinsic, 0},
+            {"sinh", SinhIntrinsic, 0}, {"cosh", CoshIntrinsic, 0}, {"tanh", TanhIntrinsic, 0},
+            {"isNaN", IsNanIntrinsic, 3}, {"isInfinite", IsInfiniteIntrinsic, 3}, {"isFinite", IsFiniteIntrinsic, 3},
+        };
+        for (size_t i = 0; i < sizeof(floatmeths) / sizeof(floatmeths[0]); ++i) {
+            IntrinsicNode *node = newIntrinsicNode(floatmeths[i].kind);
+            node->typearg = (INode*)selftype;
+            iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind(floatmeths[i].name, strlen(floatmeths[i].name)),
+                FlagMethFld | FlagPub, (INode *)(floatmeths[i].sig == 0 ? unarysig : floatmeths[i].sig == 1 ? binarysig
+                    : floatmeths[i].sig == 2 ? powisig : testsig), (INode *)node));
+        }
+    }
 }
 
 // A float's encoding: 'x.bits()' (a u32 for f32, a u64 for f64), the static
@@ -433,6 +464,60 @@ static void nbrFloatBitMethods(NbrNode *nbrtype) {
     FnDclNode *fromdcl = newFnDclNode(nametblFind("fromBits", 8), FlagPub | TypeChecked,
         (INode *)fromsig, (INode *)fromnode);
     iNsTypeAddFn((INsTypeNode*)nbrtype, fromdcl);
+}
+
+// One constant of a number type: a folded value with no storage, reached as
+// 'f64.pi' (a const of the type's namespace, as a struct's is). Marked checked as
+// 'fromBits' is: type check never walks a number type's members.
+static void nbrAddConst(NbrNode *nbrtype, const char *name, INode *type, INode *value) {
+    ConstDclNode *cdcl = newConstDclNode(nametblFind((char*)name, strlen(name)));
+    cdcl->flags |= FlagPub | TypeChecked;
+    NameUseNode *typeuse = newNameUseNode(((NbrNode*)type)->namesym);
+    typeuse->dclnode = type;
+    cdcl->vtype = (INode*)typeuse;
+    cdcl->value = value;
+    iNsTypeAddConst((INsTypeNode*)nbrtype, cdcl);
+}
+
+// The built-in constants of the number types. THE SPELLINGS ARE ALL HERE.
+//   floats:   pi tau e inf nan epsilon minValue maxValue minPositive
+//             (minValue is the most negative finite value; minPositive the
+//             smallest positive normal one; epsilon the gap from 1.0 to the
+//             next float)
+//   integers: minValue maxValue bits (bits is a u32)
+// 'min' and 'max' are the methods 'a.min(b)', 'a.max(b)'; the constants take the
+// longer names so the two share no name.
+#define NbrConstMin "minValue"
+#define NbrConstMax "maxValue"
+static void nbrConstants(NbrNode *nbrtype) {
+    if (nbrtype->tag == FloatNbrTag) {
+        int is32 = nbrtype->bits == 32;
+        uint64_t nanbits = 0x7FF8000000000000ull;
+        double nan, inf = HUGE_VAL;
+        memcpy(&nan, &nanbits, sizeof(nan));
+        static const double pi = 3.14159265358979323846, e = 2.71828182845904523536;
+        struct { const char *name; double val; } consts[] = {
+            {"pi", pi}, {"tau", 2.0 * pi}, {"e", e}, {"inf", inf}, {"nan", nan},
+            {"epsilon", is32 ? 1.1920928955078125e-07 : 2.220446049250313e-16},
+            {NbrConstMin, is32 ? -3.4028234663852886e+38 : -1.7976931348623157e+308},
+            {NbrConstMax, is32 ? 3.4028234663852886e+38 : 1.7976931348623157e+308},
+            {"minPositive", is32 ? 1.1754943508222875e-38 : 2.2250738585072014e-308},
+        };
+        for (size_t i = 0; i < sizeof(consts) / sizeof(consts[0]); ++i) {
+            FLitNode *lit = newFLitNode(consts[i].val, (INode*)nbrtype);
+            ((NameUseNode*)lit->vtype)->dclnode = (INode*)nbrtype;
+            nbrAddConst(nbrtype, consts[i].name, (INode*)nbrtype, (INode*)lit);
+        }
+        return;
+    }
+    int bits = nbrtype->bits;
+    int issigned = nbrtype->tag == IntNbrTag;
+    uint64_t maxv = issigned ? (((uint64_t)1 << (bits - 1)) - 1) : (bits == 64 ? ~(uint64_t)0 : (((uint64_t)1 << bits) - 1));
+    // A signed minimum is held sign-extended to 64 bits, as a literal's value is
+    uint64_t minv = issigned ? ((uint64_t)0 - ((uint64_t)1 << (bits - 1))) : 0;
+    nbrAddConst(nbrtype, NbrConstMin, (INode*)nbrtype, (INode*)newULitNodeTC(minv, (INode*)nbrtype));
+    nbrAddConst(nbrtype, NbrConstMax, (INode*)nbrtype, (INode*)newULitNodeTC(maxv, (INode*)nbrtype));
+    nbrAddConst(nbrtype, "bits", (INode*)u32Type, (INode*)newULitNodeTC((uint64_t)bits, (INode*)u32Type));
 }
 
 // A number type's three-way comparison, 'a <=> b': an i32 -1, 0 or 1. Made once
@@ -550,6 +635,10 @@ void stdNbrInit(int ptrsize) {
     nbrMathMethods(f64Type);
     nbrFloatBitMethods(f32Type);
     nbrFloatBitMethods(f64Type);
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
+        nbrConstants(integers[i]);
+    nbrConstants(f32Type);
+    nbrConstants(f64Type);
 
     NbrNode *ordered[] = {charType, u8Type, u16Type, u32Type, u64Type, usizeType,
         i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
