@@ -454,6 +454,66 @@ class Scenarios(unittest.TestCase):
         self.congo("build", "--strip", cwd=pkg)
         self.assertFalse((pkg / "build" / "debug" / "sym.pdb").exists(), "--strip writes no PDB in debug either")
 
+    def test_lto_builds_a_release_program_across_its_packages(self):
+        """'--lto' (with --release) compiles every package to ThinLTO bitcode in
+        a build folder of its own, links them with conec's ThinLTO link, and
+        the program runs as the ordinary build's does: a String's text crosses
+        into collections and a trait object's call through its vtable, which the
+        link must not drop (a symbol only a call out of line or a vtable
+        reaches); the PDB still names the program's functions; without
+        --release it is refused, and without --lto nothing is bitcode."""
+        self.congo("new", "lt", cwd=self.root)
+        pkg = self.root / "lt"
+        write(pkg / "src" / "lt.cone", """
+            mod lt;
+
+            import stdio use *;
+            import collections use *;
+
+            trait Speak { pub fn word(self: &) &str; }
+            struct Dog is Speak {
+              pub n: i32;
+              pub fn word(self: &) &str { "woof" }
+            }
+
+            fn speak(s: &<Speak) &str { s.word() }
+
+            // Recursive, so optimisation leaves it a function of its own
+            fn fibonacciNumber(n: i32) i32 {
+              if n < 2i32 { n } else { fibonacciNumber(n - 1i32) + fibonacciNumber(n - 2i32) }
+            }
+
+            fn main() i32 {
+              var s = String();
+              s <- "lt ";
+              s.appendUInt(u64.from(fibonacciNumber(20i32)));
+              s <- " ";
+              let d = Dog(1i32);
+              s <- speak(&d);
+              print <- s.view();
+              print <- "\\n";
+              0i32
+            }
+            """)
+        run = self.congo("run", "--release", "--lto", cwd=pkg)
+        self.assertEqual(self.program_output(run), "lt 6765 woof\n")
+        folder = pkg / "build" / "release-lto"
+        self.assertTrue((folder / "lt.bc").is_file(), "an --lto compile writes bitcode")
+        self.assertTrue((folder / "core.bc").is_file())
+        self.assertFalse((folder / f"lt{congo.OBJ_EXT}").exists(), "and no object")
+        if IS_WINDOWS:
+            self.assertTrue(b"fibonacciNumber" in (folder / "lt.pdb").read_bytes(),
+                            "the PDB names the program's functions")
+        self.assertIn("Optimising", run.stdout)
+        # Not the default: the release build is its own, of objects
+        self.congo("build", "--release", cwd=pkg)
+        self.assertTrue((pkg / "build" / "release" / f"lt{congo.OBJ_EXT}").is_file())
+        self.assertFalse((pkg / "build" / "release" / "lt.bc").exists())
+        # A debug build has no ThinLTO
+        refused = self.congo("build", "--lto", cwd=pkg, ok=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--lto optimises a release build", refused.stderr)
+
     def test_a_lone_file(self):
         write(self.root / "lone.cone", """
             mod lone;

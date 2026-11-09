@@ -61,13 +61,21 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
       while cand >= 0i64 && chain < chainLimit {
         if i - cand > 32768i64 { break; }
         let ci = usize.from(cand - base);
-        // Match length at this candidate
-        var l = 0usize;
-        while l < 258usize && ib + l < n && buf[ci + l] == buf[ib + l] { l += 1usize; }
-        if l > bestLen {
-          bestLen = l;
-          bestDist = usize.from(i - cand);
-          if l == 258usize { break; }
+        // Quick reject, as miniz's find_match does: a candidate longer than bestLen agrees with this
+        // position at every byte up to and including bestLen, so the byte at bestLen (and the one
+        // before it), then the first two, refuse most candidates before the compare. (None can win
+        // when the data ends first.) A refused candidate would have had l <= bestLen: output is the same.
+        if ib + bestLen < n && buf[ci + bestLen] == buf[ib + bestLen]
+            && (bestLen == 0usize || buf[ci + bestLen - 1usize] == buf[ib + bestLen - 1usize])
+            && buf[ci] == buf[ib] && buf[ci + 1usize] == buf[ib + 1usize] {
+          // Match length at this candidate
+          var l = 0usize;
+          while l < 258usize && ib + l < n && buf[ci + l] == buf[ib + l] { l += 1usize; }
+          if l > bestLen {
+            bestLen = l;
+            bestDist = usize.from(i - cand);
+            if l == 258usize { break; }
+          }
         }
         cand = *prev[usize.from(cand & 32767i64)];
         chain += 1usize;

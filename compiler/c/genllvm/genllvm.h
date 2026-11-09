@@ -308,6 +308,14 @@ void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlComdat(GenState *gen, LLVMValueRef global);
+// Link-time optimisation (genllto.cpp, the one C++ file): a module as bitcode
+// with its ThinLTO summary, and bitcode files linked into an object each.
+// Both return 0, or 1 with the reason in 'err'.
+int genlWriteThinBitcode(LLVMModuleRef mod, const char *path, char *err, size_t errsize);
+int genlThinLink(const char *outdir, const char *ext, const char **files, int n,
+        const char **keep, int nkeep, const char *cpu, const char *features, int pic,
+        const char *cachedir, char *err, size_t errsize);
+int genlLtoLink(ConeOptions *opt, int nfiles, char **files);
 // What this object file does with a declared symbol, which genlLinkage reads
 typedef enum GenlDefinition {
     GenlDeclared,   // Only names it: some other object defines it
