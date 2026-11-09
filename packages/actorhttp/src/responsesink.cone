@@ -1,0 +1,309 @@
+// A server response fed by a stream: 'Exchange.bodySink()' (server.cone) makes a
+// ResponseSink, a stages.ChunkSink, and a pipeline (a FileSource, a gzip
+// stage...) that ends in it becomes the response's body, so a large or generated
+// body never sits whole in memory. The sink is an actor shaped like BodySource: it
+// posts each chunk to the service thread (the jobs below), which keeps them in the
+// exchange's record (serverservice.cone, ExRec) and sends them as the connection
+// takes them.
+//
+// CREDIT BY COPY. For each piece of a chunk the service thread takes a buffer of its own
+// from the pool, copies the piece into it and gives that copy to the connection
+// (srvSend). The chunk itself goes back to the source ('giveBack') once all its
+// pieces are accepted. So the connection's watermark is the credit: while the
+// peer reads slowly the connection refuses, the chunk stays queued, the source is not
+// given its buffer back and sends no more. What is held is the source's window of
+// bytes (and one copy in the connection's queue at most as far as its watermark).
+// Chunks are sent one by one (a pool buffer holds at most sendChunk bytes of one
+// chunk); small chunks are not joined here, the cores join small buffers themselves
+// (h2). A sized body's length is counted on the service thread as the chunks
+// arrive: past the length, or short of it at the end, the exchange is cancelled
+// (srvCancel) and the source stopped Failed, because the cores panic on either.
+//
+// WHO ENDS THE BODY. The sink's 'end(Finished)' is 'finish'. 'end(Failed)' resets
+// the exchange. Dropping the Exchange after 'bodySink' leaves the body to the sink
+// (DropExJob does not finish or cut it): the handler wires the sink to a source and
+// returns, so the drop usually comes before the source's 'attach' reaches the service.
+// The peer resetting or the connection
+// closing (endEx) stops the source with Failed(closed) and gives back every chunk
+// held and every chunk still arriving. A body the protocol forbids (HEAD, 204, 304, a
+// length of 0) is answered on 'attach' with stop(Finished), so the pipeline is not run.
+// A sink that is held but never attached to a source ends nothing: the response waits,
+// as any pipeline with no end does. A sink that is DROPPED (the actor's 'final') without
+// a source ever attached can have none attach after it (its 'attach' is a message to
+// it, ahead of its death, and its job to the service ahead of SinkGoneJob), so no body
+// will come: with the Exchange dropped too, whichever of the two comes second ends the
+// response as without a sink (an unsized body is finished, a sized one reset).
+
+// Give back to the source an exchange's chunk that was queued
+fn sinkGive(x: &ExRec, b: IoBuf) {
+  match &x.sinkUp {
+    case let &Some(u) {u.giveBack(b);}
+    else {}
+  }
+}
+
+// Give back every chunk held
+fn sinkDrain(x: &mut ExRec) {
+  while true {
+    match x.sinkChunks.popFront() {
+      case var Some(b) {sinkGive(x, b);}
+      else {break;}
+    }
+  }
+  x.sinkOff = 0usize;
+}
+
+// The exchange's source is stopped with why (once), and the chunks held go back
+fn sinkStop(x: &mut ExRec, why: Ending) {
+  if x.sinkFailed {return;}
+  x.sinkFailed = true;
+  match &x.sinkUp {
+    case let &Some(u) {u.stop(why);}
+    else {}
+  }
+  sinkDrain(x);
+}
+
+// The body cannot go on: the exchange is cancelled and the source stopped
+fn sinkFail(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec, text: &str) {
+  if x.sinkFailed {return;}
+  srvCancel(srv, lp, x);
+  sinkStop(x, Ending.Failed(AnyError.msg(text)));
+}
+
+// Send as much of the chunks held as the connection takes, and finish the body
+// once the sink has ended and they are all sent
+fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
+  if x.over || x.sinkFailed {return;}
+  while x.sinkChunks.len() > 0usize {
+    let total = x.sinkChunks[0usize].len();
+    let off = x.sinkOff;
+    if off >= total {
+      // an empty chunk, or the last piece went: it goes back
+      match x.sinkChunks.popFront() {
+        case var Some(b) {sinkGive(x, b);}
+        else {}
+      }
+      x.sinkOff = 0usize;
+    } else {
+      let left = total - off;
+      let n = if left < sendChunk {left} else {sendChunk};
+      // A pool that refuses the buffer ends the exchange, as for a String write
+      var b = match IoBuf.tryMake(n) {
+        case var Some(got) {got}
+        else {
+          sinkFail(srv, lp, x, "the buffer pool refused a buffer for the response body");
+          return;
+        }
+      };
+      {
+        let all = x.sinkChunks[0usize].view() as &Array[u8];
+        b.append(&all[off ..< off + n]);
+      }
+      // Refused: Writable comes when there is room
+      if !srvSend(srv, x, b) {return;}
+      x.sinkOff = off + n;
+      x.written = x.written + u64.from(n);
+    }
+  }
+  if x.sinkEnded && !x.finished {
+    x.finished = true;
+    x.sinkOpen = false;
+    srvFinish(srv, x);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sink
+// ---------------------------------------------------------------------------
+
+actor ResponseSink is ChunkSink {
+  srv: u64;
+  slot: u32;
+  id: u64;
+  up: Option[ChunkSource];       // kept past 'end' (the source holds nothing of this sink after it): a chunk that finds its exchange gone goes back through it
+
+  bodyless: bool;                // the response has no body bytes: the source is stopped Finished at once, and nothing goes to the service
+
+  pub fn init(self: &new, srv: u64, slot: u32, id: u64, bodyless: bool) {
+    *self = Self(srv: srv, slot: slot, id: id, up: None[ChunkSource], bodyless: bodyless);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source.clone());
+    if bodyless {
+      source.stop(Ending.Finished);
+      return;
+    }
+    post[SinkAttachJob](SinkAttachJob(srv, slot, id, source));
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if bodyless {
+      self.home(c);
+      return;
+    }
+    post[SinkChunkJob](SinkChunkJob(srv, slot, id, c, selfactor.clone()));
+  }
+
+  pub async fn end(self, how: Ending) {
+    if bodyless {return;}
+    post[SinkEndJob](SinkEndJob(srv, slot, id, how));
+  }
+
+  // The sink dropped with no source ever attached: the service is told
+  fn final(self: &uni) {
+    if bodyless {return;}
+    match &up {
+      case let &Some(u) {}
+      else {post[SinkGoneJob](SinkGoneJob(srv, slot, id));}
+    }
+  }
+
+  // A chunk the service thread could not take (its exchange is gone): back to the source
+  pub async fn home(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      else {}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The jobs
+// ---------------------------------------------------------------------------
+
+// A sink taken (Exchange.bodySink): the exchange's body is the sink's from now
+struct SinkOpenJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let loc = locate(sv, self.srv, self.slot, self.id);
+    if loc.ex as usize == 0usize {return;}
+    let x = loc.ex as &mut ExRec;
+    x.sinkOpen = true;
+    // the exchange ended already: the source, once attached, is stopped
+    if x.over {x.sinkFailed = true;}
+  }
+}
+
+// The sink actor was dropped and no source had been attached to it
+struct SinkGoneJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let loc = locate(sv, self.srv, self.slot, self.id);
+    if loc.ex as usize == 0usize {return;}
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
+    if x.over || x.finished || x.finishing || !x.sinkOpen || x.sinkFailed || x.sinkEnded || x.sinkIn != 0u64 {return;}
+    match &x.sinkUp {
+      case let &Some(u) {return;}
+      else {}
+    }
+    x.sinkGone = true;
+    // the Exchange is dropped already: no body will come
+    if !x.handle {
+      x.sinkOpen = false;
+      endBodyUnsunk(s, lp, x);
+    }
+  }
+}
+
+// The sink was given its source
+struct SinkAttachJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+  pub up: ChunkSource;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let srv, slot, id, up = self.(srv, slot, id, up);
+    let loc = locate(sv, srv, slot, id);
+    if loc.ex as usize == 0usize {
+      up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
+      return;
+    }
+    let x = loc.ex as &mut ExRec;
+    if x.sinkFailed {
+      up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
+      return;
+    }
+    x.sinkUp = Some[ChunkSource](up);
+  }
+}
+
+// A chunk of the body
+struct SinkChunkJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+  pub buf: IoBuf;
+  pub home: ResponseSink;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let srv, slot, id, buf, home = self.(srv, slot, id, buf, home);
+    let loc = locate(sv, srv, slot, id);
+    if loc.ex as usize == 0usize {
+      home.home(buf);
+      return;
+    }
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
+    if !x.sinkOpen || x.sinkFailed || x.over {
+      home.home(buf);
+      return;
+    }
+    x.sinkIn = x.sinkIn + u64.from(buf.len());
+    if x.sized && x.sinkIn > x.length {
+      home.home(buf);
+      sinkFail(s, lp, x, "the body is longer than the length declared to start");
+      return;
+    }
+    x.sinkChunks.push(buf);
+    pumpSink(s, lp, x);
+  }
+}
+
+// The stream is over
+struct SinkEndJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+  pub how: Ending;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let srv, slot, id, how = self.(srv, slot, id, how);
+    let loc = locate(sv, srv, slot, id);
+    if loc.ex as usize == 0usize {return;}
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
+    if !x.sinkOpen {return;}
+    match how {
+      case is Finished {
+        if x.sinkFailed {
+          x.sinkOpen = false;
+        } else if x.sized && x.sinkIn != x.length {
+          sinkFail(s, lp, x, "the body is shorter than the length declared to start");
+        } else {
+          x.sinkEnded = true;
+          pumpSink(s, lp, x);
+        }
+      }
+      else {
+        // the pipeline failed: the response is cut short
+        if x.sinkFailed {
+          x.sinkOpen = false;
+        } else {
+          x.sinkFailed = true;
+          sinkDrain(x);
+          if !x.finished {srvCancel(s, lp, x);}
+        }
+      }
+    }
+  }
+}

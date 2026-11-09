@@ -8,7 +8,8 @@
 // handler seeing Version.Http3; a body past the limit answered 413 over
 // HTTP/3 and the next request answered; twenty GETs awaited at once by four
 // actors through one client, every one over HTTP/3; a server asked for
-// HTTP/3 without TLS refuses to listen.
+// HTTP/3 without TLS refuses to listen; a sized body fed by a stream through
+// 'Exchange.bodySink()' arriving whole over HTTP/3.
 
 mod served;
 
@@ -24,6 +25,8 @@ import tls;
 import sse;
 import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream;
+import iobuf use IoBuf;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 import h3driver;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -39,6 +42,55 @@ fn versionName(v: Version) &str {
 // The server's side
 // ---------------------------------------------------------------------------
 
+// A source of three chunks, "alpha-" "beta-" and "gamma-gamma-gamma!" (29 bytes together)
+actor ThreeChunks is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  at: u32;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), at: 0u32, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if at == 3u32 {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        let text = if at == 0u32 {"alpha-"} else if at == 1u32 {"beta-"} else {"gamma-gamma-gamma!"};
+        match link.take(text.len) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(text as &Array[u8]);
+            at = at + 1u32;
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
 actor Handler {
   ex: Exchange;
 
@@ -52,6 +104,12 @@ actor Handler {
       let r1 = await ex.sendEvent(&a);
       let r2 = await ex.sendEvent(&b);
       let f = await ex.finish();
+    } else if p == "/sink" {
+      // a body fed by a stream: three chunks through bodySink, sized
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(29u64));
+      let sink = ex.bodySink();
+      let g = ThreeChunks(sink);
+      g.start();
     } else {
       var t = String.from(ex.request.methodName());
       t.append(" ");
@@ -254,6 +312,8 @@ actor Prober {
       }
     }
     say("after it", await prior.get(url(smallPort, "/after").view()));
+    // A body fed by a stream (bodySink) over HTTP/3
+    say("a body from a sink", await prior.get(url(smallPort, "/sink").view()));
     var d = done;
     d.send(1u64);
   }
