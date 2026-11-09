@@ -653,6 +653,18 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
             LLVMBuildTrunc(gen->builder, high, i64, "mulfoldhi"), "mulfold");
     }
 
+    // A hint to the cache: llvm.prefetch(p, read, high locality, data cache). It
+    // is nothing on a GPU or WebAssembly target. The argument was evaluated for
+    // its effects before this, so dropping the call drops only the hint
+    case PrefetchIntrinsic: {
+        if (gen->opt->gpu || gen->opt->wasm)
+            return NULL;
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+        LLVMValueRef args[4] = { fnargs[0], LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 3, 0), LLVMConstInt(i32, 1, 0) };
+        genlCallLlvmIntrinsic(gen, "llvm.prefetch", LLVMTypeOf(fnargs[0]), args, 4);
+        return NULL;
+    }
+
     // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
     // the CPU a call to the thread's barrier hook when it has set one.
     // WebAssembly links no conestd, which holds the hook, and runs a kernel one
