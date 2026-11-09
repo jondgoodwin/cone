@@ -1,0 +1,290 @@
+// One row of the regex benchmark (tools/regexbench). Run one row per process, so a
+// script can alternate this program with its Rust twin (tools/regexbench/rust,
+// `regexbench bench a|b <row>`), which builds the same corpus from the same
+// generator and prints the same line:
+//
+//   congo run --release packages/regex/examples/regexbench.cone -- p3-caps
+//
+// prints `row us=<microseconds> count=<matches> sum=<checksum>`. The count and the
+// checksum (of every match's and group's offsets) must equal the twin's before any
+// time counts. The corpus is built before the clock starts. Rows: p1-is p1-find
+// p2-is p2-find p3-find p3-caps p4-find p4-caps p5-is p5-find p6-find compile
+// adv64k adv1m. An '-is' row asks isMatch of each line of the corpus in turn;
+// '-find' every match of the whole corpus; '-caps' every match's groups.
+
+mod regexbench;
+
+import collections use *;
+import regex;
+import process;
+import stdio use *;
+import time use *;
+
+struct Rng {
+  pub s: u64;
+
+  pub fn next(self: &mut) u32 {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    u32.from(s >> 33u64)
+  }
+
+  pub fn below(self: &mut, n: u32) u32 { self.next() % n }
+}
+
+fn two(out: &mut String, n: u32) {
+  out.appendByte(u8.from(48u32 + n / 10u32));
+  out.appendByte(u8.from(48u32 + n % 10u32));
+}
+
+const logWords: Array[&str, 8] = ["index", "login", "search", "api", "static", "users", "orders", "health"];
+const methods: Array[&str, 3] = ["GET", "POST", "PUT"];
+const codes: Array[&str, 3] = ["200", "404", "500"];
+const dictWords: Array[&str, 20] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+  "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango"];
+const letters = "etaoinshrdlcumwfgypbvkjxqz";
+
+// 10 MiB of log lines; about one in 50 has ERROR
+fn logCorpus() String {
+  var r = Rng(1u64);
+  var s = String.withCapacity(10485760usize + 200usize);
+  while s.len() < 10485760usize {
+    s.append("2026-11-");
+    two(&mut s, 1u32 + r.below(28u32));
+    s.append("T");
+    two(&mut s, r.below(24u32));
+    s.append(":");
+    two(&mut s, r.below(60u32));
+    s.append(":");
+    two(&mut s, r.below(60u32));
+    s.append("Z ");
+    let lv = r.below(50u32);
+    if lv == 0u32 { s.append("ERROR"); } else if lv % 2u32 == 0u32 { s.append("INFO"); } else { s.append("WARN"); }
+    s.append(" host-");
+    two(&mut s, r.below(100u32));
+    s.append(" ");
+    s.append(methods[usize.from(r.below(3u32))]);
+    s.append(" /");
+    s.append(logWords[usize.from(r.below(8u32))]);
+    s.append("?x=");
+    s.appendUInt(u64.from(r.below(1000u32)));
+    s.append(" ");
+    s.append(codes[usize.from(r.below(3u32))]);
+    s.append(" ");
+    s.appendUInt(u64.from(r.below(2000u32)));
+    s.append("ms ip ");
+    s.appendUInt(u64.from(r.below(256u32)));
+    s.append(".");
+    s.appendUInt(u64.from(r.below(256u32)));
+    s.append(".");
+    s.appendUInt(u64.from(r.below(256u32)));
+    s.append(".");
+    s.appendUInt(u64.from(r.below(256u32)));
+    s.append("\n");
+  }
+  s
+}
+
+fn letter(r: &mut Rng) u8 {
+  let a = r.below(26u32);
+  let b = r.below(26u32);
+  letters[usize.from(if a < b { a } else { b })]
+}
+
+// 100000 pseudo-words, one a line; every 5000th is one of the 20 alternatives of P5
+fn dictCorpus() String {
+  var r = Rng(2u64);
+  var s = String.withCapacity(1000000usize);
+  var i = 0u32;
+  while i < 100000u32 {
+    if i % 5000u32 == 2500u32 {
+      s.append(dictWords[usize.from(i / 5000u32)]);
+    }
+    else {
+      let n = 3u32 + r.below(8u32);
+      var k = 0u32;
+      while k < n { s.appendByte(letter(&mut r)); k = k + 1u32; }
+    }
+    s.append("\n");
+    i = i + 1u32;
+  }
+  s
+}
+
+// 10 MiB of words and punctuation; one word in 10 ends in 'ing', one in 50 has a 2- or 3-byte character
+fn textCorpus() String {
+  var r = Rng(3u64);
+  var s = String.withCapacity(10485760usize + 100usize);
+  var words = 0u32;
+  while s.len() < 10485760usize {
+    let n = 2u32 + r.below(8u32);
+    let odd = r.below(50u32);
+    var k = 0u32;
+    while k < n {
+      if odd == 0u32 && k == 1u32 { s.append("é"); }
+      else if odd == 1u32 && k == 1u32 { s.append("日"); }
+      else { s.appendByte(letter(&mut r)); }
+      k = k + 1u32;
+    }
+    if r.below(10u32) == 0u32 { s.append("ing"); }
+    let p = r.below(10u32);
+    if p == 0u32 { s.append(","); } else if p == 1u32 { s.append("."); } else if p == 2u32 { s.append(";"); }
+    words = words + 1u32;
+    if words % 12u32 == 0u32 { s.append("\n"); } else { s.append(" "); }
+  }
+  s
+}
+
+const p5 = "(?-u)\\b(?:alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango)\\b";
+
+fn patternOf(row: &str) &str {
+  if row.startsWith("p1") { "ERROR" }
+  else if row.startsWith("p2") { "[0-9]{4}-[0-9]{2}-[0-9]{2}" }
+  else if row.startsWith("p3") { "(?-u)(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)" }
+  else if row.startsWith("p4") { "(?-u)(GET|POST|PUT) /(\\w+)\\?x=(\\d+)" }
+  else if row.startsWith("p5") { p5 }
+  else { "(?-u)\\w+ing\\b" }
+}
+
+fn mix(h: u64, x: u64) u64 { h * 1000003u64 + x }
+
+fn built(pat: &str) regex.Regex {
+  match regex.Regex.parse(pat) {
+    case let Ok(re) { re }
+    case let Err(e) { panic("pattern refused") }
+  }
+}
+
+fn isRow(re: &regex.Regex, text: &str, out: &mut RowOut) {
+  var pos = 0usize;
+  var n = 0u64;
+  var yes = 0u64;
+  while pos < text.len() {
+    var e = pos;
+    while e < text.len() && text[e] != '\n' { e = e + 1usize; }
+    if re.isMatch(text.slice(pos, e)) { yes = yes + 1u64; }
+    n = n + 1u64;
+    pos = e + 1usize;
+  }
+  out.count = n;
+  out.sum = yes;
+}
+
+fn findRow(re: &regex.Regex, text: &str, out: &mut RowOut) {
+  var it = re.matches(text);
+  var n = 0u64;
+  var h = 0u64;
+  var go = true;
+  while go {
+    match it.next() {
+      case let Some(m) { n = n + 1u64; h = mix(mix(h, u64.from(m.start)), u64.from(m.end)); }
+      case is None { go = false; }
+    }
+  }
+  out.count = n;
+  out.sum = h;
+}
+
+fn capsRow(re: &regex.Regex, text: &str, out: &mut RowOut) {
+  var n = 0u64;
+  var h = 0u64;
+  var pos = 0usize;
+  var go = true;
+  while go {
+    match re.capturesFrom(text, pos) {
+      case let Some(c) {
+        n = n + 1u64;
+        var i = 0usize;
+        while i < c.len() {
+          match c.span(i) {
+            case let Some(m) { h = mix(mix(h, u64.from(m.start) + 1u64), u64.from(m.end) + 1u64); }
+            case is None { h = mix(h, 0u64); }
+          }
+          i = i + 1usize;
+        }
+        pos = c.span(0).unwrap().end;
+      }
+      case is None { go = false; }
+    }
+  }
+  out.count = n;
+  out.sum = h;
+}
+
+struct RowOut {
+  pub count: u64;
+  pub sum: u64;
+}
+
+fn compileRow(out: &mut RowOut) {
+  var n = 0u64;
+  var k = 0;
+  while k < 1000 {
+    var p = 1;
+    while p <= 6 {
+      var pat = "ERROR";
+      if p == 2 { pat = "[0-9]{4}-[0-9]{2}-[0-9]{2}"; }
+      else if p == 3 { pat = "(?-u)(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)"; }
+      else if p == 4 { pat = "(?-u)(GET|POST|PUT) /(\\w+)\\?x=(\\d+)"; }
+      else if p == 5 { pat = p5; }
+      else if p == 6 { pat = "(?-u)\\w+ing\\b"; }
+      match regex.Regex.parse(pat) {
+        case let Ok(re) { n = n + u64.from(re.groupCount()) + 1u64; }
+        case is Err { }
+      }
+      p = p + 1;
+    }
+    k = k + 1;
+  }
+  out.count = n;
+  out.sum = n;
+}
+
+fn adversarial(size: usize, out: &mut RowOut) {
+  var hay = String.withCapacity(size);
+  var i = 0usize;
+  while i < size { hay.appendByte('a'); i = i + 1usize; }
+  let a = built("(a*)*b");
+  let b = built("(a|a)*b");
+  var n = 0u64;
+  if a.isMatch(hay.view()) { n = n + 1u64; }
+  if b.isMatch(hay.view()) { n = n + 1u64; }
+  out.count = n;
+  out.sum = u64.from(size);
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 2usize { printStr("usage: regexbench <row>\n"); return 2i32; }
+  let row = args[1usize].view();
+  var out = RowOut(0u64, 0u64);
+  var us = 0i64;
+  if row == "compile" {
+    let t0 = Instant.now();
+    compileRow(&mut out);
+    us = t0.elapsed().micros();
+  }
+  else if row == "adv64k" || row == "adv1m" {
+    let t0 = Instant.now();
+    adversarial(if row == "adv64k" { 65536usize } else { 1048576usize }, &mut out);
+    us = t0.elapsed().micros();
+  }
+  else {
+    var text = String();
+    var reps = 1;
+    if row.startsWith("p5") { text = dictCorpus(); reps = 10; }
+    else if row.startsWith("p6") { text = textCorpus(); }
+    else { text = logCorpus(); }
+    let re = built(patternOf(row));
+    let t0 = Instant.now();
+    var rep = 0;
+    while rep < reps {
+      if row.endsWith("-is") { isRow(&re, text.view(), &mut out); }
+      else if row.endsWith("-caps") { capsRow(&re, text.view(), &mut out); }
+      else { findRow(&re, text.view(), &mut out); }
+      rep = rep + 1;
+    }
+    us = t0.elapsed().micros();
+  }
+  print <- row, " us=", us, " count=", out.count, " sum=", out.sum, "\n";
+  0i32
+}

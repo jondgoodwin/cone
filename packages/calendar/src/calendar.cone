@@ -1,8 +1,9 @@
 // The calendar package: the civil calendar over the time package's
 // Timestamp. A Timestamp read as the calendar reads it is a DateTime, a Date
 // and a TimeOfDay in UTC; and RFC 3339's dates and HTTP's are written and
-// read. No time zones yet: a DateTime is UTC, and a written offset ('+05:30')
-// is only read, into UTC.
+// read. A DateTime is UTC, and a written offset ('+05:30') is only read, into
+// UTC; a Zone, read from a TZif file's bytes, says what offset a place has at
+// an instant, and no local date-time is made from it yet.
 //
 //   mod when;
 //   import time use Timestamp;
@@ -28,6 +29,8 @@
 //   TimeOfDay    an hour, a minute, a second, a nanosecond       (TIME OF DAY)
 //   DateTime     a Date and a TimeOfDay, in UTC                  (DATETIME)
 //   TimeError    why a text is not a date or a time              (FORMATS)
+//   Zone         the rules of one place, from a TZif file        (ZONES)
+//   Offset       the offset from UTC at an instant               (ZONES)
 //
 // WHY A PACKAGE OF ITS OWN. The time package is a foundation that sync,
 // thread, fs and process import, and it needs nothing but libc. The calendar
@@ -153,11 +156,28 @@
 // parseHttpDateAsOf, for a test or a replay. The day's name must be the
 // date's: 'Mon, 06 Nov 1994' is refused, since 6 November 1994 was a
 // Sunday. A leap second is refused, as in RFC 3339.
+//
+// ZONES. A Zone is the rules of one place, made from the bytes of a TZif file
+// (RFC 8536) that the caller has read: this package reads no file. Version 2
+// and later only; a version 1 file is refused. 'fat' and 'slim' files are read
+// alike. The reading and its rules are in zone.cone's header.
+//
+//   Zone.fromTzif(bytes)            Result[Zone, TimeError]: the byte it
+//                                   stopped at and why
+//   z.offsetAt(t)                   an Offset, for any Timestamp
+//   o.seconds                       an i32, east of UTC (-10800 is UTC-03:00)
+//   o.abbr                          &str, the zone's own name for it: 'BRT',
+//                                   '-03', borrowed from the Zone
+//   o.isDst                         whether it is daylight saving time
+//
+// At the instant of a transition the new offset applies, a nanosecond before
+// it the old one; before the first listed transition the file's first time
+// type does.
 
 mod calendar;
 
 import time use Duration, Timestamp;
-import collections use String;
+import collections use String, List;
 
 const nsPerSecond = 1000000000i64;
 
