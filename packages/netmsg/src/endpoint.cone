@@ -41,9 +41,9 @@
 // is not "running", so the program's end does not wait for it (aio's header,
 // THE PROGRAM'S END); the peers then time out as for any lost datagram.
 //
-// STILL SHARED: events reach the application through one EventHandler closure
-// under Arc[Mutex] for all connections, because actors cannot yet be generic or
-// take a trait; it becomes direct actor messages once they can.
+// EVENTS reach the application through one EventHandler, a ValueSink[NetEvent]
+// shared by all the connections (see events.cone and Connection); the endpoint's
+// own Left (a dial that failed, with no connection) goes to it directly.
 
 // A connection an endpoint holds
 struct ConnectionSlot {
@@ -107,7 +107,9 @@ pub actor Endpoint {
   }
 
   // End every connection (each tells its peer), send what is queued, close the
-  // socket. Call it before the program ends.
+  // socket. Call it before the program ends. The sink's one 'end' follows; it can
+  // reach a sink before a connection's 'Left' when the sink is withholding credit,
+  // so treat 'end' as every connection gone.
   pub async fn shutdown(self) {
     if stopped {return;}
     stopped = true;
@@ -123,6 +125,9 @@ pub actor Endpoint {
         case is None[Connection] {}
       }
     }
+    // The ValueSource contract: one 'end' to the handler, after every Left. A
+    // Connection sends none (its Left is its own end), because the handler is shared.
+    handler.end(Ending.Finished);
     // The disconnect datagrams are in flight: wait for the socket to take them
     let limit = Instant.now() + Duration.fromMillis(flushMillis);
     while inflight > 0usize && Instant.now() < limit {
@@ -274,7 +279,9 @@ pub actor Endpoint {
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
         dialing = false;
-        (&mut *handler).call(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
+        // Id 1 is no live connection: only a dial that connects makes one (with id 1,
+        // in 'dial', which ends the dialing), and a server never dials
+        handler.accept(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
       }
     }
     var i = 0usize;
@@ -366,7 +373,8 @@ pub actor Endpoint {
       }
       case is Refused {
         dialing = false;
-        (&mut *handler).call(NetEvent.Left(1u32, CloseReason.Refused));
+        // As in 'fire': dialing was on, so id 1 is no live connection
+        handler.accept(NetEvent.Left(1u32, CloseReason.Refused));
       }
       case is Nothing {}
     }
