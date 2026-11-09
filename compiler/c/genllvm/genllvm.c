@@ -1039,6 +1039,10 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
         genlBorrowAttrs(gen, glofn, glofn->llvmvar);
+        // '@noalias': the pointer returned is a fresh allocation. Honors --no-noalias
+        if ((glofn->dclinfo.facts & DclNoAlias) && !gen->opt->no_noalias && !gen->opt->gpu)
+            LLVMAddAttributeAtIndex(glofn->llvmvar, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("noalias", 7), 0));
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);

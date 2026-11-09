@@ -3073,7 +3073,7 @@ pub extern {
 // bytes is not refused and gets 16. A block goes back to this layer, never to
 // the C library directly.
 pub struct @opaque RawBlocks {
-  pub fn alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
+  pub fn @noalias alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
   pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {
     rawBlockResize(block, oldBytes, newBytes, align)
   }
@@ -3081,7 +3081,7 @@ pub struct @opaque RawBlocks {
 }
 
 extern {
-  fn @c("cone_rawBlockAlloc") rawBlockAlloc(bytes: usize, align: usize) *u8;
+  fn @noalias @c("cone_rawBlockAlloc") rawBlockAlloc(bytes: usize, align: usize) *u8;
   fn @c("cone_rawBlockResize") rawBlockResize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8;
   fn @c("cone_rawBlockRelease") rawBlockRelease(block: *u8);
 }
@@ -3098,7 +3098,7 @@ extern {
 // 'free'. A region ref declaring neither 'Move' nor 'aliasRef' would share its
 // references freely, and its owners' going would do nothing.
 pub struct Uni is RegionRef, Move {
-  fn alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
   fn free(self: &uni Uni) inline {RawBlocks.release(self as *u8);}
 }
 
@@ -3111,7 +3111,7 @@ pub struct Uni is RegionRef, Move {
 pub struct Rc is RegionRef {
   cnt: u32;
   seen: u32;
-  fn alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
+  fn @noalias alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
   fn init(self: &new) inline {*self = Rc(1u32, 0u32);}
   fn aliasRef(self: &uni Rc) inline {
     if cnt == 4294967295u32 {panic("Rc: more than 4294967295 owners of one value");}
@@ -3195,6 +3195,11 @@ pub struct Rwcell is LockPermission {
 //                                       function of its own); one that rounds a
 //                                       request up to a size of its own answers that
 //
+// A block 'alloc' gives is fresh: it is distinct from, and overlaps, every block
+// the region has given that is still live (not yet released). The compiler relies
+// on this, marking the result of 'allocate' 'noalias'; a region that handed one
+// block out twice while live would be miscompiled.
+//
 // A block the region cannot give is null, as the C library's is. Calls are
 // made through 'allocate', 'resize', 'release' and 'sizeFor', the methods below.
 //
@@ -3221,7 +3226,7 @@ pub struct MemRegion {
   pub releaseFn: &fn(r: *MemRegion, block: *u8, bytes: usize);
   pub sizeFn: &fn(r: *MemRegion, bytes: usize, align: usize) usize;
 
-  pub fn allocate(self: &, bytes: usize, align: usize) *u8 inline {
+  pub fn @noalias allocate(self: &, bytes: usize, align: usize) *u8 inline {
     let f = allocFn;
     f(self as *MemRegion, bytes, align)
   }
