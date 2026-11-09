@@ -1,0 +1,588 @@
+// Time zones: a Zone read from TZif files (RFC 8536) and Zone.offsetAt, on the
+// files of tests/data (IANA release 2026f), which are committed byte for byte
+// and not read from the machine: the 'slim' files tzcode writes by default,
+// which list only the transitions no rule gives and end in the footer's POSIX
+// rule, and the 'fat' files, which list transitions to 2037.
+//
+// The expected offsets, names and daylight saving flags were not computed by
+// this code: tests/data/make_expected.py wrote them with Python's zoneinfo
+// reading the slim files and pytz reading the fat ones (it asserts the two
+// agree), and a few were checked by hand against the zones' history (the
+// New York day of two noons in 1883, the 2026 changes in March and November,
+// Lord Howe's half hour). Each change of offset is probed a second before, at
+// and a second after; the sweeps are sums over 630702 instants from 1900 to
+// 2100, 10007 seconds apart, which Python computed, run over the slim and the
+// fat file of one zone alike. Then the refusals, the footer's forms checked
+// by hand (Jn, n, an offset with minutes, a rule time that is negative or
+// over a day), and a file made here with no transition.
+
+mod zone;
+
+import testing use *;
+import collections use *;
+import time use Timestamp;
+import calendar use Zone, Offset, DateTime;
+import fs;
+import path use Path;
+
+fn loadFile(name: &str) String {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  var file = String();
+  match fs.readFile(&Path.from(p.view())) {
+    case var Ok(ok) { file <-> ok; }
+    case let Err(e) { require(false, "the data file is there"); }
+  }
+  file
+}
+
+fn zoneOf(file: &String) Zone {
+  Zone.fromTzif(file.view()).expect("the test's file is read")
+}
+
+fn at(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) Timestamp {
+  match DateTime.fromYmdHms(y, mo, d, h, mi, s) {
+    case let Some(x) {
+      match x.toTimestamp() {
+        case let Some(t) { return t; }
+        case is None { }
+      }
+    }
+    case is None { }
+  }
+  require(false, "the test's instant exists");
+  Timestamp.fromUnixSeconds(0)
+}
+
+fn named(kind: &str, label: &str, what: &str) String {
+  var m = String.from(kind);
+  m.append(" ");
+  m.append(label);
+  m.append(": ");
+  m.append(what);
+  m
+}
+
+// What the zone says at the instant, against the offset (seconds east of UTC),
+// the abbreviation and the daylight saving flag expected
+fn check(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64,
+    off: i64, abbr: &str, dst: bool) {
+  let o = z.offsetAt(at(y, mo, d, h, mi, s));
+  expectInt(i64.from(o.seconds), off, named(kind, label, "offset").view());
+  expectStr(o.abbr, abbr, named(kind, label, "abbreviation").view());
+  expectBool(o.isDst, dst, named(kind, label, "daylight saving").view());
+}
+
+// ---------------------------------------------------------------------------
+// The sweeps
+// ---------------------------------------------------------------------------
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+fn sweep(z: &Zone, kind: &str, name: &str, samples: i64, offsetSum: i64, dstCount: i64, nameChanges: i64) {
+  var n = 0i64;
+  var offs = 0i64;
+  var dsts = 0i64;
+  var changes = 0i64;
+  var last = String();
+  var t = -2208988800i64;
+  while t < 4102444800i64 {
+    let o = z.offsetAt(Timestamp.fromUnixSeconds(t));
+    n = n + 1i64;
+    offs = offs + i64.from(o.seconds);
+    if o.isDst { dsts = dsts + 1i64; }
+    if !same(o.abbr, last.view()) {
+      if n > 1i64 { changes = changes + 1i64; }
+      last = String.from(o.abbr);
+    }
+    t = t + 10007i64;
+  }
+  expectInt(n, samples, named(kind, name, "sweep samples").view());
+  expectInt(offs, offsetSum, named(kind, name, "sweep offset sum").view());
+  expectInt(dsts, dstCount, named(kind, name, "sweep daylight saving count").view());
+  expectInt(changes, nameChanges, named(kind, name, "sweep abbreviation changes").view());
+}
+
+fn sweeps() {
+  let spS = loadFile("America_Sao_Paulo.slim.tzif");
+  let spF = loadFile("America_Sao_Paulo.fat.tzif");
+  let mS = loadFile("Europe_Moscow.slim.tzif");
+  let mF = loadFile("Europe_Moscow.fat.tzif");
+  let nyS = loadFile("America_New_York.slim.tzif");
+  let nyF = loadFile("America_New_York.fat.tzif");
+  let ky = loadFile("Europe_Kyiv.slim.tzif");
+  let lh = loadFile("Australia_Lord_Howe.slim.tzif");
+  let du = loadFile("Europe_Dublin.slim.tzif");
+  let nu = loadFile("America_Nuuk.slim.tzif");
+  let lo = loadFile("Europe_London.fat.tzif");
+  sweep(&zoneOf(&spS), "slim", "Sao_Paulo", 630702, -6658070636, 47400, 91);
+  sweep(&zoneOf(&spF), "fat", "Sao_Paulo", 630702, -6658070636, 47400, 91);
+  sweep(&zoneOf(&mS), "slim", "Moscow", 630702, 6866988614, 58661, 74);
+  sweep(&zoneOf(&mF), "fat", "Moscow", 630702, 6866988614, 58661, 74);
+  sweep(&zoneOf(&ky), "slim", "Kyiv", 630702, 5984574920, 222453, 244);
+  sweep(&zoneOf(&nyS), "slim", "New_York", 630702, -10143831600, 335779, 359);
+  sweep(&zoneOf(&nyF), "fat", "New_York", 630702, -10143831600, 335779, 359);
+  sweep(&zoneOf(&lh), "slim", "Lord_Howe", 630702, 23707335600, 177531, 238);
+  sweep(&zoneOf(&du), "slim", "Dublin", 630702, 1145414385, 261728, 350);
+  sweep(&zoneOf(&nu), "slim", "Nuuk", 630702, -5249060064, 215395, 240);
+  sweep(&zoneOf(&lo), "fat", "London", 630702, 1244642400, 329787, 364);
+}
+
+// ---------------------------------------------------------------------------
+// The checks at the changes
+// ---------------------------------------------------------------------------
+
+fn changes() {
+  let spS = loadFile("America_Sao_Paulo.slim.tzif");
+  let spF = loadFile("America_Sao_Paulo.fat.tzif");
+  let mS = loadFile("Europe_Moscow.slim.tzif");
+  let mF = loadFile("Europe_Moscow.fat.tzif");
+  let nyS = loadFile("America_New_York.slim.tzif");
+  let nyF = loadFile("America_New_York.fat.tzif");
+  checkSaoPaulo(&zoneOf(&spS), "slim");
+  checkSaoPaulo(&zoneOf(&spF), "fat");
+  checkMoscow(&zoneOf(&mS), "slim");
+  checkMoscow(&zoneOf(&mF), "fat");
+  checkNewYork(&zoneOf(&nyS), "slim");
+  checkNewYork(&zoneOf(&nyF), "fat");
+  checkKyiv(&zoneOf(&loadFile("Europe_Kyiv.slim.tzif")), "slim");
+  checkLordHowe(&zoneOf(&loadFile("Australia_Lord_Howe.slim.tzif")), "slim");
+  checkDublin(&zoneOf(&loadFile("Europe_Dublin.slim.tzif")), "slim");
+  checkNuuk(&zoneOf(&loadFile("America_Nuuk.slim.tzif")), "slim");
+  checkLondon(&zoneOf(&loadFile("Europe_London.fat.tzif")), "fat");
+}
+
+// A Timestamp is nanoseconds: the instant of a change is the new offset's, a
+// nanosecond before it the old one's, before 1970 as after
+fn nanoseconds() {
+  let ny = zoneOf(&loadFile("America_New_York.slim.tzif"));
+  // 2026-03-08T07:00:00Z, New York's skipped hour begins
+  let spring = 1772953200i64 * 1000000000i64;
+  expectInt(i64.from(ny.offsetAt(Timestamp.fromUnixNanos(spring - 1i64)).seconds), -18000, "a nanosecond before spring");
+  expectInt(i64.from(ny.offsetAt(Timestamp.fromUnixNanos(spring)).seconds), -14400, "at spring");
+  // 1883-11-18T17:00:00Z, the day of two noons
+  let noons = -2717650800i64 * 1000000000i64;
+  expectInt(i64.from(ny.offsetAt(Timestamp.fromUnixNanos(noons - 1i64)).seconds), -17762, "a nanosecond before 1883");
+  expectInt(i64.from(ny.offsetAt(Timestamp.fromUnixNanos(noons)).seconds), -18000, "at 1883");
+  expectInt(i64.from(ny.offsetAt(Timestamp.fromUnixNanos(noons + 999999999i64)).seconds), -18000, "a second less a nanosecond after 1883");
+  // The ends of a Timestamp's range (1677-09-21 and 2262-04-11)
+  let lo = ny.offsetAt(Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64));
+  expectInt(i64.from(lo.seconds), -17762, "the earliest Timestamp: local mean time");
+  expectStr(lo.abbr, "LMT", "the earliest Timestamp: its name");
+  let hi = ny.offsetAt(Timestamp.fromUnixNanos(9223372036854775807i64));
+  expectInt(i64.from(hi.seconds), -14400, "the latest Timestamp: daylight saving time");
+  expect(hi.isDst, "the latest Timestamp: its flag");
+}
+
+// ---------------------------------------------------------------------------
+// Footers by hand
+// ---------------------------------------------------------------------------
+
+// A copy of a file with another footer
+fn withFooter(file: &String, footer: &str) String {
+  let b = file.view();
+  var cut = b.len - 2usize;                        // the byte before the closing newline
+  while b[cut] != '\n' { cut = cut - 1usize; }     // the opening newline
+  var out = String.fromBytes(&b[0..<cut + 1usize]);
+  out.append(footer);
+  out.appendByte('\n');
+  out
+}
+
+fn footerCase(base: &String, footer: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64,
+    off: i64, abbr: &str, dst: bool) {
+  let f = withFooter(base, footer);
+  let z = zoneOf(&f);
+  check(&z, "footer", footer, y, mo, d, h, mi, s, off, abbr, dst);
+}
+
+fn footers() {
+  // Sao Paulo's last listed transition is in 2019, so these years are the footer's
+  let sp = loadFile("America_Sao_Paulo.slim.tzif");
+  // Jn counts no 29 February: J60 is 1 March in 2024 and 2023 alike, J305 is 1 November
+  // start: 2024-03-01 02:00 at -05:00 is 07:00Z; end: 2024-11-01 02:00 at -04:00 is 06:00Z
+  footerCase(&sp, "TST5TDT,J60,J305", 2024, 3, 1, 6, 59, 59, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,J60,J305", 2024, 3, 1, 7, 0, 0, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,J60,J305", 2024, 11, 1, 5, 59, 59, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,J60,J305", 2024, 11, 1, 6, 0, 0, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,J60,J305", 2023, 2, 28, 12, 0, 0, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,J60,J305", 2023, 3, 1, 7, 0, 0, -14400, "TDT", true);
+  // n counts it, from 0: 59 is 29 February in 2024 and 1 March in 2023; 304 is 31 October
+  // in 2024 and 1 November in 2023
+  footerCase(&sp, "TST5TDT,59,304", 2024, 2, 29, 6, 59, 59, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,59,304", 2024, 2, 29, 7, 0, 0, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,59,304", 2024, 10, 31, 5, 59, 59, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,59,304", 2024, 10, 31, 6, 0, 0, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,59,304", 2023, 2, 28, 12, 0, 0, -18000, "TST", false);
+  footerCase(&sp, "TST5TDT,59,304", 2023, 3, 1, 7, 0, 0, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,59,304", 2023, 11, 1, 5, 59, 59, -14400, "TDT", true);
+  footerCase(&sp, "TST5TDT,59,304", 2023, 11, 1, 6, 0, 0, -18000, "TST", false);
+  // Offsets with minutes, a rule time with minutes and seconds and negative, another past a
+  // day: standard +05:30 (19800), daylight +06:30 (23400). 2026-03-29 is the last Sunday of
+  // March: its midnight less 1:30:15 is 22:29:45 on the 28th at +05:30, 16:59:45Z. 2026-10-25
+  // is the last Sunday of October: its midnight plus 26 hours is 02:00 on the 26th at +06:30,
+  // 19:30:00Z on the 25th
+  let odd = "<+0530>-5:30<+0630>-6:30,M3.5.0/-1:30:15,M10.5.0/26";
+  footerCase(&sp, odd, 2026, 3, 28, 16, 59, 44, 19800, "+0530", false);
+  footerCase(&sp, odd, 2026, 3, 28, 16, 59, 45, 23400, "+0630", true);
+  footerCase(&sp, odd, 2026, 10, 25, 19, 29, 59, 23400, "+0630", true);
+  footerCase(&sp, odd, 2026, 10, 25, 19, 30, 0, 19800, "+0530", false);
+  // The daylight offset left out is one hour east of standard
+  footerCase(&sp, "AAA3BBB,M3.5.0,M10.5.0", 2026, 7, 1, 0, 0, 0, -7200, "BBB", true);
+  footerCase(&sp, "AAA3BBB,M3.5.0,M10.5.0", 2026, 1, 1, 0, 0, 0, -10800, "AAA", false);
+
+  // An empty footer: the last transition's type for ever. New York's slim file lists its
+  // last transition on 2007-03-11, to daylight saving time, so a January is daylight too
+  let ny = loadFile("America_New_York.slim.tzif");
+  let none = withFooter(&ny, "");
+  let z = zoneOf(&none);
+  check(&z, "no footer", "2026-01-15", 2026, 1, 15, 0, 0, 0, -14400, "EDT", true);
+  check(&z, "no footer", "2006-10-29T05:59:59Z", 2006, 10, 29, 5, 59, 59, -14400, "EDT", true);
+}
+
+// ---------------------------------------------------------------------------
+// A file with no transition, made here
+// ---------------------------------------------------------------------------
+
+fn putU32(out: &mut String, v: i64) {
+  out.appendByte(u8.from((v / 16777216i64) % 256i64));
+  out.appendByte(u8.from((v / 65536i64) % 256i64));
+  out.appendByte(u8.from((v / 256i64) % 256i64));
+  out.appendByte(u8.from(v % 256i64));
+}
+
+fn putHeader(out: &mut String) {
+  out.append("TZif2");
+  var i = 0i64;
+  while i < 15i64 { out.appendByte(0u8); i = i + 1i64; }
+  putU32(out, 0i64);   // UT indicators
+  putU32(out, 0i64);   // standard indicators
+  putU32(out, 0i64);   // leap seconds
+  putU32(out, 0i64);   // transitions
+  putU32(out, 1i64);   // time types
+  putU32(out, 4i64);   // characters
+}
+
+fn putData(out: &mut String, utoff: i64) {
+  putU32(out, utoff);
+  out.appendByte(0u8);   // not daylight saving
+  out.appendByte(0u8);   // abbreviation at 0
+  out.append("XYZ");
+  out.appendByte(0u8);
+}
+
+// A version 2 file with one time type, XYZ at utoff seconds, and no transition
+fn minimalFile(utoff: i64, footer: &str) String {
+  var out = String();
+  putHeader(&mut out);
+  putData(&mut out, utoff);
+  putHeader(&mut out);
+  putData(&mut out, utoff);
+  out.appendByte('\n');
+  out.append(footer);
+  out.appendByte('\n');
+  out
+}
+
+fn minimal() {
+  // No transition, no footer: time type 0 at every instant
+  let a = zoneOf(&minimalFile(3600, ""));
+  check(&a, "no transition", "1900", 1900, 1, 1, 0, 0, 0, 3600, "XYZ", false);
+  check(&a, "no transition", "2100", 2100, 1, 1, 0, 0, 0, 3600, "XYZ", false);
+  // No transition, a footer: its rule at every instant
+  let b = zoneOf(&minimalFile(3600, "ABC-2"));
+  check(&b, "footer only", "1900", 1900, 1, 1, 0, 0, 0, 7200, "ABC", false);
+  check(&b, "footer only", "2100", 2100, 1, 1, 0, 0, 0, 7200, "ABC", false);
+  // And a footer with daylight saving time and no transition
+  let c = zoneOf(&minimalFile(0, "EST5EDT,M3.2.0,M11.1.0"));
+  check(&c, "footer only", "2026-03-08T06:59:59Z", 2026, 3, 8, 6, 59, 59, -18000, "EST", false);
+  check(&c, "footer only", "2026-03-08T07:00:00Z", 2026, 3, 8, 7, 0, 0, -14400, "EDT", true);
+}
+
+// ---------------------------------------------------------------------------
+// Refusals
+// ---------------------------------------------------------------------------
+
+fn refused(bytes: &Array[u8], want: &str, label: &str) {
+  match Zone.fromTzif(bytes) {
+    case let Ok(z) { expect(false, named("refused", label, "was read").view()); }
+    case let Err(e) {
+      let got = String() <- e;
+      expectStr(got.view(), want, named("refused", label, "message").view());
+    }
+  }
+}
+
+// A copy of a file, to change a byte of
+fn copyOf(file: &String) String { String.fromBytes(file.view()) }
+
+fn poke(s: &mut String, at: usize, v: u8) {
+  let b = s.viewMut();
+  b[at] = v;
+}
+
+fn refusals() {
+  // Sao Paulo's slim file is 952 bytes: the version 1 header at 0 and its data (7 bytes) at 44,
+  // the version 2 header at 51, its 91 times at 95, their types at 823, the 3 time types at 914
+  // (the first's flag at 918 and abbreviation index at 919), the characters at 932 and the
+  // footer, '\n<-03>3\n', at 944
+  let sp = loadFile("America_Sao_Paulo.slim.tzif");
+  expectInt(i64.from(sp.len()), 952, "the file is the size the offsets below assume");
+
+  let empty = String();
+  refused(empty.view(), "at byte 0: the file ends inside the header", "empty");
+  var junk = String();
+  var i = 0i64;
+  while i < 44i64 { junk.appendByte('x'); i = i + 1i64; }
+  refused(junk.view(), "at byte 0: not a TZif file: the header does not begin with 'TZif'", "junk");
+
+  var v1 = copyOf(&sp);
+  poke(&mut v1, 4usize, 0u8);
+  refused(v1.view(), "at byte 4: this is a version 1 file; only version 2 and later are read", "version 1");
+  var v9 = copyOf(&sp);
+  poke(&mut v9, 4usize, 'x');
+  refused(v9.view(), "at byte 4: the version is not a TZif version, '2' or later", "version x");
+
+  let all: &Array[u8] = sp.view();
+  refused(&all[0..<60], "at byte 60: the file ends inside the header", "cut in the second header");
+  refused(&all[0..<700], "at byte 700: the file ends inside the data", "cut in the times");
+  refused(&all[0..<944], "at byte 944: the file ends before the footer", "cut before the footer");
+  refused(&all[0..<951], "at byte 951: the footer is not ended by a newline", "cut in the footer");
+
+  var more = copyOf(&sp);
+  more.appendByte('x');
+  refused(more.view(), "at byte 952: unexpected bytes after the footer", "bytes after the footer");
+
+  // Every shorter file than the whole is refused, and none stops the reader
+  var n = 0usize;
+  var refusedAll = true;
+  while n < sp.len() {
+    match Zone.fromTzif(&all[0..<n]) {
+      case is Ok { refusedAll = false; }
+      case is Err { }
+    }
+    n = n + 1usize;
+  }
+  expect(refusedAll, "every prefix of the file is refused");
+
+  var types0 = copyOf(&sp);
+  poke(&mut types0, 90usize, 0u8);
+  refused(types0.view(), "at byte 87: the number of time types is not 1 to 256", "no time types");
+
+  var order = copyOf(&sp);
+  var k = 0usize;
+  while k < 8usize { poke(&mut order, 103usize + k, sp.view()[95usize + k]); k = k + 1usize; }
+  refused(order.view(), "at byte 103: the transition times are not in ascending order", "equal times");
+
+  var tt = copyOf(&sp);
+  poke(&mut tt, 823usize, 3u8);
+  refused(tt.view(), "at byte 823: a transition names a time type that does not exist", "type 3 of 3");
+  var flag = copyOf(&sp);
+  poke(&mut flag, 918usize, 2u8);
+  refused(flag.view(), "at byte 918: the daylight saving flag is neither 0 nor 1", "flag 2");
+  var idx = copyOf(&sp);
+  poke(&mut idx, 919usize, 200u8);
+  refused(idx.view(), "at byte 919: an abbreviation index is outside the characters", "index 200");
+  var bad = copyOf(&sp);
+  poke(&mut bad, 933usize, ' ');
+  refused(bad.view(), "at byte 933: an abbreviation holds a character other than a letter, a digit, '+' or '-'", "a space");
+  var open = copyOf(&sp);
+  poke(&mut open, 943usize, 'x');
+  refused(open.view(), "at byte 940: an abbreviation is not ended by a NUL byte", "no NUL");
+  var nl = copyOf(&sp);
+  poke(&mut nl, 944usize, 'x');
+  refused(nl.view(), "at byte 944: the footer does not begin with a newline", "footer without newline");
+
+  // Footers: their text begins at byte 945
+  refused(withFooter(&sp, "ES5").view(), "at byte 945: expected a name of at least three characters", "short name");
+  refused(withFooter(&sp, "<ES>5").view(), "at byte 945: expected a name of at least three characters", "short quoted name");
+  refused(withFooter(&sp, "<EST5").view(), "at byte 945: a name begun by '<' is not ended by '>'", "unclosed name");
+  refused(withFooter(&sp, "<E T>5").view(),
+    "at byte 947: a name between '<' and '>' may hold only letters, digits, '+' and '-'", "space in a name");
+  refused(withFooter(&sp, "EST").view(), "at byte 948: expected the hours of the standard offset", "no offset");
+  refused(withFooter(&sp, "EST25").view(), "at byte 948: the hours of the standard offset are more than 24", "25 hours");
+  refused(withFooter(&sp, "EST5:60").view(), "at byte 950: the minutes are not 0 to 59", "60 minutes");
+  refused(withFooter(&sp, "EST5EDT").view(),
+    "at byte 952: expected ',' and the rule for the start of daylight saving time", "no rules");
+  refused(withFooter(&sp, "EST5EDT,M13.1.0,M11.1.0").view(),
+    "at byte 953: a rule 'Mm.w.d' has a month 1 to 12, a week 1 to 5 and a weekday 0 to 6", "month 13");
+  refused(withFooter(&sp, "EST5EDT,J0,J5").view(), "at byte 953: a rule 'Jn' has a day 1 to 365", "J0");
+  refused(withFooter(&sp, "EST5EDT,366,5").view(), "at byte 953: a rule 'n' has a day 0 to 365", "366");
+  refused(withFooter(&sp, "EST5EDT,Q").view(), "at byte 953: expected a rule: 'Mm.w.d', 'Jn' or 'n'", "no such rule");
+  refused(withFooter(&sp, "EST5EDT,M3.2.0").view(),
+    "at byte 959: expected ',' and the rule for the end of daylight saving time", "one rule");
+  refused(withFooter(&sp, "EST5EDT,M3.2.0,M11.1").view(),
+    "at byte 965: expected '.' after the week of a rule", "rule cut short");
+  refused(withFooter(&sp, "EST5EDT,M3.2.0,M11.1.0x").view(), "at byte 967: unexpected text after the rules", "text after");
+  refused(withFooter(&sp, "EST5EDT,M3.2.0/170,M11.1.0").view(),
+    "at byte 960: the hours of a rule's time are more than 167", "170 hours");
+}
+
+fn main() i32 {
+  changes();
+  nanoseconds();
+  footers();
+  minimal();
+  refusals();
+  sweeps();
+  return done();
+}
+
+// ---------------------------------------------------------------------------
+// GENERATED by tests/data/make_expected.py: the checks at each change
+// ---------------------------------------------------------------------------
+
+// America/Sao_Paulo
+fn checkSaoPaulo(z: &Zone, kind: &str) {
+  check(z, kind, "Sao_Paulo 1914-01-01T03:06:27Z", 1914, 1, 1, 3, 6, 27, -11188, "LMT", false);
+  check(z, kind, "Sao_Paulo 1914-01-01T03:06:28Z", 1914, 1, 1, 3, 6, 28, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 1914-01-01T03:06:29Z", 1914, 1, 1, 3, 6, 29, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2008-10-19T02:59:59Z", 2008, 10, 19, 2, 59, 59, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2008-10-19T03:00:00Z", 2008, 10, 19, 3, 0, 0, -7200, "-02", true);
+  check(z, kind, "Sao_Paulo 2008-10-19T03:00:01Z", 2008, 10, 19, 3, 0, 1, -7200, "-02", true);
+  check(z, kind, "Sao_Paulo 2018-11-04T02:59:59Z", 2018, 11, 4, 2, 59, 59, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2018-11-04T03:00:00Z", 2018, 11, 4, 3, 0, 0, -7200, "-02", true);
+  check(z, kind, "Sao_Paulo 2018-11-04T03:00:01Z", 2018, 11, 4, 3, 0, 1, -7200, "-02", true);
+  check(z, kind, "Sao_Paulo 2019-02-17T01:59:59Z", 2019, 2, 17, 1, 59, 59, -7200, "-02", true);
+  check(z, kind, "Sao_Paulo 2019-02-17T02:00:00Z", 2019, 2, 17, 2, 0, 0, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2019-02-17T02:00:01Z", 2019, 2, 17, 2, 0, 1, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 1900-01-01T00:00:00Z", 1900, 1, 1, 0, 0, 0, -11188, "LMT", false);
+  check(z, kind, "Sao_Paulo 1950-06-01T00:00:00Z", 1950, 6, 1, 0, 0, 0, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2019-11-03T03:00:00Z", 2019, 11, 3, 3, 0, 0, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2026-06-01T12:00:00Z", 2026, 6, 1, 12, 0, 0, -10800, "-03", false);
+  check(z, kind, "Sao_Paulo 2100-01-01T00:00:00Z", 2100, 1, 1, 0, 0, 0, -10800, "-03", false);
+}
+
+// Europe/Moscow
+fn checkMoscow(z: &Zone, kind: &str) {
+  check(z, kind, "Moscow 1919-08-15T19:59:59Z", 1919, 8, 15, 19, 59, 59, 14400, "MSD", true);
+  check(z, kind, "Moscow 1919-08-15T20:00:00Z", 1919, 8, 15, 20, 0, 0, 10800, "MSK", false);
+  check(z, kind, "Moscow 1919-08-15T20:00:01Z", 1919, 8, 15, 20, 0, 1, 10800, "MSK", false);
+  check(z, kind, "Moscow 2010-10-30T22:59:59Z", 2010, 10, 30, 22, 59, 59, 14400, "MSD", true);
+  check(z, kind, "Moscow 2010-10-30T23:00:00Z", 2010, 10, 30, 23, 0, 0, 10800, "MSK", false);
+  check(z, kind, "Moscow 2010-10-30T23:00:01Z", 2010, 10, 30, 23, 0, 1, 10800, "MSK", false);
+  check(z, kind, "Moscow 2011-03-26T22:59:59Z", 2011, 3, 26, 22, 59, 59, 10800, "MSK", false);
+  check(z, kind, "Moscow 2011-03-26T23:00:00Z", 2011, 3, 26, 23, 0, 0, 14400, "MSK", false);
+  check(z, kind, "Moscow 2011-03-26T23:00:01Z", 2011, 3, 26, 23, 0, 1, 14400, "MSK", false);
+  check(z, kind, "Moscow 2014-10-25T21:59:59Z", 2014, 10, 25, 21, 59, 59, 14400, "MSK", false);
+  check(z, kind, "Moscow 2014-10-25T22:00:00Z", 2014, 10, 25, 22, 0, 0, 10800, "MSK", false);
+  check(z, kind, "Moscow 2014-10-25T22:00:01Z", 2014, 10, 25, 22, 0, 1, 10800, "MSK", false);
+  check(z, kind, "Moscow 1900-01-01T00:00:00Z", 1900, 1, 1, 0, 0, 0, 9017, "MMT", false);
+  check(z, kind, "Moscow 2010-07-01T00:00:00Z", 2010, 7, 1, 0, 0, 0, 14400, "MSD", true);
+  check(z, kind, "Moscow 2012-07-01T00:00:00Z", 2012, 7, 1, 0, 0, 0, 14400, "MSK", false);
+  check(z, kind, "Moscow 2026-01-01T00:00:00Z", 2026, 1, 1, 0, 0, 0, 10800, "MSK", false);
+  check(z, kind, "Moscow 2100-07-01T00:00:00Z", 2100, 7, 1, 0, 0, 0, 10800, "MSK", false);
+}
+
+// Europe/Kyiv
+fn checkKyiv(z: &Zone, kind: &str) {
+  check(z, kind, "Kyiv 1996-03-30T23:59:59Z", 1996, 3, 30, 23, 59, 59, 7200, "EET", false);
+  check(z, kind, "Kyiv 1996-03-31T00:00:00Z", 1996, 3, 31, 0, 0, 0, 10800, "EEST", true);
+  check(z, kind, "Kyiv 1996-03-31T00:00:01Z", 1996, 3, 31, 0, 0, 1, 10800, "EEST", true);
+  check(z, kind, "Kyiv 1996-10-27T00:59:59Z", 1996, 10, 27, 0, 59, 59, 10800, "EEST", true);
+  check(z, kind, "Kyiv 1996-10-27T01:00:00Z", 1996, 10, 27, 1, 0, 0, 7200, "EET", false);
+  check(z, kind, "Kyiv 1996-10-27T01:00:01Z", 1996, 10, 27, 1, 0, 1, 7200, "EET", false);
+  check(z, kind, "Kyiv 2026-03-29T00:59:59Z", 2026, 3, 29, 0, 59, 59, 7200, "EET", false);
+  check(z, kind, "Kyiv 2026-03-29T01:00:00Z", 2026, 3, 29, 1, 0, 0, 10800, "EEST", true);
+  check(z, kind, "Kyiv 2026-03-29T01:00:01Z", 2026, 3, 29, 1, 0, 1, 10800, "EEST", true);
+  check(z, kind, "Kyiv 2026-10-25T00:59:59Z", 2026, 10, 25, 0, 59, 59, 10800, "EEST", true);
+  check(z, kind, "Kyiv 2026-10-25T01:00:00Z", 2026, 10, 25, 1, 0, 0, 7200, "EET", false);
+  check(z, kind, "Kyiv 2026-10-25T01:00:01Z", 2026, 10, 25, 1, 0, 1, 7200, "EET", false);
+  check(z, kind, "Kyiv 1900-01-01T00:00:00Z", 1900, 1, 1, 0, 0, 0, 7324, "KMT", false);
+  check(z, kind, "Kyiv 2026-01-15T00:00:00Z", 2026, 1, 15, 0, 0, 0, 7200, "EET", false);
+  check(z, kind, "Kyiv 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, 10800, "EEST", true);
+  check(z, kind, "Kyiv 2100-03-28T00:00:00Z", 2100, 3, 28, 0, 0, 0, 7200, "EET", false);
+  check(z, kind, "Kyiv 2100-03-28T01:00:00Z", 2100, 3, 28, 1, 0, 0, 10800, "EEST", true);
+}
+
+// America/New_York
+fn checkNewYork(z: &Zone, kind: &str) {
+  check(z, kind, "New_York 1883-11-18T16:59:59Z", 1883, 11, 18, 16, 59, 59, -17762, "LMT", false);
+  check(z, kind, "New_York 1883-11-18T17:00:00Z", 1883, 11, 18, 17, 0, 0, -18000, "EST", false);
+  check(z, kind, "New_York 1883-11-18T17:00:01Z", 1883, 11, 18, 17, 0, 1, -18000, "EST", false);
+  check(z, kind, "New_York 2006-10-29T05:59:59Z", 2006, 10, 29, 5, 59, 59, -14400, "EDT", true);
+  check(z, kind, "New_York 2006-10-29T06:00:00Z", 2006, 10, 29, 6, 0, 0, -18000, "EST", false);
+  check(z, kind, "New_York 2006-10-29T06:00:01Z", 2006, 10, 29, 6, 0, 1, -18000, "EST", false);
+  check(z, kind, "New_York 2007-03-11T06:59:59Z", 2007, 3, 11, 6, 59, 59, -18000, "EST", false);
+  check(z, kind, "New_York 2007-03-11T07:00:00Z", 2007, 3, 11, 7, 0, 0, -14400, "EDT", true);
+  check(z, kind, "New_York 2007-03-11T07:00:01Z", 2007, 3, 11, 7, 0, 1, -14400, "EDT", true);
+  check(z, kind, "New_York 2026-03-08T06:59:59Z", 2026, 3, 8, 6, 59, 59, -18000, "EST", false);
+  check(z, kind, "New_York 2026-03-08T07:00:00Z", 2026, 3, 8, 7, 0, 0, -14400, "EDT", true);
+  check(z, kind, "New_York 2026-03-08T07:00:01Z", 2026, 3, 8, 7, 0, 1, -14400, "EDT", true);
+  check(z, kind, "New_York 2026-11-01T05:59:59Z", 2026, 11, 1, 5, 59, 59, -14400, "EDT", true);
+  check(z, kind, "New_York 2026-11-01T06:00:00Z", 2026, 11, 1, 6, 0, 0, -18000, "EST", false);
+  check(z, kind, "New_York 2026-11-01T06:00:01Z", 2026, 11, 1, 6, 0, 1, -18000, "EST", false);
+  check(z, kind, "New_York 2037-11-01T05:59:59Z", 2037, 11, 1, 5, 59, 59, -14400, "EDT", true);
+  check(z, kind, "New_York 2037-11-01T06:00:00Z", 2037, 11, 1, 6, 0, 0, -18000, "EST", false);
+  check(z, kind, "New_York 2037-11-01T06:00:01Z", 2037, 11, 1, 6, 0, 1, -18000, "EST", false);
+  check(z, kind, "New_York 2038-03-14T06:59:59Z", 2038, 3, 14, 6, 59, 59, -18000, "EST", false);
+  check(z, kind, "New_York 2038-03-14T07:00:00Z", 2038, 3, 14, 7, 0, 0, -14400, "EDT", true);
+  check(z, kind, "New_York 2038-03-14T07:00:01Z", 2038, 3, 14, 7, 0, 1, -14400, "EDT", true);
+  check(z, kind, "New_York 1850-01-01T00:00:00Z", 1850, 1, 1, 0, 0, 0, -17762, "LMT", false);
+  check(z, kind, "New_York 2026-01-15T00:00:00Z", 2026, 1, 15, 0, 0, 0, -18000, "EST", false);
+  check(z, kind, "New_York 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, -14400, "EDT", true);
+  check(z, kind, "New_York 2100-07-04T00:00:00Z", 2100, 7, 4, 0, 0, 0, -14400, "EDT", true);
+}
+
+// Australia/Lord_Howe
+fn checkLordHowe(z: &Zone, kind: &str) {
+  check(z, kind, "Lord_Howe 2026-04-04T14:59:59Z", 2026, 4, 4, 14, 59, 59, 39600, "+11", true);
+  check(z, kind, "Lord_Howe 2026-04-04T15:00:00Z", 2026, 4, 4, 15, 0, 0, 37800, "+1030", false);
+  check(z, kind, "Lord_Howe 2026-04-04T15:00:01Z", 2026, 4, 4, 15, 0, 1, 37800, "+1030", false);
+  check(z, kind, "Lord_Howe 2026-10-03T15:29:59Z", 2026, 10, 3, 15, 29, 59, 37800, "+1030", false);
+  check(z, kind, "Lord_Howe 2026-10-03T15:30:00Z", 2026, 10, 3, 15, 30, 0, 39600, "+11", true);
+  check(z, kind, "Lord_Howe 2026-10-03T15:30:01Z", 2026, 10, 3, 15, 30, 1, 39600, "+11", true);
+  check(z, kind, "Lord_Howe 1850-01-01T00:00:00Z", 1850, 1, 1, 0, 0, 0, 38180, "LMT", false);
+  check(z, kind, "Lord_Howe 2026-01-15T00:00:00Z", 2026, 1, 15, 0, 0, 0, 39600, "+11", true);
+  check(z, kind, "Lord_Howe 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, 37800, "+1030", false);
+}
+
+// Europe/Dublin
+fn checkDublin(z: &Zone, kind: &str) {
+  check(z, kind, "Dublin 2026-03-29T00:59:59Z", 2026, 3, 29, 0, 59, 59, 0, "GMT", true);
+  check(z, kind, "Dublin 2026-03-29T01:00:00Z", 2026, 3, 29, 1, 0, 0, 3600, "IST", false);
+  check(z, kind, "Dublin 2026-03-29T01:00:01Z", 2026, 3, 29, 1, 0, 1, 3600, "IST", false);
+  check(z, kind, "Dublin 2026-10-25T00:59:59Z", 2026, 10, 25, 0, 59, 59, 3600, "IST", false);
+  check(z, kind, "Dublin 2026-10-25T01:00:00Z", 2026, 10, 25, 1, 0, 0, 0, "GMT", true);
+  check(z, kind, "Dublin 2026-10-25T01:00:01Z", 2026, 10, 25, 1, 0, 1, 0, "GMT", true);
+  check(z, kind, "Dublin 2026-01-15T00:00:00Z", 2026, 1, 15, 0, 0, 0, 0, "GMT", true);
+  check(z, kind, "Dublin 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, 3600, "IST", false);
+}
+
+// America/Nuuk
+fn checkNuuk(z: &Zone, kind: &str) {
+  check(z, kind, "Nuuk 2026-03-29T00:59:59Z", 2026, 3, 29, 0, 59, 59, -7200, "-02", false);
+  check(z, kind, "Nuuk 2026-03-29T01:00:00Z", 2026, 3, 29, 1, 0, 0, -3600, "-01", true);
+  check(z, kind, "Nuuk 2026-03-29T01:00:01Z", 2026, 3, 29, 1, 0, 1, -3600, "-01", true);
+  check(z, kind, "Nuuk 2026-10-25T00:59:59Z", 2026, 10, 25, 0, 59, 59, -3600, "-01", true);
+  check(z, kind, "Nuuk 2026-10-25T01:00:00Z", 2026, 10, 25, 1, 0, 0, -7200, "-02", false);
+  check(z, kind, "Nuuk 2026-10-25T01:00:01Z", 2026, 10, 25, 1, 0, 1, -7200, "-02", false);
+  check(z, kind, "Nuuk 2026-01-15T00:00:00Z", 2026, 1, 15, 0, 0, 0, -7200, "-02", false);
+  check(z, kind, "Nuuk 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, -3600, "-01", true);
+}
+
+// Europe/London
+fn checkLondon(z: &Zone, kind: &str) {
+  check(z, kind, "London 1847-12-01T00:01:14Z", 1847, 12, 1, 0, 1, 14, -75, "LMT", false);
+  check(z, kind, "London 1847-12-01T00:01:15Z", 1847, 12, 1, 0, 1, 15, 0, "GMT", false);
+  check(z, kind, "London 1847-12-01T00:01:16Z", 1847, 12, 1, 0, 1, 16, 0, "GMT", false);
+  check(z, kind, "London 1941-05-04T00:59:59Z", 1941, 5, 4, 0, 59, 59, 3600, "BST", true);
+  check(z, kind, "London 1941-05-04T01:00:00Z", 1941, 5, 4, 1, 0, 0, 7200, "BDST", true);
+  check(z, kind, "London 1941-05-04T01:00:01Z", 1941, 5, 4, 1, 0, 1, 7200, "BDST", true);
+  check(z, kind, "London 2037-03-29T00:59:59Z", 2037, 3, 29, 0, 59, 59, 0, "GMT", false);
+  check(z, kind, "London 2037-03-29T01:00:00Z", 2037, 3, 29, 1, 0, 0, 3600, "BST", true);
+  check(z, kind, "London 2037-03-29T01:00:01Z", 2037, 3, 29, 1, 0, 1, 3600, "BST", true);
+  check(z, kind, "London 2037-10-25T00:59:59Z", 2037, 10, 25, 0, 59, 59, 3600, "BST", true);
+  check(z, kind, "London 2037-10-25T01:00:00Z", 2037, 10, 25, 1, 0, 0, 0, "GMT", false);
+  check(z, kind, "London 2037-10-25T01:00:01Z", 2037, 10, 25, 1, 0, 1, 0, "GMT", false);
+  check(z, kind, "London 2038-03-28T00:59:59Z", 2038, 3, 28, 0, 59, 59, 0, "GMT", false);
+  check(z, kind, "London 2038-03-28T01:00:00Z", 2038, 3, 28, 1, 0, 0, 3600, "BST", true);
+  check(z, kind, "London 2038-03-28T01:00:01Z", 2038, 3, 28, 1, 0, 1, 3600, "BST", true);
+  check(z, kind, "London 2038-10-31T00:59:59Z", 2038, 10, 31, 0, 59, 59, 3600, "BST", true);
+  check(z, kind, "London 2038-10-31T01:00:00Z", 2038, 10, 31, 1, 0, 0, 0, "GMT", false);
+  check(z, kind, "London 2038-10-31T01:00:01Z", 2038, 10, 31, 1, 0, 1, 0, "GMT", false);
+  check(z, kind, "London 1900-01-01T00:00:00Z", 1900, 1, 1, 0, 0, 0, 0, "GMT", false);
+  check(z, kind, "London 2026-07-15T00:00:00Z", 2026, 7, 15, 0, 0, 0, 3600, "BST", true);
+  check(z, kind, "London 2100-01-01T00:00:00Z", 2100, 1, 1, 0, 0, 0, 0, "GMT", false);
+}
+

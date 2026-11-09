@@ -623,7 +623,11 @@ actor Weather {
 	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when the
 		response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields of it) whose
 		<span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>, then
-		<span class="pre">None</span> when the body is whole, or an <span class="pre">Err</span> as above.
+		<span class="pre">None</span> when the body is whole, or an <span class="pre">Err</span> as above. The body
+			waits for the caller's choice: after looking at the head the caller reads, or sends the body to a
+			<span class="pre">ChunkSink</span> with <span class="pre">body.to(sink)</span> (which takes the stream; the pieces
+			that arrived meanwhile are held, and go first, in order), or reads it as server-sent events with
+				<span class="pre">body.events()</span> (which also takes the stream and gives the <span class="pre">EventStream</span> below).
 		<span class="pre">client.events(request)</span> is the same for server-sent events (the <span class="pre">sse</span>
 		package's, <a href="lib-http.html#sse">HTTP, TLS and URLs</a>): an <span class="pre">EventStream</span> whose
 		<span class="pre">next()</span> awaits the next <span class="pre">sse.Event</span>. A reader that awaits slowly slows the
@@ -635,12 +639,27 @@ actor Weather {
 		given <span class="pre">end(Finished)</span> or <span class="pre">end(Failed(error))</span> once. The sink gives each buffer
 		back, and that is what lets the connection read on, so a slow stage slows the server and nothing holds more than
 		the connection's own window.</p>
+	<p>A request body can come from a stage too: <span class="pre">client.upload(request, framing)</span> (the request's own body
+		empty; <span class="pre">framing</span> is <span class="pre">BodyLength.sized(n)</span> or <span class="pre">.unsized()</span>) starts the fetch at
+		once and gives an <span class="pre">Upload</span>. A pipeline that ends in <span class="pre">up.sink()</span> (a
+		<span class="pre">stages.ChunkSink</span>) is the body, a chunk at a time, so a large upload never sits whole in memory, and
+		<span class="pre">await up.stream()</span> is answered with the response as <span class="pre">client.stream</span> would be. The credit is
+		by copy: the chunk goes back to its source once the connection has taken the copy of it, so a slow server holds the
+		pipeline back. The sink counts a sized body: past the length, or short of it at the end, the fetch is cancelled and the
+		source stopped <span class="pre">Failed</span>. A streamed body cannot be sent twice, so the fetch is never retried and a 307 or
+		308 is the response, not followed (a 301, 302 or 303 that makes the next request a GET drops the body, as for a
+		string body); a response that comes before the body is all sent (an early 413, say) is delivered to
+		<span class="pre">stream()</span> and the source is stopped <span class="pre">Finished</span>. Because a kept HTTP/1.1 connection that
+		proves stale cannot be retried under a streamed body, such an upload takes a new connection, never a kept one (HTTP/2
+		multiplexes it on the shared connection as usual). An <span class="pre">Upload</span> dropped without
+		<span class="pre">stream()</span> cancels the fetch.</p>
 	<p>A body that arrives compressed (<span class="pre">Content-Encoding</span> gzip, deflate or zstd) goes through package
-		<span class="pre">httpdecode</span>: <span class="pre">Decoder(sink, limit)</span> is the sink given to
-		<span class="pre">streamTo</span> (by its <span class="pre">open(client, request)</span>), and what reaches the caller's sink is the
-		decoded bytes. Its <span class="pre">limit</span> bounds the decoded output, a decompression bomb ending as
+		<span class="pre">httpdecode</span>: <span class="pre">httpdecode.request(req)</span> adds the
+		<span class="pre">Accept-Encoding</span> it can decode, and <span class="pre">httpdecode.to(body, sink, limit)</span> takes the
+		<span class="pre">BodyStream</span> that <span class="pre">client.stream</span> answered and sends its body on to the sink, so that what
+		reaches the caller's sink is the decoded bytes. Its <span class="pre">limit</span> bounds the decoded output, a decompression bomb ending as
 		<span class="pre">Failed</span>; this differs from <span class="pre">fetchWhole</span>, whose limit counts bytes on the wire. A
-		coding it cannot decode, or a corrupt or oversized stream, ends the sink <span class="pre">Failed</span> and cancels the fetch.</p>
+		coding it cannot decode, or a corrupt or oversized stream, ends the sink <span class="pre">Failed</span> and ends the fetch.</p>
 	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a <span class="pre">Server</span>
 		(a handle that moves and <span class="pre">clone()</span>s; its last handle's going closes it), and
 		<span class="pre">await server.next()</span> answers the next request, whole, as an <span class="pre">Exchange</span>: the
@@ -652,6 +671,15 @@ actor Weather {
 		<span class="pre">ex.startEvents()</span> then <span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of
 		server-sent events. A write is answered when the connection has taken the bytes, so an actor that awaits each is
 		slowed to its peer's speed; a peer that has left answers the write <span class="pre">Closed</span>.
+		After <span class="pre">start</span>, <span class="pre">ex.bodySink()</span> instead of <span class="pre">write</span> and
+		<span class="pre">finish</span> gives a <span class="pre">ChunkSink</span>: a pipeline that ends in it
+		(<span class="pre">FileSource</span>, a gzip stage, the sink) is the response's body, a chunk at a time, so a large
+		or generated body never sits whole in memory. The service thread copies each chunk into buffers of its own and gives the
+		chunk back to its source once the connection has accepted the copy, so a slow client holds the pipeline back. The sink's
+		end is the finish; a sized body that the pipeline overruns or ends short of resets the exchange and stops the source
+		<span class="pre">Failed</span>; dropping the Exchange leaves the body to the sink; if the sink too is dropped without a source ever attached to it,
+		the response ends as without a sink (an unsized body finished, a sized one reset), so a handler that forgets to wire
+		its sink does not pin the connection.
 		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
 		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
 		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,

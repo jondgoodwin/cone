@@ -5,8 +5,9 @@
 // bigger than storing the data would be, they store it instead (the
 // streaming Deflater cannot, see compress.cone).
 
-// Compress to a raw DEFLATE stream at 'level' (0 stored, 1 fixed Huffman,
-// 2 dynamic Huffman; other values are 2)
+// Compress to a raw DEFLATE stream at 'level' (0 stored; 1 fixed Huffman and
+// the fastest; 2 to 9 dynamic Huffman, slower and smaller the higher; negative
+// is the default, 6, and above 9 is 9)
 pub fn rawDeflate(data: &Array[u8], level: i32) List[u8] {
   var d = Deflater.make(Format.Raw, level);
   var out = List[u8]();
@@ -19,7 +20,8 @@ pub fn rawDeflate(data: &Array[u8], level: i32) List[u8] {
 }
 
 // Compress to a zlib stream (header, DEFLATE, Adler-32), 32 KiB window,
-// header 78 01 for stored, 78 9C otherwise
+// header 78 01 for stored and level 1, 78 5E for levels 2 to 5, 78 9C for
+// level 6, 78 DA for levels 7 to 9
 pub fn zlibCompress(data: &Array[u8], level: i32) List[u8] {
   var out = List[u8]();
   writeZlibHeader(&mut out, level);
@@ -35,7 +37,7 @@ pub fn zlibCompress(data: &Array[u8], level: i32) List[u8] {
 // header: no time, no name, system 255 (unknown)
 pub fn gzipCompress(data: &Array[u8], level: i32) List[u8] {
   var h = GzipHeader.plain();
-  h.xfl = xflOf(if level == 0 {0} else if level == 1 {1} else {2});
+  h.xfl = xflOf(levelOf(level));
   gzipCompressWith(data, level, &h)
 }
 

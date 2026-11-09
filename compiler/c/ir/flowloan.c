@@ -52,6 +52,8 @@ typedef struct {
     uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
     uint8_t globalview; // a shape loan's collection is a 'var' global, or reached from one: any call may write it
+    uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
+                        // (loanElemViewSet): a borrow it carries is of that element, wherever else it is reached
     uint32_t roots[3];  // the local variables (walk indexes) whose storage it points into
 } Loan;
 
@@ -287,6 +289,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
+    loan->elemview = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -334,6 +337,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
+    loan->elemview = 0;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
 }
@@ -501,14 +505,21 @@ uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDcl
 
 // Whether the loans an arena reference holds are to be checked. One holding no
 // loan but what was stored through it was made by a route the walk does not
-// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena):
-// that, and only that, is trusted, as every such cast is. Any other is
-// checked, whether the walk can place it or not.
-int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
+// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena,
+// where the cast leaves the reference no loan at all): that, and only that, is
+// trusted, as every such cast is. Any other is checked, whether the walk can
+// place it or not. A loan the reference holds that a caller lent through the
+// parameter the arena was reached by ('root', the root of the place the store
+// goes through; NULL where the arena is no place the walk follows, and then any
+// caller loan) says it was reached through that parameter, not made from a raw
+// pointer, even when what is stored carries the same loan (Bug 68: 'self.h.ar'
+// storing '&self.n').
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds, VarDclNode *root) {
     for (uint32_t i = 0; arenaholds && i < arenaholds->cnt; ++i) {
         uint32_t hid = loanOf(arenaholds->ids[i]);
         if (!pathSetHasLoan(stored, hid)
-            || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+            || (loans[hid].kind == LoanCaller
+                && (itypeIsArena(lifePointee(loanParm(hid)->vtype)) || root == NULL || loanParm(hid) == root)))
             return 1;
     }
     return 0;
@@ -560,7 +571,16 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // though it shows no more than the parameter does. The arena's
 // finalizers may read what is stored, so such a store takes only what the
 // arena was lent.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
+//
+// Bug 65: a node of an arena reached through a parameter takes only what the
+// arena was lent. The handle's lifetime and the insides' are two: a caller lends
+// a holder ('Hd { ar: &mut Arena }') under one lifetime, but the nodes live as
+// long as the arena. So heldfield is asked even of a reference reached by
+// parameter (byparm): that reference may have been overwritten by a call's
+// result, a node of the arena, and the caller never asks (a holder has
+// writable-borrow depth 0). The exception (#992): a node whose death reads no
+// borrow ('readsnothing') may hold a shorter one, as nothing reads it later.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing) {
     if (refholds == NULL)
         return 0;
     int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
@@ -571,7 +591,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
             INode *place = lifePointee(loanParm(id)->vtype);
             if (itypeIsArena(place) && !lifeSlotted(place))
                 arenaparm = 1;
-            else if (!byparm && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
+            else if ((!byparm || !readsnothing) && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
         else if (loans[id].kind == LoanPin && loans[id].site->tag == FnCallTag) {
@@ -589,11 +609,11 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
     return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
 }
 
-uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through) {
     if (stored == NULL)
         return 0;
     uint32_t nstored = stored->cnt;
-    if (!loanArenaChecked(stored, arenaholds))
+    if (!loanArenaChecked(stored, arenaholds, root))
         return 0;
     for (uint32_t k = 0; k < nstored; ++k) {
         uint32_t sid = loanOf(stored->ids[k]);
@@ -2496,6 +2516,22 @@ int loanExcludesWriters(uint32_t entry) {
     if (loan->kind == LoanShared)
         return !loanAliasHeld(loan->place.var);
     return loanIsExclusive(entry);
+}
+
+Place *loanPlaceOf(uint32_t entry) {
+    return &loans[entry & LoanIdMask].place;
+}
+
+void loanElemViewSet(uint32_t loan) {
+    loans[loan].elemview = 1;
+}
+
+int loanElemView(uint32_t entry) {
+    return loans[entry & LoanIdMask].elemview;
+}
+
+int loanIsCallerOwn(uint32_t entry) {
+    return loans[entry & LoanIdMask].kind == LoanCaller && loans[entry & LoanIdMask].part == LifePartOwn;
 }
 
 // Where a loan marked as a borrow into a shape-changing value points: its own place,

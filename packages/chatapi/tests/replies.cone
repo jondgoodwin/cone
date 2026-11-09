@@ -10,7 +10,9 @@
 // reason but no '[DONE]' (accepted), a 200 that is no event stream, a 429 and a
 // 401 answered to the streamed request, a stream that goes silent (ended by a
 // deadline), and a reader that leaves an endless stream (the server finds out by
-// a write answering Closed). 'collect' gathers a whole reply from a stream. The
+// a write answering Closed, and every lent buffer comes home). A 500 whose error object is 8 MiB long
+// is read only to its first 64 KiB, and the server finds the reader gone; tiny events read slowly
+// hold no more than the window. 'collect' gathers a whole reply from a stream. The
 // request the mock saw must say "stream":true. No error message holds the key.
 
 mod replies;
@@ -25,6 +27,7 @@ import http use ResponseHead, BodyLength;
 import json;
 import env;
 import sse;
+import iobuf;
 import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange;
 import aio use IoLimits;
@@ -240,6 +243,41 @@ actor Handler {
       self.answer(200u16, "{\"choices\":[{\"message\":{\"content\":\"not a stream\"}}]}");
     } else if m == "ratelimit" {
       self.answer(429u16, errorJson("Rate limit reached", "rate_limit_exceeded").view());
+    } else if m == "bigerror" {
+      // a 500 whose JSON error object is 8 MiB long, written in 16 KiB pieces until a write fails
+      ex.start(ResponseHead.make(500u16), BodyLength.unsized());
+      var filler = String();
+      var k = 0usize;
+      while k < 16384usize {filler.append("a"); k = k + 1usize;}
+      var n = 0u64;
+      var going = true;
+      while going && n < 512u64 {
+        var piece = String();
+        if n == 0u64 {piece.append("{\"error\":{\"message\":\"");}
+        piece.append(filler.view());
+        let w = await ex.write(piece);
+        match w {
+          case is Ok {n = n + 1u64;}
+          case is Err {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(1i64));
+      }
+      left.send(n);
+    } else if m == "flood" {
+      // tiny events as fast as the connection takes them, until a write fails
+      ex.startEvents();
+      var n = 0u64;
+      var going = true;
+      while going && n < 400000u64 {
+        let c = chunkJson("", true, "x", "");
+        let e = sse.Event.message(c.view());
+        let w = await ex.sendEvent(&e);
+        match w {
+          case is Ok {n = n + 1u64;}
+          case is Err {going = false;}
+        }
+      }
+      left.send(n);
     } else if m == "endless" {
       ex.startEvents();
       var n = 0u64;
@@ -531,6 +569,66 @@ actor Reader {
     var d = done;
     d.send(1u64);
   }
+
+  // A 500 with an 8 MiB error object: the error is made of the first 64 KiB, which is not
+  // a whole JSON object, and the rest of the body is let go
+  pub async fn bigError(self, done: OneshotSender[u64]) {
+    let opened = await chat.stream(request("bigerror", false));
+    match opened {
+      case let Ok(cs) {printStr("big error: a stream, NO\n");}
+      case let Err(er) {
+        printStr("big error: status ");
+        printUInt(u64.from(er.status));
+        printStr(", made of the part it read: ");
+        printStr(yes(er.detail.view().startsWith("the server answered 500 with no error object: {\"error\"")));
+        printStr("\n");
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // Tiny events, a reader that is slow: what is held stays within the window; then it leaves
+  pub async fn slowFlood(self, done: OneshotSender[u64]) {
+    var peak = 0u64;
+    {
+      let opened = await chat.stream(request("flood", false));
+      match opened {
+        case let Ok(cs) {
+          var got = 0u64;
+          while got < 3u64 {
+            let n = await cs.next();
+            match n {
+              case let Ok(ok) {got = got + 1u64;}
+              case let Err(er) {got = 100u64;}
+            }
+          }
+          var t = 0;
+          while t < 140 {
+            let l = lentNow();
+            if l > peak {peak = l;}
+            thread.sleep(Duration.fromMillis(5i64));
+            t = t + 1;
+          }
+        }
+        case let Err(er) {printStr("flood failed\n");}
+      }
+    }
+    printStr("flood: bytes lent while the reader slept 700 ms stay within 2 MiB (both ends' windows): ");
+    printStr(yes(peak > 0u64 && peak <= 2097152u64));
+    printStr("\n");
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn lentNow() u64 {u64.from(iobuf.stats().lentBytes)}
+
+// Whether the bytes lent come back to 'base' (polled: the service thread gets them back after the drop)
+fn lentHome(base: u64) bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lentNow() > base && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lentNow() <= base
 }
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
@@ -609,6 +707,41 @@ fn main() i32 {
         case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
       }
     }
+    printStr("...every buffer home after the reader left: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
+
+    // An error body far past 64 KiB: only the first 64 KiB is read, the server finds the reader gone
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.bigError(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case let Some(n) {printStr("big error: the server saw its reader leave before the end: "); printStr(yes(n < 512u64)); printStr("\n");}
+        case is None[u64] {printStr("big error: the server never saw its reader leave\n");}
+      }
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
+
+    // Tiny events and a slow reader, then the reader leaves
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      reader.slowFlood(tx);
+      rx.recv();
+      match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
+        case let Some(n) {printStr("flood: the server was held back and saw its reader leave: "); printStr(yes(n < 400000u64)); printStr("\n");}
+        case is None[u64] {printStr("flood: the server never saw its reader leave\n");}
+      }
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(lentHome(0u64)));
+    printStr("\n");
     acceptor.stop();
   }
   finalAll();

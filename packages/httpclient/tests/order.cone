@@ -619,6 +619,11 @@ fn main() i32 {
     k = k + 1u32;
   }
   let outside = cl.send(&mut lp, ordered(port, "outside", Intent.Background, 0i64), Sink.Here(4u64));
+  // The bound below scales with how late this machine wakes a 50 ms sleep right now, so load that delays
+  // the canceller thread does not fail a check about the loop being woken at once
+  let sl0 = Instant.now();
+  thread.sleep(Duration.fromMillis(50i64));
+  let slept = (Instant.now() - sl0).millis();
   let c0 = Instant.now();
   {
     let th = thread.start(Canceller(g, Duration.fromMillis(50i64)), &cancelLater);
@@ -628,7 +633,7 @@ fn main() i32 {
     expect(kindOf(&fs4, h3id) == EventKind.Cancelled, "...the one under way among them");
     expect(kindOf(&fs4, outside) == EventKind.Done, "the one outside the group goes on: Done");
     let cAt = (endedAt(&fs4, h3id) - c0).millis();
-    expect(cAt >= 50i64 && cAt < 150i64, "the cancel wakes the loop at once");
+    expect(cAt >= 50i64 && cAt < 2i64 * slept + 50i64, "the cancel wakes the loop at once (bound scales with a measured 50 ms sleep)");
   }
   expectStr(orderSince(&sv, from4).view(), "hang outside", "the group's waiting ones never sent");
   expect(g.isCancelled(), "the group is cancelled: a state");

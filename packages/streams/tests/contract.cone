@@ -170,7 +170,7 @@ fn failedIsFinal() {
 
   // A good prefix, then damage: what came out before the damage is right
   let data = words(200000usize);
-  let packed = deflate.zlibCompress(data.view(), 2);
+  let packed = deflate.zlibCompress(data.view(), 6);
   var bent = List[u8]();
   bent.appendSlice(packed.view());
   let at = bent.len() / 2usize;
@@ -289,6 +289,19 @@ fn digesters() {
   expectUInt(u64.from(sizeOf(&mut a, data.view())), 32u64, "Sha256 meets Digester, a 32-byte digest");
   expectUInt(u64.from(sizeOf(&mut b, data.view())), 64u64, "Sha512 meets Digester, a 64-byte digest");
   expectUInt(u64.from(sizeOf(&mut c, data.view())), 20u64, "Sha1 meets Digester, a 20-byte digest");
+
+  let key = words(40usize);
+  var h1 = cryptohash.HmacSha256.make(key.view());
+  var h2 = cryptohash.HmacSha256.make(key.view());
+  var h5 = cryptohash.HmacSha512.make(key.view());
+  var h6 = cryptohash.HmacSha1.make(key.view());
+  expectUInt(u64.from(sizeOf(&mut h5, data.view())), 64u64, "HmacSha512 meets Digester, a 64-byte tag");
+  expectUInt(u64.from(sizeOf(&mut h6, data.view())), 20u64, "HmacSha1 meets Digester, a 20-byte tag");
+  h1.update(data.view());
+  let viaUpdate = h1.finish();
+  expectUInt(u64.from(sizeOf(&mut h2, data.view())), 32u64, "HmacSha256 meets Digester, a 32-byte tag");
+  let viaFeed = h2.finish();
+  expect(same(&viaUpdate, &viaFeed), "HmacSha256 fed through Digester gives the update/finish tag");
 }
 
 fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }

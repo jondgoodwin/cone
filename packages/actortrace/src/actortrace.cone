@@ -1,12 +1,12 @@
 // The actortrace package: tracing the actors runtime, round 1. It records the
 // events the actors package's hooks produce (a message sent, a reply sent, a
-// message's run beginning, a message's run ending), four ways, so that the
+// message's run beginning, a message's run ending), three ways, so that the
 // ways can be compared on one workload; and reads the file back.
 //
 //   import actortrace;
 //
 //   let send = actortrace.register("my.event", actortrace.layerUser, actortrace.levelHigh);
-//   actortrace.start(actortrace.methodLogger, "trace.bin", actortrace.Options());
+//   actortrace.start(actortrace.methodBuffers, "trace.bin", actortrace.Options());
 //   actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
 //   ... the program runs; actors send and run; actortrace.emit(&send, 0, id, arg) ...
 //   let totals = actortrace.finish();       // the records written, the records dropped, ...
@@ -50,12 +50,8 @@
 // each (u32 id, u32 name length, 24 bytes of name). So a reader knows the clock
 // and the names with nothing else.
 //
-// THE FOUR WAYS (methods). Same events, same record:
+// THE THREE WAYS (methods). Same events, same record:
 //
-//   methodLogger (A)   a logger ACTOR: one message per event, which the logger
-//                      appends to a staging buffer and writes. The logger's own
-//                      messages are not traced (actors.untrace). Options.cap, if
-//                      not 0, drops a record while that many are waiting.
 //   methodBuffers (B)  each worker fills a buffer of its own (64 KB); a full one
 //                      is moved to the logger as ONE message (no copy), which
 //                      writes it and hands it back to a pool of spare buffers. A
@@ -95,7 +91,6 @@ pub const levelHigh = 2u32;       // every event of the layer
 
 pub const methodCount = 0u32;
 pub const methodNull = 1u32;
-pub const methodLogger = 2u32;    // A
 pub const methodBuffers = 3u32;   // B
 pub const methodEtw = 4u32;       // C
 pub const methodText = 5u32;      // D
@@ -132,9 +127,8 @@ pub struct Kind {
 
 // What start() is told
 pub struct Options {
-  pub cap: u64 = 0u64;            // A: drop a record while this many are waiting for the logger (0: never)
   pub spare: u32 = 32u32;         // B: how many spare buffers there are (64 KB each)
-  pub timeLogger: bool = false;   // A, B: the logger times its own work (adds two clock reads to each of its messages)
+  pub timeLogger: bool = false;   // B: the logger times its own work (adds two clock reads to each of its messages)
   pub etwCheck: bool = true;      // C: ask EventEnabled before building an event
   pub grow: bool = false;         // B: with no spare buffer make another (nothing dropped, memory grows) instead of dropping
 }
@@ -142,7 +136,7 @@ pub struct Options {
 pub struct Totals {
   pub events: u64;                // events counted (every enabled layer's)
   pub records: u64;               // records written to the file (or events written to ETW)
-  pub dropped: u64;               // records dropped, A's cap or B's missing spare buffer
+  pub dropped: u64;               // records dropped, B's missing spare buffer
   pub loggerMessages: u64;        // messages the logger actor handled
   pub loggerBusy: u64;            // the logger's own ticks running them, if Options.timeLogger
   pub bytes: u64;                 // bytes in the file
@@ -177,8 +171,6 @@ struct State {
   bytes: u64;
   dropped: u64;                   // atomic
   written: u64;                   // atomic
-  cap: u64;
-  pending: u64;                   // atomic: A, with a cap
   timeLogger: bool;
   etwCheck: bool;
   grow: bool;
@@ -580,15 +572,14 @@ fn pushSpare(st: *State, b: *u8) {
 }
 
 // ---------------------------------------------------------------------------
-// The logger actor (A and B), written by hand over the actors package's own
+// The logger actor (B), written by hand over the actors package's own
 // calls (makeActor, startActor, send), because the generated handle of an
 // 'actor' cannot be kept where a sink reaches it: a global is Shareable or an
 // atomic, and the handle's mailbox is private to it
 // ---------------------------------------------------------------------------
 
-// One message of the logger: op 0, one record (a: time, b: kind | worker << 16
-// | actor << 32, c: id, d: argument); op 1, a full buffer (a: its address, b:
-// its record count); op 2, write what is staged and flush the file
+// One message of the logger: op 1, a full buffer (a: its address, b: its
+// record count); op 2, flush the file (op 0, one record, was way A, removed)
 struct LogMsg is Sendable {
   pub op: u64;
   pub a: u64;
@@ -598,11 +589,8 @@ struct LogMsg is Sendable {
 }
 
 struct LogState {
-  buf: *u8;
-  used: usize;
   messages: u64;
   busy: u64;
-  recs: u64;
 }
 
 fn logWrite(p: *u8, n: usize) {
@@ -620,29 +608,12 @@ fn logDispatch(s: &mut LogState, m: *LogMsg) {
     t0 = ticks();
   }
   let op = (*m).op;
-  if op == 0u64 {
-    if s.used + recordBytes > blockBytes {
-      logWrite(s.buf, s.used);
-      s.used = 0usize;
-    }
-    let p = s.buf + s.used;
-    mem.writeRaw[u64](p as *u64, (*m).a);
-    mem.writeRaw[u64]((p + 8usize) as *u64, (*m).b);
-    mem.writeRaw[u64]((p + 16usize) as *u64, (*m).c);
-    mem.writeRaw[u64]((p + 24usize) as *u64, (*m).d);
-    s.used = s.used + recordBytes;
-    s.recs = s.recs + 1u64;
-    if (*st).cap != 0u64 {
-      mem.atomicSub[u64](&(*st).pending as *u64, 1u64, MemOrder.Relaxed);
-    }
-  } else if op == 1u64 {
+  if op == 1u64 {
     let b = usize.from((*m).a) as *u8;
     logWrite(b, usize.from((*m).b) * recordBytes);
     addAtomic(&(*st).written as *u64, (*m).b);
     pushSpare(st, b);
   } else {
-    logWrite(s.buf, s.used);
-    s.used = 0usize;
     libc.fflush((*st).file);
   }
   s.messages = s.messages + 1u64;
@@ -658,7 +629,7 @@ fn sendLog(st: *State, m: LogMsg) {
 
 fn startLogger(st: *State) {
   let ls = actors.makeActor[LogState, LogMsg](&logDispatch);
-  mem.writeRaw[LogState](ls, LogState(libc.malloc(blockBytes), 0usize, 0u64, 0u64, 0u64));
+  mem.writeRaw[LogState](ls, LogState(0u64, 0u64));
   (*st).loggerState = ls;
   let mb = actors.startActor[LogState, LogMsg](ls);
   actors.untrace[LogMsg](mb);
@@ -683,23 +654,6 @@ fn sinkNull(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
   }
 }
 
-// A: a message to the logger
-fn sinkLogger(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
-  let st = state();
-  if !gate(st, kind, worker) {
-    return;
-  }
-  if (*st).cap != 0u64 {
-    if loadAtomic(&(*st).pending as *u64) >= (*st).cap {
-      addAtomic(&(*st).dropped as *u64, 1u64);
-      return;
-    }
-    addAtomic(&(*st).pending as *u64, 1u64);
-  }
-  let t = ticks();
-  sendLog(st, LogMsg(0u64, t, u64.from(kind) | (u64.from(worker) << 16u64) | (u64.from(tid) << 32u64), id, arg));
-}
-
 // The slot's full buffer goes to the logger, and a spare takes its place:
 // whether there was a spare
 fn rotate(st: *State, sl: *Slot) bool {
@@ -708,7 +662,7 @@ fn rotate(st: *State, sl: *Slot) bool {
     if !(*st).grow {
       return false;
     }
-    // precise mode: nothing is dropped, the pool grows (as A's mailbox does)
+    // precise mode: nothing is dropped, the pool grows (the pool grows)
     sp = libc.malloc(blockBytes);
   }
   sendLog(st, LogMsg(1u64, u64.from((*sl).buf as usize), u64.from((*sl).used / recordBytes), 0u64, 0u64));
@@ -847,20 +801,25 @@ fn sinkText(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
 // Starting and finishing
 // ---------------------------------------------------------------------------
 
-// Begin recording by a method. The file is created (A, B, D); the logger actor is
-// started (A, B), so the workers are running when this returns. Levels are set
-// afterwards, with setLevel. False if the file cannot be created.
+// Begin recording by a method. The file is created (B, D); the logger actor is
+// started, so the workers are running when this returns. Levels are set
+// afterwards, with setLevel. False if the file cannot be created, or if method is
+// not one of methodCount, methodNull, methodBuffers, methodEtw, methodText
+// (methodLogger, 2, no longer exists; nothing is started).
 pub fn start(method: u32, path: cstr, opts: Options) bool {
+  if method != methodCount && method != methodNull && method != methodBuffers
+      && method != methodEtw && method != methodText {
+    return false;
+  }
   let st = ensure();
   (*st).started = 1u32;
   (*st).method = method;
   (*st).freq = clockFrequency();
   (*st).startTicks = ticks();
-  (*st).cap = opts.cap;
   (*st).timeLogger = opts.timeLogger;
   (*st).etwCheck = opts.etwCheck;
   (*st).grow = opts.grow;
-  if method == methodLogger || method == methodBuffers || method == methodText {
+  if method == methodBuffers || method == methodText {
     (*st).file = libc.fopen(path, "wb");
     if (*st).file as usize == 0usize {
       return false;
@@ -873,7 +832,7 @@ pub fn start(method: u32, path: cstr, opts: Options) bool {
       libc.free(h);
     }
   }
-  // The logger is started whatever the method (idle but for A and B): it is an
+  // The logger is started whatever the method (idle but for B): it is an
   // actor, so it starts the workers, whose number the slots need
   startLogger(st);
   let workers = actors.stats().workers;
@@ -901,13 +860,11 @@ pub fn start(method: u32, path: cstr, opts: Options) bool {
     actors.traceSetSink(&sinkCount);
   } else if method == methodNull {
     actors.traceSetSink(&sinkNull);
-  } else if method == methodLogger {
-    actors.traceSetSink(&sinkLogger);
   } else if method == methodBuffers {
     actors.traceSetSink(&sinkBuffers);
   } else if method == methodEtw {
     actors.traceSetSink(&sinkEtw);
-  } else {
+  } else if method == methodText {
     actors.traceSetSink(&sinkText);
   }
   true
@@ -970,7 +927,7 @@ pub fn finish() Totals {
     slotSum = slotSum + (*sl).count;
     i = i + 1usize;
   }
-  if method == methodLogger || method == methodBuffers {
+  if method == methodBuffers {
     sendLog(st, LogMsg(2u64, 0u64, 0u64, 0u64, 0u64));
     actors.waitUntilIdle();
   }
@@ -980,9 +937,7 @@ pub fn finish() Totals {
   }
   var records = 0u64;
   var dropped = loadAtomic(&(*st).dropped as *u64);
-  if method == methodLogger {
-    records = (*(*st).loggerState).recs;
-  } else if method == methodBuffers {
+  if method == methodBuffers {
     records = loadAtomic(&(*st).written as *u64);
     dropped = dropped + slotSum;
   } else if method == methodEtw || method == methodText {
@@ -990,7 +945,7 @@ pub fn finish() Totals {
   }
   var lm = 0u64;
   var lb = 0u64;
-  if method == methodLogger || method == methodBuffers {
+  if method == methodBuffers {
     lm = (*(*st).loggerState).messages;
     lb = (*(*st).loggerState).busy;
   }
@@ -998,13 +953,10 @@ pub fn finish() Totals {
 }
 
 // A MEASUREMENT AID, for timing a record that is dropped: make the drop path
-// the only path. A: the logger counts as full (needs Options.cap not 0); B: every
-// buffer is full and there is no spare. What is recorded afterwards is lost
+// the only path: every buffer is full and there is no spare. What is recorded afterwards is lost
 pub fn forceFull() {
   let st = state();
-  if (*st).method == methodLogger {
-    mem.atomicStore[u64](&(*st).pending as *u64, (*st).cap, MemOrder.SeqCst);
-  } else if (*st).method == methodBuffers {
+  if (*st).method == methodBuffers {
     while popSpare(st) as usize != 0usize { }
     var i = 0usize;
     while i < usize.from((*st).nslots) {

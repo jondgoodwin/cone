@@ -317,7 +317,8 @@ FoldClause *parseFoldClause(ParseState *parse, int maypub);
 // Parse a module's standalone 'use' -- of an enum or of a submodule -- with the
 // lexer on the 'use'. 'pubflag' is the 'pub' written before it.
 ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag);
-ConstDclNode *parseConstDcl(ParseState *parse);
+// A 'const' in a type's braces ('member') may omit the ';' before the '}'
+ConstDclNode *parseConstDcl(ParseState *parse, int member);
 // Parse a function's signature; 'reftype' for the one after '&fn', which may
 // be a function-reference type with unnamed parameters
 INode *parseFnSig(ParseState *parse, int reftype);

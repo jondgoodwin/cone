@@ -27,6 +27,7 @@ typedef struct INsTypeNode {
 typedef struct FnDclNode FnDclNode;
 typedef struct VarDclNode VarDclNode;
 typedef struct MacroDclNode MacroDclNode;
+typedef struct ConstDclNode ConstDclNode;
 
 // Outcome of testing every candidate a name declares against one call
 enum OverloadMatch {
@@ -51,6 +52,10 @@ void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro);
 // Add a static variable to type's dictionary and owned list: one copy shared
 // by every value of the type, owned and named by the type
 void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var);
+
+// Add a named constant to type's dictionary and owned list: a folded value with
+// no storage, owned and named by the type
+void iNsTypeAddConst(INsTypeNode *type, ConstDclNode *cdcl);
 
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found

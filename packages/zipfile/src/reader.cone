@@ -196,82 +196,32 @@ pub struct EntryReader {
   }
 
   fn pullDeflate(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
-    let before = out.len();
-    while true {
-      let produced = out.len() - before;
-      if produced >= cap { return Status.MoreOutput; }
-      // WHY setLen: IoBuf(n) may return a pool block with capacity larger than n, and
-      // pullBuf fills ALL the room a buffer has, which would overshoot 'cap' (the
-      // entry's size limit). So the front of the block is called filled (setLen(pre),
-      // pre = capacity - n), leaving exactly n bytes of room; the output is what lies
-      // after 'pre'.
-      let want = cap - produced;
-      var buf = IoBuf(if want < 65536usize {want} else {65536usize});
-      let pre = buf.capacity() - (if want < 65536usize {want} else {65536usize});
-      buf.setLen(pre);
-      let s = inf.pull(&mut buf);
-      out.appendSlice(&buf.view()[pre ..< buf.len()]);
-      if s == deflate.Status.MoreOutput { continue; }
-      if s == deflate.Status.Done { return Status.Done; }
-      if s == deflate.Status.Failed {
-        let k = inf.error().kind;
-        if k == deflate.ErrorKind.TooLarge {
-          return self.fail(ErrorKind.TooLarge, "the entry inflates to more than its header says");
-        }
-        var why = String.from("the compressed data is bad: ");
-        why.append(inf.error().reason.view());
-        return self.fail(ErrorKind.BadData, why.view());
-      }
-      // NeedInput: feed the next piece, or say there is no more
-      if fedAll {
-        if told { return self.fail(ErrorKind.BadData, "the compressed data ends before the deflate stream does"); }
-        inf.finish();
-        told = true;
-      } else {
-        let left = end - pos;
-        let n = if left < 65536u64 { usize.from(left) } else { 65536usize };
-        let from = usize.from(pos);
-        inf.feed(&data[from..<from + n]);
-        pos += u64.from(n);
-        if pos == end { fedAll = true; }
-      }
+    let s = pumpCapped(&mut inf, data, &mut pos, end, &mut fedAll, &mut told, out, cap);
+    if s == deflate.Status.MoreOutput { return Status.MoreOutput; }
+    if s == deflate.Status.Done { return Status.Done; }
+    if s == deflate.Status.NeedInput {
+      return self.fail(ErrorKind.BadData, "the compressed data ends before the deflate stream does");
     }
-    Status.Done
+    let k = inf.error().kind;
+    if k == deflate.ErrorKind.TooLarge {
+      return self.fail(ErrorKind.TooLarge, "the entry inflates to more than its header says");
+    }
+    var why = String.from("the compressed data is bad: ");
+    why.append(inf.error().reason.view());
+    self.fail(ErrorKind.BadData, why.view())
   }
 
   // Method 93: the zstd package's Decompressor, fed the entry's bytes 64 KiB at a time. Its own limits
   // apply as they do to any zstd stream: the output is bounded by the entry's size, and a frame that asks
   // for a window past the Decompressor's default (128 MiB) is refused before anything of it is decoded.
   fn pullZstd(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
-    let before = out.len();
-    while true {
-      let produced = out.len() - before;
-      if produced >= cap { return Status.MoreOutput; }
-      // setLen cuts the room to the ask, as in pullDeflate: a pool block can be larger than asked and pullBuf fills all the room
-      let want = cap - produced;
-      var buf = IoBuf(if want < 65536usize {want} else {65536usize});
-      let pre = buf.capacity() - (if want < 65536usize {want} else {65536usize});
-      buf.setLen(pre);
-      let s = zd.pull(&mut buf);
-      out.appendSlice(&buf.view()[pre ..< buf.len()]);
-      if s == zstd.Status.MoreOutput { continue; }
-      if s == zstd.Status.Done { return Status.Done; }
-      if s == zstd.Status.Failed { return self.zstdFault(); }
-      // NeedInput: feed the next piece, or say there is no more
-      if fedAll {
-        if told { return self.fail(ErrorKind.BadData, "the compressed data ends before the zstd stream does"); }
-        zd.finish();
-        told = true;
-      } else {
-        let left = end - pos;
-        let n = if left < 65536u64 { usize.from(left) } else { 65536usize };
-        let from = usize.from(pos);
-        zd.feed(&data[from..<from + n]);
-        pos += u64.from(n);
-        if pos == end { fedAll = true; }
-      }
+    let s = pumpCapped(&mut zd, data, &mut pos, end, &mut fedAll, &mut told, out, cap);
+    if s == zstd.Status.MoreOutput { return Status.MoreOutput; }
+    if s == zstd.Status.Done { return Status.Done; }
+    if s == zstd.Status.NeedInput {
+      return self.fail(ErrorKind.BadData, "the compressed data ends before the zstd stream does");
     }
-    Status.Done
+    self.zstdFault()
   }
 
   // The zstd package's failure as this package's: the output limit and the window limit are TooLarge, a
@@ -407,4 +357,47 @@ fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipE
     }
   }
   Ok[List[u8], ZipError](out)
+}
+
+// The loop of a compressed entry's pull, for any codec that is a Transform: pulls 't' into 'out' until 'cap'
+// bytes of this call are there, feeding the entry's compressed bytes 'data[pos..<end]' 64 KiB at a time
+// (the next piece only when the codec asks, or the input piles up) and telling 'finish' once after the last.
+// Answers MoreOutput (the cap is reached), Done, Failed (the caller maps the codec's own error), or
+// NeedInput when the codec still wants input after 'finish': the data ends before the stream does.
+fn pumpCapped[T: Transform](t: &mut T, data: &Array[u8], pos: &mut u64, end: u64, fedAll: &mut bool, told: &mut bool, out: &mut List[u8], cap: usize) deflate.Status {
+  let before = out.len();
+  while true {
+    let produced = out.len() - before;
+    if produced >= cap { return deflate.Status.MoreOutput; }
+    // WHY setLen: IoBuf(n) may return a pool block with capacity larger than n, and
+    // pullBuf fills ALL the room a buffer has, which would overshoot 'cap' (the
+    // entry's size limit). So the front of the block is called filled (setLen(pre),
+    // pre = capacity - n), leaving exactly n bytes of room; the output is what lies
+    // after 'pre'.
+    let want = cap - produced;
+    let ask = if want < 65536usize { want } else { 65536usize };
+    var buf = IoBuf(ask);
+    let pre = buf.capacity() - ask;
+    buf.setLen(pre);
+    let s = t.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    if s != deflate.Status.NeedInput { 
+      if s != deflate.Status.MoreOutput { return s; }
+      continue;
+    }
+    // NeedInput: feed the next piece, or say there is no more
+    if *fedAll {
+      if *told { return deflate.Status.NeedInput; }
+      t.finish();
+      *told = true;
+    } else {
+      let left = end - *pos;
+      let n = if left < 65536u64 { usize.from(left) } else { 65536usize };
+      let from = usize.from(*pos);
+      t.feed(&data[from..<from + n]);
+      *pos += u64.from(n);
+      if *pos == end { *fedAll = true; }
+    }
+  }
+  deflate.Status.Done
 }

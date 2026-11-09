@@ -49,14 +49,18 @@
 // THE LIMITS. An entry that declares no size is bounded by 'entryLimit' (1 GiB at first) and the central
 // directory by 'maxDirectory' (16 MiB at first), as ArchiveStream's own setEntryLimit and setMaxDirectory:
 // the 'shared' constructor takes both.
+//
+// THE OTHER WAY, an archive written from an actor, is in zipsource.cone: ZipSource, a ChunkSource over a
+// zipfile.ZipWriter, and saveTo, which writes one to a file through stageio's FileSink.
 
 mod archivestage;
 
 import iobuf use IoBuf;
 import collections use AnyError, Deque, String;
 import actors;
-import sync use OneshotSender;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow, ChunkPool, linkWindow, linkBytes;
+import stageio use FileSink;
 import zipfile;
 
 // Gives a chunk back to its source, if the source is still held
@@ -164,6 +168,27 @@ pub actor ArchiveStage is ChunkSink, ChunkSource {
     self.settle();
   }
 
+  // A stop from an entry's sink (ChunkSource.stop) stops the whole archive, not that entry: the open
+  // entry gets its end, 'done' the reason as text, and the stop goes on upstream. The upstream handle
+  // stays until its 'end' comes (settle), so chunks still in flight are given back.
+  pub async fn stop(self, why: Ending) {
+    if ended { return; }
+    var entryEnd = Ending.Finished;
+    var answer = AnyError.msg("archivestage: stopped before the end");
+    match &why {
+      case let &Failed(e) {
+        entryEnd = Ending.Failed(textOf(e));
+        answer = textOf(e);
+      }
+      case is Finished {}
+    }
+    self.finish(entryEnd, Err[u64, AnyError](answer));
+    match &up {
+      case let &Some(u) { u.stop(why); }
+      case is None {}
+    }
+  }
+
   // The stage works in the cancel group of the message it handles; when that is cancelled it ends
   // the open entry, answers 'done', gives the input back and lets go of the upstream
   fn cancelCheck(self: &mut) {
@@ -256,7 +281,14 @@ pub actor ArchiveStage is ChunkSink, ChunkSource {
       case let Some(e) { forDone = AnyError.from(e); }
       case is None[zipfile.ZipError] {}
     }
+    let w = Ending.Failed(textOf(&forDone));
     self.finish(Ending.Failed(forEntry), Err[u64, AnyError](forDone));
+    // the whole archive stops: the work feeding us ends at once (the handle stays until its 'end')
+    if upEnded { return; }
+    match &up {
+      case let &Some(u) { u.stop(w); }
+      case is None {}
+    }
   }
 
   // The input is used up: give the chunk back and go on to the next, or to the

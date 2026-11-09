@@ -380,7 +380,7 @@ fn serverStreamLimit() {
   let b5 = requestBlock(&mut p, "/5");
   p.w.headers(5u32, b5.view(), true);
   send(&mut p, &mut s, at(1));
-  expectStr(heard(&mut p, &mut s, at(1)).view(), "RST 5 REFUSED_STREAM;", "the third stream is refused, safe to retry");
+  expectStr(heard(&mut p, &mut s, at(1)).view(), "WU 1 11142;WU 3 11142;RST 5 REFUSED_STREAM;", "the first two streams are raised from their floor 5242 to 16384 on open; the third is refused, safe to retry");
   expectStr(drain(&mut s, true).view(), "req 1;req 3;", "the first two are taken");
   // A stream the peer resets still counts until its events are taken
   let r3 = p.w.rstStream(3u32, ErrorCode.Cancel);
@@ -711,7 +711,8 @@ fn clientHeaderList() {
 
 fn streamWindow() {
   var cfg = Config.make();
-  cfg.initialWindowSize = 65535u32;
+  cfg.streamWindow = 65535u32;
+  cfg.creditBudget = 2u64 * 100u64 * 65535u64;     // the floor is the whole window: a stream starts at 65535, as before budgets
   var s = Connection.server(cfg, at(0));
   var p = rawClient(&mut s, at(0));
   let h0 = heard(&mut p, &mut s, at(0));
@@ -733,7 +734,8 @@ fn streamWindow() {
 fn connectionWindow() {
   var cfg = Config.make();
   cfg.connectionWindowSize = 65535u32;
-  cfg.initialWindowSize = 1048576u32;
+  cfg.streamWindow = 1048576u32;
+  cfg.creditBudget = 2u64 * 100u64 * 1048576u64;   // the floor is the whole window
   cfg.frames.maxFrameSize = 65536usize;
   cfg.maxBuffered = 131072usize;
   var s = Connection.server(cfg, at(0));

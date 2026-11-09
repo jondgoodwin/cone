@@ -1079,14 +1079,32 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     genlRootsRestore(gen, &svroots);
 }
 
+// The moves that hollowed 'var' where this seam stands (flow found them,
+// AwaitNode.hollowed); NULL if it is not hollow there. A move written after
+// the seam is not among them. Where flow met the seam with the variable whole
+// but the path walk found it hollow, every move that hollowed it on any path.
+static Nodes *genlSeamMoves(AwaitNode *node, VarDclNode *var) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (node->hollowed) {
+        for (nodesFor(node->hollowed, cnt, nodesp)) {
+            if (((HollowNode *)*nodesp)->var == var)
+                return ((HollowNode *)*nodesp)->moved;
+        }
+    }
+    return var->hollowall;
+}
+
 // A parked record's drop function, '<method>'<n>.drop(record)', which the
 // pending table calls when its actor dies with the record parked, its reply
 // never to come: the continuation is abandoned. Each value the record holds
 // is finalized, in the record's order, which is the order the values would
 // have died in; a variable carried with its drop flag only where the flag
-// says it holds its whole value. The second half never runs. (A sole owner
-// whose referent was partly moved out, its flag saying hollow, is left: what
-// remains of it is not freed.)
+// says it holds its whole value. The second half never runs. A sole owner
+// whose referent was partly moved out (flow's SeamHollow; on every path, or
+// where its flag says hollow) is released as its scope's end releases it, by
+// genlHollowReleaseRef: what moved is left to its new holder, the allocation
+// is freed.
 static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     GenSeam *seam = node->genseam;
     LLVMValueRef svfn = gen->fn;
@@ -1117,15 +1135,36 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
             continue;
         LLVMValueRef at = LLVMBuildStructGEP2(gen->builder, seam->record, record, i, "dropping");
         LLVMBasicBlockRef endblk = NULL;
+        // An owner hollowed at the seam (flow's SeamHollow) is released as its
+        // scope's end releases it: what moved out is left, the allocation goes
+        SeamVar *sv = field->kind == GenSeamVar ? genlSeamOfVar(node, field->var) : NULL;
+        Nodes *moved = sv && (sv->flags & SeamHollow) ? genlSeamMoves(node, field->var) : NULL;
+        int hollow = moved != NULL;
         if (field->kind == GenSeamVar && i + 1 < seam->nfields && seam->fields[i + 1].kind == GenSeamFlag
             && seam->fields[i + 1].var == field->var) {
             LLVMValueRef flagat = LLVMBuildStructGEP2(gen->builder, seam->record, record, i + 1, "flag");
             LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, flagat, "held");
+            endblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropped");
+            if (hollow) {
+                LLVMValueRef ishollow = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, DropFlagHollow, 0), "ishollow");
+                LLVMBasicBlockRef hollowblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "drophollow");
+                LLVMBasicBlockRef wholechk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropchk");
+                LLVMBuildCondBr(gen->builder, ishollow, hollowblk, wholechk);
+                LLVMPositionBuilderAtEnd(gen->builder, hollowblk);
+                LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
+                genlHollowReleaseRef(gen, ref, field->var, moved);
+                LLVMBuildBr(gen->builder, endblk);
+                LLVMPositionBuilderAtEnd(gen->builder, wholechk);
+            }
             LLVMValueRef whole = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, DropFlagWhole, 0), "whole");
             LLVMBasicBlockRef doblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "drop");
-            endblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropped");
             LLVMBuildCondBr(gen->builder, whole, doblk, endblk);
             LLVMPositionBuilderAtEnd(gen->builder, doblk);
+        }
+        else if (hollow) {
+            LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
+            genlHollowReleaseRef(gen, ref, field->var, moved);
+            continue;
         }
         genlFinalizeAt(gen, at, field->type);
         if (endblk) {

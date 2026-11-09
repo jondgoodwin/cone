@@ -25,11 +25,13 @@ pub actor SocketSource is ChunkSource {
   conn: Socket;
   pumping: bool;
   over: bool;
-  halt: bool;                   // cancelled while a read was in flight
+  halt: bool;                   // cancelled or stopped while a read was in flight
+  why: Option[Ending];          // the stop's reason, kept for the end when a read was in flight
+  reading: Option[CancelGroup]; // the read in flight's own child group, which a stop cancels
 
   pub fn init(self: &new, down: ChunkSink) {
     *self = Self(down: down, link: ChunkWindow.own(linkWindow), conn: Socket.none(), pumping: false,
-      over: false, halt: false);
+      over: false, halt: false, why: None[Ending], reading: None[CancelGroup]);
     down.attach(selfactor);
   }
 
@@ -61,29 +63,34 @@ pub actor SocketSource is ChunkSource {
     var more = true;
     while more {
       if halt || actors.isCancelled() {
-        self.stop(Ending.Failed(AnyError.msg("streams: cancelled")));
+        self.finishHalted();
         more = false;
       } else {
         match link.take(linkBytes) {
           case is None { more = false; }
           case let Some(b) {
-            let r = await conn.readIn(b, IoLimits.within(actors.currentGroup()));
+            // the read runs in a child group of ours, so a stop can end it
+            let g = actors.currentGroup().child();
+            reading = Some[CancelGroup](g);
+            let r = await conn.readIn(b, IoLimits.within(g));
+            reading = None[CancelGroup];
             match r {
               case let Ok(buf) {
                 if halt {
                   link.give(buf);
-                  self.stop(Ending.Failed(AnyError.msg("streams: cancelled")));
+                  self.finishHalted();
                   more = false;
                 } else if buf.isEmpty() {
                   link.give(buf);
-                  self.stop(Ending.Finished);
+                  self.finish(Ending.Finished);
                   more = false;
                 } else {
                   down <- buf;
                 }
               }
               case let Err(e) {
-                self.stop(Ending.Failed(AnyError.from(e)));
+                if halt { self.finishHalted(); }
+                else { self.finish(Ending.Failed(AnyError.from(e))); }
                 more = false;
               }
             }
@@ -99,14 +106,44 @@ pub actor SocketSource is ChunkSource {
     if over { return; }
     if actors.isCancelled() {
       // a read in flight ends by its group's cancel: the pump sees 'halt' when it resumes
-      if pumping { halt = true; } else { self.stop(Ending.Failed(AnyError.msg("streams: cancelled"))); }
+      if pumping { halt = true; } else { self.finishHalted(); }
     } else if !pumping {
       selfactor.pump();
     }
   }
 
+  // The consumer wants no more (ChunkSource.stop): a read in flight is cancelled
+  // (its own child group), then the connection is closed and the sink gets its one
+  // end, Failed(reason). After the end, or a second stop, nothing happens. Buffers
+  // still out come back through giveBack.
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    if pumping {
+      halt = true;
+      why = Some[Ending](reason);
+      match &reading {
+        case let &Some(g) { g.cancel(); }
+        case is None {}
+      }
+    } else {
+      self.finish(reason);
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
   // The stream is over: the connection is closed and the sink told
-  fn stop(self, how: Ending) {
+  fn finish(self, how: Ending) {
     over = true;
     var old = Socket.none();
     old <-> conn;

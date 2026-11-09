@@ -11,7 +11,16 @@ import collections use *;
 import zipfile use *;
 import deflate;
 import fs;
+import iobuf use IoBuf;
 import path use Path;
+
+// One pull of at most 'max' bytes through a pooled buffer, appended to 'all'
+fn pullInto(w: &mut ZipWriter, all: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(if max < 65536usize { max } else { 65536usize });
+  let st = w.pull(&mut buf, max);
+  all.appendSlice(buf.view());
+  st
+}
 
 fn why(a: &str, e: &ZipError) String {
   var s = String.from(a);
@@ -362,7 +371,7 @@ fn main() i32 {
     expect(z.finish() is Ok, "pull: finish");
     var all = List[u8]();
     var st = Status.MoreOutput;
-    while st == Status.MoreOutput { st = z.pull(&mut all, 1000usize); }
+    while st == Status.MoreOutput { st = pullInto(&mut z, &mut all, 1000usize); }
     expect(st == Status.Done, "pull: done");
     match Archive.open(all.view()) {
       case let Err(e) { expect(false, why("pull: opens", &e).view()); }
