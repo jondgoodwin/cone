@@ -13,8 +13,10 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Not built yet: time zones (a <span class="pre">DateTime</span> is always UTC, and a written
-		offset is only read, into UTC); dates written by a pattern or in a person's language (only RFC 3339 and HTTP's
+	<p style="margin-left: 40px;"><i>Note: Not built yet: local time (a <span class="pre">DateTime</span> is always UTC, and a written
+		offset is only read, into UTC; a <span class="pre">Zone</span> gives the offset at an instant but does not yet
+		turn an instant into a local date-time or back, and nothing yet finds a zone by name or the machine's own);
+		dates written by a pattern or in a person's language (only RFC 3339 and HTTP's
 		dates are written and read); repeating timers; and checked or saturating <span class="pre">Duration</span>
 		arithmetic (overflow wraps).</i></p>
 
@@ -325,6 +327,23 @@ it is after 2026-01-01
 		<span class="pre">parseHttpDate</span> takes now from <span class="pre">Timestamp.now()</span>;
 		<span class="pre">calendar.parseHttpDateAsOf(text, now)</span> takes it as a <span class="pre">Timestamp</span>, for
 		a test or a replay. A leap second is refused.</p>
+
+	<h3 id="zone">Zone and Offset</h3>
+	<p>A <span class="pre">Zone</span> holds the rules of one place, read from the contents of a TZif file
+		(RFC 8536, the format of <span class="pre">/usr/share/zoneinfo</span>) that the program has already read:
+		<span class="pre">Zone.fromTzif(bytes)</span> answers a <span class="pre">Result</span>, the
+		<span class="pre">TimeError</span> of a malformed file giving the byte of the file it stopped at. The package
+		reads no file and asks the operating system nothing. Only version 2 and later are read, whose times are 64 bits and
+		which end in a POSIX rule for every time after the last listed transition; a version 1 file is refused. Files that
+		list their transitions to 2037 (<i>fat</i>) and those that list only what no rule gives (<i>slim</i>, the default
+		since 2020) are read alike.</p>
+	<p><span class="pre">zone.offsetAt(t)</span> answers an <span class="pre">Offset</span> for any
+		<span class="pre">Timestamp</span>: <span class="pre">seconds</span> east of UTC (an
+		<span class="pre">i32</span>, so <span class="pre">-10800</span> is UTC-03:00), <span class="pre">abbr</span>, the
+		zone's own name for it (<span class="pre">&quot;BRT&quot;</span>, <span class="pre">&quot;CEST&quot;</span>,
+		<span class="pre">&quot;-03&quot;</span>), and <span class="pre">isDst</span>. The abbreviation is borrowed from
+		the zone. Before the first transition it is the file's first time type (local mean time, in the files
+		IANA publishes); at a transition's own instant it is the new offset.</p>
 
 	<h3 id="time-error">TimeError</h3>
 	<p>A text that is not a date or a time is refused, never read as some other moment: the whole text must be the format,
