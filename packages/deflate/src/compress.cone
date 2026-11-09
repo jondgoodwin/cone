@@ -12,8 +12,9 @@
 //   1  LZ77 with a hash chain of three-byte strings (one candidate a
 //      position, a match entering only its first position in the chain),
 //      coded with the fixed Huffman code of RFC 1951 3.2.6, in one block
-//   2 to 9  the same matcher with more candidates the higher the level
-//      (6, 32, 16, 32, 128, 256, 512, 768: miniz_oxide's counts), every
+//   2 to 9  the same chain with more candidates the higher the level
+//      (6, 32, 16, 32, 128, 256, 512, 768: miniz_oxide's counts), lazy
+//      matching from level 4 (below), every
 //      position a match covers entered in the chain, coded with a dynamic
 //      Huffman code per block of 32768 tokens (RFC 1951 3.2.7), the code
 //      lengths built by the two-lightest merge of Huffman 1952 and limited
@@ -21,9 +22,12 @@
 //      until they fit
 // A negative level is the default, 6; a level over 9 acts as 9.
 //
-// The matcher is the classic greedy one (zlib's deflate_fast without the
-// level tuning): at each position the longest match within a chain of
-// candidates, taken if it is 3 bytes or longer. The window is the full 32 KiB.
+// The matcher of levels 1 to 3 is the classic greedy one (zlib's deflate_fast
+// without the level tuning): at each position the longest match within a chain
+// of candidates, taken if it is 3 bytes or longer. Levels 4 to 9 match lazily,
+// as miniz_oxide does: a match of under 128 bytes is held back one position, and
+// if the next position has a longer match the byte here is a literal and the
+// longer match is taken (held in its turn). The window is the full 32 KiB.
 // It is neither as fast as zlib nor as small, but a stream any inflater reads.
 //
 // What a streaming deflater does not do, and the one-shot helpers do: a
