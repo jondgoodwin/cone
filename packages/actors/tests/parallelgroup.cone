@@ -166,8 +166,10 @@ fn main() i32 {
   expectUInt(seen.sawCancel.load(), 0u64, "2: ... and have seen no cancel");
   g2.cancel();
   actors.waitQuiet();
-  expectUInt(seen.started.load(), 64u64, "2: all 64 pieces ran");
-  expectUInt(seen.sawCancel.load(), 64u64, "2: every piece saw the cancel made outside, through its child group");
+  // The loop splits on demand, so how many passes had begun when the cancel came
+  // depends on the workers; the pieces not yet begun are skipped
+  expect(seen.started.load() <= 64u64, "2: no more than 64 passes ran");
+  expectUInt(seen.sawCancel.load(), seen.started.load(), "2: every pass that ran saw the cancel made outside, through its child group");
   expectUInt(seen.afterCancelled.load(), 1u64, "2: and the rest of the behaviour is in the cancelled group");
 
   // 3. a search cancels its own group, not its parent's
