@@ -1400,6 +1400,10 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+FnDclNode *flowCallMethod(FnCallNode *call) {
+    return pwMethod(call);
+}
+
 // Is the method's parameter 'i', as declared, a borrow? Such an argument is
 // not stored in an arena by a call ('ar.get(&key)'); one declared by value
 // ('value: T') is, whatever T is
