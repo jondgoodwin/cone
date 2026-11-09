@@ -293,6 +293,31 @@ fn main() i32 {
     expectUInt(e.sent(), e.passed() + 0u64, "4: sent = passed (nothing lost)");
   }
 
+  // ---- 5. finish while out of credit: the end waits for the credit, then comes after the last item
+  reset();
+  {
+    let edge = ValueEdge[u64].fromThread(64u32, 8u32, &marker);
+    let sink = Collect(0u32, true);
+    edge.connect(sink);
+    var e = edge;
+    var i = 0u64;
+    while i < 5u64 { _ = e.trySend(i); i = i + 1u64; }
+    e.finish();
+    thread.sleep(Duration.fromMillis(100i64));
+    actors.waitQuiet();
+    expectUInt(seen.ends.load(), 0u64, "5: with no credit the end has not come, though the thread finished");
+    expectUInt(seen.got.load(), 0u64, "5: ... and no item has been passed on");
+    sink.grant(100u32);
+    expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 5000i64), "5: once credit comes the stream ends");
+    actors.waitQuiet();
+    expectUInt(seen.got.load(), 5u64, "5: all 5 items arrived, none lost");
+    expectUInt(seen.bad.load(), 0u64, "5: in order, none twice");
+    expectUInt(seen.afterEnd.load(), 0u64, "5: the end came after the last item");
+    expectUInt(seen.markers.load(), 0u64, "5: no marker: nothing was dropped");
+    expectUInt(e.dropped(), 0u64, "5: dropped is zero");
+    expectUInt(e.sent(), e.passed(), "5: sent = passed");
+  }
+
   finalAll();
   done()
 }
