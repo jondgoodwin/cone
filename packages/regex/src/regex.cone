@@ -195,7 +195,10 @@ pub struct Regex {
     var trans = List[Trans]();
     insts <-> c.insts;
     trans <-> c.trans;
-    Ok[Regex, RegexError](Regex(Program(insts, trans, start, 2 * usize.from(p.groups), prefix), p.groups, names, bytesMode))
+    var seedLo = List[u8]();
+    var seedHi = List[u8]();
+    let seed = startStates(&insts, &trans, start, &mut seedLo, &mut seedHi);
+    Ok[Regex, RegexError](Regex(Program(insts, trans, start, 2 * usize.from(p.groups), prefix, seed, seedLo, seedHi, nullable(&p, root)), p.groups, names, bytesMode))
   }
 
   // How many groups the pattern has, not counting the whole match
@@ -217,7 +220,7 @@ pub struct Regex {
     var at = from;
     while at <= t.len {
       if !pike.search(&prog, t, at, earliest) { return false; }
-      if bytesMode { return true; }
+      if bytesMode || pike.nslots == 0 { return true; }
       let s = *pike.result[0];
       if s == *pike.result[1] && !text.isCharBoundary(s) { at = s + 1; }
       else { return true; }
@@ -227,7 +230,8 @@ pub struct Regex {
 
   // Whether the pattern matches anywhere in the text
   pub fn isMatch(self: &, text: &str) bool {
-    var pike = Pike.start(&prog, 2);
+    // the slots are needed only to tell an empty match inside a character
+    var pike = Pike.start(&prog, if prog.nullable && !bytesMode { 2usize } else { 0usize });
     searchFrom(&mut pike, text, 0, true)
   }
 

@@ -354,6 +354,63 @@ fn collectPrefix(p: &Parser, id: u32, out: &mut List[u8]) bool {
   false
 }
 
+// Whether the node can match the empty text
+fn nullable(p: &Parser, id: u32) bool {
+  let n = p.nodes[usize.from(id)];
+  if n.kind == nEmpty || n.kind == nLook { return true; }
+  if n.kind == nClass { return false; }
+  if n.kind == nGroup { return nullable(p, n.first); }
+  if n.kind == nRepeat { return n.a == 0 || nullable(p, n.first); }
+  var k = 0usize;
+  if n.kind == nConcat {
+    while k < usize.from(n.count) {
+      if !nullable(p, p.kids[usize.from(n.first) + k]) { return false; }
+      k = k + 1;
+    }
+    return true;
+  }
+  while k < usize.from(n.count) {
+    if nullable(p, p.kids[usize.from(n.first) + k]) { return true; }
+    k = k + 1;
+  }
+  false
+}
+
+// The states that read a byte, or match, that the start state leads to without a
+// byte, in the order a search tries them: a search that wants only the whole match
+// starts each thread from these, without walking the Split states again. Empty when
+// an assertion is on the way (the walk is then done afresh at each position).
+fn startStates(insts: &List[Inst], trans: &List[Trans], start: u32, lo: &mut List[u8], hi: &mut List[u8]) List[u32] {
+  var seed = List[u32]();
+  var seen = List[bool](insts.len()) <- fill false;
+  var stack = List[u32]();
+  stack.push(start);
+  while stack.len() > 0 {
+    var sid = stack.pop().unwrap();
+    var go = true;
+    while go {
+      if *seen[usize.from(sid)] { break; }
+      seen.set(usize.from(sid), true);
+      let inst = &insts[usize.from(sid)];
+      if inst.op == opSplit { stack.push(inst.x); sid = inst.next; }
+      else if inst.op == opSave { sid = inst.next; }
+      else if inst.op == opLook || inst.op == opMatch { return List[u32](); }
+      else if inst.op == opFail { go = false; }
+      else {
+        seed.push(sid);
+        // the bytes the state can read, or a range holding them all
+        if inst.op == opByte { lo.push(inst.lo); hi.push(inst.hi); }
+        else {
+          lo.push(trans[usize.from(inst.x)].lo);
+          hi.push(trans[usize.from(inst.x) + usize.from(inst.y) - 1].hi);
+        }
+        go = false;
+      }
+    }
+  }
+  seed
+}
+
 // The compiled program
 struct Program {
   pub insts: List[Inst];
@@ -362,4 +419,10 @@ struct Program {
   // Slots for the captures: two for each group, the whole match first
   pub slots: usize;
   pub prefix: List[u8];
+  // startStates, or empty, and for each a range of the bytes it can read
+  pub seed: List[u32];
+  pub seedLo: List[u8];
+  pub seedHi: List[u8];
+  // Whether the pattern can match the empty text
+  pub nullable: bool;
 }

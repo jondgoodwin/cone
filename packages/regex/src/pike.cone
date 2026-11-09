@@ -63,7 +63,10 @@ struct Pike {
         if at == noPos { break; }
         p = at;
       }
-      if !matched { closure(prog, text, w, p, prog.start); }
+      if !matched {
+        if ns <= 2 && prog.seed.len() > 0 { seedThreads(prog, text, w, p); }
+        else { closure(prog, text, w, p, prog.start); }
+      }
       if *lens[w] == 0 {
         if matched || p >= tlen { break; }
         p = p + 1;
@@ -113,6 +116,35 @@ struct Pike {
       w = nw;
     }
     matched
+  }
+
+  // The same as 'closure' from the start state, for a search that keeps at most the
+  // whole match's slots: the states startStates found, those not in the list yet
+  fn seedThreads(self: &mut, prog: &Program, text: &Array[u8], w: usize, at: usize) {
+    // a thread that cannot read the byte at 'at' would die in this very step: not added
+    if at >= text.len { return; }
+    let byte = text[at];
+    let ns = nslots;
+    let base = w * n;
+    var i = 0usize;
+    let count = prog.seed.len();
+    while i < count {
+      if byte < *prog.seedLo[i] || byte > *prog.seedHi[i] { i = i + 1; continue; }
+      let sid = *prog.seed[i];
+      let si = usize.from(*sparse[base + usize.from(sid)]);
+      let used = *lens[w];
+      if !(si < used && *dense[base + si] == sid) {
+        dense.set(base + used, sid);
+        sparse.set(base + usize.from(sid), u32.from(used));
+        lens.set(w, used + 1);
+        if ns == 2 {
+          let row = (base + usize.from(sid)) * 2;
+          slots.set(row, at);
+          slots.set(row + 1, noPos);
+        }
+      }
+      i = i + 1;
+    }
   }
 
   // Move the thread of state 'sid' (list w) along to 'next' in list nw at position at
