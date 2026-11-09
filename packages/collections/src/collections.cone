@@ -1350,9 +1350,14 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // Add these bytes at the end, for bytes that are text; nothing checks they
   // are UTF-8 (see 'fromBytes')
   pub fn appendBytes(self: &mut, b: &Array[u8]) {
-    buf.reserve(b.len + 1usize);
-    var i = 0usize;
-    while i < b.len { buf.push(b[i]); i = i + 1usize; }
+    let n = b.len;
+    buf.reserve(n + 1usize);
+    if n > 0usize {
+      // One block copy, as List.appendSliceCopy does; the reserve has room
+      // for the bytes and the NUL, so seal() finds the NUL's room
+      mem.moveRawInto(buf.ptr + buf.used, b as *u8, n);
+      buf.used = buf.used + n;
+    }
     self.seal();
   }
 
