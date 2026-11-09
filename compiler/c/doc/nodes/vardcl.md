@@ -89,11 +89,15 @@ into the module ([module](module.md), "Name resolution").
 a fresh unchecked node however far along its source got. Without that,
 `inodeTypeCheck`'s declaration guard skips the clone entirely.
 
-**There is no clone for a constant.** `const` is parsed only in the global
-statement area, and cloning is entered only on a function, struct or macro body,
-so no `ConstDclNode` can reach `cloneNode` — which has no `ConstDclTag` arm
-either, and whose `default:` says so. Whoever makes `const` legal inside a body
-owes both halves, the mark clearing above included; `const.c` carries that note.
+**There is no clone for a constant.** `const` is parsed in the global
+statement area and in the braces of a struct or an enum that is neither generic
+nor a trait (below), and cloning is entered only on a function, struct or macro
+body, so no `ConstDclNode` can reach `cloneNode` — which has no `ConstDclTag`
+arm either, and whose `default:` says so. A generic type's instances and a
+trait's implementers copy their members, which is why `const` is refused in both
+(`ErrorConstPlace`). Whoever makes `const` legal there owes both halves, the
+mark clearing above included, and `structClone`'s member loop a `ConstDclTag`
+arm (its `default:` takes a function); `const.c` carries that note.
 
 ## Parse
 
@@ -105,6 +109,7 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
 | static local (`parseExprBlock`, after `static`) | sig/impl | `FlagStatic`, `VarInitialized`. One copy shared by every call of the function; the function becomes its owner in type check, and its storage is a global |
 | type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type.name` from outside and by bare name from the type's own functions |
+| type const (`parseStructItems`, after `pub`) | `parseConstDcl(parse, 1)`: the `;` before the `}` may be left out | `ConstDclNode` with `owner` set by `iNsTypeAddConst`, which adds it to the type's `nodelist` and binds it in the type's namespace beside the fields, methods and statics. No `dclinfo` (a constant has no symbol): privacy answers from `FlagPub`, as a module constant's does. Reached as `Type.name` (`fnCallNameResPath` binds the path to the constant, as it does a static) and by bare name from the type's own functions (`nametblHookNamespace`). In a trait, or in a generic type's braces, `#each` ones included, it is read and refused (`ErrorConstPlace`) and not added |
 | parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default; in-list throughout, so a default is read as a simple expression and the comma after it begins the next parameter rather than a tuple | `VarInitialized`, `scope = 1`, `index`, `Self` inference. In a `&fn` signature, a parameter written as its type alone is not read by `parseVarDcl`: `parseFnSig` builds it, named `anonName`, and `parseFnSigSettle` turns a lone name into such a parameter once the signature is known to be a type ([parse](../phases/parse.md), section 4) |
 
 `static` before anything that is not a variable — a function, a type, a

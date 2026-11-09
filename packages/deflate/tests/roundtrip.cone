@@ -1,5 +1,5 @@
 // The deflater against the inflater, over data of many shapes and sizes, at
-// levels 0 to 2 and all three formats (levels.cone covers 1 to 9). Writer and
+// levels 0, 1, 2, 4, 6 and 9 and all three formats (levels.cone covers 1 to 9). Writer and
 // reader could share a mistake, so the reader is checked against zlib's own
 // streams in zoo.cone. The golden check values at the end are the CRC-32 of
 // four of the streams, so any change to the bytes written is seen.
@@ -119,6 +119,8 @@ fn formatName(f: Format) &str {
 
 fn main() i32 {
   let sizes: Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
+  // 0 stores, 1 is fixed Huffman, 2 is greedy, 4 6 9 match lazily (the cut-invariance of the held match)
+  let levelList: Array[i32, 6] = [0, 1, 2, 4, 6, 9];
   var badRound = 0usize;
   var badChunk = 0usize;
   var badOneShot = 0usize;
@@ -131,8 +133,9 @@ fn main() i32 {
     while si < 11usize {
       let n = sizes[si];
       let d = data(kind, n);
-      var lv = 0;
-      while lv < 3 {
+      var li = 0usize;
+      while li < 6usize {
+        let lv = levelList[li];
         var f = 0;
         while f < 3 {
           let fmt = if f == 0 {Format.Raw} else if f == 1 {Format.Zlib} else {Format.Gzip};
@@ -180,7 +183,7 @@ fn main() i32 {
           }
           f += 1;
         }
-        lv += 1;
+        li += 1usize;
       }
       si += 1usize;
     }
@@ -191,7 +194,7 @@ fn main() i32 {
   expectInt(i64.from(badChunk), 0i64, "cuttings that write other bytes than the whole input at once");
   expectInt(i64.from(badOneShot), 0i64, "one-shot helpers that differ from the stream (other than by storing)");
   expectInt(i64.from(badBound), 0i64, "stored streams of the wrong size");
-  expectInt(i64.from(runs), 495i64, "combinations run");
+  expectInt(i64.from(runs), 990i64, "combinations run");
 
   // The one-shot helpers' fallback: random data is stored, whatever the level
   let rnd = data(0, 70000usize);
@@ -220,5 +223,12 @@ fn main() i32 {
   expectUInt(u64.from(crc32(zlibCompress(w.view(), 2).view())), 0xb2b51369u64, "golden: kind 2, 20000 bytes, zlib level 2");
   expectUInt(u64.from(crc32(gzipCompress(letters.view(), 2).view())), 0xab1d1e47u64, "golden: kind 3, 100000 bytes, gzip level 2");
   expectUInt(u64.from(crc32(rawDeflate(runs2.view(), 1).view())), 0xd77dc969u64, "golden: kind 1, 100000 bytes, raw level 1");
+  // Levels 4 to 9 match lazily; each stream below was also decoded by Python's zlib to the data
+  expectUInt(u64.from(crc32(zlibCompress(w.view(), 4).view())), 0x14cca460u64, "golden: kind 2, 20000 bytes, zlib level 4");
+  expectUInt(u64.from(crc32(zlibCompress(w.view(), 6).view())), 0xf6b8202du64, "golden: kind 2, 20000 bytes, zlib level 6");
+  expectUInt(u64.from(crc32(zlibCompress(w.view(), 9).view())), 0x431a3962u64, "golden: kind 2, 20000 bytes, zlib level 9");
+  expectUInt(u64.from(crc32(gzipCompress(letters.view(), 4).view())), 0x1eff65dau64, "golden: kind 3, 100000 bytes, gzip level 4");
+  expectUInt(u64.from(crc32(gzipCompress(letters.view(), 6).view())), 0x0991cdcdu64, "golden: kind 3, 100000 bytes, gzip level 6");
+  expectUInt(u64.from(crc32(gzipCompress(letters.view(), 9).view())), 0xceffda5cu64, "golden: kind 3, 100000 bytes, gzip level 9");
   done()
 }
