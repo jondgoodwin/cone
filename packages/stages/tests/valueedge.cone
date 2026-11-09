@@ -318,6 +318,38 @@ fn main() i32 {
     expectUInt(e.sent(), e.passed(), "5: sent = passed");
   }
 
+  // ---- 6. `finished` must not lose an item: asked before the items are taken, it says no and keeps them
+  reset();
+  {
+    let edge = ValueEdge[u64].toThread(16u32, 16u32);
+    var e = edge;
+    match e.sink() {
+      case let Some(s) { let gen = Gen(s, 3u64); }
+      else { require(false, "6: an edge into a thread has a sink"); }
+    }
+    // wait for the end to be visible, asking `finished` only; each ask finds an item and must keep it
+    var asks = 0u32;
+    var saidYes = false;
+    while asks < 300u32 && !saidYes {
+      saidYes = e.finished();
+      asks = asks + 1u32;
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    expect(!saidYes, "6: finished is false while items are still on the ring");
+    var next = 0u64;
+    var bad = 0u64;
+    var more = true;
+    while more {
+      match e.tryRecv() {
+        case let Some(v) { if v != next { bad = bad + 1u64; } next = next + 1u64; }
+        else { more = false; }
+      }
+    }
+    expectUInt(next, 3u64, "6: all 3 items were still there for tryRecv, none eaten by finished");
+    expectUInt(bad, 0u64, "6: in order");
+    expect(e.finished(), "6: and now it is finished");
+  }
+
   finalAll();
   done()
 }
