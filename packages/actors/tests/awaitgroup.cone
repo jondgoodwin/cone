@@ -275,7 +275,15 @@ fn main() i32 {
     actors.withGroup(&g, fn() [a, slow, kk] { a.stress(slow, kk); });
     k += 1u64;
   }
-  waitHeld(200u64);
+  // Slow answers one at a time, the first holding its turn until the gate or its
+  // five seconds, so 'held' never reaches 200: the table is what to wait for.
+  // (This waited for held to reach 200, i.e. out the five seconds, and checked
+  // the table just as Slow's own five seconds ran out; the answers then came
+  // free, a few entries gone. Slow now starts at the first send, on another
+  // worker woken by it, so its five seconds end before the wait's.)
+  waitHeld(1u64);
+  let limit = bounded(5000i64);
+  while u64.from(actors.groupAwaitsLive()) < 200u64 && Instant.now() < limit {thread.yieldNow();}
   expectUInt(u64.from(actors.groupAwaitsLive()), 200u64, "5: 200 entries while the answers are held");
   seen.gate.store(1u64);
   actors.waitQuiet();

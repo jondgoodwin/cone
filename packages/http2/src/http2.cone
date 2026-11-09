@@ -351,15 +351,38 @@
 // to spare, goes out as one DATA frame's payload, moved, never copied; a
 // longer one, or one the windows cut, is copied a frame at a time.
 // Receiving: a stream's credit comes back only as the program releases its
-// bytes ('release(stream, n)', the http1 model), so a stream's unread data
-// is bounded by its own window ('initialWindowSize') and one stalled reader
-// holds up only itself; the connection's credit comes back as DATA
-// arrives, so the connection's window ('connectionWindowSize') limits how
-// fast the network delivers, never how much sits unread, and a few stalled
-// readers cannot freeze the rest (gRPC-Go's, nginx's, .NET's answer).
-// What a connection can hold unread is maxConcurrentStreams x
-// initialWindowSize. Credit goes back in a WINDOW_UPDATE once half a window
-// is owed.
+// bytes ('release(stream, n)', the http1 model), so one stalled reader holds
+// up only itself; the connection's credit comes back as DATA arrives, so the
+// connection's window ('connectionWindowSize') limits how fast the network
+// delivers, never how much sits unread, and a few stalled readers cannot
+// freeze the rest (gRPC-Go's, nginx's, .NET's answer). Credit goes back in a
+// WINDOW_UPDATE once half a stream's window is owed.
+//
+// CREDIT (as quic's). The stream windows are drawn from a budget,
+// 'creditBudget' a connection (1 MiB by default; a server sets its share of
+// the pool). A stream's window is its floor, our SETTINGS_INITIAL_WINDOW_SIZE:
+// half the budget over the streams (the larger of maxConcurrentStreams and
+// assumedPeerStreams), at least 2 KiB, at most 'streamWindow': 5242 B at the
+// defaults. All the floors together are half the budget; the other half is
+// the spare. A stream that opens is raised at once by a WINDOW_UPDATE to
+// 16 KiB, taking at most the spare's upper half (23 streams get the whole
+// 11,142 B, the 24th the 5,922 left, then a stream keeps its floor); the
+// lower half is kept for growth. A stream that releases bytes gets them back
+// and as many more again from the spare, up to 'streamWindow' (256 KiB): a
+// stream that keeps reading doubles its window with each window's worth, and
+// one bulk stream reaches the full 256 KiB. A stream that releases nothing
+// keeps what it holds. A stream the peer can send no more on (its END_STREAM
+// came, it was reset, or this end reset it) keeps credit for the bytes not yet
+// released and no more, and the whole when it leaves the table. So the bytes
+// held unread on a connection are at most creditBudget, however many streams
+// stall, not maxConcurrentStreams x 256 KiB (25 MiB): the bytes of a stream
+// that has left the table, which the program still holds, are the program's.
+// Two exceptions: a budget under 2 KiB x 2 x the streams is exceeded by the
+// floors alone; and until the peer acknowledges our SETTINGS it may send
+// the 65535 bytes a stream may before them, so a floor below that is not
+// enforced meanwhile (at most settingsTimeout, 10 s).
+// httpconn's read credit (readCredit) is not this budget: it bounds the input
+// held unparsed, which release never touches, so it is not drawn on.
 //
 // EVENTS. 'pollEvent' gives one Event each call, every one naming its
 // stream (0 for the connection's own), until NeedData (nothing more until
@@ -428,9 +451,9 @@
 // client resets the stream, CANCEL), hpack.headerTableSize our
 // SETTINGS_HEADER_TABLE_SIZE. 'maxConcurrentStreams' (100, RFC 9113's
 // floor and the industry's figure) is our SETTINGS_MAX_CONCURRENT_STREAMS;
-// 'assumedPeerStreams' (100) the peer's until it says. 'initialWindowSize'
-// (256 KiB, http1's bodyWindow; at least 65535) is our
-// SETTINGS_INITIAL_WINDOW_SIZE, a stream's unreleased bytes;
+// 'assumedPeerStreams' (100) the peer's until it says. 'streamWindow'
+// (256 KiB, http1's bodyWindow; at least 65535) is the most a stream's window
+// grows to, and 'creditBudget' (1 MiB) the credit they share (CREDIT);
 // 'connectionWindowSize' (16 MiB) the connection's window, raised by a
 // WINDOW_UPDATE at the start. 'maxBuffered' (64 KiB) is the input held
 // unparsed, at least a whole frame. 'writeWatermark' (256 KiB, http1's) a

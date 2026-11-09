@@ -2547,6 +2547,12 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
     snprintf(buf + used, size - used, "]");
 }
 
+// A type named with its arguments, 'Wrap[Option[i64]]', in a fresh buffer
+void genericTypeSpell(char *buf, size_t size, INode *type) {
+    buf[0] = '\0';
+    genericTypeNameCat(buf, size, type, 0);
+}
+
 // Append a type as a constraint writes it, before its parameters have
 // arguments: a parameter by its name, an instance with its arguments written
 // as they are ('Stack[T]'), anything else as the type it is
@@ -3768,6 +3774,8 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
         structDeferCheck(pstate, genericLateWhere, instance, wait);
     }
 
+    structInstanceNote(instance);
+
     // Remember instantiation for the future
     if (!genericinfo->memonodes)
         genericinfo->memonodes = newNodes(2);
@@ -4177,6 +4185,10 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // Instantiate the dcl generic.
     // Instantiating analyzes the new instance, which may instantiate this same
     // generic again at larger type arguments, so this is where depth is counted.
+    // An instance made while another's members are checked is deeper by one than
+    // that one (structInstanceNest): the stack is not, as those checks are queued.
+    if (!structInstanceNest((INode*)srcgencall))
+        return newErrorNode((INode*)srcgencall);
     if (!genericInstantiateEnter((INode*)srcgencall))
         return newErrorNode((INode*)srcgencall);
 
