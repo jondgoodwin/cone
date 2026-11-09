@@ -496,6 +496,7 @@ pub struct Connection is Move {
     s.responded = true;
     if end {
       s.sendDone = true;
+      self.answeredWhole(s);
       self.settle(s);
       return;
     }
@@ -1419,6 +1420,26 @@ pub struct Connection is Move {
     s.finishing = false;
   }
 
+  // A server's response on s has gone out whole (its END_STREAM is queued). If the request is still being
+  // sent, the server asks the client to stop with RST_STREAM(NO_ERROR) (section 8.1): the response stands,
+  // the stream is closed (what the client still sends for it is ignored, as after any reset of ours), and
+  // the program, which would otherwise wait for an End that will not come, hears Reset (NO_ERROR). It is
+  // not a reset for the peer's fault, so maxLocalResets does not count it
+  fn answeredWhole(self: &mut, s: &mut Stream) {
+    if clientRole || s.recvDone || !s.sendDone || failed || closed {return;}
+    let id = s.id;
+    if !writer.rstStream(id, ErrorCode.NoError) {
+      self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+      return;
+    }
+    if s.announced {
+      let e = HttpError.coded(ErrorKind.Reset, 0u64, ErrorScope.Stream,
+        "the request was not sent whole: the response was complete, so the stream was reset with NO_ERROR");
+      self.emit(s, Event.Reset(id, e));
+    }
+    self.abandon(s, true);
+  }
+
   // After s changed: once both its directions are done, it is closed on the
   // wire (its slot under the peer's limit freed, a waiting request opened),
   // and once its events are all taken too, it leaves the table. The last
@@ -1586,6 +1607,7 @@ pub struct Connection is Move {
       if last {
         s.sendDone = true;
         s.ready = false;
+        self.answeredWhole(s);
         self.settle(s);
         return 2u32;
       }
@@ -1604,6 +1626,7 @@ pub struct Connection is Move {
       }
       s.sendDone = true;
       s.ready = false;
+      self.answeredWhole(s);
       self.settle(s);
       return 2u32;
     }
