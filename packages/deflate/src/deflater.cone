@@ -10,21 +10,42 @@ fn fixedFlushTokens() usize { 8192usize }
 // the hash of the last position it enters
 fn lookAhead() i64 { 262i64 }
 
-// Candidate positions the matcher looks at for one position, by level
+// The level a deflater runs at: 0 stores, 1 to 9 are themselves (1 the
+// fastest, 9 the smallest), a negative number is zlib's default, 6, and
+// anything above 9 is 9
+fn levelOf(level: i32) i32 {
+  if level < 0 { return 6; }
+  if level > 9 { return 9; }
+  level
+}
+
+// Candidate positions the matcher looks at for one position, by level: the
+// probe counts miniz_oxide gives its levels 1 to 9 (1, 6, 32, 16, 32, 128,
+// 256, 512, 768). Its levels 4 and up also match lazily, which this matcher
+// does not, so level 4 here finds less than level 3.
 fn chainLimitOf(level: i32) usize {
-  if level == 1 { return 16usize; }
-  48usize
+  if level <= 1 { return 1usize; }
+  if level == 2 { return 6usize; }
+  if level == 3 { return 32usize; }
+  if level == 4 { return 16usize; }
+  if level == 5 { return 32usize; }
+  if level == 6 { return 128usize; }
+  if level == 7 { return 256usize; }
+  if level == 8 { return 512usize; }
+  768usize
 }
 
 // The matcher: from position '*cur' (absolute, the byte at 'base' is buf[0]),
 // turn bytes into tokens (a literal byte, or 0x80000000 | length << 16 |
 // distance) until the data runs out (answers false; with 'final' false it
 // stops while less than 'lookAhead()' bytes remain) or 'tokens' holds
-// 'maxTokens' and another position is waiting (answers true). 'head' and
+// 'maxTokens' and another position is waiting (answers true). With 'insertAll'
+// false a match enters only its first position in the hash chain, as miniz's
+// level 1 does; true enters every position it covers. 'head' and
 // 'prev' are the hash chains: 'head' by hash the newest position, 'prev' by
 // position (modulo 32768) the one before it with the same hash.
 fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
-  chainLimit: usize, maxTokens: usize, final: bool) bool {
+  chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let endPos = base + i64.from(n);
   while *cur < endPos {
@@ -55,9 +76,10 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
     }
     if bestLen >= 3usize {
       tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
-      // Insert every position the match covers
+      // Insert the positions the match covers: all of them, or just its first
+      let covered = if insertAll {bestLen} else {1usize};
       var k = 0usize;
-      while k < bestLen {
+      while k < covered {
         if ib + k + 3usize <= n {
           let h = hash3(buf, ib + k);
           let p = i + i64.from(k);
@@ -124,10 +146,12 @@ fn writeGzipHeader(out: &mut List[u8], h: &GzipHeader) {
 }
 
 // RFC 1950 section 2.2: CMF 78 (deflate, 32 KiB window), FLG with the
-// check bits; FLEVEL 0 for stored, 2 (the default) otherwise
+// check bits; FLEVEL as zlib sets it: 0 for stored and level 1, 1 for levels 2
+// to 5, 2 for level 6 (the default), 3 for levels 7 to 9
 fn writeZlibHeader(out: &mut List[u8], level: i32) {
+  let lv = levelOf(level);
   out.push(0x78u8);
-  out.push(if level == 0 {0x01u8} else {0x9Cu8});
+  out.push(if lv <= 1 {0x01u8} else if lv <= 5 {0x5Eu8} else if lv == 6 {0x9Cu8} else {0xDAu8});
 }
 
 // The Adler-32, most significant byte first
@@ -151,9 +175,11 @@ fn writeGzipTrailer(out: &mut List[u8], crc: u32, size: u64) {
   out.push(u8.from(s >> 24u32));
 }
 
-// The XFL byte a compressor writes: 4 for the fastest levels, else 0
+// The XFL byte a compressor writes, as zlib does: 4 for the fastest levels, 2
+// for the slowest (9), else 0
 fn xflOf(level: i32) u8 {
   if level == 0 || level == 1 { return 4u8; }
+  if level == 9 { return 2u8; }
   0u8
 }
 
@@ -200,12 +226,13 @@ pub struct Deflater {
   gz: GzipHeader;
   outTotal: u64;
 
-  // A deflater for 'format' at 'level' (0 stored, 1 fixed Huffman, 2
-  // dynamic Huffman; other numbers act as 2). A gzip stream gets a plain
-  // header (no time, no name, system 255) unless 'setGzipHeader' is called
-  // before the first 'feed'.
+  // A deflater for 'format' at 'level' (0 stored; 1 fixed Huffman and the
+  // fewest candidates; 2 to 9 dynamic Huffman and more candidates the higher;
+  // a negative level is the default, 6, and above 9 is 9). A gzip stream gets
+  // a plain header (no time, no name, system 255) unless 'setGzipHeader' is
+  // called before the first 'feed'.
   pub fn make(format: Format, level: i32) Deflater {
-    let lv = if level == 0 {0} else if level == 1 {1} else {2};
+    let lv = levelOf(level);
     var head = List[i64]();
     var prev = List[i64]();
     if lv > 0 {
@@ -320,7 +347,7 @@ pub struct Deflater {
   fn step(self: &mut) bool {
     self.slide();
     if level == 0 { return self.stepStored(); }
-    let full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level),
+    let full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), level > 1,
       if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing);
     if full {
       self.flushTokens();

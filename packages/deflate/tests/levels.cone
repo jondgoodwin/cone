@@ -1,0 +1,116 @@
+// The levels 1 to 9: every level's output decodes to its input, in all three
+// formats and over data of several shapes and sizes, plus what a level number
+// means: 0 stores, a negative level is the default (6), above 9 is 9, the
+// zlib header's FLEVEL and the gzip header's XFL follow zlib, and the higher
+// levels do not make the six-letter data bigger than level 1's fixed code.
+
+mod levels;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+fn data(kind: i32, n: usize) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var s = 12345u64;
+  var i = 0usize;
+  while i < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
+    else if kind == 1 { d.push(u8.from((i / 100usize) & 255usize)); }
+    else if kind == 2 { d.push(u8.from(((i * 7usize) % 251usize) + (if (s >> 60u64) == 0u64 {1usize} else {0usize}))); }
+    else if kind == 3 { d.push(u8.from(97usize + usize.from((s >> 45u64) % 6u64))); }
+    else { d.push(u8.from((i % 32768usize) * 31usize & 255usize)); }
+    i += 1usize;
+  }
+  d
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+fn zlibBack(z: &Array[u8], want: &Array[u8]) bool {
+  match zlibDecompress(z, 0usize) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn gzipBack(z: &Array[u8], want: &Array[u8]) bool {
+  match gzipDecompress(z, 0usize) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn rawBack(z: &Array[u8], want: &Array[u8]) bool {
+  var used = 0usize;
+  match inflate(z, 0usize, 0usize, &mut used) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn zlibByte(d: &Array[u8], level: i32, at: usize) i64 {
+  let z = zlibCompress(d, level);
+  i64.from(*z[at])
+}
+
+fn gzipByte(d: &Array[u8], level: i32, at: usize) i64 {
+  let z = gzipCompress(d, level);
+  i64.from(*z[at])
+}
+
+fn main() i32 {
+  let sizes: Array[usize, 6] = [0usize, 1usize, 4usize, 300usize, 40000usize, 100000usize];
+  var runs = 0usize;
+  var bad = 0usize;
+  var level = -2;
+  while level <= 11 {
+    var kind = 0;
+    while kind < 5 {
+      var si = 0usize;
+      while si < 6usize {
+        let d = data(kind, sizes[si]);
+        runs += 3usize;
+        if !zlibBack(zlibCompress(d.view(), level).view(), d.view()) { bad += 1usize; }
+        if !gzipBack(gzipCompress(d.view(), level).view(), d.view()) { bad += 1usize; }
+        if !rawBack(rawDeflate(d.view(), level).view(), d.view()) { bad += 1usize; }
+        si += 1usize;
+      }
+      kind += 1;
+    }
+    level += 1;
+  }
+  expectInt(i64.from(runs), 14i64 * 5i64 * 6i64 * 3i64, "level x kind x size x format combinations run");
+  expectInt(i64.from(bad), 0i64, "streams that did not decode to their data (levels -2 to 11)");
+
+  // What a level number means
+  let text = data(3, 100000usize);
+  let t = text.view();
+  expect(same(rawDeflate(t, -1).view(), rawDeflate(t, 6).view()), "a negative level is the default, 6");
+  expect(same(rawDeflate(t, 10).view(), rawDeflate(t, 9).view()), "level 10 is level 9");
+  expect(same(rawDeflate(t, 99).view(), rawDeflate(t, 9).view()), "level 99 is level 9");
+  expect(rawDeflate(t, 1).len() > rawDeflate(t, 2).len(), "level 1's fixed code is bigger than level 2's dynamic one on six letters");
+  expect(rawDeflate(t, 6).len() <= rawDeflate(t, 2).len(), "level 6 is no bigger than level 2");
+  // A repeat of 251 bytes with noise: more candidates find the longer matches
+  let rep = data(2, 100000usize);
+  expect(rawDeflate(rep.view(), 6).len() <= rawDeflate(rep.view(), 2).len(), "noisy repeat: level 6 is no bigger than level 2");
+  expect(rawDeflate(rep.view(), 9).len() <= rawDeflate(rep.view(), 6).len(), "noisy repeat: level 9 is no bigger than level 6");
+  expect(rawDeflate(rep.view(), 2).len() < rawDeflate(rep.view(), 1).len(), "noisy repeat: level 2 is smaller than level 1");
+
+  // zlib's header: FLEVEL 0 for level 1, 1 for 2 to 5, 2 for 6, 3 for 7 to 9
+  expectInt(zlibByte(t, 1, 1usize), 0x01i64, "zlib header, level 1: FLEVEL 0");
+  expectInt(zlibByte(t, 3, 1usize), 0x5Ei64, "zlib header, level 3: FLEVEL 1");
+  expectInt(zlibByte(t, 6, 1usize), 0x9Ci64, "zlib header, level 6: FLEVEL 2");
+  expectInt(zlibByte(t, 9, 1usize), 0xDAi64, "zlib header, level 9: FLEVEL 3");
+  expectInt(zlibByte(t, -1, 1usize), 0x9Ci64, "zlib header, default level: FLEVEL 2");
+  expectInt(zlibByte(t, 0, 1usize), 0x01i64, "zlib header, level 0: FLEVEL 0");
+  // gzip's XFL: 4 for the fastest, 2 for the slowest
+  expectInt(gzipByte(t, 1, 8usize), 4i64, "gzip XFL, level 1: 4");
+  expectInt(gzipByte(t, 6, 8usize), 0i64, "gzip XFL, level 6: 0");
+  expectInt(gzipByte(t, 9, 8usize), 2i64, "gzip XFL, level 9: 2");
+  done()
+}
