@@ -2322,16 +2322,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             // A parameter with no lifetime named shares none with the arena
             if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
-            // A borrow written as the argument is stored itself only where
-            // the place's type can hold a borrow of what it borrows: the
-            // world's pool and the list of its creatures, each lent '&mut' to
-            // one call, are not stored in each other
             PathSet *carried = argsets[i];
-            INode *site = pwLendSite(parts[i]);
-            uint32_t own = site ? loanAt(site) : 0;
-            if (own && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
-                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
-                carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
         if (others == NULL)
