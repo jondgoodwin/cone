@@ -377,13 +377,14 @@ fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
 }
 
 // A streamed request's body nobody wants (dropped unread, never taken, cut by a limit) while its response is
-// whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1) so the client stops sending. It
-// is called at the response's end and at the drop, and does its work at whichever comes second. A handler
-// still holding the body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1
-// gets false from the driver (the core closes the connection after the answer); HTTP/3 is not done yet
+// whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), over HTTP/3 the client is asked
+// to stop with STOP_SENDING H3_NO_ERROR (RFC 9114 section 4.1), so it stops sending. It is called at the
+// response's end and at the drop, and does its work at whichever comes second. A handler still holding the
+// body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1 gets false from
+// the driver (the core closes the connection after the answer)
 fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
-  if x.onH3 || !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
-  srv.drv.stopBody(x.req);
+  if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
+  if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
 }
 
 fn srvCancel(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
