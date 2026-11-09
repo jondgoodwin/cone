@@ -1,0 +1,181 @@
+// The unstable sort on input that is nearly all equal keys: every element the same, and
+// two, three and four distinct values (the pivot then equals the one below it and the
+// sort partitions out the run of equals). Records of a key and an id are sorted by
+// sortUnstableBy, and selectNth is run on the same inputs.
+//
+// What each check means (every printed line was worked out against the source):
+// - Sorted: the keys come out in non-decreasing order.
+// - Checksums: the sum of the keys, the sum of the ids and the sum of id * key, all
+//   wrapping u64, are the same after the sort as before, and each id occurs exactly once
+//   with the key it started with. So no element is lost, doubled or changed, which a
+//   partition that exchanged wrongly would break while still leaving the keys sorted.
+// - The all-equal input has one key, 7: its key sum is 7 * n, worked out here
+//   by hand (7,000 at 1,000; 140,000 at 20,000).
+// - selectNth on the same inputs puts at k the value the sorted copy has at k.
+
+mod sortmanyequal;
+
+import testing use *;
+import collections use *;
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+struct Rec {
+  pub key: u32;
+  pub id: u32;
+}
+
+fn recOrder(a: &Rec, b: &Rec) i32 { a.key <=> b.key }
+
+// 'distinct' values, 1 for all equal (every key 7), else keys 0 to distinct - 1
+fn keyFor(distinct: u32, s: &mut u64) u32 {
+  let r = u32.from(nextRand(s) >> 40u64);
+  if distinct == 1u32 { 7u32 } else { r % distinct }
+}
+
+fn keySum(l: &List[Rec]) u64 {
+  var t = 0u64;
+  var i = 0usize;
+  while i < l.len() { t = t + u64.from(l[i].key); i = i + 1usize; }
+  t
+}
+
+fn idSum(l: &List[Rec]) u64 {
+  var t = 0u64;
+  var i = 0usize;
+  while i < l.len() { t = t + u64.from(l[i].id); i = i + 1usize; }
+  t
+}
+
+fn mixSum(l: &List[Rec]) u64 {
+  var t = 0u64;
+  var i = 0usize;
+  while i < l.len() { t = t + u64.from(l[i].id) * u64.from(l[i].key); i = i + 1usize; }
+  t
+}
+
+// True when keys never fall
+fn inOrder(l: &List[Rec]) bool {
+  var i = 1usize;
+  while i < l.len() {
+    if l[i - 1usize].key > l[i].key { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// How many ids are absent, doubled, or carry a key other than the original
+fn damaged(l: &List[Rec], keys: &List[u32]) i64 {
+  var seen = List[u8]();
+  var i = 0usize;
+  while i < l.len() { seen.push(0u8); i = i + 1usize; }
+  var bad = 0i64;
+  i = 0usize;
+  while i < l.len() {
+    let id = usize.from(l[i].id);
+    if id >= l.len() { bad = bad + 1i64; }
+    else {
+      if seen[id] != 0u8 { bad = bad + 1i64; }
+      seen[id] = 1u8;
+      if keys[id] != l[i].key { bad = bad + 1i64; }
+    }
+    i = i + 1usize;
+  }
+  bad
+}
+
+fn manyEqual() {
+  let sizes = [1000usize, 20000usize, 100000usize];
+  let kinds = [1u32, 2u32, 3u32, 4u32];
+  var bad = 0i64;
+  var unsorted = 0i64;
+  var changed = 0i64;
+  var s = 987654321u64;
+  var si = 0usize;
+  while si < 3usize {
+    let n = sizes[si];
+    var ki = 0usize;
+    while ki < 4usize {
+      var l = List[Rec]();
+      var keys = List[u32]();
+      var i = 0usize;
+      while i < n {
+        let k = keyFor(kinds[ki], &mut s);
+        keys.push(k);
+        l.push(Rec(k, u32.from(i)));
+        i = i + 1usize;
+      }
+      let k0 = keySum(&l);
+      let i0 = idSum(&l);
+      let m0 = mixSum(&l);
+      if kinds[ki] == 1u32 && n == 1000usize {
+        expectInt(i64.from(k0), 7000i64, "all equal, 1,000: key sum 7 * 1,000");
+      }
+      if kinds[ki] == 1u32 && n == 20000usize {
+        expectInt(i64.from(k0), 140000i64, "all equal, 20,000: key sum 7 * 20,000");
+      }
+      l.sortUnstableBy(&recOrder);
+      if !inOrder(&l) { unsorted = unsorted + 1i64; }
+      if keySum(&l) != k0 || idSum(&l) != i0 || mixSum(&l) != m0 { changed = changed + 1i64; }
+      bad = bad + damaged(&l, &keys);
+      ki = ki + 1usize;
+    }
+    si = si + 1usize;
+  }
+  expectInt(unsorted, 0i64, "sortUnstableBy on 1, 2, 3 and 4 distinct keys, 3 sizes: all in order");
+  expectInt(changed, 0i64, "the key, id and id * key sums are unchanged by the sort");
+  expectInt(bad, 0i64, "every id is present once with its own key");
+}
+
+fn selecting() {
+  let sizes = [1000usize, 20000usize];
+  let kinds = [1u32, 2u32, 3u32];
+  var bad = 0i64;
+  var s = 24680u64;
+  var si = 0usize;
+  while si < 2usize {
+    let n = sizes[si];
+    var ki = 0usize;
+    while ki < 3usize {
+      var a = List[Rec]();
+      var i = 0usize;
+      while i < n {
+        a.push(Rec(keyFor(kinds[ki], &mut s), u32.from(i)));
+        i = i + 1usize;
+      }
+      var want = List[Rec]();
+      i = 0usize;
+      while i < n { want.push(a[i]); i = i + 1usize; }
+      want.sortUnstableBy(&recOrder);
+      let ks = [0usize, 1usize, n / 7usize, n / 2usize, n - 2usize, n - 1usize];
+      var j = 0usize;
+      while j < 6usize {
+        var c = List[Rec]();
+        i = 0usize;
+        while i < n { c.push(a[i]); i = i + 1usize; }
+        let got = c.selectNthBy(ks[j], &recOrder);
+        if got.key != want[ks[j]].key { bad = bad + 1i64; }
+        if keySum(&c) != keySum(&a) || idSum(&c) != idSum(&a) || mixSum(&c) != mixSum(&a) {
+          bad = bad + 1i64;
+        }
+        j = j + 1usize;
+      }
+      ki = ki + 1usize;
+    }
+    si = si + 1usize;
+  }
+  expectInt(bad, 0i64, "selectNthBy on 1, 2 and 3 distinct keys: the k-th key, and the sums unchanged");
+}
+
+fn main() i32 {
+  manyEqual();
+  selecting();
+  done()
+}

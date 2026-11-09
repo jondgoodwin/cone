@@ -1,0 +1,153 @@
+// Probe (tests/blockbudget.cone is its test): an h3driver server in its own process, so the
+// buffer pool it reports is the server's alone. Listens on 127.0.0.1:<port>,
+// answers nothing, releases every Data it is handed unless told to hold, and
+// every 250 ms prints the pool's peaks since the last line. Ends after <secs>.
+//   h3srv <port> <secs> [hold]
+
+mod h3srv;
+
+import stdio use *;
+import process;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import tls;
+import quic;
+import h3driver use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn main() i32 {
+  let args = process.args();
+  var port = 4443u16;
+  var secs = 20i64;
+  var hold = false;
+  if args.len() >= 2usize {
+    match u64.parse(args[1usize].view()) {
+      case let Ok(p) {port = u16.from(p);}
+      case is Err {}
+    }
+  }
+  if args.len() >= 3usize {
+    match u64.parse(args[2usize].view()) {
+      case let Ok(p) {secs = i64.from(p);}
+      case is Err {}
+    }
+  }
+  if args.len() >= 4usize {hold = true;}
+  var lp = Loop.mustMake();
+  var d = Driver.make(Config.make());
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(quic.Config.make(), &cert, &key) {
+    case let Ok(ctx) {
+      match d.listen(&mut lp, SocketAddr.localhost(port), ctx, 1u64) {
+        case let Ok(l) {}
+        case let Err(f) {print <- f; printStr("\n"); return 1i32;}
+      }
+    }
+    case let Err(e) {print <- e; printStr("\n"); return 1i32;}
+  }
+  printStr("SRV up\n");
+  let end = Instant.now() + Duration.fromSeconds(secs);
+  var nextLine = Instant.now() + Duration.fromMillis(250i64);
+  var peakLent = 0u64;
+  var peakLentBytes = 0usize;
+  var peakHeld = 0usize;
+  var gPeakLent = 0u64;
+  var gPeakLentBytes = 0usize;
+  var gPeakHeld = 0usize;
+  var requests = 0u64;
+  var dataBytes = 0u64;
+  var dataEvents = 0u64;
+  var accepted = 0u64;
+  var closed = 0u64;
+  var failedClose = 0u64;
+  var held = 0u64;
+  while Instant.now() < end {
+    d.turn(&mut lp);
+    var evs = List[Event]();
+    d.takeEvents(&mut evs);
+    var k = 0usize;
+    while k < evs.len() {
+      let e = &mut evs[k];
+      k = k + 1usize;
+      if e.kind == EventKind.Accepted {accepted = accepted + 1u64;}
+      else if e.kind == EventKind.Closed {
+        closed = closed + 1u64;
+        if !e.clean {failedClose = failedClose + 1u64;}
+      }
+      else if e.kind == EventKind.Request {requests = requests + 1u64;}
+      else if e.kind == EventKind.Data {
+        dataEvents = dataEvents + 1u64;
+        dataBytes = dataBytes + u64.from(e.buf.len());
+        if hold {held = held + u64.from(e.buf.len());} else {d.release(e.req, e.buf.len());}
+      }
+    }
+    let s = stats();
+    if s.lent > peakLent {peakLent = s.lent;}
+    if s.lentBytes > peakLentBytes {peakLentBytes = s.lentBytes;}
+    if s.heldBytes > peakHeld {peakHeld = s.heldBytes;}
+    var limit = end;
+    let w = d.wakeAt();
+    if w < limit {limit = w;}
+    if evs.len() > 0usize {limit = Instant();}
+    var cs = List[Completion]();
+    lp.poll(limit, &mut cs);
+    var j = 0usize;
+    while j < cs.len() {
+      let ok = d.complete(&mut lp, &mut cs[j]);
+      j = j + 1usize;
+    }
+    let s2 = stats();
+    if s2.lent > peakLent {peakLent = s2.lent;}
+    if s2.lentBytes > peakLentBytes {peakLentBytes = s2.lentBytes;}
+    if s2.heldBytes > peakHeld {peakHeld = s2.heldBytes;}
+    if Instant.now() >= nextLine {
+      nextLine = Instant.now() + Duration.fromMillis(250i64);
+      let st = d.stats();
+      printStr("SRV t lent="); printUInt(s2.lent);
+      printStr(" peakLent="); printUInt(peakLent);
+      printStr(" peakLentBytes="); printUInt(u64.from(peakLentBytes));
+      printStr(" peakHeld="); printUInt(u64.from(peakHeld));
+      printStr(" refused="); printUInt(s2.refused);
+      printStr(" bufRefused="); printUInt(st.bufferRefused);
+      printStr(" conns="); printUInt(u64.from(d.live()));
+      printStr(" acc="); printUInt(accepted);
+      printStr(" closed="); printUInt(closed);
+      printStr(" reqs="); printUInt(requests);
+      printStr(" dataBytes="); printUInt(dataBytes);
+      printStr(" dataEvents="); printUInt(dataEvents);
+      printStr(" datagramsIn="); printUInt(st.datagramsIn);
+      printStr("\n");
+      if peakLent > gPeakLent {gPeakLent = peakLent;}
+      if peakLentBytes > gPeakLentBytes {gPeakLentBytes = peakLentBytes;}
+      if peakHeld > gPeakHeld {gPeakHeld = peakHeld;}
+      peakLent = 0u64;
+      peakLentBytes = 0usize;
+      peakHeld = 0usize;
+    }
+  }
+  let st = d.stats();
+  printStr("SRV done peakLent="); printUInt(gPeakLent);
+  printStr(" peakLentBytes="); printUInt(u64.from(gPeakLentBytes));
+  printStr(" peakHeld="); printUInt(u64.from(gPeakHeld));
+  printStr(" bufRefused="); printUInt(st.bufferRefused);
+  printStr(" accepted="); printUInt(accepted);
+  printStr(" closed="); printUInt(closed);
+  printStr(" notClean="); printUInt(failedClose);
+  printStr(" requests="); printUInt(requests);
+  printStr(" dataBytes="); printUInt(dataBytes);
+  printStr(" dataEvents="); printUInt(dataEvents);
+  printStr(" datagramsIn="); printUInt(st.datagramsIn);
+  printStr("\n");
+  d.end(&mut lp);
+  0i32
+}

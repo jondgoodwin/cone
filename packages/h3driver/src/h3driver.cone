@@ -172,7 +172,8 @@
 //    Data goes into the stream's record; the driver hands http3 only what its
 //    readCredit allows, and releases those bytes to QUIC (quic's release) as
 //    http3 takes them, not as they arrive. So a stalled reader holds at most
-//    QUIC's streamWindow in the driver, http3's streamBuffer in the core, and
+//    its QUIC window (its floor, a share of the connection's credit budget:
+//    quic's CREDIT) in the driver, http3's streamBuffer in the core, and
 //    its bodyWindow out with the program, and QUIC's flow control stops the
 //    peer; the other streams go on. Bytes dropped (a reset, a stop) are
 //    released at once.
@@ -263,12 +264,59 @@
 // stage Tls (the verifier's own number in its code: Windows' error, or on
 // Linux OpenSSL's verify result; tls.certErrorKind reads it as a kind).
 //
-// CREDIT AND MEMORY (invariant I9). Per stream: QUIC's streamWindow held in
-// the driver, http3's streamBuffer, its bodyWindow out with the program, and
+// CREDIT AND MEMORY (invariant I9). Per stream: its QUIC window held in the
+// driver (from its floor up to streamWindow, drawn from the connection's
+// budget), http3's streamBuffer, its bodyWindow out with the program, and
 // on the way out sendWatermark in QUIC and writeWatermark in http3. Per
-// connection: quic's and http3's own bounds, and 'sendDepth' datagrams in
+// connection: quic's creditBudget (the unread bytes of all its streams
+// together, Config.make setting it to the block budget's number below) and
+// http3's own bounds, and 'sendDepth' datagrams in
 // flight. Per socket: 'recvDepth' receive buffers. Connections:
 // 'maxConnections'.
+//
+// THE BLOCK BUDGET. The credits above count bytes; a stream also holds a
+// whole 4 KiB block from its first byte, in the driver and again in HTTP/3,
+// whatever it sent, so a peer that opens streams and trickles a byte to each
+// costs the pool about 460 KB a connection (measured, 115 streams) and, with
+// enough connections, fills it; the pool's refusal then ends whichever
+// connection asks next, honest ones included. So the cost lands on the
+// connection that causes it, as for HTTP/1.1 and HTTP/2 (a refusal ends the
+// connection that asked), in two parts. (1) Each connection has a budget for
+// the blocks its streams hold BEYOND their bytes: in the driver's records and
+// HTTP/3's, a smallest block per buffer less the bytes in it, counted after
+// each round of its turn. Over it, the connection ends Overloaded
+// (stats().budgetEnded), its blocks going home. The budget is the pool's
+// share for peers (three quarters of iobuf's maxBytes, as of Driver.make)
+// over maxConnections. Only that waste is counted, not the bytes: a
+// connection moving bytes in full blocks (a download of twenty bodies at
+// once, with a client slow to read) holds none, and the bytes are the
+// credits' above. (2) Config.make scales maxConnections and the protocol's
+// maxRequestStreams to the pool, so the budgets of the connections the
+// driver accepts add up to no more than the pool's share, and a connection
+// with every stream open and a smallest block each (the most a peer can
+// make of the first block, which joining holds to one a layer) is within its
+// budget. At the default 64 MiB pool: 100 request streams, 51 connections of
+// a 0.94 MiB budget each (a full connection's streams are 120 in two layers,
+// 0.94 MiB). A program that sets maxConnections higher than Config.make
+// gives, against the same pool, shrinks every budget with it: raise the
+// pool (iobuf.setLimits) before Config.make instead. THE SAFE WAY TO SERVE
+// MORE CONNECTIONS IS A BIGGER POOL, NOT A BIGGER maxConnections.
+//
+// THE BYTES, by the same share. A connection's unread bytes are bounded by
+// quic's creditBudget, which Config.make sets to the block budget's number:
+// its streams' windows are drawn from it as they read (quic's CREDIT), so a
+// few connections whose streams all stall hold no more than their budgets,
+// 0.94 MiB each at a 64 MiB pool, and a stream that keeps reading still
+// reaches a 256 KiB window. (The connection's own credit, 16 MiB, comes back
+// as bytes arrive and bounds only bytes in flight.)
+//
+// NOT COUNTED, and not bounded by the budget. (1) The block budget counts the
+// waste in blocks, the credit budget the bytes: a connection's blocks beyond
+// its bytes are the first, its bytes the second. (2) What the program holds is the program's to bound: the
+// event deque (takeEvents) and the Data events' buffers, which stay in the
+// pool until it drops them; a program that stops draining events, or holds
+// buffers, can fill the pool. (3) A datagram's records in QUIC before the
+// turn drains them.
 //
 // LOSS, FOR TESTS. 'injectLoss(perMille, seed)' drops that share of the
 // datagrams this driver would send (a fixed pseudo-random sequence from
@@ -301,7 +349,7 @@ mod h3driver;
 import libc;
 import collections use List, String, Deque, Dict;
 import time use Instant, Duration;
-import iobuf use IoBuf, Chain;
+import iobuf use IoBuf, Chain, page, stats;
 import diag;
 import iocore use Loop, Op, Target, Completion, Handle, SocketAddr, IoError, forever;
 import ioerror use IoErrorKind;
@@ -378,10 +426,31 @@ pub struct Config {
   pub maxWaiting: u32;            // requests per connection waiting for the peer's stream limit
   pub wakeStep: Duration;         // the least a passed wake time is moved on (WAKE TIMES)
 
-  // The defaults
+  // The defaults. 'maxConnections' and the protocol's 'maxRequestStreams' come
+  // from the buffer pool as it is now (set iobuf's limits first), by one rule:
+  //   maxRequestStreams = min(100, streamsInPool / 16), at least 4
+  //   maxConnections    = streamsInPool / (maxRequestStreams + 20), 1 to 10000
+  // where streamsInPool = three quarters of iobuf's maxBytes / (2 x a block):
+  // a request stream costs two smallest blocks at the least (the driver's
+  // and HTTP/3's), and 20 more streams are a connection's control, QPACK and
+  // unidirectional ones. A bigger pool gives more connections; nobody sets
+  // maxConnections (see the package's header, THE BLOCK BUDGET)
   pub fn make() Config {
-    Config(transport: quic.Config.make(), protocol: http3.Config.make(), recvDepth: 8u32, sendDepth: 16u32,
-      sendWatermark: 262144u64, maxConnections: 10000u32, maxWaiting: 100u32,
+    let streamsInPool = poolShare() / (streamLayers * page);
+    var protocol = http3.Config.make();
+    let fair = streamsInPool / 16usize;
+    if fair < protocol.maxRequestStreams {
+      protocol.maxRequestStreams = if fair < 4usize {4usize} else {fair};
+    }
+    var conns = streamsInPool / (protocol.maxRequestStreams + streamExtras);
+    if conns < 1usize {conns = 1usize;}
+    if conns > 10000usize {conns = 10000usize;}
+    // (and a connection's receive credit, quic's creditBudget, is its block
+    // budget's number: its share of the pool)
+    var transport = quic.Config.make();
+    transport.creditBudget = u64.from(blockBudget(poolShare(), u32.from(conns)));
+    Config(transport: transport, protocol: protocol, recvDepth: 8u32, sendDepth: 16u32,
+      sendWatermark: 262144u64, maxConnections: u32.from(conns), maxWaiting: 100u32,
       wakeStep: Duration.fromMillis(1i64))
   }
 }
@@ -559,10 +628,11 @@ pub struct DriverStats {
   pub idleWakes: u64;      // ...of those, the ones that sent nothing
   pub clamped: u64;        // wake times moved on to a wakeStep after the turn (WAKE TIMES)
   pub bufferRefused: u64;  // times the buffer pool refused a buffer (iobuf's tryMake): a connection ended Overloaded, or a listener's receive waits
+  pub budgetEnded: u64;    // connections ended Overloaded for holding more buffers than their block budget
 
   pub fn zero() DriverStats {
     DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
   }
 }
 

@@ -1,0 +1,238 @@
+// churnbench: rigid bodies and joints created and destroyed every step (pool migration, step 0; the
+// churn bench the earlier measurements lacked). A world holds 'pop' small dynamic bodies, spread on a
+// wide floor so they hardly touch, and each step destroys the 'per' oldest (with their joints, as
+// 'destroyBody' does) and creates 'per' new ones, each joined to the one made before it by a point
+// joint, then steps the world. Build it optimised to measure:
+//
+//   congo run --release packages/rigiddynamics/examples/churnbench.cone -- 30
+//
+// The argument is the number of steps a row runs (default 30; one step in three is the steady part).
+// Two rows: 1,000 bodies with 100 churned a step, and 5,000 with 500. Everything is seeded and
+// deterministic. A row prints one line:
+//
+//   ns per create (a body and its joint), ns per destroy, microseconds per step (the world's step only),
+//   the body slots and joints the world holds at the end ('joints' are never reused today: removeJoint
+//   only marks, so the count is the number ever made), and the process's private bytes above the row's
+//   start: the peak, the mean over the last third of the steps (steady) and after the world is dropped
+//   (end), then the process's CPU against wall time for the whole row.
+
+mod churnbench;
+
+import stdio use *;
+import libc;
+import collections use List;
+import time use Instant;
+import noise;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+// ---- the meter: wall time, process CPU time and private bytes ----
+//
+// Memory is the process's private bytes (Windows' PrivateUsage; Linux's data size, VmData), read from
+// the OS, because these structures have no stats of their own. CPU is the process's user plus kernel time
+// against the wall time, so a row on one busy thread reads near 100%.
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+  fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+}
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib data dt), in 4096-byte pages
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+// The process's CPU time so far, in nanoseconds (user plus kernel)
+fn cpuNanos() u64 {
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    var ts = PosixClock(0i64, 0i64);
+    clock_gettime(2i32, &mut ts as *PosixClock);
+    u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+  }
+}
+
+// One row's meter: started at the row's beginning, sampled at its steps
+struct Meter {
+  base: u64;          // private bytes at the start
+  peak: u64;          // the highest sample
+  steadySum: u64;     // the samples taken in the steady part, summed
+  steadyN: u64;
+  cpu0: u64;
+  t0: Instant;
+
+  fn start() Meter {
+    let b = privateBytes();
+    Meter(b, b, 0u64, 0u64, cpuNanos(), Instant.now())
+  }
+
+  // Read the memory now; 'steady' marks a sample of the steady part
+  fn sample(self: &mut, steady: bool) {
+    let p = privateBytes();
+    if p > peak {peak = p;}
+    if steady {
+      steadySum = steadySum + p;
+      steadyN = steadyN + 1u64;
+    }
+  }
+
+  // KiB above the start (signed: a row can end below where it began)
+  fn peakKiB(self: &) i64 { (i64.from(peak) - i64.from(base)) / 1024i64 }
+  fn steadyKiB(self: &) i64 {
+    if steadyN == 0u64 {return 0i64;}
+    (i64.from(steadySum / steadyN) - i64.from(base)) / 1024i64
+  }
+  fn nowKiB(self: &) i64 { (i64.from(privateBytes()) - i64.from(base)) / 1024i64 }
+
+  // Process CPU against wall time since the start, in percent
+  fn cpuPercent(self: &) u64 {
+    let wall = u64.from(t0.elapsed().nanos());
+    if wall == 0u64 {return 0u64;}
+    (cpuNanos() - cpu0) * 100u64 / wall
+  }
+}
+
+struct Rng { state: u32; }
+
+fn nextf(r: &mut Rng) f32 {
+  r.state = noise.pcg(r.state + 1u32);
+  noise.toUnit(r.state)
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+// The spot of the n-th body on a square grid of 'side' by 'side', 1.5 apart, centred on the origin
+fn spot(n: i32, side: i32, y: f32) Vec3 {
+  let cx = n % side;
+  let cz = (n / side) % side;
+  let half = f32.from(side) * 0.75;
+  Vec3(f32.from(cx) * 1.5 - half, y, f32.from(cz) * 1.5 - half)
+}
+
+fn row(pop: i32, per: i32, steps: i32) {
+  var m = Meter.start();
+  var tCreate = 0i64;
+  var tDestroy = 0i64;
+  var tStep = 0i64;
+  var made = 0i64;
+  var killed = 0i64;
+  var slots = 0usize;
+  var joints = 0usize;
+  {
+    var rng = Rng(12345u32);
+    var w = World.make();
+    var side = 1;
+    while side * side < pop { side = side + 1; }
+    let reach = f32.from(side) * 0.75 + 4.;
+    let floor = w.addShape(Shape.single(Prim.box(Vec3(reach, 0.5, reach))));
+    w.createBody(BodyDef.staticAt(floor, Vec3(0., -0.5, 0.)));
+    let ball = w.addShape(Shape.single(Prim.sphere(0.3)));
+    let block = w.addShape(Shape.single(Prim.box(Vec3(0.25, 0.25, 0.25))));
+    // the population, a ring of ids oldest first
+    var ids = List[u32]();
+    var n = 0;
+    while n < pop {
+      ids.push(w.createBody(BodyDef.dynamicAt(if n % 2 == 0 { ball } else { block }, spot(n, side, 0.6))));
+      n = n + 1;
+    }
+    var head = 0usize;
+    var last = *ids[ids.len() - 1usize];
+    var step = 0;
+    while step < steps {
+      var k = 0;
+      while k < per {
+        // the oldest goes (its joints with it), a new one takes its place in the ring
+        let old = *ids[head];
+        let t0 = Instant.now();
+        w.destroyBody(old);
+        let t1 = Instant.now();
+        let cell = i32.from(nextf(&mut rng) * f32.from(pop));
+        let at = spot(cell, side, 0.6 + nextf(&mut rng) * 0.5);
+        let id = w.createBody(BodyDef.dynamicAt(if k % 2 == 0 { ball } else { block }, at));
+        w.addPointJoint(last, id, at);
+        let t2 = Instant.now();
+        tDestroy = tDestroy + (t1.nanos() - t0.nanos());
+        tCreate = tCreate + (t2.nanos() - t1.nanos());
+        made = made + 1i64;
+        killed = killed + 1i64;
+        ids.set(head, id);
+        last = id;
+        head = (head + 1usize) % ids.len();
+        k = k + 1;
+      }
+      let s0 = Instant.now();
+      w.step(1. / 60.);
+      tStep = tStep + (Instant.now().nanos() - s0.nanos());
+      m.sample(step >= steps * 2 / 3);
+      step = step + 1;
+    }
+    slots = w.bodies.len();
+    joints = w.joints.len();
+  }
+  let end = m.nowKiB();
+  print <- "rigid bodies, ", pop, " bodies, ", per, " churned a step, ", steps, " steps: create ", tCreate / made,
+    " ns, destroy ", tDestroy / killed, " ns, step ", tStep / i64.from(steps) / 1000i64, " us; ", slots, " body slots, ",
+    joints, " joints held; private KiB over the start: peak ", m.peakKiB(), ", steady ", m.steadyKiB(), ", end ", end,
+    "; cpu ", m.cpuPercent(), "%\n";
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var steps = 30;
+  if argc > 1i32 { steps = i32.from(digits(*(argv + 1usize))); }
+  if steps < 3 { steps = 3; }
+  row(1000, 100, steps);
+  row(5000, 500, steps);
+  0i32
+}
