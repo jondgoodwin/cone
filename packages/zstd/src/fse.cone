@@ -53,6 +53,17 @@ struct BackBits {
 
   // Load bytes until 57 or more bits are held, or none are left
   fn refill(self: &mut, src: &List[u8]) {
+    if n <= 56u32 && pos >= start + 8usize {
+      // Eight bytes in one load, of which the top 'm' (the ones at the highest
+      // addresses, which come first) are taken: the same bits the loop below
+      // would load a byte at a time (pos <= src.len(), so the load is in range)
+      let w = mem.readRaw[u64](((src.view() as *u8) + (pos - 8usize)) as *u64);
+      let m = u64.from((64u32 - n) >> 3u32);
+      acc = if m == 8u64 {w} else {(acc << (8u64 * m)) | (w >> (64u64 - 8u64 * m))};
+      pos = pos - usize.from(m);
+      n = n + u32.from(8u64 * m);
+      return;
+    }
     while n <= 56u32 && pos > start {
       pos = pos - 1usize;
       acc = (acc << 8u64) | u64.from(*src[pos]);
@@ -61,7 +72,7 @@ struct BackBits {
   }
 
   // Read k bits, 0 to 32
-  fn read(self: &mut, src: &List[u8], k: u32) u32 {
+  fn read(self: &mut, src: &List[u8], k: u32) u32 inline {
     if k == 0u32 { return 0u32; }
     if n < k { self.refill(src); }
     if n >= k {
