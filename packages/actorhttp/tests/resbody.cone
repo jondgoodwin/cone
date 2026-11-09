@@ -5,7 +5,9 @@
 // The handler wires Gen to the sink and returns at once, so the Exchange is dropped right
 // after 'bodySink()' in every scenario. Checked, in each protocol:
 //   - a sized body of 8 MiB: every byte, in order, one clean end, the source never stopped;
-//   - an unsized body in chunks of 40,000 bytes (so a chunk goes in pieces): whole, clean;
+//   - an unsized body in chunks of 40,000 bytes (each goes to the connection whole, not in pieces): whole, clean;
+//   - after the sized, the unsized and the reset (client drops its body) runs, every chunk's credit came
+//     back (the source's giveBack count equals the chunks it sent): the buffers' deaths return it;
 //   - a sized body that the source runs past (50,000 bytes over): the client's body does
 //     not end clean, the source is stopped once, Failed, and sends its one end; a request
 //     after it is answered (the server did not panic);
@@ -62,6 +64,7 @@ struct Tally {
   pub ended: Atomic[u64];      // readers that ran to their end
   pub clean: Atomic[u64];      // ...of them, cleanly
   pub failed: Atomic[u64];     // ...otherwise
+  pub chunks: Atomic[u64];     // chunks the source sent
 }
 
 let tally: Tally;
@@ -69,7 +72,7 @@ let tally: Tally;
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -84,6 +87,16 @@ fn reset() {
   tally.ended.store(0u64);
   tally.clean.store(0u64);
   tally.failed.store(0u64);
+  tally.chunks.store(0u64);
+}
+
+// The sent chunks' credit all returned by the buffers' deaths (the chunks go to the connection as they are,
+// with the source's home on them; nothing gives them back by hand)
+fn creditBack() {
+  waitFor(&tally.back, tally.chunks.load());
+  printStr("  every chunk's credit came back: ");
+  printStr(yes(tally.chunks.load() > 0u64 && tally.back.load() == tally.chunks.load()));
+  printStr("\n");
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
@@ -178,6 +191,7 @@ actor Gen is ChunkSource {
             buf.append(&all[off ..< off + n]);
             sent = sent + u64.from(n);
             tally.sent.add(u64.from(n));
+            tally.chunks.add(1u64);
             down <- buf;
           }
         }
@@ -500,9 +514,10 @@ fn scenarios(secure: bool, port: u16, label: &str) {
   printStr(", ends sent ");
   printUInt(tally.endsSent.load());
   printStr("\n");
+  creditBack();
   home();
 
-  // An unsized body, chunks that go in pieces
+  // An unsized body, chunks of 40,000 bytes, each sent whole
   readAll(secure, port, "/unsized/3000017", 0i64, 0u64);
   printStr("unsized 3000017: bytes ");
   printUInt(tally.bytes.load());
@@ -513,6 +528,7 @@ fn scenarios(secure: bool, port: u16, label: &str) {
   printStr(", stops ");
   printUInt(tally.stops.load());
   printStr("\n");
+  creditBack();
   home();
 
   // The source runs past the length
@@ -688,6 +704,7 @@ fn scenarios(secure: bool, port: u16, label: &str) {
   printStr(", sent a small part: ");
   printStr(yes(tally.sent.load() < 16777216u64));
   printStr("\n");
+  creditBack();
   home();
 
   // A client that reads one piece and sleeps
