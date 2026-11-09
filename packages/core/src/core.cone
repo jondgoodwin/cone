@@ -908,20 +908,21 @@ pub struct @opaque Array[T] is GcTraceElements {
     self.swapAt(0usize, pivot);
     var l = 1usize;
     var r = n;
-    var more = true;
-    while more {
-      while l < r && !self.lessAt(0usize, l, order) { l = l + 1usize; }
-      while l < r && self.lessAt(0usize, r - 1usize, order) { r = r - 1usize; }
-      if l >= r {
-        more = false;
-      }
-      else {
-        r = r - 1usize;
-        self.swapAt(l, r);
-        l = l + 1usize;
-      }
+    // A branch-free sweep, as partitionBy's: each element is exchanged with the first one
+    // above the pivot, and that boundary moves up by one when the element is not above it.
+    // Each step is a swap, so a comparator that panics leaves every element in the slice
+    let p = self as *T;
+    var bound = l;
+    var i = l;
+    while i < r {
+      let notAbove = order(p as &T, (p + i) as &T) >= 0i32;
+      let held = mem.readRaw[T](p + i);
+      mem.writeRaw[T](p + i, mem.readRaw[T](p + bound));
+      mem.writeRaw[T](p + bound, held);
+      bound = bound + (if notAbove { 1usize } else { 0usize });
+      i = i + 1usize;
     }
-    l
+    bound
   }
 
   // How many splits a sort may find unbalanced before it turns to the heap sort

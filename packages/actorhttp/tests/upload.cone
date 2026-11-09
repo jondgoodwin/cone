@@ -1,0 +1,625 @@
+// A client request fed by a stream: 'Client.upload' (upload.cone), against the package's own server, over
+// HTTP/1.1 in the clear and over HTTP/2 through TLS (the tls package's test certificates). The source is a
+// test actor, Gen, that lends its buffers from a ChunkWindow of 256 KiB and counts what it sent, was given back
+// and was stopped for. The server (maxBody 16 MiB) reads each body whole, checks the pattern and counts. Checked,
+// in each protocol:
+//   - a sized body of 8 MiB: the server got every byte once, in order; status 200; the source never stopped;
+//   - an unsized body in chunks of 40,000 bytes (so a chunk goes in pieces): whole, clean;
+//   - a sized body the source runs past (50,000 over): the upload fails, the source is stopped once Failed, the
+//     server saw no body; one that ends short (50,000 under): the same;
+//   - a source that fails half way: the upload fails, the source is not stopped;
+//   - a body declared past the server's maxBody (24 MiB): the server's early 413 reaches 'stream', the source is
+//     stopped Finished and has sent a small part of the body;
+//   - a POST answered 307: the 307 is the response, the server saw the body once and nothing followed; answered 302:
+//     followed as a GET (no body), the server saw the body once;
+//   - a connection refused: the upload fails and the source is stopped Failed, whether 'stream' is asked at once or
+//     long after the failure;
+//   - 'stream' asked 400 ms after the whole body went: the response is waiting;
+//   - an Upload dropped without 'stream' while the source runs: the fetch is cancelled, the source stopped Failed;
+//   - (HTTP/1.1) a server that accepts and never reads, 256 MiB offered, a 1.5 s deadline: the source's sent bytes
+//     stop growing far below the body (the server holds the pipeline back), TimedOut, the source stopped Failed;
+// and, after each, every buffer is back in the pool.
+
+mod upload;
+
+import stdio use *;
+import thread;
+import fs;
+import path use Path;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request, Response;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// ---------------------------------------------------------------------------
+// What the actors tell the main thread
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub sent: Atomic[u64];       // body bytes the source sent
+  pub stops: Atomic[u64];      // stops the source was told
+  pub stopFin: Atomic[u64];    // ...of them Finished
+  pub stopFail: Atomic[u64];   // ...Failed
+  pub endsSent: Atomic[u64];   // ends the source sent its sink
+  pub srvSink: Atomic[u64];    // POSTs the server read whole at /sink
+  pub srvBytes: Atomic[u64];   // body bytes of every POST it read
+  pub srvBad: Atomic[u64];     // ...that were not the pattern
+  pub srv307: Atomic[u64];     // POSTs at /r307
+  pub srv302: Atomic[u64];     // POSTs at /r302
+  pub srvGet: Atomic[u64];     // GETs at /get
+  pub status: Atomic[u64];     // the response's status (0: none)
+  pub bodyLen: Atomic[u64];    // its body's length
+  pub clean: Atomic[u64];      // responses read to their end
+  pub failed: Atomic[u64];     // uploads whose 'stream' was an Err
+  pub timedOut: Atomic[u64];   // ...of them, deadline
+  pub ended: Atomic[u64];      // scenarios run to their end
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.sent.store(0u64);
+  tally.stops.store(0u64);
+  tally.stopFin.store(0u64);
+  tally.stopFail.store(0u64);
+  tally.endsSent.store(0u64);
+  tally.srvSink.store(0u64);
+  tally.srvBytes.store(0u64);
+  tally.srvBad.store(0u64);
+  tally.srv307.store(0u64);
+  tally.srv302.store(0u64);
+  tally.srvGet.store(0u64);
+  tally.status.store(0u64);
+  tally.bodyLen.store(0u64);
+  tally.clean.store(0u64);
+  tally.failed.store(0u64);
+  tally.timedOut.store(0u64);
+  tally.ended.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+// The pool's bytes lent now: both ends' buffers
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// ---------------------------------------------------------------------------
+// The source: byte i of the body is i % 251
+// ---------------------------------------------------------------------------
+
+const window = 262144usize;
+
+actor Gen is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  table: List[u8];             // the pattern, so a chunk is one slice of it
+  total: u64;                  // bytes to send
+  sent: u64;
+  chunk: usize;
+  failAt: u64;                 // end Failed once this many are sent (0: never)
+  over: bool;                  // its one end has gone
+
+  pub fn init(self: &new, down: ChunkSink, total: u64, chunk: usize, failAt: u64) {
+    var t = List[u8].withCapacity(chunk + 251usize);
+    var i = 0usize;
+    while i < chunk + 251usize {
+      t.push(u8.from(u64.from(i) % 251u64));
+      i = i + 1usize;
+    }
+    *self = Self(down: down, link: ChunkWindow.own(window), table: t, total: total, sent: 0u64, chunk: chunk,
+      failAt: failAt, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  // The first stop decides: the one end carries its reason. After the end, a stop does nothing
+  pub async fn stop(self, why: Ending) {
+    tally.stops.add(1u64);
+    match &why {
+      case is Finished {tally.stopFin.add(1u64);}
+      else {tally.stopFail.add(1u64);}
+    }
+    if !over {
+      over = true;
+      tally.endsSent.add(1u64);
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if failAt > 0u64 && sent >= failAt {
+        over = true;
+        tally.endsSent.add(1u64);
+        down.end(Ending.Failed(AnyError.msg("the source failed")));
+        more = false;
+      } else if sent >= total {
+        over = true;
+        tally.endsSent.add(1u64);
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        let left = total - sent;
+        let n = if left < u64.from(chunk) {usize.from(left)} else {chunk};
+        match link.take(n) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let off = usize.from(sent % 251u64);
+            let all = table.view();
+            buf.append(&all[off ..< off + n]);
+            sent = sent + u64.from(n);
+            tally.sent.add(u64.from(n));
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The server: /sink, /r307, /r302 (POSTs, read whole), /get
+// ---------------------------------------------------------------------------
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let body = ex.request.body.view();
+    if p == "/get" {
+      tally.srvGet.add(1u64);
+      ex.respond(ResponseHead.make(200u16), String.from("got"));
+      return;
+    }
+    // a POST: counted, and its body checked
+    var bad = 0u64;
+    var i = 0usize;
+    while i < body.len() {
+      if body[i] != u8.from(u64.from(i) % 251u64) {bad = bad + 1u64;}
+      i = i + 1usize;
+    }
+    tally.srvBytes.add(u64.from(body.len()));
+    tally.srvBad.add(bad);
+    if p == "/r307" {
+      tally.srv307.add(1u64);
+      var h = ResponseHead.make(307u16);
+      h.headers.add("Location", "/sink");
+      ex.respond(h, String.from("moved"));
+    } else if p == "/r302" {
+      tally.srv302.add(1u64);
+      var h = ResponseHead.make(302u16);
+      h.headers.add("Location", "/get");
+      ex.respond(h, String.from("moved"));
+    } else {
+      tally.srvSink.add(1u64);
+      ex.respond(ResponseHead.make(200u16), String.from("ok"));
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// A server that accepts one connection and never reads from it
+actor Hole {
+  held: Option[aio.Socket];
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await aio.listen(SocketAddr.localhost(0u16));
+    match r {
+      case var Ok(l) {
+        let a = await l.localAddr();
+        match a {
+          case let Ok(addr) {ports.send(addr.port());}
+          case let Err(e) {ports.send(0u16);}
+        }
+        let c = await l.accept();
+        match c {
+          case var Ok(sock) {held = Some[aio.Socket](sock);}
+          case let Err(e) {}
+        }
+      }
+      case let Err(e) {ports.send(0u16);}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client
+// ---------------------------------------------------------------------------
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+// A client of its own for each upload, dropped with it: no kept-alive connection holds a buffer when they are counted
+fn newClient(secure: bool) Client {
+  if !secure {return Client.standard();}
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = true;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn url(secure: bool, port: u16, path: &str) String {
+  var u = String.from(if secure {"https://127.0.0.1:"} else {"http://127.0.0.1:"});
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// One upload by POST: 'total' bytes from a Gen in chunks of 'chunk', sized (declared bytes) or unsized; the
+// response's 'stream' asked 'lateMs' after the source starts; a deadline of 'deadlineMs' (0: none)
+actor Up {
+  client: Client;
+
+  pub async fn run(self, u: String, total: u64, chunk: usize, declared: u64, failAt: u64, lateMs: i64, deadlineMs: i64) {
+    let framing = if declared > 0u64 {BodyLength.sized(declared)} else {BodyLength.unsized()};
+    let lim = if deadlineMs > 0i64 {IoLimits.until(Instant.now() + Duration.fromMillis(deadlineMs))} else {IoLimits.none()};
+    let up = client.uploadIn(Request.make("POST", u.view()), framing, lim);
+    let g = Gen(up.sink(), total, chunk, failAt);
+    g.start();
+    if lateMs > 0i64 {
+      let s = await aio.sleep(Duration.fromMillis(lateMs));
+    }
+    let r = await up.stream();
+    match r {
+      case let Ok(bs) {
+        tally.status.store(u64.from(bs.status));
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {tally.bodyLen.add(u64.from(piece.len()));}
+                case is None[String] {tally.clean.add(1u64); going = false;}
+              }
+            }
+            case let Err(e) {tally.failed.add(1u64); going = false;}
+          }
+        }
+      }
+      case let Err(e) {
+        tally.failed.add(1u64);
+        if e.isTimedOut() {tally.timedOut.add(1u64);}
+      }
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// An Upload dropped while its source runs, without 'stream'
+actor Drop {
+  client: Client;
+
+  pub async fn run(self, u: String, total: u64) {
+    {
+      let up = client.upload(Request.make("POST", u.view()), BodyLength.sized(total));
+      let g = Gen(up.sink(), total, 65536usize, 0u64);
+      g.start();
+    }
+    let s = await aio.sleep(Duration.fromMillis(300i64));
+    tally.ended.add(1u64);
+  }
+}
+
+// A plain GET, to see the server still answers
+actor Plain {
+  client: Client;
+
+  pub async fn run(self, u: String) {
+    let r = await client.send(Request.get(u.view()));
+    match r {
+      case let Ok(ok) {tally.status.store(u64.from(ok.status)); tally.bodyLen.add(u64.from(ok.body.len()));}
+      case let Err(e) {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+fn home() {
+  printStr("...every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+}
+
+fn putBody(secure: bool, port: u16, path: &str, total: u64, chunk: usize, declared: u64, failAt: u64, lateMs: i64, deadlineMs: i64) {
+  reset();
+  let u = Up(newClient(secure));
+  u.run(url(secure, port, path), total, chunk, declared, failAt, lateMs, deadlineMs);
+  waitFor(&tally.ended, 1u64);
+}
+
+fn server(label: &str) {
+  printStr("  server: sink ");
+  printUInt(tally.srvSink.load());
+  printStr(", bytes ");
+  printUInt(tally.srvBytes.load());
+  printStr(", wrong ");
+  printUInt(tally.srvBad.load());
+  printStr(", 307s ");
+  printUInt(tally.srv307.load());
+  printStr(", 302s ");
+  printUInt(tally.srv302.load());
+  printStr(", gets ");
+  printUInt(tally.srvGet.load());
+  printStr("\n");
+}
+
+fn client() {
+  printStr("  client: status ");
+  printUInt(tally.status.load());
+  printStr(", body ");
+  printUInt(tally.bodyLen.load());
+  printStr(", clean ");
+  printUInt(tally.clean.load());
+  printStr(", failed ");
+  printUInt(tally.failed.load());
+  printStr("; source: stops ");
+  printUInt(tally.stops.load());
+  printStr(" (Finished ");
+  printUInt(tally.stopFin.load());
+  printStr(", Failed ");
+  printUInt(tally.stopFail.load());
+  printStr("), ends sent ");
+  printUInt(tally.endsSent.load());
+  printStr("\n");
+}
+
+fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
+  printStr("== ");
+  printStr(label);
+  printStr("\n");
+
+  printStr("sized 8 MiB\n");
+  putBody(secure,port, "/sink", 8388608u64, 65536usize, 8388608u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.endsSent, 1u64);
+  server("");
+  client();
+  home();
+
+  printStr("unsized 3000017 in chunks of 40000\n");
+  putBody(secure,port, "/sink", 3000017u64, 40000usize, 0u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.endsSent, 1u64);
+  server("");
+  client();
+  home();
+
+  printStr("sized 1000000, the source runs 50000 past\n");
+  putBody(secure,port, "/sink", 1050000u64, 65536usize, 1000000u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.stops, 1u64);
+  server("");
+  client();
+  home();
+
+  printStr("sized 1000000, the source ends 50000 short\n");
+  putBody(secure,port, "/sink", 950000u64, 65536usize, 1000000u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.stops, 1u64);
+  server("");
+  client();
+  home();
+
+  printStr("the server went on: sized 100000\n");
+  putBody(secure,port, "/sink", 100000u64, 65536usize, 100000u64, 0u64, 0i64, 0i64);
+  server("");
+  client();
+  home();
+
+  printStr("the source fails a third of the way\n");
+  putBody(secure,port, "/sink", 3000000u64, 65536usize, 3000000u64, 1000000u64, 0i64, 0i64);
+  waitFor(&tally.endsSent, 1u64);
+  server("");
+  client();
+  home();
+
+  printStr("declared 24 MiB, past the server's maxBody: an early 413\n");
+  putBody(secure,port, "/sink", 25165824u64, 65536usize, 25165824u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.stops, 1u64);
+  printStr("  the source sent a small part of the body: ");
+  printStr(yes(tally.sent.load() < 16777216u64));
+  printStr("\n");
+  server("");
+  client();
+  home();
+
+  printStr("a 307: the response, not followed\n");
+  putBody(secure,port, "/r307", 1000000u64, 65536usize, 1000000u64, 0u64, 0i64, 0i64);
+  server("");
+  client();
+  home();
+
+  printStr("a 302: followed as a GET without the body\n");
+  putBody(secure,port, "/r302", 1000000u64, 65536usize, 1000000u64, 0u64, 0i64, 0i64);
+  server("");
+  client();
+  home();
+
+  printStr("a connection refused, 'stream' asked at once\n");
+  putBody(secure,1u16, "/sink", 1000000u64, 65536usize, 1000000u64, 0u64, 0i64, 0i64);
+  waitFor(&tally.endsSent, 1u64);
+  client();
+  home();
+
+  printStr("a connection refused, 'stream' asked 1.5 s later\n");
+  putBody(secure,1u16, "/sink", 1000000u64, 65536usize, 1000000u64, 0u64, 1500i64, 0i64);
+  waitFor(&tally.endsSent, 1u64);
+  client();
+  home();
+
+  printStr("'stream' asked 400 ms after the body went\n");
+  putBody(secure,port, "/sink", 1000000u64, 65536usize, 1000000u64, 0u64, 400i64, 0i64);
+  server("");
+  client();
+  home();
+
+  printStr("an Upload dropped without 'stream' while its source runs\n");
+  reset();
+  {
+    let d = Drop(newClient(secure));
+    d.run(url(secure, port, "/sink"), 67108864u64);
+    waitFor(&tally.ended, 1u64);
+    waitFor(&tally.endsSent, 1u64);
+  }
+  printStr("  the source sent a small part of the body: ");
+  printStr(yes(tally.sent.load() < 33554432u64));
+  printStr("\n");
+  server("");
+  client();
+  home();
+
+  if !secure {
+    printStr("a server that never reads: 256 MiB offered, a 1.5 s deadline\n");
+    reset();
+    {
+      let u = Up(newClient(secure));
+      u.run(url(secure, holePort, "/sink"), 268435456u64, 65536usize, 268435456u64, 0u64, 0i64, 1500i64);
+      thread.sleep(Duration.fromMillis(700i64));
+      let s1 = tally.sent.load();
+      thread.sleep(Duration.fromMillis(500i64));
+      let s2 = tally.sent.load();
+      printStr("  the source's sent bytes stopped growing: ");
+      printStr(yes(s2 - s1 < 1048576u64));
+      printStr(", far below the body: ");
+      printStr(yes(s2 < 67108864u64));
+      printStr("\n");
+      waitFor(&tally.ended, 1u64);
+      waitFor(&tally.endsSent, 1u64);
+    }
+    printStr("  timed out ");
+    printUInt(tally.timedOut.load());
+    printStr("\n");
+    client();
+    home();
+  }
+
+  printStr("a request after all that\n");
+  reset();
+  {
+    let p = Plain(newClient(secure));
+    p.run(url(secure, port, "/get"));
+    waitFor(&tally.ended, 1u64);
+  }
+  printStr("  status ");
+  printUInt(tally.status.load());
+  printStr(", body ");
+  printUInt(tally.bodyLen.load());
+  printStr("\n");
+  home();
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var cfg1 = ServerConfig.make();
+    cfg1.maxBody = 16777216usize;
+    let plain = Acceptor(Server.none());
+    plain.open(cfg1, ptx.clone());
+    let port = prx.recv() || 0u16;
+    plain.serve();
+    var cfg2 = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+    cfg2.maxBody = 16777216usize;
+    let secure = Acceptor(Server.none());
+    secure.open(cfg2, ptx.clone());
+    let sport = prx.recv() || 0u16;
+    secure.serve();
+    let hole = Hole(None[aio.Socket]);
+    hole.open(ptx.clone());
+    let hport = prx.recv() || 0u16;
+    printStr("three servers listen: ");
+    printStr(yes(port != 0u16 && sport != 0u16 && hport != 0u16));
+    printStr("\n");
+    scenarios(false, port, hport, "HTTP/1.1");
+    scenarios(true, sport, hport, "HTTP/2 over TLS");
+    plain.stop();
+    secure.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}

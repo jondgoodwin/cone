@@ -3829,6 +3829,9 @@ static void pwSeamVar(AwaitNode *node, uint32_t index, int isparm) {
         flags |= SeamOpen;
     if (var->vtype && !flowNoDeath(var->vtype) && itypeNeedsFinal(var->vtype))
         flags |= SeamDies;
+    // An owner hollowed here is released without what moved (the record's drop)
+    if (pv->tracked && (pv->state & DropHollow))
+        flags |= SeamHollow;
     if (pwIsGuard(var))
         flags |= SeamGuard;
     // The borrow an operator's rewrite keeps in a temporary that is no holder
