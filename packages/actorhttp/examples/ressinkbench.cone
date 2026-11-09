@@ -18,6 +18,19 @@
 // median of each mode. This is the measurement that decides whether the sink needs the
 // hand-back instead of the copy; it is not a gate.
 //
+// The other direction (streaming bodies, step 4, the client upload): the same server also
+// takes POST /up, which reads the body whole and answers its length, and each round then
+// uploads 'MiB' mebibytes two ways, so the copy in the upload sink has its own reading:
+//
+//   upstring   the body one String in the Request (the whole body in memory before it starts)
+//   upsink     'client.upload' with the ListSource of the sink mode writing to 'up.sink()': each
+//              chunk is copied on the service thread into a buffer of its own and the original
+//              goes back to the source once the core has accepted the copy
+//
+// Each prints its time from asking for the fetch to the answer, the rate, and (upsink) the most
+// bytes lent. The server reads the whole request body (ServerConfig.maxBody is raised), so the
+// server's memory is the body's size in both modes.
+//
 //   congo run --release packages/actorhttp/examples/ressinkbench.cone -- 256 5
 //
 // The arguments are MiB (default 256) and rounds (default 5). Run it on a QUIET machine.
@@ -66,9 +79,10 @@ actor ListSource is ChunkSource {
   data: List[u8];
   left: u64;
   over: bool;
+  k: u32;
 
   pub fn init(self: &new, down: ChunkSink, data: List[u8], total: u64) {
-    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, left: total, over: false);
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, left: total, over: false, k: 0u32);
     down.attach(selfactor);
   }
 
@@ -100,6 +114,8 @@ actor ListSource is ChunkSource {
             var buf = b;
             buf.append(data.view());
             left = left - u64.from(blockSize);
+            k = k + 1u32;
+            if k % 16u32 == 0u32 {sample();}
             down <- buf;
           }
         }
@@ -118,6 +134,12 @@ actor Handler {
   pub async fn run(self) {
     let path = String.from(ex.request.path());
     let p = path.view();
+    if p == "/up" {
+      var said = String.from("len=");
+      said.appendUInt(u64.from(ex.request.body.len()));
+      ex.respond(ResponseHead.make(200u16), said);
+      return;
+    }
     let viaSink = p.len > 6usize && &p[0usize ..< 6usize] == "/sink/";
     let n = number(&p[if viaSink {6usize} else {7usize} ..]);
     ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
@@ -147,7 +169,9 @@ actor Acceptor {
   server: Server;
 
   pub async fn open(self, ports: Sender[u16]) {
-    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var scfg = ServerConfig.make();
+    scfg.maxBody = 1610612736usize;        // the uploads are read whole
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), scfg);
     var res = r;
     match &mut res {
       case var &mut Ok(ok) {server <-> *ok;}
@@ -234,6 +258,104 @@ actor Fetcher {
   }
 }
 
+// ---- the client's upload: a String body, or 'client.upload' fed by a ListSource ----
+
+actor Uploader {
+  client: Client;
+
+  // Sends the body ('body' whole, or 'size' bytes from a ListSource when 'viaSink'), and sends 'done' the
+  // server's count of the bytes it read (0 if the upload or the answer went wrong)
+  pub async fn run(self, url: String, body: String, size: u64, viaSink: bool, done: OneshotSender[u64]) {
+    var said = String();
+    var good = false;
+    if viaSink {
+      let up = client.upload(Request.make("POST", url.view()), BodyLength.sized(size));
+      let g = ListSource(up.sink(), blockBytes(), size);
+      g.start();
+      let r = await up.stream();
+      match r {
+        case let Ok(bs) {
+          good = bs.status == 200u16;
+          var going = true;
+          while going {
+            let n = await bs.read();
+            match n {
+              case let Ok(ok) {
+                match ok {
+                  case let Some(piece) {said.append(piece.view());}
+                  case is None[String] {going = false;}
+                }
+              }
+              case let Err(e) {good = false; going = false;}
+            }
+          }
+        }
+        case let Err(e) {}
+      }
+    } else {
+      var rq = Request.make("POST", url.view());
+      rq.body = body;
+      let r = await client.send(rq);
+      match r {
+        case let Ok(resp) {
+          good = resp.status == 200u16;
+          said.append(resp.body.view());
+        }
+        case let Err(e) {}
+      }
+    }
+    var want = String.from("len=");
+    want.appendUInt(size);
+    var tell = done;
+    tell.send(if good && said.view() == want.view() {size} else {0u64});
+  }
+}
+
+// One upload run: its milliseconds-times-ten, or 0 if wrong
+fn runUp(sinkMode: bool, port: u16, size: u64) u64 {
+  peak.store(0u64);
+  var body = String();
+  if !sinkMode {
+    let blk = blockBytes();
+    var at = 0u64;
+    while at < size {
+      body.appendBytes(blk.view());
+      at = at + u64.from(blockSize);
+    }
+  }
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/up");
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let t0 = Instant.now();
+  let f = Uploader(Client.standard());
+  f.run(u, body, size, sinkMode, tx);
+  let got = rx.recv() || 0u64;
+  let ns = u64.from(t0.elapsed().nanos());
+  printStr(if sinkMode {"upsink   "} else {"upstring "});
+  if got != size {
+    printStr("WRONG: ");
+    printUInt(got);
+    printStr(" bytes of ");
+    printUInt(size);
+    printStr("\n");
+    return 0u64;
+  }
+  printUInt(ns / 1000000u64);
+  printStr(" ms, ");
+  printUInt(size * 1000u64 / ns);
+  printStr(" MB/s");
+  if sinkMode {
+    printStr(", most lent ");
+    printUInt(peak.load() / 1024u64);
+    printStr(" KiB");
+  }
+  printStr("\n");
+  ns / 100000u64
+}
+
 fn url(port: u16, sinkMode: bool, size: u64) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
@@ -302,6 +424,8 @@ fn main(argc: i32, argv: **u8) i32 {
   ptx, prx = Channel[u16].make();
   var writes = List[u64]();
   var sinks = List[u64]();
+  var upStrings = List[u64]();
+  var upSinks = List[u64]();
   var wrong = false;
   {
     let acceptor = Acceptor(Server.none());
@@ -315,6 +439,11 @@ fn main(argc: i32, argv: **u8) i32 {
       if a == 0u64 || b == 0u64 {wrong = true;}
       writes.push(a);
       sinks.push(b);
+      let c = runUp(false, port, size);
+      let d = runUp(true, port, size);
+      if c == 0u64 || d == 0u64 {wrong = true;}
+      upStrings.push(c);
+      upSinks.push(d);
       k = k + 1u32;
     }
     acceptor.stop();
@@ -330,6 +459,10 @@ fn main(argc: i32, argv: **u8) i32 {
   printUInt(mw / 10u64);
   printStr(" ms, sink ");
   printUInt(ms / 10u64);
+  printStr(" ms, upload: upstring ");
+  printUInt(median(&upStrings) / 10u64);
+  printStr(" ms, upsink ");
+  printUInt(median(&upSinks) / 10u64);
   printStr(" ms\n");
   if wrong {1i32} else {0i32}
 }
