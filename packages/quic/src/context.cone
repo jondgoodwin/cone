@@ -14,7 +14,8 @@ pub struct Config {
   pub verify: tls.Verifier;      // a client's: who decides the server is who it claims to be
   pub offline: bool;             // a client's: the OS's verifier fetches nothing
   pub verifyLane: Lane;          // a client's: the blocking pool's lane verifyOp runs on
-  pub streamWindow: u64;         // bytes the peer may send on a stream before this end releases more
+  pub streamWindow: u64;         // the most a stream's window grows to: bytes the peer may send on it before this end releases more
+  pub creditBudget: u64;         // bytes of receive credit the connection's streams share: the most it holds unread (CREDIT)
   pub connectionWindow: u64;     // bytes the peer may send on every stream together, in flight
   pub maxStreamsBidi: u64;       // bidirectional streams the peer may have open
   pub maxStreamsUni: u64;        // unidirectional streams the peer may have open
@@ -22,12 +23,13 @@ pub struct Config {
   pub maxUdpPayload: usize;      // the largest UDP payload sent, and the largest the peer may send (1200 at least)
 
   // The defaults (see the package's header, CONFIG): ALPN h3, the OS's
-  // verifier, 256 KiB a stream, 16 MiB the connection, 100 bidirectional
+  // verifier, 256 KiB a stream at most, 1 MiB of credit the connection's
+  // streams share, 16 MiB the connection, 100 bidirectional
   // streams and 16 unidirectional, 30 s idle, 1452-byte payloads
   pub fn make() Config {
     Config(alpn: String.from("h3"), verify: tls.Verifier.platform(), offline: false,
       verifyLane: tls.defaultVerifyLane(), streamWindow: defaultStreamWindow,
-      connectionWindow: defaultConnectionWindow, maxStreamsBidi: defaultMaxStreamsBidi,
+      creditBudget: defaultCreditBudget, connectionWindow: defaultConnectionWindow, maxStreamsBidi: defaultMaxStreamsBidi,
       maxStreamsUni: defaultMaxStreamsUni, idleTimeout: Duration.fromSeconds(defaultIdleSeconds),
       maxUdpPayload: defaultMaxUdpPayload)
   }
@@ -35,11 +37,36 @@ pub struct Config {
 
 // The Config's defaults, by name (see the package's header, CONFIG)
 pub const defaultStreamWindow = 262144u64;          // 256 KiB
+pub const defaultCreditBudget = 1048576u64;         // 1 MiB: about a connection's share of the default 64 MiB pool (h3driver's Config.make sets its own)
+pub const minStreamFloor = 2048u64;                 // a stream's first window at the least, whatever the budget
+const streamFirstWindow = 16384u64;                 // 16 KiB: the window a new stream is raised to at once, as the spare allows (the window before budgets)
 pub const defaultConnectionWindow = 16777216u64;    // 16 MiB
 pub const defaultMaxStreamsBidi = 100u64;
 pub const defaultMaxStreamsUni = 16u64;
 pub const defaultIdleSeconds = 30i64;
 pub const defaultMaxUdpPayload = 1452usize;
+
+// A stream's first window, its floor (see the package's header, CREDIT): half
+// the budget over the streams the peer may have open, so that the floors of
+// every one of them use half the budget and the other half is what streams
+// that keep reading draw from. Never under minStreamFloor (so under a budget
+// smaller than twice that for each stream, the floors alone exceed it), never
+// over streamWindow
+fn streamFloor(cfg: &Config) u64 {
+  var n = cfg.maxStreamsBidi + cfg.maxStreamsUni;
+  if n == 0u64 {n = 1u64;}
+  var f = cfg.creditBudget / (2u64 * n);
+  if f < minStreamFloor {f = minStreamFloor;}
+  if f > cfg.streamWindow {f = cfg.streamWindow;}
+  f
+}
+
+// What the budget leaves for streams to grow by once every stream the peer
+// may have open has its floor
+fn creditSpare(cfg: &Config) u64 {
+  let reserved = (cfg.maxStreamsBidi + cfg.maxStreamsUni) * streamFloor(cfg);
+  if cfg.creditBudget > reserved {cfg.creditBudget - reserved} else {0u64}
+}
 
 // What one side's connections share (see the header of this file)
 pub struct Context is Move {
