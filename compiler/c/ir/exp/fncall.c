@@ -2038,6 +2038,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (!isMethodType(objdereftype)) {
         return 0;
     }
+    structMembersUse(pstate, objdereftype, 0);
 
     // 'mask.select(a, b)' chooses between two vectors of any lane type, which
     // no signature can say
