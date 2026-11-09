@@ -72,6 +72,7 @@
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
 //   Op.ReadAt(file, at, buf)  Op.WriteAt(file, at, buf)
 //   Op.RecvFrom(sock, buf)  Op.SendTo(sock, addr, buf)      one datagram each  (DATAGRAMS)
+//   Op.PipeRead(pipe, buf)  Op.PipeWrite(pipe, buf)  lp.adoptPipe(raw)   a pipe's end  (PIPES)
 //   Op.Call(lane, work, arg, buf)       work run on the blocking pool (THE BLOCKING POOL)
 //   resolveOp(host, port, buf)  statOp(path, lane, buf)  readFileOp(path, at, lane, buf)
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
@@ -160,6 +161,22 @@
 // - ReadAt(file, at, buf), WriteAt(file, at, buf): at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
+//
+// PIPES. 'lp.adoptPipe(raw)' gives the loop one end of a pipe -- on Windows a
+// HANDLE opened FILE_FLAG_OVERLAPPED (a named pipe's end), on Linux a
+// descriptor, made non-blocking -- as a Handle of its own kind, owned by the
+// loop from then on ('close' closes it; a failed adopt has). Linux: the first
+// adopt makes the process ignore SIGPIPE, so a write to a pipe nobody reads
+// fails (EPIPE; Windows' ERROR_NO_DATA or ERROR_BROKEN_PIPE) instead of ending it.
+// - PipeRead(pipe, buf): what the pipe holds, at most buf's room, added to
+//   its length; Done(n). Done(0) is the end of the stream: the other end is
+//   closed and everything it wrote is read. A buffer with no room is refused,
+//   as Recv's is. The pipe's own capacity is the back-pressure: a writer
+//   blocks (or its write waits, here) while nobody reads.
+// - PipeWrite(pipe, buf): all of buf's bytes, across as many writes as the
+//   pipe takes, Done(len); the answer comes when the last is taken.
+// A pipe operation can be cancelled, can have a deadline and belongs to a
+// cancel group like any other; a cancelled read has taken nothing.
 //
 // DATAGRAMS. 'lp.bindUdp(addr)' is a UDP socket bound to addr (port 0 has the
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
@@ -1025,6 +1042,8 @@ pub enum Op {
   pub struct Call {pub lane: Lane; pub work: WorkFn; pub arg: u64; pub buf: IoBuf;}
   pub struct RecvFrom {pub sock: Handle; pub buf: IoBuf;}
   pub struct SendTo {pub sock: Handle; pub addr: SocketAddr; pub buf: IoBuf;}
+  pub struct PipeRead {pub pipe: Handle; pub buf: IoBuf;}
+  pub struct PipeWrite {pub pipe: Handle; pub buf: IoBuf;}
 }
 
 // Where an operation's answer goes, and the token it carries back (see the
