@@ -17,15 +17,18 @@ ConstDclNode *newConstDclNode(Name *namesym) {
     name->vtype = unknownType;
     name->namesym = namesym;
     name->value = NULL;
+    name->owner = NULL;
     return name;
 }
 
-// There is no clone for a constant declaration. 'const' is parsed only in the
-// global statement area (parsemod.c), and cloning is entered only on a
-// function, struct or macro body, so no const node can reach it. cloneNode has
+// There is no clone for a constant declaration. 'const' is parsed in the
+// global statement area (parsemod.c) and in the braces of a struct or enum that
+// is neither generic nor a trait (parseStructItems), and cloning is entered only
+// on a function, struct or macro body, so no const node can reach it. cloneNode has
 // no ConstDclTag arm either, and its default arm says so loudly. Whoever makes
-// 'const' legal inside a body writes both halves together -- including the
-// TypeChecked/TypeChecking clear that every other declaration clone does.
+// 'const' legal in a generic type or a trait writes both halves together --
+// including the TypeChecked/TypeChecking clear that every other declaration
+// clone does.
 
 // Serialize a constant node
 void constDclPrint(ConstDclNode *name) {
