@@ -1,0 +1,235 @@
+// churnbench: scene items added and removed while the collect walk runs (pool migration, step 0; the
+// churn bench the earlier measurements lacked). No GPU is touched: a 'Visibility' holds 'items'
+// items spread over a wide box, and every frame removes 'items / 10' of them (chosen by a seeded
+// generator), adds as many new ones into the freed slots, and then collects for a fixed camera, as
+// a render does. Build it optimised to measure:
+//
+//   congo run --release packages/render/examples/churnbench.cone -- 30
+//
+// The argument is the number of frames a row runs (default 30; one frame in three is the steady
+// part). Two rows: 10,000 items and 50,000. Everything is seeded and deterministic. A row prints
+// one line:
+//
+//   ns per add (the hierarchy insert included), ns per remove, microseconds per collect (the items
+//   it drew in the last frame), and the process's private bytes above the row's start: the peak,
+//   the mean over the last third of the frames (steady) and after the scene is dropped (end), then
+//   the process's CPU against wall time for the whole row.
+
+mod churnbench;
+
+import stdio use *;
+import libc;
+import collections use *;
+import time use Instant;
+import geomath use *;
+import pool use *;
+import render use *;
+
+// ---- the meter: wall time, process CPU time and private bytes ----
+//
+// Memory is the process's private bytes (Windows' PrivateUsage; Linux's data size, VmData), read from
+// the OS, because these structures have no stats of their own. CPU is the process's user plus kernel time
+// against the wall time, so a row on one busy thread reads near 100%.
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+  fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+}
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib data dt), in 4096-byte pages
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+// The process's CPU time so far, in nanoseconds (user plus kernel)
+fn cpuNanos() u64 {
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    var ts = PosixClock(0i64, 0i64);
+    clock_gettime(2i32, &mut ts as *PosixClock);
+    u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+  }
+}
+
+// One row's meter: started at the row's beginning, sampled at its steps
+struct Meter {
+  base: u64;          // private bytes at the start
+  peak: u64;          // the highest sample
+  steadySum: u64;     // the samples taken in the steady part, summed
+  steadyN: u64;
+  cpu0: u64;
+  t0: Instant;
+
+  fn start() Meter {
+    let b = privateBytes();
+    Meter(b, b, 0u64, 0u64, cpuNanos(), Instant.now())
+  }
+
+  // Read the memory now; 'steady' marks a sample of the steady part
+  fn sample(self: &mut, steady: bool) {
+    let p = privateBytes();
+    if p > peak {peak = p;}
+    if steady {
+      steadySum = steadySum + p;
+      steadyN = steadyN + 1u64;
+    }
+  }
+
+  // KiB above the start (signed: a row can end below where it began)
+  fn peakKiB(self: &) i64 { (i64.from(peak) - i64.from(base)) / 1024i64 }
+  fn steadyKiB(self: &) i64 {
+    if steadyN == 0u64 {return 0i64;}
+    (i64.from(steadySum / steadyN) - i64.from(base)) / 1024i64
+  }
+  fn nowKiB(self: &) i64 { (i64.from(privateBytes()) - i64.from(base)) / 1024i64 }
+
+  // Process CPU against wall time since the start, in percent
+  fn cpuPercent(self: &) u64 {
+    let wall = u64.from(t0.elapsed().nanos());
+    if wall == 0u64 {return 0u64;}
+    (cpuNanos() - cpu0) * 100u64 / wall
+  }
+}
+
+struct Rng {
+  s: u64;
+  fn next(self: &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64
+  }
+  // A float in [0, 1)
+  fn unit(self: &mut) f32 { f32.from(next() >> 40u64) / 16777216. }
+  fn range(self: &mut, lo: f32, hi: f32) f32 { lo + (hi - lo) * unit() }
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn mesh(slot: u32) MeshHandle { MeshHandle(Ref[MeshSlot].of(slot, 1u32)) }
+
+fn addOne(vis: &mut Visibility, rng: &mut Rng, world: f32) SceneHandle {
+  let at = Vec3(rng.range(-world, world), rng.range(-5., 30.), rng.range(-world, world));
+  vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.fromTranslation(at), Color(1., 1., 1., 1.), Vec3(0., 0., 0.),
+    Vec3(1., 1., 1.), 1.7)
+}
+
+fn row(items: i32, frames: i32) {
+  var m = Meter.start();
+  var tAdd = 0i64;
+  var tRemove = 0i64;
+  var tCollect = 0i64;
+  var ops = 0i64;
+  var drawn = 0usize;
+  var slots = 0usize;
+  {
+    var rng = Rng(2685821657736338717u64);
+    let world = 200.f;
+    var vis = Visibility.create(0.2);
+    vis.settings.lod = false;
+    vis.settings.ranges = false;
+    var handles = List[SceneHandle]();
+    var i = 0;
+    while i < items {
+      handles.push(addOne(&mut vis, &mut rng, world));
+      i = i + 1;
+    }
+    var cam = Camera.make();
+    cam.far = 400.;
+    cam.lookAt(Vec3(0., 10., 0.), Vec3(0., 5., -100.), Vec3(0., 1., 0.));
+    var out = List[DrawItem]();
+    let per = items / 10;
+    var frame = 0;
+    while frame < frames {
+      var k = 0;
+      while k < per {
+        let at = usize.from(rng.next() % u64.from(handles.len()));
+        let h = *handles[at];
+        let t0 = Instant.now();
+        vis.remove(h);
+        let t1 = Instant.now();
+        // the slot taken is the one just freed
+        let nh = addOne(&mut vis, &mut rng, world);
+        let t2 = Instant.now();
+        tRemove = tRemove + (t1.nanos() - t0.nanos());
+        tAdd = tAdd + (t2.nanos() - t1.nanos());
+        handles.set(at, nh);
+        ops = ops + 1i64;
+        k = k + 1;
+      }
+      out.clear();
+      let c0 = Instant.now();
+      vis.collect(&cam, 1.5, 720., &mut out);
+      tCollect = tCollect + (Instant.now().nanos() - c0.nanos());
+      drawn = out.len();
+      m.sample(frame >= frames * 2 / 3);
+      frame = frame + 1;
+    }
+    slots = vis.items.len();
+  }
+  let end = m.nowKiB();
+  print <- "scene items, ", items, " items, ", items / 10, " churned a frame, ", frames, " frames: add ", tAdd / ops,
+    " ns, remove ", tRemove / ops, " ns, collect ", tCollect / i64.from(frames) / 1000i64, " us (", drawn, " drawn), ",
+    slots, " item slots; private KiB over the start: peak ", m.peakKiB(), ", steady ", m.steadyKiB(), ", end ", end,
+    "; cpu ", m.cpuPercent(), "%\n";
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var frames = 30;
+  if argc > 1i32 { frames = i32.from(digits(*(argv + 1usize))); }
+  if frames < 3 { frames = 3; }
+  row(10000, frames);
+  row(50000, frames);
+  0i32
+}

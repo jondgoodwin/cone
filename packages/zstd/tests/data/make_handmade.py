@@ -628,6 +628,41 @@ ko("cut-in-checksum", Truncated, good[:-1])
 ko("cut-skippable", Truncated, skippable(3, b"abcdef")[:10])
 ko("cut-second-frame", Truncated, good + good[:7])
 
+# A header claiming far more content than its few bytes can make: the decoder reserves no more than the input could
+# produce, and the frame fails at its end as a short one does
+ko("content-size-huge-claim", BadChecksum, frame([raw(a, 1)], a, content_size=1 << 26, checksum=False))
+
+# -------- matches that repeat, with and without a content size (added last: the cases above draw from 'rnd') --------
+
+# Every way a match copy goes: offsets 1 to 7 (a byte at a time, or the repeating pattern doubled), 8 and more but
+# less than the length (eight bytes a step), the offset at least the length (short, long), literal runs of 0 to 40
+olits = bytes((i * 7 + 3) % 251 for i in range(160))
+oseqs = [(26, 60, 1 + 3),     # offset 1, a long run of one byte
+         (2, 12, 2 + 3),      # offset 2, short
+         (3, 40, 3 + 3),      # offset 3, long
+         (0, 100, 7 + 3),     # offset 7, long
+         (1, 30, 8 + 3),      # offset 8, shorter than the length
+         (1, 50, 9 + 3),      # offset 9
+         (2, 20, 15 + 3),     # offset 15
+         (2, 33, 17 + 3),     # offset 17
+         (0, 16, 16 + 3),     # offset 16 = length
+         (1, 8, 40 + 3),      # offset 40, a short copy that is not overlapping
+         (4, 5, 5 + 3),       # offset 5 = length
+         (1, 100, 70 + 3),    # offset 70, shorter than the length
+         (40, 3, 20 + 3),     # a literal run of 40, a match of 3
+         (1, 20, 300 + 3),    # offset 300, long and not overlapping
+         (0, 3, 1),           # ll 0: rep2 = the offset before the last
+         (7, 18, 1)]          # rep1 again
+ocontent, _ = run_seqs(olits, oseqs)
+oblock = lits_raw(olits) + sequences(oseqs)
+ok("overlap-offsets", frame([comp(oblock, 1)], ocontent), ocontent)
+ok("overlap-offsets-no-size", frame([comp(oblock, 1)], ocontent, content_size=None), ocontent)
+ok("overlap-offsets-no-size-no-checksum", frame([comp(oblock, 1)], ocontent, content_size=None, checksum=False), ocontent)
+# Several blocks, no content size, a 4-byte one, and an 8-byte one
+ncontent = b"A" + b"B" * 1000 + b"xyz"
+ok("blocks-no-size", frame([rle(0x41, 1), rle(0x42, 1000), raw(b"xyz", 1)], ncontent, content_size=None), ncontent)
+ok("blocks-8byte-size", frame([rle(0x41, 1), rle(0x42, 1000), raw(b"xyz", 1)], ncontent, fcs_bytes=8), ncontent)
+
 # -------- write --------
 
 here = os.path.dirname(os.path.abspath(__file__))
