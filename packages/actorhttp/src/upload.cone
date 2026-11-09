@@ -176,6 +176,11 @@ fn upPump(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec) {
       let left = total - off;
       let n = if left < upPiece {left} else {upPiece};
       // A pool that refuses the buffer ends the fetch, as for a String body
+      // Under -D SENDCOPY_TIME the buffer's allocation and the copy are timed (copytime.cone); otherwise nothing is compiled here
+      var copyT0 = 0i64;
+      #if #defined("SENDCOPY_TIME") {
+        copyT0 = Instant.now().nanos();
+      }
       var b = match IoBuf.tryMake(n) {
         case var Some(got) {got}
         else {
@@ -186,6 +191,9 @@ fn upPump(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec) {
       {
         let all = s.up.chunks[0usize].view() as &Array[u8];
         b.append(&all[off ..< off + n]);
+      }
+      #if #defined("SENDCOPY_TIME") {
+        copyTimeAdd(Instant.now().nanos() - copyT0);
       }
       rec.client.pushBody(lp, s.fetch, b);
       s.up.room = false;

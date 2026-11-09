@@ -1,0 +1,465 @@
+// sendcopy: the harness that decides whether the sinks' copy is worth removing (send hand-back,
+// option c). Today's sinks copy each lent piece into a pool buffer of their own and give the original
+// back at once: the client upload (actorhttp upload.cone, #1045) and the server response
+// (responsesink.cone, #1022). The decision rests on one figure, the copy's share of the whole send, so
+// each row prints three numbers:
+//
+//   copy ns/piece   the pool buffer's allocation and the copy into it, timed in place around those
+//                   two statements in the sink, summed and divided by the pieces copied
+//   whole send      from asking for the fetch to the last byte counted (response) or to the server's
+//                   answer (upload), in milliseconds
+//   share           the copy's total over the whole send, in per cent
+//
+// Rows: a body of 'MiB' mebibytes (default 64) over HTTP/1.1, HTTP/2 and HTTP/3, each through the real
+// client upload path (Client.upload with the sink fed by a source) and the real server response path
+// (Exchange.bodySink), with source blocks of 16 KiB and of 64 KiB. What the sink copies is a piece of at
+// most upPiece (64 KiB) for the upload and sendChunk (16 KiB) for the response, so a 64 KiB block is one
+// piece of the upload and four of the response; "pieces" in the output counts the copies made, a copy the
+// connection refused (and the sink makes again on Writable) included, since it was paid for. All three protocols are TLS on loopback (HTTP/3 needs it), one server offering all three,
+// the client choosing: HTTP/1.1 by Config.http2 = false, HTTP/2 by ALPN, HTTP/3 by prior knowledge.
+// The server records the version that carried each request, and a row whose version is not the one
+// asked for is printed WRONG.
+//
+// THE TIMING IS COMPILED IN OR NOT. The sink's timing is under '#if #defined("SENDCOPY_TIME")' (actorhttp's
+// copytime.cone): without '-D SENDCOPY_TIME' no clock read, call, branch or counter exists in the sink, so a
+// build without it is the shipped sink, and prints the whole-send column only. The copy column needs the flag.
+// Reading the clock around a piece costs itself (it is inside the timed span, twice per piece), so the example
+// measures a pair of clock reads at the start and prints it as 'clock'; subtract it from the ns/piece.
+//
+//   cd packages\h3driver
+//   python ..\..\tools\congo\congo.py run --release -D SENDCOPY_TIME examples/sendcopy.cone -- 64 0
+//
+// (Run from where the tls package's test certificates are found at '../../../../../tls/tests/certs', as
+// clientbench: congo run puts the build under build/release/examples/sendcopy.) The arguments are MiB
+// (default 64) and the row order: 0 protocols h1, h2, h3, 1 reversed (h3, h2, h1) for a swapped pair.
+// Informative until it is run on a QUIET machine: numbers move with the machine's other work.
+
+mod sendcopy;
+
+import stdio use *;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import tls;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
+import h3driver;
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn blockBytes(size: usize) List[u8] {
+  var piece = List[u8].withCapacity(size);
+  var i = 0usize;
+  while i < size {
+    piece.push(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  piece
+}
+
+// The tls package's test certificates, from the build folder (build/release/examples/sendcopy, as
+// clientbench) or from packages/h3driver (where 'congo run' puts the working directory)
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  let far = Path.fromString(p);
+  match fs.readFile(&far) {
+    case let Ok(r) {return far;}
+    case let Err(e) {}
+  }
+  var q = String.from("../tls/tests/certs/");
+  q.append(name);
+  Path.fromString(q)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+// The version of the last request the server saw: 1 HTTP/1.1, 2 HTTP/2, 3 HTTP/3
+let seen: Atomic[u64];
+
+fn @initpure init() {
+  seen = Atomic[u64].of(0u64);
+}
+
+fn versionCode(v: Version) u64 {
+  if v == Version.Http3 {3u64} else if v == Version.Http2 {2u64} else {1u64}
+}
+
+// ---- the source: a block repeated, a block per chunk, lent from a 256 KiB window ----
+
+actor ListSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  block: usize;
+  left: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], total: u64) {
+    let block = data.len();
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), block: block, data: data, left: total, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if left == 0u64 {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(block) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - u64.from(block);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---- the server: POST /up answers the length it read; GET /sink/<block>/<n> answers n bytes ----
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    seen.store(versionCode(ex.request.head.version));
+    if p == "/up" {
+      var said = String.from("len=");
+      said.appendUInt(u64.from(ex.request.body.len()));
+      ex.respond(ResponseHead.make(200u16), said);
+      return;
+    }
+    // "/sink/<block>/<n>"
+    let rest = &p[6usize ..];
+    var cut = 0usize;
+    while cut < rest.len && rest.bytes()[cut] != 47u8 {cut = cut + 1usize;}
+    let block = number(&rest[0usize ..< cut]);
+    let n = number(&rest[cut + 1usize ..]);
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    let sink = ex.bodySink();
+    let g = ListSource(sink, blockBytes(usize.from(block)), n);
+    g.start();
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(if server.offersHttp3() {server.port()} else {0u16});
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---- the client ----
+
+fn origin(port: u16) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u
+}
+
+// A client of the protocol 'proto' (1, 2 or 3) that trusts the test root
+fn clientFor(proto: u32, port: u16) Client {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  if proto == 1u32 {cfg.http2 = false;}
+  if proto == 3u32 {
+    cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+    cfg.http3Origins.push(origin(port));
+  }
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Counter is ChunkSink {
+  up: Option[ChunkSource];
+  at: u64;
+  badFirst: u64;
+  block: u64;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, block: u64, done: OneshotSender[u64]) {
+    *self = Self(up: None[ChunkSource], at: 0u64, badFirst: 0u64, block: block, done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    if c.len() > 0usize && c.view()[0usize] != u8.from((at % block) % 251u64) {badFirst = badFirst + 1u64;}
+    at = at + u64.from(c.len());
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    var good = true;
+    match how {
+      case is Finished {}
+      case is Failed {good = false;}
+    }
+    if badFirst > 0u64 {good = false;}
+    done.send(if good {at} else {0u64});
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn run(self, url: String, sink: ChunkSink) {
+    let r = await client.streamTo(Request.get(url.view()), sink);
+    match r {
+      case is Ok {}
+      case is Err {}
+    }
+  }
+}
+
+actor Uploader {
+  client: Client;
+
+  // Uploads 'size' bytes from a ListSource of 'block'-byte blocks through 'client.upload', and sends
+  // 'done' the server's count of the bytes it read (0 if the upload or the answer went wrong)
+  pub async fn run(self, url: String, block: usize, size: u64, done: OneshotSender[u64]) {
+    var said = String();
+    var good = false;
+    let up = client.upload(Request.make("POST", url.view()), BodyLength.sized(size));
+    let g = ListSource(up.sink(), blockBytes(block), size);
+    g.start();
+    let r = await up.stream();
+    match r {
+      case let Ok(bs) {
+        good = bs.status == 200u16;
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {said.append(piece.view());}
+                case is None[String] {going = false;}
+              }
+            }
+            case let Err(e) {good = false; going = false;}
+          }
+        }
+      }
+      case let Err(e) {}
+    }
+    var want = String.from("len=");
+    want.appendUInt(size);
+    var tell = done;
+    tell.send(if good && said.view() == want.view() {size} else {0u64});
+  }
+}
+
+// ---- rows ----
+
+fn protoName(proto: u32) &str {
+  if proto == 3u32 {"h3"} else if proto == 2u32 {"h2"} else {"h1"}
+}
+
+fn tenths(v: u64) {
+  printUInt(v / 10u64);
+  printStr(".");
+  printUInt(v % 10u64);
+}
+
+// Prints one row's three numbers (or WRONG)
+fn report(upload: bool, proto: u32, block: usize, size: u64, got: u64, wholeNs: u64, clockNs: u64, wantVersion: u64) {
+  printStr(protoName(proto));
+  printStr(if upload {" upload   "} else {" response "});
+  printUInt(u64.from(block) / 1024u64);
+  printStr(" KiB pieces: ");
+  if got != size || seen.load() != wantVersion {
+    printStr("WRONG: ");
+    printUInt(got);
+    printStr(" bytes of ");
+    printUInt(size);
+    printStr(", carried by version ");
+    printUInt(seen.load());
+    printStr("\n");
+    return;
+  }
+  var ns = 0u64;
+  var pieces = 0u64;
+  ns, pieces = actorhttp.copyTimeTotals();
+  printStr("whole send ");
+  printUInt(wholeNs / 1000000u64);
+  printStr(" ms");
+  if !actorhttp.copyTimeOn() {
+    printStr(", copy not timed (no -D SENDCOPY_TIME)\n");
+    return;
+  }
+  printStr(", copy ");
+  printUInt(if pieces == 0u64 {0u64} else {ns / pieces});
+  printStr(" ns/piece (");
+  printUInt(pieces);
+  printStr(" pieces, ");
+  printUInt(ns / 1000u64);
+  printStr(" us, clock ");
+  printUInt(clockNs);
+  printStr(" ns of it), share ");
+  tenths(ns * 1000u64 / wholeNs);
+  printStr(" %\n");
+}
+
+fn row(upload: bool, proto: u32, port: u16, block: usize, size: u64, clockNs: u64) {
+  actorhttp.copyTimeReset();
+  seen.store(0u64);
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let client = clientFor(proto, port);
+  var u = origin(port);
+  let t0 = Instant.now();
+  if upload {
+    u.append("/up");
+    let f = Uploader(client);
+    f.run(u, block, size, tx);
+  } else {
+    u.append("/sink/");
+    u.appendUInt(u64.from(block));
+    u.append("/");
+    u.appendUInt(size);
+    let f = Fetcher(client);
+    f.run(u, Counter(u64.from(block), tx));
+  }
+  let got = rx.recv() || 0u64;
+  let ns = u64.from(t0.elapsed().nanos());
+  report(upload, proto, block, size, got, ns, clockNs, u64.from(proto));
+}
+
+// The cost of a read of the clock, as the sink pays it twice a piece
+fn clockCost() u64 {
+  let n = 200000u64;
+  var sum = 0i64;
+  let t0 = Instant.now();
+  var i = 0u64;
+  while i < n {
+    sum = sum + Instant.now().nanos();
+    i = i + 1u64;
+  }
+  let ns = u64.from(t0.elapsed().nanos());
+  if sum == 0i64 {printStr("?");}
+  ns / n
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var mib = 64u32;
+  var order = 0u32;
+  if argc > 1i32 { mib = digits(*(argv + 1usize)); }
+  if argc > 2i32 { order = digits(*(argv + 2usize)); }
+  let size = u64.from(mib) * 1048576u64;
+  let clockNs = clockCost();
+  printStr("clock read: ");
+  printUInt(clockNs);
+  printStr(" ns; body ");
+  printUInt(u64.from(mib));
+  printStr(" MiB, TLS on loopback, copy timing ");
+  printStr(if actorhttp.copyTimeOn() {"on"} else {"off"});
+  printStr(", protocol order ");
+  printStr(if order == 0u32 {"h1 h2 h3"} else {"h3 h2 h1"});
+  printStr("\n");
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    var scfg = ServerConfig.make().secure(tls.ServerConfig.make(&certs("server.pem"), &certs("server.key")))
+      .offerHttp2().offerHttp3(&h3driver.plugin);
+    scfg.maxBody = 1610612736usize;        // the uploads are read whole
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(scfg, ptx);
+    let port = prx.recv() || 0u16;
+    if port == 0u16 {
+      printStr("no server\n");
+      return 1i32;
+    }
+    acceptor.serve();
+    var k = 0u32;
+    while k < 3u32 {
+      let proto = if order == 0u32 {k + 1u32} else {3u32 - k};
+      row(true, proto, port, 16384usize, size, clockNs);
+      row(true, proto, port, 65536usize, size, clockNs);
+      row(false, proto, port, 16384usize, size, clockNs);
+      row(false, proto, port, 65536usize, size, clockNs);
+      k = k + 1u32;
+    }
+    acceptor.stop();
+  }
+  finalAll();
+  0i32
+}

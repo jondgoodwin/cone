@@ -1,0 +1,35 @@
+// The cost of the sinks' copy, read in place: when the program is compiled with
+// '-D SENDCOPY_TIME', each sink (upload.cone's upPump, responsesink.cone's response
+// pump) times the pool buffer's allocation and the copy into it ('IoBuf.tryMake' and
+// 'append') and adds the nanoseconds and the piece to the totals below. Without the
+// flag the '#if' at those two places compiles to nothing: no call, no clock read, no
+// branch, no counter, so the build that is timed for a verdict is the build that ships.
+// The totals are read by an example (h3driver's sendcopy) that is the only reader; they
+// are process-wide, so a run is bracketed by 'copyTimeReset' and 'copyTimeTotals'.
+
+let copyNs: Atomic[u64];
+let copyPieces: Atomic[u64];
+
+// (made in actorhttp.cone's 'init')
+
+// Adds one piece that took 'ns' (only the flagged build calls it)
+fn copyTimeAdd(ns: i64) {
+  copyNs.add(if ns > 0i64 {u64.from(ns)} else {0u64});
+  copyPieces.add(1u64);
+}
+
+// Zeros the totals
+pub fn copyTimeReset() {
+  copyNs.store(0u64);
+  copyPieces.store(0u64);
+}
+
+// The nanoseconds spent copying and the pieces copied since the last reset (both 0 in a build without SENDCOPY_TIME)
+pub fn copyTimeTotals() (u64, u64) {
+  (copyNs.load(), copyPieces.load())
+}
+
+// Whether this build times the copy
+pub fn copyTimeOn() bool {
+  #if #defined("SENDCOPY_TIME") {true} #else {false}
+}

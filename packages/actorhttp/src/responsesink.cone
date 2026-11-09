@@ -89,6 +89,11 @@ fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
       let left = total - off;
       let n = if left < sendChunk {left} else {sendChunk};
       // A pool that refuses the buffer ends the exchange, as for a String write
+      // Under -D SENDCOPY_TIME the buffer's allocation and the copy are timed (copytime.cone); otherwise nothing is compiled here
+      var copyT0 = 0i64;
+      #if #defined("SENDCOPY_TIME") {
+        copyT0 = Instant.now().nanos();
+      }
       var b = match IoBuf.tryMake(n) {
         case var Some(got) {got}
         else {
@@ -99,6 +104,9 @@ fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
       {
         let all = x.sinkChunks[0usize].view() as &Array[u8];
         b.append(&all[off ..< off + n]);
+      }
+      #if #defined("SENDCOPY_TIME") {
+        copyTimeAdd(Instant.now().nanos() - copyT0);
       }
       // Refused: Writable comes when there is room
       if !srvSend(srv, x, b) {return;}
