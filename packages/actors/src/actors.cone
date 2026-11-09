@@ -379,6 +379,11 @@
 // starts, sets n workers (0, the default, is one per logical processor,
 // thread.parallelism()) and a batch limit b (actors.defaultBatch, 100, by
 // default; 0 is taken as 1); called once they have started, it is a panic.
+// Options also holds the scheduler's own constants, for trying them per
+// workload: spinMicros (8), spinCap (0: half the workers, at most 4),
+// injectEvery (61) and wakeOnPush (false: Go's wake rule, which cost a
+// ping-pong benchmark 6.8x, is off unless asked for); the defaults are the
+// built-in values.
 // It is not synchronized with a first start on another thread: configure
 // first.
 //
@@ -698,19 +703,20 @@
 // microseconds have passed; then, or at once if it could not become one, it
 // publishes itself a sleeper (its park word PARKED, the sleepers' count one
 // more), looks once more, and sleeps on its park word. A push to the inject
-// queue, and a push to a worker's own queue that already held another, wakes
-// one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
+// queue, and a push to a worker's own queue (the wake rule: THE SEARCH
+// INVARIANT, duty 3), wakes one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
 // worker is looking already: one spinning (THE SPIN, below), or one woken
 // earlier and still looking (the 'searching' flag). The one woken takes a
 // share and, if more waits, wakes the next, so that a burst of work spreads
 // across the workers a worker at a time rather than waking them all. A push
-// to an empty queue of one's own wakes nobody, so two actors passing
-// messages back and forth stay on one worker. That a queue's work is never
-// left while every worker sleeps is kept by two Dekker pairings on
+// to an empty queue of one's own wakes one only when none is looking, so at
+// high load (a worker spinning, or none asleep) two actors passing messages
+// back and forth stay on one worker. That a queue's work is never
+// left while every worker sleeps is kept by Dekker pairings on
 // sequentially consistent operations: a sleeper publishes itself and clears
-// 'searching', then looks; an inject push adds to the queue's length, then
-// reads the sleepers and swaps 'searching'. A worker's own queue needs no
-// such pairing: only its owner pushes to it, and the owner is awake.
+// 'searching', then looks; a push adds to the queue (its length for the
+// inject queue, its tail for a worker's), then reads the sleepers and swaps
+// 'searching'.
 //
 // THE PARK WORD. Each worker sleeps on a word of its own ('park', on a cache
 // line of its own in the Worker), not on one word all of them share, so that
@@ -807,6 +813,34 @@
 //   that marks a published worker.
 // - The stop: 'stopping' is stored before the marks, and a worker checks it
 //   after publishing (before its wait) and after every chosen return.
+//
+// THE SEARCH INVARIANT (Go's rule; #989's lost wake, Bug 2). While any queue
+// holds a runnable actor and a worker sleeps, at least one worker is searching
+// (spinning, or woken and not yet done looking) and has not yet looked at every
+// queue. 'Only its owner pushes, and the owner is awake' is not enough: an
+// owner in a turn that does not end is awake and unavailable. Duties keep it:
+// 1. A SEARCHER THAT FINDS WORK HANDS THE SEARCH ON. A worker that leaves
+//    searching by taking an actor (inject, a steal, a loop piece) wakes one more
+//    if work is queued anywhere, not only in the inject queue and its own
+//    (foundAway; notify itself declines when another worker spins or searches).
+//    So does a woken worker that takes the actor in its own queue: else
+//    'searching' stays set through that turn.
+// 2. A SEARCHER THAT FINDS NOTHING LOOKS AGAIN BEFORE IT SLEEPS. After it has
+//    left 'spinning', published itself and cleared 'searching', idle looks at
+//    every queue (anyWork) and, seeing work, leaves the park for the loop,
+//    which steals (this already held).
+// 3. A PUSH TO ONE'S OWN QUEUE WAKES ONE WHEN NONE LOOKS (Go's ready, which
+//    calls wakep after runqput). An owner whose queue was empty runs the actor
+//    when its turn ends, but a turn may not end soon, or ever, when the actor
+//    is what that turn waits for. So localPush calls notify even into an empty
+//    queue: notify wakes a sleeper only if one is parked and none spins or
+//    searches, else it costs a load. At high load there is no sleeper to wake
+//    and it does nothing; at light load, where workers park after the spin,
+//    it bounds how long an actor waits behind another's long turn. It costs a
+//    wake per send in a conversation between two actors, when no worker spins.
+// The constants of the spin, the cap, the inject look and duty 3 are settings
+// (Options: spinMicros, spinCap, injectEvery, wakeOnPush), so that a benchmark
+// can try them per workload; their defaults are the values below.
 //
 // THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
 // time to run again, measured on the 24-thread laptop (Windows) at 4 to 10 us
@@ -4023,16 +4057,19 @@ const queueMask = 1023u64;
 
 // How often a worker looks in the inject queue before its own: every 61st
 // turn, tokio's number, so actors there are not starved by a busy local queue
-const injectEvery = 61u32;
+// (Options.injectEvery; 0 there means this)
+pub const defaultInjectEvery = 61u32;
 
 // THE SPIN's bound, in microseconds (the header, IDLE WORKERS): about what a
 // park and its wake cost when the sleeper's core is still awake, so that
 // spinning it and then parking costs at most about twice the better choice
-const spinMicros = 8u64;
+// (Options.spinMicros)
+pub const defaultSpinMicros = 8u32;
 
 // THE SPIN's cap: at most this many workers spin at once, and never more than
-// half of them; one, with a single worker
-const spinMost = 4u32;
+// half of them; one, with a single worker (Options.spinCap; 0 there means
+// this rule, with this most)
+pub const defaultSpinMost = 4u32;
 
 // A worker index for a thread that is not a worker
 pub const noWorker = 0xFFFFFFFFu32;
@@ -4052,6 +4089,7 @@ struct Worker {
   pub index: u32;
   pub tick: u32;
   pub rng: u32;
+  pub woken: u32;               // 1 from a worker's return from its park (or its leaving it) until it stops looking (foundAway): it may be the one 'searching' counts
   pub cause: u64;               // the cause id of the message this worker is running, 0 between messages (tracing hooks)
   pub seq: u64;                 // the send ids this worker has made (tracing hooks)
   pub stat: *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
@@ -4087,9 +4125,11 @@ struct Sched {
   pub gap2: Array[u8, 32];
   pub nworkers: u32;
   pub batch: u32;
-  pub spinCap: u32;             // how many workers may spin at once (spinMost)
+  pub spinCap: u32;             // how many workers may spin at once (Options.spinCap)
+  pub injectEvery: u32;         // every this many turns a worker looks in the inject queue first (Options.injectEvery)
+  pub wakeOnPush: u32;          // 1: a push to one's own queue calls notify even when the queue was empty (the header, THE SEARCH INVARIANT, duty 3; Options.wakeOnPush)
   pub parkHold: u32;            // the test hook holdNextPark's state (atomic): 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
-  pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (spinMicros)
+  pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (Options.spinMicros); 0: no spin
   pub parkHoldAt: u32;          // where the test hook holds: 1 before the worker publishes itself, 4 before its look, 2 before its wait, 3 before it leaves having seen work
   pub parkHeldIdx: u32;         // the index of the worker the test hook holds
   pub parkedWords: u32;         // how many words the sleepers' bitmap has, 64 workers each
@@ -4152,7 +4192,8 @@ fn schedule(h: *Header) {
 }
 
 // Put h on w's own queue; half of it goes to the inject queue when it is
-// full. Wake a sleeping worker to steal when the queue held another already.
+// full. Wake a sleeping worker (notify) when the queue held another already,
+// or, by the wake rule (Options.wakeOnPush), even when it was empty.
 fn localPush(w: *Worker, h: *Header) {
   let headp = &(*w).head as *u64;
   let tailp = &(*w).tail as *u64;
@@ -4161,9 +4202,19 @@ fn localPush(w: *Worker, h: *Header) {
     let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
     if t - hd < queueCap {
       mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed);
-      mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
       if t != hd {
+        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
         notify((*w).sched);
+      } else if (*(*w).sched).wakeOnPush != 0u32 {
+        // Into an empty queue (THE SEARCH INVARIANT, duty 3). Sequentially
+        // consistent, so that notify's read of the sleepers, spinners and
+        // searchers comes after this push is visible to every worker (as a
+        // parking worker's publication precedes its look in idle): else
+        // a push and a worker's park could each miss the other
+        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.SeqCst);
+        notify((*w).sched);
+      } else {
+        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
       }
       return;
     }
@@ -4370,12 +4421,18 @@ fn parkedBit(w: *Worker) u64 {
 }
 
 // A worker found work away from its own queue: it is no longer the one
-// looking, and if more work is waiting, another is woken to look
+// looking, and if more work is waiting ANYWHERE (the inject queue, a loop
+// piece, any worker's queue, not only its own), another is woken to look: the
+// search is handed on (THE SEARCH INVARIANT, duty 1; Go's resetspinning). Only
+// the taker's own queue and the inject queue counted once, and a chain of
+// wakes could end with an actor left in the queue of a third worker, busy in a
+// turn that does not end
 fn foundAway(w: *Worker) {
   let s = (*w).sched;
+  (*w).woken = 0u32;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if ld64(&(*s).injectLen as *u64) != 0u64 || ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
-      || taskWork(s) {
+      || taskWork(s) || anyWork(s) {
     notify(s);
   }
 }
@@ -4384,7 +4441,7 @@ fn foundAway(w: *Worker) {
 fn findWork(w: *Worker) *Header {
   let s = (*w).sched;
   (*w).tick = (*w).tick + 1u32;
-  if (*w).tick % injectEvery == 0u32 {
+  if (*w).tick % (*s).injectEvery == 0u32 {
     let a = injectPop(s, w);
     if a as usize != 0usize {
       // Taken away from its own queue, as any inject take: more waiting
@@ -4395,6 +4452,12 @@ fn findWork(w: *Worker) *Header {
   }
   let mine = queuePop(w);
   if mine as usize != 0usize {
+    // A worker woken to look that takes its own queue's actor has stopped
+    // looking too, or 'searching' stays set through the turn and every notify
+    // meanwhile wakes nobody (duty 1)
+    if (*w).woken != 0u32 {
+      foundAway(w);
+    }
     return mine;
   }
   let fromInject = injectPop(s, w);
@@ -4480,6 +4543,9 @@ fn runActor(w: *Worker, h: *Header) {
 // park that follows sees (idle).
 fn spin(w: *Worker) bool {
   let s = (*w).sched;
+  if (*s).spinTicks == 0u64 {
+    return false;
+  }
   let np = &(*s).spinning as *u32;
   var n = mem.atomicLoad[u32](np, MemOrder.Relaxed);
   var joined = false;
@@ -4646,6 +4712,7 @@ fn idle(w: *Worker) bool {
       parkHoldHere(s, w, 3u32);
     }
     leavePark(s, w);
+    (*w).woken = 1u32;
     return true;
   }
   if ld32(&(*s).stopping as *u32) != 0u32 {
@@ -4672,6 +4739,7 @@ fn idle(w: *Worker) bool {
   // Chosen (NOTIFIED): the notify cleared the bit
   mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
   uncount(s);
+  (*w).woken = 1u32;
   ld32(&(*s).stopping as *u32) == 0u32
 }
 
@@ -4776,6 +4844,13 @@ fn quiescent(s: *Sched) bool {
 pub struct Options {
   pub workers: u32 = 0u32;
   pub batch: u32 = defaultBatch;
+  // The scheduler's constants, for trying them per workload (the header, IDLE
+  // WORKERS, THE SPIN, THE SEARCH INVARIANT). The defaults are the values the
+  // runtime was built and measured with
+  pub spinMicros: u32 = defaultSpinMicros;   // how long an idle worker spins before it parks (THE SPIN); 0: it parks at once
+  pub spinCap: u32 = 0u32;                   // most workers spinning at once; 0: half of them, at most defaultSpinMost (4)
+  pub injectEvery: u32 = defaultInjectEvery; // every this many turns a worker looks in the inject queue before its own queue; 0: the default (61)
+  pub wakeOnPush: bool = false;              // OFF by default (it cost pingpong 6.8x). true: a push to a worker's own queue wakes one parked worker when none is looking, even if the queue was empty (THE SEARCH INVARIANT, duty 3)
 }
 
 // What the workers have done, counted by them: answered by 'stats'
@@ -4797,6 +4872,10 @@ pub struct Stats {
 // may be called on any thread, held by 'let' globals and set in 'init' (below)
 let chosenWorkers: Atomic[u32];
 let chosenBatch: Atomic[u32];
+let chosenSpinMicros: Atomic[u32];
+let chosenSpinCap: Atomic[u32];
+let chosenInjectEvery: Atomic[u32];
+let chosenWakeOnPush: Atomic[u32];
 
 // Starts the workers once, however many threads start a first actor at once
 let startOnce: sync.Once;
@@ -4845,6 +4924,10 @@ fn @initpure init() {
   running = Atomic[usize].of(0usize);
   chosenWorkers = Atomic[u32].of(0u32);
   chosenBatch = Atomic[u32].of(defaultBatch);
+  chosenSpinMicros = Atomic[u32].of(defaultSpinMicros);
+  chosenSpinCap = Atomic[u32].of(0u32);
+  chosenInjectEvery = Atomic[u32].of(defaultInjectEvery);
+  chosenWakeOnPush = Atomic[u32].of(0u32);
   statSlots = Atomic[usize].of(0usize);
   statWorkers = Atomic[u32].of(0u32);
   taskStealsTotal = Atomic[u64].of(0u64);
@@ -4881,6 +4964,10 @@ pub fn configure(opts: Options) {
   }
   chosenWorkers.store(opts.workers);
   chosenBatch.store(opts.batch);
+  chosenSpinMicros.store(opts.spinMicros);
+  chosenSpinCap.store(opts.spinCap);
+  chosenInjectEvery.store(opts.injectEvery);
+  chosenWakeOnPush.store(if opts.wakeOnPush {1u32} else {0u32});
 }
 
 // The workers are running, having been started now if they were not: a
@@ -4920,8 +5007,13 @@ fn startWorkers() {
   let chosenB = chosenBatch.load();
   (*s).batch = if chosenB == 0u32 {1u32} else {chosenB};
   let half = n / 2u32;
-  (*s).spinCap = if half == 0u32 {1u32} else if half > spinMost {spinMost} else {half};
-  (*s).spinTicks = clockFrequency() * spinMicros / 1000000u64;
+  let chosenCap = chosenSpinCap.load();
+  (*s).spinCap = if chosenCap != 0u32 {chosenCap}
+    else if half == 0u32 {1u32} else if half > defaultSpinMost {defaultSpinMost} else {half};
+  (*s).spinTicks = clockFrequency() * u64.from(chosenSpinMicros.load()) / 1000000u64;
+  let chosenIE = chosenInjectEvery.load();
+  (*s).injectEvery = if chosenIE == 0u32 {defaultInjectEvery} else {chosenIE};
+  (*s).wakeOnPush = chosenWakeOnPush.load();
   // The sleepers' bitmap: a word for every 64 workers, a cache line each
   (*s).parkedWords = (n + 63u32) / 64u32;
   (*s).parked = libc.calloc(usize.from((*s).parkedWords), 64usize) as usize;
