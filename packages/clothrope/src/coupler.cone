@@ -41,7 +41,7 @@ pub struct ShapePart {
 
 // A rigid body of the world, its Coupled in the soft body, and its shapes' colliders
 pub struct BodyLink {
-  pub rigid: u32;
+  pub rigid: BodyId;
   pub index: u32;
   pub parts: List[ShapePart];
   pub colliders: List[u32];   // for each part, its collider's index in the soft body (NO_BODY: none)
@@ -57,7 +57,7 @@ pub struct Coupler {
   }
 
   // The link of rigid body 'rigid', or none
-  pub fn find(self: &, rigid: u32) Option[usize] {
+  pub fn find(self: &, rigid: BodyId) Option[usize] {
     var k = 0usize;
     while k < links.len() {
       if links[k].rigid == rigid { return Some[usize](k); }
@@ -69,12 +69,12 @@ pub struct Coupler {
   // Couple rigid body 'rigid' to the soft body: its Coupled's index. 'withShape'
   // makes colliders of its shapes (sphere, box and capsule), so cloth lies on it.
   // Coupling a body twice answers the first.
-  pub fn couple(self: &mut, soft: &mut SoftBody, world: &World, rigid: u32, withShape: bool) u32 {
+  pub fn couple(self: &mut, soft: &mut SoftBody, world: &World, rigid: BodyId, withShape: bool) u32 {
     match find(rigid) {
       case let Some(k) { return links[k].index; }
       case is None { }
     }
-    let body = world.bodies[usize.from(rigid)];
+    let body = world.bd(usize.from(rigid.index));
     let index = soft.addBody(coupledOf(world, rigid));
     var link = BodyLink(rigid, index, List[ShapePart](), List[u32]());
     if withShape {
@@ -98,7 +98,7 @@ pub struct Coupler {
   // Hold particle 'particle' of the soft body to the point of rigid body 'rigid' that is at world
   // position 'at' now (coupling the body if it is not yet, without colliders). 'breakForce' (newtons,
   // negative: never) is the pull at which the particle lets go: a rope tears from its cleat.
-  pub fn anchor(self: &mut, soft: &mut SoftBody, world: &World, particle: u32, rigid: u32, at: Vec3, breakForce: f32) {
+  pub fn anchor(self: &mut, soft: &mut SoftBody, world: &World, particle: u32, rigid: BodyId, at: Vec3, breakForce: f32) {
     let index = couple(soft, world, rigid, false);
     soft.attachBody(particle, index, at, breakForce);
   }
@@ -122,11 +122,11 @@ pub struct Coupler {
       let c = *soft.bodies[index];
       let id = links[k].rigid;
       if c.invMass > 0. && (c.impulse.lengthSquared() > 0. || c.angImpulse.lengthSquared() > 0.) {
-        let i = usize.from(id);
+        let i = usize.from(id.index);
         world.wake(id);
-        world.bodies[i].linVel = world.bodies[i].linVel + c.impulse * world.bodies[i].invMass;
-        world.bodies[i].angVel = world.bodies[i].angVel
-          + rotateInertia(world.bodies[i].rot, world.bodies[i].invInertiaLocal) * c.angImpulse;
+        world.bd(i).linVel = world.bd(i).linVel + c.impulse * world.bd(i).invMass;
+        world.bd(i).angVel = world.bd(i).angVel
+          + rotateInertia(world.bd(i).rot, world.bd(i).invInertiaLocal) * c.angImpulse;
       }
       soft.bodies[index].impulse = Vec3(0., 0., 0.);
       soft.bodies[index].angImpulse = Vec3(0., 0., 0.);
@@ -149,8 +149,8 @@ pub struct Coupler {
 }
 
 // The soft body's view of a rigid body now
-fn coupledOf(world: &World, rigid: u32) Coupled {
-  let b = world.bodies[usize.from(rigid)];
+fn coupledOf(world: &World, rigid: BodyId) Coupled {
+  let b = world.bd(usize.from(rigid.index));
   let dynamic = b.motion == MotionDynamic;
   var c = Coupled.make(b.pos, b.rot, if dynamic {b.invMass} else {0.},
     if dynamic {rotateInertia(b.rot, b.invInertiaLocal)} else {Mat3([0., 0., 0., 0., 0., 0., 0., 0., 0.])});

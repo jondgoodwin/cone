@@ -98,7 +98,7 @@ pub fn subtreeInertia(rig: &Ragdoll, w: &World, k: usize) f32 {
       a = rig.links[usize.from(a)].parent;
     }
     if below {
-      let b = w.bodies[usize.from(rig.links[j].body)];
+      let b = w.bd(usize.from(rig.links[j].body.index));
       let tr = b.inertiaLocal.cell(0usize, 0usize) + b.inertiaLocal.cell(1usize, 1usize) + b.inertiaLocal.cell(2usize, 2usize);
       total = total + tr / 3. + b.mass * (b.pos - anchor).lengthSquared();
     }
@@ -126,12 +126,12 @@ pub fn driveJoints(rig: &mut Ragdoll, w: &mut World, dt: f32) {
     let pd = rig.passiveDamping * (1. - bl);
     if pd > 0. {
       let pl = rig.links[usize.from(l.parent)];
-      let ip = usize.from(pl.body);
-      let ic = usize.from(l.body);
-      let wr = w.bodies[ic].angVel - w.bodies[ip].angVel;
+      let ip = usize.from(pl.body.index);
+      let ic = usize.from(l.body.index);
+      let wr = w.bd(ic).angVel - w.bd(ip).angVel;
       if wr.length() > 0.000001 {
-        let iA = rotateInertia(w.bodies[ip].rot, w.bodies[ip].invInertiaLocal);
-        let iB = rotateInertia(w.bodies[ic].rot, w.bodies[ic].invInertiaLocal);
+        let iA = rotateInertia(w.bd(ip).rot, w.bd(ip).invInertiaLocal);
+        let iB = rotateInertia(w.bd(ic).rot, w.bd(ic).invInertiaLocal);
         let iRef = subtreeInertia(rig, w, k);
         let kd = pd * iRef;
         let km = mat3Add(iA, iB);
@@ -139,8 +139,8 @@ pub fn driveJoints(rig: &mut Ragdoll, w: &mut World, dt: f32) {
         if tr > 0.0000001 {
           let ieff = 3. / tr;
           let lam = km.inverse() * (wr * (-kd * dt / (ieff + kd * dt)));
-          w.bodies[ic].angVel = w.bodies[ic].angVel + iB * lam;
-          w.bodies[ip].angVel = w.bodies[ip].angVel - iA * lam;
+          w.bd(ic).angVel = w.bd(ic).angVel + iB * lam;
+          w.bd(ip).angVel = w.bd(ip).angVel - iA * lam;
         }
       }
     }
@@ -151,12 +151,12 @@ pub fn driveJoints(rig: &mut Ragdoll, w: &mut World, dt: f32) {
     var r = 0usize;
     while r < rig.links.len() {
       if rig.links[r].parent < 0i32 {
-        let ir = usize.from(rig.links[r].body);
+        let ir = usize.from(rig.links[r].body.index);
         let om = 2. * pi * rig.rootHertz;
         let kpr = bl * om * om;
         let kdr = 2. * rig.damping * om * bl.sqrt();
-        let er = rotVec(rig.rootTarget * w.bodies[ir].rot.conjugate());
-        let wv = w.bodies[ir].angVel;
+        let er = rotVec(rig.rootTarget * w.bd(ir).rot.conjugate());
+        let wv = w.bd(ir).angVel;
         var acc = (er * kpr - wv * (kpr * dt + kdr)) * (1. / (1. + kdr * dt + kpr * dt * dt));
         let lim = 60. * bl;
         if acc.length() > lim { acc = acc * (lim / acc.length()); }
@@ -167,10 +167,10 @@ pub fn driveJoints(rig: &mut Ragdoll, w: &mut World, dt: f32) {
           let dw = acc * dt;
           var q = 0usize;
           while q < rig.links.len() {
-            let iq = usize.from(rig.links[q].body);
+            let iq = usize.from(rig.links[q].body.index);
             w.wake(rig.links[q].body);
-            w.bodies[iq].angVel = w.bodies[iq].angVel + dw;
-            w.bodies[iq].linVel = w.bodies[iq].linVel + dw.cross(w.bodies[iq].pos - com);
+            w.bd(iq).angVel = w.bd(iq).angVel + dw;
+            w.bd(iq).linVel = w.bd(iq).linVel + dw.cross(w.bd(iq).pos - com);
             q = q + 1usize;
           }
         }
