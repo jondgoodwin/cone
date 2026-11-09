@@ -162,6 +162,16 @@
 // is replaced, as any value stored over is; the arena finalizes whatever the
 // slot holds when it dies. Assigning over the arena itself ('a =
 // Arena()') tears the old one down first.
+//
+// REUSE. 'a = a.reset()' ends every value in the arena at once, as that
+// assignment does (finalized newest first, once each), but keeps the arena: it
+// comes back empty, holding only its first block (the room 'withRoom' asked
+// for), so a search per query, a frame's scratch or a compile per file reuses
+// one arena and a peak is not held for good. The arena goes in by value and
+// comes back, which the checker treats as it treats 'consume(a)': refused while
+// any allocation, bare or held in a value or a list, is still to be used.
+// (test/cases/region/region_flow_arena_freeze.cone; a function handed only
+// '&mut Arena' cannot reset it, since that would move it out of a borrow.)
 
 mod arena;
 
@@ -220,6 +230,7 @@ struct ArenaCore is GcTraceElements {
   nblocks: usize;       // how many blocks it holds
   traced: *GcTraceNode;   // the newest value needing a trace, or null
   ntraced: usize;       // how many it has held
+  firstRoom: usize;     // the room of the first block, which a reset keeps
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
@@ -258,7 +269,7 @@ struct ArenaCore is GcTraceElements {
     let core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
     if core as usize == 0usize { panic("arena: out of memory for an arena"); }
     mem.writeRaw(core, ArenaCore(MemRegion(&regionAlloc, &regionResize, &regionRelease, &regionSize),
-      null, 1usize, 0usize, null, 0usize, 0usize, null, 0usize));
+      null, 1usize, 0usize, null, 0usize, 0usize, null, 0usize, 0usize));
     core as *MemRegion
   }
 
@@ -304,6 +315,7 @@ struct ArenaCore is GcTraceElements {
   // bumps through. What was left of the one before is not used again.
   fn grow(self: &mut, need: usize) {
     let room = blockRoom(need);
+    if blocks as usize == 0usize { firstRoom = room; }
     let blk = newBlock(blocks, room);
     blocks = blk;
     nblocks = nblocks + 1usize;
@@ -336,11 +348,9 @@ struct ArenaCore is GcTraceElements {
     moved
   }
 
-  // Its death: every value that needs it finalized, newest first, each header
-  // taken off the list before its value's thunk runs, so a value allocated by
-  // a 'final' during teardown is finalized too, and none twice; then every
-  // block freed. The blocks all stay until the last finalizer has run.
-  fn teardown(self: &mut) {
+  // Every value that needs it finalized, newest first, each header taken off
+  // the list before its value's thunk runs (see teardown)
+  fn finalizeAll(self: &mut) {
     while finals as usize != 0usize {
       let node = finals;
       let hdr = node as &FinalNode;
@@ -348,6 +358,38 @@ struct ArenaCore is GcTraceElements {
       let run = hdr.run;
       run((node as usize + mem.sizeof[FinalNode]()) as *u8);
     }
+  }
+
+  // Its reset: every value finalized as at its death, then every block but the
+  // first freed and the first rewound to empty. The first is the one the arena
+  // was made with ('withRoom'), so a reused scratch keeps the room it was asked
+  // to start with, and a later peak is given back. (Its size is kept in
+  // 'firstRoom': a block's header holds no size.) The lists restart empty: the
+  // trace nodes were allocated in the blocks being rewound.
+  fn reset(self: &mut) {
+    self.finalizeAll();
+    traced = null;
+    ntraced = 0usize;
+    nfinals = 0usize;
+    if blocks as usize == 0usize { return; }
+    var first = blocks;
+    while (first as &Block).prev as usize != 0usize {
+      let newer = first;
+      first = (newer as &Block).prev;
+      RawBlocks.release(newer as *u8);
+    }
+    blocks = first;
+    nblocks = 1usize;
+    top = first as usize + mem.sizeof[Block]();
+    limit = top + firstRoom;
+  }
+
+  // Its death: every value that needs it finalized, newest first, each header
+  // taken off the list before its value's thunk runs, so a value allocated by
+  // a 'final' during teardown is finalized too, and none twice; then every
+  // block freed. The blocks all stay until the last finalizer has run.
+  fn teardown(self: &mut) {
+    self.finalizeAll();
     while blocks as usize != 0usize {
       let blk = blocks;
       blocks = (blk as &Block).prev;
@@ -426,6 +468,20 @@ pub struct Arena is Default, NoLoanMut, GcTraceElements {
       core.noteTraced(at, mem.typeRecord[T]());
     }
     at as &mut T
+  }
+
+  // Ends every value in the arena and gives the arena back empty, ready to be
+  // filled again: the values finalized newest first as at its death, all its
+  // blocks but the first freed (the first, rewound), so a peak is not held for good.
+  // A reference into the arena must not be used afterwards. The arena is taken
+  // by value and returned ('a = a.reset()'), which the checker reads as it reads
+  // 'consume(a)' and 'a = Arena()': refused while an allocation held in a local,
+  // bare or inside a value built around it, is still to be used
+  // (test/cases/region/region_flow_arena_freeze.cone). A 'self: &mut' form would
+  // not be refused, since an allocation loans nothing of the arena.
+  pub fn reset(self: Arena) Arena {
+    coreOf(self.region).reset();
+    self
   }
 
   // How a collector reaches what the arena holds, whatever the types: the values

@@ -64,11 +64,11 @@
 // on the maximum, so maxima are recorded, never only means. They print when
 // the run ends (Config.printStats) and are 'host.stats' to the world.
 //
-// THE SCRATCH ARENA. Each frame the runner makes an arena (the arena package),
-// hands it to simulate and draw, and lets it die at the end of the frame:
-// that is its reset, and the borrow rules keep anything allocated in it from
-// outliving the frame. (An arena has no reset that keeps its blocks, so each
-// frame allocates its first block, Config.scratchBytes, and frees it.)
+// THE SCRATCH ARENA. The runner makes one arena (the arena package) for the run,
+// hands it to simulate and draw, and resets it at the end of each frame
+// ('scratch = scratch.reset()'): the frame's values are finalized and the arena
+// keeps its first block, Config.scratchBytes, so a frame that needs more does
+// not hold that peak for good, and no frame allocates its first block again.
 //
 // THE FIRST FRAME runs no step: the clock is read as it begins, so nothing has
 // elapsed, and it draws the world as start left it. Time spent in start is
@@ -153,8 +153,8 @@ pub mod trait World {
     if !host.isOpen() { return 1i32; }
     if !start(&mut host) { return 1i32; }
     var net = NetQueues();   // the network slot's queues, the loop's own
+    var scratch = Arena.withRoom(host.scratchBytes());   // one arena for the run, reset at each frame's end
     while host.beginFrame() {
-      var scratch = Arena.withRoom(host.scratchBytes());
 
       host.beginPhase(PHASE_INPUT);
       var e = sdl.Event();
@@ -191,6 +191,7 @@ pub mod trait World {
       host.endPhase(PHASE_PRESENT);
 
       host.endFrame();
+      scratch = scratch.reset();   // the frame's values end here; the arena keeps its first block
     }
     let code = quit(&mut host);
     host.finish();

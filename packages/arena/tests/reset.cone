@@ -1,0 +1,184 @@
+// 'a = a.reset()': every value in the arena ends, newest first, exactly once, and
+// the arena comes back empty and usable. Expected logs worked out by hand:
+// - a value's death notes its digit into 'log' (log = log * 10 + n), so the
+//   digits read in the order of death;
+// - after a reset one block is held, however many the run took: a block holds
+//   4096 bytes of room after its 8-byte header, so 1000 i64 (8000 bytes) take
+//   three blocks;
+// - what was finalized by the reset is not finalized again at the arena's death.
+
+mod reset;
+
+import testing use *;
+import arena use *;
+import collections use *;
+
+var @threadlocal log = 0i64;
+fn note(d: i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { note(n); }
+}
+
+// A node that needs no finalizing
+struct Node { pub v: i64; pub next: *Node; }
+
+// Reset finalizes newest first, once, and the arena works afterwards; the
+// values after the reset are finalized at death, the ones before are not again
+fn finalizes() {
+  var a = Arena();
+  a.alloc(Fin(1));
+  a.alloc(Fin(2));
+  a.alloc(Fin(3));
+  expectUInt(u64.from(a.finalizers()), 3, "three headers before the reset");
+  a = a.reset();
+  expectInt(log, 321, "newest first on reset");
+  expectUInt(u64.from(a.finalizers()), 0, "no headers after the reset");
+  a.alloc(Fin(4));
+  a.alloc(Fin(5));
+}
+
+// Its death allocates into the arena it lives in during the reset: that value
+// is finalized in the same reset
+struct Spawner {
+  pub n: i64;
+  pub home: &mut Arena;
+  fn final(self: &uni) {
+    note(n);
+    home.alloc(Fin(n + 1i64));
+  }
+}
+
+fn spawns() {
+  var a = Arena();
+  a.alloc(Fin(1));
+  a.alloc(Spawner(2, &mut a));
+  a = a.reset();
+  expectInt(log, 231, "Spawner, then the Fin it made, then the older Fin");
+  log = 0;
+  a.alloc(Fin(7));
+}
+
+// A reset of an empty arena, and of one with no block, does nothing wrong;
+// two resets in a row are fine
+fn empties() {
+  var a = Arena();
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 0, "no block still");
+  a.alloc(Node(1, null));
+  a = a.reset();
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 1, "the one block is kept");
+  let n = a.alloc(Node(9, null));
+  expectInt(n.v, 9, "usable");
+}
+
+// An allocation whose last use comes before the reset: accepted (the reject
+// side is test/cases/region/region_flow_arena_freeze.cone)
+fn lastUseBefore() {
+  var a = Arena();
+  let r = a.alloc(Node(5, null));
+  expectInt(r.v, 5, "read before the reset");
+  a = a.reset();
+  let s = a.alloc(Node(6, null));
+  expectInt(s.v, 6, "a new allocation after it");
+}
+
+fn fillNodes(a: &mut Arena, count: i64) i64 {
+  var prev: *Node = null;
+  var i = 0i64;
+  var sum = 0i64;
+  while i < count {
+    let n = a.alloc(Node(i, prev));
+    prev = n as *Node;
+    sum = sum + n.v;
+    i = i + 1i64;
+  }
+  sum
+}
+
+// A run that took many blocks holds one afterwards, and the arena fills again
+fn oneBlock() {
+  var a = Arena();
+  fillNodes(&mut a, 1000);
+  expectUInt(u64.from(a.blockCount()), 4, "16000 bytes of nodes take four blocks");
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 1, "one block after the reset");
+  fillNodes(&mut a, 100);
+  expectUInt(u64.from(a.blockCount()), 1, "800 bytes fit the kept block");
+  fillNodes(&mut a, 900);
+  expectUInt(u64.from(a.blockCount()), 4, "and it grows again as before");
+}
+
+// The block kept is the first, with the room it was made with: a scratch made
+// with room for 20000 bytes takes 16000 bytes of nodes in that one block, before
+// and after a run that went past it
+fn keepsFirstRoom() {
+  var a = Arena.withRoom(20000usize);
+  fillNodes(&mut a, 1000);
+  expectUInt(u64.from(a.blockCount()), 1, "16000 bytes fit the first block");
+  fillNodes(&mut a, 2000);
+  expectInt(if a.blockCount() > 1usize {1i64} else {0i64}, 1, "a peak takes more blocks");
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 1, "back to the first");
+  fillNodes(&mut a, 1000);
+  expectUInt(u64.from(a.blockCount()), 1, "which holds its whole room again");
+}
+
+// A value larger than a block, then a reset: one block (the big one) is kept
+fn bigThenReset() {
+  var a = Arena();
+  a.alloc(Array[i64, 3000]() <- fill 1i64);
+  expectUInt(u64.from(a.blockCount()), 1, "a value larger than a block takes its own");
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 1, "kept");
+  let arr = a.alloc(Array[i64, 3000]() <- fill 2i64);
+  expectInt(arr[2999], 2, "the kept block holds it again");
+  expectUInt(u64.from(a.blockCount()), 1, "with no new block");
+}
+
+// A loop of 1,000 runs, a few thousand nodes each: the blocks held stay one
+fn steady() {
+  var a = Arena();
+  var run = 0i64;
+  var worst = 0usize;
+  var total = 0i64;
+  while run < 1000i64 {
+    total = total + fillNodes(&mut a, 3000);
+    a = a.reset();
+    if a.blockCount() > worst { worst = a.blockCount(); }
+    run = run + 1i64;
+  }
+  expectUInt(u64.from(worst), 1, "one block after every one of 1000 resets");
+  expectInt(total, 4498500000, "1000 runs of the sum 0..2999");
+}
+
+// A list made in the arena draws from it; reset gives its room back too, and
+// the list is not used after (the checker refuses it)
+fn listInArena() {
+  var a = Arena();
+  let l = new a[List[i64]](16);
+  var i = 0i64;
+  while i < 5000i64 { l.push(i); i = i + 1i64; }
+  expectUInt(u64.from(l.len()), 5000, "filled");
+  a = a.reset();
+  expectUInt(u64.from(a.blockCount()), 1, "one block kept");
+}
+
+fn main() i32 {
+  finalizes();
+  expectInt(log, 32154, "the two after the reset die with the arena, the three are not finalized again");
+  log = 0;
+  spawns();
+  expectInt(log, 7, "the Fin after the reset dies at the arena's death");
+  log = 0;
+  empties();
+  lastUseBefore();
+  oneBlock();
+  keepsFirstRoom();
+  bigThenReset();
+  steady();
+  listInArena();
+  done()
+}

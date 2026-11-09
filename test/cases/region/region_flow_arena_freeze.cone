@@ -11,6 +11,7 @@
 mod region_flow_arena_freeze;
 
 import arena use *;
+import collections use *;
 
 struct Pt { pub x: i64; pub y: i64; }
 struct Holder { pub r: &mut Pt; }
@@ -69,4 +70,41 @@ fn endedWhileHeld() i64 {
     h = Holder(a.alloc(Pt(1, 2)));
   }
   h.r.x
+}
+
+// Reset ends every value in the arena, as 'a = Arena()' does: refused while an
+// allocation is still to be used. 'a = a.reset()' takes the arena by value.
+fn resetDirect() i64 {
+  var a = Arena();
+  let r = a.alloc(Pt(1, 2));
+  a = a.reset();                //~ ErrorFrozen:7 "may not be moved"
+                                //~^ ErrorFrozen:3 "may not be changed"
+  r.x
+}
+
+// Through a struct holding an allocation
+fn resetHeld() i64 {
+  var a = Arena();
+  let h = Holder(a.alloc(Pt(1, 2)));
+  a = a.reset();                //~ ErrorFrozen:7 "may not be moved"
+                                //~^ ErrorFrozen:3 "may not be changed"
+  h.r.x
+}
+
+// Through a List of allocations
+fn resetListed() i64 {
+  var a = Arena();
+  var l = List[&mut Pt]();
+  l.push(a.alloc(Pt(1, 2)));
+  a = a.reset();                //~ ErrorFrozen:7 "may not be moved"
+                                //~^ ErrorFrozen:3 "may not be changed"
+  l[0usize].x
+}
+
+// A function handed the arena ('&mut Arena') cannot reset it: that would move
+// the arena out through a borrow, and so end values its caller still holds
+fn resetThroughBorrow(a: &mut Arena) i64 {
+  let r = a.alloc(Pt(1, 2));
+  let b = a.reset();            //~ ErrorMoveOut:11 "May not move a value out through a borrowed reference"
+  r.x
 }
