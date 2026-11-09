@@ -1066,7 +1066,7 @@ struct Extra {
   pub retTail: *Seg;
   pub pool: *Seg;
   pub poolBytes: u32;      // the bytes of the segments in the pool
-  pub spareBytes: u32;     // the bytes of the segments in the spare places (atomic: the consumer adds what it puts, a sender takes its away)
+  pub spareBytes: Atomic[u32]; // the bytes of the segments in the spare places (the consumer adds what it puts, a sender takes its away)
   pub small: u32;          // the slots of a small segment, and the floor in bytes, for this mailbox's slot size: worked out once, for atRest
   pub floor: u32;
   pub prevHigh: u32;       // the high-water mark the previous rest left (atRest)
@@ -1172,7 +1172,7 @@ pub fn liveSegmentBytes() usize {
 // two counts are read at different moments
 pub fn mailboxDepth[M: Sendable](mb: &opaq Mailbox[M]) u64 {
   let h = mb as *Header;
-  let t = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask;
+  let t = (*h).tail.loadOrdered(MemOrder.Relaxed) & posMask;
   let hd = mem.atomicLoad[u64](&(*h).head as *u64, MemOrder.Relaxed);
   if t > hd {t - hd} else {0u64}
 }
@@ -1186,20 +1186,20 @@ pub fn mailboxHighWater[M: Sendable](mb: &opaq Mailbox[M]) u64 {
 // How many bytes of segments the mailbox holds now: the queue's and the ones
 // it keeps (0 before the first send)
 pub fn mailboxBytes[M: Sendable](mb: &opaq Mailbox[M]) u32 {
-  mem.atomicLoad[u32](&(*(mb as *Header)).bytes as *u32, MemOrder.Relaxed)
+  (*(mb as *Header)).bytes.loadOrdered(MemOrder.Relaxed)
 }
 
 // Set how many queued messages are too many for this mailbox (noLimit: never,
 // as it starts)
 pub fn setMailboxLimit[M: Sendable](mb: &opaq Mailbox[M], limit: u32) {
-  mem.atomicStore[u32](&(*(mb as *Header)).limit as *u32, limit, MemOrder.Relaxed);
+  (*(mb as *Header)).limit.storeOrdered(limit, MemOrder.Relaxed);
 }
 
 // Whether the mailbox is too full: a sender muting itself would ask this
 // before it sends. With no muting yet, nothing does, and a mailbox with no
 // limit grows without one
 pub fn mailboxTooFull[M: Sendable](mb: &opaq Mailbox[M]) bool {
-  mailboxDepth[M](mb) >= u64.from(mem.atomicLoad[u32](&(*(mb as *Header)).limit as *u32, MemOrder.Relaxed))
+  mailboxDepth[M](mb) >= u64.from((*(mb as *Header)).limit.loadOrdered(MemOrder.Relaxed))
 }
 
 // ---- A TEST HOOK: a sender held between its claim and its publication ----
@@ -1259,7 +1259,7 @@ fn keepFloor(h: *Header) usize {
 
 // How many messages the mailbox holds now, claimed and not yet taken
 fn depthOf(h: *Header) u64 {
-  let t = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask;
+  let t = (*h).tail.loadOrdered(MemOrder.Relaxed) & posMask;
   let hd = mem.atomicLoad[u64](&(*h).head as *u64, MemOrder.Relaxed);
   if t > hd {t - hd} else {0u64}
 }
@@ -1300,7 +1300,7 @@ fn segAlloc(h: *Header, count: u32) *Seg {
   segAllocs.addOrdered(1u64, MemOrder.Relaxed);
   segsLive.addOrdered(1usize, MemOrder.Relaxed);
   segBytesLive.addOrdered(bytes, MemOrder.Relaxed);
-  mem.atomicAdd[u32](&(*h).bytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+  (*h).bytes.addOrdered(u32.from(bytes), MemOrder.Relaxed);
   s
 }
 
@@ -1309,7 +1309,7 @@ fn segFree(h: *Header, s: *Seg) {
   libc.free(s as *u8);
   segsLive.subOrdered(1usize, MemOrder.Relaxed);
   segBytesLive.subOrdered(bytes, MemOrder.Relaxed);
-  mem.atomicSub[u32](&(*h).bytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+  (*h).bytes.subOrdered(u32.from(bytes), MemOrder.Relaxed);
 }
 
 // Where position pos lies in segment s
@@ -1347,7 +1347,7 @@ fn linkAfter(h: *Header, s: *Seg) *Seg {
       i = i + 1usize;
     }
     if fresh as usize != 0usize {
-      mem.atomicSub[u32](&(*e).spareBytes as *u32, u32.from(segBytesOf(h, (*fresh).count)), MemOrder.Relaxed);
+      (*e).spareBytes.subOrdered(u32.from(segBytesOf(h, (*fresh).count)), MemOrder.Relaxed);
     }
   }
   if fresh as usize == 0usize {
@@ -1374,7 +1374,7 @@ fn keepSpare(h: *Header, x: *Seg) {
     // counted before it is put, so that a sender taking it at once takes the
     // count away from a count that has it
     let bytes = u32.from(segBytesOf(h, (*x).count));
-    mem.atomicAdd[u32](&(*e).spareBytes as *u32, bytes, MemOrder.Relaxed);
+    (*e).spareBytes.addOrdered(bytes, MemOrder.Relaxed);
     var i = 0usize;
     while i < spareCount {
       if mem.atomicLoad[*Seg](spareAt(e, i), MemOrder.Relaxed) as usize == 0usize {
@@ -1388,7 +1388,7 @@ fn keepSpare(h: *Header, x: *Seg) {
       }
       i = i + 1usize;
     }
-    mem.atomicSub[u32](&(*e).spareBytes as *u32, bytes, MemOrder.Relaxed);
+    (*e).spareBytes.subOrdered(bytes, MemOrder.Relaxed);
   }
   segFree(h, x);
 }
@@ -1476,7 +1476,7 @@ fn claim(h: *Header) Claim {
   // sequentially consistent: the claim comes before the sender reads the hint
   // and the consumer's segment, and a segment's retiring (retire) moves them
   // before it notes the claims
-  let prev = mem.atomicAdd[u64](&(*h).tail as *u64, 1u64, MemOrder.SeqCst);
+  let prev = (*h).tail.add(1u64);
   let pos = prev & posMask;
   Claim(slotFor(h, pos), pos, (prev & idleBit) != 0u64)
 }
@@ -1510,7 +1510,7 @@ fn wakeAfter(h: *Header, c: Claim, waited: bool) bool {
   if !c.idle {
     return false;
   }
-  (mem.atomicAnd[u64](&(*h).tail as *u64, posMask, MemOrder.AcqRel) & idleBit) != 0u64
+  ((*h).tail.bitAndOrdered(posMask, MemOrder.AcqRel) & idleBit) != 0u64
 }
 
 // ---- the consumer's side: only the worker running the actor ----
@@ -1562,7 +1562,7 @@ fn retire(h: *Header, x: *Seg, nx: *Seg) {
     seen, moved = mem.atomicCompareSwap[*Seg](&(*h).hint as **Seg, x, nx,
       MemOrder.SeqCst, MemOrder.SeqCst);
   }
-  *retMark(x) = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.SeqCst) & posMask;
+  *retMark(x) = (*h).tail.load() & posMask;
   *retNext(x) = nullSeg();
   var e = (*h).extra;
   if e as usize == 0usize {
@@ -1830,7 +1830,7 @@ fn restFloor(h: *Header, e: *Extra, cur: *Seg) usize {
 
 // What a mailbox keeps: the pool's and the spare places' bytes
 fn keptBytes(e: *Extra) usize {
-  usize.from((*e).poolBytes) + usize.from(mem.atomicLoad[u32](&(*e).spareBytes as *u32, MemOrder.Relaxed))
+  usize.from((*e).poolBytes) + usize.from((*e).spareBytes.loadOrdered(MemOrder.Relaxed))
 }
 
 // Free what is kept (the spare places and the pool) beyond 'limit' bytes; with
@@ -1846,7 +1846,7 @@ fn trimKept(h: *Header, e: *Extra, limit: usize, smallOnly: bool) {
       let y = mem.atomicSwap[*Seg](spareAt(e, i), nullSeg(), MemOrder.AcqRel);
       if y as usize != 0usize {
         let bytes = segBytesOf(h, (*y).count);
-        mem.atomicSub[u32](&(*e).spareBytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+        (*e).spareBytes.subOrdered(u32.from(bytes), MemOrder.Relaxed);
         if (!smallOnly || (*y).count <= small) && kept + bytes <= limit {
           kept = kept + bytes;
           keepSpare(h, y);
@@ -1904,8 +1904,7 @@ fn shrinkChain(h: *Header) {
     let end = (*x).base + u64.from((*x).count);
     var seen = 0u64;
     var claimed = false;
-    seen, claimed = mem.atomicCompareSwap[u64](&(*h).tail as *u64, head, end,
-      MemOrder.SeqCst, MemOrder.Relaxed);
+    seen, claimed = (*h).tail.compareSwapOrdered(head, end, MemOrder.SeqCst, MemOrder.Relaxed);
     if !claimed {
       return;
     }
@@ -1957,14 +1956,13 @@ fn linkSmall(h: *Header, s: *Seg) *Seg {
 // The worker never waits for the sender. A slot in a segment not yet linked
 // has no word to mark, so the segment is linked here, as a sender would.
 fn mailMarkIdle(h: *Header) bool {
-  if mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) == (*h).head {
+  if (*h).tail.loadOrdered(MemOrder.Relaxed) == (*h).head {
     atRest(h);
   }
   let head = (*h).head;
   var seen = 0u64;
   var marked = false;
-  seen, marked = mem.atomicCompareSwap[u64](&(*h).tail as *u64, head, head | idleBit,
-    MemOrder.AcqRel, MemOrder.Relaxed);
+  seen, marked = (*h).tail.compareSwapOrdered(head, head | idleBit, MemOrder.AcqRel, MemOrder.Relaxed);
   if marked {
     return true;
   }
@@ -2010,16 +2008,20 @@ fn mailMarkIdle(h: *Header) bool {
 // name it, read it or write it; the scheduler reaches an actor only through
 // it. It holds raw pointers, which the thread check refuses; Mailbox, which
 // holds it, declares Sendable, since the runtime orders every hand-off.
+// The fields other threads touch with no plain access by the owner are
+// 'Atomic' fields (tail, bytes, limit), each used with the ordering its site
+// names; 'head', 'extra' and 'high' are the running worker's, written plainly
+// by it and atomically by others, so they stay plain integers and pointers.
 struct Header {
-  pub tail: u64;                          // senders': the positions claimed, one per send; bit 63, idle (the mailbox's ring, above)
+  pub tail: Atomic[u64];                  // senders': the positions claimed, one per send; bit 63, idle (the mailbox's ring, above)
   pub head: u64;                          // the running worker's: the position of the next message to take
   pub cur: *Seg;                          // ... the segment holding it (senders read it)
   pub hint: *Seg;                         // senders': the last segment one used (atomic)
   pub extra: *Extra;                      // the running worker's: the drained segments and the spares, once there are any (atomic)
   pub stride: u32;                        // the size of a slot, in bytes
-  pub bytes: u32;                         // bytes of segments this mailbox holds now (atomic)
+  pub bytes: Atomic[u32];                 // bytes of segments this mailbox holds now
   pub high: u32;                          // most messages queued at once, as the worker running the actor saw it at the start of a turn
-  pub limit: u32;                         // how many queued is too many (noLimit: never)
+  pub limit: Atomic[u32];                 // how many queued is too many (noLimit: never)
   pub link: *Header;                      // the next actor on the inject queue
   pub run: &fn(h: *Header, limit: u32) u32; // runBatch[S, M]
   pub release: &fn(h: *Header);            // releaseHold[M]
@@ -2149,8 +2151,8 @@ pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &uni S, m: *M)) *S {
   }
   let payload = payloadBytes[M]();
   var f = dispatch;
-  var h = Header(tail: 0u64, head: 0u64, cur: nullSeg(), hint: nullSeg(),
-    extra: nullExtra(), stride: u32.from(slotHead + payload), bytes: 0u32, high: 0u32, limit: noLimit,
+  var h = Header(tail: Atomic[u64].of(0u64), head: 0u64, cur: nullSeg(), hint: nullSeg(),
+    extra: nullExtra(), stride: u32.from(slotHead + payload), bytes: Atomic[u32].of(0u32), high: 0u32, limit: Atomic[u32].of(noLimit),
     link: nullHeader(), run: &runBatch[S, M], release: &releaseHold[M],
     finalize: &finalizeState[S, M], dispatch: *(&mut f as **u8));
   // No segment: an actor that is never sent a message costs no more than its
@@ -2242,7 +2244,7 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
 // carrier's position (the waiting mark) is woken by the one publication that can
 // wake it. The pair may straddle two segments (see THE GROUP TRAVELS).
 fn sendGrouped[M: Sendable](h: *Header, msg: M, gp: usize) {
-  let prev = mem.atomicAdd[u64](&(*h).tail as *u64, 2u64, MemOrder.SeqCst);
+  let prev = (*h).tail.add(2u64);
   let pos = prev & posMask;
   let c1 = Claim(slotFor(h, pos), pos, (prev & idleBit) != 0u64);
   let c2 = Claim(slotFor(h, pos + 1u64), pos + 1u64, false);
@@ -2513,7 +2515,7 @@ fn runInGroup[S, M: Sendable](f: &fn(s: &uni S, m: *M), h: *Header, slot: *u8, m
 // The mailbox's depth, as the worker starting a turn sees it: the high-water
 // mark (MAILBOX LIMIT, above)
 fn noteDepth(h: *Header) {
-  let depth = (mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask) - (*h).head;
+  let depth = ((*h).tail.loadOrdered(MemOrder.Relaxed) & posMask) - (*h).head;
   if depth > u64.from((*h).high) {
     if depth > u64.from(noLimit) {
       (*h).high = noLimit;
@@ -4080,14 +4082,16 @@ pub const noWorker = 0xFFFFFFFFu32;
 
 pub const defaultBatch = 100u32;
 
-// One worker: an OS thread with its run queue
+// One worker: an OS thread with its run queue. Its run queue's head and tail,
+// the counts of activations begun and ended, and its park word are 'Atomic'
+// fields, each used with the ordering its site names
 struct Worker {
   pub before: Array[u8, 64];
-  pub head: u64;                // stealers' and owner's: the next position to take
+  pub head: Atomic[u64];        // stealers' and owner's: the next position to take
   pub gap: Array[u8, 56];
-  pub tail: u64;                // owner's: the next position to fill
-  pub started: u64;             // activations this worker began (SeqCst stores)
-  pub ended: u64;               // activations this worker ended (SeqCst stores)
+  pub tail: Atomic[u64];        // owner's: the next position to fill
+  pub started: Atomic[u64];     // activations this worker began (SeqCst stores)
+  pub ended: Atomic[u64];       // activations this worker ended (SeqCst stores)
   pub gap2: Array[u8, 40];
   pub sched: *Sched;
   pub index: u32;
@@ -4111,7 +4115,10 @@ const parkRunning = 0u32;
 const parkParked = 1u32;
 const parkNotified = 2u32;
 
-// The runtime: its workers, the inject queue, and how workers sleep
+// The runtime: its workers, the inject queue, and how workers sleep. Its fields
+// touched across threads are 'Atomic' fields (sleepers, searching, quiet, done,
+// stopping, spinning, injectLen, extStarted, the test hook's parkHold words,
+// stealRot, liveScheduled), each used with the ordering its site names
 struct Sched {
   pub before: Array[u8, 64];
   pub sleepers: Atomic[u32];    // workers in the idle path, asleep or about to be
@@ -4124,25 +4131,25 @@ struct Sched {
   pub lock: sync.Mutex;         // guards the inject queue's list
   pub injectHead: *Header;
   pub injectTail: *Header;
-  pub injectLen: u64;           // how many are in it (atomic)
-  pub extStarted: u64;          // activations begun off the workers (atomic)
+  pub injectLen: Atomic[u64];   // how many are in it
+  pub extStarted: Atomic[u64];  // activations begun off the workers
   pub gap2: Array[u8, 32];
   pub nworkers: u32;
   pub batch: u32;
   pub spinCap: u32;             // how many workers may spin at once (Options.spinCap)
   pub injectEvery: u32;         // every this many turns a worker looks in the inject queue first (Options.injectEvery)
   pub wakeOnPush: u32;          // 1: a push to one's own queue calls notify even when the queue was empty (the header, THE SEARCH INVARIANT, duty 3; Options.wakeOnPush)
-  pub parkHold: u32;            // the test hook holdNextPark's state (atomic): 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
+  pub parkHold: Atomic[u32];    // the test hook holdNextPark's state: 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
   pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (Options.spinMicros); 0: no spin
-  pub parkHoldAt: u32;          // where the test hook holds: 1 before the worker publishes itself, 4 before its look, 2 before its wait, 3 before it leaves having seen work
-  pub parkHeldIdx: u32;         // the index of the worker the test hook holds
+  pub parkHoldAt: Atomic[u32];  // where the test hook holds: 1 before the worker publishes itself, 4 before its look, 2 before its wait, 3 before it leaves having seen work
+  pub parkHeldIdx: Atomic[u32]; // the index of the worker the test hook holds
   pub parkedWords: u32;         // how many words the sleepers' bitmap has, 64 workers each
   pub parked: usize;            // the sleepers' bitmap (THE PARK WORD): word i at parked + 64 i, a cache line each (atomic)
   pub workers: *Worker;
   pub threads: *thread.Thread[u32];
   pub extTasks: TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
-  pub stealRot: u32;            // where the next steal of a piece starts looking (atomic)
-  pub liveScheduled: u64;       // loops begun with parallelRangeThen not yet finished (atomic)
+  pub stealRot: Atomic[u32];    // where the next steal of a piece starts looking
+  pub liveScheduled: Atomic[u64]; // loops begun with parallelRangeThen not yet finished
 }
 
 // The running runtime, or 0: before the first actor, and once stopped. Every
@@ -4162,12 +4169,11 @@ fn ringAt(w: *Worker, pos: u64) **Header {
   (&(*w).ring as **Header) + usize.from(pos & queueMask)
 }
 
-fn ld32(p: *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst)}
 fn ld64(p: *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst)}
 
 // Add one to a count only its worker writes, which stats() reads meanwhile
-fn tally(p: *u64, n: u64) {
-  mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed) + n, MemOrder.Relaxed);
+fn tally(c: &Atomic[u64], n: u64) {
+  c.storeOrdered(c.loadOrdered(MemOrder.Relaxed) + n, MemOrder.Relaxed);
 }
 
 // An actor has become runnable, its mailbox having left idle: count the
@@ -4185,11 +4191,11 @@ fn schedule(h: *Header) {
   }
   let w = me as *Worker;
   if w as usize != 0usize && (*w).sched as usize == s as usize {
-    let startedp = &(*w).started as *u64;
-    mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
+    let startedp = &(*w).started;
+    startedp.store(startedp.loadOrdered(MemOrder.Relaxed) + 1u64);
     localPush(w, h);
   } else {
-    mem.atomicAdd[u64](&(*s).extStarted as *u64, 1u64, MemOrder.SeqCst);
+    (*s).extStarted.add(1u64);
     (*h).link = nullHeader();
     injectPush(s, h, h, 1u64);
   }
@@ -4199,15 +4205,15 @@ fn schedule(h: *Header) {
 // full. Wake a sleeping worker (notify) when the queue held another already,
 // or, by the wake rule (Options.wakeOnPush), even when it was empty.
 fn localPush(w: *Worker, h: *Header) {
-  let headp = &(*w).head as *u64;
-  let tailp = &(*w).tail as *u64;
+  let headp = &(*w).head;
+  let tailp = &(*w).tail;
   while true {
-    let t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed);
-    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
+    let t = tailp.loadOrdered(MemOrder.Relaxed);
+    let hd = headp.loadOrdered(MemOrder.Acquire);
     if t - hd < queueCap {
       mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed);
       if t != hd {
-        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
+        tailp.storeOrdered(t + 1u64, MemOrder.Release);
         notify((*w).sched);
       } else if (*(*w).sched).wakeOnPush != 0u32 {
         // Into an empty queue (THE SEARCH INVARIANT, duty 3). Sequentially
@@ -4215,10 +4221,10 @@ fn localPush(w: *Worker, h: *Header) {
         // searchers comes after this push is visible to every worker (as a
         // parking worker's publication precedes its look in idle): else
         // a push and a worker's park could each miss the other
-        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.SeqCst);
+        tailp.store(t + 1u64);
         notify((*w).sched);
       } else {
-        mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release);
+        tailp.storeOrdered(t + 1u64, MemOrder.Release);
       }
       return;
     }
@@ -4236,8 +4242,7 @@ fn overflow(w: *Worker, h: *Header, hd: u64, t: u64) bool {
   // and only this thread, their queue's owner, writes their slots
   var seen = 0u64;
   var taken = false;
-  seen, taken = mem.atomicCompareSwap[u64](&(*w).head as *u64, hd, hd + n,
-    MemOrder.AcqRel, MemOrder.Relaxed);
+  seen, taken = (*w).head.compareSwapOrdered(hd, hd + n, MemOrder.AcqRel, MemOrder.Relaxed);
   if !taken {
     return false;
   }
@@ -4258,19 +4263,18 @@ fn overflow(w: *Worker, h: *Header, hd: u64, t: u64) bool {
 
 // Take the actor at the front of w's queue, by its owner or a stealer, or 0
 fn queuePop(w: *Worker) *Header {
-  let headp = &(*w).head as *u64;
-  let tailp = &(*w).tail as *u64;
+  let headp = &(*w).head;
+  let tailp = &(*w).tail;
   while true {
-    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
-    let t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+    let hd = headp.loadOrdered(MemOrder.Acquire);
+    let t = tailp.loadOrdered(MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
     let h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed);
     var seen = 0u64;
     var taken = false;
-    seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + 1u64,
-      MemOrder.AcqRel, MemOrder.Relaxed);
+    seen, taken = headp.compareSwapOrdered(hd, hd + 1u64, MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
       return h;
     }
@@ -4281,12 +4285,12 @@ fn queuePop(w: *Worker) *Header {
 // Steal half of v's queue into w's own, which is empty: one of them to run,
 // or 0
 fn stealFrom(w: *Worker, v: *Worker) *Header {
-  let headp = &(*v).head as *u64;
-  let tailp = &(*v).tail as *u64;
-  let ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed);
+  let headp = &(*v).head;
+  let tailp = &(*v).tail;
+  let ot = (*w).tail.loadOrdered(MemOrder.Relaxed);
   while true {
-    let hd = mem.atomicLoad[u64](headp, MemOrder.Acquire);
-    let t = mem.atomicLoad[u64](tailp, MemOrder.Acquire);
+    let hd = headp.loadOrdered(MemOrder.Acquire);
+    let t = tailp.loadOrdered(MemOrder.Acquire);
     if hd >= t {
       return nullHeader();
     }
@@ -4300,14 +4304,13 @@ fn stealFrom(w: *Worker, v: *Worker) *Header {
     }
     var seen = 0u64;
     var taken = false;
-    seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + k,
-      MemOrder.AcqRel, MemOrder.Relaxed);
+    seen, taken = headp.compareSwapOrdered(hd, hd + k, MemOrder.AcqRel, MemOrder.Relaxed);
     if taken {
       let run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed);
       if k > 1u64 {
-        mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release);
+        (*w).tail.storeOrdered(ot + k - 1u64, MemOrder.Release);
       }
-      tally(&(*(*w).stat).steals as *u64, 1u64);
+      tally(&(*(*w).stat).steals, 1u64);
       return run;
     }
   }
@@ -4325,15 +4328,15 @@ fn injectPush(s: *Sched, first: *Header, last: *Header, count: u64) {
   }
   (*s).injectTail = last;
   (*s).lock.unlock();
-  mem.atomicAdd[u64](&(*s).injectLen as *u64, count, MemOrder.SeqCst);
+  (*s).injectLen.add(count);
   notify(s);
 }
 
 // Take an actor from the inject queue, and move a few more onto w's own
 // queue: the one to run, or 0
 fn injectPop(s: *Sched, w: *Worker) *Header {
-  let lenp = &(*s).injectLen as *u64;
-  if mem.atomicLoad[u64](lenp, MemOrder.SeqCst) == 0u64 {
+  let lenp = &(*s).injectLen;
+  if lenp.load() == 0u64 {
     return nullHeader();
   }
   (*s).lock.lock();
@@ -4343,7 +4346,7 @@ fn injectPop(s: *Sched, w: *Worker) *Header {
     return nullHeader();
   }
   // Take the first, and up to a share of the rest for this worker's queue
-  let len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed);
+  let len = lenp.loadOrdered(MemOrder.Relaxed);
   var extra = len / u64.from((*s).nworkers);
   if extra > 32u64 {
     extra = 32u64;
@@ -4359,7 +4362,7 @@ fn injectPop(s: *Sched, w: *Worker) *Header {
     (*s).injectTail = nullHeader();
   }
   (*last).link = nullHeader();
-  mem.atomicSub[u64](lenp, k, MemOrder.SeqCst);
+  lenp.sub(k);
   (*s).lock.unlock();
   // The rest to this worker's own queue
   var next = (*first).link;
@@ -4376,13 +4379,13 @@ fn injectPop(s: *Sched, w: *Worker) *Header {
 // Wake one sleeping worker to look for work, unless one is looking already:
 // a worker spinning (THE SPIN), or one woken earlier and not yet done looking
 fn notify(s: *Sched) {
-  if ld32(&(*s).sleepers as *u32) == 0u32 {
+  if (*s).sleepers.load() == 0u32 {
     return;
   }
-  if ld32(&(*s).spinning as *u32) != 0u32 {
+  if (*s).spinning.load() != 0u32 {
     return;
   }
-  if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst) != 0u32 {
+  if (*s).searching.swap(1u32) != 0u32 {
     return;
   }
   // Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be
@@ -4402,8 +4405,7 @@ fn notify(s: *Sched) {
         let w = workerAt(s, i);
         var seen = 0u32;
         var marked = false;
-        seen, marked = mem.atomicCompareSwap[u32](&(*w).park as *u32, parkParked, parkNotified,
-          MemOrder.SeqCst, MemOrder.SeqCst);
+        seen, marked = (*w).park.compareSwap(parkParked, parkNotified);
         if marked {
           sync.futexWake(&(*w).park);
           return;
@@ -4434,8 +4436,8 @@ fn parkedBit(w: *Worker) u64 {
 fn foundAway(w: *Worker) {
   let s = (*w).sched;
   (*w).woken = 0u32;
-  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
-  if ld64(&(*s).injectLen as *u64) != 0u64 || ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
+  (*s).searching.store(0u32);
+  if (*s).injectLen.load() != 0u64 || (*w).tail.load() != (*w).head.load()
       || taskWork(s) || anyWork(s) {
     notify(s);
   }
@@ -4500,13 +4502,13 @@ fn stealActor(w: *Worker) *Header {
 
 // Whether any queue holds an actor or a loop piece, looked at without taking one
 fn anyWork(s: *Sched) bool {
-  if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
+  if (*s).injectLen.load() != 0u64 || taskWork(s) {
     return true;
   }
   var i = 0u32;
   while i < (*s).nworkers {
     let v = workerAt(s, i);
-    if ld64(&(*v).tail as *u64) != ld64(&(*v).head as *u64) {
+    if (*v).tail.load() != (*v).head.load() {
       return true;
     }
     i = i + 1u32;
@@ -4521,8 +4523,8 @@ fn runActor(w: *Worker, h: *Header) {
   let run = (*h).run;
   let n = run(h, (*s).batch);
   let stat = (*w).stat;
-  tally(&(*stat).messages as *u64, u64.from(n));
-  tally(&(*stat).activations as *u64, 1u64);
+  tally(&(*stat).messages, u64.from(n));
+  tally(&(*stat).activations, 1u64);
   // The last behaviour began a 'parallel each' and has returned: the actor is
   // neither queued again nor marked idle, but waits for its loop, its mailbox
   // taking messages meanwhile; the loop begins now, on this worker
@@ -4533,8 +4535,8 @@ fn runActor(w: *Worker, h: *Header) {
   if n < (*s).batch && mailMarkIdle(h) {
     let release = (*h).release;
     release(h);
-    let endedp = &(*w).ended as *u64;
-    mem.atomicStore[u64](endedp, mem.atomicLoad[u64](endedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
+    let endedp = &(*w).ended;
+    endedp.store(endedp.loadOrdered(MemOrder.Relaxed) + 1u64);
     return;
   }
   localPush(w, h);
@@ -4550,17 +4552,17 @@ fn spin(w: *Worker) bool {
   if (*s).spinTicks == 0u64 {
     return false;
   }
-  let np = &(*s).spinning as *u32;
-  var n = mem.atomicLoad[u32](np, MemOrder.Relaxed);
+  let np = &(*s).spinning;
+  var n = np.loadOrdered(MemOrder.Relaxed);
   var joined = false;
   while !joined {
     if n >= (*s).spinCap {
       return false;
     }
-    n, joined = mem.atomicCompareSwap[u32](np, n, n + 1u32, MemOrder.AcqRel, MemOrder.Relaxed);
+    n, joined = np.compareSwapOrdered(n, n + 1u32, MemOrder.AcqRel, MemOrder.Relaxed);
   }
   let stat = (*w).stat;
-  tally(&(*stat).spins as *u64, 1u64);
+  tally(&(*stat).spins, 1u64);
   let start = clockTicks();
   var found = false;
   while !found {
@@ -4572,11 +4574,11 @@ fn spin(w: *Worker) bool {
   }
   // Sequentially consistent: the pairing with notify's read of 'spinning'
   // (the header, NO WAKE IS LOST) needs this before idle's next look
-  mem.atomicSub[u32](np, 1u32, MemOrder.SeqCst);
+  np.sub(1u32);
   if found {
-    tally(&(*stat).spinsFound as *u64, 1u64);
+    tally(&(*stat).spinsFound, 1u64);
   } else {
-    tally(&(*stat).spinsOut as *u64, 1u64);
+    tally(&(*stat).spinsOut, 1u64);
   }
   found
 }
@@ -4609,20 +4611,20 @@ pub fn holdNextPark(at: u32 = 1u32) {
   if s as usize == 0usize {
     die("actors: holdNextPark called with no runtime running");
   }
-  mem.atomicStore[u32](&(*s).parkHoldAt as *u32, at, MemOrder.SeqCst);
-  mem.atomicStore[u32](&(*s).parkHold as *u32, 1u32, MemOrder.SeqCst);
+  (*s).parkHoldAt.store(at);
+  (*s).parkHold.store(1u32);
 }
 
 // Whether a worker is held on its way to park
 pub fn parkHeld() bool {
   let s = running.load() as *Sched;
-  s as usize != 0usize && mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.SeqCst) == 2u32
+  s as usize != 0usize && (*s).parkHold.load() == 2u32
 }
 
 // The index of the worker held
 pub fn parkHeldWorker() u32 {
   let s = running.load() as *Sched;
-  if s as usize == 0usize {noWorker} else {mem.atomicLoad[u32](&(*s).parkHeldIdx as *u32, MemOrder.SeqCst)}
+  if s as usize == 0usize {noWorker} else {(*s).parkHeldIdx.load()}
 }
 
 // Let the held worker go on, the hook armed again for 'at': the same worker
@@ -4632,8 +4634,8 @@ pub fn releaseParkTo(at: u32) {
   if s as usize == 0usize {
     return;
   }
-  mem.atomicStore[u32](&(*s).parkHoldAt as *u32, at, MemOrder.SeqCst);
-  mem.atomicStore[u32](&(*s).parkHold as *u32, 1u32, MemOrder.SeqCst);
+  (*s).parkHoldAt.store(at);
+  (*s).parkHold.store(1u32);
 }
 
 // Let the held worker go on to park, and wait until it has gone on (the hook
@@ -4643,9 +4645,9 @@ pub fn releasePark() {
   if s as usize == 0usize {
     return;
   }
-  let hp = &(*s).parkHold as *u32;
-  mem.atomicStore[u32](hp, 3u32, MemOrder.SeqCst);
-  while mem.atomicLoad[u32](hp, MemOrder.SeqCst) != 0u32 {
+  let hp = &(*s).parkHold;
+  hp.store(3u32);
+  while hp.load() != 0u32 {
     yieldProcessor();
   }
 }
@@ -4667,25 +4669,25 @@ pub fn pokeParked() {
 }
 
 fn parkHoldHere(s: *Sched, w: *Worker, at: u32) {
-  if mem.atomicLoad[u32](&(*s).parkHoldAt as *u32, MemOrder.SeqCst) != at {
+  if (*s).parkHoldAt.load() != at {
     return;
   }
-  let hp = &(*s).parkHold as *u32;
-  mem.atomicStore[u32](&(*s).parkHeldIdx as *u32, (*w).index, MemOrder.SeqCst);
+  let hp = &(*s).parkHold;
+  (*s).parkHeldIdx.store((*w).index);
   var seen = 0u32;
   var armed = false;
-  seen, armed = mem.atomicCompareSwap[u32](hp, 1u32, 2u32, MemOrder.SeqCst, MemOrder.Relaxed);
+  seen, armed = hp.compareSwapOrdered(1u32, 2u32, MemOrder.SeqCst, MemOrder.Relaxed);
   if !armed {
     return;
   }
   var st = 2u32;
   while st == 2u32 {
     yieldProcessor();
-    st = mem.atomicLoad[u32](hp, MemOrder.SeqCst);
+    st = hp.load();
   }
   // Released (3): off again. Re-armed (1, releaseParkTo): left armed
   if st == 3u32 {
-    mem.atomicStore[u32](hp, 0u32, MemOrder.SeqCst);
+    hp.store(0u32);
   }
 }
 
@@ -4696,55 +4698,55 @@ fn idle(w: *Worker) bool {
   if spin(w) {
     return true;
   }
-  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+  if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 1u32);
   }
   // Publish: the park word, the bit, the count (THE PARK WORD)
-  let pk = &(*w).park as *u32;
+  let pk = &(*w).park;
   let wp = parkedWord(s, (*w).index / 64u32);
   let bit = parkedBit(w);
-  mem.atomicStore[u32](pk, parkParked, MemOrder.SeqCst);
+  pk.store(parkParked);
   mem.atomicOr[u64](wp, bit, MemOrder.SeqCst);
-  let asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst) + 1u32;
+  let asleep = (*s).sleepers.add(1u32) + 1u32;
   assertDebugMsg(asleep <= (*s).nworkers, "actors: more sleepers counted than workers");
-  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
-  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+  (*s).searching.store(0u32);
+  if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 4u32);
   }
   if anyWork(s) {
-    if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+    if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
       parkHoldHere(s, w, 3u32);
     }
     leavePark(s, w);
     (*w).woken = 1u32;
     return true;
   }
-  if ld32(&(*s).stopping as *u32) != 0u32 {
+  if (*s).stopping.load() != 0u32 {
     leavePark(s, w);
     return false;
   }
-  if asleep == (*s).nworkers && ld32(&(*s).done as *u32) != 0u32 {
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
+  if asleep == (*s).nworkers && (*s).done.load() != 0u32 {
+    (*s).quiet.add(1u32);
     sync.futexWake(&(*s).quiet);
   }
-  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+  if (*s).parkHold.loadOrdered(MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 2u32);
   }
-  tally(&(*(*w).stat).parks as *u64, 1u64);
+  tally(&(*(*w).stat).parks, 1u64);
   while true {
     sync.futexWait(&(*w).park, parkParked);
-    if mem.atomicLoad[u32](pk, MemOrder.SeqCst) != parkParked {
+    if pk.load() != parkParked {
       break;
     }
     // Back with the word still PARKED: nobody chose this worker. Sleep
     // again at once, still published (THE PARK WORD)
-    tally(&(*(*w).stat).reparks as *u64, 1u64);
+    tally(&(*(*w).stat).reparks, 1u64);
   }
   // Chosen (NOTIFIED): the notify cleared the bit
-  mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
+  pk.store(parkRunning);
   uncount(s);
   (*w).woken = 1u32;
-  ld32(&(*s).stopping as *u32) == 0u32
+  (*s).stopping.load() == 0u32
 }
 
 // A published worker leaves the park without sleeping: its bit cleared, its
@@ -4752,14 +4754,14 @@ fn idle(w: *Worker) bool {
 // it NOTIFIED (THE PARK WORD, the claimed-but-leaving case) woke nobody new:
 // the mark is this worker's to spend, and it is awake already
 fn leavePark(s: *Sched, w: *Worker) {
-  let pk = &(*w).park as *u32;
+  let pk = &(*w).park;
   mem.atomicAnd[u64](parkedWord(s, (*w).index / 64u32), ~parkedBit(w), MemOrder.SeqCst);
   var seen = 0u32;
   var out = false;
-  seen, out = mem.atomicCompareSwap[u32](pk, parkParked, parkRunning, MemOrder.SeqCst, MemOrder.SeqCst);
+  seen, out = pk.compareSwap(parkParked, parkRunning);
   if !out {
-    tally(&(*(*w).stat).marksSpent as *u64, 1u64);
-    mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
+    tally(&(*(*w).stat).marksSpent, 1u64);
+    pk.store(parkRunning);
   }
   uncount(s);
 }
@@ -4767,7 +4769,7 @@ fn leavePark(s: *Sched, w: *Worker) {
 // The one decrement of the sleepers' count in a park, made by the worker
 // itself as it leaves (never by a notify): the count never goes below 0
 fn uncount(s: *Sched) {
-  let before = mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
+  let before = (*s).sleepers.sub(1u32);
   assertDebugMsg(before != 0u32, "actors: the sleepers' count went below 0");
 }
 
@@ -4826,16 +4828,16 @@ fn quiescent(s: *Sched) bool {
   var ended = 0u64;
   var i = 0u32;
   while i < (*s).nworkers {
-    ended = ended + ld64(&(*workerAt(s, i)).ended as *u64);
+    ended = ended + (*workerAt(s, i)).ended.load();
     i = i + 1u32;
   }
-  var started = ld64(&(*s).extStarted as *u64);
+  var started = (*s).extStarted.load();
   i = 0u32;
   while i < (*s).nworkers {
-    started = started + ld64(&(*workerAt(s, i)).started as *u64);
+    started = started + (*workerAt(s, i)).started.load();
     i = i + 1u32;
   }
-  started == ended && ld64(&(*s).liveScheduled as *u64) == 0u64
+  started == ended && (*s).liveScheduled.load() == 0u64
 }
 
 // ---------------------------------------------------------------------------
@@ -4895,16 +4897,18 @@ let startOnce: sync.Once;
 // 'stats' sums the slots. After the stop the slots are the run's totals.
 // Published slots first, then their number, both before the workers run; a
 // 'stats' that finds no number answers all 0.
+// (Its counts are 'Atomic' fields: only the worker writes each, with Relaxed
+// stores, and stats() reads them meanwhile.)
 struct StatSlot {
-  pub messages: u64;            // messages handled
-  pub activations: u64;         // turns
-  pub steals: u64;              // times a steal took actors from another worker's queue
-  pub spins: u64;               // spins begun (THE SPIN)
-  pub spinsFound: u64;          // spins ended by seeing work
-  pub spinsOut: u64;            // spins ended by their bound
-  pub parks: u64;               // sleeps on the park word
-  pub reparks: u64;             // returns from the wait unchosen, slept again at once
-  pub marksSpent: u64;          // parks left with work seen after a notify had marked the worker
+  pub messages: Atomic[u64];    // messages handled
+  pub activations: Atomic[u64]; // turns
+  pub steals: Atomic[u64];      // times a steal took actors from another worker's queue
+  pub spins: Atomic[u64];       // spins begun (THE SPIN)
+  pub spinsFound: Atomic[u64];  // spins ended by seeing work
+  pub spinsOut: Atomic[u64];    // spins ended by their bound
+  pub parks: Atomic[u64];       // sleeps on the park word
+  pub reparks: Atomic[u64];     // returns from the wait unchosen, slept again at once
+  pub marksSpent: Atomic[u64];  // parks left with work seen after a notify had marked the worker
   pub gap: Array[u8, 56];       // a slot is two cache lines, so that no two workers' slots share one (startWorkers checks)
 }
 
@@ -5047,9 +5051,9 @@ fn startWorkers() {
 // Wait until s is quiescent. 'done' says the stop has begun, so that the
 // last worker to go to sleep wakes this thread to look again
 fn quiesce(s: *Sched) {
-  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
+  (*s).done.store(1u32);
   while true {
-    let q = ld32(&(*s).quiet as *u32);
+    let q = (*s).quiet.load();
     if quiescent(s) {
       break;
     }
@@ -5086,7 +5090,7 @@ fn opSpent() {
   opsEnded.addOrdered(1u64, MemOrder.SeqCst);
   let s = running.load() as *Sched;
   if s as usize != 0usize {
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
+    (*s).quiet.add(1u32);
     sync.futexWake(&(*s).quiet);
   }
 }
@@ -5118,15 +5122,15 @@ pub fn waitUntilIdle() {
     die("actors: waitUntilIdle called on one of the runtime's own workers, which would wait for itself");
   }
   let s = running.load() as *Sched;
-  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
+  (*s).done.store(1u32);
   while true {
-    let q = ld32(&(*s).quiet as *u32);
+    let q = (*s).quiet.load();
     if idleNow(s) {
       break;
     }
     sync.futexWait(&(*s).quiet, q);
   }
-  mem.atomicStore[u32](&(*s).done as *u32, 0u32, MemOrder.SeqCst);
+  (*s).done.store(0u32);
 }
 
 // The deadline form of waitUntilIdle: wait at most 'limit', and say whether
@@ -5144,10 +5148,10 @@ pub fn waitUntilIdleFor(limit: time.Duration) bool {
   }
   let s = running.load() as *Sched;
   let start = time.Instant.now();
-  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
+  (*s).done.store(1u32);
   var ok = false;
   while true {
-    let q = ld32(&(*s).quiet as *u32);
+    let q = (*s).quiet.load();
     if idleNow(s) {
       ok = true;
       break;
@@ -5158,7 +5162,7 @@ pub fn waitUntilIdleFor(limit: time.Duration) bool {
     }
     sync.futexWaitTimeout(&(*s).quiet, q, left);
   }
-  mem.atomicStore[u32](&(*s).done as *u32, 0u32, MemOrder.SeqCst);
+  (*s).done.store(0u32);
   ok
 }
 
@@ -5180,14 +5184,14 @@ fn stopWorkers() {
   // the console before the process ends. The owner is its own thread and
   // abandonParked leaves nothing running that it waits on
   consoleDrain();
-  mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
+  (*s).stopping.store(1u32);
   // Mark every worker and wake its word (THE PARK WORD): a worker asleep
   // wakes chosen and sees 'stopping'; one not yet asleep finds its word not
   // PARKED, or reads 'stopping' before it sleeps
   var j = 0u32;
   while j < (*s).nworkers {
     let w = workerAt(s, j);
-    mem.atomicStore[u32](&(*w).park as *u32, parkNotified, MemOrder.SeqCst);
+    (*w).park.store(parkNotified);
     sync.futexWake(&(*w).park);
     j = j + 1u32;
   }
@@ -5219,15 +5223,15 @@ pub fn stats() Stats {
   var i = 0u32;
   while i < n {
     let slot = (slots + usize.from(i) * mem.sizeof[StatSlot]()) as *StatSlot;
-    st.messages = st.messages + mem.atomicLoad[u64](&(*slot).messages as *u64, MemOrder.Relaxed);
-    st.activations = st.activations + mem.atomicLoad[u64](&(*slot).activations as *u64, MemOrder.Relaxed);
-    st.steals = st.steals + mem.atomicLoad[u64](&(*slot).steals as *u64, MemOrder.Relaxed);
-    st.spins = st.spins + mem.atomicLoad[u64](&(*slot).spins as *u64, MemOrder.Relaxed);
-    st.spinsFound = st.spinsFound + mem.atomicLoad[u64](&(*slot).spinsFound as *u64, MemOrder.Relaxed);
-    st.spinsOut = st.spinsOut + mem.atomicLoad[u64](&(*slot).spinsOut as *u64, MemOrder.Relaxed);
-    st.parks = st.parks + mem.atomicLoad[u64](&(*slot).parks as *u64, MemOrder.Relaxed);
-    st.reparks = st.reparks + mem.atomicLoad[u64](&(*slot).reparks as *u64, MemOrder.Relaxed);
-    st.marksSpent = st.marksSpent + mem.atomicLoad[u64](&(*slot).marksSpent as *u64, MemOrder.Relaxed);
+    st.messages = st.messages + (*slot).messages.loadOrdered(MemOrder.Relaxed);
+    st.activations = st.activations + (*slot).activations.loadOrdered(MemOrder.Relaxed);
+    st.steals = st.steals + (*slot).steals.loadOrdered(MemOrder.Relaxed);
+    st.spins = st.spins + (*slot).spins.loadOrdered(MemOrder.Relaxed);
+    st.spinsFound = st.spinsFound + (*slot).spinsFound.loadOrdered(MemOrder.Relaxed);
+    st.spinsOut = st.spinsOut + (*slot).spinsOut.loadOrdered(MemOrder.Relaxed);
+    st.parks = st.parks + (*slot).parks.loadOrdered(MemOrder.Relaxed);
+    st.reparks = st.reparks + (*slot).reparks.loadOrdered(MemOrder.Relaxed);
+    st.marksSpent = st.marksSpent + (*slot).marksSpent.loadOrdered(MemOrder.Relaxed);
     i = i + 1u32;
   }
   st
