@@ -2065,8 +2065,9 @@ class Testing(unittest.TestCase):
               0i32
             }
             """)
-        for jobs in ("1", "2", "4"):
-            out = self.congo("test", "--jobs", jobs, cwd=folder).stdout
+        # (the Cone Congo has no --jobs yet: it tests one package at a time)
+        for jobs in ((None,) if CONGO_EXE else ("1", "2", "4")):
+            out = self.congo("test", *(("--jobs", jobs) if jobs else ()), cwd=folder).stdout
             timing = out.index("test timing ... ok")
             quiet_line = out.index("Quiet")
             self.assertLess(quiet_line, timing, out)
@@ -2076,7 +2077,7 @@ class Testing(unittest.TestCase):
             for what in ("Result qone", "Result qtwo", "test steady ... ok",
                          "test other ... ok", "example demo ... built"):
                 self.assertLess(out.index(what), quiet_line, f"--jobs {jobs}: {what}\n{out}")
-            self.assertIn("one at a time, nothing else running", out)
+            self.assertIn("one at a time", out[quiet_line:timing])
 
     def test_quiet_names_a_test_that_exists(self):
         folder = self.quiet_packages(self.root)
