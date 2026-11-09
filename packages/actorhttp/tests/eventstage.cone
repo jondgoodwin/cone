@@ -1,0 +1,432 @@
+// An event stream's parse stage (stream.cone, SseParseStage onto stages.ValueReader), as an actor
+// sees it through Client.events, against a loopback server of the package's own. Nets for the
+// stage's three promises:
+//   1. /flood: 20000 events of about 100 bytes, read slowly. After the reader takes one event and
+//      waits, the server's sends stall far short of the whole (the waiting events hold buffers, the
+//      fetch's window is not exceeded), then the reader takes the rest: all 20000 in order, one clean
+//      end, repeated the same at every read after;
+//   2. /limit: 100 events, then one of 1.5 MiB (past the reader's limit of 1 MiB). The reader waits
+//      first, then takes every one of the 100, then a failure at Stage.Limit with the limit's text,
+//      the same at every read after, and the server's writes fail (the source was stopped);
+//   3. /finish: 3 events then a Finished end: the reader sees 3, then the one clean end, repeated;
+//      /hold: 3 events, then silence, read under a deadline: 3 events, then the deadline's
+//      TimedOut, repeated the same.
+// Every buffer is home after each.
+
+mod eventstage;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import sse;
+import actors;
+import aio use IoLimits;
+import iobuf;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+let stopped: Atomic[u64];       // server writes that failed (the reader left or the fetch was stopped)
+let done: Atomic[u64];          // readers that ran to their end
+let sent: Atomic[u64];          // events of /flood the server has had accepted
+
+fn @initpure init() {
+  stopped = Atomic[u64].of(0u64);
+  done = Atomic[u64].of(0u64);
+  sent = Atomic[u64].of(0u64);
+}
+
+const floodCount = 20000u64;
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while u64.from(iobuf.stats().lentBytes) != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  u64.from(iobuf.stats().lentBytes) == 0u64
+}
+
+fn eventText(i: u64) String {
+  var s = String.from("event number ");
+  s.appendUInt(i);
+  s
+}
+
+// About 100 bytes, the index first
+fn floodText(i: u64) String {
+  var s = eventText(i);
+  s.append("|");
+  var k = 0usize;
+  while k < 70usize {s.append("y"); k = k + 1usize;}
+  s
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    ex.startEvents();
+    if p == "/flood" {
+      var i = 0u64;
+      var going = true;
+      while going && i < floodCount {
+        let e = sse.Event.message(floodText(i).view());
+        let w = await ex.sendEvent(&e);
+        match w {
+          case is Ok {i = i + 1u64; sent.add(1u64);}
+          case is Err {going = false;}
+        }
+      }
+      if going {let f = await ex.finish();}
+      else {stopped.add(1u64);}
+    } else if p == "/limit" {
+      var i = 0u64;
+      while i < 100u64 {
+        let e = sse.Event.message(eventText(i).view());
+        let w = await ex.sendEvent(&e);
+        i = i + 1u64;
+      }
+      var big = String();
+      var k = 0usize;
+      while k < 1572864usize {big.append("x"); k = k + 1usize;}
+      let e = sse.Event.message(big.view());
+      let w = await ex.sendEvent(&e);
+      var going = true;
+      while going {
+        let e2 = sse.Event.message("after");
+        let w2 = await ex.sendEvent(&e2);
+        match w2 {
+          case is Ok {}
+          case is Err {going = false;}
+        }
+        thread.sleep(Duration.fromMillis(2i64));
+      }
+      stopped.add(1u64);
+    } else if p == "/finish" {
+      var i = 0u64;
+      while i < 3u64 {
+        let e = sse.Event.message(eventText(i).view());
+        let w = await ex.sendEvent(&e);
+        i = i + 1u64;
+      }
+      let f = await ex.finish();
+    } else {
+      var i = 0u64;
+      while i < 3u64 {
+        let e = sse.Event.message(eventText(i).view());
+        let w = await ex.sendEvent(&e);
+        i = i + 1u64;
+      }
+      var going = true;
+      while going {
+        thread.sleep(Duration.fromMillis(20i64));
+        let w2 = await ex.sendComment("still here");
+        match w2 {
+          case is Ok {}
+          case is Err {going = false;}
+        }
+      }
+      stopped.add(1u64);
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// The readers
+// ---------------------------------------------------------------------------
+
+// What a read answered, as one word: "event", "clean" (the stream ended whole), or the failure's kind
+fn nameOf(e: &Result[Option[sse.Event], FetchError]) String {
+  match e {
+    case let &Ok(ok) {
+      match ok {
+        case is Some[sse.Event] {String.from("event")}
+        case is None[sse.Event] {String.from("clean")}
+      }
+    }
+    case let &Err(er) {
+      if er.isCancelled() {String.from("cancelled")}
+      else if er.isTimedOut() {String.from("timed out")}
+      else if er.kind() == actorhttp.FetchErrorKind.Failed && er.failure.stage == httpclient.Stage.Limit {String.from("limit")}
+      else {String.from("other")}
+    }
+  }
+}
+
+actor Reader {
+  client: Client;
+
+  // 1. the flood, read slowly
+  pub async fn flood(self, u: String) {
+    let r = await client.events(Request.get(u.view()));
+    match r {
+      case let Ok(es) {
+        let first = await es.next();
+        let s = await aio.sleep(Duration.fromMillis(500i64));
+        let at1 = sent.load();
+        let s2 = await aio.sleep(Duration.fromMillis(300i64));
+        let at2 = sent.load();
+        printStr("flood: the sends stalled short of the whole: ");
+        printStr(yes(at1 == at2 && at2 < floodCount));
+        printStr("\n");
+        let held = u64.from(iobuf.stats().lentBytes);
+        printStr("flood: buffers are held, far less than the body (about 2.5 MB): ");
+        printStr(yes(held > 0u64 && held < 1500000u64));
+        printStr("\n");
+        var n = 0u64;
+        var inOrder = true;
+        var going = true;
+        match first {
+          case let Ok(ok) {
+            match ok {
+              case let Some(ev) {
+                if ev.data.view() != floodText(0u64).view() {inOrder = false;}
+                n = 1u64;
+              }
+              case is None[sse.Event] {going = false;}
+            }
+          }
+          case let Err(er) {going = false;}
+        }
+        var end = String.from("none");
+        while going {
+          let e = await es.next();
+          end = nameOf(&e);
+          match e {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  if ev.data.view() != floodText(n).view() {inOrder = false;}
+                  n = n + 1u64;
+                }
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case let Err(er) {going = false;}
+          }
+        }
+        let a1 = await es.next();
+        let a2 = await es.next();
+        let same = nameOf(&a1).view() == end.view() && nameOf(&a2).view() == end.view();
+        printStr("flood: events read: ");
+        printUInt(n);
+        printStr(", in order ");
+        printStr(yes(inOrder));
+        printStr(", end ");
+        printStr(end.view());
+        printStr(", the same end after ");
+        printStr(yes(same));
+        printStr("\n");
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+
+  // 2. queued events, then one past the limit
+  pub async fn limit(self, u: String) {
+    let r = await client.events(Request.get(u.view()));
+    match r {
+      case let Ok(es) {
+        let s = await aio.sleep(Duration.fromMillis(500i64));
+        var n = 0u64;
+        var inOrder = true;
+        var going = true;
+        var end = String.from("none");
+        var text = String();
+        while going {
+          let e = await es.next();
+          end = nameOf(&e);
+          match e {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  if ev.data.view() != eventText(n).view() {inOrder = false;}
+                  n = n + 1u64;
+                }
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case let Err(er) {
+              text = String() <- er;
+              going = false;
+            }
+          }
+        }
+        let a1 = await es.next();
+        let a2 = await es.next();
+        let same = nameOf(&a1).view() == end.view() && nameOf(&a2).view() == end.view();
+        printStr("limit: events read before the end: ");
+        printUInt(n);
+        printStr(", in order ");
+        printStr(yes(inOrder));
+        printStr("\n");
+        printStr("limit: the end: ");
+        printStr(end.view());
+        printStr(", text: ");
+        printStr(text.view());
+        printStr("\n");
+        printStr("limit: the same failure after: ");
+        printStr(yes(same));
+        printStr("\n");
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+
+  // 3. a Finished end, or a Failed one (the deadline passing on a silent stream)
+  pub async fn finish(self, u: String, name: String, lim: IoLimits) {
+    let r = await client.eventsIn(Request.get(u.view()), lim);
+    match r {
+      case let Ok(es) {
+        var n = 0u64;
+        var going = true;
+        var end = String.from("none");
+        while going {
+          let e = await es.next();
+          end = nameOf(&e);
+          match e {
+            case let Ok(ok) {
+              match ok {
+                case is Some[sse.Event] {n = n + 1u64;}
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case let Err(er) {going = false;}
+          }
+        }
+        let a1 = await es.next();
+        let a2 = await es.next();
+        let same = nameOf(&a1).view() == end.view() && nameOf(&a2).view() == end.view();
+        printStr(name.view());
+        printStr(": events ");
+        printUInt(n);
+        printStr(", end ");
+        printStr(end.view());
+        printStr(", the same end after ");
+        printStr(yes(same));
+        printStr("\n");
+      }
+      case let Err(er) {printStr("no head\n");}
+    }
+    done.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    printStr("the server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.flood(url(port, "/flood"));
+      waitFor(&done, 1u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.limit(url(port, "/limit"));
+      waitFor(&done, 2u64);
+      waitFor(&stopped, 1u64);
+    }
+    printStr("limit: the server's writes failed: ");
+    printStr(yes(stopped.load() == 1u64));
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.finish(url(port, "/finish"), String.from("finish"),IoLimits.none());
+      waitFor(&done, 3u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    {
+      let r = Reader(Client.standard());
+      r.finish(url(port, "/hold"), String.from("hold"),IoLimits.until(Instant.now() + Duration.fromMillis(400i64)));
+      waitFor(&done, 4u64);
+      waitFor(&stopped, 2u64);
+    }
+    printStr("hold: the server's writes failed: ");
+    printStr(yes(stopped.load() == 2u64));
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    acceptor.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}
