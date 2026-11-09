@@ -138,37 +138,44 @@ fn main() i32 {
 
   // 4. Deadlines
   {
+    // The parent's deadline is far off, so no load can bring it near: the tight
+    // child firing first is then structural, not a race with the test thread.
     let t0 = Instant.now();
-    let g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
+    let g = CancelGroup.until(t0 + Duration.fromSeconds(60i64));
     let c = g.child();
-    let tight = g.childUntil(t0 + Duration.fromMillis(20i64));
-    let loose = g.childUntil(t0 + Duration.fromSeconds(60i64));
-    expect(g.deadline() == t0 + Duration.fromMillis(60i64), "the group's deadline");
+    let tight = g.childUntil(t0 + Duration.fromSeconds(1i64));
+    let loose = g.childUntil(t0 + Duration.fromSeconds(120i64));
+    expect(g.deadline() == t0 + Duration.fromSeconds(60i64), "the group's deadline");
     expect(c.deadline() == g.deadline(), "a child inherits it");
-    expect(tight.deadline() == t0 + Duration.fromMillis(20i64), "a tighter child wins");
+    expect(tight.deadline() == t0 + Duration.fromSeconds(1i64), "a tighter child wins");
     expect(loose.deadline() == g.deadline(), "a looser one gives way to the parent's");
     expect(!g.isCancelled() && !tight.isCancelled(), "live before the deadline");
     waitUntilCancelled(&tight, 5000i64);
     expect(tight.isCancelled(), "the tight child timed out");
-    expect(Instant.now() >= t0 + Duration.fromMillis(20i64), "not before its deadline");
+    expect(Instant.now() >= t0 + Duration.fromSeconds(1i64), "not before its deadline");
     expect(causeIs(&tight, Cause.TimedOut), "with the cause TimedOut");
     expect(!g.isCancelled(), "its parent did not");
-    waitUntilCancelled(&g, 5000i64);
-    expect(g.isCancelled() && c.isCancelled() && loose.isCancelled(), "then the parent and what follows it");
-    expect(causeIs(&c, Cause.TimedOut), "TimedOut reaches the child");
-    expect(!g.cancel(), "a cancel after the timeout says false");
+    // The parent's own timeout, in a group of its own
+    let t1 = Instant.now();
+    let g2 = CancelGroup.until(t1 + Duration.fromMillis(60i64));
+    let c2 = g2.child();
+    let loose2 = g2.childUntil(t1 + Duration.fromSeconds(60i64));
+    waitUntilCancelled(&g2, 5000i64);
+    expect(g2.isCancelled() && c2.isCancelled() && loose2.isCancelled(), "then the parent and what follows it");
+    expect(causeIs(&c2, Cause.TimedOut), "TimedOut reaches the child");
+    expect(!g2.cancel(), "a cancel after the timeout says false");
     // A deadline already past
     let past = CancelGroup.until(Instant.now() - Duration.fromSeconds(1i64));
     waitUntilCancelled(&past, 5000i64);
     expect(past.isCancelled() && causeIs(&past, Cause.TimedOut), "a deadline past fires at once");
     // A cancel before the deadline keeps its cause
-    let early = CancelGroup.until(Instant.now() + Duration.fromMillis(30i64));
+    let early = CancelGroup.until(Instant.now() + Duration.fromSeconds(1i64));
     early.cancel();
-    thread.sleep(Duration.fromMillis(80i64));
+    thread.sleep(Duration.fromMillis(1200i64));
     expect(causeIs(&early, Cause.Cancelled), "a cancel before the deadline stays Cancelled");
     // A shield with its own deadline
     let p = CancelGroup.make();
-    let sh = p.shield(Instant.now() + Duration.fromMillis(20i64));
+    let sh = p.shield(Instant.now() + Duration.fromSeconds(1i64));
     p.cancel();
     expect(!sh.isCancelled(), "the shield lives under a cancelled parent");
     waitUntilCancelled(&sh, 5000i64);
@@ -181,18 +188,24 @@ fn main() i32 {
     var keep = List[CancelGroup]();
     var n = 0usize;
     while n < 1000usize {
-      let g = CancelGroup.until(t0 + Duration.fromMillis(100i64));
+      let g = CancelGroup.until(t0 + Duration.fromSeconds(1i64));
       if n % 100usize == 0usize {keep.push(g);}
       n = n + 1usize;
     }
     expectUInt(u64.from(keep.len()), 10u64, "ten kept");
     expectUInt(u64.from(armedTimers()), 10u64, "the other 990 timers were disarmed with their last handle");
-    waitUntilCancelled(&keep[0usize], 5000i64);
-    thread.sleep(Duration.fromMillis(20i64));
+    // Wait for each of the ten, then for the timers to be released: the timer
+    // thread may run late after the first, so no sleep guesses at its pace
     var all = true;
     n = 0usize;
-    while n < keep.len() {all = all && keep[n].isCancelled(); n = n + 1usize;}
+    while n < keep.len() {
+      waitUntilCancelled(&keep[n], 5000i64);
+      all = all && keep[n].isCancelled();
+      n = n + 1usize;
+    }
     expect(all, "all ten fired");
+    let unarmedBy = Instant.now() + Duration.fromMillis(5000i64);
+    while armedTimers() != 0usize && Instant.now() < unarmedBy {thread.sleep(Duration.fromMillis(1i64));}
     expectUInt(u64.from(armedTimers()), 0u64, "none remains armed");
     // One handle dropped, another held: the timer stays
     let a = CancelGroup.until(Instant.now() + Duration.fromMillis(40i64));
@@ -243,11 +256,13 @@ fn main() i32 {
     q.cancel();
     expectUInt(u64.from(n3.load()), 0u64, "the gone loop's entry went at the next registration");
     // A timeout tells the loops too
-    let m = CancelGroup.until(Instant.now() + Duration.fromMillis(20i64));
+    let m = CancelGroup.until(Instant.now() + Duration.fromSeconds(1i64));
     let e4 = ear(&n2, false);
     m.watch(9u64, &e4);
     waitUntilCancelled(&m, 5000i64);
-    thread.sleep(Duration.fromMillis(10i64));
+    // the signal follows the flag: wait for it rather than guess how long
+    let toldBy = Instant.now() + Duration.fromMillis(5000i64);
+    while n2.load() < 2u32 && Instant.now() < toldBy {thread.sleep(Duration.fromMillis(1i64));}
     expectUInt(u64.from(n2.load()), 2u64, "a deadline's cancel signals the loop");
   }
 
