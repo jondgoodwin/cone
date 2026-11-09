@@ -1,0 +1,43 @@
+// A caller's refusal for a borrow held only because a signature names no lifetime: every
+// borrow in such a signature shares one, so the result is tied to a key it never reads.
+// The refusal (ErrorFrozen) names that signature and says a lifetime name would separate
+// them. A signature that names one is refused for nothing, and a borrow held another way
+// is refused as ever.
+mod lifetime_tie_refusal;
+
+struct M { pub x: i32; pub y: i32;
+  pub fn first(self: &, key: &i32) &i32 { &self.x }  //~ WarnLifetimeTie
+  pub fn named(self: &'a, key: &i32) &'a i32 { &self.x }
+}
+fn get(m: &M, key: &i32) &i32 { &m.x }  //~ WarnLifetimeTie
+fn getn(m: &'a M, key: &i32) &'a i32 { &m.x }
+
+fn main() i32 {
+  let m = M(1, 2);
+  // A temporary key
+  let t = get(&m, &(3 + 4));  //~ ErrorFrozen "'t' holds it through the result of 'get(m: &M, key: &i32) &i32', whose signature names no lifetime"
+  // A key of an inner block
+  let r = {
+    let k = 5;  //~ ErrorFrozen "The value being made carries it through the result of 'get(m: &M, key: &i32) &i32'"
+    get(&m, &k)
+  };
+  // A key of an inner block, with a holder outside it
+  var h = &m.y;
+  {
+    let k = 6;  //~ ErrorFrozen "'h' holds it through the result of 'get(m: &M, key: &i32) &i32'"
+    h = get(&m, &k);
+  }
+  // The same by a method
+  let s = {
+    let k = 7;  //~ ErrorFrozen "carries it through the result of 'first(self: &, key: &i32) &i32'"
+    m.first(&k)
+  };
+  // A key written while the result is held
+  var w = 8;
+  let u = get(&m, &w);
+  w = 9;  //~ ErrorFrozen "'u' holds it through the result of 'get(m: &M, key: &i32) &i32'"
+  // No refusal: the signature says the key is not tied
+  let n = getn(&m, &(3 + 4));
+  let p = { let k = 5; m.named(&k) };
+  *t + *r + *h + *s + *u + *n + *p
+}

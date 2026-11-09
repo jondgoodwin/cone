@@ -826,6 +826,8 @@ enum ErrorCode {
     WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
     WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
+    WarnLifetimeTie = 3009, // A function with a body and no lifetime named, whose signature ties a borrowed parameter to its result or to another parameter, while its body never returns that parameter's borrow nor stores it: its callers are held to a tie the body does not need. The message gives the signature that separates them. Pointed at the parameter
+
     // Uncounted
     Uncounted = 9000,
 };

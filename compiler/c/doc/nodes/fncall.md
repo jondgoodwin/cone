@@ -129,6 +129,16 @@ chain falls out of that for free: `mymod.Gadget.make(2)` parses innermost
 first, so the inner hop has left a resolved type name in `objfn` before the
 outer hop looks at it.
 
+**A number type is not collapsed here** (`f32.pi` above is the shape, not this
+function's work): its constants (`nbrConstants`, `corenumber.c`, `ConstDclNode`s in the
+type's namespace) are reached in type check by `fnCallNumberConst`, which binds the
+member and replaces the node by the name use, as the table's first row does. The
+same function serves `T.maxValue` in an instance, where `T` has become the number
+type. A name the type has no member of is `ErrorNoMbr`. A generic instance's const
+(`Vec3[f32].zero`) is bound in `fnCallTypeInstancePath`, and an actor's const is
+found in the actor's state, by `actorOfHandle`, when the path's base is the actor's
+handle: statics are refused in an actor (`ErrorActorMember`) but a const has no storage.
+
 ### The parallel reductions
 
 **`xs.parallel().sum()`, `fold(...)` and `findFirst(...)` are rewritten here, by
