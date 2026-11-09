@@ -213,7 +213,7 @@ its linkage:
 | --- | --- | --- |
 | a definition of a program compiled with no build description — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
 | in a described build, library or program, an instance of a generic, a member of one, or a vtable (`GenlShared`) | `linkonce_odr`: every object that uses it defines it, all the copies are the same, and an unused one may be dropped | `any` — the linker keeps one copy. `nodeduplicate` would make the copies a duplicate-symbol error (LNK2005), and internal would leave two vtables with two addresses |
-| a *function* of such an instance, in a release program of at most `--private-instances` LLVM instructions as first generated (below) | `internal`, set once the body is generated | `nodeduplicate`; the object's own copy |
+| a *function* of such an instance, in a release program (below; `--private-instances` caps its size) | `internal`, set once the body is generated | `nodeduplicate`; the object's own copy |
 | a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
 | a described build's other definitions — a program's, or a library's that are not exported, and every vtable list | `internal` | `nodeduplicate` |
 | `main`, or a public C-named definition (`pub` and `@c` export to C) | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
@@ -281,19 +281,24 @@ instance, and a vtable `GenlShared`, which `genlLinkage` lowers to
 package defines the instances it uses; each importer defines the ones it uses,
 from the full body its include file carries (a generic cannot be `extern`);
 identical instances in two objects merge at link, and one only an importer
-makes is in that importer's object alone. **A release program keeps its small
+makes is in that importer's object alone. **A release program keeps its
 instance functions to itself** (`genlInstanceIsPrivate`). Shared, an instance
 is a `linkonce_odr` function LLVM has to keep a body of for the linker, and one
 it chooses not to inline is called out of line, its argument's address taken
 and the value spilled (measured 31 Oct 2026: core's `Option[Rc[..]]` drop glue,
 called out of line on every decrement, made richards 2.6 times slower than the
-same IR with the instances internal). So a function of a shared instance, generated in a program
-compile (not `--library`) that is release and described, is set `internal` when
-its body is at most `opt->privateinst` LLVM instructions as first generated,
-before any optimisation (`--private-instances=n`, `DefaultPrivateInstances`; 0
-shares all). The size is measured on the generated function because a reshaped
+same IR with the instances internal). A large one loses as well: LLVM
+cannot specialise a `linkonce_odr` function on the one function pointer every
+caller passes, so `pdqSort[u32]` called its comparator for every comparison
+(`sortUnstableBy` on 1M `u32`, 41 ms; 21 ms with the instance internal, as with a
+closure). So a function of a shared instance, generated in a program
+compile (not `--library`) that is release and described, is set `internal`
+whatever its size, unless `opt->privateinst` caps it: the instance is then
+refused when its body is more than `opt->privateinst` LLVM instructions as first
+generated, before any optimisation (`--private-instances=n`,
+`DefaultPrivateInstances`, which is no cap; 0 shares all). The size is measured on the generated function because a reshaped
 private copy cannot safely be merged back afterwards, so the decision precedes
-optimisation. A larger instance stays `linkonce_odr`, one copy per program; a
+optimisation. A capped-out instance stays `linkonce_odr`, one copy per program; a
 library keeps all of its instances shared, since its importers may link against
 them; a debug build keeps one copy (it compiles faster and a breakpoint lands in
 one place). A generic's global (its statics) and a vtable are never decided by
@@ -301,7 +306,9 @@ size: they stay `linkonce_odr`, one object per program, because a counter must
 count once and a vtable's address tells a type apart. A function's address is
 therefore not promised to agree across objects (a private copy per object, and
 the linker's identical-code folding `/OPT:ICF` may then merge or not): the
-language promises it only within one object. A vtable is shared because pattern
+language promises it only within one object (`generic_fn_address`). So a
+program's copy of a generic instance and a library's copy may have different
+addresses; equality is promised only within one object. A vtable is shared because pattern
 matching tells a concrete type by comparing a virtual reference's vtable
 address with the one its own object built (`genlIsType`): a reference built in
 the program and tested in the library matched nothing while each object kept
@@ -2588,6 +2595,66 @@ closure that holds something is the struct type check makes of it,
 [closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
 variables.
 
+### Link-time optimisation (`--lto`)
+
+`--lto` is opt-in and release-and-native only (`genSetup` clears it for a debug,
+WebAssembly or SPIR-V compile); without it nothing here runs and the objects
+are the same. Congo's `--release --lto` passes it to every compile of the build
+and then runs `conec --lto-link` over their outputs (`tools/congo/README.md`).
+
+**A compile** runs `thinlto-pre-link<O3>` where it would run `default<O3>`, and
+writes `<name>.bc` in place of the object: bitcode with the ThinLTO module
+summary and hash that a ThinLTO link reads (`genlWriteThinBitcode`,
+`genllto.cpp`, because LLVM's C API writes bitcode with no summary). There is
+no object, so `--asm` writes nothing for such a compile, and `.ir` is the
+pre-link module. Two things differ in the module from the ordinary build's:
+a local symbol (`internal`, `private`) has no COMDAT, and a debug-info build
+carries the `Debug Info Version` flag. A local's COMDAT is named for it, and the
+link renames a local it shares between modules (it must be promoted to a
+global), leaving the COMDAT naming a symbol that is not there, which LLVM
+reports as "Associative COMDAT symbol 'string.5' does not exist"; the flag is
+what makes bitcode read back keep its debug info, and without it the PDB would
+have no names.
+
+**The link** (`conec --lto-link -o <dir> a.bc b.bc ...`, `genlLtoLink`,
+`genlThinLink`) hands every module to LLVM's `ThinLTOCodeGenerator` at once and
+writes `<dir>/<i>.obj` for the i-th. It takes the program's whole code, so a
+function another package calls is inlined across packages, a generic instance
+that only one module uses is internalised (and specialised on the one
+function-pointer argument its callers pass), and the linker's `/OPT:REF` drops
+what is left unreached, since the objects are made with a section to each
+function and datum. The linker does not run LTO: no `lld` ships with the
+toolchain this builds with, and `link.exe` cannot read bitcode.
+
+**What the link must be told is kept.** `ThinLTOCodeGenerator` decides which
+symbols a module exports from what the other modules *import* (inline), so a
+function that another module calls out of line, or holds the address of in a
+vtable or passes to `CreateThread`, is internalised and deleted from the module
+that defines it, and the link fails on the caller's unresolved reference (112 of
+them in the `clientbench` build, 30 modules, when only `main` is kept: methods
+listed in vtables, such as `IoErrorKind.AlreadyExists.toText`, and functions
+called out of line). `genlThinLink` therefore
+tells it about every symbol one module defines and another refers to
+(`crossReferenceSymbol`: dead only if every reference is optimised away), and
+keeps `main` and every global with a C name (one not spelled `_C...`), since a C
+object (the runtime; a C package) may call it by name and the link cannot see
+that object. A symbol only a native object refers to, with a Cone name, is not
+a case.
+
+**It composes with `--private-instances`: not yet measured.** The size gate
+decides, in each compile, which generic instance functions are the object's own
+(`internal`) rather than shared (`linkonce_odr`); ThinLTO then sees the program's
+whole code and could do what the gate does for any instance only one module uses,
+and also for what the gate leaves shared. That the two overlap for the sort case
+and not for a call across packages (a `Mutex` pair, actors' pingpong) is expected
+from how each works and has no numbers behind it yet. The measurements are listed
+in the branch's `build/HANDOVER.md`, and the change to the gate's default (PR
+#1050) alters the answer, so they are taken with it. The gate costs no link time.
+
+A build made so has a bigger link (the ThinLTO step, over every module of the
+program, on every relink), a bigger program, and a longer clean build (each
+compile writes its bitcode, and the objects are made at the link).
+
 ## 8. Hazards
 
 - **Some `LLVMBuild*` calls run with the builder outside any basic block** —
@@ -2733,6 +2800,7 @@ variables.
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlPlacePre`, `genlPlacePreEnd`, `genlPreOf`, `genlNeedsPre` | the indexes of places holding a seam in an index made first, in the order written (`awaitChainLevels`), and noted for `genlAddr` and `genlSubslice` to take: a place indexed more than once, both sides of a swap, a slice's bounds, a parallel assignment's places |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
+| `genllvm/genllto.cpp` | `genlWriteThinBitcode`, `genlThinLink` | link-time optimisation (section 7, "Link-time optimisation"): a module's bitcode with its ThinLTO summary and hash; the whole-program ThinLTO pass over every module, with the kept symbols, section splitting and cache (the `--lto` compile in `genllvm.c`, and `genlLtoLink`, the `--lto-link` entry) |
 | `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |

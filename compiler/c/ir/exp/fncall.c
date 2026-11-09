@@ -5583,6 +5583,17 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // than a function (fnCallTypeInstancePath took those). Diagnosed rather
         // than left to read as a bad call.
         if (node->methfld != NULL) {
+            // A name a struct (a generic's instance, 'T.maxValue' at a struct) does
+            // not declare: it is the struct that lacks it
+            INode *owner = itypeGetTypeDcl(node->objfn);
+            if (isNameUseNode(node->methfld) && owner && owner->tag == StructTag
+                && namespaceFind(&((StructNode*)owner)->namespace, ((NameUseNode*)node->methfld)->namesym) == NULL
+                && actorOfHandle(owner) == NULL) {
+                errorMsgNode(node->methfld, ErrorUnkName, "%s has no constant or member named %s.",
+                    &inodeGetName(owner)->namestr, &((NameUseNode*)node->methfld)->namesym->namestr);
+                node->vtype = errorType;
+                return;
+            }
             errorMsgNode(node->objfn, ErrorUnkName,
                 "A path may pass through a module, a struct or a trait, and a number type has 'from'; reaching a member through anything else is not built.");
             node->vtype = errorType;
