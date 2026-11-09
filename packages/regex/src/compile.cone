@@ -1,0 +1,428 @@
+// ======== The compiler: a tree to a byte-level automaton ========
+//
+// The automaton reads one byte at a time. A class of characters is compiled to
+// the UTF-8 byte sequences that spell it, merged into a graph that shares its
+// suffixes, so a class costs a few states however many characters it holds. The
+// program is built from the end: a node is compiled given the state that follows
+// it and answers the state it begins at, so a loop's back edge is the one state
+// that must be patched.
+
+const opByte = 0u8;
+const opSparse = 1u8;
+const opSplit = 2u8;
+const opSave = 3u8;
+const opLook = 4u8;
+const opMatch = 5u8;
+const opFail = 6u8;
+
+// The most states a program may have; a pattern that needs more is TooBig
+const stateLimit = 200000usize;
+
+// One state. Byte: byte range lo..hi then 'next'. Sparse: the transitions
+// 'x' (first) and 'y' (count) of 'trans'. Split: 'next' is tried first, then
+// 'x'. Save: slot 'x' then 'next'. Look: assertion 'x' then 'next'.
+struct Inst {
+  pub op: u8;
+  pub lo: u8;
+  pub hi: u8;
+  pub next: u32;
+  pub x: u32;
+  pub y: u32;
+}
+
+// One edge of a Sparse state: bytes lo..hi lead to 'next'. Disjoint and sorted.
+struct Trans {
+  pub lo: u8;
+  pub hi: u8;
+  pub next: u32;
+}
+
+struct Compiler {
+  pub insts: List[Inst];
+  pub trans: List[Trans];
+  pub cache: Dict[String, u32];
+  pub failed: bool;
+  pub seqs: List[u8];
+
+  pub fn start() Compiler {
+    Compiler(List[Inst](), List[Trans](), Dict[String, u32](), false, List[u8]())
+  }
+
+  fn push(self: &mut, i: Inst) u32 {
+    if insts.len() >= stateLimit { failed = true; return 0; }
+    insts.push(i);
+    u32.from(insts.len() - 1)
+  }
+
+  pub fn plain(self: &mut, op: u8, next: u32, x: u32) u32 {
+    push(Inst(op, 0u8, 0u8, next, x, 0u32))
+  }
+
+  fn split(self: &mut, first: u32, second: u32) u32 { plain(opSplit, first, second) }
+
+  // A state with these edges, the same one again for the same edges
+  fn sparse(self: &mut, tr: &List[Trans]) u32 {
+    if tr.len() == 0 { return plain(opFail, 0u32, 0u32); }
+    var key = String();
+    var i = 0usize;
+    while i < tr.len() {
+      let t = *tr[i];
+      key.appendByte(t.lo);
+      key.appendByte(t.hi);
+      key.appendByte(u8.from(t.next));
+      key.appendByte(u8.from(t.next >> 8));
+      key.appendByte(u8.from(t.next >> 16));
+      key.appendByte(u8.from(t.next >> 24));
+      i = i + 1;
+    }
+    match cache.get(&key) {
+      case let Some(id) { return *id; }
+      case is None {}
+    }
+    var id = 0u32;
+    if tr.len() == 1 {
+      let t = *tr[0];
+      id = push(Inst(opByte, t.lo, t.hi, t.next, 0u32, 0u32));
+    }
+    else {
+      let first = u32.from(trans.len());
+      i = 0;
+      while i < tr.len() { trans.push(*tr[i]); i = i + 1; }
+      id = push(Inst(opSparse, 0u8, 0u8, 0u32, first, u32.from(tr.len())));
+    }
+    cache.insert(key, id);
+    id
+  }
+
+  // -------- classes --------
+
+  // A class of bytes: one edge for each range
+  fn byteClass(self: &mut, p: &Parser, node: &Node, next: u32) u32 {
+    var tr = List[Trans]();
+    var i = 0usize;
+    while i < usize.from(node.count) {
+      let r = p.ranges[usize.from(node.first) + i];
+      tr.push(Trans(u8.from(r.lo), u8.from(r.hi), next));
+      i = i + 1;
+    }
+    sparse(&tr)
+  }
+
+  // A class of code points: the UTF-8 sequences of its ranges, then a graph of them
+  fn charClass(self: &mut, p: &Parser, node: &Node, next: u32) u32 {
+    seqs.clear();
+    var i = 0usize;
+    while i < usize.from(node.count) {
+      let r = p.ranges[usize.from(node.first) + i];
+      sequencesOf(r.lo, r.hi, &mut seqs);
+      i = i + 1;
+    }
+    let n = seqs.len() / 9;
+    if n == 0 { return plain(opFail, 0u32, 0u32); }
+    level(0usize, n, 0usize, next)
+  }
+
+  // The graph state for the sequences from..<to, which agree on all before 'depth'
+  fn level(self: &mut, from: usize, to: usize, depth: usize, next: u32) u32 {
+    var tr = List[Trans]();
+    var i = from;
+    while i < to && !failed {
+      let lo = *seqs[i * 9 + 1 + 2 * depth];
+      let hi = *seqs[i * 9 + 2 + 2 * depth];
+      var j = i + 1;
+      while j < to && *seqs[j * 9 + 1 + 2 * depth] == lo && *seqs[j * 9 + 2 + 2 * depth] == hi { j = j + 1; }
+      var target = next;
+      if usize.from(*seqs[i * 9]) > depth + 1 { target = level(i, j, depth + 1, next); }
+      tr.push(Trans(lo, hi, target));
+      i = j;
+    }
+    sparse(&tr)
+  }
+
+  // -------- nodes --------
+
+  pub fn node(self: &mut, p: &Parser, id: u32, next: u32) u32 {
+    if failed { return 0; }
+    let n = p.nodes[usize.from(id)];
+    let kind = n.kind;
+    if kind == nEmpty { return next; }
+    if kind == nClass {
+      if n.flag { return byteClass(p, &n, next); }
+      return charClass(p, &n, next);
+    }
+    if kind == nConcat {
+      var cur = next;
+      var k = usize.from(n.count);
+      while k > 0 && !failed {
+        k = k - 1;
+        cur = node(p, p.kids[usize.from(n.first) + k], cur);
+      }
+      return cur;
+    }
+    if kind == nAlt {
+      var entries = List[u32]();
+      var k = 0usize;
+      while k < usize.from(n.count) && !failed {
+        entries.push(node(p, p.kids[usize.from(n.first) + k], next));
+        k = k + 1;
+      }
+      if failed { return 0; }
+      var cur = *entries[entries.len() - 1];
+      k = entries.len() - 1;
+      while k > 0 {
+        k = k - 1;
+        cur = split(*entries[k], cur);
+      }
+      return cur;
+    }
+    if kind == nGroup {
+      let close = plain(opSave, next, 2 * n.a + 1);
+      let body = node(p, n.first, close);
+      return plain(opSave, body, 2 * n.a);
+    }
+    if kind == nLook { return plain(opLook, next, n.a); }
+    repeat(p, &n, next)
+  }
+
+  // x{min,max}: the copies that must match, then the ones that may
+  fn repeat(self: &mut, p: &Parser, n: &Node, next: u32) u32 {
+    let child = n.first;
+    let greedy = n.flag;
+    var min = n.a;
+    var tail = next;
+    if n.b == noMax {
+      // x* after min copies, or x+ as the last of them
+      var loop = 0u32;
+      if min == 0 {
+        // x* as (x+)?, so the first pass through x is entered, not looped to:
+        // (a*)* on "b" has group 1 empty at 0, as Perl's and Rust's do
+        loop = plain(opSplit, 0u32, 0u32);
+        let body = node(p, child, loop);
+        if failed { return 0; }
+        patchSplit(loop, body, next, greedy);
+        tail = if greedy { split(body, next) } else { split(next, body) };
+      }
+      else {
+        loop = plain(opSplit, 0u32, 0u32);
+        let body = node(p, child, loop);
+        if failed { return 0; }
+        patchSplit(loop, body, next, greedy);
+        tail = body;
+        min = min - 1;
+      }
+    }
+    else {
+      var optional = n.b - n.a;
+      while optional > 0 && !failed {
+        let body = node(p, child, tail);
+        tail = if greedy { split(body, next) } else { split(next, body) };
+        optional = optional - 1;
+      }
+    }
+    while min > 0 && !failed {
+      tail = node(p, child, tail);
+      min = min - 1;
+    }
+    if failed { return 0; }
+    tail
+  }
+
+  fn patchSplit(self: &mut, at: u32, body: u32, exit: u32, greedy: bool) {
+    let i = &mut insts[usize.from(at)];
+    if greedy { i.next = body; i.x = exit; }
+    else { i.next = exit; i.x = body; }
+  }
+}
+
+// -------- UTF-8 sequences --------
+
+fn utf8Len(cp: u32) usize {
+  if cp < 0x80 { 1 } else if cp < 0x800 { 2 } else if cp < 0x10000 { 3 } else { 4 }
+}
+
+// The k-th byte of the n-byte encoding of cp
+fn utf8Byte(cp: u32, n: usize, k: usize) u8 {
+  let shift = u32.from(6 * (n - 1 - k));
+  if k == 0 {
+    if n == 1 { return u8.from(cp); }
+    let lead = if n == 2 { 0xC0u32 } else if n == 3 { 0xE0u32 } else { 0xF0u32 };
+    return u8.from(lead | (cp >> shift));
+  }
+  u8.from(0x80 | ((cp >> shift) & 0x3F))
+}
+
+fn maxOfLen(n: usize) u32 {
+  if n == 1 { 0x7F } else if n == 2 { 0x7FF } else { 0xFFFF }
+}
+
+// The UTF-8 byte-range sequences that together spell the code points lo..=hi, in
+// order: each is a count and four (lo, hi) pairs, nine bytes in all
+fn sequencesOf(lo: u32, hi: u32, out: &mut List[u8]) {
+  var stack = List[Range]();
+  stack.push(Range(lo, hi));
+  while stack.len() > 0 {
+    var r = stack.pop().unwrap();
+    var again = true;
+    while again {
+      again = false;
+      // skip the surrogates
+      if r.lo < 0xE000 && r.hi > 0xD7FF {
+        stack.push(Range(0xE000, r.hi));
+        r = Range(r.lo, 0xD7FF);
+        again = true;
+        continue;
+      }
+      if r.lo > r.hi { break; }
+      // split where the length of the encoding changes
+      var n = 1usize;
+      while n < 4 && !again {
+        let m = maxOfLen(n);
+        if r.lo <= m && m < r.hi {
+          stack.push(Range(m + 1, r.hi));
+          r = Range(r.lo, m);
+          again = true;
+        }
+        n = n + 1;
+      }
+      if again { continue; }
+      if r.hi < 0x80 {
+        out.push(1u8);
+        out.push(u8.from(r.lo)); out.push(u8.from(r.hi));
+        var z = 0usize;
+        while z < 6 { out.push(0u8); z = z + 1; }
+        break;
+      }
+      // split where a continuation byte's range would be cut
+      var i = 1u32;
+      while i < 4 && !again {
+        let mask = (1u32 << (6 * i)) - 1;
+        if (r.lo & ~mask) != (r.hi & ~mask) {
+          if (r.lo & mask) != 0 {
+            stack.push(Range((r.lo | mask) + 1, r.hi));
+            r = Range(r.lo, r.lo | mask);
+            again = true;
+          }
+          else if (r.hi & mask) != mask {
+            stack.push(Range(r.hi & ~mask, r.hi));
+            r = Range(r.lo, (r.hi & ~mask) - 1);
+            again = true;
+          }
+        }
+        i = i + 1;
+      }
+      if again { continue; }
+      let len = utf8Len(r.lo);
+      out.push(u8.from(len));
+      var k = 0usize;
+      while k < 4 {
+        if k < len {
+          out.push(utf8Byte(r.lo, len, k));
+          out.push(utf8Byte(r.hi, len, k));
+        }
+        else { out.push(0u8); out.push(0u8); }
+        k = k + 1;
+      }
+    }
+  }
+}
+
+// -------- the literal every match begins with --------
+
+// Append the bytes of the literal text the node must begin with; true while
+// the whole node was literal, so the next sibling continues the prefix
+fn collectPrefix(p: &Parser, id: u32, out: &mut List[u8]) bool {
+  let n = p.nodes[usize.from(id)];
+  if n.kind == nEmpty || n.kind == nLook { return true; }
+  if n.kind == nGroup { return collectPrefix(p, n.first, out); }
+  if n.kind == nConcat {
+    var k = 0usize;
+    while k < usize.from(n.count) {
+      if !collectPrefix(p, p.kids[usize.from(n.first) + k], out) { return false; }
+      k = k + 1;
+    }
+    return true;
+  }
+  if n.kind == nClass && n.count == 1 {
+    let r = p.ranges[usize.from(n.first)];
+    if r.lo != r.hi { return false; }
+    if n.flag { out.push(u8.from(r.lo)); return true; }
+    let len = utf8Len(r.lo);
+    var k = 0usize;
+    while k < len { out.push(utf8Byte(r.lo, len, k)); k = k + 1; }
+    return true;
+  }
+  false
+}
+
+// Whether the node can match the empty text
+fn nullable(p: &Parser, id: u32) bool {
+  let n = p.nodes[usize.from(id)];
+  if n.kind == nEmpty || n.kind == nLook { return true; }
+  if n.kind == nClass { return false; }
+  if n.kind == nGroup { return nullable(p, n.first); }
+  if n.kind == nRepeat { return n.a == 0 || nullable(p, n.first); }
+  var k = 0usize;
+  if n.kind == nConcat {
+    while k < usize.from(n.count) {
+      if !nullable(p, p.kids[usize.from(n.first) + k]) { return false; }
+      k = k + 1;
+    }
+    return true;
+  }
+  while k < usize.from(n.count) {
+    if nullable(p, p.kids[usize.from(n.first) + k]) { return true; }
+    k = k + 1;
+  }
+  false
+}
+
+// The states that read a byte, or match, that the start state leads to without a
+// byte, in the order a search tries them: a search that wants only the whole match
+// starts each thread from these, without walking the Split states again. Empty when
+// an assertion is on the way (the walk is then done afresh at each position).
+fn startStates(insts: &List[Inst], trans: &List[Trans], start: u32, lo: &mut List[u8], hi: &mut List[u8]) List[u32] {
+  var seed = List[u32]();
+  var seen = List[bool](insts.len()) <- fill false;
+  var stack = List[u32]();
+  stack.push(start);
+  while stack.len() > 0 {
+    var sid = stack.pop().unwrap();
+    var go = true;
+    while go {
+      if *seen[usize.from(sid)] { break; }
+      seen.set(usize.from(sid), true);
+      let inst = &insts[usize.from(sid)];
+      if inst.op == opSplit { stack.push(inst.x); sid = inst.next; }
+      else if inst.op == opSave { sid = inst.next; }
+      else if inst.op == opLook || inst.op == opMatch { return List[u32](); }
+      else if inst.op == opFail { go = false; }
+      else {
+        seed.push(sid);
+        // the bytes the state can read, or a range holding them all
+        if inst.op == opByte { lo.push(inst.lo); hi.push(inst.hi); }
+        else {
+          lo.push(trans[usize.from(inst.x)].lo);
+          hi.push(trans[usize.from(inst.x) + usize.from(inst.y) - 1].hi);
+        }
+        go = false;
+      }
+    }
+  }
+  seed
+}
+
+// The compiled program
+struct Program {
+  pub insts: List[Inst];
+  pub trans: List[Trans];
+  pub start: u32;
+  // Slots for the captures: two for each group, the whole match first
+  pub slots: usize;
+  pub prefix: List[u8];
+  // startStates, or empty, and for each a range of the bytes it can read
+  pub seed: List[u32];
+  pub seedLo: List[u8];
+  pub seedHi: List[u8];
+  // Whether the pattern can match the empty text
+  pub nullable: bool;
+}
