@@ -1,0 +1,410 @@
+// A float's math methods: tan, asin, acos, atan, atan2, exp, exp2, ln, log2, log10,
+// pow, powi, hypot, cbrt, sinh, cosh, tanh, and the tests isNaN, isInfinite and
+// isFinite, on f64 and f32, beside the compiler's sqrt, sin and cos. Each is
+// 'x.tan()', never a package function.
+//
+// Every value is worked against the C library's definition (C99 Annex F, which
+// Rust's f64 methods follow): the expected values below come from CPython's math
+// module, itself the C library's, and each was checked by hand against a known
+// constant (tan 1 = 1.5574077..., e = 2.718281828..., ln 10 = 2.302585092..., pi/4,
+// pi/6 = 0.5235987755..., sinh 1 = 1.1752011936...). What the cases are chosen to catch:
+//  - atan2 in all four quadrants, and at a zero of either sign: atan2(+-0, -1) is
+//    +-pi, atan2(+-0, +0) is +-0, atan2(+0, -0) is pi, atan2(-0, -0) is -pi;
+//  - ln(0) and log2(0) and log10(0) are -inf, of a negative a NaN, ln(inf) is inf;
+//  - pow(0, 0) is 1, and so is pow(NaN, 0) and pow(1, NaN); pow(-8, 1/3) is a NaN;
+//    pow(+-0, -1) is +-inf; pow(-1, inf) is 1; powi(x, 0) is 1 for every x, a NaN too;
+//  - a negative base to an odd integer power is negative (powi(-2, 3) is -8);
+//  - hypot(inf, NaN) is inf (an infinity wins over a NaN), hypot(1e200, 1e200) does not
+//    overflow, and hypot(5e-324, 0) is the subnormal itself;
+//  - cbrt of a negative is negative, and cbrt(-0) is -0;
+//  - exp2(-1074) is the smallest subnormal (a bit pattern of 1), exp2(1024) is inf;
+//  - sinh and tanh are odd (sinh(-0) is -0), cosh is even, tanh saturates at +-1;
+//  - isNaN is true for a NaN alone, isInfinite for the two infinities alone, isFinite
+//    for everything else: zero of either sign, a subnormal, the largest finite.
+// A value that is not exact is judged by a relative tolerance (f64 1e-14, f32 1e-6),
+// printed as 'ok'; an exact value is printed whole, with the sign of a zero. Every
+// operand comes through a C function the optimizer cannot see into, so the
+// calls run as the program runs; a last section gives the compiler's constant
+// folder a few. The .out is the same in a release and a debug build.
+
+mod intrinsic_float_math;
+
+import stdio use *;
+
+extern {
+  fn @c opaque64(x: f64) f64;
+  fn @c opaque32(x: f32) f32;
+  fn @c opaquei(x: i32) i32;
+}
+
+fn pinf() f64 { f64.fromBits(0x7FF0000000000000u64) }
+fn ninf() f64 { f64.fromBits(0xFFF0000000000000u64) }
+fn nan() f64 { f64.fromBits(0x7FF8000000000000u64) }
+fn nzero() f64 { f64.fromBits(0x8000000000000000u64) }
+fn tiny() f64 { f64.fromBits(1u64) }
+fn big() f64 { f64.fromBits(0x7FEFFFFFFFFFFFFFu64) }
+fn pinf32() f32 { f32.fromBits(0x7F800000u32) }
+fn ninf32() f32 { f32.fromBits(0xFF800000u32) }
+fn nan32() f32 { f32.fromBits(0x7FC00000u32) }
+fn nzero32() f32 { f32.fromBits(0x80000000u32) }
+fn tiny32() f32 { f32.fromBits(1u32) }
+fn big32() f32 { f32.fromBits(0x7F7FFFFFu32) }
+
+fn o(x: f64) f64 { opaque64(x) }
+fn p(x: f32) f32 { opaque32(x) }
+fn oi(n: i32) i32 { opaquei(n) }
+
+// An exact result: a NaN, an infinity, a zero with its sign, or the number whole
+fn show(label: &str, x: f64) {
+  printStr(label);
+  printStr(" = ");
+  if x != x { printStr("nan"); }
+  else if x == pinf() { printStr("inf"); }
+  else if x == ninf() { printStr("-inf"); }
+  else if x == 0.0 { printStr(if x.signBit() { "-0" } else { "+0" }); }
+  else { printFloat(x); }
+  printStr("\n");
+}
+
+fn show32(label: &str, x: f32) { show(label, f64.from(x)); }
+
+// An inexact result, within a relative tolerance of the wanted value
+fn near(label: &str, got: f64, want: f64, tol: f64) {
+  printStr(label);
+  let d = (got - want).abs();
+  if d <= tol * want.abs() { printStr(" ok\n"); }
+  else {
+    printStr(" BAD got ");
+    printFloat(got);
+    printStr(" want ");
+    printFloat(want);
+    printStr("\n");
+  }
+}
+
+fn n(label: &str, got: f64, want: f64) { near(label, got, want, 1.0e-14); }
+fn n32(label: &str, got: f32, want: f64) { near(label, f64.from(got), want, 1.0e-6); }
+
+fn yn(v: bool) { printStr(if v { "yes" } else { "no" }); }
+
+fn kind(label: &str, x: f64) {
+  printStr(label);
+  printStr(": isNaN ");
+  yn(x.isNaN());
+  printStr(", isInfinite ");
+  yn(x.isInfinite());
+  printStr(", isFinite ");
+  yn(x.isFinite());
+  printStr("\n");
+}
+
+fn kind32(label: &str, x: f32) {
+  printStr(label);
+  printStr(": isNaN ");
+  yn(x.isNaN());
+  printStr(", isInfinite ");
+  yn(x.isInfinite());
+  printStr(", isFinite ");
+  yn(x.isFinite());
+  printStr("\n");
+}
+
+fn f64tests() {
+  printStr("-- f64 --\n");
+  // tan
+  n("tan(1)", o(1.0).tan(), 1.5574077246549023);
+  n("tan(-1)", o(-1.0).tan(), -1.5574077246549023);
+  n("tan(0.5)", o(0.5).tan(), 0.5463024898437905);
+  show("tan(0)", o(0.0).tan());
+  show("tan(-0)", o(nzero()).tan());
+  show("tan(inf)", o(pinf()).tan());
+  // asin, acos, atan
+  n("asin(0.5)", o(0.5).asin(), 0.5235987755982989);
+  n("asin(1)", o(1.0).asin(), 1.5707963267948966);
+  show("asin(0)", o(0.0).asin());
+  show("asin(-0)", o(nzero()).asin());
+  show("asin(2)", o(2.0).asin());
+  n("acos(0.5)", o(0.5).acos(), 1.0471975511965979);
+  n("acos(-1)", o(-1.0).acos(), 3.141592653589793);
+  show("acos(1)", o(1.0).acos());
+  show("acos(-2)", o(-2.0).acos());
+  n("atan(1)", o(1.0).atan(), 0.7853981633974483);
+  n("atan(inf)", o(pinf()).atan(), 1.5707963267948966);
+  n("atan(-inf)", o(ninf()).atan(), -1.5707963267948966);
+  show("atan(-0)", o(nzero()).atan());
+  show("atan(nan)", o(nan()).atan());
+  // atan2, y.atan2(x): the four quadrants, then the zeros
+  n("atan2(1, 1)", o(1.0).atan2(o(1.0)), 0.7853981633974483);
+  n("atan2(1, -1)", o(1.0).atan2(o(-1.0)), 2.356194490192345);
+  n("atan2(-1, -1)", o(-1.0).atan2(o(-1.0)), -2.356194490192345);
+  n("atan2(-1, 1)", o(-1.0).atan2(o(1.0)), -0.7853981633974483);
+  n("atan2(1, 2)", o(1.0).atan2(o(2.0)), 0.4636476090008061);
+  n("atan2(0, -1)", o(0.0).atan2(o(-1.0)), 3.141592653589793);
+  n("atan2(-0, -1)", o(nzero()).atan2(o(-1.0)), -3.141592653589793);
+  show("atan2(0, 0)", o(0.0).atan2(o(0.0)));
+  show("atan2(-0, 0)", o(nzero()).atan2(o(0.0)));
+  n("atan2(0, -0)", o(0.0).atan2(o(nzero())), 3.141592653589793);
+  n("atan2(-0, -0)", o(nzero()).atan2(o(nzero())), -3.141592653589793);
+  n("atan2(inf, inf)", o(pinf()).atan2(o(pinf())), 0.7853981633974483);
+  show("atan2(1, inf)", o(1.0).atan2(o(pinf())));
+  show("atan2(nan, 1)", o(nan()).atan2(o(1.0)));
+  // exp, exp2
+  show("exp(0)", o(0.0).exp());
+  n("exp(1)", o(1.0).exp(), 2.718281828459045);
+  n("exp(-1)", o(-1.0).exp(), 0.36787944117144233);
+  n("exp(0.5)", o(0.5).exp(), 1.6487212707001282);
+  show("exp(-inf)", o(ninf()).exp());
+  show("exp(inf)", o(pinf()).exp());
+  show("exp(710)", o(710.0).exp());
+  show("exp(-1000)", o(-1000.0).exp());
+  show("exp(nan)", o(nan()).exp());
+  show("exp2(10)", o(10.0).exp2());
+  show("exp2(-1)", o(-1.0).exp2());
+  n("exp2(0.5)", o(0.5).exp2(), 1.4142135623730951);
+  show("exp2(1024)", o(1024.0).exp2());
+  show("exp2(-1074) is the smallest subnormal", o(-1074.0).exp2());
+  printStr("exp2(-1074).bits() = ");
+  printUInt(o(-1074.0).exp2().bits());
+  printStr("\n");
+  show("exp2(-1080)", o(-1080.0).exp2());
+  show("exp2(-inf)", o(ninf()).exp2());
+  // ln, log2, log10
+  show("ln(1)", o(1.0).ln());
+  n("ln(e)", o(2.718281828459045).ln(), 1.0);
+  n("ln(10)", o(10.0).ln(), 2.302585092994046);
+  n("ln(2)", o(2.0).ln(), 0.6931471805599453);
+  n("ln(5e-324)", o(tiny()).ln(), -744.4400719213812);
+  show("ln(0)", o(0.0).ln());
+  show("ln(-0)", o(nzero()).ln());
+  show("ln(-1)", o(-1.0).ln());
+  show("ln(inf)", o(pinf()).ln());
+  show("log2(8)", o(8.0).log2());
+  show("log2(1024)", o(1024.0).log2());
+  show("log2(0.5)", o(0.5).log2());
+  show("log2(1)", o(1.0).log2());
+  n("log2(10)", o(10.0).log2(), 3.321928094887362);
+  show("log2(0)", o(0.0).log2());
+  show("log2(-1)", o(-1.0).log2());
+  n("log10(1000)", o(1000.0).log10(), 3.0);
+  n("log10(1e-5)", o(1.0e-5).log10(), -5.0);
+  n("log10(2)", o(2.0).log10(), 0.3010299956639812);
+  n("log10(7)", o(7.0).log10(), 0.8450980400142568);
+  show("log10(1)", o(1.0).log10());
+  show("log10(0)", o(0.0).log10());
+  show("log10(-1)", o(-1.0).log10());
+  // pow
+  show("pow(2, 10)", o(2.0).pow(o(10.0)));
+  show("pow(0, 0)", o(0.0).pow(o(0.0)));
+  show("pow(nan, 0)", o(nan()).pow(o(0.0)));
+  show("pow(1, nan)", o(1.0).pow(o(nan())));
+  show("pow(-8, 1/3)", o(-8.0).pow(o(0.3333333333333333)));
+  show("pow(-2, 3)", o(-2.0).pow(o(3.0)));
+  show("pow(0, -1)", o(0.0).pow(o(-1.0)));
+  show("pow(-0, -1)", o(nzero()).pow(o(-1.0)));
+  show("pow(-0, 3)", o(nzero()).pow(o(3.0)));
+  n("pow(2, 0.5)", o(2.0).pow(o(0.5)), 1.4142135623730951);
+  n("pow(3, 2.5)", o(3.0).pow(o(2.5)), 15.588457268119896);
+  show("pow(2, inf)", o(2.0).pow(o(pinf())));
+  show("pow(0.5, inf)", o(0.5).pow(o(pinf())));
+  show("pow(-1, inf)", o(-1.0).pow(o(pinf())));
+  show("pow(inf, -1)", o(pinf()).pow(o(-1.0)));
+  show("pow(2, -inf)", o(2.0).pow(o(ninf())));
+  show("pow(nan, 1)", o(nan()).pow(o(1.0)));
+  // powi
+  show("powi(2, 10)", o(2.0).powi(oi(10)));
+  show("powi(2, -2)", o(2.0).powi(oi(-2)));
+  show("powi(-2, 3)", o(-2.0).powi(oi(3)));
+  show("powi(-2, 2)", o(-2.0).powi(oi(2)));
+  show("powi(1.5, 2)", o(1.5).powi(oi(2)));
+  show("powi(0, 0)", o(0.0).powi(oi(0)));
+  show("powi(nan, 0)", o(nan()).powi(oi(0)));
+  show("powi(0, -1)", o(0.0).powi(oi(-1)));
+  show("powi(-0, -1)", o(nzero()).powi(oi(-1)));
+  show("powi(2, 1024)", o(2.0).powi(oi(1024)));
+  n("powi(3, -1)", o(3.0).powi(oi(-1)), 0.3333333333333333);
+  n("powi(10, 300)", o(10.0).powi(oi(300)), 1.0e300);
+  show("powi(nan, 2)", o(nan()).powi(oi(2)));
+  // hypot
+  show("hypot(3, 4)", o(3.0).hypot(o(4.0)));
+  show("hypot(-3, -4)", o(-3.0).hypot(o(-4.0)));
+  show("hypot(5, 12)", o(5.0).hypot(o(12.0)));
+  show("hypot(0, 0)", o(0.0).hypot(o(0.0)));
+  n("hypot(1, 1)", o(1.0).hypot(o(1.0)), 1.4142135623730951);
+  n("hypot(1e200, 1e200)", o(1.0e200).hypot(o(1.0e200)), 1.414213562373095e200);
+  show("hypot(5e-324, 0)", o(tiny()).hypot(o(0.0)));
+  show("hypot(inf, nan)", o(pinf()).hypot(o(nan())));
+  show("hypot(nan, -inf)", o(nan()).hypot(o(ninf())));
+  show("hypot(nan, 1)", o(nan()).hypot(o(1.0)));
+  // cbrt
+  show("cbrt(27)", o(27.0).cbrt());
+  show("cbrt(-8)", o(-8.0).cbrt());
+  show("cbrt(0)", o(0.0).cbrt());
+  show("cbrt(-0)", o(nzero()).cbrt());
+  show("cbrt(inf)", o(pinf()).cbrt());
+  show("cbrt(-inf)", o(ninf()).cbrt());
+  show("cbrt(nan)", o(nan()).cbrt());
+  n("cbrt(10)", o(10.0).cbrt(), 2.154434690031884);
+  n("cbrt(1e-300)", o(1.0e-300).cbrt(), 1.0e-100);
+  // sinh, cosh, tanh
+  show("sinh(0)", o(0.0).sinh());
+  show("sinh(-0)", o(nzero()).sinh());
+  n("sinh(1)", o(1.0).sinh(), 1.1752011936438014);
+  n("sinh(-1)", o(-1.0).sinh(), -1.1752011936438014);
+  show("sinh(inf)", o(pinf()).sinh());
+  show("sinh(-inf)", o(ninf()).sinh());
+  show("sinh(1000)", o(1000.0).sinh());
+  show("sinh(nan)", o(nan()).sinh());
+  show("cosh(0)", o(0.0).cosh());
+  n("cosh(1)", o(1.0).cosh(), 1.5430806348152437);
+  n("cosh(-1)", o(-1.0).cosh(), 1.5430806348152437);
+  show("cosh(-inf)", o(ninf()).cosh());
+  show("cosh(1000)", o(1000.0).cosh());
+  show("cosh(nan)", o(nan()).cosh());
+  show("tanh(0)", o(0.0).tanh());
+  show("tanh(-0)", o(nzero()).tanh());
+  n("tanh(1)", o(1.0).tanh(), 0.7615941559557649);
+  show("tanh(inf)", o(pinf()).tanh());
+  show("tanh(-inf)", o(ninf()).tanh());
+  show("tanh(1000)", o(1000.0).tanh());
+  show("tanh(-1000)", o(-1000.0).tanh());
+  show("tanh(nan)", o(nan()).tanh());
+  // the tests
+  kind("nan", o(nan()));
+  kind("inf", o(pinf()));
+  kind("-inf", o(ninf()));
+  kind("0", o(0.0));
+  kind("-0", o(nzero()));
+  kind("5e-324", o(tiny()));
+  kind("largest finite", o(big()));
+  kind("1", o(1.0));
+  kind("-2.5", o(-2.5));
+}
+
+fn f32tests() {
+  printStr("-- f32 --\n");
+  n32("tan(1)", p(1.0f32).tan(), 1.5574077246549023);
+  show32("tan(-0)", p(nzero32()).tan());
+  show32("tan(inf)", p(pinf32()).tan());
+  n32("asin(0.5)", p(0.5f32).asin(), 0.5235987755982989);
+  show32("asin(2)", p(2.0f32).asin());
+  n32("acos(0.5)", p(0.5f32).acos(), 1.0471975511965979);
+  show32("acos(1)", p(1.0f32).acos());
+  n32("atan(1)", p(1.0f32).atan(), 0.7853981633974483);
+  n32("atan(-inf)", p(ninf32()).atan(), -1.5707963267948966);
+  n32("atan2(1, 1)", p(1.0f32).atan2(p(1.0f32)), 0.7853981633974483);
+  n32("atan2(1, -1)", p(1.0f32).atan2(p(-1.0f32)), 2.356194490192345);
+  n32("atan2(-1, -1)", p(-1.0f32).atan2(p(-1.0f32)), -2.356194490192345);
+  n32("atan2(-1, 1)", p(-1.0f32).atan2(p(1.0f32)), -0.7853981633974483);
+  n32("atan2(-0, -1)", p(nzero32()).atan2(p(-1.0f32)), -3.141592653589793);
+  show32("atan2(-0, 0)", p(nzero32()).atan2(p(0.0f32)));
+  show32("exp(0)", p(0.0f32).exp());
+  n32("exp(1)", p(1.0f32).exp(), 2.718281828459045);
+  show32("exp(-inf)", p(ninf32()).exp());
+  show32("exp(100)", p(100.0f32).exp());
+  show32("exp2(10)", p(10.0f32).exp2());
+  show32("exp2(-1)", p(-1.0f32).exp2());
+  show32("exp2(128)", p(128.0f32).exp2());
+  show32("exp2(-149) is the smallest subnormal", p(-149.0f32).exp2());
+  printStr("exp2(-149).bits() = ");
+  printUInt(u64.from(p(-149.0f32).exp2().bits()));
+  printStr("\n");
+  show32("ln(1)", p(1.0f32).ln());
+  n32("ln(10)", p(10.0f32).ln(), 2.302585092994046);
+  show32("ln(0)", p(0.0f32).ln());
+  show32("ln(-1)", p(-1.0f32).ln());
+  show32("ln(inf)", p(pinf32()).ln());
+  show32("log2(8)", p(8.0f32).log2());
+  show32("log2(0)", p(0.0f32).log2());
+  n32("log2(10)", p(10.0f32).log2(), 3.321928094887362);
+  n32("log10(1000)", p(1000.0f32).log10(), 3.0);
+  show32("log10(0)", p(0.0f32).log10());
+  show32("log10(-1)", p(-1.0f32).log10());
+  show32("pow(2, 10)", p(2.0f32).pow(p(10.0f32)));
+  show32("pow(0, 0)", p(0.0f32).pow(p(0.0f32)));
+  show32("pow(nan, 0)", p(nan32()).pow(p(0.0f32)));
+  show32("pow(1, nan)", p(1.0f32).pow(p(nan32())));
+  show32("pow(-8, 1/3)", p(-8.0f32).pow(p(0.33333334f32)));
+  show32("pow(-2, 3)", p(-2.0f32).pow(p(3.0f32)));
+  show32("pow(-0, -1)", p(nzero32()).pow(p(-1.0f32)));
+  n32("pow(3, 2.5)", p(3.0f32).pow(p(2.5f32)), 15.588457268119896);
+  show32("powi(2, 10)", p(2.0f32).powi(oi(10)));
+  show32("powi(2, -2)", p(2.0f32).powi(oi(-2)));
+  show32("powi(-2, 3)", p(-2.0f32).powi(oi(3)));
+  show32("powi(0, 0)", p(0.0f32).powi(oi(0)));
+  show32("powi(nan, 0)", p(nan32()).powi(oi(0)));
+  show32("powi(0, -1)", p(0.0f32).powi(oi(-1)));
+  show32("powi(2, 200)", p(2.0f32).powi(oi(200)));
+  show32("hypot(3, 4)", p(3.0f32).hypot(p(4.0f32)));
+  show32("hypot(-5, -12)", p(-5.0f32).hypot(p(-12.0f32)));
+  show32("hypot(inf, nan)", p(pinf32()).hypot(p(nan32())));
+  show32("hypot(nan, 1)", p(nan32()).hypot(p(1.0f32)));
+  n32("hypot(1e30, 1e30)", p(1.0e30f32).hypot(p(1.0e30f32)), 1.4142135623730951e30);
+  show32("hypot(1.4e-45, 0)", p(tiny32()).hypot(p(0.0f32)));
+  show32("cbrt(27)", p(27.0f32).cbrt());
+  show32("cbrt(-8)", p(-8.0f32).cbrt());
+  show32("cbrt(-0)", p(nzero32()).cbrt());
+  show32("cbrt(inf)", p(pinf32()).cbrt());
+  show32("cbrt(nan)", p(nan32()).cbrt());
+  n32("cbrt(10)", p(10.0f32).cbrt(), 2.154434690031884);
+  show32("sinh(-0)", p(nzero32()).sinh());
+  n32("sinh(1)", p(1.0f32).sinh(), 1.1752011936438014);
+  show32("sinh(-inf)", p(ninf32()).sinh());
+  show32("cosh(0)", p(0.0f32).cosh());
+  n32("cosh(1)", p(1.0f32).cosh(), 1.5430806348152437);
+  show32("cosh(-inf)", p(ninf32()).cosh());
+  show32("cosh(100)", p(100.0f32).cosh());
+  show32("tanh(-0)", p(nzero32()).tanh());
+  n32("tanh(1)", p(1.0f32).tanh(), 0.7615941559557649);
+  show32("tanh(inf)", p(pinf32()).tanh());
+  show32("tanh(-100)", p(-100.0f32).tanh());
+  kind32("nan", p(nan32()));
+  kind32("inf", p(pinf32()));
+  kind32("-inf", p(ninf32()));
+  kind32("0", p(0.0f32));
+  kind32("-0", p(nzero32()));
+  kind32("1.4e-45", p(tiny32()));
+  kind32("largest finite", p(big32()));
+  kind32("1", p(1.0f32));
+  kind32("-2.5", p(-2.5f32));
+}
+
+// The same calls on values the compiler can see, so its constant folder answers
+fn foldedtests() {
+  printStr("-- folded --\n");
+  let one = 1.0;
+  let zero = 0.0;
+  let negone = -1.0;
+  n("tan(1)", one.tan(), 1.5574077246549023);
+  n("atan2(-1, -1)", negone.atan2(negone), -2.356194490192345);
+  n("atan2(1, -1)", one.atan2(negone), 2.356194490192345);
+  show("ln(0)", zero.ln());
+  show("ln(-1)", negone.ln());
+  show("log2(0)", zero.log2());
+  show("pow(0, 0)", zero.pow(zero));
+  show("powi(2, 10)", 2.0.powi(10));
+  show("powi(2, -2)", 2.0.powi(-2));
+  show("powi(-1, 3) * 2", negone.powi(3) * 2.0);
+  show("hypot(3, 4)", 3.0.hypot(4.0));
+  show("cbrt(-8)", (-8.0).cbrt());
+  show("sqrt(-1)", negone.sqrt());
+  show("exp(-inf)", ninf().exp());
+  show("tanh(inf)", pinf().tanh());
+  kind("folded nan", nan());
+  kind("folded -inf", ninf());
+  kind("folded largest finite", big());
+  kind("folded 0", zero);
+  let two32 = 2.0f32;
+  show32("ln(0) f32", 0.0f32.ln());
+  show32("hypot(3, 4) f32", 3.0f32.hypot(4.0f32));
+  show32("powi(2, 10) f32", two32.powi(10));
+  show32("cbrt(27) f32", 27.0f32.cbrt());
+  kind32("folded nan f32", nan32());
+  kind32("folded inf f32", pinf32());
+  kind32("folded 1 f32", 1.0f32);
+}
+
+fn main() {
+  f64tests();
+  f32tests();
+  foldedtests();
+}
