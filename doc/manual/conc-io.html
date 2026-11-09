@@ -640,11 +640,12 @@ actor Weather {
 		back, and that is what lets the connection read on, so a slow stage slows the server and nothing holds more than
 		the connection's own window.</p>
 	<p>A body that arrives compressed (<span class="pre">Content-Encoding</span> gzip, deflate or zstd) goes through package
-		<span class="pre">httpdecode</span>: <span class="pre">Decoder(sink, limit)</span> is the sink given to
-		<span class="pre">streamTo</span> (by its <span class="pre">open(client, request)</span>), and what reaches the caller's sink is the
-		decoded bytes. Its <span class="pre">limit</span> bounds the decoded output, a decompression bomb ending as
+		<span class="pre">httpdecode</span>: <span class="pre">httpdecode.request(req)</span> adds the
+		<span class="pre">Accept-Encoding</span> it can decode, and <span class="pre">httpdecode.to(body, sink, limit)</span> takes the
+		<span class="pre">BodyStream</span> that <span class="pre">client.stream</span> answered and sends its body on to the sink, so that what
+		reaches the caller's sink is the decoded bytes. Its <span class="pre">limit</span> bounds the decoded output, a decompression bomb ending as
 		<span class="pre">Failed</span>; this differs from <span class="pre">fetchWhole</span>, whose limit counts bytes on the wire. A
-		coding it cannot decode, or a corrupt or oversized stream, ends the sink <span class="pre">Failed</span> and cancels the fetch.</p>
+		coding it cannot decode, or a corrupt or oversized stream, ends the sink <span class="pre">Failed</span> and ends the fetch.</p>
 	<p>The other way round, <span class="pre">actorhttp.listen(addr, config)</span> answers a <span class="pre">Server</span>
 		(a handle that moves and <span class="pre">clone()</span>s; its last handle's going closes it), and
 		<span class="pre">await server.next()</span> answers the next request, whole, as an <span class="pre">Exchange</span>: the
@@ -656,6 +657,15 @@ actor Weather {
 		<span class="pre">ex.startEvents()</span> then <span class="pre">await ex.sendEvent(&amp;event)</span> for a stream of
 		server-sent events. A write is answered when the connection has taken the bytes, so an actor that awaits each is
 		slowed to its peer's speed; a peer that has left answers the write <span class="pre">Closed</span>.
+		After <span class="pre">start</span>, <span class="pre">ex.bodySink()</span> instead of <span class="pre">write</span> and
+		<span class="pre">finish</span> gives a <span class="pre">ChunkSink</span>: a pipeline that ends in it
+		(<span class="pre">FileSource</span>, a gzip stage, the sink) is the response's body, a chunk at a time, so a large
+		or generated body never sits whole in memory. The service thread copies each chunk into buffers of its own and gives the
+		chunk back to its source once the connection has accepted the copy, so a slow client holds the pipeline back. The sink's
+		end is the finish; a sized body that the pipeline overruns or ends short of resets the exchange and stops the source
+		<span class="pre">Failed</span>; dropping the Exchange leaves the body to the sink; if the sink too is dropped without a source ever attached to it,
+		the response ends as without a sink (an unsized body finished, a sized one reset), so a handler that forgets to wire
+		its sink does not pin the connection.
 		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
 		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
 		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,

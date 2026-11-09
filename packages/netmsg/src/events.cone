@@ -2,11 +2,11 @@
 // it there.
 //
 // Every connection, whether it crosses a network or joins two actors in one
-// process, tells the application the same few things, as NetEvents given to an
-// EventHandler: a closure of the application's own, which typically sends a message
-// to an application actor (or pushes the event on a channel for a thread).
-// It is called by the connection's actor, one event at a time per connection,
-// in the order they happened.
+// process, tells the application the same few things, as NetEvents delivered to a
+// ValueSink[NetEvent] (an EventHandler): an actor of the application's own, or one
+// of the two small adapters here that carry them to a closure ('eventHandler') or
+// a channel ('channelHandler'). They arrive one at a time per connection, in the
+// order they happened, as a stream of values with credit (stages, valuesink.cone).
 
 // Why a send was refused
 pub enum RefusalKind {
@@ -33,28 +33,119 @@ pub enum NetEvent {
   pub struct Update {pub id: u32; pub stream: u16; pub data: List[u8];}
 }
 
-// The application's side of the events: a closure, with the one rule that it
-// does not wait (it hands the event on). One EventHandler serves every connection
-// of a server, so it is shared and taken under a lock; build one with
-// 'eventHandler' or 'channelHandler'.
-pub struct EventSink {
-  f: Uni[fn(ev: NetEvent) + Sendable];
+// WHERE EVENTS GO. An EventHandler is a ValueSink[NetEvent], so a connection (a
+// ValueSource) sends an event only against credit its sink has granted, one unit per
+// event: a sink that is slow slows its connection, or ends it (see Connection), and
+// never blocks it. Joined, Left and Refused are control items: they pass without
+// credit. ONE SINK SERVES EVERY CONNECTION of a server, so a sink with several sources
+// must tell them apart from the item: it keeps the Connection each Joined(id, conn)
+// carries, credits that one by NetEvent.id as it uses events, and forgets it on Left.
+// The adapters below do exactly this: each grants a window of 64 when a connection
+// attaches and one more unit per event it has handled. An application actor that is
+// its own ValueSink does the same, or credits as it likes.
+pub alias EventHandler = ValueSink[NetEvent];
 
-  fn call(self: &mut, ev: NetEvent) {
-    f(ev);
+// The window the adapters grant each connection
+const handlerWindow = 64u32;
+
+// The connections a sink has been told of, by NetEvent.id, to credit the right one
+struct Roster {
+  conns: Dict[u32, Connection];
+
+  // An event is about to be handled: remember a connection that joined
+  fn noteJoined(self: &mut, ev: &NetEvent) {
+    match ev {
+      case let &Joined(j) { self.conns.insert(j.id, j.conn); }
+      else {}
+    }
+  }
+
+  // The event has been handled: credit its connection one unit, or let it go on Left
+  fn used(self: &mut, id: u32, left: bool) {
+    if left {
+      self.conns.remove(&id);
+      return;
+    }
+    match self.conns.get(&id) {
+      case let Some(c) { c.credit(1u32); }
+      else {}
+    }
   }
 }
 
-pub alias EventHandler = Arc[Mutex, EventSink];
+fn idOf(ev: &NetEvent) u32 {
+  match ev {
+    case let &Joined(j) { j.id }
+    case let &Left(l) { l.id }
+    case let &Refused(r) { r.id }
+    case let &Message(m) { m.id }
+    case let &Update(u) { u.id }
+  }
+}
+
+fn isLeft(ev: &NetEvent) bool {
+  match ev {
+    case is Left { true }
+    else { false }
+  }
+}
+
+// An EventHandler that calls f with each event
+pub actor ClosureSink is ValueSink[NetEvent] {
+  f: Uni[fn(ev: NetEvent) + Sendable];
+  roster: Roster;
+
+  pub fn init(self: &new, f: Uni[fn(ev: NetEvent) + Sendable]) {
+    *self = Self(f: f, roster: Roster(Dict[u32, Connection]()));
+  }
+
+  pub async fn attach(self, up: ValueSource) {
+    up.credit(handlerWindow);
+  }
+
+  pub async fn accept(self, ev: NetEvent) {
+    let id = idOf(&ev);
+    let left = isLeft(&ev);
+    roster.noteJoined(&ev);
+    f(ev);
+    roster.used(id, left);
+  }
+
+  pub async fn end(self, how: Ending) {}
+}
+
+// An EventHandler that puts each event on a channel, for a thread to take
+pub actor ChannelSink is ValueSink[NetEvent] {
+  tx: Sender[NetEvent];
+  roster: Roster;
+
+  pub fn init(self: &new, tx: Sender[NetEvent]) {
+    *self = Self(tx: tx, roster: Roster(Dict[u32, Connection]()));
+  }
+
+  pub async fn attach(self, up: ValueSource) {
+    up.credit(handlerWindow);
+  }
+
+  pub async fn accept(self, ev: NetEvent) {
+    let id = idOf(&ev);
+    let left = isLeft(&ev);
+    roster.noteJoined(&ev);
+    tx.send(ev);
+    roster.used(id, left);
+  }
+
+  pub async fn end(self, how: Ending) {}
+}
 
 // An EventHandler that calls f with each event
 pub fn eventHandler(f: Uni[fn(ev: NetEvent) + Sendable]) EventHandler {
-  EventHandler(EventSink(f))
+  let s: EventHandler = ClosureSink(f);
+  s
 }
 
 // An EventHandler that puts each event on a channel, for a thread to take
 pub fn channelHandler(tx: Sender[NetEvent]) EventHandler {
-  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [tx] {
-    tx.send(ev);
-  }))
+  let s: EventHandler = ChannelSink(tx);
+  s
 }

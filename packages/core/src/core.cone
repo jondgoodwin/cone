@@ -504,6 +504,41 @@ pub struct @opaque str {
     &b[a..<e] as &str
   }
 
+  // The pieces between each 'sep', as borrows of this text (nothing copied): a
+  // cursor whose 'next' gives each. "a,b,,c" is four pieces, the third empty; ""
+  // is one empty piece; a sep at either end gives an empty piece there. The
+  // empty 'sep' matches between every character, as Rust's does: "abc" gives
+  // "", "a", "b", "c" and "". Rust's 'split'; 'split' on arrays is the cut at
+  // an index.
+  pub fn splitOn(self: &, sep: &str) StrSplit inline { StrSplit(self, sep, 0usize, false, false) }
+
+  // The same, cut at each occurrence of the character
+  pub fn splitOnChar(self: &, c: char) StrSplitChar inline { StrSplitChar(self, c, 0usize, false) }
+
+  // The text before the first 'sep' and the text after it, or None if there is
+  // none. An empty 'sep' is found at 0: the first piece is empty.
+  pub fn splitOnce(self: &, sep: &str) Option[(&str, &str)] inline {
+    let b: &Array[u8] = self;
+    let n: &Array[u8] = sep;
+    match self.findFrom(sep, 0usize) {
+      case let Some(at) {
+        Some[(&str, &str)]((&b[..<at] as &str, &b[at + n.len..] as &str))
+      }
+      case is None[usize] {None}
+    }
+  }
+
+  // The lines: a line ends at '\n', and the '\r' just before that '\n' is not
+  // part of it (a lone '\r' is); a last line need not end in '\n', and the '\n'
+  // ending the text does not begin another line, so "a\nb\n" and "a\r\nb" are two
+  // lines and "" is none. Rust's 'lines'.
+  pub fn lines(self: &) StrLines inline { StrLines(self, 0usize) }
+
+  // The runs of characters between ASCII whitespace (as 'trim' counts it: space,
+  // tab, line feed, form feed, carriage return), none of them empty. Only ASCII
+  // whitespace: Unicode's waits for the tables, and 'trim' with it.
+  pub fn splitWhitespace(self: &) StrWords inline { StrWords(self, 0usize) }
+
   // -1, 0 or 1 as the bytes sort before, with or after o's, a text that is
   // the start of a longer one first. UTF-8's byte order is code-point order.
   pub fn compare(self: &, o: &str) i32 inline {
@@ -2077,6 +2112,118 @@ pub struct StrChars['a] is Iterator[char] {
     let c = strCharValue(b, pos, width);
     pos = pos + width;
     Some[char](c)
+  }
+}
+
+// The part of a text from byte start up to, not including, byte end, both known
+// to be on character boundaries (the split cursors' pieces)
+fn strPiece(t: &str, start: usize, end: usize) &str inline {
+  let b: &Array[u8] = t;
+  &b[start..<end] as &str
+}
+
+// A cursor over the pieces of a text between a separator (splitOn): 'next' gives
+// each as a borrow of the text, and None after the last.
+pub struct StrSplit['a] is Iterator[&str] {
+  text: &'a str;
+  sep: &'a str;
+  pos: usize;
+  done: bool;
+  started: bool;
+
+  pub fn next(self: &mut) Option[&'a str] inline {
+    if done { return None; }
+    let b: &Array[u8] = text;
+    let n: &Array[u8] = sep;
+    // The empty separator is found before the text, between each character
+    // (never inside one) and after the text
+    if n.len == 0usize {
+      if !started {
+        started = true;
+        return Some[&str](&b[pos..<pos] as &str);
+      }
+      if pos >= b.len {
+        done = true;
+        return Some[&str](&b[pos..] as &str);
+      }
+      let start = pos;
+      pos = pos + strCharWidth(b, pos);
+      return Some[&str](&b[start..<pos] as &str);
+    }
+    var i = pos;
+    while i + n.len <= b.len {
+      if strBytesAt(b, i, n) {
+        let start = pos;
+        pos = i + n.len;
+        return Some[&str](&b[start..<i] as &str);
+      }
+      i = i + 1usize;
+    }
+    done = true;
+    Some[&str](&b[pos..] as &str)
+  }
+}
+
+// The pieces between a character (splitOnChar), as StrSplit
+pub struct StrSplitChar['a] is Iterator[&str] {
+  text: &'a str;
+  ch: char;
+  pos: usize;
+  done: bool;
+
+  pub fn next(self: &mut) Option[&'a str] inline {
+    if done { return None; }
+    let b: &Array[u8] = text;
+    var i = pos;
+    while i < b.len {
+      let width = strCharWidth(b, i);
+      if strCharValue(b, i, width) == ch {
+        let start = pos;
+        pos = i + width;
+        return Some[&str](&b[start..<i] as &str);
+      }
+      i = i + width;
+    }
+    done = true;
+    Some[&str](&b[pos..] as &str)
+  }
+}
+
+// The lines of a text (lines), as borrows, without their ends
+pub struct StrLines['a] is Iterator[&str] {
+  text: &'a str;
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a str] inline {
+    let b: &Array[u8] = text;
+    if pos >= b.len { return None; }
+    let start = pos;
+    var i = pos;
+    while i < b.len && b[i] != '\n' { i = i + 1usize; }
+    var end = i;
+    if i < b.len {
+      pos = i + 1usize;
+      if end > start && b[end - 1usize] == '\r' { end = end - 1usize; }
+    }
+    else { pos = b.len; }
+    Some[&str](strPiece(text, start, end))
+  }
+}
+
+// The words of a text (splitWhitespace), as borrows
+pub struct StrWords['a] is Iterator[&str] {
+  text: &'a str;
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a str] inline {
+    let b: &Array[u8] = text;
+    var i = pos;
+    while i < b.len && strIsSpace(b[i]) { i = i + 1usize; }
+    if i >= b.len { pos = b.len; return None; }
+    let start = i;
+    while i < b.len && !strIsSpace(b[i]) { i = i + 1usize; }
+    pos = i;
+    Some[&str](&b[start..<i] as &str)
   }
 }
 

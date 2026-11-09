@@ -151,7 +151,9 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
 // what else the caller lent (loanArenaApart then decides what it may store).
 // 'byparm' when the reference was reached from a parameter by field steps and
 // dereferences alone, a path whose places a caller's own check sees.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm);
+// Bug 65: a reference reached by parameter is asked too, unless 'readsnothing':
+// the node stored into is of a type whose death reads no borrow (#992's exception).
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing);
 
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
