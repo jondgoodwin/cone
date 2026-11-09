@@ -2,7 +2,7 @@
 // an actor reads as it arrives, how a fetch's events feed its sink, and the
 // jobs the stream calls post (actorhttp.cone's header, STREAMS). Every stream is
 // a body sent to a sink: 'stream' to a stages.ReaderSink the BodyStream reads,
-// 'events' to an EventSink the EventStream reads, 'streamTo' to the caller's.
+// 'events' to an SseParseStage feeding the reader the EventStream reads, 'streamTo' to the caller's.
 // The reading queue, the credit rule and the cancel of a handle dropped are the
 // sinks' and the cancel group's.
 
@@ -19,7 +19,7 @@ struct StreamRec {
   openHead: Option[actors.ReplyOf[Result[BodyHead, FetchError]]];
   // What the handle answered to 'stream' or 'events' is made of, taken when the head arrives
   bodyReader: Option[ReaderSink[Result[Option[String], FetchError]]];
-  eventReader: Option[EventSink];
+  eventReader: Option[ValueReader[sse.Event, Result[Option[sse.Event], FetchError]]];
   group: Option[CancelGroup];      // cancelled when the handle is dropped
   status: u16;
   sink: Option[ChunkSink];         // the body goes to this sink
@@ -47,7 +47,7 @@ fn openingStream(id: u64) StreamRec {
     openBody: None[actors.ReplyOf[Result[BodyStream, FetchError]]],
     openEvents: None[actors.ReplyOf[Result[EventStream, FetchError]]],
     openHead: None[actors.ReplyOf[Result[BodyHead, FetchError]]],
-    bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[EventSink], group: None[CancelGroup],
+    bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[ValueReader[sse.Event, Result[Option[sse.Event], FetchError]]], group: None[CancelGroup],
     status: 0u16, sink: None[ChunkSink], lend: newLend(),
     refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending],
     up: UpState.idle())
@@ -152,7 +152,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
         else {}
       }
     } else if s.openEvents is Some {
-      var reader = None[EventSink];
+      var reader = None[ValueReader[sse.Event, Result[Option[sse.Event], FetchError]]];
       reader <-> s.eventReader;
       var group = None[CancelGroup];
       group <-> s.group;
@@ -340,22 +340,23 @@ struct StreamOpenJob {
 struct EventOpenJob {
   pub id: u64;
   pub req: httpclient.Request;
-  pub reader: EventSink;
+  pub stage: SseParseStage;
+  pub reader: ValueReader[sse.Event, Result[Option[sse.Event], FetchError]];
   pub group: CancelGroup;
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[EventStream, FetchError]]) {
-    let id, req, reader, group = self.(id, req, reader, group);
+    let id, req, stage, reader, group = self.(id, req, stage, reader, group);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
       rp.answer(Err[EventStream, FetchError](FetchError.cancelled()));
-      reader.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
+      stage.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
     var st = openingStream(newId());
     st.openEvents = Some[actors.ReplyOf[Result[EventStream, FetchError]]](rp);
-    st.sink = Some[ChunkSink](reader.clone());
-    st.eventReader = Some[EventSink](reader);
+    st.sink = Some[ChunkSink](stage);
+    st.eventReader = Some[ValueReader[sse.Event, Result[Option[sse.Event], FetchError]]](reader);
     st.group = Some[CancelGroup](group);
     startStream(rec, lp, st, req);
   }

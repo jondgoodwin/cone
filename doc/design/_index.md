@@ -217,7 +217,7 @@ Most real work crosses phases. Start here instead.
 | work out why a value is or is not accepted | [Type Check Reasoning](../../compiler/c/doc/phases/type-check-reasoning.md), "The verdict vocabulary" and "Coercion" |
 | change a call, a method, or overloading | [Type Check Reasoning](../../compiler/c/doc/phases/type-check-reasoning.md), "Calls, methods and overloads" |
 | fix a double release, a leak, or a bad move | [Flow Analysis](../../compiler/c/doc/phases/flow.md), "Moves and counting" onward, then [Generation](../../compiler/c/doc/phases/generation.md), "The allocation header" |
-| change ownership, borrowing, or lifetimes | [References and Regions](references-and-regions.md) for the model, then [Flow Analysis](../../compiler/c/doc/phases/flow.md) for what enforces it |
+| change ownership, borrowing, or lifetimes | [References and Regions](references-and-regions.md) for the model ("Lifetimes: one invariant, checked from both sides of a call" for the lifetime rules and where they are not yet enforced), then [Flow Analysis](../../compiler/c/doc/phases/flow.md) for what enforces it |
 | know whether a safety property actually holds | [Safety](safety.md) — the scorecard, and why a clean compile proves less than it looks like |
 | know what something costs at runtime | [Performance](performance.md) |
 | add a file, a node family, or a phase | [Architecture](../../compiler/c/doc/compiler/architecture.md) |

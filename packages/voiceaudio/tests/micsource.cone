@@ -1,0 +1,240 @@
+// MicSource: the microphone as a stream of 20 ms blocks through the thread edge, on SDL's disk driver (a raw file
+// is the "microphone"; the driver is named, so no real device opens).
+//
+// 1. A MicSource at 16 kHz into a VadStage into a collecting sink finds the same two utterances in the file
+//    that Microphone.pump + Vad do (tests/diskmic): the same landmarks, 1.0 s to 2.5 s and 3.5 s to 4.5 s.
+// 2. A SLOW CONSUMER: the sink gives no credit while the file plays at 20 times real time into a ring of 8 blocks
+//    with keep 4. The capture thread never waits; the attendant drops the oldest whole blocks, counted, and when
+//    credit comes it sends ONE discontinuity marker carrying how many were lost, then the kept blocks. Nothing is
+//    unaccounted: blocks captured = blocks received + blocks lost at the attendant.
+// 3. STOP: a stop sent to the VadStage mid-stream reaches the edge's attendant (EdgeOut.stop), the sink is ended
+//    once, nothing arrives after the end, and the attendant takes no more blocks from the thread.
+mod micsource;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration, Instant;
+import actors;
+import stages use *;
+import voiceaudio use *;
+
+fn ms(n: u32, rate: u32) usize { usize.from(n) * usize.from(rate) / 1000usize }
+
+struct Seen {
+  pub utts: Atomic[u64];
+  pub s0: Atomic[u64];
+  pub e0: Atomic[u64];
+  pub s1: Atomic[u64];
+  pub e1: Atomic[u64];
+  pub ends: Atomic[u64];
+  pub afterEnd: Atomic[u64];
+  pub blocks: Atomic[u64];       // data blocks the raw sink received
+  pub markers: Atomic[u64];
+  pub markLost: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  seen.utts.store(0u64); seen.s0.store(0u64); seen.e0.store(0u64); seen.s1.store(0u64); seen.e1.store(0u64);
+  seen.ends.store(0u64); seen.afterEnd.store(0u64); seen.blocks.store(0u64); seen.markers.store(0u64);
+  seen.markLost.store(0u64);
+}
+
+// The utterances arrive here; each is credited back
+actor Collect is ValueSink[Utterance] {
+  up: Option[ValueSource];
+  ended: bool;
+
+  pub fn init(self: &new) { *self = Self(up: None[ValueSource], ended: false); }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(4u32);
+  }
+
+  pub async fn accept(self, u: Utterance) {
+    if ended { seen.afterEnd.add(1u64); }
+    let n = seen.utts.add(1u64);
+    if n == 0u64 { seen.s0.store(u64.from(u.start)); seen.e0.store(u64.from(u.end)); }
+    if n == 1u64 { seen.s1.store(u64.from(u.start)); seen.e1.store(u64.from(u.end)); }
+    match &up {
+      case let &Some(s) { s.credit(1u32); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    ended = true;
+    seen.ends.add(1u64);
+  }
+}
+
+// A raw block sink with credit only when told
+actor Stuck is ValueSink[AudioBlock] {
+  up: Option[ValueSource];
+  ended: bool;
+
+  pub fn init(self: &new) { *self = Self(up: None[ValueSource], ended: false); }
+
+  pub async fn attach(self, source: ValueSource) { up = Some[ValueSource](source); }
+
+  pub async fn accept(self, b: AudioBlock) {
+    if ended { seen.afterEnd.add(1u64); }
+    if b.lost > 0u64 {
+      seen.markers.add(1u64);
+      seen.markLost.store(b.lost);
+    } else {
+      seen.blocks.add(1u64);
+      match &up {
+        case let &Some(s) { s.credit(1u32); }
+        else {}
+      }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    ended = true;
+    seen.ends.add(1u64);
+  }
+
+  pub async fn grant(self, n: u32) {
+    match &up {
+      case let &Some(s) { s.credit(n); }
+      else {}
+    }
+  }
+}
+
+fn waitFor(f: &fn() bool, limitMs: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(limitMs);
+  while !f() && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  f()
+}
+
+// until the source has captured (or, with 'lossToo', captured or lost) n blocks
+fn waitBlocks(src: &MicSource, n: u64, lossToo: bool, limitMs: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(limitMs);
+  var got = src.captured();
+  if lossToo { got = got + src.dropped(); }
+  while got < n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(2i64));
+    got = src.captured();
+    if lossToo { got = got + src.dropped(); }
+  }
+  got >= n
+}
+
+fn near(got: u64, want: usize, early: usize, late: usize, label: &Array[u8]) bool {
+  let g = usize.from(got);
+  let lo = if want > early {want - early} else {0usize};
+  expect(g >= lo && g <= want + late, label)
+}
+
+fn main() i32 {
+  initAll();
+  let S = 16000u32;
+  let R = DISK_RATE;
+  var x = noiseBed(5700u32, R, 0.002, 21u32);
+  addInto(&mut x, ms(1000u32, R), speechLike(1500u32, R, 0.05, 21u32).view());
+  addInto(&mut x, ms(3500u32, R), speechLike(1000u32, R, 0.05, 22u32).view());
+  let inPath = Path.from("voiceaudio-test-micsrc.raw");
+  var ok = false;
+  match writeRawF32(&inPath, x.view()) { case let Ok(u) { ok = true; } case let Err(e) {} }
+  require(ok, "the microphone file is written");
+
+  // ---- 1. the same utterances as the polling path
+  reset();
+  {
+    let drv = Driver.disk("voiceaudio-test-micsrc.raw", "voiceaudio-test-micsrc-out.raw", "0.05");
+    match Microphone.open(&drv, S) {
+      case var Ok(mic) {
+        let collect = Collect();
+        let stage = VadStage(VadConfig.standard(S), 8u32, collect);
+        var src = MicSource.start(mic, 20u32, 64u32, 32u32, stage);
+        // the converter holds back a little of the end: wait for 5.4 s of the 5.7
+        expect(waitBlocks(&src, 270u64, false, 20000i64), "1: 5.4 s of blocks were captured");
+        let status = src.stop();
+        expectInt(i64.from(status), 0i64, "1: the capture thread ended cleanly");
+        expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 10000i64), "1: the stream ended once the last block was through");
+        actors.waitQuiet();
+        expectUInt(seen.utts.load(), 2u64, "1: two utterances through the MicSource and the VadStage");
+        near(seen.s0.load(), ms(1000u32, S), ms(40u32, S), ms(80u32, S), "1: first starts at 1.0 s");
+        near(seen.e0.load(), ms(2500u32, S), ms(60u32, S), ms(60u32, S), "1: first ends at 2.5 s");
+        near(seen.s1.load(), ms(3500u32, S), ms(40u32, S), ms(80u32, S), "1: second starts at 3.5 s");
+        near(seen.e1.load(), ms(4500u32, S), ms(60u32, S), ms(60u32, S), "1: second ends at 4.5 s");
+        expectUInt(src.markers(), 0u64, "1: no marker: nothing was dropped");
+        expectUInt(seen.afterEnd.load(), 0u64, "1: nothing after the end");
+      }
+      case let Err(e) { require(false, "1: the disk microphone opens"); }
+    }
+  }
+
+  // ---- 2. a slow consumer: drop oldest, one marker, nothing unaccounted
+  reset();
+  {
+    let drv = Driver.disk("voiceaudio-test-micsrc.raw", "voiceaudio-test-micsrc-out.raw", "0.05");
+    match Microphone.open(&drv, S) {
+      case var Ok(mic) {
+        let stuck = Stuck();
+        var src = MicSource.start(mic, 20u32, 8u32, 4u32, stuck);
+        expect(waitBlocks(&src, 300u64, true, 20000i64), "2: the file played into a consumer with no credit");
+        thread.sleep(Duration.fromMillis(100i64));
+        actors.waitQuiet();
+        expectUInt(seen.blocks.load(), 0u64, "2: the consumer got nothing while it had no credit");
+        stuck.grant(1000u32);
+        let status = src.stop();
+        expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 10000i64), "2: the stream ended after the last block");
+        actors.waitQuiet();
+        expectUInt(seen.markers.load(), 1u64, "2: one discontinuity marker");
+        expect(seen.markLost.load() > 0u64, "2: ... carrying how many blocks were lost");
+        expectUInt(seen.blocks.load() + seen.markLost.load(), src.captured(), "2: blocks received + lost at the attendant = blocks captured");
+        expect(seen.blocks.load() <= 4u64 + 1u64, "2: at most the kept 4 (and one that arrived after the grant) were received");
+        expectUInt(seen.afterEnd.load(), 0u64, "2: nothing after the end");
+      }
+      case let Err(e) { require(false, "2: the disk microphone opens"); }
+    }
+  }
+
+  // ---- 3. a stop sent to the stage reaches the attendant and ends the sink once
+  reset();
+  {
+    let drv = Driver.disk("voiceaudio-test-micsrc.raw", "voiceaudio-test-micsrc-out.raw", "0.2");
+    match Microphone.open(&drv, S) {
+      case var Ok(mic) {
+        let collect = Collect();
+        let stage = VadStage(VadConfig.standard(S), 8u32, collect);
+        var src = MicSource.start(mic, 20u32, 64u32, 32u32, stage);
+        expect(waitBlocks(&src, 20u64, false, 20000i64), "3: blocks are flowing");
+        stage.stop(Ending.Finished);
+        expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 10000i64), "3: the sink was ended by the stop");
+        actors.waitQuiet();
+        // the microphone goes on playing for a while after the stop: the attendant must take none of it
+        thread.sleep(Duration.fromMillis(150i64));
+        let status = src.stop();
+        // the counts are published before the end, so they are exact now
+        expect(src.passed() < src.captured(), "3: the attendant passed on fewer blocks than were captured: it took none after the stop");
+        expect(src.passed() + src.dropped() >= src.captured(), "3: and the rest were dropped, counted");
+        expectInt(i64.from(status), 0i64, "3: the capture thread ends cleanly");
+        actors.waitQuiet();
+        expectUInt(seen.ends.load(), 1u64, "3: the sink was ended exactly once");
+        expectUInt(seen.afterEnd.load(), 0u64, "3: nothing arrived after the end");
+      }
+      case let Err(e) { require(false, "3: the disk microphone opens"); }
+    }
+  }
+
+  _ = fs.removeFile(&inPath);
+  _ = fs.removeFile(&Path.from("voiceaudio-test-micsrc-out.raw"));
+  finalAll();
+  done()
+}
