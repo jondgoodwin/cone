@@ -7,6 +7,14 @@ assert, and how to update expectations.
 Run the full suite before every merge. `python test/run.py` takes a few seconds
 and is the default for a reason.
 
+`python test/run.py --lto` builds each `run` scenario with ThinLTO (`conec --lto`
+for its compile, which writes bitcode, then `conec --lto-link` over the bitcode,
+which makes the objects it links): it checks that the opt-in release mode keeps
+every program's output. It skips what cannot be so built (a scenario with a debug
+build description, WebAssembly, GPU, library) and the checks of the optimised IR
+and the assembly, which are a different pipeline's under `--lto`. A scenario whose
+options name `--lto` is built so in every run (`module_lto`). Both runs must pass.
+
 The suite tests the compiler, not the packages. What a package does — `libc`'s
 bindings, `geomath`'s values — is tested by the package's own `tests/` folder,
 which `congo test` runs against the package compiled on its own
@@ -389,6 +397,11 @@ Never hand-assert what a category already covers.
 
 `compile` is for valid code that cannot run — no `main`, library-shaped, or no
 codegen path yet. Never add a synthetic `main` to satisfy a category.
+
+A `compile` or `run` scenario may annotate a warning (code 3000 and up) with `//~`
+where the program is written, for a program whose point is a signature that warns:
+the warnings are then asserted exactly as a `warn` scenario's are, and an
+unannotated one still fails. It may annotate nothing else.
 
 Mark anything not yet implemented `xfail`: it reports as an expected failure and
 **fails the suite if it starts passing**.

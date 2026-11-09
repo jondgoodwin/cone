@@ -180,8 +180,8 @@ static void foldGlobalItem(ModuleNode *mod, VarDclNode *global, StructNode *src,
     // value, whether the value is a field or a module's one instance
     if (!inodeIsMember(dcl)) {
         errorMsgNode((INode*)alias, ErrorBadFold,
-            "%s is a static of %s: it is reached through the type, not through a value, so it does not fold. Name it as %s.%s.",
-            &srcname->namestr, &src->namesym->namestr, &src->namesym->namestr, &srcname->namestr);
+            "%s is a %s of %s: it is reached through the type, not through a value, so it does not fold. Name it as %s.%s.",
+            &srcname->namestr, dcl->tag == ConstDclTag ? "const" : "static", &src->namesym->namestr, &src->namesym->namestr, &srcname->namestr);
         return;
     }
     target->dclnode = dcl;

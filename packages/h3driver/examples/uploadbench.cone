@@ -1,0 +1,476 @@
+// uploadbench: one large request body uploaded over loopback by HTTP/1.1 (plain), HTTP/2 (TLS, ALPN)
+// and HTTP/3 (TLS over QUIC), through the path a user takes: 'client.upload(req, BodyLength.sized(n))'
+// fed by a ListSource into 'up.sink()' (actorhttp's upload.cone), against this package's actorhttp
+// server, which reads the whole body and answers its length (and, with 'sum', a position-weighted
+// checksum). It lives here because h3driver is the plug-in actorhttp cannot import.
+//
+// WHAT IT IS FOR. Today the upload sink copies each chunk into a fresh pool buffer (upload.cone's
+// upPump: IoBuf.tryMake, append, pushBody) and gives the original back to the source at once. Option
+// (c), a lent send, would remove that copy. The decision needs one figure: the copy's cost against the
+// whole send (send hand-back step 0, sections 5 and 6). So per protocol and round this prints
+//
+//   upload h1|h2|h3   N ms, M MB/s          (from asking for the upload to the server's answer)
+//
+// and, once per round, the cost of the copy alone, with no network: the same number of chunks, each one
+// a pool get (IoBuf.tryMake of the piece size), a memcpy of the piece from a source buffer, and the
+// give-back (the drop):
+//
+//   copy alone        P ns a piece, C ms for K pieces
+//
+// A last line per protocol gives the median upload time (ms), the copy time for the same bytes (us), and the copy
+// as a percentage of the upload. The copy on the real path runs on the service thread beside everything
+// else, so the percentage is the bound of what (c) can save, not a prediction.
+//
+// Arguments: MiB (default 64), protocols (1, 2, 3, or all; default all), rounds (default 3), then
+// optionally 'sum' to have the server checksum the body (a correctness check; it adds server time, so
+// leave it out when timing). 1 MiB runs in seconds.
+//
+// Run from its build folder (the tls package's test certificates), RELEASE, on a QUIET machine:
+//
+//   mkdir packages\h3driver\build\release\examples\uploadbench      (once; the certificates are five folders up)
+//   cd packages\h3driver\build\release\examples\uploadbench
+//   congo run --release ..\..\..\..\examples\uploadbench.cone -- 64 all 5
+//
+// (OpenSSL's and ngtcp2's folders on LIB and CONE_DEPS set, as for any congo run of this package.)
+//
+// Not a gate. Nothing here is timing-sensitive except what it prints.
+
+mod uploadbench;
+
+import stdio use *;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import tls;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
+import h3driver;
+
+const blockSize = 65536usize;
+const upPiece = 65536usize;       // actorhttp's upPiece: the copy's size
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+// Byte i of the body: the block repeated
+fn blockBytes() List[u8] {
+  var piece = List[u8].withCapacity(blockSize);
+  var i = 0usize;
+  while i < blockSize {
+    piece.push(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  piece
+}
+
+const hashMod = 1000000007u64;
+
+fn hashStep(h: u64, b: u8) u64 {(h * 31u64 + u64.from(b) + 1u64) % hashMod}
+
+// The checksum of 'size' bytes of the repeated block
+fn expectedSum(size: u64) u64 {
+  let blk = blockBytes();
+  var h = 0u64;
+  var at = 0u64;
+  while at < size {
+    var i = 0usize;
+    while i < blockSize {
+      h = hashStep(h, *blk[i]);
+      i = i + 1usize;
+    }
+    at = at + u64.from(blockSize);
+  }
+  h
+}
+
+// ---- the source: the block repeated, a block per chunk, lent from a 256 KiB window ----
+
+actor ListSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  left: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], total: u64) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, left: total, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if left == 0u64 {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(blockSize) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - u64.from(blockSize);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---- the server: POST /up answers the body's length, POST /upsum also its checksum ----
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    var said = String.from("len=");
+    said.appendUInt(u64.from(ex.request.body.len()));
+    if path.view() == "/upsum" {
+      var h = 0u64;
+      let v = ex.request.body.view();
+      var i = 0usize;
+      while i < v.len {
+        h = hashStep(h, v[i]);
+        i = i + 1usize;
+      }
+      said.append(" sum=");
+      said.appendUInt(h);
+    }
+    ex.respond(ResponseHead.make(200u16), said);
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  // ports: the server's port, or 0 if it could not listen (or did not offer HTTP/3 when asked)
+  pub async fn open(self, cfg: ServerConfig, wantH3: bool, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(if wantH3 && !server.offersHttp3() {0u16} else {server.port()});
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn origin(port: u16, secure: bool) String {
+  var u = String.from(if secure {"https://127.0.0.1:"} else {"http://127.0.0.1:"});
+  u.appendUInt(u64.from(port));
+  u
+}
+
+// A client for protocol p (1, 2, 3): plain for 1; trusting the test root for 2 (h2 offered) and 3 (h3
+// known to be on the server's port)
+fn clientFor(p: u32, port: u16) Client {
+  if p == 1u32 {return Client.standard();}
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = p == 2u32;
+  if p == 3u32 {
+    cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+    cfg.http3Origins.push(origin(port, true));
+  }
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn versionFor(p: u32) Version {
+  if p == 1u32 {Version.Http11} else if p == 2u32 {Version.Http2} else {Version.Http3}
+}
+
+// ---- the client's upload ----
+
+actor Uploader {
+  client: Client;
+
+  // Sends 'size' bytes from a ListSource through 'client.upload', and sends 'done' the server's answer
+  // text if the status and the version are right ("" if the upload or the answer went wrong)
+  pub async fn run(self, url: String, size: u64, want: Version, done: OneshotSender[String]) {
+    var said = String();
+    var good = false;
+    let up = client.upload(Request.make("POST", url.view()), BodyLength.sized(size));
+    let g = ListSource(up.sink(), blockBytes(), size);
+    g.start();
+    let r = await up.stream();
+    match r {
+      case let Ok(bs) {
+        good = bs.status == 200u16 && bs.version == want;
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {said.append(piece.view());}
+                case is None[String] {going = false;}
+              }
+            }
+            case let Err(e) {good = false; going = false;}
+          }
+        }
+      }
+      case let Err(e) {}
+    }
+    var tell = done;
+    tell.send(if good {said} else {String()});
+  }
+}
+
+// One upload: its nanoseconds, or 0 if wrong
+fn runUp(client: Client, name: &str, port: u16, p: u32, size: u64, sum: bool) u64 {
+  var u = origin(port, p != 1u32);
+  u.append(if sum {"/upsum"} else {"/up"});
+  var tx: OneshotSender[String];
+  var rx: OneshotReceiver[String];
+  tx, rx = Oneshot[String].make();
+  let t0 = Instant.now();
+  let f = Uploader(client.clone());
+  f.run(u, size, versionFor(p), tx);
+  let got = rx.recv() || String();
+  let ns = u64.from(t0.elapsed().nanos());
+  var want = String.from("len=");
+  want.appendUInt(size);
+  if sum {
+    want.append(" sum=");
+    want.appendUInt(expectedSum(size));
+  }
+  printStr("upload ");
+  printStr(name);
+  if got.view() != want.view() {
+    printStr("   WRONG: answered '");
+    printStr(got.view());
+    printStr("', wanted '");
+    printStr(want.view());
+    printStr("' (an empty answer: the upload failed or used the wrong protocol)\n");
+    return 0u64;
+  }
+  printStr("   ");
+  printUInt(ns / 1000000u64);
+  printStr(" ms, ");
+  printUInt(size * 1000u64 / ns);
+  printStr(" MB/s\n");
+  ns
+}
+
+// ---- the copy alone: pool get, memcpy of a piece, give-back, 'count' times, no network ----
+
+let copySink: Atomic[u64];
+
+fn @initpure init() {
+  copySink = Atomic[u64].of(0u64);
+}
+
+// Nanoseconds for 'count' pieces of upPiece bytes; 0 if the pool refused
+fn copyAlone(count: u64) u64 {
+  var src = match IoBuf.tryMake(upPiece) {
+    case var Some(b) {b}
+    else {return 0u64;}
+  };
+  src.append(blockBytes().view());
+  let all = src.view() as &Array[u8];
+  var keep = 0u64;
+  let t0 = Instant.now();
+  var k = 0u64;
+  while k < count {
+    var b = match IoBuf.tryMake(upPiece) {
+      case var Some(got) {got}
+      else {return 0u64;}
+    };
+    b.append(&all[0usize ..< upPiece]);
+    keep = keep + u64.from(b.view()[upPiece - 1usize]);
+    k = k + 1u64;
+    // b is dropped here: the give-back to the pool
+  }
+  let ns = u64.from(t0.elapsed().nanos());
+  copySink.add(keep);
+  ns
+}
+
+fn median(v: &List[u64]) u64 {
+  var s = List[u64]();
+  var q = 0usize;
+  while q < v.len() {
+    s.push(*v[q]);
+    q = q + 1usize;
+  }
+  var i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && *s[j - 1usize] > *s[j] {
+      s.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  if s.len() == 0usize {0u64} else {*s[s.len() / 2usize]}
+}
+
+// One protocol: rounds uploads and the copy alone beside each. False if any went wrong
+fn bench(p: u32, mib: u32, rounds: u32, sum: bool) bool {
+  let name = if p == 1u32 {"h1"} else if p == 2u32 {"h2"} else {"h3"};
+  let size = u64.from(mib) * 1048576u64;
+  let count = size / u64.from(upPiece);
+  var cfg = ServerConfig.make();
+  if p != 1u32 {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    cfg = cfg.secure(tls.ServerConfig.make(&certFile, &keyFile));
+    if p == 2u32 {cfg = cfg.offerHttp2();}
+    if p == 3u32 {cfg = cfg.offerHttp3(&h3driver.plugin);}
+  }
+  cfg.maxBody = usize.from(size) + 1048576usize;     // the uploads are read whole
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var ups = List[u64]();
+  var copies = List[u64]();
+  var ok = true;
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(cfg, p == 3u32, ptx);
+    let port = prx.recv() || 0u16;
+    if port == 0u16 {
+      printStr(name);
+      printStr(": the server could not listen (run it from its build folder, for the certificates)\n");
+      return false;
+    }
+    acceptor.serve();
+    let client = clientFor(p, port);
+    var k = 0u32;
+    while k < rounds {
+      let ns = runUp(client.clone(), name, port, p, size, sum);
+      if ns == 0u64 {ok = false;}
+      ups.push(ns);
+      let c = copyAlone(count);
+      if c == 0u64 {ok = false;}
+      copies.push(c);
+      printStr("copy alone   ");
+      printUInt(c / (count + 1u64));
+      printStr(" ns a piece of ");
+      printUInt(u64.from(upPiece));
+      printStr(" bytes, ");
+      printUInt(c / 1000u64);
+      printStr(" us for ");
+      printUInt(count);
+      printStr(" pieces\n");
+      k = k + 1u32;
+    }
+    acceptor.stop();
+  }
+  let mu = median(&ups);
+  let mc = median(&copies);
+  printStr("median ");
+  printStr(name);
+  printStr(", ");
+  printUInt(u64.from(mib));
+  printStr(" MiB over ");
+  printUInt(u64.from(rounds));
+  printStr(" rounds: upload ");
+  printUInt(mu / 1000000u64);
+  printStr(" ms, copy alone ");
+  printUInt(mc / 1000u64);
+  printStr(" us (");
+  printUInt(if mu == 0u64 {0u64} else {mc * 1000u64 / mu / 10u64});
+  printStr(".");
+  printUInt(if mu == 0u64 {0u64} else {mc * 1000u64 / mu % 10u64});
+  printStr("% of the upload)\n");
+  ok
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var mib = 64u32;
+  var rounds = 3u32;
+  var which = 0u32;                 // 0: all
+  if argc > 1i32 { mib = digits(*(argv + 1usize)); }
+  if argc > 2i32 {
+    let c = **(argv + 2usize);
+    if c >= 49u8 && c <= 51u8 { which = u32.from(c - 48u8); }
+  }
+  if argc > 3i32 { rounds = digits(*(argv + 3usize)); }
+  var sum = false;
+  if argc > 4i32 { sum = **(argv + 4usize) == 115u8; }
+  if mib == 0u32 || rounds == 0u32 {
+    printStr("usage: uploadbench MiB [1|2|3|all] [rounds] [sum]\n");
+    return 2i32;
+  }
+  var good = true;
+  var p = 1u32;
+  while p <= 3u32 {
+    if which == 0u32 || which == p {
+      if !bench(p, mib, rounds, sum) {good = false;}
+    }
+    p = p + 1u32;
+  }
+  finalAll();
+  printStr(if good {"ok (copy sink "} else {"FAILED (copy sink "});
+  printUInt(copySink.load() % 10u64);
+  printStr(")\n");
+  if good {0i32} else {1i32}
+}

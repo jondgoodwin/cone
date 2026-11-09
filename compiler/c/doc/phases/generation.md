@@ -2391,7 +2391,12 @@ intrinsics. The CPU is untouched, and the C library is called there. Core's
 every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
 `round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
-(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
+`tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
+`cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
+`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
+([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
+`module_target_spirv_floatmath`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
@@ -2583,6 +2588,66 @@ closure that holds something is the struct type check makes of it,
 [closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
 variables.
 
+### Link-time optimisation (`--lto`)
+
+`--lto` is opt-in and release-and-native only (`genSetup` clears it for a debug,
+WebAssembly or SPIR-V compile); without it nothing here runs and the objects
+are the same. Congo's `--release --lto` passes it to every compile of the build
+and then runs `conec --lto-link` over their outputs (`tools/congo/README.md`).
+
+**A compile** runs `thinlto-pre-link<O3>` where it would run `default<O3>`, and
+writes `<name>.bc` in place of the object: bitcode with the ThinLTO module
+summary and hash that a ThinLTO link reads (`genlWriteThinBitcode`,
+`genllto.cpp`, because LLVM's C API writes bitcode with no summary). There is
+no object, so `--asm` writes nothing for such a compile, and `.ir` is the
+pre-link module. Two things differ in the module from the ordinary build's:
+a local symbol (`internal`, `private`) has no COMDAT, and a debug-info build
+carries the `Debug Info Version` flag. A local's COMDAT is named for it, and the
+link renames a local it shares between modules (it must be promoted to a
+global), leaving the COMDAT naming a symbol that is not there, which LLVM
+reports as "Associative COMDAT symbol 'string.5' does not exist"; the flag is
+what makes bitcode read back keep its debug info, and without it the PDB would
+have no names.
+
+**The link** (`conec --lto-link -o <dir> a.bc b.bc ...`, `genlLtoLink`,
+`genlThinLink`) hands every module to LLVM's `ThinLTOCodeGenerator` at once and
+writes `<dir>/<i>.obj` for the i-th. It takes the program's whole code, so a
+function another package calls is inlined across packages, a generic instance
+that only one module uses is internalised (and specialised on the one
+function-pointer argument its callers pass), and the linker's `/OPT:REF` drops
+what is left unreached, since the objects are made with a section to each
+function and datum. The linker does not run LTO: no `lld` ships with the
+toolchain this builds with, and `link.exe` cannot read bitcode.
+
+**What the link must be told is kept.** `ThinLTOCodeGenerator` decides which
+symbols a module exports from what the other modules *import* (inline), so a
+function that another module calls out of line, or holds the address of in a
+vtable or passes to `CreateThread`, is internalised and deleted from the module
+that defines it, and the link fails on the caller's unresolved reference (112 of
+them in the `clientbench` build, 30 modules, when only `main` is kept: methods
+listed in vtables, such as `IoErrorKind.AlreadyExists.toText`, and functions
+called out of line). `genlThinLink` therefore
+tells it about every symbol one module defines and another refers to
+(`crossReferenceSymbol`: dead only if every reference is optimised away), and
+keeps `main` and every global with a C name (one not spelled `_C...`), since a C
+object (the runtime; a C package) may call it by name and the link cannot see
+that object. A symbol only a native object refers to, with a Cone name, is not
+a case.
+
+**It composes with `--private-instances`: not yet measured.** The size gate
+decides, in each compile, which generic instance functions are the object's own
+(`internal`) rather than shared (`linkonce_odr`); ThinLTO then sees the program's
+whole code and could do what the gate does for any instance only one module uses,
+and also for what the gate leaves shared. That the two overlap for the sort case
+and not for a call across packages (a `Mutex` pair, actors' pingpong) is expected
+from how each works and has no numbers behind it yet. The measurements are listed
+in the branch's `build/HANDOVER.md`, and the change to the gate's default (PR
+#1050) alters the answer, so they are taken with it. The gate costs no link time.
+
+A build made so has a bigger link (the ThinLTO step, over every module of the
+program, on every relink), a bigger program, and a longer clean build (each
+compile writes its bitcode, and the objects are made at the link).
+
 ## 8. Hazards
 
 - **Some `LLVMBuild*` calls run with the builder outside any basic block** —
@@ -2728,6 +2793,7 @@ variables.
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlPlacePre`, `genlPlacePreEnd`, `genlPreOf`, `genlNeedsPre` | the indexes of places holding a seam in an index made first, in the order written (`awaitChainLevels`), and noted for `genlAddr` and `genlSubslice` to take: a place indexed more than once, both sides of a swap, a slice's bounds, a parallel assignment's places |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
+| `genllvm/genllto.cpp` | `genlWriteThinBitcode`, `genlThinLink` | link-time optimisation (section 7, "Link-time optimisation"): a module's bitcode with its ThinLTO summary and hash; the whole-program ThinLTO pass over every module, with the kept symbols, section splitting and cache (the `--lto` compile in `genllvm.c`, and `genlLtoLink`, the `--lto-link` entry) |
 | `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
