@@ -41,9 +41,10 @@ struct RtRecord {
   geometry: Array[u32, 4];          // first normal (in vertices), first index
 }
 
-// A mesh with a bottom-level structure
+// A mesh's bottom-level structure, held in the mesh's own entry ('MeshSlot.rt'). It is current while 'epoch' is the
+// scene's and 'version' the mesh's.
 struct RtMesh {
-  mesh: Ref[MeshSlot];
+  epoch: u32;                       // the scene's epoch when it was made; 0: none made
   version: u32;
   blas: AccelerationStructure;
   normalBase: u32;
@@ -56,7 +57,7 @@ pub struct RtScene {
   pub records: Buffer;              // the records, a storage buffer (group 3, binding 7)
   pub normals: Buffer;              // every mesh's normals, tight float3s (binding 8)
   pub indices: Buffer;              // every mesh's indices (binding 9)
-  meshes: List[RtMesh];
+  epoch: u32;                       // bumped when the shared buffers start again, which makes every mesh's entry stale
   normalUsed: u32;
   indexUsed: u32;
   instanceList: List[AccelerationStructureInstance];
@@ -69,7 +70,7 @@ pub struct RtScene {
 
   // No ray tracing: not valid
   pub fn none() RtScene {
-    RtScene(AccelerationStructure.none(), Buffer.none(), Buffer.none(), Buffer.none(), List[RtMesh](), 0u32, 0u32,
+    RtScene(AccelerationStructure.none(), Buffer.none(), Buffer.none(), Buffer.none(), 1u32, 0u32, 0u32,
       List[AccelerationStructureInstance](), List[RtRecord](), false, 0u32, 0u32, 0u32, 0u32)
   }
 
@@ -86,59 +87,63 @@ pub struct RtScene {
     s
   }
 
-  // The place of mesh 'h' in 'meshes' if it has a usable structure for 'version', made (and built into 'encoder')
-  // if not; -1 if it cannot be made
-  fn meshFor(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, h: MeshHandle, m: &GpuMesh, version: u32) i32 {
-    var i = 0usize;
-    var found = false;
-    while i < meshes.len() && !found {
-      if meshes[i].mesh == h.slot {
-        if meshes[i].version == version {
-          if meshes[i].usable { return i32.from(i); }
-          return -1i32;
+  // Whether the mesh in 'slot' has a usable structure for its version: made (and built into 'encoder') in the
+  // slot's own entry if that is not current; false if it cannot be made
+  fn meshFor(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, slot: &mut MeshSlot) bool {
+    match slot.rt.asRef() {
+      case let Some(e) {
+        if e.epoch == epoch && e.version == slot.version { return e.usable; }
+      }
+      else {}
+    }
+    var entry = RtMesh(epoch, slot.version, AccelerationStructure.none(), 0u32, 0u32, false);
+    {
+      let m = slot.current();
+      let tracesIt = (m.positions.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32
+        && (m.indices.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32;
+      if tracesIt && normalUsed + m.vertexCount <= RT_NORMAL_CAPACITY && indexUsed + m.indexCount <= RT_INDEX_CAPACITY {
+        var blas = device.createBottomLevel(&m.positions, m.vertexCount, &m.indices, m.indexCount);
+        if blas.isValid() {
+          encoder.buildAccelerationStructure(&blas, 0u32);
+          device.queue.releaseBuffer(&mut blas.scratch);
+          encoder.copyBufferToBuffer(&m.normals, 0u64, &normals, u64.from(normalUsed) * 12u64, u64.from(m.vertexCount) * 12u64);
+          encoder.copyBufferToBuffer(&m.indices, 0u64, &indices, u64.from(indexUsed) * 4u64, u64.from(m.indexCount) * 4u64);
+          entry.blas = blas;
+          entry.normalBase = normalUsed;
+          entry.indexBase = indexUsed;
+          entry.usable = true;
+          normalUsed = normalUsed + m.vertexCount;
+          indexUsed = indexUsed + m.indexCount;
+          built = built + 1u32;
         }
-        found = true;
-      } else {
-        i = i + 1usize;
+      } else if tracesIt {
+        // The shared buffers are full: start them again next frame
+        resetNext = true;
       }
     }
-    var entry = RtMesh(h.slot, version, AccelerationStructure.none(), 0u32, 0u32, false);
-    let tracesIt = (m.positions.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32
-      && (m.indices.usage & BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT) != 0u32;
-    if tracesIt && normalUsed + m.vertexCount <= RT_NORMAL_CAPACITY && indexUsed + m.indexCount <= RT_INDEX_CAPACITY {
-      var blas = device.createBottomLevel(&m.positions, m.vertexCount, &m.indices, m.indexCount);
-      if blas.isValid() {
-        encoder.buildAccelerationStructure(&blas, 0u32);
-        device.queue.releaseBuffer(&mut blas.scratch);
-        encoder.copyBufferToBuffer(&m.normals, 0u64, &normals, u64.from(normalUsed) * 12u64, u64.from(m.vertexCount) * 12u64);
-        encoder.copyBufferToBuffer(&m.indices, 0u64, &indices, u64.from(indexUsed) * 4u64, u64.from(m.indexCount) * 4u64);
-        entry.blas = blas;
-        entry.normalBase = normalUsed;
-        entry.indexBase = indexUsed;
-        entry.usable = true;
-        normalUsed = normalUsed + m.vertexCount;
-        indexUsed = indexUsed + m.indexCount;
-        built = built + 1u32;
-      }
-    } else if tracesIt {
-      // The shared buffers are full: start them again next frame
-      resetNext = true;
-    }
-    if i < meshes.len() {
-      meshes.set(i, entry);
-    } else {
-      meshes.push(entry);
-    }
-    if meshes[i].usable { i32.from(i) } else { -1i32 }
+    let usable = entry.usable;
+    slot.rt = Some[Uni[RtMesh]](Uni[RtMesh](entry));
+    usable
   }
 
   // Build this frame's structure from 'items' (the first 'mainEnd' of them): every mesh that is alive and a
   // material that is representable; the bottom-level structures first, into 'encoder', then the top level. The
   // encoder is not in a pass.
-  pub fn update(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, meshPool: &Pool[MeshSlot],
+  pub fn update(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, meshPool: &mut Pool[MeshSlot],
       materialPool: &Pool[MaterialSlot], items: &List[DrawItem], mainEnd: usize) {
     if resetNext {
-      meshes.clear();
+      // One stall for the lot: every stale structure is released while the device is idle, so each one's own wait
+      // (AccelerationStructure.final) returns at once, and a mesh not drawn again keeps none
+      device.waitIdle();
+      var it = meshPool.gcTraceElements();
+      var more = true;
+      while more {
+        match it.next() {
+          case let Some(s) { s.rt = None[Uni[RtMesh]]; }
+          else { more = false; }
+        }
+      }
+      epoch = epoch + 1u32;
       normalUsed = 0u32;
       indexUsed = 0u32;
       resetNext = false;
@@ -151,7 +156,7 @@ pub struct RtScene {
       let item = items[k];
       k = k + 1usize;
       if !meshPool.alive(item.mesh.slot) || !materialPool.alive(item.material.slot) { continue; }
-      let slot = &meshPool[item.mesh.slot];
+      let slot = &mut meshPool[item.mesh.slot];
       let m = slot.current();
       let mslot = &materialPool[item.material.slot];
       if !m.isValid() || m.isSkinned() || m.topology != PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || item.bones != NO_BONES
@@ -168,12 +173,21 @@ pub struct RtScene {
         skipped = skipped + 1u32;
         continue;
       }
-      let at = self.meshFor(device, encoder, item.mesh, m, slot.version);
-      if at < 0i32 {
+      if !self.meshFor(device, encoder, slot) {
         skipped = skipped + 1u32;
         continue;
       }
-      let entry = &meshes[usize.from(u32.from(at))];
+      var address = 0u64;
+      var normalBase = 0u32;
+      var indexBase = 0u32;
+      match slot.rt.asRef() {
+        case let Some(e) {
+          address = e.blas.address;
+          normalBase = e.normalBase;
+          indexBase = e.indexBase;
+        }
+        else {}
+      }
       var tr = Array[f32, 12]() <- fill 0f;
       var row = 0usize;
       while row < 3usize {
@@ -186,8 +200,8 @@ pub struct RtScene {
       }
       let id = u32.from(recordList.len());
       instanceList.push(AccelerationStructureInstance(tr, id | (mask << 24u32),
-        INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, entry.blas.address));
-      recordList.push(rtRecordOf(mslot, item.tint, entry.normalBase, entry.indexBase));
+        INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, address));
+      recordList.push(rtRecordOf(mslot, item.tint, normalBase, indexBase));
     }
     count = u32.from(instanceList.len());
     if count > 0u32 {

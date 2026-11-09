@@ -1414,7 +1414,7 @@ included), is `linkonce_odr` with
 a COMDAT of kind `any` (`GenlShared`): the package's own instances and each
 importer's are identical, and the linker keeps one copy. A compile with no
 build description is the program's only object, and there an instance is
-internal like every other definition; so is a small *function* of an instance
+internal like every other definition; so is a *function* of an instance
 in a release program (`genlInstanceIsPrivate`, generation.md "Linkage"), never
 a global of one. `dclIsExported` never exports one. What a
 library compile does export is each private function, global or type a
