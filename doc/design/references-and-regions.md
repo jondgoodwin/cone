@@ -415,9 +415,14 @@ is refused where it is written (`ErrorSoleOwnerMut`), while `Uni[imm, T]` stays,
 promise that the value never changes.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
-parameter, 2+ a local. It is not a type parameter, not a constraint variable,
-and not part of type identity — `refIsSame` ignores it and `refFindSuper` drops
-it. How long a borrow *freezes* its source is a different question, and is not
+parameter, 2+ a local. Two questions are kept apart here. **Instancing:** a
+generic gets one instance for every lifetime, because a lifetime changes no
+generated code (Rust erases lifetimes before code generation for the same
+reason). That is right, and so is ignoring other things that do not change the
+code. **The type:** a lifetime is part of what the checker knows about a value,
+and it must stay in the type. Today `refIsSame` ignores it and `refFindSuper`
+drops it when types are compared, which removes it from the type and not only
+from instancing. That is a gap ("Where it is not yet enforced", below). How long a borrow *freezes* its source is a different question, and is not
 in the type at all: flow's loan walk records which loans each local may hold,
 per path, and a borrow's source stays frozen until the last use of whatever
 holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan
@@ -427,7 +432,7 @@ struct and named on its uses (`struct Cursor['a]`, `Cursor['a]`), ordered by a
 signature, never by a number: the loan walk keeps a caller loan per part of
 what a parameter lends, a struct's lifetimes one by one, and compares the
 parts' names (Flow Analysis, "Named lifetimes", "Slots"). A name, like the
-scope, is no part of type identity, and is never instanced. What these
+scope, is never instanced. What these
 mechanisms must add up to, and where they do not yet, is the next section,
 "Lifetimes: one invariant, checked from both sides of a call".
 
@@ -481,10 +486,19 @@ represented; this section is what they must add up to.
   (`Cursor['a]`). A store into a field through `self` is a store like any other,
   so its relation to the stored value's lifetime is part of the method's
   signature.
-- **Containers and a generic `T`.** A `T` that holds a borrow carries that
-  borrow's lifetime inside `T`, and a container of `T` holds whatever its
-  elements borrow. *Open, Jon's:* whether storing a `T` into a container of `T`
-  needs a where clause, or whether the type implies the relation.
+- **A generic `T`.** A `T` that holds borrows carries their lifetime in its
+  type. Instancing ignores it, and the type keeps it. Storing a `T` into a
+  holder is a store like any other: what the `T` borrows must live at least as
+  long as the holder. So a generic signature that stores a `T` names the
+  lifetime the `T` carries and states the ordering. `'b + T` reads "a `T` whose
+  borrows live at least `'b`" (Jon's sketch, 9 Nov; spelling open):
+
+  ```
+  fn push(self: &mut List['a + T], value: 'b + T) where 'b >= 'a
+  fn alloc(self: &mut Arena['a], value: 'b + T) where 'b >= 'a
+  ```
+
+  A container's push and an arena's alloc are the same store.
 - **Moving a holder.** Moving a value that holds borrows moves the holder, which
   changes how long the borrows it holds must last. So either the holder's type
   carries the bound wherever it goes (a struct's lifetime parameter), or the
@@ -495,21 +509,27 @@ represented; this section is what they must add up to.
   reads at the arena's death, 6 Nov). `Arena`'s type carries no lifetime and an
   `Arena` can move, so moving one breaks the invariant (Bug 76). Which of the two
   ways above closes it is open, and Jon's.
-- **Elision is syntax.** Leaving lifetime names out reads as one shared name on
-  every unannotated borrow (Jon, 6 Nov). It never stands for a store's relation:
-  a function that stores a borrow from one input into a place reached from
-  another names both and states the where clause. That an elided signature
-  cannot carry a where clause is a matter of syntax, not of what is safe.
+- **Elision is syntax.** It writes no lifetime names (unannotated borrows read
+  as one shared name, Jon 6 Nov), so it cannot state an ordering, and a store's
+  requirement is an ordering ("at least as long"), not an equality. So a
+  function that stores a borrow, or a `T` that holds one, into a place reached
+  from another input writes its lifetimes: names on both, and the where clause.
+  One shared name would be stricter than the requirement, and so wrong as a
+  contract, even though nothing dangles.
 - **Raw pointers** carry no lifetime. A reference made from one is outside both
   checks, and `trust` vouches for it.
 
 **Where it is not yet enforced** (each a check against the contract that does
 not happen today):
 
-- Bug 77: a body whose lifetimes are elided may store a borrow from one input
-  into a place reached from another, and the caller's check is skipped for a
-  directly written `&mut x` argument (the shortcut near `flowpath.c` 2332).
+- Bug 77: a body that writes no lifetimes may store a borrow from one input
+  into a place reached from another, which its signature never states, and the
+  caller's check is skipped for a directly written `&mut x` argument (the
+  shortcut near `flowpath.c` 2332).
 - Bug 76: an `Arena` can be moved while it holds borrows.
+- Lifetimes are dropped from types when types are compared (`refIsSame`,
+  `refFindSuper`), so a generic `T`'s lifetime can be neither named nor checked,
+  and `'b + T` cannot yet be written.
 
 ## The kinds of reference, and what each is for
 
