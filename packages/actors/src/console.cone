@@ -55,8 +55,9 @@
 // If the wait gives up with records unwritten, the panic goes on and writes its
 // message itself, and the process's LAST line, written to standard error after
 // the panic's message and its hook, says how many lines were dropped
-// ('console: N lines were queued but not written'; op 2 below, which conestd's
-// panic.cone calls last). A failed main does not: its end drains without a limit.
+// ('console: N lines were queued but not written (no progress for 500 ms)', or
+// '(ceiling of 10000 ms reached)': which limit ended the wait; op 2 below, which
+// conestd's panic.cone calls last). A failed main does not: its end drains without a limit.
 
 const consoleBufCap = 16384usize;
 const consoleLimit = 67108864usize;
@@ -78,7 +79,8 @@ let coHold: Atomic[u32];       // 1 while a test holds the destination stalled
 // Progress, for a panic's wait: records that reached the operating system
 // (bumped by the owner after a write, read without a lock by a panic)
 let coDelivered: Atomic[u64];
-let coGaveUp: Atomic[u32];     // 1 once a panic's wait gave up with the owner not idle
+let coGaveUp: Atomic[u32];     // once a panic's wait gave up with the owner not idle: 1 the stall ended it, 2 the ceiling
+let coGaveLimit: Atomic[u32];  // that limit in ms
 // The panic's limits in ms, 0 for the defaults below (a test sets them)
 let coStallMs: Atomic[u32];
 let coCeilingMs: Atomic[u32];
@@ -394,7 +396,16 @@ fn consoleControl(op: u32) {
     }
     // The owner is not finished: the panic goes on without it, and op 2
     // reports what is still unwritten then
-    coGaveUp.store(1u32);
+    // and which limit ended the wait goes with it: the stall (no progress for that
+    // long) takes the credit if both are up
+    if moved.elapsed().millis() >= i64.from(stall) {
+      coGaveLimit.store(stall);
+      coGaveUp.store(1u32);
+    }
+    else {
+      coGaveLimit.store(ceiling);
+      coGaveUp.store(2u32);
+    }
     return;
   }
   if op == 2u32 {
@@ -425,7 +436,7 @@ fn consoleReportDropped() {
     return;
   }
   let dropped = pushed - delivered;
-  var buf = Array[u8, 96]() <- fill 0u8;
+  var buf = Array[u8, 160]() <- fill 0u8;
   let head = "console: ";
   var at = 0usize;
   var i = 0usize;
@@ -448,10 +459,43 @@ fn consoleReportDropped() {
     buf[at] = digits[nd];
     at = at + 1usize;
   }
-  let tail = if dropped == 1u64 { " line was queued but not written\n" } else { " lines were queued but not written\n" };
+  let tail = if dropped == 1u64 { " line was queued but not written (" } else { " lines were queued but not written (" };
   i = 0usize;
   while i < tail.len() {
     buf[at] = tail[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  // Which limit ended the wait, so a test (and a reader) can tell a stalled destination from a
+  // trickling one without timing anything: "no progress for 500 ms" or "ceiling of 10000 ms reached"
+  let stalled = coGaveUp.load() == 1u32;
+  let why = if stalled { "no progress for " } else { "ceiling of " };
+  i = 0usize;
+  while i < why.len() {
+    buf[at] = why[i];
+    at = at + 1usize;
+    i = i + 1usize;
+  }
+  var ms = coGaveLimit.load();
+  nd = 0usize;
+  if ms == 0u32 {
+    digits[nd] = 48u8;
+    nd = nd + 1usize;
+  }
+  while ms > 0u32 {
+    digits[nd] = 48u8 + u8.from(ms % 10u32);
+    nd = nd + 1usize;
+    ms = ms / 10u32;
+  }
+  while nd > 0usize {
+    nd = nd - 1usize;
+    buf[at] = digits[nd];
+    at = at + 1usize;
+  }
+  let end = if stalled { " ms)\n" } else { " ms reached)\n" };
+  i = 0usize;
+  while i < end.len() {
+    buf[at] = end[i];
     at = at + 1usize;
     i = i + 1usize;
   }
