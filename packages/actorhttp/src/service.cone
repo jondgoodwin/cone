@@ -42,8 +42,8 @@ struct ClientRec {
   dying: bool;                   // no handle is left: it is ended, and goes when its connections have
   maxBody: usize;
   client: httpclient.Client;
-  waits: SlotTable[Wait];
-  streams: SlotTable[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
+  waits: GenPool[Wait];
+  streams: GenPool[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
   ups: Dict[u64, u32];               // an upload's stream id: its slot in 'streams' (upload.cone: its sink knows the id alone)
 }
 
@@ -69,16 +69,16 @@ const connBit = 0x100000000u64;
 // connections a program makes itself, and what is awaited on those. A service
 // hosted on aio's I/O thread (aio.Hosted: turn, complete, wakeAt, end)
 struct Service {
-  clients: SlotTable[ClientRec];
+  clients: GenPool[ClientRec];
   drv: httpconn.Driver;
-  conns: SlotTable[ConnRec];
-  xwaits: SlotTable[Wait];
-  srvs: SlotTable[SrvRec];       // the servers listening, each with a driver of its own
+  conns: GenPool[ConnRec];
+  xwaits: GenPool[Wait];
+  srvs: GenPool[SrvRec];       // the servers listening, each with a driver of its own
 
   fn make() Service {
-    Service(clients: SlotTable[ClientRec].make(4u32),
-      drv: httpconn.Driver.make(httpconn.Config.make()), conns: SlotTable[ConnRec].make(16u32),
-      xwaits: SlotTable[Wait].make(16u32), srvs: SlotTable[SrvRec].make(4u32))
+    Service(clients: GenPool[ClientRec].make(4u32),
+      drv: httpconn.Driver.make(httpconn.Config.make()), conns: GenPool[ConnRec].make(16u32),
+      xwaits: GenPool[Wait].make(16u32), srvs: GenPool[SrvRec].make(4u32))
   }
 
   // The record in cell k, or null if that cell is free
@@ -484,7 +484,7 @@ struct CreateClientJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     sv.clients.add(ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
-      SlotTable[Wait].make(16u32), SlotTable[StreamRec].make(16u32), Dict[u64, u32]()));
+      GenPool[Wait].make(16u32), GenPool[StreamRec].make(16u32), Dict[u64, u32]()));
   }
 }
 
