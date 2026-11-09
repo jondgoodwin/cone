@@ -1154,8 +1154,7 @@ instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not 
 or outside. A constant belongs to the type (Jon, 22 Sep: a name folds on a type, not on a field), so the lookup of a member
 of a value (`fnCallLowerMethodOn`) refuses the `ConstDclTag` it finds, and for a value of an enum's variant the
 one the enum declares, and names the form that works, `Vec3.zero`. `ErrorConstPlace` (1621) is a `const` read in the
-braces of a trait or of a generic type (a `#each` over its fields included), where each implementer or instance would
-need its own copy (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
+braces of a trait, where it would be a requirement each implementer meets (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
 A `const` with no value is `ErrorNoInit`, one with no name `ErrorNoIdent`, a name the type already has `ErrorDupName`,
 and a value that is no constant expression `ErrorNotLit`, as at module level.
 
