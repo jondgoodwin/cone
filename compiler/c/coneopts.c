@@ -65,6 +65,8 @@ enum
     OPT_WARN_INDEX_STAR,
     OPT_PRIVATE_INSTANCES,
     OPT_NO_NOALIAS,
+    OPT_LTO,
+    OPT_LTO_LINK,
 
     OPT_BNF,
     OPT_ANTLR,
@@ -119,6 +121,8 @@ static opt_arg_t args[] =
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
     { "private-instances", '\0', OPT_ARG_REQUIRED, OPT_PRIVATE_INSTANCES },
     { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
+    { "lto", '\0', OPT_ARG_NONE, OPT_LTO },
+    { "lto-link", '\0', OPT_ARG_NONE, OPT_LTO_LINK },
 
     OPT_ARGS_FINISH
 };
@@ -222,6 +226,14 @@ static void usage()
         "  --no-noalias    Attach no 'noalias' to a unique or immutable borrow\n"
         "                  parameter (also set by CONE_NO_NOALIAS in the\n"
         "                  environment): the way to bisect a suspected miscompile.\n"
+        "  --lto           A release compile of a native module writes <name>.bc,\n"
+        "                  LLVM bitcode with a ThinLTO summary, in place of an\n"
+        "                  object; --lto-link then makes the objects.\n"
+        "  --lto-link      Not a compile: ThinLTO-links the bitcode files named\n"
+        "                  (after the options) and writes <output>/<i>.obj for the\n"
+        "                  i-th, keeping 'main' and what the modules call across\n"
+        "                  one another. Takes --cpu, --features, --pic and --nopic\n"
+        "                  as a compile does.\n"
         ,
         "" // "Runtime options for Cone programs (not for use with Cone compiler):\n"
     );
@@ -471,6 +483,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
                 ok = 0;
             break;
         case OPT_NO_NOALIAS: opt->no_noalias = 1; break;
+        case OPT_LTO: opt->lto = 1; break;
+        case OPT_LTO_LINK: opt->ltolink = 1; break;
 
         case OPT_VERBOSE:
         {
