@@ -551,7 +551,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     // check. A bare name in a generic enum's variant is bound to the enum
     // instance's own method, so a variant's members checked before the enum's
     // found that method unchecked and checked it as the variant's.
-    INode *owner = inodeGetOwner(name->dclnode);
+    INode *owner = name->dclnode->tag == ConstDclTag ? ((ConstDclNode*)name->dclnode)->owner : inodeGetOwner(name->dclnode);
     if (owner != NULL && owner->tag == StructTag && owner != pstate->typenode
         && !(name->dclnode->flags & (TypeChecked | TypeChecking))) {
         TypeCheckState tstate;

@@ -454,6 +454,66 @@ class Scenarios(unittest.TestCase):
         self.congo("build", "--strip", cwd=pkg)
         self.assertFalse((pkg / "build" / "debug" / "sym.pdb").exists(), "--strip writes no PDB in debug either")
 
+    def test_lto_builds_a_release_program_across_its_packages(self):
+        """'--lto' (with --release) compiles every package to ThinLTO bitcode in
+        a build folder of its own, links them with conec's ThinLTO link, and
+        the program runs as the ordinary build's does: a String's text crosses
+        into collections and a trait object's call through its vtable, which the
+        link must not drop (a symbol only a call out of line or a vtable
+        reaches); the PDB still names the program's functions; without
+        --release it is refused, and without --lto nothing is bitcode."""
+        self.congo("new", "lt", cwd=self.root)
+        pkg = self.root / "lt"
+        write(pkg / "src" / "lt.cone", """
+            mod lt;
+
+            import stdio use *;
+            import collections use *;
+
+            trait Speak { pub fn word(self: &) &str; }
+            struct Dog is Speak {
+              pub n: i32;
+              pub fn word(self: &) &str { "woof" }
+            }
+
+            fn speak(s: &<Speak) &str { s.word() }
+
+            // Recursive, so optimisation leaves it a function of its own
+            fn fibonacciNumber(n: i32) i32 {
+              if n < 2i32 { n } else { fibonacciNumber(n - 1i32) + fibonacciNumber(n - 2i32) }
+            }
+
+            fn main() i32 {
+              var s = String();
+              s <- "lt ";
+              s.appendUInt(u64.from(fibonacciNumber(20i32)));
+              s <- " ";
+              let d = Dog(1i32);
+              s <- speak(&d);
+              print <- s.view();
+              print <- "\\n";
+              0i32
+            }
+            """)
+        run = self.congo("run", "--release", "--lto", cwd=pkg)
+        self.assertEqual(self.program_output(run), "lt 6765 woof\n")
+        folder = pkg / "build" / "release-lto"
+        self.assertTrue((folder / "lt.bc").is_file(), "an --lto compile writes bitcode")
+        self.assertTrue((folder / "core.bc").is_file())
+        self.assertFalse((folder / f"lt{congo.OBJ_EXT}").exists(), "and no object")
+        if IS_WINDOWS:
+            self.assertTrue(b"fibonacciNumber" in (folder / "lt.pdb").read_bytes(),
+                            "the PDB names the program's functions")
+        self.assertIn("Optimising", run.stdout)
+        # Not the default: the release build is its own, of objects
+        self.congo("build", "--release", cwd=pkg)
+        self.assertTrue((pkg / "build" / "release" / f"lt{congo.OBJ_EXT}").is_file())
+        self.assertFalse((pkg / "build" / "release" / "lt.bc").exists())
+        # A debug build has no ThinLTO
+        refused = self.congo("build", "--lto", cwd=pkg, ok=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--lto optimises a release build", refused.stderr)
+
     def test_a_lone_file(self):
         write(self.root / "lone.cone", """
             mod lone;
@@ -2038,8 +2098,10 @@ class Testing(unittest.TestCase):
         out = run.stdout
         # Over several packages: every other test of every package first, the
         # quiet one after them all, by itself
-        order = [out.index(f"test {n} ... ok") for n in ("steady", "other", "timing")]
-        self.assertEqual(order, sorted(order), out)
+        # (the two packages' own tests may run at once, in either order)
+        timing = out.index("test timing ... ok")
+        for n in ("steady", "other"):
+            self.assertLess(out.index(f"test {n} ... ok"), timing, out)
         self.assertEqual(out.count("test timing ... ok"), 1, out)
         self.assertIn("2 packages: 3 tests: 3 passed", out)
         # One package: the quiet test runs last in it
@@ -2050,6 +2112,32 @@ class Testing(unittest.TestCase):
         run = self.congo("test", "timing", cwd=folder)
         self.assertIn("test timing ... ok", run.stdout)
         self.assertNotIn("test steady", run.stdout)
+
+    def test_quiet_class_runs_only_when_the_parallel_phase_is_over(self):
+        """The mechanism for timing-sensitive tests: whatever the job count, a
+        quiet test starts only after every package has ended (its Result line
+        printed) and its examples are built, and is announced as running alone."""
+        folder = self.quiet_packages(self.root)
+        write(folder / "qone" / "examples" / "demo.cone", """
+            mod demo;
+
+            fn main() i32 {
+              0i32
+            }
+            """)
+        # (the Cone Congo has no --jobs yet: it tests one package at a time)
+        for jobs in ((None,) if CONGO_EXE else ("1", "2", "4")):
+            out = self.congo("test", *(("--jobs", jobs) if jobs else ()), cwd=folder).stdout
+            timing = out.index("test timing ... ok")
+            quiet_line = out.index("Quiet")
+            self.assertLess(quiet_line, timing, out)
+            self.assertEqual(out.count("test timing ... ok"), 1, out)
+            self.assertEqual(out.count("Result qone"), 1, out)
+            self.assertEqual(out.count("Result qtwo"), 1, out)
+            for what in ("Result qone", "Result qtwo", "test steady ... ok",
+                         "test other ... ok", "example demo ... built"):
+                self.assertLess(out.index(what), quiet_line, f"--jobs {jobs}: {what}\n{out}")
+            self.assertIn("one at a time", out[quiet_line:timing])
 
     def test_quiet_names_a_test_that_exists(self):
         folder = self.quiet_packages(self.root)
@@ -4174,5 +4262,89 @@ class IndexRegistries(unittest.TestCase):
         self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "11\n")
 
 
+def all_test_ids() -> list[str]:
+    """Every test of this module as 'Class.method', in the order unittest runs them."""
+    found: list[str] = []
+
+    def walk(suite):
+        for item in suite:
+            if isinstance(item, unittest.TestSuite):
+                walk(item)
+            else:
+                found.append(item.id().split(".", 1)[1] if item.id().startswith("__main__.")
+                             else item.id())
+    walk(unittest.defaultTestLoader.loadTestsFromModule(sys.modules["__main__"]))
+    return found
+
+
+def parallel_tasks() -> list[list[str]]:
+    """The test ids split into groups, each run by a process of its own: one
+    group per test, except the classes that build the Cone Congo (it is built
+    into tools/congo/build, so the two are one group, one process, built once)."""
+    cone_congo = ("ConeCongoParity.", "ConeCongoMsvcEnvironment.")
+    ids = all_test_ids()
+    together = [i for i in ids if i.startswith(cone_congo)]
+    tasks = [[i] for i in ids if not i.startswith(cone_congo)]
+    if together:
+        tasks.insert(0, together)    # the long ones first
+    return tasks
+
+
+def run_in_parallel(jobs: int) -> int:
+    """The suite on `jobs` processes, each a serial run of some of its tests; one
+    summary line at the end, as unittest prints it."""
+    import concurrent.futures
+    started = time.monotonic()
+    tasks = parallel_tasks()
+    totals = {"ran": 0, "failures": 0, "errors": 0, "skipped": 0, "other": 0}
+    failed_output: list[str] = []
+
+    def run(group: list[str]) -> tuple[list[str], str]:
+        done = subprocess.run([sys.executable, str(HERE / "test_congo.py"), "-v", *group],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        return group, done.stderr + (done.stdout if done.returncode else "")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        for group, text in pool.map(run, tasks):
+            sys.stdout.write(text if text.endswith("\n") else text + "\n")
+            sys.stdout.flush()
+            ran = re.search(r"^Ran (\d+) tests?", text, re.M)
+            if not ran:
+                totals["other"] += 1
+                totals["errors"] += 1
+                failed_output.append(f"no result from {', '.join(group)}")
+                continue
+            totals["ran"] += int(ran.group(1))
+            last = text.rstrip().splitlines()[-1]
+            for key in ("failures", "errors", "skipped"):
+                found = re.search(rf"\b{key}=(\d+)", last)
+                if found:
+                    totals[key] += int(found.group(1))
+    elapsed = time.monotonic() - started
+    ran = totals["ran"]
+    print("-" * 70)
+    print(f"Ran {ran} test{'' if ran == 1 else 's'} in {elapsed:.3f}s\n")
+    bad = totals["failures"] + totals["errors"]
+    details = [f"{k}={totals[k]}" for k in ("failures", "errors", "skipped") if totals[k]]
+    if bad:
+        print(f"FAILED ({', '.join(details)})")
+    else:
+        print("OK" + (f" ({', '.join(details)})" if details else ""))
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    # 'test_congo.py -j N' runs the tests on N processes (-j 1: one process,
+    # as ever); with no -j, half the logical processors. Test names given on
+    # the command line are run in this process, as unittest runs them
+    argv = sys.argv[1:]
+    jobs = max(1, (os.cpu_count() or 2) // 2)
+    if argv[:1] in (["-j"], ["--jobs"]) and len(argv) >= 2:
+        jobs = int(argv[1])
+        argv = argv[2:]
+    elif argv[:1] == ["-v"] or argv:
+        jobs = 1
+    if jobs > 1 and not argv:
+        sys.exit(run_in_parallel(jobs))
+    unittest.main(argv=[sys.argv[0], *(argv or ["-v"])], verbosity=2)

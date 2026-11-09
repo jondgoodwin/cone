@@ -1349,32 +1349,32 @@ target = "symbols"
 object = "g"
 excludes = ["g[", "g.add", "g.total"]
 
-# The same three objects in an optimized program: an instance's function small
-# enough to inline is the program's own copy (internal), while a library keeps
+# The same three objects in an optimized program: an instance's function, large
+# or small, is the program's own copy (internal), while a library keeps
 # its copies shared, and the instance's counter and the trait objects' vtables
 # stay shared everywhere, since each must be one object in the program. A
 # function's address is promised the same only within one object (nothing says
 # two objects, or two folded copies, share one), so only that is pinned.
 [scenario.module_generic_private]
 category = "run"
-description = "An optimized program, a library and a generic module's package: the program keeps a small generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
+description = "An optimized program, a library and a generic module's package: the program keeps a generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
 tags = ["genllvm", "runtime"]
 link = ["g/g.conebuild", "q/q.conebuild"]
 include = ["include/g.cone", "include/q.cone"]
 
 [[scenario.module_generic_private.check]]
-name = "the-program-keeps-a-small-instance-function-to-itself"
+name = "the-program-keeps-an-instance-function-to-itself"
 target = "symbols"
 contains = [
   "define internal g[i64].add comdat nodeduplicate",
   "define internal g[i64].sameAddress comdat nodeduplicate",
   "global linkonce_odr thread_local g[i64].total comdat any",
   "global linkonce_odr thread_local g[i64].adds comdat any",
-  "define linkonce_odr g[i64].heavy comdat any",
+  "define internal g[i64].heavy comdat nodeduplicate",
   "constant linkonce_odr q.Wrap[i64] as q.Shape (vtable) comdat any",
   "constant linkonce_odr q.Wrap[f64] as q.Shape (vtable) comdat any",
 ]
-excludes = ["define linkonce_odr g[i64].add comdat", "global internal thread_local", "constant internal q.Wrap"]
+excludes = ["define linkonce_odr g[i64]", "global internal thread_local", "constant internal q.Wrap"]
 
 [[scenario.module_generic_private.check]]
 name = "the-library-keeps-its-instance-shared"
@@ -4426,3 +4426,36 @@ diagnostics = 12
 category = "run"
 description = "A 'while' or 'each' in a block giving a global its value runs in the global's setup and gives the right value (it crashed: a loop's breaks were compared with the body of a function, and there is none here)"
 tags = ["typecheck", "genllvm", "runtime"]
+
+# Built with ThinLTO (--lto: each compile writes bitcode, and conec's ThinLTO
+# link makes the objects): a package's function called out of line, and the
+# method of a trait object reached by its vtable, are in the package's module and
+# referred to from the program's. The link must keep them though nothing imports
+# them (the cross-referenced symbols), or the program does not link.
+[scenario.module_lto]
+category = "run"
+description = "A program and a package built with ThinLTO: a call to the package's function, a method called on its type, and the package's function taking a trait object whose method is reached by a vtable, all linking and running as the ordinary build does"
+tags = ["genllvm", "runtime"]
+link = ["ltolib/lto_lib.conebuild"]
+include = ["include/lto_lib.cone"]
+
+[[scenario.module_lto.run]]
+name = "lto"
+options = ["--lto"]
+
+# A float's math methods on the Vulkan form: GLSL.std.450's instructions for those LLVM
+# has an intrinsic for, a formula for hypot, cbrt and powi, the module validating
+[scenario.module_target_spirv_floatmath]
+category = "compile"
+description = "A float's tan, asin, acos, atan, atan2, exp, exp2, ln, log2, log10, pow, sinh, cosh, tanh, hypot, cbrt, powi, isNaN, isInfinite and isFinite in compute kernels on SPIR-V's Vulkan form: GLSL.std.450's Tan, Asin, Acos, Atan, Atan2, Exp, Exp2, Log, Log2, Pow, Sinh, Cosh and Tanh, a formula for hypot, cbrt and powi, no OpUnordered, nothing imported"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_floatmath.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_floatmath.check]]
+name = "each-is-a-glsl-instruction"
+target = "asm"
+contains = [" Tan %", " Asin %", " Acos %", " Atan %", " Atan2 %", " Exp %", " Exp2 %", " Log %", " Log2 %", " Pow %", " Sinh %", " Cosh %", " Tanh %", " Sqrt %", " FAbs %", " Fma %", " OpFUnordNotEqual %"]
+excludes = ["OpUnordered", "OpExtInstImport \"OpenCL"]

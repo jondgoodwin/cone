@@ -28,6 +28,7 @@ typedef struct VarDclNode {
     uint32_t flowindex;        // Transient: this variable's index in the loan walk (flowpath.c), 0 outside one
     Nodes *hollowed;           // Data flow: each move that took what this owning reference points at, or an element of it, out
     Nodes *hollowall;          // Data flow: every such move in the function, on any path (a drop flag's hollow release)
+    Nodes *hollowuse;          // Data flow: the use of this variable's name each move in 'hollowall' hollows it through, in its order (the path walk follows which moves reach a release)
     LLVMValueRef llvmflag;     // Generation: its drop flag, for a variable with VarDropFlag
 } VarDclNode;
 
