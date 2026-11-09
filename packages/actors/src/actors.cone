@@ -843,7 +843,7 @@
 //    it bounds how long an actor waits behind another's long turn. It costs a
 //    wake per send in a conversation between two actors, when no worker spins.
 // The constants of the spin, the cap, the inject look and duty 3 are settings
-// (Options: spinMicros, spinCap, injectEvery, wakeOnPush), so that a benchmark
+// (Options: spinMicros, spinCap, injectEvery, wakeOnPush, monitorMicros), so that a benchmark
 // can try them per workload; their defaults are the values below.
 //
 // THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
@@ -4075,6 +4075,12 @@ pub const defaultSpinMicros = 8u32;
 // this rule, with this most)
 pub const defaultSpinMost = 4u32;
 
+// THE MONITOR's tick, in microseconds (Options.monitorMicros)
+pub const defaultMonitorMicros = 500u32;
+
+// Ticks in a row with every worker parked, after which the monitor parks
+const monitorIdleTicks = 4u32;
+
 // A worker index for a thread that is not a worker
 pub const noWorker = 0xFFFFFFFFu32;
 
@@ -4120,7 +4126,8 @@ struct Sched {
   pub done: Atomic[u32];        // 1 once the stop has begun
   pub stopping: Atomic[u32];    // 1 once the workers are to stop
   pub spinning: Atomic[u32];    // workers in THE SPIN now, at most spinCap
-  pub gap: Array[u8, 40];
+  pub monitor: Atomic[u32];     // THE MONITOR's park word: 0 running (or none), 1 parked; beside the sleepers' count, which a worker has just written when it reads this
+  pub gap: Array[u8, 36];
   pub lock: sync.Mutex;         // guards the inject queue's list
   pub injectHead: *Header;
   pub injectTail: *Header;
@@ -4131,6 +4138,7 @@ struct Sched {
   pub batch: u32;
   pub spinCap: u32;             // how many workers may spin at once (Options.spinCap)
   pub injectEvery: u32;         // every this many turns a worker looks in the inject queue first (Options.injectEvery)
+  pub monitorMicros: u32;       // THE MONITOR's tick in microseconds (Options.monitorMicros); 0: no monitor thread
   pub wakeOnPush: u32;          // 1: a push to one's own queue calls notify even when the queue was empty (the header, THE SEARCH INVARIANT, duty 3; Options.wakeOnPush)
   pub parkHold: u32;            // the test hook holdNextPark's state (atomic): 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
   pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (Options.spinMicros); 0: no spin
@@ -4375,15 +4383,16 @@ fn injectPop(s: *Sched, w: *Worker) *Header {
 
 // Wake one sleeping worker to look for work, unless one is looking already:
 // a worker spinning (THE SPIN), or one woken earlier and not yet done looking
-fn notify(s: *Sched) {
+// True when it woke a worker (the monitor counts those)
+fn notify(s: *Sched) bool {
   if ld32(&(*s).sleepers as *u32) == 0u32 {
-    return;
+    return false;
   }
   if ld32(&(*s).spinning as *u32) != 0u32 {
-    return;
+    return false;
   }
   if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst) != 0u32 {
-    return;
+    return false;
   }
   // Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be
   // had leaves 'searching' set: every worker counted a sleeper is then chosen
@@ -4406,12 +4415,13 @@ fn notify(s: *Sched) {
           MemOrder.SeqCst, MemOrder.SeqCst);
         if marked {
           sync.futexWake(&(*w).park);
-          return;
+          return true;
         }
       }
     }
     k = k + 1u32;
   }
+  false
 }
 
 // Word k of the sleepers' bitmap
@@ -4769,6 +4779,136 @@ fn leavePark(s: *Sched, w: *Worker) {
 fn uncount(s: *Sched) {
   let before = mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
   assertDebugMsg(before != 0u32, "actors: the sleepers' count went below 0");
+  // The first worker out of a park that has the monitor asleep wakes it
+  // (THE MONITOR). The decrement is first, the read after, both sequentially
+  // consistent: the monitor publishes its park and then looks at the count,
+  // so one of the two sees the other
+  if ld32(&(*s).monitor as *u32) != 0u32 {
+    var seen = 0u32;
+    var got = false;
+    seen, got = mem.atomicCompareSwap[u32](&(*s).monitor as *u32, 1u32, 0u32, MemOrder.SeqCst, MemOrder.SeqCst);
+    if got {
+      sync.futexWake(&(*s).monitor);
+    }
+  }
+}
+
+// THE MONITOR. A worker's turn that does not end holds the actors in that
+// worker's own queue, though other workers sleep (a push to an empty queue
+// wakes nobody: Options.wakeOnPush is off, for pingpong's sake). The monitor
+// is Go's sysmon in Cone's form, with nothing on the send path. Every
+// monitorMicros it reads each worker's 'activations' (bumped once at the end
+// of every turn by runActor, Relaxed, in its stats slot). A worker whose count
+// has not moved since the last tick, with its queue non-empty, has held one
+// turn for a whole tick while actors wait: the monitor calls notify, which
+// declines when a worker is spinning or looking, or none sleeps, and else
+// wakes a sleeper, which steals. A stranded actor waits about two ticks and a
+// wake. Turns that do not bump the count (a loop piece run by runTask, the
+// idle path) leave the count still too, so a worker busy with them and actors
+// queued behind is caught the same way. After monitorIdleTicks ticks with
+// every worker parked the monitor parks on 's.monitor'; the first worker to
+// leave a park (uncount) wakes it, once per idle-to-busy change.
+fn monitorMain(arg: WorkerArg) u32 {
+  let s = (*arg.w).sched;
+  let n = (*s).nworkers;
+  let last = libc.calloc(usize.from(n), 8usize) as *u64;
+  if last as usize == 0usize {
+    die("actors: out of memory for the runtime");
+  }
+  let tick = time.Duration.fromMicros(i64.from((*s).monitorMicros));
+  let timer = monitorTimerMake();
+  var quiet = 0u32;
+  while ld32(&(*s).stopping as *u32) == 0u32 {
+    monitorPause(timer, tick);
+    if ld32(&(*s).sleepers as *u32) == n {
+      quiet = quiet + 1u32;
+    } else {
+      quiet = 0u32;
+    }
+    if quiet >= monitorIdleTicks {
+      // Publish the park, then look again: a worker that left a park before
+      // the publication is seen in the count, one after it sees the park
+      mem.atomicStore[u32](&(*s).monitor as *u32, 1u32, MemOrder.SeqCst);
+      if ld32(&(*s).sleepers as *u32) == n && ld32(&(*s).stopping as *u32) == 0u32 {
+        sync.futexWait(&(*s).monitor, 1u32);
+      }
+      var seen = 0u32;
+      var back = false;
+      seen, back = mem.atomicCompareSwap[u32](&(*s).monitor as *u32, 1u32, 0u32, MemOrder.SeqCst, MemOrder.SeqCst);
+      quiet = 0u32;
+      // The counts as they are now: no turn is judged by a tick before the park
+      var j = 0u32;
+      while j < n {
+        *(last + usize.from(j)) = mem.atomicLoad[u64](&(*(*workerAt(s, j)).stat).activations as *u64, MemOrder.Relaxed);
+        j = j + 1u32;
+      }
+      continue;
+    }
+    var i = 0u32;
+    while i < n {
+      let w = workerAt(s, i);
+      let now = mem.atomicLoad[u64](&(*(*w).stat).activations as *u64, MemOrder.Relaxed);
+      let lp = last + usize.from(i);
+      if now == *lp && ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64) {
+        if notify(s) {
+          monitorWakesTotal.addOrdered(1u64, MemOrder.Relaxed);
+        }
+      }
+      *lp = now;
+      i = i + 1u32;
+    }
+  }
+  monitorTimerFree(timer);
+  libc.free(last as *u8);
+  0u32
+}
+
+// The monitor's own sleep for one tick. Windows: a high resolution waitable
+// timer the monitor makes once and keeps (Go's runtime does the same), whose
+// resolution is the clock's own, about 0.5 ms; the system timer resolution is
+// never raised. The handle is 0 when this Windows has no such timer, and the
+// pause is then thread.sleep's (a millisecond sleep). Elsewhere thread.sleep
+// is nanosleep, which has the resolution already. The timer and the
+// monitor's futex park do not meet: the monitor does one or the other.
+#if #os == .windows {
+  extern {
+    fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
+    fn @c(system) CloseHandle(handle: usize) i32;
+    fn @c(system) CreateWaitableTimerExW(attrs: *u8, name: *u16, flags: u32, access: u32) usize;
+    fn @c(system) SetWaitableTimer(timer: usize, due: *i64, period: i32, routine: *u8, arg: *u8, resume: i32) i32;
+  }
+}
+
+fn monitorTimerMake() usize {
+  #if #os == .windows {
+    // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS
+    CreateWaitableTimerExW(null, null, 0x2u32, 0x1F0003u32)
+  } #else {0usize}
+}
+
+fn monitorTimerFree(timer: usize) {
+  #if #os == .windows {
+    if timer != 0usize {CloseHandle(timer);}
+  }
+}
+
+fn monitorPause(timer: usize, d: time.Duration) {
+  #if #os == .windows {
+    if timer != 0usize {
+      // Relative (negative), in 100 ns units. The timer fires at the first
+      // of its own 0.5 ms beats after the due time (measured: asked for 100,
+      // 250 or 500 us it came after 0.53, 0.54 and 1.02 ms at the median), so
+      // the request is a half beat short of the tick, to land on the beat
+      // nearest the tick
+      let ask = if d.nanos() > 500000i64 {d.nanos() - 250000i64} else {d.nanos() / 2i64};
+      var due = 0i64 - ask / 100i64;
+      if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
+        WaitForSingleObject(timer, 0xFFFFFFFFu32);
+        return;
+      }
+    }
+  }
+  thread.sleep(d);
 }
 
 // What a worker thread is handed
@@ -4854,6 +4994,7 @@ pub struct Options {
   pub spinMicros: u32 = defaultSpinMicros;   // how long an idle worker spins before it parks (THE SPIN); 0: it parks at once
   pub spinCap: u32 = 0u32;                   // most workers spinning at once; 0: half of them, at most defaultSpinMost (4)
   pub injectEvery: u32 = defaultInjectEvery; // every this many turns a worker looks in the inject queue before its own queue; 0: the default (61)
+  pub monitorMicros: u32 = defaultMonitorMicros; // the scheduler's monitor thread looks at the workers every this many microseconds, and wakes a sleeper to steal when a worker has held one turn for a whole tick with actors waiting in its queue (THE MONITOR); 0: no monitor thread
   pub wakeOnPush: bool = false;              // OFF by default (it cost pingpong 6.8x). true: a push to a worker's own queue wakes one parked worker when none is looking, even if the queue was empty (THE SEARCH INVARIANT, duty 3)
 }
 
@@ -4870,6 +5011,7 @@ pub struct Stats {
   pub parks: u64 = 0u64;        // times a worker slept on its park word (THE PARK WORD)
   pub reparks: u64 = 0u64;      // returns from that sleep with nobody having chosen the worker, which slept again at once
   pub marksSpent: u64 = 0u64;   // times a notify chose a worker already leaving the park with work seen: it woke nobody new
+  pub monitorWakes: u64 = 0u64; // sleeping workers the monitor woke: times it found a worker holding one turn for a whole tick with actors waiting in its queue, and its notify woke a sleeper (a notify that declined is not counted) (THE MONITOR)
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
@@ -4880,6 +5022,8 @@ let chosenSpinMicros: Atomic[u32];
 let chosenSpinCap: Atomic[u32];
 let chosenInjectEvery: Atomic[u32];
 let chosenWakeOnPush: Atomic[u32];
+let chosenMonitorMicros: Atomic[u32];
+let monitorWakesTotal: Atomic[u64];   // the monitor's wakes (Relaxed); the monitor is the one writer, and stats() reads
 
 // Starts the workers once, however many threads start a first actor at once
 let startOnce: sync.Once;
@@ -4932,6 +5076,8 @@ fn @initpure init() {
   chosenSpinCap = Atomic[u32].of(0u32);
   chosenInjectEvery = Atomic[u32].of(defaultInjectEvery);
   chosenWakeOnPush = Atomic[u32].of(0u32);
+  chosenMonitorMicros = Atomic[u32].of(defaultMonitorMicros);
+  monitorWakesTotal = Atomic[u64].of(0u64);
   statSlots = Atomic[usize].of(0usize);
   statWorkers = Atomic[u32].of(0u32);
   taskStealsTotal = Atomic[u64].of(0u64);
@@ -4972,6 +5118,7 @@ pub fn configure(opts: Options) {
   chosenSpinCap.store(opts.spinCap);
   chosenInjectEvery.store(opts.injectEvery);
   chosenWakeOnPush.store(if opts.wakeOnPush {1u32} else {0u32});
+  chosenMonitorMicros.store(opts.monitorMicros);
 }
 
 // The workers are running, having been started now if they were not: a
@@ -4997,7 +5144,8 @@ fn startWorkers() {
   let n = if chosenN == 0u32 {thread.parallelism()} else {chosenN};
   let s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
   let ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
-  let ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
+  // One slot more than workers: the monitor thread's, last
+  let ts = libc.malloc((usize.from(n) + 1usize) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
   // The stats slots, zeroed, two cache lines each (the block is 16-aligned, so
   // one more slot is allocated and the first is rounded up to a slot's size).
   // Never freed: stats() reads them after the stop has freed the rest.
@@ -5018,6 +5166,8 @@ fn startWorkers() {
   let chosenIE = chosenInjectEvery.load();
   (*s).injectEvery = if chosenIE == 0u32 {defaultInjectEvery} else {chosenIE};
   (*s).wakeOnPush = chosenWakeOnPush.load();
+  // The monitor finds a worker's stranded queue for the others to steal from: with one worker there are no others
+  (*s).monitorMicros = if n >= 2u32 {chosenMonitorMicros.load()} else {0u32};
   // The sleepers' bitmap: a word for every 64 workers, a cache line each
   (*s).parkedWords = (n + 63u32) / 64u32;
   (*s).parked = libc.calloc(usize.from((*s).parkedWords), 64usize) as usize;
@@ -5039,6 +5189,10 @@ fn startWorkers() {
     mem.writeRaw[thread.Thread[u32]](ts + usize.from(i),
       thread.startWith(thread.Options(name: "actors worker"), WorkerArg(w), &workerMain));
     i = i + 1u32;
+  }
+  if (*s).monitorMicros != 0u32 {
+    mem.writeRaw[thread.Thread[u32]](ts + usize.from(n),
+      thread.startWith(thread.Options(name: "actors monitor"), WorkerArg(workerAt(s, 0u32)), &monitorMain));
   }
   // From here a print is a hand-over to the console's owner (console.cone)
   consoleOwnerStart();
@@ -5191,6 +5345,13 @@ fn stopWorkers() {
     sync.futexWake(&(*w).park);
     j = j + 1u32;
   }
+  // The monitor sees 'stopping' at its next tick, or is woken from its park
+  if (*s).monitorMicros != 0u32 {
+    mem.atomicStore[u32](&(*s).monitor as *u32, 0u32, MemOrder.SeqCst);
+    sync.futexWake(&(*s).monitor);
+    let mt = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from((*s).nworkers));
+    mt.join();
+  }
   var i = 0u32;
   while i < (*s).nworkers {
     let t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from(i));
@@ -5230,6 +5391,7 @@ pub fn stats() Stats {
     st.marksSpent = st.marksSpent + mem.atomicLoad[u64](&(*slot).marksSpent as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
+  st.monitorWakes = monitorWakesTotal.loadOrdered(MemOrder.Relaxed);
   st
 }
 
