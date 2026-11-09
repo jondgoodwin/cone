@@ -1,0 +1,142 @@
+// Feed timing (audio streaming PR 2, "the audiotiming run"): how late the feeder's wake-ups are, and what it costs
+// to render and put a block, with the machine quiet and with N busy threads. It sets the voice window: the `ahead`
+// (queue depth) the feeder must keep so that SDL's thread never runs dry.
+//
+// This is the loop of audiodevice's feeder, on this thread, with the mixer playing 16 looped voices and a synth,
+// writing to SDL's DUMMY driver (it plays nothing; the dummy device takes audio at real time, so the stream
+// drains as a real device's would). Every pass of the loop either renders and puts a 10 ms block (when the
+// stream holds less than `aheadMs`) or sleeps 2 ms; it records
+//
+//   wake lateness   how much longer than 2 ms each sleep took (what a late timer costs the feeder)
+//   block cost      the time to render and put one 10 ms block
+//   underruns       passes that found the stream EMPTY after the first block (the device ran dry: a glitch)
+//   shortest queue  the least the stream held at a wake that put a block, in ms (how close the margin came)
+//
+//   congo run --release packages/audiodevice/examples/feedtiming.cone -- <seconds> <busy threads> <aheadMs>
+//
+// Run it for each aheadMs in 10 20 30 40 60 80 100 150, at 0 busy threads and at 24 (all the logical
+// processors), 30 seconds each. READING IT: the window is the smallest aheadMs whose runs at 24 busy threads show
+// `underruns 0` every time, with its shortest queue still over about 10 ms; the sum "wake p99.9 + block worst"
+// should come in under that aheadMs less one block (10 ms) -- see the last line, which prints that sum.
+// No sound is made (the dummy driver), but a machine under load is still loaded.
+
+mod feedtiming;
+
+import stdio use *;
+import collections use *;
+import process;
+import thread;
+import env;
+import sync use Arc;
+import time use Duration, Instant;
+import sdl;
+import diag use Histogram;
+import audiomixer use *;
+
+const BLOCK_FRAMES = 480usize;
+const RATE = 48000u32;
+
+fn arg(args: &List[String], i: usize, d: usize) usize {
+  match args.get(i).andThen(s => u64.parse(s.view()).ok()) {
+    case let Some(v) { usize.from(v) }
+    else { d }
+  }
+}
+
+fn nowNs() i64 { Instant.now().nanos() }
+
+fn spin(stop: Arc[imm, Atomic[bool]]) u64 {
+  var x = 1u64;
+  while !stop.load() {
+    var i = 0u32;
+    while i < 100000u32 { x = x * 6364136223846793005u64 + 1442695040888963407u64; i += 1u32; }
+  }
+  x
+}
+
+fn us(ns: u64) u64 { ns / 1000u64 }
+
+fn main() i32 {
+  let args = process.args();
+  let seconds = arg(&args, 1usize, 10usize);
+  let busy = arg(&args, 2usize, 0usize);
+  let aheadMs = arg(&args, 3usize, 40usize);
+  env.set("SDL_AUDIODRIVER", "dummy");
+
+  let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  var spinners = List[thread.Thread[u64]]();
+  var s = 0usize;
+  while s < busy { spinners.push(thread.start(stop, &spin)); s += 1usize; }
+
+  var c: Control;
+  var rx: sync.Receiver[Cmd];
+  c, rx = commandQueue(DEFAULT_QUEUE);
+  var engine = Engine.make(f32.from(RATE), 32usize, rx);
+  var tone = List[f32]();
+  var o = Osc.make(WAVE_SINE);
+  var i = 0usize;
+  while i < 48000usize { tone.push(o.next(440., 48000.)); i = i + 1usize; }
+  let snd = c.addSound(Sound(48000u32, 1u32, tone));
+  var v = 0usize;
+  while v < 16usize { c.play(snd, BUS_EFFECTS, 0.05, 1. + f32.from(v) * 0.01, 0., true, 0i32); v += 1usize; }
+  c.playSynth(SYNTH_WIND, 3u32, BUS_AMBIENCE, 0.3, 0.5, 0., 0i32);
+
+  if !sdl.InitSubSystem(sdl.INIT_AUDIO) { printStr("SDL audio would not start\n"); return 1i32; }
+  let spec = sdl.AudioSpec(sdl.AUDIO_F32, 2i32, i32.from(RATE));
+  let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
+  if stream as usize == 0usize { printStr("the audio stream would not open\n"); return 2i32; }
+  sdl.ResumeAudioStreamDevice(stream);
+
+  var buf = List[f32].withCapacity(BLOCK_FRAMES * 2usize);
+  i = 0usize;
+  while i < BLOCK_FRAMES * 2usize { buf.push(0.); i = i + 1usize; }
+  let blockBytes = i32.from(BLOCK_FRAMES * 8usize);
+  let wantBytes = i32.from(RATE / 1000u32 * u32.from(aheadMs)) * 8i32;
+  let sleepNs = 2000000i64;
+
+  var wake = Histogram.make();
+  var cost = Histogram.make();
+  var blocks = 0u64;
+  var underruns = 0u64;
+  var shortest = 1000000i64;       // ms
+  let end = nowNs() + i64.from(seconds) * 1000000000i64;
+  while nowNs() < end {
+    let queued = sdl.GetAudioStreamQueued(stream);
+    if queued < wantBytes {
+      if queued <= 0i32 && blocks > 0u64 { underruns += 1u64; }
+      if blocks > 0u64 {
+        let ms = i64.from(queued) / (i64.from(RATE) * 8i64 / 1000i64);
+        if ms < shortest { shortest = ms; }
+      }
+      let t0 = nowNs();
+      engine.render(buf.viewMut(), BLOCK_FRAMES);
+      let b = buf.view();
+      sdl.PutAudioStreamData(stream, (&b[0usize] as *u8), blockBytes);
+      cost.record(nowNs() - t0);
+      blocks += 1u64;
+    } else {
+      let t0 = nowNs();
+      thread.sleep(Duration.fromMillis(2));
+      let late = nowNs() - t0 - sleepNs;
+      wake.record(if late < 0i64 { 0i64 } else { late });
+    }
+  }
+  sdl.DestroyAudioStream(stream);
+  sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  stop.store(true);
+
+  printStr("feedtiming: "); printUInt(u64.from(seconds)); printStr(" s, busy threads "); printUInt(u64.from(busy));
+  printStr(", aheadMs "); printUInt(u64.from(aheadMs)); printStr("\n");
+  printStr("blocks put "); printUInt(blocks); printStr(", underruns "); printUInt(underruns);
+  printStr(", shortest queue at a refill (ms) "); printInt(shortest); printStr("\n");
+  printStr("wake lateness us: p50 "); printUInt(us(wake.percentile(0.5)));
+  printStr(", p99 "); printUInt(us(wake.percentile(0.99)));
+  printStr(", p99.9 "); printUInt(us(wake.percentile(0.999)));
+  printStr(", worst "); printUInt(us(wake.max())); printStr("\n");
+  printStr("block cost us (render+put): p50 "); printUInt(us(cost.percentile(0.5)));
+  printStr(", p99 "); printUInt(us(cost.percentile(0.99)));
+  printStr(", worst "); printUInt(us(cost.max())); printStr("\n");
+  printStr("wake p99.9 + block worst, ms: "); printUInt((us(wake.percentile(0.999)) + us(cost.max())) / 1000u64);
+  printStr(" (the aheadMs less one block, 10 ms, must stay above this)\n");
+  0i32
+}
