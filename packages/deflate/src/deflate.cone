@@ -33,7 +33,7 @@
 //     inflate(data, start, expected, &mut used) Result[List[u8], DeflateError]
 //   'expected' is the output size if known (0 if not): it reserves room and is
 //   also the most output allowed (0 allows 1 GiB), so a stream that claims to be
-//   small and is not is refused as TooLarge. 'level' is 0, 1 or 2 (below).
+//   small and is not is refused as TooLarge. 'level' is 0 to 9 (below).
 //   gzipDecompress inflates every member and joins their data, as 'gzip -d' does.
 //
 //   STREAMING        a value that holds the whole state; any chunking
@@ -109,18 +109,24 @@
 //   value holds: made by 'Crc32.make()', no global. 'crc32(data)' makes one each
 //   call; keep a Crc32 for many calls. Slicing-by-8 and the carry-less multiply
 //   instructions were left out.
-// - Deflating: three levels. 0 stores, in blocks of 65535. 1 is LZ77 with a hash
-//   chain of three-byte strings (32768 buckets of the 15 low bits of a
-//   shift-xor of the three bytes), at most 16 candidates a position, coded with
-//   the fixed Huffman code in one block. 2 is the same matcher with at most 48
-//   candidates, coded with a dynamic Huffman code per block of 32768 tokens: the
-//   code lengths by Huffman's merge of the two lightest, limited to 15 bits (7
-//   for the code-length code) by halving the frequencies until they fit, the
-//   lengths run-length coded with symbols 16, 17 and 18. The matcher is greedy
-//   (zlib's deflate_fast without its tuning): the longest match in the chain,
-//   taken if 3 or more, every position it covers entered in the chain; no lazy
-//   matching, no chain limit that shrinks after a good match. The window is
-//   32 KiB. Other level numbers act as 2.
+// - Deflating: levels 0 to 9, as zlib and miniz_oxide number them. 0 stores, in
+//   blocks of 65535. 1 is LZ77 with a hash chain of three-byte strings (32768
+//   buckets of the 15 low bits of a shift-xor of the three bytes), one
+//   candidate a position, a match entering only its first position in the chain
+//   (as miniz's level 1 does), coded with the fixed Huffman code in one block.
+//   2 to 9 are the same matcher coded with a dynamic Huffman code per block of
+//   32768 tokens, every position a match covers entered in the chain, and these
+//   candidates a position: 6, 32, 16, 32, 128, 256, 512, 768 (miniz_oxide's
+//   NUM_PROBES for its levels 2 to 9; its levels 4 and up also match lazily,
+//   which this matcher does not, so level 4 finds a little less than level 3).
+//   The dynamic code's lengths come from Huffman's merge of the two lightest,
+//   limited to 15 bits (7 for the code-length code) by halving the frequencies
+//   until they fit, run-length coded with symbols 16, 17 and 18. The matcher is
+//   greedy (zlib's deflate_fast without its tuning): the longest match in the
+//   chain, taken if 3 or more; no lazy matching, no chain limit that shrinks
+//   after a good match. The window is 32 KiB. A negative level is zlib's
+//   default, 6 (before levels 3 to 9 existed, the default was 2, and any level
+//   over 2 acted as 2); a level over 9 acts as 9.
 // - A streaming Deflater cannot fall back to stored blocks when the data does
 //   not compress (it does not know the end when it writes a block); random
 //   data grows a little through it (70000 random bytes make 70154 as a zlib
@@ -129,26 +135,24 @@
 //   writer always did), so they never expand by more than 5 bytes a 64 KiB
 //   block and the framing. A block's type is not chosen by cost (zlib picks the
 //   smallest of stored, fixed and dynamic per block): level 1 is always fixed
-//   and level 2 always dynamic. Left out: lazy matching, a block type by cost,
-//   levels 3 to 9, strategies (RLE, Huffman only, fixed), a choice of window
+//   and levels 2 to 9 always dynamic. Left out: lazy matching, a block type by
+//   cost, strategies (RLE, Huffman only, fixed), a choice of window
 //   size or memory level, and a sync or full flush (a Deflater ends only with
 //   'finish').
 // - The compressed bytes are fixed by the data and the level: the matcher waits
 //   for 262 bytes of look-ahead before it decides a position (258 for the longest
 //   match, 3 for the hash of the last position a match covers) unless the input
-//   is finished, so cutting the input differently changes nothing. They are
-//   also the very bytes imagedecode's writer wrote before this package existed
-//   (the move was checked by comparing, byte for byte, every PNG and zlib stream
-//   of a corpus written before and after).
-// - zlib framing: CMF 78 (deflate, 32 KiB window), FLG 01 for stored and 9C
-//   otherwise, FDICT never written. On reading, a window under 32 KiB is
+//   is finished, so cutting the input differently changes nothing.
+// - zlib framing: CMF 78 (deflate, 32 KiB window), FLG 01 for stored and level
+//   1, 5E for levels 2 to 5, 9C for 6, DA for 7 to 9 (zlib's FLEVEL), FDICT
+//   never written. On reading, a window under 32 KiB is
 //   accepted and a larger one (CINFO over 7) refused; the stream is not held to
 //   the window its header declares (zlib refuses a distance past it). A preset
 //   dictionary (FDICT) is refused: BadHeader. The Adler-32 is verified; bytes
 //   after it are left alone ('takeRest' has them).
 // - gzip framing, writing: ID1 ID2, CM 8, FLG with FTEXT, FEXTRA, FNAME and
 //   FCOMMENT as the header says, MTIME (0 for none), XFL (4 at levels 0 and 1,
-//   else 0), OS (255, unknown, unless the header says), the extra field (at most
+//   2 at level 9, else 0), OS (255, unknown, unless the header says), the extra field (at most
 //   65535 bytes), the name and comment cut at a zero byte (they are ISO 8859-1
 //   bytes, zero-terminated); never FHCRC (the header CRC-16). One member per
 //   stream. Reading: all of those fields are kept in a GzipHeader; FHCRC is
@@ -188,35 +192,37 @@
 // parallel compressor; the 4 GiB mark of gzip's ISIZE (it is checked modulo 2^32
 // and not tested past it).
 //
-// SPEED AND SIZE, best of 3 (compress) and 5 (inflate, checksums) runs on a
-// loaded 13th-gen Core i7-13700HX, release build, next to Python 3.13's zlib
-// 1.3.1, on six files of this repository at the commit it was written (sizes in
-// bytes; speeds in MB/s of the file, compress first and then "in" for
-// inflating; examples/bench.cone makes the first columns, a few lines of Python
-// the others):
+// SPEED AND SIZE of the levels, next to Rust's miniz_oxide 0.9.1 at the same
+// level number: 100 MiB of generated text (words, repeated phrases and short
+// runs of noise), one swapped run per side, compress time only (the generator's
+// 0.31 s taken off), release builds, 13th-gen Core i7-13700HX with the machine
+// 40 to 60 per cent busy. The Cone side feeds the Deflater 1 MiB at a time.
 //
-//                                 ours L1       ours L2      zlib L1     zlib L6     zlib L9
-//   ace.js           354531  size  121480        102676       117566       98545       98114
-//                            MB/s  43 / in 223   29 / in 214  78 / in 253 32 / in 258 19 / in 209
-//   struct.c         249581  size   79308         64434        80201       62179       61597
-//                            MB/s  37 / in 215   23 / in 229  66 / in 198 21 / in 230  9 / in 196
-//   pbrxrt.spv       384620  size  153455        117236       123874      116693      115730
-//                            MB/s  36 / in 203   22 / in 207  53 / in 181 14 / in 227  3 / in 236
-//   lighting.cone    647568  size  106545         87577       113917       82398       77179
-//                            MB/s  59 / in 391   37 / in 409 124 / in 315 38 / in 349  4 / in 444
-//   stilllife.jpg    249480  size  249506*       248782       248326      248354      248354
-//                            MB/s  28 / in 476   29 / in 159  29 / in 282 27 / in 253 25 / in 239
-//   refmodule.html    66130  size   24356         19873        23450       19266       19140
-//                            MB/s  34 / in 200   22 / in 208  64 / in 185 20 / in 207 10 / in 188
-//   (* stored: the one-shot helper's fallback.)
+//             Cone ms   miniz ms   Cone/miniz   Cone size     miniz size
+//   level 1       990        442         2.2     33.80 %       34.11 %
+//   level 2      2300        662         3.5     26.39 %       26.75 %
+//   level 3      4154       1258         3.3     26.07 %       26.05 %
+//   level 4      3449       1458         2.4     26.12 %       26.02 %
+//   level 5      3939       1835         2.2     26.07 %       25.96 %
+//   level 6      4649       2290         2.0     26.04 %       25.90 %
+//   level 7      4376       2300         1.9     26.03 %       25.90 %
+//   level 8      4474       2218         2.0     26.03 %       25.90 %
+//   level 9      4872       2662         1.8     26.03 %       25.90 %
 //
-// So level 2 runs about as fast as zlib's level 6 and makes streams 0.2 to 6 per
-// cent bigger; level 1 runs at about half the speed of zlib's level 1 and makes
-// streams from 6 per cent smaller to 24 per cent bigger (the fixed code is the
-// price); inflating runs at 60 to 120 per cent of zlib's speed. The CRC-32 runs
-// at 1.3 GB/s (zlib's: 1.4 to 2.6) and the Adler-32 at 3.8 GB/s (2.4 to 3.2).
-// These are measured, not chased: nothing here has been tuned for speed past the
-// shape of the algorithms.
+// The probe counts are miniz's, so the sizes match closely; the time is the
+// byte-at-a-time compare and the bit writer. miniz's levels 4 and up match
+// lazily, which this matcher does not (level 4 is a little bigger than level 3
+// here, and 0.1 to 0.2 points off miniz's). On this text the chain seldom fills
+// the longer limits, so levels 6 to 9 cost about the same. Before the levels
+// were numbered this way, level 1 probed 16 candidates and entered every
+// position of a match (29.7 % of the input, 2.7 s) and level 2, the default,
+// probed 48 (26.1 %, 4.8 s).
+//
+// Inflating runs at 60 to 120 per cent of zlib's speed (measured earlier on
+// small files of this repository), the CRC-32 at 1.3 GB/s (zlib's: 1.4 to 2.6)
+// and the Adler-32 at 3.8 GB/s (2.4 to 3.2). examples/bench.cone times a file at
+// levels 1, 6 and 9. These are measured, not chased: nothing here has been tuned
+// for speed past the shape of the algorithms.
 //
 // Its files are one module, and only this one, the root, imports:
 //
