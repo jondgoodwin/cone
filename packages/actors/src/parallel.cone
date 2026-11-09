@@ -262,7 +262,7 @@ fn curDeque(s: *Sched) *TaskDeque {
 // at every steal.
 fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
   let n = (*s).nworkers;
-  let r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed);
+  let r = (*s).stealRot.addOrdered(1u32, MemOrder.Relaxed);
   var i = 0u32;
   while i < n {
     let v = workerAt(s, (r + i) % n);
@@ -343,8 +343,8 @@ fn finishItems(s: *Sched, rec: *LoopRec, n: usize, scheduled: bool, onDone: &fn(
   if prev == n && scheduled {
     libc.free(rec as *u8);
     onDone(doneArg);
-    mem.atomicSub[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
+    (*s).liveScheduled.sub(1u64);
+    (*s).quiet.add(1u32);
     sync.futexWake(&(*s).quiet);
   }
 }
@@ -781,7 +781,7 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, 
     die("actors: out of memory for a parallel loop");
   }
   mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive));
-  mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
+  (*s).liveScheduled.add(1u64);
   if !dequePush(curDeque(s), Task(rec, from, hi, (*s).nworkers, false)) {
     // The deque is full: run the loop's first task here, which splits it
     runTask(s, Task(rec, from, hi, (*s).nworkers, false));

@@ -114,6 +114,9 @@ extern {
   fn @c("sendmsg") sysSendmsg(fd: i32, msg: *MsgHdrLx, flags: i32) i64;
   fn @c("open") sysOpen(path: *u8, flags: i32, mode: u32) i32;
   fn @c("fcntl") sysFcntl(fd: i32, cmd: i32, arg: i32) i32;
+  fn @c("syscall") sysSyscall(n: i64, a: i64, b: i64) i64;
+  fn @c("waitid") sysWaitid(idtype: i32, id: u32, info: *u8, options: i32) i32;
+  fn @c("signal") sysSignal(sig: i32, handler: usize) usize;
   fn @c("pread") sysPread(fd: i32, buf: *u8, n: usize, at: i64) i64;
   fn @c("pwrite") sysPwrite(fd: i32, buf: *u8, n: usize, at: i64) i64;
   fn @c("stat") sysStat(path: cstr, st: *u8) i32;
@@ -164,6 +167,14 @@ const oRdwr = 2i32;
 const oCreat = 0x40i32;
 const oTrunc = 0x200i32;
 const fDupfdCloexec = 1030i32;
+const pPidfd = 3i32;                                // P_PIDFD
+const wExited = 4i32;                               // WEXITED
+const wNoHang = 1i32;                               // WNOHANG
+const cldExited = 1i32;                             // CLD_EXITED (si_code)
+const fGetfl = 3i32;
+const fSetfl = 4i32;
+const sigpipe = 13i32;
+const sigIgn = 1usize;                              // SIG_IGN
 const sIfmt = 0xF000u32;
 const sIfdir = 0x4000u32;
 
@@ -318,6 +329,26 @@ fn lxOpen() u32, usize, usize, usize {
 fn socketKind(k: u32) bool {
   k == diag.kindConnect || k == diag.kindAccept || k == diag.kindRecv
     || k == diag.kindRecvReady || k == diag.kindSend || k == diag.kindRecvFrom || k == diag.kindSendTo
+    || k == diag.kindWaitChild
+    || k == diag.kindPipeRead || k == diag.kindPipeWrite
+}
+
+// A pidfd for process pid (pidfd_open, syscall 434; Linux 5.3 and later,
+// close-on-exec): the descriptor, or -1 with errno set
+fn sysPidfdOpen(pid: i64) i64 {
+  #if #os == .windows {-1i64} #else {
+  sysSyscall(434i64, pid, 0i64)
+  }
+}
+
+
+// A write to a pipe nobody reads raises SIGPIPE, which ends the process; a
+// socket send has MSG_NOSIGNAL, a pipe write nothing like it. Ignored, the
+// write fails EPIPE instead
+fn lxIgnoreSigpipe() {
+  #if #os == .windows {return;} #else {
+  sysSignal(sigpipe, sigIgn);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +412,73 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     r.dequeued = at;
     lp.unlinkSide(p);
     lp.decide(p, diag.outcomeFailed, 0usize, u32.from(e));
+    return triedDone;
+  }
+  if k == diag.kindWaitChild {
+    // The pidfd is readable when the process has ended: waitid reaps it and
+    // says how. A siginfo_t is 128 bytes: si_code at 8, si_pid at 16, si_status
+    // at 24; si_pid stays 0 when nothing has ended yet
+    var si = Array[i32, 32]() <- fill 0i32;
+    var rc = sysWaitid(pPidfd, u32.from(fd), &mut si as *u8, wExited | wNoHang);
+    while rc < 0i32 && lastErrno() == eintr {rc = sysWaitid(pPidfd, u32.from(fd), &mut si as *u8, wExited | wNoHang);}
+    if rc < 0i32 {
+      let e = lastErrno();
+      r.dequeued = at;
+      lp.unlinkSide(p);
+      lp.decide(p, diag.outcomeFailed, 0usize, u32.from(e));
+      return triedDone;
+    }
+    if si[4] == 0i32 {return triedWait;}
+    r.dequeued = at;
+    lp.unlinkSide(p);
+    if si[2] == cldExited {
+      lp.decide(p, diag.outcomeDone, usize.from(si[6]), 0u32);
+    } else {
+      // Killed by a signal (dumped or not): no exit code, the signal in 'code'
+      lp.decide(p, diag.outcomeDone, 0usize, u32.from(si[6]));
+    }
+    return triedDone;
+  }
+
+  if k == diag.kindPipeRead {
+    // Bytes, or 0: the write end is closed (the end of the stream)
+    var n = sysRead(fd, r.bufBase() + r.bufLen(), r.bufRoom());
+    while n < 0i64 && lastErrno() == eintr {n = sysRead(fd, r.bufBase() + r.bufLen(), r.bufRoom());}
+    if n >= 0i64 {
+      r.dequeued = at;
+      r.bufGrow(usize.from(n));
+      lp.unlinkSide(p);
+      lp.decide(p, diag.outcomeDone, usize.from(n), 0u32);
+      return triedDone;
+    }
+    let e = lastErrno();
+    if e == eagain {return triedWait;}
+    r.dequeued = at;
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, u32.from(e));
+    return triedDone;
+  }
+  if k == diag.kindPipeWrite {
+    // All the buffer's bytes, across as many writes as the pipe will take
+    let len = r.bufLen();
+    var failed = 0i32;
+    while r.done < len && failed == 0i32 {
+      let n = sysWrite(fd, r.bufBase() + r.done, len - r.done);
+      if n >= 0i64 {
+        r.done = r.done + usize.from(n);
+      } else {
+        let e = lastErrno();
+        if e != eintr {failed = e;}
+      }
+    }
+    if failed == eagain {return triedWait;}
+    r.dequeued = at;
+    lp.unlinkSide(p);
+    if failed != 0i32 {
+      lp.decide(p, diag.outcomeFailed, 0usize, u32.from(failed));
+    } else {
+      lp.decide(p, diag.outcomeDone, len, 0u32);
+    }
     return triedDone;
   }
   if k == diag.kindRecvReady {
@@ -634,6 +732,25 @@ fn lxStartSend(lp: &mut Loop, p: *OpCore) u32 {
   let r = p as &mut OpCore;
   if lp.rawOf(r.handle, hSocket) == invalidHandle {return noSuchHandle();}
   lxQueue(lp, p, onWrites)
+  }
+}
+
+// A WaitChild
+fn lxStartWait(lp: &mut Loop, p: *OpCore) u32 {
+  #if #os == .windows {errorInvalidParameter} #else {
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hChild) == invalidHandle {return noSuchHandle();}
+  lxQueue(lp, p, onReads)
+  }
+}
+
+// A PipeRead or a PipeWrite
+fn lxStartPipe(lp: &mut Loop, p: *OpCore, write: bool) u32 {
+  #if #os == .windows {errorInvalidParameter} #else {
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hPipe) == invalidHandle {return noSuchHandle();}
+  if !write && r.bufRoom() == 0usize {return noRoom();}
+  lxQueue(lp, p, if write {onWrites} else {onReads})
   }
 }
 

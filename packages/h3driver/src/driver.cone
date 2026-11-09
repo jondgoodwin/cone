@@ -742,6 +742,24 @@ pub struct Driver {
     self.markDirty(req.conn.index);
   }
 
+  // A server's request whose body the program no longer wants (it answered without reading the upload, or
+  // dropped it): the client is asked to stop sending it, STOP_SENDING with H3_NO_ERROR (RFC 9114 section 4.1);
+  // what this end sends goes on, and the request no longer waits for the client's End to be Done. The twin of
+  // httpconn's Driver.stopBody. False, and nothing done, when req names no request, is a client's, or was
+  // read whole already
+  pub fn stopBody(self: &mut, req: ReqId) bool {
+    let cp = self.connOf(req.conn);
+    let sp = self.strmOf(cp, req);
+    if sp as usize == 0usize {return false;}
+    let c = cp as &mut Conn;
+    let s = sp as &mut Strm;
+    if !c.server || s.readDone {return false;}
+    c.h.stopBody(s.id);
+    s.readDone = true;
+    self.markDirty(req.conn.index);
+    true
+  }
+
   // Give a request up: its exchange is reset both ways
   // (H3_REQUEST_CANCELLED), and it is answered Cancelled now. False when it
   // has had its final answer

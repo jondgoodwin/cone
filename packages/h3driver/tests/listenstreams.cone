@@ -1,0 +1,34 @@
+// The request streams a server lets a peer open are one number: Config.make's
+// protocol.maxRequestStreams, scaled to the pool, and the transport's
+// maxStreamsBidi that a listener's QUIC carries (which the listener hands HTTP/3
+// as its maxRequestStreams, driver.cone listen) and the Plugin's listen copies.
+// Below about a 17 MiB pool Config.make lowers the first; the second stayed 100,
+// so a listener advertised more streams than the connections were counted for.
+//
+// A 16 MiB pool: maxRequestStreams 96 (a share of 12 MiB, 1536 streams, a sixteenth),
+// and the transport's the same. The default 64 MiB pool: 100 and 100. A tiny
+// pool (1 MiB): 6 (768 KiB share, 96 streams, a sixteenth), in both.
+
+mod listenstreams;
+
+import stdio use *;
+import iobuf use *;
+import h3driver use *;
+
+fn show(label: &str) {
+  let c = Config.make();
+  printStr(label);
+  printStr(": maxRequestStreams "); printUInt(u64.from(c.protocol.maxRequestStreams));
+  printStr(", transport maxStreamsBidi "); printUInt(c.transport.maxStreamsBidi);
+  printStr(if u64.from(c.protocol.maxRequestStreams) == c.transport.maxStreamsBidi {", the same\n"} else {", DIFFER\n"});
+}
+
+fn main() {
+  let pool = stats();
+  setLimits(16777216usize, 2097152usize);
+  show("a 16 MiB pool");
+  setLimits(1048576usize, 262144usize);
+  show("a 1 MiB pool");
+  setLimits(pool.maxBytes, pool.keepBytes);
+  show("the default pool");
+}
