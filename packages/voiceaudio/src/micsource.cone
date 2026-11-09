@@ -25,10 +25,11 @@ pub const BLOCK_SAMPLES = 320usize;
 pub struct AudioBlock is Sendable {
   pub len: u32;
   pub lost: u64;
+  pub gen: u32;               // the playback generation it was made for (SpeakerSink.cutOff): 0 for capture
   pub samples: Array[f32, 320];
 
   pub fn empty() AudioBlock {
-    AudioBlock(0u32, 0u64, [
+    AudioBlock(0u32, 0u64, 0u32, [
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
@@ -49,6 +50,19 @@ pub struct AudioBlock is Sendable {
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
       0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.])
+  }
+
+  // A block of up to 320 samples of x from index `at`, made for playback generation `gen`
+  pub fn of(x: &Array[f32], at: usize, gen: u32) AudioBlock {
+    var b = AudioBlock.empty();
+    var n = 0usize;
+    if at < x.len { n = x.len - at; }
+    if n > BLOCK_SAMPLES { n = BLOCK_SAMPLES; }
+    var i = 0usize;
+    while i < n { b.samples[i] = x[at + i]; i = i + 1usize; }
+    b.len = u32.from(n);
+    b.gen = gen;
+    b
   }
 
   // The marker for `lost` blocks dropped

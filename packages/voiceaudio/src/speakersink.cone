@@ -1,0 +1,186 @@
+// ======== The speaker as a sink: SpeakerSink ========
+//
+// Playback through the thread edge (stages' ValueEdge, into a thread; Ruminations/design-audio-streaming-2026-11-09.md).
+// A producer in the stage world (a TTS, a sentence splitter) sends `AudioBlock`s to `sink()`; the edge's attendant
+// puts them on the ring; a FEEDER THREAD of ours (a Cone thread; SDL's own audio thread never runs Cone code)
+// takes them with `tryRecv` and hands them to SDL's push stream, keeping `aheadMs` of sound queued there. SDL's stream
+// stays the jitter buffer, so what a late wake-up costs is queue depth, not a glitch.
+//
+//   producer -> sink() [attendant] -> ring -> feeder thread -> SDL stream -> SDL's thread -> the device
+//
+// THE VOICE WINDOW. `aheadMs` is 60 for voice: the smallest safe value at 24 busy threads in the timing run
+// (packages/audiodevice/examples/feedtiming.cone, window B of 9 Nov, C:\src\zz-cone-module-tools\window-1109b.log:
+// 0 underruns and a 10 ms shortest queue at 60; 40 underran once, 30 came within 8 ms of empty, 10 to 20 underran
+// about half the time). A caller names it; the tests use 60.
+//
+// BACK-PRESSURE, `maxQueuedMs`. The source is granted credit for as many blocks as `maxQueuedMs` holds, and gets one
+// back when a block has PLAYED (it has left the SDL stream), so a fast TTS cannot run seconds ahead of the speaker.
+// This replaces the polls of `waitingMs`. (Credit comes back in batches: when blocks play, everything the feeder
+// has taken since the last return is credited, so up to `aheadMs` of sound is credited early.)
+//
+// BARGE-IN. `cutOff` is DIRECT: it bumps the generation and clears SDL's stream, which is safe from any thread (SDL's
+// stream is locked), so the sound stops at once. Blocks already on the ring or in the attendant's mailbox are the
+// producer's old sentence: a producer stamps each block with the `generation()` it read when it began (AudioBlock.of),
+// and the feeder discards blocks of an older generation, counted in `stale`, crediting them as played.
+//
+// ENDING. When the source sends its `end`, the feeder flushes SDL's stream (its converter holds samples back until
+// told), and `played()` becomes true once every block has left the stream: "drain" as an event, not a sleep loop.
+//
+// Nothing here runs on SDL's thread, and the feeder thread allocates nothing per block after it has started
+// (a block is moved off the ring, copied into SDL's stream, and forgotten).
+
+// What the feeder and the SpeakerSink share
+struct SpeakShared is Sendable {
+  generation: Atomic[u32];
+  put: Atomic[u64];          // blocks handed to SDL's stream
+  played: Atomic[u64];       // blocks that have left it (or were cleared out of it)
+  stale: Atomic[u64];        // blocks discarded as older than the generation
+  underruns: Atomic[u64];    // times the stream ran dry mid-speech: empty, with the producer still going and nothing on the ring
+  done: Atomic[u32];         // 1 once the stream has ended and everything has played
+}
+
+struct SpeakJob is Sendable {
+  stream: *sdl.AudioStream;
+  edge: ValueEdge[AudioBlock];
+  stop: Arc[imm, Atomic[u32]];
+  shared: Arc[imm, SpeakShared];
+  aheadSamples: usize;
+}
+
+fn waitingSamples(stream: *sdl.AudioStream) usize {
+  let b = sdl.GetAudioStreamQueued(stream);
+  if b <= 0i32 { return 0usize; }
+  usize.from(b) / 4usize
+}
+
+// The feeder thread
+fn feedLoop(job: SpeakJob) i32 {
+  var stream, var edge, let stop, let shared, let aheadSamples = job.(stream, edge, stop, shared, aheadSamples);
+  var putSamples = 0usize;           // samples handed to the stream so far (or cleared from it)
+  var ends = Deque[usize]();         // for each block put, the running count at its end
+  var dry = false;
+  var flushed = false;
+  var started = false;
+  while stop.load() == 0u32 {
+    var waiting = waitingSamples(stream);
+    // what has left the stream: the blocks whose end is at or below the samples that are gone
+    var credited = false;
+    var gone = 0usize;
+    if putSamples > waiting { gone = putSamples - waiting; }
+    var scanning = true;
+    while scanning {
+      match ends.peekFront() {
+        case let Some(e) {
+          if *e <= gone {
+            _ = ends.popFront();
+            shared.played.add(1u64);
+            credited = true;
+          } else { scanning = false; }
+        }
+        else { scanning = false; }
+      }
+    }
+    // take more while the stream holds less than `aheadMs`
+    var more = true;
+    while more && waiting < aheadSamples {
+      match edge.tryRecv() {
+        case let Some(b) {
+          if b.lost > 0u64 {
+            // not part of the stream; nothing to play
+          } else if b.gen < shared.generation.load() {
+            shared.stale.add(1u64);
+            credited = true;
+          } else if b.len > 0u32 {
+            let n = usize.from(b.len);
+            sdl.PutAudioStreamData(stream, (&b.samples[0usize] as *u8), i32.from(n * 4usize));
+            putSamples = putSamples + n;
+            waiting = waiting + n;
+            ends.push(putSamples);
+            shared.put.add(1u64);
+            started = true;
+            dry = false;
+            flushed = false;
+          }
+        }
+        else { more = false; }
+      }
+    }
+    if credited { edge.drained(); }
+    // the stream ran dry with the producer still going
+    let over = edge.finished();
+    if started && waiting == 0usize && !dry {
+      if !over { shared.underruns.add(1u64); }
+      dry = true;
+    }
+    // the end: everything taken, so flush the converter's tail, and done once it has all played
+    if over {
+      if !flushed { sdl.FlushAudioStream(stream); flushed = true; }
+      if waiting == 0usize && ends.len() == 0usize { shared.done.store(1u32); }
+    }
+    thread.sleep(Duration.fromMillis(2));
+  }
+  0i32
+}
+
+// A speaker as a sink of AudioBlocks
+pub struct SpeakerSink {
+  speaker: Speaker;
+  worker: Option[thread.Thread[i32]];
+  stopFlag: Arc[imm, Atomic[u32]];
+  shared: Arc[imm, SpeakShared];
+  sinkHandle: ValueSink[AudioBlock];
+
+  // aheadMs: the sound kept queued in SDL's stream (60 for voice, see the header); maxQueuedMs: the most the producer
+  // may have outstanding, in sound (blocks it has sent and that have not played)
+  pub fn start(speaker: Speaker, aheadMs: u32, maxQueuedMs: u32) SpeakerSink {
+    let rate = speaker.rate;
+    var window = u32.from(usize.from(maxQueuedMs) * usize.from(rate) / 1000usize / BLOCK_SAMPLES);
+    if window < 2u32 { window = 2u32; }
+    let edge = ValueEdge[AudioBlock].toThread(window, window);
+    let handle = edge.sink().unwrap();
+    let stopFlag = Arc[imm, Atomic[u32]](Atomic[u32].of(0u32));
+    let shared = Arc[imm, SpeakShared](SpeakShared(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+      Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u32].of(0u32)));
+    let aheadSamples = usize.from(rate) * usize.from(aheadMs) / 1000usize;
+    let t = thread.start(SpeakJob(speaker.stream, edge, stopFlag, shared, aheadSamples), &feedLoop);
+    SpeakerSink(speaker, Some[thread.Thread[i32]](t), stopFlag, shared, handle)
+  }
+
+  // The sink to attach a producer to
+  pub fn sink(self: &) ValueSink[AudioBlock] { sinkHandle.clone() }
+
+  // The generation to stamp new blocks with (AudioBlock.of); `cutOff` makes it one higher
+  pub fn generation(self: &) u32 { shared.generation.load() }
+
+  // Barge-in: stop the sound now. Blocks of the old generation still on their way are discarded
+  pub fn cutOff(self: &mut) {
+    shared.generation.add(1u32);
+    speaker.cutOff();
+  }
+
+  // True once the producer has ended the stream and every block has played out
+  pub fn played(self: &) bool { shared.done.load() == 1u32 }
+
+  // Blocks handed to SDL's stream
+  pub fn blocksPut(self: &) u64 { shared.put.load() }
+  // Blocks that have left it (played, or cleared by a cut-off)
+  pub fn blocksPlayed(self: &) u64 { shared.played.load() }
+  // Blocks discarded as older than the generation
+  pub fn stale(self: &) u64 { shared.stale.load() }
+  // Times the stream ran dry mid-speech
+  pub fn underruns(self: &) u64 { shared.underruns.load() }
+
+  // Stop the feeder, join it and close the speaker
+  pub fn stop(self: &mut) i32 {
+    stopFlag.store(1u32);
+    var w: Option[thread.Thread[i32]] = None;
+    w <-> worker;
+    var status = 0i32;
+    match w {
+      case var Some(t) { status = t.join(); }
+      case is None[thread.Thread[i32]] {}
+    }
+    speaker.close();
+    status
+  }
+}
