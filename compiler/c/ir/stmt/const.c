@@ -21,14 +21,31 @@ ConstDclNode *newConstDclNode(Name *namesym) {
     return name;
 }
 
-// There is no clone for a constant declaration. 'const' is parsed in the
-// global statement area (parsemod.c) and in the braces of a struct or enum that
-// is neither generic nor a trait (parseStructItems), and cloning is entered only
-// on a function, struct or macro body, so no const node can reach it. cloneNode has
-// no ConstDclTag arm either, and its default arm says so loudly. Whoever makes
-// 'const' legal in a generic type or a trait writes both halves together --
-// including the TypeChecked/TypeChecking clear that every other declaration
-// clone does.
+// Clone a constant declaration, in two steps like a static (cloneStructNode):
+// the shell is made and bound in the instance's namespace first, and the type and
+// value are copied after, so a use in any member body maps to the copy. memcpy
+// carries the type check marks with everything else, and a clone that kept them
+// would be skipped by the guard in inodeTypeCheck, so they are cleared. A module's
+// const is never cloned (cloning is entered on a function, struct or macro body);
+// a trait's const is refused at parse (ErrorConstPlace).
+ConstDclNode *cloneConstDclShell(ConstDclNode *node) {
+    ConstDclNode *newnode = memAllocBlk(sizeof(ConstDclNode));
+    memcpy(newnode, node, sizeof(ConstDclNode));
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
+    return newnode;
+}
+
+void cloneConstDclFill(CloneState *cstate, ConstDclNode *newnode, ConstDclNode *node) {
+    newnode->vtype = cloneNode(cstate, node->vtype);
+    newnode->value = cloneNode(cstate, node->value);
+    cloneDclSetMap((INode*)node, (INode*)newnode);
+}
+
+INode *cloneConstDclNode(CloneState *cstate, ConstDclNode *node) {
+    ConstDclNode *newnode = cloneConstDclShell(node);
+    cloneConstDclFill(cstate, newnode, node);
+    return (INode*)newnode;
+}
 
 // Serialize a constant node
 void constDclPrint(ConstDclNode *name) {
