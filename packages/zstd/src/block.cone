@@ -123,6 +123,9 @@ fn decodeBlock(src: &List[u8], start: usize, end: usize, ent: &mut Entropy, hist
 // The literals section at *src[*p, end) into ent.lits; *p moves past it
 fn decodeLiterals(src: &List[u8], p: &mut usize, end: usize, ent: &mut Entropy) Fault {
   ent.lits.clear();
+  // Room for the largest literals and 8 bytes of slack, which the sequences'
+  // word-wise copies read past the end into
+  ent.lits.reserve(blockSizeMax() + 8usize);
   let at = *p;
   if at >= end { return Fault.LitHeader; }
   let b0 = *src[at];
@@ -287,7 +290,7 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   let dictLen = dict.len();
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
-  hist.reserve(room);
+  hist.reserve(room + 8usize);
   // The block is written through pointers into the room just reserved
   // (everything checked against 'room' and the literals' length first), 'w'
   // the next byte; 'hist' gets its new length once, at the end
@@ -341,7 +344,7 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
     // Execute: the literals, then the match
     if ll > nlits - litPos { return Fault.LitOverrun; }
     if (w - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
-    copyBytes(bp + w, lp + litPos, ll);
+    copyWords(bp + w, lp + litPos, ll);
     w = w + ll;
     litPos = litPos + ll;
     // The frame's output so far, and how far back a match may reach: the
@@ -372,7 +375,7 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   ent.rep3 = r3;
   let rest = nlits - litPos;
   if (w - blockStart) + rest > room { return Fault.BlockTooBig; }
-  copyBytes(bp + w, lp + litPos, rest);
+  copyWords(bp + w, lp + litPos, rest);
   w = w + rest;
   commit(hist, blockStart, w - blockStart);
   Fault.Ok
@@ -409,13 +412,40 @@ fn copyBytes(to: *u8, from: *u8, n: usize) inline {
   }
 }
 
+// The same for a copy that may read up to 7 bytes past its source and write
+// up to 7 past its target (short ones are two words, not a byte loop); both
+// have the slack, as 'decodeLiterals' and 'decodeSequences' reserve it
+fn copyWords(to: *u8, from: *u8, n: usize) inline {
+  if n <= 16usize {
+    var k = 0usize;
+    while k < n {
+      mem.writeRaw[u64]((to + k) as *u64, mem.readRaw[u64]((from + k) as *u64));
+      k = k + 8usize;
+    }
+  } else {
+    mem.moveRaw[u8](to, from, n);
+  }
+}
+
 // Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
 // b[from + 1], ...: when the source runs on into the bytes being written (the
 // match is longer than its offset, from + ml > at), the last 'at - from' bytes
 // repeat. The caller has checked 0 < at - from and that b has room to at + ml.
 fn copyMatch(b: *u8, at: usize, from: usize, ml: usize) {
   let off = at - from;
-  if off >= ml { copyBytes(b + at, b + from, ml); return; }
+  if off >= 8usize {
+    // Eight bytes a step, each read after the write before it, so the
+    // repeating of a short offset comes out right as long as it is eight or
+    // more; the last step may write up to 7 bytes past the match, into the
+    // slack the block reserved
+    if off >= ml && ml > 16usize { mem.moveRaw[u8](b + at, b + from, ml); return; }
+    var k = 0usize;
+    while k < ml {
+      mem.writeRaw[u64]((b + (at + k)) as *u64, mem.readRaw[u64]((b + (from + k)) as *u64));
+      k = k + 8usize;
+    }
+    return;
+  }
   if ml <= 16usize {
     var k = 0usize;
     while k < ml {
