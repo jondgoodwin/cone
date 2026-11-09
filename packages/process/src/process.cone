@@ -786,9 +786,16 @@ pub struct Child {
 
 // Start a program and let it run: args[0] is the program, the rest its arguments, as 'run' takes them, and it starts
 // in 'dir' as there. An Err is a program that could not be started. Its standard output and error come back as the
-// ends of pipes (the Child's 'takeStdout', 'takeStderr'), or are this program's own where 'opts.inherit' is true;
-// 'opts.timeout' and 'opts.crashReport' do nothing here (the caller stops the child with 'kill', and a crash goes to
-// the system's reporting).
+// ends of pipes (the Child's 'takeStdout', 'takeStderr'), or are this program's own where 'opts.inherit' is true.
+//
+// WHICH OPTIONS APPLY. 'inherit' applies, as in 'run'. 'timeout' and 'crashReport' are IGNORED here, whatever they
+// are set to: the caller stops the child with 'kill' when it wants it stopped, and a crash goes to the system's
+// reporting.
+//
+// A DROPPED CHILD IS KILLED AND REAPED. When the returned Child dies with its process not given away, the child and
+// the programs it started are ended and waited for. This is unlike Rust's std::process::Child, which detaches. For a
+// child meant to outlive its owner, or to be waited for by a loop, give the process away with 'takeProcess' (iocore's
+// 'adoptChild' takes it); the Child then leaves it alone.
 pub fn launch(args: &Array[String], opts: Options = Options(), dir: &Path = "") Result[Child, ProcessError] {
   if args.len == 0usize {
     return Err[Child, ProcessError](failure("launch", "", dir, invalidParameter()));
