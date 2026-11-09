@@ -5,7 +5,7 @@
 // end or be reset, and the connection's close. Bytes, ends and resets come
 // in by the calls that say so; what to write, finish, reset, stop or close
 // goes out from pollTransmit; what happened comes from pollEvent. Every
-// stream's state is one record in one SlotTable, found from its number by a
+// stream's state is one record in one GenPool, found from its number by a
 // Dict.
 
 // ---------------------------------------------------------------------------
@@ -220,8 +220,8 @@ pub struct Connection is Move {
   now: Instant;              // the time the last call brought
   enc: QpackEncoder;         // our field sections, and our encoder stream
   dec: QpackDecoder;         // the peer's field sections, and our decoder stream
-  streams: SlotTable[H3Stream];
-  ids: Dict[u64, Slot];      // each stream's record, by its number
+  streams: GenPool[H3Stream];
+  ids: Dict[u64, Handle];      // each stream's record, by its number
   requestRecords: usize;     // request streams with a record, refused ones too
   activeRequests: usize;     // ...and those not refused
 
@@ -296,7 +296,7 @@ pub struct Connection is Move {
     encodeVarint(&mut decOut, streamDecoder);
     Connection(clientRole: client, cfg: cfg, now: now,
       enc: QpackEncoder.make(&cfg.qpack), dec: QpackDecoder.make(cfg.qpack),
-      streams: SlotTable[H3Stream].make(16u32), ids: Dict[u64, Slot](),
+      streams: GenPool[H3Stream].make(16u32), ids: Dict[u64, Handle](),
       requestRecords: 0usize, activeRequests: 0usize,
       controlId: base, encoderId: base + 4u64, decoderId: base + 8u64,
       controlOut: control, encoderOut: encOut, decoderOut: decOut,
@@ -320,10 +320,10 @@ pub struct Connection is Move {
       file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     now = at;
     if closed || gone {return;}
-    var slot = Slot.none();
+    var slot = Handle.none();
     match ids.getCopy(&stream) {
       case let Some(sl) {slot = sl;}
-      case is None[Slot] {slot = self.peerStream(stream);}
+      case is None[Handle] {slot = self.peerStream(stream);}
     }
     if slot.isNone() {return;}
     let i = usize.from(slot.index);
@@ -354,10 +354,10 @@ pub struct Connection is Move {
   pub fn handleReset(self: &mut, stream: u64, code: u64, at: Instant) {
     now = at;
     if closed || gone {return;}
-    var slot = Slot.none();
+    var slot = Handle.none();
     match ids.getCopy(&stream) {
       case let Some(sl) {slot = sl;}
-      case is None[Slot] {return;}
+      case is None[Handle] {return;}
     }
     let i = usize.from(slot.index);
     let s = streams.at(slot.index) as &mut H3Stream;
@@ -395,10 +395,10 @@ pub struct Connection is Move {
       self.fail(h3ClosedCriticalStream, "the peer asked to stop one of our critical streams");
       return;
     }
-    var slot = Slot.none();
+    var slot = Handle.none();
     match ids.getCopy(&stream) {
       case let Some(sl) {slot = sl;}
-      case is None[Slot] {return;}
+      case is None[Handle] {return;}
     }
     let i = usize.from(slot.index);
     let s = streams.at(slot.index) as &mut H3Stream;
@@ -453,7 +453,7 @@ pub struct Connection is Move {
         let held = s.input.len();
         return if held >= cfg.streamBuffer {0usize} else {cfg.streamBuffer - held};
       }
-      case is None[Slot] {return cfg.streamBuffer;}
+      case is None[Handle] {return cfg.streamBuffer;}
     }
   }
 
@@ -465,7 +465,7 @@ pub struct Connection is Move {
         let s = streams.at(sl.index) as &mut H3Stream;
         s.outstanding = if n >= s.outstanding {0usize} else {s.outstanding - n};
       }
-      case is None[Slot] {}
+      case is None[Handle] {}
     }
   }
 
@@ -729,7 +729,7 @@ pub struct Connection is Move {
         if s.kind != StreamKind.Request {return;}
         self.stopReading(s, h3NoError);
       }
-      case is None[Slot] {}
+      case is None[Handle] {}
     }
   }
 
@@ -747,7 +747,7 @@ pub struct Connection is Move {
         self.stopWriting(s, code);
         self.reap(usize.from(sl.index));
       }
-      case is None[Slot] {}
+      case is None[Handle] {}
     }
   }
 
@@ -807,7 +807,7 @@ pub struct Connection is Move {
         let q = queuedOf(streams.at(sl.index) as &H3Stream);
         return if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q};
       }
-      case is None[Slot] {return 0usize;}
+      case is None[Handle] {return 0usize;}
     }
   }
 
@@ -872,9 +872,9 @@ pub struct Connection is Move {
     }
   }
 
-  // A stream the peer opened, seen for the first time: its record's Slot,
-  // or Slot.none() when it is refused or not the peer's to open
-  fn peerStream(self: &mut, id: u64) Slot {
+  // A stream the peer opened, seen for the first time: its record's Handle,
+  // or Handle.none() when it is refused or not the peer's to open
+  fn peerStream(self: &mut, id: u64) Handle {
     let cls = id & 3u64;
     if cls == 0u64 || cls == 1u64 {
       if clientRole {
@@ -882,13 +882,13 @@ pub struct Connection is Move {
         // client's own request streams are found by their record, so one
         // without is done with
         if cls == 1u64 {self.fail(h3StreamCreationError, "a server-initiated bidirectional stream");}
-        return Slot.none();
+        return Handle.none();
       }
-      if cls == 1u64 {return Slot.none();}
+      if cls == 1u64 {return Handle.none();}
       return self.newRequest(id);
     }
     let theirs = if clientRole {3u64} else {2u64};
-    if cls != theirs {return Slot.none();}
+    if cls != theirs {return Handle.none();}
     let slot = streams.add(newStream(id, StreamKind.Untyped, cfg.streamBuffer));
     let previous = ids.insert(id, slot);
     slot
@@ -898,12 +898,12 @@ pub struct Connection is Move {
   // once, with no record; at or past the id of a GOAWAY we sent it is
   // refused and kept until the peer's side ends, its bytes dropped. Either
   // way H3_REQUEST_REJECTED: not processed, safe to retry
-  fn newRequest(self: &mut, id: u64) Slot {
+  fn newRequest(self: &mut, id: u64) Handle {
     if id + 4u64 > nextUnseen {nextUnseen = id + 4u64;}
     if requestRecords >= cfg.maxRequestStreams {
       commands.push(Transmit.StopSending(id, h3RequestRejected));
       commands.push(Transmit.Reset(id, h3RequestRejected));
-      return Slot.none();
+      return Handle.none();
     }
     var s = newStream(id, StreamKind.Request, cfg.streamBuffer);
     if goAwaySent && id >= goAwaySentId {
@@ -944,16 +944,16 @@ pub struct Connection is Move {
     let removed = streams.removeAt(u32.from(i));
   }
 
-  // The Slot of a request stream the program may write on, or Slot.none()
-  fn writable(self: &, stream: u64) Slot {
+  // The Handle of a request stream the program may write on, or Handle.none()
+  fn writable(self: &, stream: u64) Handle {
     match ids.getCopy(&stream) {
       case let Some(sl) {
         let r = streams.at(sl.index) as &H3Stream;
         if r.kind == StreamKind.Request && r.accepted && !r.reported && !r.writeDone {return sl;}
       }
-      case is None[Slot] {}
+      case is None[Handle] {}
     }
-    Slot.none()
+    Handle.none()
   }
 
   // A field list as one field section, in a HEADERS frame, on a stream
@@ -1400,7 +1400,7 @@ pub struct Connection is Move {
                 case let Err(e) {self.qpackSectionFail(s, &e);}
               }
             }
-            case is None[Slot] {}
+            case is None[Handle] {}
           }
         }
         case is None[Unblocked] {break;}
