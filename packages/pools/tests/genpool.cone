@@ -1,0 +1,286 @@
+// What a GenPool does, case by case. Each expected value is worked out by hand.
+// Cells here are 4 to a slab unless said, handed out in index order from a fresh
+// slab, and a freed cell is the next one used (last in, first out).
+
+mod genpool;
+
+import testing use *;
+import pools use *;
+import collections use List;
+
+struct Pt {
+  pub x: i64;
+  pub y: i64;
+}
+
+let deaths: Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Mortal is Move {
+  pub id: i64;
+
+  fn final(self: &uni) {
+    deaths.add(1u64);
+  }
+}
+
+fn isNull(p: *Pt) bool {p as usize == 0usize}
+
+// remove, retire and reuse make a handle stale
+fn stale() {
+  var t = GenPool[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  expectUInt(u64.from(a.index), 0u64, "first entry in cell 0");
+  expectUInt(u64.from(a.gen), 1u64, "as its first occupant");
+  expectInt((*t.get(a)).y, 2i64, "get reads it");
+  expect(t.remove(a), "remove answers true");
+  expect(isNull(t.get(a)), "a removed entry's handle reaches nothing");
+  expect(!t.remove(a), "removing it again answers false");
+  let b = t.add(Pt(5i64, 6i64));
+  expectUInt(u64.from(b.index), 0u64, "the freed cell is the next used");
+  expectUInt(u64.from(b.gen), 2u64, "as its second occupant");
+  expect(isNull(t.get(a)), "the old handle still reaches nothing after reuse");
+  expectInt((*t.get(b)).x, 5i64, "the new one reaches the new entry");
+
+  // retire: dead to every handle and to at(), not reusable until freed
+  expect(t.retire(b), "retire answers true");
+  expect(isNull(t.get(b)), "a retired entry's handle reaches nothing");
+  expect(isNull(t.at(0u32)), "at() does not reach it");
+  expect(!t.isLive(0u32), "it is not live");
+  expectUInt(u64.from(t.len()), 0u64, "len counts live entries");
+  expect(!t.retire(b), "retiring twice answers false");
+  expect(!t.remove(b), "remove does not take a retired entry");
+  let c = t.add(Pt(7i64, 8i64));
+  expectUInt(u64.from(c.index), 1u64, "a retired cell is not reused");
+  expect(!t.free(c), "free of a live entry answers false");
+  expect(t.free(b), "free of the retired entry answers true");
+  expect(!t.free(b), "free twice answers false");
+  let d = t.add(Pt(9i64, 9i64));
+  expectUInt(u64.from(d.index), 0u64, "the freed cell is used next");
+  expectUInt(u64.from(d.gen), 3u64, "as its third occupant");
+  expect(isNull(t.get(b)), "the retired entry's handle stays stale");
+  expect(Handle.none().isNone(), "none is none");
+  expect(isNull(t.get(Handle.none())), "none reaches nothing");
+  expect(isNull(t.at(1000u32)), "at past the pool: null");
+}
+
+// A slab returned and a new one put in its place: the old handle must not match
+fn epoch() {
+  var t = GenPool[Pt].make(4u32);
+  var hs = List[Handle]();
+  var i = 0i64;
+  while i < 8i64 {
+    hs.push(t.add(Pt(i, 0i64)));
+    i = i + 1i64;
+  }
+  expectUInt(u64.from(t.slabCount()), 2u64, "two slabs for eight entries");
+  var k = 4usize;
+  while k < 8usize {t.remove(*hs[k]); k = k + 1usize;}
+  expectUInt(u64.from(t.slabCount()), 2u64, "slab 1 emptied: kept as the spare");
+  k = 0usize;
+  while k < 4usize {t.remove(*hs[k]); k = k + 1usize;}
+  expectUInt(u64.from(t.slabCount()), 1u64, "slab 0 emptied with a spare held: returned");
+  // slab 1 is the spare: four adds fill it (cells 7, 6, 5, 4), the fifth needs a slab
+  i = 0i64;
+  while i < 4i64 {t.add(Pt(100i64 + i, 0i64)); i = i + 1i64;}
+  expectUInt(u64.from(t.slabCount()), 1u64, "the spare was taken first");
+  let n = t.add(Pt(200i64, 0i64));
+  expectUInt(u64.from(t.slabCount()), 2u64, "then a new slab");
+  expectUInt(u64.from(n.index), 0u64, "in the returned slab's table position");
+  expectUInt(u64.from(n.gen), 2u64, "its generation starts above the old cells' (they had reached 2)");
+  expect(isNull(t.get(*hs[0])), "the old handle to cell 0 (generation 1) reaches nothing");
+  expect(isNull(t.get(Handle(0u32, 1u32))), "nor does a made-up one");
+  expectInt((*t.get(n)).x, 200i64, "the new entry is reached");
+}
+
+// A generation that would wrap retires its cell for good
+fn wrap() {
+  var t = GenPool[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 0i64));
+  t.remove(a);
+  t.setGenForTests(0u32, 0xFFFFFFFFu32);
+  let b = t.add(Pt(2i64, 0i64));
+  expectUInt(u64.from(b.index), 0u64, "the cell is used");
+  expectUInt(u64.from(b.gen), 0xFFFFFFFFu64, "at the top generation");
+  expect(t.remove(b), "removed");
+  expect(isNull(t.get(b)), "stale");
+  var seen0 = false;
+  var i = 0;
+  while i < 12 {
+    let h = t.add(Pt(0i64, 0i64));
+    if h.index == 0u32 {seen0 = true;}
+    i = i + 1;
+  }
+  expect(!seen0, "the cell is never handed out again");
+  expectUInt(u64.from(t.len()), 12u64, "twelve live");
+  // its slab is never returned: the dead cell counts as occupied
+  var c = 1u32;
+  while c < 13u32 {t.removeAt(c); c = c + 1u32;}
+  expectUInt(u64.from(t.len()), 0u64, "all gone");
+  expectUInt(u64.from(t.slabCount()), 2u64, "the slab with the dead cell is kept, and one spare");
+}
+
+// Add and remove at a slab boundary allocate nothing
+fn thrash() {
+  var t = GenPool[Pt].make(4u32);
+  var i = 0i64;
+  while i < 4i64 {t.add(Pt(i, 0i64)); i = i + 1i64;}
+  var h = t.add(Pt(9i64, 0i64));
+  expectUInt(u64.from(t.slabCount()), 2u64, "five entries: two slabs");
+  var n = 0;
+  while n < 1000 {
+    t.remove(h);
+    h = t.add(Pt(9i64, 0i64));
+    n = n + 1;
+  }
+  expectUInt(u64.from(t.slabCount()), 2u64, "a thousand pairs at the boundary: still two slabs");
+  expectUInt(u64.from(h.gen), 1001u64, "same cell each time: generation 1 + 1000");
+  expectUInt(u64.from(h.index), 4u64, "in cell 4");
+  var u = GenPool[Pt].make(4u32);
+  var g = u.add(Pt(1i64, 0i64));
+  n = 0;
+  while n < 100 {
+    u.remove(g);
+    g = u.add(Pt(1i64, 0i64));
+    n = n + 1;
+  }
+  expectUInt(u64.from(u.slabCount()), 1u64, "a lone entry thrashing: one slab");
+}
+
+// After an unload in a block, most slabs go back; scattered, none
+fn unload() {
+  var t = GenPool[Pt].make(16u32);
+  var hs = List[Handle]();
+  var i = 0i64;
+  while i < 256i64 {hs.push(t.add(Pt(i, 0i64))); i = i + 1i64;}
+  expectUInt(u64.from(t.slabCount()), 16u64, "256 entries: 16 slabs");
+  var k = 0usize;
+  while k < 240usize {t.remove(*hs[k]); k = k + 1usize;}
+  expectUInt(u64.from(t.slabCount()), 2u64, "clustered unload: the last slab and one spare");
+  expectUInt(u64.from(t.len()), 16u64, "16 left");
+  expectInt((*t.at(250u32)).x, 250i64, "an entry of the surviving slab is where it was");
+  var u = GenPool[Pt].make(16u32);
+  var gs = List[Handle]();
+  i = 0i64;
+  while i < 256i64 {gs.push(u.add(Pt(i, 0i64))); i = i + 1i64;}
+  k = 0usize;
+  while k < 256usize {
+    if k % 16usize != 0usize {u.remove(*gs[k]);}
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(u.slabCount()), 16u64, "scattered unload: no slab goes back");
+  expectUInt(u64.from(u.len()), 16u64, "16 left");
+}
+
+// The walk visits exactly the live cells, in index order
+fn walkAt(keepEvery: i64, want: i64, label: &Array[u8]) {
+  var t = GenPool[Pt].make(16u32);
+  var hs = List[Handle]();
+  var i = 0i64;
+  while i < 1000i64 {hs.push(t.add(Pt(i, 0i64))); i = i + 1i64;}
+  i = 0i64;
+  while i < 1000i64 {
+    if i % keepEvery != 0i64 {t.remove(*hs[usize.from(i as u64)]);}
+    i = i + 1i64;
+  }
+  var it = t.entries();
+  var n = 0i64;
+  var last = -1i64;
+  var ordered = true;
+  var matches = true;
+  while true {
+    match it.next() {
+      case let Some(e) {
+        let idx = i64.from(e.0);
+        if idx <= last {ordered = false;}
+        if (*e.1).x != idx || idx % keepEvery != 0i64 {matches = false;}
+        last = idx;
+        n = n + 1i64;
+      }
+      case is None {break;}
+    }
+  }
+  expectInt(n, want, label);
+  expect(ordered, "in index order");
+  expect(matches, "each live cell and only those");
+  var it2 = t.iter();
+  var m = 0i64;
+  while true {
+    match it2.next() {
+      case let Some(p) {m = m + 1i64;}
+      case is None {break;}
+    }
+  }
+  expectInt(m, want, "iter agrees");
+}
+
+fn walk() {
+  walkAt(100i64, 10i64, "1% occupancy: 10 live");
+  walkAt(2i64, 500i64, "50% occupancy: 500 live");
+  walkAt(1i64, 1000i64, "100% occupancy: 1000 live");
+  var e = GenPool[Pt].make(4u32);
+  expectUInt(u64.from(e.nextLive(0u32)), 0xFFFFFFFFu64, "an empty pool has nothing to walk");
+}
+
+// remove and take finalize once; the pool's death finalizes the rest, retired included
+fn finalizers() {
+  let before = deaths.load();
+  {
+    var t = GenPool[Mortal].make(4u32);
+    let a = t.add(Mortal(1i64));
+    let b = t.add(Mortal(2i64));
+    let c = t.add(Mortal(3i64));
+    let d = t.add(Mortal(4i64));
+    t.remove(a);
+    expectUInt(deaths.load() - before, 1u64, "remove finalizes once");
+    t.remove(a);
+    expectUInt(deaths.load() - before, 1u64, "a stale remove does not");
+    match t.take(b) {
+      case let Some(m) {
+        expectUInt(deaths.load() - before, 1u64, "take does not finalize");
+      }
+      case is None[Mortal] {expect(false, "take gives Some");}
+    }
+    expectUInt(deaths.load() - before, 2u64, "the value taken dies with its new owner");
+    t.retire(c);
+    expectUInt(deaths.load() - before, 2u64, "retire does not finalize");
+    t.free(c);
+    expectUInt(deaths.load() - before, 3u64, "free does");
+    let e = t.add(Mortal(5i64));
+    let f = t.add(Mortal(6i64));
+    t.retire(f);
+  }
+  // d, e live and f retired when the pool died: 3 more
+  expectUInt(deaths.load() - before, 6u64, "the pool's death finalizes the live and the retired");
+}
+
+fn misc() {
+  var t = GenPool[Pt].make();
+  let a = t.add(Pt(1i64, 2i64));
+  expectUInt(u64.from(t.bound()), 2048u64, "default slab: 64 KiB of 24-byte cells is 2730, rounded down to 2048");
+  expect(t.slotAt(0u32) == a, "slotAt gives the handle");
+  expect(t.slotAt(1u32).isNone(), "none for a free cell");
+  match t.borrowMut(a) {
+    case let Some(p) {p.x = 10i64;}
+    else {expect(false, "borrowMut");}
+  }
+  match t.borrowAt(0u32) {
+    case let Some(p) {expectInt(p.x, 10i64, "borrowAt sees the write");}
+    else {expect(false, "borrowAt");}
+  }
+}
+
+fn main() i32 {
+  stale();
+  epoch();
+  wrap();
+  thrash();
+  unload();
+  walk();
+  finalizers();
+  misc();
+  done()
+}
