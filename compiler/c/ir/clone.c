@@ -144,6 +144,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneReturnNode(cstate, (BreakRetNode *)nodep); break;
     case VarDclTag:
         node = cloneVarDclNode(cstate, (VarDclNode *)nodep); break;
+    case ConstDclTag:
+        node = cloneConstDclNode(cstate, (ConstDclNode *)nodep); break;
 
     case StructTag:
         node = cloneStructNode(cstate, (StructNode *)nodep); break;

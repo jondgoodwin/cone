@@ -1,0 +1,232 @@
+// A behaviour parked at an 'await' holding an owner whose referent was moved
+// out through it (the owner is hollowed, flow's VarHollow): the record the seam
+// saves must not finalize what moved on, and must give the allocation back.
+// Each row owns a value whose 'final' adds to a tally, and an owner whose
+// region counts its allocations and frees, held across an 'await': the value
+// must be finalized once wherever the behaviour ends, and every allocation
+// freed once.
+//
+// Two phases run every row:
+//
+//   resumed: the behaviour awaits a short sleep, resumes, and its scope ends.
+//   abandoned: the behaviour awaits a job of a hosted service, whose reply the
+//     service keeps and never answers; main ends the service while the program
+//     runs (Host.end), which drops the reply, abandons the behaviour, and drops
+//     its parked record (the abandoned record's drop function, genlSeamDrop).
+//
+// A row's finals are counted in a nibble of its phase's tally: a double drop
+// reads 2, a value left undropped 0. After each phase the owners' allocations
+// not yet freed are counted: 0. The rows, by the nibble they count in:
+//
+//    0  a local owner, its value moved out through it: hollow on every path
+//    1  the same, the owner bound by 'case let Ok(o)'
+//  2-3  the same, then the owner given a new value (whole again): row 3's
+//    4  hollow on one path only: the value moved on when the behaviour resumes
+//    5  the same when it is abandoned instead
+//    6  an owner of an owner, the inner value moved out through both
+
+mod seamhollow;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import collections use List;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+let park: Host[Park];
+let resumedTally: Atomic[u64];
+let abandonedTally: Atomic[u64];
+let keptCount: Atomic[u64];     // replies the service holds
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  park = aio.host[Park](&makePark);
+  resumedTally = Atomic[u64].of(0u64);
+  abandonedTally = Atomic[u64].of(0u64);
+  keptCount = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+fn makePark() Park {Park.make()}
+
+// A value whose death is counted: in the nibble 'n' of the tally of its phase
+struct Counted {
+  pub n: u64;
+  pub short: bool;
+  fn final(self: &uni) {
+    if short {resumedTally.add(1u64 << (n * 4u64));} else {abandonedTally.add(1u64 << (n * 4u64));}
+  }
+}
+
+// An owner of a value in a region of its own, which counts what it hands out
+// and takes back
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+// A hosted service keeping the replies of the jobs it is asked, none answered
+struct Park {
+  kept: List[actors.ReplyOf[u64]];
+
+  pub fn make() Park {Park(List[actors.ReplyOf[u64]]())}
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct ParkJob {
+  pub fn run(self, lp: &mut Loop, s: &mut Park, rp: actors.ReplyOf[u64]) {
+    s.kept.push(rp);
+    keptCount.add(1u64);
+  }
+}
+
+fn give(c: Counted) {}
+
+actor Holder {
+  // 0: a local owner, its value moved out through it
+  pub async fn hollowLocal(self, short: bool, done: OneshotSender[u64]) {
+    let o = One[Counted](Counted(0u64, short));
+    let c = *o;
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if c.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 1: the owner is a pattern's binding
+  pub async fn partlyMoved(self, short: bool, done: OneshotSender[u64]) {
+    let r: Result[One[Counted], u32] = Ok[One[Counted], u32](One[Counted](Counted(1u64, short)));
+    match r {
+      case let Ok(o) {
+        let c = *o;
+        if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+        if c.n > 99u64 {printStr("never\n");}
+      }
+      case is Err[One[Counted], u32] {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 2, 3: the owner is given a new value after its referent moved out
+  pub async fn refilled(self, short: bool, done: OneshotSender[u64]) {
+    var o = One[Counted](Counted(2u64, short));
+    let c = *o;
+    o = One[Counted](Counted(3u64, short));
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if c.n + o.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 4: hollow on the path where the behaviour resumes only (a drop flag)
+  pub async fn movedSometimes(self, short: bool, done: OneshotSender[u64]) {
+    let o = One[Counted](Counted(4u64, short));
+    if short {give(*o);}
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 5: hollow on the path where the behaviour is abandoned only
+  pub async fn movedOtherwise(self, short: bool, done: OneshotSender[u64]) {
+    let o = One[Counted](Counted(5u64, short));
+    if !short {give(*o);}
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 6: an owner of an owner: the value moves out through both
+  pub async fn nested(self, short: bool, done: OneshotSender[u64]) {
+    let o = One[One[Counted]](One[Counted](Counted(6u64, short)));
+    let c = **o;
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if c.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+const rows = 7u64;
+
+// Row 3 is the second value of row 2
+fn start(h: &Holder, row: u64, short: bool, tx: OneshotSender[u64]) {
+  if row == 0u64 {h.hollowLocal(short, tx);}
+  else if row == 1u64 {h.partlyMoved(short, tx);}
+  else if row == 2u64 {h.refilled(short, tx);}
+  else if row == 4u64 {h.movedSometimes(short, tx);}
+  else if row == 5u64 {h.movedOtherwise(short, tx);}
+  else {h.nested(short, tx);}
+}
+
+fn report(what: &str, tally: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < rows {
+    printStr(" ");
+    printUInt((tally >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var row = 0u64;
+  while row < rows {
+    if row != 3u64 {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      {
+        let h = Holder();
+        start(&h, row, true, tx);
+        rx.recv();
+      }
+    }
+    row = row + 1u64;
+  }
+  actors.waitUntilIdle();
+  report("resumed:  ", resumedTally.load());
+  var rxs = List[OneshotReceiver[u64]]();
+  var started = 0u64;
+  row = 0u64;
+  while row < rows {
+    if row != 3u64 {
+      started = started + 1u64;
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      rxs.push(rx);
+      let h = Holder();
+      start(&h, row, false, tx);
+    }
+    row = row + 1u64;
+  }
+  // Every behaviour is parked once the service holds its reply and no actor runs
+  while keptCount.load() < started {thread.sleep(Duration.fromMillis(1i64));}
+  actors.waitQuiet();
+  park.end();
+  actors.waitQuiet();
+  report("abandoned:", abandonedTally.load());
+  finalAll();
+  printStr("end\n");
+}

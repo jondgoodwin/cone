@@ -1,0 +1,150 @@
+// SoaList[T] runs its rows' finalizers (Bug 70). A T with a 'final' used to be taken apart into its
+// columns and its 'final' never ran. Now the list's death builds each row whole again from its
+// columns, first to last, and drops it, so T's 'final' runs once per row, then its fields' do.
+// 'log' keeps a base-10 record of the order: each finalizer appends its digit, 'log * 10 + digit'.
+// Every expected value is worked out by hand from the pushes made.
+
+mod soalistfinal;
+
+import testing use *;
+import collections use *;
+
+var @threadlocal log = 0i64;
+
+// A row whose finalizer appends its own 'n'
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { log = log * 10i64 + n; }
+}
+
+// A row that has its own finalizer (it appends 9) and a field that has one (it appends that Fin's n)
+struct Outer {
+  pub inner: Fin;
+  pub m: i64;
+  fn final(self: &uni) { log = log * 10i64 + 9i64; }
+}
+
+// A row with a finalizing field and a plain one: no finalizer of its own
+struct Held {
+  pub f: Fin;
+  pub k: i32;
+}
+
+// A row with nothing to finalize
+struct Plain {
+  pub a: i32;
+  pub b: i64;
+}
+
+// A row with a String: freed by its drop, once
+struct Named {
+  pub name: String;
+  pub id: i32;
+}
+
+// Fin(1), Fin(2), Fin(3) pushed by column: nothing runs until the list dies, then 1, 2, 3 in turn
+fn dies() {
+  log = 0i64;
+  {
+    var ps = SoaList[Fin]();
+    ps.n.push(1i64);
+    ps.n.push(2i64);
+    ps.n.push(3i64);
+    expectInt(log, 0, "pushes finalize nothing");                       // 1
+    expectUInt(u64.from(ps.len()), 3, "three rows");                    // 2
+  }
+  expectInt(log, 123, "each row's final ran once, first to last");      // 3
+}
+
+// The e5 probe: one row, one column
+fn single() {
+  log = 0i64;
+  {
+    var ps = SoaList[Fin]();
+    ps.n.push(7i64);
+  }
+  expectInt(log, 7, "a single row's final ran");                        // 4
+}
+
+// Outer rows (Fin 1, m 10) and (Fin 2, m 20). Row 0 dies as 9 (Outer's final) then 1 (its field's),
+// row 1 as 9 then 2: log goes 0 -> 9 -> 91 -> 919 -> 9192
+fn fieldFinal() {
+  log = 0i64;
+  {
+    var os = SoaList[Outer]();
+    os.inner.push(Fin(1i64));
+    os.m.push(10i64);
+    os.inner.push(Fin(2i64));
+    os.m.push(20i64);
+    expectInt(os.m[1usize], 20, "m of row 1");                          // 5
+  }
+  expectInt(log, 9192, "own final, then the field's, once per row");    // 6
+}
+
+// A Held has no final of its own: its Fin field's runs once per row, first to last (1, 2, 3)
+fn heldFinal() {
+  log = 0i64;
+  {
+    var hs = SoaList[Held]();
+    hs.f.push(Fin(1i64));
+    hs.k.push(10);
+    hs.f.push(Fin(2i64));
+    hs.k.push(20);
+    hs.f.push(Fin(3i64));
+    hs.k.push(30);
+  }
+  expectInt(log, 123, "a field's final ran once per row");              // 7
+}
+
+// Columns that fell out of step: f holds Fin 1, 2, 3 and k holds one value, 10, so there is one
+// whole row, (Fin 1, 10), and it is dropped as a row (log 1). The two Fins left over are finalized
+// by their column's own death (2, then 3): log 123, each ran once
+fn outOfStep() {
+  log = 0i64;
+  {
+    var hs = SoaList[Held]();
+    hs.f.push(Fin(1i64));
+    hs.f.push(Fin(2i64));
+    hs.f.push(Fin(3i64));
+    hs.k.push(10);
+  }
+  expectInt(log, 123, "left-over column values finalized once");        // 8
+}
+
+// An emptied list runs nothing, and a list with nothing to finalize is only dropped
+fn quiet() {
+  log = 0i64;
+  {
+    var none = SoaList[Fin]();
+    expectBool(none.isEmpty(), true, "empty list is empty");            // 9
+    var ps = SoaList[Plain]();
+    ps.push(Plain(1, 10i64));
+    ps.push(Plain(2, 20i64));
+    expectInt(ps.b[1usize], 20, "plain row read");                      // 10
+    expectInt(i64.from(ps.get(0usize).unwrap().a), 1, "plain get");     // 11
+  }
+  expectInt(log, 0, "no finalizer ran");                                // 12
+}
+
+// A String in a row is freed once by the row's drop (a double free or a leak would show under
+// the allocator checks of a debug run; here the values read back first)
+fn strings() {
+  var ns = SoaList[Named]();
+  ns.name.push(String.from("ann"));
+  ns.id.push(1);
+  ns.name.push(String.from("bob"));
+  ns.id.push(2);
+  expectStr(ns.name[1usize].view(), "bob", "name of row 1");            // 13
+  expectInt(i64.from(ns.id[0usize]), 1, "id of row 0");                 // 14
+}
+
+fn main() i32 {
+  dies();
+  single();
+  fieldFinal();
+  heldFinal();
+  outOfStep();
+  quiet();
+  strings();
+  done()
+}

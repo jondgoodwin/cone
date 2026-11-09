@@ -108,6 +108,17 @@ struct Fetch {
   retries: u32;
   maxRedirects: u32;
   timing: Timing;
+  // A streamed request body (sendUpload, pushBody, endBody): a queue of pieces, taken as the connection takes them.
+  // Such a fetch is never sent twice (canRetry), and a redirect that would send the body again is its answer
+  streamed: bool;
+  upLen: BodyLength;         // the body's framing, said at sendUpload
+  upq: Deque[IoBuf];         // pieces pushed and not yet taken by the connection
+  upPushed: u64;             // bytes pushed
+  upEnded: bool;             // endBody was called
+  upFinished: bool;          // the connection was told the body is whole
+  upGone: bool;              // the body is wanted no more (a response came before it was all sent): pieces pushed are dropped
+  upWritable: bool;          // the connection has room: the last piece offered was taken, or it said Writable
+  upAsked: bool;             // a BodyRoom event was sent since the last push
 
   fn methodName(self: &) &str {
     if method == Method.Other {methodText.view()} else {methodToken(method)}
@@ -319,7 +330,8 @@ pub struct Client {
       req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
       ending: endNone, delivered: false, following: false, cutting: false, location: String(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
-      maxRedirects: 0u32, timing: Timing.zero())
+      maxRedirects: 0u32, timing: Timing.zero(), streamed: false, upLen: BodyLength(), upq: Deque[IoBuf](),
+      upPushed: 0u64, upEnded: false, upFinished: false, upGone: false, upWritable: false, upAsked: false)
   }
 
   fn newFetch(self: &mut) u32 {
@@ -357,6 +369,14 @@ pub struct Client {
     f.sent = 0usize;
     f.retries = 0u32;
     f.timing = Timing.zero();
+    f.streamed = false;
+    f.upLen = BodyLength();
+    f.upPushed = 0u64;
+    f.upEnded = false;
+    f.upFinished = false;
+    f.upGone = false;
+    f.upWritable = false;
+    f.upAsked = false;
     liveFetches = liveFetches + 1u32;
     i
   }
@@ -370,6 +390,7 @@ pub struct Client {
     f.url = Url();
     f.headers = Headers();
     f.body = String();
+    f.upq.clear();
     f.group = None;
     f.location = String();
     f.nextFree = freeFetch;
@@ -547,6 +568,62 @@ pub struct Client {
     }
     self.enqueue(fi);
     id
+  }
+
+  // A request whose body is streamed (see the package's header, A STREAMED BODY): the request's own
+  // body must be empty; its head goes out as the connection is chosen, framing says the body's length
+  // (sized: Content-Length; unsized: chunked on HTTP/1.1, plain DATA on HTTP/2 and HTTP/3), and the
+  // body follows piece by piece through pushBody and endBody
+  pub fn sendUpload(self: &mut, lp: &mut Loop, req: Request, sink: Sink, framing: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) FetchId {
+    if req.body.len() > 0usize {panic("httpclient: a streamed request's own body must be empty", file, line);}
+    if framing.isEmpty() {panic("httpclient: a streamed request's framing must be sized or unsized", file, line);}
+    let id = self.send(lp, req, sink, file, line);
+    let fi = self.fetchIndex(id);
+    if fi != noEntry {
+      // (not dispatched yet: send only queues it, so the mode is set before any request is made)
+      let f = self.fetchAt(fi) as &mut Fetch;
+      f.streamed = true;
+      f.upLen = framing;
+    }
+    id
+  }
+
+  // A piece of a streamed fetch's body, queued; it is the connection's from here. A fetch that has
+  // ended, or whose body is wanted no more, drops it. More than a sized body's length, or any after
+  // endBody, is a program error
+  pub fn pushBody(self: &mut, lp: &mut Loop, id: FetchId, b: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return;}
+    let f = self.fetchAt(fi) as &mut Fetch;
+    if f.upGone {return;}      // (also a fetch whose redirect has dropped the body)
+    if !f.streamed {panic("httpclient: pushBody on a fetch that was not made by sendUpload", file, line);}
+    if f.upEnded {panic("httpclient: pushBody after endBody", file, line);}
+    let n = u64.from(b.len());
+    if n == 0u64 {return;}
+    f.upPushed = f.upPushed + n;
+    if f.upLen.isSized() && f.upPushed > f.upLen.length {
+      panic("httpclient: the streamed body is longer than the length it was sent with", file, line);
+    }
+    if f.upGone {return;}
+    f.upq.push(b);
+    f.upAsked = false;
+    if f.upWritable && f.state == fActive {self.feedUpload(lp, fi);}
+  }
+
+  // A streamed fetch's body is whole. Short of a sized body's length is a program error
+  pub fn endBody(self: &mut, lp: &mut Loop, id: FetchId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let fi = self.fetchIndex(id);
+    if fi == noEntry {return;}
+    let f = self.fetchAt(fi) as &mut Fetch;
+    if f.upGone {return;}
+    if !f.streamed {panic("httpclient: endBody on a fetch that was not made by sendUpload", file, line);}
+    if f.upEnded {return;}
+    if f.upLen.isSized() && f.upPushed != f.upLen.length {
+      panic("httpclient: the streamed body is shorter than the length it was sent with", file, line);
+    }
+    f.upEnded = true;
+    if f.upGone {return;}
+    if f.upWritable && f.state == fActive {self.feedUpload(lp, fi);}
   }
 
   // A fetch that cannot be made is answered Failed at once
@@ -752,7 +829,8 @@ pub struct Client {
   // (see the package's header, RETRIES)
   fn canRetry(self: &, fi: u32, fl: &Failure, h2: bool) bool {
     let f = self.fetchAt(fi) as &Fetch;
-    if f.delivered || f.ending != endNone || f.retries >= cfg.maxRetries {return false;}
+    // (a streamed body cannot be sent twice)
+    if f.delivered || f.streamed || f.ending != endNone || f.retries >= cfg.maxRetries {return false;}
     safeToRetry(fl, f.method, f.timing.reused, h2)
   }
 
@@ -1477,6 +1555,31 @@ pub struct Client {
     best
   }
 
+  // Where the first of origin oi's queue that is not a streamed upload is in it (the queue's length: none)
+  fn firstPlain(self: &, oi: u32) usize {
+    let og = self.originAt(oi) as &Origin;
+    var best = og.queue.len();
+    var k = 0usize;
+    while k < og.queue.len() {
+      if !(self.fetchAt(*og.queue[k]) as &Fetch).streamed &&
+          (best == og.queue.len() || self.before(*og.queue[k], *og.queue[best])) {
+        best = k;
+      }
+      k = k + 1usize;
+    }
+    best
+  }
+
+  // The idle connection of origin og that nothing has been sent on (the latest), or noEntry
+  fn freshIdle(self: &, og: &Origin) u32 {
+    var k = og.idle.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if (self.connAt(*og.idle[k]) as &PConn).uses == 0u32 {return *og.idle[k];}
+    }
+    noEntry
+  }
+
   // Free connections to the first waiting fetches; connections opened where
   // fetches wait, the origins whose first fetch is first getting them first.
   // Whether it did anything
@@ -1493,7 +1596,26 @@ pub struct Client {
       }
       let og = self.originAt(o) as &mut Origin;
       while og.queue.len() > 0usize && og.idle.len() > 0usize {
-        let pc = *og.idle[og.idle.len() - 1usize];
+        var pc = *og.idle[og.idle.len() - 1usize];
+        var pos = self.firstIn(o);
+        if (self.fetchAt(*og.queue[pos]) as &Fetch).streamed {
+          // A streamed body cannot be sent again if a kept connection turns out to be stale under it (canRetry),
+          // and a handshake costs little against a large body: it takes a connection nothing has been sent on
+          // yet, and what else waits may take the kept ones
+          pc = self.freshIdle(og);
+          if pc == noEntry {
+            pos = self.firstPlain(o);
+            if pos < og.queue.len() {
+              pc = *og.idle[og.idle.len() - 1usize];
+            } else if og.connecting == 0u32 && (og.open >= cfg.maxPerOrigin || total >= cfg.maxTotal) {
+              // no room for a new connection: the kept one idle longest makes it
+              self.retire(lp, *og.idle[0usize], true);
+              continue;
+            } else {
+              break;
+            }
+          }
+        }
         let p = self.connAt(pc) as &mut PConn;
         if !drv.isIdle(p.id) {
           // It is closing under us (the server's close, its idle timeout)
@@ -1505,8 +1627,7 @@ pub struct Client {
           self.retire(lp, pc, true);
           continue;
         }
-        og.idle.pop();
-        let pos = self.firstIn(o);
+        removeValue(&mut og.idle, pc);
         let fi = *og.queue[pos];
         removeAt(&mut og.queue, pos);
         queuedN = queuedN - 1u32;
@@ -1608,7 +1729,9 @@ pub struct Client {
     var head = RequestHead.make(f.methodName(), target.view(), authority.view());
     head.scheme = f.url.scheme.clone();
     head.headers = f.headers.clone();
-    let body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength()};
+    let body = if f.streamed {f.upLen}
+      else if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength()};
+    f.upWritable = false;
     f.timing.dispatched = Instant.now();
     f.timing.attempts = f.timing.attempts + 1u32;
     f.timing.reused = p.uses > 1u32;
@@ -1624,12 +1747,53 @@ pub struct Client {
     let qid = p.qid;
     let q = h3.request(lp, qid, head, body, token);
     f.qreq = q;
-    if !q.isNone() && f.body.len() > 0usize {self.sendBody(lp, fi);}
+    if !q.isNone() && (f.body.len() > 0usize || f.streamed) {self.sendBody(lp, fi);}
+  }
+
+  // A streamed fetch's queued pieces, as many as its connection takes now; then, the body being
+  // all pushed, the connection is told it is whole, else the pusher is told there is room
+  fn feedUpload(self: &mut, lp: &mut Loop, fi: u32) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    f.upWritable = true;
+    if f.upGone || f.upFinished {return;}
+    while true {
+      var b = match f.upq.popFront() {
+        case var Some(got) {got}
+        else {break;}
+      };
+      match self.offerPiece(fi, b) {
+        case var Some(back) {
+          // refused: kept at the front; Writable comes when there is room
+          f.upq.pushFront(back);
+          f.upWritable = false;
+          return;
+        }
+        else {}
+      }
+    }
+    if f.upEnded {
+      f.upFinished = true;
+      let qreq = f.qreq;
+      if qreq.isNone() {
+        drv.finish(f.req);
+      } else {
+        h3.finish(qreq);
+      }
+      return;
+    }
+    if !f.upAsked {
+      f.upAsked = true;
+      self.emit(Event.make(EventKind.BodyRoom, f.sink.token, self.idOf(fi)));
+    }
   }
 
   // As much of fetch fi's body as its connection takes now
   fn sendBody(self: &mut, lp: &mut Loop, fi: u32) {
     let f = self.fetchAt(fi) as &mut Fetch;
+    if f.streamed {
+      self.feedUpload(lp, fi);
+      return;
+    }
     // The body is viewed only where its bytes are copied: a view held across the
     // driver's calls would be one into a String the driver might change
     while f.sent < f.body.len() {
@@ -1663,19 +1827,19 @@ pub struct Client {
 
   // A piece of fetch fi's body to what carries its request: whether it was taken
   fn sendPiece(self: &mut, fi: u32, b: IoBuf) bool {
-    let f = self.fetchAt(fi) as &Fetch;
-    let req = f.req;
-    let qreq = f.qreq;
-    if qreq.isNone() {
-      match drv.sendData(req, b) {
-        case is None[IoBuf] {return true;}
-        else {return false;}
-      }
-    }
-    match h3.sendData(qreq, b) {
+    match self.offerPiece(fi, b) {
       case is None[IoBuf] {true}
       else {false}
     }
+  }
+
+  // The same, the piece handed back when the connection refused it
+  fn offerPiece(self: &mut, fi: u32, b: IoBuf) Option[IoBuf] {
+    let f = self.fetchAt(fi) as &Fetch;
+    let req = f.req;
+    let qreq = f.qreq;
+    if qreq.isNone() {return drv.sendData(req, b);}
+    h3.sendData(qreq, b)
   }
 
   // ---------------------------------------------------------------------------
@@ -1732,7 +1896,15 @@ pub struct Client {
     let f = self.fetchAt(fi) as &mut Fetch;
     f.timing.firstByte = Instant.now();
     let status = response.status;
-    if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 {
+    // The body not all sent, and wanted no more: whatever the response is, it ends the body (a redirect
+    // that follows as a GET drops it; any other is the answer, a streamed body being sent once)
+    if f.streamed && !f.upFinished && !f.upGone {
+      f.upGone = true;
+      f.upq.clear();
+      self.emit(Event.make(EventKind.BodyEnded, f.sink.token, self.idOf(fi)));
+    }
+    if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 &&
+        (!f.streamed || dropsBody(status, f.method)) {
       match response.headers.get("Location") {
         case let Some(loc) {
           f.following = true;
@@ -1860,12 +2032,12 @@ pub struct Client {
       return;
     }
     // 303 makes it a GET (a HEAD stays one), as 301 and 302 do of a POST
-    let toGet = (status == 303u16 && f.method != Method.Head) ||
-      ((status == 301u16 || status == 302u16) && f.method == Method.Post);
-    if toGet && f.method != Method.Get {
+    if dropsBody(status, f.method) {
       f.method = Method.Get;
       f.methodText = String();
       f.body = String();
+      f.streamed = false;
+      f.upq.clear();
       f.headers.remove("Content-Type");
       f.headers.remove("Content-Encoding");
       f.headers.remove("Content-Language");
@@ -2011,6 +2183,14 @@ fn alpnFor(names: &List[String], http2: bool) List[String] {
 }
 
 // Whether a status is a redirect the client follows
+// Whether following a redirect of this status makes the next request a GET without the body (303,
+// and 301 and 302 of a POST): else the same method and body would be sent again
+fn dropsBody(status: u16, m: Method) bool {
+  let toGet = (status == 303u16 && m != Method.Head) ||
+    ((status == 301u16 || status == 302u16) && m == Method.Post);
+  toGet && m != Method.Get
+}
+
 fn followsRedirect(s: u16) bool {
   s == 301u16 || s == 302u16 || s == 303u16 || s == 307u16 || s == 308u16
 }
