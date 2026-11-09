@@ -1,0 +1,403 @@
+// ======== Extracting an archive from an actor: Extractor, and extract over it ========
+//
+// extract writes the entries of a zip archive (its bytes in memory) under a folder, the files' data through
+// stageio's FileSink, so that no worker waits for the disk:
+//
+//   var tx: OneshotSender[Result[zipfile.Extracted, AnyError]];
+//   var rx: OneshotReceiver[Result[zipfile.Extracted, AnyError]];
+//   tx, rx = Oneshot[Result[zipfile.Extracted, AnyError]].make();
+//   match zipfile.Archive.open(bytes.view()) {
+//     case let Ok(ar) { extract(ar, bytes, String.from("out"), zipfile.ExtractOptions.safe(), tx); }
+//     case let Err(e) { ... }
+//   }
+//   rx.recv();                                    // Some(Ok(got)): every entry is under out/
+//
+// WHAT IS ZIPFILE'S AND WHAT IS HERE. Every rule of what may be extracted lives in zipfile, once:
+// zipfile.planExtract looks at every name, kind, method and limit and refuses it all before a byte is
+// written, and the plan's 'begin' looks at the way to each entry again as it is reached (a link made
+// meanwhile), makes the folders and clears the way. zipfile's sync extractAll runs the same plan. This
+// file does only the I/O: for each file the plan names, an EntryReader inflates the entry a piece at a
+// time, each piece is copied once into a buffer of this actor's window and sent to a FileSink made with
+// removeOnFailure (the file is made when the first piece arrives, and removed, before 'done' is told, if
+// the entry comes out wrong: a bad CRC, data that does not inflate, a failed write, a cancel), and the
+// entry's time and mode are set (the plan's 'written') once FileSink has told its answer. The short
+// metadata calls of the plan (makeDirAll, isLink, exists, utime, chmod) stay sync, as FileSink's removal
+// does; they are what a worker waits for, the data is not. The plan is made by 'extract', on the caller's
+// thread: a refusal comes through 'done' all the same, with nothing made.
+//
+// SMALL ENTRIES. An entry declaring under 64 KiB (smallEntry) is not given a FileSink: it costs an actor,
+// a oneshot and a poll each, which made 2,000 entries of 1 KiB run 1.49 times the sync extract. The extractor
+// inflates it into one buffer and awaits aio's open, write and close itself ('small'); a failure after the
+// open succeeded removes the file, by FileSink's rule, and one before it touches nothing.
+//
+// ONE FILE AT A TIME, in the archive's order: a file's FileSink has answered (closed) before the next entry
+// begins. The extractor waits for that answer by looking, between other messages, at the oneshot FileSink
+// answers on (it cannot park on it: that would hold a worker). A failure ends the extraction at that entry:
+// the files before it stay, and so do the folders as made, as the sync extract leaves them.
+//
+// 'done' is told once: Ok(what was extracted) or Err(why). It is told after the last file is closed.
+// extract works in the cancel group of the caller; cancel that group and the open entry ends Failed
+// ("streams: cancelled"), its file is removed, and 'done' says Err.
+
+
+// Where the extractor is
+enum Phase {
+  // Between entries
+  Idle;
+  // An entry's pieces are being pulled and sent
+  Streaming;
+  // The entry's end is sent; its FileSink's answer is awaited
+  Closing;
+  // 'done' has been told
+  Over;
+  // A small entry is being written by this actor itself (see 'small')
+  Small;
+}
+
+// An entry declaring less than this is written by the extractor's own aio calls, one buffer, no FileSink
+const smallEntry = 65536usize;
+
+// An error as an error of its own
+fn errOf(e: &zipfile.ZipError) AnyError { AnyError.from(e.clone()) }
+
+pub actor Extractor is ChunkSource {
+  ar: zipfile.Archive;
+  data: List[u8];
+  plan: zipfile.ExtractPlan;
+  k: usize;                       // the plan's item being done
+  link: ChunkWindow;
+  reader: Option[zipfile.EntryReader];
+  sink: Option[ChunkSink];
+  reply: Option[OneshotReceiver[Result[u64, AnyError]]];
+  file: Option[Path];
+  sent: u64;                      // bytes sent of the open entry
+  want: usize;                    // the room a piece asks for: the entry's size if it is small
+  phase: Phase;
+  fault: Option[AnyError];        // why this actor ended the entry, when it did (else the sink's answer is the why)
+  halt: Option[Ending];           // a stop, kept for the entry it stops
+  done: OneshotSender[Result[zipfile.Extracted, AnyError]];
+
+  pub fn init(self: &new, ar: zipfile.Archive, data: List[u8], plan: zipfile.ExtractPlan,
+      done: OneshotSender[Result[zipfile.Extracted, AnyError]]) {
+    *self = Self(ar: ar, data: data, plan: plan, k: 0usize, link: ChunkWindow.own(4usize * zipChunk),
+      reader: None[zipfile.EntryReader], sink: None[ChunkSink], reply: None[OneshotReceiver[Result[u64, AnyError]]],
+      file: None[Path], sent: 0u64, want: zipChunk, phase: Phase.Idle, fault: None[AnyError],
+      halt: None[Ending], done: done);
+  }
+
+  pub async fn start(self) {
+    if phase != Phase.Idle || k != 0usize { return; }
+    self.advance();
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if phase == Phase.Streaming { self.pump(); }
+  }
+
+  // The open entry's sink failed or wants no more: the entry ends Failed with that reason. (A sink that
+  // has failed has told its own why on 'done', which is the answer.)
+  pub async fn stop(self, why: Ending) {
+    if phase != Phase.Streaming {
+      return;
+    }
+    var reason = AnyError.msg("archivestage: the file sink stopped the extraction");
+    match why {
+      case let Failed(e) { reason = e; }
+      case is Finished {}
+    }
+    self.endEntry(reason, false);
+  }
+
+  // A small entry, whole: inflated into one buffer, then the aio open, write and close are awaited here. A
+  // failure after the open succeeded removes the file (the rule FileSink's removeOnFailure keeps); a failed
+  // open, or an entry that fails before it, touches nothing.
+  pub async fn small(self) {
+    if phase != Phase.Small { return; }
+    var piece = List[u8]();
+    var why = None[AnyError];
+    var s = zipfile.Status.MoreOutput;
+    match &mut reader {
+      case let &mut Some(r) {
+        var chunk = List[u8]();
+        var limit = r.size();
+        while s == zipfile.Status.MoreOutput {
+          chunk.clear();
+          s = r.pull(data.view(), &mut chunk, smallEntry);
+          piece.appendSlice(chunk.view());
+          if u64.from(piece.len()) > limit {
+            s = zipfile.Status.Failed;
+            why = Some[AnyError](AnyError.msg("archivestage: the entry is longer than it says"));
+          }
+        }
+        if s == zipfile.Status.Failed && why is None {
+          match r.error() {
+            case let Some(e) { why = Some[AnyError](AnyError.from(e)); }
+            case is None { why = Some[AnyError](AnyError.msg("archivestage: the entry failed")); }
+          }
+        }
+      }
+      case is None {}
+    }
+    var path = None[Path];
+    path <-> file;
+    reader = None[zipfile.EntryReader];
+    var target = Path.from("");
+    match path {
+      case let Some(p) { target = p; }
+      case is None {}
+    }
+    if why is None && actors.isCancelled() { why = Some[AnyError](AnyError.msg("streams: cancelled")); }
+    if why is None {
+      let n = piece.len();
+      let r = await aio.openFile(&target, Access.Create);
+      match r {
+        case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
+        case let Ok(f) {
+          var file = f;
+          if n > 0usize {
+            var buf = IoBuf(n);
+            buf.append(piece.view());
+            let w = await file.writeAt(0u64, buf);
+            match w {
+              case is Ok {}
+              case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
+            }
+          }
+          if why is None && actors.isCancelled() { why = Some[AnyError](AnyError.msg("streams: cancelled")); }
+          var old = File.none();
+          old <-> file;
+          if why is Some { _ = fs.removeFile(&target); }
+        }
+      }
+    }
+    match why {
+      case let Some(e) { self.answer(Err[zipfile.Extracted, AnyError](e)); }
+      case is None {
+        plan.written(&ar, k, &target, u64.from(piece.len()));
+        k += 1usize;
+        phase = Phase.Idle;
+        self.advance();
+      }
+    }
+  }
+
+  // Looks for the FileSink's answer, and goes on when it is there
+  pub async fn poll(self) {
+    if phase != Phase.Closing { return; }
+    var got = None[Result[u64, AnyError]];
+    var gone = false;
+    match &mut reply {
+      case let &mut Some(rx) {
+        got = rx.tryRecv();
+        gone = got is None && rx.isClosed();
+      }
+      case is None { gone = true; }
+    }
+    match got {
+      case let Some(r) { self.settle(r); }
+      case is None {
+        if gone {
+          self.settle(Err[u64, AnyError](AnyError.msg("archivestage: the file sink went away")));
+        } else {
+          selfactor.poll();
+        }
+      }
+    }
+  }
+
+  // Begins the entries from 'k' on, until one has data to write
+  fn advance(self) {
+    var more = true;
+    while more {
+      if k >= plan.count() {
+        let got = plan.finish(&ar);
+        self.answer(Ok[zipfile.Extracted, AnyError](got));
+        more = false;
+      } else if actors.isCancelled() {
+        self.answer(Err[zipfile.Extracted, AnyError](AnyError.msg("streams: cancelled")));
+        more = false;
+      } else {
+        match plan.begin(&ar, k) {
+          case let Err(e) {
+            self.answer(Err[zipfile.Extracted, AnyError](AnyError.from(e)));
+            more = false;
+          }
+          case let Ok(opened) {
+            match opened {
+              case is None { k += 1usize; }
+              case let Some(p) {
+                more = false;
+                self.open(p);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Item 'k' has a file to write at 'p'
+  fn open(self, p: Path) {
+    match ar.reader(data.view(), plan.item(k).index) {
+      case let Err(e) {
+        self.answer(Err[zipfile.Extracted, AnyError](AnyError.from(e)));
+      }
+      case let Ok(r) {
+        if r.size() < u64.from(smallEntry) {
+          reader = Some[zipfile.EntryReader](r);
+          file = Some[Path](p);
+          sent = 0u64;
+          phase = Phase.Small;
+          selfactor.small();
+          return;
+        }
+        var tx: OneshotSender[Result[u64, AnyError]];
+        var rx: OneshotReceiver[Result[u64, AnyError]];
+        tx, rx = Oneshot[Result[u64, AnyError]].make();
+        let s = FileSink(String.from(p.view()), tx, true);
+        s.attach(selfactor);
+        want = zipChunk;
+        if r.size() < u64.from(zipChunk) { want = usize.from(r.size()); }
+        if want == 0usize { want = 1usize; }
+        reader = Some[zipfile.EntryReader](r);
+        sink = Some[ChunkSink](s);
+        reply = Some[OneshotReceiver[Result[u64, AnyError]]](rx);
+        file = Some[Path](p);
+        sent = 0u64;
+        phase = Phase.Streaming;
+        self.pump();
+      }
+    }
+  }
+
+  // Pulls and sends while there is room in the window
+  fn pump(self) {
+    var more = phase == Phase.Streaming;
+    while more {
+      if actors.isCancelled() {
+        self.endEntry(AnyError.msg("streams: cancelled"), true);
+        more = false;
+      } else {
+        match link.take(want) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            var piece = List[u8]();
+            var s = zipfile.Status.Failed;
+            var why = None[AnyError];
+            match &mut reader {
+              case let &mut Some(r) {
+                s = r.pull(data.view(), &mut piece, want);
+                if s == zipfile.Status.Failed {
+                  match r.error() {
+                    case let Some(e) { why = Some[AnyError](AnyError.from(e)); }
+                    case is None {}
+                  }
+                }
+              }
+              case is None {}
+            }
+            if s == zipfile.Status.Failed {
+              link.give(buf);
+              var reason = AnyError.msg("archivestage: the entry failed");
+              match why {
+                case let Some(e) { reason = e; }
+                case is None {}
+              }
+              self.endEntry(reason, true);
+              more = false;
+            } else {
+              buf.append(piece.view());
+              sent += u64.from(piece.len());
+              if buf.isEmpty() {
+                link.give(buf);
+              } else {
+                match &sink {
+                  case let &Some(d) { d <- buf; }
+                  case is None {}
+                }
+              }
+              if s == zipfile.Status.Done {
+                self.sendEnd(Ending.Finished);
+                more = false;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The open entry's stream ends: Finished if 'reason' is nothing to tell (a Done pull), else Failed. 'own':
+  // this actor ended it, and it is the answer's why.
+  fn endEntry(self, reason: AnyError, own: bool) {
+    if own { fault = Some[AnyError](textOf(&reason)); }
+    self.sendEnd(Ending.Failed(reason));
+  }
+
+  fn sendEnd(self, how: Ending) {
+    phase = Phase.Closing;
+    match &sink {
+      case let &Some(d) { d.end(how); }
+      case is None {}
+    }
+    selfactor.poll();
+  }
+
+  // The entry's FileSink has answered
+  fn settle(self, r: Result[u64, AnyError]) {
+    var f = None[AnyError];
+    f <-> fault;
+    sink = None[ChunkSink];
+    reply = None[OneshotReceiver[Result[u64, AnyError]]];
+    reader = None[zipfile.EntryReader];
+    var p = None[Path];
+    p <-> file;
+    match r {
+      case let Ok(n) {
+        match f {
+          case let Some(e) { self.answer(Err[zipfile.Extracted, AnyError](e)); }
+          case is None {
+            match p {
+              case let Some(path) { plan.written(&ar, k, &path, sent); }
+              case is None {}
+            }
+            k += 1usize;
+            phase = Phase.Idle;
+            self.advance();
+          }
+        }
+      }
+      case let Err(e) {
+        match f {
+          case let Some(mine) { self.answer(Err[zipfile.Extracted, AnyError](mine)); }
+          case is None { self.answer(Err[zipfile.Extracted, AnyError](e)); }
+        }
+      }
+    }
+  }
+
+  fn answer(self, r: Result[zipfile.Extracted, AnyError]) {
+    if phase == Phase.Over { return; }
+    phase = Phase.Over;
+    _ = done.send(r);
+  }
+}
+
+// Extracts the entries of 'ar' (whose bytes are 'data', moved in) under the folder 'dest', as the actors of this
+// package do, and answers 'done' once: Ok(what was extracted), or Err(why). zipfile.planExtract looks at every
+// entry first, here on the caller's thread, and a refusal is the answer with nothing made.
+pub fn extract(ar: zipfile.Archive, data: List[u8], dest: String, opts: zipfile.ExtractOptions,
+    done: OneshotSender[Result[zipfile.Extracted, AnyError]]) {
+  var reply = done;
+  match zipfile.planExtract(&ar, data.view(), &Path.from(dest.view()), &opts) {
+    case let Err(e) {
+      _ = reply.send(Err[zipfile.Extracted, AnyError](AnyError.from(e)));
+    }
+    case let Ok(plan) {
+      let x = Extractor(ar, data, plan, reply);
+      x.start();
+    }
+  }
+}
