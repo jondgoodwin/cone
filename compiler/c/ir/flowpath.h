@@ -167,6 +167,9 @@ extern int flowShapeRetry;
 // a package this one imported (WarnLifetimeTie is raised for the first only)
 extern char *flowOwnDir;
 
+// The method a call calls, when its first argument is the method's receiver (else NULL)
+FnDclNode *flowCallMethod(FnCallNode *call);
+
 // Print the walk's tallies for -V 2
 void flowPathPrint();
 

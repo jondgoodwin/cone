@@ -1,0 +1,192 @@
+// One bulk download over HTTP/3 on loopback: httpclient (this package's
+// plug-in) against this package's server, both on one Loop and one thread
+// over 127.0.0.1. One GET answered 200 with 50 MB, three times (the first
+// warms the connection); prints MB a second for each. It tests the
+// throughput of a single stream, the case a receive window that is too small
+// hurts (quic's CREDIT), so compare a build with another's on a quiet
+// machine, alternating the two (informative: numbers vary run to run, and the
+// machine's other work moves them). Run from its build folder (the tls
+// package's test certificates):
+//
+//   congo test     (builds it)   then   cd build/release/examples/bulkbench; ./bulkbench
+
+mod bulkbench;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import tls;
+import quic;
+import h3driver;
+import httpclient use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+const bodySize = 52428800u64;     // 50 MB
+const pieceSize = 16384usize;
+
+// The server: each request answered 200 with bodySize bytes when it is whole
+struct Server {
+  pub h3: h3driver.Driver;
+  pub req: h3driver.ReqId;
+  pub sent: u64;
+  pub on: bool;
+}
+
+// Send what the stream has room for; the end when all is sent
+fn push(s: &mut Server) {
+  while s.on && s.sent < bodySize {
+    let left = bodySize - s.sent;
+    let n = if left > u64.from(pieceSize) {pieceSize} else {usize.from(left)};
+    var b = IoBuf(n);
+    b.setLen(n);
+    match s.h3.sendData(s.req, b) {
+      case let Some(back) {return;}
+      case is None[IoBuf] {s.sent = s.sent + u64.from(n);}
+    }
+  }
+  if s.on && s.sent == bodySize {
+    s.h3.finish(s.req);
+    s.on = false;
+  }
+}
+
+fn serve(s: &mut Server, lp: &mut Loop) {
+  var evs = List[h3driver.Event]();
+  s.h3.pump(lp, &mut evs);
+  var k = 0usize;
+  while k < evs.len() {
+    let e = &mut evs[k];
+    k = k + 1usize;
+    if e.kind == h3driver.EventKind.Data {
+      s.h3.release(e.req, e.buf.len());
+    } else if e.kind == h3driver.EventKind.End {
+      s.req = e.req;
+      s.sent = 0u64;
+      s.on = true;
+      s.h3.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(bodySize));
+      push(s);
+    } else if e.kind == h3driver.EventKind.Writable {
+      push(s);
+    }
+  }
+}
+
+fn step(cl: &mut Client, s: &mut Server, lp: &mut Loop, out: &uni List[Event]) {
+  cl.pump(lp, out);
+  serve(s, lp);
+  var limit = Instant.now() + Duration.fromMillis(100i64);
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = s.h3.wakeAt();
+  if b < limit {limit = b;}
+  if out.len() > 0usize {limit = Instant();}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let cp = &mut comps[k];
+    if !cl.complete(lp, cp) {s.h3.complete(lp, cp);}
+    k = k + 1usize;
+  }
+  comps.clear();
+  serve(s, lp);
+  cl.pump(lp, out);
+}
+
+// One GET of u: the bytes that came back, and whether it ended Done
+fn download(cl: &mut Client, s: &mut Server, lp: &mut Loop, u: &str) (u64, bool) {
+  cl.get(lp, u, Sink.Here(1u64));
+  var got = 0u64;
+  var done = false;
+  var finished = false;
+  var out = List[Event]();
+  while !finished {
+    step(cl, s, lp, &uni out);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {
+        got = got + u64.from(e.buf.len());
+        cl.release(e.id, e.buf.len());
+      } else if e.isTerminal() {
+        finished = true;
+        done = e.kind == EventKind.Done;
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  (got, done)
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var s = Server(h3: h3driver.Driver.make(h3driver.Config.make()), req: h3driver.ReqId.none(), sent: 0u64, on: false);
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  var up = 0u16;
+  match quic.Context.server(quic.Config.make(), &cert, &key) {
+    case let Ok(ctx) {
+      match s.h3.listen(&mut lp, SocketAddr.localhost(0u16), ctx, 7u64) {
+        case let Ok(l) {
+          match s.h3.localAddr(&lp, l) {
+            case let Ok(a) {up = a.port();}
+            case let Err(e) {}
+          }
+        }
+        case let Err(f) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  if up == 0u16 {
+    printStr("the server could not listen: run it from its build folder\n");
+    return 1i32;
+  }
+  var cfg = Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[Http3]](&h3driver.plugin);
+  var h3url = String.from("https://127.0.0.1:");
+  h3url.appendUInt(u64.from(up));
+  cfg.http3Origins.push(h3url.clone());
+  h3url.append("/bulk");
+  var cl = Client.make(cfg);
+  var round = 0u32;
+  while round < 3u32 {
+    let t0 = Instant.now();
+    let got, done = download(&mut cl, &mut s, &mut lp, h3url.view());
+    let ns = (Instant.now() - t0).nanos();
+    printStr(if round == 0u32 {"warm-up   : "} else {"download  : "});
+    printUInt(got * 1000u64 / u64.from(ns));   // bytes a nanosecond x 1000 = MB a second
+    printStr(" MB a second (");
+    printUInt(got);
+    printStr(" bytes, ");
+    printStr(if done {"Done"} else {"not Done"});
+    printStr(")\n");
+    round = round + 1u32;
+  }
+  cl.abortAll(&mut lp);
+  s.h3.abortAll(&mut lp);
+  0i32
+}

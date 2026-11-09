@@ -537,7 +537,7 @@ void structPrint(StructNode *node) {
     inodeFprint("{");
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         Name *namesym = inodeGetName(*nodesp);
-        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : "fn";
+        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : (*nodesp)->tag == ConstDclTag ? "const" : "fn";
         inodeFprint(cnt == node->nodelist.used ? "%s %s" : ", %s %s", kind, namesym ? &namesym->namestr : "");
         dclInfoPrint(*nodesp);
     }
