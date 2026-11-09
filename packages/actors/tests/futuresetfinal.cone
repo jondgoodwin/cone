@@ -1,0 +1,182 @@
+// FutureSet[T] for a move T that has a 'final' (Bug 73: setTake and setCollect moved
+// a field out of an owned arrival, error 1166, so such a set did not compile).
+// Every number recorded was worked out by hand from the source below.
+//
+// Twelve Tokens are made, each worker call making one with its own bit (1, 2, 4, ...
+// 2048). Token's final adds 1 to 'dropped' and its bit to 'mask'. Twelve drops whose
+// bits add to 4095 mean every token's final ran exactly once (twelve powers of two
+// adding to 4095 can only be the twelve different ones).
+//
+// - take-and-collect: tokens 1, 2, 4 in a set; one taken by 'next()' (which one depends
+//   on timing), then the other two collected by 'await set'. The three results
+//   are dropped by the block's end: 3 drops by then, the taken and collected bits
+//   adding to 7, and two collected;
+// - unclaimed: tokens 8 and 16 in a set that is dropped without being waited on; each is
+//   dropped from the queue or, if it arrives after the set, on arrival;
+// - collect-all: tokens 32, 64, 128, 256, collected by 'await set' alone and dropped;
+// - allOk: tokens 512 and 1024 as Ok members, collected as a list (bits add to 1536);
+// - nextOk: token 2048 as an Ok member and a failure 7, taken one at a time (the same
+//   function, setCollect and setTake's cousins, move the value out of the Result).
+
+mod futuresetfinal;
+
+import testing use *;
+import actors use SetError;
+
+let dropped: Atomic[u64];
+let mask: Atomic[u64];
+let seenTaken: Atomic[u64];       // the bits of the token 'next()' gave
+let seenRest: Atomic[u64];        // the bits of the tokens 'await set' gave after it
+let seenRestLen: Atomic[u64];
+let afterFirst: Atomic[u64];      // 'dropped' once the first block is over
+let finished: Atomic[u64];
+let seenAllOk: Atomic[u64];       // the bits of the tokens 'allOk' gave
+let seenNextTok: Atomic[u64];     // the bits of the token 'nextOk' gave
+let seenNextErr: Atomic[u64];     // the failure 'nextOk' gave
+
+fn @initpure init() {
+  dropped = Atomic[u64].of(0u64);
+  mask = Atomic[u64].of(0u64);
+  seenTaken = Atomic[u64].of(0u64);
+  seenRest = Atomic[u64].of(0u64);
+  seenRestLen = Atomic[u64].of(0u64);
+  afterFirst = Atomic[u64].of(0u64);
+  finished = Atomic[u64].of(0u64);
+  seenAllOk = Atomic[u64].of(0u64);
+  seenNextTok = Atomic[u64].of(0u64);
+  seenNextErr = Atomic[u64].of(0u64);
+}
+
+struct Token {
+  pub bit: u64;
+
+  fn final(self: &uni) {
+    dropped.add(1u64);
+    mask.add(self.bit);
+  }
+}
+
+actor Worker {
+  pub async fn make(self, bit: u64) Token {Token(bit)}
+  pub async fn tok(self, bit: u64) Result[Token, u64] {Ok[Token, u64](Token(bit))}
+  pub async fn bad(self, code: u64) Result[Token, u64] {Err[Token, u64](code)}
+}
+
+actor Asker {
+  w: Worker;
+
+  pub async fn go(self) {
+    // take-and-collect
+    {
+      var set = actors.FutureSet[Token].make();
+      set <- w.make(1u64);
+      set <- w.make(2u64);
+      set <- w.make(4u64);
+      match await set.next() {
+        case let Some(p) {
+          let k, r = p.(0, 1);
+          match r {
+            case let Ok(t) {seenTaken.store(t.bit);}
+            case let Err(e) {seenTaken.store(999u64);}
+          }
+        }
+        case is None {}
+      }
+      var rest = await set;
+      seenRestLen.store(u64.from(rest.len()));
+      var sum = 0u64;
+      while true {
+        match rest.pop() {
+          case let Some(r) {
+            match r {
+              case let Ok(t) {sum = sum + t.bit;}
+              case let Err(e) {sum = sum + 999u64;}
+            }
+          }
+          case is None {break;}
+        }
+      }
+      seenRest.store(sum);
+    }
+    afterFirst.store(dropped.load());
+    // unclaimed
+    {
+      var set = actors.FutureSet[Token].make();
+      set <- w.make(8u64);
+      set <- w.make(16u64);
+    }
+    // collect-all
+    {
+      var set = actors.FutureSet[Token].make();
+      set <- w.make(32u64);
+      set <- w.make(64u64);
+      set <- w.make(128u64);
+      set <- w.make(256u64);
+      let all = await set;
+    }
+    // allOk
+    {
+      var set = actors.FutureSet[Result[Token, u64]].make();
+      set <- w.tok(512u64);
+      set <- w.tok(1024u64);
+      match await actors.allOk(set) {
+        case let Ok(list) {
+          var l = list;
+          var sum = 0u64;
+          while true {
+            match l.pop() {
+              case let Some(t) {sum = sum + t.bit;}
+              case is None {break;}
+            }
+          }
+          seenAllOk.store(sum);
+        }
+        case let Err(e) {seenAllOk.store(999u64);}
+      }
+    }
+    // nextOk
+    {
+      var set = actors.FutureSet[Result[Token, u64]].make();
+      set <- w.tok(2048u64);
+      set <- w.bad(7u64);
+      while true {
+        match await actors.nextOk(&mut set) {
+          case let Some(p) {
+            let k, r = p.(0, 1);
+            match r {
+              case let Ok(t) {seenNextTok.store(t.bit);}
+              case let Err(e) {
+                match e {
+                  case let MemberFailed(code) {seenNextErr.store(code);}
+                  case let MemberGone(a) {seenNextErr.store(999u64);}
+                }
+              }
+            }
+          }
+          case is None {break;}
+        }
+      }
+    }
+    finished.store(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let a = Asker(Worker());
+    a.go();
+  }
+  finalAll();
+  expectUInt(finished.load(), 1u64, "the behaviour ran to its end");
+  expectUInt(seenTaken.load() + seenRest.load(), 7u64, "the token taken and the two collected are tokens 1, 2 and 4");
+  expectUInt(seenRestLen.load(), 2u64, "two left after one next()");
+  expectUInt(afterFirst.load(), 3u64, "taken, collected and dropped: three finals by the block's end");
+  expectUInt(seenAllOk.load(), 1536u64, "allOk gives tokens 512 and 1024");
+  expectUInt(seenNextTok.load(), 2048u64, "nextOk gives token 2048");
+  expectUInt(seenNextErr.load(), 7u64, "nextOk gives the failure 7");
+  expectUInt(dropped.load(), 12u64, "twelve tokens made, twelve finals run");
+  expectUInt(mask.load(), 4095u64, "each token's final ran exactly once");
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
+  done()
+}
