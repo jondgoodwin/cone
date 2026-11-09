@@ -1,6 +1,6 @@
 // orCancelled() (orcancelled.cone): an await that wakes at the cancel. A plain
-// 'await' always waits for the answer; 'await fut.orCancelled()' (a Future's
-// method) and 'await actors.orCancelled(op)' (an Awaitable's function) give
+// 'await' always waits for the answer; 'await actors.orCancelled(fut)' (a Future)
+// and 'await actors.orCancelledOp(op)' (an Awaitable) give
 // Ok(the answer) or Err(Cancelled(cause)), whichever comes first, exactly once.
 //
 // 1. No group, or a live one, answered: Ok, the answer, in the group the await
@@ -142,22 +142,23 @@ fn hungDrop() {
 actor Asker {
   // a request awaited with orCancelled
   pub async fn viaFuture(self, slow: Slow, n: u64) {
-    match await slow.answer(n).orCancelled() {
+    match await actors.orCancelled(slow.answer(n)) {
       case let Ok(t) {
+        seen.gid.store(actors.currentGroup().id());
         seen.value.store(t.n);
         seen.ok.add(1u64);
       }
       case let Err(c) {
+        seen.gid.store(actors.currentGroup().id());
         seen.cause.store(causeNum(c.cause));
         seen.err.add(1u64);
       }
     }
-    seen.gid.store(actors.currentGroup().id());
     seen.after.store(await slow.plain(1u64));
   }
 
   pub async fn viaQuick(self, slow: Slow, n: u64) {
-    match await slow.quick(n).orCancelled() {
+    match await actors.orCancelled(slow.quick(n)) {
       case let Ok(t) {seen.ok.add(1u64);}
       case let Err(c) {seen.err.add(1u64);}
     }
@@ -165,31 +166,33 @@ actor Asker {
 
   // an operation, awaited with orCancelled
   pub async fn viaOp(self) {
-    match await actors.orCancelled(instantOp(5u64)) {
+    match await actors.orCancelledOp(instantOp(5u64)) {
       case let Ok(v) {
+        seen.gid.store(actors.currentGroup().id());
         seen.value.store(v);
         seen.ok.add(1u64);
       }
       case let Err(c) {
+        seen.gid.store(actors.currentGroup().id());
         seen.cause.store(causeNum(c.cause));
         seen.err.add(1u64);
       }
     }
-    seen.gid.store(actors.currentGroup().id());
   }
 
   pub async fn viaHung(self) {
-    match await actors.orCancelled(hungOp()) {
+    match await actors.orCancelledOp(hungOp()) {
       case let Ok(v) {
+        seen.gid.store(actors.currentGroup().id());
         seen.value.store(v);
         seen.ok.add(1u64);
       }
       case let Err(c) {
+        seen.gid.store(actors.currentGroup().id());
         seen.cause.store(causeNum(c.cause));
         seen.err.add(1u64);
       }
     }
-    seen.gid.store(actors.currentGroup().id());
   }
 
   // a set's next(), awaited with orCancelled; the member is slow
@@ -197,7 +200,7 @@ actor Asker {
     var set = actors.FutureSet[u64].make();
     set.start(fn() [slow] actors.Future[u64] {slow.gated(1u64)});
     set.start(fn() [slow] actors.Future[u64] {slow.gated(2u64)});
-    match await actors.orCancelled(set.next()) {
+    match await actors.orCancelledOp(set.next()) {
       case let Ok(first) {seen.ok.add(1u64);}
       case let Err(c) {
         seen.cause.store(causeNum(c.cause));
