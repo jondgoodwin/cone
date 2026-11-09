@@ -512,14 +512,21 @@ uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDcl
 
 // Whether the loans an arena reference holds are to be checked. One holding no
 // loan but what was stored through it was made by a route the walk does not
-// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena):
-// that, and only that, is trusted, as every such cast is. Any other is
-// checked, whether the walk can place it or not.
-int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
+// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena,
+// where the cast leaves the reference no loan at all): that, and only that, is
+// trusted, as every such cast is. Any other is checked, whether the walk can
+// place it or not. A loan the reference holds that a caller lent through the
+// parameter the arena was reached by ('root', the root of the place the store
+// goes through; NULL where the arena is no place the walk follows, and then any
+// caller loan) says it was reached through that parameter, not made from a raw
+// pointer, even when what is stored carries the same loan (Bug 68: 'self.h.ar'
+// storing '&self.n').
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds, VarDclNode *root) {
     for (uint32_t i = 0; arenaholds && i < arenaholds->cnt; ++i) {
         uint32_t hid = loanOf(arenaholds->ids[i]);
         if (!pathSetHasLoan(stored, hid)
-            || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+            || (loans[hid].kind == LoanCaller
+                && (itypeIsArena(lifePointee(loanParm(hid)->vtype)) || root == NULL || loanParm(hid) == root)))
             return 1;
     }
     return 0;
@@ -609,11 +616,11 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
     return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
 }
 
-uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through) {
     if (stored == NULL)
         return 0;
     uint32_t nstored = stored->cnt;
-    if (!loanArenaChecked(stored, arenaholds))
+    if (!loanArenaChecked(stored, arenaholds, root))
         return 0;
     for (uint32_t k = 0; k < nstored; ++k) {
         uint32_t sid = loanOf(stored->ids[k]);

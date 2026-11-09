@@ -17,6 +17,11 @@ typedef struct ConstDclNode {
 
 ConstDclNode *newConstDclNode(Name *namesym);
 
+// Clone (const.c): shell and fill apart, as a static's
+ConstDclNode *cloneConstDclShell(ConstDclNode *node);
+void cloneConstDclFill(CloneState *cstate, ConstDclNode *newnode, ConstDclNode *node);
+INode *cloneConstDclNode(CloneState *cstate, ConstDclNode *node);
+
 void constDclPrint(ConstDclNode *fn);
 
 // Name resolution of vardcl
