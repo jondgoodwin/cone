@@ -26,7 +26,7 @@ void narrowRestore(NarrowEnv *env);
 NarrowEnv *narrowJoin(NarrowEnv *a, NarrowEnv *b);
 
 // A function body is checked on its own, and in the middle of another's
-typedef struct { NarrowEnv *env; int depth; void *frames; uint32_t lazy; void *stmt; uint32_t epoch; void *lastcall; uint32_t tests; } NarrowFnSave;
+typedef struct { NarrowEnv *env; int depth; void *frames; uint32_t lazy; void *stmt; void *calls; uint32_t tests; uint32_t testbase; } NarrowFnSave;
 void narrowFnBegin(NarrowFnSave *save);
 void narrowFnEnd(NarrowFnSave *save);
 
@@ -57,9 +57,9 @@ void narrowDeclared(VarDclNode *var);
 void narrowBorrowed(INode *place, INode *perm, INode *pointee);
 
 // An 'is' test, and a call or a store through a name, was type checked. A name that is a
-// reference others may share is narrowed only if no call came between its test and the
-// local that holds it (or, within one condition, its use): nothing follows the reference
-// before that.
+// reference others may share is narrowed only if no call that could reach the enum (as the
+// loan walk judges one: reshape.h) came between its test and the local that holds it (or,
+// within one condition, its use): nothing follows the reference before that.
 void narrowNoteTest(INode *test);
 void narrowCallMade(INode *call);
 

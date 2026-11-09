@@ -151,7 +151,9 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **throu
 // what else the caller lent (loanArenaApart then decides what it may store).
 // 'byparm' when the reference was reached from a parameter by field steps and
 // dereferences alone, a path whose places a caller's own check sees.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm);
+// Bug 65: a reference reached by parameter is asked too, unless 'readsnothing':
+// the node stored into is of a type whose death reads no borrow (#992's exception).
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing);
 
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
@@ -354,6 +356,15 @@ int loanShapeRootVars(uint32_t loan, VarDclNode **out);
 // of variant through its own name is for the shape check to report.
 int loanExcludesWriters(uint32_t entry);
 int loanShapeFrozen(uint32_t loan);
+// The place a set entry's loan borrows. And the loan of a method's receiver, whose method
+// returned an element out of the receiver's own block ('ls[i]' of a list), so that a borrow the
+// call carries is of that element and of nothing the receiver merely reaches
+// (flowpath.c, pwElemView, pwHoldsUnwritten)
+Place *loanPlaceOf(uint32_t entry);
+void loanElemViewSet(uint32_t loan);
+int loanElemView(uint32_t entry);
+// Does the entry stand for what a caller lent through a parameter, what its own reference points at?
+int loanIsCallerOwn(uint32_t entry);
 void loanShapeSource(uint32_t loan, PathSet *holds);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);

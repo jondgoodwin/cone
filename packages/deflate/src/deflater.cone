@@ -10,21 +10,41 @@ fn fixedFlushTokens() usize { 8192usize }
 // the hash of the last position it enters
 fn lookAhead() i64 { 262i64 }
 
-// Candidate positions the matcher looks at for one position, by level
+// The level a deflater runs at: 0 stores, 1 to 9 are themselves (1 the
+// fastest, 9 the smallest), a negative number is zlib's default, 6, and
+// anything above 9 is 9
+fn levelOf(level: i32) i32 {
+  if level < 0 { return 6; }
+  if level > 9 { return 9; }
+  level
+}
+
+// Candidate positions the matcher looks at for one position, by level: the
+// probe counts miniz_oxide gives its levels 1 to 9 (1, 6, 32, 16, 32, 128,
+// 256, 512, 768).
 fn chainLimitOf(level: i32) usize {
-  if level == 1 { return 16usize; }
-  48usize
+  if level <= 1 { return 1usize; }
+  if level == 2 { return 6usize; }
+  if level == 3 { return 32usize; }
+  if level == 4 { return 16usize; }
+  if level == 5 { return 32usize; }
+  if level == 6 { return 128usize; }
+  if level == 7 { return 256usize; }
+  if level == 8 { return 512usize; }
+  768usize
 }
 
 // The matcher: from position '*cur' (absolute, the byte at 'base' is buf[0]),
 // turn bytes into tokens (a literal byte, or 0x80000000 | length << 16 |
 // distance) until the data runs out (answers false; with 'final' false it
 // stops while less than 'lookAhead()' bytes remain) or 'tokens' holds
-// 'maxTokens' and another position is waiting (answers true). 'head' and
+// 'maxTokens' and another position is waiting (answers true). With 'insertAll'
+// false a match enters only its first position in the hash chain, as miniz's
+// level 1 does; true enters every position it covers. 'head' and
 // 'prev' are the hash chains: 'head' by hash the newest position, 'prev' by
 // position (modulo 32768) the one before it with the same hash.
 fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
-  chainLimit: usize, maxTokens: usize, final: bool) bool {
+  chainLimit: usize, insertAll: bool, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let endPos = base + i64.from(n);
   while *cur < endPos {
@@ -55,9 +75,10 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
     }
     if bestLen >= 3usize {
       tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
-      // Insert every position the match covers
+      // Insert the positions the match covers: all of them, or just its first
+      let covered = if insertAll {bestLen} else {1usize};
       var k = 0usize;
-      while k < bestLen {
+      while k < covered {
         if ib + k + 3usize <= n {
           let h = hash3(buf, ib + k);
           let p = i + i64.from(k);
@@ -75,6 +96,111 @@ fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev:
         head.set(h, i);
       }
       *cur = i + 1i64;
+    }
+  }
+  false
+}
+
+// The lazy matcher of levels 4 to 9, after miniz_oxide's compress_normal. Where
+// 'lzScan' takes the match it finds, this one holds a match of under 128 bytes
+// back for one position: if the next position has a longer match, the byte
+// here goes out as a literal and the longer match is held in its turn;
+// otherwise the held match goes out. A match of 128 or more is taken at once.
+// A match of 3 bytes farther than 8192 is dropped (miniz's far_and_small).
+// Looking for the longer match at the next position, a held match of 32 or
+// more shrinks the candidates to a quarter (at least 1), as miniz's second
+// probe count does. Every position a match covers enters the hash chain.
+// '*savedLen' and '*savedDist' are the held match (0 for none), found at
+// position cur - 1; they live in the Deflater between calls, so a call may stop
+// for want of look-ahead with a match held. Otherwise as 'lzScan'.
+fn lzScanLazy(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+  chainLimit: usize, savedLen: &mut usize, savedDist: &mut usize, maxTokens: usize, final: bool) bool {
+  let n = buf.len;
+  let endPos = base + i64.from(n);
+  while *cur < endPos {
+    if !final && endPos - *cur < lookAhead() { return false; }
+    if tokens.len() >= maxTokens { return true; }
+    let i = *cur;
+    let ib = usize.from(i - base);
+    let held = *savedLen > 0usize;
+    var bestLen = *savedLen;
+    var bestDist = 0usize;
+    if ib + 3usize <= n {
+      let h = hash3(buf, ib);
+      var limit = chainLimit;
+      if bestLen >= 32usize {
+        limit = chainLimit >> 2usize;
+        if limit == 0usize { limit = 1usize; }
+      }
+      var cand = *head[h];
+      var chain = 0usize;
+      while cand >= 0i64 && chain < limit {
+        if i - cand > 32768i64 { break; }
+        let ci = usize.from(cand - base);
+        // Only a candidate that agrees at bestLen can beat bestLen (and none can when the data ends first)
+        if ib + bestLen < n && buf[ci + bestLen] == buf[ib + bestLen] {
+          var l = 0usize;
+          while l < 258usize && ib + l < n && buf[ci + l] == buf[ib + l] { l += 1usize; }
+          if l > bestLen {
+            bestLen = l;
+            bestDist = usize.from(i - cand);
+            if l == 258usize { break; }
+          }
+        }
+        cand = *prev[usize.from(cand & 32767i64)];
+        chain += 1usize;
+      }
+      prev.set(usize.from(i & 32767i64), *head[h]);
+      head.set(h, i);
+    }
+    // The match found here, if it is a usable one (and, when one is held, longer)
+    var newLen = if bestDist > 0usize && bestLen >= 3usize {bestLen} else {0usize};
+    if newLen == 3usize && bestDist >= 8192usize { newLen = 0usize; }
+    if held && newLen <= *savedLen {
+      // The held match (found at i - 1) goes out; i is already in the chain
+      tokens.push(0x80000000u32 | (u32.from(*savedLen) << 16u32) | u32.from(*savedDist));
+      let end = i - 1i64 + i64.from(*savedLen);
+      var p = i + 1i64;
+      while p < end {
+        let pb = usize.from(p - base);
+        if pb + 3usize <= n {
+          let h = hash3(buf, pb);
+          prev.set(usize.from(p & 32767i64), *head[h]);
+          head.set(h, p);
+        }
+        p += 1i64;
+      }
+      *cur = end;
+      *savedLen = 0usize;
+      *savedDist = 0usize;
+    } else {
+      // A literal for the held match's byte (i - 1), or for this one when
+      // nothing is held and nothing found
+      if held { tokens.push(u32.from(buf[ib - 1usize])); }
+      if newLen == 0usize {
+        tokens.push(u32.from(buf[ib]));
+        *cur = i + 1i64;
+      } else if newLen >= 128usize {
+        tokens.push(0x80000000u32 | (u32.from(newLen) << 16u32) | u32.from(bestDist));
+        let end = i + i64.from(newLen);
+        var p = i + 1i64;
+        while p < end {
+          let pb = usize.from(p - base);
+          if pb + 3usize <= n {
+            let h = hash3(buf, pb);
+            prev.set(usize.from(p & 32767i64), *head[h]);
+            head.set(h, p);
+          }
+          p += 1i64;
+        }
+        *cur = end;
+        *savedLen = 0usize;
+        *savedDist = 0usize;
+      } else {
+        *savedLen = newLen;
+        *savedDist = bestDist;
+        *cur = i + 1i64;
+      }
     }
   }
   false
@@ -124,10 +250,12 @@ fn writeGzipHeader(out: &mut List[u8], h: &GzipHeader) {
 }
 
 // RFC 1950 section 2.2: CMF 78 (deflate, 32 KiB window), FLG with the
-// check bits; FLEVEL 0 for stored, 2 (the default) otherwise
+// check bits; FLEVEL as zlib sets it: 0 for stored and level 1, 1 for levels 2
+// to 5, 2 for level 6 (the default), 3 for levels 7 to 9
 fn writeZlibHeader(out: &mut List[u8], level: i32) {
+  let lv = levelOf(level);
   out.push(0x78u8);
-  out.push(if level == 0 {0x01u8} else {0x9Cu8});
+  out.push(if lv <= 1 {0x01u8} else if lv <= 5 {0x5Eu8} else if lv == 6 {0x9Cu8} else {0xDAu8});
 }
 
 // The Adler-32, most significant byte first
@@ -151,9 +279,11 @@ fn writeGzipTrailer(out: &mut List[u8], crc: u32, size: u64) {
   out.push(u8.from(s >> 24u32));
 }
 
-// The XFL byte a compressor writes: 4 for the fastest levels, else 0
+// The XFL byte a compressor writes, as zlib does: 4 for the fastest levels, 2
+// for the slowest (9), else 0
 fn xflOf(level: i32) u8 {
   if level == 0 || level == 1 { return 4u8; }
+  if level == 9 { return 2u8; }
   0u8
 }
 
@@ -181,6 +311,10 @@ pub struct Deflater {
   head: List[i64];
   prev: List[i64];
   tokens: List[u32];
+  // Levels 4 to 9: the lazy matcher's held match, found at position cur - 1
+  // (length 0 for none) and not yet written
+  savedLen: usize;
+  savedDist: usize;
   // The output so far: bw.out holds it, the first 'outPos' bytes delivered
   bw: BitWriter;
   outPos: usize;
@@ -200,12 +334,13 @@ pub struct Deflater {
   gz: GzipHeader;
   outTotal: u64;
 
-  // A deflater for 'format' at 'level' (0 stored, 1 fixed Huffman, 2
-  // dynamic Huffman; other numbers act as 2). A gzip stream gets a plain
-  // header (no time, no name, system 255) unless 'setGzipHeader' is called
-  // before the first 'feed'.
+  // A deflater for 'format' at 'level' (0 stored; 1 fixed Huffman and the
+  // fewest candidates; 2 to 9 dynamic Huffman and more candidates the higher;
+  // a negative level is the default, 6, and above 9 is 9). A gzip stream gets
+  // a plain header (no time, no name, system 255) unless 'setGzipHeader' is
+  // called before the first 'feed'.
   pub fn make(format: Format, level: i32) Deflater {
-    let lv = if level == 0 {0} else if level == 1 {1} else {2};
+    let lv = levelOf(level);
     var head = List[i64]();
     var prev = List[i64]();
     if lv > 0 {
@@ -217,7 +352,7 @@ pub struct Deflater {
     let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
     var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
-    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](),
+    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), 0usize, 0usize,
       BitWriter(List[u8](), 0u64, 0u32), 0usize, false, false, false, false,
       Code(List[u8](), List[u32]()), Code(List[u8](), List[u32]()), false,
       Adler32.start(), table, 0u32, 0u64, gz, 0u64)
@@ -320,8 +455,13 @@ pub struct Deflater {
   fn step(self: &mut) bool {
     self.slide();
     if level == 0 { return self.stepStored(); }
-    let full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level),
-      if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing);
+    let full = if level >= 4 {
+      lzScanLazy(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), &mut savedLen, &mut savedDist,
+        blockTokens(), finishing)
+    } else {
+      lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level), level > 1,
+        if level == 1 {fixedFlushTokens()} else {blockTokens()}, finishing)
+    };
     if full {
       self.flushTokens();
       return true;

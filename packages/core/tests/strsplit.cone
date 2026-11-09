@@ -1,0 +1,185 @@
+// str split by a separator, into lines and into words: core's 'splitOn',
+// 'splitOnChar', 'splitOnce', 'lines' and 'splitWhitespace'. Each piece is
+// printed in brackets after the count of pieces; the expected pieces were worked
+// out by hand from the rules in the comments, not read off this program:
+// - splitOn gives n+1 pieces for n separators found left to right without
+//   overlap; "" is one empty piece; a separator at an end gives an empty piece there;
+// - lines ends a line at '\n', drops one '\r' just before it, and gives no empty
+//   piece after a final '\n' ("" is none, "\n" is one empty line);
+// - the lengths lines (len) show where a '\r' stays: "a\rb" is 3 bytes, "a\r"
+//   with no '\n' after it is 2.
+
+mod strsplit;
+
+import stdio use *;
+
+fn open(label: &str, n: usize) {
+  printStr(label);
+  printStr(" ");
+  printUInt(u64.from(n));
+}
+
+fn piece(p: &str) {
+  printStr(" [");
+  printStr(p);
+  printStr("]");
+}
+
+fn showSplit(label: &str, text: &str, sep: &str) {
+  var n = 0usize;
+  var it = text.splitOn(sep);
+  var out = text.splitOn(sep);
+  while true {
+    match it.next() {
+      case let Some(p) { n = n + 1usize; }
+      case is None {break;}
+    }
+  }
+  open(label, n);
+  while true {
+    match out.next() {
+      case let Some(p) { piece(p); }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn showChar(label: &str, text: &str, c: char) {
+  var n = 0usize;
+  var it = text.splitOnChar(c);
+  var out = text.splitOnChar(c);
+  while true {
+    match it.next() {
+      case let Some(p) { n = n + 1usize; }
+      case is None {break;}
+    }
+  }
+  open(label, n);
+  while true {
+    match out.next() {
+      case let Some(p) { piece(p); }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn showLines(label: &str, text: &str) {
+  var n = 0usize;
+  var it = text.lines();
+  var out = text.lines();
+  while true {
+    match it.next() {
+      case let Some(p) { n = n + 1usize; }
+      case is None {break;}
+    }
+  }
+  open(label, n);
+  while true {
+    match out.next() {
+      case let Some(p) { piece(p); }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+// The byte length of each line, for texts whose '\r' cannot be printed
+fn lineLens(label: &str, text: &str) {
+  printStr(label);
+  var it = text.lines();
+  while true {
+    match it.next() {
+      case let Some(p) { printStr(" "); printUInt(u64.from(p.len)); }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn showWords(label: &str, text: &str) {
+  var n = 0usize;
+  var it = text.splitWhitespace();
+  var out = text.splitWhitespace();
+  while true {
+    match it.next() {
+      case let Some(p) { n = n + 1usize; }
+      case is None {break;}
+    }
+  }
+  open(label, n);
+  while true {
+    match out.next() {
+      case let Some(p) { piece(p); }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn showOnce(label: &str, text: &str, sep: &str) {
+  printStr(label);
+  match text.splitOnce(sep) {
+    case let Some(pair) {
+      piece(pair.0);
+      piece(pair.1);
+    }
+    case is None { printStr(" none"); }
+  }
+  printStr("\n");
+}
+
+fn main() {
+  showSplit("empty", "", ",");
+  showSplit("start", ",a", ",");
+  showSplit("end", "a,", ",");
+  showSplit("both", ",a,", ",");
+  showSplit("only", ",", ",");
+  showSplit("twice", "a,,b", ",");
+  showSplit("plain", "a,b,,c", ",");
+  showSplit("none", "abc", ",");
+  showSplit("longer", "ab", "abc");
+  showSplit("same", "abc", "abc");
+  showSplit("long", "a, b,c, d", ", ");
+  showSplit("overlap", "a--b---c", "--");
+  showSplit("arrow", "a→b→→c", "→");
+  showSplit("arrow2", "a→→b→", "→→");
+  showSplit("accents", "é,€,😀", ",");
+  showSplit("emptysep", "abc", "");
+  showSplit("emptysep0", "", "");
+  showSplit("emptysepmb", "é€", "");
+
+  showChar("empty", "", ',');
+  showChar("plain", "a,b,,c", ',');
+  showChar("euro", "é€x€", '€');
+  showChar("emoji", "😀a😀", '😀');
+  showChar("none", "é", '€');
+
+  showLines("empty", "");
+  showLines("one", "a");
+  showLines("final", "a\n");
+  showLines("blank", "a\n\n");
+  showLines("only", "\n");
+  showLines("two", "a\nb");
+  showLines("accents", "é\n€\n😀");
+  lineLens("crlf", "a\r\nb");
+  lineLens("lonecr", "a\rb\r\n");
+  lineLens("crend", "a\r");
+  lineLens("crlfblank", "a\r\n\r\nb");
+  lineLens("crlfonly", "\r\n");
+  lineLens("cronly", "\r");
+  lineLens("crlfaccents", "é\r\n€\n");
+
+  showOnce("pair", "k=v=w", "=");
+  showOnce("front", "=v", "=");
+  showOnce("back", "k=", "=");
+  showOnce("absent", "kv", "=");
+  showOnce("arrow", "a→b→c", "→");
+  showOnce("empty", "", "=");
+
+  showWords("empty", "");
+  showWords("blank", "   \t\n");
+  showWords("mixed", "  a  b\t\nc  ");
+  showWords("accents", "é €");
+}

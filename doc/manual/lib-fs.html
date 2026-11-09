@@ -19,7 +19,7 @@
 		or any time of it but its last write, and giving a program that <span class="pre">process</span>
 		starts an environment or a standard input of its own.</i></p>
 
-	<p>Four packages let a program work with its surroundings, all synchronously (each call
+	<p>Five packages let a program work with its surroundings, all synchronously (each call
 		returns when the work is done):</p>
 	<ul>
 	<li><span class="pre">path</span>: file paths taken apart and put together, as text.
@@ -30,11 +30,14 @@
 		current folder is read and changed.</li>
 	<li><span class="pre">env</span>: what this process's environment is: the program's arguments, and its
 		environment variables, read, set and removed.</li>
+	<li><span class="pre">args</span>: the program's command line read as options and values, over what
+		<span class="pre">env</span> gives.</li>
 	<li><span class="pre">process</span>: running another program, waiting for it, and capturing what it
 		writes; and this program's own path.</li>
 	</ul>
 	<p>A program reaches them with <span class="pre">import fs;</span>,
-		<span class="pre">import path use Path;</span>, <span class="pre">import env;</span> and
+		<span class="pre">import path use Path;</span>, <span class="pre">import env;</span>,
+		<span class="pre">import args use *;</span> and
 		<span class="pre">import process;</span>. They run on Windows and on Linux. The interfaces
 		belong to no one system, but what is beneath them differs by system: <span class="pre">path</span> reads
 		the paths of the system the program is built for (Windows' drive letters, shares and both separators; or
@@ -817,6 +820,118 @@ A=B: not set
 	<pre>
 setting a variable named A=B
 panic at envpanic.cone:8: env: a variable's name may not hold '='
+</pre>
+
+	<h2 id="args">Reading the command line: the args package</h2>
+	<p>A small lexer for a program's arguments, so a program does not write a flag loop of its own. It imports
+		<span class="pre">env</span> and reads the list <a href="#env"><span class="pre">env.args()</span></a> gives; what
+		each option means stays with the program. A program that wants only the list imports
+		<span class="pre">env</span> and needs no lexer.</p>
+	<ul>
+	<li><span class="pre">ArgReader.fromEnv()</span> reads this program's own arguments, its name skipped.
+		<span class="pre">ArgReader.from(list)</span> reads a <span class="pre">List[String]</span> (with no name in it),
+		so a test needs no process.</li>
+	<li><span class="pre">r.next()</span> answers a <span class="pre">Result[Option[Arg], ArgError]</span>,
+		<span class="pre">Ok(None)</span> at the end (an <span class="pre">Err</span> only for a value given to an option
+		that took none, below). An <span class="pre">Arg</span> is <span class="pre">Long(name)</span>,
+		<span class="pre">Short(char)</span> or <span class="pre">Value(text)</span>.</li>
+	<li><span class="pre">r.value()</span>, <span class="pre">r.int()</span>, <span class="pre">r.uint()</span> and
+		<span class="pre">r.float()</span> answer the value of the option just read, as a
+		<span class="pre">String</span>, an <span class="pre">i64</span>, a <span class="pre">u64</span> and an
+		<span class="pre">f64</span>, each in a <span class="pre">Result[_, ArgError]</span>.</li>
+	<li><span class="pre">arg.unexpected()</span> answers the <span class="pre">ArgError</span> that says an argument was
+		not wanted. An <span class="pre">ArgError</span> has <span class="pre">toText</span>, one line saying what was
+		wrong. Its variants are <span class="pre">UnknownOption</span>, <span class="pre">UnexpectedArgument</span>,
+		<span class="pre">UnexpectedValue</span>, <span class="pre">Missing</span>, <span class="pre">BadValue</span> and <span class="pre">OutOfRange</span>.</li>
+	</ul>
+	<p>The forms <span class="pre">next</span> reads:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Written</th><th>Read as</th></tr>
+	<tr><td><span class="pre">--name</span></td><td><span class="pre">Long("name")</span></td></tr>
+	<tr><td><span class="pre">--name=text</span></td><td><span class="pre">Long("name")</span>, whose value is <span class="pre">text</span></td></tr>
+	<tr><td><span class="pre">--name text</span></td><td><span class="pre">Long("name")</span>; asking for its value takes the next argument</td></tr>
+	<tr><td><span class="pre">-a</span></td><td><span class="pre">Short('a')</span></td></tr>
+	<tr><td><span class="pre">-abc</span></td><td><span class="pre">Short('a')</span>, <span class="pre">Short('b')</span>, <span class="pre">Short('c')</span></td></tr>
+	<tr><td><span class="pre">-n5</span>, <span class="pre">-n 5</span></td><td><span class="pre">Short('n')</span>; asking for its value gives <span class="pre">"5"</span> either way</td></tr>
+	<tr><td><span class="pre">-</span></td><td><span class="pre">Value("-")</span>: a lone dash is an argument</td></tr>
+	<tr><td><span class="pre">--</span></td><td>ends the options: each argument after it is a <span class="pre">Value</span>, even one that begins with a dash. The <span class="pre">--</span> itself is not given.</td></tr>
+	<tr><td>anything else</td><td><span class="pre">Value(text)</span></td></tr>
+	</table>
+	<p>The reader does not know which options take a value: the program says so by asking for it. The value is
+		the text attached to the option if there is any (<span class="pre">--name=text</span>, or the rest of a short
+		group, <span class="pre">-n5</span>), else the next argument, whatever it looks like (<span class="pre">--offset -5</span>
+		is -5). A <span class="pre">=</span> after a short letter belongs to the value: <span class="pre">-n=5</span> has the
+		value <span class="pre">"=5"</span>. A value missing at the end is an error, not a panic, and so is a value of
+		the wrong kind; nothing in the package panics on what a user types.</p>
+	<p>An option that takes no value but is given one (<span class="pre">--headless=yes</span>, where the program only
+		checks for <span class="pre">headless</span>) is not dropped: <span class="pre">next</span> answers <span class="pre">Long("headless")</span>
+		and the reader holds the <span class="pre">yes</span>. If the program calls <span class="pre">value()</span> it gets
+		<span class="pre">"yes"</span>; if it calls <span class="pre">next()</span> instead, that call is
+		<span class="pre">Err(UnexpectedValue("headless"))</span>, <span class="pre">--headless takes no value</span>,
+		and the reader goes on after it. A repeated option is read each time it is given; the program decides
+		whether the last wins.</p>
+	<p><span class="pre">int</span>, <span class="pre">uint</span> and <span class="pre">float</span> read numbers as
+		<span class="pre">i64.parse</span>, <span class="pre">u64.parse</span> and <span class="pre">f64.parse</span> do,
+		and say what was wrong with the option's name in it: <span class="pre">--frames wants a whole number, got 'x'</span>,
+		<span class="pre">--frames wants a whole number, 0 or more, got '-5'</span> (from <span class="pre">uint</span>),
+		<span class="pre">--ratio wants a number, got 'x'</span>,
+		<span class="pre">--frames is out of range: '99999999999999999999'</span>,
+		<span class="pre">--frames wants a value</span>. <span class="pre">float</span> refuses a NaN and an infinity, which
+		no option wants.</p>
+	<p><b>Arguments that are not UTF-8.</b> On Windows <span class="pre">env.args()</span> is UTF-8 whatever the code
+		page. On Linux it is the bytes the system holds, and the reader keeps them as they are: it looks only at the
+		ASCII <span class="pre">-</span> and <span class="pre">=</span>, so an argument that is not UTF-8 reaches a
+		<span class="pre">Value</span>, or <span class="pre">value()</span>, byte for byte. The one place it reads a
+		character is the letter of a short option, where a byte that does not start a well-formed character reads as
+		U+FFFD, each such byte a letter of its own.</p>
+	<pre>
+mod tool;
+
+import stdio use *;
+import collections use *;
+import args use *;
+
+fn run() Result[u64, ArgError] {
+  var frames = 60i64;
+  var headless = false;
+  var files = List[String]();
+  var r = ArgReader.fromEnv();                 // skips the program's name
+  while true {
+    match r.next()? {
+      case let Some(arg) {
+        match arg {
+          case let Long(n) if n == "frames" { frames = r.int()?; }
+          case let Long(n) if n == "headless" { headless = true; }
+          case let Short(c) if c == 'f' { frames = r.int()?; }
+          case let Value(v) { files.push(v); }
+          else { return Err[u64, ArgError](arg.unexpected()); }
+        }
+      }
+      case is None { break; }
+    }
+  }
+  Ok[u64, ArgError](u64.from(frames) + u64.from(files.len()))
+}
+
+fn main() i32 {
+  match run() {
+    case let Ok(n) { print &lt;- n; print &lt;- "\n"; 0i32 }
+    case let Err(e) { print &lt;- toText(&amp;e); print &lt;- "\nUsage: tool [--frames N] [--headless] FILE...\n"; 2i32 }
+  }
+}
+</pre>
+	<p>Run with <span class="pre">--frames 3 -f4 --headless a.txt b.txt</span> it prints <span class="pre">6</span>
+		(the last frame count, 4, and two files). Run with <span class="pre">--frames x</span>, <span class="pre">-f</span>
+		or <span class="pre">--zz</span>, it prints a line and the usage line, and exits with 2:</p>
+	<pre>
+--frames wants a whole number, got 'x'
+Usage: tool [--frames N] [--headless] FILE...
+
+-f wants a value
+Usage: tool [--frames N] [--headless] FILE...
+
+unknown option --zz
+Usage: tool [--frames N] [--headless] FILE...
 </pre>
 
 	<h2 id="process">Running programs: the process package</h2>

@@ -1,0 +1,216 @@
+// churnbench: UI nodes created and destroyed every frame (pool migration, step 0; the churn bench the
+// earlier measurements lacked). A 'Ui' holds a standing panel of 20 rows of 20 labels (420 nodes), and
+// every frame builds a new subtree of 'rows' rows of 20 labelled nodes (text set on each label, as a
+// rebuilt dialog or list does), destroys the previous frame's subtree, and lays the tree out. Build it
+// optimised to measure:
+//
+//   congo run --release packages/uilayout/examples/churnbench.cone -- 300
+//
+// The argument is the number of frames a row runs (default 300; one frame in three is the steady
+// part). Two rows: 10 rows (211 nodes a frame) and 100 rows (2,101 nodes). Everything is
+// deterministic. A row prints one line:
+//
+//   ns per node created (its text set included), ns per node destroyed, microseconds per layout, the
+//   node slots the tree holds at the end, and the process's private bytes above the row's start: the
+//   peak, the mean over the last third of the frames (steady) and after the tree is dropped (end),
+//   then the process's CPU against wall time for the whole row.
+
+mod churnbench;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import uilayout use *;
+
+// ---- the meter: wall time, process CPU time and private bytes ----
+//
+// Memory is the process's private bytes (Windows' PrivateUsage; Linux's data size, VmData), read from
+// the OS, because these structures have no stats of their own. CPU is the process's user plus kernel time
+// against the wall time, so a row on one busy thread reads near 100%.
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+  fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+}
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib data dt), in 4096-byte pages
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+// The process's CPU time so far, in nanoseconds (user plus kernel)
+fn cpuNanos() u64 {
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    var ts = PosixClock(0i64, 0i64);
+    clock_gettime(2i32, &mut ts as *PosixClock);
+    u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+  }
+}
+
+// One row's meter: started at the row's beginning, sampled at its steps
+struct Meter {
+  base: u64;          // private bytes at the start
+  peak: u64;          // the highest sample
+  steadySum: u64;     // the samples taken in the steady part, summed
+  steadyN: u64;
+  cpu0: u64;
+  t0: Instant;
+
+  fn start() Meter {
+    let b = privateBytes();
+    Meter(b, b, 0u64, 0u64, cpuNanos(), Instant.now())
+  }
+
+  // Read the memory now; 'steady' marks a sample of the steady part
+  fn sample(self: &mut, steady: bool) {
+    let p = privateBytes();
+    if p > peak {peak = p;}
+    if steady {
+      steadySum = steadySum + p;
+      steadyN = steadyN + 1u64;
+    }
+  }
+
+  // KiB above the start (signed: a row can end below where it began)
+  fn peakKiB(self: &) i64 { (i64.from(peak) - i64.from(base)) / 1024i64 }
+  fn steadyKiB(self: &) i64 {
+    if steadyN == 0u64 {return 0i64;}
+    (i64.from(steadySum / steadyN) - i64.from(base)) / 1024i64
+  }
+  fn nowKiB(self: &) i64 { (i64.from(privateBytes()) - i64.from(base)) / 1024i64 }
+
+  // Process CPU against wall time since the start, in percent
+  fn cpuPercent(self: &) u64 {
+    let wall = u64.from(t0.elapsed().nanos());
+    if wall == 0u64 {return 0u64;}
+    (cpuNanos() - cpu0) * 100u64 / wall
+  }
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+// A column of 'rows' rows of 20 labels under 'parent'; its id
+fn build(ui: &mut Ui, parent: usize, rows: i32) usize {
+  let col = ui.create(parent, K_PLAIN);
+  ui.setFlex(col, LK_COLUMN, 2.);
+  ui.setJustify(col, JUSTIFY_START, ALIGN_START);
+  var r = 0;
+  while r < rows {
+    let row = ui.create(col, K_PLAIN);
+    ui.setFlex(row, LK_ROW, 4.);
+    ui.setJustify(row, JUSTIFY_START, ALIGN_START);
+    var k = 0;
+    while k < 20 {
+      let l = ui.create(row, K_LABEL);
+      ui.setText(l, "label");
+      k = k + 1;
+    }
+    r = r + 1;
+  }
+  col
+}
+
+fn row(rows: i32, frames: i32) {
+  var m = Meter.start();
+  var tCreate = 0i64;
+  var tDestroy = 0i64;
+  var tLayout = 0i64;
+  let perFrame = i64.from(rows) * 21i64 + 1i64;
+  var slots = 0usize;
+  {
+    var measure = fn(t: &str, font: u32, size: f32) Vec2 { Vec2(f32.from(t.len()) * 8., 16.) };
+    var ui = Ui.make(1600., 2000.);
+    let standing = ui.create(ui.root, K_PLAIN);
+    ui.setFlex(standing, LK_COLUMN, 2.);
+    build(&mut ui, standing, 20);
+    let holder = ui.create(ui.root, K_PLAIN);
+    ui.setFlex(holder, LK_COLUMN, 2.);
+    layout(&mut ui, &mut measure);
+    var current = build(&mut ui, holder, rows);
+    var frame = 0;
+    while frame < frames {
+      let t0 = Instant.now();
+      let next = build(&mut ui, holder, rows);
+      let t1 = Instant.now();
+      ui.destroy(current);
+      let t2 = Instant.now();
+      current = next;
+      layout(&mut ui, &mut measure);
+      let t3 = Instant.now();
+      tCreate = tCreate + (t1.nanos() - t0.nanos());
+      tDestroy = tDestroy + (t2.nanos() - t1.nanos());
+      tLayout = tLayout + (t3.nanos() - t2.nanos());
+      m.sample(frame >= frames * 2 / 3);
+      frame = frame + 1;
+    }
+    slots = ui.nodes.len();
+  }
+  let end = m.nowKiB();
+  let n = perFrame * i64.from(frames);
+  print <- "ui nodes, ", perFrame, " nodes a frame, ", frames, " frames: create ", tCreate / n, " ns, destroy ", tDestroy / n,
+    " ns, layout ", tLayout / i64.from(frames) / 1000i64, " us; ", slots, " node slots; private KiB over the start: peak ", m.peakKiB(),
+    ", steady ", m.steadyKiB(), ", end ", end, "; cpu ", m.cpuPercent(), "%\n";
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var frames = 300;
+  if argc > 1i32 { frames = i32.from(digits(*(argv + 1usize))); }
+  if frames < 3 { frames = 3; }
+  row(10, frames);
+  row(100, frames);
+  0i32
+}

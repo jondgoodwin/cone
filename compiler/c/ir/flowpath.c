@@ -973,6 +973,38 @@ static int pwMayAliasWritten(INode *reftype) {
         && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
 }
 
+// Does a borrowed reference holding 'holds' point only where no other name writes? It does when
+// every borrow it may hold (only the near loans are where it points: flowloan.h) is of an
+// element a method returned out of its receiver's own block (pwElemView), the receiver reached
+// through a reference nothing writes by ('imm', 'mut1'; not 'ro', 'mut': Place.shwrite), or is
+// what a caller lent through a parameter of such a reference, the one the receiver was reached by
+// (a reborrow carries it): the element is then in an 'imm' path, though the '&' the method
+// returned says only that its holder may not write. Anything else keeps what the reference's
+// type says: a borrow of a local, a global, what a caller lent through a reference that may be
+// written by, a borrow the method may have made of something it merely reaches (a '&mut' field
+// of the receiver, a global), and a reference holding nothing the walk knows of.
+static int pwHoldsUnwritten(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    int elems = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t entry = holds->ids[i];
+        if (entry & LoanFar)
+            continue;
+        Place *lp = loanPlaceOf(entry);
+        if (loanElemView(entry) && lp->shared && !lp->shwrite) {
+            elems = 1;
+            continue;
+        }
+        if (!loanIsCallerOwn(entry))
+            return 0;
+        INode *parmtype = itypeGetTypeDcl(pathVars[lp->var].var->vtype);
+        if ((parmtype->tag != RefTag && parmtype->tag != ArrayRefTag) || pwMayAliasWritten(parmtype))
+            return 0;
+    }
+    return elems;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -1041,7 +1073,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
-        pl->shwrite = pwMayAliasWritten(reftype);
+        pl->shwrite = pwMayAliasWritten(reftype)
+            && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1367,6 +1400,10 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+FnDclNode *flowCallMethod(FnCallNode *call) {
+    return pwMethod(call);
+}
+
 // Is the method's parameter 'i', as declared, a borrow? Such an argument is
 // not stored in an arena by a call ('ar.get(&key)'); one declared by value
 // ('value: T') is, whatever T is
@@ -1656,14 +1693,14 @@ static int pwByParm(VarDclNode *var) {
 }
 
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how,
-        int byparm) {
+        int byparm, int readsnothing) {
     VarDclNode *through;
     // A node of an arena a caller keeps takes no other parameter's borrow where
     // the function names no lifetime (every borrow in its signature would share
     // one) or the arena was reached through a struct's field, whatever it
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
-    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm)) {
+    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
         uint32_t foreign = loanArenaApart(stored, refholds, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
@@ -1798,8 +1835,19 @@ static PathSet *pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rv
         uint32_t own = pwPlaceOutlives(pl) ? loanNamedThroughIn(holds, pl->var) : 0;
         if (own)
             loanSelfStore(lval, own, pl, LoanEscapeStore);
+        // The node stored into: the object the stored-into place lies in. Its
+        // type may be one whose death reads no borrow; an unseen type (none
+        // found here) answers 'reads' (readsnothing = 0)
+        INode *ctype = NULL;
+        if (lval->tag == FldAccessTag)
+            ctype = iexpGetTypeDcl(((FnCallNode *)lval)->objfn);
+        else if (lval->tag == DerefTag)
+            ctype = iexpGetTypeDcl(lval);
+        if (ctype && (ctype->tag == RefTag || ctype->tag == VirtRefTag))
+            ctype = itypeGetTypeDcl(((RefNode *)ctype)->vtexp);
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
-            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var));
+            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var),
+            ctype && !itypeDropReadsBorrow(ctype));
         if (lval->tag == DerefTag)
             pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
     }
@@ -2249,7 +2297,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape(node, local, how);
             else
-                pwStoreApart(node, argsets[at], beyond, 0, others, how, 0);
+                pwStoreApart(node, argsets[at], beyond, 0, others, how, 0, 0);
             pwStoreLands(argsets[at], beyond, others, 0);
             continue;
         }
@@ -2282,8 +2330,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                     loanApart(node, apart, through, how);
             }
             else
+                // Only a store one borrow deep has a node to ask about
                 pwStoreApart(node, pathVars[target.var].holds, reach.far, 0, others, how,
-                    pwByParm(pathVars[target.var].var));
+                    pwByParm(pathVars[target.var].var), isref && depth == 1 && !itypeDropReadsBorrow(storedin));
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
@@ -2537,6 +2586,31 @@ static INode *pwViewOwner(INode *recv, INode *cont, int *byvalue) {
             return NULL;
     }
     return holder;
+}
+
+// Did this method return an element out of its receiver's own block: a borrow of a struct held in
+// the block of 'container' (a 'List[Item]''s '[]' returns an '&Item'), with the receiver reached
+// through a reference nothing writes by, so that the element is in that 'imm' path too? Then a
+// borrow the call carries is of that element and of nothing else the receiver reaches: not of what
+// a '&mut' field of the receiver points at, and (pwHoldsElements) the call is handed no other
+// borrow the element could come from. No 'var' global may reach the element's type, for a method
+// whose body is another's could return a borrow of one, and that is not an 'imm' path.
+static int pwElemView(FnCallNode *call, INode *container, Place *recvpl) {
+    if (!recvpl->shared || recvpl->shwrite || call->args == NULL || call->args->used == 0
+            || (call->flags & (FlagVDisp | FlagLvalOp)))
+        return 0;
+    INode *rt = iexpGetTypeDcl((INode *)call);
+    if (rt->tag != RefTag)
+        return 0;
+    INode *elem = itypeGetTypeDcl(((RefNode *)rt)->vtexp);
+    if (elem == NULL || elem->tag != StructTag || (elem->flags & TraitType) || !pwHoldsElements(container, elem))
+        return 0;
+    for (uint32_t k = 1; k < call->args->used; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        if (arg->tag != StringLitTag && !intrinsicIsSrcDefault(arg) && pwCarries(iexpGetTypeDcl(arg)))
+            return 0;
+    }
+    return !reshapeMutGlobalsReach(elem);
 }
 
 // The borrow a call returned out of a container that changes shape, carrying the loan
@@ -2943,6 +3017,8 @@ static PathSet *pwCall(FnCallNode *call) {
                 int byvalue;
                 INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
                 loanShapeOwnerSet(recvloan, vowner, byvalue);
+                if (pwElemView(call, container, &recvpl))
+                    loanElemViewSet(recvloan);
             }
         }
         result = pathSetUnion(result, fromrecv);
@@ -3817,6 +3893,9 @@ static void pwSeamVar(AwaitNode *node, uint32_t index, int isparm) {
         flags |= SeamOpen;
     if (var->vtype && !flowNoDeath(var->vtype) && itypeNeedsFinal(var->vtype))
         flags |= SeamDies;
+    // An owner hollowed here is released without what moved (the record's drop)
+    if (pv->tracked && (pv->state & DropHollow))
+        flags |= SeamHollow;
     if (pwIsGuard(var))
         flags |= SeamGuard;
     // The borrow an operator's rewrite keeps in a temporary that is no holder
