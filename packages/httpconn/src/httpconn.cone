@@ -176,6 +176,11 @@
 // use of its input); the peer's end is fed only once the layer's 'peerEnded'
 // says every byte was taken.
 //
+// STOPPING AN UPLOAD. A server that answers whole before reading the request's body calls
+// 'stopBody(req)': over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), so the client stops
+// sending; over HTTP/1.1 it does nothing (the connection closes after the answer). The core does not do
+// it by itself: a program using httpconn directly that does not want the upload calls it.
+//
 // CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
 // req)' asks a request to end: still waiting, it is taken out and answered
 // Cancelled; under way, HTTP/1.1's only way to stop it is to end the
@@ -265,7 +270,7 @@
 // - Credit: 'release(req, n)' gives the credit back to that request's stream
 //   alone (the connection's comes back as the bytes arrive: http2's
 //   approach), so one slow reader stops only its own stream, at its window
-//   ('h2.initialWindowSize').
+//   (a share of 'h2.creditBudget', at most 'h2.streamWindow').
 // - Errors: a stream reset fails its request alone, Stage.Http with the
 //   core's error: Reset, or Refused when the peer did not process it
 //   (isRetrySafe). A peer's GOAWAY refuses the streams above its last stream

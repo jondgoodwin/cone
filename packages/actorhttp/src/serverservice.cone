@@ -59,6 +59,19 @@ struct ExRec {
   sinkOff: usize;              // ...of the first, how many it has taken
   sinkIn: u64;                 // body bytes the sink has been given, for the declared length
   sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
+  // The request's body as a stream (ServerConfig.streamBodies; requestbody.cone). 'inMode' says the exchange is
+  // one. Its body goes to 'inSink' from 'inLend' as a response body does to a client's sink (lend.cone); until
+  // the handler's choice ('inAwait') it is staged and 'inKept' keeps its end. 'inDiscard': nobody wants the rest,
+  // the bytes are released as they arrive. 'inRefused': the pool refused a staging buffer
+  inMode: bool;
+  inAwait: bool;
+  inContinue: bool;            // an 'Expect: 100-continue' not yet answered
+  inEnded: bool;               // the body's end has come
+  inDiscard: bool;
+  inRefused: bool;
+  inSink: Option[ChunkSink];
+  inKept: Option[Ending];
+  inLend: BodyLend;
 }
 
 // The record of request req (or qreq, over HTTP/3), its head just read
@@ -67,7 +80,9 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
-    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false)
+    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false,
+    inMode: false, inAwait: false, inContinue: false, inEnded: false, inDiscard: false, inRefused: false,
+    inSink: None[ChunkSink], inKept: None[Ending], inLend: newLend())
 }
 
 // A listening server the service owns: its own driver (so its bounds are its
@@ -81,6 +96,7 @@ struct SrvRec {
   secure: bool;
   maxBody: usize;
   maxPending: usize;
+  streamBodies: bool;         // requests are delivered at their heads (requestbody.cone)
   drv: httpconn.Driver;
   listener: httpconn.ListenerId;
   exs: SlotTable[ExRec];
@@ -250,6 +266,13 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
       x.rejected = true;
       x.stage = exOut;
       answerText(srv, x, 503u16, "the server is closing", true);
+    } else if srv.streamBodies {
+      // Delivered at its head: its body is staged until the handler chooses (requestbody.cone). maxBody and the
+      // 413 are the gathered path's; a 100 Continue waits for the handler's first read
+      x.inMode = true;
+      x.inAwait = true;
+      x.inContinue = head.headers.hasToken("Expect", "100-continue");
+      readyEx(srv, slot, Request(head, String(), peer, srv.secure));
     } else if framing.isSized() && framing.length > u64.from(srv.maxBody) {
       x.rejected = true;
       x.stage = exOut;
@@ -258,6 +281,8 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
       if head.headers.hasToken("Expect", "100-continue") {sendContinue(srv, x);}
       srv.reading.insert(key, Request(head, String(), peer, srv.secure));
     }
+  } else if k == sData && srv.streamBodies {
+    onStreamedData(srv, lp, e);
   } else if k == sData {
     let n = e.buf.len();
     let slot = slotOfKey(srv, key);
@@ -280,6 +305,16 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
       }
     }
     if e.qreq.isNone() {srv.drv.release(e.req, n);} else {srv.h3.release(e.qreq, n);}
+  } else if k == sEnd && srv.streamBodies {
+    let slot = slotOfKey(srv, key);
+    if slot < srv.exs.bound() {
+      let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
+      x.inEnded = true;
+      if x.inMode && !x.rejected && !x.inDiscard {
+        if x.inAwait {x.inKept = Some[Ending](Ending.Finished);}
+        else {inFinish(x, Ending.Finished);}
+      }
+    }
   } else if k == sEnd {
     let slot = slotOfKey(srv, key);
     // The request read whole: taken out of 'reading' by value
@@ -338,6 +373,18 @@ fn srvSend(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) bool {
 
 fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
   if x.onH3 {srv.h3.finish(x.qreq);} else {srv.drv.finish(x.req);}
+  stopUpload(srv, x);
+}
+
+// A streamed request's body nobody wants (dropped unread, never taken, cut by a limit) while its response is
+// whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), over HTTP/3 the client is asked
+// to stop with STOP_SENDING H3_NO_ERROR (RFC 9114 section 4.1), so it stops sending. It is called at the
+// response's end and at the drop, and does its work at whichever comes second. A handler still holding the
+// body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1 gets false from
+// the driver (the core closes the connection after the answer)
+fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
+  if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
+  if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
 }
 
 fn srvCancel(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
@@ -358,6 +405,7 @@ fn readyEx(srv: &mut SrvRec, slot: usize, r: Request) {
     else {
       if srv.ready.len() >= srv.maxPending {
         x.rejected = true;
+        x.inAwait = false;
         x.stage = exOut;
         answerText(srv, x, 503u16, "the server is busy", false);
       } else {
@@ -373,7 +421,7 @@ fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.ReplyOf[Result[Exchange, 
   let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   x.stage = exOut;
   x.handle = true;
-  let ex = Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
+  let ex = Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, x.inMode, false, r);
   rp.answer(Ok[Exchange, ServerError](ex));
 }
 
@@ -429,10 +477,85 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
   } else {
     answerKeptIn[Result[u64, ServerError]](&mut x.finishReply, Err[u64, ServerError](ServerError.closed()));
   }
+  if x.inMode {inTerminal(srv, x);}
   if x.stage == exReady {
     x.stage = exDead;
-  } else if !x.handle {
+  } else if !x.handle && !x.inAwait {
     freeEx(srv, slot);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A request's body as a stream (requestbody.cone is the handle's side)
+// ---------------------------------------------------------------------------
+
+// Credit for n body bytes back to the request's connection or stream
+fn inRelease(srv: &mut SrvRec, x: &ExRec, n: usize) {
+  if n == 0usize {return;}
+  if x.onH3 {srv.h3.release(x.qreq, n);} else {srv.drv.release(x.req, n);}
+}
+
+// The body's end, or its failure: what is staged goes first, in order, whatever the window (no more bytes are
+// coming, and the staged bytes are bounded by the connection's credit), then the sink's one end
+fn inFinish(x: &mut ExRec, how: Ending) {
+  while !stagingEmpty(&x.inLend) {sendStaged(&mut x.inLend, &x.inSink);}
+  var held = None[ChunkSink];
+  held <-> x.inSink;
+  match held {
+    case let Some(sk) {sk.end(how);}
+    else {}
+  }
+}
+
+// Nobody wants the rest of the body: what is staged is let go and its credit released, and the bytes still to
+// come are released as they arrive (onStreamedData)
+fn inDiscarded(srv: &mut SrvRec, x: &mut ExRec) {
+  x.inAwait = false;
+  x.inDiscard = true;
+  x.inKept = None[Ending];
+  let n = lendDiscard(&mut x.inLend);
+  inRelease(srv, x, n);
+}
+
+// A piece of a streamed request's body: to the sink, with the lent record (lend.cone), or staged while the
+// handler has not chosen or the sink's window is full. Its credit is released when the sink gives the buffer
+// back, never here; a body nobody wants is released at once
+fn onStreamedData(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
+  let n = e.buf.len();
+  let slot = slotOfKey(srv, e.key);
+  if slot >= srv.exs.bound() {
+    if e.qreq.isNone() {srv.drv.release(e.req, n);} else {srv.h3.release(e.qreq, n);}
+    return;
+  }
+  let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
+  if n == 0usize {return;}
+  if !x.inMode || x.rejected || x.inDiscard || x.inRefused || (!x.inAwait && !(x.inSink is Some)) {
+    inRelease(srv, x, n);
+    return;
+  }
+  let buf = e.(buf);
+  if x.inAwait || !(stagingEmpty(&x.inLend) && hasRoom(&x.inLend, buf.capacity())) {
+    if !stagePiece(&mut x.inLend, &buf) {
+      x.inRefused = true;
+      srvCancel(srv, lp, x);
+    }
+  } else {
+    deliver(&mut x.inLend, &x.inSink, buf);
+  }
+}
+
+// The request's final answer has come: a sink still open gets its end (the peer left, or the pool refused
+// a staging buffer); one that is yet to be chosen is told when it is
+fn inTerminal(srv: &mut SrvRec, x: &mut ExRec) {
+  if x.inEnded || x.inDiscard {return;}
+  let how = if x.inRefused {Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure())))}
+    else {Ending.Failed(AnyError.from(FetchError.failed(
+      httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the request ended before its body did"))))};
+  x.inEnded = true;
+  if x.inAwait {
+    x.inKept = Some[Ending](how);
+  } else {
+    inFinish(x, how);
   }
 }
 
@@ -515,6 +638,7 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
     if x.stage == exReady {
       x.stage = exOut;
       x.rejected = true;
+      x.inAwait = false;
       answerText(srv, x, 503u16, "the server is closing", true);
     } else if x.stage == exDead {
       freeEx(srv, slot);
@@ -540,7 +664,7 @@ struct ListenJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Server, ServerError]]) {
     let addr, cfg = self.(addr, cfg);
-    let conn, maxBody, maxPending, tcfg, http2, http3 = cfg.(conn, maxBody, maxPending, tlsConfig, http2, http3);
+    let conn, maxBody, maxPending, tcfg, http2, http3, streamBodies = cfg.(conn, maxBody, maxPending, tlsConfig, http2, http3, bodiesStreamed);
     var h3on = false;
     match http3 {
       case let Some(mk) {h3on = true;}
@@ -607,7 +731,7 @@ struct ListenJob {
           altSvc.append("\"; ma=86400");
         }
         let id = newId();
-        sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, drv, l,
+        sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, streamBodies, drv, l,
           SlotTable[ExRec].make(16u32), Dict[u64, usize](), Dict[u64, Request](),
           Deque[ReadyEx](), Deque[actors.ReplyOf[Result[Exchange, ServerError]]](), 0usize, h3, h3on, h3listener, altSvc,
           Dict[QKey, u64](), 1u64, Deque[actors.ReplyOf[bool]]()));
@@ -741,7 +865,10 @@ fn beginResponse(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: B
   x.bodyless = x.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
     (framing.isSized() && framing.length == 0u64);
   srvRespond(srv, x, head, framing);
-  if x.bodyless {x.finished = true;}
+  if x.bodyless {
+    x.finished = true;
+    stopUpload(srv, x);
+  }
 }
 
 // A whole response
@@ -856,6 +983,7 @@ struct DropExJob {
   pub srv: u64;
   pub slot: u32;
   pub id: u64;
+  pub discard: bool;       // a streamed request whose body was never taken: the rest is not wanted
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
@@ -863,8 +991,12 @@ struct DropExJob {
     let s = loc.srv as &mut SrvRec;
     let x = loc.ex as &mut ExRec;
     x.handle = false;
+    if discard && x.inAwait {
+      inDiscarded(s, x);
+      stopUpload(s, x);
+    }
     if x.over {
-      freeEx(s, usize.from(slot));
+      if !x.inAwait {freeEx(s, usize.from(slot));}
       return;
     }
     if !x.responded {
