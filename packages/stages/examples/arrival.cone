@@ -10,7 +10,7 @@
 //   zip-whole    the same archive fetched whole (Client.get), then opened and read (what a program does
 //                without a stream)
 //   files        every file a fetch of its own over the ONE HTTP/2 connection of the client (and so its one
-//                shared buffer ChunkPool), each with Content-Encoding zstd or gzip, decoded by httpdecode.Decoder
+//                shared buffer ChunkPool), each with Content-Encoding zstd or gzip, decoded by httpdecode.to
 //
 // for the two codecs, 'zstd' (entries of method 93 / Content-Encoding zstd) and 'gzip' (entries of method 8 /
 // Content-Encoding gzip). A run of each is timed from asking for the fetch to
@@ -56,7 +56,7 @@ import actors;
 import aio use IoLimits;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending;
-import httpdecode use Decoder;
+import httpdecode;
 import archivestage use ArchiveStage;
 import zipfile;
 import deflate;
@@ -586,10 +586,15 @@ actor ZipWhole {
 actor FileFetcher {
   client: Client;
 
-  pub async fn run(self, url: String, d: Decoder, g: CancelGroup, lim: bool) {
+  pub async fn run(self, url: String, sink: ChunkSink, limit: usize, g: CancelGroup, lim: bool) {
     var req = Request.get(url.view());
     if lim { req.group = Some[CancelGroup](g); }
-    let r = await d.open(client.clone(), req);
+    let r = await client.stream(httpdecode.request(req));
+    match r {
+      case var Ok(body) { httpdecode.to(body, sink, limit); }
+      // no head: the sink is still ours, so we end it (a cancelled run counts the file as missing)
+      case is Err { sink.end(Ending.Failed(AnyError.msg("arrival: the fetch failed before its head"))); }
+    }
   }
 }
 
@@ -655,9 +660,8 @@ fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], s
   } else {
     var i = 0usize;
     while i < n {
-      let d = Decoder(CheckSink(*hashes[i], *sizes[i], col), 1073741824usize);
       let f = FileFetcher(client.clone());
-      f.run(fileUrl(port, z, i), d, g, cancelAt > 0usize);
+      f.run(fileUrl(port, z, i), CheckSink(*hashes[i], *sizes[i], col), 1073741824usize, g, cancelAt > 0usize);
       i += 1usize;
     }
   }
