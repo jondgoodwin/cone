@@ -117,3 +117,28 @@ fn lendReturn(l: &mut BodyLend, at: usize) usize {
   l.sinkHeld = if c < l.sinkHeld {l.sinkHeld - c} else {0usize};
   lentBytes(v)
 }
+
+// The staged bytes let go, with nothing more to send them to: the bytes dropped, which are credit for the
+// caller to release
+fn lendDiscard(l: &mut BodyLend) usize {
+  var n = l.tail.len();
+  var t = IoBuf();
+  t <-> l.tail;
+  while true {
+    match l.staged.popFront() {
+      case let Some(b) {n = n + b.len();}
+      else {break;}
+    }
+  }
+  n
+}
+
+// Every buffer the sink still holds written off (it is gone, and will give none back): the bytes recorded as
+// lent in them, credit for the caller to release, and the window reopened
+fn lendAbandon(l: &mut BodyLend) usize {
+  var n = 0usize;
+  each v in l.lent.values() {n = n + lentBytes(*v);}
+  l.lent.clear();
+  l.sinkHeld = 0usize;
+  n
+}

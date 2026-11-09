@@ -812,7 +812,7 @@ enum ErrorCode {
     ErrorSetupReadsInit = 1606, // A setup reads, directly or through the module's own functions, a global that the module's 'init' sets: setups run before 'init', so it holds nothing yet. The message names the global and the function that reads it
     ErrorWholeEnumMeth = 1604,  // An enum's variant (or the enum) viewed as a trait behind a virtual reference (`&<Trait`, `AnyError.from`, `?`) where the enum writes a method the trait requires over the whole enum (`self: &Two`): no variant has a copy of it, so none complies. The message names the method and says `self: &` makes the variants comply
     ErrorConstViaValue = 1620,  // A type's 'const' named through a value of the type, 'v.zero'. A constant belongs to the type, never to a value of it (Jon, 22 Sep: a name folds on a type, not on a field). The message gives the type form, 'Vec3.zero'
-    ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait or in a generic type (a '#each' over a type's fields in its braces included). The message says which
+    ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait. The message says which
     ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings
@@ -825,6 +825,8 @@ enum ErrorCode {
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
     WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
     WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
+
+    WarnLifetimeTie = 3009, // A function with a body and no lifetime named, whose signature ties a borrowed parameter to its result or to another parameter, while its body never returns that parameter's borrow nor stores it: its callers are held to a tie the body does not need. The message gives the signature that separates them. Pointed at the parameter
 
     // Uncounted
     Uncounted = 9000,

@@ -423,6 +423,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         case VarDclTag:
             iNsTypeAddStatic((INsTypeNode*)newnode, cloneVarDclShell((VarDclNode*)*nodesp));
             break;
+        case ConstDclTag:
+            iNsTypeAddConst((INsTypeNode*)newnode, cloneConstDclShell((ConstDclNode*)*nodesp));
+            break;
         case AliasDclTag: {
             // A type alias, 'alias Cursor = Rep[T];', whose target names the
             // instance's arguments: copied whole, with nothing to fill after
@@ -487,6 +490,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             continue;
         if ((*nodesp)->tag == VarDclTag)
             cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
+        else if ((*nodesp)->tag == ConstDclTag)
+            cloneConstDclFill(cstate, (ConstDclNode*)*copyp, (ConstDclNode*)*nodesp);
         else if ((*nodesp)->tag != MacroDclTag && (*nodesp)->tag != AliasDclTag)
             cloneFnDclFill(cstate, (FnDclNode*)*copyp, (FnDclNode*)*nodesp);
         if (late && structMemberAbsent(late, *nodesp)) {
@@ -534,7 +539,7 @@ void structCloneMapMembers(StructNode *original, StructNode *copy) {
     uint32_t cnt;
     for (nodelistFor(&original->nodelist, cnt, nodesp)) {
         uint16_t tag = (*nodesp)->tag;
-        if (tag != FnDclTag && tag != VarDclTag)
+        if (tag != FnDclTag && tag != VarDclTag && tag != ConstDclTag)
             continue;
         INode *found = namespaceFind(&copy->namespace, inodeGetName(*nodesp));
         if (found && found->tag == tag)
@@ -930,6 +935,10 @@ static void structFoldItem(StructNode *node, FieldDclNode *field, StructNode *sr
         entry = (INode*)copy;
         break;
     }
+    case ConstDclTag:
+        errorMsgNode((INode*)alias, ErrorBadFold, "%s is a const of %s: it is reached through the type, not through a value, so it does not fold.",
+            &srcname->namestr, &src->namesym->namestr);
+        return;
     case FnDclTag:
     case FnOverloadDclTag:
     case MacroDclTag:

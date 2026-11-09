@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 2.8)
 project(conec)
 
+# genllto.cpp is the one C++ file (LLVM's ThinLTO has no C API in the static
+# libraries); LLVM's headers need C++17
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # LLVM's package version check matches major.minor, so name both.
 find_package(LLVM 23.1 REQUIRED CONFIG)
 
@@ -17,8 +22,10 @@ include_directories(
 set(LLVM_LINK_COMPONENTS
 		Analysis
 		BitReader
+		BitWriter
 		Core
 		InstCombine
+		LTO
 		MC
 		MCDisassembler
 		Object
@@ -168,6 +175,7 @@ add_executable(conec
 	compiler/c/genllvm/genlgpu.c
 	compiler/c/genllvm/genlgpusync.c
 	compiler/c/genllvm/genlvector.c
+	compiler/c/genllvm/genllto.cpp
 )
 
 target_link_libraries(conec ${llvm_libs})
