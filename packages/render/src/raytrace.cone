@@ -129,6 +129,17 @@ pub struct RtScene {
   pub fn update(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, meshPool: &mut Pool[MeshSlot],
       materialPool: &Pool[MaterialSlot], items: &List[DrawItem], mainEnd: usize) {
     if resetNext {
+      // One stall for the lot: every stale structure is released while the device is idle, so each one's own wait
+      // (AccelerationStructure.final) returns at once, and a mesh not drawn again keeps none
+      device.waitIdle();
+      var it = meshPool.gcTraceElements();
+      var more = true;
+      while more {
+        match it.next() {
+          case let Some(s) { s.rt = RtMesh.none(); }
+          else { more = false; }
+        }
+      }
       epoch = epoch + 1u32;
       normalUsed = 0u32;
       indexUsed = 0u32;
