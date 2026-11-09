@@ -1,0 +1,41 @@
+// A 'const' in a generic actor's braces: each instance has it, folded and held
+// in no storage, and used bare in a behaviour of both 'Tally[i32]' and
+// 'Tally[f64]': each prints step (4) and limit (60 / 4 = 15). (Reaching it
+// through the instance, 'Tally[i32].step', is not built.)
+
+mod concurrency_actor_generic_const;
+
+import stdio use *;
+import actors;
+
+actor Tally[T] {
+  total: T;
+  pub const step: u64 = 4;
+  pub const limit: u64 = 60 / 4;
+
+  fn init(self: &new, start: T) {
+    *self = Self(total: start);
+  }
+
+  pub async fn bump(self, delta: T) {
+    total = total + delta;
+  }
+
+  pub async fn report(self: &) {
+    printStr("step "); printUInt(step); printStr(" limit "); printUInt(limit); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let a = Tally[i32](10);
+    a.bump(4); a.bump(4); a.bump(4);
+    a.report();
+    let b = Tally[f64](0.5);
+    b.bump(4.0); b.bump(4.0);
+    b.report();
+  }
+  finalAll();
+}

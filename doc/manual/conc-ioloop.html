@@ -169,6 +169,18 @@ fn main() {
 		out wait has answered for nothing. On Linux a child never waited for stays a zombie until its parent reaps it. A wait can be cancelled, can have a deadline, and is cancelled by closing the handle, like any
 		other operation.</p>
 
+	<h2 id="pipes">Pipes on the loop</h2>
+	<p><span class="pre">lp.adoptPipe(raw)</span> gives the loop one end of a pipe: on Windows a handle opened
+		<span class="pre">FILE_FLAG_OVERLAPPED</span> (an end of a named pipe; an anonymous pipe cannot be overlapped), on Linux a
+		descriptor, which the loop makes non-blocking. The loop owns it from then on, whatever the result, and
+		<span class="pre">lp.close(h)</span> closes it. From the first adopted pipe,
+		<span class="pre">SIGPIPE</span> is ignored process-wide; a write to a closed reader fails with an error instead.
+		<span class="pre">Op.PipeRead(pipe, buf)</span> takes what the pipe holds, at most the buffer's room, and answers
+		Done(n); Done(0) is the end of the stream, the other end closed and everything it wrote read.
+		<span class="pre">Op.PipeWrite(pipe, buf)</span> writes all the buffer's bytes and answers Done when the last is taken.
+		Deadlines, cancel groups and closing the handle end them as they end a socket's operations. The pipe's own capacity
+		is the back-pressure: a writer's operation stays pending while nobody reads.</p>
+
 	<h2 id="cancel-groups">Cancel groups</h2>
 	<p>Work in flight on the loop can be asked to end. <span class="pre">lp.cancel(id)</span> asks one operation to. A
 		<span class="pre">CancelGroup</span> asks many at once. A group is a value: copying it makes another handle on the same

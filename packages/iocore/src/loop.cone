@@ -50,6 +50,7 @@
 // Whether an operation of kind k is on its handle's writes (else its reads)
 fn writes(k: u32) bool {
   k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindConnect
+    || k == diag.kindPipeWrite
 }
 
 // What a handle is (a free cell of the handle table holds no entry at all)
@@ -57,6 +58,7 @@ const hSocket = 1u32;
 const hListener = 2u32;
 const hFile = 3u32;
 const hDatagram = 4u32;       // a bound UDP socket
+const hPipe = 5u32;           // one end of a pipe (adoptPipe)
 const hChild = 6u32;          // a child process (adoptChild)
 
 // An entry of the handle table (a slots.SlotTable: its cell's number and
@@ -482,6 +484,38 @@ pub struct Loop {
     }
   }
 
+  // One end of a pipe, for PipeRead and PipeWrite. 'raw' is the OS's: on
+  // Windows a HANDLE opened FILE_FLAG_OVERLAPPED (a named pipe's end; an
+  // anonymous pipe cannot be), on Linux a descriptor (made non-blocking here).
+  // The loop owns it from this call, whatever the result: 'close' closes it,
+  // and a failed adopt has closed it. From the first
+  // adopted pipe, SIGPIPE is ignored process-wide; a write to a closed reader
+  // fails with an error instead (Linux; Windows has no such signal)
+  pub fn adoptPipe(self: &mut, raw: usize) Result[Handle, IoError] {
+    #if #os == .windows {
+      if CreateIoCompletionPort(raw, portHandle, keyIo, 0u32) == 0usize {
+        let code = GetLastError();
+        CloseHandle(raw);
+        return Err[Handle, IoError](IoError(code));
+      }
+      Ok[Handle, IoError](self.register(raw, hPipe, 0u16))
+    } #else {
+      lxIgnoreSigpipe();
+      let fd = fdOf(raw);
+      let fl = sysFcntl(fd, fGetfl, 0i32);
+      if fl < 0i32 || sysFcntl(fd, fSetfl, fl | nonBlock) < 0i32 {
+        let code = u32.from(lastErrno());
+        sysClose(fd);
+        return Err[Handle, IoError](IoError(code));
+      }
+      var code = 0u32;
+      var h = Handle.none();
+      code, h = lxAdopt(self, raw, hPipe, 0u16);
+      if code != 0u32 {return Err[Handle, IoError](IoError(code));}
+      Ok[Handle, IoError](h)
+    }
+  }
+
   // Whether h names something this loop holds
   pub fn isOpen(self: &, h: Handle) bool {self.handleIndex(h) != noEntry}
 
@@ -566,7 +600,7 @@ pub struct Loop {
     // Windows: a socket's completions skip the port when it finishes at once
     // (its start answers it then: 'finishNow'), where the system allows it
     var skip = 0u32;
-    #if #os == .windows { if kind != hFile && kind != hChild && skipOnSuccess(raw) {skip = 1u32;} }
+    #if #os == .windows { if kind != hFile && kind != hChild && kind != hPipe && skipOnSuccess(raw) {skip = 1u32;} }
     let s = handles.add(HEntry(raw, kind, family, 0u32, null, null, null, null, skip));
     self.publish(s.index);
     Handle(s.index, s.gen)
@@ -1221,6 +1255,18 @@ pub struct Loop {
         r.handle = file;
         r.at = at;
       }
+      case let PipeRead(o) {
+        let buf, pipe = o.(buf, pipe);
+        r.kind = diag.kindPipeRead;
+        r.buf = Some[IoBuf](buf);
+        r.handle = pipe;
+      }
+      case let PipeWrite(o) {
+        let buf, pipe = o.(buf, pipe);
+        r.kind = diag.kindPipeWrite;
+        r.buf = Some[IoBuf](buf);
+        r.handle = pipe;
+      }
       case let Call(o) {
         let buf, lane, work, arg = o.(buf, lane, work, arg);
         r.kind = diag.kindCall;
@@ -1424,6 +1470,8 @@ pub struct Loop {
     if k == diag.kindWaitChild {return self.startWait(p, r.handle);}
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
     if k == diag.kindWriteAt {return self.startFile(p, r.handle, r.at, true);}
+    if k == diag.kindPipeRead {return self.startPipe(p, r.handle, false);}
+    if k == diag.kindPipeWrite {return self.startPipe(p, r.handle, true);}
     if k == diag.kindCall {return self.startCall(p);}
     badParameter()
   }
@@ -1728,6 +1776,43 @@ pub struct Loop {
     }
   }
 
+  // A read from, or the buffer's bytes written to, a pipe's end. Windows:
+  // ReadFile or WriteFile on the overlapped end (no offset), the end of the
+  // stream (the other end closed) a read ending Done(0) -- ERROR_BROKEN_PIPE
+  // at once, or STATUS_PIPE_BROKEN with the completion (finish). Linux: the
+  // handle's queues, as a socket's (lxStartPipe)
+  fn startPipe(self: &mut, p: *OpCore, pipe: Handle, write: bool) u32 {
+    let r = p as &mut OpCore;
+    #if #os == .windows {
+      let raw = self.rawOf(pipe, hPipe);
+      if raw == invalidHandle {return errorInvalidHandle;}
+      r.raw = raw;
+      r.ov.offset = 0u32;
+      r.ov.offsetHigh = 0u32;
+      var ok = 0i32;
+      if write {
+        let len = r.bufLen();
+        if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
+        ok = WriteFile(raw, r.bufBase(), u32.from(len), null, p as *u8);
+      } else {
+        let room = r.bufRoom();
+        if room == 0usize {return errorInsufficientBuffer;}
+        let want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
+        ok = ReadFile(raw, r.bufBase() + r.bufLen(), want, null, p as *u8);
+      }
+      if ok == 0i32 {
+        let code = GetLastError();
+        if code != errorIoPending {
+          if !write && code == errorBrokenPipe {return errorHandleEof;}
+          return code;
+        }
+      }
+      0u32
+    } #else {
+      lxStartPipe(self, p, write)
+    }
+  }
+
   // A job for the blocking pool: the record goes away, with a waker of this
   // loop, queued on its lane; the lane's thread works on it, its buffer and
   // all, where it is (pool.cone)
@@ -1899,10 +1984,10 @@ pub struct Loop {
         // (aio's own quiet deadline answered nobody, and must not lose them)
         let k = r.kind;
         if !r.own && (r.ov.internal & 0xFFFFFFFFusize) == statusSuccess
-            && (k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom
-              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt) {
+            && (k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead
+              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt || k == diag.kindPipeWrite) {
           let got = usize.from(bytes);
-          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom {r.bufGrow(got);}
+          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom || k == diag.kindPipeRead {r.bufGrow(got);}
           r.status = diag.outcomeDone;
           r.n = got;
           r.code = 0u32;
@@ -1952,7 +2037,7 @@ pub struct Loop {
         return;
       }
       if status == statusSuccess {
-        if r.kind == diag.kindRecv || r.kind == diag.kindReadAt || r.kind == diag.kindRecvFrom {
+        if r.kind == diag.kindRecv || r.kind == diag.kindReadAt || r.kind == diag.kindRecvFrom || r.kind == diag.kindPipeRead {
           r.bufGrow(n);
         }
         if r.kind == diag.kindAccept || r.kind == diag.kindConnect {
@@ -1975,7 +2060,7 @@ pub struct Loop {
         } else {
           self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
         }
-      } else if status == statusEndOfFile {
+      } else if status == statusEndOfFile || (status == statusPipeBroken && r.kind == diag.kindPipeRead) {
         self.decide(p, diag.outcomeDone, 0usize, 0u32);
       } else if status == statusInvalidBufferSize && r.kind == diag.kindSendTo {
         // A datagram larger than UDP carries: what Winsock's own call calls WSAEMSGSIZE
