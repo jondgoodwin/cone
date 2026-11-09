@@ -15,10 +15,40 @@ const connUdp = 0u32;
 const connDirect = 1u32;
 const connSim = 2u32;
 
-pub actor Connection {
+// How many reliable messages may wait for the application's credit before the
+// connection gives up on it (CloseReason.Overflow)
+const outboxBound = 256usize;
+
+// A latest-wins value waiting for credit: only the newest of its stream is kept
+struct PendingUpdate {
+  stream: u16;
+  data: List[u8];
+}
+
+// A Connection is a ValueSource of NetEvents: it sends them to its handler (a
+// ValueSink[NetEvent]) only against the credit the handler has granted. Two lanes
+// wait for credit, and a control event (Joined, Left, Refused) needs none:
+//  - reliable: an ordered queue of Messages with Refused and Left behind them, so a
+//    Left follows every message. Past outboxBound waiting messages the application
+//    is not keeping up, and the connection ends with CloseReason.Overflow.
+//  - latest-wins: one slot for each stream; a newer value replaces the one waiting,
+//    and the replaced one is counted in ConnectionStats.latestStale.
+// The credit it holds never exceeds the first grant (the window), so a unit the
+// handler returns for a control event cannot inflate it. The handler's 'stop' closes
+// the connection (CloseReason.Local). A connection shares its handler with the
+// others of its server, so it sends no 'end' to it: Left is the end of a
+// connection's events. The handler's one 'end' (Ending.Finished) comes from the
+// Endpoint at its shutdown, after the Left of every connection it held.
+pub actor Connection is ValueSource {
   kind: u32;
   id: u32;
   handler: EventHandler;
+  window: u32;                  // the first credit granted; 0 before it
+  avail: u32;                   // credit held
+  outbox: Deque[NetEvent];      // the reliable lane, waiting for credit
+  waiting: usize;               // the data events (Message) in outbox
+  slots: Deque[PendingUpdate];  // the latest-wins lane
+  staleOut: u64;                // values replaced in a slot before they were sent
   peer: ConnectionCore;
   open: bool;
   forced: bool;                 // the reason it ended is not the peer's
@@ -35,7 +65,8 @@ pub actor Connection {
 
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
       ep: Option[Endpoint], link: LinkConfig, seed: u64) {
-    *self = Self(kind: kind, id: id, handler: handler, peer: ConnectionCore.make(cfg, session, Instant.now()),
+    *self = Self(kind: kind, id: id, handler: handler, window: 0u32, avail: 0u32,
+      outbox: Deque[NetEvent](), waiting: 0usize, slots: Deque[PendingUpdate](), staleOut: 0u64, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, reported: -1i64,
       partner: None[Connection], sim: LinkSim.make(link, seed));
@@ -115,7 +146,25 @@ pub actor Connection {
   // What the connection has measured: round trip time, loss, packets. All
   // zeros for an in-process connection, which has no link
   pub async fn stats(self) ConnectionStats {
-    peer.stats()
+    var s = peer.stats();
+    s.latestStale = s.latestStale + staleOut;
+    s
+  }
+
+  // The handler has used n events: n more may be sent (ValueSource)
+  pub async fn credit(self, n: u32) {
+    if window == 0u32 {window = n;}
+    if n >= window - avail {
+      avail = window;
+    } else {
+      avail = avail + n;
+    }
+    self.flush();
+  }
+
+  // The handler wants no more events: end the connection (ValueSource)
+  pub async fn stop(self, why: Ending) {
+    self.closeNow();
   }
 
   // ------------------------------------------------------------------
@@ -151,13 +200,13 @@ pub actor Connection {
 
   async fn inMessage(self, data: List[u8]) {
     if open {
-      (&mut *handler).call(NetEvent.Message(id, data));
+      self.emit(NetEvent.Message(id, data));
     }
   }
 
   async fn inUpdate(self, stream: u16, data: List[u8]) {
     if open {
-      (&mut *handler).call(NetEvent.Update(id, stream, data));
+      self.emit(NetEvent.Update(id, stream, data));
     }
   }
 
@@ -171,12 +220,95 @@ pub actor Connection {
 
   // Tell the application a send was refused
   fn refuse(self, reliable: bool, stream: u16, why: RefusalKind, size: usize, limit: usize) {
-    (&mut *handler).call(NetEvent.Refused(id, reliable, stream, why, size, limit));
+    self.emit(NetEvent.Refused(id, reliable, stream, why, size, limit));
   }
 
   fn announce(self) {
-    (&mut *handler).call(NetEvent.Joined(id, selfactor));
+    handler.attach(selfactor);
+    self.emit(NetEvent.Joined(id, selfactor));
     self.reschedule();
+  }
+
+  // An event for the application: control events go at once or behind the
+  // messages before them, data waits for credit (see the actor's comment)
+  fn emit(self, ev: NetEvent) {
+    match ev {
+      case let Update(u) {
+        let stream, d = u.(stream, data);
+        var i = 0usize;
+        while i < slots.len() {
+          if slots[i].stream == stream {
+            let s = &mut slots[i];
+            s.data = d;
+            staleOut = staleOut + 1u64;
+            self.flush();
+            return;
+          }
+          i = i + 1usize;
+        }
+        slots.push(PendingUpdate(stream, d));
+      }
+      case is Message {
+        if forced {return;}
+        if waiting >= outboxBound {
+          self.overflow();
+          return;
+        }
+        waiting = waiting + 1usize;
+        outbox.push(ev);
+      }
+      else { outbox.push(ev); }
+    }
+    self.flush();
+  }
+
+  // Send what the credit allows: the reliable lane in order, a control event
+  // needing none, then the newest value of each stream
+  fn flush(self) {
+    while true {
+      match outbox.popFront() {
+        case let Some(ev) {
+          let control = match ev {
+            case is Message { false }
+            else { true }
+          };
+          if control {
+            handler.accept(ev);
+          } else if avail > 0u32 {
+            avail = avail - 1u32;
+            waiting = waiting - 1usize;
+            handler.accept(ev);
+          } else {
+            outbox.pushFront(ev);
+            break;
+          }
+        }
+        else { break; }
+      }
+    }
+    while outbox.len() == 0usize && avail > 0u32 {
+      match slots.popFront() {
+        case let Some(p) {
+          avail = avail - 1u32;
+          let stream, d = p.(stream, data);
+          handler.accept(NetEvent.Update(id, stream, d));
+        }
+        else { break; }
+      }
+    }
+  }
+
+  // The application is not keeping up: too many messages wait for it
+  fn overflow(self) {
+    if kind == connDirect {
+      match &partner {
+        case let &Some[Connection](p) { p.inClosed(); }
+        else {}
+      }
+      self.finish(CloseReason.Overflow);
+    } else {
+      self.fail(CloseReason.Overflow);
+    }
   }
 
   fn closeNow(self) {
@@ -239,11 +371,11 @@ pub actor Connection {
       match e {
         case let Reliable(r) {
           let d = r.(data);
-          if open {(&mut *handler).call(NetEvent.Message(id, d));}
+          if open {self.emit(NetEvent.Message(id, d));}
         }
         case let Latest(l) {
           let stream, d = l.(stream, data);
-          if open {(&mut *handler).call(NetEvent.Update(id, stream, d));}
+          if open {self.emit(NetEvent.Update(id, stream, d));}
         }
         case let Closed(c) {
           if forced {
@@ -273,7 +405,12 @@ pub actor Connection {
   fn finish(self, reason: CloseReason) {
     if !open {return;}
     open = false;
-    (&mut *handler).call(NetEvent.Left(id, reason));
+    // A value still waiting for credit is dropped: nothing follows Left
+    while slots.len() > 0usize {
+      slots.popFront();
+      staleOut = staleOut + 1u64;
+    }
+    self.emit(NetEvent.Left(id, reason));
     match &ep {
       case let &Some[Endpoint](e) { e.gone(id); }
       else {}
