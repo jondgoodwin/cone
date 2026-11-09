@@ -30,7 +30,8 @@
 //   }
 //
 //   Config.make(): the defaults, each a field to change                 (CONFIG)
-//   defaultStreamWindow defaultConnectionWindow defaultMaxStreamsBidi
+//   defaultStreamWindow defaultCreditBudget minStreamFloor
+//   defaultConnectionWindow defaultMaxStreamsBidi
 //   defaultMaxStreamsUni defaultIdleSeconds defaultMaxUdpPayload
 //   Context.client(cfg)  Context.server(cfg, certFile, keyFile)            (CONTEXTS)
 //   ctx.isServer()  ctx.config()
@@ -40,7 +41,7 @@
 //   c.handleInput(packet, now)  c.pollTransmit(now)  c.wakeAt()  c.pollEvent()
 //   c.openBidi()  c.openUni()  c.write(stream, buf)  c.writeBytes(stream, bytes)  (STREAMS)
 //   c.finish(stream)  c.reset(stream, code)  c.stopSending(stream, code)
-//   c.release(stream, n)  c.unreleased(stream)  c.queued(stream)  c.openStreams()  (CREDIT)
+//   c.release(stream, n)  c.window(stream)  c.unreleased(stream)  c.queued(stream)  c.openStreams()  (CREDIT)
 //   c.hasStream(stream)
 //   c.close(code)  c.isClosed()                                              (CLOSING)
 //   c.localIds(out)  c.localIdsEpoch()  localIdLen                           (ROUTING)
@@ -103,17 +104,45 @@
 // the owner to bound.
 //
 // CREDIT (invariant I9: bounded memory). A stream's Data events are bytes on
-// loan: the peer may send 'streamWindow' bytes on a stream past what the
+// loan: the peer may send a stream's window of bytes on it past what the
 // owner has released, and 'release(stream, n)' gives n back
 // (ngtcp2_conn_extend_max_stream_offset, a MAX_STREAM_DATA in time). The
 // connection's credit (MAX_DATA) comes back as the bytes arrive
 // (ngtcp2_conn_extend_max_offset), not as they are released: so a stream
 // whose owner stops reading stops only itself, and the others go on
-// (research-http2-multiplexing's choice (A), gRPC-Go's). Unread bytes are
-// bounded by the stream windows: at most (maxStreamsBidi + maxStreamsUni) x
-// streamWindow for the peer's streams, about 29 MiB at the defaults, plus
-// streamWindow for each of this end's bidirectional streams; the connection
-// window bounds only what is in flight.
+// (research-http2-multiplexing's choice (A), gRPC-Go's).
+//
+// The stream windows are drawn from a budget, 'creditBudget' a connection
+// (1 MiB at the defaults; h3driver sets a connection's share of the pool).
+// - A stream starts with its floor: half the budget over the streams the peer
+//   may have open (maxStreamsBidi + maxStreamsUni), at least 2 KiB, at most
+//   streamWindow: 4.5 KiB at the defaults. Every stream's floor together is
+//   half the budget, so a new stream can always start.
+// - The other half is the spare. A stream that releases bytes has its credit
+//   back and draws as many bytes again from the spare, up to streamWindow
+//   (256 KiB): a stream that keeps reading doubles its window with each
+//   window's worth, and one bulk stream can reach the full 256 KiB. A stream
+//   that releases nothing keeps what it holds, so a stalled one holds only
+//   its window and the streams that keep reading draw the rest.
+// - A stream the peer can send no more on (its end came, it was reset by the
+//   peer, or stopSending asked) keeps credit for the bytes its owner has not
+//   yet released and no more (never under the floor); the rest goes back to
+//   the spare at once, and the whole when the stream goes.
+// So the bytes held unread on a connection, with those in flight, are at
+// most creditBudget (windows add up to the floors, which are half of it, and
+// what was drawn, which is at most the other half), however many streams
+// stall, plus the floor of each stream this end opens. That is, at the
+// defaults, 1 MiB rather than 116 x 256 KiB = 29 MiB. A budget smaller than
+// 2 KiB x 2 x the streams the peer may have open is exceeded by the floors
+// alone, 232 KiB at the defaults. 'window(stream)' says a stream's credit now.
+//
+// Receive-window autotuning with a cap, as quiche does (quiche's
+// flowcontrol.rs: a window that doubles when the reader's updates come within
+// two RTTs of each other, up to a maximum). Quiche's grows by the speed of the
+// reader's updates, never takes credit back, and no stream's growth costs
+// another's: the maximum is the only bound, so 100 streams may each reach
+// it. Here a growth is paid from the connection's budget, and goes by the
+// bytes the stream has read, not by timing.
 //
 // CONFIG (each a field of Config; Config.make() gives the defaults, each a
 // named constant). 'alpn' ("h3") is the one application protocol: a client
@@ -123,7 +152,8 @@
 // (tls.Verifier.platform()), 'offline' (false) and 'verifyLane'
 // (tls.defaultVerifyLane()) are a client's, as in tls's ClientConfig.
 // 'streamWindow' (256 KiB, as quic-go's starting window halved and
-// Kestrel's below its 768 KiB; the memory a stalled stream may hold) and
+// Kestrel's below its 768 KiB; the most a stream's window grows to, drawn
+// from 'creditBudget', see CREDIT) and
 // 'connectionWindow' (16 MiB, msquic's: under the CREDIT rule above it bounds
 // only bytes in flight, so it is sized for a fast link's bandwidth x delay)
 // are what the peer may send. 'maxStreamsBidi' (100, the de facto number:

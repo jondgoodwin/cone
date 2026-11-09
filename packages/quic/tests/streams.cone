@@ -9,6 +9,13 @@
 //   same connection go on to their ends, though the connection's window is
 //   smaller than the three streams' bodies together (its credit comes back
 //   as bytes arrive); released at last, the stalled stream ends too;
+// - the credit budget: the server's windows are drawn from one. The client
+//   opens the 100 streams the server allows and writes at once; the server
+//   releases four and none of the other 96: what it holds unreleased stays
+//   within the budget (printed with the most it held), and a control with a
+//   budget as large as the old rule shows the old rule's peak over it; a
+//   stalled stream holds its floor, readers draw the spare to the stream
+//   window's maximum, and a stopped reader gives its credit back;
 // - a reset: the client resets a stream it has written on, the server hears
 //   Reset with the code and resets its own half, after which neither end
 //   holds the stream and the client may not write on it;
@@ -90,6 +97,7 @@ struct In {
   resetCode: u64;
   stopped: bool;            // WriteStopped came
   firstAt: u32;             // the number of Data events before its first
+  got: u64;                 // bytes read on it
 }
 
 // One end's view: its streams, and its connection's events. 'echo': a
@@ -110,11 +118,13 @@ struct Side {
   echo: bool;
   stall: i64;
   resetBack: bool;
+  sparse: bool;             // slow readers: only every 25th of the peer's bidirectional streams is released, nothing is kept, the most held is tracked
+  peak: u64;                // sparse: the most bytes the connection held unreleased
 
   fn make() Side {
     Side(ins: List[In](), dataEvents: 0u32, firstFinAt: 0u32, handshake: false, more: 0u32,
       closedSeen: false, closedByPeer: false, closedApp: false, closedIdle: false, closedCode: 0u64,
-      echo: false, stall: -1i64, resetBack: false)
+      echo: false, stall: -1i64, resetBack: false, sparse: false, peak: 0u64)
   }
 
   // The index of a stream's record, made when it has none
@@ -124,7 +134,7 @@ struct Side {
       if ins[k].id == id {return k;}
       k = k + 1usize;
     }
-    ins.push(In(id, String(), false, false, 0u64, false, dataEvents));
+    ins.push(In(id, String(), false, false, 0u64, false, dataEvents, 0u64));
     ins.len() - 1usize
   }
 }
@@ -141,12 +151,28 @@ fn drain(c: &mut quic.Connection, side: &mut Side) {
         side.dataEvents = side.dataEvents + 1u32;
         let n = d.buf.len();
         let r = &mut side.ins[k];
-        r.bytes.appendBytes(d.buf.view());
+        r.got = r.got + u64.from(n);
+        if side.sparse {
+          // What the connection holds unreleased now, this event's bytes in it
+          var held = 0u64;
+          var j = 0usize;
+          while j < side.ins.len() {
+            held = held + c.unreleased(side.ins[j].id);
+            j = j + 1usize;
+          }
+          if held > side.peak {side.peak = held;}
+        } else {
+          r.bytes.appendBytes(d.buf.view());
+        }
         if d.fin {
           r.fin = true;
           if side.firstFinAt == 0u32 {side.firstFinAt = side.dataEvents;}
         }
-        if d.stream != side.stall {c.release(d.stream, n);}
+        if side.sparse {
+          if (d.stream / 4i64) % 25i64 == 0i64 {c.release(d.stream, n);}
+        } else if d.stream != side.stall {
+          c.release(d.stream, n);
+        }
         if side.echo && (d.stream & 2i64) == 0i64 {
           c.writeBytes(d.stream, d.buf.view());
           if d.fin {c.finish(d.stream);}
@@ -191,7 +217,7 @@ fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
 // neither must wake within a second
 fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mut Side, now: &mut Instant) {
   var rounds = 0u32;
-  while rounds < 100000u32 {
+  while rounds < 1000000u32 {
     rounds = rounds + 1u32;
     var moved = false;
     while true {
@@ -376,6 +402,139 @@ fn stalledReader(cctx: &quic.Context) {
     ss.ins[ai].fin));
 }
 
+// The slow-reader bound. The client opens the 100 streams the server allows
+// and writes 150000 bytes on each, at once (the buffer pool holds them all,
+// and a control that sent a window each would fill it); the server releases the bytes of
+// four (every 25th) and none of the 96 others. What the server holds
+// unreleased, across all its streams, is sampled at every Data event; its
+// most is 'peak'. With 'budget' the Config's creditBudget, the bound is the
+// budget. The control is a budget of 2 x 116 x 256 KiB, whose floor is the
+// whole stream window: every stream may hold its window, as before windows
+// were drawn from a budget. Returns the peak
+fn slowReaders(cctx: &quic.Context, what: &str, budget: u64) u64 {
+  var cfg = quic.Config.make();
+  cfg.creditBudget = budget;
+  let sctx = serverCtx(cfg);
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  ss.sparse = true;
+  let data = body(0i64, 150000usize);
+  var opened = 0u32;
+  var ids = List[i64]();
+  while opened < 100u32 {
+    let id = openBidi(&mut c);
+    if id < 0i64 {break;}
+    ids.push(id);
+    c.writeBytes(id, data.view());
+    c.finish(id);
+    opened = opened + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  printStr("-- ");
+  printStr(what);
+  printStr("\n");
+  lineU("streams the client opened", u64.from(opened));
+  lineU("the credit budget, which is the bound on bytes held unreleased", budget);
+  lineU("the most the server held unreleased", ss.peak);
+  line("within the bound", yesNo(ss.peak <= budget));
+  var whole = 0u32;
+  var k = 0usize;
+  while k < ids.len() {
+    let i = ss.at(ids[k]);
+    if (ids[k] / 4i64) % 25i64 == 0i64 && ss.ins[i].got == 150000u64 && ss.ins[i].fin {whole = whole + 1u32;}
+    k = k + 1usize;
+  }
+  lineU("slow-reader streams: the four that release read to their ends", u64.from(whole));
+  ss.peak
+}
+
+// One bulk stream alone on a connection draws its window to the maximum
+fn bulkWindow(cctx: &quic.Context) {
+  printStr("-- one bulk stream\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  ss.sparse = true;
+  let id = openBidi(&mut c);
+  c.writeBytes(id, body(0i64, 1000000usize).view());
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  lineU("the server's window on it, the stream window's maximum", s.window(id));
+  lineU("the most the server held unreleased", ss.peak);
+  line("it read the stream whole, but for the end (still open)", yesNo(ss.ins[ss.at(id)].got == 1000000u64));
+}
+
+// What a stream's window does: a stalled stream keeps its floor, one that
+// keeps reading grows to the maximum from the budget, and the budget comes
+// back when the readers' streams are over
+fn windows(cctx: &quic.Context) {
+  printStr("-- windows drawn from the budget\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  ss.sparse = true;
+  let data = body(0i64, 300000usize);   // more than a window: a reader never has all of it at once
+  // Streams 0, 25, 50 and 75 (every 25th) are read; all others stall. The
+  // first 51 are opened and written, so three readers compete for the spare
+  var ids = List[i64]();
+  var k = 0u32;
+  while k < 51u32 {
+    let id = openBidi(&mut c);
+    ids.push(id);
+    c.writeBytes(id, data.view());
+    k = k + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  let floor = s.window(ids[1usize]);
+  lineU("a stalled stream's window, its floor", floor);
+  var stalledAtFloor = true;
+  k = 1u32;
+  while k < 51u32 {
+    if k != 25u32 && k != 50u32 {
+      let id = ids[usize.from(k)];
+      if s.window(id) != floor || s.unreleased(id) != floor {stalledAtFloor = false;}
+    }
+    k = k + 1u32;
+  }
+  line("every stalled stream holds exactly its floor", yesNo(stalledAtFloor));
+  let w0 = s.window(ids[0usize]);
+  let w25 = s.window(ids[25usize]);
+  let w50 = s.window(ids[50usize]);
+  var wmax = w0;
+  if w25 > wmax {wmax = w25;}
+  if w50 > wmax {wmax = w50;}
+  lineU("the largest a reader's window grew to", wmax);
+  // Three readers' windows less their floors: the spare (the budget less 116 floors)
+  let drawn = (w0 - floor) + (w25 - floor) + (w50 - floor);
+  lineU("the readers drew from the spare, in all", drawn);
+  line("...which is the whole spare", yesNo(drawn == 1048576u64 - 116u64 * floor));
+  // Two readers are stopped by the server: all they hold above the floor
+  // goes back to the spare, for a reader that comes later
+  s.stopSending(ids[25usize], 0x10Bu64);
+  s.stopSending(ids[50usize], 0x10Bu64);
+  line("a reader stopped keeps its floor and no more", yesNo(s.window(ids[25usize]) == floor && s.window(ids[50usize]) == floor));
+  while k < 76u32 {
+    let id = openBidi(&mut c);
+    ids.push(id);
+    c.writeBytes(id, data.view());
+    k = k + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("the fourth reader, later, draws what they gave back", yesNo(s.window(ids[75usize]) > floor));
+  var held = 0u64;
+  k = 0u32;
+  while k < 76u32 {
+    held = held + s.unreleased(ids[usize.from(k)]);
+    k = k + 1u32;
+  }
+  line("all held unreleased is within the budget", yesNo(held <= 1048576u64));
+}
+
 fn resets(cctx: &quic.Context) {
   printStr("-- a reset, and stop sending\n");
   let sctx = serverCtx(quic.Config.make());
@@ -407,7 +566,7 @@ fn resets(cctx: &quic.Context) {
   c.writeBytes(t, body(t, 400000usize).view());
   c.finish(t);
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  lineU("the server read of a 400000-byte body, unreleased (its window)", u64.from(ss.ins[ti].bytes.len()));
+  lineU("the server read of a 400000-byte body, unreleased (its floor)", u64.from(ss.ins[ti].bytes.len()));
   line("the server asks the client to stop", yesNo(s.stopSending(t, 0x10Bu64)));
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
   let tc = cs.at(t);
@@ -495,6 +654,12 @@ fn main() {
   let cctx = clientCtx();
   manyStreams(&cctx);
   stalledReader(&cctx);
+  let bound = quic.defaultCreditBudget;
+  let peak = slowReaders(&cctx, "slow readers: 100 streams, four released, 96 not", bound);
+  let old = slowReaders(&cctx, "the control: a budget so large that every stream's floor is its full window, as before", 60817408u64);
+  line("the control exceeds the bound the first run held to", yesNo(old > bound && peak <= bound));
+  bulkWindow(&cctx);
+  windows(&cctx);
   resets(&cctx);
   streamLimit(&cctx);
   idleAndClose(&cctx);
