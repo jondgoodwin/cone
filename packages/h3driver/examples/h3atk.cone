@@ -1,0 +1,421 @@
+// Step-0 probe (not for merge): a raw QUIC client (the quic package, no HTTP/3
+// of its own) that writes whatever bytes it likes to a server on
+// 127.0.0.1:<port>, in its own process. Rows:
+//   rr    N connections; per connection the control stream, 100 request streams
+//         (HEADERS frame announcing 16000 bytes, never completed, then 1 byte
+//         a write) and 16 unidirectional streams (unknown type, then 1 byte a
+//         write), round robin: one byte to each stream per round
+//   one   as rr, but all the bytes to one unidirectional stream (unknown type)
+//   data  N connections each: a complete request (POST), then a DATA frame
+//         announcing 1 MiB, written in pieces of random sizes 1..<maxp>, to
+//         100 request streams round robin
+//   ctl   as data but the pieces are 1 byte
+//   uni1  N connections; one unknown-type unidirectional stream gets 1-byte
+//         writes (an Ignored stream: bytes read and dropped)
+//   h3atk <row> <port> <conns> <secs> [maxp]
+
+mod h3atk;
+
+import stdio use *;
+import process;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Op, Target, Handle, SocketAddr, Completion, forever;
+import tls;
+import quic;
+
+fn certs(name: &str) Path {
+  var p = String.from("C:/src/cone-wt-h3s0/packages/tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  String()
+}
+
+const tag = 0x5Au64;
+
+struct Strm {
+  id: i64;
+  sent: u64;
+  bidi: bool;
+}
+
+struct Raw {
+  q: quic.Connection;
+  h: Handle;
+  peer: SocketAddr;
+  sends: u32;
+  up: bool;
+  opened: bool;
+  closed: bool;
+  streams: List[Strm];
+  ctl: i64;
+  writes: u64;
+  failed: String;
+}
+
+fn tok(i: usize, k: u64) u64 {(tag << 56u64) | (u64.from(i) << 8u64) | k}
+
+fn parseArg(args: &List[String], at: usize, dflt: u64) u64 {
+  if args.len() > at {
+    match u64.parse(args[at].view()) {
+      case let Ok(p) {return p;}
+      case is Err {}
+    }
+  }
+  dflt
+}
+
+fn newRaw(lp: &mut Loop, cctx: &quic.Context, port: u16, i: usize) Option[Raw] {
+  match lp.bindUdp(SocketAddr.localhost(0u16)) {
+    case let Ok(h) {
+      var lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 0u16);
+      match lp.localAddr(h) {
+        case let Ok(a) {lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, a.port());}
+        case let Err(e) {}
+      }
+      let rq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, port);
+      match quic.Connection.client(cctx, "localhost", &lq, &rq, Instant.now()) {
+        case let Ok(q) {
+          var r = Raw(q, h, SocketAddr.localhost(port), 0u32, false, false, false, List[Strm](), -1i64, 0u64, String());
+          return Some[Raw](r);
+        }
+        case let Err(e) {
+          print <- e;
+          printStr("\n");
+        }
+      }
+    }
+    case let Err(e) {}
+  }
+  None
+}
+
+fn post(lp: &mut Loop, r: &mut Raw, i: usize) {
+  var k = 0u32;
+  while k < 4u32 {
+    match IoBuf.tryMake(2048usize) {
+      case var Some(b) {lp.submit(Op.RecvFrom(r.h, b), Target.Here(tok(i, 0u64)));}
+      else {}
+    }
+    k = k + 1u32;
+  }
+}
+
+fn write1(r: &mut Raw, id: i64, b: u8) {
+  var a = Array[u8, 1]() <- fill b;
+  if r.q.writeBytes(id, &a[0usize ..< 1usize]) {r.writes = r.writes + 1u64;}
+}
+
+fn writeAll(r: &mut Raw, id: i64, bytes: &Array[u8]) {
+  if r.q.writeBytes(id, bytes) {r.writes = r.writes + 1u64;}
+}
+
+// xorshift
+fn rnd(x: &mut u64) u64 {
+  var v = *x;
+  v = v ^ (v << 13u64);
+  v = v ^ (v >> 7u64);
+  v = v ^ (v << 17u64);
+  *x = v;
+  v
+}
+
+// The stream setup, once the handshake is done and the peer allows streams
+fn openStreams(r: &mut Raw, row: &str) {
+  let isData = row == "data" || row == "ctl" || row == "fuzz" || row == "dgram";
+  // the control stream: type 0, an empty SETTINGS frame
+  match r.q.openUni() {
+    case let Some(id) {
+      r.ctl = id;
+      var c = Array[u8, 3]() <- fill 0u8;
+      c[1usize] = 4u8;
+      writeAll(r, id, &c[0usize ..< 3usize]);
+    }
+    case is None[i64] {return;}
+  }
+  if row == "uni1" || row == "one" {
+    match r.q.openUni() {
+      case let Some(id) {
+        write1(r, id, 0x21u8);
+        r.streams.push(Strm(id, 1u64, false));
+      }
+      case is None[i64] {}
+    }
+    r.opened = true;
+    return;
+  }
+  var nb = 0usize;
+  while nb < 100usize {
+    match r.q.openBidi() {
+      case let Some(id) {
+        if isData {
+          // HEADERS (1) of 16 bytes: prefix 00 00, :method POST, :scheme https, :path /,
+          // :authority localhost; then DATA (0) announcing 1 MiB
+          let host = "localhost";
+          var k = 0usize;
+          var f = Array[u8, 32]() <- fill 0u8;
+          f[0usize] = 1u8; f[1usize] = 16u8;
+          f[2usize] = 0u8; f[3usize] = 0u8; f[4usize] = 0xD4u8; f[5usize] = 0xD7u8; f[6usize] = 0xC1u8;
+          f[7usize] = 0x50u8; f[8usize] = 9u8;
+          while k < 9usize {f[9usize + k] = host[k]; k = k + 1usize;}
+          f[18usize] = 0u8; f[19usize] = 0x80u8; f[20usize] = 0x10u8; f[21usize] = 0u8; f[22usize] = 0u8;
+          writeAll(r, id, &f[0usize ..< 23usize]);
+        } else {
+          // HEADERS announcing 16000 bytes (a 2-byte varint)
+          var f = Array[u8, 3]() <- fill 0u8;
+          f[0usize] = 1u8; f[1usize] = 0x7Eu8; f[2usize] = 0x80u8;
+          writeAll(r, id, &f[0usize ..< 3usize]);
+        }
+        r.streams.push(Strm(id, 0u64, true));
+      }
+      case is None[i64] {}
+    }
+    nb = nb + 1usize;
+  }
+  if !isData {
+    var nu = 0usize;
+    while nu < 15usize {
+      match r.q.openUni() {
+        case let Some(id) {
+          write1(r, id, 0x21u8);
+          r.streams.push(Strm(id, 1u64, false));
+        }
+        case is None[i64] {}
+      }
+      nu = nu + 1usize;
+    }
+  }
+  r.opened = true;
+}
+
+fn events(r: &mut Raw) {
+  var going = true;
+  while going {
+    match r.q.pollEvent() {
+      case is Nothing {going = false;}
+      case is HandshakeDone {r.up = true;}
+      case is VerifyNeeded {r.q.verifyNow();}
+      case let PeerStream(p) {}
+      case let Data(d) {r.q.release(d.stream, d.buf.len());}
+      case let Reset(x) {}
+      case let WriteStopped(x) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {
+        r.closed = true;
+        going = false;
+      }
+    }
+  }
+}
+
+fn transmit(lp: &mut Loop, r: &mut Raw, i: usize, now: Instant) usize {
+  var n = 0usize;
+  while r.sends < 16u32 && !r.closed {
+    let b = r.q.pollTransmit(now);
+    if b.len() == 0usize {break;}
+    n = n + 1usize;
+    r.sends = r.sends + 1u32;
+    lp.submit(Op.SendTo(r.h, r.peer, b), Target.Here(tok(i, 1u64)));
+  }
+  n
+}
+
+fn main() i32 {
+  let args = process.args();
+  var row = String.from("rr");
+  if args.len() >= 2usize {row = args[1usize].clone();}
+  let port = u16.from(parseArg(&args, 2usize, 4443u64));
+  let conns = usize.from(parseArg(&args, 3usize, 1u64));
+  let secs = i64.from(parseArg(&args, 4usize, 10u64));
+  let maxp = usize.from(parseArg(&args, 5usize, 3000u64));
+  var lp = Loop.mustMake();
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  var raws = List[Raw]();
+  match quic.Context.client(cfg) {
+    case let Ok(c) {
+      var i = 0usize;
+      while i < conns {
+        match newRaw(&mut lp, &c, port, i) {
+          case var Some(r) {
+            raws.push(r);
+            let at = raws.len() - 1usize;
+            post(&mut lp, &mut raws[at], at);
+          }
+          case is None[Raw] {printStr("ATK no connection\n");}
+        }
+        i = i + 1usize;
+      }
+      var seed = 88172645463325252u64;
+      let end = Instant.now() + Duration.fromSeconds(secs);
+      var totalWrites = 0u64;
+      var upCount = 0usize;
+      var lastLine = Instant.now();
+      while Instant.now() < end {
+        let now = Instant.now();
+        var busy = false;
+        var k = 0usize;
+        var ups = 0usize;
+        var downs = 0usize;
+        while k < raws.len() {
+          let r = &mut raws[k];
+          if !r.closed {
+            events(r);
+            if r.up {ups = ups + 1usize;}
+            if r.up && !r.opened {openStreams(r, row.view());}
+            if r.up && r.opened && !r.closed {
+              // pace: the client's own pool stays small
+              let s = stats();
+              if s.lent < 4000u64 {
+                var q = 0usize;
+                while q < r.streams.len() {
+                  let sid = r.streams[q].id;
+                  let sbidi = r.streams[q].bidi;
+                  let ssent = r.streams[q].sent;
+                  q = q + 1usize;
+                  let rv = row.view();
+                  if rv == "floor" {
+                    // nothing more: each stream holds only what openStreams wrote
+                  } else if rv == "rr" || rv == "uni1" || rv == "one" || rv == "ctl" {
+                    if sbidi && ssent >= 15000u64 && rv != "ctl" {continue;}
+                    write1(r, sid, 0x61u8);
+                    r.streams[q - 1usize].sent = ssent + 1u64;
+                  } else if rv == "dgram" {
+                    // one stream, one byte each time nothing is waiting to be sent: a datagram a byte
+                    if q == 1usize && r.sends == 0u32 {
+                      write1(r, sid, 0x64u8);
+                    }
+                  } else if rv == "fuzz" {
+                    // frames on the request stream: DATA or an unknown type, a length from a set
+                    // chosen to fall either side of http3's streamBuffer (32768) and bodyWindow
+                    // (65536), the body in pieces of random size
+                    if sbidi {
+                      if ssent == 0u64 {
+                        let pick = rnd(&mut seed) % 10u64;
+                        var len = 0u64;
+                        if pick == 0u64 {len = 1u64;}
+                        else if pick == 1u64 {len = 100u64;}
+                        else if pick == 2u64 {len = 4000u64;}
+                        else if pick == 3u64 {len = 32767u64;}
+                        else if pick == 4u64 {len = 32768u64;}
+                        else if pick == 5u64 {len = 32769u64;}
+                        else if pick == 6u64 {len = 65536u64;}
+                        else if pick == 7u64 {len = 70000u64;}
+                        else if pick == 8u64 {len = 1000000u64;}
+                        let typ = if (rnd(&mut seed) & 1u64) == 0u64 {0u8} else {0x21u8};
+                        var fh = Array[u8, 5]() <- fill 0u8;
+                        fh[0usize] = typ;
+                        fh[1usize] = 0x80u8 | u8.from((len >> 24u64) & 0x3Fu64);
+                        fh[2usize] = u8.from((len >> 16u64) & 0xFFu64);
+                        fh[3usize] = u8.from((len >> 8u64) & 0xFFu64);
+                        fh[4usize] = u8.from(len & 0xFFu64);
+                        writeAll(r, sid, &fh[0usize ..< 5usize]);
+                        r.streams[q - 1usize].sent = len;
+                      } else {
+                        var n = usize.from(rnd(&mut seed) % u64.from(maxp)) + 1usize;
+                        if u64.from(n) > ssent {n = usize.from(ssent);}
+                        if n > 4096usize {n = 4096usize;}
+                        var buf = Array[u8, 4096]() <- fill 0x63u8;
+                        writeAll(r, sid, &buf[0usize ..< n]);
+                        r.streams[q - 1usize].sent = ssent - u64.from(n);
+                      }
+                    }
+                  } else if rv == "data" {
+                    var n = usize.from(rnd(&mut seed) % u64.from(maxp)) + 1usize;
+                    var buf = Array[u8, 4096]() <- fill 0x62u8;
+                    if n > 4096usize {n = 4096usize;}
+                    if sbidi && ssent < 1000000u64 {
+                      writeAll(r, sid, &buf[0usize ..< n]);
+                      r.streams[q - 1usize].sent = ssent + u64.from(n);
+                    }
+                  }
+                }
+                busy = true;
+              }
+            }
+            if transmit(&mut lp, r, k, now) > 0usize {busy = true;}
+          } else {
+            downs = downs + 1usize;
+          }
+          k = k + 1usize;
+        }
+        if now - lastLine > Duration.fromMillis(1000i64) {
+          lastLine = now;
+          var w = 0u64;
+          var b = 0usize;
+          k = 0usize;
+          while k < raws.len() {
+            w = w + raws[k].writes;
+            k = k + 1usize;
+          }
+          let s = stats();
+          printStr("ATK t up="); printUInt(u64.from(ups));
+          printStr(" closed="); printUInt(u64.from(downs));
+          printStr(" writes="); printUInt(w);
+          printStr(" ownLent="); printUInt(s.lent);
+          printStr("\n");
+        }
+        var limit = end;
+        k = 0usize;
+        while k < raws.len() {
+          match raws[k].q.wakeAt() {
+            case let Some(t) {if t < limit {limit = t;}}
+            case is None[Instant] {}
+          }
+          k = k + 1usize;
+        }
+        if busy {limit = Instant();}
+        var cs = List[Completion]();
+        lp.poll(limit, &mut cs);
+        var j = 0usize;
+        while j < cs.len() {
+          let c2 = &mut cs[j];
+          j = j + 1usize;
+          if (c2.token >> 56u64) != tag {continue;}
+          let idx = usize.from((c2.token >> 8u64) & 0xFFFFFFu64);
+          let kind = c2.token & 0xFFu64;
+          if idx >= raws.len() {continue;}
+          let r = &mut raws[idx];
+          if kind == 0u64 {
+            if c2.isDone() && c2.buf.len() > 0usize && !r.closed {
+              r.q.handleInput(mem.sliceFromParts(c2.buf.base(), c2.buf.len()), Instant.now());
+            }
+            if !r.closed && c2.isDone() {
+              match IoBuf.tryMake(2048usize) {
+                case var Some(b) {lp.submit(Op.RecvFrom(r.h, b), Target.Here(c2.token));}
+                else {}
+              }
+            }
+          } else {
+            if r.sends > 0u32 {r.sends = r.sends - 1u32;}
+          }
+        }
+      }
+      var closedN = 0usize;
+      var wsum = 0u64;
+      var k2 = 0usize;
+      while k2 < raws.len() {
+        if raws[k2].closed {closedN = closedN + 1usize;}
+        wsum = wsum + raws[k2].writes;
+        k2 = k2 + 1usize;
+      }
+      printStr("ATK done conns="); printUInt(u64.from(raws.len()));
+      printStr(" closedByServer="); printUInt(u64.from(closedN));
+      printStr(" writes="); printUInt(wsum);
+      printStr("\n");
+    }
+    case let Err(e) {print <- e; printStr("\n");}
+  }
+  0i32
+}
