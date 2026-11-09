@@ -1,0 +1,486 @@
+// extract: an archive extracted from an actor (extractor.cone in src), against zipfile's sync extractAll.
+//
+//   1. a round trip: an archive with folders, nested files, an empty file and files of 1 KiB to 3 MiB
+//      (stored and deflated) extracted both ways to two folders: every file has the bytes that were added,
+//      both answers count the same files, folders and bytes, and the times are restored alike;
+//   2. 2,000 entries of 1 KiB, the same;
+//   3. a failing entry (one byte of a stored entry flipped, so its CRC-32 fails at its end): done says
+//      Err, the partial file is removed, the entry before it stays;
+//   4. a cancel mid-extract (a 64 MiB entry, the group cancelled once its file is there): done says Err and
+//      no file of that entry is left;
+//   5. an existing read-only target: refused (nothing made) without 'overwrite'; with it, the open fails,
+//      done says Err and the file is as it was;
+//   6. the zip-slip and link cases of zipfile's tests, through the async path: a name that leaves the
+//      folder, an absolute name, a symbolic-link entry, a link already on an entry's way (a folder link,
+//      live and dangling), a file in the way, a second entry of one name, the limit on the total: each is
+//      refused with nothing made (a good entry before the bad one is not there), as the sync extract does.
+
+mod extracttest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import libc;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import thread;
+import actors;
+import cancelgroups use *;
+import archivestage use *;
+import zipfile;
+
+fn mix(h: u64, b: u8) u64 { (h ^ u64.from(b)) * 1099511628211u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 14695981039346656037u64;
+  var i = 0usize;
+  while i < v.len { h = mix(h, v[i]); i += 1usize; }
+  h
+}
+
+fn corpus(n: usize, seed: u64) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var s = seed;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    d.push(97u8 + u8.from((s >> 40u64) % 26u64));
+  }
+  d
+}
+
+fn clean(p: &str) { _ = fs.removeAll(&Path.from(p)); }
+
+fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
+
+// What was added: names (files only) and the hash of each
+struct Made {
+  zip: zipfile.ZipWriter;
+  names: List[String];
+  hashes: List[u64];
+  lens: List[usize];
+}
+
+fn newMade() Made { Made(zipfile.ZipWriter.make(), List[String](), List[u64](), List[usize]()) }
+
+fn addFile(m: &mut Made, name: &str, size: usize, seed: u64, opts: &zipfile.EntryOptions) {
+  let data = corpus(size, seed);
+  expect(m.zip.add(name, data.view(), opts) is Ok, "an entry is added");
+  m.names.push(String.from(name));
+  m.hashes.push(hashOf(data.view()));
+  m.lens.push(size);
+}
+
+fn archiveOf(m: &mut Made) List[u8] {
+  match m.zip.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, "the archive is made"); List[u8]() }
+  }
+}
+
+fn copyOf(b: &List[u8]) List[u8] {
+  var c = List[u8].withCapacity(b.len());
+  c.appendSlice(b.view());
+  c
+}
+
+alias Answer = Result[zipfile.Extracted, AnyError];
+
+// extract and the answer
+fn ran(bytes: &List[u8], dest: &str, opts: &zipfile.ExtractOptions) Answer {
+  var tx: OneshotSender[Answer];
+  var rx: OneshotReceiver[Answer];
+  tx, rx = Oneshot[Answer].make();
+  match zipfile.Archive.open(bytes.view()) {
+    case let Err(e) { return Err[zipfile.Extracted, AnyError](AnyError.from(e)); }
+    case let Ok(ar) { extract(ar, copyOf(bytes), String.from(dest), clone(opts), tx); }
+  }
+  match rx.recv() {
+    case let Some(r) { r }
+    case is None { Err[zipfile.Extracted, AnyError](AnyError.msg("no answer")) }
+  }
+}
+
+fn clone(o: &zipfile.ExtractOptions) zipfile.ExtractOptions {
+  zipfile.ExtractOptions(o.overwrite, o.maxTotal, o.restoreMode, o.restoreTimes)
+}
+
+// extractAll, the sync way
+fn synced(bytes: &List[u8], dest: &str, opts: &zipfile.ExtractOptions) Result[zipfile.Extracted, zipfile.ZipError] {
+  match zipfile.Archive.open(bytes.view()) {
+    case let Err(e) { Err[zipfile.Extracted, zipfile.ZipError](e) }
+    case let Ok(ar) { ar.extractAll(bytes.view(), &Path.from(dest), opts) }
+  }
+}
+
+fn isOk(a: &Answer) bool {
+  match a {
+    case is Ok { true }
+    case is Err { false }
+  }
+}
+
+fn gotOf(a: &Answer) zipfile.Extracted {
+  match a {
+    case let &Ok(g) { zipfile.Extracted(g.files, g.folders, g.bytes, g.unrestored) }
+    case is Err { zipfile.Extracted(0usize, 0usize, 0u64, 0usize) }
+  }
+}
+
+// How many of the files made are under 'dir' with the bytes that were added
+fn goodUnder(dir: &str, m: &Made) usize {
+  var good = 0usize;
+  var i = 0usize;
+  while i < m.names.len() {
+    var p = String.from(dir);
+    p.append("/");
+    p.append(m.names[i].view());
+    match fs.mapFile(&Path.from(p.view())) {
+      case let Ok(f) {
+        if f.view().len == m.lens[i] && hashOf(f.view()) == m.hashes[i] { good += 1usize; }
+      }
+      case is Err {
+        // an empty file does not map
+        if m.lens[i] == 0usize && exists(p.view()) { good += 1usize; }
+      }
+    }
+    i += 1usize;
+  }
+  good
+}
+
+// Both ways extract the archive: the same bytes, the same counts
+fn bothWays(bytes: &List[u8], m: &Made, label: &str) {
+  clean("zx_async");
+  clean("zx_sync");
+  let opts = zipfile.ExtractOptions.safe();
+  let a = ran(bytes, "zx_async", &opts);
+  let s = synced(bytes, "zx_sync", &opts);
+  expect(isOk(&a), label);
+  expectUInt(u64.from(goodUnder("zx_async", m)), u64.from(m.names.len()), label);
+  expectUInt(u64.from(goodUnder("zx_sync", m)), u64.from(m.names.len()), label);
+  match s {
+    case let Ok(g) {
+      let ag = gotOf(&a);
+      expectUInt(u64.from(ag.files), u64.from(g.files), label);
+      expectUInt(u64.from(ag.folders), u64.from(g.folders), label);
+      expectUInt(ag.bytes, g.bytes, label);
+      expectUInt(u64.from(ag.unrestored), u64.from(g.unrestored), label);
+    }
+    case is Err { expect(false, "the sync extract works"); }
+  }
+}
+
+// A file's modified time in seconds
+fn modifiedOf(p: &str) i64 {
+  match fs.stat(&Path.from(p)) {
+    case let Ok(info) { info.modified.unixSeconds() }
+    case is Err { -1i64 }
+  }
+}
+
+// Runs extract in the group its 'go' message carries
+actor Launcher {
+  bytes: List[u8];
+  dest: String;
+  tx: Option[OneshotSender[Answer]];
+
+  pub fn init(self: &new, bytes: List[u8], dest: String, tx: OneshotSender[Answer]) {
+    *self = Self(bytes: bytes, dest: dest, tx: Some[OneshotSender[Answer]](tx));
+  }
+
+  pub async fn go(self) {
+    var t = None[OneshotSender[Answer]];
+    t <-> tx;
+    match t {
+      case let Some(s) {
+        match zipfile.Archive.open(bytes.view()) {
+          case let Ok(ar) { extract(ar, copyOf(&bytes), dest.clone(), zipfile.ExtractOptions.safe(), s); }
+          case is Err {}
+        }
+      }
+      case is None {}
+    }
+  }
+}
+
+// A link to a folder (a junction on Windows, a symbolic link elsewhere)
+fn linkToFolder(link: &Path, target: &Path) bool {
+  var command = String();
+  #if #os == .windows {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink /J \"");
+    command.append(paths.view());
+    command.append("\" >nul");
+  } #else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
+  libc.system(command.cstr()) == 0i32
+}
+
+fn absolute(p: &str) Path {
+  fs.absolute(&Path.from(p)) || Path.from(p)
+}
+
+// An archive of stored files with these names, each holding "evil"
+fn evilArchive(names: &Array[&str]) List[u8] {
+  var w = zipfile.ZipWriter.make();
+  var i = 0usize;
+  while i < names.len {
+    let name = names[i];
+    if name.endsWith("/") {
+      expect(w.addDir(name, &zipfile.EntryOptions.stored()) is Ok, "a folder entry is added");
+    } else {
+      expect(w.add(name, "evil\n", &zipfile.EntryOptions.stored()) is Ok, "an entry is added");
+    }
+    i += 1usize;
+  }
+  match w.bytes() {
+    case let Ok(b) { b }
+    case is Err { List[u8]() }
+  }
+}
+
+// Refused through both ways, with nothing made: the async answer is Err, the sync result is Err, and
+// 'nothing' is not there
+fn refusedBoth(bytes: &List[u8], dest: &str, nothing: &str, opts: &zipfile.ExtractOptions, label: &str) {
+  let a = ran(bytes, dest, opts);
+  expect(!isOk(&a), label);
+  expect(!exists(nothing), label);
+  let s = synced(bytes, dest, opts);
+  expect(s is Err, label);
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 4u32));
+
+  // ---- 1. a round trip ----
+  {
+    var m = newMade();
+    expect(m.zip.addDir("docs/", &zipfile.EntryOptions.plain()) is Ok, "1: a folder");
+    expect(m.zip.addDir("empty/", &zipfile.EntryOptions.plain()) is Ok, "1: an empty folder");
+    var opts = zipfile.EntryOptions.plain();
+    opts.modified = 1700000000i64;
+    addFile(&mut m, "docs/small.txt", 1024usize, 1u64, &opts);
+    addFile(&mut m, "docs/nothing.txt", 0usize, 2u64, &opts);
+    addFile(&mut m, "docs/deep/er/medium.txt", 300000usize, 3u64, &opts);
+    addFile(&mut m, "big.bin", 3145728usize, 4u64, &zipfile.EntryOptions.stored());
+    addFile(&mut m, "big.txt", 3000000usize, 5u64, &opts);
+    let bytes = archiveOf(&mut m);
+    bothWays(&bytes, &m, "1: the async extract matches the sync one");
+    expectInt(modifiedOf("zx_async/docs/small.txt"), 1700000000i64, "1: a file's time is restored");
+    expectInt(modifiedOf("zx_sync/docs/small.txt"), 1700000000i64, "1: as the sync extract restores it");
+    clean("zx_async");
+    clean("zx_sync");
+  }
+
+  // ---- 2. 2,000 entries of 1 KiB ----
+  {
+    var m = newMade();
+    var i = 0usize;
+    while i < 2000usize {
+      var name = String.from("many/e");
+      name.appendUInt(u64.from(i));
+      name.append(".txt");
+      addFile(&mut m, name.view(), 1024usize, 9000u64 + u64.from(i), &zipfile.EntryOptions.plain());
+      i += 1usize;
+    }
+    let bytes = archiveOf(&mut m);
+    bothWays(&bytes, &m, "2: 2,000 entries: the async extract matches the sync one");
+    clean("zx_async");
+    clean("zx_sync");
+  }
+
+  // ---- 3. a failing entry ----
+  {
+    var m = newMade();
+    addFile(&mut m, "good.txt", 5000usize, 20u64, &zipfile.EntryOptions.stored());
+    let bad = corpus(2097152usize, 21u64);
+    expect(m.zip.add("bad.bin", bad.view(), &zipfile.EntryOptions.stored()) is Ok, "3: the entry is added");
+    var bytes = archiveOf(&mut m);
+    // one byte of its data flipped, 1.5 MiB in: found by its first bytes
+    var at = 0usize;
+    var found = false;
+    var i = 0usize;
+    while !found && i + 16usize < bytes.len() {
+      var same = true;
+      var j = 0usize;
+      while same && j < 16usize {
+        if bytes[i + j] != bad[j] { same = false; }
+        j += 1usize;
+      }
+      if same { found = true; at = i; }
+      i += 1usize;
+    }
+    expect(found, "3: the entry's data is in the archive");
+    bytes[at + 1572864usize] = bytes[at + 1572864usize] ^ 1u8;
+    clean("zx_async");
+    let a = ran(&bytes, "zx_async", &zipfile.ExtractOptions.safe());
+    expect(!isOk(&a), "3: a bad CRC-32: done says Err");
+    expect(exists("zx_async/good.txt"), "3: the entry before it stays");
+    expect(!exists("zx_async/bad.bin"), "3: the partial file is removed");
+    clean("zx_async");
+  }
+
+  // ---- 3b. the same for a small entry (written by the extractor's own aio calls) ----
+  {
+    var m = newMade();
+    addFile(&mut m, "good.txt", 500usize, 22u64, &zipfile.EntryOptions.stored());
+    let bad = corpus(3000usize, 23u64);
+    expect(m.zip.add("small.bin", bad.view(), &zipfile.EntryOptions.stored()) is Ok, "3b: the entry is added");
+    addFile(&mut m, "after.txt", 500usize, 24u64, &zipfile.EntryOptions.stored());
+    var bytes = archiveOf(&mut m);
+    var at = 0usize;
+    var found = false;
+    var i = 0usize;
+    while !found && i + 16usize < bytes.len() {
+      var same = true;
+      var j = 0usize;
+      while same && j < 16usize {
+        if bytes[i + j] != bad[j] { same = false; }
+        j += 1usize;
+      }
+      if same { found = true; at = i; }
+      i += 1usize;
+    }
+    expect(found, "3b: the entry's data is in the archive");
+    bytes[at + 2000usize] = bytes[at + 2000usize] ^ 1u8;
+    clean("zx_async");
+    let a = ran(&bytes, "zx_async", &zipfile.ExtractOptions.safe());
+    expect(!isOk(&a), "3b: a bad CRC-32 in a small entry: done says Err");
+    expect(exists("zx_async/good.txt"), "3b: the entry before it stays");
+    expect(!exists("zx_async/small.bin"), "3b: the partial file is not left");
+    expect(!exists("zx_async/after.txt"), "3b: and nothing after it is made");
+    clean("zx_async");
+  }
+
+  // ---- 4. a cancel mid-extract ----
+  {
+    var m = newMade();
+    addFile(&mut m, "cancel.bin", 67108864usize, 31u64, &zipfile.EntryOptions.stored());
+    let bytes = archiveOf(&mut m);
+    clean("zx_cancel");
+    var tx: OneshotSender[Answer];
+    var rx: OneshotReceiver[Answer];
+    tx, rx = Oneshot[Answer].make();
+    let gc = CancelGroup.make();
+    let gs = gc.child();
+    let launcher = Launcher(bytes, String.from("zx_cancel"), tx);
+    actors.withGroup(&gs, fn() [launcher] { launcher.go(); });
+    var waited = 0u32;
+    while !exists("zx_cancel/cancel.bin") && waited < 5000u32 {
+      thread.sleep(Duration.fromMillis(1i64));
+      waited += 1u32;
+    }
+    expect(exists("zx_cancel/cancel.bin"), "4: the file was started");
+    gc.cancel();
+    var erred = false;
+    match rx.recv() {
+      case let Some(x) { erred = !isOk(&x); }
+      case is None {}
+    }
+    expect(erred, "4: cancelled mid-extract, done says Err");
+    expect(!exists("zx_cancel/cancel.bin"), "4: and no file of that entry is left");
+    clean("zx_cancel");
+  }
+
+  // ---- 5. an existing read-only target ----
+  {
+    var m = newMade();
+    addFile(&mut m, "ro.txt", 4000usize, 41u64, &zipfile.EntryOptions.stored());
+    let bytes = archiveOf(&mut m);
+    clean("zx_ro");
+    expect(fs.makeDirAll(&Path.from("zx_ro")) is Ok, "5: the folder");
+    expect(fs.writeFile(&Path.from("zx_ro/ro.txt"), "keep me\n") is Ok, "5: the file is there");
+    expect(fs.chmod(&Path.from("zx_ro/ro.txt"), 0x124u32) is Ok, "5: and read-only");
+    let a = ran(&bytes, "zx_ro", &zipfile.ExtractOptions.safe());
+    expect(!isOk(&a), "5: without overwrite: refused");
+    var over = zipfile.ExtractOptions.safe();
+    over.overwrite = true;
+    let b = ran(&bytes, "zx_ro", &over);
+    expect(!isOk(&b), "5: with overwrite the open fails: done says Err");
+    match fs.readFile(&Path.from("zx_ro/ro.txt")) {
+      case let Ok(s) { expectStr(s.view(), "keep me\n", "5: and the file is as it was"); }
+      case is Err { expect(false, "5: the file is still there"); }
+    }
+    _ = fs.chmod(&Path.from("zx_ro/ro.txt"), 0x1B6u32);
+    clean("zx_ro");
+  }
+
+  // ---- 6. the refusals, through the async path ----
+  {
+    let safe = zipfile.ExtractOptions.safe();
+    clean("zx_ref");
+    clean("zx_evil.txt");
+    clean("zx_evil2.txt");
+    // a name that leaves the folder, after a good entry
+    let slip = evilArchive(&["good.txt", "../zx_evil.txt"]);
+    refusedBoth(&slip, "zx_ref/in", "zx_ref/in/good.txt", &safe, "6: a name with '..' is refused, nothing made");
+    expect(!exists("zx_ref/zx_evil.txt"), "6: and nothing outside");
+    let abs = evilArchive(&["good.txt", "/zx_evil2.txt"]);
+    refusedBoth(&abs, "zx_ref/in", "zx_ref/in/good.txt", &safe, "6: an absolute name is refused");
+    let back = evilArchive(&["good.txt", "..\\zx_evil.txt"]);
+    refusedBoth(&back, "zx_ref/in", "zx_ref/in/good.txt", &safe, "6: '..' behind a backslash is refused");
+    // two entries of one name
+    // (the writer refuses a name twice: the second is written 'dup.txv' and patched, both headers of it)
+    var twice = evilArchive(&["good.txt", "dup.txt", "dup.txv"]);
+    var p = 0usize;
+    while p + 7usize <= twice.len() {
+      if twice[p] == 'd' && twice[p + 1usize] == 'u' && twice[p + 2usize] == 'p' && twice[p + 3usize] == '.'
+          && twice[p + 4usize] == 't' && twice[p + 5usize] == 'x' && twice[p + 6usize] == 'v' {
+        twice[p + 6usize] = 't';
+      }
+      p += 1usize;
+    }
+    refusedBoth(&twice, "zx_ref/in", "zx_ref/in/good.txt", &safe, "6: two entries of one name are refused");
+    // the limit on the total
+    var tight = zipfile.ExtractOptions.safe();
+    tight.maxTotal = 8u64;
+    let two = evilArchive(&["good.txt", "more.txt"]);
+    refusedBoth(&two, "zx_ref/in", "zx_ref/in/good.txt", &tight, "6: past the limit on the total is refused");
+    // a file in the way
+    expect(fs.makeDirAll(&Path.from("zx_ref/way")) is Ok, "6: a folder");
+    expect(fs.writeFile(&Path.from("zx_ref/way/taken.txt"), "mine\n") is Ok, "6: a file");
+    let taken = evilArchive(&["fresh.txt", "taken.txt"]);
+    refusedBoth(&taken, "zx_ref/way", "zx_ref/way/fresh.txt", &safe, "6: a file already there is refused");
+    match fs.readFile(&Path.from("zx_ref/way/taken.txt")) {
+      case let Ok(s) { expectStr(s.view(), "mine\n", "6: and left as it was"); }
+      case is Err { expect(false, "6: the file is still there"); }
+    }
+    // a link on an entry's way, live and dangling
+    expect(fs.makeDirAll(&Path.from("zx_ref/outside")) is Ok, "6: a target folder");
+    expect(fs.makeDirAll(&Path.from("zx_ref/dest")) is Ok, "6: a destination");
+    let tgt = absolute("zx_ref/outside");
+    if linkToFolder(&Path.from("zx_ref/dest/lnk"), &tgt) {
+      let through = evilArchive(&["good.txt", "lnk/x.txt"]);
+      refusedBoth(&through, "zx_ref/dest", "zx_ref/dest/good.txt", &safe, "6: a name through a live link is refused");
+      expect(!exists("zx_ref/outside/x.txt"), "6: and nothing is made through it");
+      clean("zx_ref/outside");
+      let deep = evilArchive(&["good.txt", "lnk/a/b/x.txt"]);
+      refusedBoth(&deep, "zx_ref/dest", "zx_ref/dest/good.txt", &safe, "6: and through a dangling one, deeper");
+    }
+    // a symbolic-link entry: Unix mode 0120000 in the external attributes
+    var lw = zipfile.ZipWriter.make();
+    expect(lw.add("good.txt", "evil\n", &zipfile.EntryOptions.stored()) is Ok, "6: an entry");
+    var lo = zipfile.EntryOptions.stored();
+    lo.mode = 0xA1FFu32;
+    expect(lw.add("link", "good.txt", &lo) is Ok, "6: a link entry");
+    match lw.bytes() {
+      case let Ok(lb) {
+        refusedBoth(&lb, "zx_ref/links", "zx_ref/links/good.txt", &safe, "6: a symbolic-link entry is refused");
+      }
+      case is Err { expect(false, "6: the archive is made"); }
+    }
+    clean("zx_ref");
+  }
+
+  done()
+}

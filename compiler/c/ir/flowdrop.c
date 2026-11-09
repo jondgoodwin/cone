@@ -34,6 +34,7 @@ typedef struct {
 
 typedef struct {
     uint32_t var;
+    uint32_t hmask;     // the moves that may have hollowed it here, on any walk (dropHollowBit)
     uint8_t state;
 } DropEntry;
 
@@ -173,13 +174,58 @@ void dropPartUse(uint32_t var, INode *node) {
         errorMsgNode(node, ErrorMove, "A field or element is stored only into a variable that holds a value on every path that reaches here. Give the whole variable its value first.");
 }
 
+// The moves that hollow a variable are numbered in the order flow listed them
+// (VarDclNode.hollowall), and the path walk keeps, for each variable, the set
+// that may have hollowed it as a mask: bit i for the i-th move, and the last
+// bit for every one from the 31st on. A use of the owner's name that is none of
+// the listed ones sets every bit, so the release is told of every move.
+#define DropHollowAll 0xFFFFFFFFu
+#define DropHollowLast 31
+
+static uint32_t dropHollowBit(VarDclNode *var, INode *use) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t index = 0;
+    if (var->hollowuse == NULL || var->hollowuse->used != (var->hollowall ? var->hollowall->used : 0))
+        return DropHollowAll;
+    for (nodesFor(var->hollowuse, cnt, nodesp)) {
+        if (*nodesp == use)
+            return 1u << (index < DropHollowLast ? index : DropHollowLast);
+        ++index;
+    }
+    return DropHollowAll;
+}
+
+// The moves a release is told of: those of the walk's mask, or every one
+static Nodes *dropHollowMoves(VarDclNode *var, uint32_t hmask) {
+    Nodes *moved = newNodes(2);
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t index = 0;
+    if (var->hollowall == NULL)
+        return moved;
+    if (hmask == 0)
+        hmask = DropHollowAll;
+    for (nodesFor(var->hollowall, cnt, nodesp)) {
+        if (hmask & (1u << (index < DropHollowLast ? index : DropHollowLast)))
+            nodesAdd(&moved, *nodesp);
+        ++index;
+    }
+    return moved;
+}
+
 void dropMove(uint32_t var, INode *node, int hollow) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked)
         return;
     if (pv->state != DropWhole && pv->state != 0 && !pathCandFail(var, pv->state))
         dropRefuse(node, pv->state, 0);
+    uint32_t hmask = 0;
+    if (hollow)
+        hmask = (pv->state & DropHollow ? pv->hmask : 0) | dropHollowBit(pv->var, node);
     pathSetState(var, hollow ? DropHollow : DropMoved);
+    if (hollow)
+        pathSetHollowMask(var, hmask);
 }
 
 void dropUse(uint32_t var, INode *node, int borrow) {
@@ -226,9 +272,11 @@ static void dropOne(INode *node, uint8_t kind, uint32_t var, INode **rvalp) {
     if (isnew) {
         entry->var = var;
         entry->state = 0;
+        entry->hmask = 0;
         site->rvalp = rvalp;
     }
     entry->state |= pathVars[var].state;
+    entry->hmask |= pathVars[var].hmask;
 }
 
 void dropStore(uint32_t var, INode *lval, INode **rvalp) {
@@ -258,12 +306,14 @@ void dropExit(INode *exit, uint32_t *vars, uint32_t n) {
         if (isnew) {
             entry->var = vars[i];
             entry->state = 0;
+            entry->hmask = 0;
         }
         else if (entry->var != vars[i]) {
             errorUnreachable(exit, "an exit whose variables in scope differ between walks");
             return;
         }
         entry->state |= pv->state;
+        entry->hmask |= pv->hmask;
         ++entry;
     }
 }
@@ -294,14 +344,8 @@ static void dropApplyStore(DropSite *site, DropEntry *entry) {
             hnode->vtype = ((IExpNode *)*rvalp)->vtype;
             *rvalp = (INode *)hnode;
         }
-        // Every move that hollowed it, on any path
-        hnode->moved = newNodes(2);
-        INode **nodesp;
-        uint32_t cnt;
-        if (var->hollowall) {
-            for (nodesFor(var->hollowall, cnt, nodesp))
-                nodesAdd(&hnode->moved, *nodesp);
-        }
+        // Every move that hollowed it on a path that reaches here
+        hnode->moved = dropHollowMoves(var, entry->hmask);
         hnode->test = mixed;
     }
     else if (hnode)
@@ -340,7 +384,7 @@ static void dropApplyExit(DropSite *site) {
             continue;
         int whole = (state & DropWhole) && hollow == NULL;
         int hollowed = (state & DropHollow) || (hollow != NULL && (state & DropWhole));
-        flowVarRelease(var, dropat, whole, hollowed, (state & DropHollow) ? var->hollowall : NULL, hollow,
+        flowVarRelease(var, dropat, whole, hollowed, (state & DropHollow) ? dropHollowMoves(var, entry->hmask) : NULL, hollow,
             dropMixed(state), &list);
     }
     exit->dealias = list;
