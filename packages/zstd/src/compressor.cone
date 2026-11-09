@@ -64,7 +64,7 @@ pub struct Compressor {
   // The matcher's tables (positions in buf; the fast matcher uses shortT alone)
   longT: List[u32];
   shortT: List[u32];
-  // With -D ZSTD_TAG=1, a tag byte for each slot of the two tables (matcher.cone); empty otherwise
+  // A tag byte for each slot of the two tables (matcher.cone)
   longG: List[u8];
   shortG: List[u8];
   // The repeat offsets as the decoder has them after the last block, and as
@@ -214,21 +214,14 @@ pub struct Compressor {
       let shortMax = if longLog > 0u32 {need} else {need + 1u32};
       if shortLog > shortMax { shortLog = shortMax; }
     }
-    // -D ZSTD_SHRINK=n: tables n logs smaller than the level says (at least 2^10), to time the cache effect
-    // (1 to 4 are taken; any other value is none)
-    let sh = #if #define("ZSTD_SHRINK") == 1 {1u32} #elif #define("ZSTD_SHRINK") == 2 {2u32}
-      #elif #define("ZSTD_SHRINK") == 3 {3u32} #elif #define("ZSTD_SHRINK") == 4 {4u32} #else {0u32};
-    if sh > 0u32 {
-      if longLog > 10u32 { longLog = if longLog > 10u32 + sh {longLog - sh} else {10u32}; }
-      if shortLog > 10u32 { shortLog = if shortLog > 10u32 + sh {shortLog - sh} else {10u32}; }
-    }
     par = Params(par.windowLog, longLog, shortLog, par.minMatch);
     if longLog > 0u32 { longT.resize(1usize << usize.from(longLog), 0u32); }
     shortT.resize(1usize << usize.from(shortLog), 0u32);
-    #if #define("ZSTD_TAG") == 1 {
-      if longLog > 0u32 { longG.resize(1usize << usize.from(longLog), 0u8); }
-      shortG.resize(1usize << usize.from(shortLog), 0u8);
-    }
+    // An empty slot holds position 0: its tag is the tag of the buffer's first 4 bytes (when it has them; the
+    // matcher probes only past 8 bytes, and the first block has at least that if it probes at all)
+    let zero = if buf.len() >= 4usize { tag4(&buf, 0usize) } else { 0u8 };
+    if longLog > 0u32 { longG.resize(1usize << usize.from(longLog), zero); }
+    shortG.resize(1usize << usize.from(shortLog), zero);
   }
 
   // RFC 8878 section 3.1.1.1: the magic number and the frame header. With
@@ -283,21 +276,11 @@ pub struct Compressor {
         work = Reps(reps.r1, reps.r2, reps.r3);
         seqs.clear();
         let window = 1usize << usize.from(par.windowLog);
-        #if #define("ZSTD_TAG") == 1 {
-          if par.longLog == 0u32 {
-            matchFastTag(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut shortG,
-              &mut work, &mut seqs);
-          } else {
-            matchDoubleTag(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
-              &mut longG, &mut shortG, &mut work, &mut seqs);
-          }
-        } #else {
-          if par.longLog == 0u32 {
-            matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut work, &mut seqs);
-          } else {
-            matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
-              &mut work, &mut seqs);
-          }
+        if par.longLog == 0u32 {
+          matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut shortG, &mut work, &mut seqs);
+        } else {
+          matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
+            &mut longG, &mut shortG, &mut work, &mut seqs);
         }
         writeLiterals(&seqs.lits, &mut enc.huf, &mut out);
         writeSequences(&seqs, &mut enc, &mut out);
@@ -350,8 +333,9 @@ pub struct Compressor {
     buf.truncate(keep);
     base = base + u64.from(drop);
     cur = cur - drop;
-    shiftDown(&mut longT, drop);
-    shiftDown(&mut shortT, drop);
+    let zero = if buf.len() >= 4usize { tag4(&buf, 0usize) } else { 0u8 };
+    shiftDown(&mut longT, &mut longG, drop, zero);
+    shiftDown(&mut shortT, &mut shortG, drop, zero);
   }
 
   // -------- one-shot use --------
@@ -377,13 +361,14 @@ fn allSame(b: &Array[u8], start: usize, end: usize) bool {
 }
 
 // Every position in 't' moved down by 'd', those before it to 0
-fn shiftDown(t: &mut List[u32], d: usize) {
+fn shiftDown(t: &mut List[u32], tags: &mut List[u8], d: usize, zero: u8) {
   let v = t.viewMut();
+  let g = tags.viewMut();
   let dd = u32.from(if d > 0xFFFFFFFFusize {0xFFFFFFFFusize} else {d});
   var i = 0usize;
   while i < v.len {
     let x = v[i];
-    v[i] = if x > dd {x - dd} else {0u32};
+    if x > dd { v[i] = x - dd; } else { v[i] = 0u32; g[i] = zero; }
     i += 1usize;
   }
 }

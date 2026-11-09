@@ -150,20 +150,6 @@ fn matchLen(src: &List[u8], a: usize, c: usize, end: usize) usize {
   k
 }
 
-// The hashes of the 5, 6, 7 and 8 bytes at src[p], 'shift' being 64 less
-// the table's log (the reference's multipliers)
-fn hash5(src: &List[u8], p: usize, shift: u64) usize {
-  usize.from(((rd64(src, p) << 24u64) * 889523592379u64) >> shift)
-}
-fn hash8(src: &List[u8], p: usize, shift: u64) usize {
-  usize.from((rd64(src, p) * 0xCF1BBCDCB7A56463u64) >> shift)
-}
-// 6 or 7 bytes, by 'mls'
-fn hashFast(src: &List[u8], p: usize, mls: u32, shift: u64) usize {
-  if mls == 7u32 { return usize.from(((rd64(src, p) << 8u64) * 58295818150454627u64) >> shift); }
-  usize.from(((rd64(src, p) << 16u64) * 227718039650203u64) >> shift)
-}
-
 // Whether a match of offset 'r' (a repeat) can start at p: it reaches no
 // further back than the buffer and the window
 fn repFits(p: usize, r: u32, window: usize) bool {
@@ -171,155 +157,25 @@ fn repFits(p: usize, r: u32, window: usize) bool {
   ru <= p && ru <= window
 }
 
-// The fast matcher over src[start, end): sequences into 'seqs', the repeats
-// moved in 'reps'. 'table' is 2^log entries, by the 'mls' (6 or 7) bytes at
-// a position.
-fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
-    reps: &mut Reps, seqs: &mut Seqs) {
-  let shift = 64u64 - u64.from(log);
-  var ip = start;
-  var anchor = start;
-  while ip + 9usize <= end {
-    // The last offset, one byte on
-    let r = reps.r1;
-    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
-      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
-      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
-      ip = ip + 1usize + ml;
-      anchor = ip;
-    } else {
-      let h = hashFast(src, ip, mls, shift);
-      let cand = usize.from(*table[h]);
-      table.set(h, u32.from(ip));
-      if cand < ip && ip - cand <= window && rd32(src, cand) == rd32(src, ip) {
-        var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
-        var s = ip;
-        var c = cand;
-        while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
-          s -= 1usize;
-          c -= 1usize;
-          ml += 1usize;
-        }
-        emit(src, anchor, s - anchor, u32.from(ip - cand), ml, reps, seqs);
-        let at = ip;
-        ip = s + ml;
-        anchor = ip;
-        if ip + 8usize <= end {
-          table.set(hashFast(src, at + 2usize, mls, shift), u32.from(at + 2usize));
-          table.set(hashFast(src, ip - 2usize, mls, shift), u32.from(ip - 2usize));
-        }
-      } else {
-        ip += ((ip - anchor) >> 7usize) + 1usize;
-        continue;
-      }
-    }
-    // The second-to-last offset, at once
-    while ip + 8usize <= end && repFits(ip, reps.r2, window)
-        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
-      let r2 = reps.r2;
-      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
-      table.set(hashFast(src, ip, mls, shift), u32.from(ip));
-      emit(src, anchor, 0usize, r2, ml, reps, seqs);
-      ip += ml;
-      anchor = ip;
-    }
-  }
-  emitRest(src, anchor, end, seqs);
-}
-
-// The double-fast matcher over src[start, end): 'longT' (2^longLog entries)
-// by the 8 bytes at a position, 'shortT' (2^shortLog) by the 5
-fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
-    longT: &mut List[u32], shortT: &mut List[u32], reps: &mut Reps, seqs: &mut Seqs) {
-  let shiftL = 64u64 - u64.from(longLog);
-  let shiftS = 64u64 - u64.from(shortLog);
-  var ip = start;
-  var anchor = start;
-  while ip + 9usize <= end {
-    let hl = hash8(src, ip, shiftL);
-    let hs = hash5(src, ip, shiftS);
-    let candL = usize.from(*longT[hl]);
-    let candS = usize.from(*shortT[hs]);
-    longT.set(hl, u32.from(ip));
-    shortT.set(hs, u32.from(ip));
-    let r = reps.r1;
-    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
-      // The last offset, one byte on
-      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
-      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
-      ip = ip + 1usize + ml;
-      anchor = ip;
-    } else {
-      var ml = 0usize;
-      var s = ip;
-      var c = 0usize;
-      if candL < ip && ip - candL <= window && rd64(src, candL) == rd64(src, ip) {
-        ml = 8usize + matchLen(src, ip + 8usize, candL + 8usize, end);
-        c = candL;
-      } else if candS < ip && ip - candS <= window && rd32(src, candS) == rd32(src, ip) {
-        // A short match: the long one a byte on may be better
-        let next = ip + 1usize;
-        let hl1 = hash8(src, next, shiftL);
-        let candL1 = usize.from(*longT[hl1]);
-        longT.set(hl1, u32.from(next));
-        if candL1 < next && next - candL1 <= window && rd64(src, candL1) == rd64(src, next) {
-          ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
-          s = next;
-          c = candL1;
-        } else {
-          ml = 4usize + matchLen(src, ip + 4usize, candS + 4usize, end);
-          c = candS;
-        }
-      } else {
-        ip += ((ip - anchor) >> 8usize) + 1usize;
-        continue;
-      }
-      let off = u32.from(s - c);
-      while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
-        s -= 1usize;
-        c -= 1usize;
-        ml += 1usize;
-      }
-      emit(src, anchor, s - anchor, off, ml, reps, seqs);
-      let at = ip;
-      ip = s + ml;
-      anchor = ip;
-      if ip + 8usize <= end {
-        longT.set(hash8(src, at + 2usize, shiftL), u32.from(at + 2usize));
-        longT.set(hash8(src, ip - 2usize, shiftL), u32.from(ip - 2usize));
-        shortT.set(hash5(src, at + 2usize, shiftS), u32.from(at + 2usize));
-        shortT.set(hash5(src, ip - 1usize, shiftS), u32.from(ip - 1usize));
-      }
-    }
-    // The second-to-last offset, at once
-    while ip + 8usize <= end && repFits(ip, reps.r2, window)
-        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
-      let r2 = reps.r2;
-      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
-      shortT.set(hash5(src, ip, shiftS), u32.from(ip));
-      longT.set(hash8(src, ip, shiftL), u32.from(ip));
-      emit(src, anchor, 0usize, r2, ml, reps, seqs);
-      ip += ml;
-      anchor = ip;
-    }
-  }
-  emitRest(src, anchor, end, seqs);
-}
-
-// ======== The tagged matchers (compile-time choice, -D ZSTD_TAG=1) ========
+// ======== The matchers: fast (level 1) and double-fast (levels 2, 3) ========
 //
-// The same two matchers with a one-byte tag beside every table slot (a
-// parallel List[u8], same index): the 8 hash bits just below the ones that
-// pick the slot. A probe reads the tag first, and only when it is the
-// probe's own tag reads the slot's position and then the window at it; a
-// slot whose tag differs holds some other bytes (or nothing), so the
-// window load, a cache miss into the 2 MiB window, is skipped. The slot is
-// still written on every probe. Not the same output as the untagged
-// matchers: where the untagged probes compared only 4 bytes of the 5 to 7
-// they hash, a candidate that agrees on 4 and differs in the rest is now
-// not tried. Every frame is still a valid one.
+// The fast matcher over src[start, end): sequences into 'seqs', the repeats
+// moved in 'reps'; 'table' is 2^log entries, by the 'mls' (6 or 7) bytes at
+// a position. The double-fast one has a table by 8 bytes and one by 5.
+//
+// Each table has a one-byte tag beside every slot (a parallel List[u8], same
+// index): a hash of the 4 bytes at the position the slot holds, the very
+// bytes a candidate is verified on. A probe reads the tag first, and only
+// when it is the tag of the probe's own 4 bytes reads the slot's position
+// and then the window at it; a slot whose tag differs holds other bytes, so
+// the window load, a cache miss into the 2 MiB window, is skipped. The slot
+// is still written on every probe. THE OUTPUT IS THE UNTAGGED MATCHER'S,
+// byte for byte: the tag is a function of the 4 verified bytes alone, so it
+// rejects exactly the candidates the verify would reject. An empty slot, or
+// one a slide dropped to position 0, holds position 0, which the verify may
+// accept; their tags are the tag of the buffer's first 4 bytes (Compressor).
 
-// The multiplicative products, before the shift (hashFast, hash5, hash8 shift them down)
+// The multiplicative products, before the shift
 fn prodFast(src: &List[u8], p: usize, mls: u32) u64 {
   if mls == 7u32 { return (rd64(src, p) << 8u64) * 58295818150454627u64; }
   (rd64(src, p) << 16u64) * 227718039650203u64
@@ -327,22 +183,29 @@ fn prodFast(src: &List[u8], p: usize, mls: u32) u64 {
 fn prod5(src: &List[u8], p: usize) u64 { (rd64(src, p) << 24u64) * 889523592379u64 }
 fn prod8(src: &List[u8], p: usize) u64 { rd64(src, p) * 0xCF1BBCDCB7A56463u64 }
 
-// The candidate in the slot a product picks, or 'none' when its tag is not the product's
-fn probeTag(table: &List[u32], tags: &List[u8], pr: u64, shift: u64, none: usize) usize {
+// The tag of the 4 bytes at src[p]: the bytes every candidate is verified on. A candidate whose 4 bytes equal the
+// probe's has the probe's tag, so a tag mismatch rejects only candidates the verify would reject
+pub fn tag4(src: &List[u8], p: usize) u8 {
+  u8.from(((u64.from(rd32(src, p)) * 2654435761u64) >> 20u64) & 255u64)
+}
+
+// The candidate in the slot a product picks, or 'none' (the probe's own position) when its tag is not the tag of
+// the 4 bytes at 'none'
+fn probeTag(src: &List[u8], table: &List[u32], tags: &List[u8], pr: u64, shift: u64, none: usize) usize {
   let h = usize.from(pr >> shift);
-  if *tags[h] != u8.from((pr >> (shift - 8u64)) & 255u64) { return none; }
+  if *tags[h] != tag4(src, none) { return none; }
   usize.from(*table[h])
 }
 
-// Enters 'pos' in the slot a product picks, with its tag
-fn putTag(table: &mut List[u32], tags: &mut List[u8], pr: u64, shift: u64, pos: usize) {
+// Enters 'pos' in the slot a product picks, with the tag of the 4 bytes at pos
+fn putTag(src: &List[u8], table: &mut List[u32], tags: &mut List[u8], pr: u64, shift: u64, pos: usize) {
   let h = usize.from(pr >> shift);
   table.set(h, u32.from(pos));
-  tags.set(h, u8.from((pr >> (shift - 8u64)) & 255u64));
+  tags.set(h, tag4(src, pos));
 }
 
 // matchFast with tags: 'tags' is as long as 'table'
-fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
+fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
     tags: &mut List[u8], reps: &mut Reps, seqs: &mut Seqs) {
   let shift = 64u64 - u64.from(log);
   var ip = start;
@@ -356,8 +219,8 @@ fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u3
       anchor = ip;
     } else {
       let pr = prodFast(src, ip, mls);
-      let cand = probeTag(table, tags, pr, shift, ip);
-      putTag(table, tags, pr, shift, ip);
+      let cand = probeTag(src, table, tags, pr, shift, ip);
+      putTag(src, table, tags, pr, shift, ip);
       if cand < ip && ip - cand <= window && rd32(src, cand) == rd32(src, ip) {
         var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
         var s = ip;
@@ -372,8 +235,8 @@ fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u3
         ip = s + ml;
         anchor = ip;
         if ip + 8usize <= end {
-          putTag(table, tags, prodFast(src, at + 2usize, mls), shift, at + 2usize);
-          putTag(table, tags, prodFast(src, ip - 2usize, mls), shift, ip - 2usize);
+          putTag(src, table, tags, prodFast(src, at + 2usize, mls), shift, at + 2usize);
+          putTag(src, table, tags, prodFast(src, ip - 2usize, mls), shift, ip - 2usize);
         }
       } else {
         ip += ((ip - anchor) >> 7usize) + 1usize;
@@ -384,7 +247,7 @@ fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u3
         && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
       let r2 = reps.r2;
       let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
-      putTag(table, tags, prodFast(src, ip, mls), shift, ip);
+      putTag(src, table, tags, prodFast(src, ip, mls), shift, ip);
       emit(src, anchor, 0usize, r2, ml, reps, seqs);
       ip += ml;
       anchor = ip;
@@ -394,7 +257,7 @@ fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u3
 }
 
 // matchDouble with tags: 'longG' and 'shortG' as long as 'longT' and 'shortT'
-fn matchDoubleTag(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
+fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
     longT: &mut List[u32], shortT: &mut List[u32], longG: &mut List[u8], shortG: &mut List[u8],
     reps: &mut Reps, seqs: &mut Seqs) {
   let shiftL = 64u64 - u64.from(longLog);
@@ -404,10 +267,10 @@ fn matchDoubleTag(src: &List[u8], start: usize, end: usize, window: usize, longL
   while ip + 9usize <= end {
     let prL = prod8(src, ip);
     let prS = prod5(src, ip);
-    let candL = probeTag(longT, longG, prL, shiftL, ip);
-    let candS = probeTag(shortT, shortG, prS, shiftS, ip);
-    putTag(longT, longG, prL, shiftL, ip);
-    putTag(shortT, shortG, prS, shiftS, ip);
+    let candL = probeTag(src, longT, longG, prL, shiftL, ip);
+    let candS = probeTag(src, shortT, shortG, prS, shiftS, ip);
+    putTag(src, longT, longG, prL, shiftL, ip);
+    putTag(src, shortT, shortG, prS, shiftS, ip);
     let r = reps.r1;
     if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
       let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
@@ -424,8 +287,8 @@ fn matchDoubleTag(src: &List[u8], start: usize, end: usize, window: usize, longL
       } else if candS < ip && ip - candS <= window && rd32(src, candS) == rd32(src, ip) {
         let next = ip + 1usize;
         let pr1 = prod8(src, next);
-        let candL1 = probeTag(longT, longG, pr1, shiftL, next);
-        putTag(longT, longG, pr1, shiftL, next);
+        let candL1 = probeTag(src, longT, longG, pr1, shiftL, next);
+        putTag(src, longT, longG, pr1, shiftL, next);
         if candL1 < next && next - candL1 <= window && rd64(src, candL1) == rd64(src, next) {
           ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
           s = next;
@@ -449,18 +312,18 @@ fn matchDoubleTag(src: &List[u8], start: usize, end: usize, window: usize, longL
       ip = s + ml;
       anchor = ip;
       if ip + 8usize <= end {
-        putTag(longT, longG, prod8(src, at + 2usize), shiftL, at + 2usize);
-        putTag(longT, longG, prod8(src, ip - 2usize), shiftL, ip - 2usize);
-        putTag(shortT, shortG, prod5(src, at + 2usize), shiftS, at + 2usize);
-        putTag(shortT, shortG, prod5(src, ip - 1usize), shiftS, ip - 1usize);
+        putTag(src, longT, longG, prod8(src, at + 2usize), shiftL, at + 2usize);
+        putTag(src, longT, longG, prod8(src, ip - 2usize), shiftL, ip - 2usize);
+        putTag(src, shortT, shortG, prod5(src, at + 2usize), shiftS, at + 2usize);
+        putTag(src, shortT, shortG, prod5(src, ip - 1usize), shiftS, ip - 1usize);
       }
     }
     while ip + 8usize <= end && repFits(ip, reps.r2, window)
         && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
       let r2 = reps.r2;
       let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
-      putTag(shortT, shortG, prod5(src, ip), shiftS, ip);
-      putTag(longT, longG, prod8(src, ip), shiftL, ip);
+      putTag(src, shortT, shortG, prod5(src, ip), shiftS, ip);
+      putTag(src, longT, longG, prod8(src, ip), shiftL, ip);
       emit(src, anchor, 0usize, r2, ml, reps, seqs);
       ip += ml;
       anchor = ip;
