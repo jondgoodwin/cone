@@ -5,7 +5,8 @@
 // suffixes, so a class costs a few states however many characters it holds. The
 // program is built from the end: a node is compiled given the state that follows
 // it and answers the state it begins at, so a loop's back edge is the one state
-// that must be patched.
+// that must be patched. Alternatives that begin with different bytes become one
+// Sparse state that the search takes by the byte it reads, not a chain of Splits.
 
 const opByte = 0u8;
 const opSparse = 1u8;
@@ -17,6 +18,9 @@ const opFail = 6u8;
 
 // The most states a program may have; a pattern that needs more is TooBig
 const stateLimit = 200000usize;
+
+// Not a state
+const noState = 0xFFFFFFFFu32;
 
 // One state. Byte: byte range lo..hi then 'next'. Sparse: the transitions
 // 'x' (first) and 'y' (count) of 'trans'. Split: 'next' is tried first, then
@@ -94,6 +98,41 @@ struct Compiler {
     id
   }
 
+  // The alternatives whose entry states each read one byte, and read different ones,
+  // as one state that takes a byte to the state after it (noState when they do not).
+  // At most one alternative can read a given byte, so the order of the alternatives,
+  // which leftmost-first matching depends on, cannot matter.
+  fn byFirstByte(self: &mut, entries: &List[u32]) u32 {
+    var tr = List[Trans]();
+    var k = 0usize;
+    while k < entries.len() {
+      let inst = &insts[usize.from(*entries[k])];
+      if inst.op == opByte { tr.push(Trans(inst.lo, inst.hi, inst.next)); }
+      else if inst.op == opSparse {
+        var t = usize.from(inst.x);
+        let end = t + usize.from(inst.y);
+        while t < end { tr.push(*trans[t]); t = t + 1; }
+      }
+      else { return noState; }
+      k = k + 1;
+    }
+    // insertion sort by first byte
+    var i = 1usize;
+    while i < tr.len() {
+      let t = *tr[i];
+      var j = i;
+      while j > 0 && (*tr[j - 1]).lo > t.lo { tr.set(j, *tr[j - 1]); j = j - 1; }
+      tr.set(j, t);
+      i = i + 1;
+    }
+    i = 1;
+    while i < tr.len() {
+      if (*tr[i]).lo <= (*tr[i - 1]).hi { return noState; }
+      i = i + 1;
+    }
+    sparse(&tr)
+  }
+
   // -------- classes --------
 
   // A class of bytes: one edge for each range
@@ -167,6 +206,10 @@ struct Compiler {
         k = k + 1;
       }
       if failed { return 0; }
+      if entries.len() > 1 {
+        let one = byFirstByte(&entries);
+        if one != noState { return one; }
+      }
       var cur = *entries[entries.len() - 1];
       k = entries.len() - 1;
       while k > 0 {
