@@ -415,9 +415,14 @@ is refused where it is written (`ErrorSoleOwnerMut`), while `Uni[imm, T]` stays,
 promise that the value never changes.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
-parameter, 2+ a local. It is not a type parameter, not a constraint variable,
-and not part of type identity — `refIsSame` ignores it and `refFindSuper` drops
-it. How long a borrow *freezes* its source is a different question, and is not
+parameter, 2+ a local. Two questions are kept apart here. **Instancing:** a
+generic gets one instance for every lifetime, because a lifetime changes no
+generated code (Rust erases lifetimes before code generation for the same
+reason). That is right, and so is ignoring other things that do not change the
+code. **The type:** a lifetime is part of what the checker knows about a value,
+and it must stay in the type. Today `refIsSame` ignores it and `refFindSuper`
+drops it when types are compared, which removes it from the type and not only
+from instancing. That is a gap ("Where it is not yet enforced", below). How long a borrow *freezes* its source is a different question, and is not
 in the type at all: flow's loan walk records which loans each local may hold,
 per path, and a borrow's source stays frozen until the last use of whatever
 holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan
@@ -427,7 +432,9 @@ struct and named on its uses (`struct Cursor['a]`, `Cursor['a]`), ordered by a
 signature, never by a number: the loan walk keeps a caller loan per part of
 what a parameter lends, a struct's lifetimes one by one, and compares the
 parts' names (Flow Analysis, "Named lifetimes", "Slots"). A name, like the
-scope, is no part of type identity, and is never instanced.
+scope, is never instanced. What these
+mechanisms must add up to, and where they do not yet, is the next section,
+"Lifetimes: one invariant, checked from both sides of a call".
 
 **That integer is a placeholder for a much larger design.** The intent is an
 encoding of source variable, *invariance group*, and relative scope, forming a
@@ -435,6 +442,94 @@ partial order whose comparison can yield "no valid comparison is possible" —
 built to carry first-class-region pairing as well as simple nesting. The
 mechanism is credited to Cyclone's restricted-alias pointers plus the insight of
 annotating a borrow with a *lifetime* rather than with an arena.
+
+## Lifetimes: one invariant, checked from both sides of a call
+
+**The invariant.** A reference is never used after what it refers to is gone.
+Stated over places: whatever holds a borrow must not outlive the borrow's
+referent. Every lifetime rule in Cone is this invariant, enforced at one site.
+The scope-depth integer and the named lifetimes above are how it is
+represented; this section is what they must add up to.
+
+**Who can check it.**
+
+1. **Inside one body**, the checker sees every local's scope, so it checks each
+   store, return and move directly.
+2. **Across a call**, neither side sees the other's body; what they share is the
+   signature, so the signature is the contract. Lifetime names stand for the
+   caller's lifetimes, which the callee cannot see, and a `where` clause
+   (`'a >= 'b`) states how they are ordered. The body is checked using only what
+   its signature states. Each caller is checked to satisfy the signature with the
+   lifetimes it actually passes. This is ordinary modular checking, one function
+   at a time (assume, then guarantee), and nothing else decides in place of
+   either check.
+
+**Consequences.**
+
+- **A store.** Storing a borrow of lifetime `'v` into a place held for `'s`
+  needs `'v >= 's`. When both come from the caller, the body can rely on that
+  only if the signature states it: `where 'v >= 's`. The where clause is the
+  requirement written down accurately. Naming the two with one lifetime is
+  stricter than the requirement, because it forces every caller to pass equal
+  lifetimes.
+
+  ```
+  struct Host['h] { pub r: &'h Pt; }
+  fn put(h: &mut Host['h], l: &'l mut List[Pt]) where 'l >= 'h { h.r = &l[0usize]; }
+  ```
+
+- **A return** is a store into the caller's result. The signature names which
+  input the result borrows from, and the caller may hold the result no longer
+  than that input (decided 5 Nov: lifetimes on the inputs, and the return says
+  which one).
+- **`self` and fields.** A struct that holds a borrow names its lifetime
+  (`Cursor['a]`). A store into a field through `self` is a store like any other,
+  so its relation to the stored value's lifetime is part of the method's
+  signature.
+- **A generic `T`.** A `T` that holds borrows carries their lifetime in its
+  type. Instancing ignores it, and the type keeps it. Storing a `T` into a
+  holder is a store like any other: what the `T` borrows must live at least as
+  long as the holder. So a generic signature that stores a `T` names the
+  lifetime the `T` carries and states the ordering. `'b + T` reads "a `T` whose
+  borrows live at least `'b`" (Jon's sketch, 9 Nov; spelling open):
+
+  ```
+  fn push(self: &mut List['a + T], value: 'b + T) where 'b >= 'a
+  fn alloc(self: &mut Arena['a], value: 'b + T) where 'b >= 'a
+  ```
+
+  A container's push and an arena's alloc are the same store.
+- **Moving a holder.** Moving a value that holds borrows moves the holder, which
+  changes how long the borrows it holds must last. So either the holder's type
+  carries the bound wherever it goes (a struct's lifetime parameter), or the
+  holder cannot move (a fixed place).
+- **Arenas** are holders. The borrow of an arena may be shorter than the arena,
+  and what is stored inside must outlive the arena, or at least what its
+  finalizers read (two lifetimes, handle and insides, 7 Nov; only a finalizer
+  reads at the arena's death, 6 Nov). `Arena`'s type carries no lifetime and an
+  `Arena` can move, so moving one breaks the invariant (Bug 76). Which of the two
+  ways above closes it is open, and Jon's.
+- **Elision is syntax.** It writes no lifetime names (unannotated borrows read
+  as one shared name, Jon 6 Nov), so it cannot state an ordering, and a store's
+  requirement is an ordering ("at least as long"), not an equality. So a
+  function that stores a borrow, or a `T` that holds one, into a place reached
+  from another input writes its lifetimes: names on both, and the where clause.
+  One shared name would be stricter than the requirement, and so wrong as a
+  contract, even though nothing dangles.
+- **Raw pointers** carry no lifetime. A reference made from one is outside both
+  checks, and `trust` vouches for it.
+
+**Where it is not yet enforced** (each a check against the contract that does
+not happen today):
+
+- Bug 77: a body that writes no lifetimes may store a borrow from one input
+  into a place reached from another, which its signature never states, and the
+  caller's check is skipped for a directly written `&mut x` argument (the
+  shortcut near `flowpath.c` 2332).
+- Bug 76: an `Arena` can be moved while it holds borrows.
+- Lifetimes are dropped from types when types are compared (`refIsSame`,
+  `refFindSuper`), so a generic `T`'s lifetime can be neither named nor checked,
+  and `'b + T` cannot yet be written.
 
 ## The kinds of reference, and what each is for
 
@@ -512,6 +607,7 @@ gap:
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`; the loan walk for what a call may store (`pwCallStores`) and for a variable that follows what it holds | **flow** |
+| a store, and a call that may store, is checked from both sides of the signature: the body for what it stores, each caller for the lifetimes it passes | the contract in [Lifetimes: one invariant, checked from both sides of a call](#lifetimes-one-invariant-checked-from-both-sides-of-a-call); `pwStoreApart`, `loanStoredApart` (named signatures) and `pwCallStores` enforce part of it, and its gaps are listed there (Bug 77: elided stores, the caller shortcut; Bug 76: a moving `Arena`) | **flow**, incomplete
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
 | freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use (a `mut` borrow, an alias loan, only against what needs the source unique, and a change of shape) | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
 

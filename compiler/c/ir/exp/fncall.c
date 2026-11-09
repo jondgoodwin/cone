@@ -3447,6 +3447,14 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
+    // An instance of a generic actor ('Tally[i32]') is its handle, and a const of the actor's
+    // braces is the state's: the instance's own, folded for its type arguments
+    if (found == NULL) {
+        ActorInfo *actor = actorOfHandle((INode*)inst);
+        INode *astate = actor ? namespaceFind(&actor->state->namespace, member->namesym) : NULL;
+        if (astate && astate->tag == ConstDclTag)
+            found = astate;
+    }
     // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
     if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
         return 0;
@@ -5588,6 +5596,17 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // than a function (fnCallTypeInstancePath took those). Diagnosed rather
         // than left to read as a bad call.
         if (node->methfld != NULL) {
+            // A name a struct (a generic's instance, 'T.maxValue' at a struct) does
+            // not declare: it is the struct that lacks it
+            INode *owner = itypeGetTypeDcl(node->objfn);
+            if (isNameUseNode(node->methfld) && owner && owner->tag == StructTag
+                && namespaceFind(&((StructNode*)owner)->namespace, ((NameUseNode*)node->methfld)->namesym) == NULL
+                && actorOfHandle(owner) == NULL) {
+                errorMsgNode(node->methfld, ErrorUnkName, "%s has no constant or member named %s.",
+                    &inodeGetName(owner)->namestr, &((NameUseNode*)node->methfld)->namesym->namestr);
+                node->vtype = errorType;
+                return;
+            }
             errorMsgNode(node->objfn, ErrorUnkName,
                 "A path may pass through a module, a struct or a trait, and a number type has 'from'; reaching a member through anything else is not built.");
             node->vtype = errorType;
