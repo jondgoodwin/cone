@@ -1371,12 +1371,19 @@ static MovedPath genlMovedPath(INode *moved, INode *root) {
 // does, and if that is the value's death, it dies hollow
 void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     VarDclNode *var = hnode->var;
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
+    genlHollowReleaseRef(gen, ref, var, hnode->moved);
+}
+
+// The same for the owning reference 'ref' of variable 'var' held somewhere
+// else than its own storage (a parked record's field), out of whose referent
+// the moves 'moved' took what they name
+void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(var->vtype);
-    int npaths = hnode->moved->used;
+    int npaths = moved->used;
     MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
     for (int i = 0; i < npaths; ++i)
-        paths[i] = genlMovedPath(nodesGet(hnode->moved, i), NULL);
-    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
+        paths[i] = genlMovedPath(nodesGet(moved, i), NULL);
     genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
 }
 

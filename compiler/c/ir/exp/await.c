@@ -18,6 +18,7 @@ AwaitNode *newAwaitNode() {
     newNode(node, AwaitNode, AwaitTag);
     node->vtype = unknownType;
     node->exp = NULL;
+    node->hollowed = NULL;
     node->seamvars = NULL;
     node->nseamvars = 0;
     node->seamcap = 0;
@@ -54,6 +55,7 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode = memAllocBlk(sizeof(AwaitNode));
     memcpy(newnode, node, sizeof(AwaitNode));
     newnode->exp = cloneNode(cstate, node->exp);
+    newnode->hollowed = NULL;
     newnode->seamvars = NULL;
     newnode->nseamvars = 0;
     newnode->seamcap = 0;
