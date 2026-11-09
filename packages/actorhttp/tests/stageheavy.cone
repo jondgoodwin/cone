@@ -350,11 +350,10 @@ fn main() i32 {
 
   // ten at once, the heavy form: a megabyte each in 8-byte writes (1.3 million pieces in all),
   // the readers keeping up after 900 ms. It is slow rather than stalled: in a debug build (the
-  // reader hashes every byte, about 7,000 to 20,000 pieces a second) it takes 100 to 175 s, near the
-  // 180 s a test is given, under load; so it is its own test, and tells a stall (no piece read for
-  // 30 s) from a run still moving at its limit
+  // reader hashes every byte, about 7,000 to 20,000 pieces a second) it takes 100 to 175 s under
+  // load, so it is its own test, and its verdict is a stall (no piece read for 30 s), never a total
+  // time: a slow run that keeps moving passes. The only outer bound is the 180 s congo gives a test
   let tenBytes = 1048576u64;
-  let tenMs = 165000i64;
   reset();
   {
     iobuf.trimAll();
@@ -367,15 +366,12 @@ fn main() i32 {
     }
     let peak = peakHeld(&tally.ended, 10u64, 800i64, base);
     expect(peak < 25165824u64, "ten streams hold about ten windows");
-    // wait while the readers make progress: a stall is 30 s with no piece read; the outer limit is
-    // the time a test is given (a slow run, still moving, is told apart from a stalled one)
+    // wait while the readers make progress: a stall is 30 s with no piece read, and ends the wait
     var last = 0u64;
     var still = 0i64;
-    var waited = 0i64;
     var stalled = false;
-    while tally.ended.load() < 10u64 && waited < tenMs && !stalled {
+    while tally.ended.load() < 10u64 && !stalled {
       thread.sleep(Duration.fromMillis(5000i64));
-      waited = waited + 5000i64;
       let now = tally.pieces.load();
       still = if now == last {still + 5000i64} else {0i64};
       last = now;
@@ -383,8 +379,7 @@ fn main() i32 {
     }
     let tenEnded = tally.ended.load() >= 10u64;
     if !tenEnded {
-      printStr(if stalled {"ten: STALLED (no piece read for 30 s), "} else {"ten: slow, still moving at the limit, "});
-      printStr("ten: ended ");
+      printStr("ten: STALLED (no piece read for 30 s), ended ");
       printUInt(tally.ended.load());
       printStr(" good ");
       printUInt(tally.good.load());
