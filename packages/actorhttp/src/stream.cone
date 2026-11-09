@@ -77,6 +77,22 @@ pub struct BodyStream is Move {
     }
   }
 
+  // The body read as server-sent events instead: this package's EventSink is attached as the
+  // body's sink, and the EventStream (the same head, the same cancel group) awaits each event
+  // as 'client.events' gives it. The head is already in hand, so the caller has looked at it
+  // before choosing. A body already read from cannot be read as events: the stream's 'next'
+  // answers a cancel. Dropping the EventStream cancels the rest of the fetch
+  pub fn events(self) EventStream {
+    let sink = EventSink();
+    if choice.swap(bodyTo) == bodyUnchosen {
+      post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](sink.clone())));
+    } else {
+      choice.store(bodyRead);
+      sink.end(Ending.Failed(AnyError.msg("the body was read from, it cannot be read as events")));
+    }
+    EventStream(sink, group, status, version, headers.clone(), url.clone())
+  }
+
   // Whether the status is a 2xx
   pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
 
@@ -141,10 +157,14 @@ pub struct EventStream is Move {
 const eventQueueHigh = 64usize;
 
 // How an event stream's reads end once its events are all taken
+fn limitError() FetchError {
+  FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
+    ErrorKind.TooLarge, "an event is longer than the reader's limit"))
+}
+
 fn eventsEnd(limited: bool, how: &Ending) Result[Option[sse.Event], FetchError] {
   if limited {
-    return Err[Option[sse.Event], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
-      ErrorKind.TooLarge, "an event is longer than the reader's limit")));
+    return Err[Option[sse.Event], FetchError](limitError());
   }
   match how {
     case is Finished {Ok[Option[sse.Event], FetchError](None[sse.Event])}
@@ -164,12 +184,11 @@ actor EventSink is ChunkSink {
   held: Deque[IoBuf];                        // buffers whose bytes are not yet released
   waiting: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]];
   ended: Option[Ending];
-  limited: bool;                             // an event passed the reader's limit and the fetch was cancelled for it
-  group: CancelGroup;
+  limited: bool;                             // an event passed the reader's limit and the source was stopped for it
 
-  pub fn init(self: &new, group: CancelGroup) {
+  pub fn init(self: &new) {
     *self = Self(up: None[ChunkSource], rd: sse.Reader.make(), events: Deque[sse.Event](), held: Deque[IoBuf](),
-      waiting: None[actors.ReplyOf[Result[Option[sse.Event], FetchError]]], ended: None[Ending], limited: false, group: group);
+      waiting: None[actors.ReplyOf[Result[Option[sse.Event], FetchError]]], ended: None[Ending], limited: false);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -186,7 +205,10 @@ actor EventSink is ChunkSink {
     each ev in got.drain() {events.push(ev);}
     if rd.overflowed() {
       limited = true;
-      group.cancel();
+      match &up {
+        case let &Some(u) {u.stop(Ending.Failed(AnyError.from(limitError())));}
+        else {}
+      }
     }
     held.push(c);
     self.serve();
