@@ -100,6 +100,11 @@ void genlComdat(GenState *gen, LLVMValueRef global) {
     LLVMSetComdat(global, comdat);
 }
 
+// Whether a linkage keeps a symbol to its own module
+static int genlIsLocalLinkage(LLVMLinkage linkage) {
+    return linkage == LLVMInternalLinkage || linkage == LLVMPrivateLinkage;
+}
+
 // An anonymous 'fn' literal is lifted to module scope with no name at all.
 // Give it one that is private to this object file. It needs a name to lead a
 // COMDAT, and it needs private linkage because nothing outside this object can
@@ -1528,6 +1533,11 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
         if (strstr(gen->opt->triple, "windows") != NULL)
             LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning, "CodeView", 8,
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0)));
+        // Bitcode read back without this flag loses its debug info as being
+        // of no known version: the ThinLTO link reads bitcode
+        if (gen->opt->lto)
+            LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning, "Debug Info Version", 18,
+                LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(gen->context), LLVMDebugMetadataVersion(), 0)));
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difiles = NULL;
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
@@ -2650,7 +2660,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             ? "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
             : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
-        ? "default<O3>"
+        ? (gen->opt->lto ? "thinlto-pre-link<O3>" : "default<O3>")
         : "globaldce,function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
@@ -2710,7 +2720,23 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // Transform IR to target's ASM and OBJ. A SPIR-V target's object is a
     // SPIR-V module, named as shader tools name one
     timerBegin(CodeGenTimer);
-    if (gen->machine) {
+    if (gen->opt->lto) {
+        // The module goes on to a ThinLTO link (genlLtoLink), which makes the
+        // object. A COMDAT named for a local symbol cannot survive that: the
+        // link renames a local it must share with another module, and the
+        // COMDAT then names a symbol that is not there ("Associative COMDAT
+        // symbol does not exist" for the first string literal).
+        for (LLVMValueRef g = LLVMGetFirstGlobal(gen->module); g; g = LLVMGetNextGlobal(g))
+            if (LLVMGetComdat(g) && genlIsLocalLinkage(LLVMGetLinkage(g)))
+                LLVMSetComdat(g, NULL);
+        for (LLVMValueRef f = LLVMGetFirstFunction(gen->module); f; f = LLVMGetNextFunction(f))
+            if (LLVMGetComdat(f) && genlIsLocalLinkage(LLVMGetLinkage(f)))
+                LLVMSetComdat(f, NULL);
+        char lerr[512];
+        char *bcpath = fileMakePath(gen->opt->output, gen->opt->srcname, "bc");
+        if (genlWriteThinBitcode(gen->module, bcpath, lerr, sizeof lerr))
+            errorMsg(ErrorGenErr, "Could not emit bitcode file: %s", lerr);
+    } else if (gen->machine) {
         char *objfile = gen->opt->wasm? "wasm" : gen->opt->gpu? "spv" : objext;
         char *asmfile = gen->opt->wasm? "wat" : gen->opt->gpu? "spvasm" : asmext;
         char *objpath = fileMakePath(gen->opt->output, gen->opt->srcname, objfile);
@@ -2798,6 +2824,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
     opt->vulkan = opt->gpu && strstr(opt->triple, "vulkan") != NULL;
+    // ThinLTO bitcode is a release native compile's alone
+    opt->lto = opt->lto && opt->release && !opt->gpu && !opt->wasm;
     // A native program carries debug info in a release build too, so a profiler
     // can name its functions (a PDB on Windows, DWARF in the ELF on Linux).
     // WebAssembly and SPIR-V output keep it for a debug build alone: a release
@@ -2866,4 +2894,36 @@ void genSetup(GenState *gen, ConeOptions *opt) {
 
 void genClose(GenState *gen) {
     LLVMDisposeTargetMachine(gen->machine);
+}
+
+// The ThinLTO link of --lto-link: the bitcode files of 'files' (each a --lto
+// compile's .bc), made into one native object each, <output>/<i>.<objext> for
+// the i-th, by the optimiser's whole-program pass (genlThinLink, genllto.cpp).
+// Kept whatever the modules do with them are 'main' and every global with a C
+// name, which a C object (the runtime, a C package) may call. A symbol one
+// module defines and another refers to is kept as far as one refers to it (a
+// caller that inlines it needs no definition; one that calls it, or holds its
+// address in a vtable, does).
+// Returns 0, or 1 after reporting an error.
+int genlLtoLink(ConeOptions *opt, int nfiles, char **files) {
+    // The same target, CPU and relocation model a compile gets (this fills
+    // opt->triple, cpu and features in)
+    LLVMTargetMachineRef machine = genlCreateMachine(opt);
+    if (!machine)
+        return 1;
+    LLVMDisposeTargetMachine(machine);
+    int linux_pic = !opt->nopic && strstr(opt->triple, "linux") != NULL;
+    const char *keep[] = { "main" };
+    char err[512];
+    // The link's cache of the objects it made is kept in the output folder, which
+    // a build leaves alone from one link to the next
+    const char *outdir = opt->output ? opt->output : ".";
+    char *cachedir = memAllocStr(outdir, strlen(outdir) + 7);
+    strcat(cachedir, "/cache");
+    if (genlThinLink(outdir, "." objext, (const char **)files, nfiles,
+            keep, 1, opt->cpu, opt->features, opt->pic || linux_pic, cachedir, err, sizeof err)) {
+        errorMsg(ErrorGenErr, "Could not link bitcode: %s", err);
+        return 1;
+    }
+    return 0;
 }
