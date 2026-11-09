@@ -156,17 +156,18 @@ static unsigned genlFnSize(LLVMValueRef fn) {
     return size;
 }
 
-// Whether a shared generic instance, now generated, is small enough to be this
-// object's own copy. A release program (no library, whose instances other
-// objects might link against) in a described build shares an instance across
-// its objects only so that it exists once. A small one costs less than the call
-// it forces: kept shared, LLVM leaves it out of line, so each use calls out,
-// spills what it passes, and loses its constants (drop glue taken out of line
-// was a 2.6x loss on one benchmark). Debug code
-// keeps one copy, which compiles faster and keeps a breakpoint in one place. A
-// large instance stays shared, so a program is not made to carry a copy per
-// object. Only a function is decided here: a generic's static, and a vtable,
-// stay shared whatever their size, as address identity requires.
+// Whether a shared generic instance, now generated, is this object's own copy.
+// A release program (no library, whose instances other objects might link
+// against) in a described build shares an instance across its objects only so
+// that it exists once. That costs more than the copies: kept shared, LLVM
+// leaves a function out of line, so each use calls out, spills what it passes,
+// and loses its constants (drop glue taken out of line was a 2.6x loss on one
+// benchmark), and it cannot specialise a large one on the function pointer
+// every caller passes (the sort's comparator was called for every comparison).
+// Debug code keeps one copy, which compiles faster and keeps a breakpoint in
+// one place. Only a function is decided here, and by default every one of a
+// program is its own (opt->privateinst caps the size): a generic's static, and a
+// vtable, stay shared whatever their size, as address identity requires.
 static int genlInstanceIsPrivate(GenState *gen, FnDclNode *fnnode, LLVMValueRef fn) {
     ConeOptions *opt = gen->opt;
     if (!opt->release || opt->library || !opt->described || opt->privateinst == 0
