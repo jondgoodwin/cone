@@ -121,29 +121,34 @@ fn main() i32 {
 
   // Lines
   let src = String.from("mod a;\nimport b;\r\nimport c;");
-  let ls = src.lines();
+  let ls = List.from(src.lines());
   expectUInt(u64.from(ls.len()), 3, "three lines");
-  expectStr(ls[0usize].view(), "mod a;", "line one");
-  expectStr(ls[1usize].view(), "import b;", "line two, its carriage return dropped");
-  expectStr(ls[2usize].view(), "import c;", "line three, unended");
+  expectStr(ls[0usize], "mod a;", "line one");
+  expectStr(ls[1usize], "import b;", "line two, its carriage return dropped");
+  expectStr(ls[2usize], "import c;", "line three, unended");
+  // Owned copies: map each line to a String first
+  let owned = List.from(src.lines().map(x => String.from(x)));
+  expectStr(owned[1usize].view(), "import b;", "an owned line");
   expectUInt(u64.from(lineCount("a\n")), 1, "an ending line feed starts no line");
   expectUInt(u64.from(lineCount("")), 0, "no text, no lines");
   expectUInt(u64.from(lineCount("\n")), 1, "a lone line feed ends one empty line");
   let blankText = String.from("a\n\nb");
-  let blank = blankText.lines();
+  let blank = List.from(blankText.lines());
   expectUInt(u64.from(blank.len()), 3, "a blank line counts");
   expectUInt(u64.from(blank[1usize].len()), 0, "the blank line");
   let crText = String.from("a\r");
-  let cr = crText.lines();
-  expectStr(cr[0usize].view(), "a", "a last line's carriage return");
+  let cr = List.from(crText.lines());
+  // A lone '\r' is not a line ending, as in Rust: only one just before a '\n' is dropped, so an unended
+  // last line keeps it. (String's copying 'lines' used to drop it.)
+  expectStr(cr[0usize], "a\r", "a last line's carriage return, kept");
 
   // Splitting
   let csv = String.from("a,b,,c");
-  let parts = csv.split(',');
+  let parts = List.from(csv.splitOnChar(','));
   expectUInt(u64.from(parts.len()), 4, "four pieces");
-  expectStr(parts[0usize].view(), "a", "piece one");
-  expectStr(parts[2usize].view(), "", "piece three is empty");
-  expectStr(parts[3usize].view(), "c", "piece four");
+  expectStr(parts[0usize], "a", "piece one");
+  expectStr(parts[2usize], "", "piece three is empty");
+  expectStr(parts[3usize], "c", "piece four");
   expectUInt(u64.from(pieceCount("", ',')), 1, "nothing is one empty piece");
   expectUInt(u64.from(pieceCount("a,", ',')), 2, "a trailing separator ends an empty piece");
 
@@ -195,13 +200,12 @@ fn trimmed(text: &str, want: &Array[u8], label: &Array[u8]) {
 
 fn lineCount(text: &str) usize {
   let s = String.from(text);
-  let ls = s.lines();
-  ls.len()
+  s.lines().count()
 }
 
 fn pieceCount(text: &str, sep: u8) usize {
   let s = String.from(text);
-  let ps = s.split(sep);
+  let ps = List.from(s.splitOnChar(char.from(sep)));
   ps.len()
 }
 

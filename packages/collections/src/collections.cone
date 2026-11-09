@@ -195,6 +195,22 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     l
   }
 
+  // A list of what an iterator gives, in order, in the heap: 'List.from(text.lines())' is a list of
+  // borrowed lines, 'List.from(text.lines().map(x => String.from(x)))' one of copies. T and I are
+  // inferred.
+  pub fn from[I: Iterator[T]](it: I) List {
+    var l = List(null, 0usize, 0usize, heapRegion());
+    var cursor = it;
+    var more = true;
+    while more {
+      match cursor.next() {
+        case let Some(x) { l.push(x); }
+        case is None[T] { more = false; }
+      }
+    }
+    l
+  }
+
   // A second list, in the same region, holding a clone of each value in order.
   // Exists only where T is Clone
   pub fn clone(self: &) List[T] where T is Clone {
@@ -1206,7 +1222,7 @@ pub struct DequeGcTraceItems['a, T] is Iterator[&mut T] {
 pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   buf: List[u8];
 
-  use str via view but len, isEmpty, cstr, `[]`, trim, lines, eq, `==`, cmp, `<=>`, hash;
+  use str via view but len, isEmpty, cstr, `[]`, trim, eq, `==`, cmp, `<=>`, hash;
 
   // An empty String, 'String()': no block until the first byte arrives. The
   // last argument of every init is the region the bytes will sit in (see List),
@@ -1589,50 +1605,6 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     while a < b && isSpace(v[a]) { a = a + 1usize; }
     while b > a && isSpace(v[b - 1usize]) { b = b - 1usize; }
     String.fromBytes(&v[a..<b])
-  }
-
-  // Copies of its lines. A line ends at '\n', and a '\r' just before it is
-  // dropped; a last line need not end in '\n', and an ending '\n' does not
-  // begin another line, so "a\nb\n" and "a\r\nb" are both two lines, and ""
-  // is none.
-  pub fn lines(self: &) List[String] {
-    let v = self.raw();
-    var out = List[String]();
-    var start = 0usize;
-    var i = 0usize;
-    while i < v.len {
-      if v[i] == '\n' {
-        var end = i;
-        if end > start && v[end - 1usize] == '\r' { end = end - 1usize; }
-        out.push(String.fromBytes(&v[start..<end]));
-        start = i + 1usize;
-      }
-      i = i + 1usize;
-    }
-    if start < v.len {
-      var end = v.len;
-      if v[end - 1usize] == '\r' { end = end - 1usize; }
-      out.push(String.fromBytes(&v[start..<end]));
-    }
-    out
-  }
-
-  // Copies of the pieces between each 'sep': "a,b,,c" is four pieces, the
-  // third empty; "" is one empty piece
-  pub fn split(self: &, sep: u8) List[String] {
-    let v = self.raw();
-    var out = List[String]();
-    var start = 0usize;
-    var i = 0usize;
-    while i < v.len {
-      if v[i] == sep {
-        out.push(String.fromBytes(&v[start..<i]));
-        start = i + 1usize;
-      }
-      i = i + 1usize;
-    }
-    out.push(String.fromBytes(&v[start..]));
-    out
   }
 
   // Its bytes as a C string, for a C function: they already have a NUL after
