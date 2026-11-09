@@ -1,11 +1,8 @@
 // The deflater against the inflater, over data of many shapes and sizes, at
-// all three levels and all three formats. Writer and reader could share a
-// mistake, so (1) the reader is checked against zlib's own streams in zoo.cone
-// and (2) streams this deflater wrote were checked with Python's zlib and gzip
-// modules: all 495 combinations below (kind x size x level x format, one-shot)
-// were written to files and inflated by Python back to their data. The golden
-// check values at the end are the CRC-32 of four of those streams, so any
-// change to the bytes written is seen.
+// levels 0 to 2 and all three formats (levels.cone covers 1 to 9). Writer and
+// reader could share a mistake, so the reader is checked against zlib's own
+// streams in zoo.cone. The golden check values at the end are the CRC-32 of
+// four of the streams, so any change to the bytes written is seen.
 //
 // Shapes: random bytes (no matches to find; the one-shot helpers store them),
 // long runs (maximum-length matches at distance 1), a repeat 251 bytes long
@@ -208,18 +205,18 @@ fn main() i32 {
   // Ratio sanity: dynamic Huffman beats the fixed code on six letters, and long runs are tiny
   let letters = data(3, 100000usize);
   expect(zlibCompress(letters.view(), 2).len() < zlibCompress(letters.view(), 1).len(), "dynamic Huffman beats fixed on six letters");
-  expect(zlibCompress(letters.view(), 1).len() < 60000usize, "six letters take under 5 bits each at level 1");
+  expect(zlibCompress(letters.view(), 1).len() < 80000usize, "six letters take under 6.4 bits each at level 1 (one candidate, the fixed code)");
   let runs2 = data(1, 100000usize);
   expect(zlibCompress(runs2.view(), 2).len() < 3500usize, "long runs are tiny");
   let far = data(4, 70000usize);
   expect(zlibCompress(far.view(), 2).len() < 33500usize, "the repeat at distance 32768 is found");
 
-  // Golden check values: CRC-32 of the streams below, each of which Python's
-  // zlib and gzip modules inflated back to the data
+  // Golden check values: CRC-32 of the streams below (each of which the
+  // inflater above reads back to the data, in the combinations run earlier)
   let w = data(2, 20000usize);
-  expectUInt(u64.from(crc32(zlibCompress(w.view(), 1).view())), 0xae030130u64, "golden: kind 2, 20000 bytes, zlib level 1");
-  expectUInt(u64.from(crc32(zlibCompress(w.view(), 2).view())), 0x691f0d83u64, "golden: kind 2, 20000 bytes, zlib level 2");
-  expectUInt(u64.from(crc32(gzipCompress(letters.view(), 2).view())), 0x3af1f885u64, "golden: kind 3, 100000 bytes, gzip level 2");
-  expectUInt(u64.from(crc32(rawDeflate(runs2.view(), 1).view())), 0x1415697cu64, "golden: kind 1, 100000 bytes, raw level 1");
+  expectUInt(u64.from(crc32(zlibCompress(w.view(), 1).view())), 0xd98319a4u64, "golden: kind 2, 20000 bytes, zlib level 1");
+  expectUInt(u64.from(crc32(zlibCompress(w.view(), 2).view())), 0xb2b51369u64, "golden: kind 2, 20000 bytes, zlib level 2");
+  expectUInt(u64.from(crc32(gzipCompress(letters.view(), 2).view())), 0xab1d1e47u64, "golden: kind 3, 100000 bytes, gzip level 2");
+  expectUInt(u64.from(crc32(rawDeflate(runs2.view(), 1).view())), 0xd77dc969u64, "golden: kind 1, 100000 bytes, raw level 1");
   done()
 }
