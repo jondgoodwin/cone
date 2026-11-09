@@ -1886,7 +1886,11 @@ function, `<method>'<n>.drop(record)` (`genlSeamDrop`), declared where the seam
 is laid out and handed to `parkReserve`: each of the record's values that does
 something as it dies is finalized, in the record's order -- the order the
 values would die in -- a variable carried with its drop flag only where the
-flag says it holds its whole value (a hollow one, part moved out, is left).
+flag says it holds its whole value. A hollow one, part moved out, is released as
+its scope's end releases it (`genlHollowReleaseRef`; flow's `SeamHollow` note on the
+seam's variable, read from the flag where there is one): what moved, by the
+moves that reach this seam (`AwaitNode.hollowed`), is left, the allocation is
+freed.
 The table calls it when its actor dies with the record still parked
 (`Pending`'s finalizer), which happens only when the envelope the record was
 owed was dropped unanswered: the I/O it awaited was ended at the program's end,

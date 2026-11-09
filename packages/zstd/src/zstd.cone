@@ -127,7 +127,9 @@
 //   or more read than there are, fail the block. The Huffman streams are
 //   decoded one after another (the reference decodes the four at once,
 //   interleaved, two symbols a look); the sequences are executed as they are
-//   decoded; every copy is a byte at a time.
+//   decoded, into room reserved for the whole block, by pointer: a literal run
+//   or a match is copied eight bytes a step (a block move when long), and a
+//   match shorter than its offset repeats exactly as a byte-by-byte copy would.
 // - Streaming by whole units, not by a state machine that can stop at any
 //   bit. The cost: a block's bytes are kept until all of them have come (at
 //   most 128 KiB), and decoded at once. The gain: one decoder for one-call and
@@ -153,8 +155,10 @@
 //   codes of the longest length.
 // - A bomb stopper: output is capped at 1 GiB unless 'setLimit' (or the
 //   one-call 'expected') says otherwise, as deflate's is; a frame header that
-//   declares more is refused at once. The room reserved up front is never
-//   more than 64 MiB on a header's word.
+//   declares more is refused at once. The one-call helpers reserve the
+//   output once from the frame's content size, but never more than the
+//   input left could make (32768 times its size, a 4-byte RLE block being
+//   128 KiB) on a header's word; 'expected' reserves up to 64 MiB at once.
 // - Dictionaries: raw content only (zstd's "rawContent" mode: the bytes are
 //   taken as content that comes before each frame, the repeat offsets start at
 //   1, 4 and 8). A frame that names a dictionary by ID is refused with
@@ -280,13 +284,15 @@
 //   pbrxrt.spv (385 KB)      L3      212         154          385
 //                            L19     114          87          279
 //
-// So it runs at 35 to 60 per cent of the reference's speed. The likely cause
-// is the copying: every literal and every match byte is moved one at a time
-// through a List (the reference copies 16 or 32 bytes a step, overlapping
-// past the end), and a streamed pull moves each byte once more. Then the
-// Huffman streams decoded one at a time, one symbol a look, and the bit reader
-// refilled a byte at a time. These are measured, not chased: nothing here has
-// been tuned for speed past the shape of the algorithms.
+// (Those one-call figures were taken with every copy a byte at a time; the
+// decoder now copies by pointer, eight bytes a step, and loads the bit reader
+// eight bytes at a time.) Decoding one call, best of 3, release, 100 MiB of
+// generated text (a frame from libzstd, level 3): 330 to 390 MB/s, against
+// libzstd's 830 and ruzstd's 320; the first 32 MiB of conec.exe: 225 to 235,
+// against libzstd's 550 to 580 and ruzstd's 177. The rest of the gap to the
+// reference is the Huffman streams decoded one at a time, one symbol a look,
+// the sequence loop's table lookups and checks, and a streamed pull moving
+// each byte once more.
 // XXH64 runs at 6.7 GB/s.
 //
 // COMPRESSING, on the same three files (the reference's level-3 frames

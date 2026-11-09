@@ -1,0 +1,207 @@
+// The levels 1 to 9: every level's output decodes to its input, in all three
+// formats and over data of several shapes and sizes, plus what a level number
+// means: 0 stores, a negative level is the default (6), above 9 is 9, the
+// zlib header's FLEVEL and the gzip header's XFL follow zlib, and the higher
+// levels do not make the six-letter data bigger than level 1's fixed code.
+
+mod levels;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+
+fn data(kind: i32, n: usize) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var s = 12345u64;
+  var i = 0usize;
+  while i < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
+    else if kind == 1 { d.push(u8.from((i / 100usize) & 255usize)); }
+    else if kind == 2 { d.push(u8.from(((i * 7usize) % 251usize) + (if (s >> 60u64) == 0u64 {1usize} else {0usize}))); }
+    else if kind == 3 { d.push(u8.from(97usize + usize.from((s >> 45u64) % 6u64))); }
+    else { d.push(u8.from((i % 32768usize) * 31usize & 255usize)); }
+    i += 1usize;
+  }
+  d
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+fn zlibBack(z: &Array[u8], want: &Array[u8]) bool {
+  match zlibDecompress(z, 0usize) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn gzipBack(z: &Array[u8], want: &Array[u8]) bool {
+  match gzipDecompress(z, 0usize) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn rawBack(z: &Array[u8], want: &Array[u8]) bool {
+  var used = 0usize;
+  match inflate(z, 0usize, 0usize, &mut used) {
+    case let Ok(back) { return same(back.view(), want); }
+    case let Err(e) { return false; }
+  }
+  false
+}
+
+fn zlibByte(d: &Array[u8], level: i32, at: usize) i64 {
+  let z = zlibCompress(d, level);
+  i64.from(*z[at])
+}
+
+// Data on which the later match is the better one. Three parts, each of 'units'
+// units made from five random bytes t0..t4 (128 to 255): "c t0 t1 t2 #", then
+// "! t0 t1 t2 t3 t4 ?", then "c t0 t1 t2 t3 t4 @". In the third part, at the
+// 'c' the longest match is "c t0 t1 t2" (4 bytes, from the first part), but at
+// the byte after it "t0 t1 t2 t3 t4" is 5 bytes long (from the second part).
+// A greedy matcher takes the 4 and then has three literals (t3 t4 @); a lazy
+// one writes 'c' as a literal, takes the 5, and has one literal (@): one token
+// fewer a unit.
+fn lazyData(units: usize) List[u8] {
+  var t = List[u8]();
+  var s = 987654321u64;
+  var k = 0usize;
+  while k < units * 5usize {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    t.push(u8.from(128u64 + ((s >> 40u64) % 128u64)));
+    k += 1usize;
+  }
+  var d = List[u8]();
+  k = 0usize;
+  while k < units {
+    d.push(99u8);
+    d.push(*t[k * 5usize]); d.push(*t[k * 5usize + 1usize]); d.push(*t[k * 5usize + 2usize]);
+    d.push(35u8);
+    k += 1usize;
+  }
+  k = 0usize;
+  while k < units {
+    d.push(33u8);
+    var j = 0usize;
+    while j < 5usize { d.push(*t[k * 5usize + j]); j += 1usize; }
+    d.push(63u8);
+    k += 1usize;
+  }
+  k = 0usize;
+  while k < units {
+    d.push(99u8);
+    var j = 0usize;
+    while j < 5usize { d.push(*t[k * 5usize + j]); j += 1usize; }
+    d.push(64u8);
+    k += 1usize;
+  }
+  d
+}
+
+fn gzipByte(d: &Array[u8], level: i32, at: usize) i64 {
+  let z = gzipCompress(d, level);
+  i64.from(*z[at])
+}
+
+fn main() i32 {
+  let sizes: Array[usize, 6] = [0usize, 1usize, 4usize, 300usize, 40000usize, 100000usize];
+  var runs = 0usize;
+  var bad = 0usize;
+  var level = -2;
+  while level <= 11 {
+    var kind = 0;
+    while kind < 5 {
+      var si = 0usize;
+      while si < 6usize {
+        let d = data(kind, sizes[si]);
+        runs += 3usize;
+        if !zlibBack(zlibCompress(d.view(), level).view(), d.view()) { bad += 1usize; }
+        if !gzipBack(gzipCompress(d.view(), level).view(), d.view()) { bad += 1usize; }
+        if !rawBack(rawDeflate(d.view(), level).view(), d.view()) { bad += 1usize; }
+        si += 1usize;
+      }
+      kind += 1;
+    }
+    level += 1;
+  }
+  expectInt(i64.from(runs), 14i64 * 5i64 * 6i64 * 3i64, "level x kind x size x format combinations run");
+  expectInt(i64.from(bad), 0i64, "streams that did not decode to their data (levels -2 to 11)");
+
+  // What a level number means
+  let text = data(3, 100000usize);
+  let t = text.view();
+  expect(same(rawDeflate(t, -1).view(), rawDeflate(t, 6).view()), "a negative level is the default, 6");
+  expect(same(rawDeflate(t, 10).view(), rawDeflate(t, 9).view()), "level 10 is level 9");
+  expect(same(rawDeflate(t, 99).view(), rawDeflate(t, 9).view()), "level 99 is level 9");
+  expect(rawDeflate(t, 1).len() > rawDeflate(t, 2).len(), "level 1's fixed code is bigger than level 2's dynamic one on six letters");
+  expect(rawDeflate(t, 6).len() <= rawDeflate(t, 2).len(), "level 6 is no bigger than level 2");
+  // A repeat of 251 bytes with noise: more candidates find the longer matches
+  let rep = data(2, 100000usize);
+  expect(rawDeflate(rep.view(), 6).len() <= rawDeflate(rep.view(), 2).len(), "noisy repeat: level 6 is no bigger than level 2");
+  expect(rawDeflate(rep.view(), 9).len() <= rawDeflate(rep.view(), 6).len(), "noisy repeat: level 9 is no bigger than level 6");
+  expect(rawDeflate(rep.view(), 2).len() < rawDeflate(rep.view(), 1).len(), "noisy repeat: level 2 is smaller than level 1");
+
+  // zlib's header: FLEVEL 0 for level 1, 1 for 2 to 5, 2 for 6, 3 for 7 to 9
+  expectInt(zlibByte(t, 1, 1usize), 0x01i64, "zlib header, level 1: FLEVEL 0");
+  expectInt(zlibByte(t, 3, 1usize), 0x5Ei64, "zlib header, level 3: FLEVEL 1");
+  expectInt(zlibByte(t, 6, 1usize), 0x9Ci64, "zlib header, level 6: FLEVEL 2");
+  expectInt(zlibByte(t, 9, 1usize), 0xDAi64, "zlib header, level 9: FLEVEL 3");
+  expectInt(zlibByte(t, -1, 1usize), 0x9Ci64, "zlib header, default level: FLEVEL 2");
+  expectInt(zlibByte(t, 0, 1usize), 0x01i64, "zlib header, level 0: FLEVEL 0");
+  // gzip's XFL: 4 for the fastest, 2 for the slowest
+  expectInt(gzipByte(t, 1, 8usize), 4i64, "gzip XFL, level 1: 4");
+  expectInt(gzipByte(t, 6, 8usize), 0i64, "gzip XFL, level 6: 0");
+  expectInt(gzipByte(t, 9, 8usize), 2i64, "gzip XFL, level 9: 2");
+
+  // Lazy matching (levels 4 to 9) takes the later, longer match where greedy (levels 2 and 3)
+  // takes the earlier, shorter one: on lazyData(1000), 19000 bytes, level 3 writes 12283
+  // bytes and levels 4 to 9 about 11600 (a literal fewer a unit)
+  let ld = lazyData(1000usize);
+  let greedy = rawDeflate(ld.view(), 3).len();
+  var lz = 4;
+  while lz <= 9 {
+    let z = rawDeflate(ld.view(), lz);
+    expect(z.len() + 500usize < greedy, "lazy data: a lazy level is over 500 bytes smaller than level 3");
+    expect(rawBack(z.view(), ld.view()), "lazy data: a lazy level reads back to the data");
+    lz += 1;
+  }
+  expect(greedy < rawDeflate(ld.view(), 2).len(), "lazy data: level 3 (32 candidates) is smaller than level 2 (6)");
+  // The held match is written the same however the input is cut (the deflater stops for
+  // want of look-ahead with a match held)
+  var cutOk = true;
+  var cl = 4;
+  while cl <= 9 {
+    var def = Deflater.make(Format.Raw, cl);
+    var out = List[u8]();
+    var pos = 0usize;
+    while pos < ld.len() {
+      let e = if pos + 97usize < ld.len() {pos + 97usize} else {ld.len()};
+      def.feed(&ld.view()[pos ..< e]);
+      pos = e;
+      var st = Status.MoreOutput;
+      while st == Status.MoreOutput {
+        var buf = IoBuf(512usize);
+        st = def.pull(&mut buf);
+        out.appendSlice(buf.view());
+      }
+    }
+    def.finish();
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      var buf = IoBuf(512usize);
+      st = def.pull(&mut buf);
+      out.appendSlice(buf.view());
+    }
+    if out.view() != rawDeflate(ld.view(), cl).view() { cutOk = false; }
+    cl += 1;
+  }
+  expect(cutOk, "lazy data: feeding 97 bytes at a time writes the bytes the whole input does (levels 4 to 9)");
+  // Golden: raw level 4 of lazyData(1000), decoded by Python's zlib to the data
+  expectUInt(u64.from(crc32(rawDeflate(ld.view(), 4).view())), 0x6704c478u64, "golden: lazyData(1000), raw level 4");
+  done()
+}

@@ -1,0 +1,141 @@
+// Stability of the stable sort, on records that share keys: sortBy on a List of
+// (key, id) records, the ids rising with the original positions, so equal keys that stay in
+// input order show as rising ids. Sizes straddle the merge's cases (21 and 33 are the
+// shortest that merge; 129 and up merge runs of 32 small enough to go from both ends; the
+// rest are the larger levels, where the top merges take the one-directional path).
+//
+// What each check means (every printed value was worked out against the source):
+// - For each size, each of three layouts of the keys (random modulo K, i % K, and blocks of 7
+//   with key (i / 7) % K, which make the merge gallop) and each key count K in 1, 2, 3, 5, 17
+//   and n (all different), the result must be in key order, with strictly rising ids inside
+//   every key, and hold every id exactly once. Each configuration adds 0 to 'bad' when so;
+//   the line for a size says 0.
+// - Hand-worked case, n = 200, keys i % 4: each key holds 50 records, key k with ids k, k + 4,
+//   ..., so the sorted list is key 0's ids 0, 4, 8 ... 196 (50 of them), then key 1's 1, 5 ...
+//   197, then key 2's 2 ... 198, then key 3's 3 ... 199. So position 0 has id 0, position 1
+//   id 4, position 49 id 196, position 50 id 1, position 99 id 197, position 100 id 2,
+//   position 149 id 198, position 150 id 3 and position 199 id 199.
+// - Hand-worked case, n = 130, two keys, keys (i / 65) % 2: the first 65 records have key 0 and
+//   the last 65 key 1, already in order: ids 0 to 129 unchanged (position 64 has id 64,
+//   position 65 id 65). With keys 1 - (i / 65) % 2 instead the halves swap: the key-0
+//   records are the last 65 (ids 65 to 129), so position 0 has id 65, position 64 id 129,
+//   position 65 id 0, position 129 id 64.
+
+mod sortstablekeys;
+
+import testing use *;
+import collections use *;
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+struct Rec {
+  pub key: u32;
+  pub id: u32;
+}
+
+fn recOrder(a: &Rec, b: &Rec) i32 { a.key <=> b.key }
+
+fn makeRecs(layout: i32, kc: usize, n: usize, seed: u64) List[Rec] {
+  var s = seed;
+  var l = List[Rec]();
+  var i = 0usize;
+  while i < n {
+    let r = nextRand(&mut s) >> 20u64;
+    var k = 0usize;
+    if layout == 0 { k = usize.from(r) % kc; }
+    else if layout == 1 { k = i % kc; }
+    else { k = (i / 7usize) % kc; }
+    l.push(Rec(u32.from(k), u32.from(i)));
+    i = i + 1usize;
+  }
+  l
+}
+
+// 0 when the list is in key order, ids rise within each key and every id 0 to n - 1 is there once
+fn problems(l: &List[Rec], n: usize) i32 {
+  var bad = 0i32;
+  if l.len() != n { return 1i32; }
+  var seen = List[bool]();
+  var i = 0usize;
+  while i < n { seen.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < n {
+    let id = usize.from(l[i].id);
+    if id >= n || seen[id] { bad = bad + 1i32; }
+    else { seen[id] = true; }
+    if i > 0usize {
+      if l[i - 1usize].key > l[i].key { bad = bad + 1i32; }
+      if l[i - 1usize].key == l[i].key && l[i - 1usize].id >= l[i].id { bad = bad + 1i32; }
+    }
+    i = i + 1usize;
+  }
+  bad
+}
+
+fn sizes() {
+  let ns = [21usize, 33usize, 64usize, 100usize, 129usize, 257usize, 1000usize, 4099usize, 20000usize];
+  let kcs = [1usize, 2usize, 3usize, 5usize, 17usize];
+  var ni = 0usize;
+  while ni < 9usize {
+    let n = ns[ni];
+    var bad = 0i32;
+    var layout = 0i32;
+    while layout < 3 {
+      var ki = 0usize;
+      while ki < 6usize {
+        let kc = if ki < 5usize { kcs[ki] } else { n };
+        var l = makeRecs(layout, kc, n, 99u64 + u64.from(n));
+        l.sortBy(&recOrder);
+        bad = bad + problems(&l, n);
+        ki = ki + 1usize;
+      }
+      layout = layout + 1i32;
+    }
+    expectInt(i64.from(bad), 0i64, "stable by id, 18 layouts and key counts");
+    ni = ni + 1usize;
+  }
+}
+
+fn byHand() {
+  var l = makeRecs(1i32, 4usize, 200usize, 1u64);
+  l.sortBy(&recOrder);
+  expectInt(i64.from(l[0usize].id), 0i64, "n = 200, i % 4: position 0");
+  expectInt(i64.from(l[1usize].id), 4i64, "position 1");
+  expectInt(i64.from(l[49usize].id), 196i64, "position 49");
+  expectInt(i64.from(l[50usize].id), 1i64, "position 50");
+  expectInt(i64.from(l[99usize].id), 197i64, "position 99");
+  expectInt(i64.from(l[100usize].id), 2i64, "position 100");
+  expectInt(i64.from(l[149usize].id), 198i64, "position 149");
+  expectInt(i64.from(l[150usize].id), 3i64, "position 150");
+  expectInt(i64.from(l[199usize].id), 199i64, "position 199");
+
+  var a = List[Rec]();
+  var b = List[Rec]();
+  var i = 0usize;
+  while i < 130usize {
+    a.push(Rec(u32.from((i / 65usize) % 2usize), u32.from(i)));
+    b.push(Rec(1u32 - u32.from((i / 65usize) % 2usize), u32.from(i)));
+    i = i + 1usize;
+  }
+  a.sortBy(&recOrder);
+  b.sortBy(&recOrder);
+  expectInt(i64.from(a[64usize].id), 64i64, "in order halves: position 64");
+  expectInt(i64.from(a[65usize].id), 65i64, "in order halves: position 65");
+  expectInt(i64.from(b[0usize].id), 65i64, "swapped halves: position 0");
+  expectInt(i64.from(b[64usize].id), 129i64, "swapped halves: position 64");
+  expectInt(i64.from(b[65usize].id), 0i64, "swapped halves: position 65");
+  expectInt(i64.from(b[129usize].id), 64i64, "swapped halves: position 129");
+}
+
+fn main() i32 {
+  sizes();
+  byHand();
+  done()
+}
