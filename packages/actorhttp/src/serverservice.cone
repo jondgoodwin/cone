@@ -373,6 +373,18 @@ fn srvSend(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) bool {
 
 fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
   if x.onH3 {srv.h3.finish(x.qreq);} else {srv.drv.finish(x.req);}
+  stopUpload(srv, x);
+}
+
+// A streamed request's body nobody wants (dropped unread, never taken, cut by a limit) while its response is
+// whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), over HTTP/3 the client is asked
+// to stop with STOP_SENDING H3_NO_ERROR (RFC 9114 section 4.1), so it stops sending. It is called at the
+// response's end and at the drop, and does its work at whichever comes second. A handler still holding the
+// body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1 gets false from
+// the driver (the core closes the connection after the answer)
+fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
+  if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
+  if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
 }
 
 fn srvCancel(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
@@ -853,7 +865,10 @@ fn beginResponse(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: B
   x.bodyless = x.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
     (framing.isSized() && framing.length == 0u64);
   srvRespond(srv, x, head, framing);
-  if x.bodyless {x.finished = true;}
+  if x.bodyless {
+    x.finished = true;
+    stopUpload(srv, x);
+  }
 }
 
 // A whole response
@@ -976,7 +991,10 @@ struct DropExJob {
     let s = loc.srv as &mut SrvRec;
     let x = loc.ex as &mut ExRec;
     x.handle = false;
-    if discard && x.inAwait {inDiscarded(s, x);}
+    if discard && x.inAwait {
+      inDiscarded(s, x);
+      stopUpload(s, x);
+    }
     if x.over {
       if !x.inAwait {freeEx(s, usize.from(slot));}
       return;

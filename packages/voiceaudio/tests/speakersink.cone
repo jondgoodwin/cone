@@ -1,0 +1,249 @@
+// SpeakerSink: the speaker as a sink of 320-sample blocks through the thread edge, on SDL's disk driver (playback
+// lands in a raw file, which is checked). aheadMs is 60, the voice window the timing run found (packages/audiodevice/
+// examples/feedtiming.cone). Nothing here waits a fixed time for something to happen: every wait is a poll with a
+// deadline.
+//
+// 1. WHAT IS SENT IS WHAT IS PLAYED: half a second of tone as blocks; the file holds every sample, in order; and
+//    `played()` is the end event, true once the stream has ended and everything has left SDL's stream.
+// 2. BACK-PRESSURE: the producer has at most `maxQueuedMs` of sound outstanding (plus what the feeder keeps ahead);
+//    it is nowhere near the whole two seconds it has to send.
+// 3. BARGE-IN: a cut-off mid-sentence stops the sound at once; blocks of the old sentence still on their way are
+//    discarded (generation); the next sentence, stamped with the new generation, plays whole.
+// 4. UNDERRUN: a producer that stalls mid-speech lets the stream run dry, which is counted; the speech goes on and
+//    plays when it resumes.
+mod speakersink;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration, Instant;
+import actors;
+import stages use *;
+import voiceaudio use *;
+
+let curGen: Atomic[u32];
+let maxOut: Atomic[u64];
+let sent: Atomic[u64];
+
+fn @initpure init() {
+  curGen = Atomic[u32].of(0u32);
+  maxOut = Atomic[u64].of(0u64);
+  sent = Atomic[u64].of(0u64);
+}
+
+// A source of blocks under credit, stamped with the current generation
+actor Voice is ValueSource {
+  down: ValueSink[AudioBlock];
+  x: List[f32];
+  pos: usize;
+  credits: u32;
+  out: u32;
+  finishing: bool;
+  over: bool;
+
+  pub fn init(self: &new, down: ValueSink[AudioBlock], x: List[f32]) {
+    *self = Self(down: down, x: x, pos: 0usize, credits: 0u32, out: 0u32, finishing: false, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn credit(self, n: u32) {
+    credits = credits + n;
+    if out >= n { out = out - n; } else { out = 0u32; }
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  // a new sentence
+  pub async fn speak(self, y: List[f32]) {
+    x = y;
+    pos = 0usize;
+    self.pump();
+  }
+
+  // no more sentences
+  pub async fn finish(self) {
+    finishing = true;
+    self.pump();
+  }
+
+  fn pump(self) {
+    while credits > 0u32 && pos < x.len() {
+      let b = AudioBlock.of(x.view(), pos, curGen.load());
+      pos = pos + usize.from(b.len);
+      down.accept(b);
+      credits = credits - 1u32;
+      out = out + 1u32;
+      if u64.from(out) > maxOut.load() { maxOut.store(u64.from(out)); }
+      sent.add(1u64);
+    }
+    if finishing && pos >= x.len() && !over {
+      over = true;
+      down.end(Ending.Finished);
+    }
+  }
+}
+
+fn deadline(ms: i64) Instant { Instant.now() + Duration.fromMillis(ms) }
+
+fn waitPlayed(sp: &SpeakerSink, ms: i64) bool {
+  let limit = deadline(ms);
+  while !sp.played() && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  sp.played()
+}
+
+fn waitPut(sp: &SpeakerSink, n: u64, ms: i64) bool {
+  let limit = deadline(ms);
+  while sp.blocksPut() < n && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  sp.blocksPut() >= n
+}
+
+fn waitPlayedCount(sp: &SpeakerSink, n: u64, ms: i64) bool {
+  let limit = deadline(ms);
+  while sp.blocksPlayed() < n && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  sp.blocksPlayed() >= n
+}
+
+// The left channel of the file, once its length has stopped changing (the disk driver writes from its own thread)
+fn settledLeft(p: &Path) List[f32] {
+  var prev = 0usize;
+  var same = 0;
+  var out = List[f32]();
+  let limit = deadline(10000i64);
+  while same < 4 && Instant.now() < limit {
+    match readRawF32(p) {
+      case let Ok(l) { out = channel(l.view(), 2usize, 0usize); }
+      case let Err(e) {}
+    }
+    if out.len() == prev && prev > 0usize { same = same + 1; } else { same = 0; prev = out.len(); }
+    thread.sleep(Duration.fromMillis(25i64));
+  }
+  out
+}
+
+fn main() i32 {
+  initAll();
+  let R = DISK_RATE;
+  let outName = "voiceaudio-test-sink-out.raw";
+  let outPath = Path.from("voiceaudio-test-sink-out.raw");
+
+  // ---- 1. what is sent is what is played
+  {
+    let tone = toneMs(500u32, R, 440., 0.5);
+    // real time, and 200 ms ahead (a setting): the content check must not depend on the machine's load
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        var sp = SpeakerSink.start(spk, 200u32, 300u32);
+        let voice = Voice(sp.sink(), toneMs(500u32, R, 440., 0.5));
+        voice.finish();
+        expect(waitPlayed(&sp, 20000i64), "1: played() became true: the stream ended and everything left SDL's stream");
+        expectUInt(sp.blocksPlayed(), sp.blocksPut(), "1: every block put has played");
+        expectUInt(sp.blocksPut(), 69u64, "1: 22,050 samples are 69 blocks of 320");
+        expectUInt(sp.stale(), 0u64, "1: none was stale");
+        expectInt(i64.from(sp.stop()), 0i64, "1: the feeder ended cleanly");
+      }
+      case let Err(e) { require(false, "1: the disk speaker opens"); }
+    }
+    let got = settledLeft(&outPath);
+    let first = firstAbove(got.view(), 0.);
+    let last = endAbove(got.view(), 0.);
+    expectUInt(u64.from(last - first), 22049u64, "1: the file holds the whole half second (22,049 non-zero samples)");
+    var worst = 0.f;
+    var k = 0usize;
+    while k < 22049usize && first + k < got.len() {
+      var d = *got[first + k] - *tone[k + 1usize];
+      if d < 0. { d = -d; }
+      if d > worst { worst = d; }
+      k = k + 1usize;
+    }
+    expectFloat(f64.from(worst), 0., 0.0000001, "1: and every sample written is the sample sent");
+    _ = fs.removeFile(&outPath);
+  }
+
+  // ---- 2. back-pressure: the producer cannot run away from the speaker
+  maxOut.store(0u64);
+  sent.store(0u64);
+  {
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "0.05");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        // 100 ms outstanding: 13 blocks of 320 at 44.1 kHz
+        var sp = SpeakerSink.start(spk, 60u32, 100u32);
+        let voice = Voice(sp.sink(), toneMs(2000u32, R, 440., 0.5));
+        voice.finish();
+        expect(waitPlayed(&sp, 30000i64), "2: the two seconds played out");
+        expectUInt(sent.load(), 276u64, "2: 88,200 samples are 276 blocks");
+        // credit returns when blocks play, in batches that include what the feeder took meanwhile (about aheadMs
+        // of sound, 9 blocks): outstanding stays within the window plus that, far under the 276
+        expect(maxOut.load() <= 13u64 + 9u64 + 2u64, "2: the producer never had more than the window plus the feeder's lead outstanding");
+        expect(maxOut.load() >= 2u64, "2: and it did use credit");
+        expectInt(i64.from(sp.stop()), 0i64, "2: the feeder ended cleanly");
+      }
+      case let Err(e) { require(false, "2: the disk speaker opens"); }
+    }
+    _ = fs.removeFile(&outPath);
+  }
+
+  // ---- 3. barge-in
+  curGen.store(0u32);
+  {
+    // a real-time device, so that the first sentence is still mostly unplayed at the cut
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        var sp = SpeakerSink.start(spk, 60u32, 300u32);
+        let voice = Voice(sp.sink(), toneMs(3000u32, R, 440., 0.5));
+        expect(waitPut(&sp, 20u64, 10000i64), "3: the first sentence is playing");
+        sp.cutOff();
+        curGen.store(sp.generation());
+        expectUInt(u64.from(sp.generation()), 1u64, "3: the cut-off made a new generation");
+        voice.speak(toneMs(200u32, R, 440., 0.5));
+        voice.finish();
+        expect(waitPlayed(&sp, 30000i64), "3: the second sentence played out");
+        expectInt(i64.from(sp.stop()), 0i64, "3: the feeder ended cleanly");
+        expect(sp.stale() + sp.blocksPut() < 600u64, "3: far fewer blocks were played than the 3.2 s sent in all");
+      }
+      case let Err(e) { require(false, "3: the disk speaker opens"); }
+    }
+    let got = settledLeft(&outPath);
+    let first = firstAbove(got.view(), 0.001);
+    let last = endAbove(got.view(), 0.001);
+    expect(last > first, "3: there is sound in the file");
+    // the file holds a short stretch of the first sentence, then the second: well under the 3 s of the first
+    expect(last - first < ms(1500u32, R), "3: the cut-off stopped the first sentence: under 1.5 s of sound in all");
+    _ = fs.removeFile(&outPath);
+  }
+
+  // ---- 4. a stalled producer lets the stream run dry: counted
+  curGen.store(0u32);
+  {
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        var sp = SpeakerSink.start(spk, 60u32, 300u32);
+        let voice = Voice(sp.sink(), toneMs(40u32, R, 440., 0.5));
+        expect(waitPlayedCount(&sp, 5u64, 20000i64), "4: the first words played");
+        // the producer says nothing now; the stream empties
+        let limit = deadline(5000i64);
+        while sp.underruns() == 0u64 && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+        expectUInt(sp.underruns(), 1u64, "4: the stream ran dry mid-speech: one underrun");
+        voice.speak(toneMs(100u32, R, 440., 0.5));
+        voice.finish();
+        expect(waitPlayed(&sp, 20000i64), "4: and the speech goes on when the producer resumes");
+        // the end of the stream is not an underrun (a load spike could add one mid-sentence, so not exactly one)
+        expect(sp.underruns() <= 2u64, "4: the end added no underrun of its own");
+        expectInt(i64.from(sp.stop()), 0i64, "4: the feeder ended cleanly");
+      }
+      case let Err(e) { require(false, "4: the disk speaker opens"); }
+    }
+    _ = fs.removeFile(&outPath);
+  }
+
+  finalAll();
+  done()
+}
+
+fn ms(n: u32, rate: u32) usize { usize.from(n) * usize.from(rate) / 1000usize }
