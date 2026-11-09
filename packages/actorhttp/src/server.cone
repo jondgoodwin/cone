@@ -53,16 +53,26 @@ pub struct ServerConfig {
   pub tlsConfig: Option[tls.ServerConfig];  // Some: every connection is TLS
   pub http2: bool;                          // TLS: HTTP/2 offered (ALPN "h2" before "http/1.1")
   pub http3: Option[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]];   // TLS: HTTP/3 on UDP, by this plug-in's maker
+  pub bodiesStreamed: bool;                 // every request is delivered at its head, its body taken by 'Exchange.body()' (maxBody applies to none)
 
   // The defaults: plain HTTP/1.1, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
-    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false, None)
+    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false, None, false)
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
   pub fn secure(self, cfg: tls.ServerConfig) ServerConfig {
     var c = self;
     c.tlsConfig = Some[tls.ServerConfig](cfg);
+    c
+  }
+
+  // The same delivering every request at its head, with no body gathered: the handler takes the body as a
+  // stream with 'ex.body()' ('read', 'to' a sink, or 'readAll(limit)'), and 'Expect: 100-continue' is
+  // answered when it first does. 'maxBody' means nothing to such a server (requestbody.cone)
+  pub fn streamBodies(self) ServerConfig {
+    var c = self;
+    c.bodiesStreamed = true;
     c
   }
 
@@ -264,6 +274,8 @@ pub struct Exchange is Move {
   length: u64;                   // ...and is this
   written: u64;                  // body bytes asked for so far
   bodyless: bool;                // the response has no body bytes (HEAD, 204, 304, a length of 0)
+  streamed: bool;                // the server delivers bodies as streams (ServerConfig.streamBodies): 'request.body' is empty
+  bodyTaken: bool;               // ...and 'body()' has been called
   pub request: Request;
 
   // A whole response: the head (status 200 to 599; the framing fields are the
@@ -376,11 +388,21 @@ pub struct Exchange is Move {
     sink
   }
 
+  // The request's body as a stream, once: only on a server made with ServerConfig.streamBodies (otherwise
+  // 'request.body' is the whole body). The first 'read', 'to' or 'readAll' is the choice, and answers an
+  // 'Expect: 100-continue' (requestbody.cone)
+  pub fn body(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) RequestBody {
+    if !streamed {die("actorhttp: body needs a server made with ServerConfig.streamBodies", file, line);}
+    if bodyTaken {die("actorhttp: body was taken already", file, line);}
+    bodyTaken = true;
+    RequestBody.make(srv, slot, id)
+  }
+
   // Whether a response has been begun
   pub fn isAnswered(self: &) bool {phase != phaseFresh}
 
   fn final(self: &uni) {
-    post[DropExJob](DropExJob(srv, slot, id));
+    post[DropExJob](DropExJob(srv, slot, id, streamed && !bodyTaken));
   }
 }
 
