@@ -491,6 +491,7 @@ typedef struct {
     Nodes *wholes;    // variables whose own value moved
     Nodes *hollow;    // move sources, each reaching a local owning reference
     int nomark;       // walking a match binding's matched value: the binding's use is the move site
+    Nodes *hollowuse; // for each in 'hollow', the use of the owner's name it is reached through
 } MoveParts;
 
 // The local variable holding an owning reference that 'ref' names, or NULL.
@@ -584,9 +585,12 @@ static void flowMoveHollow(VarDclNode *owner, INode *owneruse, Nodes **moved, IN
     // Where it happens, for a drop flag
     owneruse->flags |= FlagHollowOut;
     flowAddMoved(moved, (INode *)owner);
-    if (parts->hollow == NULL)
+    if (parts->hollow == NULL) {
         parts->hollow = newNodes(2);
+        parts->hollowuse = newNodes(2);
+    }
     nodesAdd(&parts->hollow, top);
+    nodesAdd(&parts->hollowuse, owneruse);
 }
 
 // Walk one of the values a block or an 'if' may hand back, narrowing 'common'
@@ -902,7 +906,7 @@ static VarDclNode *flowHollowOwner(INode *exp) {
 // use flowMoveSource marked), so the function's drops go to the path walk.
 void flowHandleMove(INode *node) {
     Nodes *moved = NULL;
-    MoveParts parts = { NULL, NULL, 0 };
+    MoveParts parts = { NULL, NULL, 0, NULL };
     INode **nodesp;
     uint32_t cnt;
     flowMoveSource(node, &moved, node, &parts);
@@ -916,13 +920,19 @@ void flowHandleMove(INode *node) {
         }
     }
     if (parts.hollow) {
+        uint32_t at = 0;
         for (nodesFor(parts.hollow, cnt, nodesp)) {
+            INode *owneruse = nodesGet(parts.hollowuse, at++);
             VarDclNode *owner = flowHollowOwner(*nodesp);
             if (flowNodesHas(parts.wholes, (INode *)owner))
                 continue;
             flowVarSetFlags(owner, owner->flowtempflags | VarHollow, flowNodesWith(owner->hollowed, *nodesp));
-            if (!flowNodesHas(owner->hollowall, *nodesp))
+            // Beside each move, the use of the owner's name it happens at: the
+            // path walk meets that node, and says which moves reach a release
+            if (!flowNodesHas(owner->hollowall, *nodesp)) {
                 owner->hollowall = flowNodesWith(owner->hollowall, *nodesp);
+                owner->hollowuse = flowNodesWith(owner->hollowuse, owneruse);
+            }
             flowDropNote(flowCurrent, owner);
             if (!flowNodesHas(moved, (INode *)owner) && flowCurrent)
                 flowCurrent->dropgate = 1;
