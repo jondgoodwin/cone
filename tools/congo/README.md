@@ -803,6 +803,16 @@ so, and still builds its examples.
   tests; over a folder of packages, after every package's other tests, one at a
   time, so no other test is running beside it. `congo test <text>` orders them
   the same way.
+
+  **Quiet is the class for timing-sensitive tests.** Over a folder, packages
+  run in parallel (`--jobs`, half the logical processors by default), so a test
+  that asserts on a clock, a deadline, a latency or a "fast enough" bound can
+  fail on load alone. List such a test under `quiet` as soon as it fails in the
+  parallel run and passes alone: every package's tests have run and every
+  example is built before the first quiet test starts. Then fix its window
+  (give every short window a margin; poll instead of sleeping), and take it off
+  the list only after the fix has held under load. Congo runs nothing else
+  beside a quiet test; other programs on the machine are not its to stop.
 - **At a folder of packages**, such as the repository's `packages/`, `congo
   test` tests each package in it in turn, and ends with a summary of them all.
   Each package's builds go in its own `build/` folder, as a build of it would.

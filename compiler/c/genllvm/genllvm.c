@@ -2544,6 +2544,10 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     genlProgram(gen, pgm);
     if (gen->opt->gpu && !errors)
         genlGpuCalls(gen);
+    // Generation failed before the walk of what a kernel reaches: report the
+    // GPU refusals flow held (loanGpuHeldFlush), as a failed analysis does
+    else if (gen->opt->gpu)
+        loanGpuHeldFlush(NULL, NULL);
 
     // Generation reports only what makes an object wrong -- a C name declared
     // two ways (genlClaimSymbol); on a GPU target, a global holding a borrow

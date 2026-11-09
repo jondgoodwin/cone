@@ -123,6 +123,9 @@ fn decodeBlock(src: &List[u8], start: usize, end: usize, ent: &mut Entropy, hist
 // The literals section at *src[*p, end) into ent.lits; *p moves past it
 fn decodeLiterals(src: &List[u8], p: &mut usize, end: usize, ent: &mut Entropy) Fault {
   ent.lits.clear();
+  // Room for the largest literals and 8 bytes of slack, which the sequences'
+  // word-wise copies read past the end into
+  ent.lits.reserve(blockSizeMax() + 8usize);
   let at = *p;
   if at >= end { return Fault.LitHeader; }
   let b0 = *src[at];
@@ -147,16 +150,12 @@ fn decodeLiterals(src: &List[u8], p: &mut usize, end: usize, ent: &mut Entropy) 
     let q = at + hs;
     if kind == 0u8 {
       if end - q < regen { return Fault.LitHeader; }
-      ent.lits.reserve(regen);
-      var i = 0usize;
-      while i < regen { ent.lits.push(*src[q + i]); i = i + 1usize; }
+      appendRange(&mut ent.lits, src, q, regen);
       *p = q + regen;
     } else {
       if end - q < 1usize { return Fault.LitHeader; }
       let b = *src[q];
-      ent.lits.reserve(regen);
-      var i = 0usize;
-      while i < regen { ent.lits.push(b); i = i + 1usize; }
+      ent.lits.resize(regen, b);
       *p = q + 1usize;
     }
     return Fault.Ok;
@@ -252,9 +251,7 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   if b0 == 0usize {
     if p + 1usize != end { return Fault.SeqHeader; }
     if nlits > reach.blockMax { return Fault.BlockTooBig; }
-    hist.reserve(nlits);
-    var i = 0usize;
-    while i < nlits { hist.push(*ent.lits[i]); i = i + 1usize; }
+    appendRange(hist, &ent.lits, 0usize, nlits);
     return Fault.Ok;
   }
   if b0 < 128usize {
@@ -293,7 +290,14 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   let dictLen = dict.len();
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
-  hist.reserve(room);
+  hist.reserve(room + 8usize);
+  // The block is written through pointers into the room just reserved
+  // (everything checked against 'room' and the literals' length first), 'w'
+  // the next byte; 'hist' gets its new length once, at the end
+  let bp = hist.viewMut() as *u8;
+  let lp = ent.lits.view() as *u8;
+  let dp = dict.view() as *u8;
+  var w = blockStart;
   var i = 0usize;
   while i < nseq {
     let llc = *ent.ll.cells[usize.from(llState)];
@@ -339,34 +343,30 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
     }
     // Execute: the literals, then the match
     if ll > nlits - litPos { return Fault.LitOverrun; }
-    if (hist.len() - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
-    var k = 0usize;
-    while k < ll { hist.push(*ent.lits[litPos + k]); k = k + 1usize; }
+    if (w - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
+    copyWords(bp + w, lp + litPos, ll);
+    w = w + ll;
     litPos = litPos + ll;
     // The frame's output so far, and how far back a match may reach: the
     // window, or while the output is no longer than the window, all of it
     // and the dictionary before it
-    let pos = reach.out + u64.from(hist.len() - blockStart);
+    let pos = reach.out + u64.from(w - blockStart);
     var limit = if pos < reach.window {pos} else {reach.window};
     if dictLen > 0usize && pos <= reach.window { limit = pos + u64.from(dictLen); }
     if off > limit { return Fault.OffsetFar; }
     if off <= pos {
       // From the frame's own output
       let o = usize.from(off);
-      if o > hist.len() - reach.base { return Fault.OffsetFar; }
-      var from = hist.len() - o;
-      k = 0usize;
-      while k < ml { hist.push(*hist[from]); from = from + 1usize; k = k + 1usize; }
+      if o > w - reach.base { return Fault.OffsetFar; }
+      copyMatch(bp, w, w - o, ml);
     } else {
       // From the dictionary, then on into the frame's output
       let back = usize.from(off - pos);
-      var from = dictLen - back;
       let first = if ml < back {ml} else {back};
-      k = 0usize;
-      while k < first { hist.push(*dict[from]); from = from + 1usize; k = k + 1usize; }
-      var f2 = reach.base;
-      while k < ml { hist.push(*hist[f2]); f2 = f2 + 1usize; k = k + 1usize; }
+      copyBytes(bp + w, dp + (dictLen - back), first);
+      if ml > first { copyMatch(bp, w + first, reach.base, ml - first); }
     }
+    w = w + ml;
     i = i + 1usize;
   }
   if !bits.exact() { return Fault.SeqStream; }
@@ -374,8 +374,94 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   ent.rep2 = r2;
   ent.rep3 = r3;
   let rest = nlits - litPos;
-  if (hist.len() - blockStart) + rest > room { return Fault.BlockTooBig; }
-  var k = litPos;
-  while k < nlits { hist.push(*ent.lits[k]); k = k + 1usize; }
+  if (w - blockStart) + rest > room { return Fault.BlockTooBig; }
+  copyWords(bp + w, lp + litPos, rest);
+  w = w + rest;
+  commit(hist, blockStart, w - blockStart);
   Fault.Ok
+}
+
+// Gives 'hist' the n bytes already written at its end, past its length, in
+// room it reserved: 'appendSlice' of exactly those bytes (a copy of them onto
+// themselves, a block move, where growing the list by 'resize' or 'push'
+// writes a byte at a time)
+fn commit(hist: &mut List[u8], at: usize, n: usize) {
+  let p = hist.viewMut() as *u8;
+  hist.appendSlice(mem.sliceFromParts[u8](p + at, n));
+}
+
+// Appends *src[from, from + n) to 'dst' in one block copy. 'appendSlice' is
+// given a slice made from a pointer because the checker, seeing two lists
+// behind references, cannot tell that 'dst' and 'src' are not the same one.
+// Bounds-checked.
+fn appendRange(dst: &mut List[u8], src: &List[u8], from: usize, n: usize) {
+  let part = &src.view()[from ..< from + n];
+  dst.appendSlice(mem.sliceFromParts[u8](part as *u8, n));
+}
+
+// n bytes from 'from' to 'to', which do not overlap; no bounds check
+fn copyBytes(to: *u8, from: *u8, n: usize) inline {
+  if n <= 16usize {
+    var k = 0usize;
+    while k < n {
+      mem.writeRaw[u8](to + k, mem.readRaw[u8](from + k));
+      k = k + 1usize;
+    }
+  } else {
+    mem.moveRaw[u8](to, from, n);
+  }
+}
+
+// The same for a copy that may read up to 7 bytes past its source and write
+// up to 7 past its target (short ones are two words, not a byte loop); both
+// have the slack, as 'decodeLiterals' and 'decodeSequences' reserve it
+fn copyWords(to: *u8, from: *u8, n: usize) inline {
+  if n <= 16usize {
+    var k = 0usize;
+    while k < n {
+      mem.writeRaw[u64]((to + k) as *u64, mem.readRaw[u64]((from + k) as *u64));
+      k = k + 8usize;
+    }
+  } else {
+    mem.moveRaw[u8](to, from, n);
+  }
+}
+
+// Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
+// b[from + 1], ...: when the source runs on into the bytes being written (the
+// match is longer than its offset, from + ml > at), the last 'at - from' bytes
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml.
+fn copyMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  let off = at - from;
+  if off >= 8usize {
+    // Eight bytes a step, each read after the write before it, so the
+    // repeating of a short offset comes out right as long as it is eight or
+    // more; the last step may write up to 7 bytes past the match, into the
+    // slack the block reserved
+    if off >= ml && ml > 16usize { mem.moveRaw[u8](b + at, b + from, ml); return; }
+    var k = 0usize;
+    while k < ml {
+      mem.writeRaw[u64]((b + (at + k)) as *u64, mem.readRaw[u64]((b + (from + k)) as *u64));
+      k = k + 8usize;
+    }
+    return;
+  }
+  if ml <= 16usize {
+    var k = 0usize;
+    while k < ml {
+      mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
+      k = k + 1usize;
+    }
+    return;
+  }
+  // Overlapping and long: the output is the last 'off' bytes repeated. Each
+  // step copies the run that starts at 'from' and ends where the output so
+  // far ends (at most off + done bytes) to the end of the output, so a step's
+  // source and target never overlap.
+  var done = 0usize;
+  while done < ml {
+    let chunk = if off + done < ml - done {off + done} else {ml - done};
+    mem.moveRaw[u8](b + (at + done), b + from, chunk);
+    done = done + chunk;
+  }
 }

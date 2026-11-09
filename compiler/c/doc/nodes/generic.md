@@ -1117,6 +1117,17 @@ unwound, without reporting again: each level the refusal returns through would
 otherwise start its next expansion down to the limit again, and one that
 expands twice a level would report the limit an exponential number of times.
 
+**A chain through the members queue is counted apart.** An instance of a generic
+type has its members checked from a queue (`structCheckMembers`, drained by
+`structLayoutExit`), not inside the instantiation that made it, so a method whose
+signature names the type at a larger argument (`Wrap[R]` giving `Wrap[Option[R]]`)
+makes each next instance with the stack back at depth 0, and `genericInstantiateEnter`
+never counts it (Bug 71: endless instantiation, a segfault after minutes). Each new
+instance made while another's members are checked records that one (`instfrom`),
+the member (`instmeth`) and its depth (`instdepth`, `structInstanceNote`); a chain
+reaching `TypeCheckLoopMax` is refused by `structInstanceNest` with `ErrorInstDepth`,
+once per chain, naming its first instances, the last, and the member.
+
 **Macros differ from generics in three ways**: a value argument is never type
 checked in place before it is substituted or bound, an expansion is never
 memoized, and the type arguments are given at the use — `m[i32](x)`,
@@ -1364,7 +1375,9 @@ hooks set. The pass's hooks are the ones a `#each` in a body uses (`fieldEachPas
 other properties are pseudo generic parameters whose `Name.node` is the field's answer while the member is
 cloned, and `x.#f` is a member name `#f` that `cloneNameUseNode` turns into the field's. A generated member's name
 is the field's with the loop's fixed word (`genNameFor`); a name already in the instance is
-`ErrorMetaGenClash` (`structGenClash`). A generated member's `gen` is cleared in the instance, so the instance is
+`ErrorMetaGenClash` (`structGenClash`); a written method named like a generated field, which entered the instance
+first, is the same error (`structMethodFieldClash`), and the instance is then made with no methods, so no body
+is checked against the field. A generated member's `gen` is cleared in the instance, so the instance is
 an ordinary struct. Not built: a generated member in a plain (non-generic) struct, an enum or a trait, a static,
 macro or alias, a `#if` on a type inside the loop, and a loop inside a loop. An error in a generated member's
 body does not name its pass (a body's loops do, via `EachPass`).

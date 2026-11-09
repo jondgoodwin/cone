@@ -1,0 +1,161 @@
+// A behaviour that moves a value out through its owners (they are hollow),
+// awaits, and gives the owner a new value after it resumes, then moves out of
+// it in another shape: the allocations the hollow owner held must be freed as
+// the new value is stored, by the moves that hollowed it and not by the ones
+// written after the refill, as a plain function does. Each row owns a value
+// whose 'final' adds to a tally, and an owner whose region counts its
+// allocations and frees. Every value is finalized once and every allocation
+// freed once.
+//
+// The rows, by the nibble their finals count in (each counts 1, 1):
+//
+//  0, 1  an owner of an owner hollowed through both before the 'await', refilled
+//        after it and moved out of through the outer one only
+//  2, 3  hollowed through the outer one only, refilled and moved out of
+//        through both
+//  4, 5  the first row's shape in a plain function, with no 'await'
+//  6, 7  the second row's shape in a plain function
+//  8, 9  hollow on one path only (an 'if' moved the value out) at the 'await',
+//        where the move was made; refilled after it and moved out of through
+//        the outer one
+// 10, 11 the same where the 'if' did not move it
+
+mod seamrefill;
+
+import stdio use *;
+import libc;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import aio;
+
+let tally: Atomic[u64];
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  tally = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+// A value whose death is counted in the nibble 'n' of the tally
+struct Counted {
+  pub n: u64;
+  fn final(self: &uni) {
+    tally.add(1u64 << (n * 4u64));
+  }
+}
+
+// An owner of a value in a region of its own, which counts what it hands out
+// and takes back
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+fn give(c: Counted) {}
+
+fn plainShallower() {
+  var o = One[One[Counted]](One[Counted](Counted(4u64)));
+  let c = **o;
+  o = One[One[Counted]](One[Counted](Counted(5u64)));
+  let e = *o;
+  if c.n + e.n > 99u64 {printStr("never\n");}
+}
+
+fn plainDeeper() {
+  var o = One[One[Counted]](One[Counted](Counted(6u64)));
+  let c = *o;
+  o = One[One[Counted]](One[Counted](Counted(7u64)));
+  let e = **o;
+  if c.n + e.n > 99u64 {printStr("never\n");}
+}
+
+actor Holder {
+  // 0, 1
+  pub async fn shallower(self, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(0u64)));
+    let c = **o;
+    let s = await aio.sleep(Duration.fromMillis(10i64));
+    o = One[One[Counted]](One[Counted](Counted(1u64)));
+    let e = *o;
+    if c.n + e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 2, 3
+  pub async fn deeper(self, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(2u64)));
+    let c = *o;
+    let s = await aio.sleep(Duration.fromMillis(10i64));
+    o = One[One[Counted]](One[Counted](Counted(3u64)));
+    let e = **o;
+    if c.n + e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 8, 9 (the move made) and 10, 11 (not made): 'base' is the first nibble
+  pub async fn sometimes(self, base: u64, moves: bool, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(base)));
+    if moves {give(**o);}
+    let s = await aio.sleep(Duration.fromMillis(10i64));
+    o = One[One[Counted]](One[Counted](Counted(base + 1u64)));
+    let e = *o;
+    if e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn report(what: &str) {
+  printStr(what);
+  var n = 0u64;
+  while n < 12u64 {
+    printStr(" ");
+    printUInt((tally.load() >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  plainShallower();
+  plainDeeper();
+  report("plain:  ");
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  {
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.shallower(tx);
+    rx.recv();
+  }
+  {
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.deeper(tx);
+    rx.recv();
+  }
+  {
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.sometimes(8u64, true, tx);
+    rx.recv();
+  }
+  {
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.sometimes(10u64, false, tx);
+    rx.recv();
+  }
+  actors.waitUntilIdle();
+  report("resumed:");
+  finalAll();
+  printStr("end\n");
+}

@@ -1893,7 +1893,11 @@ function, `<method>'<n>.drop(record)` (`genlSeamDrop`), declared where the seam
 is laid out and handed to `parkReserve`: each of the record's values that does
 something as it dies is finalized, in the record's order -- the order the
 values would die in -- a variable carried with its drop flag only where the
-flag says it holds its whole value (a hollow one, part moved out, is left).
+flag says it holds its whole value. A hollow one, part moved out, is released as
+its scope's end releases it (`genlHollowReleaseRef`; flow's `SeamHollow` note on the
+seam's variable, read from the flag where there is one): what moved, by the
+moves that reach this seam (`AwaitNode.hollowed`), is left, the allocation is
+freed.
 The table calls it when its actor dies with the record still parked
 (`Pending`'s finalizer), which happens only when the envelope the record was
 owed was dropped unanswered: the I/O it awaited was ended at the program's end,
@@ -2394,7 +2398,12 @@ intrinsics. The CPU is untouched, and the C library is called there. Core's
 every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
 `round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
-(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
+`tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
+`cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
+`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
+([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
+`module_target_spirv_floatmath`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
