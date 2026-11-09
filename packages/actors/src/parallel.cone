@@ -371,6 +371,48 @@ fn grainOf(g: usize) usize {
   if g == 0usize {1usize} else {g}
 }
 
+// THE COST GUARD of a 'parallel each'. Splitting costs a push, a wake and a
+// wait for workers: about 4 us for 8 items measured, against 40 ns to run them
+// where they are. So the caller runs the items of a loop itself, one at a time,
+// and reads the clock after each; only once the time it has spent passes
+// splitAfterNanos (about what a wake costs) with more than one item left does it
+// hand the rest to runTask, which splits on demand. A loop of cheap items
+// finishes inline, with no deque, no wake and the workers not even started; a
+// loop of costly items splits after its first; a loop whose first items are fast
+// and whose later ones are slow splits as soon as the slow part has used up the
+// threshold. The time spent on the run so far decides, never one sample alone.
+// Pieces a thief takes are not guarded: they split by their budget as before.
+// The clock is the spin's (clockTicks).
+const splitAfterNanos = 2000u64;
+
+var @threadlocal guardLimit: u64 = 0u64;
+
+// splitAfterNanos in the clock's ticks, found once a thread
+fn guardTicks() u64 {
+  if guardLimit == 0u64 {
+    let q = clockFrequency() * splitAfterNanos / 1000000000u64;
+    guardLimit = if q > 0u64 {q} else {1u64};
+  }
+  guardLimit
+}
+
+// Run the items of [lo, hi) one body call each on this thread, until they are
+// done or the clock has passed the guard with more than one left: the first
+// item not run (hi when all were)
+fn runInline(body: PieceFn, data: *u8, lo: usize, hi: usize) usize {
+  let limit = guardTicks();
+  let t0 = clockTicks();
+  var at = lo;
+  while at < hi {
+    body(data, at, at + 1usize);
+    at = at + 1usize;
+    if hi - at > 1usize && clockTicks() - t0 >= limit {
+      return at;
+    }
+  }
+  hi
+}
+
 // A 'parallel each' has no grain: it splits on demand (runTask, adaptive), the
 // runtime not knowing what one pass costs. The fixed floor of 128 items it had
 // (Jon, 9 Oct 2026: 25 us to 2.2 us on 1,000 cheap items) capped an expensive
@@ -420,11 +462,19 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, d
     body(data, lo, hi);
     return;
   }
+  // The cost guard (above): an adaptive loop begins on this thread, item by item
+  var from = lo;
+  if adaptive {
+    from = runInline(body, data, lo, hi);
+    if from >= hi {
+      return;
+    }
+  }
   ensureRunning();
   let s = running.load() as *Sched;
-  var rec = LoopRec(hi - lo, g, body, data, &noDone, null, false, adaptive);
+  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive);
   let p = &mut rec as *LoopRec;
-  runTask(s, Task(p, lo, hi, (*s).nworkers, false));
+  runTask(s, Task(p, from, hi, (*s).nworkers, false));
   helpUntilDone(s, p);
 }
 
@@ -713,17 +763,28 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, 
     onDone(doneArg);
     return;
   }
+  // The cost guard (above): an adaptive loop begins on this thread, item by item.
+  // The behaviour form runs here on the actor's own worker, after the behaviour
+  // returned, so it can run items inline as a blocking loop's caller does
+  var from = lo;
+  if adaptive {
+    from = runInline(body, data, lo, hi);
+    if from >= hi {
+      onDone(doneArg);
+      return;
+    }
+  }
   ensureRunning();
   let s = running.load() as *Sched;
   let rec = libc.malloc(mem.sizeof[LoopRec]()) as *LoopRec;
   if rec as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[LoopRec](rec, LoopRec(hi - lo, g, body, data, onDone, doneArg, true, adaptive));
+  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive));
   mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
-  if !dequePush(curDeque(s), Task(rec, lo, hi, (*s).nworkers, false)) {
+  if !dequePush(curDeque(s), Task(rec, from, hi, (*s).nworkers, false)) {
     // The deque is full: run the loop's first task here, which splits it
-    runTask(s, Task(rec, lo, hi, (*s).nworkers, false));
+    runTask(s, Task(rec, from, hi, (*s).nworkers, false));
     return;
   }
   notify(s);
