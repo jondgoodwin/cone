@@ -1,0 +1,430 @@
+// orCancelled() (orcancelled.cone): an await that wakes at the cancel. A plain
+// 'await' always waits for the answer; 'await fut.orCancelled()' (a Future's
+// method) and 'await actors.orCancelled(op)' (an Awaitable's function) give
+// Ok(the answer) or Err(Cancelled(cause)), whichever comes first, exactly once.
+//
+// 1. No group, or a live one, answered: Ok, the answer, in the group the await
+//    was made in; a plain await afterwards is not disturbed.
+// 2. Cancelled while parked: Err at once with the cause, in the cancelled group,
+//    while the callee still holds the request; actors.lateAnswersOwed() counts it;
+//    the callee's owned answer (a Token with a finalizer) comes later and is
+//    finalized exactly once, and the count goes to 0.
+// 3. Cancelled before the await: Err at once. A Future's request was sent already,
+//    so its answer is the late one (finalized once); an Awaitable's operation is
+//    not started.
+// 4. Cancelled after the answer: Ok, unchanged.
+// 5. The race, repeated: 300 awaits whose groups are cancelled the moment they are
+//    sent, four rounds; each ends Ok or Err once, every Token is finalized exactly
+//    once, nothing is owed and the group table is empty.
+// 6. A callee that never answers (an operation keeping its envelope): the
+//    behaviour wakes at the cancel; the callee's debt is counted until the
+//    envelope is dropped unanswered, when the count goes down and the behaviour
+//    does not resume again; one that answers late is finalized once.
+// 7. A group cancelled from another actor.
+// 8. Nested: an operation of a FutureSet (set.next()) awaited with orCancelled,
+//    woken at the cancel; the set dropped with its member still owed.
+
+mod orcancelled;
+
+import testing use *;
+import libc;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub held: Atomic[u64];       // requests the slow callee has in hand
+  pub gate: Atomic[u64];       // set to let it answer
+  pub ok: Atomic[u64];         // awaits that ended Ok
+  pub err: Atomic[u64];        // ... Err
+  pub value: Atomic[u64];
+  pub cause: Atomic[u64];
+  pub gid: Atomic[u64];        // the group the code after the await ran in
+  pub after: Atomic[u64];      // a plain await after the orCancelled one gave its answer
+  pub made: Atomic[u64];       // Tokens made
+  pub drops: Atomic[u64];      // ... finalized
+  pub started: Atomic[u64];    // operations started
+  pub hung: Atomic[u64];       // the address of the envelope a hung operation keeps
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+struct Token is Move {
+  pub n: u64;
+
+  fn final(self: &uni) {seen.drops.add(1u64);}
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+fn causeNum(c: Cause) u64 {
+  match c {
+    case Cause.Cancelled {1u64}
+    case Cause.TimedOut {2u64}
+    case Cause.SiblingFinished {3u64}
+    case Cause.Shutdown {4u64}
+  }
+}
+
+actor Slow {
+  // answers once the gate is set (or after five seconds)
+  pub async fn answer(self, n: u64) Token {
+    seen.held.add(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    seen.made.add(1u64);
+    Token(n + 7u64)
+  }
+
+  pub async fn quick(self, n: u64) Token {
+    seen.made.add(1u64);
+    Token(n + 1u64)
+  }
+
+  pub async fn plain(self, n: u64) u64 {n + 100u64}
+
+  // as 'answer', with a plain value
+  pub async fn gated(self, n: u64) u64 {
+    seen.held.add(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    seen.made.add(1u64);
+    n
+  }
+}
+
+actor Canceller {
+  pub async fn cancelIt(self, g: CancelGroup, cause: Cause) {
+    g.cancelWith(cause);
+  }
+}
+
+// An operation that answers when it is started
+fn instantOp(n: u64) actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [n] {
+    seen.started.add(1u64);
+    rp.answer(n);
+  })
+}
+
+// An operation that keeps its envelope, for the test to answer or drop
+fn hungOp() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    seen.started.add(1u64);
+    let b = libc.malloc(mem.sizeof[actors.ReplyOf[u64]]());
+    mem.writeRaw[actors.ReplyOf[u64]](b as *actors.ReplyOf[u64], rp);
+    seen.hung.store(u64.from(b as usize));
+  })
+}
+
+fn hungAnswer(v: u64) {
+  let b = usize.from(seen.hung.load()) as *actors.ReplyOf[u64];
+  seen.hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+  rp.answer(v);
+}
+
+fn hungDrop() {
+  let b = usize.from(seen.hung.load()) as *actors.ReplyOf[u64];
+  seen.hung.store(0u64);
+  let rp = mem.readRaw[actors.ReplyOf[u64]](b);
+  libc.free(b as *u8);
+}
+
+actor Asker {
+  // a request awaited with orCancelled
+  pub async fn viaFuture(self, slow: Slow, n: u64) {
+    match await slow.answer(n).orCancelled() {
+      case let Ok(t) {
+        seen.value.store(t.n);
+        seen.ok.add(1u64);
+      }
+      case let Err(c) {
+        seen.cause.store(causeNum(c.cause));
+        seen.err.add(1u64);
+      }
+    }
+    seen.gid.store(actors.currentGroup().id());
+    seen.after.store(await slow.plain(1u64));
+  }
+
+  pub async fn viaQuick(self, slow: Slow, n: u64) {
+    match await slow.quick(n).orCancelled() {
+      case let Ok(t) {seen.ok.add(1u64);}
+      case let Err(c) {seen.err.add(1u64);}
+    }
+  }
+
+  // an operation, awaited with orCancelled
+  pub async fn viaOp(self) {
+    match await actors.orCancelled(instantOp(5u64)) {
+      case let Ok(v) {
+        seen.value.store(v);
+        seen.ok.add(1u64);
+      }
+      case let Err(c) {
+        seen.cause.store(causeNum(c.cause));
+        seen.err.add(1u64);
+      }
+    }
+    seen.gid.store(actors.currentGroup().id());
+  }
+
+  pub async fn viaHung(self) {
+    match await actors.orCancelled(hungOp()) {
+      case let Ok(v) {
+        seen.value.store(v);
+        seen.ok.add(1u64);
+      }
+      case let Err(c) {
+        seen.cause.store(causeNum(c.cause));
+        seen.err.add(1u64);
+      }
+    }
+    seen.gid.store(actors.currentGroup().id());
+  }
+
+  // a set's next(), awaited with orCancelled; the member is slow
+  pub async fn viaSet(self, slow: Slow) {
+    var set = actors.FutureSet[u64].make();
+    set.start(fn() [slow] actors.Future[u64] {slow.gated(1u64)});
+    set.start(fn() [slow] actors.Future[u64] {slow.gated(2u64)});
+    match await actors.orCancelled(set.next()) {
+      case let Ok(first) {seen.ok.add(1u64);}
+      case let Err(c) {
+        seen.cause.store(causeNum(c.cause));
+        seen.err.add(1u64);
+      }
+    }
+  }
+}
+
+fn waitFor(a: &Atomic[u64], n: u64) {
+  let limit = bounded(5000i64);
+  while a.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn reset() {
+  seen.held.store(0u64);
+  seen.gate.store(0u64);
+  seen.ok.store(0u64);
+  seen.err.store(0u64);
+  seen.value.store(0u64);
+  seen.cause.store(0u64);
+  seen.gid.store(0u64);
+  seen.after.store(0u64);
+  seen.made.store(0u64);
+  seen.drops.store(0u64);
+  seen.started.store(0u64);
+}
+
+fn owed() u64 {u64.from(actors.lateAnswersOwed())}
+fn table() u64 {u64.from(actors.groupAwaitsLive())}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let slow = Slow();
+  let a = Asker();
+  let canceller = Canceller();
+
+  // 1. no group; a live group
+  reset();
+  seen.gate.store(1u64);
+  a.viaFuture(slow, 1u64);
+  actors.waitQuiet();
+  expectUInt(seen.ok.load(), 1u64, "1: no group: Ok");
+  expectUInt(seen.value.load(), 8u64, "1: ... the real answer");
+  expectUInt(seen.after.load(), 101u64, "1: ... a plain await after it is undisturbed");
+  expectUInt(seen.drops.load(), 1u64, "1: ... the Token finalized once");
+  reset();
+  let g1 = CancelGroup.make();
+  actors.withGroup(&g1, fn() [a, slow] { a.viaFuture(slow, 2u64); });
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.ok.load(), 1u64, "1: live group: Ok");
+  expectUInt(seen.value.load(), 9u64, "1: ... the real answer");
+  expectUInt(seen.gid.load(), g1.id(), "1: ... after the await, in the group it was made in");
+  expectUInt(seen.drops.load(), 1u64, "1: ... the Token finalized once");
+  expectUInt(table(), 0u64, "1: the table is empty");
+  expectUInt(owed(), 0u64, "1: nothing owed");
+
+  // 2. cancelled while parked
+  reset();
+  let g2 = CancelGroup.make();
+  actors.withGroup(&g2, fn() [a, slow] { a.viaFuture(slow, 3u64); });
+  waitFor(&seen.held, 1u64);
+  expectUInt(seen.err.load() + seen.ok.load(), 0u64, "2: parked: neither yet");
+  g2.cancelWith(Cause.Shutdown);
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "2: Err, while the callee still holds the request");
+  expectUInt(seen.ok.load(), 0u64, "2: ... not Ok");
+  expectUInt(seen.cause.load(), 4u64, "2: ... with the cause");
+  expectUInt(owed(), 1u64, "2: the callee's answer is owed");
+  expectUInt(seen.made.load(), 0u64, "2: ... not made yet");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.made.load(), 1u64, "2: the callee answered late");
+  expectUInt(seen.drops.load(), 1u64, "2: ... the late Token finalized exactly once");
+  expectUInt(seen.err.load(), 1u64, "2: ... the behaviour did not resume again");
+  expectUInt(seen.gid.load(), g2.id(), "2: ... the code after the await ran in the cancelled group");
+  expectUInt(seen.after.load(), 101u64, "2: ... and a plain await after it gave its answer");
+  expectUInt(owed(), 0u64, "2: nothing owed after");
+  expectUInt(table(), 0u64, "2: the table is empty");
+
+  // 3. cancelled before the await
+  reset();
+  let g3 = CancelGroup.make();
+  g3.cancel();
+  actors.withGroup(&g3, fn() [a, slow] { a.viaFuture(slow, 4u64); });
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "3: a group cancelled before the await: Err at once");
+  expectUInt(seen.cause.load(), 1u64, "3: ... with the cause");
+  expectUInt(owed(), 0u64, "3: ... nothing owed: the Future's answer is discarded with its future");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.made.load(), 1u64, "3: the request had been sent, and was answered");
+  expectUInt(seen.drops.load(), 1u64, "3: ... its Token finalized once");
+  reset();
+  actors.withGroup(&g3, fn() [a] { a.viaOp(); });
+  actors.waitQuiet();
+  expectUInt(seen.err.load(), 1u64, "3: an operation awaited in a cancelled group: Err");
+  expectUInt(seen.started.load(), 0u64, "3: ... and not started");
+  reset();
+  let g3b = CancelGroup.make();
+  actors.withGroup(&g3b, fn() [a] { a.viaOp(); });
+  actors.waitQuiet();
+  expectUInt(seen.ok.load(), 1u64, "3: the same operation in a live group: Ok");
+  expectUInt(seen.value.load(), 5u64, "3: ... its answer");
+  expectUInt(seen.started.load(), 1u64, "3: ... started once");
+  expectUInt(table(), 0u64, "3: the table is empty");
+
+  // 4. cancelled after the answer
+  reset();
+  seen.gate.store(1u64);
+  let g4 = CancelGroup.make();
+  actors.withGroup(&g4, fn() [a, slow] { a.viaFuture(slow, 5u64); });
+  actors.waitQuiet();
+  g4.cancel();
+  expectUInt(seen.ok.load(), 1u64, "4: answered first: Ok");
+  expectUInt(seen.err.load(), 0u64, "4: ... a later cancel does not change it");
+  expectUInt(seen.drops.load(), 1u64, "4: ... the Token finalized once");
+  expectUInt(owed(), 0u64, "4: nothing owed");
+
+  // 5. the race, repeated
+  var round = 0u64;
+  var oks = 0u64;
+  var errs = 0u64;
+  while round < 4u64 {
+    reset();
+    var k = 0u64;
+    while k < 300u64 {
+      let kk = k;
+      let gi = CancelGroup.make();
+      actors.withGroup(&gi, fn() [a, slow, kk] { a.viaQuick(slow, kk); });
+      // the cancel at a different moment each time, from the send to well after the answer
+      var rests = (kk * 7u64 + round * 3u64) % 40u64;
+      while rests > 0u64 {
+        thread.yieldNow();
+        rests -= 1u64;
+      }
+      gi.cancel();
+      k += 1u64;
+    }
+    actors.waitQuiet();
+    expectUInt(seen.ok.load() + seen.err.load(), 300u64, "5: every await ended once");
+    expectUInt(seen.made.load(), 300u64, "5: every request was answered");
+    expectUInt(seen.drops.load(), 300u64, "5: every Token finalized exactly once");
+    expectUInt(owed(), 0u64, "5: nothing owed");
+    expectUInt(table(), 0u64, "5: the table is empty");
+    oks += seen.ok.load();
+    errs += seen.err.load();
+    round += 1u64;
+  }
+  expectUInt(oks + errs, 1200u64, "5: all four rounds ended");
+
+  // 6. a callee that never answers
+  reset();
+  let g6 = CancelGroup.make();
+  actors.withGroup(&g6, fn() [a] { a.viaHung(); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  expectUInt(seen.err.load() + seen.ok.load(), 0u64, "6: the operation holds its envelope: the behaviour waits");
+  g6.cancelWith(Cause.Cancelled);
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "6: the cancel wakes it");
+  expectUInt(seen.cause.load(), 1u64, "6: ... with the cause");
+  expectUInt(seen.gid.load(), g6.id(), "6: ... in the cancelled group");
+  expectUInt(owed(), 1u64, "6: the hung operation's debt is counted, not silently kept");
+  hungDrop();
+  actors.waitQuiet();
+  expectUInt(owed(), 0u64, "6: its envelope dropped unanswered: nothing owed");
+  expectUInt(seen.err.load(), 1u64, "6: ... the behaviour did not resume again");
+  expectUInt(table(), 0u64, "6: the table is empty");
+  // woken, then answered late
+  reset();
+  let g6b = CancelGroup.make();
+  actors.withGroup(&g6b, fn() [a] { a.viaHung(); });
+  waitFor(&seen.started, 1u64);
+  g6b.cancel();
+  waitFor(&seen.err, 1u64);
+  expectUInt(owed(), 1u64, "6: woken: owed");
+  hungAnswer(77u64);
+  actors.waitQuiet();
+  expectUInt(owed(), 0u64, "6: answered late: nothing owed");
+  expectUInt(seen.ok.load(), 0u64, "6: ... the late answer is not delivered");
+  expectUInt(seen.err.load(), 1u64, "6: ... the behaviour did not resume again");
+  // an operation that is dropped unanswered while its group is never cancelled
+  reset();
+  let g6c = CancelGroup.make();
+  actors.withGroup(&g6c, fn() [a] { a.viaHung(); });
+  waitFor(&seen.started, 1u64);
+  actors.waitQuiet();
+  hungDrop();
+  actors.waitQuiet();
+  expectUInt(owed(), 0u64, "6: ended without answering, never cancelled: nothing owed");
+  expectUInt(seen.ok.load() + seen.err.load(), 0u64, "6: ... the behaviour stays parked, as a plain await's does");
+  g6c.cancel();
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "6: ... and the cancel still wakes it");
+  expectUInt(owed(), 0u64, "6: ... nothing owed");
+
+  // 7. cancelled from another actor
+  reset();
+  let g7 = CancelGroup.make();
+  actors.withGroup(&g7, fn() [a, slow] { a.viaFuture(slow, 6u64); });
+  waitFor(&seen.held, 1u64);
+  canceller.cancelIt(g7, Cause.TimedOut);
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "7: cancelled by another actor: Err");
+  expectUInt(seen.cause.load(), 2u64, "7: ... with its cause");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.drops.load(), 1u64, "7: the late Token finalized once");
+  expectUInt(owed(), 0u64, "7: nothing owed");
+
+  // 8. nested in a FutureSet: the set's next() is awaited with orCancelled
+  reset();
+  let g8 = CancelGroup.make();
+  actors.withGroup(&g8, fn() [a, slow] { a.viaSet(slow); });
+  waitFor(&seen.held, 1u64);
+  g8.cancel();
+  waitFor(&seen.err, 1u64);
+  expectUInt(seen.err.load(), 1u64, "8: a set's next() awaited with orCancelled wakes at the cancel");
+  expectUInt(seen.ok.load(), 0u64, "8: ... not Ok");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.made.load(), 2u64, "8: both members answered");
+  expectUInt(owed(), 0u64, "8: nothing owed");
+  expectUInt(table(), 0u64, "8: the table is empty");
+
+  done()
+}
