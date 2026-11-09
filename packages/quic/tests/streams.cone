@@ -12,8 +12,9 @@
 // - the credit budget: the server's windows are drawn from one. The client
 //   opens the 100 streams the server allows and writes at once; the server
 //   releases four and none of the other 96: what it holds unreleased stays
-//   within the budget (printed with the most it held), and a control with a
-//   budget as large as the old rule shows the old rule's peak over it; a
+//   within the budget (the peak itself is not printed: it is the schedule's),
+//   and a control with a budget as large as the old rule shows that rule's
+//   peak over the first run's bound; a
 //   stalled stream holds its floor, readers draw the spare to the stream
 //   window's maximum, and a stopped reader gives its credit back;
 // - a reset: the client resets a stream it has written on, the server hears
@@ -437,8 +438,7 @@ fn slowReaders(cctx: &quic.Context, what: &str, budget: u64) u64 {
   printStr("\n");
   lineU("streams the client opened", u64.from(opened));
   lineU("the credit budget, which is the bound on bytes held unreleased", budget);
-  lineU("the most the server held unreleased", ss.peak);
-  line("within the bound", yesNo(ss.peak <= budget));
+  line("the most the server held unreleased is within the bound", yesNo(ss.peak <= budget));
   var whole = 0u32;
   var k = 0usize;
   while k < ids.len() {
@@ -463,7 +463,7 @@ fn bulkWindow(cctx: &quic.Context) {
   c.writeBytes(id, body(0i64, 1000000usize).view());
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
   lineU("the server's window on it, the stream window's maximum", s.window(id));
-  lineU("the most the server held unreleased", ss.peak);
+  line("the most the server held unreleased is within the window", yesNo(ss.peak <= 262144u64));
   line("it read the stream whole, but for the end (still open)", yesNo(ss.ins[ss.at(id)].got == 1000000u64));
 }
 
@@ -508,7 +508,7 @@ fn windows(cctx: &quic.Context) {
   var wmax = w0;
   if w25 > wmax {wmax = w25;}
   if w50 > wmax {wmax = w50;}
-  lineU("the largest a reader's window grew to", wmax);
+  line("a reader's window grew past the floor, within the maximum", yesNo(wmax > floor && wmax <= 262144u64));
   // Three readers' windows less their floors: the spare (the budget less 116 floors)
   let drawn = (w0 - floor) + (w25 - floor) + (w50 - floor);
   lineU("the readers drew from the spare, in all", drawn);
