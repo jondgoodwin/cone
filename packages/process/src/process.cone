@@ -699,6 +699,347 @@ pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Ou
   }
 }
 
+// ---------------------------------------------------------------------------
+// Spawning: a child that runs on, with the ends of its pipes handed back
+// ---------------------------------------------------------------------------
+
+// What an end that is not there holds (INVALID_HANDLE_VALUE; a descriptor is never this)
+const noEnd = 0xFFFFFFFFFFFFFFFFusize;
+
+// A child started by 'launch', still running or not: its standard output and standard error as the ends of two pipes of ours,
+// and the child itself, each as the operating system's raw value, so that a loop can take them over (iocore's
+// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is.
+//
+// - An end is OVERLAPPED on Windows (a HANDLE of a named pipe, to read with ReadFile and an OVERLAPPED) and a blocking
+//   descriptor on Linux (iocore's adoptPipe makes it non-blocking); 'noEnd' where the child inherited the stream instead.
+// - The child is a Windows process HANDLE, or a Linux pid. It is placed so that 'kill' reaches the programs it started
+//   too: in a job object on Windows, as the leader of a process group on Linux.
+// - 'takeStdout', 'takeStderr' and 'takeProcess' give a raw value away: the Child no longer closes it. Whatever it still
+//   holds when it dies is closed, and a child never taken by 'takeProcess' is killed and waited for there (none is left
+//   running, none a zombie). A child taken is the taker's: do not 'kill' it after its wait has answered (its id may
+//   belong to another process by then).
+pub struct Child {
+  proc: usize;         // Windows: the process HANDLE; Linux: the pid
+  job: usize;          // Windows: the job object the child is in, else 0
+  procId: u32;
+  outEnd: usize;
+  errEnd: usize;
+  owned: bool;         // the Child still owns the process (takeProcess has not been called)
+
+  // The child's process id
+  pub fn pid(self: &) u32 { procId }
+
+  // End the child and every program it started, at once and without a chance to clean up
+  pub fn kill(self: &) {
+    #if #os == .windows {
+      stop(job, proc);
+    } #else {
+      stopGroup(i32.from(proc), true);
+    }
+  }
+
+  // Our end of its standard output / standard error, now the caller's to close or hand to a loop; 'noEnd' once taken
+  // or where there was none
+  pub fn takeStdout(self: &mut) usize {
+    let e = outEnd;
+    outEnd = noEnd;
+    e
+  }
+  pub fn takeStderr(self: &mut) usize {
+    let e = errEnd;
+    errEnd = noEnd;
+    e
+  }
+
+  // The child itself (Windows: its process HANDLE, Linux: its pid), now the caller's: iocore's 'adoptChild' takes it
+  // with the ownership its comment says
+  pub fn takeProcess(self: &mut) usize {
+    owned = false;
+    proc
+  }
+
+  fn final(self: &uni) {
+    #if #os == .windows {
+      closeIf(outEnd);
+      closeIf(errEnd);
+      if owned {
+        stop(job, proc);
+        WaitForSingleObject(proc, infinite);
+        CloseHandle(proc);
+      }
+      closeIf(job);
+    } #else {
+      if outEnd != noEnd { closeFd(i32.from(outEnd)); }
+      if errEnd != noEnd { closeFd(i32.from(errEnd)); }
+      if owned {
+        stopGroup(i32.from(proc), true);
+        var status = 0i32;
+        var reaped = false;
+        while !reaped {
+          let w = waitPid(i32.from(proc), &mut status as *i32, 0i32);
+          if w == i32.from(proc) || *libc.errno() != errnoInterrupted { reaped = true; }
+        }
+      }
+    }
+  }
+}
+
+// Start a program and let it run: args[0] is the program, the rest its arguments, as 'run' takes them, and it starts
+// in 'dir' as there. An Err is a program that could not be started. Its standard output and error come back as the
+// ends of pipes (the Child's 'takeStdout', 'takeStderr'), or are this program's own where 'opts.inherit' is true;
+// 'opts.timeout' and 'opts.crashReport' do nothing here (the caller stops the child with 'kill', and a crash goes to
+// the system's reporting).
+pub fn launch(args: &Array[String], opts: Options = Options(), dir: &Path = "") Result[Child, ProcessError] {
+  if args.len == 0usize {
+    return Err[Child, ProcessError](failure("launch", "", dir, invalidParameter()));
+  }
+  let program = args[0usize].view();
+  var i = 0usize;
+  while i < args.len {
+    if hasByte(args[i].view(), 0u8) {
+      return Err[Child, ProcessError](failure("launch", program, dir, invalidParameter()));
+    }
+    i = i + 1usize;
+  }
+  #if #os == .windows {
+    if hasByte(program, '"') {
+      return Err[Child, ProcessError](failure("launch", program, dir, errorInvalidName));
+    }
+    let line = commandLine(args);
+    spawnWindows("launch", program, line.view(), dir, opts)
+  }
+  #else {
+    spawnPosix("launch", program, args, dir, opts)
+  }
+}
+
+// A pipe for one of the child's outputs, with nothing of 'run''s reading kit: our end, overlapped, goes in 'ours'; the
+// child's end, inheritable, is returned, or 0 on failure
+fn makeEnd(ours: &mut usize) usize {
+  var tries = 0u32;
+  while tries < 8u32 {
+    tries = tries + 1u32;
+    pipeSerial = pipeSerial + 1u32;
+    var name = String.from("\\\\.\\pipe\\cone-process-");
+    name.appendUInt(u64.from(GetCurrentProcessId()));
+    name.append("-");
+    name.appendUInt(u64.from(GetCurrentThreadId()));
+    name.append("-");
+    name.appendUInt(u64.from(pipeSerial));
+    let wname = widen(name.view());
+    let mine = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
+      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
+    if mine != invalidHandle {
+      let sa = SecurityAttributes(24u32, null, 1i32);
+      let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
+      libc.free(wname as *u8);
+      if theirs == invalidHandle {
+        CloseHandle(mine);
+        return 0usize;
+      }
+      *ours = mine;
+      return theirs;
+    }
+    libc.free(wname as *u8);
+  }
+  0usize
+}
+
+fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[Child, ProcessError] {
+  let wline = widen(line);
+  if wline as usize == 0usize {
+    return Err[Child, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
+  }
+  var wdir: *u16 = null;
+  if !dir.isEmpty() {
+    if hasByte(dir.view(), 0u8) {
+      libc.free(wline as *u8);
+      return Err[Child, ProcessError](failure(op, program, dir, errorInvalidParameter));
+    }
+    wdir = widen(dir.view());
+    if wdir as usize == 0usize {
+      libc.free(wline as *u8);
+      return Err[Child, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
+    }
+  }
+
+  var ourOut = noEnd;
+  var ourErr = noEnd;
+  var childIn = 0usize;
+  var childOut = 0usize;
+  var childErr = 0usize;
+  if opts.inherit {
+    childIn = inheritStd(stdInput, genericRead);
+    childOut = inheritStd(stdOutput, genericWrite);
+    childErr = inheritStd(stdError, genericWrite);
+  }
+  else {
+    childIn = openNul(genericRead);
+    childOut = makeEnd(&mut ourOut);
+    childErr = makeEnd(&mut ourErr);
+  }
+
+  // Only those three handles are inherited
+  var handles = Array[usize, 3]() <- fill 0usize;
+  handles[0usize] = childIn;
+  handles[1usize] = childOut;
+  handles[2usize] = childErr;
+  let hp: *usize = &[]handles as *usize;
+  var listSize = 0usize;
+  InitializeProcThreadAttributeList(null, 1u32, 0u32, &mut listSize);
+  let list = libc.malloc(listSize);
+  var failed = true;
+  var code = 0u32;
+  if childIn == 0usize || childOut == 0usize || childErr == 0usize {
+    code = GetLastError();
+  }
+  else if InitializeProcThreadAttributeList(list, 1u32, 0u32, &mut listSize) == 0i32 {
+    code = GetLastError();
+  }
+  else if UpdateProcThreadAttribute(list, 0u32, attributeHandleList, hp as *u8, 24usize,
+      null, null) == 0i32 {
+    code = GetLastError();
+    DeleteProcThreadAttributeList(list);
+  }
+  else {
+    failed = false;
+  }
+
+  var pi = ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  if !failed {
+    var si = StartupInfoEx(112u32, null, null, null,
+      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
+      childIn, childOut, childErr, list);
+    // Suspended until it is in its job, so that nothing it starts escapes the job
+    var flags = extendedStartupInfo | createSuspended;
+    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
+    if CreateProcessW(null, wline, null, null, 1i32, flags, null, wdir, &mut si, &mut pi) == 0i32 {
+      failed = true;
+      code = GetLastError();
+    }
+    DeleteProcThreadAttributeList(list);
+  }
+  libc.free(list);
+  libc.free(wline as *u8);
+  if wdir as usize != 0usize { libc.free(wdir as *u8); }
+  // The child's ends are the child's now: with ours closed, a pipe ends when the child, and whatever it started, has
+  // closed it
+  closeIf(childIn);
+  closeIf(childOut);
+  closeIf(childErr);
+  if failed {
+    closeIf(ourOut);
+    closeIf(ourErr);
+    if code == 0u32 { code = errorInvalidParameter; }
+    return Err[Child, ProcessError](failure(op, program, dir, code));
+  }
+  var job = CreateJobObjectW(null, null);
+  if job != 0usize && AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
+    CloseHandle(job);
+    job = 0usize;
+  }
+  ResumeThread(pi.hThread);
+  CloseHandle(pi.hThread);
+  Ok[Child, ProcessError](Child(pi.hProcess, job, pi.dwProcessId, ourOut, ourErr, true))
+}
+
+fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: Options) Result[Child, ProcessError] {
+  var cdir = String();
+  if !dir.isEmpty() {
+    if hasByte(dir.view(), 0u8) {
+      return Err[Child, ProcessError](failure(op, program, dir, errnoInvalid));
+    }
+    cdir = String.from(dir.view());
+    var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+    if posix.stat(cdir.cstr(), &mut st) != 0i32 {
+      return Err[Child, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
+    }
+    if (st.st_mode & posix.S_IFMT) != posix.S_IFDIR {
+      return Err[Child, ProcessError](failure(op, program, dir, errnoNotDirectory));
+    }
+  }
+  // A program named by a relative path is read from this program's folder, not from the child's
+  let name = args[0usize].view();
+  var file = String.from(name);
+  let named: &Array[u8] = name;
+  if !dir.isEmpty() && hasByte(named, '/') && named[0usize] != '/' {
+    let here = posix.getcwd(null, 0usize);
+    if here != null {
+      file = String.fromCStr(cstr.fromPtr(here));
+      libc.free(here);
+      file.appendByte('/');
+      file.append(name);
+    }
+  }
+  let count = args.len;
+  let argv = libc.malloc((count + 1usize) * 8usize) as **u8;
+  var k = 0usize;
+  while k < count {
+    *(argv + k) = copyCString(args[k].view());
+    k = k + 1usize;
+  }
+  *(argv + count) = null;
+
+  // Standard input from /dev/null, output and error to pipes of ours (close-on-exec, so no other program started
+  // meanwhile holds them), and the child the leader of a group of its own, so that 'kill' reaches what it started
+  var outFds = Array[i32, 2]() <- fill -1i32;
+  var errFds = Array[i32, 2]() <- fill -1i32;
+  let outp: *i32 = &[]outFds as *i32;
+  let errp: *i32 = &[]errFds as *i32;
+  var actions = Array[u64, 32]() <- fill 0u64;
+  var attr = Array[u64, 64]() <- fill 0u64;
+  let aw: *u64 = &[]actions as *u64;
+  let tw: *u64 = &[]attr as *u64;
+  let ap: *u8 = aw as *u8;
+  let tp: *u8 = tw as *u8;
+  var rc = actionsInit(ap);
+  if rc == 0i32 { rc = attrInit(tp); }
+  if rc == 0i32 && !opts.inherit {
+    if makePipe2(outp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+    }
+    else if makePipe2(errp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+      closeFd(outFds[0usize]);
+      closeFd(outFds[1usize]);
+      outFds[0usize] = -1i32;
+    }
+    else {
+      rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32);
+      if rc == 0i32 { rc = actionsDup2(ap, outFds[1usize], 1i32); }
+      if rc == 0i32 { rc = actionsDup2(ap, errFds[1usize], 2i32); }
+    }
+  }
+  if rc == 0i32 && cdir.len() > 0usize { rc = actionsChdir(ap, cdir.cstr()); }
+  if rc == 0i32 {
+    rc = attrFlags(tp, spawnSetGroup);
+    if rc == 0i32 { rc = attrGroup(tp, 0i32); }
+  }
+  var pid = 0i32;
+  if rc == 0i32 {
+    rc = spawnProgram(&mut pid as *i32, file.cstr(), ap, tp, argv, cone_environ());
+  }
+  actionsDestroy(ap);
+  attrDestroy(tp);
+  k = 0usize;
+  while k < count {
+    libc.free(*(argv + k));
+    k = k + 1usize;
+  }
+  libc.free(argv as *u8);
+  // The child's ends are the child's now
+  closeFdIf(outFds[1usize]);
+  closeFdIf(errFds[1usize]);
+  if rc != 0i32 {
+    closeFdIf(outFds[0usize]);
+    closeFdIf(errFds[0usize]);
+    return Err[Child, ProcessError](failure(op, program, dir, u32.from(rc)));
+  }
+  let oe = if outFds[0usize] >= 0i32 {usize.from(outFds[0usize])} else {noEnd};
+  let ee = if errFds[0usize] >= 0i32 {usize.from(errFds[0usize])} else {noEnd};
+  Ok[Child, ProcessError](Child(usize.from(pid), 0usize, u32.from(pid), oe, ee, true))
+}
+
 // One of the child's streams, read without blocking: our end of its pipe,
 // the read in flight, and what has come
 struct Stream {
