@@ -33,7 +33,7 @@ import httpclient use Request, Response;
 import tls;
 import actors;
 import aio use IoLimits;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import actorhttp use BodyError, Client, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -284,6 +284,14 @@ actor Handler {
     true
   }
 
+  // readAll through '?': the BodyError becomes an AnyError that still holds it
+  async fn gatherQ(self) Result[String, AnyError] {
+    let body = ex.body();
+    let r = await body.readAll(200000usize);
+    let s = r?;
+    Ok[String, AnyError](s)
+  }
+
   pub async fn run(self) {
     let path = String.from(ex.request.path());
     let p = path.view();
@@ -314,6 +322,21 @@ actor Handler {
         case let Err(e) {
           tally.srvErr.add(1u64);
           if e.isTooLarge() {tally.srvBig.add(1u64);}
+          ex.text(500u16, "too much");
+        }
+      }
+    } else if p == "/allq" {
+      let r = await self.gatherQ();
+      match r {
+        case let Ok(s) {ex.text(200u16, "ok");}
+        case let Err(e) {
+          tally.srvErr.add(1u64);
+          if e.holds[BodyError]() {
+            match e.downcastRef[BodyError]() {
+              case let Some(be) {if be.isTooLarge() {tally.srvBig.add(1u64);}}
+              else {}
+            }
+          }
           ex.text(500u16, "too much");
         }
       }
@@ -538,6 +561,12 @@ fn scenarios(secure: bool, port: u16, label: &str) {
 
   printStr("readAll(200000) of a 1 MiB body: the server answers 413\n");
   put(secure, port, "/all", 1048576u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("readAll(200000)? of a 1 MiB body: the error reaches the handler's caller as an AnyError, TooLarge\n");
+  put(secure, port, "/allq", 1048576u64, 65536usize, true);
   server();
   client();
   home();
