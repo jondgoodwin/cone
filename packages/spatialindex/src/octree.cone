@@ -46,8 +46,8 @@ pub struct LooseOctree[T: Copy] {
 
   pub fn len(self: &) usize {items.count}
   pub fn contains(self: &, p: Proxy) bool {items.alive(p)}
-  pub fn handle(self: &, p: Proxy) T {items.list[usize.from(p.slot)].handle}
-  pub fn box(self: &, p: Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
+  pub fn handle(self: &, p: Proxy) T {(*items.cell(usize.from(p.slot))).handle}
+  pub fn box(self: &, p: Proxy) Aabb3 {(*items.cell(usize.from(p.slot))).box}
   pub fn pairBox(self: &, p: Proxy) Aabb3 {box(p)}
 
   // The number of cells in use (the root included)
@@ -159,10 +159,10 @@ pub struct LooseOctree[T: Copy] {
     let si = usize.from(slot);
     let ni = usize.from(node);
     let head = nodes[ni].first;
-    items.list[si].x = node;
-    items.list[si].y = head;
-    items.list[si].z = NONE;
-    if head != NONE {items.list[usize.from(head)].z = slot;}
+    (*items.cell(si)).x = node;
+    (*items.cell(si)).y = head;
+    (*items.cell(si)).z = NONE;
+    if head != NONE {(*items.cell(usize.from(head))).z = slot;}
     nodes[ni].first = slot;
     var n = node;
     while n != NONE {
@@ -173,12 +173,12 @@ pub struct LooseOctree[T: Copy] {
 
   fn unlink(self: &mut, slot: u32) {
     let si = usize.from(slot);
-    let node = items.list[si].x;
-    let next = items.list[si].y;
-    let prev = items.list[si].z;
-    if prev != NONE {items.list[usize.from(prev)].y = next;}
+    let node = (*items.cell(si)).x;
+    let next = (*items.cell(si)).y;
+    let prev = (*items.cell(si)).z;
+    if prev != NONE {(*items.cell(usize.from(prev))).y = next;}
     else {nodes[usize.from(node)].first = next;}
-    if next != NONE {items.list[usize.from(next)].z = prev;}
+    if next != NONE {(*items.cell(usize.from(next))).z = prev;}
     var n = node;
     while n != NONE {
       let ni = usize.from(n);
@@ -195,8 +195,8 @@ pub struct LooseOctree[T: Copy] {
   }
 
   fn flagMoved(self: &mut, slot: u32) {
-    if !items.list[usize.from(slot)].moved {
-      items.list[usize.from(slot)].moved = true;
+    if !(*items.cell(usize.from(slot))).moved {
+      (*items.cell(usize.from(slot))).moved = true;
       moved.push(slot);
     }
   }
@@ -214,14 +214,14 @@ pub struct LooseOctree[T: Copy] {
     unlink(p.slot);
     var ended = List[u32]();
     pairs.forget(p.slot, &mut ended);
-    let h = items.list[si].handle;
+    let h = (*items.cell(si)).handle;
     var i = 0usize;
     while i < ended.len() {
       let o = *ended[i];
-      pendingRemoved.push(pairOf(p.slot, h, o, items.list[usize.from(o)].handle));
+      pendingRemoved.push(pairOf(p.slot, h, o, (*items.cell(usize.from(o))).handle));
       i = i + 1usize;
     }
-    items.list[si].moved = false;
+    (*items.cell(si)).moved = false;
     items.release(p.slot);
     true
   }
@@ -241,8 +241,8 @@ pub struct LooseOctree[T: Copy] {
   pub fn move(self: &mut, p: Proxy, box: Aabb3, displacement: Vec3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
-    items.list[si].box = box;
-    let was = items.list[si].x;
+    (*items.cell(si)).box = box;
+    let was = (*items.cell(si)).x;
     flagMoved(p.slot);
     // out first, so that emptied cells are given back before the new cell
     // is looked up (which may make some)
@@ -264,9 +264,9 @@ pub struct LooseOctree[T: Copy] {
     if node != 0u32 && !loose(c, h).overlaps(box) {return true;}
     var s = nodes[ni].first;
     while s != NONE {
-      let it = items.list[usize.from(s)];
+      let it = (*items.cell(usize.from(s)));
       if it.box.overlaps(box) {
-        if !visit(it.handle, Proxy(s, it.gen)) {return false;}
+        if !visit(it.handle, items.proxyOf(s)) {return false;}
       }
       s = it.y;
     }
@@ -291,9 +291,9 @@ pub struct LooseOctree[T: Copy] {
     if node != 0u32 && !sp.overlapsAabb(loose(c, h)) {return true;}
     var s = nodes[ni].first;
     while s != NONE {
-      let it = items.list[usize.from(s)];
+      let it = (*items.cell(usize.from(s)));
       if sp.overlapsAabb(it.box) {
-        if !visit(it.handle, Proxy(s, it.gen)) {return false;}
+        if !visit(it.handle, items.proxyOf(s)) {return false;}
       }
       s = it.y;
     }
@@ -325,9 +325,9 @@ pub struct LooseOctree[T: Copy] {
     }
     var s = nodes[ni].first;
     while s != NONE {
-      let it = items.list[usize.from(s)];
+      let it = (*items.cell(usize.from(s)));
       if m == 0u32 || cullMask(f, &it.box, m) != NONE {
-        if !visit(it.handle, Proxy(s, it.gen)) {return false;}
+        if !visit(it.handle, items.proxyOf(s)) {return false;}
       }
       s = it.y;
     }
@@ -359,10 +359,10 @@ pub struct LooseOctree[T: Copy] {
     if node != 0u32 && rayBox(&r, &loose(c, h), limit) < 0. {return limit;}
     var s = nodes[ni].first;
     while s != NONE {
-      let it = items.list[usize.from(s)];
+      let it = (*items.cell(usize.from(s)));
       let t = rayBox(&r, &it.box, limit);
       if t >= 0. {
-        let res = visit(it.handle, Proxy(s, it.gen), t);
+        let res = visit(it.handle, items.proxyOf(s), t);
         if res < 0. {return -1.;}
         if res < limit {limit = res;}
       }
@@ -431,14 +431,14 @@ pub struct LooseOctree[T: Copy] {
     while heap.len() > 0usize && out.len() < k {
       let e = heap.pop();
       if e.isItem {
-        let it = items.list[usize.from(e.id)];
-        out.push(Neighbor[T](it.handle, Proxy(e.id, it.gen), e.key));
+        let it = (*items.cell(usize.from(e.id)));
+        out.push(Neighbor[T](it.handle, items.proxyOf(e.id), e.key));
       }
       else {
         let ni = usize.from(e.id);
         var s = nodes[ni].first;
         while s != NONE {
-          let it = items.list[usize.from(s)];
+          let it = (*items.cell(usize.from(s)));
           heap.push(HeapEntry(distSqPointBox(point, it.box), s, true, e.c, 0.));
           s = it.y;
         }
@@ -467,15 +467,15 @@ pub struct LooseOctree[T: Copy] {
   pub fn allPairs(self: &, out: &mut List[Pair[T]]) {
     var found = List[u32]();
     var i = 0usize;
-    while i < items.list.len() {
+    while i < items.bound() {
       if items.isLive(i) {
         found.clear();
-        queryBox(items.list[i].box, &mut found);
+        queryBox((*items.cell(i)).box, &mut found);
         var j = 0usize;
         while j < found.len() {
           let o = *found[j];
           if usize.from(o) > i {
-            out.push(pairOf(u32.from(i), items.list[i].handle, o, items.list[usize.from(o)].handle));
+            out.push(pairOf(u32.from(i), (*items.cell(i)).handle, o, (*items.cell(usize.from(o))).handle));
           }
           j = j + 1usize;
         }
@@ -499,23 +499,23 @@ pub struct LooseOctree[T: Copy] {
       let m = *moved[i];
       let mi = usize.from(m);
       i = i + 1usize;
-      if !items.isLive(mi) || !items.list[mi].moved {continue;}
-      items.list[mi].moved = false;
+      if !items.isLive(mi) || !(*items.cell(mi)).moved {continue;}
+      (*items.cell(mi)).moved = false;
       found.clear();
       added.clear();
       ended.clear();
-      queryBox(items.list[mi].box, &mut found);
+      queryBox((*items.cell(mi)).box, &mut found);
       pairs.sync(m, &found, &mut added, &mut ended);
       var j = 0usize;
       while j < added.len() {
         let o = *added[j];
-        events.added.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        events.added.push(pairOf(m, (*items.cell(mi)).handle, o, (*items.cell(usize.from(o))).handle));
         j = j + 1usize;
       }
       j = 0usize;
       while j < ended.len() {
         let o = *ended[j];
-        events.removed.push(pairOf(m, items.list[mi].handle, o, items.list[usize.from(o)].handle));
+        events.removed.push(pairOf(m, (*items.cell(mi)).handle, o, (*items.cell(usize.from(o))).handle));
         j = j + 1usize;
       }
     }
