@@ -452,10 +452,12 @@ fn slowReaders(cctx: &quic.Context, what: &str, budget: u64) u64 {
 }
 
 // A new stream's first grant: raised from its floor (4519) to 16384 at once
-// while the spare lasts; the spare is 524372 and each grant 11865, so the
-// first 44 streams get one whole, the 45th the 2312 left, and from the 46th
-// on a stream holds its floor. The server releases nothing, so each stream
-// holds what its window lets the client send
+// while the upper half of the spare lasts; the spare is 524372, so 262186 for
+// first grants, and each grant is 11865: the first 22 streams get one whole
+// (261030), the 23rd the 1156 left (window 5675), and from the 24th on a
+// stream holds its floor. The server releases nothing, so each stream holds
+// what its window lets the client send. Then the other half is still there
+// for a reader: the 31st stream, opened at its floor, grows past 16 KiB
 fn firstGrants(cctx: &quic.Context) {
   printStr("-- a new stream's first grant\n");
   let sctx = serverCtx(quic.Config.make());
@@ -481,10 +483,10 @@ fn firstGrants(cctx: &quic.Context) {
     }
   }
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  lineU("the 44th stream's window", s.window(ids[43usize]));
-  lineU("the 45th's, the spare's last 2312 over its floor", s.window(ids[44usize]));
-  lineU("the 46th's, the spare spent: its floor", s.window(ids[45usize]));
-  lineU("...and what the client could send on it, held unreleased", s.unreleased(ids[45usize]));
+  lineU("the 22nd stream's window", s.window(ids[21usize]));
+  lineU("the 23rd's, the first-grant half's last 1156 over its floor", s.window(ids[22usize]));
+  lineU("the 24th's, the first-grant half spent: its floor", s.window(ids[23usize]));
+  lineU("...and what the client could send on it, held unreleased", s.unreleased(ids[23usize]));
   lineU("the 50th's", s.window(ids[49usize]));
   var drawn = 0u64;
   k = 0u32;
@@ -492,7 +494,31 @@ fn firstGrants(cctx: &quic.Context) {
     drawn = drawn + s.window(ids[usize.from(k)]) - floor;
     k = k + 1u32;
   }
-  line("the grants together are the whole spare", yesNo(drawn == 1048576u64 - 116u64 * floor));
+  lineU("the grants together, the spare's upper half", drawn);
+  line("...which is half the spare", yesNo(drawn == (1048576u64 - 116u64 * floor) / 2u64));
+
+  // The reserved half: streams 0 and 30 are read, 29 others stall and take
+  // first grants, which stop at the half; stream 30 opens at its floor, and
+  // still grows past 16 KiB by release
+  var cs2 = Side.make();
+  var ss2 = Side.make();
+  var now2 = Instant.fromNanos(1000000000i64);
+  var c2, s2 = connect(cctx, &sctx, &mut cs2, &mut ss2, &mut now2);
+  ss2.sparse = true;
+  ss2.every = 30i64;
+  let big = body(0i64, 300000usize);
+  var ids2 = List[i64]();
+  k = 0u32;
+  while k < 31u32 {
+    let id = openBidi(&mut c2);
+    ids2.push(id);
+    c2.writeBytes(id, big.view());
+    k = k + 1u32;
+  }
+  pump(&mut c2, &mut s2, &mut cs2, &mut ss2, &mut now2);
+  lineU("a stalled stream opened after the half was spent: its window", s2.window(ids2[29usize]));
+  line("the reader opened after it grew past 16 KiB, to within the maximum",
+    yesNo(s2.window(ids2[30usize]) > 16384u64 && s2.window(ids2[30usize]) <= 262144u64));
 }
 
 // One bulk stream alone on a connection draws its window to the maximum

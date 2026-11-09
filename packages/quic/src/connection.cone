@@ -170,6 +170,7 @@ pub struct Connection is Move {
   offline: bool;
   lane: Lane;
   maxUdp: usize;
+  reserve: u64;            // half the spare: first grants leave this much for growth by release
   floor: u64;              // a stream's first window (CREDIT)
   maxWindow: u64;          // the most a stream's window grows to
   spare: u64;              // budget credit no stream holds, for streams that keep reading to draw
@@ -976,13 +977,15 @@ pub struct Connection is Move {
     let s = streams.add(Stream.make(id, floor));
     byId.insert(id, s.index);
     // A first grant: a stream this end can receive on is raised at once from
-    // its floor to streamFirstWindow, as far as the spare allows, so that
+    // its floor to streamFirstWindow, as far as the spare allows (but the
+    // spare's lower half is left for growth by release), so that
     // under normal load it starts where streams did before windows were
     // drawn from a budget. With the spare spent it keeps its floor
     if self.canReceive(id) {
       let first = if streamFirstWindow < maxWindow {streamFirstWindow} else {maxWindow};
       var grant = if first > floor {first - floor} else {0u64};
-      if grant > spare {grant = spare;}
+      let room = if spare > reserve {spare - reserve} else {0u64};
+      if grant > room {grant = room;}
       if grant > 0u64 {
         let p = self.streamAt(id);
         (*p).window = (*p).window + grant;
@@ -1182,7 +1185,7 @@ fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &st
   Connection(conn: conn, ossl: ossl, ssl: ssl, box: b, ps: ps, server: server, host: String.from(host),
     alpnName: cfg.alpn.clone(), kind: cfg.verify.kind, pins: pins, offline: cfg.offline,
     lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, floor: streamFloor(cfg),
-    maxWindow: cfg.streamWindow, spare: creditSpare(cfg), streams: SlotTable[Stream].make(16u32),
+    maxWindow: cfg.streamWindow, spare: creditSpare(cfg), reserve: creditSpare(cfg) / 2u64, streams: SlotTable[Stream].make(16u32),
     byId: Dict[i64, u32](), cursor: 0usize, events: Deque[Event](), verifyStage: stageIdle,
     lastNow: now, closed: false, closing: None, err: None)
 }
