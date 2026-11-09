@@ -138,25 +138,32 @@ fn main() i32 {
 
   // 4. Deadlines
   {
+    // The parent's deadline is far off, so no load can bring it near: the tight
+    // child firing first is then structural, not a race with the test thread.
     let t0 = Instant.now();
-    let g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
+    let g = CancelGroup.until(t0 + Duration.fromSeconds(60i64));
     let c = g.child();
-    let tight = g.childUntil(t0 + Duration.fromMillis(20i64));
-    let loose = g.childUntil(t0 + Duration.fromSeconds(60i64));
-    expect(g.deadline() == t0 + Duration.fromMillis(60i64), "the group's deadline");
+    let tight = g.childUntil(t0 + Duration.fromSeconds(1i64));
+    let loose = g.childUntil(t0 + Duration.fromSeconds(120i64));
+    expect(g.deadline() == t0 + Duration.fromSeconds(60i64), "the group's deadline");
     expect(c.deadline() == g.deadline(), "a child inherits it");
-    expect(tight.deadline() == t0 + Duration.fromMillis(20i64), "a tighter child wins");
+    expect(tight.deadline() == t0 + Duration.fromSeconds(1i64), "a tighter child wins");
     expect(loose.deadline() == g.deadline(), "a looser one gives way to the parent's");
     expect(!g.isCancelled() && !tight.isCancelled(), "live before the deadline");
     waitUntilCancelled(&tight, 5000i64);
     expect(tight.isCancelled(), "the tight child timed out");
-    expect(Instant.now() >= t0 + Duration.fromMillis(20i64), "not before its deadline");
+    expect(Instant.now() >= t0 + Duration.fromSeconds(1i64), "not before its deadline");
     expect(causeIs(&tight, Cause.TimedOut), "with the cause TimedOut");
     expect(!g.isCancelled(), "its parent did not");
-    waitUntilCancelled(&g, 5000i64);
-    expect(g.isCancelled() && c.isCancelled() && loose.isCancelled(), "then the parent and what follows it");
-    expect(causeIs(&c, Cause.TimedOut), "TimedOut reaches the child");
-    expect(!g.cancel(), "a cancel after the timeout says false");
+    // The parent's own timeout, in a group of its own
+    let t1 = Instant.now();
+    let g2 = CancelGroup.until(t1 + Duration.fromMillis(60i64));
+    let c2 = g2.child();
+    let loose2 = g2.childUntil(t1 + Duration.fromSeconds(60i64));
+    waitUntilCancelled(&g2, 5000i64);
+    expect(g2.isCancelled() && c2.isCancelled() && loose2.isCancelled(), "then the parent and what follows it");
+    expect(causeIs(&c2, Cause.TimedOut), "TimedOut reaches the child");
+    expect(!g2.cancel(), "a cancel after the timeout says false");
     // A deadline already past
     let past = CancelGroup.until(Instant.now() - Duration.fromSeconds(1i64));
     waitUntilCancelled(&past, 5000i64);
