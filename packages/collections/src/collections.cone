@@ -716,8 +716,8 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
 // must be a struct, and its fields public, or all of them visible to this module (a type from
 // another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty' or 'get'
-// clashes with the method of that name and is refused (ErrorDupName, 1011, with ErrorFldArgs
-// after it at this file's own uses of 'self.len'; not the 1596 of two generated members).
+// clashes with the method of that name and is refused (ErrorMetaGenClash, 1596, naming the field
+// and T).
 //
 // A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
 // taken apart field by field, and a field of an owned value that moves cannot be moved out of it.
@@ -728,6 +728,9 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // 'ps.name[i]'); whoever pushes to columns one at a time keeps them the same length ('len' reads
 // the last column). A push can move the blocks, as a List's does, so a column borrowed before
 // it is stale after.
+// When the list dies and T has something to finalize, each row is built whole again from its
+// columns and dropped, so T's own 'final' runs once per row (see 'final' below); T's fields must
+// then be ones this module may give a value to, which a private field of an '@reflect' type is not.
 // Not yet: 'ps[i].pos' as a place, a layout marker, and 'remove'.
 pub struct SoaList[T] is Default {
   #each #f in #fields(T) {
@@ -756,6 +759,30 @@ pub struct SoaList[T] is Default {
   pub fn get(self: &, index: usize) Option[T] where T is Copy {
     if index >= self.len() { return None; }
     Some[T](T(#each #f in #fields(T) { #f: self.#f[index] }))
+  }
+
+  // Its death, for a T that has something to finalize: each row is built whole again from its
+  // columns, first to last, and dropped, so T's own 'final' runs once for it, and then each
+  // field's. The columns are then left holding nothing of those rows, so their own deaths
+  // finalize nothing twice. Columns that fell out of step keep their values past the shortest
+  // column, which their own deaths finalize as a List's does. A T with nothing to finalize pays
+  // for none of this: the branch is decided when the instance is made.
+  fn final(self: &uni) {
+    if mem.needsFinal[T]() {
+      var rows = self.len();
+      #each #f in #fields(T) {
+        if self.#f.used < rows { rows = self.#f.used; }
+      }
+      var i = 0usize;
+      while i < rows {
+        let row = T(#each #f in #fields(T) { #f: mem.readRaw(self.#f.ptr + i) });
+        i = i + 1usize;
+      }
+      #each #f in #fields(T) {
+        mem.moveRaw(self.#f.ptr, self.#f.ptr + rows, self.#f.used - rows);
+        self.#f.used = self.#f.used - rows;
+      }
+    }
   }
 }
 

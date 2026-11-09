@@ -1112,7 +1112,9 @@ the instance, when the include file is generated. A generic with neither leaves 
 a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
 the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
 named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
-the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name;
+and a written method named like a generated field (`structMethodFieldClash`), pointed at the method and naming the
+type argument and the field, after which the instance has no methods.
 
 `ErrorSetupCycle` (1605) and `ErrorSetupReadsInit` (1606) refuse a module's setups (a `let` global given a value that is
 not a constant; `module.md`, "Setups"). The first is setups that read one another round a cycle, directly or through the
