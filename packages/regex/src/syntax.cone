@@ -1,0 +1,860 @@
+// ======== The parser: a pattern to a tree of nodes ========
+//
+// A recursive-descent parser for Rust's regex syntax (the subset the package
+// header lists). The tree lives in three flat lists, so no node owns another:
+// 'nodes', the children of nodes ('kids') and the character ranges of classes
+// ('ranges'). A class holds sorted, merged ranges of code points (or of bytes,
+// for a class written in ASCII or bytes mode).
+
+const nEmpty = 0u8;
+const nClass = 1u8;
+const nConcat = 2u8;
+const nAlt = 3u8;
+const nRepeat = 4u8;
+const nGroup = 5u8;
+const nLook = 6u8;
+
+// The assertions
+const lkStartText = 0u32;
+const lkEndText = 1u32;
+const lkStartLine = 2u32;
+const lkEndLine = 3u32;
+const lkWord = 4u32;
+const lkNotWord = 5u32;
+
+const noNode = 0xFFFFFFFFu32;
+const noMax = 0xFFFFFFFFu32;
+const maxCodePoint = 0x10FFFFu32;
+// The deepest nesting of groups and classes a pattern may have
+const nestLimit = 250u32;
+// The largest count in a repetition 'x{n,m}'
+const repeatLimit = 1000u32;
+
+struct Range {
+  pub lo: u32;
+  pub hi: u32;
+}
+
+struct Node {
+  pub kind: u8;
+  // Repeat: greedy. Class: the ranges are bytes, not code points.
+  pub flag: bool;
+  // Repeat: the least count. Group: its index. Look: which assertion.
+  pub a: u32;
+  // Repeat: the most count (noMax for none)
+  pub b: u32;
+  // Where the children (kids) or the ranges begin, and how many
+  pub first: u32;
+  pub count: u32;
+}
+
+struct GroupName {
+  pub name: String;
+  pub index: u32;
+}
+
+struct Flags {
+  pub i: bool;
+  pub m: bool;
+  pub s: bool;
+  pub x: bool;
+  // Unicode mode: the default. Off, a class is ASCII (or bytes)
+  pub u: bool;
+  // Swap the meaning of greedy and lazy
+  pub swap: bool;
+}
+
+// What the parser answers with when a pattern is refused
+struct Refusal {
+  pub kind: ErrorKind;
+  pub offset: usize;
+  pub reason: String;
+}
+
+// A code point read from the pattern: width 0 for bytes that are not UTF-8
+struct Decoded {
+  pub cp: u32;
+  pub width: usize;
+}
+
+fn decodeUtf8(b: &Array[u8], i: usize) Decoded {
+  let b0 = u32.from(b[i]);
+  if b0 < 0x80 { return Decoded(b0, 1); }
+  var need = 0usize;
+  var cp = 0u32;
+  if b0 >= 0xC2 && b0 <= 0xDF { need = 1; cp = b0 & 0x1F; }
+  else if b0 >= 0xE0 && b0 <= 0xEF { need = 2; cp = b0 & 0x0F; }
+  else if b0 >= 0xF0 && b0 <= 0xF4 { need = 3; cp = b0 & 0x07; }
+  else { return Decoded(0, 0); }
+  if i + need >= b.len { return Decoded(0, 0); }
+  var k = 1usize;
+  while k <= need {
+    let c = u32.from(b[i + k]);
+    if (c & 0xC0) != 0x80 { return Decoded(0, 0); }
+    cp = (cp << 6) | (c & 0x3F);
+    k = k + 1;
+  }
+  if need == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) { return Decoded(0, 0); }
+  if need == 3 && (cp < 0x10000 || cp > maxCodePoint) { return Decoded(0, 0); }
+  Decoded(cp, need + 1)
+}
+
+// -------- sets of ranges --------
+
+fn sortedRanges(r: &List[Range]) List[Range] {
+  var v = List[Range]();
+  var i = 0usize;
+  while i < r.len() { v.push(*r[i]); i = i + 1; }
+  v.sortBy((a, b) => if a.lo < b.lo {-1i32} else if a.lo > b.lo {1i32} else {0i32});
+  var out = List[Range]();
+  i = 0;
+  while i < v.len() {
+    let c = *v[i];
+    let n = out.len();
+    if n > 0 && c.lo <= out[n - 1].hi + 1 {
+      if c.hi > out[n - 1].hi { out.set(n - 1, Range(out[n - 1].lo, c.hi)); }
+    }
+    else { out.push(c); }
+    i = i + 1;
+  }
+  out
+}
+
+// The complement of normalized ranges within 0 to top
+fn negatedRanges(r: &List[Range], top: u32) List[Range] {
+  var out = List[Range]();
+  var next = 0u32;
+  var i = 0usize;
+  var done = false;
+  while i < r.len() {
+    let c = *r[i];
+    if c.lo > next { out.push(Range(next, c.lo - 1)); }
+    if c.hi >= top { done = true; break; }
+    next = c.hi + 1;
+    i = i + 1;
+  }
+  if !done && next <= top { out.push(Range(next, top)); }
+  out
+}
+
+fn intersectRanges(a: &List[Range], b: &List[Range]) List[Range] {
+  var out = List[Range]();
+  var i = 0usize;
+  var j = 0usize;
+  while i < a.len() && j < b.len() {
+    let x = *a[i];
+    let y = *b[j];
+    let lo = if x.lo > y.lo { x.lo } else { y.lo };
+    let hi = if x.hi < y.hi { x.hi } else { y.hi };
+    if lo <= hi { out.push(Range(lo, hi)); }
+    if x.hi < y.hi { i = i + 1; } else { j = j + 1; }
+  }
+  out
+}
+
+fn unionRanges(a: &List[Range], b: &List[Range]) List[Range] {
+  var v = List[Range]();
+  var i = 0usize;
+  while i < a.len() { v.push(*a[i]); i = i + 1; }
+  i = 0;
+  while i < b.len() { v.push(*b[i]); i = i + 1; }
+  sortedRanges(&v)
+}
+
+fn differenceRanges(a: &List[Range], b: &List[Range], top: u32) List[Range] {
+  let nb = negatedRanges(b, top);
+  intersectRanges(a, &nb)
+}
+
+// ASCII case folding: every letter in the set brings its other case along
+fn foldedAscii(r: &List[Range]) List[Range] {
+  var v = List[Range]();
+  var i = 0usize;
+  while i < r.len() {
+    let c = *r[i];
+    v.push(c);
+    var lo = if c.lo > 97 { c.lo } else { 97u32 };
+    var hi = if c.hi < 122 { c.hi } else { 122u32 };
+    if lo <= hi { v.push(Range(lo - 32, hi - 32)); }
+    lo = if c.lo > 65 { c.lo } else { 65u32 };
+    hi = if c.hi < 90 { c.hi } else { 90u32 };
+    if lo <= hi { v.push(Range(lo + 32, hi + 32)); }
+    i = i + 1;
+  }
+  sortedRanges(&v)
+}
+
+fn isHex(c: u8) bool { (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') }
+
+fn hexValue(c: u8) u32 {
+  if c >= '0' && c <= '9' { u32.from(c) - 48 }
+  else if c >= 'a' && c <= 'f' { u32.from(c) - 87 }
+  else { u32.from(c) - 55 }
+}
+
+fn isWordByte(c: u8) bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+// -------- the parser --------
+
+struct Parser {
+  pub pat: String;
+  pub pos: usize;
+  pub flags: Flags;
+  // Bytes mode: a class may match bytes that are not UTF-8
+  pub bytesMode: bool;
+  pub depth: u32;
+  pub nodes: List[Node];
+  pub kids: List[u32];
+  pub ranges: List[Range];
+  pub groups: u32;
+  pub names: List[GroupName];
+  pub failed: bool;
+  pub err: Refusal;
+
+  pub fn start(pattern: &str, bytesMode: bool) Parser {
+    Parser(String.from(pattern), 0, Flags(false, false, false, false, true, false), bytesMode, 0u32,
+      List[Node](), List[u32](), List[Range](), 1u32, List[GroupName](), false,
+      Refusal(ErrorKind.Syntax, 0, String()))
+  }
+
+  fn fail(self: &mut, kind: ErrorKind, at: usize, msg: &str) {
+    if failed { return; }
+    failed = true;
+    err = Refusal(kind, at, String.from(msg));
+  }
+
+  fn atEnd(self: &) bool { pos >= pat.len() }
+
+  fn cur(self: &) u8 { pat[pos] }
+
+  fn looking(self: &, c: u8) bool { pos < pat.len() && pat[pos] == c }
+
+  fn lookingAt(self: &, at: usize, c: u8) bool { at < pat.len() && pat[at] == c }
+
+  // The verbose flag skips white space and comments between things
+  fn skipSpace(self: &mut) {
+    if !flags.x { return; }
+    while pos < pat.len() {
+      let c = pat[pos];
+      if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C { pos = pos + 1; }
+      else if c == '#' {
+        while pos < pat.len() && pat[pos] != '\n' { pos = pos + 1; }
+      }
+      else { break; }
+    }
+  }
+
+  fn addNode(self: &mut, kind: u8, flag: bool, a: u32, b: u32, first: u32, count: u32) u32 {
+    nodes.push(Node(kind, flag, a, b, first, count));
+    u32.from(nodes.len() - 1)
+  }
+
+  fn addKids(self: &mut, kind: u8, items: &List[u32]) u32 {
+    let first = u32.from(kids.len());
+    var i = 0usize;
+    while i < items.len() { kids.push(*items[i]); i = i + 1; }
+    addNode(kind, false, 0u32, 0u32, first, u32.from(items.len()))
+  }
+
+  // A class node from normalized ranges
+  fn addClass(self: &mut, r: &List[Range], bytes: bool) u32 {
+    let first = u32.from(ranges.len());
+    var i = 0usize;
+    while i < r.len() { ranges.push(*r[i]); i = i + 1; }
+    addNode(nClass, bytes, 0u32, 0u32, first, u32.from(r.len()))
+  }
+
+  // -------- the grammar --------
+
+  // The root node, or noNode once the pattern is refused ('failed' and 'err' say why).
+  // The tree stays in the parser: 'nodes', 'kids', 'ranges', 'groups' and 'names'.
+  // A Repeat's and a Group's only child is its 'first'; a Concat's and an Alt's
+  // children are 'kids' from 'first' for 'count'.
+  pub fn parse(self: &mut) u32 {
+    let root = parseAlt();
+    if !failed && pos < pat.len() {
+      fail(ErrorKind.Syntax, pos, "unopened group: ')' has no '('");
+    }
+    if failed { return noNode; }
+    root
+  }
+
+  fn parseAlt(self: &mut) u32 {
+    depth = depth + 1;
+    if depth > nestLimit { fail(ErrorKind.Syntax, pos, "the pattern is nested too deeply"); }
+    var branches = List[u32]();
+    branches.push(parseConcat());
+    while !failed && looking('|') {
+      pos = pos + 1;
+      branches.push(parseConcat());
+    }
+    depth = depth - 1;
+    if branches.len() == 1 { return *branches[0]; }
+    addKids(nAlt, &branches)
+  }
+
+  fn parseConcat(self: &mut) u32 {
+    var items = List[u32]();
+    while !failed {
+      skipSpace();
+      if atEnd() || cur() == '|' || cur() == ')' { break; }
+      let atom = parseRepeated();
+      if atom != noNode { items.push(atom); }
+    }
+    if items.len() == 0 { return addNode(nEmpty, false, 0u32, 0u32, 0u32, 0u32); }
+    if items.len() == 1 { return *items[0]; }
+    addKids(nConcat, &items)
+  }
+
+  // An atom and the repetition operators after it
+  fn parseRepeated(self: &mut) u32 {
+    var atom = parseAtom();
+    if atom == noNode || failed { return atom; }
+    while !failed {
+      skipSpace();
+      if atEnd() { break; }
+      let c = cur();
+      var lo = 0u32;
+      var hi = noMax;
+      if c == '*' { pos = pos + 1; }
+      else if c == '+' { lo = 1; pos = pos + 1; }
+      else if c == '?' { hi = 1; pos = pos + 1; }
+      else if c == '{' {
+        let at = pos;
+        pos = pos + 1;
+        lo = parseCount();
+        if failed { break; }
+        hi = lo;
+        skipBraceSpace();
+        if looking(',') {
+          pos = pos + 1;
+          skipBraceSpace();
+          if looking('}') { hi = noMax; }
+          else { hi = parseCount(); }
+        }
+        skipBraceSpace();
+        if !looking('}') { fail(ErrorKind.Syntax, pos, "a repetition 'x{n,m}' is missing its closing '}'"); break; }
+        pos = pos + 1;
+        if hi != noMax && lo > hi { fail(ErrorKind.Syntax, at, "the repetition's least count is greater than its greatest"); break; }
+      }
+      else { break; }
+      var greedy = true;
+      if looking('?') { greedy = false; pos = pos + 1; }
+      if flags.swap { greedy = !greedy; }
+      atom = addNode(nRepeat, greedy, lo, hi, atom, 1u32);
+      // The child of a repeat is 'first'
+    }
+    atom
+  }
+
+  fn skipBraceSpace(self: &mut) {
+    while pos < pat.len() && (pat[pos] == ' ' || pat[pos] == '\t') { pos = pos + 1; }
+  }
+
+  fn parseCount(self: &mut) u32 {
+    skipBraceSpace();
+    let start = pos;
+    var n = 0u32;
+    while pos < pat.len() && pat[pos] >= '0' && pat[pos] <= '9' {
+      n = n * 10 + (u32.from(pat[pos]) - 48);
+      if n > repeatLimit {
+        fail(ErrorKind.TooBig, start, "a repetition count is larger than 1000");
+        return 0;
+      }
+      pos = pos + 1;
+    }
+    if pos == start { fail(ErrorKind.Syntax, start, "a repetition 'x{n,m}' needs a decimal count"); }
+    n
+  }
+
+  fn parseAtom(self: &mut) u32 {
+    let c = cur();
+    if c == '(' { return parseGroup(); }
+    if c == '[' { return parseBracket(); }
+    if c == '.' {
+      pos = pos + 1;
+      return dotNode();
+    }
+    if c == '^' {
+      pos = pos + 1;
+      return addNode(nLook, false, if flags.m { lkStartLine } else { lkStartText }, 0u32, 0u32, 0u32);
+    }
+    if c == '$' {
+      pos = pos + 1;
+      return addNode(nLook, false, if flags.m { lkEndLine } else { lkEndText }, 0u32, 0u32, 0u32);
+    }
+    if c == '\\' { return parseEscapeAtom(); }
+    if c == '*' || c == '+' || c == '?' {
+      fail(ErrorKind.Syntax, pos, "a repetition operator has nothing to repeat");
+      return noNode;
+    }
+    if c == '{' {
+      fail(ErrorKind.Syntax, pos, "a repetition operator has nothing to repeat (write '\\{' for a brace)");
+      return noNode;
+    }
+    let at = pos;
+    let d = decodeUtf8(pat.bytes(), pos);
+    if d.width == 0 { fail(ErrorKind.Syntax, pos, "the pattern is not valid UTF-8"); return noNode; }
+    pos = pos + d.width;
+    literalNode(d.cp, at, false)
+  }
+
+  // A class that matches '.': any character but a line feed, or every character with the 's' flag
+  fn dotNode(self: &mut) u32 {
+    var r = List[Range]();
+    if flags.u {
+      if flags.s { r.push(Range(0, maxCodePoint)); }
+      else { r.push(Range(0, 9)); r.push(Range(11, maxCodePoint)); }
+    }
+    else {
+      if flags.s { r.push(Range(0, 255)); }
+      else { r.push(Range(0, 9)); r.push(Range(11, 255)); }
+    }
+    classNode(r, !flags.u, pos - 1)
+  }
+
+  // The class node for a finished set: the checks that depend on the mode
+  fn classNode(self: &mut, r: List[Range], bytes: bool, at: usize) u32 {
+    if bytes && !bytesMode && r.len() > 0 && r[r.len() - 1].hi >= 0x80 {
+      fail(ErrorKind.Unsupported, at, "this class can match bytes that are not UTF-8: use Regex.parseBytes, or keep to ASCII");
+      return noNode;
+    }
+    addClass(&r, bytes)
+  }
+
+  // One character as a class of its own
+  fn literalNode(self: &mut, cp: u32, at: usize, asByte: bool) u32 {
+    var r = List[Range]();
+    r.push(Range(cp, cp));
+    if flags.i {
+      if flags.u {
+        let isLetter = (cp >= 97 && cp <= 122) || (cp >= 65 && cp <= 90);
+        if isLetter || cp >= 0x80 {
+          fail(ErrorKind.Unsupported, at, "case-insensitive matching of letters needs the Unicode tables, which are not built: write (?i-u) for ASCII case folding");
+          return noNode;
+        }
+      }
+      else { r = foldedAscii(&r); }
+    }
+    classNode(r, asByte, at)
+  }
+
+  // -------- escapes --------
+
+  fn parseEscapeAtom(self: &mut) u32 {
+    let at = pos;
+    pos = pos + 1;
+    if atEnd() { fail(ErrorKind.Syntax, at, "the pattern ends with a '\\'"); return noNode; }
+    let c = cur();
+    if c == 'A' { pos = pos + 1; return addNode(nLook, false, lkStartText, 0u32, 0u32, 0u32); }
+    if c == 'z' { pos = pos + 1; return addNode(nLook, false, lkEndText, 0u32, 0u32, 0u32); }
+    if c == 'b' || c == 'B' {
+      pos = pos + 1;
+      if flags.u {
+        fail(ErrorKind.Unsupported, at, "a Unicode word boundary needs the Unicode tables, which are not built: write (?-u:\\b) for an ASCII one");
+        return noNode;
+      }
+      return addNode(nLook, false, if c == 'b' { lkWord } else { lkNotWord }, 0u32, 0u32, 0u32);
+    }
+    let perl = perlClass(c);
+    if perl != 0 {
+      pos = pos + 1;
+      return perlNode(c, at);
+    }
+    if c == 'p' || c == 'P' {
+      fail(ErrorKind.Unsupported, at, "\\p{..} classes need the Unicode tables, which are not built");
+      return noNode;
+    }
+    if c >= '1' && c <= '9' {
+      fail(ErrorKind.Unsupported, at, "backreferences are not supported: matching is linear in the text");
+      return noNode;
+    }
+    let v = parseEscapedChar(at, false);
+    if failed { return noNode; }
+    literalNode(v.cp, at, v.width == 1)
+  }
+
+  // 'd', 's', 'w' and their capitals are 1 to 3 (and 4 to 6 for the denials)
+  fn perlClass(c: u8) u8 {
+    if c == 'd' { 1 } else if c == 's' { 2 } else if c == 'w' { 3 }
+    else if c == 'D' { 4 } else if c == 'S' { 5 } else if c == 'W' { 6 }
+    else { 0 }
+  }
+
+  // The set of \d \s \w (or the denial), in ASCII mode; Unicode mode refuses
+  fn perlSet(self: &mut, c: u8, at: usize) List[Range] {
+    var r = List[Range]();
+    if flags.u {
+      fail(ErrorKind.Unsupported, at, "a Unicode \\d, \\s or \\w needs the Unicode tables, which are not built: write (?-u:\\w), or a class such as [0-9]");
+      return r;
+    }
+    let kind = perlClass(c);
+    if kind == 1 || kind == 4 { r.push(Range(48, 57)); }
+    else if kind == 2 || kind == 5 {
+      r.push(Range(9, 13));
+      r.push(Range(32, 32));
+    }
+    else {
+      r.push(Range(48, 57));
+      r.push(Range(65, 90));
+      r.push(Range(95, 95));
+      r.push(Range(97, 122));
+    }
+    if kind >= 4 { return negatedRanges(&r, 255); }
+    r
+  }
+
+  fn perlNode(self: &mut, c: u8, at: usize) u32 {
+    var r = perlSet(c, at);
+    if failed { return noNode; }
+    if flags.i { r = foldedAscii(&r); }
+    classNode(r, true, at)
+  }
+
+  // After a '\': the character an escape names (a Decoded whose width is 1
+  // for a raw byte \xHH in ASCII mode). 'inClass' lets '-' and others through.
+  fn parseEscapedChar(self: &mut, at: usize, inClass: bool) Decoded {
+    let c = cur();
+    var cp = 0u32;
+    if c == 'n' { pos = pos + 1; return Decoded(10, 2); }
+    if c == 't' { pos = pos + 1; return Decoded(9, 2); }
+    if c == 'r' { pos = pos + 1; return Decoded(13, 2); }
+    if c == 'f' { pos = pos + 1; return Decoded(12, 2); }
+    if c == 'v' { pos = pos + 1; return Decoded(11, 2); }
+    if c == 'a' { pos = pos + 1; return Decoded(7, 2); }
+    if c == 'x' || c == 'u' || c == 'U' {
+      pos = pos + 1;
+      var digits = 2usize;
+      if c == 'u' { digits = 4; }
+      if c == 'U' { digits = 8; }
+      var n = 0u32;
+      if looking('{') {
+        pos = pos + 1;
+        var count = 0usize;
+        while pos < pat.len() && isHex(pat[pos]) {
+          n = n * 16 + hexValue(pat[pos]);
+          count = count + 1;
+          pos = pos + 1;
+          if count > 8 || n > maxCodePoint {
+            fail(ErrorKind.Syntax, at, "a hexadecimal escape is not a character");
+            return Decoded(0, 2);
+          }
+        }
+        if count == 0 || !looking('}') {
+          fail(ErrorKind.Syntax, at, "a hexadecimal escape needs digits and a closing '}'");
+          return Decoded(0, 2);
+        }
+        pos = pos + 1;
+      }
+      else {
+        var count = 0usize;
+        while count < digits {
+          if pos >= pat.len() || !isHex(pat[pos]) {
+            fail(ErrorKind.Syntax, at, "a hexadecimal escape needs more hexadecimal digits");
+            return Decoded(0, 2);
+          }
+          n = n * 16 + hexValue(pat[pos]);
+          pos = pos + 1;
+          count = count + 1;
+        }
+      }
+      if n > maxCodePoint || (n >= 0xD800 && n <= 0xDFFF) {
+        fail(ErrorKind.Syntax, at, "a hexadecimal escape is not a character");
+        return Decoded(0, 2);
+      }
+      // In ASCII mode '\xFF' is the byte; width 1 says so
+      if c == 'x' && !flags.u && n >= 0x80 { return Decoded(n, 1); }
+      return Decoded(n, 2);
+    }
+    // an escaped punctuation mark is itself
+    let isPunct = (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126);
+    if (isPunct && c != '<' && c != '>') || c == ' ' {
+      pos = pos + 1;
+      return Decoded(u32.from(c), 2);
+    }
+    fail(ErrorKind.Syntax, at, "this escape sequence is not recognized");
+    Decoded(0, 2)
+  }
+
+  // -------- groups and flags --------
+
+  fn parseGroup(self: &mut) u32 {
+    let at = pos;
+    pos = pos + 1;
+    let saved = flags;
+    var index = 0u32;
+    var capturing = true;
+    if looking('?') {
+      pos = pos + 1;
+      if looking('P') && lookingAt(pos + 1, '<') { pos = pos + 1; }
+      if looking('<') && !lookingAt(pos + 1, '=') && !lookingAt(pos + 1, '!') {
+        pos = pos + 1;
+        let nameAt = pos;
+        var name = String();
+        while pos < pat.len() && (isWordByte(pat[pos])) {
+          name.appendByte(pat[pos]);
+          pos = pos + 1;
+        }
+        if !looking('>') || name.len() == 0 || (name[0] >= '0' && name[0] <= '9') {
+          fail(ErrorKind.Syntax, nameAt, "a group name must be letters, digits and '_', not starting with a digit, and end with '>'");
+          return noNode;
+        }
+        pos = pos + 1;
+        var k = 0usize;
+        while k < names.len() {
+          if names[k].name.view() == name.view() {
+            fail(ErrorKind.Syntax, nameAt, "a group name is used twice");
+            return noNode;
+          }
+          k = k + 1;
+        }
+        index = groups;
+        groups = groups + 1;
+        names.push(GroupName(name, index));
+      }
+      else if looking('=') || looking('!') || (looking('<') && (lookingAt(pos + 1, '=') || lookingAt(pos + 1, '!'))) {
+        fail(ErrorKind.Unsupported, at, "look-around is not supported: matching is linear in the text");
+        return noNode;
+      }
+      else if looking('P') {
+        fail(ErrorKind.Unsupported, at, "backreferences are not supported: matching is linear in the text");
+        return noNode;
+      }
+      else {
+        // flags: (?i) sets them to the end of this group, (?i:...) for the part
+        var on = true;
+        var f = flags;
+        var any = false;
+        var scoped = false;
+        var ended = false;
+        while !ended && !failed {
+          if atEnd() { fail(ErrorKind.Syntax, at, "a group's flags are not closed"); return noNode; }
+          let c = cur();
+          pos = pos + 1;
+          if c == 'i' { f.i = on; any = true; }
+          else if c == 'm' { f.m = on; any = true; }
+          else if c == 's' { f.s = on; any = true; }
+          else if c == 'x' { f.x = on; any = true; }
+          else if c == 'U' { f.swap = on; any = true; }
+          else if c == 'u' {
+            if on {
+              fail(ErrorKind.Unsupported, pos - 1, "Unicode mode is the default and cannot be set again before the Unicode tables are built; (?-u) turns it off");
+              return noNode;
+            }
+            f.u = false; any = true;
+          }
+          else if c == 'R' {
+            fail(ErrorKind.Unsupported, pos - 1, "the CRLF flag (?R) is not supported");
+            return noNode;
+          }
+          else if c == '-' {
+            if !on { fail(ErrorKind.Syntax, pos - 1, "a flag group has two '-'"); return noNode; }
+            on = false;
+          }
+          else if c == ')' { ended = true; }
+          else if c == ':' { ended = true; scoped = true; }
+          else { fail(ErrorKind.Syntax, pos - 1, "this flag is not recognized"); return noNode; }
+        }
+        if !any && !scoped { fail(ErrorKind.Syntax, at, "a flag group names no flags"); return noNode; }
+        if !scoped {
+          // (?i) takes effect to the end of the enclosing group
+          flags = f;
+          return noNode;
+        }
+        flags = f;
+        capturing = false;
+      }
+    }
+    else { index = groups; groups = groups + 1; }
+    let body = parseAlt();
+    if failed { return noNode; }
+    if !looking(')') { fail(ErrorKind.Syntax, at, "this group is never closed"); return noNode; }
+    pos = pos + 1;
+    flags = saved;
+    if !capturing && index == 0 { return body; }
+    addNode(nGroup, false, index, 0u32, body, 1u32)
+  }
+
+  // -------- classes --------
+
+  fn parseBracket(self: &mut) u32 {
+    let at = pos;
+    let set = parseBracketSet();
+    if failed { return noNode; }
+    let bytes = !flags.u;
+    classNode(set, bytes, at)
+  }
+
+  // '[' ... ']' as a set of ranges (a class may nest)
+  fn parseBracketSet(self: &mut) List[Range] {
+    let at = pos;
+    depth = depth + 1;
+    if depth > nestLimit { fail(ErrorKind.Syntax, pos, "the pattern is nested too deeply"); }
+    pos = pos + 1;
+    var negate = false;
+    if looking('^') { negate = true; pos = pos + 1; }
+    let top = if flags.u { maxCodePoint } else { 255u32 };
+    var acc = parseClassItems(true);
+    while !failed {
+      skipSpace();
+      var op = 0u8;
+      if looking('&') && lookingAt(pos + 1, '&') { op = 1; }
+      else if looking('-') && lookingAt(pos + 1, '-') { op = 2; }
+      else if looking('~') && lookingAt(pos + 1, '~') { op = 3; }
+      if op == 0 { break; }
+      pos = pos + 2;
+      let rhs = parseClassItems(false);
+      if failed { break; }
+      if op == 1 { acc = intersectRanges(&acc, &rhs); }
+      else if op == 2 { acc = differenceRanges(&acc, &rhs, top); }
+      else {
+        let l = differenceRanges(&acc, &rhs, top);
+        let r = differenceRanges(&rhs, &acc, top);
+        acc = unionRanges(&l, &r);
+      }
+    }
+    if failed { depth = depth - 1; return List[Range](); }
+    if !looking(']') { fail(ErrorKind.Syntax, at, "this character class is never closed"); depth = depth - 1; return List[Range](); }
+    pos = pos + 1;
+    depth = depth - 1;
+    if flags.i && flags.u {
+      // folding needs tables, unless nothing in the set is a letter or beyond ASCII
+      var k = 0usize;
+      while k < acc.len() {
+        let c = *acc[k];
+        if c.hi >= 0x80 || (c.lo <= 90 && c.hi >= 65) || (c.lo <= 122 && c.hi >= 97) {
+          fail(ErrorKind.Unsupported, at, "case-insensitive matching of letters needs the Unicode tables, which are not built: write (?i-u) for ASCII case folding");
+          return List[Range]();
+        }
+        k = k + 1;
+      }
+    }
+    else if flags.i { acc = foldedAscii(&acc); }
+    if negate { acc = negatedRanges(&acc, top); }
+    acc
+  }
+
+  // The members of a class up to a ']' or an operator, as a set
+  fn parseClassItems(self: &mut, first: bool) List[Range] {
+    var v = List[Range]();
+    var isFirst = first;
+    while !failed {
+      skipSpace();
+      if atEnd() { break; }
+      let c = cur();
+      if c == ']' && !isFirst { break; }
+      if (c == '&' || c == '-' || c == '~') && lookingAt(pos + 1, c) { break; }
+      isFirst = false;
+      let at = pos;
+      if c == '[' {
+        if lookingAt(pos + 1, ':') {
+          let named = parsePosix(&mut v);
+          if named || failed { continue; }
+        }
+        let inner = parseBracketSet();
+        if failed { break; }
+        v = unionRanges(&v, &inner);
+        continue;
+      }
+      // a single member, perhaps the start of a range
+      let lo = parseClassChar(&mut v);
+      if failed { break; }
+      if lo.width == 0 { continue; }
+      var hi = lo;
+      if looking('-') && !lookingAt(pos + 1, ']') && !lookingAt(pos + 1, '-') && pos + 1 < pat.len() {
+        pos = pos + 1;
+        hi = parseClassChar(&mut v);
+        if failed { break; }
+        if hi.width == 0 {
+          fail(ErrorKind.Syntax, at, "a range in a class ends with a class, not a character");
+          break;
+        }
+        if hi.cp < lo.cp { fail(ErrorKind.Syntax, at, "this range of characters is backwards"); break; }
+      }
+      v.push(Range(lo.cp, hi.cp));
+    }
+    sortedRanges(&v)
+  }
+
+  // One character of a class, an escape included. A \d-like escape is added to the set
+  // and answers width 0.
+  fn parseClassChar(self: &mut, dest: &mut List[Range]) Decoded {
+    let at = pos;
+    if cur() == '\\' {
+      pos = pos + 1;
+      if atEnd() { fail(ErrorKind.Syntax, at, "the pattern ends with a '\\'"); return Decoded(0, 0); }
+      let c = cur();
+      if perlClass(c) != 0 {
+        pos = pos + 1;
+        let s = perlSet(c, at);
+        if failed { return Decoded(0, 0); }
+        var s2 = s;
+        if flags.i { s2 = foldedAscii(&s2); }
+        var k = 0usize;
+        while k < s2.len() { dest.push(*s2[k]); k = k + 1; }
+        return Decoded(0, 0);
+      }
+      if c == 'p' || c == 'P' {
+        fail(ErrorKind.Unsupported, at, "\\p{..} classes need the Unicode tables, which are not built");
+        return Decoded(0, 0);
+      }
+      if c == 'b' {
+        fail(ErrorKind.Syntax, at, "a word boundary is not allowed inside a class");
+        return Decoded(0, 0);
+      }
+      if c >= '1' && c <= '9' {
+        fail(ErrorKind.Unsupported, at, "backreferences are not supported: matching is linear in the text");
+        return Decoded(0, 0);
+      }
+      let v = parseEscapedChar(at, true);
+      if failed { return Decoded(0, 0); }
+      return Decoded(v.cp, if v.width == 1 { 1 } else { 2 });
+    }
+    let d = decodeUtf8(pat.bytes(), pos);
+    if d.width == 0 { fail(ErrorKind.Syntax, pos, "the pattern is not valid UTF-8"); return Decoded(0, 0); }
+    if d.cp >= 0x80 && !flags.u {
+      fail(ErrorKind.Unsupported, pos, "a character past ASCII cannot be in a class written in ASCII mode (?-u)");
+      return Decoded(0, 0);
+    }
+    pos = pos + d.width;
+    Decoded(d.cp, d.width)
+  }
+
+  // '[:alpha:]' and '[:^alpha:]' inside a class; false if it is not one
+  fn parsePosix(self: &mut, dest: &mut List[Range]) bool {
+    let at = pos;
+    var p = pos + 2;
+    var neg = false;
+    if p < pat.len() && pat[p] == '^' { neg = true; p = p + 1; }
+    let nameStart = p;
+    while p < pat.len() && pat[p] >= 'a' && pat[p] <= 'z' { p = p + 1; }
+    if !(p + 1 < pat.len() && pat[p] == ':' && pat[p + 1] == ']') { return false; }
+    let name = String.fromBytes(&pat.bytes()[nameStart..<p]);
+    var r = List[Range]();
+    let n = name.view();
+    if n == "alnum" { r.push(Range(48, 57)); r.push(Range(65, 90)); r.push(Range(97, 122)); }
+    else if n == "alpha" { r.push(Range(65, 90)); r.push(Range(97, 122)); }
+    else if n == "ascii" { r.push(Range(0, 127)); }
+    else if n == "blank" { r.push(Range(9, 9)); r.push(Range(32, 32)); }
+    else if n == "cntrl" { r.push(Range(0, 31)); r.push(Range(127, 127)); }
+    else if n == "digit" { r.push(Range(48, 57)); }
+    else if n == "graph" { r.push(Range(33, 126)); }
+    else if n == "lower" { r.push(Range(97, 122)); }
+    else if n == "print" { r.push(Range(32, 126)); }
+    else if n == "punct" { r.push(Range(33, 47)); r.push(Range(58, 64)); r.push(Range(91, 96)); r.push(Range(123, 126)); }
+    else if n == "space" { r.push(Range(9, 13)); r.push(Range(32, 32)); }
+    else if n == "upper" { r.push(Range(65, 90)); }
+    else if n == "word" { r.push(Range(48, 57)); r.push(Range(65, 90)); r.push(Range(95, 95)); r.push(Range(97, 122)); }
+    else if n == "xdigit" { r.push(Range(48, 57)); r.push(Range(65, 70)); r.push(Range(97, 102)); }
+    else { fail(ErrorKind.Syntax, at, "this POSIX class name is not known"); return true; }
+    var s = sortedRanges(&r);
+    if flags.i { s = foldedAscii(&s); }
+    if neg { s = negatedRanges(&s, if flags.u { maxCodePoint } else { 255u32 }); }
+    var k = 0usize;
+    while k < s.len() { dest.push(*s[k]); k = k + 1; }
+    pos = p + 2;
+    true
+  }
+}
