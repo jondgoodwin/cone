@@ -692,6 +692,26 @@ fn expectTest(port: u16, path: &str, label: &str) {
   printStr(" body bytes\n");
 }
 
+// A server with no actor to take its requests and room for none (maxPending 0): each is answered 503 at its
+// head, its body is not delivered, and nothing it staged is kept
+fn busyTest(port: u16) {
+  printStr("a request no actor takes (maxPending 0): 4 MiB offered, twice\n");
+  var n = 0u32;
+  while n < 2u32 {
+    reset();
+    let u = Up(newClient(false));
+    u.run(url(false, port, "/read"), 4194304u64, 65536usize, true);
+    waitFor(&tally.ended, 1u64);
+    printStr("  status ");
+    printUInt(tally.status.load());
+    printStr(", the handler got ");
+    printUInt(tally.srvBytes.load());
+    printStr(" body bytes\n");
+    n = n + 1u32;
+  }
+  home();
+}
+
 fn main() i32 {
   initAll();
   var ptx: Sender[u16];
@@ -720,8 +740,16 @@ fn main() i32 {
     printStr("== 100 Continue (HTTP/1.1, raw)\n");
     expectTest(port, "/expect-read", "a handler that reads");
     expectTest(port, "/refuse", "a handler that answers 413 without reading");
+    var cfg3 = ServerConfig.make().streamBodies();
+    cfg3.maxPending = 0usize;
+    let busy = Acceptor(Server.none());
+    busy.open(cfg3, ptx.clone());
+    let bport = prx.recv() || 0u16;
+    printStr("== a full server (HTTP/1.1)\n");
+    busyTest(bport);
     plain.stop();
     secure.stop();
+    busy.stop();
   }
   actors.waitQuiet();
   finalAll();
