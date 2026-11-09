@@ -64,6 +64,8 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import concurrent.futures
+import contextlib
 import difflib
 import hashlib
 import json
@@ -2430,6 +2432,13 @@ def lone_build_root(file: Path) -> Path:
     return congo_home() / "lone" / f"{file.stem}-{digest}"
 
 
+LINKER_LOCK = threading.Lock()
+# One lock for every library of the shared folder, not one each: checking a
+# library rewrites its generated files, which a thread compiling a dependent
+# of it is reading
+SHARED_LOCK = threading.Lock()
+
+
 class Session:
     """The compiles of one build folder, and its link. A package is compiled at
     most once in a session: 'congo test' builds the package, then each test
@@ -2539,9 +2548,13 @@ class Session:
                 prelude = None
             else:
                 prelude = searched_sources(core, "prelude")
-            obj = compile_unit(conec, unit, into, self.mode, is_top, env,
-                               packages, self.out, announce or not is_top, prelude,
-                               self.home)
+            # A library in the shared folder is compiled by one thread at a
+            # time ('congo test --jobs'): the next finds it current
+            with (SHARED_LOCK if not is_top and self.shared is not None
+                  else contextlib.nullcontext()):
+                obj = compile_unit(conec, unit, into, self.mode, is_top, env,
+                                   packages, self.out, announce or not is_top, prelude,
+                                   self.home)
             if not is_top or (into == self.out and unit.pkg.output == "library"):
                 self.objs[unit.pkg.key] = obj
             objs.append(obj)
@@ -2556,7 +2569,9 @@ class Session:
     def link(self, order: list[Unit], objs: list[Path], exe: Path,
              announce: bool = True) -> None:
         if self._linker is None:
-            self._linker = Linker(find_conestd(self.conec))
+            # Captures Visual Studio's environment, cached in a file: once at a time
+            with LINKER_LOCK:
+                self._linker = Linker(find_conestd(self.conec))
         linker = self._linker
         # The program's object first, then the packages it imports, last built first;
         # and the C libraries every one of them names, in the same order, each once.
@@ -3171,6 +3186,29 @@ def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: b
         tally.failures.append(f"{pkg.name}: test {file.stem}")
 
 
+def prepare_package(pkg: Package, mode: str, shared: Path | None,
+                    tally: Tally) -> Session | None:
+    """The build step of test_package: build the package, and return the session
+    its tests and examples are built in; or None, with the failure counted in
+    `tally`, where the package does not build."""
+    say("Testing", f"{pkg.label()} ({pkg.root})")
+    # The package under test is found first, under its own name, so a test
+    # imports this copy -- whether or not it is in a registry, and whatever
+    # else a registry holds of that name
+    registry = open_registry()
+    registry.packages[pkg.name] = pkg
+    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
+    try:
+        build(pkg, mode, session)
+    except CongoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        tally.broken += 1
+        tally.failures.append(f"{pkg.name}: the package does not build")
+        say("Result", f"{pkg.name}: the package does not build")
+        return None
+    return session
+
+
 def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
                  later: list | None = None, shared: Path | None = None) -> Tally:
     """Build the package, then run each test and build each example. A test the
@@ -3179,23 +3217,18 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
     caller to run, alone, after every package's other tests. Where `shared` is a
     folder, every package of the build but this one is compiled there (Session.home)."""
     tally = Tally()
-    say("Testing", f"{pkg.label()} ({pkg.root})")
-    # The package under test is found first, under its own name, so a test
-    # imports this copy -- whether or not it is in a registry, and whatever
-    # else a registry holds of that name
-    registry = open_registry()
-    registry.packages[pkg.name] = pkg
-    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
+    session = prepare_package(pkg, mode, shared, tally)
+    if session is not None:
+        run_package(pkg, session, mode, name_filter, bless, later, tally)
+    return tally
+
+
+def run_package(pkg: Package, session: Session, mode: str, name_filter: str | None,
+                bless: bool, later: list | None, tally: Tally) -> None:
+    """The run step of test_package: the package's tests and examples, in the
+    session its build left."""
     tests = programs(pkg.root / TESTS, name_filter)
     examples = programs(pkg.root / EXAMPLES, name_filter)
-    try:
-        build(pkg, mode, session)
-    except CongoError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        tally.broken += 1
-        tally.failures.append(f"{pkg.name}: the package does not build")
-        say("Result", f"{pkg.name}: the package does not build")
-        return tally
     # Its kernels, where it has them, checked by the Vulkan SDK's validator
     # for Vulkan 1.3, counted as a test; where the SDK is not installed they
     # are only built, and that is said
@@ -3259,7 +3292,6 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
             tally.unbuilt += 1
             tally.failures.append(f"{pkg.name}: example {file.stem}")
     say("Result", f"{pkg.name}: {tally.summary()}")
-    return tally
 
 
 def package_manifests(folder: Path) -> list[Path]:
@@ -3283,6 +3315,112 @@ def shared_folder(folder: Path, mode: str) -> Path:
     return folder / SHARED_FOLDER / f"{mode}-{tag}"
 
 
+def default_jobs() -> int:
+    """Half the logical processors, at least 1: what 'congo test' over a folder
+    of packages runs at once unless --jobs says otherwise."""
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+class ThreadOutput:
+    """Stands in for sys.stdout or sys.stderr while packages run on threads:
+    what a thread writes goes to the buffer it has set (thread-local), or, for a
+    thread with none, to the real stream. A package's output is then printed as
+    one block when it ends."""
+
+    def __init__(self, real, local: threading.local, attribute: str):
+        self.real = real
+        self.local = local
+        self.attribute = attribute
+
+    def write(self, text: str) -> int:
+        buffer = getattr(self.local, self.attribute, None)
+        if buffer is None:
+            return self.real.write(text)
+        buffer.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        if getattr(self.local, self.attribute, None) is None:
+            self.real.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self.real, name)
+
+
+def prewarm_imports(pkg: Package, session: Session, name_filter: str | None) -> None:
+    """Compile, now and in order, every library a test or example of the package
+    imports that the package build did not compile (stdio, say), so that the
+    programs built beside each other later find them current and write nothing
+    in the shared folder. What a program's own build compiles, no more. An error
+    is left for the program's build to report, in its own block."""
+    for folder in (TESTS, EXAMPLES):
+        if folder == TESTS and not (pkg.root / TESTS).is_dir():
+            continue
+        for file in programs(pkg.root / folder, name_filter):
+            try:
+                lone = lone_package(file)
+                restore(lone, session.registry)
+                order = build_order(lone, session.registry)
+                if len(order) > 1:
+                    session.compile(order[:-1], lone, announce=False)
+            except CongoError:
+                pass
+
+
+def run_packages_in_parallel(manifests: list[Path], jobs: int, mode: str,
+                             args: argparse.Namespace, shared: Path | None,
+                             later: list, total: Tally) -> None:
+    """'congo test' over a folder, several packages at once. First, one at a
+    time, every package is built (the shared folder is written by one process at
+    a time; the tests of a package are built later, beside the run). Then the
+    packages' tests and examples run on `jobs` threads, each package's output
+    printed as one block when it ends. Quiet tests are left in `later`."""
+    prepared: list[tuple[Package, Session, Tally]] = []
+    for manifest in manifests:
+        pkg = read_manifest(manifest)
+        tally = Tally()
+        session = prepare_package(pkg, mode, shared, tally)
+        if session is None:
+            total.add(tally)
+        else:
+            if pkg.output == "library":
+                prewarm_imports(pkg, session, args.name)
+            prepared.append((pkg, session, tally))
+    say("Running", f"{len(prepared)} packages, {jobs} at a time")
+    local = threading.local()
+    real_out, real_err = sys.stdout, sys.stderr
+    print_lock = threading.Lock()
+
+    def work(item: tuple[Package, Session, Tally]) -> Tally:
+        pkg, session, tally = item
+        local.out, local.err = [], []
+        try:
+            say("Running", f"{pkg.label()} ({pkg.root})")
+            run_package(pkg, session, mode, args.name, args.bless, later, tally)
+        except Exception as exc:    # a crash of Congo's own, counted as a failure
+            print(f"error: {pkg.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            tally.failed += 1
+            tally.failures.append(f"{pkg.name}: congo crashed: {exc}")
+        finally:
+            out, err = "".join(local.out), "".join(local.err)
+            local.out = local.err = None
+            with print_lock:
+                real_out.write(out)
+                real_out.flush()
+                real_err.write(err)
+                real_err.flush()
+        return tally
+
+    sys.stdout = ThreadOutput(real_out, local, "out")
+    sys.stderr = ThreadOutput(real_err, local, "err")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            for tally in pool.map(work, prepared):
+                total.add(tally)
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     mode = "release" if args.release else "debug"
     here = Path.cwd()
@@ -3294,9 +3432,15 @@ def cmd_test(args: argparse.Namespace) -> int:
     total = Tally()
     later: list = []
     shared = shared_folder(here, mode) if len(manifests) > 1 else None
-    for manifest in manifests:
-        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
-                               later if len(manifests) > 1 else None, shared))
+    jobs = args.jobs if args.jobs is not None else default_jobs()
+    if jobs < 1:
+        raise CongoError("--jobs must be 1 or more")
+    if jobs == 1 or len(manifests) < 2:
+        for manifest in manifests:
+            total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
+                                   later if len(manifests) > 1 else None, shared))
+    else:
+        run_packages_in_parallel(manifests, jobs, mode, args, shared, later, total)
     if later:
         say("Quiet", f"{len(later)} test(s), one at a time, nothing else running")
         for pkg, session, file, _ in later:
@@ -3365,6 +3509,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_define_argument(test)
     add_strip_argument(test)
     add_cache_argument(test)
+    test.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
+                      help="over a folder of packages, run N packages' tests at once"
+                           " (default: half the logical processors); 1 runs the packages"
+                           " one at a time, build and run together, as before")
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")

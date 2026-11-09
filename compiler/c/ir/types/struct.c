@@ -49,6 +49,9 @@ StructNode *newStructNode(Name *namesym) {
     snode->reflect = 0;
     snode->callsig = NULL;
     snode->latewhere = NULL;
+    snode->instfrom = NULL;
+    snode->instmeth = NULL;
+    snode->instdepth = 0;
     return snode;
 }
 
@@ -144,6 +147,39 @@ static int structGenClash(StructNode *inst, INode *tmpl, Name *name) {
     return 1;
 }
 
+// A written method of the template named like a field the instance generated, which entered the
+// instance first (the other order of structGenClash): refused once for each, naming the type the
+// loops describe and the field. The instance is then made with no methods at all, since a body
+// that calls the method would find the field and add errors that name nothing of the cause.
+static int structMethodFieldClash(StructNode *inst, StructNode *tmpl, Nodes *absent, Nodes *genruns) {
+    int clashed = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&tmpl->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->gen || structMemberAbsent(absent, *nodesp))
+            continue;
+        Name *name = ((FnDclNode*)*nodesp)->namesym;
+        INode *found = namespaceFind(&inst->namespace, name);
+        if (found == NULL || found->tag != FieldDclTag)
+            continue;
+        // The template cannot hold a written field of this name beside the method (a duplicate
+        // there), so a field of it in the instance was generated
+        const char *argname = "the type argument";
+        if (genruns && genruns->used > 0) {
+            INode *subj = ((FieldEachRun*)nodesGet(genruns, 0))->subj;
+            INode *dcl = subj && isTypeNode(subj) ? itypeGetTypeDcl(subj) : NULL;
+            Name *dclname = dcl ? inodeGetName(dcl) : NULL;
+            if (dclname)
+                argname = &dclname->namestr;
+        }
+        errorMsgNode(*nodesp, ErrorMetaGenClash,
+            "Field '%s' of '%s' clashes with the method '%s' of '%s': the instance would have a field and a method of one name. Rename the field.",
+            &name->namestr, argname, &name->namestr, &inst->namesym->namestr);
+        clashed = 1;
+    }
+    return clashed;
+}
+
 // The fields template->fields[from..to) are one loop's: make them for each field of T in turn
 static void structCloneGenFields(CloneState *cstate, StructNode *newnode, StructNode *node, uint32_t from, uint32_t to,
         Nodes **runs) {
@@ -220,6 +256,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     }
     newnode->lifecycle = NULL;
     newnode->latewhere = NULL;
+    newnode->instfrom = NULL;
+    newnode->instmeth = NULL;
+    newnode->instdepth = 0;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
     // whether they carry a borrow, hold a traced reference or an atomic value,
@@ -368,7 +407,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     if (reenrich)
         structCloneEnrichAliases(cstate, node);
     nodelistInit(&newnode->nodelist, node->nodelist.avail);
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    // A written method that a generated field of its name hides is refused, and the instance is
+    // then made with no methods: the loops below walk none
+    NodeList nomethods = {0, 0, NULL};
+    NodeList *methods = structMethodFieldClash(newnode, node, absent, genruns) ? &nomethods : &node->nodelist;
+    for (nodelistFor(methods, cnt, nodesp)) {
         if (structMemberAbsent(absent, *nodesp))
             continue;
         if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->gen)
@@ -399,7 +442,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // 'genfill' holds triples: the template, the shell, and the field's place (index + 1, 0 where
     // T is still a parameter of an enclosing generic and the method is kept as written)
     Nodes *genfill = NULL;
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodelistFor(methods, cnt, nodesp)) {
         if ((*nodesp)->tag != FnDclTag || !((FnDclNode*)*nodesp)->gen || structMemberAbsent(absent, *nodesp))
             continue;
         FnDclNode *tmpl = (FnDclNode*)*nodesp;
@@ -437,7 +480,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     if (yieldAny())
         yieldGenCloned(node, newnode);
     INode **copyp = newnode->nodelist.nodes;
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodelistFor(methods, cnt, nodesp)) {
         if (structMemberAbsent(absent, *nodesp))
             continue;
         if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->gen)
@@ -4819,7 +4862,71 @@ static int structIsInheritedInlineDefault(StructNode *node, FnDclNode *fn) {
 // Check a laid-out type's members: its methods, static functions and statics,
 // then every overload set it declares, then what the traits taken into it require
 // of those members. Every layout the program has begun is finished by now.
+// The instance whose members are being checked, and the member, so that an instance
+// made by that check is known to come of it
+static StructNode *structMembersCur = NULL;
+static FnDclNode *structMembersMeth = NULL;
+static StructNode *structNestReported = NULL;
+
+// An instance made while another's members are checked is one link of a chain, and
+// the chain's length is what the limit counts: the member checks wait in a queue,
+// so no instantiation is nested in another on the stack and the stack's depth never
+// grows (a method returning its own type at a larger argument, 'Wrap[Option[R]]',
+// made instances without end). False, reported once, where the chain is too long.
+int structInstanceNest(INode *errnode) {
+    StructNode *cur = structMembersCur;
+    if (cur == NULL || cur->instdepth + 1 < TypeCheckLoopMax)
+        return 1;
+    StructNode *first = cur;
+    while (first->instfrom)
+        first = first->instfrom;
+    if (structNestReported == first)
+        return 0;
+    structNestReported = first;
+    char chain[600];
+    char name[200];
+    genericTypeSpell(name, sizeof(name), (INode*)first);
+    int used = snprintf(chain, sizeof(chain), "%s", name);
+    StructNode *second = cur;
+    while (second->instfrom && second->instfrom != first)
+        second = second->instfrom;
+    if (second != first) {
+        genericTypeSpell(name, sizeof(name), (INode*)second);
+        used += snprintf(chain + used, sizeof(chain) - used, " -> %s", name);
+    }
+    genericTypeSpell(name, sizeof(name), (INode*)cur);
+    snprintf(chain + used, sizeof(chain) - used, " -> ... -> %s", name);
+    errorMsgNode(errnode, ErrorInstDepth,
+        "Generic type instances nested more than %d deep: %s. Each is made by checking the previous one's member%s%s, whose signature or body names the type at larger arguments. It likely expands itself endlessly.",
+        TypeCheckLoopMax, chain, structMembersMeth ? " " : "",
+        structMembersMeth ? &structMembersMeth->namesym->namestr : "");
+    return 0;
+}
+
+void structInstanceNote(INode *instance) {
+    if (instance == NULL || instance->tag != StructTag || structMembersCur == NULL)
+        return;
+    StructNode *node = (StructNode*)instance;
+    if (node == structMembersCur || node->instfrom != NULL || node->instdepth != 0)
+        return;
+    node->instfrom = structMembersCur;
+    node->instmeth = structMembersMeth;
+    node->instdepth = structMembersCur->instdepth + 1;
+}
+
+static void structCheckMembersBody(StructNode *node);
+
 static void structCheckMembers(StructNode *node) {
+    StructNode *savedcur = structMembersCur;
+    FnDclNode *savedmeth = structMembersMeth;
+    structMembersCur = node;
+    structMembersMeth = NULL;
+    structCheckMembersBody(node);
+    structMembersCur = savedcur;
+    structMembersMeth = savedmeth;
+}
+
+static void structCheckMembersBody(StructNode *node) {
     TypeCheckState tstate;
     tstate.typenode = (INode*)node;
     tstate.fn = NULL;
@@ -4853,7 +4960,9 @@ static void structCheckMembers(StructNode *node) {
         // with items no generic holds (a brand), of a cursor of ... without end
         if (meth->tag == FnDclTag && structIsInheritedInlineDefault(node, (FnDclNode*)meth))
             continue;
+        structMembersMeth = meth->tag == FnDclTag ? (FnDclNode*)meth : NULL;
         inodeTypeCheckAny(&tstate, &nodelistGet(&node->nodelist, pos));
+        structMembersMeth = NULL;
     }
 
     // Now that every method's signature is known, verify that no overload name this

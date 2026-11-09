@@ -245,6 +245,8 @@ void genericSendableCheckAll();
 // permission, which a diagnostic says is not a local's own 'var'. 'how' is how
 // the check was made: whether a borrow of the whole program may cross there
 int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how);
+// A type named with its arguments ('Wrap[Option[i64]]') in a fresh buffer
+void genericTypeSpell(char *buf, size_t size, INode *type);
 
 // Why a type is not Shareable: what the reference found first (itypeNotShareableWhy)
 // is and why it may not be held by several threads at once, into 'reason'

@@ -1,0 +1,412 @@
+// orCancelled(): an await that wakes at the cancel (a plain await always
+// resumes with the real answer: actors.cone, checkCancelled).
+//
+//   match await actors.orCancelled(store.fetch(key)) {
+//     case let Ok(v) { ... }             // the real answer
+//     case let Err(c) { ... }            // Cancelled(cause): the group was cancelled first
+//   }
+//
+// A plain 'await' keeps the real answer whatever its type and always resumes;
+// this is the one opt-in that wakes at the cancel itself. 'actors.orCancelled'
+// takes a Future[T] (what a call whose value is kept gives) or, for an
+// operation started at the seam, an Awaitable[R]; each gives an
+// Awaitable[Result[T, Cancelled]].
+//
+// THE RACE. The wait has two ways to end, the callee's answer and the group's
+// cancel, and exactly one wins: an OrCell holds one word, its state, and the
+// outer envelope (the Reply the awaiting seam made); whichever side moves the
+// state out of Open takes the envelope and answers it, once, and the other
+// finds the state moved and does nothing to the behaviour. No lock is taken
+// by either side but the group's own (the cancel runs with it, as for any
+// Wakeup); a plain await, and a plain cancel of a group nobody
+// waits on, touch none of this.
+//
+// - THE CANCEL'S SIDE. At the seam the cell is registered with the group as a
+//   Wakeup (CancelGroup.watch, as an I/O loop is: the group posts, never calls
+//   back into the behaviour). The cancel, on whatever thread it runs, moves
+//   the state Open -> Woken and answers the envelope with Err(Cancelled(cause)),
+//   the cause read from the copy of the group the await noted (THE GROUP
+//   SURVIVES AN AWAIT), which is still there until the answer is dispatched.
+// - THE ANSWER'S SIDE. The callee answers, as it would any await, into a
+//   future of its own (the Future's own, or one made here for an Awaitable's
+//   operation); a Waiter on it, registered as FutureSet registers its members
+//   (futureJoin), publishes a slot in the awaiting actor's ring when the future
+//   has its ending, and orArrive runs on that actor's thread: it moves the
+//   state Open -> Callee and answers the envelope with Ok(value), or finds it
+//   Woken.
+//
+// THE LATE ANSWER. A callee that answers after the cancel won finds its
+// value in the future, which nobody will open: orArrive lets go of the
+// waiter's count of the future, and the future finalizes a value that arrived
+// and was never taken when its last count goes (FutureCell's final), so an
+// owned answer is finalized exactly once and no behaviour is touched. Nothing
+// of it reaches the awaiting actor's state. A callee that never answers holds,
+// until it does or drops its envelope, one future with its waiter, one count
+// of the awaiting actor and one cell: bounded, one set per call that woke
+// early, and counted by lateAnswersOwed(). It does not hold the behaviour
+// (that has moved on) or the group (the cell holds none).
+//
+// A callee that ends without answering (its envelope dropped) leaves the
+// behaviour parked as a plain await's is, still to be woken by the cancel.
+//
+// A group already cancelled when the await is made answers Err at once. An
+// Awaitable's operation is then not started (nothing has begun, so nothing
+// can be left running, and a late answer need not be disposed of); a Future's
+// request is out already, so its answer, when it comes, is the late one.
+
+// How many answers are still owed to awaits that woke at the cancel: the
+// callee has neither answered nor ended without answering. For tests and for
+// finding callees that hold what their awaiters let go
+var lateOwed: usize = 0usize;
+
+pub fn lateAnswersOwed() usize {
+  mem.atomicLoad[usize](&lateOwed, MemOrder.Acquire)
+}
+
+fn lateAdd() {
+  mem.atomicAdd[usize](&lateOwed, 1usize, MemOrder.Relaxed);
+}
+
+fn lateSub() {
+  mem.atomicSub[usize](&lateOwed, 1usize, MemOrder.Relaxed);
+}
+
+const orOpen = 0u32;       // nobody has the envelope
+const orCallee = 1u32;     // the callee's answer took it
+const orWoken = 2u32;      // the cancel took it
+const orGone = 3u32;       // the callee ended without answering: open still, to the cancel only
+const orAnswered = 4u32;   // the cancel's answer has been made (orWoken, and then this)
+
+// A cell's loop ids in the group's registry, apart from every loop's: the top
+// bit is set, then a ticket
+const orLoopBit = 0x4000000000000000u64;
+
+// The shared state of one orCancelled await: held by the Waiter on the
+// future (through its id word), and by the Wakeup in each group it was
+// registered in. Declared Sendable on trust: the state is an atomic word, and
+// the envelope is taken by whichever side wins it, once
+struct OrCell is Sendable {
+  state: Atomic[u32];
+  // The awaiting seam's envelope, in its words (a Reply field would be dropped
+  // with the cell): made whole again by the side that won it, once
+  to: *Header;
+  at: *u8;
+  id: u64;
+  cell: *u8;
+  meta: u64;
+
+  // Dying with the envelope still in it: neither side won (a callee that ended
+  // without answering and a group that was never cancelled). The envelope is
+  // let go as any unanswered one is: the awaiting behaviour is abandoned
+  fn final(self: &uni) {
+    let s = state.load();
+    if s == orOpen || s == orGone {
+      let r = Reply(to: to, at: at, id: id, cell: cell, meta: meta);
+    }
+  }
+
+  // The envelope, for the side that won it
+  fn takeReply(self: &) Reply {
+    Reply(to: to, at: at, id: id, cell: cell, meta: meta)
+  }
+
+  // The cancel wins the envelope if nobody has. 'owed': the callee's answer
+  // is still to come, and is counted (lateAnswersOwed) until it is disposed
+  fn claimWake(self: &, owed: bool) bool {
+    if owed {lateAdd();}
+    while true {
+      let cur = state.load();
+      if cur != orOpen && cur != orGone {
+        if owed {lateSub();}
+        return false;
+      }
+      let seen, ok = state.compareSwap(cur, orWoken);
+      if ok {
+        if owed && cur == orGone {lateSub();}
+        return true;
+      }
+    }
+    false
+  }
+
+  // The callee's answer wins the envelope if the cancel has not
+  fn claimArrive(self: &) bool {
+    let seen, ok = state.compareSwap(orOpen, orCallee);
+    ok
+  }
+
+  // The callee ended without answering. If the cancel has the envelope, the
+  // answer that was owed will not come
+  fn markGone(self: &) {
+    let seen, ok = state.compareSwap(orOpen, orGone);
+    if !ok && (seen == orWoken || seen == orAnswered) {
+      lateSub();
+    }
+  }
+}
+
+// What the group tells when it is cancelled: the cell, for the R of the await
+// (so the answer is made in the type the awaiting seam expects). A copy shares
+// the cell
+struct OrWake[R] is Sendable {
+  cell: Arc[imm, OrCell];
+
+  // Run by the cancel, under the group's lock, on any thread: it takes the
+  // envelope if the callee's answer has not, and answers it with
+  // Err(Cancelled); the answer is dispatched to the awaiting actor
+  pub fn signal(self: &) bool {
+    // A cancel after the runtime has stopped has no behaviour to wake: the
+    // parked ones were abandoned at the end
+    if running.load() == 0usize {
+      return false;
+    }
+    if !self.cell.claimWake(true) {
+      return false;
+    }
+    orAnswerErr[R](self.cell.takeReply());
+    self.cell.state.store(orAnswered);
+    true
+  }
+
+  // Gone from the group's registry once nothing more will come of it: the callee
+  // answered, or the cancel's answer was made
+  pub fn isGone(self: &) bool {
+    let s = self.cell.state.load();
+    s == orCallee || s == orAnswered
+  }
+}
+
+// The cancel's answer: Err(Cancelled(cause)), the cause read from the copy of
+// the group the await noted, which is there until the answer is dispatched
+fn orAnswerErr[R](rp: Reply) {
+  var r = rp;
+  var why = Cause.Cancelled;
+  match groupCopy(r.to, r.id ^ groupBit) {
+    case let Some(g) {
+      match g.cause() {
+        case let Some(c) {why = c;}
+        case is None {}
+      }
+    }
+    case is None {}
+  }
+  answerNowIn[Result[R, Cancelled]](&mut r, Err[R, Cancelled](Cancelled(why)));
+}
+
+// A copy of the group noted for (h, w), or None
+fn groupCopy(h: *Header, w: u64) Option[CancelGroup] {
+  var out: Option[CancelGroup] = None;
+  gAcquire();
+  if gTable != 0usize {
+    var n = *((gTable as *usize) + gBucket(h, w)) as *GNode;
+    while n as usize != 0usize {
+      if (*n).h as usize == h as usize && (*n).w == w {
+        out = Some[CancelGroup](*(&(*n).g as &CancelGroup));
+        break;
+      }
+      n = (*n).next;
+    }
+  }
+  gRelease();
+  out
+}
+
+// The cell as a word, another owner counted, for a Waiter's id; and back, the
+// owner taken out of the word. A pointer's top bit is clear, so the word is
+// not taken for a group's
+fn orWordOf(cell: &Arc[imm, OrCell]) u64 {
+  if mem.sizeof[Arc[imm, OrCell]]() != 8usize {
+    die("actors: an Arc is not one word");
+  }
+  var a = *cell;
+  let w = mem.readRaw[u64](&mut a as *u64);
+  mem.forget[Arc[imm, OrCell]](a);
+  w
+}
+
+fn orArcOf(w: u64) Arc[imm, OrCell] {
+  var x = w;
+  mem.readRaw[Arc[imm, OrCell]](&mut x as *(Arc[imm, OrCell]))
+}
+
+// The start every orCancelled await shares. rp is the envelope the seam made.
+// A count of the awaiting actor is taken for the Waiter (the caller gives it
+// to the Waiter or lets it go), the cell is made, and, if the await is in a
+// cancel group, registered with it. Some(cell) to go on and wait for the
+// callee; None if the group is cancelled already, when the envelope has been
+// answered with Err and the count let go
+fn orPrepare[R](rp: Reply) Option[Arc[imm, OrCell]] {
+  let h = rp.to;
+  let w = rp.id;
+  holdHeader(h);
+  let cell = Arc[imm, OrCell](OrCell(Atomic[u32].of(orOpen), rp.to, rp.at, rp.id, rp.cell, rp.meta));
+  mem.forget[Reply](rp);
+  if (w & groupBit) != 0u64 {
+    match groupCopy(h, w ^ groupBit) {
+      case let Some(g) {
+        let loopId = orLoopBit | (mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64);
+        let wake = OrWake[R](cell);
+        g.watch(loopId, &wake);
+        // A cancel since is told to the wake; one before is seen here. Which of
+        // the two answers is decided by the cell
+        if g.isCancelled() && cell.claimWake(false) {
+          let release = (*h).release;
+          release(h);
+          orAnswerErr[R](cell.takeReply());
+          cell.state.store(orAnswered);
+          return None[Arc[imm, OrCell]];
+        }
+      }
+      case is None {}
+    }
+  }
+  Some[Arc[imm, OrCell]](cell)
+}
+
+// The callee's ending has reached the awaiting actor: the future lying at 'at'
+// (the consumer's reference is let go here). Arrived, and the cancel has not
+// taken the envelope, the value answers it; arrived and the cancel has, the
+// value is the late one, finalized with the future; ended without an answer,
+// the envelope is left to the cancel
+fn orDeliver[R](cell: &Arc[imm, OrCell], at: *u8) {
+  let c = cellAt(at);
+  let s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire);
+  let release = (*c).release;
+  let payload = *(at as **u8);
+  if s == futArrived {
+    if cell.claimArrive() {
+      let v = mem.readRaw[R]((*c).value as *R);
+      if mem.needsFinal[R]() {
+        futureTaken(at);
+      }
+      release(payload);
+      var rp = cell.takeReply();
+      answerNowIn[Result[R, Cancelled]](&mut rp, Ok[R, Cancelled](v));
+    } else {
+      lateSub();
+      release(payload);
+    }
+  } else {
+    cell.markGone();
+    release(payload);
+  }
+}
+
+// A reply slot reached the awaiting actor: the future the cell waits on has its
+// ending. The resume function of the Waiter orJoin registers; 'id' is the cell
+fn orArrive[R](st: *u8, id: u64, data: *u8) {
+  let cell = orArcOf(id);
+  orDeliver[R](&cell, data);
+}
+
+// Wait for the future f for the cell's envelope, taking over f (and the count
+// orPrepare took): parked on a Waiter, or, if the future has its ending, at once
+fn orJoin[R](cell: Arc[imm, OrCell], f: Future[R]) {
+  var fut = f;
+  let at = &mut fut as *Future[R] as *u8;
+  let h = cell.to;
+  if !futureReady(at) {
+    var rf = &orArrive[R];
+    let run = mem.readRaw[*u8](&mut rf as *(*u8));
+    let word = orWordOf(&cell);
+    if futureJoin(at, h, run, word) {
+      mem.forget[Future[R]](fut);
+      return;
+    }
+    // it ended meanwhile: no Waiter was made, and the owner counted for it is taken back
+    let back = orArcOf(word);
+  }
+  let release = (*h).release;
+  release(h);
+  orDeliver[R](&cell, at);
+  mem.forget[Future[R]](fut);
+}
+
+// A future of an R that no actor owes, for an operation's answer
+fn orFuture[R]() Future[R] {
+  let off = cellOffset[R]();
+  let voff = roundUp(mem.sizeof[FutureCell[R]](), mem.alignof[R]());
+  let block = libc.malloc(off + voff + mem.sizeof[R]());
+  if block as usize == 0usize {
+    die("actors: out of memory for a future");
+  }
+  futuresLive.addOrdered(1usize, MemOrder.Relaxed);
+  *(block as *usize) = 1usize;
+  let c = (block + off) as *FutureCell[R];
+  (*c).state = futPending;
+  (*c).waiters = null;
+  (*c).value = block + off + voff;
+  (*c).owesActor = 0usize;
+  (*c).owesId = futuresMade.addOrdered(1u64, MemOrder.Relaxed) + 1u64;
+  (*c).release = &futureRelease[R];
+  Future[R]((block as usize + off) as Futures[opaq, FutureCell[R]])
+}
+
+// The Future's form starts: ctx is a Future[R], moved into a block of its own
+fn orRunFuture[R](ctx: *u8, rp: Reply) {
+  let f = mem.readRaw[Future[R]](ctx as *Future[R]);
+  libc.free(ctx);
+  match orPrepare[R](rp) {
+    case let Some(cell) {orJoin[R](cell, f);}
+    case is None {}
+  }
+}
+
+// ... and dies unawaited
+fn orDropFuture[R](ctx: *u8) {
+  mem.finalize[Future[R]](ctx as *Future[R]);
+  libc.free(ctx);
+}
+
+// The Awaitable's form starts: ctx is an Awaitable[R], moved into a block of
+// its own. The operation answers into a future made here, which the cell waits on
+fn orRunAwaitable[R](ctx: *u8, rp: Reply) {
+  match orPrepare[R](rp) {
+    case let Some(cell) {
+      var f = orFuture[R]();
+      let inner = futureReply(&f);
+      startAwait(ctx, inner);
+      libc.free(ctx);
+      orJoin[R](cell, f);
+    }
+    case is None {
+      // not started: the operation is let go as an Awaitable that dies unawaited is
+      orDropAwaitable[R](ctx);
+    }
+  }
+}
+
+fn orDropAwaitable[R](ctx: *u8) {
+  mem.finalize[Awaitable[R]](ctx as *Awaitable[R]);
+  libc.free(ctx);
+}
+
+// A future, awaited so that it wakes at the cancel of the group the await is
+// made in: 'await actors.orCancelled(fut)'. Ok(the value), or Err(Cancelled(cause))
+// if the group was cancelled first, whichever comes first, exactly once. A plain
+// 'await fut' always waits for the value
+pub fn orCancelled[R](f: Future[R]) Awaitable[Result[R, Cancelled]] {
+  let b = libc.malloc(mem.sizeof[Future[R]]());
+  if b as usize == 0usize {
+    die("actors: out of memory for orCancelled");
+  }
+  mem.writeRaw[Future[R]](b as *Future[R], f);
+  Awaitable[Result[R, Cancelled]].of(b, &orRunFuture[R], &orDropFuture[R])
+}
+
+// An operation (an Awaitable[R]), awaited so that it wakes at the cancel of the
+// group the await is made in: 'await actors.orCancelledOp(op)'. Both forms are free
+// functions, with two names because a generic function cannot join an overload
+// set. A method of Awaitable[R] that gives an Awaitable[Result[R, Cancelled]]
+// makes the compiler instantiate the type without end (each instance has the
+// method, whose result is a new instance), and a method of Future[T] is
+// instantiated for every T, including those that cannot be sent to a group
+pub fn orCancelledOp[R](a: Awaitable[R]) Awaitable[Result[R, Cancelled]] {
+  let b = libc.malloc(mem.sizeof[Awaitable[R]]());
+  if b as usize == 0usize {
+    die("actors: out of memory for orCancelled");
+  }
+  mem.writeRaw[Awaitable[R]](b as *Awaitable[R], a);
+  Awaitable[Result[R, Cancelled]].of(b, &orRunAwaitable[R], &orDropAwaitable[R])
+}
+
