@@ -94,7 +94,7 @@
 // it back, once 'writeWatermark' bytes wait to be sent ('writeRoom()').
 // The credit is in bytes, whatever blocks hold them: while the input holds
 // bytes, an arriving buffer whose bytes fit the room of the last segment is
-// copied into it and its block dies (joinInput), so short writes do not
+// copied into it and its block dies (Reader.push), so short writes do not
 // each hold a block; a buffer the read filled is pushed whole, copying nothing.
 //
 // FRAMING (RFC 9112, section 6). A body is read by Content-Length, by the
@@ -368,26 +368,6 @@ pub struct Connection is Move {
 
   // ------------------------------------------------------------- the four calls
 
-  // The bytes of an arriving buffer, copied after those of the last segment
-  // (the caller has checked they fit); the buffer then dies
-  fn joinSmall(self: &mut, buf: IoBuf) {
-    let joined = input.appendLast(buf.view());
-  }
-
-  // Add an arrival to the input. A consumer that is behind (input not empty)
-  // takes what fits in the last segment's room into it, and the arriving
-  // block dies: a peer's short writes cannot each hold a block. A buffer the
-  // read filled has no room of its own to waste and is pushed whole, copying
-  // nothing (checked first, so the common receive does no more than a push);
-  // a consumer keeping up has an empty input, and no room to join
-  fn joinInput(self: &mut, buf: IoBuf, n: usize) {
-    if buf.room() != 0usize && n <= input.lastRoom() {
-      self.joinSmall(buf);
-    } else {
-      input.push(buf);
-    }
-  }
-
   // Bytes that arrived, at 'at': an empty buffer says the peer has finished
   // sending. More than readCredit() is a program error
   pub fn handleInput(self: &mut, buf: IoBuf, at: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
@@ -399,7 +379,10 @@ pub struct Connection is Move {
     }
     if closed || failed {return;}
     if input.len() + n > cfg.maxBuffered {panic("http1: handleInput past the read credit", file, line);}
-    self.joinInput(buf, n);
+    // A consumer that is behind takes a small arrival into the last segment's
+    // room and the arriving block dies (Reader.push); a full block, or any
+    // arrival into an empty input, is pushed whole
+    input.push(buf);
     bytesIn = bytesIn + u64.from(n);
     if rs == ReadState.Idle && !clientRole && !headArmed {
       // A request's first byte: its head timeout starts (pollEvent skips

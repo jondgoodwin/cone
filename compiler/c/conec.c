@@ -191,6 +191,12 @@ int main(int argc, char **argv) {
     ok = coneOptSet(&coneopt, &argc, argv);
     if (ok <= 0)
         exit(ok == 0 ? 0 : ExitOpts);
+    // Not a compile: the bitcode files of earlier --lto compiles, linked
+    if (coneopt.ltolink) {
+        if (argc < 2)
+            errorExit(ExitOpts, "Specify the bitcode files to link.");
+        exit(genlLtoLink(&coneopt, argc - 1, argv + 1) ? ExitGen : 0);
+    }
     if (argc < 2)
         errorExit(ExitOpts, "Specify a Cone program to compile.");
     coneopt.srcpath = argv[1];

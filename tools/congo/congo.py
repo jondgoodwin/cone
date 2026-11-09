@@ -98,6 +98,7 @@ REPO_DEPS = REPO / "deps"
 
 MANIFEST = "congo.toml"
 OBJ_EXT = ".obj" if IS_WINDOWS else ".o"
+LTO_EXT = ".bc"      # what an --lto compile writes in place of an object
 EXE_EXT = ".exe" if IS_WINDOWS else ""
 PRELUDE = "core"
 # What Windows ends a program with when a DLL it needs is not found
@@ -145,6 +146,12 @@ DEFINES: list[str] = []
 # of the build, and a Windows link writes no PDB. Without it every native build
 # carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
+
+# '--lto' given to build, run or test with --release: every native compile writes
+# ThinLTO bitcode (<name>.bc) in place of an object, and the link is preceded by
+# conec's ThinLTO link of them all, whose objects the linker takes. Into a build
+# folder of its own, so that neither build's files are the other's to rebuild
+LTO = [False]
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
@@ -2016,12 +2023,13 @@ def tool_hash(path: Path) -> str:
     return known[1]
 
 
-def conec_command(command: list[str]) -> list[str]:
-    """conec's command line as it is run: the -D defines, and --strip where the
-    build is stripped, put after the compiler."""
+def conec_command(command: list[str], lto: bool = False) -> list[str]:
+    """conec's command line as it is run: the -D defines, --strip where the
+    build is stripped, and --lto where a native compile is of an --lto build,
+    put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
     strip = ["--strip"] if STRIP_DEBUG[0] else []
-    return [command[0], *defines, *strip, *command[1:]]
+    return [command[0], *defines, *strip, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2126,10 +2134,10 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     desc = out / f"{unit.pkg.name}.conebuild"
     desc.write_text(description(unit, mode, output, includes or out, packages, homes),
                     encoding="utf-8")
-    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
+    obj = out / f"{unit.pkg.name}{LTO_EXT if LTO[0] else OBJ_EXT}"
     include = include_for(unit.pkg, out)
     outputs = [obj, include] if output == "library" else [obj]
-    command = conec_command([str(conec), "-o", str(out), str(desc)])
+    command = conec_command([str(conec), "-o", str(out), str(desc)], lto=True)
     files: list[tuple[str, Path]] = []
     if not unit.pkg.lone:
         files.append(("manifest", unit.pkg.root / MANIFEST))
@@ -2419,8 +2427,14 @@ def validate_kernels(spv: Path) -> tuple[bool | None, str]:
     return result.returncode == 0, utf8_text(result.stdout) + utf8_text(result.stderr)
 
 
+def mode_folder(mode: str) -> str:
+    """The folder name of a build mode: an --lto build has a folder of its own."""
+    return mode + "-lto" if LTO[0] else mode
+
+
 def build_folder(pkg: Package, mode: str) -> Path:
-    return lone_build_root(pkg.src) / mode if pkg.lone else pkg.root / "build" / mode
+    folder = mode_folder(mode)
+    return lone_build_root(pkg.src) / folder if pkg.lone else pkg.root / "build" / folder
 
 
 def lone_build_root(file: Path) -> Path:
@@ -2566,6 +2580,22 @@ class Session:
                                                        self.mode, env)
         return objs
 
+    def lto_link(self, bitcode: list[Path], exe: Path, announce: bool) -> list[Path]:
+        """An --lto build's modules, as bitcode, made into the objects the
+        linker takes: one conec ThinLTO link over all of them, which writes
+        <i>.obj for the i-th into a folder beside the program, which also keeps
+        conec's cache of the objects it made, so that the next link generates
+        only what changed."""
+        folder = exe.parent / f"{exe.stem}.lto"
+        folder.mkdir(parents=True, exist_ok=True)
+        started = time.time()
+        command = [str(self.conec), "--lto-link", "-o", str(folder), *map(str, bitcode)]
+        if not run_conec(command, dict(os.environ)):
+            raise CongoError(f"the ThinLTO link failed: {' '.join(command)}")
+        if announce:
+            say("Optimising", f"{len(bitcode)} modules (ThinLTO, {time.time() - started:.1f}s)")
+        return [folder / f"{i}{OBJ_EXT}" for i in range(len(bitcode))]
+
     def link(self, order: list[Unit], objs: list[Path], exe: Path,
              announce: bool = True) -> None:
         if self._linker is None:
@@ -2598,6 +2628,8 @@ class Session:
                     pass
                 raise
         linked = [objs[-1], *reversed(objs[:-1])]
+        if LTO[0]:
+            linked = self.lto_link(linked, exe, announce)
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
@@ -3312,7 +3344,7 @@ def shared_folder(folder: Path, mode: str) -> Path:
     keys, and is kept the same way."""
     settings = json.dumps([DEFINES, STRIP_DEBUG[0]])
     tag = hashlib.sha256(settings.encode("utf-8")).hexdigest()[:8]
-    return folder / SHARED_FOLDER / f"{mode}-{tag}"
+    return folder / SHARED_FOLDER / f"{mode_folder(mode)}-{tag}"
 
 
 def default_jobs() -> int:
@@ -3472,6 +3504,14 @@ def add_strip_argument(parser: argparse.ArgumentParser) -> None:
                              " build otherwise carries function names and line tables")
 
 
+def add_lto_argument(parser: argparse.ArgumentParser) -> None:
+    """'--lto': a release build optimised across its packages by ThinLTO."""
+    parser.add_argument("--lto", action="store_true",
+                        help="with --release, optimise across the packages at link time"
+                             " (ThinLTO): a slower link, a larger program, a faster one;"
+                             " built in build/release-lto")
+
+
 def add_cache_argument(parser: argparse.ArgumentParser) -> None:
     """'--no-cache': compile every package of the build, as if no compile
     before had left anything (README.md, "What a build does"), and capture
@@ -3496,6 +3536,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--release", action="store_true", help="an optimised build")
         add_define_argument(p)
         add_strip_argument(p)
+        add_lto_argument(p)
         add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
@@ -3508,6 +3549,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     test.add_argument("--release", action="store_true", help="an optimised build")
     add_define_argument(test)
     add_strip_argument(test)
+    add_lto_argument(test)
     add_cache_argument(test)
     test.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
                       help="over a folder of packages, run N packages' tests at once"
@@ -3557,6 +3599,10 @@ def main(argv: list[str] | None = None) -> int:
     DEFINES[:] = getattr(args, "define", [])
     USE_CACHE[0] = not getattr(args, "no_cache", False)
     STRIP_DEBUG[0] = getattr(args, "strip", False)
+    LTO[0] = getattr(args, "lto", False)
+    if LTO[0] and not args.release:
+        print("congo: error: --lto optimises a release build: add --release", file=sys.stderr)
+        return 1
     try:
         return args.func(args)
     except CongoError as exc:
