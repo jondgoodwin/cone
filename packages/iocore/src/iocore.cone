@@ -72,6 +72,7 @@
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
 //   Op.ReadAt(file, at, buf)  Op.WriteAt(file, at, buf)
 //   Op.RecvFrom(sock, buf)  Op.SendTo(sock, addr, buf)      one datagram each  (DATAGRAMS)
+//   Op.WaitChild(child)  lp.adoptChild(raw)                 a child process's end  (CHILDREN)
 //   Op.Call(lane, work, arg, buf)       work run on the blocking pool (THE BLOCKING POOL)
 //   resolveOp(host, port, buf)  statOp(path, lane, buf)  readFileOp(path, at, lane, buf)
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
@@ -160,6 +161,22 @@
 // - ReadAt(file, at, buf), WriteAt(file, at, buf): at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
+//
+// CHILDREN. 'lp.adoptChild(raw)' gives the loop a child process, a Handle of
+// its own kind, for WaitChild. What 'raw' is, and what the loop owns, differ by
+// system. Windows: raw is the process HANDLE (SYNCHRONIZE and
+// PROCESS_QUERY_LIMITED_INFORMATION), and the loop OWNS it from the call,
+// whatever the result; 'close' closes it. Linux: raw is the process id, and the
+// loop owns only the pidfd it opens for it (pidfd_open, Linux 5.3 and later);
+// the pid stays the caller's. WaitChild(child) answers when the process has
+// ended, with no thread waiting for it: Done(n), n the exit code, and on Linux,
+// for a process a signal ended, n = 0 and 'c.code' the signal's number (code is
+// 0 in every other Done). Linux: the WaitChild that answers reaps the child, so
+// a second WaitChild on the same handle fails (ECHILD); a child never waited for
+// stays a zombie until its parent reaps it. Windows: the exit code stays
+// readable, and a second WaitChild answers again. A WaitChild can be cancelled,
+// can have a deadline, and is cancelled by closing the handle, like any other
+// operation.
 //
 // DATAGRAMS. 'lp.bindUdp(addr)' is a UDP socket bound to addr (port 0 has the
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
@@ -1025,6 +1042,7 @@ pub enum Op {
   pub struct Call {pub lane: Lane; pub work: WorkFn; pub arg: u64; pub buf: IoBuf;}
   pub struct RecvFrom {pub sock: Handle; pub buf: IoBuf;}
   pub struct SendTo {pub sock: Handle; pub addr: SocketAddr; pub buf: IoBuf;}
+  pub struct WaitChild {pub child: Handle;}
 }
 
 // Where an operation's answer goes, and the token it carries back (see the
