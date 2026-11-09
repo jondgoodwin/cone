@@ -209,7 +209,16 @@ fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, 
           table.set(hashFast(src, ip - 2usize, mls, shift), u32.from(ip - 2usize));
         }
       } else {
-        ip += ((ip - anchor) >> 7usize) + 1usize;
+        let step = ((ip - anchor) >> 7usize) + 1usize;
+        ip += step;
+        // A miss means the next probe is at hand: ask for the window bytes its
+        // candidate points at, and for the table slot of the probe after it.
+        // Hints only; the matches found are the same
+        if ip + step + 9usize <= end {
+          let cp = (src.view() as *u8) + usize.from(*table[hashFast(src, ip, mls, shift)]);
+          mem.prefetch[u8](cp);
+          mem.prefetch[u32]((table.view() as *u32) + hashFast(src, ip + step, mls, shift));
+        }
         continue;
       }
     }
@@ -271,7 +280,16 @@ fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog:
           c = candS;
         }
       } else {
-        ip += ((ip - anchor) >> 8usize) + 1usize;
+        let step = ((ip - anchor) >> 8usize) + 1usize;
+        ip += step;
+        // As in matchFast: the next probe's long candidate's window bytes, and
+        // both table slots of the probe after it
+        if ip + step + 9usize <= end {
+          let cp = (src.view() as *u8) + usize.from(*longT[hash8(src, ip, shiftL)]);
+          mem.prefetch[u8](cp);
+          mem.prefetch[u32]((longT.view() as *u32) + hash8(src, ip + step, shiftL));
+          mem.prefetch[u32]((shortT.view() as *u32) + hash5(src, ip + step, shiftS));
+        }
         continue;
       }
       let off = u32.from(s - c);
