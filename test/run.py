@@ -2547,6 +2547,30 @@ class Runner:
         self.linker = linker
         self.out_root = REPO / "build" / "testrun"
 
+    def lto_for(self, scenario: Scenario, spec: RunSpec) -> bool:
+        """Whether --lto builds this scenario: a run scenario of the default
+        optimised native build, its linked packages too. Its object checks
+        (optimised IR, assembly) need the ordinary build and still get it.
+        A run that names --lto among its options is built so, whatever the
+        command line says."""
+        if scenario.category != "run":
+            return False
+        if "--lto" in spec.options:
+            return True
+        if not self.args.lto:
+            return False
+        skipped = {"--debug", "-d", "--wasm", "--library", "-l"}
+        for options in (spec.options, scenario.link_options or ()):
+            if any(o in skipped or o.startswith("--triple") for o in options):
+                return False
+        # A debug build description among them: its object is a native one the
+        # ThinLTO link cannot see the calls of, so the build is not uniform
+        for source in (scenario.source, *scenario.link):
+            if source.suffix == ".conebuild" and re.search(
+                    r"^build:\s*debug", source.read_text(encoding="utf-8"), re.M):
+                return False
+        return True
+
     def timeout_for(self, scenario: Scenario) -> float:
         """Every process the scenario starts (a linked package's compile, its
         own compile, the link, the program) gets this many seconds."""
@@ -2597,6 +2621,9 @@ class Runner:
             options.append("--asm")
         if any(c.target == "meta" for c in scenario.checks):
             options.append("--meta-ir")
+        use_lto = self.lto_for(scenario, spec)
+        if use_lto and "--lto" not in options:
+            options.append("--lto")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
 
@@ -2629,6 +2656,8 @@ class Runner:
                     return result
                 continue
             lib_options = spec.options if scenario.link_options is None else scenario.link_options
+            if self.lto_for(scenario, spec) and "--lto" not in lib_options:
+                lib_options = [*lib_options, "--lto"]
             lib_cmd = [str(self.conec), *lib_options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
             if any(c.object == lib.stem for c in scenario.checks):
@@ -2703,10 +2732,14 @@ class Runner:
         # run on a machine with no linker where the run scenarios themselves
         # skip (R3.7).
         if result.status == PASS:
-            self.check_artifacts(result, scenario, out_dir, "llvmir")
+            # Under --lto the optimised IR is a pre-link pipeline's and there is
+            # no assembly: those two are pinned by the ordinary run of the case
+            if not use_lto:
+                self.check_artifacts(result, scenario, out_dir, "llvmir")
             self.check_artifacts(result, scenario, out_dir, "preir")
             self.check_artifacts(result, scenario, out_dir, "symbols")
-            self.check_artifacts(result, scenario, out_dir, "asm")
+            if not use_lto:
+                self.check_artifacts(result, scenario, out_dir, "asm")
             self.check_artifacts(result, scenario, out_dir, "meta")
             # 'trust': what --report-trust prints for the same source, from a
             # run of its own because the option generates no code
@@ -2765,6 +2798,9 @@ class Runner:
             result.problems.append("warnings, where the category expects zero:\n" + indent(
                 "\n".join(d.describe(self.by_number) for d in warnings)))
         obj = out_dir / f"{scenario.source.stem}.{object_extension(spec.options)}"
+        # (A described build of a debug program writes an object even so)
+        if self.lto_for(scenario, spec) and obj.with_suffix(".bc").exists():
+            obj = obj.with_suffix(".bc")
         if result.status == PASS and not obj.exists():
             result.status = FAIL
             result.problems.append(f"no object file emitted at {obj.name}")
@@ -2950,8 +2986,26 @@ class Runner:
         obj = out_dir / f"{stem}.{object_extension(spec.options)}"
         exe = out_dir / (f"{stem}.exe" if IS_WINDOWS else stem)
         ext = object_extension(spec.options)
-        link_cmd = self.linker.command(
-            [obj, *(out_dir / f"{lib.stem}.{ext}" for lib in scenario.link)], exe)
+        objs = [obj, *(out_dir / f"{lib.stem}.{ext}" for lib in scenario.link)]
+        bitcode = [o.with_suffix(".bc") for o in objs if o.with_suffix(".bc").exists()]
+        if self.lto_for(scenario, spec) and bitcode:
+            # The compiles wrote bitcode; one ThinLTO link makes their objects
+            # (a C source linked, or a debug build, is an object already)
+            lto_dir = out_dir / "lto"
+            lto_dir.mkdir(exist_ok=True)
+            lto_cmd = [str(self.conec), "--lto-link", "-o", str(lto_dir), *map(str, bitcode)]
+            result.commands.append(quote(lto_cmd))
+            made = execute(lto_cmd, REPO, out_dir, "lto-link",
+                           self.timeout_for(scenario), self.args.max_output)
+            if made.killed or made.code != 0:
+                result.status = FAIL
+                result.problems.append(
+                    "the ThinLTO link " + (f"was {made.killed}" if made.killed else f"exited {made.code}")
+                    + "\n" + indent(made.stdout + made.stderr))
+                return
+            objs = [o for o in objs if not o.with_suffix(".bc").exists()] \
+                + [lto_dir / f"{i}.{ext}" for i in range(len(bitcode))]
+        link_cmd = self.linker.command(objs, exe)
         result.commands.append(quote(link_cmd))
         linked = execute(link_cmd, REPO, out_dir, "link",
                          self.timeout_for(scenario), self.args.max_output, env=self.linker.env)
@@ -3871,6 +3925,10 @@ def main(argv: list[str]) -> int:
                              f" from error.h, and review the diff (R5.2)")
     parser.add_argument("--build", action="store_true",
                         help="build the compiler before running (R1.1)")
+    parser.add_argument("--lto", action="store_true",
+                        help="build each run scenario with ThinLTO (conec --lto, then"
+                             " --lto-link): its compile writes bitcode, and the link"
+                             " runs on the objects the ThinLTO link makes")
     parser.add_argument("--allow-stale", action="store_true",
                         help="warn instead of refusing when the binary predates a source")
     parser.add_argument("--conec", type=Path, default=None,
