@@ -245,6 +245,7 @@ pub struct ValueEdge[T: Sendable] {
   toIn: Option[EdgeIn[T]];
   toOut: Option[EdgeOut[T]];
   pending: u32;                    // items taken since `drained`
+  held: Option[T];                 // an item `finished` found on the ring, for the next `tryRecv`
 
   // An edge INTO a thread: the ring holds the larger of ringBlocks and window items; the source may have
   // `window` items outstanding
@@ -259,7 +260,7 @@ pub struct ValueEdge[T: Sendable] {
     var drx: Receiver[T];
     dtx, drx = Channel[T].spsc(1u64);
     let a = EdgeIn[T](window, tx, state);
-    ValueEdge[T](state, rx, dtx, Some[EdgeIn[T]](a), None[EdgeOut[T]], 0u32)
+    ValueEdge[T](state, rx, dtx, Some[EdgeIn[T]](a), None[EdgeOut[T]], 0u32, None[T])
   }
 
   // An edge OUT OF a thread: a ring of ringBlocks items; the attendant keeps `keep` when it has no credit, and
@@ -273,7 +274,7 @@ pub struct ValueEdge[T: Sendable] {
     var drx: Receiver[T];
     dtx, drx = Channel[T].spsc(1u64);
     let a = EdgeOut[T](rx, state, keep, marker);
-    ValueEdge[T](state, drx, tx, None[EdgeIn[T]], Some[EdgeOut[T]](a), 0u32)
+    ValueEdge[T](state, drx, tx, None[EdgeIn[T]], Some[EdgeOut[T]](a), 0u32, None[T])
   }
 
   // INTO a thread: the sink to attach a source to (None on an edge out of a thread)
@@ -286,9 +287,15 @@ pub struct ValueEdge[T: Sendable] {
 
   // INTO a thread: the next item, or None at once if nothing has come
   pub fn tryRecv(self: &mut) Option[T] {
-    let v = rx.tryRecv();
-    match v {
-      case is Some { pending = pending + 1u32; }
+    // an item `finished` found on the ring is kept here and comes first
+    var v: Option[T] = None[T];
+    v <-> held;
+    match &v {
+      case is &None { v = rx.tryRecv(); }
+      else {}
+    }
+    match &v {
+      case is &Some { pending = pending + 1u32; }
       else {}
     }
     v
@@ -310,9 +317,13 @@ pub struct ValueEdge[T: Sendable] {
     // read the end FIRST: it is set only after the last item is on the ring
     let ended = state.ended.load() == 1u32;
     if !ended { return false; }
-    let v = rx.tryRecv();
-    match v {
-      case is Some { pending = pending + 1u32; return false; }
+    match &held {
+      case is &Some { return false; }
+      else {}
+    }
+    // an item still on the ring is kept (not lost) for the next `tryRecv`, and the stream is not finished
+    match rx.tryRecv() {
+      case let Some(x) { held = Some[T](x); false }
       else { true }
     }
   }
