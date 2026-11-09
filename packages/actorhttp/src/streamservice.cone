@@ -44,6 +44,8 @@ struct StreamRec {
   abandoned: bool;
   // The reason a consumer stopped the stream (BodySource.stop): the end carries it if the fetch ends cancelled
   stopWhy: Option[Ending];
+  // An upload's request body, fed by a sink (upload.cone); 'on' is false for every other stream
+  up: UpState;
 }
 
 // A staging buffer's size (stages' linkBytes, the size a stage makes its chunks): pieces of fewer
@@ -66,7 +68,8 @@ fn openingStream(id: u64) StreamRec {
     openHead: None[actors.ReplyOf[Result[BodyHead, FetchError]]],
     bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[EventSink], group: None[CancelGroup],
     status: 0u16, sink: None[ChunkSink], lent: Dict[usize, usize](), sinkHeld: 0usize, staged: Deque[IoBuf](),
-    tail: IoBuf(), refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending])
+    tail: IoBuf(), refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending],
+    up: UpState.idle())
 }
 
 // A reply kept in a stream's record answered in place, and let go
@@ -87,6 +90,11 @@ fn streamOf(rec: &ClientRec, slot: u32, id: u64) *StreamRec {
 }
 
 fn freeStream(rec: &mut ClientRec, slot: usize) {
+  let x = rec.streams.at(u32.from(slot));
+  if x as usize != 0usize && (*x).up.on {
+    let sid = (*x).id;
+    let gone = rec.ups.remove(&sid);
+  }
   rec.streams.removeAt(u32.from(slot));
 }
 
@@ -107,6 +115,13 @@ fn endError(k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
   else {FetchError.cancelled()}
 }
 
+// Why a stream's fetch ended otherwise than Done: its own failure if the service ended it (an upload whose
+// body broke its length), else what the fetch's final answer says
+fn terminalError(s: &StreamRec, k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
+  if s.up.on && s.up.own {return FetchError.failed(s.up.failure.clone());}
+  endError(k, f)
+}
+
 // An event of a stream's fetch (its slot sslot), taken by value: the head answers
 // the caller's 'await' (with the handle the stream's kind is read through); each
 // piece is sent on as it is, the IoBuf moved and its bytes held from the client
@@ -115,11 +130,21 @@ fn endError(k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
 fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: usize) {
   let s = rec.streams.at(u32.from(sslot)) as &mut StreamRec;
   let k = e.kind;
+  if k == httpclient.EventKind.BodyRoom {
+    // an upload's connection has taken every piece pushed: the originals behind them go back, the next piece goes
+    upRoom(rec, lp, s);
+    return;
+  }
+  if k == httpclient.EventKind.BodyEnded {
+    // a response came before the body was all sent: the source is stopped Finished
+    upSettle(s, true, httpclient.EventKind.Done, httpclient.Failure.none());
+    return;
+  }
   if k == httpclient.EventKind.Response {
     let response, url = e.(response, url);
     let status, version, headers = response.(status, version, headers);
     s.status = status;
-    if s.openBody is Some {
+    if s.openBody is Some || s.up.on {
       var reader = None[ReaderSink[Result[Option[String], FetchError]]];
       reader <-> s.bodyReader;
       var group = None[CancelGroup];
@@ -128,9 +153,16 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
         case let Some(rd) {
           match group {
             case let Some(g) {
-              answerKept[Result[BodyStream, FetchError]](&mut s.openBody,
-                Ok[BodyStream, FetchError](BodyStream(rd, g, status, version, headers, url,
-                  Atomic[u8].of(bodyUnchosen), rec.id, u32.from(sslot), s.id)));
+              if s.openBody is Some {
+                answerKept[Result[BodyStream, FetchError]](&mut s.openBody,
+                  Ok[BodyStream, FetchError](BodyStream(rd, g, status, version, headers, url,
+                    Atomic[u8].of(bodyUnchosen), rec.id, u32.from(sslot), s.id)));
+              } else {
+                // an upload whose 'stream' is not asked yet: its reader and group wait with the head
+                s.bodyReader = Some[ReaderSink[Result[Option[String], FetchError]]](rd);
+                s.group = Some[CancelGroup](g);
+                s.up.head = Some[UpHead](UpHead(status, version, headers, url));
+              }
               s.awaiting = true;
             }
             else {}
@@ -183,14 +215,31 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
       rec.client.cancel(lp, s.fetch);
     }
   } else if e.isTerminal() {
+    if s.up.on {
+      // the upload's source is stopped (Finished if the fetch is Done) and the originals still held go back
+      if k == httpclient.EventKind.Done {upSettle(s, true, k, httpclient.Failure.none());}
+      else {upSettle(s, false, k, e.failure.clone());}
+    }
     if s.openBody is Some {
-      answerKept[Result[BodyStream, FetchError]](&mut s.openBody, Err[BodyStream, FetchError](endError(k, &e.failure)));
+      answerKept[Result[BodyStream, FetchError]](&mut s.openBody, Err[BodyStream, FetchError](terminalError(s, k, &e.failure)));
     }
     if s.openEvents is Some {
       answerKept[Result[EventStream, FetchError]](&mut s.openEvents, Err[EventStream, FetchError](endError(k, &e.failure)));
     }
     if s.openHead is Some {
       answerKept[Result[BodyHead, FetchError]](&mut s.openHead, Err[BodyHead, FetchError](endError(k, &e.failure)));
+    }
+    if s.up.on && !s.awaiting && !(s.sink is Some) {
+      // an upload that ended before its head: 'stream' (asked now or later) is answered with the error,
+      // which waits in the record (freed at once if the Upload is gone)
+      if s.up.called || s.up.dropped {
+        // (the reply was answered above, or nobody will ask)
+        freeStream(rec, sslot);
+        unrefClient(rec, lp);
+      } else {
+        s.up.err = Some[FetchError](terminalError(s, k, &e.failure));
+      }
+      return;
     }
     var stopWhy = None[Ending];
     stopWhy <-> s.stopWhy;
@@ -199,7 +248,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
       else {
         match stopWhy {
           case let Some(w) { w }
-          case is None { Ending.Failed(AnyError.from(endError(k, &e.failure))) }
+          case is None { Ending.Failed(AnyError.from(terminalError(s, k, &e.failure))) }
         }
       };
     if s.awaiting && !(s.sink is Some) {
