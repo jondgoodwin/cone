@@ -14,7 +14,7 @@
 //     var files = List[String]();
 //     var r = ArgReader.fromEnv();                 // skips the program's name
 //     while true {
-//       match r.next() {
+//       match r.next()? {
 //         case let Some(arg) {
 //           match arg {
 //             case let Long(n) if n == "frames" { frames = r.int()?; }
@@ -41,7 +41,7 @@
 //
 //   ArgReader.fromEnv()     the program's own arguments, the name skipped
 //   ArgReader.from(list)    the arguments in this List[String] (no name in it)
-//   r.next()                the next argument, an Option[Arg]: None at the end
+//   r.next()                the next argument, a Result[Option[Arg], ArgError]: Ok(None) at the end
 //   r.value()               the value of the option just read, a String
 //   r.int()  r.uint()  r.float()    that value as an i64, a u64, an f64
 //   Arg                     Long(name), Short(char) or Value(text)
@@ -69,9 +69,10 @@
 //
 // **What it will not hide.** An option that took no value but was given one
 // ('--headless=yes' where the program only checks for 'headless') is not
-// dropped: after Long("headless"), the next argument 'next' answers is
-// Long("headless=yes"), which the program's catch-all arm turns into 'unexpected'.
-// A repeated option is read as often as it is given; the program decides
+// dropped: 'next' answers Long("headless") and holds the "yes"; if the program
+// does not ask for it with 'value()', the next 'next' is the error
+// UnexpectedValue("headless"), "--headless takes no value". (The reader goes
+// on after it.) A repeated option is read as often as it is given; the program decides
 // whether the last wins.
 //
 // **Typed values.** 'int', 'uint' and 'float' parse with the core's own number
@@ -117,7 +118,7 @@ pub enum Arg {
         s <- *c;
         ArgError.UnknownOption(s)
       }
-      case let Value(v) { ArgError.UnexpectedValue(v.clone()) }
+      case let Value(v) { ArgError.UnexpectedArgument(v.clone()) }
     }
   }
 }
@@ -125,7 +126,8 @@ pub enum Arg {
 // What went wrong reading the command line, with the text of the option or argument it is about
 pub enum ArgError is Error {
   UnknownOption(String);                  // --frames, -x
-  UnexpectedValue(String);                // an argument the program has no place for
+  UnexpectedArgument(String);             // an argument the program has no place for
+  UnexpectedValue(String);                // the long option that was given a value ('--name=text') and takes none
   Missing(String);                        // the option that wants a value and has none
   struct BadValue {                       // the option, what it wants, what it got
     pub option: String;
@@ -142,7 +144,8 @@ pub enum ArgError is Error {
   fn say(self: &ArgError, out: &uni TextOut) {
     match self {
       case let UnknownOption(o) { out <- "unknown option "; out <- o.view(); }
-      case let UnexpectedValue(v) { out <- "unexpected argument '"; out <- v.view(); out <- "'"; }
+      case let UnexpectedArgument(v) { out <- "unexpected argument '"; out <- v.view(); out <- "'"; }
+      case let UnexpectedValue(o) { out <- "--"; out <- o.view(); out <- " takes no value"; }
       case let Missing(o) { out <- o.view(); out <- " wants a value"; }
       case let BadValue(b) {
         out <- b.option.view(); out <- " wants "; out <- b.wants.view(); out <- ", got '"; out <- b.got.view(); out <- "'";
@@ -184,8 +187,19 @@ pub struct ArgReader {
     ArgReader(items, 0usize, String(), restNone, String(), String(), false)
   }
 
-  // The next argument, None when they are all read
-  pub fn next(self: &mut) Option[Arg] {
+  // The next argument, None when they are all read. An error when the option just read was given a
+  // value ('--name=text') that its program did not take: UnexpectedValue(name). The reader then goes on.
+  pub fn next(self: &mut) Result[Option[Arg], ArgError] {
+    if kind == restValue {
+      let name = longName.clone();
+      kind = restNone;
+      rest = String();
+      return Err[Option[Arg], ArgError](ArgError.UnexpectedValue(name));
+    }
+    Ok[Option[Arg], ArgError](self.lex())
+  }
+
+  fn lex(self: &mut) Option[Arg] {
     if kind == restShort {
       let h = firstChar(rest.view());
       rest = rest.sub(h.width, rest.len());
@@ -194,22 +208,13 @@ pub struct ArgReader {
       flag <- h.ch;
       return Some[Arg](Arg.Short(h.ch));
     }
-    if kind == restValue {
-      // A value given to an option that did not take it: handed on as one more, odd, option
-      var odd = longName.clone();
-      odd <- "=";
-      odd <- rest.view();
-      kind = restNone;
-      rest = String();
-      return Some[Arg](Arg.Long(odd));
-    }
     if pos >= items.len() { return None; }
     let item = items[pos].clone();
     pos = pos + 1usize;
     if ended { return Some[Arg](Arg.Value(item)); }
     if item.len() == 2usize && item.view() == "--" {
       ended = true;
-      return self.next();
+      return self.lex();
     }
     if item.view().startsWith("--") {
       let body = item.sub(2usize, item.len());

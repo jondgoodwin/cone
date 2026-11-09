@@ -831,8 +831,9 @@ panic at envpanic.cone:8: env: a variable's name may not hold '='
 	<li><span class="pre">ArgReader.fromEnv()</span> reads this program's own arguments, its name skipped.
 		<span class="pre">ArgReader.from(list)</span> reads a <span class="pre">List[String]</span> (with no name in it),
 		so a test needs no process.</li>
-	<li><span class="pre">r.next()</span> answers an <span class="pre">Option[Arg]</span>, <span class="pre">None</span>
-		at the end. An <span class="pre">Arg</span> is <span class="pre">Long(name)</span>,
+	<li><span class="pre">r.next()</span> answers a <span class="pre">Result[Option[Arg], ArgError]</span>,
+		<span class="pre">Ok(None)</span> at the end (an <span class="pre">Err</span> only for a value given to an option
+		that took none, below). An <span class="pre">Arg</span> is <span class="pre">Long(name)</span>,
 		<span class="pre">Short(char)</span> or <span class="pre">Value(text)</span>.</li>
 	<li><span class="pre">r.value()</span>, <span class="pre">r.int()</span>, <span class="pre">r.uint()</span> and
 		<span class="pre">r.float()</span> answer the value of the option just read, as a
@@ -840,8 +841,8 @@ panic at envpanic.cone:8: env: a variable's name may not hold '='
 		<span class="pre">f64</span>, each in a <span class="pre">Result[_, ArgError]</span>.</li>
 	<li><span class="pre">arg.unexpected()</span> answers the <span class="pre">ArgError</span> that says an argument was
 		not wanted. An <span class="pre">ArgError</span> has <span class="pre">toText</span>, one line saying what was
-		wrong. Its variants are <span class="pre">UnknownOption</span>, <span class="pre">UnexpectedValue</span>,
-		<span class="pre">Missing</span>, <span class="pre">BadValue</span> and <span class="pre">OutOfRange</span>.</li>
+		wrong. Its variants are <span class="pre">UnknownOption</span>, <span class="pre">UnexpectedArgument</span>,
+		<span class="pre">UnexpectedValue</span>, <span class="pre">Missing</span>, <span class="pre">BadValue</span> and <span class="pre">OutOfRange</span>.</li>
 	</ul>
 	<p>The forms <span class="pre">next</span> reads:</p>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -863,9 +864,11 @@ panic at envpanic.cone:8: env: a variable's name may not hold '='
 		value <span class="pre">"=5"</span>. A value missing at the end is an error, not a panic, and so is a value of
 		the wrong kind; nothing in the package panics on what a user types.</p>
 	<p>An option that takes no value but is given one (<span class="pre">--headless=yes</span>, where the program only
-		checks for <span class="pre">headless</span>) is not dropped: the next argument <span class="pre">next</span> answers
-		is <span class="pre">Long("headless=yes")</span>, which a catch-all arm turns into an
-		<span class="pre">unexpected</span> error. A repeated option is read each time it is given; the program decides
+		checks for <span class="pre">headless</span>) is not dropped: <span class="pre">next</span> answers <span class="pre">Long("headless")</span>
+		and the reader holds the <span class="pre">yes</span>. If the program calls <span class="pre">value()</span> it gets
+		<span class="pre">"yes"</span>; if it calls <span class="pre">next()</span> instead, that call is
+		<span class="pre">Err(UnexpectedValue("headless"))</span>, <span class="pre">--headless takes no value</span>,
+		and the reader goes on after it. A repeated option is read each time it is given; the program decides
 		whether the last wins.</p>
 	<p><span class="pre">int</span>, <span class="pre">uint</span> and <span class="pre">float</span> read numbers as
 		<span class="pre">i64.parse</span>, <span class="pre">u64.parse</span> and <span class="pre">f64.parse</span> do,
@@ -894,7 +897,7 @@ fn run() Result[u64, ArgError] {
   var files = List[String]();
   var r = ArgReader.fromEnv();                 // skips the program's name
   while true {
-    match r.next() {
+    match r.next()? {
       case let Some(arg) {
         match arg {
           case let Long(n) if n == "frames" { frames = r.int()?; }

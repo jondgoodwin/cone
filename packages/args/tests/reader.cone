@@ -16,6 +16,14 @@ fn say(e: &ArgError) String {
   s
 }
 
+// The next argument, for the cases that expect no error
+fn step(r: &mut ArgReader) Option[Arg] {
+  match r.next() {
+    case let Ok(got) { got }
+    case let Err(e) { expect(false, "next() gave an error"); None }
+  }
+}
+
 fn parts(line: &str) List[String] {
   if line.len() == 0usize { return List[String](); }
   String.from(line).split('|')
@@ -25,7 +33,14 @@ fn run(line: &str) String {
   var r = ArgReader.from(parts(line));
   var out = String();
   while true {
-    match r.next() {
+    let step = r.next();
+    match step {
+      case let Err(e) {
+        if out.len() > 0usize { out <- " "; }
+        out <- "ERR: "; out <- toText(&e);
+        return out;
+      }
+      case let Ok(got) { match got {
       case let Some(arg) {
         if out.len() > 0usize { out <- " "; }
         match arg {
@@ -51,6 +66,7 @@ fn run(line: &str) String {
         }
       }
       case is None { break; }
+      } }
     }
   }
   out
@@ -112,9 +128,10 @@ fn main() i32 {
   check("a|--|b", "V:a V:b");
   check("--|--|x", "V:-- V:x");
   check("--x|--", "L:x");
-  // a value given to an option that takes none comes on as an option of its own, which the program refuses
-  check("--verbose=yes", "L:verbose L:verbose=yes");
-  check("--verbose=yes|x", "L:verbose L:verbose=yes V:x");
+  // a value given to an option that takes none: the next 'next' is the error
+  check("--verbose=yes", "L:verbose ERR: --verbose takes no value");
+  check("--verbose=yes|x", "L:verbose ERR: --verbose takes no value");
+  check("--verbose=", "L:verbose ERR: --verbose takes no value");
   // a value missing at the end
   check("--int", "ERR: --int wants a value");
   check("-n", "ERR: -n wants a value");
@@ -140,7 +157,7 @@ fn main() i32 {
   check("--float|1e999", "ERR: --float is out of range: '1e999'");
   // UTF-8, in names, letters and values
   check("--größe|é", "L:größe V:é");
-  check("--größe=é", "L:größe L:größe=é");
+  check("--größe=é", "L:größe ERR: --größe takes no value");
   check("-é", "S:é");
   check("-éa日", "S:é S:a S:日");
   check("-sé日", "str=[é日]");
@@ -151,7 +168,7 @@ fn main() i32 {
     var r = ArgReader.from(parts("--zz|-q|val"));
     var seen = String();
     while true {
-      match r.next() {
+      match step(&mut r) {
         case let Some(arg) {
           if seen.len() > 0usize { seen <- "; "; }
           seen <- toText(&arg.unexpected());
@@ -172,7 +189,56 @@ fn main() i32 {
   // the program's own: a test is run with no arguments
   {
     var r = ArgReader.fromEnv();
-    expect(r.next() is None[Arg], "fromEnv() skips the name: a test has no arguments");
+    expect(step(&mut r) is None[Arg], "fromEnv() skips the name: a test has no arguments");
+  }
+  // --out=P: the value() after Long("out") is P
+  {
+    var r = ArgReader.from(parts("--out=P|x"));
+    match step(&mut r) {
+      case let Some(arg) {
+        match arg {
+          case let Long(n) { expectStr(n.view(), "out", "--out=P is Long(out)"); }
+          else { expect(false, "--out=P is a Long"); }
+        }
+      }
+      case is None { expect(false, "--out=P is read"); }
+    }
+    match r.value() {
+      case let Ok(v) { expectStr(v.view(), "P", "value() after --out=P is P"); }
+      case let Err(e) { expect(false, "value() after --out=P is P"); }
+    }
+    match step(&mut r) {
+      case let Some(arg) { match arg { case let Value(v) { expectStr(v.view(), "x", "the argument after --out=P"); } else { expect(false, "the argument after --out=P"); } } }
+      case is None { expect(false, "the argument after --out=P"); }
+    }
+  }
+  // --headless=yes, value() not taken: the next next() is UnexpectedValue("headless"), and the reader goes on
+  {
+    var r = ArgReader.from(parts("--headless=yes|x"));
+    match step(&mut r) {
+      case let Some(arg) {
+        match arg {
+          case let Long(n) { expectStr(n.view(), "headless", "--headless=yes is Long(headless)"); }
+          else { expect(false, "--headless=yes is a Long"); }
+        }
+      }
+      case is None { expect(false, "--headless=yes is read"); }
+    }
+    let second = r.next();
+    match second {
+      case let Err(e) {
+        expectStr(say(&e).view(), "--headless takes no value", "toText of the unwanted value");
+        match e {
+          case let UnexpectedValue(name) { expectStr(name.view(), "headless", "UnexpectedValue holds the option's name"); }
+          else { expect(false, "the error is UnexpectedValue"); }
+        }
+      }
+      case let Ok(o) { expect(false, "next() after --headless=yes is an error"); }
+    }
+    match step(&mut r) {
+      case let Some(arg) { match arg { case let Value(v) { expectStr(v.view(), "x", "reading goes on after the error"); } else { expect(false, "reading goes on"); } } }
+      case is None { expect(false, "reading goes on after the error"); }
+    }
   }
   // bytes that are not UTF-8 pass through as they are
   {
@@ -183,7 +249,7 @@ fn main() i32 {
     items.push(bad.clone());
     items.push(bad.clone());
     var r = ArgReader.from(items);
-    match r.next() {
+    match step(&mut r) {
       case let Some(arg) { expect(true, "the option is read"); }
       case is None { expect(false, "the option is read"); }
     }
@@ -192,7 +258,7 @@ fn main() i32 {
       case let Ok(s) { expect(s == bad, "a value that is not UTF-8 comes back byte for byte"); }
       case let Err(e) { expect(false, "a value that is not UTF-8 comes back byte for byte"); }
     }
-    match r.next() {
+    match step(&mut r) {
       case let Some(arg) {
         match arg {
           case let Value(s) { expect(s == bad, "an argument that is not UTF-8 is a Value, byte for byte"); }
@@ -211,7 +277,7 @@ fn main() i32 {
     var r = ArgReader.from(items);
     var seen = String();
     while true {
-      match r.next() {
+      match step(&mut r) {
         case let Some(arg) { match arg { case let Short(c) { seen <- c; } else { seen <- "?"; } } }
         case is None { break; }
       }
