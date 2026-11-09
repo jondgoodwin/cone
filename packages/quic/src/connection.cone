@@ -93,10 +93,12 @@ struct Stream {
   writeShut: bool;          // reset here, or stopped by the peer: nothing more goes out
   unreleased: u64;          // bytes delivered in Data events, not yet released
   gone: bool;               // ngtcp2 has closed it; the record waits for its bytes' release
+  window: u64;              // the credit the stream holds: the peer may have this many bytes sent and not released (CREDIT)
+  readShut: bool;           // the peer's half is over or stopped: no more bytes come, so no more credit is drawn
 
-  fn make(id: i64) Stream {
+  fn make(id: i64, floor: u64) Stream {
     Stream(id: id, out: Deque[Piece](), offered: 0u64, queued: 0u64, acked: 0u64, fin: false,
-      finSent: false, writeShut: false, unreleased: 0u64, gone: false)
+      finSent: false, writeShut: false, unreleased: 0u64, gone: false, window: floor, readShut: false)
   }
 
   fn hasUnsent(self: &) bool {!writeShut && (offered < queued || (fin && !finSent))}
@@ -168,6 +170,10 @@ pub struct Connection is Move {
   offline: bool;
   lane: Lane;
   maxUdp: usize;
+  reserve: u64;            // half the spare: first grants leave this much for growth by release
+  floor: u64;              // a stream's first window (CREDIT)
+  maxWindow: u64;          // the most a stream's window grows to
+  spare: u64;              // budget credit no stream holds, for streams that keep reading to draw
   streams: SlotTable[Stream];
   byId: Dict[i64, u32];    // a stream's number to its cell
   cursor: usize;           // the cell whose stream sends first next
@@ -430,7 +436,10 @@ pub struct Connection is Move {
   pub fn stopSending(self: &mut, stream: i64, code: u64) bool {
     let p = self.streamAt(stream);
     if closed || p as usize == 0usize || (*p).gone || !self.canReceive(stream) {return false;}
-    ngtcp2_conn_shutdown_stream_read(conn, 0u32, stream, code) == 0i32
+    if ngtcp2_conn_shutdown_stream_read(conn, 0u32, stream, code) != 0i32 {return false;}
+    (*p).readShut = true;
+    self.shrink(p);
+    true
   }
 
   // The owner has used n more of a stream's received bytes: the peer may
@@ -442,10 +451,34 @@ pub struct Connection is Move {
     let k = u64.from(n);
     (*p).unreleased = if k > (*p).unreleased {0u64} else {(*p).unreleased - k};
     if (*p).gone {
+      self.shrink(p);
       if (*p).unreleased == 0u64 {self.retire(stream);}
       return;
     }
-    if !closed {ngtcp2_conn_extend_max_stream_offset(conn, stream, k);}
+    // The bytes released come back as credit, and a stream still being sent
+    // to draws as many more from the budget (up to the maximum window and
+    // what the budget has left): a stream that keeps reading doubles its
+    // window with each window's worth it reads, one that has stopped keeps
+    // what it holds (see the package's header, CREDIT)
+    var give = k;
+    if (*p).readShut {
+      self.shrink(p);
+    } else {
+      var grow = if (*p).window < maxWindow {maxWindow - (*p).window} else {0u64};
+      if grow > k {grow = k;}
+      if grow > spare {grow = spare;}
+      (*p).window = (*p).window + grow;
+      spare = spare - grow;
+      give = k + grow;
+    }
+    if !closed {ngtcp2_conn_extend_max_stream_offset(conn, stream, give);}
+  }
+
+  // A stream's credit now: the bytes the peer may have sent on it and its
+  // owner not released
+  pub fn window(self: &, stream: i64) u64 {
+    let p = self.streamAt(stream);
+    if p as usize == 0usize {0u64} else {(*p).window}
   }
 
   // A stream's bytes delivered in Data events and not yet released
@@ -895,10 +928,23 @@ pub struct Connection is Move {
     p
   }
 
+  // A stream the peer can send no more on holds credit only for the bytes its
+  // owner has not yet released (never under the floor): the rest of its
+  // window returns to the budget
+  fn shrink(self: &mut, p: *Stream) {
+    let keep = if (*p).unreleased > floor {(*p).unreleased} else {floor};
+    if (*p).window > keep {
+      spare = spare + ((*p).window - keep);
+      (*p).window = keep;
+    }
+  }
+
   // A stream's record goes: ngtcp2 has closed the stream, and its owner has
   // released its bytes. The peer may then open one more stream of its kind
   // (ngtcp2 raises the peer's limit only when told)
   fn retire(self: &mut, stream: i64) {
+    let sp = self.streamAt(stream);
+    if sp as usize != 0usize {self.shrink(sp);}
     match byId.getCopy(&stream) {
       case let Some(cell) {
         streams.removeAt(cell);
@@ -928,8 +974,25 @@ pub struct Connection is Move {
       case let Some(cell) {return;}
       case is None[u32] {}
     }
-    let s = streams.add(Stream.make(id));
+    let s = streams.add(Stream.make(id, floor));
     byId.insert(id, s.index);
+    // A first grant: a stream this end can receive on is raised at once from
+    // its floor to streamFirstWindow, as far as the spare allows (but the
+    // spare's lower half is left for growth by release), so that
+    // under normal load it starts where streams did before windows were
+    // drawn from a budget. With the spare spent it keeps its floor
+    if self.canReceive(id) {
+      let first = if streamFirstWindow < maxWindow {streamFirstWindow} else {maxWindow};
+      var grant = if first > floor {first - floor} else {0u64};
+      let room = if spare > reserve {spare - reserve} else {0u64};
+      if grant > room {grant = room;}
+      if grant > 0u64 {
+        let p = self.streamAt(id);
+        (*p).window = (*p).window + grant;
+        spare = spare - grant;
+        if !closed {ngtcp2_conn_extend_max_stream_offset(conn, id, grant);}
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -986,7 +1049,13 @@ pub struct Connection is Move {
         let fin = (r.flags & streamDataFlagFin) != 0u32;
         delivered = delivered + u64.from(n);
         let p = self.streamAt(r.stream);
-        if p as usize != 0usize {(*p).unreleased = (*p).unreleased + u64.from(n);}
+        if p as usize != 0usize {
+          (*p).unreleased = (*p).unreleased + u64.from(n);
+          if fin {
+            (*p).readShut = true;
+            self.shrink(p);
+          }
+        }
         if curOn && curStream == r.stream && !curFin && cur.room() >= n {
           if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
           curFin = fin;
@@ -1028,6 +1097,11 @@ pub struct Connection is Move {
             if (*p).unreleased == 0u64 {self.retire(r.stream);}
           }
         } else if r.kind == recReset {
+          let p = self.streamAt(r.stream);
+          if p as usize != 0usize {
+            (*p).readShut = true;
+            self.shrink(p);
+          }
           events.push(Event.Reset(r.stream, r.b));
         } else if r.kind == recAcked {
           let p = self.streamAt(r.stream);
@@ -1110,7 +1184,8 @@ fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &st
   }
   Connection(conn: conn, ossl: ossl, ssl: ssl, box: b, ps: ps, server: server, host: String.from(host),
     alpnName: cfg.alpn.clone(), kind: cfg.verify.kind, pins: pins, offline: cfg.offline,
-    lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, streams: SlotTable[Stream].make(16u32),
+    lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, floor: streamFloor(cfg),
+    maxWindow: cfg.streamWindow, spare: creditSpare(cfg), reserve: creditSpare(cfg) / 2u64, streams: SlotTable[Stream].make(16u32),
     byId: Dict[i64, u32](), cursor: 0usize, events: Deque[Event](), verifyStage: stageIdle,
     lastNow: now, closed: false, closing: None, err: None)
 }
@@ -1189,9 +1264,10 @@ fn defaultParams() TransportParams {
 // The transport parameters announced: ngtcp2's defaults, and the Config's
 fn paramsFor(cfg: &Config) TransportParams {
   var tp = defaultParams();
-  tp.initialMaxStreamDataBidiLocal = cfg.streamWindow;
-  tp.initialMaxStreamDataBidiRemote = cfg.streamWindow;
-  tp.initialMaxStreamDataUni = cfg.streamWindow;
+  let floor = streamFloor(cfg);
+  tp.initialMaxStreamDataBidiLocal = floor;
+  tp.initialMaxStreamDataBidiRemote = floor;
+  tp.initialMaxStreamDataUni = floor;
   tp.initialMaxData = cfg.connectionWindow;
   tp.initialMaxStreamsBidi = cfg.maxStreamsBidi;
   tp.initialMaxStreamsUni = cfg.maxStreamsUni;

@@ -98,6 +98,18 @@ void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var) {
             "Duplicate name %s: a static shares its type's namespace with fields and methods.", &var->namesym->namestr);
 }
 
+// Add a named constant to type's dictionary and owned list. It shares the one
+// namespace with fields, methods and statics. It holds no storage and has no
+// symbol: every use is the literal it folds to. The type is its owner, so its
+// initializer is checked under the type's walk when a use reaches it first.
+void iNsTypeAddConst(INsTypeNode *type, ConstDclNode *cdcl) {
+    nodelistAdd(&type->nodelist, (INode*)cdcl);
+    cdcl->owner = (INode*)type;
+    if (namespaceAdd(&type->namespace, cdcl->namesym, (INode*)cdcl) != NULL)
+        errorMsgNode((INode*)cdcl, ErrorDupName,
+            "Duplicate name %s: a const shares its type's namespace with fields, methods and statics.", &cdcl->namesym->namestr);
+}
+
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
