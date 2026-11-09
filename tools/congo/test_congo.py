@@ -2053,6 +2053,31 @@ class Testing(unittest.TestCase):
         self.assertIn("test timing ... ok", run.stdout)
         self.assertNotIn("test steady", run.stdout)
 
+    def test_quiet_class_runs_only_when_the_parallel_phase_is_over(self):
+        """The mechanism for timing-sensitive tests: whatever the job count, a
+        quiet test starts only after every package has ended (its Result line
+        printed) and its examples are built, and is announced as running alone."""
+        folder = self.quiet_packages(self.root)
+        write(folder / "qone" / "examples" / "demo.cone", """
+            mod demo;
+
+            fn main() i32 {
+              0i32
+            }
+            """)
+        for jobs in ("1", "2", "4"):
+            out = self.congo("test", "--jobs", jobs, cwd=folder).stdout
+            timing = out.index("test timing ... ok")
+            quiet_line = out.index("Quiet")
+            self.assertLess(quiet_line, timing, out)
+            self.assertEqual(out.count("test timing ... ok"), 1, out)
+            self.assertEqual(out.count("Result qone"), 1, out)
+            self.assertEqual(out.count("Result qtwo"), 1, out)
+            for what in ("Result qone", "Result qtwo", "test steady ... ok",
+                         "test other ... ok", "example demo ... built"):
+                self.assertLess(out.index(what), quiet_line, f"--jobs {jobs}: {what}\n{out}")
+            self.assertIn("one at a time, nothing else running", out)
+
     def test_quiet_names_a_test_that_exists(self):
         folder = self.quiet_packages(self.root)
         write(folder / "qone" / "congo.toml",
