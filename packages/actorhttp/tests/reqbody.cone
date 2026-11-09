@@ -59,6 +59,7 @@ struct Tally {
   pub bodyLen: Atomic[u64];    // its body's length
   pub failed: Atomic[u64];     // uploads whose 'stream' was an Err
   pub ended: Atomic[u64];      // scenarios run to their end
+  pub srvBig: Atomic[u64];     // ...of those, BodyError.isTooLarge
   pub peak: Atomic[u64];       // the most pool bytes lent while a slow sink ran
 }
 
@@ -69,7 +70,7 @@ fn @initpure init() {
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -90,6 +91,7 @@ fn reset() {
   tally.failed.store(0u64);
   tally.ended.store(0u64);
   tally.peak.store(0u64);
+  tally.srvBig.store(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
@@ -311,6 +313,7 @@ actor Handler {
         }
         case let Err(e) {
           tally.srvErr.add(1u64);
+          if e.isTooLarge() {tally.srvBig.add(1u64);}
           ex.text(500u16, "too much");
         }
       }
@@ -471,6 +474,9 @@ fn server() {
   printUInt(tally.srvEnds.load());
   printStr(", errs ");
   printUInt(tally.srvErr.load());
+  printStr(" (too large ");
+  printUInt(tally.srvBig.load());
+  printStr(")");
   printStr(", readAll ok ");
   printUInt(tally.srvAllOk.load());
   printStr(", sink ends ");

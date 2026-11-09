@@ -22,21 +22,71 @@
 // exception is 'readAll' past its limit: the server answers 413 itself, as a gathered request over
 // 'maxBody' gets, and discards the rest.
 
-// How a body longer than 'readAll''s limit ends
-fn bodyLimitError() FetchError {
-  FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
-    ErrorKind.TooLarge, "the request body is longer than the limit readAll was given"))
+// Why a request body ended otherwise than whole. The server's own type: FetchError is the client's, and a
+// request body has no fetch to fail (no URL, no deadline, no retry). Ending (stages) says only Finished or
+// Failed(AnyError), with no kind to match, so the reader gets this
+pub enum BodyErrorKind {
+  TooLarge,      // 'readAll' passed its limit
+  Cancelled,     // the peer or the server stopped the request, or it was never to be read
+  Failed         // the connection or the stream failed: 'failure' says how
+}
+
+pub struct BodyError is Error {
+  pub failure: httpclient.Failure;   // Failed: the stage and the error; else none
+  cause: BodyErrorKind;
+
+  pub fn failed(f: httpclient.Failure) BodyError {BodyError(f, BodyErrorKind.Failed)}
+  pub fn cancelled() BodyError {BodyError(httpclient.Failure.none(), BodyErrorKind.Cancelled)}
+  pub fn tooLarge() BodyError {BodyError(httpclient.Failure.none(), BodyErrorKind.TooLarge)}
+
+  pub fn kind(self: &) BodyErrorKind {cause}
+  pub fn isTooLarge(self: &) bool {cause == BodyErrorKind.TooLarge}
+  pub fn isCancelled(self: &) bool {cause == BodyErrorKind.Cancelled}
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    if cause == BodyErrorKind.TooLarge {out <- "the request body is longer than the limit readAll was given";}
+    else if cause == BodyErrorKind.Cancelled {out <- "cancelled";}
+    else {out <- failure;}
+  }
+}
+
+// The error an ending carries: a BodyError as it is; a FetchError the service made (a failure the connection
+// had, an overload) as its Failed or Cancelled; else a cancel
+fn bodyErrorOfEnding(e: &AnyError) BodyError {
+  match e.downcastRef[BodyError]() {
+    case let Some(be) {
+      if be.kind() == BodyErrorKind.Failed {BodyError.failed(be.failure.clone())}
+      else if be.kind() == BodyErrorKind.TooLarge {BodyError.tooLarge()}
+      else {BodyError.cancelled()}
+    }
+    else {
+      match e.downcastRef[FetchError]() {
+        case let Some(fe) {
+          if fe.kind() == FetchErrorKind.Failed {BodyError.failed(fe.failure.clone())} else {BodyError.cancelled()}
+        }
+        else {BodyError.cancelled()}
+      }
+    }
+  }
+}
+
+fn requestChunk(c: &IoBuf) Result[Option[String], BodyError] {
+  Ok[Option[String], BodyError](Some[String](String.fromBytes(c.view())))
+}
+
+fn requestEnd(how: &Ending) Result[Option[String], BodyError] {
+  match how {
+    case is Finished {Ok[Option[String], BodyError](None[String])}
+    case let &Failed(e) {Err[Option[String], BodyError](bodyErrorOfEnding(e))}
+  }
 }
 
 // Whether a stop's reason is that one
 fn isBodyLimit(why: &Ending) bool {
   match why {
     case let &Failed(e) {
-      match e.downcastRef[FetchError]() {
-        case let Some(fe) {
-          fe.kind() == FetchErrorKind.Failed && fe.failure.stage == httpclient.Stage.Limit &&
-            fe.failure.error.kind == ErrorKind.TooLarge
-        }
+      match e.downcastRef[BodyError]() {
+        case let Some(be) {be.isTooLarge()}
         else {false}
       }
     }
@@ -47,26 +97,28 @@ fn isBodyLimit(why: &Ending) bool {
 // A request's body being read, piece by piece or sent to a sink. Dropping it before the choice lets the
 // rest of the body go
 pub struct RequestBody is Move {
-  reader: ReaderSink[Result[Option[String], FetchError]];
+  reader: ReaderSink[Result[Option[String], BodyError]];
   choice: Atomic[u8];        // bodyUnchosen until 'read', 'to' or 'readAll' (stream.cone's constants)
   srv: u64;
   slot: u32;
   id: u64;
 
   fn make(srv: u64, slot: u32, id: u64) RequestBody {
-    RequestBody(ReaderSink[Result[Option[String], FetchError]](&bodyChunk, &bodyEnd), Atomic[u8].of(bodyUnchosen), srv, slot, id)
+    RequestBody(ReaderSink[Result[Option[String], BodyError]](&requestChunk, &requestEnd), Atomic[u8].of(bodyUnchosen), srv, slot, id)
   }
 
   // The next piece of the body (the bytes of one receive: any size), or None when the body is whole; or why it
   // ended otherwise. A piece is released to the connection as it is taken, so a handler that awaits slowly
-  // slows the sender. The first read is the choice (and answers 'Expect: 100-continue')
-  pub fn read(self: &) actors.Awaitable[Result[Option[String], FetchError]] {
+  // slows the sender. The first read is the choice (and answers 'Expect: 100-continue'). Each piece is a
+  // String COPIED from the receive buffer, so reading a body costs a copy of every byte; for a big body use
+  // 'to(sink)', which hands the sink the connection's own buffers uncopied. The Err is a BodyError
+  pub fn read(self: &) actors.Awaitable[Result[Option[String], BodyError]] {
     if choice.load() == bodyUnchosen {
       if choice.swap(bodyRead) == bodyUnchosen {
         post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](reader.clone())));
       }
     }
-    readSink[Result[Option[String], FetchError]](&reader)
+    readSink[Result[Option[String], BodyError]](&reader)
   }
 
   // The body sent to a sink: the sink is told its source, then gets the body's pieces, then the one end. The
@@ -81,9 +133,9 @@ pub struct RequestBody is Move {
   }
 
   // The whole body, as a String, unless it passes 'limit': then the server answers 413 itself (the answer a
-  // gathered request over maxBody gets), discards the rest, and this is the Err (a Limit failure). The Err
+  // gathered request over maxBody gets), discards the rest, and this is the Err (a BodyError, isTooLarge). The whole body is held, and copied into the String. The Err
   // is also what a peer that left, or a body already chosen, gives
-  pub fn readAll(self, limit: usize) actors.Awaitable[Result[String, FetchError]] {
+  pub fn readAll(self, limit: usize) actors.Awaitable[Result[String, BodyError]] {
     let g = GatherSink(limit);
     if choice.swap(bodyTo) == bodyUnchosen {
       post[ReqChoiceJob](ReqChoiceJob(srv, slot, id, Some[ChunkSink](g.clone())));
@@ -91,8 +143,8 @@ pub struct RequestBody is Move {
       g.end(Ending.Failed(AnyError.msg("the body was chosen already, it cannot be read whole")));
     }
     let h = g.clone();
-    actors.Awaitable[Result[String, FetchError]].make(
-      fn(rp: actors.ReplyOf[Result[String, FetchError]]) [h] {
+    actors.Awaitable[Result[String, BodyError]].make(
+      fn(rp: actors.ReplyOf[Result[String, BodyError]]) [h] {
         h.want(rp);
       })
   }
@@ -132,11 +184,11 @@ actor GatherSink is ChunkSink {
   limit: usize;
   over: bool;                // a piece passed the limit and the source was stopped for it
   ended: Option[Ending];
-  waiting: Option[actors.ReplyOf[Result[String, FetchError]]];
+  waiting: Option[actors.ReplyOf[Result[String, BodyError]]];
 
   pub fn init(self: &new, limit: usize) {
     *self = Self(up: None[ChunkSource], body: String(), limit: limit, over: false, ended: None[Ending],
-      waiting: None[actors.ReplyOf[Result[String, FetchError]]]);
+      waiting: None[actors.ReplyOf[Result[String, BodyError]]]);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -147,7 +199,7 @@ actor GatherSink is ChunkSink {
     if !over && !streams.gather(&mut body, c.view(), limit) {
       over = true;
       match &up {
-        case let &Some(u) {u.stop(Ending.Failed(AnyError.from(bodyLimitError())));}
+        case let &Some(u) {u.stop(Ending.Failed(AnyError.from(BodyError.tooLarge())));}
         else {}
       }
     }
@@ -163,28 +215,28 @@ actor GatherSink is ChunkSink {
     self.serve();
   }
 
-  pub async fn want(self, rp: actors.ReplyOf[Result[String, FetchError]]) {
+  pub async fn want(self, rp: actors.ReplyOf[Result[String, BodyError]]) {
     if waiting is Some {
-      rp.answer(Err[String, FetchError](FetchError.cancelled()));
+      rp.answer(Err[String, BodyError](BodyError.cancelled()));
       return;
     }
-    waiting = Some[actors.ReplyOf[Result[String, FetchError]]](rp);
+    waiting = Some[actors.ReplyOf[Result[String, BodyError]]](rp);
     self.serve();
   }
 
   fn serve(self) {
     if waiting is None {return;}
-    var answer: Option[Result[String, FetchError]] = None;
+    var answer: Option[Result[String, BodyError]] = None;
     match &ended {
       case let &Some(how) {
         match how {
           case is Finished {
             var out = String();
             out <-> body;
-            answer = Some[Result[String, FetchError]](Ok[String, FetchError](out));
+            answer = Some[Result[String, BodyError]](Ok[String, BodyError](out));
           }
           case let &Failed(e) {
-            answer = Some[Result[String, FetchError]](Err[String, FetchError](errorOfEnding(e)));
+            answer = Some[Result[String, BodyError]](Err[String, BodyError](bodyErrorOfEnding(e)));
           }
         }
       }
@@ -192,7 +244,7 @@ actor GatherSink is ChunkSink {
     }
     match answer {
       case let Some(v) {
-        var taken: Option[actors.ReplyOf[Result[String, FetchError]]] = None;
+        var taken: Option[actors.ReplyOf[Result[String, BodyError]]] = None;
         taken <-> waiting;
         match taken {
           case let Some(r) {r.answer(v);}
@@ -231,7 +283,7 @@ struct ReqChoiceJob {
       case let Some(snk) {
         // the request is gone, or the body was chosen already or let go: the sink's one end says so
         if loc.ex as usize == 0usize || !(loc.ex as &ExRec).inAwait {
-          snk.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
+          snk.end(Ending.Failed(AnyError.from(BodyError.cancelled())));
           return;
         }
         let s = loc.srv as &mut SrvRec;
