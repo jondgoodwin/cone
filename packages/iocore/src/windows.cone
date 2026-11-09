@@ -54,6 +54,7 @@ extern {
       removed: &mut u32, ms: u32, alertable: i32) i32;
   fn @c(system) PostQueuedCompletionStatus(port: usize, bytes: u32, key: usize, ov: *u8) i32;
   fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetExitCodeProcess(h: usize, code: &mut u32) i32;
   fn @c(system) GetLastError() u32;
   fn @c(system) CancelIoEx(h: usize, ov: *u8) i32;
   fn @c(system) SetFileCompletionNotificationModes(h: usize, flags: u8) i32;
@@ -148,7 +149,8 @@ const statusBufferOverflow = 0x80000005usize;       // STATUS_BUFFER_OVERFLOW: a
 // Windows' error numbers iocore gives or reads
 pub const errorFileNotFound = 2u32;                 // ERROR_FILE_NOT_FOUND
 pub const errorHandleEof = 38u32;                   // ERROR_HANDLE_EOF
-pub const errorBusy = 170u32;                       // ERROR_BUSY: a lane's queue is full
+pub const errorNoChildren = 128u32;                 // ERROR_WAIT_NO_CHILDREN: a child already waited for (Linux's ECHILD is 10)
+pub const errorBusy = 170u32;                      // ERROR_BUSY: a lane's queue is full
 pub const errorInvalidParameter = 87u32;            // ERROR_INVALID_PARAMETER
 pub const errorInsufficientBuffer = 122u32;         // ERROR_INSUFFICIENT_BUFFER
 const errorNotEnoughMemory = 8u32;                  // ERROR_NOT_ENOUGH_MEMORY
@@ -370,7 +372,7 @@ fn resetSocket(s: usize) {
 // Close what the OS gave for a handle of kind: a file, or a socket
 fn closeRaw(kind: u32, raw: usize) {
   #if #os == .windows {
-    if kind == hFile || kind == hPipe {CloseHandle(raw);} else {closesocket(raw);}
+    if kind == hFile || kind == hChild || kind == hPipe {CloseHandle(raw);} else {closesocket(raw);}
   } #else {
     sysClose(fdOf(raw));
   }
