@@ -1,0 +1,53 @@
+// mem.prefetch is a hint and changes nothing a program can see. A loop
+// prefetches ahead of the element it sums, past the end of the array and at a
+// null pointer too (a prefetch cannot fault), and the sum, the array and what
+// the argument's own effect did are exactly what they are without it. Worked
+// out by hand: data is 1..=16, so the sum is 16 * 17 / 2 = 136 and the array is
+// unchanged (first 1, last 16); 'next' is called once per iteration, 16 times,
+// and its counter says so; the null prefetch leaves 136 and 16 as they are.
+
+mod intrinsic_prefetch_run;
+
+import stdio use *;
+import libc;
+
+var calls = 0u32;
+
+// The prefetch argument's effect: counted, so a prefetch that dropped its
+// argument's evaluation would show
+fn next(p: *u32) *u32 {
+  calls = calls + 1u32;
+  p
+}
+
+fn main() i32 {
+  let n = 16usize;
+  let data = malloc(n * mem.sizeof[u32]()) as *u32;
+  var i = 0usize;
+  while i < n {
+    mem.writeRaw[u32](data + i, u32.from(i) + 1u32);
+    i = i + 1usize;
+  }
+
+  var sum = 0u32;
+  i = 0usize;
+  while i < n {
+    // 8 elements ahead: the last 8 iterations prefetch past the end
+    mem.prefetch[u32](next(data + (i + 8usize)));
+    sum = sum + mem.readRaw[u32](data + i);
+    i = i + 1usize;
+  }
+  mem.prefetch[u32](0usize as *u32);
+
+  printStr("sum ");
+  printUInt(u64.from(sum));
+  printStr("\nfirst ");
+  printUInt(u64.from(mem.readRaw[u32](data)));
+  printStr(" last ");
+  printUInt(u64.from(mem.readRaw[u32](data + (n - 1usize))));
+  printStr("\ncalls ");
+  printUInt(u64.from(calls));
+  printStr("\n");
+  libc.free(data as *u8);
+  0
+}

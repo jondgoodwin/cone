@@ -1701,7 +1701,7 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t la
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
     if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
-        uint32_t foreign = loanArenaApart(stored, refholds, &through);
+        uint32_t foreign = loanArenaApart(stored, refholds, NULL, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
         return;
@@ -2287,9 +2287,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // no local's borrow may be stored in it
                 VarDclNode *through;
                 int known = argsets[at] && argsets[at]->cnt;
-                if (known && local && loanArenaChecked(others, argsets[at]))
+                if (known && local && loanArenaChecked(others, argsets[at], NULL))
                     loanEscape(node, local, how);
-                uint32_t apart = known ? loanArenaApart(others, argsets[at], &through) : 0;
+                uint32_t apart = known ? loanArenaApart(others, argsets[at], NULL, &through) : 0;
                 if (apart)
                     loanApart(node, apart, through, how);
                 continue;
@@ -2325,7 +2325,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // An arena reached through a reference takes of the caller's
                 // loans only its own: those of the parameter it was reached by
                 VarDclNode *through;
-                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, &through);
+                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, pathVars[target.var].var, &through);
                 if (apart)
                     loanApart(node, apart, through, how);
             }

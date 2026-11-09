@@ -1428,7 +1428,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode = stdlibAdoptCStr(lex->val.ident, parse->mod);
     if (strnode == NULL && named)
         strnode = stdlibAdoptArray(lex->val.ident, parse->mod);
-    if (strnode == NULL)
+    if (strnode != NULL) {
+        // The compiler made the node before any source was read, so it holds
+        // the start-up lexer; it belongs to the file that declares it, whose
+        // line marks (a package's include file) say it records the package's
+        // verdicts (struct.c: ShapeKeeping, shapeinfer.c: siIsRecorded)
+        strnode->lexer = lex;
+        strnode->srcp = lex->tokp;
+        strnode->linep = lex->linep;
+        strnode->linenbr = lex->linenbr;
+    }
+    else
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;
