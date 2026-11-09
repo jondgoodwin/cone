@@ -36,6 +36,11 @@ fn rayTracingOff() bool {
   (e as usize) != 0usize && libc.strcmp(cstr.fromPtr(e), "off") == 0i32
 }
 
+fn envSet() bool {
+  let e = libc.getenv("GPU_REQUIRE_RAY_TRACING");
+  (e as usize) != 0usize && libc.strcmp(cstr.fromPtr(e), "1") == 0i32
+}
+
 fn halfToFloat(h: u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
@@ -74,6 +79,13 @@ fn main() i32 {
   var device = adapter.requestDeviceWith(wantRays);
   require(device.isValid(), "a device");
   let hasRays = device.rayTracing;
+  // GPU_REQUIRE_RAY_TRACING=1: this machine must take the ray-traced path (it is asked for, and the card has it);
+  // without that a card with no ray tracing passes by the raster branch
+  let requireRays = envSet();
+  if requireRays {
+    expect(wantRays, "GPU_REQUIRE_RAY_TRACING with GPU_RAY_TRACING=off");
+    expect(hasRays, "ray tracing required, but the device has none");
+  }
 
   let target = TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
@@ -121,6 +133,12 @@ fn main() i32 {
   if hasRays {
     expectUInt(u64.from(renderer.rt[0usize].count), 3u64, "the structure holds the two planes and the ball");
     expectUInt(u64.from(renderer.rt[0usize].built), 2u64, "a bottom level for the plane mesh (shared by both planes) and one for the ball");
+    expect(renderer.rt[0usize].built > 0u32, "bottom-level structures were built");
+    if requireRays {
+      printStr("rtglass: bottom levels built: ");
+      printUInt(u64.from(renderer.rt[0usize].built));
+      printStr("\n");
+    }
     expect(radiance(p, 36u32, 48u32, 1usize) > radiance(p, 36u32, 48u32, 0usize), "rays: left of the middle is green, the picture turned over");
     expect(radiance(p, 60u32, 48u32, 0usize) > radiance(p, 60u32, 48u32, 1usize), "rays: right of the middle is red");
     expect(radiance(p, 8u32, 48u32, 0usize) > 0.8, "outside the ball, still red");
@@ -132,7 +150,7 @@ fn main() i32 {
     expect(radiance(p, 36u32, 48u32, 0usize) > radiance(p, 36u32, 48u32, 1usize), "without rays, the raster picture");
     // Same number of checks on every GPU
     var skipped = 0u32;
-    while skipped < 5u32 {
+    while skipped < 6u32 {
       expect(true, "a ray-traced check, skipped: no ray tracing here");
       skipped = skipped + 1u32;
     }
