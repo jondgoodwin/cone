@@ -2794,8 +2794,17 @@ class Runner:
         leftover = list(unlocated)
         for want in scenario.unlocated:
             code = self.codes.get(want.get("code"))
+            # A diagnostic in an imported package's file is claimed only by an
+            # entry that names that file (``path``, the end of its path); one
+            # that names none claims only what has no file of a package
+            def same_file(d: Diagnostic) -> bool:
+                path = normalize_path(d.path) if d.path else ""
+                if "/packages/" not in path:
+                    return "path" not in want
+                return "path" in want and path.endswith(normalize_path(want["path"]))
             hit = next((d for d in leftover
-                        if d.code == code and want.get("message", "") in d.message), None)
+                        if d.code == code and want.get("message", "") in d.message
+                        and same_file(d)), None)
             if hit:
                 leftover.remove(hit)
             else:
@@ -2834,8 +2843,13 @@ class Runner:
         # include file that failed its self-check -- has no source to be
         # annotated in, so it is matched as an unlocated one is
         generated = self.out_root.relative_to(REPO).as_posix() + "/"
+        # Nor can one in a package the scenario imports (core's own function a
+        # kernel reaches): an [[unlocated]] entry names its code and message
         def in_output(d: Diagnostic) -> bool:
-            return d.path is not None and normalize_path(d.path).startswith(generated)
+            if d.path is None:
+                return False
+            path = normalize_path(d.path)
+            return path.startswith(generated) or "/packages/" in path
         located = [d for d in diagnostics if d.line is not None and not in_output(d)]
         unlocated = [d for d in diagnostics if d.line is None or in_output(d)]
         missing, extra = match_diagnostics(scenario.annotations, located)

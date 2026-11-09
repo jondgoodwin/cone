@@ -1,0 +1,328 @@
+// The args package: a small lexer for a program's command line, so a program
+// does not write its own flag loop. It reads the list 'env.args()' gives and
+// hands out the options and the other arguments one at a time; what each
+// option means stays the program's: a loop and a 'match'.
+//
+//   mod tool;
+//   import stdio use *;
+//   import collections use *;
+//   import args use *;
+//
+//   fn run() Result[u64, ArgError] {
+//     var frames = 60i64;
+//     var headless = false;
+//     var files = List[String]();
+//     var r = ArgReader.fromEnv();                 // skips the program's name
+//     while true {
+//       match r.next()? {
+//         case let Some(arg) {
+//           match arg {
+//             case let Long(n) if n == "frames" { frames = r.int()?; }
+//             case let Long(n) if n == "headless" { headless = true; }
+//             case let Short(c) if c == 'f' { frames = r.int()?; }
+//             case let Value(v) { files.push(v); }
+//             else { return Err[u64, ArgError](arg.unexpected()); }
+//           }
+//         }
+//         case is None { break; }
+//       }
+//     }
+//     Ok[u64, ArgError](u64.from(frames) + u64.from(files.len()))
+//   }
+//
+//   fn main() i32 {
+//     match run() {
+//       case let Ok(n) { print <- n; print <- "\n"; 0i32 }
+//       case let Err(e) { print <- toText(&e); print <- "\nUsage: tool [--frames N] [--headless] FILE...\n"; 2i32 }
+//     }
+//   }
+//
+// What it has:
+//
+//   ArgReader.fromEnv()     the program's own arguments, the name skipped
+//   ArgReader.from(list)    the arguments in this List[String] (no name in it)
+//   r.next()                the next argument, a Result[Option[Arg], ArgError]: Ok(None) at the end
+//   r.value()               the value of the option just read, a String
+//   r.int()  r.uint()  r.float()    that value as an i64, a u64, an f64
+//   Arg                     Long(name), Short(char) or Value(text)
+//   arg.unexpected()        an ArgError saying that argument was not wanted
+//   ArgError                what went wrong: toText says it in one line
+//
+// **The forms.** 'next' reads:
+//   --name           Long("name")
+//   --name=text      Long("name"), and 'text' is its value
+//   --name text      Long("name"); asking for its value takes the next argument
+//   -a               Short('a')
+//   -abc             Short('a'), then Short('b'), then Short('c'): a group
+//   -n5   -n 5       Short('n'); asking for its value gives "5" in either form
+//   -                Value("-"): a lone dash is an argument, the name of stdin
+//   --               ends the options: every argument after it is a Value, even
+//                    one that begins with '-'. The '--' itself is not given.
+//   anything else    Value(text)
+// An option's value is not known to the reader: a program says it takes one by
+// calling 'value', 'int', 'uint' or 'float' on seeing the option. The value is
+// the text attached to the option if there is any ('--name=text', and the rest
+// of a short group: '-n5'), else the next argument, whatever it looks like
+// ('--offset -5' is -5; '--out --' is "--"). The rest of a short group is not
+// split into letters once a value has been asked for. A '=' after a short
+// letter is part of the value ('-n=5' has the value "=5").
+//
+// **What it will not hide.** An option that took no value but was given one
+// ('--headless=yes' where the program only checks for 'headless') is not
+// dropped: 'next' answers Long("headless") and holds the "yes"; if the program
+// does not ask for it with 'value()', the next 'next' is the error
+// UnexpectedValue("headless"), "--headless takes no value". (The reader goes
+// on after it.) A repeated option is read as often as it is given; the program decides
+// whether the last wins.
+//
+// **Typed values.** 'int', 'uint' and 'float' parse with the core's own number
+// reading ('i64.parse', 'u64.parse', 'f64.parse') and answer a Result whose
+// error names the option: "--frames wants a whole number, got 'x'". 'uint'
+// refuses a '-'. 'float' refuses a NaN or an infinity, which no option wants;
+// a number the type cannot hold is "--frames is out of range: '99999999999999999999'".
+// A value missing at the end of the list is "--frames wants a value". Nothing
+// in the package panics on what a user types.
+//
+// **Not UTF-8.** On Windows 'env.args()' is UTF-8 whatever the code page. On
+// Linux it is the bytes of /proc/self/cmdline as they are, and so are the
+// package's Strings: the reader looks only at the ASCII '-' and '=', so an
+// argument that is not UTF-8 passes through to 'Value', and to 'value()', byte
+// for byte (a program that needs them as text checks them itself). The one
+// place a character is read is the letter of a short option: a byte that is not
+// the start of a well-formed character is read as U+FFFD, as core's 'chars'
+// reads it, and each such byte is a letter of its own in a group. A number
+// made of such bytes is invalid.
+
+mod args;
+
+import collections use String, List;
+import env;
+
+// What was given on the command line, one argument at a time
+pub enum Arg {
+  Long(String);        // --name or --name=text: the name, without the dashes and the '=text'
+  Short(char);         // -a: one letter of a group
+  Value(String);       // anything else, and every argument after a '--'
+
+  // The error that says this argument was not wanted: for a program's last 'match' arm
+  pub fn unexpected(self: &) ArgError { self.describe() }
+  fn describe(self: &Arg) ArgError {
+    match self {
+      case let Long(n) {
+        var s = String.from("--");
+        s <- n.view();
+        ArgError.UnknownOption(s)
+      }
+      case let Short(c) {
+        var s = String.from("-");
+        s <- *c;
+        ArgError.UnknownOption(s)
+      }
+      case let Value(v) { ArgError.UnexpectedArgument(v.clone()) }
+    }
+  }
+}
+
+// What went wrong reading the command line, with the text of the option or argument it is about
+pub enum ArgError is Error {
+  UnknownOption(String);                  // --frames, -x
+  UnexpectedArgument(String);             // an argument the program has no place for
+  UnexpectedValue(String);                // the long option that was given a value ('--name=text') and takes none
+  Missing(String);                        // the option that wants a value and has none
+  struct BadValue {                       // the option, what it wants, what it got
+    pub option: String;
+    pub wants: String;
+    pub got: String;
+  }
+  struct OutOfRange {                     // the option, what it got
+    pub option: String;
+    pub got: String;
+  }
+
+  // One line saying what was wrong
+  pub fn toText(self: &, out: &uni TextOut) { self.say(out); }
+  fn say(self: &ArgError, out: &uni TextOut) {
+    match self {
+      case let UnknownOption(o) { out <- "unknown option "; out <- o.view(); }
+      case let UnexpectedArgument(v) { out <- "unexpected argument '"; out <- v.view(); out <- "'"; }
+      case let UnexpectedValue(o) { out <- "--"; out <- o.view(); out <- " takes no value"; }
+      case let Missing(o) { out <- o.view(); out <- " wants a value"; }
+      case let BadValue(b) {
+        out <- b.option.view(); out <- " wants "; out <- b.wants.view(); out <- ", got '"; out <- b.got.view(); out <- "'";
+      }
+      case let OutOfRange(b) { out <- b.option.view(); out <- " is out of range: '"; out <- b.got.view(); out <- "'"; }
+    }
+  }
+}
+
+// How the reader holds what is left of the argument it is in
+const restNone = 0u8;        // nothing: the next argument is the next in the list
+const restShort = 1u8;       // letters of a '-abc' group, not read yet
+const restValue = 2u8;       // the text after the '=' of '--name=text'
+
+// The arguments of a command line, read one by one
+pub struct ArgReader {
+  items: List[String];
+  pos: usize;               // the next argument in 'items'
+  rest: String;             // what is left of the current argument, as 'kind' says
+  kind: u8;
+  longName: String;         // the name of the '--name=text' that 'rest' belongs to
+  flag: String;             // the option last read, as the person typed it: "--frames", "-n"
+  ended: bool;              // a '--' has been read
+
+  // The reader of this program's own arguments, its name skipped
+  pub fn fromEnv() ArgReader {
+    let all = env.args();
+    var mine = List[String]();
+    var i = 1usize;
+    while i < all.len() {
+      mine.push(all[i].clone());
+      i = i + 1usize;
+    }
+    ArgReader.from(mine)
+  }
+
+  // The reader of these arguments, which do not hold a program's name
+  pub fn from(items: List[String]) ArgReader {
+    ArgReader(items, 0usize, String(), restNone, String(), String(), false)
+  }
+
+  // The next argument, None when they are all read. An error when the option just read was given a
+  // value ('--name=text') that its program did not take: UnexpectedValue(name). The reader then goes on.
+  pub fn next(self: &mut) Result[Option[Arg], ArgError] {
+    if kind == restValue {
+      let name = longName.clone();
+      kind = restNone;
+      rest = String();
+      return Err[Option[Arg], ArgError](ArgError.UnexpectedValue(name));
+    }
+    Ok[Option[Arg], ArgError](self.lex())
+  }
+
+  fn lex(self: &mut) Option[Arg] {
+    if kind == restShort {
+      let h = firstChar(rest.view());
+      rest = rest.sub(h.width, rest.len());
+      if rest.len() == 0usize { kind = restNone; }
+      flag = String.from("-");
+      flag <- h.ch;
+      return Some[Arg](Arg.Short(h.ch));
+    }
+    if pos >= items.len() { return None; }
+    let item = items[pos].clone();
+    pos = pos + 1usize;
+    if ended { return Some[Arg](Arg.Value(item)); }
+    if item.len() == 2usize && item.view() == "--" {
+      ended = true;
+      return self.lex();
+    }
+    if item.view().startsWith("--") {
+      let body = item.sub(2usize, item.len());
+      match body.view().find("=") {
+        case let Some(eq) {
+          longName = body.sub(0usize, eq);
+          rest = body.sub(eq + 1usize, body.len());
+          kind = restValue;
+          flag = String.from("--");
+          flag <- longName.view();
+          return Some[Arg](Arg.Long(longName.clone()));
+        }
+        case is None {
+          flag = String.from("--");
+          flag <- body.view();
+          return Some[Arg](Arg.Long(body));
+        }
+      }
+    }
+    if item.view().startsWith("-") && item.len() > 1usize {
+      let body = item.sub(1usize, item.len());
+      let h = firstChar(body.view());
+      rest = body.sub(h.width, body.len());
+      if rest.len() > 0usize { kind = restShort; }
+      flag = String.from("-");
+      flag <- h.ch;
+      return Some[Arg](Arg.Short(h.ch));
+    }
+    Some[Arg](Arg.Value(item))
+  }
+
+  // The value of the option just read: the text attached to it, else the next argument
+  pub fn value(self: &mut) Result[String, ArgError] {
+    if kind != restNone {
+      let v = rest.clone();
+      rest = String();
+      kind = restNone;
+      return Ok[String, ArgError](v);
+    }
+    if pos < items.len() {
+      let v = items[pos].clone();
+      pos = pos + 1usize;
+      return Ok[String, ArgError](v);
+    }
+    Err[String, ArgError](ArgError.Missing(self.optionName()))
+  }
+
+  // The value as a whole number: "--frames wants a whole number, got 'x'"
+  pub fn int(self: &mut) Result[i64, ArgError] {
+    let text = self.value()?;
+    match i64.parse(text.view()) {
+      case let Ok(n) { Ok[i64, ArgError](n) }
+      case let Err(e) { Err[i64, ArgError](self.numberError[i64](e, "a whole number", text)) }
+    }
+  }
+
+  // The value as a whole number of 0 or more
+  pub fn uint(self: &mut) Result[u64, ArgError] {
+    let text = self.value()?;
+    match u64.parse(text.view()) {
+      case let Ok(n) { Ok[u64, ArgError](n) }
+      case let Err(e) { Err[u64, ArgError](self.numberError[u64](e, "a whole number, 0 or more", text)) }
+    }
+  }
+
+  // The value as a number: "2", "1.5", ".5", "1e3". Not a NaN or an infinity.
+  pub fn float(self: &mut) Result[f64, ArgError] {
+    let text = self.value()?;
+    match f64.parse(text.view()) {
+      case let Ok(x) {
+        if x - x != 0.0 { return Err[f64, ArgError](ArgError.BadValue(self.optionName(), String.from("a number"), text)); }
+        Ok[f64, ArgError](x)
+      }
+      case let Err(e) { Err[f64, ArgError](self.numberError[f64](e, "a number", text)) }
+    }
+  }
+
+  // The option last read as it was typed, or what stands in for it before any
+  fn optionName(self: &) String {
+    if flag.len() == 0usize { return String.from("an argument"); }
+    flag.clone()
+  }
+
+  fn numberError[T](self: &, e: NumberConvError[T], wants: &str, got: String) ArgError {
+    match e {
+      case is TooLarge { ArgError.OutOfRange(self.optionName(), got) }
+      case is TooSmall { ArgError.OutOfRange(self.optionName(), got) }
+      else { ArgError.BadValue(self.optionName(), String.from(wants), got) }
+    }
+  }
+}
+
+// A character and the bytes it takes
+struct Head {
+  ch: char;
+  width: usize;
+}
+
+// The first character of this text, and the bytes it takes. The text is not empty.
+fn firstChar(s: &str) Head {
+  var it = s.charIndices();
+  match it.next() {
+    case let Some(first) {
+      match it.next() {
+        case let Some(second) { Head(first.ch, second.offset) }
+        case is None { Head(first.ch, s.len()) }
+      }
+    }
+    case is None { Head('?', 0usize) }
+  }
+}
