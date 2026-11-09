@@ -1,0 +1,557 @@
+// A peer's cost in buffers lands on its own connection (the package's header,
+// THE BLOCK BUDGET). One server Driver, one honest client Driver and raw QUIC
+// clients (the quic package alone, no HTTP/3 of their own: the step-0 probes
+// h3atk and h3srv in examples/, in one process) on one Loop and one thread,
+// the default pool (64 MiB), then 16 MiB.
+//
+// 1. Config.make scales maxConnections and maxRequestStreams to the pool.
+// 2. The defaults. An honest connection is served. A raw connection that
+//    opens the control stream, 100 request streams (3 bytes of a HEADERS
+//    frame each) and 15 unknown unidirectional streams, and sends no more
+//    ("the floor") holds a block a stream and is not ended: that is what the
+//    defaults allow every connection. Nor is one that sends 1000 bytes at a
+//    time to each request stream (the HEADERS frame announces 16000 bytes,
+//    never completed): those are bytes, in full blocks, and the windows bound
+//    them.
+// 3. A pool of 32 MiB and a server that takes 500 connections, not the 25 that
+//    Config.make gives it for the pool (the budget is 48 KiB, less than the
+//    floor's 400 KB): the floor connection is ended by the server for it, the
+//    honest connection beside it goes on, and forty floor connections
+//    together (18 MB of blocks in the server if they were let, and as much
+//    again in these raw clients, in a try bank of 24 MiB) are all ended by
+//    the budget without the pool ever refusing the server a buffer; the
+//    honest connection is still served and a new one is made and served.
+// Without the budget (checked by disabling it) no floor is ended, and with
+// more of them (eighty) the pool fills and its refusal ends whichever
+// connection asks next, the honest ones included.
+
+mod blockbudget;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Completion, SocketAddr, Op, Target, Handle, forever;
+import http use *;
+import tls;
+import quic;
+import h3driver use *;
+
+const tag = 0x5Au64;
+const noBound = 0xFFFFFFFFFFFFFFFFusize;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+fn clientConfig() Config {
+  var cfg = Config.make();
+  cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg
+}
+
+fn serverCtx() quic.Context {
+  let q = quic.Config.make();
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(q, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn byteOf(size: u64, j: u64) u8 {u8.from((j * 31u64 + size * 7u64 + j / 256u64) % 251u64)}
+
+fn piece(size: u64) IoBuf {
+  let n = usize.from(size);
+  var b = IoBuf(n);
+  let w = b.spare();
+  var k = 0usize;
+  while k < n {
+    w[k] = byteOf(size, u64.from(k));
+    k = k + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn numberAfter(t: &str, prefix: &str) u64 {
+  var n = 0u64;
+  var k = prefix.len();
+  while k < t.len() {
+    let ch = t[k];
+    if ch < '0' || ch > '9' {break;}
+    n = n * 10u64 + (u64.from(ch) - 48u64);
+    k = k + 1usize;
+  }
+  n
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"no"}}
+
+// What a client request came to: 0 none, 1 Done, 2 Failed
+struct Res {
+  outcome: u32;
+  status: u16;
+  got: u64;
+  size: u64;
+  good: bool;
+}
+
+// A raw client: modes 0 the floor, 1 pieces of 1000 bytes
+struct Raw {
+  q: quic.Connection;
+  h: Handle;
+  peer: SocketAddr;
+  sends: u32;
+  up: bool;
+  opened: bool;
+  closed: bool;
+  mode: u32;
+  ids: List[i64];
+  sent: List[usize];
+}
+
+struct World {
+  lp: Loop;
+  cli: Driver;
+  srv: Driver;
+  port: u16;
+  accepted: u64;
+  connected: u64;
+  srvClosed: u64;
+  srvClean: u64;
+  res: List[Res];       // by request token - 10
+  raws: List[Raw];
+}
+
+fn world(maxConnections: u32) World {
+  var lp = Loop.mustMake();
+  var scfg = Config.make();
+  if maxConnections != 0u32 {scfg.maxConnections = maxConnections;}
+  var srv = Driver.make(scfg);
+  var port = 0u16;
+  match srv.listen(&mut lp, SocketAddr.localhost(0u16), serverCtx(), 1u64) {
+    case let Ok(l) {
+      match srv.localAddr(&lp, l) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  var res = List[Res]();
+  var i = 0usize;
+  while i < 8usize {
+    res.push(Res(0u32, 0u16, 0u64, 0u64, true));
+    i = i + 1usize;
+  }
+  World(lp, Driver.make(clientConfig()), srv, port, 0u64, 0u64, 0u64, 0u64, res, List[Raw]())
+}
+
+fn rawTok(i: usize, k: u64) u64 {(tag << 56u64) | (u64.from(i) << 8u64) | k}
+
+fn postRecvs(lp: &mut Loop, r: &Raw, i: usize) {
+  var k = 0u32;
+  while k < 4u32 {
+    match IoBuf.tryMake(2048usize) {
+      case var Some(b) {lp.submit(Op.RecvFrom(r.h, b), Target.Here(rawTok(i, 0u64)));}
+      else {}
+    }
+    k = k + 1u32;
+  }
+}
+
+// A raw client toward the server, in a mode
+fn addRaw(w: &mut World, cctx: &quic.Context, mode: u32) {
+  match w.lp.bindUdp(SocketAddr.localhost(0u16)) {
+    case let Ok(h) {
+      var lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 0u16);
+      match w.lp.localAddr(h) {
+        case let Ok(a) {lq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, a.port());}
+        case let Err(e) {}
+      }
+      let rq = quic.Addr.v4(127u8, 0u8, 0u8, 1u8, w.port);
+      match quic.Connection.client(cctx, "localhost", &lq, &rq, Instant.now()) {
+        case let Ok(q) {
+          w.raws.push(Raw(q, h, SocketAddr.localhost(w.port), 0u32, false, false, false, mode, List[i64](), List[usize]()));
+          let at = w.raws.len() - 1usize;
+          postRecvs(&mut w.lp, &w.raws[at], at);
+        }
+        case let Err(e) {print <- e; printStr("\n");}
+      }
+    }
+    case let Err(e) {}
+  }
+}
+
+fn writeAll(r: &mut Raw, id: i64, bytes: &Array[u8]) {
+  let ok = r.q.writeBytes(id, bytes);
+}
+
+// The streams: the control stream (type 0, an empty SETTINGS frame), 100
+// request streams (a HEADERS frame announcing 16000 bytes: its first 3 bytes)
+// and 15 unidirectional streams of a type nobody knows
+fn openStreams(r: &mut Raw) {
+  match r.q.openUni() {
+    case let Some(id) {
+      var c = Array[u8, 3]() <- fill 0u8;
+      c[1usize] = 4u8;
+      writeAll(r, id, &c[0usize ..< 3usize]);
+    }
+    case is None[i64] {return;}
+  }
+  var nb = 0usize;
+  while nb < 100usize {
+    match r.q.openBidi() {
+      case let Some(id) {
+        var f = Array[u8, 3]() <- fill 0u8;
+        f[0usize] = 1u8; f[1usize] = 0x7Eu8; f[2usize] = 0x80u8;
+        writeAll(r, id, &f[0usize ..< 3usize]);
+        r.ids.push(id);
+        r.sent.push(0usize);
+      }
+      case is None[i64] {}
+    }
+    nb = nb + 1usize;
+  }
+  var nu = 0usize;
+  while nu < 15usize {
+    match r.q.openUni() {
+      case let Some(id) {
+        var b = Array[u8, 1]() <- fill 0x21u8;
+        writeAll(r, id, &b[0usize ..< 1usize]);
+      }
+      case is None[i64] {}
+    }
+    nu = nu + 1usize;
+  }
+  r.opened = true;
+}
+
+fn rawEvents(r: &mut Raw) {
+  var going = true;
+  while going {
+    match r.q.pollEvent() {
+      case is Nothing {going = false;}
+      case is HandshakeDone {r.up = true;}
+      case is VerifyNeeded {r.q.verifyNow();}
+      case let PeerStream(p) {}
+      case let Data(d) {r.q.release(d.stream, d.buf.len());}
+      case let Reset(x) {}
+      case let WriteStopped(x) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {
+        r.closed = true;
+        going = false;
+      }
+    }
+  }
+}
+
+// One pass of a raw client: its events, its streams once up, a round of
+// pieces when little is waiting to be sent (up to 15000 bytes a stream: the
+// HEADERS frame stays incomplete), and its datagrams
+fn pumpRaw(w: &mut World, k: usize, now: Instant) {
+  let r = &mut w.raws[k];
+  if r.closed {return;}
+  rawEvents(r);
+  if r.up && !r.opened && !r.closed {openStreams(r);}
+  if r.up && r.opened && !r.closed && r.mode != 0u32 {
+    var buf = Array[u8, 1000]() <- fill 0x61u8;
+    var q = 0usize;
+    while q < r.ids.len() {
+      let sent = r.sent[q];
+      let want = 1000usize;
+      if sent + want <= 15000usize && r.q.queued(r.ids[q]) == 0u64 {
+        writeAll(r, r.ids[q], &buf[0usize ..< want]);
+        r.sent[q] = sent + want;
+      }
+      q = q + 1usize;
+    }
+  }
+  let h = r.h;
+  let peer = r.peer;
+  while w.raws[k].sends < 16u32 && !w.raws[k].closed {
+    let b = w.raws[k].q.pollTransmit(now);
+    if b.len() == 0usize {break;}
+    w.raws[k].sends = w.raws[k].sends + 1u32;
+    w.lp.submit(Op.SendTo(h, peer, b), Target.Here(rawTok(k, 1u64)));
+  }
+}
+
+fn serverEvents(w: &mut World, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Accepted {
+      w.accepted = w.accepted + 1u64;
+    } else if e.kind == EventKind.Closed {
+      w.srvClosed = w.srvClosed + 1u64;
+      if e.clean {w.srvClean = w.srvClean + 1u64;}
+    } else if e.kind == EventKind.Request {
+      let size = numberAfter(e.request.target.view(), "/get/");
+      w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));
+      w.srv.sendData(e.req, piece(size));
+      w.srv.finish(e.req);
+    }
+  }
+  events.clear();
+}
+
+fn clientEvents(w: &mut World, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Connected {
+      w.connected = w.connected + 1u64;
+    } else if e.token >= 10u64 {
+      let r = &mut w.res[usize.from(e.token - 10u64)];
+      if e.kind == EventKind.Response {
+        r.status = e.response.status;
+      } else if e.kind == EventKind.Data {
+        let v = e.buf.view();
+        var i = 0usize;
+        while i < v.len {
+          if v[i] != byteOf(r.size, r.got + u64.from(i)) {r.good = false;}
+          i = i + 1usize;
+        }
+        r.got = r.got + u64.from(v.len);
+        w.cli.release(e.req, v.len);
+      } else if e.kind == EventKind.Done {
+        r.outcome = 1u32;
+      } else if e.kind == EventKind.Failed {
+        r.outcome = 2u32;
+      }
+    }
+  }
+  events.clear();
+}
+
+fn spin(w: &mut World, until: Instant) {
+  w.cli.turn(&mut w.lp);
+  w.srv.turn(&mut w.lp);
+  var ce = List[Event]();
+  var se = List[Event]();
+  w.cli.takeEvents(&mut ce);
+  w.srv.takeEvents(&mut se);
+  var busy = ce.len() > 0usize || se.len() > 0usize;
+  clientEvents(w, &mut ce);
+  serverEvents(w, &mut se);
+  let now = Instant.now();
+  var limit = until;
+  var k = 0usize;
+  while k < w.raws.len() {
+    let wasClosed = w.raws[k].closed;
+    pumpRaw(w, k, now);
+    // A raw client that closed in this pass makes it busy too: the caller's
+    // loop reads 'closed' next, and a poll to 'until' would sleep past it
+    if w.raws[k].closed != wasClosed {busy = true;}
+    if !w.raws[k].closed {
+      busy = true;
+      match w.raws[k].q.wakeAt() {
+        case let Some(t) {if t < limit {limit = t;}}
+        case is None[Instant] {}
+      }
+    }
+    k = k + 1usize;
+  }
+  let a = w.cli.wakeAt();
+  let b = w.srv.wakeAt();
+  if a < limit {limit = a;}
+  if b < limit {limit = b;}
+  if busy {limit = Instant();}
+  var cs = List[Completion]();
+  w.lp.poll(limit, &mut cs);
+  var j = 0usize;
+  while j < cs.len() {
+    let c2 = &mut cs[j];
+    j = j + 1usize;
+    if (c2.token >> 56u64) == tag {
+      let idx = usize.from((c2.token >> 8u64) & 0xFFFFFFu64);
+      if idx >= w.raws.len() {continue;}
+      let r = &mut w.raws[idx];
+      if (c2.token & 0xFFu64) == 0u64 {
+        if c2.isDone() && c2.buf.len() > 0usize && !r.closed {
+          r.q.handleInput(mem.sliceFromParts(c2.buf.base(), c2.buf.len()), Instant.now());
+        }
+        if !r.closed && c2.isDone() {
+          match IoBuf.tryMake(2048usize) {
+            case var Some(b2) {w.lp.submit(Op.RecvFrom(r.h, b2), Target.Here(c2.token));}
+            else {}
+          }
+        }
+      } else if r.sends > 0u32 {
+        r.sends = r.sends - 1u32;
+      }
+    } else if !w.cli.complete(&mut w.lp, c2) {
+      if !w.srv.complete(&mut w.lp, c2) {printStr("a completion no driver claimed\n");}
+    }
+  }
+}
+
+fn spinFor(w: &mut World, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < limit {spin(w, limit);}
+}
+
+fn settle(w: &mut World, t: u64) {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while w.res[usize.from(t - 10u64)].outcome == 0u32 && Instant.now() < limit {spin(w, limit);}
+}
+
+fn get(w: &mut World, conn: ConnId, token: u64, size: u64) {
+  w.res[usize.from(token - 10u64)].size = size;
+  var path = String.from("/get/");
+  path.appendUInt(size);
+  w.cli.request(&mut w.lp, conn, RequestHead.get(path.view(), "localhost"), BodyLength(), token);
+}
+
+fn served(w: &World, t: u64, size: u64) bool {
+  let r = &w.res[usize.from(t - 10u64)];
+  r.outcome == 1u32 && r.status == 200u16 && r.good && r.got == size
+}
+
+fn connect(w: &mut World, token: u64) ConnId {
+  match w.cli.connect(&mut w.lp, SocketAddr.localhost(w.port), "localhost", token) {
+    case let Ok(c) {return c;}
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  ConnId.none()
+}
+
+fn closedCount(w: &World, from: usize) usize {
+  var n = 0usize;
+  var k = from;
+  while k < w.raws.len() {
+    if w.raws[k].closed {n = n + 1usize;}
+    k = k + 1usize;
+  }
+  n
+}
+
+// Spin until every raw client from 'from' on is closed, or 'secs' pass
+fn spinUntilClosed(w: &mut World, from: usize, secs: i64) {
+  let limit = Instant.now() + Duration.fromSeconds(secs);
+  while closedCount(w, from) < w.raws.len() - from && Instant.now() < limit {spin(w, limit);}
+}
+
+fn main() {
+  // 1.
+  let pool = stats();
+  setLimits(8388608usize, 2097152usize);
+  let small = Config.make();
+  printStr("an 8 MiB pool: maxRequestStreams "); printUInt(u64.from(small.protocol.maxRequestStreams));
+  printStr(", maxConnections "); printUInt(u64.from(small.maxConnections)); printStr("\n");
+  setLimits(33554432usize, 2097152usize);
+  let big = Config.make();
+  printStr("a 32 MiB pool: maxRequestStreams "); printUInt(u64.from(big.protocol.maxRequestStreams));
+  printStr(", maxConnections "); printUInt(u64.from(big.maxConnections)); printStr("\n");
+  setLimits(268435456usize, 2097152usize);
+  let huge = Config.make();
+  printStr("a 256 MiB pool: maxRequestStreams "); printUInt(u64.from(huge.protocol.maxRequestStreams));
+  printStr(", maxConnections "); printUInt(u64.from(huge.maxConnections)); printStr("\n");
+  setLimits(pool.maxBytes, pool.keepBytes);
+  let dflt = Config.make();
+  printStr("the default pool, "); printUInt(u64.from(pool.maxBytes / 1048576usize)); printStr(" MiB: maxRequestStreams ");
+  printUInt(u64.from(dflt.protocol.maxRequestStreams));
+  printStr(", maxConnections "); printUInt(u64.from(dflt.maxConnections)); printStr("\n");
+
+  var rcfg = quic.Config.make();
+  rcfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  let cctx = match quic.Context.client(rcfg) {
+    case var Ok(c) {c}
+    case let Err(e) {panic("no client context")}
+  };
+
+  // 2. The defaults: nothing a peer can make of the first block is ended.
+  {
+    var w = world(0u32);
+    let honest = connect(&mut w, 2u64);
+    let limit = Instant.now() + Duration.fromSeconds(10i64);
+    while (w.connected == 0u64 || w.accepted == 0u64) && Instant.now() < limit {spin(&mut w, limit);}
+    get(&mut w, honest, 10u64, 100u64);
+    settle(&mut w, 10u64);
+    printStr("defaults, the honest connection: served "); printStr(yes(served(&w, 10u64, 100u64))); printStr("\n");
+    addRaw(&mut w, &cctx, 0u32);
+    addRaw(&mut w, &cctx, 1u32);
+    spinFor(&mut w, 2500i64);
+    printStr("  the floor connection (115 streams, a block each): up "); printStr(yes(w.raws[0usize].up));
+    printStr(", ended "); printStr(yes(w.raws[0usize].closed)); printStr("\n");
+    printStr("  a connection sending 1000-byte pieces (bytes, not waste): ended "); printStr(yes(w.raws[1usize].closed));
+    printStr("\n");
+    get(&mut w, honest, 11u64, 3000u64);
+    settle(&mut w, 11u64);
+    printStr("  the honest connection beside them: served "); printStr(yes(served(&w, 11u64, 3000u64)));
+    printStr(", ended by the budget "); printUInt(w.srv.stats().budgetEnded); printStr(" times\n");
+    w.cli.end(&mut w.lp);
+    w.srv.end(&mut w.lp);
+    spinFor(&mut w, 300i64);
+  }
+
+  // 3. (the header)
+  setLimits(33554432usize, 2097152usize);
+  {
+    var w = world(500u32);
+    let honest = connect(&mut w, 2u64);
+    let limit = Instant.now() + Duration.fromSeconds(10i64);
+    while (w.connected == 0u64 || w.accepted == 0u64) && Instant.now() < limit {spin(&mut w, limit);}
+    get(&mut w, honest, 10u64, 100u64);
+    settle(&mut w, 10u64);
+    printStr("500 connections: the honest connection: served "); printStr(yes(served(&w, 10u64, 100u64))); printStr("\n");
+    addRaw(&mut w, &cctx, 0u32);
+    spinUntilClosed(&mut w, 0usize, 10i64);
+    printStr("  the floor connection: ended by the server "); printStr(yes(w.raws[0usize].closed));
+    printStr(", by the budget "); printUInt(w.srv.stats().budgetEnded); printStr(" time\n");
+    get(&mut w, honest, 11u64, 3000u64);
+    settle(&mut w, 11u64);
+    printStr("  the honest connection beside it: served "); printStr(yes(served(&w, 11u64, 3000u64))); printStr("\n");
+    let from = w.raws.len();
+    var n = 0u32;
+    while n < 40u32 {
+      addRaw(&mut w, &cctx, 0u32);
+      n = n + 1u32;
+    }
+    spinUntilClosed(&mut w, from, 20i64);
+    printStr("forty floor connections: ended "); printUInt(u64.from(closedCount(&w, from)));
+    printStr(", budget ends in all "); printUInt(w.srv.stats().budgetEnded); printStr("\n");
+    printStr("  the pool refused the server a buffer: "); printStr(yes(w.srv.stats().bufferRefused != 0u64)); printStr("\n");
+    get(&mut w, honest, 12u64, 3000u64);
+    settle(&mut w, 12u64);
+    printStr("  the first honest connection: served "); printStr(yes(served(&w, 12u64, 3000u64))); printStr("\n");
+    let accepted0 = w.accepted;
+    let second = connect(&mut w, 3u64);
+    let limit2 = Instant.now() + Duration.fromSeconds(10i64);
+    while w.accepted == accepted0 && Instant.now() < limit2 {spin(&mut w, limit2);}
+    get(&mut w, second, 13u64, 5000u64);
+    settle(&mut w, 13u64);
+    printStr("  a new honest connection: accepted "); printStr(yes(w.accepted == accepted0 + 1u64));
+    printStr(", served "); printStr(yes(served(&w, 13u64, 5000u64))); printStr("\n");
+    w.cli.end(&mut w.lp);
+    w.srv.end(&mut w.lp);
+    spinFor(&mut w, 300i64);
+  }
+}
+
