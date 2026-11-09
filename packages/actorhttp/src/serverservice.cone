@@ -51,6 +51,14 @@ struct ExRec {
   handle: bool;                // an Exchange names it
   over: bool;                  // the driver's final answer has come
   ok: bool;                    // ...and was Done
+  sinkOpen: bool;              // a bodySink was taken and its 'end' has not come (responsesink.cone)
+  sinkFailed: bool;            // its pipeline was stopped or the body failed: chunks arriving go straight back
+  sinkEnded: bool;             // its 'end(Finished)' has come: finish the body once the chunks are sent
+  sinkUp: Option[ChunkSource]; // the source feeding it
+  sinkChunks: Deque[IoBuf];    // chunks arrived, whose bytes the connection has not all taken
+  sinkOff: usize;              // ...of the first, how many it has taken
+  sinkIn: u64;                 // body bytes the sink has been given, for the declared length
+  sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
 }
 
 // The record of request req (or qreq, over HTTP/3), its head just read
@@ -58,7 +66,8 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
   ExRec(used: true, id: newId(), req: req, qreq: qreq, onH3: onH3, stage: exReading, rejected: false, isHead: isHead, bodyless: false,
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
-    over: false, ok: false)
+    over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
+    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false)
 }
 
 // A listening server the service owns: its own driver (so its bounds are its
@@ -411,6 +420,10 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
   }
   x.writes.clear();
   x.wi = 0usize;
+  // A sink still open: its source is stopped, and the chunks it held go back
+  if x.sinkOpen {
+    sinkStop(x, Ending.Failed(AnyError.from(ServerError.closed())));
+  }
   if done {
     answerKeptIn[Result[u64, ServerError]](&mut x.finishReply, Ok[u64, ServerError](x.written));
   } else {
@@ -427,6 +440,10 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
 // the body when it has all gone and 'finish' was asked
 fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
   if x.over {return;}
+  if x.sinkOpen || x.sinkFailed {
+    pumpSink(srv, lp, x);
+    return;
+  }
   while x.wi < x.writes.len() {
     // The write is looked up afresh each time round: the driver's call may be
     // taken to change lists, so no borrow of one is kept across it
@@ -853,12 +870,26 @@ struct DropExJob {
     if !x.responded {
       answerText(s, x, 500u16, "no response was made", false);
     } else if !x.finished && !x.finishing {
-      if x.chunked {
-        x.finishing = true;
-        pumpWrites(s, lp, x);
-      } else {
-        srvCancel(s, lp, x);
+      // A sink taken keeps the body while it may still be given a source: it finishes the
+      // body, or the exchange ends. A sink dropped without ever being given one
+      // (sinkGone, from SinkGoneJob) has no body coming: the drop ends the body as
+      // without a sink.
+      if x.sinkGone {
+        x.sinkOpen = false;
+        endBodyUnsunk(s, lp, x);
+      } else if !x.sinkOpen && !x.sinkFailed {
+        endBodyUnsunk(s, lp, x);
       }
     }
+  }
+}
+
+// The Exchange is gone and its body not ended by the handler: an unsized one is finished, a sized one reset
+fn endBodyUnsunk(s: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
+  if x.chunked {
+    x.finishing = true;
+    pumpWrites(s, lp, x);
+  } else {
+    srvCancel(s, lp, x);
   }
 }

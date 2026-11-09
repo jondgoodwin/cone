@@ -98,6 +98,7 @@
 //   ex.start(head, length)  ex.startEvents()  ex.startEventsWith(head)   a streamed one (not awaited)
 //   ex.write(bytes)  ex.sendEvent(event)  ex.sendComment(text)     Result[usize, ServerError]
 //   ex.finish()                                                    Result[u64, ServerError]
+//   ex.bodySink()   after start: a stages.ChunkSink, a pipeline's end, feeds the body   (A SERVER)
 //   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  String() <- e
 //   defaultMaxRequestBody         the most request body bytes a server takes unless configured
 //
@@ -337,7 +338,18 @@
 // sized body's length, 'finish' short of it) is a program error: a panic at
 // the line of the call, as the client's are. A response to a HEAD request, or a
 // 204 or 304, sends the head (with the Content-Length 'respond' computed) and no
-// body: its writes answer 0. Dropping an Exchange without answering answers 500;
+// body: its writes answer 0. After 'start', 'bodySink()' instead of 'write' and
+// 'finish' makes a stages.ChunkSink of the body: a pipeline (a file source, a gzip
+// stage) that ends in it is the response, a chunk at a time, and a large or generated
+// body never sits whole in memory. The credit is by copy: the service thread copies
+// each chunk into pool buffers of its own and gives the chunk back to its source once
+// the connection has accepted the copy, so a slow client holds the pipeline back at
+// the same watermark as 'write'. The sink's end is 'finish'; Failed resets the
+// exchange; a sized body is counted there, and past or short of its length the
+// exchange is reset and the source stopped Failed; a body the protocol forbids
+// stops the source Finished at its attach; a peer that left stops it Failed
+// (responsesink.cone is the longer account). Dropping the Exchange after
+// 'bodySink()' leaves the body to the sink. Dropping an Exchange without answering answers 500;
 // dropping one that is streaming an unsized body ends the body cleanly (so a
 // stream of events closes), a sized one short of its length resets the
 // connection. The Date and Server fields are not added: the program writes the
