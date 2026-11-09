@@ -8,6 +8,9 @@
 //     the followed GET's Response, the pushes after it are dropped, and the GET is answered;
 //   - a connection reset under a streamed POST, and under a streamed PUT: one attempt, Failed, not retried (a PUT with
 //     a String body is, up to maxRetries + 1 attempts);
+//   - a server that resets a request on a kept connection (the idle race): a streamed upload takes a new connection
+//     and succeeds, a String POST in the same setup takes the kept one and is retried; with maxPerOrigin 1 and the
+//     connection kept, the upload closes it and opens another;
 //   - a server that never reads, 256 MiB offered: the pieces taken stop at a bound far below the body (BodyRoom
 //     stops coming), and a cancel then ends it Cancelled;
 // and every buffer is back in the pool.
@@ -98,7 +101,7 @@ fn answer(sv: &mut Srv, k: usize) {
   let req = sv.reqs[k].req;
   let path = sv.reqs[k].path.clone();
   let p = splitPath(path.view());
-  if p == "/echo" {
+  if p == "/echo" || p == "/stale" {
     var b = String.from("len=");
     b.appendUInt(sv.reqs[k].bytes);
     reply(sv, req, 200u16, "", b.view());
@@ -110,6 +113,16 @@ fn answer(sv: &mut Srv, k: usize) {
   }
 }
 
+// Whether an earlier request than k came on k's connection
+fn sawConnBefore(sv: &Srv, k: usize) bool {
+  var j = 0usize;
+  while j < k {
+    if sv.reqs[j].conn == sv.reqs[k].conn {return true;}
+    j = j + 1usize;
+  }
+  false
+}
+
 fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Request {
@@ -117,6 +130,10 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
     let k = sv.reqs.len() - 1usize;
     let p = splitPath(sv.reqs[k].path.view());
     if p == "/close" {
+      sv.reqs[k].answered = true;
+      sv.drv.abort(lp, e.conn);
+    } else if p == "/stale" && sawConnBefore(sv, k) {
+      // a server that closes idle connections: a request on a connection that has served one is reset unread
       sv.reqs[k].answered = true;
       sv.drv.abort(lp, e.conn);
     } else if p == "/early" {
@@ -387,6 +404,46 @@ fn main() i32 {
   expect(s.last == EventKind.Cancelled, "a server that never reads: the cancel ends it Cancelled");
   expect(s.pushed < 33554432u64, "...after pushing a small part of 256 MiB");
   expect(s.pushed > 0u64, "...some was pushed");
+
+  // A server that closes idle connections (/stale: a request on a connection that has served one is reset unread).
+  // A kept connection is open; the streamed upload does not take it, but a new one, and succeeds
+  cl.closeIdle(&mut lp);
+  base = sv.reqs.len();
+  ps = plain(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/hello").view()));
+  expect(ps.last == EventKind.Done, "stale: a GET opens a kept connection");
+  let retries0 = cl.stats().retries;
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/stale").view()),
+    BodyLength.sized(100000u64), 100000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "stale: the streamed upload succeeds");
+  expectStr(s.body.view(), "len=100000", "stale: the server read the whole body");
+  expectUInt(u64.from(s.attempts), 1u64, "stale: in one attempt");
+  expectUInt(u64.from(sv.reqs.len() - base), 2u64, "stale: the server saw the GET and the upload, nothing reset");
+  expect(sv.reqs[base + 1usize].conn != sv.reqs[base].conn, "stale: the upload came on a new connection");
+  expectUInt(cl.stats().retries - retries0, 0u64, "stale: no retry");
+  // ...a String fetch in the same setup still takes a kept connection, finds it stale, and is retried
+  base = sv.reqs.len();
+  var sp = Request.make("POST", url(port, "/stale").view());
+  sp.body = String.from("abc");
+  ps = plain(&mut cl, &mut sv, &mut lp, sp);
+  expect(ps.last == EventKind.Done && ps.status == 200u16, "stale: a String POST is answered");
+  expectStr(ps.body.view(), "len=3", "stale: ...with its body");
+  expect(ps.attempts >= 2u32, "stale: ...after a retry from a stale kept connection");
+  expect(cl.stats().retries > retries0, "stale: stats count the retry");
+
+  // With one connection allowed to the origin and it kept: the streamed upload closes it and opens a new one
+  {
+    var cfg = Config.make();
+    cfg.maxPerOrigin = 1u32;
+    var c1 = Client.make(cfg);
+    base = sv.reqs.len();
+    ps = plain(&mut c1, &mut sv, &mut lp, Request.get(url(port, "/hello").view()));
+    expect(ps.last == EventKind.Done, "limit: a GET leaves the one connection kept");
+    s = streamed(&mut c1, &mut sv, &mut lp, Request.make("POST", url(port, "/stale").view()),
+      BodyLength.sized(1000u64), 1000u64, 1000usize, 0i64);
+    expect(s.last == EventKind.Done && s.status == 200u16, "limit: the streamed upload is answered");
+    expect(sv.reqs[base + 1usize].conn != sv.reqs[base].conn, "limit: on a new connection");
+    c1.abortAll(&mut lp);
+  }
 
   cl.abortAll(&mut lp);
   var out = List[Event]();

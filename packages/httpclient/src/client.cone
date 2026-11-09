@@ -1555,6 +1555,31 @@ pub struct Client {
     best
   }
 
+  // Where the first of origin oi's queue that is not a streamed upload is in it (the queue's length: none)
+  fn firstPlain(self: &, oi: u32) usize {
+    let og = self.originAt(oi) as &Origin;
+    var best = og.queue.len();
+    var k = 0usize;
+    while k < og.queue.len() {
+      if !(self.fetchAt(*og.queue[k]) as &Fetch).streamed &&
+          (best == og.queue.len() || self.before(*og.queue[k], *og.queue[best])) {
+        best = k;
+      }
+      k = k + 1usize;
+    }
+    best
+  }
+
+  // The idle connection of origin og that nothing has been sent on (the latest), or noEntry
+  fn freshIdle(self: &, og: &Origin) u32 {
+    var k = og.idle.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if (self.connAt(*og.idle[k]) as &PConn).uses == 0u32 {return *og.idle[k];}
+    }
+    noEntry
+  }
+
   // Free connections to the first waiting fetches; connections opened where
   // fetches wait, the origins whose first fetch is first getting them first.
   // Whether it did anything
@@ -1571,7 +1596,26 @@ pub struct Client {
       }
       let og = self.originAt(o) as &mut Origin;
       while og.queue.len() > 0usize && og.idle.len() > 0usize {
-        let pc = *og.idle[og.idle.len() - 1usize];
+        var pc = *og.idle[og.idle.len() - 1usize];
+        var pos = self.firstIn(o);
+        if (self.fetchAt(*og.queue[pos]) as &Fetch).streamed {
+          // A streamed body cannot be sent again if a kept connection turns out to be stale under it (canRetry),
+          // and a handshake costs little against a large body: it takes a connection nothing has been sent on
+          // yet, and what else waits may take the kept ones
+          pc = self.freshIdle(og);
+          if pc == noEntry {
+            pos = self.firstPlain(o);
+            if pos < og.queue.len() {
+              pc = *og.idle[og.idle.len() - 1usize];
+            } else if og.connecting == 0u32 && (og.open >= cfg.maxPerOrigin || total >= cfg.maxTotal) {
+              // no room for a new connection: the kept one idle longest makes it
+              self.retire(lp, *og.idle[0usize], true);
+              continue;
+            } else {
+              break;
+            }
+          }
+        }
         let p = self.connAt(pc) as &mut PConn;
         if !drv.isIdle(p.id) {
           // It is closing under us (the server's close, its idle timeout)
@@ -1583,8 +1627,7 @@ pub struct Client {
           self.retire(lp, pc, true);
           continue;
         }
-        og.idle.pop();
-        let pos = self.firstIn(o);
+        removeValue(&mut og.idle, pc);
         let fi = *og.queue[pos];
         removeAt(&mut og.queue, pos);
         queuedN = queuedN - 1u32;
