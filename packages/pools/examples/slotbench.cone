@@ -1,0 +1,658 @@
+mod slotbench;
+
+// slotbench: micro-benches of GenPool (pools) against the SlotTable it replaces
+// (a verbatim copy of the old slots.cone, below, renamed OldTable), in the
+// A B B A order of pool-family-measure-2026-11-08.md: each case runs old, new,
+// new, old, and each run is at least 300 ms after a warm pass; the figure to
+// quote is the BEST PASS (fastest single pass, ns per op) with cpu%.
+//
+//   congo run --release packages/pools/examples/slotbench.cone
+//
+// RUN IT ON A QUIET MACHINE: a row whose cpu% is under about 90 was disturbed.
+// Rows: at(i) and get(h), sequential and random, 4K / 64K / 1M cells; add plus
+// remove at 10K and 1M entries; the walk at 1%, 50%, 99% live of 1M cells (old:
+// isLive per cell, new: the bitmap walk); the thrash pair at a slab boundary;
+// and the memory held after the 6b unload (100,000 parts of 128 bytes, 10 of
+// 100 regions kept, then 10% kept at random). Both tables take 512 cells to a
+// slab. Cells: 8-byte header in the new table, 16 in the old one.
+
+import stdio use *;
+import libc;
+import collections use List;
+import time use Instant;
+import iocore use threadTimes;
+import pools use GenPool, Handle;
+
+fn cpuNs() u64 {
+  let u, k = threadTimes();
+  u + k
+}
+
+struct Meas {
+  t0: i64 = 0i64;
+  c0: u64 = 0u64;
+  ns: f64 = 0.;
+  cpu: f64 = 0.;
+
+  last: i64 = 0i64;
+  best: f64 = 1000000000000.;
+  perPass: u64 = 1u64;
+
+  fn begin(self: &mut, opsPerPass: u64) {
+    perPass = opsPerPass; best = 1000000000000.;
+    t0 = Instant.now().nanos(); last = t0; c0 = cpuNs();
+  }
+  fn expired(self: &mut) bool {
+    let now = Instant.now().nanos();
+    let b = f64.from(now - last) / f64.from(perPass);
+    if b < best { best = b; }
+    last = now;
+    now - t0 >= 300000000i64
+  }
+  fn end(self: &mut, ops: u64, sink: u64) {
+    let wall = Instant.now().nanos() - t0;
+    let dc = cpuNs() - c0;
+    ns = f64.from(wall) / f64.from(ops);
+    cpu = 100. * f64.from(dc) / f64.from(wall);
+    if sink == 12345u64 { print <- "(sink)\n"; }
+  }
+}
+
+fn r2(x: f64) f64 { f64.from(i64.from(x * 100. + 0.5)) / 100. }
+fn r0(x: f64) f64 { f64.from(i64.from(x + 0.5)) }
+
+struct Rng { s: u64; }
+fn next(r: &mut Rng) u64 {
+  var x = r.s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  r.s = x;
+  x
+}
+
+struct Row {
+  w: Array[u64, 8];
+  fn touch(self: &) u64 { w[0] + w[7] }
+}
+
+fn mkRow(i: u64) Row {
+  var r = Row(Array[u64, 8]() <- fill 0u64);
+  r.w[0] = i;
+  r.w[7] = i * 3u64;
+  r
+}
+
+// 120 bytes: a 128-byte cell in the new table
+struct Part {
+  w: Array[u64, 15];
+}
+
+fn mkPart(i: u64) Part {
+  var p = Part(Array[u64, 15]() <- fill 0u64);
+  p.w[0] = i;
+  p
+}
+
+const perSlab = 512u32;
+
+
+
+
+
+const oldNoCell = 0xFFFFFFFFu32;
+
+// A cell's number and which occupant of it: plain data
+pub struct OldSlot {
+  pub index: u32;
+  pub gen: u32;
+
+  pub fn none() OldSlot {OldSlot(oldNoCell, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn `==`(self, o: OldSlot) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: OldSlot) bool {index != o.index || gen != o.gen}
+}
+
+// A cell: bookkeeping, then the value
+struct OldCell[T] {
+  pub gen: u32;
+  pub next: u32;          // free: the next free cell, oldNoCell for the last
+  pub live: u32;
+  pub pad: u32;
+  pub value: T;
+}
+
+fn oldNextGen(g: u32) u32 {
+  if g == 0xFFFFFFFFu32 {1u32} else {g + 1u32}
+}
+
+fn oldNullOf[T]() *T {null}
+
+pub struct OldTable[T] is Move {
+  chunks: List[*OldCell[T]];
+  perChunk: u32;
+  count: u32;             // cells made
+  free: u32;              // the first free cell, or oldNoCell
+  live: u32;
+
+  // An empty table that grows perChunk cells at a time (at least 1)
+  pub fn make(perChunk: u32 = 64u32) OldTable[T] {
+    OldTable[T](List[*OldCell[T]](), if perChunk == 0u32 {1u32} else {perChunk}, 0u32, oldNoCell, 0u32)
+  }
+
+  pub fn len(self: &) usize {usize.from(live)}
+  pub fn bound(self: &) usize {usize.from(count)}
+
+  fn cell(self: &, i: u32) *OldCell[T] {
+    *chunks[usize.from(i / perChunk)] + usize.from(i % perChunk)
+  }
+
+  pub fn isLive(self: &, i: u32) bool {
+    if i >= count {return false;}
+    (*self.cell(i)).live != 0u32
+  }
+
+  // A new chunk of cells, all free, chained in index order
+  fn grow(self: &mut) {
+    let block = libc.malloc(usize.from(perChunk) * mem.sizeof[OldCell[T]]()) as *OldCell[T];
+    if block as usize == 0usize {
+      panic("slots: out of memory for a table chunk");
+    }
+    let base = count;
+    var j = 0u32;
+    while j < perChunk {
+      let c = block + usize.from(j);
+      (*c).gen = 1u32;
+      (*c).next = if j + 1u32 < perChunk {base + j + 1u32} else {free};
+      (*c).live = 0u32;
+      (*c).pad = 0u32;
+      j = j + 1u32;
+    }
+    chunks.push(block);
+    count = count + perChunk;
+    free = base;
+  }
+
+  // v moved into a free cell: its OldSlot
+  pub fn add(self: &mut, v: T) OldSlot {
+    if free == oldNoCell {
+      self.grow();
+    }
+    let i = free;
+    let c = self.cell(i);
+    free = (*c).next;
+    (*c).next = oldNoCell;
+    (*c).live = 1u32;
+    mem.writeRaw[T](&(*c).value as *T, v);
+    live = live + 1u32;
+    OldSlot(i, (*c).gen)
+  }
+
+  // The value s names, or null if it is gone (or s names nothing)
+  pub fn get(self: &, s: OldSlot) *T {
+    if s.index >= count || s.gen == 0u32 {return oldNullOf[T]();}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return oldNullOf[T]();}
+    &(*c).value as *T
+  }
+
+  // The live value in cell i, or null
+  pub fn at(self: &, i: u32) *T {
+    if i >= count {return oldNullOf[T]();}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return oldNullOf[T]();}
+    &(*c).value as *T
+  }
+
+  // Some borrow of the value s names, or None if it is gone (or s names
+  // nothing). The borrow is of the table: while it is still to be used, the
+  // table may be read but not added to, removed from or taken from
+  pub fn borrow(self: &, s: OldSlot) Option[&T] {
+    let p = self.get(s);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  // Some mutable borrow of the value s names, or None. An alias loan of the
+  // table: while it is still to be used, the table may be read, borrowed again
+  // and written in place, but not added to, removed from or taken from
+  pub fn borrowMut(self: &mut, s: OldSlot) Option[&mut T] {
+    let p = self.get(s);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // Some borrow of the live value in cell i, or None: borrow by index alone
+  pub fn borrowAt(self: &, i: u32) Option[&T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  // Some mutable borrow of the live value in cell i, or None: borrowMut by
+  // index alone
+  pub fn borrowMutAt(self: &mut, i: u32) Option[&mut T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // The OldSlot of the live value in cell i, or OldSlot.none()
+  pub fn slotAt(self: &, i: u32) OldSlot {
+    if i >= count {return OldSlot.none();}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return OldSlot.none();}
+    OldSlot(i, (*c).gen)
+  }
+
+  // Finalize the value in cell i and free the cell: true if there was one
+  pub fn removeAt(self: &mut, i: u32) bool {
+    if i >= count {return false;}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return false;}
+    mem.finalize[T](&(*c).value as *T);
+    (*c).live = 0u32;
+    (*c).gen = oldNextGen((*c).gen);
+    (*c).next = free;
+    free = i;
+    live = live - 1u32;
+    true
+  }
+
+  // Finalize the value s names and free its cell: true; false, and nothing
+  // done, if s is stale or none
+  pub fn remove(self: &mut, s: OldSlot) bool {
+    if s.index >= count || s.gen == 0u32 {return false;}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return false;}
+    self.removeAt(s.index)
+  }
+
+  // Move the value s names out of the table, by value, and free its cell:
+  // the value is the caller's now, so nothing is finalized; None, and
+  // nothing done, if s is stale or none
+  pub fn take(self: &mut, s: OldSlot) Option[T] {
+    if s.index >= count || s.gen == 0u32 {return None;}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return None;}
+    let v = mem.readRaw[T](&(*c).value as *T);
+    (*c).live = 0u32;
+    (*c).gen = oldNextGen((*c).gen);
+    (*c).next = free;
+    free = s.index;
+    live = live - 1u32;
+    Some[T](v)
+  }
+
+  fn final(self: &uni) {
+    var i = 0u32;
+    while i < count {
+      let c = self.cell(i);
+      if (*c).live != 0u32 {
+        mem.finalize[T](&(*c).value as *T);
+      }
+      i = i + 1u32;
+    }
+    var k = 0usize;
+    while k < chunks.len() {
+      libc.free(*chunks[k] as *u8);
+      k = k + 1usize;
+    }
+  }
+}
+// ---- Old ----
+
+struct FixOld {
+  t: OldTable[Row];
+  hs: *OldSlot;       // the handle of entry j, in index order
+  ids: *u32;      // lookup order (sequential or random)
+  hq: *OldSlot;       // the handles in lookup order
+  m: usize;
+}
+
+fn fixOld(n: usize, seq: bool) FixOld {
+  var t = OldTable[Row].make(perSlab);
+  let hs = libc.malloc(n * 8usize) as *OldSlot;
+  var i = 0usize;
+  while i < n {
+    mem.writeRaw[OldSlot](hs + i, t.add(mkRow(u64.from(i))));
+    i = i + 1usize;
+  }
+  let m = n;
+  let ids = libc.malloc(m * 4usize) as *u32;
+  let hq = libc.malloc(m * 8usize) as *OldSlot;
+  var rng = Rng(88172645463325252u64);
+  var j = 0usize;
+  while j < m {
+    let k = if seq { j } else { usize.from(next(&mut rng) % u64.from(n)) };
+    mem.writeRaw[u32](ids + j, u32.from(k));
+    mem.writeRaw[OldSlot](hq + j, *(hs + k));
+    j = j + 1usize;
+  }
+  FixOld(t, hs, ids, hq, m)
+}
+
+// at(i) or get(h) over the lookup order, 4096 ops a pass
+fn lookupOld(n: usize, seq: bool, byHandle: bool, m: &mut Meas) u64 {
+  var f = fixOld(n, seq);
+  var sink = 0u64;
+  var warm = 0usize;
+  m.begin(4096u64);
+  var ops = 0u64;
+  var pos = 0usize;
+  while true {
+    var k = 0usize;
+    while k < 4096usize {
+      let p = if byHandle { f.t.get(*(f.hq + pos)) } else { f.t.at(*(f.ids + pos)) };
+      sink = sink + ((*p).w[0] + (*p).w[7]);
+      pos = pos + 1usize;
+      if pos == f.m { pos = 0usize; }
+      k = k + 1usize;
+    }
+    ops = ops + 4096u64;
+    if m.expired() { break; }
+  }
+  m.end(ops, sink);
+  sink
+}
+
+// remove one entry and add another, n entries held, 1024 pairs a pass
+fn addRemoveOld(n: usize, m: &mut Meas) u64 {
+  var f = fixOld(n, true);
+  m.begin(1024u64);
+  var ops = 0u64;
+  var pos = 0usize;
+  var sink = 0u64;
+  while true {
+    var k = 0usize;
+    while k < 1024usize {
+      let h = *(f.hs + pos);
+      f.t.remove(h);
+      mem.writeRaw[OldSlot](f.hs + pos, f.t.add(mkRow(u64.from(pos))));
+      pos = pos + 1usize;
+      if pos == n { pos = 0usize; }
+      k = k + 1usize;
+    }
+    ops = ops + 1024u64;
+    if m.expired() { break; }
+  }
+  sink = u64.from(f.t.len());
+  m.end(ops, sink);
+  sink
+}
+
+// the walk of 1M cells with 1 / keep of them live, per live entry
+fn walkOld(keepMod: usize, removeMultiples: bool, m: &mut Meas) u64 {
+  let n = 1048576usize;
+  var f = fixOld(n, true);
+  var i = 0usize;
+  var live = 0u64;
+  while i < n {
+    let keep = if removeMultiples { i % keepMod != 0usize } else { i % keepMod == 0usize };
+    if keep { live = live + 1u64; } else { f.t.remove(*(f.hs + i)); }
+    i = i + 1usize;
+  }
+  var sink = 0u64;
+  m.begin(live);
+  var ops = 0u64;
+  while true {
+var c = 0u32;
+    while usize.from(c) < f.t.bound() {
+      let p = f.t.at(c);
+      if p as usize != 0usize { sink = sink + ((*p).w[0] + (*p).w[7]); }
+      c = c + 1u32;
+    }
+    ops = ops + live;
+    if m.expired() { break; }
+  }
+  m.end(ops, sink);
+  sink
+}
+
+// 2561 entries (five slabs and one): remove the last, add one, again
+fn thrashOld(m: &mut Meas) u64 {
+  var f = fixOld(2561usize, true);
+  var last = *(f.hs + 2560usize);
+  m.begin(1024u64);
+  var ops = 0u64;
+  while true {
+    var k = 0usize;
+    while k < 1024usize {
+      f.t.remove(last);
+      last = f.t.add(mkRow(1u64));
+      k = k + 1usize;
+    }
+    ops = ops + 1024u64;
+    if m.expired() { break; }
+  }
+  m.end(ops, u64.from(f.t.len()));
+
+  u64.from(f.t.len())
+}
+
+// 6b: 100,000 parts up, 90% down, how many slabs are held
+fn unloadOld(scattered: bool) usize {
+  var t = OldTable[Part].make(perSlab);
+  let hs = libc.malloc(100000usize * 8usize) as *OldSlot;
+  var i = 0usize;
+  while i < 100000usize {
+    mem.writeRaw[OldSlot](hs + i, t.add(mkPart(u64.from(i))));
+    i = i + 1usize;
+  }
+  var rng = Rng(88172645463325252u64);
+  i = 0usize;
+  while i < 100000usize {
+    let keep = if scattered { next(&mut rng) % 10u64 == 0u64 } else { (i / 1000usize) % 10usize == 0usize };
+    if !keep { t.remove(*(hs + i)); }
+    i = i + 1usize;
+  }
+t.bound() / usize.from(perSlab)
+}
+
+// ---- New ----
+
+struct FixNew {
+  t: GenPool[Row];
+  hs: *Handle;       // the handle of entry j, in index order
+  ids: *u32;      // lookup order (sequential or random)
+  hq: *Handle;       // the handles in lookup order
+  m: usize;
+}
+
+fn fixNew(n: usize, seq: bool) FixNew {
+  var t = GenPool[Row].make(perSlab);
+  let hs = libc.malloc(n * 8usize) as *Handle;
+  var i = 0usize;
+  while i < n {
+    mem.writeRaw[Handle](hs + i, t.add(mkRow(u64.from(i))));
+    i = i + 1usize;
+  }
+  let m = n;
+  let ids = libc.malloc(m * 4usize) as *u32;
+  let hq = libc.malloc(m * 8usize) as *Handle;
+  var rng = Rng(88172645463325252u64);
+  var j = 0usize;
+  while j < m {
+    let k = if seq { j } else { usize.from(next(&mut rng) % u64.from(n)) };
+    mem.writeRaw[u32](ids + j, u32.from(k));
+    mem.writeRaw[Handle](hq + j, *(hs + k));
+    j = j + 1usize;
+  }
+  FixNew(t, hs, ids, hq, m)
+}
+
+// at(i) or get(h) over the lookup order, 4096 ops a pass
+fn lookupNew(n: usize, seq: bool, byHandle: bool, m: &mut Meas) u64 {
+  var f = fixNew(n, seq);
+  var sink = 0u64;
+  var warm = 0usize;
+  m.begin(4096u64);
+  var ops = 0u64;
+  var pos = 0usize;
+  while true {
+    var k = 0usize;
+    while k < 4096usize {
+      let p = if byHandle { f.t.get(*(f.hq + pos)) } else { f.t.at(*(f.ids + pos)) };
+      sink = sink + ((*p).w[0] + (*p).w[7]);
+      pos = pos + 1usize;
+      if pos == f.m { pos = 0usize; }
+      k = k + 1usize;
+    }
+    ops = ops + 4096u64;
+    if m.expired() { break; }
+  }
+  m.end(ops, sink);
+  sink
+}
+
+// remove one entry and add another, n entries held, 1024 pairs a pass
+fn addRemoveNew(n: usize, m: &mut Meas) u64 {
+  var f = fixNew(n, true);
+  m.begin(1024u64);
+  var ops = 0u64;
+  var pos = 0usize;
+  var sink = 0u64;
+  while true {
+    var k = 0usize;
+    while k < 1024usize {
+      let h = *(f.hs + pos);
+      f.t.remove(h);
+      mem.writeRaw[Handle](f.hs + pos, f.t.add(mkRow(u64.from(pos))));
+      pos = pos + 1usize;
+      if pos == n { pos = 0usize; }
+      k = k + 1usize;
+    }
+    ops = ops + 1024u64;
+    if m.expired() { break; }
+  }
+  sink = u64.from(f.t.len());
+  m.end(ops, sink);
+  sink
+}
+
+// the walk of 1M cells with 1 / keep of them live, per live entry
+fn walkNew(keepMod: usize, removeMultiples: bool, m: &mut Meas) u64 {
+  let n = 1048576usize;
+  var f = fixNew(n, true);
+  var i = 0usize;
+  var live = 0u64;
+  while i < n {
+    let keep = if removeMultiples { i % keepMod != 0usize } else { i % keepMod == 0usize };
+    if keep { live = live + 1u64; } else { f.t.remove(*(f.hs + i)); }
+    i = i + 1usize;
+  }
+  var sink = 0u64;
+  m.begin(live);
+  var ops = 0u64;
+  while true {
+var c = f.t.nextLive(0u32);
+    while c != 0xFFFFFFFFu32 {
+      let p = f.t.at(c);
+      sink = sink + ((*p).w[0] + (*p).w[7]);
+      c = f.t.nextLive(c + 1u32);
+    }
+    ops = ops + live;
+    if m.expired() { break; }
+  }
+  m.end(ops, sink);
+  sink
+}
+
+// 2561 entries (five slabs and one): remove the last, add one, again
+fn thrashNew(m: &mut Meas) u64 {
+  var f = fixNew(2561usize, true);
+  var last = *(f.hs + 2560usize);
+  m.begin(1024u64);
+  var ops = 0u64;
+  while true {
+    var k = 0usize;
+    while k < 1024usize {
+      f.t.remove(last);
+      last = f.t.add(mkRow(1u64));
+      k = k + 1usize;
+    }
+    ops = ops + 1024u64;
+    if m.expired() { break; }
+  }
+  m.end(ops, u64.from(f.t.len()));
+print <- "  (thrash: slabs held ", f.t.slabCount(), ")\n";
+  u64.from(f.t.len())
+}
+
+// 6b: 100,000 parts up, 90% down, how many slabs are held
+fn unloadNew(scattered: bool) usize {
+  var t = GenPool[Part].make(perSlab);
+  let hs = libc.malloc(100000usize * 8usize) as *Handle;
+  var i = 0usize;
+  while i < 100000usize {
+    mem.writeRaw[Handle](hs + i, t.add(mkPart(u64.from(i))));
+    i = i + 1usize;
+  }
+  var rng = Rng(88172645463325252u64);
+  i = 0usize;
+  while i < 100000usize {
+    let keep = if scattered { next(&mut rng) % 10u64 == 0u64 } else { (i / 1000usize) % 10usize == 0usize };
+    if !keep { t.remove(*(hs + i)); }
+    i = i + 1usize;
+  }
+t.slabCount()
+}
+
+// ---- the runs ----
+
+struct Row2 {
+  a: f64; ac: f64; ab: f64;
+}
+
+// case: 0 at seq, 1 at rand, 2 get seq, 3 get rand, 4 add+remove, 5 walk, 6 thrash
+fn runOne(kind: u32, c: u32, n: usize, keepMod: usize, rem: bool, m: &mut Meas) {
+  if kind == 0u32 {
+    if c <= 3u32 { lookupOld(n, c % 2u32 == 0u32, c >= 2u32, m); }
+    else if c == 4u32 { addRemoveOld(n, m); }
+    else if c == 5u32 { walkOld(keepMod, rem, m); }
+    else { thrashOld(m); }
+  } else {
+    if c <= 3u32 { lookupNew(n, c % 2u32 == 0u32, c >= 2u32, m); }
+    else if c == 4u32 { addRemoveNew(n, m); }
+    else if c == 5u32 { walkNew(keepMod, rem, m); }
+    else { thrashNew(m); }
+  }
+}
+
+fn name(kind: u32) &str { if kind == 0u32 { "old SlotTable" } else { "new GenPool  " } }
+
+// old, new, new, old; best pass and mean with cpu%
+fn abba(label: &str, c: u32, n: usize, keepMod: usize, rem: bool) {
+  var m = Meas();
+  var order = Array[u32, 4]() <- (0u32, 1u32, 1u32, 0u32);
+  var k = 0usize;
+  while k < 4usize {
+    let kind = order[k];
+    runOne(kind, c, n, keepMod, rem, &mut m);
+    print <- label, " N=", n, " | ", name(kind), " | best ", r2(m.best), " ns | mean ", r2(m.ns), " ns | cpu ", r0(m.cpu), "%\n";
+    k = k + 1usize;
+  }
+}
+
+fn main() i32 {
+  print <- "slotbench: cells ", mem.sizeof[Row](), "-byte rows, ", perSlab, " cells to a slab\n";
+  var sizes = Array[usize, 3]() <- (4096usize, 65536usize, 1048576usize);
+  var s = 0usize;
+  while s < 3usize {
+    let n = sizes[s];
+    abba("at seq  ", 0u32, n, 1usize, false);
+    abba("at rand ", 1u32, n, 1usize, false);
+    abba("get seq ", 2u32, n, 1usize, false);
+    abba("get rand", 3u32, n, 1usize, false);
+    s = s + 1usize;
+  }
+  abba("add+remove N=10000", 4u32, 10000usize, 1usize, false);
+  abba("add+remove N=1000000", 4u32, 1000000usize, 1usize, false);
+  abba("walk 1% live", 5u32, 0usize, 100usize, false);
+  abba("walk 50% live", 5u32, 0usize, 2usize, false);
+  abba("walk 99% live", 5u32, 0usize, 100usize, true);
+  abba("thrash pair", 6u32, 0usize, 0usize, false);
+  print <- "6b clustered unload: slabs held old ", unloadOld(false), " new ", unloadNew(false), " (of ", 100000usize / 512usize + 1usize, " at peak)\n";
+  print <- "6b scattered unload: slabs held old ", unloadOld(true), " new ", unloadNew(true), "\n";
+  0i32
+}
