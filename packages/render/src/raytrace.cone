@@ -50,8 +50,6 @@ struct RtMesh {
   normalBase: u32;
   indexBase: u32;
   usable: bool;
-
-  fn none() RtMesh { RtMesh(0u32, 0u32, AccelerationStructure.none(), 0u32, 0u32, false) }
 }
 
 pub struct RtScene {
@@ -92,7 +90,12 @@ pub struct RtScene {
   // Whether the mesh in 'slot' has a usable structure for its version: made (and built into 'encoder') in the
   // slot's own entry if that is not current; false if it cannot be made
   fn meshFor(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, slot: &mut MeshSlot) bool {
-    if slot.rt.epoch == epoch && slot.rt.version == slot.version { return slot.rt.usable; }
+    match slot.rt.asRef() {
+      case let Some(e) {
+        if e.epoch == epoch && e.version == slot.version { return e.usable; }
+      }
+      else {}
+    }
     var entry = RtMesh(epoch, slot.version, AccelerationStructure.none(), 0u32, 0u32, false);
     {
       let m = slot.current();
@@ -119,7 +122,7 @@ pub struct RtScene {
       }
     }
     let usable = entry.usable;
-    slot.rt = entry;
+    slot.rt = Some[Uni[RtMesh]](Uni[RtMesh](entry));
     usable
   }
 
@@ -136,7 +139,7 @@ pub struct RtScene {
       var more = true;
       while more {
         match it.next() {
-          case let Some(s) { s.rt = RtMesh.none(); }
+          case let Some(s) { s.rt = None[Uni[RtMesh]]; }
           else { more = false; }
         }
       }
@@ -174,7 +177,17 @@ pub struct RtScene {
         skipped = skipped + 1u32;
         continue;
       }
-      let entry = &slot.rt;
+      var address = 0u64;
+      var normalBase = 0u32;
+      var indexBase = 0u32;
+      match slot.rt.asRef() {
+        case let Some(e) {
+          address = e.blas.address;
+          normalBase = e.normalBase;
+          indexBase = e.indexBase;
+        }
+        else {}
+      }
       var tr = Array[f32, 12]() <- fill 0f;
       var row = 0usize;
       while row < 3usize {
@@ -187,8 +200,8 @@ pub struct RtScene {
       }
       let id = u32.from(recordList.len());
       instanceList.push(AccelerationStructureInstance(tr, id | (mask << 24u32),
-        INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, entry.blas.address));
-      recordList.push(rtRecordOf(mslot, item.tint, entry.normalBase, entry.indexBase));
+        INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE << 24u32, address));
+      recordList.push(rtRecordOf(mslot, item.tint, normalBase, indexBase));
     }
     count = u32.from(instanceList.len());
     if count > 0u32 {
