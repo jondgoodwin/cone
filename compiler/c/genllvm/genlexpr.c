@@ -320,6 +320,20 @@ static LLVMValueRef genlCallLlvmIntrinsic(GenState *gen, char *name, LLVMTypeRef
     return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, &type, 1), fn, args, nargs, "");
 }
 
+// Call a C library math function on floats by its C name: the double form
+// ('hypot') or, for an f32, the float form ('hypotf'). A GPU target has none
+// (genlNumberIntrinsic gives those a formula first)
+static LLVMValueRef genlCallLibm(GenState *gen, const char *cname, LLVMTypeRef type, LLVMValueRef *args, unsigned nargs) {
+    char name[32];
+    snprintf(name, sizeof(name), "%s%s", cname, LLVMGetTypeKind(type) == LLVMFloatTypeKind ? "f" : "");
+    LLVMTypeRef params[2] = { type, type };
+    LLVMTypeRef fntype = LLVMFunctionType(type, params, nargs, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(gen->module, name);
+    if (!fn)
+        fn = LLVMAddFunction(gen->module, name, fntype);
+    return LLVMBuildCall2(gen->builder, fntype, fn, args, nargs, "");
+}
+
 // An integer value of one width as another, its low bits kept or zeros added
 static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef to) {
     unsigned from = LLVMGetIntTypeWidth(LLVMTypeOf(val));
@@ -491,6 +505,93 @@ static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type
         args[1] = fnargs[1];
         args[2] = fnargs[2];
         return genlCallLlvmIntrinsic(gen, "llvm.fma", llvmtype, args, 3);
+
+    // A float's, each LLVM's intrinsic of the same meaning (the libm call it
+    // folds to or becomes on a CPU, the GLSL.std.450 instruction on a GPU)
+    case TanIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.tan", llvmtype, args, 1);
+    case AsinIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.asin", llvmtype, args, 1);
+    case AcosIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.acos", llvmtype, args, 1);
+    case AtanIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.atan", llvmtype, args, 1);
+    case Atan2Intrinsic:
+        args[1] = fnargs[1];
+        return genlCallLlvmIntrinsic(gen, "llvm.atan2", llvmtype, args, 2);
+    case ExpIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.exp", llvmtype, args, 1);
+    case Exp2Intrinsic: return genlCallLlvmIntrinsic(gen, "llvm.exp2", llvmtype, args, 1);
+    case LnIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.log", llvmtype, args, 1);
+    case Log2Intrinsic: return genlCallLlvmIntrinsic(gen, "llvm.log2", llvmtype, args, 1);
+    case Log10Intrinsic: return genlCallLlvmIntrinsic(gen, "llvm.log10", llvmtype, args, 1);
+    case SinhIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.sinh", llvmtype, args, 1);
+    case CoshIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.cosh", llvmtype, args, 1);
+    case TanhIntrinsic: return genlCallLlvmIntrinsic(gen, "llvm.tanh", llvmtype, args, 1);
+    case PowIntrinsic:
+        args[1] = fnargs[1];
+        return genlCallLlvmIntrinsic(gen, "llvm.pow", llvmtype, args, 2);
+    case PowiIntrinsic: {
+        // llvm.powi is overloaded on the float and on the integer exponent
+        LLVMTypeRef types[2] = { llvmtype, LLVMTypeOf(fnargs[1]) };
+        args[1] = fnargs[1];
+        if (gen->opt->gpu) {
+            // The SPIR-V backend has no powi, and GLSL's pow is undefined for a
+            // negative base and for 0 to a power of 0 or less. So: pow of |x| to
+            // the exponent as a float, negated where x < 0 and the exponent is
+            // odd, and 1 for an exponent of 0. (A zero base to a negative power
+            // is whatever GLSL's pow gives; the sign of -0.0 is lost.)
+            LLVMTypeRef inttype = LLVMTypeOf(fnargs[1]);
+            LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
+            LLVMValueRef powargs[2] = { mag, LLVMBuildSIToFP(gen->builder, fnargs[1], llvmtype, "powiexp") };
+            LLVMValueRef p = genlCallLlvmIntrinsic(gen, "llvm.pow", llvmtype, powargs, 2);
+            LLVMValueRef odd = LLVMBuildICmp(gen->builder, LLVMIntNE,
+                LLVMBuildAnd(gen->builder, fnargs[1], LLVMConstInt(inttype, 1, 0), ""), LLVMConstInt(inttype, 0, 0), "");
+            LLVMValueRef neg = LLVMBuildAnd(gen->builder, odd,
+                LLVMBuildFCmp(gen->builder, LLVMRealOLT, args[0], LLVMConstNull(llvmtype), ""), "");
+            LLVMValueRef signed_p = LLVMBuildSelect(gen->builder, neg, LLVMBuildFNeg(gen->builder, p, ""), p, "");
+            LLVMValueRef zeroexp = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[1], LLVMConstInt(inttype, 0, 0), "");
+            return LLVMBuildSelect(gen->builder, zeroexp, LLVMConstReal(llvmtype, 1.0), signed_p, "");
+        }
+        unsigned id = LLVMLookupIntrinsicID("llvm.powi", 9);
+        LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, types, 2);
+        return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, types, 2), fn, args, 2, "");
+    }
+    case HypotIntrinsic:
+        args[1] = fnargs[1];
+        if (gen->opt->gpu) {
+            // No C library there: sqrt(x*x + y*y), with no protection from
+            // overflow or underflow of the squares, and NaN for (inf, NaN)
+            LLVMValueRef fmaargs[3] = { args[0], args[0], LLVMBuildFMul(gen->builder, args[1], args[1], "") };
+            LLVMValueRef sumsq = genlCallLlvmIntrinsic(gen, "llvm.fma", llvmtype, fmaargs, 3);
+            return genlCallLlvmIntrinsic(gen, "llvm.sqrt", llvmtype, &sumsq, 1);
+        }
+        // An f32 goes through the double form: the UCRT has no 'hypotf' symbol
+        // (it is inline there, over '_hypotf'), as it has no 'fabsf'
+        if (LLVMGetTypeKind(llvmtype) == LLVMFloatTypeKind) {
+            LLVMTypeRef dbl = LLVMDoubleTypeInContext(gen->context);
+            LLVMValueRef wide[2] = { LLVMBuildFPExt(gen->builder, args[0], dbl, ""), LLVMBuildFPExt(gen->builder, args[1], dbl, "") };
+            return LLVMBuildFPTrunc(gen->builder, genlCallLibm(gen, "hypot", dbl, wide, 2), llvmtype, "");
+        }
+        return genlCallLibm(gen, "hypot", llvmtype, args, 2);
+    case CbrtIntrinsic:
+        if (gen->opt->gpu) {
+            // No C library there: the sign of x times 2^(log2|x| / 3). Within a
+            // few ulp, and a negative zero gives a positive zero
+            LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
+            LLVMValueRef lg = genlCallLlvmIntrinsic(gen, "llvm.log2", llvmtype, &mag, 1);
+            LLVMValueRef third = LLVMBuildFDiv(gen->builder, lg, LLVMConstReal(llvmtype, 3.0), "");
+            LLVMValueRef root = genlCallLlvmIntrinsic(gen, "llvm.exp2", llvmtype, &third, 1);
+            LLVMValueRef neg = LLVMBuildFCmp(gen->builder, LLVMRealOLT, args[0], LLVMConstNull(llvmtype), "");
+            return LLVMBuildSelect(gen->builder, neg, LLVMBuildFNeg(gen->builder, root, ""), root, "");
+        }
+        return genlCallLibm(gen, "cbrt", llvmtype, args, 1);
+    case IsNanIntrinsic:
+        // x != x (unordered or not equal), as SPIR-V's Shader capability has no OpUnordered
+        return LLVMBuildFCmp(gen->builder, LLVMRealUNE, args[0], args[0], "");
+    case IsInfiniteIntrinsic: {
+        LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
+        return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, mag, LLVMConstReal(llvmtype, HUGE_VAL), "");
+    }
+    case IsFiniteIntrinsic: {
+        LLVMValueRef mag = genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
+        return LLVMBuildFCmp(gen->builder, LLVMRealOLT, mag, LLVMConstReal(llvmtype, HUGE_VAL), "");
+    }
     default:
         errorExit(ExitGen, "Internal error: no generation for number intrinsic %d", (int)kind);
         return NULL;
@@ -638,6 +739,26 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case CeilIntrinsic:
     case RoundIntrinsic:
     case FmaIntrinsic:
+    case TanIntrinsic:
+    case AsinIntrinsic:
+    case AcosIntrinsic:
+    case AtanIntrinsic:
+    case Atan2Intrinsic:
+    case ExpIntrinsic:
+    case Exp2Intrinsic:
+    case LnIntrinsic:
+    case Log2Intrinsic:
+    case Log10Intrinsic:
+    case PowIntrinsic:
+    case PowiIntrinsic:
+    case HypotIntrinsic:
+    case CbrtIntrinsic:
+    case SinhIntrinsic:
+    case CoshIntrinsic:
+    case TanhIntrinsic:
+    case IsNanIntrinsic:
+    case IsInfiniteIntrinsic:
+    case IsFiniteIntrinsic:
         return genlNumberIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
     // The two halves of a 64 by 64 bit product, xored. With both operands
@@ -651,6 +772,18 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         LLVMValueRef high = LLVMBuildLShr(gen->builder, product, LLVMConstInt(i128, 64, 0), "mulfoldh");
         return LLVMBuildXor(gen->builder, LLVMBuildTrunc(gen->builder, product, i64, "mulfoldlo"),
             LLVMBuildTrunc(gen->builder, high, i64, "mulfoldhi"), "mulfold");
+    }
+
+    // A hint to the cache: llvm.prefetch(p, read, high locality, data cache). It
+    // is nothing on a GPU or WebAssembly target. The argument was evaluated for
+    // its effects before this, so dropping the call drops only the hint
+    case PrefetchIntrinsic: {
+        if (gen->opt->gpu || gen->opt->wasm)
+            return NULL;
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+        LLVMValueRef args[4] = { fnargs[0], LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 3, 0), LLVMConstInt(i32, 1, 0) };
+        genlCallLlvmIntrinsic(gen, "llvm.prefetch", LLVMTypeOf(fnargs[0]), args, 4);
+        return NULL;
     }
 
     // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on

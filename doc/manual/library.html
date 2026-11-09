@@ -171,10 +171,13 @@ fn main() {
 		<td>File paths taken apart and put together as text; never asks the file system anything.</td></tr>
 	<tr><td><span class="pre">env</span><br><span class="pre">import env;</span></td>
 		<td>The program's environment variables.</td></tr>
+	<tr><td><span class="pre">args</span><br><span class="pre">import args use *;</span></td>
+		<td>The command line read as options and values: <span class="pre">--name value</span>, <span class="pre">--name=value</span>,
+		<span class="pre">-abc</span>, <span class="pre">--</span>, and typed values with errors that name the option.</td></tr>
 	<tr><td><span class="pre">process</span><br><span class="pre">import process;</span></td>
 		<td>Running another program and waiting for it; the program's own arguments.</td></tr>
 	</table>
-	<p>All four are on <a href="lib-fs.html">their own page</a>.</p>
+	<p>All five are on <a href="lib-fs.html">their own page</a>.</p>
 
 	<h3 id="timepkgs">Time</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -183,7 +186,8 @@ fn main() {
 		<td><span class="pre">Duration</span>, <span class="pre">Instant</span>, <span class="pre">Timestamp</span>
 		and <span class="pre">Clock</span>.</td></tr>
 	<tr><td><span class="pre">calendar</span><br><span class="pre">import calendar;</span></td>
-		<td>Civil dates and times over a <span class="pre">Timestamp</span>, and RFC 3339 and HTTP date text.</td></tr>
+		<td>Civil dates and times over a <span class="pre">Timestamp</span>, RFC 3339 and HTTP date text, and a time zone's
+			offset at an instant, from a TZif file's bytes.</td></tr>
 	<tr><td><span class="pre">timewheel</span><br><span class="pre">import timewheel use *;</span></td>
 		<td>Timers that cost almost nothing to arm and cancel, for the I/O loop.</td></tr>
 	</table>
@@ -354,7 +358,7 @@ fn main() i32 {
 	<p><span class="pre">chatapi</span>'s tests run against a mock server on loopback, and
 		<span class="pre">examples/ask.cone</span> takes a base URL, a model, the key's variable and a prompt.</p>
 
-	<h3 id="textpkgs">Text: textdiff, toml and json</h3>
+	<h3 id="textpkgs">Text: textdiff, toml, json and regex</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">textdiff</span><br><span class="pre">import textdiff;</span></td>
@@ -372,6 +376,9 @@ fn main() i32 {
 	<tr><td><span class="pre">json</span><br><span class="pre">import json;</span></td>
 		<td>JSON (RFC 8259) read and written: a value tree, a streaming reader of events, a writer, numbers kept as
 		written and read as i64 or f64 on request, UTF-8 checked. Written in Cone, with no C library.</td></tr>
+	<tr><td><span class="pre">regex</span><br><span class="pre">import regex;</span></td>
+		<td>Regular expressions in Rust's syntax, matched in time linear in the text: no backreferences and no
+		look-around. Captures, iteration over matches, replace and split. Written in Cone, with no C library.</td></tr>
 	</table>
 
 	<h3 id="textdiff">textdiff</h3>
@@ -502,6 +509,96 @@ hello
     "b"
   ]
 }
+</pre>
+
+	<h3 id="regex">regex</h3>
+	<p><i>Status: the first step. It matches in time linear in the text with a Pike VM and nothing faster yet; the
+		Unicode classes wait for the Unicode tables.</i></p>
+	<p><span class="pre">regex.Regex.parse(pattern)</span> compiles a pattern in Rust's regex syntax and answers a
+		<span class="pre">Result[Regex, RegexError]</span>; <span class="pre">parseBytes</span> does the same for text
+		that need not be UTF-8. The compiled <span class="pre">Regex</span> is not changed by a search.
+		<span class="pre">isMatch(text)</span>, <span class="pre">find(text)</span> (a <span class="pre">Match</span> with
+		byte offsets <span class="pre">start</span> and <span class="pre">end</span>), <span class="pre">captures(text)</span>
+		(<span class="pre">get(i)</span> and <span class="pre">named(name)</span> give parts of the text),
+		<span class="pre">matches(text)</span> and <span class="pre">split(text)</span> (cursors), and
+		<span class="pre">replace</span> and <span class="pre">replaceAll</span> (with <span class="pre">$1</span>,
+		<span class="pre">${name}</span> and <span class="pre">$$</span> in the replacement) are the calls;
+		<span class="pre">findFrom</span> and <span class="pre">capturesFrom</span> begin at a byte and still see the
+		text before it. There are no backreferences and no look-around, so no pattern takes more than time
+		proportional to its size times the text's length; a pattern that uses either is refused with an
+		<span class="pre">ErrorKind.Unsupported</span> error. Until the Unicode tables exist, a bare
+		<span class="pre">\d \s \w \b</span>, <span class="pre">\p{..}</span> and <span class="pre">(?i)</span> on a letter
+		are refused rather than taken to mean ASCII: write <span class="pre">(?-u:\w)</span>,
+		<span class="pre">(?i-u)</span> or <span class="pre">[0-9]</span>. A <span class="pre">.</span>, a negated class,
+		a range such as <span class="pre">[α-ω]</span> and a literal <span class="pre">é</span> work on any character
+		already. The package's header lists the syntax, the limits and what is left out.</p>
+	<p><b>Not yet supported, and what lifts it.</b> Each of these is refused when the pattern is parsed, with an
+		<span class="pre">ErrorKind.Unsupported</span> error unless another kind is named. The step numbers are those of the
+		regex design (<span class="pre">Ruminations\regex-design-2026-11-07.md</span>, section 6).</p>
+	<ul>
+		<li><b>Unicode classes and case folding</b>: a bare <span class="pre">\d \s \w \D \S \W</span>, a Unicode
+			<span class="pre">\b</span> or <span class="pre">\B</span>, <span class="pre">\p{..}</span> and
+			<span class="pre">\P{..}</span>, and <span class="pre">(?i)</span> on a letter in Unicode mode (also inside a
+			class). Case folding is refused rather than done for ASCII alone because Rust folds
+			<span class="pre">k</span> to U+212A (the Kelvin sign) and <span class="pre">s</span> to U+017F, so ASCII-only
+			folding would match less than Rust does. Step 6 lifts all of them (range tables from the Unicode work, and
+			simple Unicode case folding). Today <span class="pre">(?-u:\w)</span>, <span class="pre">(?i-u)</span> (which
+			folds ASCII letters) and a class such as <span class="pre">[0-9]</span> say what is meant.</li>
+		<li><b><span class="pre">(?u)</span></b>: Unicode mode is already the default, so setting it again is refused
+			until the tables exist, so that a pattern written for Unicode fails rather than matching less.
+			<span class="pre">(?-u)</span> is accepted. Step 6 accepts <span class="pre">(?u)</span>.</li>
+		<li><b>Classes that could match half a character, in <span class="pre">parse</span></b>: with
+			<span class="pre">(?-u)</span>, <span class="pre">.</span>, <span class="pre">[^a]</span> and
+			<span class="pre">\W</span> can match a lone byte past ASCII, which is not a whole character of the text. A
+			<span class="pre">Regex.parse</span> pattern is refused these, as in Rust; <span class="pre">Regex.parseBytes</span>
+			accepts them, since its text need not be UTF-8. This is by design and no step lifts it. Likewise a character
+			past ASCII written inside a class in ASCII mode, such as <span class="pre">(?-u)[é]</span>, is refused in both
+			forms; in a <span class="pre">parseBytes</span> pattern write its bytes as <span class="pre">\xHH</span>.</li>
+		<li><b>Backreferences</b> (<span class="pre">\1</span>, <span class="pre">(?P=name)</span>) <b>and look-around</b>
+			(<span class="pre">(?=..)</span>, <span class="pre">(?!..)</span>, <span class="pre">(?&lt;=..)</span>,
+			<span class="pre">(?&lt;!..)</span>): they need a backtracking engine that can take exponential time, which
+			the package's guarantee rules out. No step in the design lifts them; they would need a separate engine with its
+			own name and its own warning.</li>
+		<li><b><span class="pre">(?R)</span></b>, the CRLF flag, and <span class="pre">\&lt;</span> and
+			<span class="pre">\&gt;</span>, Rust's word-start and word-end assertions (these two are refused as an
+			unrecognized escape, an <span class="pre">ErrorKind.Syntax</span> error). The design names no step for
+			<span class="pre">(?R)</span> or the CRLF flag. Word-start and word-end can come in their ASCII form, beside the
+			ASCII <span class="pre">\b</span> this first step already has, in any later small step; their Unicode form
+			comes with step 6, which brings the Unicode <span class="pre">\w</span> and <span class="pre">\b</span>.</li>
+		<li><b>Limits</b>: a pattern nested more than 250 deep is a <span class="pre">Syntax</span> error; a repetition
+			count over 1000 and a program of more than 200,000 states are <span class="pre">ErrorKind.TooBig</span>. The
+			design sets no step that raises them. Step 6's Unicode classes make programs larger, and the size-against-speed
+			measurement there decides whether the state limit stays.</li>
+	</ul>
+	<p>In Cone source, write each backslash of a pattern twice (<span class="pre">"\\d+"</span> for
+		<span class="pre">\d+</span>), because raw string literals (<span class="pre">r"..."</span>) are described in the
+		<a href="syntax-lexical.html">lexical rules</a> but not built yet. When they are, a pattern can be written
+		without the doubling.</p>
+<pre>
+mod demo;
+
+import stdio use *;
+import regex;
+
+fn main() i32 {
+  match regex.Regex.parse("(?P&lt;year&gt;[0-9]{4})-(?P&lt;month&gt;[0-9]{2})") {
+    case let Ok(re) {
+      match re.captures("due 2026-11, paid 2026-12") {
+        case let Some(c) { printStr(c.named("year").unwrap()); printStr("\n"); }
+        case is None {}
+      }
+      printStr(re.replaceAll("2026-11 and 2026-12", "$month/$year").view());
+      printStr("\n");
+    }
+    case let Err(e) { printStr((String() &lt;- e).view()); return 1i32; }
+  }
+  0i32
+}
+</pre>
+	<p>prints:</p>
+<pre>
+2026
+11/2026 and 12/2026
 </pre>
 
 	<h3 id="randompkg">Random numbers</h3>
@@ -678,7 +775,9 @@ fn main() i32 {
 		<span class="pre">deflate</span>, <span class="pre">zstd</span> and <span class="pre">fs</span>. Named <span class="pre">zipfile</span>, not <span class="pre">zip</span>, since
 		a module may not share the name of core's <span class="pre">zip</span> function. It uses no actors; an archive arriving as
 		a stream between actors is read by <span class="pre">ArchiveStage</span> in package <span class="pre">archivestage</span>
-		(over <span class="pre">stages</span> and this package), which hands each entry to a sink of its own.</td></tr>
+		(over <span class="pre">stages</span> and this package), which hands each entry to a sink of its own; an archive
+		written to a file without blocking a worker is <span class="pre">saveTo</span> in the same package, over
+		<span class="pre">ZipSource</span> and <span class="pre">stageio</span>.</td></tr>
 	<tr><td><span class="pre">zstd</span><br><span class="pre">import zstd;</span></td>
 		<td>Zstandard (RFC 8878) decompressed (every frame and block form, skippable frames, the content checksum,
 		a raw-content dictionary, a window limit) and compressed at levels 1 to 3 (the reference's fast and
@@ -696,9 +795,11 @@ fn main() i32 {
 		<span class="pre">Result[List[u8], DeflateError]</span>, the error holding a
 		<span class="pre">kind</span> (a bad header, a bad code, a match reaching before the start, a cut stream,
 		a checksum that does not match, more output than allowed, bytes after a gzip file) and a
-		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with the fixed Huffman code) or 2
-		(the same matcher with a dynamic Huffman code per block); level 2 runs about as fast as zlib's level 6 and
-		makes streams a few per cent bigger. The checksums check themselves: a stream that fails its Adler-32,
+		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with one candidate a position and the fixed
+		Huffman code: the fastest) or 2 to 9 (the same matcher with a dynamic Huffman code per block and more
+		candidates the higher the level, the counts miniz_oxide uses; levels 4 to 9 also match lazily, holding a
+		match back one position to see whether the next is longer, as miniz_oxide does; a negative level is
+		zlib's default, 6, and a level over 9 is 9). The checksums check themselves: a stream that fails its Adler-32,
 		its CRC-32 or its length is refused.</p>
 	<p>For a stream that arrives in pieces, or output that must not be held whole, an
 		<span class="pre">Inflater</span> (and a <span class="pre">Deflater</span>) is made for a

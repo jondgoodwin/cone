@@ -50,6 +50,22 @@ registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them.
 type outside the class is refused for `mem.abs[T]` and the rest by `intrinsicClassCheck`
 as for the bit operations; a method asked of a type that lacks it is `ErrorNoMbr`.
 
+**A float's `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`,
+`powi`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `isNaN`, `isInfinite` and `isFinite` are methods
+of the float types alone, declared in C and not in core.** `nbrMathMethods` (`corenumber.c`) adds
+them to `f32` and `f64` after the shared ones, kinds `TanIntrinsic` to `IsFiniteIntrinsic`, each
+node's `typearg` the float type, and they go through `genlDeclaredIntrinsic` to
+`genlNumberIntrinsic` (they are not in the registry, there being no `mem.tan`; a vector does not
+have them). Each is LLVM's overloaded intrinsic of the same meaning (`llvm.tan`, `llvm.atan2`,
+`llvm.log` for `ln`, `llvm.pow`, `llvm.sinh` and the rest), except: `powi` is `llvm.powi` (on a
+GPU, `pow` of the magnitude, negated for a negative base and an odd exponent, and 1 for an
+exponent of 0, because GLSL's `pow` is undefined for a negative base); `hypot` and `cbrt` have no intrinsic, so
+they call the C library by name (`genlCallLibm`; an `f32`'s `hypot` through the double form,
+the UCRT having no `hypotf`), and on a GPU are `sqrt(fma(x, x, y*y))` and the sign of `x` times
+`exp2(log2|x| / 3)`; `isNaN` is `fcmp une x, x` (Shader has no `OpUnordered`), `isInfinite` and
+`isFinite` compare `llvm.fabs` with the infinity. The GPU's math table (`genlGpuMath`) is for C
+bindings and is untouched: these methods reach the GPU as intrinsics, not by C symbol.
+
 **A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`
 (`corenumber.c`) declares both on `bool` alone, valued `LogicAndIntrinsic` and
 `LogicOrIntrinsic` (kinds built in C, below `FirstDeclaredIntrinsic`). They are never
@@ -217,6 +233,7 @@ type while each call gives its own orderings.
 | `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
+| `prefetch[T]` | operation | a call of `llvm.prefetch` overloaded on the argument's pointer type, with constants `i32 0` (read), `i32 3` (high locality) and `i32 1` (data cache); nothing on a GPU or WebAssembly target (`gen->opt->gpu`, `gen->opt->wasm`), the argument having been evaluated before the lowering is reached. Declared in `mem` with an empty fallback body |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes; no write barrier, for moves inside one container |
 | `moveRawInto[T]` | operation | the same `LLVMBuildMemMove`, then, only where `itypeHoldsBarriered(T)`, a loop over `count` calling `genlBarrierAt` on each value now at `to`; for any other `T` it is `moveRaw` exactly. For moves from one container into another (`appendList`, `appendSlice`, the piece join) |
 | `forget[T]` | expansion | nothing: the value is moved into the call, which has no body to finalize it; no code |

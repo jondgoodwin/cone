@@ -1,0 +1,142 @@
+// ======== Writing an archive from an actor: ZipSource, and saveTo over it ========
+//
+// ZipSource is a ChunkSource over a zipfile.ZipWriter: it finishes the writer (if the caller has not),
+// then pulls the archive's bytes into buffers of its link (256 KiB each, in a window of 1 MiB; at FileSource's
+// 64 KiB the write to a file ran 15 to 25 percent over today's sync saveTo, at these sizes it runs under it)
+// and sends each to its sink as 'accept'. One copy of each byte, from the writer's own bytes into the link
+// buffer (ZipWriter.pull into an IoBuf). The stream ends Finished when the writer says Done, so a sink that
+// sees Finished has seen every byte of the archive.
+//
+//   let sink = SomeSink(...);                     // any ChunkSink
+//   let src = ZipSource(sink, writer);            // the writer is moved in: the source owns the archive
+//   src.start();                                  // finishes the archive and sends it
+//
+// WHEN IT STOPS. A sink that stops it (ChunkSource.stop) or a cancelled group ends the stream Failed (with
+// the stop's reason, or "streams: cancelled") once; buffers still lent come back through 'giveBack'. A writer
+// the caller has finished already is simply pulled; one that cannot be finished ends the stream Failed with
+// the writer's error.
+//
+// saveTo writes the archive to a file through stageio's FileSink and answers the caller's 'done' once:
+//
+//   var tx: OneshotSender[Result[u64, AnyError]];
+//   var rx: OneshotReceiver[Result[u64, AnyError]];
+//   tx, rx = Oneshot[Result[u64, AnyError]].make();
+//   saveTo(writer, String.from("out.zip"), tx);
+//   rx.recv();                                    // Some(Ok(n)): n bytes, the whole archive, are in out.zip
+//
+// Ok(n) means the archive is whole in the file. Anything else (the file cannot be opened, a write fails,
+// the group is cancelled, the sink or source stopped) is an Err. saveTo hands the caller's 'done' to a
+// FileSink made with removeOnFailure: once FileSink has opened (made or emptied) the file the file is ours,
+// and any failure after closes and removes it before 'done' is told. If the open itself fails, or the save
+// ends before anything was opened (a group cancelled at the start), the file is not touched: one already
+// there stays. The sync ZipWriter.saveTo, which stays, leaves a partial file.
+//
+// saveTo works in the cancel group of the caller (the group its messages carry); cancel that group and the
+// save ends Err("streams: cancelled"). It blocks no worker beyond FileSink's one removal on failure: the
+// pulls, the open and the writes are actors and aio's.
+
+
+// The size of a chunk ZipSource sends; its window is four of them
+const zipChunk = 262144usize;
+
+// Drains a ZipWriter into the stream, 256 KiB a chunk
+pub actor ZipSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  zip: zipfile.ZipWriter;
+  started: bool;
+  over: bool;                   // the stream has ended
+  halt: bool;                   // stopped or cancelled
+  why: Option[Ending];          // the stop's reason
+
+  pub fn init(self: &new, down: ChunkSink, zip: zipfile.ZipWriter) {
+    *self = Self(down: down, link: ChunkWindow.own(4usize * zipChunk), zip: zip, started: false, over: false,
+      halt: false, why: None[Ending]);
+    down.attach(selfactor);
+  }
+
+  // Finishes the archive and sends it
+  pub async fn start(self) {
+    if started || over { return; }
+    started = true;
+    if !zip.isFinished() {
+      match zip.finish() {
+        case is Ok {}
+        case let Err(e) {
+          self.finish(Ending.Failed(AnyError.from(e)));
+          return;
+        }
+      }
+    }
+    self.pump();
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if over || !started { return; }
+    self.pump();
+  }
+
+  // The consumer wants no more: the stream ends Failed(why), once
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    halt = true;
+    why = Some[Ending](reason);
+    self.finishHalted();
+  }
+
+  // Pulls while there is room in the window
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if halt || actors.isCancelled() {
+        self.finishHalted();
+        more = false;
+      } else {
+        match link.take(zipChunk) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let s = zip.pull(&mut buf, zipChunk);
+            if buf.isEmpty() { link.give(buf); } else { down <- buf; }
+            if s == zipfile.Status.Done {
+              self.finish(Ending.Finished);
+              more = false;
+            } else if s == zipfile.Status.NeedInput {
+              // finished, so this cannot be: do not hang on it
+              self.finish(Ending.Failed(AnyError.msg("archivestage: the archive stopped short")));
+              more = false;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
+  fn finish(self, how: Ending) {
+    if over { return; }
+    over = true;
+    down.end(how);
+  }
+}
+
+// Writes the archive in 'zip' (moved in; finished if it is not) to the file 'name', as the actors of
+// this package do, and answers 'done' once: Ok(bytes written), or Err(why) with no file of ours left
+// (FileSink's removeOnFailure: see stageio)
+pub fn saveTo(zip: zipfile.ZipWriter, name: String, done: OneshotSender[Result[u64, AnyError]]) {
+  let sink = FileSink(name, done, true);
+  let src = ZipSource(sink, zip);
+  src.start();
+}

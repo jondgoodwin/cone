@@ -1,0 +1,538 @@
+// ======== Time zones: the TZif reader and Zone.offsetAt ========
+//
+// Pure arithmetic over bytes: a Zone is made from the contents of a TZif file
+// (RFC 8536), which the caller read from wherever it keeps them; this file
+// reads no file and asks no OS. Only version 2 and later are read, whose
+// times are 64 bits and which end in a footer, a POSIX TZ string giving the
+// rule for every time after the last listed transition; a version 1 file
+// (32-bit times, ending in 2037, no footer) is refused. Both kinds of
+// version 2+ file are read alike: a 'fat' file lists transitions to 2037 and
+// a 'slim' one (the default since tzcode 2020b) lists only those that no rule
+// gives, and both end in the footer's rule.
+//
+// What a Zone answers is a time type: for an instant, the offset from UTC in
+// force, its abbreviation and whether it is daylight saving time.
+//   - Before the first listed transition: the first time type (type 0).
+//   - From one listed transition to the next: the type that transition names.
+//   - From the last one on: the footer's rule, or, when the footer is empty,
+//     the last transition's type for ever.
+//   - With no transition at all: the footer's rule, or type 0.
+//
+// The footer's rule: 'std offset [dst [offset] ,start[/time] ,end[/time]]',
+// the zone's standard name and offset (hours WEST of UTC, so 'EST5' is
+// UTC-5), and, for a zone with daylight saving time, its name, its offset
+// (one hour east of standard when it is left out) and the rules for the day
+// it starts and the day it ends, each 'Mm.w.d' (month, week 1 to 5 with 5
+// the last, weekday 0 for Sunday), 'Jn' (day of the year 1 to 365, counting
+// no 29 February) or 'n' (0 to 365, counting it), at a time of day (default
+// 02:00, a signed 'hh[:mm[:ss]]' up to 167 hours) in the offset in force
+// before it. A name is letters, or letters and digits, '+' and '-' between
+// '<' and '>', at least three characters.
+//
+// A refusal is a core Result's Err holding a TimeError, as the formats'
+// are: the byte of the file it stopped at, from 0, and the reason.
+
+// One time type: seconds east of UTC, whether it is daylight saving time, and
+// its abbreviation as a range of the Zone's characters
+struct ZoneType {
+  off: i32 = 0i32;
+  dst: bool = false;
+  from: usize = 0usize;
+  to: usize = 0usize;
+}
+
+// The day a footer rule names, and the time on it, seconds from midnight
+struct RuleDay {
+  kind: u8 = 0u8;            // 0: Mm.w.d, 1: Jn, 2: n
+  a: i64 = 0i64;             // the month (kind 0) or the day number (kinds 1 and 2)
+  w: i64 = 0i64;             // the week, 1 to 5 (kind 0)
+  d: i64 = 0i64;             // the weekday, 0 (Sunday) to 6 (kind 0)
+  secs: i64 = 7200i64;       // the time of day, signed
+}
+
+// The footer's rule
+struct Footer {
+  present: bool = false;
+  hasDst: bool = false;
+  std: ZoneType = ZoneType();
+  dst: ZoneType = ZoneType();
+  start: RuleDay = RuleDay();
+  end: RuleDay = RuleDay();
+}
+
+// The offset from UTC in force at an instant, and what to call it
+pub struct Offset {
+  pub seconds: i32;            // east of UTC: 3600 is UTC+01:00, -10800 is UTC-03:00
+  pub abbr: &str;              // 'BRT', 'CEST', '-03': the zone's own, as it writes it
+  pub isDst: bool;             // whether it is daylight saving time
+}
+
+// The rules of one place: its listed transitions and its footer rule
+pub struct Zone {
+  times: List[i64];            // the listed transitions, seconds since 1970, ascending
+  which: List[u8];             // the time type each one begins
+  types: List[ZoneType];
+  chars: String;               // the abbreviations, the file's and the footer's
+  footer: Footer;
+
+  // The Zone a TZif file (version 2 or later) describes, or why not
+  pub fn fromTzif(bytes: &Array[u8]) Result[Zone, TimeError] { parseTzif(bytes) }
+
+  // The offset in force at t, its abbreviation and whether it is daylight
+  // saving time. Every instant has one
+  pub fn offsetAt(self: &, t: Timestamp) Offset {
+    let zt = typeAt(self, floorDiv(t.unixNanos(), nsPerSecond));
+    Offset(zt.off, self.chars.view().slice(zt.from, zt.to), zt.dst)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Finding the offset
+// ---------------------------------------------------------------------------
+
+fn typeAt(z: &Zone, secs: i64) ZoneType {
+  let n = z.times.len();
+  if n == 0usize || secs >= *z.times[n - 1usize] {
+    if z.footer.present { return footerType(&z.footer, secs); }
+    if n == 0usize { return *z.types[0usize]; }
+    return *z.types[usize.from(*z.which[n - 1usize])];
+  }
+  if secs < *z.times[0usize] { return *z.types[0usize]; }
+  // times[lo] <= secs < times[hi]
+  var lo = 0usize;
+  var hi = n - 1usize;
+  while hi - lo > 1usize {
+    let mid = lo + (hi - lo) / 2usize;
+    if *z.times[mid] <= secs { lo = mid; } else { hi = mid; }
+  }
+  *z.types[usize.from(*z.which[lo])]
+}
+
+// The type the footer's rule gives at secs: the latest start or end of
+// daylight saving time not after secs, among those of the year before, the
+// year of, and the year after (a rule's time may carry it over a year's edge)
+fn footerType(f: &Footer, secs: i64) ZoneType {
+  if !f.hasDst { return f.std; }
+  let year = i64.from(civilFromDays(floorDiv(secs + i64.from(f.std.off), 86400i64)).year());
+  var best = f.std;
+  var bestAt = 0i64;
+  var found = false;
+  var y = year - 1i64;
+  while y <= year + 1i64 {
+    let startAt = ruleDay(&f.start, y) * 86400i64 + f.start.secs - i64.from(f.std.off);
+    let endAt = ruleDay(&f.end, y) * 86400i64 + f.end.secs - i64.from(f.dst.off);
+    if startAt <= secs && (!found || startAt > bestAt) { found = true; bestAt = startAt; best = f.dst; }
+    if endAt <= secs && (!found || endAt > bestAt) { found = true; bestAt = endAt; best = f.std; }
+    y = y + 1i64;
+  }
+  best
+}
+
+// The day, counted from 1970-01-01, a rule names in year y
+fn ruleDay(r: &RuleDay, y: i64) i64 {
+  let jan1 = daysFromCivil(y, 1i64, 1i64);
+  if r.kind == 1u8 {
+    // Jn: 1 January is 1, 29 February is never counted
+    let skip = if isLeapYear(y) && r.a >= 60i64 {1i64} else {0i64};
+    return jan1 + r.a - 1i64 + skip;
+  }
+  if r.kind == 2u8 { return jan1 + r.a; }
+  // Mm.w.d: the w-th (5: the last) weekday d of month m
+  let first = daysFromCivil(y, r.a, 1i64);
+  let firstWeekday = floorMod(first + 4i64, 7i64);              // 1970-01-01 was a Thursday; 0 is Sunday
+  let day = first + floorMod(r.d - firstWeekday, 7i64) + 7i64 * (r.w - 1i64);
+  if day >= first + daysInMonth(y, r.a) { day - 7i64 } else { day }
+}
+
+// ---------------------------------------------------------------------------
+// Reading a TZif file
+// ---------------------------------------------------------------------------
+
+// A header's counts
+struct TzCounts {
+  version: u8 = 0u8;
+  isUtc: i64 = 0i64;
+  isStd: i64 = 0i64;
+  leap: i64 = 0i64;
+  times: i64 = 0i64;
+  types: i64 = 0i64;
+  chars: i64 = 0i64;
+}
+
+fn byteAt(text: &Array[u8], p: usize) i64 { i64.from(text[p]) }
+
+fn readU32(text: &Array[u8], p: usize) i64 {
+  byteAt(text, p) * 16777216i64 + byteAt(text, p + 1usize) * 65536i64
+    + byteAt(text, p + 2usize) * 256i64 + byteAt(text, p + 3usize)
+}
+
+fn readI32(text: &Array[u8], p: usize) i64 {
+  let v = readU32(text, p);
+  if v >= 2147483648i64 {v - 4294967296i64} else {v}
+}
+
+fn readI64(text: &Array[u8], p: usize) i64 {
+  readI32(text, p) * 4294967296i64 + readU32(text, p + 4usize)
+}
+
+// Whether n more bytes are there; else a failure, 'the file ends inside the
+// transition times'
+fn tzNeed(text: &Array[u8], s: &mut Scan, n: i64, what: &str) bool {
+  if s.failed { return false; }
+  if i64.from(s.pos) + n > i64.from(text.len) {
+    var m = String.from("the file ends inside ");
+    m.append(what);
+    failAt(s, text.len, m.view());
+    return false;
+  }
+  true
+}
+
+// A header: 'TZif', the version, 15 reserved bytes and six counts
+fn scanTzHeader(text: &Array[u8], s: &mut Scan) TzCounts {
+  var c = TzCounts();
+  if !tzNeed(text, s, 44i64, "the header") { return c; }
+  let p = s.pos;
+  if text[p] != 'T' || text[p + 1usize] != 'Z' || text[p + 2usize] != 'i' || text[p + 3usize] != 'f' {
+    failAt(s, p, "not a TZif file: the header does not begin with 'TZif'");
+    return c;
+  }
+  c.version = text[p + 4usize];
+  c.isUtc = readU32(text, p + 20usize);
+  c.isStd = readU32(text, p + 24usize);
+  c.leap = readU32(text, p + 28usize);
+  c.times = readU32(text, p + 32usize);
+  c.types = readU32(text, p + 36usize);
+  c.chars = readU32(text, p + 40usize);
+  s.pos = p + 44usize;
+  c
+}
+
+fn isNameByte(c: u8) bool { isDigit(c) || isLetter(c) || c == '+' || c == '-' }
+
+fn parseTzif(text: &Array[u8]) Result[Zone, TimeError] {
+  var s = newScan();
+  let h1 = scanTzHeader(text, &mut s);
+  if s.failed { return Err[Zone, TimeError](scanError(s)); }
+  if h1.version == 0u8 {
+    failAt(&mut s, 4usize, "this is a version 1 file; only version 2 and later are read");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  if h1.version < '2' || h1.version > '9' {
+    failAt(&mut s, 4usize, "the version is not a TZif version, '2' or later");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  // The version 1 data, which is skipped
+  let size1 = h1.times * 5i64 + h1.types * 6i64 + h1.chars + h1.leap * 8i64 + h1.isStd + h1.isUtc;
+  if !tzNeed(text, &mut s, size1, "the version 1 data") { return Err[Zone, TimeError](scanError(s)); }
+  s.pos = s.pos + usize.from(size1);
+
+  let hp = s.pos;
+  let h = scanTzHeader(text, &mut s);
+  if s.failed { return Err[Zone, TimeError](scanError(s)); }
+  if h.types < 1i64 || h.types > 256i64 {
+    failAt(&mut s, hp + 36usize, "the number of time types is not 1 to 256");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  if h.chars < 1i64 {
+    failAt(&mut s, hp + 40usize, "the abbreviation characters are missing");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  if (h.isUtc != 0i64 && h.isUtc != h.types) || (h.isStd != 0i64 && h.isStd != h.types) {
+    failAt(&mut s, hp + 20usize, "the count of UT and standard indicators is neither 0 nor the number of time types");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  let size2 = h.times * 9i64 + h.types * 6i64 + h.chars + h.leap * 12i64 + h.isStd + h.isUtc;
+  if !tzNeed(text, &mut s, size2, "the data") { return Err[Zone, TimeError](scanError(s)); }
+
+  // The transition times, strictly ascending
+  var times = List[i64]();
+  var p = s.pos;
+  var i = 0i64;
+  while i < h.times {
+    let v = readI64(text, p);
+    if i > 0i64 && v <= *times[usize.from(i - 1i64)] {
+      failAt(&mut s, p, "the transition times are not in ascending order");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    times.push(v);
+    p = p + 8usize;
+    i = i + 1i64;
+  }
+  // The type each transition begins
+  var which = List[u8]();
+  i = 0i64;
+  while i < h.times {
+    if i64.from(text[p]) >= h.types {
+      failAt(&mut s, p, "a transition names a time type that does not exist");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    which.push(text[p]);
+    p = p + 1usize;
+    i = i + 1i64;
+  }
+  // The time types, then the characters of their abbreviations
+  let typesAt = p;
+  let charsAt = p + usize.from(h.types) * 6usize;
+  var j = charsAt;
+  while j < charsAt + usize.from(h.chars) {
+    if text[j] != 0u8 && !isNameByte(text[j]) {
+      failAt(&mut s, j, "an abbreviation holds a character other than a letter, a digit, '+' or '-'");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    j = j + 1usize;
+  }
+  var types = List[ZoneType]();
+  i = 0i64;
+  while i < h.types {
+    let tp = typesAt + usize.from(i) * 6usize;
+    let off = readI32(text, tp);
+    if off == -2147483648i64 {
+      failAt(&mut s, tp, "a UT offset of -2^31 is not allowed");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    if text[tp + 4usize] > 1u8 {
+      failAt(&mut s, tp + 4usize, "the daylight saving flag is neither 0 nor 1");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    let ai = i64.from(text[tp + 5usize]);
+    if ai >= h.chars {
+      failAt(&mut s, tp + 5usize, "an abbreviation index is outside the characters");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    var e = charsAt + usize.from(ai);
+    while e < charsAt + usize.from(h.chars) && text[e] != 0u8 { e = e + 1usize; }
+    if e >= charsAt + usize.from(h.chars) {
+      failAt(&mut s, charsAt + usize.from(ai), "an abbreviation is not ended by a NUL byte");
+      return Err[Zone, TimeError](scanError(s));
+    }
+    var zt = ZoneType();
+    zt.off = i32.from(off);
+    zt.dst = text[tp + 4usize] == 1u8;
+    zt.from = usize.from(ai);
+    zt.to = e - charsAt;
+    types.push(zt);
+    i = i + 1i64;
+  }
+  var chars = String.fromBytes(&text[charsAt..<charsAt + usize.from(h.chars)]);
+
+  // The leap seconds and the indicators, skipped, and then the footer: a
+  // newline, the rule, a newline
+  var fp = charsAt + usize.from(h.chars) + usize.from(h.leap) * 12usize + usize.from(h.isStd) + usize.from(h.isUtc);
+  if fp >= text.len {
+    failAt(&mut s, text.len, "the file ends before the footer");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  if text[fp] != '\n' {
+    failAt(&mut s, fp, "the footer does not begin with a newline");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  var fe = fp + 1usize;
+  while fe < text.len && text[fe] != '\n' { fe = fe + 1usize; }
+  if fe >= text.len {
+    failAt(&mut s, text.len, "the footer is not ended by a newline");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  if fe + 1usize < text.len {
+    failAt(&mut s, fe + 1usize, "unexpected bytes after the footer");
+    return Err[Zone, TimeError](scanError(s));
+  }
+  var footer = Footer();
+  if fe > fp + 1usize {
+    s.pos = fp + 1usize;
+    footer = scanFooter(text, &mut s, fe, &mut chars);
+    if s.failed { return Err[Zone, TimeError](scanError(s)); }
+  }
+  Ok[Zone, TimeError](Zone(times, which, types, chars, footer))
+}
+
+// ---------------------------------------------------------------------------
+// Reading a footer
+// ---------------------------------------------------------------------------
+
+// The byte at the scan, or 0 at the footer's end (e)
+fn footerPeek(text: &Array[u8], s: &Scan, e: usize) u8 {
+  if s.pos < e {text[s.pos]} else {0u8}
+}
+
+fn footerByte(text: &Array[u8], s: &mut Scan, e: usize, c: u8, what: &str) {
+  if s.failed { return; }
+  if s.pos < e && text[s.pos] == c {
+    s.pos = s.pos + 1usize;
+    return;
+  }
+  fail(s, what);
+}
+
+// One to maxDigits digits, their value, or -1 when there is no digit
+fn footerNum(text: &Array[u8], s: &mut Scan, e: usize, maxDigits: usize) i64 {
+  var v = -1i64;
+  var n = 0usize;
+  while n < maxDigits && s.pos < e && isDigit(text[s.pos]) {
+    v = (if v < 0i64 {0i64} else {v}) * 10i64 + i64.from(text[s.pos] - '0');
+    s.pos = s.pos + 1usize;
+    n = n + 1usize;
+  }
+  v
+}
+
+// A name, as a range of chars: its bytes are appended to chars
+fn footerName(text: &Array[u8], s: &mut Scan, e: usize, chars: &mut String) ZoneType {
+  var zt = ZoneType();
+  if s.failed { return zt; }
+  let start = s.pos;
+  var p = start;
+  var from = start;
+  var to = start;
+  if footerPeek(text, s, e) == '<' {
+    p = p + 1usize;
+    from = p;
+    while p < e && text[p] != '>' {
+      if !isNameByte(text[p]) {
+        failAt(s, p, "a name between '<' and '>' may hold only letters, digits, '+' and '-'");
+        return zt;
+      }
+      p = p + 1usize;
+    }
+    if p >= e {
+      failAt(s, start, "a name begun by '<' is not ended by '>'");
+      return zt;
+    }
+    to = p;
+    p = p + 1usize;
+  } else {
+    while p < e && isLetter(text[p]) { p = p + 1usize; }
+    to = p;
+  }
+  if to - from < 3usize {
+    failAt(s, start, "expected a name of at least three characters");
+    return zt;
+  }
+  zt.from = chars.len();
+  chars.appendBytes(&text[from..<to]);
+  zt.to = chars.len();
+  s.pos = p;
+  zt
+}
+
+// '[+-]hh[:mm[:ss]]', its seconds with the sign: for an offset, up to 24
+// hours, and for a rule's time up to 167
+fn footerClock(text: &Array[u8], s: &mut Scan, e: usize, maxHours: i64, what: &str) i64 {
+  if s.failed { return 0i64; }
+  var negative = false;
+  let c = footerPeek(text, s, e);
+  if c == '+' || c == '-' {
+    negative = c == '-';
+    s.pos = s.pos + 1usize;
+  }
+  let hoursAt = s.pos;
+  let hh = footerNum(text, s, e, 3usize);
+  if hh < 0i64 {
+    var m = String.from("expected the hours of ");
+    m.append(what);
+    fail(s, m.view());
+    return 0i64;
+  }
+  if hh > maxHours {
+    var m = String.from("the hours of ");
+    m.append(what);
+    m.append(" are more than ");
+    appendPadded(&mut m, maxHours, 1usize);
+    failAt(s, hoursAt, m.view());
+    return 0i64;
+  }
+  var total = hh * 3600i64;
+  if footerPeek(text, s, e) == ':' {
+    s.pos = s.pos + 1usize;
+    let minAt = s.pos;
+    let mm = footerNum(text, s, e, 2usize);
+    if mm < 0i64 || mm > 59i64 {
+      failAt(s, minAt, "the minutes are not 0 to 59");
+      return 0i64;
+    }
+    total = total + mm * 60i64;
+    if footerPeek(text, s, e) == ':' {
+      s.pos = s.pos + 1usize;
+      let secAt = s.pos;
+      let ss = footerNum(text, s, e, 2usize);
+      if ss < 0i64 || ss > 59i64 {
+        failAt(s, secAt, "the seconds are not 0 to 59");
+        return 0i64;
+      }
+      total = total + ss;
+    }
+  }
+  if negative {0i64 - total} else {total}
+}
+
+// 'Mm.w.d', 'Jn' or 'n', then '/time' if there is one
+fn footerRule(text: &Array[u8], s: &mut Scan, e: usize) RuleDay {
+  var r = RuleDay();
+  if s.failed { return r; }
+  let c = footerPeek(text, s, e);
+  let at = s.pos;
+  if c == 'M' {
+    s.pos = s.pos + 1usize;
+    r.kind = 0u8;
+    r.a = footerNum(text, s, e, 2usize);
+    footerByte(text, s, e, '.', "expected '.' after the month of a rule");
+    r.w = footerNum(text, s, e, 1usize);
+    footerByte(text, s, e, '.', "expected '.' after the week of a rule");
+    r.d = footerNum(text, s, e, 1usize);
+    if s.failed { return r; }
+    if r.a < 1i64 || r.a > 12i64 || r.w < 1i64 || r.w > 5i64 || r.d < 0i64 || r.d > 6i64 {
+      failAt(s, at, "a rule 'Mm.w.d' has a month 1 to 12, a week 1 to 5 and a weekday 0 to 6");
+      return r;
+    }
+  } else if c == 'J' {
+    s.pos = s.pos + 1usize;
+    r.kind = 1u8;
+    r.a = footerNum(text, s, e, 3usize);
+    if r.a < 1i64 || r.a > 365i64 {
+      failAt(s, at, "a rule 'Jn' has a day 1 to 365");
+      return r;
+    }
+  } else if isDigit(c) {
+    r.kind = 2u8;
+    r.a = footerNum(text, s, e, 3usize);
+    if r.a > 365i64 {
+      failAt(s, at, "a rule 'n' has a day 0 to 365");
+      return r;
+    }
+  } else {
+    fail(s, "expected a rule: 'Mm.w.d', 'Jn' or 'n'");
+    return r;
+  }
+  if footerPeek(text, s, e) == '/' {
+    s.pos = s.pos + 1usize;
+    r.secs = footerClock(text, s, e, 167i64, "a rule's time");
+  }
+  r
+}
+
+// A footer from s.pos to e: 'std offset [dst [offset] ,start ,end]'
+fn scanFooter(text: &Array[u8], s: &mut Scan, e: usize, chars: &mut String) Footer {
+  var f = Footer();
+  f.present = true;
+  f.std = footerName(text, s, e, chars);
+  let stdWest = footerClock(text, s, e, 24i64, "the standard offset");
+  if s.failed { return f; }
+  f.std.off = i32.from(0i64 - stdWest);
+  if s.pos >= e { return f; }
+  f.hasDst = true;
+  f.dst = footerName(text, s, e, chars);
+  f.dst.dst = true;
+  var dstWest = stdWest - 3600i64;
+  let c = footerPeek(text, s, e);
+  if c == '+' || c == '-' || isDigit(c) {
+    dstWest = footerClock(text, s, e, 24i64, "the daylight saving offset");
+  }
+  if s.failed { return f; }
+  f.dst.off = i32.from(0i64 - dstWest);
+  footerByte(text, s, e, ',', "expected ',' and the rule for the start of daylight saving time");
+  f.start = footerRule(text, s, e);
+  footerByte(text, s, e, ',', "expected ',' and the rule for the end of daylight saving time");
+  f.end = footerRule(text, s, e);
+  if !s.failed && s.pos < e { fail(s, "unexpected text after the rules"); }
+  f
+}

@@ -965,12 +965,22 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                                     for a in parse_annotations(file, codes)]
             body = source.read_text(encoding="utf-8", errors="replace")
             scenario.last_line = count_lines(body)
-            if scenario.annotations and category not in ANNOTATABLE:
-                first = scenario.annotations[0]
+            # compile and run may annotate a warning (code 3000 and up) and nothing
+            # else: such a scenario is still a program meant to compile, and R3.2
+            # then asserts its warnings exactly.
+            if category in ("compile", "run"):
+                bad = [a for a in scenario.annotations if a.code < 3000]
+            elif category in ANNOTATABLE:
+                bad = []
+            else:
+                bad = list(scenario.annotations)
+            if bad:
+                first = bad[0]
                 raise SuiteError(
                     f"{REPO / first.path}:{first.annot_line}: only a"
                     f" {' or '.join(ANNOTATABLE)} scenario may carry //~"
-                    f" annotations; {name!r} is {category!r}"
+                    f" annotations (a compile or run scenario only for a"
+                    f" warning); {name!r} is {category!r}"
                 )
         # A warn scenario that names no warning asserts nothing its category does
         # not already imply, which is the same hole R3.2 closes for compile.
@@ -2753,17 +2763,23 @@ class Runner:
                     diagnostics: list[Diagnostic], out_dir: Path, spec: RunSpec) -> None:
         """R3.2. compile and run require no diagnostics and explicitly zero
         warnings: warnings do not fail a compile on their own, so an unasserted
-        warning count is silently ignorable."""
+        warning count is silently ignorable. A warning the source annotates with
+        //~ where it is reported is expected, and asserted exactly as a warn
+        scenario's are; any other fails."""
         errors = [d for d in diagnostics if not d.is_warning]
         warnings = [d for d in diagnostics if d.is_warning]
         if errors:
             result.status = FAIL
             result.problems.append("errors, where the category expects none:\n" + indent(
                 "\n".join(d.describe(self.by_number) for d in errors)))
-        if warnings:
+        located = [d for d in warnings if d.line is not None]
+        missing, extra = match_diagnostics(scenario.annotations, located)
+        extra += [d for d in warnings if d.line is None]
+        self.report_missing(result, missing, scenario.source_rel)
+        if extra:
             result.status = FAIL
             result.problems.append("warnings, where the category expects zero:\n" + indent(
-                "\n".join(d.describe(self.by_number) for d in warnings)))
+                "\n".join(d.describe(self.by_number) for d in extra)))
         obj = out_dir / f"{scenario.source.stem}.{object_extension(spec.options)}"
         if result.status == PASS and not obj.exists():
             result.status = FAIL
@@ -2778,8 +2794,17 @@ class Runner:
         leftover = list(unlocated)
         for want in scenario.unlocated:
             code = self.codes.get(want.get("code"))
+            # A diagnostic in an imported package's file is claimed only by an
+            # entry that names that file (``path``, the end of its path); one
+            # that names none claims only what has no file of a package
+            def same_file(d: Diagnostic) -> bool:
+                path = normalize_path(d.path) if d.path else ""
+                if "/packages/" not in path:
+                    return "path" not in want
+                return "path" in want and path.endswith(normalize_path(want["path"]))
             hit = next((d for d in leftover
-                        if d.code == code and want.get("message", "") in d.message), None)
+                        if d.code == code and want.get("message", "") in d.message
+                        and same_file(d)), None)
             if hit:
                 leftover.remove(hit)
             else:
@@ -2818,8 +2843,13 @@ class Runner:
         # include file that failed its self-check -- has no source to be
         # annotated in, so it is matched as an unlocated one is
         generated = self.out_root.relative_to(REPO).as_posix() + "/"
+        # Nor can one in a package the scenario imports (core's own function a
+        # kernel reaches): an [[unlocated]] entry names its code and message
         def in_output(d: Diagnostic) -> bool:
-            return d.path is not None and normalize_path(d.path).startswith(generated)
+            if d.path is None:
+                return False
+            path = normalize_path(d.path)
+            return path.startswith(generated) or "/packages/" in path
         located = [d for d in diagnostics if d.line is not None and not in_output(d)]
         unlocated = [d for d in diagnostics if d.line is None or in_output(d)]
         missing, extra = match_diagnostics(scenario.annotations, located)

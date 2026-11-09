@@ -23,18 +23,10 @@ struct StreamRec {
   group: Option[CancelGroup];      // cancelled when the handle is dropped
   status: u16;
   sink: Option[ChunkSink];         // the body goes to this sink
-  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent
-                                   // (low 32 bits) and its capacity (high 32), 'packLent'. Sound as a key because the release job
-                                   // carries the buffer and clears the record before the buffer dies, so a block cannot be
-                                   // reissued while a record of it stands
-  // The sink's window, in memory: 'sinkHeld' is the capacities of the buffers sent and not yet given back, against
-  // linkWindow. While it is full, a piece's bytes join the staging buffers (the full ones 'staged', then the one being
-  // filled 'tail'), which go to the sink first, in order, as buffers come back. A terminal event sends what is
+  // The buffers lent to the sink and the bytes staged behind its window (lend.cone). A terminal event sends what is
   // still staged, in order, ahead of the end (the sink may never give a buffer back once its reader is gone, so the
   // end cannot wait on that). 'refused' says the pool would not give a staging buffer: the fetch is ending Overloaded
-  sinkHeld: usize;
-  staged: Deque[IoBuf];
-  tail: IoBuf;
+  lend: BodyLend;
   refused: bool;
   // A BodyStream's body waits for the caller's choice ('read' or 'to'): until then 'sink' is None, every piece
   // is staged (the peer stops at its credit window, since nothing is given back), and a terminal event is
@@ -44,18 +36,9 @@ struct StreamRec {
   abandoned: bool;
   // The reason a consumer stopped the stream (BodySource.stop): the end carries it if the fetch ends cancelled
   stopWhy: Option[Ending];
+  // An upload's request body, fed by a sink (upload.cone); 'on' is false for every other stream
+  up: UpState;
 }
-
-// A staging buffer's size (stages' linkBytes, the size a stage makes its chunks): pieces of fewer
-// bytes join a buffer of it. A receive's block is smaller, so a staged buffer is larger than a
-// piece that finds room in the window, and bytes stay in order only because a piece joins
-// whatever is staged
-const stageBlock = 65536usize;
-
-// What 'lent' keeps for a buffer, in one word: its bytes and its capacity
-fn packLent(bytes: usize, cap: usize) usize {(cap << 32usize) | bytes}
-fn lentBytes(v: usize) usize {v & 0xFFFFFFFFusize}
-fn lentCap(v: usize) usize {v >> 32usize}
 
 // A stream opening, its fetch not yet sent: the caller puts its reply in the
 // one open field that answers its type
@@ -65,8 +48,9 @@ fn openingStream(id: u64) StreamRec {
     openEvents: None[actors.ReplyOf[Result[EventStream, FetchError]]],
     openHead: None[actors.ReplyOf[Result[BodyHead, FetchError]]],
     bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[ValueReader[sse.Event, Result[Option[sse.Event], FetchError]]], group: None[CancelGroup],
-    status: 0u16, sink: None[ChunkSink], lent: Dict[usize, usize](), sinkHeld: 0usize, staged: Deque[IoBuf](),
-    tail: IoBuf(), refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending])
+    status: 0u16, sink: None[ChunkSink], lend: newLend(),
+    refused: false, awaiting: false, kept: None[Ending], abandoned: false, stopWhy: None[Ending],
+    up: UpState.idle())
 }
 
 // A reply kept in a stream's record answered in place, and let go
@@ -87,6 +71,11 @@ fn streamOf(rec: &ClientRec, slot: u32, id: u64) *StreamRec {
 }
 
 fn freeStream(rec: &mut ClientRec, slot: usize) {
+  let x = rec.streams.at(u32.from(slot));
+  if x as usize != 0usize && (*x).up.on {
+    let sid = (*x).id;
+    let gone = rec.ups.remove(&sid);
+  }
   rec.streams.removeAt(u32.from(slot));
 }
 
@@ -107,6 +96,13 @@ fn endError(k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
   else {FetchError.cancelled()}
 }
 
+// Why a stream's fetch ended otherwise than Done: its own failure if the service ended it (an upload whose
+// body broke its length), else what the fetch's final answer says
+fn terminalError(s: &StreamRec, k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
+  if s.up.on && s.up.own {return FetchError.failed(s.up.failure.clone());}
+  endError(k, f)
+}
+
 // An event of a stream's fetch (its slot sslot), taken by value: the head answers
 // the caller's 'await' (with the handle the stream's kind is read through); each
 // piece is sent on as it is, the IoBuf moved and its bytes held from the client
@@ -115,11 +111,21 @@ fn endError(k: httpclient.EventKind, f: &httpclient.Failure) FetchError {
 fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: usize) {
   let s = rec.streams.at(u32.from(sslot)) as &mut StreamRec;
   let k = e.kind;
+  if k == httpclient.EventKind.BodyRoom {
+    // an upload's connection has taken every piece pushed: the originals behind them go back, the next piece goes
+    upRoom(rec, lp, s);
+    return;
+  }
+  if k == httpclient.EventKind.BodyEnded {
+    // a response came before the body was all sent: the source is stopped Finished
+    upSettle(s, true, httpclient.EventKind.Done, httpclient.Failure.none());
+    return;
+  }
   if k == httpclient.EventKind.Response {
     let response, url = e.(response, url);
     let status, version, headers = response.(status, version, headers);
     s.status = status;
-    if s.openBody is Some {
+    if s.openBody is Some || s.up.on {
       var reader = None[ReaderSink[Result[Option[String], FetchError]]];
       reader <-> s.bodyReader;
       var group = None[CancelGroup];
@@ -128,9 +134,16 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
         case let Some(rd) {
           match group {
             case let Some(g) {
-              answerKept[Result[BodyStream, FetchError]](&mut s.openBody,
-                Ok[BodyStream, FetchError](BodyStream(rd, g, status, version, headers, url,
-                  Atomic[u8].of(bodyUnchosen), rec.id, u32.from(sslot), s.id)));
+              if s.openBody is Some {
+                answerKept[Result[BodyStream, FetchError]](&mut s.openBody,
+                  Ok[BodyStream, FetchError](BodyStream(rd, g, status, version, headers, url,
+                    Atomic[u8].of(bodyUnchosen), rec.id, u32.from(sslot), s.id)));
+              } else {
+                // an upload whose 'stream' is not asked yet: its reader and group wait with the head
+                s.bodyReader = Some[ReaderSink[Result[Option[String], FetchError]]](rd);
+                s.group = Some[CancelGroup](g);
+                s.up.head = Some[UpHead](UpHead(status, version, headers, url));
+              }
               s.awaiting = true;
             }
             else {}
@@ -167,7 +180,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     if !(s.sink is Some) {
       // the body waits for the caller's choice: staged, in order, sent nowhere. Nothing is given
       // back, so the peer stops at its credit window; the pool's refusal ends the fetch Overloaded
-      if !stagePiece(s, &buf) {
+      if !stagePiece(&mut s.lend, &buf) {
         s.refused = true;
         rec.client.cancel(lp, s.fetch);
       }
@@ -176,21 +189,38 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     // With room in the sink's window, and nothing staged before it, the piece
     // goes at once; else its bytes join the staging buffers (while anything is
     // staged, a piece joins it, so bytes stay in order) and its block dies
-    if stagingEmpty(s) && hasRoom(s, buf.capacity()) {
-      deliver(s, buf);
-    } else if !stagePiece(s, &buf) {
+    if stagingEmpty(&s.lend) && hasRoom(&s.lend, buf.capacity()) {
+      deliver(&mut s.lend, &s.sink, buf);
+    } else if !stagePiece(&mut s.lend, &buf) {
       s.refused = true;
       rec.client.cancel(lp, s.fetch);
     }
   } else if e.isTerminal() {
+    if s.up.on {
+      // the upload's source is stopped (Finished if the fetch is Done) and the originals still held go back
+      if k == httpclient.EventKind.Done {upSettle(s, true, k, httpclient.Failure.none());}
+      else {upSettle(s, false, k, e.failure.clone());}
+    }
     if s.openBody is Some {
-      answerKept[Result[BodyStream, FetchError]](&mut s.openBody, Err[BodyStream, FetchError](endError(k, &e.failure)));
+      answerKept[Result[BodyStream, FetchError]](&mut s.openBody, Err[BodyStream, FetchError](terminalError(s, k, &e.failure)));
     }
     if s.openEvents is Some {
       answerKept[Result[EventStream, FetchError]](&mut s.openEvents, Err[EventStream, FetchError](endError(k, &e.failure)));
     }
     if s.openHead is Some {
       answerKept[Result[BodyHead, FetchError]](&mut s.openHead, Err[BodyHead, FetchError](endError(k, &e.failure)));
+    }
+    if s.up.on && !s.awaiting && !(s.sink is Some) {
+      // an upload that ended before its head: 'stream' (asked now or later) is answered with the error,
+      // which waits in the record (freed at once if the Upload is gone)
+      if s.up.called || s.up.dropped {
+        // (the reply was answered above, or nobody will ask)
+        freeStream(rec, sslot);
+        unrefClient(rec, lp);
+      } else {
+        s.up.err = Some[FetchError](terminalError(s, k, &e.failure));
+      }
+      return;
     }
     var stopWhy = None[Ending];
     stopWhy <-> s.stopWhy;
@@ -199,7 +229,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
       else {
         match stopWhy {
           case let Some(w) { w }
-          case is None { Ending.Failed(AnyError.from(endError(k, &e.failure))) }
+          case is None { Ending.Failed(AnyError.from(terminalError(s, k, &e.failure))) }
         }
       };
     if s.awaiting && !(s.sink is Some) {
@@ -221,7 +251,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
 // still staged goes first, in order, whatever the window (no more bytes are coming, and the
 // staged bytes are bounded by the connection's credit)
 fn finishStream(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec, sslot: usize, how: Ending) {
-  while !stagingEmpty(s) {sendStaged(s);}
+  while !stagingEmpty(&s.lend) {sendStaged(&mut s.lend, &s.sink);}
   var held = None[ChunkSink];
   held <-> s.sink;
   match held {
@@ -230,79 +260,6 @@ fn finishStream(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec, sslot: us
   }
   freeStream(rec, sslot);
   unrefClient(rec, lp);
-}
-
-// Whether nothing is staged
-fn stagingEmpty(s: &StreamRec) bool {s.staged.isEmpty() && s.tail.len() == 0usize}
-
-// Whether the sink's window has room for a buffer of capacity cap: always for the
-// first, so a buffer larger than the window cannot stall the stream
-fn hasRoom(s: &StreamRec, cap: usize) bool {s.sinkHeld == 0usize || s.sinkHeld + cap <= linkWindow}
-
-// A buffer sent to the sink: recorded in 'lent' (its bytes, for the credit it
-// gives back; its capacity, for the window) before it goes
-fn deliver(s: &mut StreamRec, buf: IoBuf) {
-  let at = buf.base() as usize;
-  let n = buf.len();
-  let cap = buf.capacity();
-  let before = s.lent.getCopy(&at) || 0usize;
-  if before == 0usize {
-    s.lent.insert(at, packLent(n, cap));
-    s.sinkHeld = s.sinkHeld + cap;
-  } else {
-    s.lent.insert(at, packLent(lentBytes(before) + n, lentCap(before)));
-  }
-  match &s.sink {
-    case let &Some(sk) {sk.accept(buf);}
-    else {}
-  }
-}
-
-// A piece's bytes added to the staging buffers; false if the pool refused one
-fn stagePiece(s: &mut StreamRec, buf: &IoBuf) bool {
-  let n = buf.len();
-  var off = 0usize;
-  while off < n {
-    if s.tail.room() == 0usize {
-      if s.tail.len() > 0usize {
-        var full = IoBuf();
-        full <-> s.tail;
-        s.staged.push(full);
-      }
-      let want = n - off;
-      match IoBuf.tryMake(if want > stageBlock {want} else {stageBlock}) {
-        case let Some(b) {s.tail = b;}
-        else {return false;}
-      }
-    }
-    off = off + s.tail.append(mem.sliceFromParts(buf.base() + off, n - off));
-  }
-  true
-}
-
-// The first staged buffer sent to the sink
-fn sendStaged(s: &mut StreamRec) {
-  match s.staged.popFront() {
-    case let Some(b) {deliver(s, b);}
-    else {
-      var t = IoBuf();
-      t <-> s.tail;
-      deliver(s, t);
-    }
-  }
-}
-
-// Staged buffers sent to the sink, in order, while its window has room
-fn drainStaged(s: &mut StreamRec) {
-  while !stagingEmpty(s) {
-    var cap = s.tail.capacity();
-    match s.staged.peekFront() {
-      case let Some(b) {cap = b.capacity();}
-      else {}
-    }
-    if !hasRoom(s, cap) {return;}
-    sendStaged(s);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,14 +382,10 @@ struct StreamReleaseJob {
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
-    let at = buf.base() as usize;
-    let v = st.lent.remove(&at) || 0usize;
-    // the window reopens by the capacity recorded when the buffer was sent, never by what it comes back as
-    let c = lentCap(v);
-    st.sinkHeld = if c < st.sinkHeld {st.sinkHeld - c} else {0usize};
-    let m = lentBytes(v);
+    // the record is cleared and the window reopens (lendReturn); the credit it names goes back to the client
+    let m = lendReturn(&mut st.lend, buf.base() as usize);
     if m > 0usize {rec.client.release(st.fetch, m);}
-    drainStaged(st);
+    drainStaged(&mut st.lend, &st.sink);
   }
 }
 
@@ -468,7 +421,7 @@ struct BodyChoiceJob {
         st.awaiting = false;
         st.sink = Some[ChunkSink](x.clone());
         x.attach(BodySource(client, slot, id));
-        drainStaged(st);
+        drainStaged(&mut st.lend, &st.sink);
         var how = None[Ending];
         how <-> st.kept;
         match how {

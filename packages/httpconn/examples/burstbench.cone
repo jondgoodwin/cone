@@ -1,0 +1,411 @@
+// burstbench: a connection burst, then a few steady connections, and the memory still held afterwards
+// (pool migration, step 0; the churn bench the earlier measurements lacked, and the shape lane 1's
+// connection-pool cases reuse). One thread, one Loop and one Driver, both ends of every connection in
+// this process, on 127.0.0.1 only. Build it optimised to measure:
+//
+//   congo run --release packages/httpconn/examples/burstbench.cone -- 1000 10 1000
+//
+// The arguments are 'conns' (connections in the burst, default 1000), 'steady' (connections kept, and
+// kept busy, afterwards, default 10) and 'ms' (how long the steady part runs, default 1000). On Linux
+// raise the descriptor limit first (ulimit -n 65536): both ends make 2 x conns descriptors.
+//
+// Five rows, one line each, in order:
+//
+//   up      conns connections opened (64 at a time) with one GET each answered with 64 bytes: ns per
+//           connection from the connect to its Done, the pool's peak held and lent bytes and the
+//           process's peak private bytes over the start
+//   down    all but 'steady' closed: ns per connection closed until the driver has settled
+//   steady  the kept connections making GETs one after another for 'ms': ns and requests per second,
+//           and the mean private bytes and pool bytes held over the part
+//   held    after the settle and a pool trim: the private bytes and pool bytes still held above the
+//           start with the kept connections open (the memory left behind by the burst)
+//   end     every connection closed and the driver settled: the same two numbers
+//
+// Memory is two sources: the process's private bytes (Windows' PrivateUsage; Linux's data size,
+// VmData), and the buffer pool's own 'iobuf.stats().heldBytes' (bytes held from the OS, lent and
+// idle). The start is taken after a warm-up of 64 connections and a trim. CPU is the process's user
+// plus kernel time against wall time over the row. Each row's memory is above the one start. Each run
+// leaves a few thousand ephemeral ports in TIME_WAIT (Windows: two minutes): back to back runs can
+// fail to connect, and the row says NOT DONE.
+
+mod burstbench;
+
+import stdio use *;
+import libc;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 0x10000000u64;      // the server's sink
+const tokConn = 0x20000000u64;        // a client connection's: + its number
+const tokReq = 0x30000000u64;         // a request's: + its connection's number
+
+// ---- the meter: wall time, process CPU time and private bytes ----
+//
+// Memory is the process's private bytes (Windows' PrivateUsage; Linux's data size, VmData), read from
+// the OS, because these structures have no stats of their own. CPU is the process's user plus kernel time
+// against the wall time, so a row on one busy thread reads near 100%.
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
+  fn @c(system) GetProcessTimes(process: usize, creation: *u64, exit: *u64, kernel: *u64, user: *u64) i32;
+}
+
+struct PosixClock {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
+
+fn privateBytes() u64 {
+  #if #os == .windows {
+    var c = Array[usize, 10]() <- fill 0usize;
+    let p = &mut c as *u8;
+    *(p as *u32) = 80u32;
+    K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+    u64.from(c[9usize])
+  } #else {
+    dataBytes()
+  }
+}
+
+// Linux: the sixth number of /proc/self/statm (size resident shared text lib data dt), in 4096-byte pages
+fn dataBytes() u64 {
+  let f = libc.fopen("/proc/self/statm", "rb");
+  if f == null {return 0u64;}
+  var buf = Array[u8, 256]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
+  libc.fclose(f);
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
+  while k < n {
+    let c = buf[k];
+    if c >= '0' && c <= '9' {
+      if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
+    } else {
+      field = field + 1u32;
+    }
+    k = k + 1usize;
+  }
+  value * 4096u64
+}
+
+// The process's CPU time so far, in nanoseconds (user plus kernel)
+fn cpuNanos() u64 {
+  #if #os == .windows {
+    var c = 0u64;
+    var e = 0u64;
+    var k = 0u64;
+    var u = 0u64;
+    GetProcessTimes(GetCurrentProcess(), &mut c as *u64, &mut e as *u64, &mut k as *u64, &mut u as *u64);
+    (k + u) * 100u64
+  } #else {
+    var ts = PosixClock(0i64, 0i64);
+    clock_gettime(2i32, &mut ts as *PosixClock);
+    u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+  }
+}
+
+// One row's meter: started at the row's beginning, sampled at its steps
+struct Meter {
+  base: u64;          // private bytes at the start
+  peak: u64;          // the highest sample
+  steadySum: u64;     // the samples taken in the steady part, summed
+  steadyN: u64;
+  cpu0: u64;
+  t0: Instant;
+
+  fn start() Meter {
+    let b = privateBytes();
+    Meter(b, b, 0u64, 0u64, cpuNanos(), Instant.now())
+  }
+
+  // Read the memory now; 'steady' marks a sample of the steady part
+  fn sample(self: &mut, steady: bool) {
+    let p = privateBytes();
+    if p > peak {peak = p;}
+    if steady {
+      steadySum = steadySum + p;
+      steadyN = steadyN + 1u64;
+    }
+  }
+
+  // KiB above the start (signed: a row can end below where it began)
+  fn peakKiB(self: &) i64 { (i64.from(peak) - i64.from(base)) / 1024i64 }
+  fn steadyKiB(self: &) i64 {
+    if steadyN == 0u64 {return 0i64;}
+    (i64.from(steadySum / steadyN) - i64.from(base)) / 1024i64
+  }
+  fn nowKiB(self: &) i64 { (i64.from(privateBytes()) - i64.from(base)) / 1024i64 }
+
+  // Process CPU against wall time since the start, in percent
+  fn cpuPercent(self: &) u64 {
+    let wall = u64.from(t0.elapsed().nanos());
+    if wall == 0u64 {return 0u64;}
+    (cpuNanos() - cpu0) * 100u64 / wall
+  }
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+// Answer a server's request: 200 and 64 bytes
+fn answer(drv: &mut Driver, e: &mut Event) {
+  drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+  var b = IoBuf(64usize);
+  b.setLen(64usize);
+  drv.sendData(e.req, b);
+  drv.finish(e.req);
+}
+
+// The listening driver's port
+fn listenOn(drv: &mut Driver, lp: &mut Loop) u16 {
+  var port = 0u16;
+  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {
+      match drv.localAddr(lp, r) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  port
+}
+
+// What the events of a part counted
+struct Tally {
+  connected: u64;
+  closed: u64;            // client connections closed (a failed connect, a break, or our own close)
+  dones: u64;
+  failed: u64;            // requests that ended without Done
+  finished: List[usize];  // the client connections whose request has just ended, either way
+
+  fn make() Tally { Tally(0u64, 0u64, 0u64, 0u64, List[usize]()) }
+}
+
+// Take one event: the server answers, the clients count
+fn handle(drv: &mut Driver, e: &mut Event, t: &mut Tally) {
+  if e.token == tokServer {
+    if e.kind == EventKind.Request {answer(drv, e);}
+  } else if e.kind == EventKind.Data {
+    drv.release(e.req, e.buf.len());
+  } else if e.token >= tokReq {
+    if e.kind == EventKind.Done {
+      t.dones = t.dones + 1u64;
+      t.finished.push(usize.from(e.token - tokReq));
+    } else if e.isTerminal() {
+      t.failed = t.failed + 1u64;
+      t.finished.push(usize.from(e.token - tokReq));
+    }
+  } else if e.token >= tokConn {
+    if e.kind == EventKind.Connected {t.connected = t.connected + 1u64;}
+    else if e.kind == EventKind.Closed {t.closed = t.closed + 1u64;}
+  }
+}
+
+// Poll until 'until' (or the first events), handling what comes
+fn pollOnce(drv: &mut Driver, lp: &mut Loop, until: Instant, t: &mut Tally) {
+  var events = List[Event]();
+  drv.poll(lp, until, &uni events);
+  var j = 0usize;
+  while j < events.len() {
+    handle(drv, &mut events[j], t);
+    j = j + 1usize;
+  }
+}
+
+// Poll until the driver has 'target' connections or 'seconds' pass
+fn settle(drv: &mut Driver, lp: &mut Loop, target: u32, seconds: i64, m: &mut Meter) {
+  let until = Instant.now() + Duration.fromSeconds(seconds);
+  var t = Tally.make();
+  while drv.live() > target && Instant.now() < until {
+    pollOnce(drv, lp, until, &mut t);
+    m.sample(false);
+  }
+}
+
+// Poll for 'millis', handling events
+fn idleFor(drv: &mut Driver, lp: &mut Loop, millis: i64) {
+  let until = Instant.now() + Duration.fromMillis(millis);
+  var t = Tally.make();
+  while Instant.now() < until {
+    pollOnce(drv, lp, until, &mut t);
+  }
+}
+
+// A meter whose start is the bench's (the start of memory, not of the row)
+fn meterAt(base0: u64) Meter {
+  var m = Meter.start();
+  m.base = base0;
+  m.peak = base0;
+  m
+}
+
+// The pool's bytes held from the OS, lent and idle
+fn poolHeld() i64 { i64.from(stats().heldBytes) }
+
+fn kib(bytes: i64) i64 { bytes / 1024i64 }
+
+fn main(argc: i32, argv: **u8) i32 {
+  var conns = 1000u64;
+  var steady = 10u64;
+  var ms = 1000u64;
+  if argc > 1i32 { conns = u64.from(digits(*(argv + 1usize))); }
+  if argc > 2i32 { steady = u64.from(digits(*(argv + 2usize))); }
+  if argc > 3i32 { ms = u64.from(digits(*(argv + 3usize))); }
+  if steady > conns { steady = conns; }
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
+  cfg.acceptDepth = 64u32;
+  var drv = Driver.make(cfg);
+  let port = listenOn(&mut drv, &mut lp);
+
+  // Warm: the tables and the pool's first blocks (64 connections, one GET each, then closed)
+  {
+    var t = Tally.make();
+    var w = List[ConnId]();
+    var k = 0u64;
+    while k < 64u64 {
+      let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength(), Sink.Here(tokReq + k));
+      w.push(c);
+      k = k + 1u64;
+    }
+    while t.dones + t.failed < 64u64 {
+      pollOnce(&mut drv, &mut lp, forever(), &mut t);
+    }
+    k = 0u64;
+    while k < 64u64 {
+      drv.close(&mut lp, *w[usize.from(k)]);
+      k = k + 1u64;
+    }
+    var scratch = meterAt(0u64);
+    settle(&mut drv, &mut lp, 0u32, 5i64, &mut scratch);
+  }
+  trim();
+  let base0 = privateBytes();
+  let held0 = poolHeld();
+  print <- "burstbench: ", conns, " connections, ", steady, " steady for ", ms, " ms; start private ", kib(i64.from(base0)),
+    " KiB, pool held ", kib(held0), " KiB\n";
+
+  // ---- up ----
+  var cs = List[ConnId]();
+  var up = Tally.make();
+  var peakHeld = held0;
+  var peakLent = 0i64;
+  var m = meterAt(base0);
+  while up.dones + up.failed < conns {
+    if u64.from(cs.len()) < conns && u64.from(cs.len()) < up.connected + up.closed + 64u64 {
+      let k = u64.from(cs.len());
+      let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength(), Sink.Here(tokReq + k));
+      cs.push(c);
+      continue;
+    }
+    pollOnce(&mut drv, &mut lp, forever(), &mut up);
+    m.sample(false);
+    let s = stats();
+    if i64.from(s.heldBytes) > peakHeld {peakHeld = i64.from(s.heldBytes);}
+    if i64.from(s.lentBytes) > peakLent {peakLent = i64.from(s.lentBytes);}
+  }
+  let upNs = m.t0.elapsed().nanos();
+  print <- "up: ", conns, " connections, ", up.dones, " Done, ", drv.live() / 2u32, " open now: ", upNs / i64.from(conns),
+    " ns a connection (", upNs / 1000000i64, " ms); pool held peak +", kib(peakHeld - held0), " KiB, lent peak ", kib(peakLent),
+    " KiB; private KiB over the start: peak ", m.peakKiB(), "; cpu ", m.cpuPercent(), "%",
+    if up.dones != conns { " NOT DONE" } else { "" }, "\n";
+
+  // ---- down: all but the first 'steady' closed ----
+  m = meterAt(base0);
+  var k = steady;
+  while k < u64.from(cs.len()) {
+    drv.close(&mut lp, *cs[usize.from(k)]);
+    k = k + 1u64;
+  }
+  let target = u32.from(steady * 2u64);
+  settle(&mut drv, &mut lp, target, 20i64, &mut m);
+  let closing = u64.from(cs.len()) - steady;
+  let downNs = m.t0.elapsed().nanos();
+  print <- "down: ", closing, " closed, ", drv.live() / 2u32, " open now: ", if closing > 0u64 { downNs / i64.from(closing) } else { 0i64 },
+    " ns a connection (", downNs / 1000000i64, " ms); private KiB over the start: peak ", m.peakKiB(), "; cpu ", m.cpuPercent(), "%",
+    if drv.live() != target { " NOT DONE" } else { "" }, "\n";
+
+  // ---- steady: the kept connections make GETs one after another for 'ms' ----
+  m = meterAt(base0);
+  var heldSum = 0i64;
+  var heldN = 0i64;
+  var st = Tally.make();
+  var sent = 0u64;
+  var busy = List[bool]();
+  k = 0u64;
+  while k < steady {
+    busy.push(false);
+    k = k + 1u64;
+  }
+  let stop = Instant.now() + Duration.fromMillis(i64.from(ms));
+  var inFlight = 0u64;
+  while Instant.now() < stop || inFlight > 0u64 {
+    if Instant.now() < stop {
+      k = 0u64;
+      while k < steady {
+        if !*busy[usize.from(k)] {
+          drv.request(&mut lp, *cs[usize.from(k)], RequestHead.get("/x", "127.0.0.1"), BodyLength(), Sink.Here(tokReq + k));
+          busy.set(usize.from(k), true);
+          sent = sent + 1u64;
+          inFlight = inFlight + 1u64;
+        }
+        k = k + 1u64;
+      }
+    }
+    pollOnce(&mut drv, &mut lp, Instant.now() + Duration.fromMillis(50i64), &mut st);
+    var j = 0usize;
+    while j < st.finished.len() {
+      busy.set(*st.finished[j], false);
+      inFlight = inFlight - 1u64;
+      j = j + 1usize;
+    }
+    st.finished.clear();
+    m.sample(true);
+    heldSum = heldSum + poolHeld();
+    heldN = heldN + 1i64;
+  }
+  let steadyNs = m.t0.elapsed().nanos();
+  print <- "steady: ", steady, " connections, ", st.dones, " requests of ", sent, " in ", steadyNs / 1000000i64, " ms: ",
+    if st.dones > 0u64 { steadyNs / i64.from(st.dones) } else { 0i64 }, " ns a request, ",
+    if steadyNs > 0i64 { i64.from(st.dones) * 1000000000i64 / steadyNs } else { 0i64 },
+    " requests/s; private KiB over the start: peak ", m.peakKiB(), ", steady ", m.steadyKiB(), "; pool held steady ",
+    kib(heldSum / heldN - held0), " KiB over the start; cpu ", m.cpuPercent(), "%",
+    if st.dones != sent || st.failed > 0u64 { " NOT DONE" } else { "" }, "\n";
+
+  // ---- held: after the settle and a trim, with the kept connections open ----
+  m = meterAt(base0);
+  idleFor(&mut drv, &mut lp, 200i64);
+  trim();
+  print <- "held: ", drv.live() / 2u32, " connections open: private KiB over the start ", m.nowKiB(), ", pool held ",
+    kib(poolHeld() - held0), " KiB over the start (", stats().slabs, " slabs, ", kib(i64.from(stats().idleBytes)),
+    " KiB idle in them); cpu ", m.cpuPercent(), "%\n";
+
+  // ---- end: everything closed ----
+  m = meterAt(base0);
+  drv.abortAll(&mut lp);
+  var evs = List[Event]();
+  drv.pump(&mut lp, &uni evs);
+  idleFor(&mut drv, &mut lp, 200i64);
+  trim();
+  print <- "end: ", drv.live() / 2u32, " connections open: private KiB over the start ", m.nowKiB(), ", pool held ",
+    kib(poolHeld() - held0), " KiB over the start; cpu ", m.cpuPercent(), "%\n";
+  if up.dones != conns {1i32} else {0i32}
+}

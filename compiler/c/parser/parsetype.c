@@ -228,13 +228,15 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 }
 
 // Parse a named constant declaration
-ConstDclNode *parseConstDcl(ParseState *parse) {
+ConstDclNode *parseConstDcl(ParseState *parse, int member) {
     ConstDclNode *constnode;
     lexNextToken();
 
     // Obtain name
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected name for const declaration");
+        if (member)
+            parseSkipToNextStmt();
         return newConstDclNode(anonName);
     }
     constnode = newConstDclNode(lex->val.ident);
@@ -254,7 +256,10 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     else {
         errorMsgLex(ErrorNoInit, "Must specify const value.");
     }
-    parseEndOfStatement();
+    if (member)
+        parseEndOfMember();
+    else
+        parseEndOfStatement();
 
     return constnode;
 }
@@ -1007,6 +1012,24 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
             continue;
         }
         parseBadStatic(staticflag);
+        // A fixed value of the type's own, folded where it is used and held in no
+        // storage: reached as Type.name from outside and by its bare name from the
+        // type's own functions, never through a value of the type
+        if (lexIsToken(ConstToken)) {
+            const char *refused = NULL;
+            if ((strnode->flags & TraitType) && !isenum)
+                refused = "a trait: a trait's requirement of a constant is not built";
+            ConstDclNode *cdcl = parseConstDcl(parse, 1);
+            cdcl->flags |= pubflag;
+            if (refused)
+                errorMsgNode((INode*)cdcl, ErrorConstPlace,
+                    "A 'const' in the braces of a type is built for a struct or an enum; this is %s.", refused);
+            else if (cdcl->namesym != anonName) {
+                iNsTypeAddConst((INsTypeNode*)strnode, cdcl);
+                parseSpan(parse, &strnode->spans, (INode*)cdcl, mstart, mkw, SpanDcl);
+            }
+            continue;
+        }
         // 'extern' before a method or a type's function: defined elsewhere,
         // so written without a body, as an include file declares what a
         // package's object defines. Its symbol is the one the definition
@@ -1405,7 +1428,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode = stdlibAdoptCStr(lex->val.ident, parse->mod);
     if (strnode == NULL && named)
         strnode = stdlibAdoptArray(lex->val.ident, parse->mod);
-    if (strnode == NULL)
+    if (strnode != NULL) {
+        // The compiler made the node before any source was read, so it holds
+        // the start-up lexer; it belongs to the file that declares it, whose
+        // line marks (a package's include file) say it records the package's
+        // verdicts (struct.c: ShapeKeeping, shapeinfer.c: siIsRecorded)
+        strnode->lexer = lex;
+        strnode->srcp = lex->tokp;
+        strnode->linep = lex->linep;
+        strnode->linenbr = lex->linenbr;
+    }
+    else
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;

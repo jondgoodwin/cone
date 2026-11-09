@@ -40,6 +40,7 @@
 //
 //   Client.make(config)  getWhole(url, limit)                   (THE CLIENT)
 //   c.get(lp, url, sink)  c.send(lp, request, sink)  c.fetchWhole(lp, request, limit)  (FETCHING)
+//   c.sendUpload(lp, request, sink, framing)  c.pushBody(lp, id, buf)  c.endBody(lp, id)  (A STREAMED BODY)
 //   c.release(id, n)  c.cancel(lp, id)  c.reprioritize(id, intent, score)
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
@@ -55,7 +56,7 @@
 //   Sink.Here(token)                                                    (SINKS)
 //   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
 //     e.trailers e.failure e.timing;  e.isTerminal()
-//   EventKind: Response Data End Done Failed Cancelled TimedOut;  toDebug(k)
+//   EventKind: Response Data End BodyRoom BodyEnded Done Failed Cancelled TimedOut;  toDebug(k)
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
 //   Failure: f.stage f.code f.error f.unsent f.attempts String() <- f;  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
@@ -73,8 +74,8 @@
 // FETCHING. 'get(lp, url, sink)' is a GET of a URL written as text;
 // 'send(lp, request, sink)' sends a Request, which says its method, URL,
 // header fields, body (whole, as bytes: sent with its Content-Length, so a
-// retry or a 307 can send it again; streaming a request's body is not here
-// yet), intent and score, deadline, group, and how many redirects it
+// retry or a 307 can send it again; a body sent as it is produced is A
+// STREAMED BODY), intent and score, deadline, group, and how many redirects it
 // follows. Each gives a FetchId and later exactly one final answer, Done,
 // Failed, Cancelled or TimedOut, and nothing after it (invariant I1). Before
 // it: Response (the head of the response that will be the answer, after any
@@ -218,7 +219,8 @@
 // its GOAWAY's last (http's ErrorKind.Refused: not processed) -- is tried
 // again whatever its method, and a stream it reset (ErrorKind.Reset) only
 // when no byte of a response came and its method is idempotent. At most
-// 'maxRetries' times (2), and never once its Response has gone to its sink.
+// 'maxRetries' times (2), and never once its Response has gone to its sink,
+// nor for a streamed body (A STREAMED BODY).
 // A connection that could not be made, a TLS failure, a protocol refusal
 // and a timeout are not retried. A retried request keeps its place in the
 // order.
@@ -235,6 +237,34 @@
 // Proxy-Authorization and Cookie fields: credentials never cross origins.
 // The fetch's events tell only of the response that ends it; its Timing
 // counts the redirects.
+//
+// A STREAMED BODY. 'sendUpload(lp, request, sink, framing)' sends a request
+// whose own body is empty and whose body the program supplies as it is
+// produced: 'framing' is BodyLength.sized(n) (Content-Length) or .unsized()
+// (chunked on HTTP/1.1; plain DATA ending the stream on HTTP/2 and HTTP/3).
+// The head goes out as the connection is chosen, before any byte is pushed.
+// 'pushBody(lp, id, buf)' queues a piece (the connection's from there on: the
+// program keeps nothing of it) and 'endBody(lp, id)' says the body is whole.
+// The fetch's queue is drained as the connection takes pieces (a refusal and
+// Writable pace it, as for a String body); each time it is empty and the body
+// not ended it sends a BodyRoom event, once, to say the connection has taken
+// every piece pushed so far: the program's flow control (push the next piece
+// then). A body longer than a sized framing, or shorter at endBody, is a
+// program error (a panic), because the cores panic on either; the program
+// counts. A streamed body cannot be sent twice, so such a fetch is never
+// retried, and a 307 or 308 (or any redirect that would send the same body
+// again) is its answer, not followed; a 301, 302 or 303 that makes the next
+// request a GET drops the body, as for a String body. A response that comes
+// before the body is all pushed ends the body: a BodyEnded event comes
+// before that Response (or before the redirect is followed), the queue is
+// dropped, and later pushes are dropped. (The connection ends the exchange:
+// HTTP/1.1 closes after the answer, HTTP/2 resets the stream.) Because it
+// cannot be sent again if a kept connection proves stale under it, a streamed
+// fetch on HTTP/1.1 never takes an idle pooled connection that has carried an
+// exchange: it waits for a new one (the client closes the connection idle
+// longest if the limits leave no room). On HTTP/2 it is a stream of the
+// shared connection like any other: a stale one shows as GOAWAY before the
+// stream starts. A String body keeps the pool and the retry.
 //
 // CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
 // id)' asks a fetch to end: waiting, it is taken out and answered Cancelled
@@ -256,7 +286,7 @@
 // connection reads no more than httpconn's body window (256 KiB) ahead of
 // what was released, and TCP holds the server: a slow consumer slows the
 // link, never fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
-// initialWindowSize, 256 KiB: a slow consumer stops only its own stream). A fetch's final answer releases what it still had out (the
+// streamWindow, 256 KiB at most, drawn from creditBudget: a slow consumer stops only its own stream). A fetch's final answer releases what it still had out (the
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
@@ -321,7 +351,7 @@ mod httpclient;
 
 import libc;
 import slots use SlotTable;
-import collections use List, String;
+import collections use List, Deque, String;
 import time use Instant, Duration;
 import iobuf use IoBuf;
 import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
@@ -578,6 +608,8 @@ pub enum EventKind {
   Response,      // the head of the response that answers it: response, body, url
   Data,          // body bytes: buf
   End,           // the body is whole: trailers
+  BodyRoom,      // a streamed request body (sendUpload): the connection has taken every piece pushed; push the next
+  BodyEnded,     // ...the body is wanted no more (a response came before it was all sent, or a redirect drops it): pushed pieces are dropped
   Done,          // FINAL: timing
   Failed,        // FINAL: failure, timing
   Cancelled,     // FINAL
