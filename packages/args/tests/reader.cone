@@ -1,0 +1,222 @@
+// ArgReader: every form, the typed takers and their messages, an empty list, UTF-8 and bytes that are not.
+// Each case is a command line written with '|' between the arguments; 'run' reads it with a small grammar:
+//   --int N  --uint N  --float N  --str TEXT   and  -n N  -s TEXT   take a value (int, uint, float, text)
+//   anything else is reported as it was read: L:name, S:letter, V:text.
+// The result is a line of what happened, ending at the first error, "ERR: " and its text.
+
+mod reader;
+
+import testing use *;
+import collections use *;
+import args use *;
+
+fn say(e: &ArgError) String {
+  var s = String();
+  s <- toText(e);
+  s
+}
+
+fn parts(line: &str) List[String] {
+  if line.len() == 0usize { return List[String](); }
+  String.from(line).split('|')
+}
+
+fn run(line: &str) String {
+  var r = ArgReader.from(parts(line));
+  var out = String();
+  while true {
+    match r.next() {
+      case let Some(arg) {
+        if out.len() > 0usize { out <- " "; }
+        match arg {
+          case let Long(n) if n == "int" { if !takeInt(&mut r, "int=", &mut out) { return out; } }
+          case let Short(c) if c == 'n' { if !takeInt(&mut r, "n=", &mut out) { return out; } }
+          case let Long(n) if n == "uint" {
+            match r.uint() {
+              case let Ok(v) { out <- "uint="; out.appendUInt(v); }
+              case let Err(e) { out <- "ERR: "; out <- toText(&e); return out; }
+            }
+          }
+          case let Long(n) if n == "float" {
+            match r.float() {
+              case let Ok(v) { out <- "float="; out.appendInt(i64.from(v * 100.0)); }
+              case let Err(e) { out <- "ERR: "; out <- toText(&e); return out; }
+            }
+          }
+          case let Long(n) if n == "str" { if !takeStr(&mut r, &mut out) { return out; } }
+          case let Short(c) if c == 's' { if !takeStr(&mut r, &mut out) { return out; } }
+          case let Long(n) { out <- "L:"; out <- n.view(); }
+          case let Short(c) { out <- "S:"; out <- c; }
+          case let Value(v) { out <- "V:"; out <- v.view(); }
+        }
+      }
+      case is None { break; }
+    }
+  }
+  out
+}
+
+fn takeInt(r: &mut ArgReader, label: &str, out: &mut String) bool {
+  match r.int() {
+    case let Ok(v) { *out <- label; out.appendInt(v); true }
+    case let Err(e) { *out <- "ERR: "; *out <- toText(&e); false }
+  }
+}
+
+fn takeStr(r: &mut ArgReader, out: &mut String) bool {
+  match r.value() {
+    case let Ok(v) { *out <- "str=["; *out <- v.view(); *out <- "]"; true }
+    case let Err(e) { *out <- "ERR: "; *out <- toText(&e); false }
+  }
+}
+
+fn check(line: &str, want: &str) {
+  let got = run(line);
+  expectStr(got.view(), want, line);
+}
+
+fn main() i32 {
+  // an empty list; arguments that are not options
+  check("", "");
+  check("a", "V:a");
+  check("a|b", "V:a V:b");
+  check("a||b", "V:a V: V:b");
+  // long options, with a value after, attached, or not wanted
+  check("--x|--y", "L:x L:y");
+  check("--int|5", "int=5");
+  check("--int=7", "int=7");
+  check("--int=-3", "int=-3");
+  check("--int|-3", "int=-3");
+  check("--str=a=b", "str=[a=b]");
+  check("--str=", "str=[]");
+  check("--str|--int", "str=[--int]");
+  check("--str|-", "str=[-]");
+  check("--str|--|x", "str=[--] V:x");
+  check("--int|1|--int|2", "int=1 int=2");
+  // short options, grouped, with a value attached or after
+  check("-a", "S:a");
+  check("-abc", "S:a S:b S:c");
+  check("-aa", "S:a S:a");
+  check("-n5", "n=5");
+  check("-n|5", "n=5");
+  check("-an5", "S:a n=5");
+  check("-s|-x", "str=[-x]");
+  check("-sabc", "str=[abc]");
+  check("-n5a", "ERR: -n wants a whole number, got '5a'");
+  check("-n=5", "ERR: -n wants a whole number, got '=5'");
+  check("-nn5", "ERR: -n wants a whole number, got 'n5'");
+  // a lone dash is an argument; '--' ends the options
+  check("-", "V:-");
+  check("-|a", "V:- V:a");
+  check("--|--x|-y", "V:--x V:-y");
+  check("a|--|b", "V:a V:b");
+  check("--|--|x", "V:-- V:x");
+  check("--x|--", "L:x");
+  // a value given to an option that takes none comes on as an option of its own, which the program refuses
+  check("--verbose=yes", "L:verbose L:verbose=yes");
+  check("--verbose=yes|x", "L:verbose L:verbose=yes V:x");
+  // a value missing at the end
+  check("--int", "ERR: --int wants a value");
+  check("-n", "ERR: -n wants a value");
+  check("a|--str", "V:a ERR: --str wants a value");
+  check("-ab|-s", "S:a S:b ERR: -s wants a value");
+  // bad numbers, each taker, with the message pinned
+  check("--int|x", "ERR: --int wants a whole number, got 'x'");
+  check("--int|", "ERR: --int wants a whole number, got ''");
+  check("--int|1.5", "ERR: --int wants a whole number, got '1.5'");
+  check("--int|99999999999999999999", "ERR: --int is out of range: '99999999999999999999'");
+  check("--int|-99999999999999999999", "ERR: --int is out of range: '-99999999999999999999'");
+  check("--uint|12", "uint=12");
+  check("--uint|-5", "ERR: --uint wants a whole number, 0 or more, got '-5'");
+  check("--uint|x", "ERR: --uint wants a whole number, 0 or more, got 'x'");
+  check("--uint|18446744073709551616", "ERR: --uint is out of range: '18446744073709551616'");
+  check("--float|1.5", "float=150");
+  check("--float|.5", "float=50");
+  check("--float=1e2", "float=10000");
+  check("--float|x", "ERR: --float wants a number, got 'x'");
+  check("--float|", "ERR: --float wants a number, got ''");
+  check("--float|nan", "ERR: --float wants a number, got 'nan'");
+  check("--float|-inf", "ERR: --float wants a number, got '-inf'");
+  check("--float|1e999", "ERR: --float is out of range: '1e999'");
+  // UTF-8, in names, letters and values
+  check("--größe|é", "L:größe V:é");
+  check("--größe=é", "L:größe L:größe=é");
+  check("-é", "S:é");
+  check("-éa日", "S:é S:a S:日");
+  check("-sé日", "str=[é日]");
+  check("--str|日本語", "str=[日本語]");
+
+  // unexpected(): the text for each kind of argument
+  {
+    var r = ArgReader.from(parts("--zz|-q|val"));
+    var seen = String();
+    while true {
+      match r.next() {
+        case let Some(arg) {
+          if seen.len() > 0usize { seen <- "; "; }
+          seen <- toText(&arg.unexpected());
+        }
+        case is None { break; }
+      }
+    }
+    expectStr(seen.view(), "unknown option --zz; unknown option -q; unexpected argument 'val'", "unexpected()");
+  }
+  // a value asked for before any option has been read
+  {
+    var r = ArgReader.from(List[String]());
+    match r.value() {
+      case let Ok(s) { expect(false, "value() with no option is an error"); }
+      case let Err(e) { expectStr(say(&e).view(), "an argument wants a value", "value() with no option"); }
+    }
+  }
+  // the program's own: a test is run with no arguments
+  {
+    var r = ArgReader.fromEnv();
+    expect(r.next() is None[Arg], "fromEnv() skips the name: a test has no arguments");
+  }
+  // bytes that are not UTF-8 pass through as they are
+  {
+    var bad = String();
+    bad.appendBytes(&[0x61u8, 0xFFu8, 0xFEu8, 0x62u8]);
+    var items = List[String]();
+    items.push(String.from("--str"));
+    items.push(bad.clone());
+    items.push(bad.clone());
+    var r = ArgReader.from(items);
+    match r.next() {
+      case let Some(arg) { expect(true, "the option is read"); }
+      case is None { expect(false, "the option is read"); }
+    }
+    let v = r.value();
+    match v {
+      case let Ok(s) { expect(s == bad, "a value that is not UTF-8 comes back byte for byte"); }
+      case let Err(e) { expect(false, "a value that is not UTF-8 comes back byte for byte"); }
+    }
+    match r.next() {
+      case let Some(arg) {
+        match arg {
+          case let Value(s) { expect(s == bad, "an argument that is not UTF-8 is a Value, byte for byte"); }
+          else { expect(false, "an argument that is not UTF-8 is a Value"); }
+        }
+      }
+      case is None { expect(false, "an argument that is not UTF-8 is a Value"); }
+    }
+  }
+  // a letter that is not UTF-8 reads as U+FFFD, and each such byte is a letter of its own
+  {
+    var bad = String.from("-");
+    bad.appendBytes(&[0xFFu8, 0xFEu8, 0x61u8]);
+    var items = List[String]();
+    items.push(bad);
+    var r = ArgReader.from(items);
+    var seen = String();
+    while true {
+      match r.next() {
+        case let Some(arg) { match arg { case let Short(c) { seen <- c; } else { seen <- "?"; } } }
+        case is None { break; }
+      }
+    }
+    expectStr(seen.view(), "��a", "bytes that are not UTF-8 in a group");
+  }
+  done()
+}

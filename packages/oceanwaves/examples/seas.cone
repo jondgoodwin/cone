@@ -2,6 +2,8 @@
 //
 //   congo run --release packages/oceanwaves/examples/seas.cone -- --out PREFIX
 //   GPU_POWER_PREFERENCE=low-power congo run --release ...   (the Intel)
+//   --height METRES puts the camera that high (default 5). A missing or bad value, or any other
+//   argument, is an error and the usage line, exit code 2.
 //
 // For each sea state it prints the significant wave height the spectrum gives and the surface has, the
 // peak period and wavelength, the CPU time of one ocean update (spectrum evolution and four inverse FFTs
@@ -14,7 +16,7 @@ mod seas;
 
 import stdio use *;
 import libc;
-import process;
+import args use *;
 import time;
 import geomath use *;
 import collections use *;
@@ -23,39 +25,51 @@ import render use *;
 import path as filepath;
 import oceanwaves use *;
 
-// A plain decimal in metres ("5", "70", "1.5", ".5"): None for any other text, a negative number or a
-// non-finite one.
-fn parseMetres(s: &str) Option[f32] {
-  match f32.parse(s) {
-    case let Ok(v) {
-      if v >= 0.0f32 && v - v == 0.0f32 { return Some[f32](v); }
-      return None;
+// What the command line asks for
+struct Options {
+  prefix: String;           // --out PREFIX: where to write the pictures, none to write none
+  eyeHeight: f32;           // --height METRES: e.g. 70, a camera 70 m up looking down, to see the waves' pattern
+}
+
+// The options, or what is wrong with the command line. --height is a plain decimal in metres ("5", "70",
+// "1.5", ".5"), not negative.
+fn readOptions() Result[Options, ArgError] {
+  var o = Options(String(), 5.f);
+  var r = ArgReader.fromEnv();
+  while true {
+    match r.next() {
+      case let Some(arg) {
+        match arg {
+          case let Long(n) if n == "out" { o.prefix = r.value()?; }
+          case let Long(n) if n == "height" {
+            let metres = r.float()?;
+            let h = f32.from(metres);
+            if metres < 0.0 || h - h != 0.0f32 {
+              var shown = String();
+              shown <- metres;
+              return Err[Options, ArgError](ArgError.BadValue(String.from("--height"), String.from("a number of metres, 0 or more"), shown));
+            }
+            o.eyeHeight = h;
+          }
+          else { return Err[Options, ArgError](arg.unexpected()); }
+        }
+      }
+      case is None { break; }
     }
-    case is Err { return None; }
   }
+  Ok[Options, ArgError](o)
 }
 
 fn main() i32 {
-  let args = process.args();
-  var prefix = String();
-  var eyeHeight = 5.f;      // --height METRES: e.g. 70, a camera 70 m up looking down, to see the waves' pattern
-  var a = 1usize;
-  while a < args.len() {
-    if args[a].view() == "--out" && a + 1usize < args.len() {
-      prefix = String.from(args[a + 1usize].view());
-      a = a + 1usize;
-    } else if args[a].view() == "--height" && a + 1usize < args.len() {
-      match parseMetres(args[a + 1usize].view()) {
-        case let Some(v) { eyeHeight = v; }
-        case is None[f32] {
-          print <- "Use --height METRES, such as --height 70 or --height 1.5\n";
-          return 2i32;
-        }
-      }
-      a = a + 1usize;
+  let options = match readOptions() {
+    case let Ok(o) { o }
+    case let Err(e) {
+      print <- toText(&e); print <- "\n";
+      print <- "Usage: seas [--out PREFIX] [--height METRES]   such as --height 70 or --height 1.5\n";
+      return 2i32;
     }
-    a = a + 1usize;
-  }
+  };
+  let eyeHeight = options.eyeHeight;
   var instance = Instance.create("oceanwaves seas");
   var none = Surface.none();
   var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
@@ -190,7 +204,7 @@ fn main() i32 {
     samples.sort();
     print <- "GPU: draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize]; print <- ", max ";
     print <- *samples[samples.len() - 1usize]; print <- ") over 100 frames\n";
-    if prefix.len() > 0usize {
+    if options.prefix.len() > 0usize {
       var shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
       var encoder = device.createCommandEncoder();
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
@@ -200,7 +214,7 @@ fn main() i32 {
       device.endFrame();
       device.waitIdle();
       let image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
-      var name = prefix.clone();
+      var name = options.prefix.clone();
       name <- "-beaufort"; name.appendInt(i64.from(force)); name <- ".bmp";
       image.save(&filepath.Path.from(name.view()));
       print <- "wrote "; printStr(name.view()); print <- "\n";
