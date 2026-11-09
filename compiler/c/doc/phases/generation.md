@@ -2629,12 +2629,15 @@ object (the runtime; a C package) may call it by name and the link cannot see
 that object. A symbol only a native object refers to, with a Cone name, is not
 a case.
 
-**It composes with `--private-instances`.** The size gate decides, in each
-compile, which generic instance functions are the object's own (`internal`)
-rather than shared (`linkonce_odr`); ThinLTO then sees the program's whole code
-and does what the gate does for any instance only one module uses, and also
-for what the gate leaves shared. The two do not overlap in what they cost: the
-gate costs no link time.
+**It composes with `--private-instances`: not yet measured.** The size gate
+decides, in each compile, which generic instance functions are the object's own
+(`internal`) rather than shared (`linkonce_odr`); ThinLTO then sees the program's
+whole code and could do what the gate does for any instance only one module uses,
+and also for what the gate leaves shared. That the two overlap for the sort case
+and not for a call across packages (a `Mutex` pair, actors' pingpong) is expected
+from how each works and has no numbers behind it yet. The measurements are listed
+in the branch's `build/HANDOVER.md`, and the change to the gate's default (PR
+#1050) alters the answer, so they are taken with it. The gate costs no link time.
 
 A build made so has a bigger link (the ThinLTO step, over every module of the
 program, on every relink), a bigger program, and a longer clean build (each
@@ -2785,6 +2788,7 @@ compile writes its bitcode, and the objects are made at the link).
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlPlacePre`, `genlPlacePreEnd`, `genlPreOf`, `genlNeedsPre` | the indexes of places holding a seam in an index made first, in the order written (`awaitChainLevels`), and noted for `genlAddr` and `genlSubslice` to take: a place indexed more than once, both sides of a swap, a slice's bounds, a parallel assignment's places |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
+| `genllvm/genllto.cpp` | `genlWriteThinBitcode`, `genlThinLink` | link-time optimisation (section 7, "Link-time optimisation"): a module's bitcode with its ThinLTO summary and hash; the whole-program ThinLTO pass over every module, with the kept symbols, section splitting and cache (the `--lto` compile in `genllvm.c`, and `genlLtoLink`, the `--lto-link` entry) |
 | `genllvm/genlpar.c` | `genlParallelRun`, `genlParCapture`, `genlParCount` | a parallel each: the index and loop generated as a function of their own, a variable of the caller's found through the function's record, the call of `actors.parallelEach`, a number range's count ("A parallel each") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
