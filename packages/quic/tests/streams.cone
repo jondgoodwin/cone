@@ -121,11 +121,12 @@ struct Side {
   resetBack: bool;
   sparse: bool;             // slow readers: only every 25th of the peer's bidirectional streams is released, nothing is kept, the most held is tracked
   peak: u64;                // sparse: the most bytes the connection held unreleased
+  every: i64;               // sparse: every this-many-th stream is released (0: none is)
 
   fn make() Side {
     Side(ins: List[In](), dataEvents: 0u32, firstFinAt: 0u32, handshake: false, more: 0u32,
       closedSeen: false, closedByPeer: false, closedApp: false, closedIdle: false, closedCode: 0u64,
-      echo: false, stall: -1i64, resetBack: false, sparse: false, peak: 0u64)
+      echo: false, stall: -1i64, resetBack: false, sparse: false, peak: 0u64, every: 25i64)
   }
 
   // The index of a stream's record, made when it has none
@@ -170,7 +171,7 @@ fn drain(c: &mut quic.Connection, side: &mut Side) {
           if side.firstFinAt == 0u32 {side.firstFinAt = side.dataEvents;}
         }
         if side.sparse {
-          if (d.stream / 4i64) % 25i64 == 0i64 {c.release(d.stream, n);}
+          if side.every > 0i64 && (d.stream / 4i64) % side.every == 0i64 {c.release(d.stream, n);}
         } else if d.stream != side.stall {
           c.release(d.stream, n);
         }
@@ -450,6 +451,50 @@ fn slowReaders(cctx: &quic.Context, what: &str, budget: u64) u64 {
   ss.peak
 }
 
+// A new stream's first grant: raised from its floor (4519) to 16384 at once
+// while the spare lasts; the spare is 524372 and each grant 11865, so the
+// first 44 streams get one whole, the 45th the 2312 left, and from the 46th
+// on a stream holds its floor. The server releases nothing, so each stream
+// holds what its window lets the client send
+fn firstGrants(cctx: &quic.Context) {
+  printStr("-- a new stream's first grant\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  ss.sparse = true;
+  ss.every = 0i64;
+  let floor = 1048576u64 / 232u64;
+  let data = body(0i64, 100000usize);
+  var ids = List[i64]();
+  var k = 0u32;
+  while k < 50u32 {
+    let id = openBidi(&mut c);
+    ids.push(id);
+    c.writeBytes(id, data.view());
+    k = k + 1u32;
+    if k == 1u32 {
+      pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+      lineU("the first stream, opened with spare: its window", s.window(id));
+      lineU("...and what the client could send at once, held unreleased", s.unreleased(id));
+    }
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  lineU("the 44th stream's window", s.window(ids[43usize]));
+  lineU("the 45th's, the spare's last 2312 over its floor", s.window(ids[44usize]));
+  lineU("the 46th's, the spare spent: its floor", s.window(ids[45usize]));
+  lineU("...and what the client could send on it, held unreleased", s.unreleased(ids[45usize]));
+  lineU("the 50th's", s.window(ids[49usize]));
+  var drawn = 0u64;
+  k = 0u32;
+  while k < 50u32 {
+    drawn = drawn + s.window(ids[usize.from(k)]) - floor;
+    k = k + 1u32;
+  }
+  line("the grants together are the whole spare", yesNo(drawn == 1048576u64 - 116u64 * floor));
+}
+
 // One bulk stream alone on a connection draws its window to the maximum
 fn bulkWindow(cctx: &quic.Context) {
   printStr("-- one bulk stream\n");
@@ -478,57 +523,63 @@ fn windows(cctx: &quic.Context) {
   var ss = Side.make();
   var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
   ss.sparse = true;
+  ss.every = 5i64;
+  let floor = 1048576u64 / 232u64;       // 4519
   let data = body(0i64, 300000usize);   // more than a window: a reader never has all of it at once
-  // Streams 0, 25, 50 and 75 (every 25th) are read; all others stall. The
-  // first 51 are opened and written, so three readers compete for the spare
+  // Streams 0, 5 and 10 (every 5th) are read; the other eight stall. All 11
+  // are opened and written at once: each stalled stream is raised to its
+  // first window, 16 KiB, and the readers draw the rest of the spare
   var ids = List[i64]();
   var k = 0u32;
-  while k < 51u32 {
+  while k < 11u32 {
     let id = openBidi(&mut c);
     ids.push(id);
     c.writeBytes(id, data.view());
     k = k + 1u32;
   }
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  let floor = s.window(ids[1usize]);
-  lineU("a stalled stream's window, its floor", floor);
-  var stalledAtFloor = true;
-  k = 1u32;
-  while k < 51u32 {
-    if k != 25u32 && k != 50u32 {
+  var stalledAtFirst = true;
+  k = 0u32;
+  while k < 11u32 {
+    if k % 5u32 != 0u32 {
       let id = ids[usize.from(k)];
-      if s.window(id) != floor || s.unreleased(id) != floor {stalledAtFloor = false;}
+      if s.window(id) != 16384u64 || s.unreleased(id) != 16384u64 {stalledAtFirst = false;}
     }
     k = k + 1u32;
   }
-  line("every stalled stream holds exactly its floor", yesNo(stalledAtFloor));
+  line("every stalled stream holds exactly its first window, 16384", yesNo(stalledAtFirst));
   let w0 = s.window(ids[0usize]);
-  let w25 = s.window(ids[25usize]);
-  let w50 = s.window(ids[50usize]);
+  let w5 = s.window(ids[5usize]);
+  let w10 = s.window(ids[10usize]);
   var wmax = w0;
-  if w25 > wmax {wmax = w25;}
-  if w50 > wmax {wmax = w50;}
-  line("a reader's window grew past the floor, within the maximum", yesNo(wmax > floor && wmax <= 262144u64));
-  // Three readers' windows less their floors: the spare (the budget less 116 floors)
-  let drawn = (w0 - floor) + (w25 - floor) + (w50 - floor);
-  lineU("the readers drew from the spare, in all", drawn);
+  if w5 > wmax {wmax = w5;}
+  if w10 > wmax {wmax = w10;}
+  line("a reader's window grew past the first window, within the maximum", yesNo(wmax > 16384u64 && wmax <= 262144u64));
+  // The eleven windows less their floors: the spare (the budget less 116 floors)
+  var drawn = 0u64;
+  k = 0u32;
+  while k < 11u32 {
+    drawn = drawn + s.window(ids[usize.from(k)]) - floor;
+    k = k + 1u32;
+  }
+  lineU("the streams drew from the spare, in all", drawn);
   line("...which is the whole spare", yesNo(drawn == 1048576u64 - 116u64 * floor));
   // Two readers are stopped by the server: all they hold above the floor
   // goes back to the spare, for a reader that comes later
-  s.stopSending(ids[25usize], 0x10Bu64);
-  s.stopSending(ids[50usize], 0x10Bu64);
-  line("a reader stopped keeps its floor and no more", yesNo(s.window(ids[25usize]) == floor && s.window(ids[50usize]) == floor));
-  while k < 76u32 {
+  s.stopSending(ids[5usize], 0x10Bu64);
+  s.stopSending(ids[10usize], 0x10Bu64);
+  line("a reader stopped keeps its floor and no more", yesNo(s.window(ids[5usize]) == floor && s.window(ids[10usize]) == floor));
+  while k < 16u32 {
     let id = openBidi(&mut c);
     ids.push(id);
     c.writeBytes(id, data.view());
     k = k + 1u32;
   }
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  line("the fourth reader, later, draws what they gave back", yesNo(s.window(ids[75usize]) > floor));
+  line("the fourth reader, later, draws what they gave back", yesNo(s.window(ids[15usize]) > 16384u64));
   var held = 0u64;
   k = 0u32;
-  while k < 76u32 {
+  while k < 16u32 {
     held = held + s.unreleased(ids[usize.from(k)]);
     k = k + 1u32;
   }
@@ -566,7 +617,7 @@ fn resets(cctx: &quic.Context) {
   c.writeBytes(t, body(t, 400000usize).view());
   c.finish(t);
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  lineU("the server read of a 400000-byte body, unreleased (its floor)", u64.from(ss.ins[ti].bytes.len()));
+  lineU("the server read of a 400000-byte body, unreleased (its first window)", u64.from(ss.ins[ti].bytes.len()));
   line("the server asks the client to stop", yesNo(s.stopSending(t, 0x10Bu64)));
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
   let tc = cs.at(t);
@@ -658,6 +709,7 @@ fn main() {
   let peak = slowReaders(&cctx, "slow readers: 100 streams, four released, 96 not", bound);
   let old = slowReaders(&cctx, "the control: a budget so large that every stream's floor is its full window, as before", 60817408u64);
   line("the control exceeds the bound the first run held to", yesNo(old > bound && peak <= bound));
+  firstGrants(&cctx);
   bulkWindow(&cctx);
   windows(&cctx);
   resets(&cctx);

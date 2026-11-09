@@ -975,6 +975,21 @@ pub struct Connection is Move {
     }
     let s = streams.add(Stream.make(id, floor));
     byId.insert(id, s.index);
+    // A first grant: a stream this end can receive on is raised at once from
+    // its floor to streamFirstWindow, as far as the spare allows, so that
+    // under normal load it starts where streams did before windows were
+    // drawn from a budget. With the spare spent it keeps its floor
+    if self.canReceive(id) {
+      let first = if streamFirstWindow < maxWindow {streamFirstWindow} else {maxWindow};
+      var grant = if first > floor {first - floor} else {0u64};
+      if grant > spare {grant = spare;}
+      if grant > 0u64 {
+        let p = self.streamAt(id);
+        (*p).window = (*p).window + grant;
+        spare = spare - grant;
+        if !closed {ngtcp2_conn_extend_max_stream_offset(conn, id, grant);}
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
