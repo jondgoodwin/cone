@@ -60,7 +60,7 @@ const hFile = 3u32;
 const hDatagram = 4u32;       // a bound UDP socket
 const hPipe = 5u32;           // one end of a pipe (adoptPipe)
 
-// An entry of the handle table (a slots.SlotTable: its cell's number and
+// An entry of the handle table (a pools.GenPool: its cell's number and
 // generation are the Handle's)
 struct HEntry {
   pub raw: usize;          // the OS's: Windows' handle or socket, Linux's descriptor
@@ -122,7 +122,7 @@ pub struct Loop {
   done: List[*OpCore];     // an asker's records answered, for takeDone
   cancels: List[Asked];    // Linux: socket operations asked to end, answered at the next wait (linux.cone)
   held: List[Held];        // answers held back by a full channel
-  handles: SlotTable[HEntry];
+  handles: GenPool[HEntry];
   wheel: Wheel;
   expiries: List[Expiry];
   entries: *OverlappedEntry;   // Windows: what one wait takes from the port
@@ -192,7 +192,7 @@ pub struct Loop {
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
       decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
       held: List[Held](),
-      handles: SlotTable[HEntry].make(64u32),
+      handles: GenPool[HEntry].make(64u32),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
@@ -496,14 +496,14 @@ pub struct Loop {
   // The hint word of h: a u32 kept for the layer that opened it (aio's calm
   // bit), 0 when it is opened; 0 for a handle that names nothing
   pub fn hint(self: &, h: Handle) u32 {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(PoolHandle(h.index, h.gen));
     if p as usize == 0usize {return 0u32;}
     (*p).hint
   }
 
   // Set h's hint word: false, and nothing set, if h names nothing
   pub fn setHint(self: &mut, h: Handle, v: u32) bool {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(PoolHandle(h.index, h.gen));
     if p as usize == 0usize {return false;}
     (*p).hint = v;
     true
@@ -570,7 +570,7 @@ pub struct Loop {
 
   // Whether h's completions skip the port on success
   fn skips(self: &, h: Handle) bool {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(PoolHandle(h.index, h.gen));
     p as usize != 0usize && (*p).skip != 0u32
   }
 
@@ -649,7 +649,7 @@ pub struct Loop {
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self: &, h: Handle) u32 {
-    if handles.get(Slot(h.index, h.gen)) as usize == 0usize {return noEntry;}
+    if handles.get(PoolHandle(h.index, h.gen)) as usize == 0usize {return noEntry;}
     h.index
   }
 
@@ -678,7 +678,7 @@ pub struct Loop {
       unboundTail = p;
       return;
     }
-    let e = handles.get(Slot(r.handle.index, r.handle.gen)) as &mut HEntry;
+    let e = handles.get(PoolHandle(r.handle.index, r.handle.gen)) as &mut HEntry;
     if side == onReads {
       r.hprev = e.readsTail;
       if e.readsTail as usize == 0usize {e.reads = p;} else {(*e.readsTail).hnext = p;}
@@ -707,7 +707,7 @@ pub struct Loop {
     }
     // A closed handle's lists were let go at its close (detachLists), which
     // took every record off them: an entry is there for a record still on one
-    let ep = handles.get(Slot(r.handle.index, r.handle.gen));
+    let ep = handles.get(PoolHandle(r.handle.index, r.handle.gen));
     if ep as usize == 0usize {return;}
     let e = ep as &mut HEntry;
     if side == onReads {
@@ -1803,7 +1803,7 @@ pub struct Loop {
       }
       // An operation may have closed it (Linux: a connect that failed on its
       // try): its lists went with it
-      if handles.get(Slot(h.index, h.gen)) as usize == 0usize {break;}
+      if handles.get(PoolHandle(h.index, h.gen)) as usize == 0usize {break;}
       p = next;
     }
     n
