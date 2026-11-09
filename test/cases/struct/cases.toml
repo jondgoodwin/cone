@@ -104,7 +104,7 @@
 # Initializers -- construction, 'T(...)', and the inits it runs -- are
 # struct_new, struct_typecheck_new and struct_flow_new.
 
-support = ["structmeter.cone", "struct_fields_vault.cone"]
+support = ["structmeter.cone", "struct_fields_vault.cone", "structconstmod.cone"]
 
 # -------- success --------
 
@@ -838,6 +838,50 @@ name = "a-finalizer-from-another-module-is-copied-here"
 target = "symbols"
 contains = ["define internal LoggedHandle.final comdat nodeduplicate"]
 
+# A type's 'const': the rules of a module's, reached as Type.name from outside
+# and bare inside, in structs and enums, through an extending type and from a
+# generic function. Two runs: the values must not depend on the optimizer.
+[scenario.struct_const]
+category = "run"
+description = "A type's 'const': a number, a struct of the type itself, a tuple, an enum's variant and number, another const of the type named bare before and after, an inferred type, a private one, bare in the type's own functions, through an extending type and from a generic function"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.struct_const.run]]
+name = "release"
+options = []
+
+[[scenario.struct_const.run]]
+name = "debug"
+options = ["--debug"]
+
+# Before optimization a use of a const is the literal it folds to and the module
+# holds no global for it, where a static of the same type is a global read
+[scenario.struct_const_fold]
+category = "compile"
+description = "A type's const folds before optimization: a struct's field, an arithmetic result, a tuple's sum and an enum's number are literals, and no global is declared for any of them; a static beside them is a load"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.struct_const_fold.check]]
+name = "a-use-is-the-literal"
+target = "preir"
+contains = [
+  "ret double 7.000000e+00",
+  "ret double 8.000000e+00",
+  "fmul double %a1, 2.000000e+00",
+  "ret i32 42",
+  "ret i32 13",
+]
+
+[[scenario.struct_const_fold.check]]
+name = "a-const-has-no-global"
+target = "preir"
+excludes = ["Vec34up", "Vec33two", "Vec34pair", "Shade5count"]
+
+[[scenario.struct_const_fold.check]]
+name = "a-static-beside-them-is-a-read-of-its-global"
+target = "preir"
+contains = ["load double, ptr @_CNvNt4Vec34held"]
+
 [scenario.struct_privacy]
 category = "run"
 description = "The code of a type's module reaching a private method or field through any value of the type -- a local, a parameter, a borrow written out, a by-value call, a field written -- from the type's own methods and static functions, a generic instance through another value of itself, another type's method, a function of the module, an anonymous function, a construction by position and by name, a private init and a field's default"
@@ -902,6 +946,12 @@ contains = ["call %void @_CNvNt4Vec28ofLength(ptr %here, i32 6)"]
 
 # -------- parse stage --------
 
+[scenario.struct_const_parse]
+category = "reject"
+description = "A 'const' in a trait's braces, which is not built; one with no value, no name, a name the type has already, or written 'static'"
+tags = ["parse"]
+diagnostics = 5
+
 [scenario.struct_parse]
 category = "reject"
 description = "Struct declaration syntax the parser cannot accept, and member names it cannot declare twice"
@@ -931,7 +981,7 @@ tags = ["parse"]
 category = "reject"
 description = "What a fold clause may not admit, and the names that collide"
 tags = ["nameres"]
-diagnostics = 18
+diagnostics = 19
 
 # Taking a base's members is what builds the enriching type's dictionary, so what
 # may be enriched and what an enrichment may declare are both this stage's: a
@@ -981,6 +1031,12 @@ tags = ["nameres"]
 diagnostics = 9
 
 # -------- type check stage --------
+
+[scenario.struct_const_typecheck]
+category = "reject"
+description = "A type's const that is no constant expression, is the wrong type or is defined in terms of itself; and a const named through a value, in a method or outside, of a struct and of an enum"
+tags = ["typecheck"]
+diagnostics = 6
 
 [scenario.struct_typecheck_fold]
 category = "reject"
@@ -1182,3 +1238,24 @@ diagnostics = 15
 category = "run"
 description = "What an enrichment's own 'final' does not refuse: a borrowed reference to the base, an enrichment without a 'final', the base into the enrichment"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# A pub const of a type in a package compiled on its own, named from a program
+# linked with it: the const has no symbol in the package's object, so the program
+# reads its declaration in the package's include file, which keeps it as written
+[scenario.struct_const_link]
+category = "run"
+description = "A pub const of a struct and of an enum, in a package compiled on its own, named through the type from a program linked with it: a number, a number built from another const, a struct of the type itself, and an enum's variant and number; a private const used by a method of the package"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["constlib/constlib.conebuild"]
+include = ["include/constlib.cone"]
+
+[scenario.struct_const_private]
+category = "reject"
+description = "A type's private const named through the type from another module is refused, and its pub one is read"
+tags = ["nameres"]
+diagnostics = 1
+
+[scenario.struct_const_generic]
+category = "run"
+description = "A generic struct's and a generic enum's const: Vec3[T].zero and .unit built from the instance's T, a number, and an enum's variant, each instance with its own copy, bare in the type's own functions"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]

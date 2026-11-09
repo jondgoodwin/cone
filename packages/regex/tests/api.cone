@@ -1,0 +1,95 @@
+// The calls of the package one by one, with answers worked out by hand
+
+mod api;
+import testing use *;
+import collections use *;
+import regex;
+
+fn built(pat: &str) regex.Regex {
+  match regex.Regex.parse(pat) {
+    case let Ok(re) { re }
+    case let Err(e) { panic("the pattern was refused") }
+  }
+}
+
+fn spanText(m: Option[regex.Match]) String {
+  var s = String();
+  match m {
+    case let Some(x) { s <- x.start, "..", x.end; }
+    case is None { s.append("none"); }
+  }
+  s
+}
+
+fn main() i32 {
+  // captures: group text borrowed from the haystack, by number and by name
+  let re = built("(?P<year>[0-9]{4})-(?P<month>[0-9]{2})(-(?P<day>[0-9]{2}))?");
+  expectUInt(u64.from(re.groupCount()), 4u64, "groupCount");
+  let hay = String.from("due 2026-11, paid 2026-12-31");
+  match re.captures(hay.view()) {
+    case let Some(c) {
+      expectUInt(u64.from(c.len()), 5u64, "len");
+      expectStr(c.get(0).unwrap(), "2026-11", "group 0");
+      expectStr(c.get(1).unwrap(), "2026", "group 1");
+      expectStr(c.named("month").unwrap(), "11", "named month");
+      expectBool(c.get(3).isTrue(), false, "group 3 took no part");
+      expectBool(c.named("day").isTrue(), false, "day took no part");
+      expectBool(c.named("nope").isTrue(), false, "no such name");
+      expectBool(c.get(9).isTrue(), false, "no such group");
+      expectStr(spanText(c.span(2)).view(), "9..11", "span of group 2");
+    }
+    case is None { expectBool(false, true, "captures found"); }
+  }
+  // find, findFrom: the text before 'from' is context
+  expectStr(spanText(re.find(hay.view())).view(), "4..11", "find");
+  expectStr(spanText(re.findFrom(hay.view(), 5)).view(), "18..28", "findFrom");
+  expectStr(spanText(re.findFrom(hay.view(), 100)).view(), "none", "findFrom past the end");
+  let caret = built("^b");
+  expectStr(spanText(caret.findFrom("ab", 1)).view(), "none", "^ is the start of the text, not of 'from'");
+  let word = built("(?-u:\\bb)");
+  expectStr(spanText(word.findFrom("ab", 1)).view(), "none", "a word boundary sees the byte before 'from'");
+  // an empty match never falls inside a character
+  let empty = built("");
+  var n = 0usize;
+  var it = empty.matches("日日");
+  while true {
+    match it.next() {
+      case let Some(m) { n = n + 1; expectBool(m.isEmpty(), true, "empty"); expectUInt(u64.from(m.start % 3), 0u64, "on a boundary"); }
+      case is None { break; }
+    }
+  }
+  expectUInt(u64.from(n), 3u64, "three empty matches in two characters");
+  // the literal prefix: overlapping starts, and a prefix cut off by the end
+  let pre = built("aab");
+  expectStr(spanText(pre.find("aaab")).view(), "1..4", "prefix aab in aaab");
+  expectStr(spanText(pre.find("aa")).view(), "none", "prefix longer than the text");
+  expectStr(spanText(pre.find("")).view(), "none", "prefix in an empty text");
+  expectStr(spanText(built("日本x").find("日日本x")).view(), "3..10", "a multi-byte prefix");
+  expectStr(spanText(built("ab+c").find("abbabbc")).view(), "3..7", "prefix then a loop");
+  // linear time: 100 000 bytes of 'a' against the patterns that blow up a backtracker
+  var big = String();
+  var i = 0usize;
+  while i < 100000 { big.append("a"); i = i + 1; }
+  expectBool(built("(a*)*b").isMatch(big.view()), false, "(a*)*b");
+  expectBool(built("(a|a)*b").isMatch(big.view()), false, "(a|a)*b");
+  expectBool(built("(a+)+$").isMatch(big.view()), true, "(a+)+$");
+  expectBool(built("(?:a?){30}a{30}").isMatch(big.view()), true, "a?{30}a{30}");
+  // the replacement text
+  expectStr(built("b").replaceAll("abc", "[$0]").view(), "a[b]c", "replaceAll");
+  expectStr(built("(b)(c)").replace("abcabc", "$2$1").view(), "acbabc", "replace, first only");
+  // iteration lends text that outlives the iterator
+  var parts = List[String]();
+  {
+    let sp = built(",");
+    var s = sp.split("a,b,c");
+    while true {
+      match s.next() {
+        case let Some(part) { parts.push(String.from(part)); }
+        case is None { break; }
+      }
+    }
+  }
+  expectUInt(u64.from(parts.len()), 3u64, "split parts");
+  expectStr(parts[2].view(), "c", "last part");
+  done()
+}

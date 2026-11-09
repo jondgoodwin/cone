@@ -159,6 +159,9 @@ static FlowLoopFrame *flowLoops = NULL;
 static uint32_t flowLoopN = 0;
 static uint32_t flowLoopCap = 0;
 
+static int flowNodesHas(Nodes *nodes, INode *node);
+static void flowSeamHollow(FlowState *fstate, AwaitNode *await);
+
 void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed) {
     // Inside a loop a store that changes nothing is logged too: a loop's end
     // asks which variables each path to a 'break' wrote (flowLoopEnd)
@@ -180,6 +183,13 @@ void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed) {
     }
     var->flowtempflags = flags;
     var->hollowed = hollowed;
+    // A seam reads the moves that hollowed each variable where it stands
+    // (flowSeamHollow), so each variable ever hollowed is listed
+    if ((flags & VarHollow) && flowCurrent != NULL && !flowNodesHas(flowCurrent->hollowvars, (INode *)var)) {
+        if (flowCurrent->hollowvars == NULL)
+            flowCurrent->hollowvars = newNodes(4);
+        nodesAdd(&flowCurrent->hollowvars, (INode *)var);
+    }
 }
 
 void flowFnBegin(FlowState *fstate) {
@@ -1456,6 +1466,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         if (fstate->awaits == NULL)
             fstate->awaits = newNodes(4);
         nodesAdd(&fstate->awaits, (INode *)await);
+        flowSeamHollow(fstate, await);
         break;
     }
     // A generator's seam: the result 'next' gives is made, as a return's value
@@ -1756,6 +1767,43 @@ HollowNode *flowNewHollow(VarDclNode *var) {
     return hnode;
 }
 
+// What a seam finds hollow: each variable hollowed on some path to it, with the
+// moves that reach it. A record's drop releases such an owner without those
+// alone; a move written after the seam has not happened there. A seam met
+// again (a loop's second walk) keeps the moves of both.
+static void flowSeamHollow(FlowState *fstate, AwaitNode *await) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (fstate->hollowvars == NULL)
+        return;
+    for (nodesFor(fstate->hollowvars, cnt, nodesp)) {
+        VarDclNode *var = (VarDclNode *)*nodesp;
+        if (!(var->flowtempflags & VarHollow))
+            continue;
+        HollowNode *seen = NULL;
+        if (await->hollowed) {
+            INode **hp;
+            uint32_t hcnt;
+            for (nodesFor(await->hollowed, hcnt, hp)) {
+                if (((HollowNode *)*hp)->var == var)
+                    seen = (HollowNode *)*hp;
+            }
+        }
+        if (seen == NULL) {
+            if (await->hollowed == NULL)
+                await->hollowed = newNodes(2);
+            nodesAdd(&await->hollowed, (INode *)flowNewHollow(var));
+            continue;
+        }
+        INode **mp;
+        uint32_t mcnt;
+        for (nodesFor(var->hollowed, mcnt, mp)) {
+            if (!flowNodesHas(seen->moved, *mp))
+                nodesAdd(&seen->moved, *mp);
+        }
+    }
+}
+
 // A release that runs only when the variable's drop flag holds 'state'
 static INode *flowDropFlagTest(VarDclNode *var, INode *release, uint8_t state) {
     DropFlagNode *test;
@@ -1971,6 +2019,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->jumped = 0;
     fstate->intrinsic = 0;
     fstate->awaits = NULL;
+    fstate->hollowvars = NULL;
     fstate->yields = NULL;
     fstate->shapelend = 0;
     fstate->shapewrite = 0;

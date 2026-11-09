@@ -1,0 +1,30 @@
+// A float's math methods on SPIR-V's Vulkan form. Each of tan, asin, acos, atan,
+// atan2, exp, exp2, ln, log2, pow, sinh, cosh and tanh is the LLVM intrinsic of its
+// meaning, which LLVM's SPIR-V back end selects as GLSL.std.450's instruction (Tan,
+// Asin, Acos, Atan, Atan2, Exp, Exp2, Log, Log2, Pow, Sinh, Cosh, Tanh); log10 is
+// log2 times a constant. A GPU has no C library, so hypot and cbrt are a formula
+// there, sqrt(x*x + y*y) and the sign of x times 2^(log2|x| / 3); powi is pow of the
+// magnitude with the sign and a zero exponent restored, since GLSL's pow is undefined
+// for a negative base. isNaN is x != x, an unordered-or-not-equal compare, because
+// Shader has no OpUnordered. The module imports no function, and none of this has
+// been run on a GPU.
+
+mod module_target_spirv_floatmath;
+
+fn @compute(64) floats(inv: Invocation, xs: &Array[f32], out: &mut Array[f32]) {
+  let i = usize.from(inv.globalId[0]);
+  if i < out.len && i < xs.len {
+    let x = xs[i];
+    out[i] = x.tan() + x.asin() + x.acos() + x.atan() + x.atan2(x) + x.exp() + x.exp2()
+      + x.ln() + x.log2() + x.log10() + x.pow(x) + x.sinh() + x.cosh() + x.tanh();
+  }
+}
+
+fn @compute(64) derived(inv: Invocation, xs: &Array[f32], out: &mut Array[f32]) {
+  let i = usize.from(inv.globalId[0]);
+  if i < out.len && i < xs.len {
+    let x = xs[i];
+    out[i] = x.hypot(2.0) + x.cbrt() + x.powi(3);
+    if x.isNaN() || x.isInfinite() || x.isFinite() { out[i] += 1.0; }
+  }
+}

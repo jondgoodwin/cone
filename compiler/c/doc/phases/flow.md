@@ -1298,9 +1298,11 @@ unnamed parameter and the store is refused, the message saying to name which
 parameter). A raw pointer in a stored value is outside this rule, as it is
 everywhere: nothing is tracked through one, and `trust` vouches for what it
 reaches. Only a reference to the
-arena made by a cast from a raw pointer is trusted: it carries no loan but
-what was stored through it (`loanArenaChecked`), so its stores are unseen, and
-the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+arena made by a cast from a raw pointer is trusted: the cast leaves it no
+loan, so it carries none but what was stored through it (`loanArenaChecked`),
+and its stores are unseen. A loan a caller lent through the parameter the arena
+was reached by (`self.h.ar` holds `self`'s) makes the store checked even where
+the stored value carries that same loan (`&self.n`). The one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
 every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
 tests). Any other reference whose origin the walk cannot place (an arena
 reached through a method's result) may point anywhere, so no local's borrow is
@@ -1820,6 +1822,24 @@ Only a method's receiver is followed so, not a free function's borrowed argument
 `collection_flow_reshape_through_call` pins the refusals and
 `collection_reshape_through_call_success` what stays accepted.
 
+**An element in an `imm` path.** A method's returned borrow is a plain `&Item`, whose permission
+alone says another holder may write it (`Place.shwrite` of the reference's type), so a source lent
+`&imm` lost its imm-ness at `src.items[0usize]`. `pwElemView` flags the receiver's loan
+(`Loan.elemview`) when the method returned an element out of the receiver's own block: a
+`&Struct` whose struct the receiver holds only in the block its pointer field points at
+(`pwHoldsElements`), the call handed no other borrow the element could come from, the receiver
+reached through a reference nothing writes by (`shared` and not `shwrite`), and no `var` global
+reaching the element's type (`reshapeMutGlobalsReach`: a method with a body of its own could
+return a borrow into one, which is not an `imm` path; this only reads the global-view fact and
+changes no global rule). `pwThrough` then reads a reference variable (a stand-in or a name) that
+holds only such loans, plus the caller loans of `&imm` parameters, as not written by another
+holder (`pwHoldsUnwritten`): `pwShapeLent` freezes the path as it does for `src.one.label.view()`
+and does not mark the loan. Any other loan in the holder's near set (a local, a global, a
+`&mut` parameter, a method that is not an element holder) keeps the type's answer. Not covered:
+`get`'s `Option[&T]`, a `&uni` source, the plain borrow `imm r = &src.one` (name it `&imm`).
+`collection_reshape_imm_source_success` pins what is accepted, `collection_flow_reshape_imm_source`
+and `collection_flow_reshape_imm_source_global` what stays refused.
+
 **What a call must reach to reshape the viewed value** is asked of the viewed value's owner.
 A marked loan records, beside its container (the `String`, the `List`), the struct that holds
 the container as a field where the borrow was taken through that field (`loanShapeOwnerSet`,
@@ -2209,7 +2229,14 @@ is awaited, which the `await` takes as a call takes an argument. At the seam
    the seam before it is stored over whole (`SeamLive`), plus every droppable
    (`itypeNeedsFinal`, `SeamDies`) still holding its value
    (`SeamOpen`, from drop flags' state: not moved out, not never given one,
-   not the variable whose initializer holds the seam), used again or not. A
+   not the variable whose initializer holds the seam), used again or not. One
+   hollowed there (a sole owner some of whose referent moved out, state
+   `DropHollow` on some path) is noted `SeamHollow`: the record's drop releases
+   it hollow, as its scope's end does, where it has no drop flag or its flag
+   says hollow. The main walk (`flowSeamHollow`) lists, on the seam
+   (`AwaitNode.hollowed`), each variable it finds hollow there with the moves
+   that reach the seam: a move written after the seam, or before a refill, is
+   not among them. A
    dead variable with nothing to do as it dies is left behind. Liveness is
    found forward as a frozen borrow's last use is: each variable in scope gets
    a live mark (`loanSeamLive`, kind `PendingSeamLive`), a pending entry its

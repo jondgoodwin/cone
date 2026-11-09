@@ -1,0 +1,322 @@
+// ZipSource and saveTo: an archive written from an actor (zipsource.cone in src).
+//
+// First what they do. A round trip, ZipWriter -> ZipSource -> FileSink, then the file read back with
+// zipfile.Archive and every entry hashed against what was added:
+//
+//   1. one entry of 100 MiB (stored);
+//   2. 2,000 entries of 1 KiB (deflate);
+//   3. an empty archive (no entries), and a writer the caller has finished already.
+//
+// Then how it fails, each with a check that would see it:
+//
+//   4. a sink that fails after its second chunk (a stand-in for a write error, which runs on every system:
+//      it stops the source the way FileSink does): the source ends its stream Failed once and sends no
+//      more, and the pool holds no buffer at the end;
+//   5. a save cancelled mid-write (a 64 MiB archive, the group cancelled once the file is there): 'done'
+//      says Err and no file is left;
+//   6. a file that cannot be opened (its folder is not there): 'done' says Err and no file is made.
+
+mod writetest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import thread;
+import actors;
+import cancelgroups use *;
+import stages use *;
+import archivestage use *;
+import zipfile;
+
+fn mix(h: u64, b: u8) u64 { (h ^ u64.from(b)) * 1099511628211u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 14695981039346656037u64;
+  var i = 0usize;
+  while i < v.len { h = mix(h, v[i]); i += 1usize; }
+  h
+}
+
+// n bytes of a pseudo-random run of letters, from a seed
+fn corpus(n: usize, seed: u64) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var s = seed;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    d.push(97u8 + u8.from((s >> 40u64) % 26u64));
+  }
+  d
+}
+
+// What was added: the archive's writer and the hash of each entry, by name
+struct Made {
+  zip: zipfile.ZipWriter;
+  names: List[String];
+  hashes: List[u64];
+  lens: List[usize];
+}
+
+fn made(count: usize, size: usize, opts: &zipfile.EntryOptions, seed: u64) Made {
+  var m = Made(zipfile.ZipWriter.make(), List[String](), List[u64](), List[usize]());
+  var i = 0usize;
+  while i < count {
+    let data = corpus(size, seed + u64.from(i));
+    var name = String.from("entry");
+    name.appendUInt(u64.from(i));
+    name.append(".txt");
+    match m.zip.add(name.view(), data.view(), opts) {
+      case is Ok {}
+      case is Err { expect(false, "an entry is added"); }
+    }
+    m.names.push(name);
+    m.hashes.push(hashOf(data.view()));
+    m.lens.push(size);
+    i += 1usize;
+  }
+  m
+}
+
+// The writer, moved out of its holder
+fn takeZip(m: &mut Made) zipfile.ZipWriter {
+  var z = zipfile.ZipWriter.make();
+  z <-> m.zip;
+  z
+}
+
+// Calls saveTo in the group its 'go' message carries
+actor Launcher {
+  zip: zipfile.ZipWriter;
+  name: String;
+  tx: Option[OneshotSender[Result[u64, AnyError]]];
+
+  pub fn init(self: &new, zip: zipfile.ZipWriter, name: String, tx: OneshotSender[Result[u64, AnyError]]) {
+    *self = Self(zip: zip, name: name, tx: Some[OneshotSender[Result[u64, AnyError]]](tx));
+  }
+
+  pub async fn go(self) {
+    var t = None[OneshotSender[Result[u64, AnyError]]];
+    t <-> tx;
+    var z = zipfile.ZipWriter.make();
+    z <-> zip;
+    match t {
+      case let Some(s) { saveTo(z, name.clone(), s); }
+      case is None {}
+    }
+  }
+}
+
+fn gone(name: &str) { _ = fs.removeFile(&Path.from(name)); }
+
+// saveTo and the answer
+fn saved(zip: zipfile.ZipWriter, name: &str) Result[u64, AnyError] {
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  saveTo(zip, String.from(name), tx);
+  match rx.recv() {
+    case let Some(r) { r }
+    case is None { Err[u64, AnyError](AnyError.msg("no answer")) }
+  }
+}
+
+fn isOk(r: &Result[u64, AnyError]) bool {
+  match r {
+    case is Ok { true }
+    case is Err { false }
+  }
+}
+
+fn countOf(r: &Result[u64, AnyError]) u64 {
+  match r {
+    case let &Ok(n) { *n }
+    case is Err { 0u64 }
+  }
+}
+
+// The file read back with the archive reader: how many entries had the bytes that were added
+fn checkFile(name: &str, m: &Made, label: &str) {
+  match fs.mapFile(&Path.from(name)) {
+    case let Err(e) { expect(false, "the file maps"); }
+    case let Ok(f) {
+      match zipfile.Archive.open(f.view()) {
+        case let Err(e) { expect(false, "the file is an archive"); }
+        case let Ok(ar) {
+          expectUInt(u64.from(ar.count()), u64.from(m.names.len()), label);
+          var good = 0u64;
+          var i = 0usize;
+          while i < m.names.len() {
+            match ar.readNamed(f.view(), m.names[i].view()) {
+              case let Ok(got) {
+                if hashOf(got.view()) == m.hashes[i] && got.len() == m.lens[i] { good += 1u64; }
+              }
+              case is Err {}
+            }
+            i += 1usize;
+          }
+          expectUInt(good, u64.from(m.names.len()), label);
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A sink that fails after its second chunk: it stops the source, as FileSink does on a failed write
+// ---------------------------------------------------------------------------
+
+struct Counts {
+  pub ends: Atomic[u64];
+  pub failedEnds: Atomic[u64];
+  pub chunks: Atomic[u64];
+  pub afterStop: Atomic[u64];
+}
+
+let counts: Counts;
+
+fn @initpure init() {
+  counts = Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor FailSink is ChunkSink {
+  up: Option[ChunkSource];
+  n: u64;
+  stopped: bool;
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource], n: 0u64, stopped: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    counts.chunks.add(1u64);
+    if stopped { counts.afterStop.add(1u64); }
+    n += 1u64;
+    if n == 2u64 && !stopped {
+      stopped = true;
+      match &up {
+        case let &Some(u) { u.stop(Ending.Failed(AnyError.msg("the disk is full"))); }
+        case is None {}
+      }
+    }
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    counts.ends.add(1u64);
+    match how {
+      case is Finished {}
+      case is Failed { counts.failedEnds.add(1u64); }
+    }
+    up = None[ChunkSource];
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+
+  // ---- 1. one entry of 100 MiB ----
+  {
+    var m = made(1usize, 104857600usize, &zipfile.EntryOptions.stored(), 11u64);
+    let r = saved(takeZip(&mut m), "ztest_big.zip");
+    expect(isOk(&r), "1: done says Ok");
+    expect(countOf(&r) > 104857600u64, "1: with the archive's bytes, more than the entry's");
+    match fs.stat(&Path.from("ztest_big.zip")) {
+      case let Ok(info) { expectUInt(u64.from(info.size), countOf(&r), "1: and the file is that long"); }
+      case is Err { expect(false, "1: the file is there"); }
+    }
+    checkFile("ztest_big.zip", &m, "1: the entry reads back whole");
+    gone("ztest_big.zip");
+  }
+
+  // ---- 2. 2,000 entries of 1 KiB ----
+  {
+    var m = made(2000usize, 1024usize, &zipfile.EntryOptions.plain(), 5000u64);
+    let r = saved(takeZip(&mut m), "ztest_many.zip");
+    expect(isOk(&r), "2: done says Ok");
+    checkFile("ztest_many.zip", &m, "2: every entry reads back whole");
+    gone("ztest_many.zip");
+  }
+
+  // ---- 3. an empty archive, and a writer finished already ----
+  {
+    var m = made(0usize, 0usize, &zipfile.EntryOptions.plain(), 1u64);
+    let r = saved(takeZip(&mut m), "ztest_empty.zip");
+    expect(isOk(&r), "3: an empty archive: done says Ok");
+    expectUInt(countOf(&r), 22u64, "3: with the 22 bytes of the end record");
+    checkFile("ztest_empty.zip", &m, "3: and it opens with no entries");
+    gone("ztest_empty.zip");
+
+    var f = made(3usize, 100usize, &zipfile.EntryOptions.stored(), 9u64);
+    expect(f.zip.finish() is Ok, "3: a writer is finished by its caller");
+    let r2 = saved(takeZip(&mut f), "ztest_fin.zip");
+    expect(isOk(&r2), "3: a finished writer is saved all the same");
+    checkFile("ztest_fin.zip", &f, "3: with its entries");
+    gone("ztest_fin.zip");
+  }
+
+  // ---- 4. a sink that fails after its second chunk ----
+  {
+    var m = made(1usize, 8388608usize, &zipfile.EntryOptions.stored(), 77u64);
+    let sink = FailSink();
+    let src = ZipSource(sink, takeZip(&mut m));
+    src.start();
+    // the end arrives once the buffers lent are back; wait for it
+    var waited = 0u32;
+    while counts.ends.load() == 0u64 && waited < 500u32 {
+      thread.sleep(Duration.fromMillis(10i64));
+      waited += 1u32;
+    }
+    thread.sleep(Duration.fromMillis(100i64));
+    expectUInt(counts.ends.load(), 1u64, "4: the stream ends once");
+    expectUInt(counts.failedEnds.load(), 1u64, "4: and Failed");
+    expect(counts.chunks.load() <= 6u64, "4: and the source stopped sending (an 8 MiB archive is 33 chunks)");
+  }
+
+  // ---- 5. a save cancelled once the file is there ----
+  {
+    var m = made(1usize, 67108864usize, &zipfile.EntryOptions.stored(), 31u64);
+    var tx: OneshotSender[Result[u64, AnyError]];
+    var rx: OneshotReceiver[Result[u64, AnyError]];
+    tx, rx = Oneshot[Result[u64, AnyError]].make();
+    let gc = CancelGroup.make();
+    let gs = gc.child();
+    let launcher = Launcher(takeZip(&mut m), String.from("ztest_cancel.zip"), tx);
+    actors.withGroup(&gs, fn() [launcher] { launcher.go(); });
+    var waited = 0u32;
+    while !fs.exists(&Path.from("ztest_cancel.zip")) && waited < 2000u32 {
+      thread.sleep(Duration.fromMillis(1i64));
+      waited += 1u32;
+    }
+    gc.cancel();
+    let r = rx.recv();
+    var erred = false;
+    match r {
+      case let Some(x) { erred = !isOk(&x); }
+      case is None {}
+    }
+    expect(erred, "5: cancelled mid-save, done says Err");
+    expect(!fs.exists(&Path.from("ztest_cancel.zip")), "5: and no file is left");
+    gone("ztest_cancel.zip");
+  }
+
+  // ---- 6. a file that cannot be opened ----
+  {
+    var m = made(2usize, 100usize, &zipfile.EntryOptions.stored(), 3u64);
+    let r = saved(takeZip(&mut m), "ztest_no_such_folder/out.zip");
+    expect(!isOk(&r), "6: a file that cannot be opened: done says Err");
+    expect(!fs.exists(&Path.from("ztest_no_such_folder/out.zip")), "6: and no file is made");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

@@ -82,6 +82,8 @@
 //                                                               Result[BodyStream, FetchError]
 //   c.streamTo(request, sink)  c.streamToIn(request, sink, lim)   a response body sent to a ChunkSink     (STREAMS)
 //                                                               Result[BodyHead, FetchError]
+//   c.upload(request, framing)  c.uploadIn(request, framing, lim)   a request body fed by a stream  (UPLOADS)
+//                                                               Upload: up.sink() ChunkSink  up.stream() Result[BodyStream, FetchError]
 //   c.events(request)  c.eventsIn(request, lim)     a response read as server-sent events      (STREAMS)
 //                                                               Result[EventStream, FetchError]
 //   bs.read()   BodyStream: bs.status bs.version bs.headers bs.url bs.isOk()    Result[Option[String], FetchError]
@@ -98,6 +100,7 @@
 //   ex.start(head, length)  ex.startEvents()  ex.startEventsWith(head)   a streamed one (not awaited)
 //   ex.write(bytes)  ex.sendEvent(event)  ex.sendComment(text)     Result[usize, ServerError]
 //   ex.finish()                                                    Result[u64, ServerError]
+//   ex.bodySink()   after start: a stages.ChunkSink, a pipeline's end, feeds the body   (A SERVER)
 //   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  String() <- e
 //   defaultMaxRequestBody         the most request body bytes a server takes unless configured
 //
@@ -215,6 +218,17 @@
 // the behaviour never runs. An exchange awaited after that is abandoned the
 // same way at once. aio's own I/O ends after, in aio's finalizer.
 //
+// UPLOADS. 'client.upload(request, framing)' (or 'uploadIn' with a lim) sends a request whose
+// body is a stream: the request's own body must be empty, 'framing' is BodyLength.sized(n) or
+// .unsized() (chunked on HTTP/1.1, plain DATA on HTTP/2 and HTTP/3). The fetch starts at once; the
+// Upload it returns has 'sink()', a stages.ChunkSink the body's pipeline ends in
+// ('FileSource(up.sink(), name).start()'), and 'stream()', answered like 'client.stream' with the
+// response's BodyStream (a response, or a failure, that comes first waits for it; once only).
+// The credit is by copy, the length counted by the sink, a streamed fetch never retried and a 307
+// or 308 its response; a response before the body is all sent stops the source Finished; the fetch
+// failing, cancelled or timing out stops it Failed(the FetchError); an Upload dropped without
+// 'stream' cancels the fetch (upload.cone is the longer account).
+//
 // STREAMS. 'client.stream(request)' and 'client.events(request)' are answered
 // when the response's HEAD arrives (not its body) with a handle that moves, a
 // BodyStream or an EventStream, which carries the status, the header fields
@@ -269,8 +283,8 @@
 // order, as buffers come back (while anything is staged, a piece joins it). The
 // connection's credit is not released until the staged buffer is given back. The end
 // sends what is still staged first. A body to be decoded
-// (Content-Encoding) goes through package httpdecode's Decoder, which sits over
-// this call. A fetch's group (lim's, or the
+// (Content-Encoding) goes through package httpdecode ('httpdecode.to', over a
+// BodyStream's 'to'). A fetch's group (lim's, or the
 // request's) cancels it at the client as for any fetch, ending the sink Failed once;
 // and a buffer given back in a cancelled group (a TransformStage that has seen its consumer
 // quit gives its input back so) cancels it too. 'read()' stays, for text and for
@@ -337,7 +351,18 @@
 // sized body's length, 'finish' short of it) is a program error: a panic at
 // the line of the call, as the client's are. A response to a HEAD request, or a
 // 204 or 304, sends the head (with the Content-Length 'respond' computed) and no
-// body: its writes answer 0. Dropping an Exchange without answering answers 500;
+// body: its writes answer 0. After 'start', 'bodySink()' instead of 'write' and
+// 'finish' makes a stages.ChunkSink of the body: a pipeline (a file source, a gzip
+// stage) that ends in it is the response, a chunk at a time, and a large or generated
+// body never sits whole in memory. The credit is by copy: the service thread copies
+// each chunk into pool buffers of its own and gives the chunk back to its source once
+// the connection has accepted the copy, so a slow client holds the pipeline back at
+// the same watermark as 'write'. The sink's end is 'finish'; Failed resets the
+// exchange; a sized body is counted there, and past or short of its length the
+// exchange is reset and the source stopped Failed; a body the protocol forbids
+// stops the source Finished at its attach; a peer that left stops it Failed
+// (responsesink.cone is the longer account). Dropping the Exchange after
+// 'bodySink()' leaves the body to the sink. Dropping an Exchange without answering answers 500;
 // dropping one that is streaming an unsized body ends the body cleanly (so a
 // stream of events closes), a sized one short of its length resets the
 // connection. The Date and Server fields are not added: the program writes the
@@ -616,6 +641,29 @@ pub struct Client is Move {
     if !r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
     let group = streamGroup(&mut r);
     awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r, EventSink(), group))
+  }
+
+  // A request whose body is fed by a stream (the package's header, UPLOADS): the request's own body must be
+  // empty (a panic otherwise), 'framing' says the body's length, sized or unsized. The fetch starts at
+  // once, its head going out as a connection is chosen. The Upload's 'sink' is where a pipeline ends
+  // ('FileSource(up.sink(), name).start()'), and its 'stream' awaits the response. A streamed body
+  // cannot be sent twice: the fetch is never retried, and a 307 or 308 is the response
+  pub fn upload(self: &, req: httpclient.Request, framing: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine())
+      Upload {
+    self.uploadIn(req, framing, IoLimits.none(), file, line)
+  }
+
+  // The same, the whole fetch ended if lim says so, and the request's own deadline and group too
+  pub fn uploadIn(self: &, req: httpclient.Request, framing: BodyLength, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
+      Upload {
+    if req.body.len() > 0usize {die("actorhttp: an upload's request body must be empty: its body is the Upload's sink", file, line);}
+    if framing.isEmpty() {die("actorhttp: an upload's framing must be sized or unsized", file, line);}
+    var r = limitedRequest(req, lim, file, line);
+    let group = streamGroup(&mut r);
+    let reader = ReaderSink[Result[Option[String], FetchError]](&bodyChunk, &bodyEnd);
+    let sid = newId();
+    post[UploadOpenJob](UploadOpenJob(id, sid, r, reader, group, framing));
+    Upload(id, sid, UploadSink(id, sid), Atomic[u8].of(0u8))
   }
 
   fn final(self: &uni) {

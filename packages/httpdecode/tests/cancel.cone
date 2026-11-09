@@ -1,5 +1,5 @@
 // Cancelled decoded fetches (Bug 41): 22 fetches of one 8 MiB incompressible zstd body, each through its own
-// httpdecode.Decoder into a sink that keeps its source, all in one CancelGroup. Once every fetch has its head
+// httpdecode.to into a sink that keeps its source, all in one CancelGroup. Once every fetch has its head
 // and a moment has passed, the group is cancelled, and the program ends after actors.waitUntilIdle. Meant for
 // LSan on the Linux server (nothing may leak). On any machine the output checks only that all 22 fetches got
 // their heads and that the program ends; it does not count the sinks' ends or check the bytes.
@@ -22,7 +22,7 @@ import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending;
 import zstd;
-import httpdecode use Decoder;
+import httpdecode;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
@@ -154,12 +154,15 @@ actor Count is ChunkSink {
 actor Fetch2 {
   client: Client;
 
-  pub async fn run(self, u: String, d: Decoder, g: CancelGroup) {
+  pub async fn run(self, u: String, sink: ChunkSink, limit: usize, g: CancelGroup) {
     var req = Request.get(u.view());
     req.group = Some[CancelGroup](g);
-    let r = await d.open(client.clone(), req);
+    let r = await client.stream(httpdecode.request(req));
     match r {
-      case is Ok { heads.add(1u64); }
+      case var Ok(body) {
+        heads.add(1u64);
+        httpdecode.to(body, sink, limit);
+      }
       case is Err {}
     }
   }
@@ -189,9 +192,8 @@ fn main() i32 {
     var k = 0;
     while k < 22 {
       let sink = Count();
-      let d = Decoder(sink, 268435456usize);
       let f = Fetch2(Client.standard());
-      f.run(url(port, "/rand/zstd/8388608"), d, g);
+      f.run(url(port, "/rand/zstd/8388608"), sink, 268435456usize, g);
       k = k + 1;
     }
     waitFor(&heads, 22u64);
