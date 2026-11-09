@@ -355,7 +355,12 @@ pub struct Decompressor {
     ent.reset();
     base = hist.len();
     if retain && fcsSize > 0usize {
-      hist.reserve(if fcs < 67108864u64 {usize.from(fcs)} else {67108864usize});
+      // Room for the whole frame at once, but no more than the input left could
+      // make (a 4-byte RLE block is 128 KiB, 32768 times its size): a header can
+      // claim anything
+      let left = u64.from(inp.len() - q);
+      let most = (if left > 4294967296u64 {4294967296u64} else {left}) * 32768u64;
+      hist.reserve(usize.from(if fcs < most {fcs} else {most}));
     }
     pos = q;
     stage = Stage.BlockHead;
@@ -378,13 +383,10 @@ pub struct Decompressor {
     let before = hist.len();
     if kind < 2u32 {
       if outTotal + u64.from(size) > limit { return self.fail(ErrorKind.TooLarge, "zstd: output larger than the limit"); }
-      hist.reserve(size);
-      var i = 0usize;
       if kind == 0u32 {
-        while i < size { hist.push(*inp[start + i]); i = i + 1usize; }
+        appendRange(&mut hist, &inp, start, size);
       } else {
-        let b = *inp[start];
-        while i < size { hist.push(b); i = i + 1usize; }
+        hist.resize(before + size, *inp[start]);
       }
     } else {
       let reach = Reach(window, base, frameOut, blockMax);

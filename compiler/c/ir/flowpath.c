@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <memory.h>
+#include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -333,6 +334,7 @@ typedef struct {
     uint32_t var;
     PathSet *holds;
     PathSet *pending;
+    uint32_t hmask;
     uint8_t state;
 } PathEntry;
 
@@ -500,6 +502,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->xstamp = 0;
     pv->jstamp = 0;
     pv->state = 0;
+    pv->hmask = 0;
     pv->flagged = 0;
     pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
@@ -530,6 +533,7 @@ static void pathLogVar(uint32_t var) {
     entry->holds = pv->holds;
     entry->pending = pv->pending;
     entry->state = pv->state;
+    entry->hmask = pv->hmask;
 }
 
 void pathSetState(uint32_t var, uint8_t state) {
@@ -537,6 +541,16 @@ void pathSetState(uint32_t var, uint8_t state) {
         return;
     pathLogVar(var);
     pathVars[var].state = state;
+    // The moves that hollowed it are held only while it may be hollow
+    if (!(state & DropHollow))
+        pathVars[var].hmask = 0;
+}
+
+void pathSetHollowMask(uint32_t var, uint32_t hmask) {
+    if (pathVars[var].hmask == hmask)
+        return;
+    pathLogVar(var);
+    pathVars[var].hmask = hmask;
 }
 
 void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
@@ -557,6 +571,7 @@ static void pathRollback(uint32_t mark) {
         pathVars[entry->var].holds = entry->holds;
         pathVars[entry->var].pending = entry->pending;
         pathVars[entry->var].state = entry->state;
+        pathVars[entry->var].hmask = entry->hmask;
     }
 }
 
@@ -586,6 +601,7 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
             delta->ents[cnt].holds = pv->holds;
             delta->ents[cnt].pending = pv->pending;
             delta->ents[cnt].state = pv->state;
+            delta->ents[cnt].hmask = pv->hmask;
             ++cnt;
         }
     }
@@ -611,6 +627,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jholds = NULL;
                 pv->jpending = NULL;
                 pv->jstate = 0;
+                pv->jhmask = 0;
                 pv->jfirst = entry->holds;
                 pv->japart = 0;
                 if (ntouched == touchedcap)
@@ -623,6 +640,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
             pv->jstate |= entry->state;
+            pv->jhmask |= entry->hmask;
         }
     }
     int changed = 0;
@@ -631,10 +649,12 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         PathSet *holds = pv->jholds;
         PathSet *pending = pv->jpending;
         uint8_t state = pv->jstate;
+        uint32_t hmask = pv->jhmask;
         if (withcurrent || pv->jcnt < npaths) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
+            hmask |= pv->hmask;
             if (pathGpuChoices && pv->holder && !pv->japart)
                 pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
@@ -649,6 +669,10 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         }
         if (state != pv->state) {
             pathSetState(touched[i], state);
+            changed = 1;
+        }
+        if (hmask != pv->hmask) {
+            pathSetHollowMask(touched[i], hmask);
             changed = 1;
         }
     }
@@ -973,6 +997,38 @@ static int pwMayAliasWritten(INode *reftype) {
         && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
 }
 
+// Does a borrowed reference holding 'holds' point only where no other name writes? It does when
+// every borrow it may hold (only the near loans are where it points: flowloan.h) is of an
+// element a method returned out of its receiver's own block (pwElemView), the receiver reached
+// through a reference nothing writes by ('imm', 'mut1'; not 'ro', 'mut': Place.shwrite), or is
+// what a caller lent through a parameter of such a reference, the one the receiver was reached by
+// (a reborrow carries it): the element is then in an 'imm' path, though the '&' the method
+// returned says only that its holder may not write. Anything else keeps what the reference's
+// type says: a borrow of a local, a global, what a caller lent through a reference that may be
+// written by, a borrow the method may have made of something it merely reaches (a '&mut' field
+// of the receiver, a global), and a reference holding nothing the walk knows of.
+static int pwHoldsUnwritten(PathSet *holds) {
+    if (holds == NULL)
+        return 0;
+    int elems = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t entry = holds->ids[i];
+        if (entry & LoanFar)
+            continue;
+        Place *lp = loanPlaceOf(entry);
+        if (loanElemView(entry) && lp->shared && !lp->shwrite) {
+            elems = 1;
+            continue;
+        }
+        if (!loanIsCallerOwn(entry))
+            return 0;
+        INode *parmtype = itypeGetTypeDcl(pathVars[lp->var].var->vtype);
+        if ((parmtype->tag != RefTag && parmtype->tag != ArrayRefTag) || pwMayAliasWritten(parmtype))
+            return 0;
+    }
+    return elems;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -1041,7 +1097,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
-        pl->shwrite = pwMayAliasWritten(reftype);
+        pl->shwrite = pwMayAliasWritten(reftype)
+            && !(refpl.nsteps == 0 && !refpl.deref && pwHoldsUnwritten(pathVars[refpl.var].holds));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->ownertype = NULL;
@@ -1367,6 +1424,10 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+FnDclNode *flowCallMethod(FnCallNode *call) {
+    return pwMethod(call);
+}
+
 // Is the method's parameter 'i', as declared, a borrow? Such an argument is
 // not stored in an arena by a call ('ar.get(&key)'); one declared by value
 // ('value: T') is, whatever T is
@@ -1566,6 +1627,53 @@ static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t
     }
 }
 
+// Which parameters' borrows this walk found reaching a return, or a store into
+// what a parameter, or a local reaching one, holds (WarnLifetimeTie). The
+// variable of each, by its index in the walk; NULL entries never
+typedef struct PathReach {
+    uint32_t var;
+    uint8_t how;        // PwReachReturned, PwReachStored: or both
+} PathReach;
+enum { PwReachReturned = 1, PwReachStored = 2 };
+static PathReach *pwReached = NULL;
+static uint32_t npwReached = 0;
+static uint32_t pwReachedCap = 0;
+
+static int pwTieBlind = 0;
+static int pwIsParm(VarDclNode *var);
+
+// Note the variables whose caller's lending 'set' carries, returned or stored
+static void pwNoteReach(PathSet *set, uint8_t how) {
+    if (!pathLoans || set == NULL)
+        return;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        uint32_t var = loanViaVar(loanOf(set->ids[i]));
+        if (var == 0)
+            continue;
+        uint32_t k = 0;
+        while (k < npwReached && pwReached[k].var != var)
+            ++k;
+        if (k < npwReached) {
+            pwReached[k].how |= how;
+            continue;
+        }
+        if (npwReached == pwReachedCap)
+            pwReached = (PathReach *)pathGrow(pwReached, &pwReachedCap, sizeof(PathReach));
+        pwReached[npwReached].var = var;
+        pwReached[npwReached++].how = how;
+    }
+}
+
+// Does 'set' hold a loan of what a parameter lent?
+static int pwHoldsParmReach(PathSet *set) {
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        uint32_t var = loanViaVar(loanOf(set->ids[i]));
+        if (var && pwIsParm(pathVars[var].var))
+            return 1;
+    }
+    return 0;
+}
+
 // A value carrying 'holds' stored into places reached from the variable
 // 'var', 'from' to 'to' borrows past it (pwPlaceLevel): its own storage, or
 // where it points, or further. The holder there holds those loans too,
@@ -1578,6 +1686,8 @@ static void pwStoreInto(uint32_t var, int from, int to, PathSet *holds) {
     PathVar *pv = &pathVars[var];
     if (holds == NULL || !pv->holder)
         return;
+    if (pwIsParm(pv->var) || pwHoldsParmReach(pv->holds))
+        pwNoteReach(holds, PwReachStored);
     PathSet *held = pv->holds;
     pathSetFacts(var, pathSetUnion(held, from == 0 ? holds : pathSetLoansAs(holds, 1)), pv->pending);
     if (to > 0)
@@ -1658,13 +1768,14 @@ static int pwByParm(VarDclNode *var) {
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how,
         int byparm, int readsnothing) {
     VarDclNode *through;
+    pwNoteReach(stored, PwReachStored);
     // A node of an arena a caller keeps takes no other parameter's borrow where
     // the function names no lifetime (every borrow in its signature would share
     // one) or the arena was reached through a struct's field, whatever it
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
     if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
-        uint32_t foreign = loanArenaApart(stored, refholds, &through);
+        uint32_t foreign = loanArenaApart(stored, refholds, NULL, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
         return;
@@ -2250,9 +2361,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // no local's borrow may be stored in it
                 VarDclNode *through;
                 int known = argsets[at] && argsets[at]->cnt;
-                if (known && local && loanArenaChecked(others, argsets[at]))
+                if (known && local && loanArenaChecked(others, argsets[at], NULL))
                     loanEscape(node, local, how);
-                uint32_t apart = known ? loanArenaApart(others, argsets[at], &through) : 0;
+                uint32_t apart = known ? loanArenaApart(others, argsets[at], NULL, &through) : 0;
                 if (apart)
                     loanApart(node, apart, through, how);
                 continue;
@@ -2288,7 +2399,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // An arena reached through a reference takes of the caller's
                 // loans only its own: those of the parameter it was reached by
                 VarDclNode *through;
-                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, &through);
+                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, pathVars[target.var].var, &through);
                 if (apart)
                     loanApart(node, apart, through, how);
             }
@@ -2396,6 +2507,7 @@ static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
 }
 
 int flowWalkFinal = 0;
+char *flowOwnDir = NULL;
 int flowShapeRetry = 0;
 
 // A borrow into a collection that changes shape (shapeinfer.h) through a path
@@ -2549,6 +2661,31 @@ static INode *pwViewOwner(INode *recv, INode *cont, int *byvalue) {
             return NULL;
     }
     return holder;
+}
+
+// Did this method return an element out of its receiver's own block: a borrow of a struct held in
+// the block of 'container' (a 'List[Item]''s '[]' returns an '&Item'), with the receiver reached
+// through a reference nothing writes by, so that the element is in that 'imm' path too? Then a
+// borrow the call carries is of that element and of nothing else the receiver reaches: not of what
+// a '&mut' field of the receiver points at, and (pwHoldsElements) the call is handed no other
+// borrow the element could come from. No 'var' global may reach the element's type, for a method
+// whose body is another's could return a borrow of one, and that is not an 'imm' path.
+static int pwElemView(FnCallNode *call, INode *container, Place *recvpl) {
+    if (!recvpl->shared || recvpl->shwrite || call->args == NULL || call->args->used == 0
+            || (call->flags & (FlagVDisp | FlagLvalOp)))
+        return 0;
+    INode *rt = iexpGetTypeDcl((INode *)call);
+    if (rt->tag != RefTag)
+        return 0;
+    INode *elem = itypeGetTypeDcl(((RefNode *)rt)->vtexp);
+    if (elem == NULL || elem->tag != StructTag || (elem->flags & TraitType) || !pwHoldsElements(container, elem))
+        return 0;
+    for (uint32_t k = 1; k < call->args->used; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        if (arg->tag != StringLitTag && !intrinsicIsSrcDefault(arg) && pwCarries(iexpGetTypeDcl(arg)))
+            return 0;
+    }
+    return !reshapeMutGlobalsReach(elem);
 }
 
 // The borrow a call returned out of a container that changes shape, carrying the loan
@@ -2796,6 +2933,33 @@ static void pwShapeStore(INode *lval, Place *pl) {
     }
 }
 
+static int pwTieSpell(FnDclNode *fn, VarDclNode **tied, uint32_t ntied, int resultlife, int resultstatic,
+        char *out, size_t size);
+
+// The function a call names, when its signature names no lifetime yet has more than
+// one borrow in it and a result that carries one: the unannotated rule ties
+// the result to every one of them, which a refusal then says (loanTiedBy)
+static FnDclNode *pwTiedCallee(FnCallNode *call) {
+    if (!isNameUseNode(call->objfn))
+        return NULL;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return NULL;
+    FnDclNode *fn = (FnDclNode *)dcl;
+    FnSigNode *sig = (FnSigNode *)fn->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->lifenamed || fn->srcp == NULL
+            || !itypeCarriesEndingBorrow(sig->rettype))
+        return NULL;
+    uint32_t borrows = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        if (itypeCarriesEndingBorrow(((VarDclNode *)*nodesp)->vtype))
+            ++borrows;
+    }
+    return borrows > 1 ? fn : NULL;
+}
+
 // A call: the function reference it calls through, then each argument in
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
@@ -2871,6 +3035,11 @@ static PathSet *pwCall(FnCallNode *call) {
             }
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
             pwStandInOn = savedstandin;
+            if (carries && pathLoans && recvloan && !sig) {
+                FnDclNode *tiedfn = pwTiedCallee(call);
+                if (tiedfn)
+                    loanTiedBy(recvloan, tiedfn);
+            }
             twophase = recvloan && pwTwoPhase(recvaccess);
             loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
             recvholds = carried;
@@ -2895,6 +3064,11 @@ static PathSet *pwCall(FnCallNode *call) {
             pwArenaValue = savedvalue;
         }
         loanFlightPushOf(carried, 0, *argsp);
+        if (carries && pathLoans && !sig) {
+            FnDclNode *tiedfn = pwTiedCallee(call);
+            if (tiedfn)
+                loanTiedAt(carried, *argsp, tiedfn);
+        }
         if (carries)
             result = pathSetUnion(result, pwArgCarriesTo(sig, argi, rettype, carried, globalonly));
         argsets[argi] = carried;
@@ -2955,6 +3129,8 @@ static PathSet *pwCall(FnCallNode *call) {
                 int byvalue;
                 INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
                 loanShapeOwnerSet(recvloan, vowner, byvalue);
+                if (pwElemView(call, container, &recvpl))
+                    loanElemViewSet(recvloan);
             }
         }
         result = pathSetUnion(result, fromrecv);
@@ -3357,6 +3533,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
             BreakRetNode *ret = (BreakRetNode *)*nodesp;
             if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp)) {
                 PathSet *carried = pwValue(&ret->exp, 1);
+                pwNoteReach(carried, PwReachReturned);
                 uint32_t local = loanLocalIn(carried);
                 uint32_t apart;
                 if (local)
@@ -4050,6 +4227,11 @@ static PathSet *pwValue(INode **nodep, int move) {
     if (pwRefused)
         return NULL;
     INode *node = *nodep;
+    // A raw pointer met as a value: a borrow made from one has no loan the walk
+    // could follow, so what the body does with a parameter is not fully seen
+    // (pwTieWarn)
+    if (isExpNode(node) && ((IExpNode *)node)->vtype && iexpGetTypeDcl(node)->tag == PtrTag)
+        pwTieBlind = 1;
     // An element borrowed where it lies, '&mut ls[i]': a borrow of that element of the array's place
     if (pwIsElemBorrow(node)) {
         Place pl;
@@ -4170,6 +4352,11 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
     case CastTag:
     {
+        // A borrow made a raw pointer, or one made from a raw pointer, is a
+        // route the walk does not follow: what the body does with a parameter
+        // is not fully seen (pwTieWarn)
+        if (iexpGetTypeDcl(node)->tag == PtrTag || iexpGetTypeDcl(((CastNode *)node)->exp)->tag == PtrTag)
+            pwTieBlind = 1;
         if (pathLoans && castSumNarrows(node))
             return pwNarrowShared((CastNode *)node);
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
@@ -4281,6 +4468,254 @@ static PathSet *pwCallerLoans(uint32_t var) {
     return holds;
 }
 
+// *********************
+// A tie the body does not need (WarnLifetimeTie)
+// *********************
+
+// Is this a method a trait requires or supplies, or one of a generic type, whose
+// signature is not the author's alone to change?
+static int pwTieMethodBound(FnDclNode *fn) {
+    INode *owner = inodeGetOwner((INode *)fn);
+    if (owner == NULL || owner->tag != StructTag)
+        return 0;
+    StructNode *st = (StructNode *)owner;
+    if ((st->flags & TraitType) || st->genericinfo || st->instnode)
+        return 1;
+    if (st->basetrait && st->basetrait->tag == StructTag
+            && iNsTypeFindFnField((INsTypeNode *)st->basetrait, fn->namesym))
+        return 1;
+    INode **tp;
+    uint32_t cnt;
+    if (st->traits) {
+        for (nodesFor(st->traits, cnt, tp)) {
+            INode *trait = itypeGetTypeDcl(*tp);
+            if (trait && trait->tag == StructTag && iNsTypeFindFnField((INsTypeNode *)trait, fn->namesym))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+// The signature as written, from the function's name to the end of its result,
+// with the lifetime ''a' put after the first '&' of each parameter named in
+// 'tied', and ''a' (or ''static', 'resultstatic') after the first '&' of the
+// result. False when the text is not as expected, or a place for one is not
+// found: the caller then says it in words.
+static int pwTieSpell(FnDclNode *fn, VarDclNode **tied, uint32_t ntied, int resultlife, int resultstatic,
+        char *out, size_t size) {
+    const char *src = fn->srcp;
+    if (src == NULL)
+        return 0;
+    const char *open = src;
+    while (*open && *open != '(' && *open != '{' && *open != ';' && open - src < 400)
+        ++open;
+    if (*open != '(')
+        return 0;
+    const char *name = open;
+    while (name > src && name[-1] != ' ' && name[-1] != '\t' && name[-1] != '\n')
+        --name;
+    size_t used = 0;
+    uint32_t seen = 0;
+    #define PW_PUT(ch) do { if (used + 1 >= size) return 0; out[used++] = (ch); } while (0)
+    for (const char *c = name; c <= open; ++c)
+        PW_PUT(*c);
+    int depth = 0;
+    const char *seg = open + 1;
+    const char *c = open + 1;
+    for (;; ++c) {
+        if (*c == '\0')
+            return 0;
+        int end = 0;
+        if (*c == '(' || *c == '[' || *c == '{')
+            ++depth;
+        else if ((*c == ']' || *c == '}') && depth > 0)
+            --depth;
+        else if (*c == ')') {
+            if (depth == 0)
+                end = 2;
+            else
+                --depth;
+        }
+        else if (*c == ',' && depth == 0)
+            end = 1;
+        if (!end)
+            continue;
+        // One parameter, seg to c: tied if it is written 'name:'
+        const char *p = seg;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+            ++p;
+        const char *id = p;
+        while (*p && *p != ':' && *p != ' ' && *p != ',' && *p != ')')
+            ++p;
+        int is = 0;
+        for (uint32_t k = 0; k < ntied && *p == ':'; ++k) {
+            Name *nm = tied[k]->namesym;
+            if ((size_t)(p - id) == nm->namesz && memcmp(id, &nm->namestr, nm->namesz) == 0) {
+                is = 1;
+                ++seen;
+            }
+        }
+        int placed = !is;
+        for (const char *s = seg; s < c; ++s) {
+            PW_PUT(*s);
+            if (*s == '&' && !placed) {
+                PW_PUT('\'');
+                PW_PUT('a');
+                if (s + 1 < c && s[1] != ' ' && s[1] != ',' && s[1] != ')')
+                    PW_PUT(' ');
+                placed = 1;
+            }
+        }
+        if (!placed)
+            return 0;
+        PW_PUT(*c);
+        if (end == 2)
+            break;
+        seg = c + 1;
+    }
+    if (seen != ntied)
+        return 0;
+    // The result: to the body's brace or the end of the line
+    const char *res = c + 1;
+    while (*res == ' ' || *res == '\t')
+        ++res;
+    const char *resend = res;
+    depth = 0;
+    while (*resend && *resend != '\n' && *resend != ';' && !(*resend == '{' && depth == 0)) {
+        if (*resend == '[' || *resend == '(')
+            ++depth;
+        else if (*resend == ']' || *resend == ')')
+            --depth;
+        ++resend;
+    }
+    while (resend > res && (resend[-1] == ' ' || resend[-1] == '\t' || resend[-1] == '\r'))
+        --resend;
+    int placed = !resultlife;
+    if (resend > res)
+        PW_PUT(' ');
+    for (const char *s = res; s < resend; ++s) {
+        PW_PUT(*s);
+        if (*s == '&' && !placed) {
+            const char *life = resultstatic ? "'static" : "'a";
+            for (; *life; ++life)
+                PW_PUT(*life);
+            if (s + 1 < resend && s[1] != ' ')
+                PW_PUT(' ');
+            placed = 1;
+        }
+    }
+    if (!placed)
+        return 0;
+    #undef PW_PUT
+    out[used] = '\0';
+    return 1;
+}
+
+int flowPathSigText(FnDclNode *fn, char *out, size_t size) {
+    return pwTieSpell(fn, NULL, 0, 0, 0, out, size);
+}
+
+// The walk is over and found no error: a parameter borrowed with no lifetime
+// named, which the signature ties to the result or to another parameter, whose
+// borrow the body never returns nor stores, makes every caller keep it
+// borrowed for nothing. An author who writes no lifetime has not said it was
+// meant (naming any silences this), and the compiler has read the body.
+static void pwTieWarn(FnDclNode *fn, int seams) {
+    if (pwSig->lifenamed || seams || fn->genericinfo || fn->instnode || fn->closure || fn->generatedFor
+            || (fn->flags & (FlagExtern | FlagInline)) || (fn->dclinfo.facts & DclIntrinsic)
+            || fn->value == NULL || fn->value->tag != BlockTag || pwTieMethodBound(fn) || pwTieBlind)
+        return;
+    // Only this compile's own package: a file under the root file's folder
+    if (flowOwnDir == NULL || fn->lexer == NULL || fn->lexer->url == NULL)
+        return;
+    {
+        const char *url = fn->lexer->url;
+        const char *dir = flowOwnDir;
+        while (*dir && *url) {
+            int d = *dir == '\\' ? '/' : *dir;
+            int u = *url == '\\' ? '/' : *url;
+            if (d != u)
+                return;
+            ++dir;
+            ++url;
+        }
+        if (*dir)
+            return;
+        if (flowOwnDir[0] == '\0' && (strchr(url, '/') || strchr(url, '\\')))
+            return;
+    }
+    VarDclNode *unused[16];
+    VarDclNode *tied[16];
+    uint32_t nunused = 0, ntied = 0;
+    int stored = 0;
+    int viaresult = itypeCarriesEndingBorrow(pwSig->rettype);
+    INode **nodesp;
+    uint32_t cnt;
+    // Which parameter could another hold a borrow of: one that is a way to store
+    int anystore = 0;
+    for (nodesFor(pwParms, cnt, nodesp)) {
+        INode *pt = ((VarDclNode *)*nodesp)->vtype;
+        if (itypeWritableBorrowDepth(pt, 3) > 0) {
+            INode *pointee = lifePointee(pt);
+            if (itypeCarriesEndingBorrow(pointee ? pointee : pt))
+                anystore = 1;
+        }
+    }
+    if (!viaresult && !anystore)
+        return;
+    for (nodesFor(pwParms, cnt, nodesp)) {
+        VarDclNode *parm = (VarDclNode *)*nodesp;
+        uint32_t idx = parm->flowindex;
+        if (idx == 0 || !pathVars[idx].holder || !itypeCarriesEndingBorrow(parm->vtype))
+            continue;
+        uint32_t k = 0;
+        while (k < npwReached && pwReached[k].var != idx)
+            ++k;
+        if (k < npwReached) {
+            if (ntied < 16)
+                tied[ntied++] = parm;
+            if (pwReached[k].how & PwReachStored)
+                stored = 1;
+            continue;
+        }
+        // The tie binds a caller where the result can carry this borrow, or
+        // another parameter, a way to store, can hold it
+        int binds = viaresult;
+        INode **otherp;
+        uint32_t ocnt;
+        for (nodesFor(pwParms, ocnt, otherp)) {
+            INode *pt = ((VarDclNode *)*otherp)->vtype;
+            if (*otherp != (INode *)parm && itypeWritableBorrowDepth(pt, 3) > 0
+                    && itypeCarriesEndingBorrow(lifePointee(pt) ? lifePointee(pt) : pt))
+                binds = 1;
+        }
+        if (binds && nunused < 16)
+            unused[nunused++] = parm;
+    }
+    if (nunused == 0)
+        return;
+    char list[256];
+    size_t at = 0;
+    list[0] = '\0';
+    for (uint32_t u = 0; u < nunused; ++u) {
+        Name *nm = unused[u]->namesym;
+        at += snprintf(list + at, sizeof(list) - at, "%s'%s'", u == 0 ? "" : u + 1 == nunused ? " and " : ", ",
+            &nm->namestr);
+        if (at >= sizeof(list) - 40)
+            break;
+    }
+    char sig[1024];
+    if (viaresult && !stored && pwTieSpell(fn, tied, ntied, 1, ntied == 0, sig, sizeof(sig)))
+        errorMsgNode((INode *)unused[0], WarnLifetimeTie,
+            "%s %s never returned or stored, yet a signature with no lifetime named ties every borrow in it together, so callers must keep %s borrowed as long as the result: '%s' separates %s.",
+            list, nunused == 1 ? "is" : "are", nunused == 1 ? "it" : "them", sig, nunused == 1 ? "it" : "them");
+    else
+        errorMsgNode((INode *)unused[0], WarnLifetimeTie,
+            "%s %s never returned or stored, yet a signature with no lifetime named ties every borrow in it together, so callers must keep %s borrowed as long as the borrows that are: naming a lifetime on those that are, and none on %s, separates %s.",
+            list, nunused == 1 ? "is" : "are", nunused == 1 ? "it" : "them", nunused == 1 ? "this one" : "these",
+            nunused == 1 ? "it" : "them");
+}
+
 static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams);
 
 // The walk, made again while a candidate for a counted variable's last use
@@ -4338,6 +4773,8 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
     pwArm = 0;
     pwRefused = 0;
     nlockpts = 0;
+    npwReached = 0;
+    pwTieBlind = 0;
 
     // The parameters are variables of the function's block; what a caller lent
     // through one is the caller's to freeze, and outlives the call: each holds
@@ -4360,6 +4797,8 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
         pwLockApply();
     if (!again && errors == errorsOnEntry)
         pwCandApply();
+    if (!again && loans && errors == errorsOnEntry && !flowShapeRetry && !(yieldAny() && yieldGenOf(fndcl) != NULL))
+        pwTieWarn(fndcl, seams);
 
     // A variable's index is the walk's own
     for (uint32_t i = 1; i < nvars; ++i)

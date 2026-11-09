@@ -398,6 +398,11 @@ Never hand-assert what a category already covers.
 `compile` is for valid code that cannot run — no `main`, library-shaped, or no
 codegen path yet. Never add a synthetic `main` to satisfy a category.
 
+A `compile` or `run` scenario may annotate a warning (code 3000 and up) with `//~`
+where the program is written, for a program whose point is a signature that warns:
+the warnings are then asserted exactly as a `warn` scenario's are, and an
+unannotated one still fails. It may annotate nothing else.
+
 Mark anything not yet implemented `xfail`: it reports as an expected failure and
 **fails the suite if it starts passing**.
 
