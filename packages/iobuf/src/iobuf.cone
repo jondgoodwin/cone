@@ -188,6 +188,17 @@
 // worker that ends with the process, leaves its blocks in its record, counted
 // in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
 //
+// HOMES. A buffer may be lent: 'buf.setHome(&home)' (home an IoHome, made by the lender with
+// 'IoHome.make(ctx, give, release)') makes its death, instead of releasing the block, call 'give(ctx, m)'
+// with a fresh empty buffer m on the same block, which has no home and so releases the block when it dies.
+// That is how a sender that moved a buffer into a driver is told it is done with it, with no call from the
+// driver: the death is the signal, on whatever thread it falls (the I/O thread when a send completes).
+// 'buf.clearHome()' makes it plain again (a buffer handed back by hand must be cleared first, or its credit
+// returns twice). The home is counted: each homed buffer holds one count, as does the IoHome, and the
+// lender's 'release(ctx)' runs when the last is gone. A plain buffer pays one test of its home word in
+// 'final'. A 'give' must not panic or wait; one that sends to an actor checks 'actors.isRunning()' first
+// (a buffer that outlives the runtime would panic the send). stages.chunkHome is the lender for a ChunkSource.
+//
 // SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
 // read-only, shared by any number of owners on any number of threads, as one
 // send fanned out to many sockets needs (the kernel only reads a send's
@@ -302,7 +313,7 @@ fn acquire(size: usize, file: &Array[u8], line: u32) IoBuf {
   let room = pool.sizeFor(size, page);
   let b = pool.allocate(size, page);
   if b as usize == 0usize {outOfMemory(file, line);}
-  IoBuf(b, 0usize, room)
+  IoBuf(b, 0usize, room, 0usize)
 }
 
 // Out of memory is a panic for now: the bound on bytes held from the OS is
@@ -319,10 +330,65 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
+// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give, release)' is one owner of a
+// counted record: each buffer given this home ('setHome') holds one count too, and the record, with its
+// 'ctx', goes when the last count does, by 'release(ctx)'. 'give(ctx, b)' is called when a homed buffer
+// dies, on whatever thread it dies on, with a fresh empty buffer on the same block (len 0, the same
+// capacity, no home): the lender takes it back, and if it only drops it the block goes to the pool. 'give'
+// must not panic or wait, and must not send to an actor if the runtime may have stopped (actors.isRunning)
+pub struct IoHome is Move, Sendable {
+  rec: *HomeRec;
+
+  pub fn make(ctx: *u8, give: &fn(ctx: *u8, b: IoBuf), release: &fn(ctx: *u8)) IoHome {
+    let r = libc.malloc(mem.sizeof[HomeRec]()) as *HomeRec;
+    mem.writeRaw[HomeRec](r, HomeRec(ctx, give, release, Atomic[usize].of(1usize)));
+    IoHome(r)
+  }
+
+  fn final(self: &uni) {
+    if rec as usize != 0usize {homeRelease(rec);}
+  }
+}
+
+struct HomeRec {
+  ctx: *u8;
+  give: &fn(ctx: *u8, b: IoBuf);
+  release: &fn(ctx: *u8);
+  count: Atomic[usize];
+}
+
+// One count of a home gone; the last frees the record and releases the lender's ctx
+fn homeRelease(r: *HomeRec) {
+  if (*r).count.sub(1usize) == 1usize {
+    let f = (*r).release;
+    f((*r).ctx);
+    libc.free(r as *u8);
+  }
+}
+
 pub struct IoBuf is Default, Move, Sendable {
   data: *u8;
   used: usize;
   cap: usize;
+  home: usize;                  // 0, or a *HomeRec of which this buffer holds one count
+
+  // Lend this buffer to h: when it dies, h's 'give' is called with an empty buffer on the same block. A
+  // buffer already homed leaves its old home first
+  pub fn setHome(self: &mut, h: &IoHome) {
+    self.clearHome();
+    let r = h.rec;
+    (*r).count.add(1usize);
+    home = r as usize;
+  }
+
+  // Back to a plain buffer: its death releases the block to the pool and calls nobody
+  pub fn clearHome(self: &mut) {
+    if home != 0usize {
+      let r = home as *HomeRec;
+      home = 0usize;
+      homeRelease(r);
+    }
+  }
 
   // A buffer with room for at least size bytes, empty: 'IoBuf(4096)'. The type
   // decides where the block comes from: the buffer pool region, the class that
@@ -334,7 +400,7 @@ pub struct IoBuf is Default, Move, Sendable {
   }
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize);}
+  pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize, 0usize);}
 
   // A buffer like 'IoBuf(size)', or None when the pool will not give one without
   // growing the try bank past maxBytes less its reserve (THE RESERVE): a refusal
@@ -345,7 +411,7 @@ pub struct IoBuf is Default, Move, Sendable {
     let room = (bufpool.bufferPool() as &MemRegion).sizeFor(size, page);
     let b = bufpool.tryAllocate(size);
     if b as usize == 0usize {return None[IoBuf];}
-    Some[IoBuf](IoBuf(b, 0usize, room))
+    Some[IoBuf](IoBuf(b, 0usize, room, 0usize))
   }
 
   pub fn len(self: &) usize {used}
@@ -382,7 +448,16 @@ pub struct IoBuf is Default, Move, Sendable {
   }
 
   fn final(self: &uni) {
-    if data as usize != 0usize {
+    if home != 0usize {
+      let r = home as *HomeRec;
+      if data as usize != 0usize {
+        let m = IoBuf(data, 0usize, cap, 0usize);
+        data = null;
+        let g = (*r).give;
+        g((*r).ctx, m);
+      }
+      homeRelease(r);
+    } else if data as usize != 0usize {
       (bufpool.bufferPool() as &MemRegion).release(data, cap);
     }
   }

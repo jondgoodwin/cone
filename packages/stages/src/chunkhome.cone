@@ -1,0 +1,33 @@
+// ======== Layer 3, owned credit: a buffer's death gives its credit back ========
+//
+// A sink that is handed a chunk may pass it on to a driver instead of copying it. The chunk is then
+// moved, and the credit must come back when the driver is done with it, which only its death says.
+// 'chunkHome(src)' makes an IoHome (iobuf) whose lender is the source: the sink calls
+// 'buf.setHome(&home)' on each chunk before it moves it away, and when that buffer dies, on whatever
+// thread (the I/O thread when a send completes, a worker when a core drops it), the source gets
+// 'giveBack' of a fresh empty buffer on the same block, so its window counts the capacity back. The
+// source's ChunkSource trait and its actors are unchanged.
+//
+// RULES. A homed buffer that the sink also gives back by hand ('src.giveBack(b)', 'link.give(b)') would
+// return its credit twice: the sink calls 'b.clearHome()' first (a chunk it keeps staged or hands back
+// is a plain buffer). The home holds a handle to the source, so the source lives while any of its
+// buffers are out. After the runtime stops (actors.isRunning() false) a death sends nothing: the block
+// goes to the pool and the credit is moot.
+
+// The lender: one source handle, in a block of its own that the home owns
+fn chunkHomeGive(ctx: *u8, b: IoBuf) {
+  if !actors.isRunning() {return;}
+  let s = &*(ctx as *ChunkSource);
+  s.giveBack(b);
+}
+
+fn chunkHomeRelease(ctx: *u8) {
+  mem.finalize(ctx as *ChunkSource);
+  libc.free(ctx);
+}
+
+pub fn chunkHome(src: ChunkSource) IoHome {
+  let slot = libc.malloc(mem.sizeof[ChunkSource]()) as *ChunkSource;
+  mem.writeRaw[ChunkSource](slot, src);
+  IoHome.make(slot as *u8, &chunkHomeGive, &chunkHomeRelease)
+}

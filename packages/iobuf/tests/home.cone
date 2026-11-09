@@ -1,0 +1,210 @@
+// A buffer with a home: its death calls the home's 'give' with an empty buffer on the same block, and the
+// block is not released until that buffer dies in turn. The home is counted: it goes (and its lender's
+// 'release') after the owner and every homed buffer are gone. Plain buffers are untouched.
+//
+//   1. a homed buffer dropped: one give, empty, the same capacity, no home; the block returns on its death;
+//   2. clearHome before the drop: no give, the block returns; clearHome on a plain buffer is nothing;
+//   3. a buffer given a second home leaves the first (its count goes, no give to it);
+//   4. the lender's release: once, after the owner and the last buffer, in either order;
+//   5. a homed buffer that dies on another thread: give runs there;
+//   6. give keeping the minted buffer, then dropping it: the block returns once, and no second give;
+//   7. a chain holding homed buffers: popFront dropping them, and the chain's own death, give them all;
+//   8. a plain buffer: nothing called; every block home at the end.
+
+mod hometest;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List;
+import iobuf use *;
+
+struct Lender {
+  pub gives: Atomic[u64];
+  pub bytes: Atomic[u64];
+  pub nonEmpty: Atomic[u64];
+  pub releases: Atomic[u64];
+}
+
+let lender: Lender;
+
+fn @initpure init() {
+  lender = Lender(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// ctx is null (the lender drops what it is given) or a List[IoBuf] that keeps it
+fn give(ctx: *u8, b: IoBuf) {
+  lender.gives.add(1u64);
+  lender.bytes.add(u64.from(b.capacity()));
+  if b.len() != 0usize {lender.nonEmpty.add(1u64);}
+  if ctx as usize != 0usize {
+    let l = &mut *(ctx as *List[IoBuf]);
+    l.push(b);
+  }
+}
+
+fn release(ctx: *u8) {
+  lender.releases.add(1u64);
+}
+
+fn mine() IoHome {IoHome.make(null, &give, &release)}
+
+fn homed(h: &IoHome, n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b.setHome(h);
+  b
+}
+
+fn clear() {
+  lender.gives.store(0u64);
+  lender.bytes.store(0u64);
+  lender.nonEmpty.store(0u64);
+  lender.releases.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  setLimits(268435456usize, 0usize);
+
+  // 1. a homed buffer dropped
+  {
+    let h = mine();
+    var cap = 0usize;
+    {
+      let b = homed(&h, 1000usize);
+      cap = b.capacity();
+    }
+    expectUInt(lender.gives.load(), 1u64, "1. one give");
+    expectUInt(lender.bytes.load(), u64.from(cap), "1. of the buffer's whole capacity");
+    expectUInt(lender.nonEmpty.load(), 0u64, "1. an empty buffer");
+    expectUInt(iobuf.stats().lent, 0u64, "1. the minted buffer died plain: the block is home");
+    expectUInt(lender.releases.load(), 0u64, "1. the owner still holds the home");
+  }
+  expectUInt(lender.releases.load(), 1u64, "1. the owner gone, the lender is released once");
+
+  // 2. clearHome
+  clear();
+  {
+    let h = mine();
+    {
+      var b = homed(&h, 500usize);
+      b.clearHome();
+      var c = IoBuf(100usize);
+      c.clearHome();
+    }
+    expectUInt(lender.gives.load(), 0u64, "2. no give after clearHome");
+    expectUInt(iobuf.stats().lent, 0u64, "2. the blocks are home");
+    expectUInt(lender.releases.load(), 0u64, "2. the owner still holds the home");
+  }
+  expectUInt(lender.releases.load(), 1u64, "2. the lender released once");
+
+  // 3. a second home
+  clear();
+  {
+    let h1 = mine();
+    let h2 = mine();
+    {
+      var b = homed(&h1, 100usize);
+      b.setHome(&h2);
+    }
+    expectUInt(lender.gives.load(), 1u64, "3. one give, to the second home");
+  }
+  expectUInt(lender.releases.load(), 2u64, "3. both lenders released, once each");
+
+  // 4. release order: a buffer outliving its owner
+  clear();
+  {
+    var held = IoBuf();
+    {
+      let h = mine();
+      held = homed(&h, 100usize);
+    }
+    expectUInt(lender.releases.load(), 0u64, "4. the owner gone, a buffer still holds the home");
+    held = IoBuf();
+    expectUInt(lender.gives.load(), 1u64, "4. the buffer's death gave");
+    expectUInt(lender.releases.load(), 1u64, "4. the last count gone, released once");
+  }
+
+  // 5. a death on another thread
+  clear();
+  {
+    let h = mine();
+    var tx: Sender[IoBuf];
+    var rx: Receiver[IoBuf];
+    tx, rx = Channel[IoBuf].bounded(8usize);
+    let t = thread.start(rx, &sinkAll);
+    produce(tx, &h);
+    let n = t.join();
+    expectUInt(n, 1000u64, "5. the thread dropped every buffer");
+    expectUInt(lender.gives.load(), 1000u64, "5. every death gave, off the main thread");
+    expectUInt(lender.bytes.load(), 1000u64 * 4096u64, "5. every capacity back, exactly");
+    expectUInt(iobuf.stats().lent, 0u64, "5. every block home");
+  }
+  expectUInt(lender.releases.load(), 1u64, "5. released once");
+
+  // 6. give keeps the minted buffer
+  clear();
+  {
+    var keep = List[IoBuf]();
+    let h = IoHome.make(&mut keep as *u8, &give, &release);
+    {
+      let b = homed(&h, 100usize);
+    }
+    expectUInt(lender.gives.load(), 1u64, "6. one give");
+    expectUInt(u64.from(keep.len()), 1u64, "6. the lender holds the minted buffer");
+    expectUInt(iobuf.stats().lent, 1u64, "6. and so the block");
+    keep.clear();
+    expectUInt(lender.gives.load(), 1u64, "6. the minted buffer is plain: dropping it gives nobody");
+    expectUInt(iobuf.stats().lent, 0u64, "6. and the block is home");
+  }
+
+  // 7. a chain
+  clear();
+  {
+    let h = mine();
+    {
+      var c = Chain.make(1048576usize);
+      var i = 0usize;
+      while i < 6usize {
+        c.push(homed(&h, 2000usize));
+        i = i + 1usize;
+      }
+      let first = c.popFront();
+      expectUInt(lender.gives.load(), 0u64, "7. a popped buffer is alive in 'first': no give yet");
+    }
+    expectUInt(lender.gives.load(), 6u64, "7. six gives: the popped buffer and the five the chain held");
+    expectUInt(iobuf.stats().lent, 0u64, "7. every block home");
+  }
+
+  // 8. plain buffers
+  clear();
+  {
+    var i = 0usize;
+    while i < 100usize {
+      let b = IoBuf(1000usize);
+      i = i + 1usize;
+    }
+  }
+  expectUInt(lender.gives.load(), 0u64, "8. plain buffers call nobody");
+  expectUInt(iobuf.stats().lent, 0u64, "8. every block home");
+  done()
+}
+
+// Sends 1000 homed buffers; the Sender dies at the return, which ends the receiver's loop
+fn produce(tx: Sender[IoBuf], h: &IoHome) {
+  var i = 0usize;
+  while i < 1000usize {
+    tx.send(homed(h, 4096usize));
+    i = i + 1usize;
+  }
+}
+
+fn sinkAll(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  while r.recv() is Some[IoBuf] {
+    n = n + 1u64;
+  }
+  n
+}
