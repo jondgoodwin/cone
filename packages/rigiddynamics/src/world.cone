@@ -19,7 +19,7 @@ pub struct World {
   pub settings: Settings;
   pub shapes: List[Shape];
   pub bodies: GenPool[Body];         // a body is named outside by its BodyId; the solver, contacts and joints name its cell (the u32 index)
-  pub joints: List[Joint];
+  pub joints: GenPool[Joint];        // named outside by a JointId; the solver and jointsOf name its cell (the u32 index); the solver walks cells 0..bound() in index order
   pub jointsOf: List[List[u32]];     // per body cell (grows with 'bodies'): the joints that name it, so destroyBody visits only its own
   pub bp: SweepAndPrune;
   pub cache: List[Contact];
@@ -40,7 +40,7 @@ pub struct World {
 
   pub fn make() World {
     World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape](), GenPool[Body].make(),
-      List[Joint](), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
+      GenPool[Joint].make(), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
       List[u32](), List[u32](), List[Event](), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.)
   }
 
@@ -195,12 +195,11 @@ pub struct World {
     bp.remove(id);
     var k = 0usize;
     while k < jointsOf[i].len() {
-      let ji = usize.from(*jointsOf[i][k]);
-      if joints[ji].alive {
-        joints[ji].alive = false;
-        let other = if joints[ji].a == id { joints[ji].b } else { joints[ji].a };
-        if other != id { self.unindexJoint(other, u32.from(ji)); }
-      }
+      let ji = *jointsOf[i][k];                // every listed joint is live (removeJoint and breakJoints unlist)
+      let jp = joints.at(ji) as &Joint;
+      let other = if jp.a == id { jp.b } else { jp.a };
+      if other != id { self.unindexJoint(other, ji); }
+      joints.removeAt(ji);
       k = k + 1usize;
     }
     jointsOf[i].clear();
@@ -358,7 +357,7 @@ pub struct World {
 
   // An event naming the bodies in cells a and b (NoBody for none), as ids
   fn emit(self: &mut, kind: u32, a: u32, b: u32, point: Vec3, normal: Vec3, depth: f32) {
-    if events.len() < 100000usize { events.push(Event(kind, bodies.slotAt(a), bodies.slotAt(b), point, normal, depth)); }
+    if events.len() < 100000usize { events.push(Event(kind, bodies.slotAt(a), bodies.slotAt(b), point, normal, depth, JointId.none())); }
   }
 
   // The events since the last call, oldest first
@@ -376,10 +375,10 @@ pub struct World {
   fn frameOf(axis: Vec3) Quat { Quat.fromVectors(Vec3(1., 0., 0.), axis.normalize()) }
 
   // The two ids are checked here, once: a joint names its bodies by cell. A stale or none id makes no joint (NoBody)
-  fn addJoint(self: &mut, kind: i32, ida: BodyId, idb: BodyId, anchor: Vec3, axis: Vec3) u32 {
+  fn addJoint(self: &mut, kind: i32, ida: BodyId, idb: BodyId, anchor: Vec3, axis: Vec3) JointId {
     let a = self.cellOf(ida);
     let b = self.cellOf(idb);
-    if a == NoBody || b == NoBody { return NoBody; }
+    if a == NoBody || b == NoBody { return JointId.none(); }
     let bA = self.bd(usize.from(a));
     let bB = self.bd(usize.from(b));
     var j = blankJoint(kind, a, b);
@@ -388,77 +387,93 @@ pub struct World {
     let f = World.frameOf(axis);
     j.fa = bA.rot.conjugate() * f;
     j.fb = bB.rot.conjugate() * f;
-    joints.push(j);
-    let ji = u32.from(joints.len()) - 1u32;
-    jointsOf[usize.from(a)].push(ji);
-    if b != a { jointsOf[usize.from(b)].push(ji); }
+    let h = joints.add(j);
+    jointsOf[usize.from(a)].push(h.index);
+    if b != a { jointsOf[usize.from(b)].push(h.index); }
     noCollideJoints = true;
     self.wakeAt(a);
     self.wakeAt(b);
-    u32.from(joints.len()) - 1u32
+    h
   }
 
+  // The joint in cell i (the solver's index, from activeJoints or jointsOf: always a live cell)
+  pub fn jt(self: &, i: usize) &mut Joint { joints.at(u32.from(i)) as &mut Joint }
+
+  // The joint an id names; only after jointLive(j)
+  fn jr(self: &, j: JointId) &mut Joint { joints.get(j) as &mut Joint }
+
+  // Does the id name a joint that still exists?
+  pub fn jointLive(self: &, j: JointId) bool { joints.get(j) as usize != 0usize }
+
   // A ball and socket: the two bodies share the world point
-  pub fn addPointJoint(self: &mut, a: BodyId, b: BodyId, anchor: Vec3) u32 {
+  pub fn addPointJoint(self: &mut, a: BodyId, b: BodyId, anchor: Vec3) JointId {
     self.addJoint(JointPoint, a, b, anchor, Vec3(1., 0., 0.))
   }
   // The two bodies held in the pose they have now
-  pub fn addFixedJoint(self: &mut, a: BodyId, b: BodyId, anchor: Vec3) u32 {
+  pub fn addFixedJoint(self: &mut, a: BodyId, b: BodyId, anchor: Vec3) JointId {
     self.addJoint(JointFixed, a, b, anchor, Vec3(1., 0., 0.))
   }
   // A door hinge: turns about 'axis' through 'anchor'; angle 0 is the pose it was made in
-  pub fn addHinge(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, axis: Vec3) u32 {
+  pub fn addHinge(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, axis: Vec3) JointId {
     self.addJoint(JointHinge, a, b, anchor, axis)
   }
-  pub fn setHingeLimits(self: &mut, j: u32, lower: f32, upper: f32) {
-    joints[usize.from(j)].limitOn = true;
-    joints[usize.from(j)].lower = lower;
-    joints[usize.from(j)].upper = upper;
+  pub fn setHingeLimits(self: &mut, j: JointId, lower: f32, upper: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).limitOn = true;
+    (self.jr(j)).lower = lower;
+    (self.jr(j)).upper = upper;
   }
   // Drive a hinge or slider to a speed (rad/s or m/s) with at most this torque or force
-  pub fn setMotor(self: &mut, j: u32, speed: f32, maxTorque: f32) {
-    joints[usize.from(j)].motorOn = true;
-    joints[usize.from(j)].motorSpeed = speed;
-    joints[usize.from(j)].motorMax = maxTorque;
-    let jj = joints[usize.from(j)];
+  pub fn setMotor(self: &mut, j: JointId, speed: f32, maxTorque: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).motorOn = true;
+    (self.jr(j)).motorSpeed = speed;
+    (self.jr(j)).motorMax = maxTorque;
+    let jj = *self.jr(j);
     self.wakeAt(jj.a);
     self.wakeAt(jj.b);
   }
-  pub fn clearMotor(self: &mut, j: u32) { joints[usize.from(j)].motorOn = false; joints[usize.from(j)].impMotor = 0.; }
+  pub fn clearMotor(self: &mut, j: JointId) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).motorOn = false;
+    (self.jr(j)).impMotor = 0.;
+  }
   // A drawer slide along 'axis'; offset 0 is where it was made
-  pub fn addSlider(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, axis: Vec3) u32 {
+  pub fn addSlider(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, axis: Vec3) JointId {
     self.addJoint(JointSlider, a, b, anchor, axis)
   }
-  pub fn setSliderLimits(self: &mut, j: u32, lower: f32, upper: f32) { self.setHingeLimits(j, lower, upper); }
+  pub fn setSliderLimits(self: &mut, j: JointId, lower: f32, upper: f32) { self.setHingeLimits(j, lower, upper); }
   // A rod of fixed length between two world points (one on each body)
-  pub fn addDistance(self: &mut, a: BodyId, b: BodyId, anchorA: Vec3, anchorB: Vec3) u32 {
+  pub fn addDistance(self: &mut, a: BodyId, b: BodyId, anchorA: Vec3, anchorB: Vec3) JointId {
     let j = self.addJoint(JointDistance, a, b, anchorA, Vec3(1., 0., 0.));
-    if j == NoBody { return NoBody; }
+    if j.isNone() { return j; }
     let bB = self.bd(usize.from(b.index));
-    joints[usize.from(j)].lb = bB.rot.conjugate() * (anchorB - bB.pos);
+    (self.jr(j)).lb = bB.rot.conjugate() * (anchorB - bB.pos);
     let len = (anchorB - anchorA).length();
-    joints[usize.from(j)].length = len;
-    joints[usize.from(j)].lower = len;
-    joints[usize.from(j)].upper = len;
+    (self.jr(j)).length = len;
+    (self.jr(j)).lower = len;
+    (self.jr(j)).upper = len;
     j
   }
   // A rope or telescoping rod: any length in [lower, upper] is free
-  pub fn setDistanceRange(self: &mut, j: u32, lower: f32, upper: f32) {
-    joints[usize.from(j)].limitOn = true;
-    joints[usize.from(j)].lower = lower;
-    joints[usize.from(j)].upper = upper;
+  pub fn setDistanceRange(self: &mut, j: JointId, lower: f32, upper: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).limitOn = true;
+    (self.jr(j)).lower = lower;
+    (self.jr(j)).upper = upper;
   }
   // A spring to rest length 'length' (hertz 0: rigid)
-  pub fn setDistanceSpring(self: &mut, j: u32, length: f32, hertz: f32, damping: f32) {
-    joints[usize.from(j)].length = length;
-    joints[usize.from(j)].hertz = hertz;
-    joints[usize.from(j)].damping = damping;
+  pub fn setDistanceSpring(self: &mut, j: JointId, length: f32, hertz: f32, damping: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).length = length;
+    (self.jr(j)).hertz = hertz;
+    (self.jr(j)).damping = damping;
   }
   // The ragdoll shoulder: a ball joint whose B may swing 'coneAngle' from A's x axis and twist in [lo, hi]
-  pub fn addConeTwist(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, twistAxis: Vec3, coneAngle: f32) u32 {
+  pub fn addConeTwist(self: &mut, a: BodyId, b: BodyId, anchor: Vec3, twistAxis: Vec3, coneAngle: f32) JointId {
     let j = self.addJoint(JointConeTwist, a, b, anchor, twistAxis);
-    if j == NoBody { return NoBody; }
-    joints[usize.from(j)].coneAngle = coneAngle;
+    if j.isNone() { return j; }
+    (self.jr(j)).coneAngle = coneAngle;
     j
   }
   // Make a cone-twist joint's swing range an ellipse instead of the round cone (Jolt's SwingTwistConstraint has a
@@ -466,8 +481,9 @@ pub struct World {
   // radians towards 'uDir', 'ext' the other way, 'abd' towards 'vDir' and 'add' the other way, the range being the
   // ellipse through the four in between. 'uDir' and 'vDir' are directions in A's body frame, perpendicular to the
   // twist axis (and to each other). The cone angle given to addConeTwist is then not used.
-  pub fn setSwingEllipse(self: &mut, j: u32, uDir: Vec3, vDir: Vec3, flex: f32, ext: f32, abd: f32, add: f32) {
-    let jj = &mut joints[usize.from(j)];
+  pub fn setSwingEllipse(self: &mut, j: JointId, uDir: Vec3, vDir: Vec3, flex: f32, ext: f32, abd: f32, add: f32) {
+    if !self.jointLive(j) { return; }
+    let jj = &mut (self.jr(j));
     jj.ellOn = true;
     jj.ellU = uDir.normalize();
     jj.ellV = vDir.normalize();
@@ -477,47 +493,56 @@ pub struct World {
     jj.ellAdd = maxf(add, 0.001);
     jj.impEll = 0.;
   }
-  pub fn setTwistLimits(self: &mut, j: u32, lo: f32, hi: f32) {
-    joints[usize.from(j)].twistLo = lo;
-    joints[usize.from(j)].twistHi = hi;
+  pub fn setTwistLimits(self: &mut, j: JointId, lo: f32, hi: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).twistLo = lo;
+    (self.jr(j)).twistHi = hi;
   }
   // May the two bodies a joint joins collide with each other? No by default (Box2D's collideConnected
   // and Godot's exclude-from-collision: a hinge's door and its frame overlap by design)
-  pub fn setJointCollide(self: &mut, j: u32, collide: bool) {
-    joints[usize.from(j)].collide = collide;
+  pub fn setJointCollide(self: &mut, j: JointId, collide: bool) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).collide = collide;
     noCollideJoints = false;
     var k = 0usize;
-    while k < joints.len() { if joints[k].alive && !joints[k].collide { noCollideJoints = true; } k = k + 1usize; }
+    let n = usize.from(joints.bound());
+    while k < n {
+      let p = joints.at(u32.from(k));
+      if p as usize != 0usize && !(p as &Joint).collide { noCollideJoints = true; }
+      k = k + 1usize;
+    }
   }
   // Drive a point, hinge or cone-twist joint's relative rotation to a target as a spring (stiffness N m per radian,
   // damping N m s per radian) whose torque is at most maxTorque N m (see solveDrive). The target starts as the pose
   // the joint was made in; set it with setDriveTarget.
-  pub fn setJointDrive(self: &mut, j: u32, stiffness: f32, damping: f32, maxTorque: f32) {
-    joints[usize.from(j)].driveOn = true;
-    joints[usize.from(j)].driveHertz = stiffness;
-    joints[usize.from(j)].driveDamping = damping;
-    joints[usize.from(j)].driveMax = maxTorque;
-    self.wakeAt(joints[usize.from(j)].a);
-    self.wakeAt(joints[usize.from(j)].b);
+  pub fn setJointDrive(self: &mut, j: JointId, stiffness: f32, damping: f32, maxTorque: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).driveOn = true;
+    (self.jr(j)).driveHertz = stiffness;
+    (self.jr(j)).driveDamping = damping;
+    (self.jr(j)).driveMax = maxTorque;
+    self.wakeAt((self.jr(j)).a);
+    self.wakeAt((self.jr(j)).b);
   }
-  pub fn clearJointDrive(self: &mut, j: u32) {
-    joints[usize.from(j)].driveOn = false;
-    joints[usize.from(j)].impDrive = zero3();
+  pub fn clearJointDrive(self: &mut, j: JointId) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).driveOn = false;
+    (self.jr(j)).impDrive = zero3();
   }
   // The target as the rotation of B's body relative to A's body (A's rotation inverse times B's) that the drive
   // should hold, converted into the joint's own frames
-  pub fn setDriveTarget(self: &mut, j: u32, bodyRelative: Quat) {
-    let jj = joints[usize.from(j)];
-    joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
+  pub fn setDriveTarget(self: &mut, j: JointId, bodyRelative: Quat) {
+    if !self.jointLive(j) { return; }
+    let jj = *self.jr(j);
+    (self.jr(j)).driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
   }
-  pub fn removeJoint(self: &mut, j: u32) {
-    if joints[usize.from(j)].alive {
-      joints[usize.from(j)].alive = false;
-      let a = joints[usize.from(j)].a;
-      let b = joints[usize.from(j)].b;
-      self.unindexJoint(a, j);
-      if b != a { self.unindexJoint(b, j); }
-    }
+  pub fn removeJoint(self: &mut, j: JointId) {
+    if !self.jointLive(j) { return; }
+    let a = (self.jr(j)).a;
+    let b = (self.jr(j)).b;
+    self.unindexJoint(a, j.index);
+    if b != a { self.unindexJoint(b, j.index); }
+    joints.remove(j);
   }
 
   // Joint j is dead: drop it from body 'body's list of joints
@@ -537,46 +562,66 @@ pub struct World {
   // carries passes 'force' newtons or the torque it carries passes 'torque' N m (jointLoadOf says which rows count).
   // The load is the sub-step's row impulses over the sub-step's time, which is what PhysX's breakForce reads and what
   // Jolt's constraint-force queries give. Negative: that kind of load never breaks it.
-  pub fn setJointBreak(self: &mut, j: u32, force: f32, torque: f32) {
-    joints[usize.from(j)].breakForce = force;
-    joints[usize.from(j)].breakTorque = torque;
+  pub fn setJointBreak(self: &mut, j: JointId, force: f32, torque: f32) {
+    if !self.jointLive(j) { return; }
+    (self.jr(j)).breakForce = force;
+    (self.jr(j)).breakTorque = torque;
   }
   // The force and torque joint j carried in the last sub-step, N and N m
-  pub fn jointLoad(self: &, j: u32) (f32, f32) { jointLoadOf(&joints[usize.from(j)], substepSeconds) }
+  pub fn jointLoad(self: &, j: JointId) (f32, f32) {
+    if !self.jointLive(j) { return (0., 0.); }
+    jointLoadOf(self.jr(j), substepSeconds)
+  }
 
   // Remove the breakable joints loaded past their limits in the sub-step just solved
   fn breakJoints(self: &mut, h: f32) {
     var a = 0usize;
     while a < activeJoints.len() {
       let ji = usize.from(*activeJoints[a]);
-      let jt = &joints[ji];
+      let jt = joints.at(u32.from(ji)) as &Joint;
       if jt.breakForce < 0. && jt.breakTorque < 0. { a = a + 1usize; continue; }
       let load = jointLoadOf(jt, h);
       let byForce = jt.breakForce >= 0. && load.0 > jt.breakForce;
       let byTorque = jt.breakTorque >= 0. && load.1 > jt.breakTorque;
       if !(byForce || byTorque) { a = a + 1usize; continue; }
       {
-        joints[ji].alive = false;
         activeJoints.swap(a, activeJoints.len() - 1usize);
         activeJoints.truncate(activeJoints.len() - 1usize);
-        let bA = self.bd(usize.from(jt.a));
-        self.emit(EvJointBroken, jt.a, jt.b, bA.pos + bA.rot * jt.la, zero3(), if byForce { load.0 } else { load.1 });
-        events[events.len() - 1usize].id = u32.from(ji);
-        self.wakeAt(jt.a);
-        self.wakeAt(jt.b);
+        let ja = jt.a;
+        let jb = jt.b;
+        let bA = self.bd(usize.from(ja));
+        self.emit(EvJointBroken, ja, jb, bA.pos + bA.rot * jt.la, zero3(), if byForce { load.0 } else { load.1 });
+        events[events.len() - 1usize].id = joints.slotAt(u32.from(ji));    // the id it had; the cell is freed below
+        // unlist it from its bodies (a freed cell may be reused by a joint of other bodies), then free it
+        self.unindexJoint(ja, u32.from(ji));
+        if jb != ja { self.unindexJoint(jb, u32.from(ji)); }
+        joints.removeAt(u32.from(ji));
+        self.wakeAt(ja);
+        self.wakeAt(jb);
       }
     }
   }
-  pub fn hingeAngleOf(self: &, j: u32) f32 { hingeAngle(self, &joints[usize.from(j)]) }
+  pub fn hingeAngleOf(self: &, j: JointId) f32 {
+    if !self.jointLive(j) { return 0.; }
+    hingeAngle(self, self.jr(j))
+  }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres
-  pub fn jointError(self: &, j: u32) f32 { jointState(self, &joints[usize.from(j)]).d.length() }
-  pub fn sliderOffsetOf(self: &, j: u32) f32 { sliderOffset(self, &joints[usize.from(j)]) }
+  pub fn jointError(self: &, j: JointId) f32 {
+    if !self.jointLive(j) { return 0.; }
+    jointState(self, self.jr(j)).d.length()
+  }
+  pub fn sliderOffsetOf(self: &, j: JointId) f32 {
+    if !self.jointLive(j) { return 0.; }
+    sliderOffset(self, self.jr(j))
+  }
 
+  // Does a joint that stops collision join the bodies in cells a and b? (a joint between them is in a's list)
   fn jointBlocks(self: &, a: u32, b: u32) bool {
+    let l = &jointsOf[usize.from(a)];
     var k = 0usize;
-    while k < joints.len() {
-      let j = joints[k];
-      if j.alive && !j.collide && ((j.a == a && j.b == b) || (j.a == b && j.b == a)) { return true; }
+    while k < l.len() {
+      let j = self.jt(usize.from(*l[k]));
+      if !j.collide && ((j.a == a && j.b == b) || (j.a == b && j.b == a)) { return true; }
       k = k + 1usize;
     }
     false
@@ -949,10 +994,12 @@ pub struct World {
     lastContacts = active.len();
     // joints: wake what an awake body is joined to
     var ji = 0usize;
-    while ji < joints.len() {
-      if joints[ji].alive {
-        let ja = joints[ji].a;
-        let jb = joints[ji].b;
+    let nj = usize.from(joints.bound());      // cells in index order, the order the solver sweeps them
+    while ji < nj {
+      let jp = joints.at(u32.from(ji));
+      if jp as usize != 0usize {
+        let ja = (jp as &Joint).a;
+        let jb = (jp as &Joint).b;
         let aw = isAwakeDynamic(self.bd(usize.from(ja)));
         let bw = isAwakeDynamic(self.bd(usize.from(jb)));
         if aw && self.bd(usize.from(jb)).asleep { self.wakeAt(jb); }
@@ -1024,8 +1071,8 @@ pub struct World {
     var a = 0usize;
     while a < activeJoints.len() {
       let ji = usize.from(*activeJoints[a]);
-      let mA = self.bd(usize.from(joints[ji].a)).mass;
-      let mB = self.bd(usize.from(joints[ji].b)).mass;
+      let mA = self.bd(usize.from(self.jt(ji).a)).mass;
+      let mB = self.bd(usize.from(self.jt(ji).b)).mass;
       let reduced = if mA <= 0. { mB } else if mB <= 0. { mA } else { mA * mB / (mA + mB) };
       let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / maxf(mA, mB) };
       let a2 = jsoft.massScale / (1. - jsoft.massScale);
@@ -1065,8 +1112,8 @@ pub struct World {
       while bi < usize.from(bodies.bound()) { jointed.push(false); bi = bi + 1usize; }
       a = 0usize;
       while a < activeJoints.len() {
-        jointed.set(usize.from(joints[usize.from(*activeJoints[a])].a), true);
-        jointed.set(usize.from(joints[usize.from(*activeJoints[a])].b), true);
+        jointed.set(usize.from(self.jt(usize.from(*activeJoints[a])).a), true);
+        jointed.set(usize.from(self.jt(usize.from(*activeJoints[a])).b), true);
         a = a + 1usize;
       }
       a = 0usize;
@@ -1166,10 +1213,12 @@ pub struct World {
     let n = usize.from(bodies.bound());
     while i < n { jointed.push(false); i = i + 1usize; }
     var ji = 0usize;
-    while ji < joints.len() {
-      if joints[ji].alive {
-        jointed.set(usize.from(joints[ji].a), true);
-        jointed.set(usize.from(joints[ji].b), true);
+    let nj = usize.from(joints.bound());
+    while ji < nj {
+      let jp = joints.at(u32.from(ji));
+      if jp as usize != 0usize {
+        jointed.set(usize.from((jp as &Joint).a), true);
+        jointed.set(usize.from((jp as &Joint).b), true);
       }
       ji = ji + 1usize;
     }
@@ -1236,7 +1285,7 @@ pub struct World {
     }
     a = 0usize;
     while a < activeJoints.len() {
-      let j = joints[usize.from(*activeJoints[a])];
+      let j = self.jt(usize.from(*activeJoints[a]));
       if self.bd(usize.from(j.a)).motion == MotionDynamic && self.bd(usize.from(j.b)).motion == MotionDynamic { unionSets(&mut parent, j.a, j.b); }
       a = a + 1usize;
     }

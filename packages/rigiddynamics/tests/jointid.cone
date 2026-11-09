@@ -1,0 +1,101 @@
+// Joints are named by a JointId {index, gen} (the World's joints are a GenPool). A stale id reaches nothing.
+//
+//   remove     removeJoint frees the cell: the id is stale, setters and getters on it do nothing / answer 0
+//   reuse      a new joint takes the freed cell with a new generation; the old id does not reach it
+//   destroy    destroyBody frees its joints' cells
+//   break      a broken joint's cell is freed and unlisted; the event names the joint by the id it had
+//   order      joints walk in cell order: with cells 0, 1, 2 live, the active list is 0, 1, 2
+
+mod jointid;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import rigidcollide use *;
+import rigiddynamics use *;
+
+fn main() i32 {
+  var w = World.make();
+  w.settings.sleepEnabled = false;
+  let s = w.addShape(Shape.single(Prim.box(Vec3(0.25, 0.25, 0.25))));
+  let a = w.createBody(BodyDef.staticAt(s, Vec3(0., 5., 0.)));
+  let b = w.createBody(BodyDef.dynamicAt(s, Vec3(2., 5., 0.)));
+  let c = w.createBody(BodyDef.dynamicAt(s, Vec3(4., 5., 0.)));
+  let ab = w.addPointJoint(a, b, Vec3(1., 5., 0.));
+  let bc = w.addPointJoint(b, c, Vec3(3., 5., 0.));
+  expect(ab != bc, "two joints, two ids");
+  expectUInt(u64.from(ab.index), 0u64, "the first takes cell 0");
+  expectUInt(u64.from(bc.index), 1u64, "the second cell 1");
+  expect(w.jointLive(ab) && w.jointLive(bc), "both live");
+
+  // remove
+  w.removeJoint(ab);
+  expect(!w.jointLive(ab), "a removed joint is not live");
+  expect(w.jointLive(bc), "the other is");
+  w.setHingeLimits(ab, -1., 1.);
+  w.setMotor(ab, 1., 1.);
+  w.setJointBreak(ab, 1., 1.);
+  w.removeJoint(ab);
+  expectFloat(f64.from(w.jointError(ab)), 0.0, 0.0, "a stale id has no error");
+  expectFloat(f64.from(w.jointLoad(ab).0), 0.0, 0.0, "and no load");
+  expectUInt(u64.from(w.jointsOf[usize.from(a.index)].len()), 0u64, "a no longer lists it");
+  expectUInt(u64.from(w.joints.len()), 1u64, "one live joint");
+
+  // reuse
+  let ac = w.addPointJoint(a, c, Vec3(2., 5., 0.));
+  expectUInt(u64.from(ac.index), u64.from(ab.index), "the new joint takes the freed cell");
+  expect(ac.gen != ab.gen, "with a new generation");
+  expect(!w.jointLive(ab), "the old id still does not reach it");
+  w.setJointBreak(ab, 0.001, 0.001);
+  expectFloat(f64.from((w.joints.get(ac) as &Joint).breakForce), -1.0, 0.0, "a write through the old id does not touch the new joint");
+  w.removeJoint(ab);
+  expect(w.jointLive(ac), "nor does removing it");
+
+  // destroy
+  w.destroyBody(c);
+  expect(!w.jointLive(ac) && !w.jointLive(bc), "destroyBody frees the joints of the body");
+  expectUInt(u64.from(w.joints.len()), 0u64, "no live joints");
+
+  // break
+  var w2 = World.make();
+  w2.settings.sleepEnabled = false;
+  let s2 = w2.addShape(Shape.single(Prim.box(Vec3(0.25, 0.25, 0.25))));
+  let anchor = w2.createBody(BodyDef.staticAt(s2, Vec3(0., 5., 0.)));
+  var bd = BodyDef.dynamicAt(s2, Vec3(0., 4., 0.));
+  bd.linearDamping = 0.; bd.angularDamping = 0.;
+  let hung = w2.createBody(bd);
+  let keep = w2.addPointJoint(anchor, hung, Vec3(0., 5., 0.));
+  let weak = w2.addPointJoint(anchor, hung, Vec3(0., 5., 0.));
+  w2.setJointCollide(keep, false);
+  w2.setJointCollide(weak, false);
+  w2.setJointBreak(weak, 100., -1.);
+  var i = 0;
+  while i < 60 { w2.step(1. / 60.); i = i + 1; }
+  var found = 0;
+  var named = 0;
+  var ev = w2.takeEvents();
+  var k = 0usize;
+  while k < ev.len() {
+    if ev[k].kind == EvJointBroken {
+      found = found + 1;
+      if ev[k].id == weak { named = named + 1; }
+    }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(found), 1i64, "one joint broke");
+  expectInt(i64.from(named), 1i64, "and the event names the weak one by the id it had");
+  expect(!w2.jointLive(weak), "a broken joint's id is stale");
+  expect(w2.jointLive(keep), "the other holds");
+  expectUInt(u64.from(w2.jointsOf[usize.from(hung.index)].len()), 1u64, "the body lists only the live joint");
+  let again = w2.addPointJoint(anchor, hung, Vec3(0., 5., 0.));
+  expectUInt(u64.from(again.index), u64.from(weak.index), "a new joint takes the broken one's cell");
+  expect(again != weak, "under a new id");
+
+  // order
+  expectUInt(u64.from(w2.joints.len()), 2u64, "two live joints");
+  w2.step(1. / 60.);
+  expectUInt(u64.from(w2.activeJoints.len()), 2u64, "both joints are active");
+  expectUInt(u64.from(*w2.activeJoints[0usize]), 0u64, "swept in cell order: cell 0 first");
+  expectUInt(u64.from(*w2.activeJoints[1usize]), 1u64, "then cell 1");
+  done()
+}
