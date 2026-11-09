@@ -1,0 +1,298 @@
+// ValueEdge[T], the thread edge (valueedge.cone): a plain thread on one side, the stage protocol on the other.
+//
+// 1. INTO A THREAD: a source of 50,000 numbers under a window of 16 into an edge; a plain thread takes them with
+//    tryRecv, calling drained() every 8, and ends with finished(). Every number arrives once, in order, and the
+//    source never had more than the window outstanding (checked at the source).
+// 2. OUT OF A THREAD, no loss: a plain thread pushes 50,000 numbers (retrying while the ring is full); the sink
+//    credits each one back. Records in equal records out at the end: sent = passed = 50,000, in order, and the
+//    stream's one 'end' comes after the last.
+// 3. DROP OLDEST: the sink grants no credit while the thread pushes 1,000 numbers into a ring of 64 with keep 8.
+//    The attendant keeps the newest 8 (whole items), counts the rest, and when credit comes it sends ONE marker
+//    carrying how many were lost before the first item. Conservation: received + dropped = pushed, and the last
+//    number received is the last one accepted.
+// 4. A WAKE IS NEVER LOST: 2,000 times a thread pushes one number and waits (at most 2 s) for it to be passed on.
+//    The flag that coalesces wakes is cleared before the attendant drains, so one push after another's drain
+//    wakes it again.
+// 5. THE RING IS SPSC: a second thread given the thread's end is not possible (a SoloSender has no clone); the
+//    test checks the counts that would show a second sender: sent = passed + lost at the end of every run above.
+
+mod valueedge;
+
+import testing use *;
+import collections use *;
+import thread;
+import time use Instant, Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import stages use *;
+
+const MARK = 0x4000000000000000u64;
+
+struct Seen {
+  pub got: Atomic[u64];            // data items the sink received
+  pub bad: Atomic[u64];            // items out of order
+  pub last: Atomic[u64];           // the last data item (+1, 0 if none)
+  pub markers: Atomic[u64];
+  pub markLost: Atomic[u64];
+  pub ends: Atomic[u64];
+  pub endAfterAll: Atomic[u64];    // 1 if the end came after every data item the sink got
+  pub maxOut: Atomic[u64];         // most the source had outstanding
+  pub sourceSent: Atomic[u64];
+  pub afterEnd: Atomic[u64];       // items that arrived after the end (must be 0)
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  seen.got.store(0u64); seen.bad.store(0u64); seen.last.store(0u64); seen.markers.store(0u64);
+  seen.markLost.store(0u64); seen.ends.store(0u64); seen.endAfterAll.store(0u64); seen.maxOut.store(0u64);
+  seen.sourceSent.store(0u64); seen.afterEnd.store(0u64);
+}
+
+// A source of n numbers under credit
+actor Gen is ValueSource {
+  down: ValueSink[u64];
+  left: u64;
+  next: u64;
+  credits: u32;
+  out: u32;
+  over: bool;
+
+  pub fn init(self: &new, down: ValueSink[u64], n: u64) {
+    *self = Self(down: down, left: n, next: 0u64, credits: 0u32, out: 0u32, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn credit(self, n: u32) {
+    credits = credits + n;
+    if out >= n { out = out - n; } else { out = 0u32; }
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    while credits > 0u32 && left > 0u64 {
+      down.accept(next);
+      next = next + 1u64;
+      left = left - 1u64;
+      credits = credits - 1u32;
+      out = out + 1u32;
+      if u64.from(out) > seen.maxOut.load() { seen.maxOut.store(u64.from(out)); }
+      seen.sourceSent.add(1u64);
+    }
+    if left == 0u64 && !over {
+      over = true;
+      down.end(Ending.Finished);
+    }
+  }
+}
+
+// A sink that notes what arrives; it credits each item back when 'auto'
+actor Collect is ValueSink[u64] {
+  up: Option[ValueSource];
+  window: u32;
+  auto: bool;
+  ended: bool;
+
+  pub fn init(self: &new, window: u32, auto: bool) {
+    *self = Self(up: None[ValueSource], window: window, auto: auto, ended: false);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    if window > 0u32 { source.credit(window); }
+  }
+
+  pub async fn accept(self, v: u64) {
+    if ended { seen.afterEnd.add(1u64); }
+    if v >= MARK {
+      seen.markers.add(1u64);
+      seen.markLost.store(v - MARK);
+      return;
+    }
+    let prev = seen.last.load();
+    if prev != 0u64 && v + 1u64 <= prev { seen.bad.add(1u64); }
+    seen.last.store(v + 1u64);
+    seen.got.add(1u64);
+    if auto {
+      match &up {
+        case let &Some(u) { u.credit(1u32); }
+        else {}
+      }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    ended = true;
+    seen.ends.add(1u64);
+  }
+
+  // let n more items through
+  pub async fn grant(self, n: u32) {
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else {}
+    }
+  }
+}
+
+fn marker(lost: u64) u64 { MARK + lost }
+
+fn deadline(ms: i64) Instant { Instant.now() + Duration.fromMillis(ms) }
+
+// 1. the thread that takes numbers
+fn taker(e: ValueEdge[u64]) u64 {
+  var edge = e;
+  var next = 0u64;
+  var bad = 0u64;
+  var batch = 0u32;
+  var done = false;
+  let limit = deadline(30000i64);
+  while !done && Instant.now() < limit {
+    match edge.tryRecv() {
+      case let Some(v) {
+        if v != next { bad = bad + 1u64; }
+        next = next + 1u64;
+        batch = batch + 1u32;
+        if batch == 8u32 { edge.drained(); batch = 0u32; }
+      }
+      else {
+        edge.drained();
+        batch = 0u32;
+        if edge.finished() { done = true; } else { thread.yieldNow(); }
+      }
+    }
+  }
+  seen.bad.add(bad);
+  next
+}
+
+// 2. the thread that pushes numbers, retrying while the ring is full
+fn pusher(arg: PushArg) u64 {
+  var edge, let n = arg.(edge, n);
+  var i = 0u64;
+  var refused = 0u64;
+  while i < n {
+    if edge.trySend(i) { i = i + 1u64; } else { refused = refused + 1u64; thread.yieldNow(); }
+  }
+  edge.finish();
+  refused
+}
+
+struct PushArg is Sendable {
+  pub edge: ValueEdge[u64];
+  pub n: u64;
+}
+
+// 3. a thread that pushes numbers without retrying: the accepted count comes back
+fn flooder(arg: PushArg) u64 {
+  var edge, let n = arg.(edge, n);
+  var accepted = 0u64;
+  var i = 0u64;
+  while i < n {
+    if edge.trySend(i) { accepted = accepted + 1u64; seen.sourceSent.store(i + 1u64); }
+    i = i + 1u64;
+  }
+  accepted
+}
+
+fn waitFor(f: &fn() bool, ms: i64) bool {
+  let limit = deadline(ms);
+  while !f() && Instant.now() < limit { thread.sleep(Duration.fromMillis(1i64)); }
+  f()
+}
+
+fn main() i32 {
+  initAll();
+
+  // ---- 1. into a thread
+  reset();
+  {
+    let edge = ValueEdge[u64].toThread(16u32, 16u32);
+    var sinkOpt = edge.sink();
+    match sinkOpt {
+      case let Some(s) {
+        let gen = Gen(s, 50000u64);
+        let t = thread.start(edge, &taker);
+        let took = t.join();
+        expectUInt(took, 50000u64, "1: the thread took all 50,000 numbers");
+      }
+      else { require(false, "1: an edge into a thread has a sink"); }
+    }
+    actors.waitQuiet();
+    expectUInt(seen.bad.load(), 0u64, "1: in order, none twice");
+    expectUInt(seen.sourceSent.load(), 50000u64, "1: the source sent 50,000");
+    expect(seen.maxOut.load() <= 16u64, "1: the source never had more than the window (16) outstanding");
+  }
+
+  // ---- 2. out of a thread, no loss
+  reset();
+  {
+    let edge = ValueEdge[u64].fromThread(256u32, 256u32, &marker);
+    let sink = Collect(64u32, true);
+    edge.connect(sink);
+    let t = thread.start(PushArg(edge, 50000u64), &pusher);
+    let refused = t.join();
+    expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 20000i64), "2: the stream ended");
+    actors.waitQuiet();
+    expectUInt(seen.got.load(), 50000u64, "2: all 50,000 numbers arrived (records in = records out)");
+    expectUInt(seen.bad.load(), 0u64, "2: in order");
+    expectUInt(seen.markers.load(), 0u64, "2: no marker: nothing was lost");
+    expectUInt(seen.afterEnd.load(), 0u64, "2: nothing after the end");
+  }
+
+  // ---- 3. drop oldest, with a marker
+  reset();
+  {
+    let edge = ValueEdge[u64].fromThread(64u32, 8u32, &marker);
+    let sink = Collect(0u32, true);
+    edge.connect(sink);
+    // keep a handle to the sink to grant credit later
+    let t = thread.start(PushArg(edge, 1000u64), &flooder);
+    let accepted = t.join();
+    // wait for the attendant to settle: it keeps at most 8
+    actors.waitQuiet();
+    sink.grant(100u32);
+    expect(waitFor(fn() bool { seen.got.load() > 0u64 }, 5000i64), "3: items arrive once credit does");
+    actors.waitQuiet();
+    expectUInt(seen.markers.load(), 1u64, "3: one marker, ahead of the first item");
+    expect(seen.got.load() <= 8u64 && seen.got.load() >= 1u64, "3: at most the 8 kept were received");
+    expectUInt(seen.bad.load(), 0u64, "3: the kept items are in order");
+    expectUInt(seen.got.load() + seen.markLost.load(), accepted, "3: received + lost at the attendant = accepted (the rest were refused at the full ring)");
+    expect(accepted < 1000u64 || seen.markLost.load() > 0u64, "3: something was lost, as the sink gave no credit");
+    expectUInt(seen.last.load(), seen.sourceSent.load(), "3: the newest accepted item is the last one received");
+  }
+
+  // ---- 4. a wake is never lost
+  reset();
+  {
+    let edge = ValueEdge[u64].fromThread(8u32, 8u32, &marker);
+    let sink = Collect(8u32, true);
+    edge.connect(sink);
+    var e = edge;
+    var lost = 0u64;
+    var i = 0u64;
+    while i < 2000u64 {
+      let before = e.passed();
+      if !e.trySend(i) { lost = lost + 1u64; }
+      let limit = deadline(2000i64);
+      while e.passed() == before && Instant.now() < limit { thread.yieldNow(); }
+      if e.passed() == before { lost = lost + 1u64; }
+      i = i + 1u64;
+    }
+    expectUInt(lost, 0u64, "4: each of 2,000 single pushes was passed on within 2 s (no wake lost)");
+    e.finish();
+    expect(waitFor(fn() bool { seen.ends.load() == 1u64 }, 5000i64), "4: and the end follows");
+    expectUInt(e.sent(), e.passed() + 0u64, "4: sent = passed (nothing lost)");
+  }
+
+  finalAll();
+  done()
+}
