@@ -52,11 +52,20 @@ fn next(s: &mut u64) u64 {
 fn inPlaceAndCrossing() {
   let before = lent();
   {
-    var r = Reader.make(65536usize);
-    expect(r.isEmpty(), "a new reader is empty");
-    expect(r.peek(1usize) is None[&Array[u8]], "peek of an empty reader is None");
-    expect(pushed(r.push(piece("GET /a HTTP/1.1\r\n"))), "pushed 1");
-    expectUInt(lent() - before, 1u64, "one block lent for the one segment");
+    var e = Reader.make(65536usize);
+    expect(e.isEmpty(), "a new reader is empty");
+    expect(e.peek(1usize) is None[&Array[u8]], "peek of an empty reader is None");
+    // Reader.push joins a small piece into the last segment's room (see
+    // readerjoin), so these three small pieces would be ONE segment and no
+    // edge would ever be crossed. This test is about peeks that cross edges,
+    // so it builds its three segments with Chain.push, which keeps each
+    // push as a segment, and reads them through Reader.over
+    var c = Chain.make(65536usize);
+    expect(pushed(c.push(piece("GET /a HTTP/1.1\r\n"))), "pushed 1");
+    expect(pushed(c.push(piece("Host: x\r"))), "pushed 2");
+    expect(pushed(c.push(piece("\n\r\nhello"))), "pushed 3");
+    var r = Reader.over(c);
+    expectUInt(lent() - before, 3u64, "one block lent for each of the three segments");
     match r.peek(4usize) {
       case let Some(v) {expectStr(v, "GET ", "the first four bytes");}
       case is None[&Array[u8]] {expect(false, "the first four bytes are there");}
@@ -65,17 +74,15 @@ fn inPlaceAndCrossing() {
       case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\n", "the whole segment");}
       case is None[&Array[u8]] {expect(false, "the whole segment is there");}
     }
-    expectUInt(lent() - before, 1u64, "peeks inside one segment copy nothing: still one block");
+    expectUInt(lent() - before, 3u64, "peeks inside one segment copy nothing: still three blocks");
     expectUInt(u64.from(r.contiguousLen()), 17u64, "17 bytes lie in the first segment");
-    expect(r.peek(18usize) is None[&Array[u8]], "peek past the end is None");
+    expect(r.peek(34usize) is None[&Array[u8]], "peek past the end is None");
     match r.peek(0usize) {
       case let Some(v) {expectUInt(u64.from(v.len), 0u64, "peek of none is an empty view");}
       case is None[&Array[u8]] {expect(false, "peek of none is Some");}
     }
 
-    // A second and third segment: the head now crosses edges
-    expect(pushed(r.push(piece("Host: x\r"))), "pushed 2");
-    expect(pushed(r.push(piece("\n\r\nhello"))), "pushed 3");
+    // The head now crosses edges
     expectUInt(u64.from(r.len()), 33u64, "33 bytes held");
     expectUInt(u64.from(r.segments()), 3u64, "three segments");
     match r.peek(17usize) {
