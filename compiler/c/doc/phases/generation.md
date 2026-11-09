@@ -306,7 +306,9 @@ size: they stay `linkonce_odr`, one object per program, because a counter must
 count once and a vtable's address tells a type apart. A function's address is
 therefore not promised to agree across objects (a private copy per object, and
 the linker's identical-code folding `/OPT:ICF` may then merge or not): the
-language promises it only within one object. A vtable is shared because pattern
+language promises it only within one object (`generic_fn_address`). So a
+program's copy of a generic instance and a library's copy may have different
+addresses; equality is promised only within one object. A vtable is shared because pattern
 matching tells a concrete type by comparing a virtual reference's vtable
 address with the one its own object built (`genlIsType`): a reference built in
 the program and tested in the library matched nothing while each object kept
