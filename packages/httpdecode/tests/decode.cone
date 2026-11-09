@@ -1,4 +1,4 @@
-// A body decoded as it arrives (httpdecode.Decoder over actorhttp's streamTo),
+// A body decoded as it arrives (httpdecode.to over actorhttp's BodyStream),
 // against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
 // (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
 // /zeros/<coding>/<N> answers N zero bytes compressed (a bomb); /bad/gzip/<N> is
@@ -20,15 +20,17 @@ import iocore use SocketAddr;
 import http use *;
 import httpclient use Request;
 import actors;
+import aio;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHead;
-import stages use ChunkSink, ChunkSource, Ending;
+import stages use ChunkSink, ChunkSource, Ending, linkWindow;
 import deflate;
 import zstd;
-import httpdecode use Decoder;
+import httpdecode;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 const mib = 1048576u64;
+const bound = 2097152u64;   // what a late-chosen body may hold lent (actorhttp's bodychoice.cone, the same bound)
 
 struct Tally {
   pub bytes: Atomic[u64];
@@ -38,13 +40,16 @@ struct Tally {
   pub heads: Atomic[u64];
   pub hash: Atomic[u64];   // of every byte the sink saw, in order
   pub sent: Atomic[u64];   // body bytes the server handed to the connection
+  pub attached: Atomic[u64];   // 'attach' calls the sink saw
+  pub peak: Atomic[u64];       // the most bytes lent at once while a fetch ran (fetchLate)
+  pub waiting: Atomic[u64];    // the bytes lent when the late choice was made: the body waiting, staged
 }
 
 let tally: Tally;
 
 fn @initpure init() {
   tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 // A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
@@ -93,6 +98,9 @@ fn reset() {
   tally.finished.store(0u64);
   tally.failed.store(0u64);
   tally.heads.store(0u64);
+  tally.attached.store(0u64);
+  tally.peak.store(0u64);
+  tally.waiting.store(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
@@ -241,7 +249,7 @@ actor Count is ChunkSink {
     *self = Self(up: None[ChunkSource], check: check, at: 0u64, msgs: msgs);
   }
 
-  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); tally.attached.add(1u64); }
 
   pub async fn accept(self, c: IoBuf) {
     let v = c.view();
@@ -280,10 +288,18 @@ actor Count is ChunkSink {
 actor Fetcher {
   client: Client;
 
-  pub async fn run(self, u: String, d: Decoder) {
-    let r = await d.open(client.clone(), Request.get(u.view()));
+  pub async fn run(self, u: String, sink: ChunkSink, limit: usize, pauseMs: i64) {
+    let r = await client.stream(httpdecode.request(Request.get(u.view())));
     match r {
-      case is Ok { tally.heads.add(1u64); }
+      case var Ok(body) {
+        tally.heads.add(1u64);
+        // the choice comes late: the body waits, staged, with nothing given back
+        if pauseMs > 0i64 {
+          let s = await aio.sleep(Duration.fromMillis(pauseMs));
+          tally.waiting.store(lent());
+        }
+        httpdecode.to(body, sink, limit);
+      }
       case is Err {}
     }
   }
@@ -298,15 +314,23 @@ fn url(port: u16, path: &str) String {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
-// One fetch of 'path' through a Decoder with 'limit': the sink's message, if it failed
+// One fetch of 'path' through httpdecode.to with 'limit': the sink's message, if it failed
 fn fetch(port: u16, path: &str, check: bool, limit: usize, msgs: &mut Receiver[String], mtx: Sender[String]) String {
+  fetchLate(port, path, check, limit, 0i64, msgs, mtx)
+}
+
+// ...with the choice ('httpdecode.to') made 'pauseMs' late; tally.peak is the most bytes lent at once while it ran
+fn fetchLate(port: u16, path: &str, check: bool, limit: usize, pauseMs: i64, msgs: &mut Receiver[String], mtx: Sender[String]) String {
   reset();
   let sink = Count(check, mtx.clone());
-  let d = Decoder(sink, limit);
   let f = Fetcher(Client.standard());
-  f.run(url(port, path), d);
+  f.run(url(port, path), sink, limit, pauseMs);
   let limit = Instant.now() + Duration.fromMillis(60000i64);
-  while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+  while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {
+    let l = lent();
+    if l > tally.peak.load() {tally.peak.store(l);}
+    thread.sleep(Duration.fromMillis(1i64));
+  }
   thread.sleep(Duration.fromMillis(30i64));
   var m = String();
   if tally.failed.load() > 0u64 {m = take[String](msgs, String());}
@@ -403,9 +427,63 @@ fn main() i32 {
     printUInt(tally.failed.load());
     printStr(" finished ");
     printUInt(tally.finished.load());
+    printStr(" attached ");
+    printUInt(tally.attached.load());
     printStr(", ");
     printStr(u.view());
     printStr("\n");
+    // the choice made late: 16 MiB on the wire (sixty-four windows of stages.linkWindow), 'httpdecode.to' called 500 ms
+    // after the head. Until then the pieces wait staged and nothing is given back, so the peer stops at its credit;
+    // after, the sink takes them as it can. What is lent stays at a few windows however long the body (measured:
+    // 1 MiB while it waits, up to about 1.5 MiB with the decoder running; 'bound' is bodychoice.cone's 2 MiB), and the
+    // body arrives whole
+    names = List[String]();
+    names.push(String.from("/plain/16777216"));
+    names.push(String.from("/rand/zstd/16777216"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetchLate(port, p.view(), false, 268435456usize, 500i64, &mut mrx, mtx.clone());
+      printStr(p.view());
+      printStr(": chosen 500 ms late, bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(", lent while it waited and at most, never past ");
+      printUInt(bound / u64.from(linkWindow));
+      printStr(" windows: ");
+      printStr(yes(tally.waiting.load() > 0u64 && tally.waiting.load() <= bound && tally.peak.load() <= bound));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    // tiny bodies: the end comes right behind the pieces, before or after the choice; the sink has them all, then one end
+    names = List[String]();
+    names.push(String.from("/plain/100"));
+    names.push(String.from("/gzip/100"));
+    names.push(String.from("/zstd/1"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetch(port, p.view(), true, 16777216usize, &mut mrx, mtx.clone());
+      printStr(p.view());
+      printStr(": bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(" attached ");
+      printUInt(tally.attached.load());
+      printStr("\n");
+    }
     printStr("...every buffer home: ");
     printStr(yes(allHome()));
     printStr("\n");

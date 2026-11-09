@@ -1,0 +1,143 @@
+// What the parser refuses, with the kind of error and the byte it points at. Every
+// pattern here is also refused by Rust's regex, or is a Unicode class that Rust
+// accepts and this package refuses until the Unicode tables exist (marked U).
+
+mod errors;
+import stdio use *;
+import collections use *;
+import regex;
+
+fn kindName(k: regex.ErrorKind) &str {
+  match k {
+    case is Syntax { "syntax" }
+    case is Unsupported { "unsupported" }
+    case is TooBig { "toobig" }
+  }
+}
+
+fn refuse(pat: &str) {
+  match regex.Regex.parse(pat) {
+    case let Ok(re) { print <- pat, " => ACCEPTED\n"; }
+    case let Err(e) { print <- pat, " => ", kindName(e.kind), "@", e.offset, ": ", e.reason.view(), "\n"; }
+  }
+}
+
+fn refuseBytes(pat: &str) {
+  match regex.Regex.parseBytes(pat) {
+    case let Ok(re) { print <- "bytes ", pat, " => ACCEPTED\n"; }
+    case let Err(e) { print <- "bytes ", pat, " => ", kindName(e.kind), "@", e.offset, ": ", e.reason.view(), "\n"; }
+  }
+}
+
+fn main() i32 {
+  // what no linear-time engine does
+  refuse("(?=a)");
+  refuse("(?!a)");
+  refuse("(?<=a)");
+  refuse("(?<!a)");
+  refuse("(a)\\1");
+  refuse("(?P<n>a)(?P=n)");
+  refuse("\\1");
+  // the Unicode classes (U)
+  refuse("\\w");
+  refuse("\\W");
+  refuse("\\d+");
+  refuse("\\s");
+  refuse("[\\w-]");
+  refuse("a\\b");
+  refuse("\\B");
+  refuse("\\p{L}");
+  refuse("\\pL");
+  refuse("\\P{Greek}");
+  refuse("[\\p{L}]");
+  refuse("(?i)a");
+  refuse("(?i)[a-z]");
+  refuse("(?i)é");
+  refuse("(?i:k)");
+  refuse("(?u)a");
+  refuse("(?-u)(?u)a");
+  // a class written in ASCII mode that could match half a character
+  refuse("(?-u).");
+  refuse("(?-u)[^a]");
+  refuse("(?-u)\\W");
+  refuse("(?-u)\\xff");
+  refuse("(?-u)[^\\d\\s]+");
+  refuse("(?-u)[é]");
+  // not well formed
+  refuse("(");
+  refuse("(a");
+  refuse(")");
+  refuse("a)");
+  refuse("[a");
+  refuse("[");
+  refuse("[]");
+  refuse("[z-a]");
+  refuse("*");
+  refuse("a|*");
+  refuse("+a");
+  refuse("?");
+  refuse("{2}");
+  refuse("a{");
+  refuse("a{2");
+  refuse("a{2,1}");
+  refuse("a{,2}");
+  refuse("a{x}");
+  refuse("\\");
+  refuse("a\\");
+  refuse("\\q");
+  refuse("\\xZ");
+  refuse("\\x4");
+  refuse("\\x{110000}");
+  refuse("\\x{D800}");
+  refuse("\\u12");
+  refuse("\\x{");
+  refuse("\\x{}");
+  refuse("(?P<n>a)(?P<n>b)");
+  refuse("(?P<>a)");
+  refuse("(?P<1a>a)");
+  refuse("(?P<n");
+  refuse("(?");
+  refuse("(?i");
+  refuse("(?q)");
+  refuse("(?-)");
+  refuse("(?i-i-s)a");
+  refuse("(?R)a");
+  refuse("[[:nope:]]");
+  refuse("[a-\\d]");
+  refuse("[\\b]");
+  refuse("(?P<n>");
+  // too big
+  refuse("a{1001}");
+  refuse("a{2000}");
+  refuse("(?:a{1000}){1000}");
+  refuse("(?:(?:(?:a{1000}){1000}){1000}){1000}");
+  // too deep
+  var deep = String();
+  var i = 0;
+  while i < 300 { deep.append("("); i = i + 1; }
+  deep.append("a");
+  i = 0;
+  while i < 300 { deep.append(")"); i = i + 1; }
+  match regex.Regex.parse(deep.view()) {
+    case let Ok(re) { print <- "300 deep => ACCEPTED\n"; }
+    case let Err(e) { print <- "300 deep => ", kindName(e.kind), "@", e.offset, ": ", e.reason.view(), "\n"; }
+  }
+  var ok = String();
+  i = 0;
+  while i < 200 { ok.append("(?:"); i = i + 1; }
+  ok.append("a");
+  i = 0;
+  while i < 200 { ok.append(")"); i = i + 1; }
+  match regex.Regex.parse(ok.view()) {
+    case let Ok(re) { print <- "200 deep => ok, matches: ", re.isMatch("a"), "\n"; }
+    case let Err(e) { print <- "200 deep => ", e, "\n"; }
+  }
+  // bytes mode accepts the half-character classes, not the Unicode ones
+  refuseBytes("(?-u).");
+  refuseBytes("(?-u)\\xff");
+  refuseBytes("\\w");
+  refuseBytes("(?i)a");
+  refuseBytes("(?u)a");
+  refuseBytes("(?=a)");
+  0i32
+}
