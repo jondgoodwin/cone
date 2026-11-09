@@ -1,0 +1,430 @@
+// The regex package: regular expressions in Cone, with no C library. A pattern
+// in Rust's regex syntax is parsed, compiled to a byte-level automaton, and run
+// by a Pike VM: every search takes time proportional to the pattern's size times
+// the text's length, whatever the pattern, so a pattern built from a user's input
+// is no denial of service.
+//
+//   mod demo;
+//   import stdio use *;
+//   import regex;
+//
+//   fn main() i32 {
+//     match regex.Regex.parse("(?P<year>[0-9]{4})-(?P<month>[0-9]{2})") {
+//       case let Ok(re) {
+//         match re.captures("due 2026-11, paid 2026-12") {
+//           case let Some(c) { printStr(c.named("year").unwrap()); }   // 2026
+//           case is None {}
+//         }
+//       }
+//       case let Err(e) { printStr(String() <- e); }
+//     }
+//     0i32
+//   }
+//
+// WHAT IS NOT THERE, ON PURPOSE. No backreferences and no look-around: both need
+// a backtracking engine, and a backtracking engine takes exponential time on some
+// patterns. A pattern that uses one is refused with an ErrorKind.Unsupported error.
+//
+// SYNTAX. Rust's: literals; '.'; classes '[a-z0-9_]', '[^x]', nested classes and
+// the operators '&&', '--' and '~~' inside them; the POSIX names '[[:alpha:]]'; the
+// escapes '\n \t \r \f \v \a \xHH \x{H..} \uHHHH \u{H..} \UHHHHHHHH' and an escaped
+// punctuation mark; '\d \s \w \D \S \W \b \B' in ASCII mode (below); '^ $ \A \z';
+// '* + ? {n} {n,} {n,m}' and their lazy forms with a '?' after; groups '(..)',
+// '(?:..)', '(?P<name>..)', '(?<name>..)'; flags '(?imsxU)', '(?i:..)', '(?-u)'. A
+// pattern's text is a '&str'. Matching is leftmost-first: of the matches that begin
+// earliest, the one a backtracking engine would find first, which is the first
+// alternative that can match and, for a repetition, the most (or with a '?', the
+// fewest) copies that can.
+//
+// UNICODE. Rust's classes are Unicode by default: '\w' is every letter of every
+// script. That needs range tables this package does not have yet (they come from the
+// Unicode work). Until then nothing silently means less than Rust's meaning:
+// - A bare '\d \s \w \b' (and their capitals), '\p{..}', and '(?i)' on a letter in
+//   Unicode mode are refused with ErrorKind.Unsupported, and the reason names the
+//   way round: '(?-u:\w)' for ASCII, or a class such as '[0-9]'.
+// - '(?-u)' turns Unicode mode off, and is accepted: then '\d \s \w \b' are ASCII
+//   and '(?i)' folds ASCII letters only. A pattern for text (Regex.parse) may not
+//   then match bytes past ASCII on their own: '(?-u).' and '(?-u)[^a]' are refused,
+//   as in Rust, since they could match half a character. Regex.parseBytes lifts
+//   that: its patterns may match any bytes, and its text need not be UTF-8.
+// - Everything else is Unicode already, and needs no table: '.' and a negated class
+//   take any one character, '[α-ω]' is a range of code points, 'é' and '日本' are
+//   literals.
+// - '(?u)' is refused until the tables are built: Unicode mode is already the default.
+//
+// POSITIONS are byte offsets into the text. A match never begins or ends inside a
+// character of a Regex.parse pattern's text, and an empty match is never reported
+// between two bytes of one character.
+//
+// SCRATCH. A search needs working space of the size of the program (states x
+// slots). Each call of 'isMatch', 'find', 'findFrom', 'captures', 'replace' and
+// 'replaceAll' makes its own; 'matches' and 'split' make one for the whole
+// iteration. A Regex is not changed by a search, so one may be shared.
+//
+// LIMITS. A pattern may be nested 250 deep, a repetition count may be at most 1000,
+// and a program at most 200000 states (the error is ErrorKind.TooBig).
+//
+// METHOD CHOICES. Left out for now, each to come as its own step: a bounded
+// backtracker for captures on short texts, a lazy DFA for 'isMatch' and 'find',
+// literal prefilters beyond a pattern's own leading literal (which is scanned for
+// with a plain loop), a reusable cache, a closure form of 'replaceAll', and
+// Unicode classes.
+
+mod regex;
+
+import collections use String, List, Dict;
+
+// -------- failure --------
+
+// What kind of thing was wrong with a pattern
+pub enum ErrorKind {
+  // The pattern is not well formed
+  Syntax;
+  // The pattern uses something this package does not do (look-around, a
+  // backreference, a Unicode class before the tables exist, ...)
+  Unsupported;
+  // The pattern is too big: a repetition count over 1000, or more than 200000 states
+  TooBig;
+}
+
+// Why a pattern was refused: the kind, where in the pattern (a byte offset)
+// and a sentence
+pub struct RegexError is Error {
+  pub kind: ErrorKind;
+  pub offset: usize;
+  pub reason: String;
+
+  // One line for a person: 'regex: at byte 3: this group is never closed'
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "regex: at byte ", offset, ": ", reason.view();
+  }
+
+  pub fn clone(self: &) RegexError {
+    RegexError(kind, offset, reason.clone())
+  }
+}
+
+// -------- results --------
+
+// A match: the bytes start..<end of the text
+pub struct Match {
+  pub start: usize;
+  pub end: usize;
+
+  pub fn len(self: &) usize { end - start }
+
+  pub fn isEmpty(self: &) bool { end == start }
+}
+
+// The groups of one match: group 0 is the whole match. It borrows the text, and
+// what 'get' gives is a part of the text, which may outlive the Captures.
+pub struct Captures['a] {
+  text: &'a str;
+  re: &'a Regex;
+  slots: List[usize];
+
+  // How many groups there are, the whole match included
+  pub fn len(self: &) usize { slots.len() / 2 }
+
+  // The span of group i, or None if it took no part in the match (or there is no such group)
+  pub fn span(self: &, i: usize) Option[Match] {
+    if 2 * i + 1 >= slots.len() { return None; }
+    let s = *slots[2 * i];
+    if s == noPos { return None; }
+    Some[Match](Match(s, *slots[2 * i + 1]))
+  }
+
+  // The text group i matched
+  pub fn get(self: &, i: usize) Option[&'a str] {
+    match self.span(i) {
+      case let Some(m) { Some[&str](text.slice(m.start, m.end)) }
+      case is None { None }
+    }
+  }
+
+  // The text the group with this name matched
+  pub fn named(self: &, name: &str) Option[&'a str] {
+    match re.indexOfName(name) {
+      case let Some(i) { self.get(usize.from(i)) }
+      case is None { None }
+    }
+  }
+}
+
+// -------- the regular expression --------
+
+// A compiled pattern. Build it once with 'parse' and search with it as often as
+// you like; a search does not change it.
+pub struct Regex {
+  prog: Program;
+  groups: u32;
+  names: List[GroupName];
+  bytesMode: bool;
+
+  // The pattern for text: Unicode mode on, and no class may match a byte that is
+  // not part of a character
+  pub fn parse(pattern: &str) Result[Regex, RegexError] { Regex.build(pattern, false) }
+
+  // The pattern for bytes: a class may match any byte, in '(?-u)' mode, and the
+  // text searched need not be UTF-8
+  pub fn parseBytes(pattern: &str) Result[Regex, RegexError] { Regex.build(pattern, true) }
+
+  fn build(pattern: &str, bytesMode: bool) Result[Regex, RegexError] {
+    var p = Parser.start(pattern, bytesMode);
+    let root = p.parse();
+    if p.failed {
+      return Err[Regex, RegexError](RegexError(p.err.kind, p.err.offset, p.err.reason.clone()));
+    }
+    var c = Compiler.start();
+    let done = c.plain(opMatch, 0u32, 0u32);
+    let close = c.plain(opSave, done, 1u32);
+    let body = c.node(&p, root, close);
+    let start = c.plain(opSave, body, 0u32);
+    if c.failed {
+      return Err[Regex, RegexError](RegexError(ErrorKind.TooBig, 0, String.from("the pattern compiles to too many states")));
+    }
+    var prefix = List[u8]();
+    collectPrefix(&p, root, &mut prefix);
+    var names = List[GroupName]();
+    var k = 0usize;
+    while k < p.names.len() {
+      names.push(GroupName(p.names[k].name.clone(), p.names[k].index));
+      k = k + 1;
+    }
+    var insts = List[Inst]();
+    var trans = List[Trans]();
+    insts <-> c.insts;
+    trans <-> c.trans;
+    var seedLo = List[u8]();
+    var seedHi = List[u8]();
+    let seed = startStates(&insts, &trans, start, &mut seedLo, &mut seedHi);
+    Ok[Regex, RegexError](Regex(Program(insts, trans, start, 2 * usize.from(p.groups), prefix, seed, seedLo, seedHi, nullable(&p, root)), p.groups, names, bytesMode))
+  }
+
+  // How many groups the pattern has, not counting the whole match
+  pub fn groupCount(self: &) usize { usize.from(groups) - 1 }
+
+  fn indexOfName(self: &, name: &str) Option[u32] {
+    var k = 0usize;
+    while k < names.len() {
+      if names[k].name.view() == name { return Some[u32](names[k].index); }
+      k = k + 1;
+    }
+    None
+  }
+
+  // Search text from byte 'from', leaving the match's slots in pike.result. An
+  // empty match inside a character is not a match for a text pattern.
+  fn searchFrom(self: &, pike: &mut Pike, text: &str, from: usize, earliest: bool) bool {
+    let t = text.bytes();
+    var at = from;
+    while at <= t.len {
+      if !pike.search(&prog, t, at, earliest) { return false; }
+      if bytesMode || pike.nslots == 0 { return true; }
+      let s = *pike.result[0];
+      if s == *pike.result[1] && !text.isCharBoundary(s) { at = s + 1; }
+      else { return true; }
+    }
+    false
+  }
+
+  // Whether the pattern matches anywhere in the text
+  pub fn isMatch(self: &, text: &str) bool {
+    // the slots are needed only to tell an empty match inside a character
+    var pike = Pike.start(&prog, if prog.nullable && !bytesMode { 2usize } else { 0usize });
+    searchFrom(&mut pike, text, 0, true)
+  }
+
+  // The first match
+  pub fn find(self: &, text: &str) Option[Match] { self.findFrom(text, 0) }
+
+  // The first match that begins at or after byte 'from'. The text before 'from'
+  // still counts for '^', '\b' and the like.
+  pub fn findFrom(self: &, text: &str, from: usize) Option[Match] {
+    var pike = Pike.start(&prog, 2);
+    if searchFrom(&mut pike, text, from, false) {
+      return Some[Match](Match(*pike.result[0], *pike.result[1]));
+    }
+    None
+  }
+
+  // The first match, with its groups
+  pub fn captures(self: &'a Regex, text: &'a str) Option[Captures['a]] { self.capturesFrom(text, 0) }
+
+  // The first match that begins at or after byte 'from', with its groups; the text before
+  // 'from' is context, as for 'findFrom'
+  pub fn capturesFrom(self: &'a Regex, text: &'a str, from: usize) Option[Captures['a]] {
+    var pike = Pike.start(&prog, prog.slots);
+    if searchFrom(&mut pike, text, from, false) {
+      var slots = List[usize].withCapacity(prog.slots);
+      var k = 0usize;
+      while k < prog.slots { slots.push(*pike.result[k]); k = k + 1; }
+      return Some[Captures](Captures(text, self, slots));
+    }
+    None
+  }
+
+  // The matches, left to right, none overlapping. After an empty match the search
+  // moves on one character, and an empty match right after another match is skipped.
+  pub fn matches(self: &'a Regex, text: &'a str) Matches['a] {
+    Matches(self, text, Pike.start(&prog, 2), 0, noPos, false)
+  }
+
+  // The parts of the text between the matches. The part after the last match is
+  // always there, and may be empty: "a,b," split at ',' gives "a", "b" and "".
+  pub fn split(self: &'a Regex, text: &'a str) Split['a] {
+    Split(text, self.matches(text), 0)
+  }
+
+  // The text with the first match replaced by 'with', in which '$1' and '${name}'
+  // stand for a group's text ('$name' takes the longest run of letters, digits and
+  // '_'), a group that took no part or does not exist stands for nothing, and '$$'
+  // for a '$'
+  pub fn replace(self: &, text: &str, replacement: &str) String { self.replaceUpTo(text, replacement, 1) }
+
+  // The text with every match replaced, as 'replace' does
+  pub fn replaceAll(self: &, text: &str, replacement: &str) String { self.replaceUpTo(text, replacement, 0) }
+
+  fn replaceUpTo(self: &, text: &str, repl: &str, limit: usize) String {
+    let pieces = self.pieces(repl);
+    var needGroups = false;
+    var k = 0usize;
+    while k < pieces.len() { if pieces[k].isGroup { needGroups = true; } k = k + 1; }
+    var it = Matches(self, text, Pike.start(&prog, if needGroups { prog.slots } else { 2 }), 0, noPos, false);
+    var out = String();
+    var last = 0usize;
+    var count = 0usize;
+    while limit == 0 || count < limit {
+      match it.next() {
+        case let Some(m) {
+          out.append(text.slice(last, m.start));
+          k = 0;
+          while k < pieces.len() {
+            let pc = *pieces[k];
+            if !pc.isGroup { out.append(repl.slice(pc.a, pc.b)); }
+            else if 2 * pc.a + 1 < it.pike.result.len() {
+              let s = *it.pike.result[2 * pc.a];
+              if s != noPos { out.append(text.slice(s, *it.pike.result[2 * pc.a + 1])); }
+            }
+            k = k + 1;
+          }
+          last = m.end;
+          count = count + 1;
+        }
+        case is None { break; }
+      }
+    }
+    out.append(text.sliceFrom(last));
+    out
+  }
+
+  // The replacement text in pieces: literal runs of it, and groups to insert
+  fn pieces(self: &, repl: &str) List[Piece] {
+    let w = repl.bytes();
+    var out = List[Piece]();
+    var litStart = 0usize;
+    var i = 0usize;
+    while i < w.len {
+      if w[i] != '$' { i = i + 1; continue; }
+      // a '$': what follows?
+      var name = String();
+      var next = i + 1;
+      var isDollar = false;
+      if next < w.len && w[next] == '$' { isDollar = true; next = next + 1; }
+      else if next < w.len && w[next] == '{' {
+        var j = next + 1;
+        while j < w.len && isWordByte(w[j]) { name.appendByte(w[j]); j = j + 1; }
+        if j < w.len && w[j] == '}' && name.len() > 0 { next = j + 1; } else { name = String(); }
+      }
+      else {
+        var j = next;
+        while j < w.len && isWordByte(w[j]) { name.appendByte(w[j]); j = j + 1; }
+        next = j;
+      }
+      if !isDollar && name.len() == 0 { i = i + 1; continue; }
+      if i > litStart { out.push(Piece(false, litStart, i)); }
+      if isDollar { out.push(Piece(false, i, i + 1)); }
+      else { self.pushGroup(&mut out, name.view()); }
+      i = next;
+      litStart = next;
+    }
+    if w.len > litStart { out.push(Piece(false, litStart, w.len)); }
+    out
+  }
+
+  fn pushGroup(self: &, out: &mut List[Piece], name: &str) {
+    let b = name.bytes();
+    var allDigits = true;
+    var n = 0usize;
+    var k = 0usize;
+    while k < b.len {
+      if b[k] < '0' || b[k] > '9' { allDigits = false; break; }
+      if n < 100000 { n = n * 10 + usize.from(b[k] - '0'); }
+      k = k + 1;
+    }
+    if allDigits { out.push(Piece(true, n, 0)); return; }
+    match self.indexOfName(name) {
+      case let Some(i) { out.push(Piece(true, usize.from(i), 0)); }
+      case is None {}
+    }
+  }
+}
+
+// A part of a replacement: the text of 'with' from a to b, or group a
+struct Piece {
+  pub isGroup: bool;
+  pub a: usize;
+  pub b: usize;
+}
+
+// -------- iteration --------
+
+// The matches of a text, in order; 'regex.matches(text)'
+pub struct Matches['a] is Iterator[Match] {
+  re: &'a Regex;
+  text: &'a str;
+  pike: Pike;
+  pos: usize;
+  lastEnd: usize;
+  done: bool;
+
+  pub fn next(self: &mut) Option[Match] {
+    while !done {
+      if pos > text.len() { done = true; return None; }
+      if !re.searchFrom(&mut pike, text, pos, false) { done = true; return None; }
+      let s = *pike.result[0];
+      let e = *pike.result[1];
+      if s == e && e == lastEnd { pos = e + 1; }
+      else {
+        lastEnd = e;
+        pos = e;
+        return Some[Match](Match(s, e));
+      }
+    }
+    None
+  }
+}
+
+// The parts of a text between its matches; 'regex.split(text)'
+pub struct Split['a] is Iterator[&str] {
+  text: &'a str;
+  found: Matches['a];
+  last: usize;
+
+  pub fn next(self: &mut) Option[&'a str] {
+    let t = text;
+    if last > t.len() { return None; }
+    match found.next() {
+      case let Some(m) {
+        let part = t.slice(last, m.start);
+        last = m.end;
+        Some[&str](part)
+      }
+      case is None {
+        let part = t.sliceFrom(last);
+        last = t.len() + 1;
+        Some[&str](part)
+      }
+    }
+  }
+}
