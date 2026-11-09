@@ -224,7 +224,7 @@
 // Upload it returns has 'sink()', a stages.ChunkSink the body's pipeline ends in
 // ('FileSource(up.sink(), name).start()'), and 'stream()', answered like 'client.stream' with the
 // response's BodyStream (a response, or a failure, that comes first waits for it; once only).
-// The credit is by copy, the length counted by the sink, a streamed fetch never retried and a 307
+// The credit is owned (a chunk is moved to the fetch, its death returns the credit), the length counted by the sink, a streamed fetch never retried and a 307
 // or 308 its response; a response before the body is all sent stops the source Finished; the fetch
 // failing, cancelled or timing out stops it Failed(the FetchError); an Upload dropped without
 // 'stream' cancels the fetch (upload.cone is the longer account).
@@ -354,9 +354,9 @@
 // body: its writes answer 0. After 'start', 'bodySink()' instead of 'write' and
 // 'finish' makes a stages.ChunkSink of the body: a pipeline (a file source, a gzip
 // stage) that ends in it is the response, a chunk at a time, and a large or generated
-// body never sits whole in memory. The credit is by copy: the service thread copies
-// each chunk into pool buffers of its own and gives the chunk back to its source once
-// the connection has accepted the copy, so a slow client holds the pipeline back at
+// body never sits whole in memory. The credit is owned: the service thread moves
+// each chunk to the connection as it is, and the chunk's death, once the connection is
+// done with it, returns the credit to its source, so a slow client holds the pipeline back at
 // the same watermark as 'write'. The sink's end is 'finish'; Failed resets the
 // exchange; a sized body is counted there, and past or short of its length the
 // exchange is reset and the source stopped Failed; a body the protocol forbids

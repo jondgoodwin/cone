@@ -9,14 +9,14 @@
 // chosen before any byte is accepted. The response's head, or a failure, that comes before 'stream' is
 // asked waits in the record ('up.answer') for it; an Upload dropped without 'stream' cancels the fetch.
 //
-// CREDIT BY COPY. For each piece of a chunk the service thread takes a buffer of its own from the pool,
-// copies up to upPiece bytes into it and pushes that to the fetch, one piece at a time: the next goes when
-// httpclient says (BodyRoom) that the connection has taken every piece pushed so far. A chunk is given
-// back to the source once the connection has taken the copy of its last piece. So the connection's
-// watermark is the credit: while the peer reads slowly the connection refuses, the piece stays queued,
-// no BodyRoom comes, the chunks are not given back and the source sends no more. What is held is the
-// source's window of bytes and one piece. The fetch is dispatched later than the first chunks may
-// come: the first piece waits in httpclient's queue, and the chunks behind it here.
+// OWNED CREDIT. The service thread pushes each chunk itself to the fetch, moved, with the source's home on
+// it (iobuf IoHome, stages.chunkHome), one chunk at a time: the next goes when httpclient says (BodyRoom)
+// that the connection has taken every chunk pushed so far. The chunk is not copied, and its death, when the
+// connection is done with it (the send completed, a TLS write, an h2 frame cut, a fetch cancelled), sends
+// the source 'giveBack'. So the connection's watermark is the credit: while the peer reads slowly the
+// connection refuses, no BodyRoom comes, the chunks stay queued here as plain buffers and the source
+// sends no more. What is held is the source's window of bytes. The fetch is dispatched later than the
+// first chunks may come: the first chunk waits in httpclient's queue, and the chunks behind it here.
 //
 // LENGTH. The service counts the bytes against 'framing' as the chunks arrive: past a sized length, or
 // short of it at the end, the fetch is cancelled and the source stopped Failed (httpclient and the cores
@@ -28,9 +28,6 @@
 // cancelled or timed out, or the length was wrong. The chunks held, and those still arriving, are given
 // back. A streamed fetch is never retried, and a 307 or 308 is the response (httpclient's A STREAMED
 // BODY).
-
-// Pieces of a chunk are copied into buffers of this size at most
-const upPiece = 65536usize;
 
 // A response head that came before the upload's 'stream' was asked
 struct UpHead {
@@ -44,9 +41,8 @@ struct UpHead {
 struct UpState {
   on: bool;
   src: Option[ChunkSource];       // the source feeding the sink
-  chunks: Deque[IoBuf];           // chunks arrived, whose bytes are not all pushed to the fetch
-  off: usize;                     // ...bytes of the first already pushed
-  sent: Deque[IoBuf];             // chunks all pushed, given back once the connection has taken the last piece
+  home: Option[IoHome];           // the source's home: a chunk pushed carries it, and its death returns the credit
+  chunks: Deque[IoBuf];           // chunks arrived, not yet pushed to the fetch
   got: u64;                       // bytes arrived
   sized: bool;
   length: u64;                    // a sized body's length
@@ -66,7 +62,7 @@ struct UpState {
   dropped: bool;                  // the Upload was dropped without asking
 
   fn idle() UpState {
-    UpState(on: false, src: None[ChunkSource], chunks: Deque[IoBuf](), off: 0usize, sent: Deque[IoBuf](), got: 0u64,
+    UpState(on: false, src: None[ChunkSource], home: None[IoHome], chunks: Deque[IoBuf](), got: 0u64,
       sized: false, length: 0u64, room: false, srcEnd: false, srcFailed: false, ended: false, endSent: false, settled: false, fin: false,
       own: false, failure: httpclient.Failure.none(), endKind: httpclient.EventKind.Done,
       head: None[UpHead], err: None[FetchError], called: false, dropped: false)
@@ -98,13 +94,6 @@ fn upGive(s: &StreamRec, b: IoBuf) {
 fn upDrain(s: &mut StreamRec) {
   while true {
     match s.up.chunks.popFront() {
-      case var Some(b) {upGive(s, b);}
-      else {break;}
-    }
-  }
-  s.up.off = 0usize;
-  while true {
-    match s.up.sent.popFront() {
       case var Some(b) {upGive(s, b);}
       else {break;}
     }
@@ -160,36 +149,23 @@ fn upLengthFailure(text: &str) httpclient.Failure {
 fn upPump(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec) {
   if !s.up.on || s.up.settled {return;}
   while s.up.chunks.len() > 0usize {
-    let total = s.up.chunks[0usize].len();
-    let off = s.up.off;
-    if off >= total {
-      // an empty chunk, or its last piece is pushed
-      match s.up.chunks.popFront() {
-        case var Some(b) {
-          if off == 0usize {upGive(s, b);} else {s.up.sent.push(b);}
+    // a chunk with bytes waits for room; an empty one goes back at once
+    if s.up.chunks[0usize].len() > 0usize && !s.up.room {break;}
+    match s.up.chunks.popFront() {
+      case var Some(b) {
+        if b.len() == 0usize {
+          upGive(s, b);
+        } else {
+          // The chunk itself goes to the fetch, moved, wearing the source's home: its death returns the credit
+          match &s.up.home {
+            case let &Some(h) {b.setHome(h);}
+            else {}
+          }
+          rec.client.pushBody(lp, s.fetch, b);
+          s.up.room = false;
         }
-        else {}
       }
-      s.up.off = 0usize;
-    } else {
-      if !s.up.room {break;}
-      let left = total - off;
-      let n = if left < upPiece {left} else {upPiece};
-      // A pool that refuses the buffer ends the fetch, as for a String body
-      var b = match IoBuf.tryMake(n) {
-        case var Some(got) {got}
-        else {
-          upFailOwn(rec, lp, s, overloadedFailure());
-          return;
-        }
-      };
-      {
-        let all = s.up.chunks[0usize].view() as &Array[u8];
-        b.append(&all[off ..< off + n]);
-      }
-      rec.client.pushBody(lp, s.fetch, b);
-      s.up.room = false;
-      s.up.off = off + n;
+      else {break;}
     }
   }
   if s.up.ended && !s.up.endSent && s.up.chunks.len() == 0usize {
@@ -202,12 +178,6 @@ fn upPump(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec) {
 fn upRoom(rec: &mut ClientRec, lp: &mut Loop, s: &mut StreamRec) {
   if !s.up.on || s.up.settled {return;}
   s.up.room = true;
-  while true {
-    match s.up.sent.popFront() {
-      case var Some(b) {upGive(s, b);}
-      else {break;}
-    }
-  }
   upPump(rec, lp, s);
 }
 
@@ -356,6 +326,7 @@ struct UploadAttachJob {
       if !(s.up.srcEnd && s.up.fin) && !s.up.srcFailed {upStop(s, &up);}
       return;
     }
+    s.up.home = Some[IoHome](chunkHome(up.clone()));
     s.up.src = Some[ChunkSource](up);
   }
 }

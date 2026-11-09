@@ -4,7 +4,9 @@
 // and was stopped for. The server (maxBody 16 MiB) reads each body whole, checks the pattern and counts. Checked,
 // in each protocol:
 //   - a sized body of 8 MiB: the server got every byte once, in order; status 200; the source never stopped;
-//   - an unsized body in chunks of 40,000 bytes (so a chunk goes in pieces): whole, clean;
+//   - an unsized body in chunks of 40,000 bytes (each goes to the fetch whole, not in pieces): whole, clean;
+//   - after the sized and the unsized runs, every chunk's credit came back (the source's giveBack count equals
+//     the chunks it sent): the buffers' deaths return it;
 //   - a sized body the source runs past (50,000 over): the upload fails, the source is stopped once Failed, the
 //     server saw no body; one that ends short (50,000 under): the same;
 //   - a source that fails half way: the upload fails, the source is not stopped;
@@ -63,6 +65,8 @@ struct Tally {
   pub failed: Atomic[u64];     // uploads whose 'stream' was an Err
   pub timedOut: Atomic[u64];   // ...of them, deadline
   pub ended: Atomic[u64];      // scenarios run to their end
+  pub chunks: Atomic[u64];     // chunks the source sent
+  pub back: Atomic[u64];       // buffers given back to the source
 }
 
 let tally: Tally;
@@ -72,7 +76,7 @@ fn @initpure init() {
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn reset() {
@@ -93,6 +97,17 @@ fn reset() {
   tally.failed.store(0u64);
   tally.timedOut.store(0u64);
   tally.ended.store(0u64);
+  tally.chunks.store(0u64);
+  tally.back.store(0u64);
+}
+
+// The sent chunks' credit all returned by the buffers' deaths (the chunks go to the fetch as they are, with
+// the source's home on them; nothing gives them back by hand)
+fn creditBack() {
+  waitFor(&tally.back, tally.chunks.load());
+  printStr("  every chunk's credit came back: ");
+  printStr(yes(tally.chunks.load() > 0u64 && tally.back.load() == tally.chunks.load()));
+  printStr("\n");
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
@@ -144,6 +159,7 @@ actor Gen is ChunkSource {
 
   pub async fn giveBack(self, b: IoBuf) {
     link.give(b);
+    tally.back.add(1u64);
     self.pump();
   }
 
@@ -186,6 +202,7 @@ actor Gen is ChunkSource {
             buf.append(&all[off ..< off + n]);
             sent = sent + u64.from(n);
             tally.sent.add(u64.from(n));
+            tally.chunks.add(1u64);
             down <- buf;
           }
         }
@@ -457,6 +474,7 @@ fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
   waitFor(&tally.endsSent, 1u64);
   server("");
   client();
+  creditBack();
   home();
 
   printStr("unsized 3000017 in chunks of 40000\n");
@@ -464,6 +482,7 @@ fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
   waitFor(&tally.endsSent, 1u64);
   server("");
   client();
+  creditBack();
   home();
 
   printStr("sized 1000000, the source runs 50000 past\n");
@@ -546,6 +565,7 @@ fn scenarios(secure: bool, port: u16, holePort: u16, label: &str) {
   printStr("\n");
   server("");
   client();
+  creditBack();
   home();
 
   if !secure {
