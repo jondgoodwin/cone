@@ -35,6 +35,35 @@ fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: u
 // whole fetch's token is its wait slot alone
 const streamBit = 0x100000000u64;
 
+// THE TOKEN. The layer above's own part of a sink token is forty bits (httpconn/driver.cone), used so: the cell
+// index in bits 0 to 31, the stream or connection bit at 32 (above), and the low SEVEN bits of the cell's
+// generation in bits 33 to 39. A lookup through a token (byToken) finds the cell's entry only if the cell is live
+// and those seven bits are its generation's: a token whose entry is gone, and whose cell is free or has been
+// reused, reaches nothing. The pool's full Handle stays wherever the service keeps one. WRAP ODDS: a cell's
+// generation goes up by one each time it is freed, so a stale token names a reused cell again only if the cell has
+// been reused a multiple of 128 times since (128, 256, ...) and is live at that moment. Never for fewer than 128
+// reuses of that one cell; after that, 1 in 128 of the moments it is live.
+const tokGenShift = 33u64;
+const tokGenMask = 0x7Fu64;
+
+// (pub for tests/tokens.cone, not an API) The token for the entry h, with a flag bit (streamBit, connBit, or 0)
+pub fn tokenOf(h: Handle, flag: u64) u64 {
+  flag | ((u64.from(h.gen) & tokGenMask) << tokGenShift) | u64.from(h.index)
+}
+
+// The cell index a token names
+pub fn tokCell(t: u64) u32 { u32.from(t & 0xFFFFFFFFu64) }
+
+// The live entry a token names, or null (the cell is free, or was reused since: its generation's low bits differ)
+pub fn byToken[T](pool: &GenPool[T], t: u64) *T {
+  let i = tokCell(t);
+  let h = pool.slotAt(i);
+  if h.isNone() || (u64.from(h.gen) & tokGenMask) != ((t >> tokGenShift) & tokGenMask) {
+    return pool.get(Handle.none());
+  }
+  pool.at(i)
+}
+
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
   id: u64;
@@ -271,8 +300,10 @@ struct Service {
 
   // A connection's own event: it connected, or it is over
   fn onConnEvent(self: &mut, lp: &mut Loop, e: &httpconn.Event) {
-    let slot = usize.from(e.token & 0xFFFFFFFFu64);
-    let c = conns.at(u32.from(slot)) as &mut ConnRec;
+    let cp = byToken(&conns, e.token);
+    if cp as usize == 0usize { return; }
+    let slot = usize.from(tokCell(e.token));
+    let c = cp as &mut ConnRec;
     let k = e.kind;
     if k == httpconn.EventKind.Connected {
       c.open = true;
@@ -299,8 +330,10 @@ struct Service {
   // An event of an exchange on a connection, taken by value: its head's
   // fields go whole into the response gathered
   fn onExchangeEvent(self: &mut, lp: &mut Loop, e: httpconn.Event) {
-    let slot = usize.from(e.token);
-    let w = xwaits.at(u32.from(slot)) as &mut Wait;
+    let wp = byToken(&xwaits, e.token);
+    if wp as usize == 0usize { return; }
+    let slot = usize.from(tokCell(e.token));
+    let w = wp as &mut Wait;
     let k = e.kind;
     if k == httpconn.EventKind.Response {
       let status, version, headers = e.(response).(status, version, headers);
@@ -419,8 +452,11 @@ fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
   rec.client.pump(lp, &uni evs);
   each e in evs.drain() {
     if (e.token & streamBit) != 0u64 {
-      let sslot = usize.from(e.token & 0xFFFFFFFFu64);
-      onStreamEvent(rec, lp, e, sslot);
+      // an event of a stream already freed (its cell free or reused) reaches nothing
+      if byToken(&rec.streams, e.token) as usize != 0usize {
+        let sslot = usize.from(tokCell(e.token));
+        onStreamEvent(rec, lp, e, sslot);
+      }
     } else {
       onFetchEvent(rec, lp, e);
     }
@@ -430,8 +466,10 @@ fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
 // An event of a whole fetch, taken by value: its head's fields go whole into
 // the response gathered
 fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
-  let slot = usize.from(e.token);
-  let w = rec.waits.at(u32.from(slot)) as &mut Wait;
+  let wp = byToken(&rec.waits, e.token);
+  if wp as usize == 0usize { return; }
+  let slot = usize.from(tokCell(e.token));
+  let w = wp as &mut Wait;
   let k = e.kind;
   if k == httpclient.EventKind.Response {
     let response, url = e.(response, url);
@@ -520,8 +558,9 @@ struct FetchJob {
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
-    let slot = usize.from(rec.waits.add(waitFor(rp, rec.maxBody)).index);
-    let fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(slot)));
+    let wh = rec.waits.add(waitFor(rp, rec.maxBody));
+    let slot = usize.from(wh.index);
+    let fetch = rec.client.send(lp, req, httpclient.Sink.Here(tokenOf(wh, 0u64)));
     (rec.waits.at(u32.from(slot)) as &mut Wait).fetch = fetch;
   }
 }
@@ -539,10 +578,11 @@ struct ConnectJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Conn, FetchError]]) {
     let host, port, secure, cfg = self.(host, port, secure, cfg);
-    let slot = usize.from(sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
-      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp))).index);
+    let ch = sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
+      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp)));
+    let slot = usize.from(ch.index);
     let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
-    let sink = httpconn.Sink.Here(connBit | u64.from(slot));
+    let sink = httpconn.Sink.Here(tokenOf(ch, connBit));
     // The driver is handed a copy of the host: it holds Strings, and nothing
     // shows the job's is none of them
     let name = host.clone();
@@ -582,13 +622,14 @@ struct ExchangeJob {
       return;
     }
     let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
-    let slot = usize.from(sv.xwaits.add(waitFor(rp, defaultMaxBody)).index);
+    let xh = sv.xwaits.add(waitFor(rp, defaultMaxBody));
+    let slot = usize.from(xh.index);
     let w = sv.xwaits.at(u32.from(slot)) as &mut Wait;
     w.conn = k;
     w.body = body;
     c.busy = c.busy + 1u32;
     let length = if w.body.len() > 0usize {BodyLength.sized(u64.from(w.body.len()))} else {BodyLength()};
-    let sink = httpconn.Sink.Here(u64.from(slot));
+    let sink = httpconn.Sink.Here(tokenOf(xh, 0u64));
     match group {
       case let Some(g) {w.req = sv.drv.requestIn(lp, c.conn, head, length, sink, g, deadline);}
       else {
