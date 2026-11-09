@@ -129,6 +129,9 @@ typedef struct {
     uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
+    uint8_t partmix;    // drop-flag client: paths hollowed it by different parts and joined (VarPartFlag)
+    uint8_t jh;         // scratch: a join, a hollow path met
+    uint32_t jm1;       // scratch: a join, the first hollow path's moves
     uint8_t initing;    // its initializer is being walked: it holds no value yet
     uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
     void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails
