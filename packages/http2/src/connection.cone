@@ -10,6 +10,9 @@ const noBound = 0xFFFFFFFFFFFFFFFFusize;     // the output chain is bounded by t
 const prefaceLen = 24usize;
 const protocolWindow = 65535u32;             // every window's size until SETTINGS or WINDOW_UPDATE say otherwise
 const shutdownPing = 0x73687574646f776eu64;  // "shutdown": the PING that times a graceful GOAWAY
+const firstWindow = 16384u64;                // a new stream is raised to this window at once, as the spare allows (the window before budgets)
+pub const defaultCreditBudget = 1048576u64;  // 1 MiB: a connection's receive credit, which its streams' windows share
+pub const minStreamFloor = 2048u64;          // a stream's announced window at the least, whatever the budget
 
 // The client's connection preface (section 3.4)
 fn clientPreface() &str {"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"}
@@ -25,7 +28,8 @@ pub struct Config {
   pub hpack: HpackConfig;             // HPACK's; maxHeaderListSize is our SETTINGS_MAX_HEADER_LIST_SIZE
   pub maxConcurrentStreams: u32;      // our SETTINGS_MAX_CONCURRENT_STREAMS: a peer's stream past it is refused
   pub assumedPeerStreams: u32;        // the peer's, assumed until its SETTINGS say
-  pub initialWindowSize: u32;         // our SETTINGS_INITIAL_WINDOW_SIZE: a stream's unreleased bytes
+  pub streamWindow: u32;              // the most a stream's window grows to, drawn from creditBudget (our SETTINGS_INITIAL_WINDOW_SIZE is its floor, see CREDIT)
+  pub creditBudget: u64;              // bytes of receive credit the connection's streams share: the most it holds unread
   pub connectionWindowSize: u32;      // the connection's receive window
   pub maxBuffered: usize;             // input held unparsed: at least frameHeaderLen + frames.maxFrameSize
   pub writeWatermark: usize;          // a stream's body bytes queued before sendData hands a buffer back
@@ -38,11 +42,38 @@ pub struct Config {
   // The defaults
   pub fn make() Config {
     Config(frames: FrameConfig.make(), hpack: HpackConfig.make(), maxConcurrentStreams: 100u32,
-      assumedPeerStreams: 100u32, initialWindowSize: 262144u32, connectionWindowSize: 16777216u32,
+      assumedPeerStreams: 100u32, streamWindow: 262144u32, creditBudget: defaultCreditBudget, connectionWindowSize: 16777216u32,
       maxBuffered: 65536usize, writeWatermark: 262144usize, maxQueuedRequests: 100usize,
       maxPeerResets: 200u32, maxLocalResets: 200u32, resetInterval: Duration.fromSeconds(30),
       settingsTimeout: Duration.fromSeconds(10))
   }
+}
+
+// The streams the budget is divided over: those the peer may open (ours) or
+// this end may (the peer's, assumed until it says), the larger
+fn creditStreams(cfg: &Config) u64 {
+  let a = u64.from(cfg.maxConcurrentStreams);
+  let b = u64.from(cfg.assumedPeerStreams);
+  let n = if a > b {a} else {b};
+  if n == 0u64 {1u64} else {n}
+}
+
+// A stream's announced window, its floor (see the package's header, CREDIT):
+// half the budget over the streams, so that every stream's floor together is
+// half of it and the other half is what streams that keep reading draw from.
+// Never under minStreamFloor (so under a budget smaller than twice that for
+// each stream, the floors alone exceed it), never over streamWindow
+fn streamFloor(cfg: &Config) u32 {
+  var f = cfg.creditBudget / (2u64 * creditStreams(cfg));
+  if f < minStreamFloor {f = minStreamFloor;}
+  if f > u64.from(cfg.streamWindow) {f = u64.from(cfg.streamWindow);}
+  u32.from(f)
+}
+
+// What the budget leaves for streams to grow by once every stream has its floor
+fn creditSpare(cfg: &Config) u64 {
+  let reserved = creditStreams(cfg) * u64.from(streamFloor(cfg));
+  if cfg.creditBudget > reserved {cfg.creditBudget - reserved} else {0u64}
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +138,7 @@ struct Stream {
 
   // Receiving
   recvWindow: i64;          // what the peer may still send
+  drawn: u64;               // credit drawn from the connection's spare, above the floor: the stream's window is the floor and this
   unacked: usize;           // credit released (or padding), not yet given back
   outstanding: usize;       // body bytes handed out in Data events, not yet released
   finalSeen: bool;          // a client has the response's head; a server the request's
@@ -122,7 +154,7 @@ fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64) Stream {
     fields: List[HeaderField](), trailerFields: List[HeaderField](), hasTrailers: false,
     bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf](), outOff: 0usize,
     outBytes: 0usize, finishing: false, sendWindow: sendWindow, ready: false, responded: false,
-    headRequest: false, recvWindow: recvWindow, unacked: 0usize, outstanding: 0usize,
+    headRequest: false, recvWindow: recvWindow, drawn: 0u64, unacked: 0usize, outstanding: 0usize,
     finalSeen: false, noBody: false, expect: 0u64, expectSet: false, got: 0u64)
 }
 
@@ -197,6 +229,13 @@ pub struct Connection is Move {
   connRecv: i64;
   connUnacked: usize;
 
+  // The credit budget (see the package's header, CREDIT): every stream's
+  // floor is reserved, 'spare' is what no stream holds, and first grants
+  // leave 'reserve' of it for growth by release
+  floor: u32;                // a stream's announced window (our SETTINGS_INITIAL_WINDOW_SIZE)
+  spare: u64;
+  reserve: u64;
+
   // Streams
   streams: SlotTable[Stream];
   byId: Dict[u32, Slot];
@@ -242,13 +281,15 @@ pub struct Connection is Move {
     if cfg.maxBuffered < frameHeaderLen + cfg.frames.maxFrameSize {
       panic("http2: Config.maxBuffered must hold a whole frame (frameHeaderLen + frames.maxFrameSize)", file, line);
     }
-    if cfg.initialWindowSize < protocolWindow || cfg.initialWindowSize > maxWindowSize {
-      panic("http2: Config.initialWindowSize outside 65535 to 2^31-1", file, line);
+    if cfg.streamWindow < protocolWindow || cfg.streamWindow > maxWindowSize {
+      panic("http2: Config.streamWindow outside 65535 to 2^31-1", file, line);
     }
     if cfg.connectionWindowSize < protocolWindow || cfg.connectionWindowSize > maxWindowSize {
       panic("http2: Config.connectionWindowSize outside 65535 to 2^31-1", file, line);
     }
     if cfg.maxConcurrentStreams == 0u32 {panic("http2: Config.maxConcurrentStreams of 0", file, line);}
+    let fl = streamFloor(&cfg);
+    let sp = creditSpare(&cfg);
     var c = Connection(clientRole: client, cfg: cfg, now: now,
       input: Chain.make(cfg.maxBuffered),
       reader: if client {FrameReader.client(cfg.frames)} else {FrameReader.server(cfg.frames)},
@@ -259,6 +300,7 @@ pub struct Connection is Move {
       settingsOut: 0u32, settingsAt: now, peerMaxStreams: cfg.assumedPeerStreams,
       peerWindow: i64.from(protocolWindow), peerMaxHeaderList: 0xFFFFFFFFu32,
       connSend: i64.from(protocolWindow), connRecv: i64.from(protocolWindow), connUnacked: 0usize,
+      floor: fl, spare: sp, reserve: sp / 2u64,
       streams: SlotTable[Stream].make(64u32), byId: Dict[u32, Slot](),
       ready: Deque[u32](), waiting: Deque[u32](), gone: Deque[Gone](),
       goneMax: usize.from(cfg.maxConcurrentStreams) * 2usize + 32usize,
@@ -281,7 +323,7 @@ pub struct Connection is Move {
     }
     if clientRole {values.push(Setting(settingEnablePush, 0u32));}
     values.push(Setting(settingMaxConcurrentStreams, cfg.maxConcurrentStreams));
-    if cfg.initialWindowSize != protocolWindow {values.push(Setting(settingInitialWindowSize, cfg.initialWindowSize));}
+    if floor != protocolWindow {values.push(Setting(settingInitialWindowSize, floor));}
     if cfg.frames.maxFrameSize != defaultMaxFrameSize {values.push(Setting(settingMaxFrameSize, u32.from(cfg.frames.maxFrameSize)));}
     values.push(Setting(settingMaxHeaderListSize, u32.from(cfg.hpack.maxHeaderListSize)));
     let queued = writer.settings(values.view());
@@ -407,7 +449,57 @@ pub struct Connection is Move {
     let k = if n > s.outstanding {s.outstanding} else {n};
     s.outstanding = s.outstanding - k;
     s.unacked = s.unacked + k;
+    if s.recvDone {self.shrink(s);}
     self.creditStream(s);
+  }
+
+  // A stream's credit now: the bytes the peer may have sent on it and its
+  // owner not released (CREDIT). 0 when it is gone
+  pub fn window(self: &, stream: u32) u64 {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return 0u64;}
+    u64.from(floor) + (*streams.get(slot)).drawn
+  }
+
+  // A stream's body bytes that arrived and its owner has not released
+  pub fn unreleased(self: &, stream: u32) usize {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return 0usize;}
+    (*streams.get(slot)).outstanding
+  }
+
+  // The credit no stream holds, for streams that keep reading to draw
+  pub fn spareCredit(self: &) u64 {spare}
+
+  // A stream the peer can send no more on (its end came, it was reset or
+  // abandoned) holds credit only for the bytes its owner has not yet
+  // released (never under the floor): the rest of what it drew goes back to
+  // the spare
+  fn shrink(self: &mut, s: &mut Stream) {
+    let held = u64.from(s.outstanding);
+    let keep = if held > u64.from(floor) {held - u64.from(floor)} else {0u64};
+    if s.drawn > keep {
+      spare = spare + (s.drawn - keep);
+      s.drawn = keep;
+    }
+  }
+
+  // A new stream is raised from its floor to firstWindow at once, as far as
+  // the spare allows but for its lower half, which is kept for growth by
+  // release (so a connection of stalled streams cannot spend what a reading
+  // stream grows by). With the spare spent, or no room to say so, it keeps
+  // its floor
+  fn firstGrant(self: &mut, s: &mut Stream) {
+    if s.recvDone || s.headRequest || failed || closed {return;}
+    let first = if firstWindow < u64.from(cfg.streamWindow) {firstWindow} else {u64.from(cfg.streamWindow)};
+    var grant = if first > u64.from(floor) {first - u64.from(floor)} else {0u64};
+    let room = if spare > reserve {spare - reserve} else {0u64};
+    if grant > room {grant = room;}
+    if grant == 0u64 {return;}
+    if !writer.windowUpdate(s.id, u32.from(grant)) {return;}
+    s.recvWindow = s.recvWindow + i64.from(grant);
+    s.drawn = s.drawn + grant;
+    spare = spare - grant;
   }
 
   // A stream's body bytes queued to send, and how many more sendData takes
@@ -457,7 +549,7 @@ pub struct Connection is Move {
     requestFields(&head, &body, &mut f, file, line);
     let id = nextLocal;
     nextLocal = nextLocal + 2u32;
-    let slot = streams.add(newStream(id, true, peerWindow, i64.from(cfg.initialWindowSize)));
+    let slot = streams.add(newStream(id, true, peerWindow, i64.from(floor)));
     byId.insert(id, slot);
     let s = streams.get(slot) as &mut Stream;
     s.fields = f;
@@ -763,15 +855,25 @@ pub struct Connection is Move {
     true
   }
 
-  // A stream's credit back to the peer, once half its window is owed
+  // A stream's credit back to the peer, once half its window is owed, and
+  // with it as many bytes more as the budget's spare allows, up to the
+  // stream window: a stream that keeps reading doubles its window with each
+  // window's worth, one that has stopped keeps what it holds (CREDIT)
   fn creditStream(self: &mut, s: &mut Stream) {
     if s.recvDone || s.unacked == 0usize {return;}
-    if s.unacked < usize.from(cfg.initialWindowSize) / 2usize {return;}
-    if !writer.windowUpdate(s.id, u32.from(s.unacked)) {
+    let window = u64.from(floor) + s.drawn;
+    if u64.from(s.unacked) < window / 2u64 {return;}
+    var grow = if window < u64.from(cfg.streamWindow) {u64.from(cfg.streamWindow) - window} else {0u64};
+    if grow > u64.from(s.unacked) {grow = u64.from(s.unacked);}
+    if grow > spare {grow = spare;}
+    let give = u64.from(s.unacked) + grow;
+    if !writer.windowUpdate(s.id, u32.from(give)) {
       self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
       return;
     }
-    s.recvWindow = s.recvWindow + i64.from(s.unacked);
+    s.recvWindow = s.recvWindow + i64.from(give);
+    s.drawn = s.drawn + grow;
+    spare = spare - grow;
     s.unacked = 0usize;
   }
 
@@ -796,7 +898,12 @@ pub struct Connection is Move {
       self.streamError(id, ErrorCode.ProtocolError, "DATA before the response's head");
       return;
     }
-    if i64.from(flow) > s.recvWindow {
+    // Until the peer has acknowledged our SETTINGS it may send under the
+    // window it had before them, 65535 (section 6.9.2), which is more than a
+    // floor below it: the difference is allowed meanwhile. (An empty DATA
+    // that ends the stream is allowed with the window spent, or below zero.)
+    let extra = if settingsOut > 0u32 && floor < protocolWindow {i64.from(protocolWindow - floor)} else {0i64};
+    if flow > 0usize && i64.from(flow) > s.recvWindow + extra {
       self.streamError(id, ErrorCode.FlowControlError, "DATA past the stream's window");
       return;
     }
@@ -822,6 +929,7 @@ pub struct Connection is Move {
     }
     if endStream {
       s.recvDone = true;
+      self.shrink(s);
       self.emit(s, Event.End(id, Headers()));
       self.settle(s);
       return;
@@ -928,7 +1036,7 @@ pub struct Connection is Move {
           self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
           return;
         }
-        let slot2 = streams.add(newStream(id, false, peerWindow, i64.from(cfg.initialWindowSize)));
+        let slot2 = streams.add(newStream(id, false, peerWindow, i64.from(floor)));
         byId.insert(id, slot2);
         peerLive = peerLive + 1u32;
         streamsOpened = streamsOpened + 1u64;
@@ -944,6 +1052,8 @@ pub struct Connection is Move {
         if endStream {
           s.recvDone = true;
           self.emit(s, Event.End(id, Headers()));
+        } else {
+          self.firstGrant(s);
         }
       }
     }
@@ -978,6 +1088,7 @@ pub struct Connection is Move {
         self.emit(s, Event.Response(id, head, body));
         if endStream {
           s.recvDone = true;
+          self.shrink(s);
           self.emit(s, Event.End(id, Headers()));
           self.settle(s);
         }
@@ -1001,6 +1112,7 @@ pub struct Connection is Move {
           return;
         }
         s.recvDone = true;
+        self.shrink(s);
         self.emit(s, Event.End(id, t));
         self.settle(s);
       }
@@ -1321,6 +1433,7 @@ pub struct Connection is Move {
           }
           s.sendDone = true;
           s.recvDone = true;
+          self.shrink(s);
           s.wireClosed = true;
           s.outQ.clear();
           s.outBytes = 0usize;
@@ -1413,6 +1526,7 @@ pub struct Connection is Move {
   fn abandon(self: &mut, s: &mut Stream, byUs: bool) {
     s.sendDone = true;
     s.recvDone = true;
+    self.shrink(s);
     s.resetByUs = byUs;
     s.outQ.clear();
     s.outBytes = 0usize;
@@ -1442,7 +1556,8 @@ pub struct Connection is Move {
   fn reap(self: &mut, id: u32) {
     match streams.take(self.slotOf(id)) {
       case let Some(s) {
-        let ours = s.(ours);
+        let ours, drawn = s.(ours, drawn);
+        spare = spare + drawn;
         byId.remove(&id);
         if !ours {peerLive = peerLive - 1u32;}
       }
@@ -1508,6 +1623,7 @@ pub struct Connection is Move {
     let end = !s.bodyFollows;
     writer.headers(s.id, block.view(), end);
     if end {s.sendDone = true;}
+    self.firstGrant(s);
     if s.outBytes > 0usize || s.finishing {self.makeReady(s);}
   }
 
