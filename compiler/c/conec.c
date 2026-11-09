@@ -244,6 +244,10 @@ int main(int argc, char **argv) {
                 inctext = incFileGenerate(pgmnode, &inclen);
                 if (inctext)
                     incpath = includeFilePath(&coneopt, pgmnode);
+                // Generation, which would say what a kernel reaches, will not
+                // run: report the GPU refusals held (flowloan.h)
+                if (flowGpu && errors != 0)
+                    loanGpuHeldFlush(NULL, NULL);
             }
             if (errors == 0) {
                 genpgm(&gen, pgmnode);

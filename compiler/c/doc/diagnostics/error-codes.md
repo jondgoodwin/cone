@@ -1112,7 +1112,13 @@ the instance, when the include file is generated. A generic with neither leaves 
 a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
 the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
 named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
-the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name;
+and a written method named like a generated field (`structMethodFieldClash`), pointed at the method and naming the
+type argument and the field, after which the instance has no methods.
+`ErrorFieldsRebuild` is `ErrorNotPublic`'s case inside a generic instance: a literal that code of the generic gives (a
+type argument's value rebuilt from all its fields by a `#each` among the arguments) a value for a private field of a type
+declared in another module (one opened with `@reflect`), where `typeLitStructReorder` is not told the literal is private.
+It names the field, the type and, in a generic type's method, that type.
 
 `ErrorSetupCycle` (1605) and `ErrorSetupReadsInit` (1606) refuse a module's setups (a `let` global given a value that is
 not a constant; `module.md`, "Setups"). The first is setups that read one another round a cycle, directly or through the
@@ -1154,8 +1160,7 @@ instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not 
 or outside. A constant belongs to the type (Jon, 22 Sep: a name folds on a type, not on a field), so the lookup of a member
 of a value (`fnCallLowerMethodOn`) refuses the `ConstDclTag` it finds, and for a value of an enum's variant the
 one the enum declares, and names the form that works, `Vec3.zero`. `ErrorConstPlace` (1621) is a `const` read in the
-braces of a trait or of a generic type (a `#each` over its fields included), where each implementer or instance would
-need its own copy (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
+braces of a trait, where it would be a requirement each implementer meets (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
 A `const` with no value is `ErrorNoInit`, one with no name `ErrorNoIdent`, a name the type already has `ErrorDupName`,
 and a value that is no constant expression `ErrorNotLit`, as at module level.
 

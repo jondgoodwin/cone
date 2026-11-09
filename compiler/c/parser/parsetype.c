@@ -1019,13 +1019,11 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
             const char *refused = NULL;
             if ((strnode->flags & TraitType) && !isenum)
                 refused = "a trait: a trait's requirement of a constant is not built";
-            else if (strnode->genericinfo)
-                refused = "a generic type: each instance would need its own copy of the constant, which is not built";
             ConstDclNode *cdcl = parseConstDcl(parse, 1);
             cdcl->flags |= pubflag;
             if (refused)
                 errorMsgNode((INode*)cdcl, ErrorConstPlace,
-                    "A 'const' in the braces of a type is built for a struct or an enum that is not generic; this is %s.", refused);
+                    "A 'const' in the braces of a type is built for a struct or an enum; this is %s.", refused);
             else if (cdcl->namesym != anonName) {
                 iNsTypeAddConst((INsTypeNode*)strnode, cdcl);
                 parseSpan(parse, &strnode->spans, (INode*)cdcl, mstart, mkw, SpanDcl);
@@ -1430,7 +1428,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode = stdlibAdoptCStr(lex->val.ident, parse->mod);
     if (strnode == NULL && named)
         strnode = stdlibAdoptArray(lex->val.ident, parse->mod);
-    if (strnode == NULL)
+    if (strnode != NULL) {
+        // The compiler made the node before any source was read, so it holds
+        // the start-up lexer; it belongs to the file that declares it, whose
+        // line marks (a package's include file) say it records the package's
+        // verdicts (struct.c: ShapeKeeping, shapeinfer.c: siIsRecorded)
+        strnode->lexer = lex;
+        strnode->srcp = lex->tokp;
+        strnode->linep = lex->linep;
+        strnode->linenbr = lex->linenbr;
+    }
+    else
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;

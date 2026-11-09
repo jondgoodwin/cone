@@ -1,0 +1,43 @@
+// A 'const' in an actor's braces (mod-globals.html#const, "A type's const"):
+// folded, held in no storage, and used by its bare name in the behaviours.
+//
+// The actor starts at 10 and takes 4 bumps of 'stepBy' (5): 10 + 4 * 5 = 30,
+// then the behaviour 'report' prints 'total' and 'limit' (100 / 4 = 25).
+// finalAll() waits for quiescence; the finalizer prints the total last.
+
+mod concurrency_actor_const;
+
+import stdio use *;
+import actors;
+
+actor Meter {
+  total: u64;
+  const stepBy: u64 = 5;
+  const limit: u64 = 100 / 4;
+
+  fn init(self: &new, start: u64) {
+    *self = Self(total: start);
+  }
+
+  pub async fn bump(self) {
+    total = total + stepBy;
+  }
+
+  pub async fn report(self: &) {
+    printStr("total "); printUInt(total); printStr(" limit "); printUInt(limit); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  {
+    let m = Meter(10u64);
+    m.bump();
+    m.bump();
+    m.bump();
+    m.bump();
+    m.report();
+  }
+  finalAll();
+}

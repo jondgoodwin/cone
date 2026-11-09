@@ -333,6 +333,7 @@ typedef struct {
     uint32_t var;
     PathSet *holds;
     PathSet *pending;
+    uint32_t hmask;
     uint8_t state;
 } PathEntry;
 
@@ -500,6 +501,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->xstamp = 0;
     pv->jstamp = 0;
     pv->state = 0;
+    pv->hmask = 0;
     pv->flagged = 0;
     pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
@@ -530,6 +532,7 @@ static void pathLogVar(uint32_t var) {
     entry->holds = pv->holds;
     entry->pending = pv->pending;
     entry->state = pv->state;
+    entry->hmask = pv->hmask;
 }
 
 void pathSetState(uint32_t var, uint8_t state) {
@@ -537,6 +540,16 @@ void pathSetState(uint32_t var, uint8_t state) {
         return;
     pathLogVar(var);
     pathVars[var].state = state;
+    // The moves that hollowed it are held only while it may be hollow
+    if (!(state & DropHollow))
+        pathVars[var].hmask = 0;
+}
+
+void pathSetHollowMask(uint32_t var, uint32_t hmask) {
+    if (pathVars[var].hmask == hmask)
+        return;
+    pathLogVar(var);
+    pathVars[var].hmask = hmask;
 }
 
 void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
@@ -557,6 +570,7 @@ static void pathRollback(uint32_t mark) {
         pathVars[entry->var].holds = entry->holds;
         pathVars[entry->var].pending = entry->pending;
         pathVars[entry->var].state = entry->state;
+        pathVars[entry->var].hmask = entry->hmask;
     }
 }
 
@@ -586,6 +600,7 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
             delta->ents[cnt].holds = pv->holds;
             delta->ents[cnt].pending = pv->pending;
             delta->ents[cnt].state = pv->state;
+            delta->ents[cnt].hmask = pv->hmask;
             ++cnt;
         }
     }
@@ -611,6 +626,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jholds = NULL;
                 pv->jpending = NULL;
                 pv->jstate = 0;
+                pv->jhmask = 0;
                 pv->jfirst = entry->holds;
                 pv->japart = 0;
                 if (ntouched == touchedcap)
@@ -623,6 +639,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
             pv->jstate |= entry->state;
+            pv->jhmask |= entry->hmask;
         }
     }
     int changed = 0;
@@ -631,10 +648,12 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         PathSet *holds = pv->jholds;
         PathSet *pending = pv->jpending;
         uint8_t state = pv->jstate;
+        uint32_t hmask = pv->jhmask;
         if (withcurrent || pv->jcnt < npaths) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
+            hmask |= pv->hmask;
             if (pathGpuChoices && pv->holder && !pv->japart)
                 pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
@@ -649,6 +668,10 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         }
         if (state != pv->state) {
             pathSetState(touched[i], state);
+            changed = 1;
+        }
+        if (hmask != pv->hmask) {
+            pathSetHollowMask(touched[i], hmask);
             changed = 1;
         }
     }
@@ -1701,7 +1724,7 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t la
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
     if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
-        uint32_t foreign = loanArenaApart(stored, refholds, &through);
+        uint32_t foreign = loanArenaApart(stored, refholds, NULL, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
         return;
@@ -2287,9 +2310,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // no local's borrow may be stored in it
                 VarDclNode *through;
                 int known = argsets[at] && argsets[at]->cnt;
-                if (known && local && loanArenaChecked(others, argsets[at]))
+                if (known && local && loanArenaChecked(others, argsets[at], NULL))
                     loanEscape(node, local, how);
-                uint32_t apart = known ? loanArenaApart(others, argsets[at], &through) : 0;
+                uint32_t apart = known ? loanArenaApart(others, argsets[at], NULL, &through) : 0;
                 if (apart)
                     loanApart(node, apart, through, how);
                 continue;
@@ -2325,7 +2348,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                 // An arena reached through a reference takes of the caller's
                 // loans only its own: those of the parameter it was reached by
                 VarDclNode *through;
-                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, &through);
+                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, pathVars[target.var].var, &through);
                 if (apart)
                     loanApart(node, apart, through, how);
             }

@@ -3431,7 +3431,8 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
-    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
+    // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
         return 0;
     member->dclnode = found;
     member->flags |= FlagQualified;
