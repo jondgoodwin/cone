@@ -99,9 +99,9 @@ fn usageError(msg: String) i32 {
 fn commandUsage(command: &str) String {
   var usage = cat("usage: congo ", command, " [-h]");
   if command == "new" { usage <- " [--lib] name [path]"; }
-  else if command == "build" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--no-cache]"; }
-  else if command == "run" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--no-cache] [file]"; }
-  else if command == "test" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--no-cache] [--bless] [name]"; }
+  else if command == "build" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--lto] [--no-cache]"; }
+  else if command == "run" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--lto] [--no-cache] [file]"; }
+  else if command == "test" { usage <- " [--release] [-D NAME[=INT]] [--strip] [--lto] [--no-cache] [--bless] [name]"; }
   else if command == "publish" { usage <- " [--registry URL]"; }
   else { usage <- " [file]"; }
   usage
@@ -162,6 +162,9 @@ fn releaseAndDefineHelp() {
   printStr("                        #define in every compile of the build (provisional)\n");
   printStr("  --strip               emit no debug info (and, on Windows, no PDB); a native\n");
   printStr("                        build otherwise carries function names and line tables\n");
+  printStr("  --lto                 with --release, optimise across the packages at link\n");
+  printStr("                        time (ThinLTO): a slower link, a larger program, a\n");
+  printStr("                        faster one; built in build/release-lto\n");
   printStr("  --no-cache            compile everything, whatever an earlier build left, and\n");
   printStr("                        capture Visual Studio's environment again\n");
 }
@@ -241,6 +244,7 @@ fn main() i32 {
   var bless = false;
   var noCache = false;
   var strip = false;
+  var lto = false;
   var defines = List[String]();
   var positionals = List[String]();
   var registryUrl = String();
@@ -302,6 +306,7 @@ fn main() i32 {
       else if hasRelease && isOption(opt, "--release") { explicit = "--release"; }
       else if command == "new" && isOption(opt, "--lib") { explicit = "--lib"; }
       else if hasRelease && isOption(opt, "--strip") { explicit = "--strip"; }
+      else if hasRelease && isOption(opt, "--lto") { explicit = "--lto"; }
       else if hasRelease && isOption(opt, "--no-cache") { explicit = "--no-cache"; }
       else if command == "test" && isOption(opt, "--bless") { explicit = "--bless"; }
     }
@@ -310,6 +315,7 @@ fn main() i32 {
     }
     if hasRelease && isOption(arg, "--release") { release = true; }
     else if hasRelease && isOption(arg, "--strip") { strip = true; }
+    else if hasRelease && isOption(arg, "--lto") { lto = true; }
     else if hasRelease && isOption(arg, "--no-cache") { noCache = true; }
     else if command == "new" && isOption(arg, "--lib") { lib = true; }
     else if command == "test" && isOption(arg, "--bless") { bless = true; }
@@ -328,15 +334,20 @@ fn main() i32 {
     if positionals.len() > 1usize { return cmdNew(positionals[0usize].view(), positionals[1usize].view(), lib); }
     return cmdNew(positionals[0usize].view(), "", lib);
   }
-  if command == "build" { return cmdBuild(release, &defines, noCache, strip); }
+  if lto && !release {
+    printFlush();
+    eprintStr("congo: error: --lto optimises a release build: add --release\n");
+    return 1i32;
+  }
+  if command == "build" { return cmdBuild(release, &defines, noCache, strip, lto); }
   if command == "publish" { return cmdPublish(registryUrl.view(), hasRegistry); }
   if command == "test" {
-    if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless, &defines, noCache, strip); }
-    return cmdTest("", false, release, bless, &defines, noCache, strip);
+    if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless, &defines, noCache, strip, lto); }
+    return cmdTest("", false, release, bless, &defines, noCache, strip, lto);
   }
   let hasFile = positionals.len() > 0usize;
   var file = String();
   if hasFile { file = positionals[0usize].clone(); }
-  if command == "run" { cmdRun(file.view(), hasFile, release, &defines, noCache, strip, &programArgs) }
+  if command == "run" { cmdRun(file.view(), hasFile, release, &defines, noCache, strip, lto, &programArgs) }
   else { cmdClean(file.view(), hasFile) }
 }

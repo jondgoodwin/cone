@@ -175,7 +175,7 @@ static MetaVal metaVal(MetaKind kind, int64_t val) {
 static void metaSkipCond();
 
 static const char *metaCondForms =
-    "A '#if' condition is built from the build's facts -- #os, #arch, #debug, #defined(\"NAME\") and #define(\"NAME\") -- compared with '==' or '!=' and joined with '!', '&&' and '||'. Nothing else is known while the program is being read. (In a generic, it may also ask what a type parameter is: 'T is Float', 'T == i32'.)";
+    "A '#if' condition is built from the build's facts -- #os, #arch, #debug, #defined(\"NAME\") and #define(\"NAME\") -- compared with '==' or '!=' (numbers also with '<', '<=', '>', '>=') and joined with '!', '&&' and '||'. Nothing else is known while the program is being read. (In a generic, it may also ask what a type parameter is: 'T is Float', 'T == i32'.)";
 
 // A condition about what a type is, 'tree', which a generic's clone decides
 static MetaVal metaTypeVal(INode *tree) {
@@ -419,9 +419,11 @@ static MetaVal metaUnary(MetaKind hint) {
 // A comparison: '==' or '!=' of two operands of one kind
 static MetaVal metaCompare() {
     MetaVal lhs = metaUnary(MetaBad);
-    if (!lexIsToken(EqToken) && !lexIsToken(NeToken))
+    int isOrder = lexIsToken(LtToken) || lexIsToken(LeToken) || lexIsToken(GtToken) || lexIsToken(GeToken);
+    if (!lexIsToken(EqToken) && !lexIsToken(NeToken) && !isOrder)
         return lhs;
     int negate = lexIsToken(NeToken);
+    int op = lex->toktype;
     lexNextToken();
     MetaVal rhs = metaUnary(lhs.kind);
     if (lhs.kind == MetaBad || rhs.kind == MetaBad)
@@ -444,6 +446,15 @@ static MetaVal metaCompare() {
         errorMsgLex(ErrorMetaFact, "A comparison needs two of one kind, and this compares %s with %s.",
             metaKindName(lhs.kind), metaKindName(rhs.kind));
         return metaVal(MetaBad, 0);
+    }
+    if (isOrder) {
+        if (lhs.kind != MetaInt) {
+            errorMsgLex(ErrorMetaFact, "'<', '<=', '>' and '>=' compare numbers, and this compares %s.", metaKindName(lhs.kind));
+            return metaVal(MetaBad, 0);
+        }
+        int r = op == LtToken ? lhs.val < rhs.val : op == LeToken ? lhs.val <= rhs.val
+              : op == GtToken ? lhs.val > rhs.val : lhs.val >= rhs.val;
+        return metaVal(MetaBool, r);
     }
     return metaVal(MetaBool, (lhs.val == rhs.val) != negate);
 }

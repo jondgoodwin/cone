@@ -1,7 +1,7 @@
 // The streams an actor reads: a response whose body arrives to the actor as
 // it comes, as chunks of bytes (BodyStream) or as server-sent events
 // (EventStream). The handles are plain data that move: each holds the sink its
-// body goes to (a stages.ReaderSink, or this package's EventSink) and the
+// body goes to (a stages.ReaderSink, or a stages.ValueReader fed by this package's SseParseStage) and the
 // cancel group of its fetch, which dropping the handle cancels. The service
 // thread keeps the fetch and sends the pieces (streamservice.cone), and
 // actorhttp.cone's header says how the pieces fit (STREAMS).
@@ -77,20 +77,21 @@ pub struct BodyStream is Move {
     }
   }
 
-  // The body read as server-sent events instead: this package's EventSink is attached as the
+  // The body read as server-sent events instead: this package's SseParseStage is attached as the
   // body's sink, and the EventStream (the same head, the same cancel group) awaits each event
   // as 'client.events' gives it. The head is already in hand, so the caller has looked at it
   // before choosing. A body already read from cannot be read as events: the stream's 'next'
   // answers a cancel. Dropping the EventStream cancels the rest of the fetch
   pub fn events(self) EventStream {
-    let sink = EventSink();
+    let rd = eventReader();
+    let sink = SseParseStage(rd.clone());
     if choice.swap(bodyTo) == bodyUnchosen {
       post[BodyChoiceJob](BodyChoiceJob(client, slot, sid, Some[ChunkSink](sink.clone())));
     } else {
       choice.store(bodyRead);
       sink.end(Ending.Failed(AnyError.msg("the body was read from, it cannot be read as events")));
     }
-    EventStream(sink, group, status, version, headers.clone(), url.clone())
+    EventStream(rd, group, status, version, headers.clone(), url.clone())
   }
 
   // Whether the status is a 2xx
@@ -110,9 +111,10 @@ const bodyRead = 1u8;
 const bodyTo = 2u8;
 
 // A response read as server-sent events (the sse package's): the Reader runs
-// in an EventSink actor as the body arrives, and 'next' awaits the next event
+// in an SseParseStage actor as the body arrives, and 'next' awaits the next event
+// from the stages.ValueReader that stage feeds
 pub struct EventStream is Move {
-  reader: EventSink;
+  reader: ValueReader[sse.Event, Result[Option[sse.Event], FetchError]];
   group: CancelGroup;
   pub status: u16;
   pub version: Version;     // the protocol that carried it: Http11, or Http2
@@ -124,11 +126,7 @@ pub struct EventStream is Move {
   // past the reader's limit). A comment (": ping") is no event; the stream's
   // 'id' is each event's, as the sse package's Reader keeps it
   pub fn next(self: &) actors.Awaitable[Result[Option[sse.Event], FetchError]] {
-    let h = reader.clone();
-    actors.Awaitable[Result[Option[sse.Event], FetchError]].make(
-      fn(rp: actors.ReplyOf[Result[Option[sse.Event], FetchError]]) [h] {
-        h.want(rp);
-      })
+    readValue[sse.Event, Result[Option[sse.Event], FetchError]](&reader)
   }
 
   // Whether the status is a 2xx
@@ -151,9 +149,9 @@ pub struct EventStream is Move {
   }
 }
 
-// Events held for a reader before the buffers behind them are given back (the
-// bytes of a buffer are not released to the connection until fewer than this
-// many events wait). The bound in bytes is the fetch's window
+// Events that may wait for a reader before the buffers behind them are given back (the
+// bytes of a buffer are not released to the connection until fewer than this many
+// events wait, parsed or sent and not yet read). The bound in bytes is the fetch's window
 const eventQueueHigh = 64usize;
 
 // How an event stream's reads end once its events are all taken
@@ -162,33 +160,45 @@ fn limitError() FetchError {
     ErrorKind.TooLarge, "an event is longer than the reader's limit"))
 }
 
-fn eventsEnd(limited: bool, how: &Ending) Result[Option[sse.Event], FetchError] {
-  if limited {
-    return Err[Option[sse.Event], FetchError](limitError());
-  }
+fn eventValue(ev: sse.Event) Result[Option[sse.Event], FetchError] {
+  Ok[Option[sse.Event], FetchError](Some[sse.Event](ev))
+}
+
+fn eventEnd(how: &Ending) Result[Option[sse.Event], FetchError] {
   match how {
     case is Finished {Ok[Option[sse.Event], FetchError](None[sse.Event])}
     case let &Failed(e) {Err[Option[sse.Event], FetchError](errorOfEnding(e))}
   }
 }
 
-// The sink an EventStream reads: the sse Reader runs over each chunk here, off the
-// service thread, and the events wait for the reader. A chunk's buffer is given
-// back once the events are fewer than eventQueueHigh, so a reader that awaits
-// slowly slows the sender: what is held is at most the window of bytes (and the
-// events parsed from them), however small the events
-actor EventSink is ChunkSink {
+// The sink an actor reads events through: it holds at most eventQueueHigh events, one
+// unit of credit each, and a read takes one and grants the next
+fn eventReader() ValueReader[sse.Event, Result[Option[sse.Event], FetchError]] {
+  ValueReader[sse.Event, Result[Option[sse.Event], FetchError]](u32.from(eventQueueHigh), &eventValue, &eventEnd)
+}
+
+// A stage from bytes to events: the sse Reader runs over each chunk here, off the service
+// thread, and the events go on to the ValueSink it was made with (an EventStream's reader)
+// as that sink grants credit. A chunk's buffer is given back once the events waiting (parsed
+// here, or sent and not yet credited) are fewer than eventQueueHigh, so a reader that awaits
+// slowly slows the sender: what is held is at most the window of bytes (and the events
+// parsed from them), however small the events
+actor SseParseStage is ChunkSink, ValueSource {
+  down: Option[ValueSink[sse.Event]];
   up: Option[ChunkSource];
   rd: sse.Reader;
-  events: Deque[sse.Event];                  // parsed events, waiting for the actor
+  pending: Deque[sse.Event];                 // parsed events, waiting for credit
   held: Deque[IoBuf];                        // buffers whose bytes are not yet released
-  waiting: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]];
-  ended: Option[Ending];
+  window: u32;                               // the first credit down granted: what it may hold
+  avail: u32;                                // credit down has granted and not yet been used
+  ended: Option[Ending];                     // the end, until it has gone down
   limited: bool;                             // an event passed the reader's limit and the source was stopped for it
 
-  pub fn init(self: &new) {
-    *self = Self(up: None[ChunkSource], rd: sse.Reader.make(), events: Deque[sse.Event](), held: Deque[IoBuf](),
-      waiting: None[actors.ReplyOf[Result[Option[sse.Event], FetchError]]], ended: None[Ending], limited: false);
+  pub fn init(self: &new, down: ValueSink[sse.Event]) {
+    *self = Self(down: Some[ValueSink[sse.Event]](down), up: None[ChunkSource], rd: sse.Reader.make(),
+      pending: Deque[sse.Event](), held: Deque[IoBuf](), window: 0u32, avail: 0u32,
+      ended: None[Ending], limited: false);
+    down.attach(selfactor);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -202,7 +212,7 @@ actor EventSink is ChunkSink {
     }
     var got = List[sse.Event]();
     rd.feed(c.view(), &mut got);
-    each ev in got.drain() {events.push(ev);}
+    each ev in got.drain() {pending.push(ev);}
     if rd.overflowed() {
       limited = true;
       match &up {
@@ -211,62 +221,69 @@ actor EventSink is ChunkSink {
       }
     }
     held.push(c);
-    self.serve();
-    self.release();
+    self.pump();
   }
 
   pub async fn end(self, how: Ending) {
     up = None[ChunkSource];
     held = Deque[IoBuf]();
     ended = Some[Ending](how);
-    self.serve();
+    self.pump();
   }
 
-  pub async fn want(self, rp: actors.ReplyOf[Result[Option[sse.Event], FetchError]]) {
-    if waiting is Some {
-      rp.answer(Err[Option[sse.Event], FetchError](FetchError.cancelled()));
-      return;
-    }
-    waiting = Some[actors.ReplyOf[Result[Option[sse.Event], FetchError]]](rp);
-    self.serve();
-    self.release();
+  // The reader has used n events: n more may be sent. Credit saturates at the first window
+  pub async fn credit(self, n: u32) {
+    if window == 0u32 {window = n;}
+    avail = if avail + n > window {window} else {avail + n};
+    self.pump();
   }
 
-  // An actor awaiting an event gets the next, or the end once the events are all taken
-  fn serve(self) {
-    if waiting is None {return;}
-    var answer: Option[Result[Option[sse.Event], FetchError]] = None;
-    match events.popFront() {
-      case var Some(ev) {answer = Some[Result[Option[sse.Event], FetchError]](Ok[Option[sse.Event], FetchError](Some[sse.Event](ev)));}
-      else {
-        match &ended {
-          case let &Some(how) {answer = Some[Result[Option[sse.Event], FetchError]](eventsEnd(limited, how));}
-          else {}
-        }
-      }
-    }
-    match answer {
-      case let Some(v) {
-        var taken: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]] = None;
-        taken <-> waiting;
-        match taken {
-          case let Some(r) {r.answer(v);}
-          else {}
-        }
-      }
+  // The reader wants no more: the fetch is stopped, and the end that follows carries why
+  pub async fn stop(self, why: Ending) {
+    match &up {
+      case let &Some(u) {u.stop(why);}
       else {}
     }
   }
 
-  // The buffers held go back once the events waiting are few
-  fn release(self) {
-    if events.len() < eventQueueHigh {
-      var more = true;
+  // Send events while credit lasts, give buffers back while few events wait, and send the
+  // end once every event has gone
+  fn pump(self) {
+    var more = true;
+    while more && avail > 0u32 {
+      match pending.popFront() {
+        case let Some(ev) {
+          match &down {
+            case let &Some(d) {d.accept(ev); avail = avail - 1u32;}
+            else {}
+          }
+        }
+        else {more = false;}
+      }
+    }
+    if pending.len() + usize.from(window - avail) < eventQueueHigh {
+      more = true;
       while more {
         match held.popFront() {
           case let Some(b) {self.giveOne(b);}
           else {more = false;}
         }
+      }
+    }
+    if pending.len() == 0usize {
+      var e = None[Ending];
+      e <-> ended;
+      match e {
+        case let Some(how) {
+          var why = how;
+          if limited {why = Ending.Failed(AnyError.from(limitError()));}
+          match &down {
+            case let &Some(d) {d.end(why);}
+            else {}
+          }
+          down = None[ValueSink[sse.Event]];
+        }
+        else {}
       }
     }
   }
