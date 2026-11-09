@@ -19,6 +19,12 @@
 //    released.
 // 7. The end abandons a parked behaviour, and the finalizer of a value its record
 //    held prints: that line appears (the drain after abandonParked).
+// 8. A panic with the destination held (a stalled reader) and 100 lines queued:
+//    the panic gives up after 500 ms without progress (the test asserts under
+//    2 s in all), writes its message, and the process's last line says 100
+//    lines were dropped.
+// 9. The same with the stall limit set to a minute and the overall ceiling to
+//    300 ms: the ceiling ends the wait, and the same line is written.
 
 mod consoleowner;
 
@@ -27,7 +33,7 @@ import collections use *;
 import stdio use *;
 import actors;
 import thread;
-import time use Duration;
+import time use Duration, Instant;
 import process;
 import libc;
 
@@ -259,7 +265,26 @@ fn childAbandon() i32 {
   0i32
 }
 
+// The destination is held and 100 lines wait for it, then a panic. 'stallMs'
+// and 'ceilingMs' are the panic's limits (0 for the defaults)
+fn childHeldPanic(stallMs: u32, ceilingMs: u32) i32 {
+  initAll();
+  let d = Idle();
+  d.nothing();
+  actors.waitQuiet();
+  actors.setPanicWait(stallMs, ceilingMs);
+  actors.holdConsole();
+  var i = 0u32;
+  while i < 100u32 {
+    print <- "H:", i, "\n";
+    i = i + 1u32;
+  }
+  panic("held")
+}
+
 fn child(mode: &str) i32 {
+  if mode == "heldpanic" { return childHeldPanic(0u32, 0u32); }
+  if mode == "ceiling" { return childHeldPanic(60000u32, 300u32); }
   if mode == "abandon" { return childAbandon(); }
   if mode == "writers" { return childWriters(); }
   if mode == "switch" { return childSwitch(); }
@@ -438,6 +463,35 @@ fn abandonCase(exe: &str) {
   expectBool(o.stdout.contains("abandon: nothing queued after the stop"), true, "abandon: the stop waited for the owner after the drop");
 }
 
+// The last line of 'text' that is not empty
+fn lastLine(text: &String) String {
+  let all = text.lines();
+  var k = all.len();
+  while k > 0usize {
+    k = k - 1usize;
+    if all[k].len() > 0usize {
+      return String.from(all[k].view());
+    }
+  }
+  String()
+}
+
+// A panic with the destination held: it must end within the limit, write its
+// message, and say last how many lines it dropped. 'minMs' is the least the
+// wait may take (the ceiling case proves the ceiling, not the stall, ended it)
+fn heldPanicCase(exe: &str, mode: &str, minMs: i64, label: &Array[u8]) {
+  let start = Instant.now();
+  let o = ran(exe, mode);
+  let ms = start.elapsed().millis();
+  expectBool(o.exitCode != 0u32, true, "held panic: the program fails");
+  expectBool(ms < 2000i64, true, "held panic: ends in under 2 s");
+  expectBool(ms >= minMs, true, "held panic: waited for the limit");
+  expectBool(o.stderr.contains("held"), true, "held panic: the message is written");
+  expectBool(o.stdout.contains("H:"), false, "held panic: the held lines were not written");
+  let last = lastLine(&o.stderr);
+  expectStr(last.view(), "console: 100 lines were queued but not written", label);
+}
+
 fn main() i32 {
   let a = process.args();
   if a.len() >= 3usize && a[1usize].equals("--child") {
@@ -455,5 +509,7 @@ fn main() i32 {
   flushCase(exe.view());
   stallCase(exe.view());
   abandonCase(exe.view());
+  heldPanicCase(exe.view(), "heldpanic", 400i64, "held panic: the last line says 100 lines were dropped");
+  heldPanicCase(exe.view(), "ceiling", 250i64, "ceiling: the last line says 100 lines were dropped");
   done()
 }
