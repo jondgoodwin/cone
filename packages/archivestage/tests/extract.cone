@@ -330,6 +330,38 @@ fn main() i32 {
     clean("zx_async");
   }
 
+  // ---- 3b. the same for a small entry (written by the extractor's own aio calls) ----
+  {
+    var m = newMade();
+    addFile(&mut m, "good.txt", 500usize, 22u64, &zipfile.EntryOptions.stored());
+    let bad = corpus(3000usize, 23u64);
+    expect(m.zip.add("small.bin", bad.view(), &zipfile.EntryOptions.stored()) is Ok, "3b: the entry is added");
+    addFile(&mut m, "after.txt", 500usize, 24u64, &zipfile.EntryOptions.stored());
+    var bytes = archiveOf(&mut m);
+    var at = 0usize;
+    var found = false;
+    var i = 0usize;
+    while !found && i + 16usize < bytes.len() {
+      var same = true;
+      var j = 0usize;
+      while same && j < 16usize {
+        if bytes[i + j] != bad[j] { same = false; }
+        j += 1usize;
+      }
+      if same { found = true; at = i; }
+      i += 1usize;
+    }
+    expect(found, "3b: the entry's data is in the archive");
+    bytes[at + 2000usize] = bytes[at + 2000usize] ^ 1u8;
+    clean("zx_async");
+    let a = ran(&bytes, "zx_async", &zipfile.ExtractOptions.safe());
+    expect(!isOk(&a), "3b: a bad CRC-32 in a small entry: done says Err");
+    expect(exists("zx_async/good.txt"), "3b: the entry before it stays");
+    expect(!exists("zx_async/small.bin"), "3b: the partial file is not left");
+    expect(!exists("zx_async/after.txt"), "3b: and nothing after it is made");
+    clean("zx_async");
+  }
+
   // ---- 4. a cancel mid-extract ----
   {
     var m = newMade();

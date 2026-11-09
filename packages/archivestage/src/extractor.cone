@@ -45,7 +45,12 @@ enum Phase {
   Closing;
   // 'done' has been told
   Over;
+  // A small entry is being written by this actor itself (see 'small')
+  Small;
 }
+
+// An entry declaring less than this is written by the extractor's own aio calls, one buffer, no FileSink
+const smallEntry = 65536usize;
 
 // An error as an error of its own
 fn errOf(e: &zipfile.ZipError) AnyError { AnyError.from(e.clone()) }
@@ -97,6 +102,79 @@ pub actor Extractor is ChunkSource {
       case is Finished {}
     }
     self.endEntry(reason, false);
+  }
+
+  // A small entry, whole: inflated into one buffer, then the aio open, write and close are awaited here. A
+  // failure after the open succeeded removes the file (the rule FileSink's removeOnFailure keeps); a failed
+  // open, or an entry that fails before it, touches nothing.
+  pub async fn small(self) {
+    if phase != Phase.Small { return; }
+    var piece = List[u8]();
+    var why = None[AnyError];
+    var s = zipfile.Status.MoreOutput;
+    match &mut reader {
+      case let &mut Some(r) {
+        var chunk = List[u8]();
+        var limit = r.size();
+        while s == zipfile.Status.MoreOutput {
+          chunk.clear();
+          s = r.pull(data.view(), &mut chunk, smallEntry);
+          piece.appendSlice(chunk.view());
+          if u64.from(piece.len()) > limit {
+            s = zipfile.Status.Failed;
+            why = Some[AnyError](AnyError.msg("archivestage: the entry is longer than it says"));
+          }
+        }
+        if s == zipfile.Status.Failed && why is None {
+          match r.error() {
+            case let Some(e) { why = Some[AnyError](AnyError.from(e)); }
+            case is None { why = Some[AnyError](AnyError.msg("archivestage: the entry failed")); }
+          }
+        }
+      }
+      case is None {}
+    }
+    var path = None[Path];
+    path <-> file;
+    reader = None[zipfile.EntryReader];
+    var target = Path.from("");
+    match path {
+      case let Some(p) { target = p; }
+      case is None {}
+    }
+    if why is None && actors.isCancelled() { why = Some[AnyError](AnyError.msg("streams: cancelled")); }
+    if why is None {
+      let n = piece.len();
+      let r = await aio.openFile(&target, Access.Create);
+      match r {
+        case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
+        case let Ok(f) {
+          var file = f;
+          if n > 0usize {
+            var buf = IoBuf(n);
+            buf.append(piece.view());
+            let w = await file.writeAt(0u64, buf);
+            match w {
+              case is Ok {}
+              case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
+            }
+          }
+          if why is None && actors.isCancelled() { why = Some[AnyError](AnyError.msg("streams: cancelled")); }
+          var old = File.none();
+          old <-> file;
+          if why is Some { _ = fs.removeFile(&target); }
+        }
+      }
+    }
+    match why {
+      case let Some(e) { self.answer(Err[zipfile.Extracted, AnyError](e)); }
+      case is None {
+        plan.written(&ar, k, &target, u64.from(piece.len()));
+        k += 1usize;
+        phase = Phase.Idle;
+        self.advance();
+      }
+    }
   }
 
   // Looks for the FileSink's answer, and goes on when it is there
@@ -161,6 +239,14 @@ pub actor Extractor is ChunkSource {
         self.answer(Err[zipfile.Extracted, AnyError](AnyError.from(e)));
       }
       case let Ok(r) {
+        if r.size() < u64.from(smallEntry) {
+          reader = Some[zipfile.EntryReader](r);
+          file = Some[Path](p);
+          sent = 0u64;
+          phase = Phase.Small;
+          selfactor.small();
+          return;
+        }
         var tx: OneshotSender[Result[u64, AnyError]];
         var rx: OneshotReceiver[Result[u64, AnyError]];
         tx, rx = Oneshot[Result[u64, AnyError]].make();
