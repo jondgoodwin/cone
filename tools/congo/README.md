@@ -479,9 +479,9 @@ only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
 belong to the toolchain and not to any package. A release link on Windows also
 says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the build
 is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
-identical functions: the net under the compiler's size gate on a release
-program's generic instances, which keeps each small one as the program's own
-copy (`--private-instances`). `tls` is the example of a
+identical functions: the net under the compiler's keeping each of a release
+program's generic instance functions as the program's own copy
+(`--private-instances` caps that by size). `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).
