@@ -185,8 +185,6 @@ pub struct Client {
   queuedN: u32;
   seq: u64;
   pconns: GenPool[PConn];
-  doomedFetches: List[u32];  // answered fetches whose cells are removed at the next 'sweep'
-  doomedConns: List[u32];    // the same for closed pooled connections
   total: u32;                // connections connecting, idle, busy or shared
   undecided: List[u32];      // pooled connections connected whose protocol is still to be chosen
   origins: SlotTable[Origin];    // never removed: an origin's number is its cell's
@@ -246,7 +244,6 @@ pub struct Client {
       drv: d, tlsc: tlsc,
       fetches: GenPool[Fetch].make(recsPerBlock), liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, pconns: GenPool[PConn].make(recsPerBlock),
-      doomedFetches: List[u32](), doomedConns: List[u32](),
       total: 0u32, undecided: List[u32](), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event](),
       comps: List[Completion](), ready: List[Event](),
       wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event](), attempts: List[u32]())
@@ -299,41 +296,17 @@ pub struct Client {
   // The tables
   // ---------------------------------------------------------------------------
 
-  // The record in cell i (null if the cell is free). An answered fetch's or a
-  // closed connection's record stays in its cell, marked fFree / pFree, until the
-  // next 'sweep' (the top and end of a pump, a completion, a new fetch or
-  // connection), because the code that ended it goes on holding its pointer to
-  // the end of its own turn; a caller that may be handed an ended one asks
-  // 'fetchLive' / 'pconnLive' first
+  // The record in cell i, or null if the cell is free: an answered fetch's or a
+  // closed connection's record is removed at once. A caller that may be handed
+  // an index that has ended asks 'fetchLive' / 'pconnLive' before it reads
+  // (a fetch's 'conn' is one: its connection may have closed first)
   fn fetchAt(self: &, i: u32) *Fetch {fetches.at(i)}
 
   fn connAt(self: &, i: u32) *PConn {pconns.at(i)}
 
-  fn fetchLive(self: &, i: u32) bool {
-    let f = fetches.at(i);
-    f as usize != 0usize && (f as &Fetch).state != fFree
-  }
+  fn fetchLive(self: &, i: u32) bool {fetches.at(i) as usize != 0usize}
 
-  fn pconnLive(self: &, i: u32) bool {
-    let p = pconns.at(i);
-    p as usize != 0usize && (p as &PConn).state != pFree
-  }
-
-  // The cells of what ended since the last sweep go free
-  fn sweep(self: &mut) {
-    var k = 0usize;
-    while k < doomedFetches.len() {
-      fetches.removeAt(*doomedFetches[k]);
-      k = k + 1usize;
-    }
-    doomedFetches.clear();
-    k = 0usize;
-    while k < doomedConns.len() {
-      pconns.removeAt(*doomedConns[k]);
-      k = k + 1usize;
-    }
-    doomedConns.clear();
-  }
+  fn pconnLive(self: &, i: u32) bool {pconns.at(i) as usize != 0usize}
 
   fn originAt(self: &, i: u32) *Origin {origins.at(i)}
 
@@ -343,7 +316,7 @@ pub struct Client {
   fn fetchIndex(self: &, id: FetchId) u32 {
     if id.isNone() {return noEntry;}
     let f = fetches.at(id.index);
-    if f as usize == 0usize || (f as &Fetch).gen != id.gen || (f as &Fetch).state == fFree {return noEntry;}
+    if f as usize == 0usize || (f as &Fetch).gen != id.gen {return noEntry;}
     id.index
   }
 
@@ -362,17 +335,7 @@ pub struct Client {
   }
 
   fn freeFetchRec(self: &mut, i: u32) {
-    let f = self.fetchAt(i) as &mut Fetch;
-    f.state = fFree;
-    f.sink = Sink.Here(0u64);
-    f.methodText = String();
-    f.url = Url();
-    f.headers = Headers();
-    f.body = String();
-    f.upq.clear();
-    f.group = None;
-    f.location = String();
-    doomedFetches.push(i);
+    fetches.removeAt(i);
     liveFetches = liveFetches - 1u32;
   }
 
@@ -385,10 +348,7 @@ pub struct Client {
   }
 
   fn freeConnRec(self: &mut, i: u32) {
-    let p = self.connAt(i) as &mut PConn;
-    p.state = pFree;
-    p.id = httpconn.ConnId.none();
-    doomedConns.push(i);
+    pconns.removeAt(i);
   }
 
   // The origin of a URL: its record, made the first time
@@ -441,7 +401,6 @@ pub struct Client {
       panic("httpclient: framing fields are the client's to write, from the request's body", file, line);
     }
     let now = Instant.now();
-    self.sweep();
     let fi = self.newFetch();
     let f = self.fetchAt(fi) as &mut Fetch;
     let method, methodText, url, headers, body, intent, score, deadline, group, maxRedirects, urlError =
@@ -864,7 +823,6 @@ pub struct Client {
     }
     let fi = u32.from(n & u64.from(genMask));
     let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
-    self.sweep();
     if !self.fetchLive(fi) {return true;}
     let f = self.fetchAt(fi) as &mut Fetch;
     if (f.gen & watchGenMask) != gen || f.watch != comp.id {return true;}
@@ -886,7 +844,6 @@ pub struct Client {
         wantSchedule = false;
         did = self.schedule(lp);
       }
-      self.sweep();
       if !did && got == 0usize {break;}
       rounds = rounds + 1u32;
     }
@@ -900,7 +857,6 @@ pub struct Client {
     evs <-> dev;
     let n = drv.pump(lp, &uni evs);
     each e in evs.drain() {
-      self.sweep();
       let t = e.token;
       let index = u32.from(t & 0xFFFFFFFFu64);
       let gen = u32.from((t >> 32u64) & u64.from(genMask));
@@ -921,7 +877,6 @@ pub struct Client {
         }
       }
     }
-    self.sweep();
     dev <-> evs;
     n
   }
@@ -1339,7 +1294,6 @@ pub struct Client {
     let n = comp.token & 0xFFFFFFFFFFu64;
     let pc = u32.from(n & u64.from(genMask));
     let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
-    self.sweep();
     if !self.pconnLive(pc) {return;}
     let p = self.connAt(pc) as &mut PConn;
     if (p.gen & watchGenMask) != gen || p.state != pConnecting || !p.quic || p.lookup != comp.id {return;}
@@ -1422,7 +1376,6 @@ pub struct Client {
     h3.turn(lp);
     let n = h3.takeEvents(&mut evs);
     each e in evs.drain() {
-      self.sweep();
       let t = e.token;
       let index = u32.from(t & 0xFFFFFFFFu64);
       let gen = u32.from((t >> 32u64) & u64.from(genMask));
@@ -1913,7 +1866,9 @@ pub struct Client {
   fn reqDone(self: &mut, lp: &mut Loop, fi: u32) {
     let f = self.fetchAt(fi) as &mut Fetch;
     let pc = f.conn;
-    self.connDone(lp, pc);
+    // Its connection is gone if its Closed came first (the driver sends a
+    // connection's request events before its Closed; the h3 plug-in's order is its own)
+    if self.pconnLive(pc) {self.connDone(lp, pc);}
     if f.following {
       self.follow(lp, fi);
     } else {
@@ -1924,10 +1879,12 @@ pub struct Client {
   // Fetch fi's exchange failed with fl: retried when that is safe, else Failed
   fn reqFailed(self: &mut, lp: &mut Loop, fi: u32, fl: Failure) {
     let f = self.fetchAt(fi) as &mut Fetch;
-    self.learn(f.conn);
-    let proto = (self.connAt(f.conn) as &PConn).proto;
+    // Its connection is gone if its Closed came first (see reqDone)
+    let alive = self.pconnLive(f.conn);
+    if alive {self.learn(f.conn);}
+    let proto = if alive {(self.connAt(f.conn) as &PConn).proto} else {protoUnknown};
     let multiplexed = proto == protoH2 || proto == protoH3;
-    self.connEnded(lp, f.conn);
+    if alive {self.connEnded(lp, f.conn);}
     if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
       self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
     } else if self.canRetry(fi, &fl, multiplexed) {
@@ -1942,7 +1899,7 @@ pub struct Client {
   // Fetch fi's exchange was cancelled, or timed out (the driver's own timeout)
   fn reqStopped(self: &mut, lp: &mut Loop, fi: u32, timedOut: bool) {
     let f = self.fetchAt(fi) as &mut Fetch;
-    self.connEnded(lp, f.conn);
+    if self.pconnLive(f.conn) {self.connEnded(lp, f.conn);}
     if f.cutting && f.ending == endNone {
       self.follow(lp, fi);
     } else if f.ending == endFailed {

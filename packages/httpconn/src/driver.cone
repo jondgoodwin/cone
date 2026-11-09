@@ -195,8 +195,6 @@ pub struct Driver {
   conns: GenPool[Conn];
   liveConns: u32;
   reqs: GenPool[Req];
-  doomedConns: List[u32];    // closed connections whose cells are removed at the next 'sweep'
-  doomedReqs: List[u32];     // the same for answered requests
   listeners: List[Lst];
   acceptsOut: u32;
   rearm: bool;
@@ -211,7 +209,7 @@ pub struct Driver {
     let number = u64.from(takeNumber(file, line));
     Driver(cfg: cfg, tokBase: tokTop | (number << numberShift),
       conns: GenPool[Conn].make(recsPerBlock), liveConns: 0u32,
-      reqs: GenPool[Req].make(recsPerBlock), doomedConns: List[u32](), doomedReqs: List[u32](),
+      reqs: GenPool[Req].make(recsPerBlock),
       listeners: List[Lst](), acceptsOut: 0u32, rearm: false,
       dirty: List[u32](), work: List[u32](), ready: List[Event](),
       comps: List[Completion](), st: DriverStats.zero())
@@ -268,46 +266,22 @@ pub struct Driver {
   // The tables
   // ---------------------------------------------------------------------------
 
-  // The record in cell i (null if the cell is free). A closed connection's or
-  // an answered request's record stays in its cell, marked cFree / rFree, until
-  // the next 'sweep' (the top and end of a pump, a completion, a new
-  // connection or request), because the code that closed it goes on holding
-  // its pointer to the end of its own turn; a caller that may be handed a
-  // closed one asks 'connLive' / 'reqLive' first
+  // The record in cell i, or null if the cell is free: a closed connection's or
+  // an answered request's record is removed at once. Code that may be handed one
+  // that has closed asks 'connLive' / 'reqLive' (or looks the cell up again)
+  // before it reads it; close-site audit: Ruminations\httpconn-close-audit-2026-11-09.md
   fn connAt(self: &, i: u32) *Conn {conns.at(i)}
 
   fn reqAt(self: &, i: u32) *Req {reqs.at(i)}
 
-  fn connLive(self: &, i: u32) bool {
-    let c = conns.at(i);
-    c as usize != 0usize && (c as &Conn).state != cFree
-  }
+  fn connLive(self: &, i: u32) bool {conns.at(i) as usize != 0usize}
 
-  fn reqLive(self: &, i: u32) bool {
-    let r = reqs.at(i);
-    r as usize != 0usize && (r as &Req).state != rFree
-  }
-
-  // The cells of what was closed or answered since the last sweep go free
-  fn sweep(self: &mut) {
-    var k = 0usize;
-    while k < doomedConns.len() {
-      conns.removeAt(*doomedConns[k]);
-      k = k + 1usize;
-    }
-    doomedConns.clear();
-    k = 0usize;
-    while k < doomedReqs.len() {
-      reqs.removeAt(*doomedReqs[k]);
-      k = k + 1usize;
-    }
-    doomedReqs.clear();
-  }
+  fn reqLive(self: &, i: u32) bool {reqs.at(i) as usize != 0usize}
 
   // Whether connection i is live and is the occupant that has generation gen
   fn connIs(self: &, i: u32, gen: u32) bool {
     let c = conns.at(i);
-    c as usize != 0usize && (c as &Conn).gen == gen && (c as &Conn).state != cFree
+    c as usize != 0usize && (c as &Conn).gen == gen
   }
 
   // The live connection id names, or noEntry
@@ -320,7 +294,7 @@ pub struct Driver {
   fn reqIndex(self: &, id: ReqId) u32 {
     if id.isNone() {return noEntry;}
     let r = reqs.at(id.index);
-    if r as usize == 0usize || (r as &Req).gen != id.gen || (r as &Req).state == rFree {return noEntry;}
+    if r as usize == 0usize || (r as &Req).gen != id.gen {return noEntry;}
     id.index
   }
 
@@ -360,21 +334,7 @@ pub struct Driver {
 
   // The connection has closed: its record is finalized and its cell free
   fn freeConnRec(self: &mut, i: u32) {
-    let c = self.connAt(i) as &mut Conn;
-    c.state = cFree;
-    // What it held goes now (the buffers); the cell itself at the next sweep
-    c.core = http1.Connection.client(cfg.protocol, Instant());
-    c.h2 = None;
-    c.isH2 = false;
-    c.layer = plainLayer();
-    c.sink = Sink.Here(0u64);
-    c.addrs.clear();
-    c.waiting.clear();
-    c.flushing.clear();
-    c.streams.clear();
-    c.writers.clear();
-    c.failure = None;
-    doomedConns.push(i);
+    conns.removeAt(i);
     liveConns = liveConns - 1u32;
     rearm = true;
   }
@@ -390,13 +350,11 @@ pub struct Driver {
   }
 
   fn freeReqRec(self: &mut, ri: u32) {
-    let r = self.reqAt(ri) as &mut Req;
-    r.state = rFree;
-    r.sink = Sink.Here(0u64);
-    doomedReqs.push(ri);
+    reqs.removeAt(ri);
   }
 
   fn markDirty(self: &mut, i: u32) {
+    if !self.connLive(i) {return;}
     let c = self.connAt(i) as &mut Conn;
     if !c.dirty {
       c.dirty = true;
@@ -466,7 +424,6 @@ pub struct Driver {
   // Drive every connection a completion or a call has touched, and append
   // the events for this thread to out: how many
   pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
-    self.sweep();
     if rearm {self.rearmAccepts(lp);}
     while dirty.len() > 0usize {
       work <-> dirty;
@@ -476,13 +433,11 @@ pub struct Driver {
         if self.connLive(i) {
           (self.connAt(i) as &mut Conn).dirty = false;
           self.drive(lp, i);
-          self.sweep();
         }
         k = k + 1usize;
       }
       work.clear();
     }
-    self.sweep();
     if rearm {self.rearmAccepts(lp);}
     self.handOver(out)
   }
@@ -496,10 +451,12 @@ pub struct Driver {
       return;
     }
     if c.state != cOpen {return;}
+    // decide, feed and receive (below) may close the connection: its record is
+    // gone then, so each is followed by a look-up, not a read of 'c'
     self.decide(lp, i, now);
-    if c.state != cOpen {return;}
+    if !self.connLive(i) || c.state != cOpen {return;}
     self.feed(lp, i, now);
-    if c.state != cOpen {return;}
+    if !self.connLive(i) || c.state != cOpen {return;}
     if c.decided {
       if c.isH2 {
         self.startStreams(lp, i, now);
@@ -1180,6 +1137,7 @@ pub struct Driver {
   // gone: its sending side shut, then what the peer still sends read and
   // dropped until it closes too, or the linger passes
   fn maybeClose(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
+    if !self.connLive(i) {return;}
     let c = self.connAt(i) as &mut Conn;
     if c.state != cOpen {return;}
     if c.isH2 {
@@ -1419,7 +1377,6 @@ pub struct Driver {
     if !self.owns(token) {return false;}
     let kind = (token >> kindShift) & 31u64;
     if kind >= upperKind {return false;}  // the layer above's (upperToken)
-    self.sweep();
     // A dead driver's number comes round again: its late completion has
     // that driver's generation, not this one's, and is not this driver's
     if ((token >> dgenShift) & dgenMask) != ((tokBase >> dgenShift) & dgenMask) {return false;}
@@ -1619,7 +1576,6 @@ pub struct Driver {
   // A client connection's record; one past maxConnections is refused at
   // once, its Closed saying so
   fn openClient(self: &mut, lp: &mut Loop, layer: Uni[Layer], sink: Sink, now: Instant) u32 {
-    self.sweep();
     let full = liveConns >= cfg.maxConnections;
     let i = self.newConn(false, layer, sink, now);
     let c = self.connAt(i) as &mut Conn;
@@ -1667,7 +1623,6 @@ pub struct Driver {
       group: Option[CancelGroup], deadline: Instant, file: &Array[u8], line: u32) ReqId {
     checkHead(&head, file, line);
     let now = Instant.now();
-    self.sweep();
     let ri = self.newReq();
     let r = self.reqAt(ri) as &mut Req;
     r.sink = sink;
