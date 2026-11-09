@@ -9,6 +9,7 @@ mod levels;
 import testing use *;
 import collections use *;
 import deflate use *;
+import iobuf use IoBuf;
 
 fn data(kind: i32, n: usize) List[u8] {
   var d = List[u8].withCapacity(n);
@@ -56,6 +57,50 @@ fn rawBack(z: &Array[u8], want: &Array[u8]) bool {
 fn zlibByte(d: &Array[u8], level: i32, at: usize) i64 {
   let z = zlibCompress(d, level);
   i64.from(*z[at])
+}
+
+// Data on which the later match is the better one. Three parts, each of 'units'
+// units made from five random bytes t0..t4 (128 to 255): "c t0 t1 t2 #", then
+// "! t0 t1 t2 t3 t4 ?", then "c t0 t1 t2 t3 t4 @". In the third part, at the
+// 'c' the longest match is "c t0 t1 t2" (4 bytes, from the first part), but at
+// the byte after it "t0 t1 t2 t3 t4" is 5 bytes long (from the second part).
+// A greedy matcher takes the 4 and then has three literals (t3 t4 @); a lazy
+// one writes 'c' as a literal, takes the 5, and has one literal (@): one token
+// fewer a unit.
+fn lazyData(units: usize) List[u8] {
+  var t = List[u8]();
+  var s = 987654321u64;
+  var k = 0usize;
+  while k < units * 5usize {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    t.push(u8.from(128u64 + ((s >> 40u64) % 128u64)));
+    k += 1usize;
+  }
+  var d = List[u8]();
+  k = 0usize;
+  while k < units {
+    d.push(99u8);
+    d.push(*t[k * 5usize]); d.push(*t[k * 5usize + 1usize]); d.push(*t[k * 5usize + 2usize]);
+    d.push(35u8);
+    k += 1usize;
+  }
+  k = 0usize;
+  while k < units {
+    d.push(33u8);
+    var j = 0usize;
+    while j < 5usize { d.push(*t[k * 5usize + j]); j += 1usize; }
+    d.push(63u8);
+    k += 1usize;
+  }
+  k = 0usize;
+  while k < units {
+    d.push(99u8);
+    var j = 0usize;
+    while j < 5usize { d.push(*t[k * 5usize + j]); j += 1usize; }
+    d.push(64u8);
+    k += 1usize;
+  }
+  d
 }
 
 fn gzipByte(d: &Array[u8], level: i32, at: usize) i64 {
@@ -112,5 +157,51 @@ fn main() i32 {
   expectInt(gzipByte(t, 1, 8usize), 4i64, "gzip XFL, level 1: 4");
   expectInt(gzipByte(t, 6, 8usize), 0i64, "gzip XFL, level 6: 0");
   expectInt(gzipByte(t, 9, 8usize), 2i64, "gzip XFL, level 9: 2");
+
+  // Lazy matching (levels 4 to 9) takes the later, longer match where greedy (levels 2 and 3)
+  // takes the earlier, shorter one: on lazyData(1000), 19000 bytes, level 3 writes 12283
+  // bytes and levels 4 to 9 about 11600 (a literal fewer a unit)
+  let ld = lazyData(1000usize);
+  let greedy = rawDeflate(ld.view(), 3).len();
+  var lz = 4;
+  while lz <= 9 {
+    let z = rawDeflate(ld.view(), lz);
+    expect(z.len() + 500usize < greedy, "lazy data: a lazy level is over 500 bytes smaller than level 3");
+    expect(rawBack(z.view(), ld.view()), "lazy data: a lazy level reads back to the data");
+    lz += 1;
+  }
+  expect(greedy < rawDeflate(ld.view(), 2).len(), "lazy data: level 3 (32 candidates) is smaller than level 2 (6)");
+  // The held match is written the same however the input is cut (the deflater stops for
+  // want of look-ahead with a match held)
+  var cutOk = true;
+  var cl = 4;
+  while cl <= 9 {
+    var def = Deflater.make(Format.Raw, cl);
+    var out = List[u8]();
+    var pos = 0usize;
+    while pos < ld.len() {
+      let e = if pos + 97usize < ld.len() {pos + 97usize} else {ld.len()};
+      def.feed(&ld.view()[pos ..< e]);
+      pos = e;
+      var st = Status.MoreOutput;
+      while st == Status.MoreOutput {
+        var buf = IoBuf(512usize);
+        st = def.pull(&mut buf);
+        out.appendSlice(buf.view());
+      }
+    }
+    def.finish();
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      var buf = IoBuf(512usize);
+      st = def.pull(&mut buf);
+      out.appendSlice(buf.view());
+    }
+    if out.view() != rawDeflate(ld.view(), cl).view() { cutOk = false; }
+    cl += 1;
+  }
+  expect(cutOk, "lazy data: feeding 97 bytes at a time writes the bytes the whole input does (levels 4 to 9)");
+  // Golden: raw level 4 of lazyData(1000), decoded by Python's zlib to the data
+  expectUInt(u64.from(crc32(rawDeflate(ld.view(), 4).view())), 0x6704c478u64, "golden: lazyData(1000), raw level 4");
   done()
 }
