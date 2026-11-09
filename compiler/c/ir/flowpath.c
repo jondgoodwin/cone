@@ -333,6 +333,7 @@ typedef struct {
     uint32_t var;
     PathSet *holds;
     PathSet *pending;
+    uint32_t hmask;
     uint8_t state;
 } PathEntry;
 
@@ -500,6 +501,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->xstamp = 0;
     pv->jstamp = 0;
     pv->state = 0;
+    pv->hmask = 0;
     pv->flagged = 0;
     pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
@@ -530,6 +532,7 @@ static void pathLogVar(uint32_t var) {
     entry->holds = pv->holds;
     entry->pending = pv->pending;
     entry->state = pv->state;
+    entry->hmask = pv->hmask;
 }
 
 void pathSetState(uint32_t var, uint8_t state) {
@@ -537,6 +540,16 @@ void pathSetState(uint32_t var, uint8_t state) {
         return;
     pathLogVar(var);
     pathVars[var].state = state;
+    // The moves that hollowed it are held only while it may be hollow
+    if (!(state & DropHollow))
+        pathVars[var].hmask = 0;
+}
+
+void pathSetHollowMask(uint32_t var, uint32_t hmask) {
+    if (pathVars[var].hmask == hmask)
+        return;
+    pathLogVar(var);
+    pathVars[var].hmask = hmask;
 }
 
 void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
@@ -557,6 +570,7 @@ static void pathRollback(uint32_t mark) {
         pathVars[entry->var].holds = entry->holds;
         pathVars[entry->var].pending = entry->pending;
         pathVars[entry->var].state = entry->state;
+        pathVars[entry->var].hmask = entry->hmask;
     }
 }
 
@@ -586,6 +600,7 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
             delta->ents[cnt].holds = pv->holds;
             delta->ents[cnt].pending = pv->pending;
             delta->ents[cnt].state = pv->state;
+            delta->ents[cnt].hmask = pv->hmask;
             ++cnt;
         }
     }
@@ -611,6 +626,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jholds = NULL;
                 pv->jpending = NULL;
                 pv->jstate = 0;
+                pv->jhmask = 0;
                 pv->jfirst = entry->holds;
                 pv->japart = 0;
                 if (ntouched == touchedcap)
@@ -623,6 +639,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
             pv->jstate |= entry->state;
+            pv->jhmask |= entry->hmask;
         }
     }
     int changed = 0;
@@ -631,10 +648,12 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         PathSet *holds = pv->jholds;
         PathSet *pending = pv->jpending;
         uint8_t state = pv->jstate;
+        uint32_t hmask = pv->jhmask;
         if (withcurrent || pv->jcnt < npaths) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
+            hmask |= pv->hmask;
             if (pathGpuChoices && pv->holder && !pv->japart)
                 pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
@@ -649,6 +668,10 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         }
         if (state != pv->state) {
             pathSetState(touched[i], state);
+            changed = 1;
+        }
+        if (hmask != pv->hmask) {
+            pathSetHollowMask(touched[i], hmask);
             changed = 1;
         }
     }

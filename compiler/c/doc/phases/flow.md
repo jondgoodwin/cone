@@ -2063,6 +2063,12 @@ it whole makes it whole; a name use the main walk marked (`FlagMoveOut`,
 `FlagHollowOut`) makes it moved or hollow where the walk meets it; its scope's
 end makes it nothing, so the paths leaving the scope agree. The state is logged
 and joined as the loans are — a union — so it costs what the paths changed.
+Beside it goes, for a variable that may be hollow, the set of moves that may
+have hollowed it (`PathVar.hmask`, one bit for each move in `hollowall`, in
+`hollowuse`'s order, the last bit for every one from the 31st on), set where
+the walk meets a hollowing name use, cleared whenever the state loses
+*hollow*, and logged and joined with the state. A name use that is none of the
+listed ones sets every bit.
 
 **What it records** (`dropExit`, `dropStore`, `dropPartStore`), at each release
 the walk meets, for each variable that has anything to do as it dies: at an
@@ -2107,6 +2113,11 @@ handing it on, whose move its flag records. Each store is marked
 `FlagPartNoPrior`; certainly held, neither; mixed, `FlagDropTest`. A store
 reaching a hollowed variable gets a `HollowNode` round its value, which a
 mixed state marks `test`; one wrapped where no path is hollow is unwrapped.
+A hollow release, at an exit or a store, is told of the moves that may have
+hollowed the variable on the paths reaching it (the union of their masks,
+`dropHollowMoves`), not of every move in the function: a move written after the
+store, or hollowing a value stored since, is not among them, so what that move
+took out is freed with the rest.
 
 **Generation** (`genlDropFlagBegin`, `genlDropFlagSet`, `genlDropFlagIf`,
 `genlDropFlagUse` in `genlalloc.c`; [Generation](generation.md), "Drop flags"):

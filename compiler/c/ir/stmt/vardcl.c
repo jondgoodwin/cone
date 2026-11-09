@@ -32,6 +32,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->nuses = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
+    name->hollowuse = NULL;
     name->llvmflag = NULL;
     return name;
 }
@@ -57,6 +58,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->nuses = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
+    name->hollowuse = NULL;
     name->llvmflag = NULL;
     return name;
 }
