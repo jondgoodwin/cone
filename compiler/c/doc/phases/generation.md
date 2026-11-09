@@ -1696,7 +1696,9 @@ function returns is a fresh block, one no other live pointer reaches. A function
 direct call sees it. An inline one (`RawBlocks.alloc`; `Uni`, `Rc` and `Arc`'s `alloc`; and
 `MemRegion.allocate`, which calls the region's function through a pointer) has no symbol: the
 attribute goes on the call that gives the inlined value (`genlFnCallInternal`), where that value
-is a call. `--no-noalias` and the GPU leave it off. The region contract in core (above
+is a call. Where it cannot be kept it is refused, `ErrorNoAliasAttr` (1623), never ignored: a function
+whose LLVM return is not a pointer, or an inline one whose value is not a call. The spelling is
+PROVISIONAL (Jon approved it "for now", 9 Nov). `--no-noalias` and the GPU leave it off. The region contract in core (above
 `MemRegion`) is what a user-written region must meet. Arenas, pools and `Arena.alloc` are not
 marked.
 

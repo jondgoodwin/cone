@@ -1040,7 +1040,10 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
         genlBorrowAttrs(gen, glofn, glofn->llvmvar);
         // '@noalias': the pointer returned is a fresh allocation. Honors --no-noalias
-        if ((glofn->dclinfo.facts & DclNoAlias) && !gen->opt->no_noalias && !gen->opt->gpu)
+        if ((glofn->dclinfo.facts & DclNoAlias) && LLVMGetTypeKind(LLVMGetReturnType(fntype)) != LLVMPointerTypeKind)
+            errorMsgNode((INode*)glofn, ErrorNoAliasAttr, "'@noalias' says the pointer a function returns is a fresh block, "
+                "so the function must return a pointer or a thin reference: this one returns neither.");
+        else if ((glofn->dclinfo.facts & DclNoAlias) && !gen->opt->no_noalias && !gen->opt->gpu)
             LLVMAddAttributeAtIndex(glofn->llvmvar, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(gen->context,
                 LLVMGetEnumAttributeKindForName("noalias", 7), 0));
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
