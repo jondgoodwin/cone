@@ -479,6 +479,19 @@ fn main() {
 		<span class="pre">cause</span> once it is cancelled, which <span class="pre">?</span> passes on to the caller (as a
 		<span class="pre">Cancelled</span>, a variant of an error enum that holds one, or an <span class="pre">AnyError</span>).
 		A cancel that comes after the answer is pushed does not change the answer: the code sees it at its next check.</p>
+	<p><b>Waking at the cancel.</b> A behaviour that would rather not wait for a slow or hung callee asks for it, once, at
+		the await: <span class="pre">await actors.orCancelled(fut)</span> on a future (what a call whose value is kept gives), or
+		<span class="pre">await actors.orCancelledOp(op)</span> on an operation. The value is a
+		<span class="pre">Result[T, Cancelled]</span>: <span class="pre">Ok(answer)</span>, or
+		<span class="pre">Err(Cancelled)</span> with the cause if the group is cancelled first. Exactly one of the two
+		happens, once, and the behaviour resumes in the group it awaited in. A plain
+		<span class="pre">await</span> never changes: it keeps the real answer whatever its type, so a return type does not
+		change because a behaviour woke. A group already cancelled at the await answers <span class="pre">Err</span> at once,
+		and an operation is then not started. The callee's answer, when it comes after the wake, is dropped, and an owned
+		value in it is finalized exactly once; a callee that never answers holds one small record and one count of the
+		awaiting actor until it does or drops its reply, and <span class="pre">actors.lateAnswersOwed()</span> counts
+		those. The opt-in costs a few allocations and one more hop through the actor's queue for the answer, per
+		await; a plain <span class="pre">await</span> and a plain cancel pay nothing for it.</p>
 	<p>A message sent in a group takes two places in its actor's queue (one holds the group, one the message), so the
 		mailbox's depth, high-water mark and limit (<span class="pre">mailboxDepth</span>,
 		<span class="pre">mailboxHighWater</span>, <span class="pre">setMailboxLimit</span>) count it as two. A message
