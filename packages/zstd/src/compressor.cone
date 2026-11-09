@@ -64,6 +64,9 @@ pub struct Compressor {
   // The matcher's tables (positions in buf; the fast matcher uses shortT alone)
   longT: List[u32];
   shortT: List[u32];
+  // With -D ZSTD_TAG=1, a tag byte for each slot of the two tables (matcher.cone); empty otherwise
+  longG: List[u8];
+  shortG: List[u8];
   // The repeat offsets as the decoder has them after the last block, and as
   // the block being written moves them
   reps: Reps;
@@ -86,7 +89,7 @@ pub struct Compressor {
   // below 1 act as 1, above 3 as 3.
   pub fn make(level: i32) Compressor {
     let lv = if level < 1 {1} else if level > 3 {3} else {level};
-    Compressor(paramsOf(lv), List[u8](), 0u64, 0usize, List[u32](), List[u32](),
+    Compressor(paramsOf(lv), List[u8](), 0u64, 0usize, List[u32](), List[u32](), List[u8](), List[u8](),
       Reps(1u32, 4u32, 8u32), Reps(1u32, 4u32, 8u32), Seqs(), BlockEnc.make(), List[u8](), 0usize,
       Xxh64.make(0u64), 0u64, 0u64, 0u64, false, false, false)
   }
@@ -211,9 +214,21 @@ pub struct Compressor {
       let shortMax = if longLog > 0u32 {need} else {need + 1u32};
       if shortLog > shortMax { shortLog = shortMax; }
     }
+    // -D ZSTD_SHRINK=n: tables n logs smaller than the level says (at least 2^10), to time the cache effect
+    // (1 to 4 are taken; any other value is none)
+    let sh = #if #define("ZSTD_SHRINK") == 1 {1u32} #elif #define("ZSTD_SHRINK") == 2 {2u32}
+      #elif #define("ZSTD_SHRINK") == 3 {3u32} #elif #define("ZSTD_SHRINK") == 4 {4u32} #else {0u32};
+    if sh > 0u32 {
+      if longLog > 10u32 { longLog = if longLog > 10u32 + sh {longLog - sh} else {10u32}; }
+      if shortLog > 10u32 { shortLog = if shortLog > 10u32 + sh {shortLog - sh} else {10u32}; }
+    }
     par = Params(par.windowLog, longLog, shortLog, par.minMatch);
     if longLog > 0u32 { longT.resize(1usize << usize.from(longLog), 0u32); }
     shortT.resize(1usize << usize.from(shortLog), 0u32);
+    #if #define("ZSTD_TAG") == 1 {
+      if longLog > 0u32 { longG.resize(1usize << usize.from(longLog), 0u8); }
+      shortG.resize(1usize << usize.from(shortLog), 0u8);
+    }
   }
 
   // RFC 8878 section 3.1.1.1: the magic number and the frame header. With
@@ -268,11 +283,21 @@ pub struct Compressor {
         work = Reps(reps.r1, reps.r2, reps.r3);
         seqs.clear();
         let window = 1usize << usize.from(par.windowLog);
-        if par.longLog == 0u32 {
-          matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut work, &mut seqs);
-        } else {
-          matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
-            &mut work, &mut seqs);
+        #if #define("ZSTD_TAG") == 1 {
+          if par.longLog == 0u32 {
+            matchFastTag(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut shortG,
+              &mut work, &mut seqs);
+          } else {
+            matchDoubleTag(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
+              &mut longG, &mut shortG, &mut work, &mut seqs);
+          }
+        } #else {
+          if par.longLog == 0u32 {
+            matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut work, &mut seqs);
+          } else {
+            matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
+              &mut work, &mut seqs);
+          }
         }
         writeLiterals(&seqs.lits, &mut enc.huf, &mut out);
         writeSequences(&seqs, &mut enc, &mut out);

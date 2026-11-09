@@ -1,0 +1,63 @@
+// The compressor over the package's own test corpus (tests/data/corpus.bin,
+// handmade.bin, malformed.bin: zstd frames, so mixed bytes of every shape,
+// and each file twice over, a repeat at 142 KB, 43 KB and 8 KB back, which
+// the matchers find). Each is compressed at levels 1, 2 and 3 and must
+// decompress equal. It is the check for the matcher variants chosen at build
+// time (-D ZSTD_TAG=1, -D ZSTD_SHRINK=n): run it with and without.
+
+mod corpusroundtrip;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+
+fn same(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// Level 1 to 3 of 'd', each decompressed; the number that came back wrong
+fn wrong(d: &Array[u8]) i32 {
+  var bad = 0;
+  var lv = 1;
+  while lv <= 3 {
+    let f = compress(d, lv);
+    match decompress(f.view(), 0usize) {
+      case let Ok(back) { if !same(back.view(), d) { bad += 1; } }
+      case let Err(e) { bad += 1; }
+    }
+    lv += 1;
+  }
+  bad
+}
+
+fn check(name: &str) i32 {
+  var bad = 0;
+  match fs.readFile(&Path.from(name)) {
+    case let Ok(file) {
+      let d = file.view().bytes();
+      expect(d.len > 1000usize, "the data file is there");
+      bad += wrong(d);
+      var twice = List[u8]();
+      twice.appendSlice(d);
+      twice.appendSlice(d);
+      bad += wrong(twice.view());
+    }
+    case let Err(e) { expect(false, "the data file is there"); }
+  }
+  bad
+}
+
+fn main() i32 {
+  expectInt(i64.from(check("../../../../tests/data/corpus.bin")), 0i64, "corpus.bin, levels 1-3, once and twice");
+  expectInt(i64.from(check("../../../../tests/data/handmade.bin")), 0i64, "handmade.bin, levels 1-3, once and twice");
+  expectInt(i64.from(check("../../../../tests/data/malformed.bin")), 0i64, "malformed.bin, levels 1-3, once and twice");
+  done()
+}

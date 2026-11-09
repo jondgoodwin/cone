@@ -305,3 +305,166 @@ fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog:
   }
   emitRest(src, anchor, end, seqs);
 }
+
+// ======== The tagged matchers (compile-time choice, -D ZSTD_TAG=1) ========
+//
+// The same two matchers with a one-byte tag beside every table slot (a
+// parallel List[u8], same index): the 8 hash bits just below the ones that
+// pick the slot. A probe reads the tag first, and only when it is the
+// probe's own tag reads the slot's position and then the window at it; a
+// slot whose tag differs holds some other bytes (or nothing), so the
+// window load, a cache miss into the 2 MiB window, is skipped. The slot is
+// still written on every probe. Not the same output as the untagged
+// matchers: where the untagged probes compared only 4 bytes of the 5 to 7
+// they hash, a candidate that agrees on 4 and differs in the rest is now
+// not tried. Every frame is still a valid one.
+
+// The multiplicative products, before the shift (hashFast, hash5, hash8 shift them down)
+fn prodFast(src: &List[u8], p: usize, mls: u32) u64 {
+  if mls == 7u32 { return (rd64(src, p) << 8u64) * 58295818150454627u64; }
+  (rd64(src, p) << 16u64) * 227718039650203u64
+}
+fn prod5(src: &List[u8], p: usize) u64 { (rd64(src, p) << 24u64) * 889523592379u64 }
+fn prod8(src: &List[u8], p: usize) u64 { rd64(src, p) * 0xCF1BBCDCB7A56463u64 }
+
+// The candidate in the slot a product picks, or 'none' when its tag is not the product's
+fn probeTag(table: &List[u32], tags: &List[u8], pr: u64, shift: u64, none: usize) usize {
+  let h = usize.from(pr >> shift);
+  if *tags[h] != u8.from((pr >> (shift - 8u64)) & 255u64) { return none; }
+  usize.from(*table[h])
+}
+
+// Enters 'pos' in the slot a product picks, with its tag
+fn putTag(table: &mut List[u32], tags: &mut List[u8], pr: u64, shift: u64, pos: usize) {
+  let h = usize.from(pr >> shift);
+  table.set(h, u32.from(pos));
+  tags.set(h, u8.from((pr >> (shift - 8u64)) & 255u64));
+}
+
+// matchFast with tags: 'tags' is as long as 'table'
+fn matchFastTag(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
+    tags: &mut List[u8], reps: &mut Reps, seqs: &mut Seqs) {
+  let shift = 64u64 - u64.from(log);
+  var ip = start;
+  var anchor = start;
+  while ip + 9usize <= end {
+    let r = reps.r1;
+    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
+      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
+      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
+      ip = ip + 1usize + ml;
+      anchor = ip;
+    } else {
+      let pr = prodFast(src, ip, mls);
+      let cand = probeTag(table, tags, pr, shift, ip);
+      putTag(table, tags, pr, shift, ip);
+      if cand < ip && ip - cand <= window && rd32(src, cand) == rd32(src, ip) {
+        var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
+        var s = ip;
+        var c = cand;
+        while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+          s -= 1usize;
+          c -= 1usize;
+          ml += 1usize;
+        }
+        emit(src, anchor, s - anchor, u32.from(ip - cand), ml, reps, seqs);
+        let at = ip;
+        ip = s + ml;
+        anchor = ip;
+        if ip + 8usize <= end {
+          putTag(table, tags, prodFast(src, at + 2usize, mls), shift, at + 2usize);
+          putTag(table, tags, prodFast(src, ip - 2usize, mls), shift, ip - 2usize);
+        }
+      } else {
+        ip += ((ip - anchor) >> 7usize) + 1usize;
+        continue;
+      }
+    }
+    while ip + 8usize <= end && repFits(ip, reps.r2, window)
+        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
+      let r2 = reps.r2;
+      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
+      putTag(table, tags, prodFast(src, ip, mls), shift, ip);
+      emit(src, anchor, 0usize, r2, ml, reps, seqs);
+      ip += ml;
+      anchor = ip;
+    }
+  }
+  emitRest(src, anchor, end, seqs);
+}
+
+// matchDouble with tags: 'longG' and 'shortG' as long as 'longT' and 'shortT'
+fn matchDoubleTag(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
+    longT: &mut List[u32], shortT: &mut List[u32], longG: &mut List[u8], shortG: &mut List[u8],
+    reps: &mut Reps, seqs: &mut Seqs) {
+  let shiftL = 64u64 - u64.from(longLog);
+  let shiftS = 64u64 - u64.from(shortLog);
+  var ip = start;
+  var anchor = start;
+  while ip + 9usize <= end {
+    let prL = prod8(src, ip);
+    let prS = prod5(src, ip);
+    let candL = probeTag(longT, longG, prL, shiftL, ip);
+    let candS = probeTag(shortT, shortG, prS, shiftS, ip);
+    putTag(longT, longG, prL, shiftL, ip);
+    putTag(shortT, shortG, prS, shiftS, ip);
+    let r = reps.r1;
+    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
+      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
+      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
+      ip = ip + 1usize + ml;
+      anchor = ip;
+    } else {
+      var ml = 0usize;
+      var s = ip;
+      var c = 0usize;
+      if candL < ip && ip - candL <= window && rd64(src, candL) == rd64(src, ip) {
+        ml = 8usize + matchLen(src, ip + 8usize, candL + 8usize, end);
+        c = candL;
+      } else if candS < ip && ip - candS <= window && rd32(src, candS) == rd32(src, ip) {
+        let next = ip + 1usize;
+        let pr1 = prod8(src, next);
+        let candL1 = probeTag(longT, longG, pr1, shiftL, next);
+        putTag(longT, longG, pr1, shiftL, next);
+        if candL1 < next && next - candL1 <= window && rd64(src, candL1) == rd64(src, next) {
+          ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
+          s = next;
+          c = candL1;
+        } else {
+          ml = 4usize + matchLen(src, ip + 4usize, candS + 4usize, end);
+          c = candS;
+        }
+      } else {
+        ip += ((ip - anchor) >> 8usize) + 1usize;
+        continue;
+      }
+      let off = u32.from(s - c);
+      while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+        s -= 1usize;
+        c -= 1usize;
+        ml += 1usize;
+      }
+      emit(src, anchor, s - anchor, off, ml, reps, seqs);
+      let at = ip;
+      ip = s + ml;
+      anchor = ip;
+      if ip + 8usize <= end {
+        putTag(longT, longG, prod8(src, at + 2usize), shiftL, at + 2usize);
+        putTag(longT, longG, prod8(src, ip - 2usize), shiftL, ip - 2usize);
+        putTag(shortT, shortG, prod5(src, at + 2usize), shiftS, at + 2usize);
+        putTag(shortT, shortG, prod5(src, ip - 1usize), shiftS, ip - 1usize);
+      }
+    }
+    while ip + 8usize <= end && repFits(ip, reps.r2, window)
+        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
+      let r2 = reps.r2;
+      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
+      putTag(shortT, shortG, prod5(src, ip), shiftS, ip);
+      putTag(longT, longG, prod8(src, ip), shiftL, ip);
+      emit(src, anchor, 0usize, r2, ml, reps, seqs);
+      ip += ml;
+      anchor = ip;
+    }
+  }
+  emitRest(src, anchor, end, seqs);
+}
