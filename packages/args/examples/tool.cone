@@ -1,0 +1,38 @@
+// The sample in the args package's header: a program with a number option, a flag and files.
+//
+//   congo run packages/args/examples/tool.cone -- --frames 3 -f 4 --headless a.txt b.txt
+
+mod tool;
+
+import stdio use *;
+import collections use *;
+import args use *;
+
+fn run() Result[u64, ArgError] {
+  var frames = 60i64;
+  var headless = false;
+  var files = List[String]();
+  var r = ArgReader.fromEnv();                 // skips the program's name
+  while true {
+    match r.next()? {
+      case let Some(arg) {
+        match arg {
+          case let Long(n) if n == "frames" { frames = r.int()?; }
+          case let Long(n) if n == "headless" { headless = true; }
+          case let Short(c) if c == 'f' { frames = r.int()?; }
+          case let Value(v) { files.push(v); }
+          else { return Err[u64, ArgError](arg.unexpected()); }
+        }
+      }
+      case is None { break; }
+    }
+  }
+  Ok[u64, ArgError](u64.from(frames) + u64.from(files.len()))
+}
+
+fn main() i32 {
+  match run() {
+    case let Ok(n) { print <- n; print <- "\n"; 0i32 }
+    case let Err(e) { print <- toText(&e); print <- "\nUsage: tool [--frames N] [--headless] FILE...\n"; 2i32 }
+  }
+}
