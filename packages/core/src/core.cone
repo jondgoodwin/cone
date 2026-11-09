@@ -3056,14 +3056,14 @@ pub extern {
 // nothing more (conestd's rawblocks.cone): no size classes, no caching, no
 // configuration. A block is untyped; the layer knows no region and no type.
 //
-//   alloc(bytes, align)              a block of at least 'bytes' bytes, or null;
-//                                    'bytes' may be 0
+//   alloc(bytes, align)              a block of at least 'bytes' bytes, never
+//                                    null for 'bytes' above 0 (with no room it
+//                                    panics, below); 'bytes' may be 0
 //   resize(block, old, new, align)   the block, 'old' bytes long, made 'new': the
 //                                    same address, or a new one with the first
 //                                    old-or-new bytes copied and the old one
 //                                    given back; a null block is an allocation;
-//                                    null, the block still the caller's, if
-//                                    there is no room
+//                                    with no room it panics (below)
 //   release(block)                   the block given back, by its address alone,
 //                                    as C's 'free' takes it; a null block is
 //                                    nothing
@@ -3072,6 +3072,11 @@ pub extern {
 // caller needs, a power of two; it is not yet acted on, so a request past 16
 // bytes is not refused and gets 16. A block goes back to this layer, never to
 // the C library directly.
+//
+// A request the C library cannot meet panics ("out of memory allocating N
+// bytes", conestd's rawblocks.cone), so no caller is handed a null it would take
+// for a block (Bug 80). A caller that can go without the block (the arena's, the
+// actors' collector's) still tests for null, which now never comes.
 pub struct @opaque RawBlocks {
   pub fn alloc(bytes: usize, align: usize) *u8 inline {rawBlockAlloc(bytes, align)}
   pub fn resize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 inline {

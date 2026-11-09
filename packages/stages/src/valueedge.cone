@@ -1,0 +1,375 @@
+// ======== ValueEdge[T]: the edge between the stage world and a thread that is not an actor ========
+//
+// A real-time or blocking thread (an audio feeder, a capture thread, a game's frame loop) cannot be an
+// actor: it must never wait for a mailbox, and an actor must never run its code. This is the thread edge
+// (Ruminations/thread-edge-proposal-2026-11-06.md; audio is its first user): an ATTENDANT actor beside the
+// thread, and a fixed RING of items between them, built on sync's Channel.spsc (one sender, one receiver,
+// no lock, no allocation per item). The thread's end is a plain struct it owns; the attendant's end is an
+// actor that speaks the stage protocol (ValueSink[T] / ValueSource, valuesink.cone). Two directions:
+//
+//   INTO A THREAD   `ValueEdge[T].toThread(ringBlocks, window)`. The attendant is a ValueSink[T]: `sink()` is
+//     what a source is attached to. Items it is sent go onto the ring; the thread takes them with `tryRecv`
+//     (never waits; None when nothing has come) and, once per batch, calls `drained()`, which tells the
+//     attendant how many it took, and the attendant grants that much credit to the source ("a speaker: when it
+//     has played"). So the source can never run more than `window` items ahead, and a slow thread slows the
+//     source and nothing else. `finished()` is true once the stream has ended and every item was taken.
+//
+//   OUT OF A THREAD `ValueEdge[T].fromThread(ringBlocks, keep, marker)`. The attendant is a ValueSource: `connect`
+//     attaches a ValueSink[T] to it. The thread pushes with `trySend` (never waits): a full ring DROPS THE NEWEST
+//     (the item is refused, counted in `dropped`, and the thread goes on), so the thread's cost is bounded. The
+//     attendant passes items on against the sink's credit; with no credit it keeps at most `keep` items and
+//     DROPS THE OLDEST whole items beyond them (the consumer end of an SPSC ring may discard), counted in
+//     `dropped`, and before the next item it passes on, it sends `marker(lost)`, a control item (no credit) built
+//     from the count lost since the last, so a consumer treats the gap as a reset and not a splice. `finish()`
+//     ends the stream after the last item has been passed on.
+//
+// WAKING THE ATTENDANT. A plain thread may send to an actor: one atomic claim of a mailbox slot, no allocation
+// in steady state, and, for an idle attendant, a short lock on the scheduler's inject queue
+// (Ruminations/audio-streaming-step0-2026-11-09.md). That is on the Cone thread; SDL's own real-time thread never
+// runs Cone code. The wake is COALESCED: `trySend` sends one `ready` message only when none is in flight (an atomic
+// flag the attendant clears BEFORE it drains), so a burst of items costs one message and no wake can be lost: an
+// item pushed after the clear sets the flag again and wakes it; one pushed before it is drained.
+//
+// COUNTS. `sent` items pushed, `out` items passed on, `dropped`: from them the attendant knows the ring's depth
+// without asking the ring. At `finish`, items sent = items passed on + items dropped (checked by the tests).
+//
+// The ring holds the larger of `ringBlocks` and `window` items (rounded up to a power of two), so in the
+// into-thread direction credit alone keeps it from filling; only control items, which bypass credit, can find it
+// full, and the attendant holds those (bounded, by the contract) until the thread has taken some.
+
+// What the thread and its attendant share
+struct EdgeState is Sendable {
+  pub awake: Atomic[u32];          // out: 1 while a `ready` is in flight
+  pub sent: Atomic[u64];           // out: items the thread pushed on the ring
+  pub passed: Atomic[u64];         // out: items the attendant passed on
+  pub dropped: Atomic[u64];        // out: items lost (the newest at the ring, the oldest at the attendant)
+  pub lostOldest: Atomic[u64];     // out: the part of `dropped` that came off the ring at the attendant
+  pub markers: Atomic[u64];        // out: discontinuity markers sent
+  pub ended: Atomic[u32];          // in: 1 once the end has come and every item is on the ring
+}
+
+fn newState() Arc[imm, EdgeState] {
+  Arc[imm, EdgeState](EdgeState(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u32].of(0u32)))
+}
+
+// ---- into a thread: the attendant is the sink ----
+actor EdgeIn[T: Sendable] is ValueSink[T] {
+  up: Option[ValueSource];
+  window: u32;
+  tx: SoloSender[T];
+  held: Deque[T];                  // items that found the ring full (control items only, in order)
+  ending: bool;
+  state: Arc[imm, EdgeState];
+
+  pub fn init(self: &new, window: u32, tx: SoloSender[T], state: Arc[imm, EdgeState]) {
+    *self = Self(up: None[ValueSource], window: window, tx: tx, held: Deque[T](), ending: false, state: state);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(window);
+  }
+
+  pub async fn accept(self, v: T) {
+    if held.len() > 0usize {
+      held.push(v);
+      return;
+    }
+    match tx.trySend(v) {
+      case let Some(back) { held.push(back); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ValueSource];
+    ending = true;
+    self.settle();
+  }
+
+  // The thread took n items: move any held ones on, and credit the source
+  pub async fn returned(self, n: u32) {
+    self.flush();
+    match &up {
+      case let &Some(u) { u.credit(n); }
+      else {}
+    }
+    self.settle();
+  }
+
+  fn flush(self) {
+    var more = true;
+    while more {
+      match held.popFront() {
+        case let Some(v) {
+          match tx.trySend(v) {
+            case let Some(back) { held.pushFront(back); more = false; }
+            else {}
+          }
+        }
+        else { more = false; }
+      }
+    }
+  }
+
+  // The end is visible to the thread once it has come and nothing is held back
+  fn settle(self) {
+    if ending && held.len() == 0usize { state.ended.store(1u32); }
+  }
+}
+
+// ---- out of a thread: the attendant is the source ----
+actor EdgeOut[T: Sendable] is ValueSource {
+  down: Option[ValueSink[T]];
+  rx: Receiver[T];
+  state: Arc[imm, EdgeState];
+  keep: i64;
+  marker: &fn(lost: u64) T;
+  credits: u32;
+  lost: u64;                       // dropped since the last marker
+  finishing: bool;
+  over: bool;                      // the one end has been sent
+
+  pub fn init(self: &new, rx: Receiver[T], state: Arc[imm, EdgeState], keep: u32, marker: &fn(lost: u64) T) {
+    *self = Self(down: None[ValueSink[T]], rx: rx, state: state, keep: i64.from(keep), marker: marker,
+      credits: 0u32, lost: 0u64, finishing: false, over: false);
+  }
+
+  pub async fn connect(self, sink: ValueSink[T]) {
+    down = Some[ValueSink[T]](sink);
+    sink.attach(selfactor);
+  }
+
+  pub async fn credit(self, n: u32) {
+    credits = credits + n;
+    self.drain();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if !over {
+      over = true;
+      match &down {
+        case let &Some(d) { d.end(why); }
+        else {}
+      }
+      down = None[ValueSink[T]];
+    }
+  }
+
+  // The thread pushed something (its flag is cleared first, so a later push wakes this again)
+  pub async fn ready(self) {
+    state.awake.store(0u32);
+    self.drain();
+  }
+
+  // The thread will push no more
+  pub async fn done(self) {
+    state.awake.store(0u32);
+    finishing = true;
+    self.drain();
+  }
+
+  fn depth(self) i64 {
+    i64.from(state.sent.load()) - i64.from(state.passed.load()) - i64.from(state.lostOldest.load())
+  }
+
+  fn drain(self) {
+    if over {
+      self.discard();
+      return;
+    }
+    var more = true;
+    while more && credits > 0u32 {
+      match rx.tryRecv() {
+        case let Some(x) {
+          match &down {
+            case let &Some(d) {
+              if lost > 0u64 {
+                let f = marker;
+                d.accept(f(lost));
+                state.markers.add(1u64);
+                lost = 0u64;
+              }
+              d.accept(x);
+            }
+            else {}
+          }
+          credits = credits - 1u32;
+          state.passed.add(1u64);
+        }
+        else { more = false; }
+      }
+    }
+    // no credit: keep only the newest `keep` whole items
+    if credits == 0u32 {
+      var trimming = true;
+      while trimming && self.depth() > keep {
+        match rx.tryRecv() {
+          case let Some(x) {
+            lost = lost + 1u64;
+            state.lostOldest.add(1u64);
+            state.dropped.add(1u64);
+          }
+          else { trimming = false; }
+        }
+      }
+    }
+    if finishing && self.depth() <= 0i64 {
+      over = true;
+      match &down {
+        case let &Some(d) { d.end(Ending.Finished); }
+        else {}
+      }
+      down = None[ValueSink[T]];
+    }
+  }
+
+  // After the end: what the thread still pushes is dropped, counted
+  fn discard(self) {
+    var more = true;
+    while more {
+      match rx.tryRecv() {
+        case let Some(x) { state.dropped.add(1u64); state.lostOldest.add(1u64); }
+        else { more = false; }
+      }
+    }
+  }
+}
+
+// The thread's side of an edge, and the constructor of both directions
+pub struct ValueEdge[T: Sendable] {
+  state: Arc[imm, EdgeState];
+  rx: Receiver[T];                 // into a thread: the thread's end of the ring
+  tx: SoloSender[T];               // out of a thread: the thread's end of the ring
+  toIn: Option[EdgeIn[T]];
+  toOut: Option[EdgeOut[T]];
+  pending: u32;                    // items taken since `drained`
+  held: Option[T];                 // an item `finished` found on the ring, for the next `tryRecv`
+
+  // An edge INTO a thread: the ring holds the larger of ringBlocks and window items; the source may have
+  // `window` items outstanding
+  pub fn toThread(ringBlocks: u32, window: u32) ValueEdge[T] {
+    var cap = ringBlocks;
+    if window > cap { cap = window; }
+    let state = newState();
+    var tx: SoloSender[T];
+    var rx: Receiver[T];
+    tx, rx = Channel[T].spsc(u64.from(cap));
+    var dtx: SoloSender[T];
+    var drx: Receiver[T];
+    dtx, drx = Channel[T].spsc(1u64);
+    let a = EdgeIn[T](window, tx, state);
+    ValueEdge[T](state, rx, dtx, Some[EdgeIn[T]](a), None[EdgeOut[T]], 0u32, None[T])
+  }
+
+  // An edge OUT OF a thread: a ring of ringBlocks items; the attendant keeps `keep` when it has no credit, and
+  // `marker(lost)` makes the control item that tells the consumer how many were lost before the next
+  pub fn fromThread(ringBlocks: u32, keep: u32, marker: &fn(lost: u64) T) ValueEdge[T] {
+    let state = newState();
+    var tx: SoloSender[T];
+    var rx: Receiver[T];
+    tx, rx = Channel[T].spsc(u64.from(ringBlocks));
+    var dtx: SoloSender[T];
+    var drx: Receiver[T];
+    dtx, drx = Channel[T].spsc(1u64);
+    let a = EdgeOut[T](rx, state, keep, marker);
+    ValueEdge[T](state, drx, tx, None[EdgeIn[T]], Some[EdgeOut[T]](a), 0u32, None[T])
+  }
+
+  // INTO a thread: the sink to attach a source to (None on an edge out of a thread)
+  pub fn sink(self: &) Option[ValueSink[T]] {
+    match &toIn {
+      case let &Some(a) { Some[ValueSink[T]](a.clone()) }
+      else { None[ValueSink[T]] }
+    }
+  }
+
+  // INTO a thread: the next item, or None at once if nothing has come
+  pub fn tryRecv(self: &mut) Option[T] {
+    // an item `finished` found on the ring is kept here and comes first
+    var v: Option[T] = None[T];
+    v <-> held;
+    match &v {
+      case is &None { v = rx.tryRecv(); }
+      else {}
+    }
+    match &v {
+      case is &Some { pending = pending + 1u32; }
+      else {}
+    }
+    v
+  }
+
+  // INTO a thread: tell the attendant how many items were taken since the last call, so it credits the source.
+  // One message per call; nothing is sent when nothing was taken
+  pub fn drained(self: &mut) {
+    if pending == 0u32 { return; }
+    match &toIn {
+      case let &Some(a) { a.returned(pending); }
+      else {}
+    }
+    pending = 0u32;
+  }
+
+  // INTO a thread: true once the stream has ended and every item has been taken
+  pub fn finished(self: &mut) bool {
+    // read the end FIRST: it is set only after the last item is on the ring
+    let ended = state.ended.load() == 1u32;
+    if !ended { return false; }
+    match &held {
+      case is &Some { return false; }
+      else {}
+    }
+    // an item still on the ring is kept (not lost) for the next `tryRecv`, and the stream is not finished
+    match rx.tryRecv() {
+      case let Some(x) { held = Some[T](x); false }
+      else { true }
+    }
+  }
+
+  // OUT OF a thread: attach the sink the items go to
+  pub fn connect(self: &, sink: ValueSink[T]) {
+    match &toOut {
+      case let &Some(a) { a.connect(sink); }
+      else {}
+    }
+  }
+
+  // OUT OF a thread: push an item; false if the ring was full and the item was dropped (counted)
+  pub fn trySend(self: &mut, v: T) bool {
+    match tx.trySend(v) {
+      case let Some(back) {
+        state.dropped.add(1u64);
+        false
+      }
+      else {
+        state.sent.add(1u64);
+        if state.awake.swap(1u32) == 0u32 {
+          match &toOut {
+            case let &Some(a) { a.ready(); }
+            else {}
+          }
+        }
+        true
+      }
+    }
+  }
+
+  // OUT OF a thread: no more items; the attendant ends the stream once the last has been passed on
+  pub fn finish(self: &mut) {
+    match &toOut {
+      case let &Some(a) { a.done(); }
+      else {}
+    }
+  }
+
+  // Items lost so far (out of a thread)
+  pub fn dropped(self: &) u64 { state.dropped.load() }
+  // Items the attendant passed on (out of a thread)
+  pub fn passed(self: &) u64 { state.passed.load() }
+  // Items the thread pushed on the ring (out of a thread)
+  pub fn sent(self: &) u64 { state.sent.load() }
+  // Discontinuity markers sent (out of a thread)
+  pub fn markers(self: &) u64 { state.markers.load() }
+}

@@ -637,6 +637,12 @@ fn listPartial(cs: *ClassState, s: *SlabRec) {
 
 // The n blocks at src come home to the stock, each to the slab its address
 // leads to; then idle slabs beyond the bound on idle bytes go back to the OS
+//
+// Only the class is checked, not that the block is out: a block released twice goes on the free
+// list twice and is then given to two takers. Safe code cannot do it: a block has one owner (a
+// List, a String, a buffer) that releases it once when it dies, and the entry points that release
+// (blockPut, releaseOversize, poolRelease, the region's 'release') take a raw pointer, which is
+// trusted. A caller that returns a block twice breaks the header's rule "a block is returned once".
 fn stockPut(g: *Globals, cs: *ClassState, src: **u8, n: u32) {
   (*cs).lock.lock();
   var i = 0usize;
