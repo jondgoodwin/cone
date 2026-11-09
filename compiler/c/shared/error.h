@@ -811,6 +811,8 @@ enum ErrorCode {
     ErrorLoopTangled = 1607,    // A loop whose references rotate through more variables than the flow check can follow: the facts at its head were still changing after the check's limit of walks. The message says to keep fewer references rotating through the loop. The function's flow check stops at the loop
     ErrorSetupReadsInit = 1606, // A setup reads, directly or through the module's own functions, a global that the module's 'init' sets: setups run before 'init', so it holds nothing yet. The message names the global and the function that reads it
     ErrorWholeEnumMeth = 1604,  // An enum's variant (or the enum) viewed as a trait behind a virtual reference (`&<Trait`, `AnyError.from`, `?`) where the enum writes a method the trait requires over the whole enum (`self: &Two`): no variant has a copy of it, so none complies. The message names the method and says `self: &` makes the variants comply
+    ErrorConstViaValue = 1620,  // A type's 'const' named through a value of the type, 'v.zero'. A constant belongs to the type, never to a value of it (Jon, 22 Sep: a name folds on a type, not on a field). The message gives the type form, 'Vec3.zero'
+    ErrorConstPlace = 1621,     // A 'const' in a type body where it is not built: in a trait or in a generic type (a '#each' over a type's fields in its braces included). The message says which
     ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings

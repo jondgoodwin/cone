@@ -1156,6 +1156,15 @@ default `structMakeVtable` passes by) is met by a whole-enum method, so it is sk
 another reason keeps that reason's message. `fnSigRefusalMsg` reports it at the user's own line, where the outermost
 instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not the library body's.
 
+`ErrorConstViaValue` (1620) is a type's `const` named through a value of the type, `v.zero` or `self.zero`, in a method
+or outside. A constant belongs to the type (Jon, 22 Sep: a name folds on a type, not on a field), so the lookup of a member
+of a value (`fnCallLowerMethodOn`) refuses the `ConstDclTag` it finds, and for a value of an enum's variant the
+one the enum declares, and names the form that works, `Vec3.zero`. `ErrorConstPlace` (1621) is a `const` read in the
+braces of a trait or of a generic type (a `#each` over its fields included), where each implementer or instance would
+need its own copy (`parseStructItems`); it is read in full and not added to the type, so the rest of the file is checked.
+A `const` with no value is `ErrorNoInit`, one with no name `ErrorNoIdent`, a name the type already has `ErrorDupName`,
+and a value that is no constant expression `ErrorNotLit`, as at module level.
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),

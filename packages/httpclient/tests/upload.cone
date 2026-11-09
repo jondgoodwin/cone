@@ -1,0 +1,456 @@
+// A request whose body is streamed (sendUpload, pushBody, endBody), against a loopback server on the client's
+// Loop (httpconn's driver, as retry.cone). The test pushes the pieces itself, one at each BodyRoom. Checked:
+//   - a sized body of 1,000,000 bytes and an unsized one of 300,000 (chunked): the server reads every byte once;
+//   - a 307 and a 308 answered to a streamed POST are the answer, the server sees the body once; the same 307 to a
+//     POST with a String body is followed (the String path unchanged);
+//   - a 302 to a streamed POST that was all sent: followed as a GET without the body;
+//   - a 302 sent before the body is all pushed (the server answers at the request's head): a BodyEnded comes before
+//     the followed GET's Response, the pushes after it are dropped, and the GET is answered;
+//   - a connection reset under a streamed POST, and under a streamed PUT: one attempt, Failed, not retried (a PUT with
+//     a String body is, up to maxRetries + 1 attempts);
+//   - a server that resets a request on a kept connection (the idle race): a streamed upload takes a new connection
+//     and succeeds, a String POST in the same setup takes the kept one and is retried; with maxPerOrigin 1 and the
+//     connection kept, the upload closes it and opens another;
+//   - a server that never reads, 256 MiB offered: the pieces taken stop at a bound far below the body (BodyRoom
+//     stops coming), and a cancel then ends it Cancelled;
+// and every buffer is back in the pool.
+
+mod upload;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+const tokSrv = 100u64;
+
+struct ReqRec {
+  pub req: httpconn.ReqId;
+  pub conn: httpconn.ConnId;
+  pub method: Method;
+  pub path: String;
+  pub bytes: u64;
+  pub bad: u64;
+  pub answered: bool;
+}
+
+struct Srv {
+  pub drv: httpconn.Driver;
+  pub reqs: List[ReqRec];      // every request the server saw, in order (kept)
+}
+
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), reqs: List[ReqRec]())
+}
+
+fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
+  var port = 0u16;
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
+    case let Ok(r) {
+      match sv.drv.localAddr(lp, r) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  port
+}
+
+fn reply(sv: &mut Srv, req: httpconn.ReqId, status: u16, location: &Array[u8], body: &Array[u8]) {
+  var h = ResponseHead.make(status);
+  if location.len > 0usize {h.headers.add("Location", location);}
+  sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize {
+    var b = IoBuf(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+  }
+  sv.drv.finish(req);
+}
+
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
+  var k = 0usize;
+  while k < sv.reqs.len() {
+    if sv.reqs[k].req == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len()
+}
+
+fn splitPath(full: &str) &str {
+  var q = 0usize;
+  while q < full.len && full[q] != '?' {q = q + 1usize;}
+  &full[0usize ..< q]
+}
+
+fn queryOf(full: &str) &str {
+  var q = 0usize;
+  while q < full.len && full[q] != '?' {q = q + 1usize;}
+  &full[(if q < full.len {q + 1usize} else {q}) ..]
+}
+
+// The answer to request k, once its body is read: /echo says how many bytes it got; /status/C?L is C with Location L
+fn answer(sv: &mut Srv, k: usize) {
+  if sv.reqs[k].answered {return;}
+  sv.reqs[k].answered = true;
+  let req = sv.reqs[k].req;
+  let path = sv.reqs[k].path.clone();
+  let p = splitPath(path.view());
+  if p == "/echo" || p == "/stale" {
+    var b = String.from("len=");
+    b.appendUInt(sv.reqs[k].bytes);
+    reply(sv, req, 200u16, "", b.view());
+  } else if p.len > 8usize && &p[0usize ..< 8usize] == "/status/" {
+    reply(sv, req, u16.from(u64.parse(&p[8usize ..]) || 0u64), queryOf(path.view()), "moved");
+  } else if p == "/hang" {
+  } else {
+    reply(sv, req, 200u16, "", "hello");
+  }
+}
+
+// Whether an earlier request than k came on k's connection
+fn sawConnBefore(sv: &Srv, k: usize) bool {
+  var j = 0usize;
+  while j < k {
+    if sv.reqs[j].conn == sv.reqs[k].conn {return true;}
+    j = j + 1usize;
+  }
+  false
+}
+
+fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
+  let kind = e.kind;
+  if kind == httpconn.EventKind.Request {
+    sv.reqs.push(ReqRec(e.req, e.conn, e.request.method, e.request.target.clone(), 0u64, 0u64, false));
+    let k = sv.reqs.len() - 1usize;
+    let p = splitPath(sv.reqs[k].path.view());
+    if p == "/close" {
+      sv.reqs[k].answered = true;
+      sv.drv.abort(lp, e.conn);
+    } else if p == "/stale" && sawConnBefore(sv, k) {
+      // a server that closes idle connections: a request on a connection that has served one is reset unread
+      sv.reqs[k].answered = true;
+      sv.drv.abort(lp, e.conn);
+    } else if p == "/early" {
+      // answered at the head, before the body is read
+      sv.reqs[k].answered = true;
+      let full = sv.reqs[k].path.clone();
+      reply(sv, e.req, 302u16, queryOf(full.view()), "moved");
+    }
+  } else if kind == httpconn.EventKind.Data {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {
+      var i = 0usize;
+      let v = e.buf.view();
+      var bad = 0u64;
+      while i < v.len() {
+        if v[i] != u8.from((sv.reqs[k].bytes + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+        i = i + 1usize;
+      }
+      sv.reqs[k].bytes = sv.reqs[k].bytes + u64.from(v.len());
+      sv.reqs[k].bad = sv.reqs[k].bad + bad;
+      // /hang never releases what it reads: its window fills
+      if splitPath(sv.reqs[k].path.view()) != "/hang" {sv.drv.release(e.req, e.buf.len());}
+    }
+  } else if kind == httpconn.EventKind.End {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, k);}
+  }
+}
+
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  var sevs = List[httpconn.Event]();
+  cl.pump(lp, out);
+  sv.drv.pump(lp, &uni sevs);
+  var limit = until;
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = sv.drv.wakeAt();
+  if b < limit {limit = b;}
+  if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
+  var comps = List[Completion]();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !cl.complete(lp, c) {sv.drv.complete(lp, c);}
+    k = k + 1usize;
+  }
+  comps.clear();
+  sv.drv.pump(lp, &uni sevs);
+  k = 0usize;
+  while k < sevs.len() {
+    serve(sv, lp, &mut sevs[k]);
+    k = k + 1usize;
+  }
+  cl.pump(lp, out);
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A piece of the pattern, bytes at..at+n
+fn piece(at: u64, n: usize) IoBuf {
+  var b = IoBuf(n);
+  let s = b.spare();
+  var i = 0usize;
+  while i < n {
+    s[i] = u8.from((at + u64.from(i)) % 251u64);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+struct Seen {
+  pub status: u16;
+  pub body: String;
+  pub last: EventKind;
+  pub finals: u64;
+  pub rooms: u64;
+  pub ended: u64;            // BodyEnded events
+  pub endedBeforeResponse: bool;
+  pub responses: u64;
+  pub pushed: u64;
+  pub attempts: u32;
+}
+
+fn seen() Seen {
+  Seen(status: 0u16, body: String(), last: EventKind.Done, finals: 0u64, rooms: 0u64, ended: 0u64,
+    endedBeforeResponse: false, responses: 0u64, pushed: 0u64, attempts: 0u32)
+}
+
+// A streamed upload driven to its final answer: 'total' bytes in pieces of 'pz', one at each BodyRoom (and one at the
+// start); 'cancelAfter' > 0: the fetch is cancelled that many ms after the last BodyRoom, if not yet answered
+fn streamed(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request, framing: BodyLength, total: u64, pz: usize, watchMs: i64) Seen {
+  var s = seen();
+  let id = cl.sendUpload(lp, r, Sink.Here(1u64), framing);
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  var lastRoom = Instant.now();
+  var cancelled = false;
+  var ended = false;
+  // the first piece goes before the fetch is dispatched: it waits in the fetch's queue
+  {
+    let n = if total < u64.from(pz) {usize.from(total)} else {pz};
+    cl.pushBody(lp, id, piece(0u64, n));
+    s.pushed = u64.from(n);
+    if s.pushed >= total {
+      ended = true;
+      cl.endBody(lp, id);
+    }
+  }
+  while s.finals == 0u64 && Instant.now() < giveUp {
+    step(cl, sv, lp, &uni out, Instant.now() + Duration.fromMillis(20i64));
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.id == id {
+        if e.kind == EventKind.BodyRoom {
+          s.rooms = s.rooms + 1u64;
+          lastRoom = Instant.now();
+          if s.pushed < total {
+            let left = total - s.pushed;
+            let n = if left < u64.from(pz) {usize.from(left)} else {pz};
+            cl.pushBody(lp, id, piece(s.pushed, n));
+            s.pushed = s.pushed + u64.from(n);
+          }
+          if s.pushed >= total && !ended {
+            ended = true;
+            cl.endBody(lp, id);
+          }
+        }
+        if e.kind == EventKind.BodyEnded {
+          s.ended = s.ended + 1u64;
+          if s.responses == 0u64 {s.endedBeforeResponse = true;}
+        } else if e.kind == EventKind.Response {
+          s.responses = s.responses + 1u64;
+          s.status = e.response.status;
+        } else if e.kind == EventKind.Data {
+          s.body.appendBytes(e.buf.view());
+          cl.release(e.id, e.buf.len());
+        } else if e.isTerminal() {
+          s.finals = s.finals + 1u64;
+          s.last = e.kind;
+          s.attempts = e.timing.attempts;
+        }
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+    if watchMs > 0i64 && !cancelled && Instant.now() > lastRoom + Duration.fromMillis(watchMs) {
+      cancelled = true;
+      cl.cancel(lp, id);
+    }
+  }
+  requireUInt(s.finals, 1u64, "the fetch has its one final answer in time");
+  s
+}
+
+// Drive a String request to its final answer
+fn plain(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
+  var out = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while s.finals == 0u64 && Instant.now() < giveUp {
+    step(cl, sv, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.id == id {
+        if e.kind == EventKind.Response {s.status = e.response.status;}
+        else if e.kind == EventKind.Data {s.body.appendBytes(e.buf.view()); cl.release(e.id, e.buf.len());}
+        else if e.isTerminal() {s.finals = s.finals + 1u64; s.last = e.kind; s.attempts = e.timing.attempts;}
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  requireUInt(s.finals, 1u64, "the String fetch has its one final answer in time");
+  s
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var sv = server();
+  let port = listen(&mut sv, &mut lp);
+  require(port != 0u16, "the server listens");
+  var cl = Client.make(Config.make());
+
+  // A sized body, then an unsized one: every byte once, in order
+  var s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/echo").view()),
+    BodyLength.sized(1000000u64), 1000000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "sized: answered 200");
+  expectStr(s.body.view(), "len=1000000", "sized: the server read 1,000,000 bytes");
+  expectUInt(sv.reqs[0usize].bytes, 1000000u64, "sized: the server's count");
+  expectUInt(sv.reqs[0usize].bad, 0u64, "sized: in order");
+  expectUInt(u64.from(sv.reqs.len()), 1u64, "sized: one request");
+  expect(s.rooms > 0u64, "sized: BodyRoom events paced the pushes");
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/echo").view()),
+    BodyLength.unsized(), 300000u64, 40000usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "unsized: answered 200");
+  expectStr(s.body.view(), "len=300000", "unsized: the server read 300,000 bytes");
+  expectUInt(sv.reqs[1usize].bad, 0u64, "unsized: in order");
+
+  // 307 and 308: the answer, the body seen once
+  var base = sv.reqs.len();
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/status/307?/echo").view()),
+    BodyLength.sized(100000u64), 100000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 307u16, "307 to a streamed POST: the answer itself");
+  expectUInt(u64.from(sv.reqs.len() - base), 1u64, "307: the server saw one request");
+  expectUInt(sv.reqs[base].bytes, 100000u64, "307: with the whole body, once");
+  base = sv.reqs.len();
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("PUT", url(port, "/status/308?/echo").view()),
+    BodyLength.sized(100000u64), 100000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 308u16, "308 to a streamed PUT: the answer itself");
+  expectUInt(u64.from(sv.reqs.len() - base), 1u64, "308: the server saw one request");
+  // ...a String body is followed, as before
+  base = sv.reqs.len();
+  var rq = Request.make("POST", url(port, "/status/307?/echo").view());
+  rq.body = String.from("abc");
+  var ps = plain(&mut cl, &mut sv, &mut lp, rq);
+  expect(ps.last == EventKind.Done && ps.status == 200u16, "307 to a String POST: followed");
+  expectUInt(u64.from(sv.reqs.len() - base), 2u64, "307 to a String POST: sent twice");
+  expectUInt(sv.reqs[base + 1usize].bytes, 3u64, "...the body again");
+
+  // 302 after the whole body: a GET without it
+  base = sv.reqs.len();
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/status/302?/echo").view()),
+    BodyLength.sized(100000u64), 100000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "302 to a streamed POST: followed");
+  expectStr(s.body.view(), "len=0", "302: as a GET with no body");
+  expectUInt(u64.from(sv.reqs.len() - base), 2u64, "302: two requests");
+  expect(sv.reqs[base + 1usize].method == Method.Get, "302: the second is a GET");
+
+  // 302 at the head, long before the body is pushed: BodyEnded, then the GET's answer
+  base = sv.reqs.len();
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/early?/echo").view()),
+    BodyLength.sized(8388608u64), 8388608u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "early 302: the GET is answered");
+  expectUInt(s.ended, 1u64, "early 302: one BodyEnded");
+  expect(s.endedBeforeResponse, "early 302: BodyEnded came before the Response");
+  expect(s.pushed < 8388608u64, "early 302: the pushes stopped before the body was all pushed");
+  expectStr(s.body.view(), "len=0", "early 302: the GET has no body");
+
+  // A reset: one attempt
+  base = sv.reqs.len();
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/close").view()),
+    BodyLength.sized(1000u64), 1000u64, 1000usize, 0i64);
+  expect(s.last == EventKind.Failed, "a reset under a streamed POST: Failed");
+  expectUInt(u64.from(s.attempts), 1u64, "...after one attempt");
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("PUT", url(port, "/close").view()),
+    BodyLength.sized(1000u64), 1000u64, 1000usize, 0i64);
+  expect(s.last == EventKind.Failed, "a reset under a streamed PUT: Failed");
+  expectUInt(u64.from(s.attempts), 1u64, "...after one attempt (not retried)");
+  expectUInt(u64.from(sv.reqs.len() - base), 2u64, "...the server saw each once");
+  var put = Request.make("PUT", url(port, "/close").view());
+  put.body = String.from("abc");
+  ps = plain(&mut cl, &mut sv, &mut lp, put);
+  expect(ps.last == EventKind.Failed && ps.attempts == 3u32, "a PUT with a String body is tried three times");
+
+  // A server that never reads: the pieces taken stop at a bound; the cancel ends it
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/hang").view()),
+    BodyLength.sized(268435456u64), 268435456u64, 65536usize, 800i64);
+  expect(s.last == EventKind.Cancelled, "a server that never reads: the cancel ends it Cancelled");
+  expect(s.pushed < 33554432u64, "...after pushing a small part of 256 MiB");
+  expect(s.pushed > 0u64, "...some was pushed");
+
+  // A server that closes idle connections (/stale: a request on a connection that has served one is reset unread).
+  // A kept connection is open; the streamed upload does not take it, but a new one, and succeeds
+  cl.closeIdle(&mut lp);
+  base = sv.reqs.len();
+  ps = plain(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/hello").view()));
+  expect(ps.last == EventKind.Done, "stale: a GET opens a kept connection");
+  let retries0 = cl.stats().retries;
+  s = streamed(&mut cl, &mut sv, &mut lp, Request.make("POST", url(port, "/stale").view()),
+    BodyLength.sized(100000u64), 100000u64, 65536usize, 0i64);
+  expect(s.last == EventKind.Done && s.status == 200u16, "stale: the streamed upload succeeds");
+  expectStr(s.body.view(), "len=100000", "stale: the server read the whole body");
+  expectUInt(u64.from(s.attempts), 1u64, "stale: in one attempt");
+  expectUInt(u64.from(sv.reqs.len() - base), 2u64, "stale: the server saw the GET and the upload, nothing reset");
+  expect(sv.reqs[base + 1usize].conn != sv.reqs[base].conn, "stale: the upload came on a new connection");
+  expectUInt(cl.stats().retries - retries0, 0u64, "stale: no retry");
+  // ...a String fetch in the same setup still takes a kept connection, finds it stale, and is retried
+  base = sv.reqs.len();
+  var sp = Request.make("POST", url(port, "/stale").view());
+  sp.body = String.from("abc");
+  ps = plain(&mut cl, &mut sv, &mut lp, sp);
+  expect(ps.last == EventKind.Done && ps.status == 200u16, "stale: a String POST is answered");
+  expectStr(ps.body.view(), "len=3", "stale: ...with its body");
+  expect(ps.attempts >= 2u32, "stale: ...after a retry from a stale kept connection");
+  expect(cl.stats().retries > retries0, "stale: stats count the retry");
+
+  // With one connection allowed to the origin and it kept: the streamed upload closes it and opens a new one
+  {
+    var cfg = Config.make();
+    cfg.maxPerOrigin = 1u32;
+    var c1 = Client.make(cfg);
+    base = sv.reqs.len();
+    ps = plain(&mut c1, &mut sv, &mut lp, Request.get(url(port, "/hello").view()));
+    expect(ps.last == EventKind.Done, "limit: a GET leaves the one connection kept");
+    s = streamed(&mut c1, &mut sv, &mut lp, Request.make("POST", url(port, "/stale").view()),
+      BodyLength.sized(1000u64), 1000u64, 1000usize, 0i64);
+    expect(s.last == EventKind.Done && s.status == 200u16, "limit: the streamed upload is answered");
+    expect(sv.reqs[base + 1usize].conn != sv.reqs[base].conn, "limit: on a new connection");
+    c1.abortAll(&mut lp);
+  }
+
+  cl.abortAll(&mut lp);
+  var out = List[Event]();
+  step(&mut cl, &mut sv, &mut lp, &uni out, Instant.now() + Duration.fromMillis(50i64));
+  sv.drv.abortAll(&mut lp);
+  var sevs = List[httpconn.Event]();
+  sv.drv.pump(&mut lp, &uni sevs);
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

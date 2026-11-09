@@ -12,6 +12,7 @@ typedef struct ConstDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;
     INode *value;              // Starting value/declaration (NULL if not initialized)
+    INode *owner;              // The struct or enum whose braces declare it (iNsTypeAddConst); NULL for a module's
 } ConstDclNode;
 
 ConstDclNode *newConstDclNode(Name *namesym);
