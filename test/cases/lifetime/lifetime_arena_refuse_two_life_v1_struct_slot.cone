@@ -1,0 +1,15 @@
+// Bug 65: the slot is a struct field.
+mod lifetime_arena_refuse_two_life_v1_struct_slot;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+fn mkF(a: &mut Hd) &mut F { a.ar.alloc(F(None)) }
+fn mkO(a: &mut Hd) Option[&mut F] { Some(mkF(a)) }
+struct C { pub a: &mut Hd; pub f: &mut &mut F; pub x: &mut T; fn call(self: &mut) { *self.f = mkF(self.a); (*self.f).p = Some(self.x); } }  //~ ErrorEscape
+//~^ ErrorEscape
+fn stash(a: &mut Hd, var f: &mut F, x: &mut T) { var c = C(a, &mut f, x); c.call(); }
+fn scope(q: &mut Arena) { var t = T(7); var h = Hd(q); var g = F(None); stash(&mut h, &mut g, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }
