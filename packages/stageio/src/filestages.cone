@@ -2,10 +2,12 @@
 //
 // Two actors over package aio's File, each a stage's end of a pipeline:
 //
-//   FileSink(name, done)      a ChunkSink: the file 'name' is created (or emptied) when the first chunk
+//   FileSink(name, done, removeOnFailure = false)
+//                             a ChunkSink: the file 'name' is created (or emptied) when the first chunk
 //                             arrives, and each chunk is written after the one before it. 'done' is told
 //                             once how it went: Ok(bytes written), or Err(why) if the stream failed, was
-//                             cancelled, or the file could not be opened or written
+//                             cancelled, or the file could not be opened or written. With 'removeOnFailure'
+//                             a failure after the open has succeeded removes the file (see below)
 //   FileSource(down, name)    a ChunkSource: 'start()' opens the file 'name' and reads it through, 64 KiB at
 //                             a time, into a window of 256 KiB (linkWindow, linkBytes); the stream ends
 //                             Finished at the end of the file, or Failed if it cannot be opened or read
@@ -33,7 +35,15 @@
 // CANCELLATION. Both work in the cancel group of the message they handle, as a stage does. A FileSink that
 // finds its group cancelled stops as it would for a failed write ('done' gets "streams: cancelled"); a
 // FileSource that finds it cancelled (on a buffer given back) ends its stream Failed and closes the file.
-// A partly written file is left as it is.
+// A partly written file is left as it is, unless the sink was made with 'removeOnFailure'.
+//
+// REMOVE ON FAILURE. FileSink(name, done, true) owns the file it opened: if the sink fails AFTER its open
+// succeeded (a write fails, the stream ends Failed, the group is cancelled, the source is stopped), it
+// closes the file, removes it, and only then tells 'done' the error, so an Err on 'done' means no file is
+// left. If the open itself fails, or the sink fails before it opened anything (a stream that ends Failed
+// before its first chunk, a group cancelled before it), it touches nothing: a file already there stays as
+// it was. A stream that finishes leaves its file. The close is queued to aio's thread and may trail the
+// removal; the file is opened with delete sharing (iocore), so the removal does not wait for it.
 
 // An error's text as an error of its own (an AnyError cannot be copied)
 fn textOf(e: &AnyError) AnyError {
@@ -50,15 +60,17 @@ pub actor FileSink is ChunkSink {
   rx: ChunkInbox;
   name: String;
   file: File;
-  opened: bool;
+  opened: bool;                 // the open has been tried
+  made: bool;                   // the open succeeded: the file is ours
   at: u64;
   reported: bool;
   done: OneshotSender[Result[u64, AnyError]];
+  removeOnFailure: bool;        // a failure after the open succeeded removes the file
   up: Option[ChunkSource];      // a second handle, to stop the source on a failure; let go at the source's end
 
-  pub fn init(self: &new, name: String, done: OneshotSender[Result[u64, AnyError]]) {
-    *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, at: 0u64,
-      reported: false, done: done, up: None[ChunkSource]);
+  pub fn init(self: &new, name: String, done: OneshotSender[Result[u64, AnyError]], removeOnFailure: bool = false) {
+    *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, made: false, at: 0u64,
+      reported: false, done: done, removeOnFailure: removeOnFailure, up: None[ChunkSource]);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -91,7 +103,7 @@ pub actor FileSink is ChunkSink {
             opened = true;
             let r = await aio.openFile(&Path.from(name.view()), Access.Create);
             match r {
-              case let Ok(f) { file = f; }
+              case let Ok(f) { file = f; made = true; }
               case let Err(e) { good = false; why = Some[AnyError](AnyError.from(e)); }
             }
           }
@@ -153,7 +165,7 @@ pub actor FileSink is ChunkSink {
           opened = true;
           let r = await aio.openFile(&Path.from(name.view()), Access.Create);
           match r {
-            case let Ok(f) { file = f; }
+            case let Ok(f) { file = f; made = true; }
             case let Err(e) { why = Some[AnyError](AnyError.from(e)); }
           }
         }
@@ -188,10 +200,22 @@ pub actor FileSink is ChunkSink {
     }
   }
 
-  // The one answer to 'done'
+  // The one answer to 'done'. A failure after the open succeeded, with 'removeOnFailure', closes and
+  // removes the file first
   fn report(self, r: Result[u64, AnyError]) {
     if reported { return; }
     reported = true;
+    if removeOnFailure && made {
+      var failed = false;
+      match &r {
+        case is Ok {}
+        case is Err { failed = true; }
+      }
+      if failed {
+        self.shut();
+        _ = fs.removeFile(&Path.from(name.view()));
+      }
+    }
     done.send(r);
   }
 }

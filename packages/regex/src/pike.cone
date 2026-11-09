@@ -1,0 +1,241 @@
+// ======== The Pike VM: every thread at once, one byte at a time ========
+//
+// The text is read once, left to right. Each byte moves every live thread (a
+// state with the capture positions it has seen) to the next list, in priority
+// order; a state is in a list once, so work for a byte is bounded by the number
+// of states, and a search takes time proportional to (states x text). Threads
+// are kept in the order a backtracking engine would try them, which is what
+// makes the first match found the one Perl-style engines give (leftmost-first).
+
+const noPos = 0xFFFFFFFFFFFFFFFFusize;
+const restoreBit = 0x80000000u32;
+
+// A step to take in an epsilon closure: explore a state, or put a slot back
+struct Frame {
+  pub tag: u32;
+  pub val: usize;
+}
+
+// The scratch of a search. Two lists of threads share the arrays, the second
+// list a program's states further on. Built for one program and slot count.
+struct Pike {
+  pub n: usize;
+  pub nslots: usize;
+  pub dense: List[u32];
+  pub sparse: List[u32];
+  pub lens: List[usize];
+  pub slots: List[usize];
+  pub stack: List[Frame];
+  pub cur: List[usize];
+  // The slots of the match a search found
+  pub result: List[usize];
+
+  pub fn start(prog: &Program, nslots: usize) Pike {
+    let n = prog.insts.len();
+    var lens = List[usize]();
+    lens.push(0); lens.push(0);
+    var cur = List[usize]();
+    var result = List[usize]();
+    var k = 0usize;
+    while k < nslots { cur.push(noPos); result.push(noPos); k = k + 1; }
+    Pike(n, nslots, List[u32](2 * n) <- fill 0u32, List[u32](2 * n) <- fill 0u32, lens,
+      List[usize](2 * n * nslots) <- fill 0usize, List[Frame](), cur, result)
+  }
+
+  // Whether a search can end the moment it finds any match
+  // 'earliest', else it runs to the leftmost-first one. The match's slots are in
+  // 'result'. 'from' is where the search begins; the text before it is context
+  // for the assertions.
+  pub fn search(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) bool {
+    let tlen = text.len;
+    let ns = nslots;
+    var matched = false;
+    var w = 0usize;
+    lens.set(0, 0);
+    lens.set(1, 0);
+    var k = 0usize;
+    while k < ns { cur.set(k, noPos); k = k + 1; }
+    let plen = prog.prefix.len();
+    var p = from;
+    while true {
+      if !matched && *lens[w] == 0 && plen > 0 {
+        let at = findPrefix(text, p, prog.prefix.view());
+        if at == noPos { break; }
+        p = at;
+      }
+      if !matched {
+        if ns <= 2 && prog.seed.len() > 0 { seedThreads(prog, text, w, p); }
+        else { closure(prog, text, w, p, prog.start); }
+      }
+      if *lens[w] == 0 {
+        if matched || p >= tlen { break; }
+        p = p + 1;
+        continue;
+      }
+      let nw = 1 - w;
+      lens.set(nw, 0);
+      var i = 0usize;
+      let count = *lens[w];
+      let byte = if p < tlen { text[p] } else { 0u8 };
+      while i < count {
+        let sid = *dense[w * n + i];
+        let inst = &prog.insts[usize.from(sid)];
+        let op = inst.op;
+        if op == opByte {
+          if p < tlen && byte >= inst.lo && byte <= inst.hi {
+            enter(prog, text, w, nw, sid, p + 1, inst.next);
+          }
+        }
+        else if op == opSparse {
+          if p < tlen {
+            var t = usize.from(inst.x);
+            let end = t + usize.from(inst.y);
+            while t < end {
+              let tr = &prog.trans[t];
+              if byte < tr.lo { break; }
+              if byte <= tr.hi {
+                enter(prog, text, w, nw, sid, p + 1, tr.next);
+                break;
+              }
+              t = t + 1;
+            }
+          }
+        }
+        else if op == opMatch {
+          let base = (w * n + usize.from(sid)) * ns;
+          k = 0;
+          while k < ns { result.set(k, *slots[base + k]); k = k + 1; }
+          matched = true;
+          if earliest { return true; }
+          break;
+        }
+        i = i + 1;
+      }
+      if p >= tlen { break; }
+      p = p + 1;
+      w = nw;
+    }
+    matched
+  }
+
+  // The same as 'closure' from the start state, for a search that keeps at most the
+  // whole match's slots: the states startStates found, those not in the list yet
+  fn seedThreads(self: &mut, prog: &Program, text: &Array[u8], w: usize, at: usize) {
+    // a thread that cannot read the byte at 'at' would die in this very step: not added
+    if at >= text.len { return; }
+    let byte = text[at];
+    let ns = nslots;
+    let base = w * n;
+    var i = 0usize;
+    let count = prog.seed.len();
+    while i < count {
+      if byte < *prog.seedLo[i] || byte > *prog.seedHi[i] { i = i + 1; continue; }
+      let sid = *prog.seed[i];
+      let si = usize.from(*sparse[base + usize.from(sid)]);
+      let used = *lens[w];
+      if !(si < used && *dense[base + si] == sid) {
+        dense.set(base + used, sid);
+        sparse.set(base + usize.from(sid), u32.from(used));
+        lens.set(w, used + 1);
+        if ns == 2 {
+          let row = (base + usize.from(sid)) * 2;
+          slots.set(row, at);
+          slots.set(row + 1, noPos);
+        }
+      }
+      i = i + 1;
+    }
+  }
+
+  // Move the thread of state 'sid' (list w) along to 'next' in list nw at position at
+  fn enter(self: &mut, prog: &Program, text: &Array[u8], w: usize, nw: usize, sid: u32, at: usize, next: u32) {
+    let ns = nslots;
+    let base = (w * n + usize.from(sid)) * ns;
+    var k = 0usize;
+    while k < ns { cur.set(k, *slots[base + k]); k = k + 1; }
+    closure(prog, text, nw, at, next);
+  }
+
+  // Add state sid0 and everything it leads to without reading a byte to list w,
+  // in priority order, with the slots in 'cur' (as changed by Save states on the way)
+  fn closure(self: &mut, prog: &Program, text: &Array[u8], w: usize, at: usize, sid0: u32) {
+    let ns = nslots;
+    let base = w * n;
+    stack.push(Frame(sid0, 0));
+    while stack.len() > 0 {
+      let f = stack.pop().unwrap();
+      if (f.tag & restoreBit) != 0 {
+        cur.set(usize.from(f.tag & 0x7FFFFFFF), f.val);
+        continue;
+      }
+      var sid = f.tag;
+      while true {
+        let si = usize.from(*sparse[base + usize.from(sid)]);
+        let count = *lens[w];
+        if si < count && *dense[base + si] == sid { break; }
+        dense.set(base + count, sid);
+        sparse.set(base + usize.from(sid), u32.from(count));
+        lens.set(w, count + 1);
+        let inst = &prog.insts[usize.from(sid)];
+        let op = inst.op;
+        if op == opSplit {
+          stack.push(Frame(inst.x, 0));
+          sid = inst.next;
+        }
+        else if op == opSave {
+          let slot = usize.from(inst.x);
+          if slot < ns {
+            stack.push(Frame(restoreBit | inst.x, *cur[slot]));
+            cur.set(slot, at);
+          }
+          sid = inst.next;
+        }
+        else if op == opLook {
+          if holds(inst.x, text, at) { sid = inst.next; }
+          else { break; }
+        }
+        else if op == opFail { break; }
+        else {
+          // a state that reads a byte, or the match: the thread waits here
+          let row = (base + usize.from(sid)) * ns;
+          var k = 0usize;
+          while k < ns { slots.set(row + k, *cur[k]); k = k + 1; }
+          break;
+        }
+      }
+    }
+  }
+}
+
+fn isWordAt(text: &Array[u8], i: usize) bool { i < text.len && isWordByte(text[i]) }
+
+// Whether the assertion holds between the bytes at at - 1 and at
+fn holds(kind: u32, text: &Array[u8], at: usize) bool {
+  if kind == lkStartText { at == 0 }
+  else if kind == lkEndText { at == text.len }
+  else if kind == lkStartLine { at == 0 || text[at - 1] == '\n' }
+  else if kind == lkEndLine { at == text.len || text[at] == '\n' }
+  else {
+    let before = at > 0 && isWordAt(text, at - 1);
+    let after = isWordAt(text, at);
+    if kind == lkWord { before != after } else { before == after }
+  }
+}
+
+// Where the bytes of prefix next occur at or after from, or noPos
+fn findPrefix(text: &Array[u8], from: usize, prefix: &Array[u8]) usize {
+  let m = prefix.len;
+  if text.len < m { return noPos; }
+  let last = text.len - m;
+  let first = prefix[0];
+  var i = from;
+  while i <= last {
+    if text[i] == first {
+      var k = 1usize;
+      while k < m && text[i + k] == prefix[k] { k = k + 1; }
+      if k == m { return i; }
+    }
+    i = i + 1;
+  }
+  noPos
+}
