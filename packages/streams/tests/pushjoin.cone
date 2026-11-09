@@ -1,0 +1,83 @@
+// Reader.push joins: a small piece that fits the last segment's room is
+// copied into it and its block goes home; a full block, a piece too big for
+// the room, and any piece into an empty reader are pushed whole; the bound is
+// still in bytes; the bytes read back are the sender's, in order.
+
+mod pushjoin;
+
+import testing use *;
+import iobuf use *;
+import streams use *;
+
+fn lent() u64 { stats().lent }
+
+fn bytes(n: usize, size: usize, from: usize) IoBuf {
+  var b = IoBuf(size);
+  var i = 0usize;
+  while i < n {
+    _ = b.append(&[u8.from((from + i) % 251usize)]);
+    i = i + 1usize;
+  }
+  b
+}
+
+fn inOrder(r: &mut Reader, n: usize) bool {
+  var ok = false;
+  match r.peek(n) {
+    case let Some(v) {
+      ok = true;
+      var i = 0usize;
+      while i < n {
+        if v[i] != u8.from(i % 251usize) {ok = false;}
+        i = i + 1usize;
+      }
+    }
+    else {}
+  }
+  ok
+}
+
+fn main() i32 {
+  let before = lent();
+  {
+    // 860 pieces of 7 bytes hold one block, not 860
+    var r = Reader.make(1000000usize);
+    var at = 0usize;
+    while at < 6020usize {
+      expect(r.push(bytes(7usize, 7usize, at)) is None[IoBuf], "a small piece is accepted");
+      at += 7usize;
+    }
+    expectUInt(u64.from(r.len()), 6020u64, "all the bytes are held");
+    expectUInt(u64.from(r.segments()), 2u64, "in two segments (6020 > one 4096 block)");
+    expectUInt(lent() - before, 2u64, "two blocks lent");
+    expect(inOrder(&mut r, 6020usize), "the sender's bytes, in order");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+  {
+    // a full block is pushed whole, and so is a piece too big for the room
+    var r = Reader.make(1000000usize);
+    expect(r.push(bytes(5usize, 5usize, 0usize)) is None[IoBuf], "first");
+    let room = r.lastRoom();
+    expect(r.push(bytes(room + 1usize, room + 1usize, 5usize)) is None[IoBuf], "a piece one over the room");
+    expectUInt(u64.from(r.segments()), 2u64, "is a segment of its own");
+    let full = bytes(4096usize, 4096usize, 0usize);
+    expectUInt(u64.from(full.room()), 0u64, "(the block is full)");
+    expect(r.push(full) is None[IoBuf], "a full block");
+    expectUInt(u64.from(r.segments()), 3u64, "is a segment of its own");
+  }
+  {
+    // the bound is still in bytes: 40, ten held, thirty-one refused whole
+    var r = Reader.make(40usize);
+    expect(r.push(bytes(10usize, 64usize, 0usize)) is None[IoBuf], "ten");
+    match r.push(bytes(31usize, 31usize, 10usize)) {
+      case let Some(back) {expectUInt(u64.from(back.len()), 31u64, "refused, handed back whole");}
+      case is None[IoBuf] {expect(false, "past the bound is refused");}
+    }
+    expect(r.push(bytes(30usize, 30usize, 10usize)) is None[IoBuf], "to the bound");
+    expectUInt(u64.from(r.len()), 40u64, "forty held");
+    expect(r.push(IoBuf()) is None[IoBuf], "an empty buffer is dropped");
+    expectUInt(u64.from(r.len()), 40u64, "still forty");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+  done()
+}
