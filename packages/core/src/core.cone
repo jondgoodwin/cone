@@ -1150,10 +1150,253 @@ pub struct @opaque Array[T] is GcTraceElements {
     known
   }
 
+  // Merge [lo, mid) and [mid, hi) from both ends at once, for a merge small enough that both
+  // runs fit in the buffer (room for half the elements). Both runs are copied there, so the
+  // array is only written; a front chain takes the smaller half of the result from the fronts
+  // of the runs (the left on a tie), a back chain the larger half from their ends (the right
+  // on a tie), and neither reads what the other writes. The two chains share no values, so
+  // the processor runs their compares and loads side by side, where one chain waits on its
+  // own compare for each next load. Each works in blocks of 16 plain steps and gallops after
+  // a block that one run won whole, as the one-directional merge does, but never past its half
+  fn mergeBoth[F: fn(a: &T, b: &T) i32](self: &mut, lo: usize, mid: usize, hi: usize, buf: *T, order: &F) {
+    let p = self as *T;
+    let na = mid - lo;
+    let nb = hi - mid;
+    let m = hi - lo;
+    mem.moveRaw(buf, p + lo, m);
+    let rb = buf + na;
+    let dstF = p + lo;
+    let dstB = p + hi;
+    let qf = m - m / 2usize;
+    let qb = m / 2usize;
+    // Front chain: i of the left and j of the right taken, k in all. Back chain: bi of the
+    // left and bj of the right still to take, kb taken
+    var i = 0usize;
+    var j = 0usize;
+    var k = 0usize;
+    var bi = na;
+    var bj = nb;
+    var kb = 0usize;
+    while k < qf && kb < qb {
+      if i == na || j == nb {
+        if i == na {
+          mem.moveRaw(dstF + k, rb + j, qf - k);
+          j = j + (qf - k);
+        }
+        else {
+          mem.moveRaw(dstF + k, buf + i, qf - k);
+          i = i + (qf - k);
+        }
+        k = qf;
+      }
+      else if bi == 0usize || bj == 0usize {
+        let r = qb - kb;
+        if bi == 0usize {
+          mem.moveRaw(dstB - qb, rb + bj - r, r);
+          bj = bj - r;
+        }
+        else {
+          mem.moveRaw(dstB - qb, buf + bi - r, r);
+          bi = bi - r;
+        }
+        kb = qb;
+      }
+      else {
+        var steps = 16usize;
+        if qf - k < steps { steps = qf - k; }
+        if qb - kb < steps { steps = qb - kb; }
+        if na - i < steps { steps = na - i; }
+        if nb - j < steps { steps = nb - j; }
+        if bi < steps { steps = bi; }
+        if bj < steps { steps = bj; }
+        let j0 = j;
+        let bi0 = bi;
+        var s = 0usize;
+        while s < steps {
+          if order((rb + j) as &T, (buf + i) as &T) < 0i32 {
+            mem.moveRaw(dstF + k, rb + j, 1usize);
+            j = j + 1usize;
+          }
+          else {
+            mem.moveRaw(dstF + k, buf + i, 1usize);
+            i = i + 1usize;
+          }
+          if order((rb + bj - 1usize) as &T, (buf + bi - 1usize) as &T) < 0i32 {
+            mem.moveRaw(dstB - kb - 1usize, buf + bi - 1usize, 1usize);
+            bi = bi - 1usize;
+          }
+          else {
+            mem.moveRaw(dstB - kb - 1usize, rb + bj - 1usize, 1usize);
+            bj = bj - 1usize;
+          }
+          k = k + 1usize;
+          kb = kb + 1usize;
+          s = s + 1usize;
+        }
+        if steps == 16usize {
+          let tookJ = j - j0;
+          let lenF = if qf - k < nb - j { qf - k } else { nb - j };
+          let lenI = if qf - k < na - i { qf - k } else { na - i };
+          if tookJ == 16usize && lenF > 0usize {
+            let c = self.gallopCount(rb + j, lenF, buf + i, false, true, false, order);
+            mem.moveRaw(dstF + k, rb + j, c);
+            j = j + c;
+            k = k + c;
+          }
+          else if tookJ == 0usize && lenI > 0usize {
+            let c = self.gallopCount(buf + i, lenI, rb + j, true, false, false, order);
+            mem.moveRaw(dstF + k, buf + i, c);
+            i = i + c;
+            k = k + c;
+          }
+          let tookI = bi0 - bi;
+          let lenL = if qb - kb < bi { qb - kb } else { bi };
+          let lenR = if qb - kb < bj { qb - kb } else { bj };
+          if tookI == 16usize && lenL > 0usize {
+            let c = self.gallopCount(buf + bi, lenL, rb + bj - 1usize, true, true, true, order);
+            mem.moveRaw(dstB - kb - c, buf + bi - c, c);
+            bi = bi - c;
+            kb = kb + c;
+          }
+          else if tookI == 0usize && lenR > 0usize {
+            let c = self.gallopCount(rb + bj, lenR, buf + bi - 1usize, false, false, true, order);
+            mem.moveRaw(dstB - kb - c, rb + bj - c, c);
+            bj = bj - c;
+            kb = kb + c;
+          }
+        }
+      }
+    }
+    // One chain is done (or has hit the end of a run): the other finishes alone
+    while k < qf {
+      if i == na || j == nb {
+        if i == na {
+          mem.moveRaw(dstF + k, rb + j, qf - k);
+          j = j + (qf - k);
+        }
+        else {
+          mem.moveRaw(dstF + k, buf + i, qf - k);
+          i = i + (qf - k);
+        }
+        k = qf;
+      }
+      else {
+        var steps = 16usize;
+        if qf - k < steps { steps = qf - k; }
+        if na - i < steps { steps = na - i; }
+        if nb - j < steps { steps = nb - j; }
+        let j0 = j;
+        var s = 0usize;
+        while s < steps {
+          if order((rb + j) as &T, (buf + i) as &T) < 0i32 {
+            mem.moveRaw(dstF + k, rb + j, 1usize);
+            j = j + 1usize;
+          }
+          else {
+            mem.moveRaw(dstF + k, buf + i, 1usize);
+            i = i + 1usize;
+          }
+          k = k + 1usize;
+          s = s + 1usize;
+        }
+        if steps == 16usize {
+          let tookJ = j - j0;
+          let lenF = if qf - k < nb - j { qf - k } else { nb - j };
+          let lenI = if qf - k < na - i { qf - k } else { na - i };
+          if tookJ == 16usize && lenF > 0usize {
+            let c = self.gallopCount(rb + j, lenF, buf + i, false, true, false, order);
+            mem.moveRaw(dstF + k, rb + j, c);
+            j = j + c;
+            k = k + c;
+          }
+          else if tookJ == 0usize && lenI > 0usize {
+            let c = self.gallopCount(buf + i, lenI, rb + j, true, false, false, order);
+            mem.moveRaw(dstF + k, buf + i, c);
+            i = i + c;
+            k = k + c;
+          }
+        }
+      }
+    }
+    while kb < qb {
+      if bi == 0usize || bj == 0usize {
+        let r = qb - kb;
+        if bi == 0usize {
+          mem.moveRaw(dstB - qb, rb + bj - r, r);
+          bj = bj - r;
+        }
+        else {
+          mem.moveRaw(dstB - qb, buf + bi - r, r);
+          bi = bi - r;
+        }
+        kb = qb;
+      }
+      else {
+        var steps = 16usize;
+        if qb - kb < steps { steps = qb - kb; }
+        if bi < steps { steps = bi; }
+        if bj < steps { steps = bj; }
+        let bi0 = bi;
+        var s = 0usize;
+        while s < steps {
+          if order((rb + bj - 1usize) as &T, (buf + bi - 1usize) as &T) < 0i32 {
+            mem.moveRaw(dstB - kb - 1usize, buf + bi - 1usize, 1usize);
+            bi = bi - 1usize;
+          }
+          else {
+            mem.moveRaw(dstB - kb - 1usize, rb + bj - 1usize, 1usize);
+            bj = bj - 1usize;
+          }
+          kb = kb + 1usize;
+          s = s + 1usize;
+        }
+        if steps == 16usize {
+          let tookI = bi0 - bi;
+          let lenL = if qb - kb < bi { qb - kb } else { bi };
+          let lenR = if qb - kb < bj { qb - kb } else { bj };
+          if tookI == 16usize && lenL > 0usize {
+            let c = self.gallopCount(buf + bi, lenL, rb + bj - 1usize, true, true, true, order);
+            mem.moveRaw(dstB - kb - c, buf + bi - c, c);
+            bi = bi - c;
+            kb = kb + c;
+          }
+          else if tookI == 0usize && lenR > 0usize {
+            let c = self.gallopCount(rb + bj, lenR, buf + bi - 1usize, false, false, true, order);
+            mem.moveRaw(dstB - kb - c, rb + bj - c, c);
+            bj = bj - c;
+            kb = kb + c;
+          }
+        }
+      }
+    }
+    // The chains took one element each exactly when 'order' is a consistent order. If not
+    // (they met unevenly), some element was written twice and another not at all: merge again,
+    // in one direction, from the copies, which always leaves each element once
+    if i != bi || j != bj {
+      var a = 0usize;
+      var b = 0usize;
+      var o = 0usize;
+      while a < na && b < nb {
+        if order((rb + b) as &T, (buf + a) as &T) < 0i32 {
+          mem.moveRaw(dstF + o, rb + b, 1usize);
+          b = b + 1usize;
+        }
+        else {
+          mem.moveRaw(dstF + o, buf + a, 1usize);
+          a = a + 1usize;
+        }
+        o = o + 1usize;
+      }
+      mem.moveRaw(dstF + o, buf + a, na - a);
+      mem.moveRaw(dstF + o + (na - a), rb + b, nb - b);
+    }
+  }
+
   // Merge the sorted runs [lo, mid) and [mid, hi) into one, stably, copying the shorter one
   // to 'buf' (room for half the elements; got from 'scratch' if it is still null). Answers
   // the buffer, so the caller can reuse and give it back. Nothing happens, and no buffer is
-  // got, when the two are already in order
+  // got, when the two are already in order. A merge that fits the buffer whole goes from
+  // both ends instead (mergeBoth)
   fn mergeRuns[F: fn(a: &T, b: &T) i32](self: &mut, lo: usize, mid: usize, hi: usize, bufIn: *T, scratch: *MemRegion, root: &mut SortScratch[T], order: &F) *T {
     let p = self as *T;
     if order((p + mid) as &T, (p + mid - 1usize) as &T) >= 0i32 { return bufIn; }
@@ -1161,6 +1404,14 @@ pub struct @opaque Array[T] is GcTraceElements {
     if buf == null {
       buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
       if buf == null { panic("sort: no memory for the merge buffer"); }
+    }
+    // A merge that fits the buffer whole goes from both ends
+    if hi - lo <= self.len / 2usize {
+      root.p = buf;
+      root.n = hi - lo;
+      self.mergeBoth(lo, mid, hi, buf, order);
+      root.n = 0usize;
+      return buf;
     }
     let na = mid - lo;
     let nb = hi - mid;
