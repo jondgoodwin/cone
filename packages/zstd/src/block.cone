@@ -288,6 +288,13 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   // The block's own output may not pass the block maximum
   let room = reach.blockMax;
   hist.reserve(room);
+  // The block is written through pointers into the room just reserved
+  // (everything checked against 'room' and the literals' length first), 'w'
+  // the next byte; 'hist' gets its new length once, at the end
+  let bp = hist.viewMut() as *u8;
+  let lp = ent.lits.view() as *u8;
+  let dp = dict.view() as *u8;
+  var w = blockStart;
   var i = 0usize;
   while i < nseq {
     let llc = *ent.ll.cells[usize.from(llState)];
@@ -333,29 +340,30 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
     }
     // Execute: the literals, then the match
     if ll > nlits - litPos { return Fault.LitOverrun; }
-    if (hist.len() - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
-    appendRange(hist, &ent.lits, litPos, ll);
+    if (w - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
+    copyBytes(bp + w, lp + litPos, ll);
+    w = w + ll;
     litPos = litPos + ll;
     // The frame's output so far, and how far back a match may reach: the
     // window, or while the output is no longer than the window, all of it
     // and the dictionary before it
-    let pos = reach.out + u64.from(hist.len() - blockStart);
+    let pos = reach.out + u64.from(w - blockStart);
     var limit = if pos < reach.window {pos} else {reach.window};
     if dictLen > 0usize && pos <= reach.window { limit = pos + u64.from(dictLen); }
     if off > limit { return Fault.OffsetFar; }
     if off <= pos {
       // From the frame's own output
       let o = usize.from(off);
-      if o > hist.len() - reach.base { return Fault.OffsetFar; }
-      copyMatch(hist, hist.len() - o, ml);
+      if o > w - reach.base { return Fault.OffsetFar; }
+      copyMatch(bp, w, w - o, ml);
     } else {
       // From the dictionary, then on into the frame's output
       let back = usize.from(off - pos);
-      let from = dictLen - back;
       let first = if ml < back {ml} else {back};
-      appendRange(hist, dict, from, first);
-      if ml > first { copyMatch(hist, reach.base, ml - first); }
+      copyBytes(bp + w, dp + (dictLen - back), first);
+      if ml > first { copyMatch(bp, w + first, reach.base, ml - first); }
     }
+    w = w + ml;
     i = i + 1usize;
   }
   if !bits.exact() { return Fault.SeqStream; }
@@ -363,42 +371,57 @@ fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, his
   ent.rep2 = r2;
   ent.rep3 = r3;
   let rest = nlits - litPos;
-  if (hist.len() - blockStart) + rest > room { return Fault.BlockTooBig; }
-  appendRange(hist, &ent.lits, litPos, nlits - litPos);
+  if (w - blockStart) + rest > room { return Fault.BlockTooBig; }
+  copyBytes(bp + w, lp + litPos, rest);
+  w = w + rest;
+  commit(hist, blockStart, w - blockStart);
   Fault.Ok
 }
 
-// Appends *src[from, from + n) to 'dst' in one block copy. (Not 'appendSlice':
-// its borrow of a list behind one reference is refused while another list is
-// reshaped, since the checker cannot tell the two apart.) Bounds-checked.
-fn appendRange(dst: &mut List[u8], src: &List[u8], from: usize, n: usize) {
-  if n == 0usize { return; }
-  let at = dst.len();
-  dst.resize(at + n, 0u8);
-  let part = &src.view()[from ..< from + n];
-  mem.moveRaw[u8](dst.viewMut() as *u8 + at, part as *u8, n);
+// Gives 'hist' the n bytes already written at its end, past its length, in
+// room it reserved: 'appendSlice' of exactly those bytes (a copy of them onto
+// themselves, a block move, where growing the list by 'resize' or 'push'
+// writes a byte at a time)
+fn commit(hist: &mut List[u8], at: usize, n: usize) {
+  let p = hist.viewMut() as *u8;
+  hist.appendSlice(mem.sliceFromParts[u8](p + at, n));
 }
 
-// Appends 'ml' bytes to 'hist' as if copied one at a time from *hist[from],
-// *hist[from + 1], ...: when the source runs on into the bytes being written
-// (the match is longer than its offset), the last 'hist.len() - from' bytes
-// repeat. The caller has checked from < hist.len() (the pointer work below
-// has no bounds check of its own); 'resize' makes the room.
-fn copyMatch(hist: &mut List[u8], from: usize, ml: usize) {
-  let n = hist.len();
-  hist.resize(n + ml, 0u8);
-  let b = hist.viewMut() as *u8;
-  let off = n - from;
+// Appends *src[from, from + n) to 'dst' in one block copy. 'appendSlice' is
+// given a slice made from a pointer because the checker, seeing two lists
+// behind references, cannot tell that 'dst' and 'src' are not the same one.
+// Bounds-checked.
+fn appendRange(dst: &mut List[u8], src: &List[u8], from: usize, n: usize) {
+  let part = &src.view()[from ..< from + n];
+  dst.appendSlice(mem.sliceFromParts[u8](part as *u8, n));
+}
+
+// n bytes from 'from' to 'to', which do not overlap; no bounds check
+fn copyBytes(to: *u8, from: *u8, n: usize) inline {
+  if n <= 16usize {
+    var k = 0usize;
+    while k < n {
+      mem.writeRaw[u8](to + k, mem.readRaw[u8](from + k));
+      k = k + 1usize;
+    }
+  } else {
+    mem.moveRaw[u8](to, from, n);
+  }
+}
+
+// Writes 'ml' bytes at b[at] as if copied one at a time from b[from],
+// b[from + 1], ...: when the source runs on into the bytes being written (the
+// match is longer than its offset, from + ml > at), the last 'at - from' bytes
+// repeat. The caller has checked 0 < at - from and that b has room to at + ml.
+fn copyMatch(b: *u8, at: usize, from: usize, ml: usize) {
+  let off = at - from;
+  if off >= ml { copyBytes(b + at, b + from, ml); return; }
   if ml <= 16usize {
     var k = 0usize;
     while k < ml {
-      mem.writeRaw[u8](b + (n + k), mem.readRaw[u8](b + (from + k)));
+      mem.writeRaw[u8](b + (at + k), mem.readRaw[u8](b + (from + k)));
       k = k + 1usize;
     }
-    return;
-  }
-  if off >= ml {
-    mem.moveRaw[u8](b + n, b + from, ml);
     return;
   }
   // Overlapping and long: the output is the last 'off' bytes repeated. Each
@@ -408,7 +431,7 @@ fn copyMatch(hist: &mut List[u8], from: usize, ml: usize) {
   var done = 0usize;
   while done < ml {
     let chunk = if off + done < ml - done {off + done} else {ml - done};
-    mem.moveRaw[u8](b + (n + done), b + from, chunk);
+    mem.moveRaw[u8](b + (at + done), b + from, chunk);
     done = done + chunk;
   }
 }
