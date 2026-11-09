@@ -70,6 +70,10 @@ uint32_t loanRoot(uint32_t loan);
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
 
+// The variable a loan is of what a caller lent through: a caller loan, or a reborrow through a
+// reference (a place reached by '*'). Else 0. Whether that variable is a parameter is the asker's
+uint32_t loanViaVar(uint32_t loan);
+
 // Is a loan one of a place reached through the variable 'var' -- of what it
 // points at -- by name? Not a caller loan, which stands for what the caller lent
 // and is not a name that a store over the variable stales.
@@ -143,8 +147,8 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
 // What an arena reached through a reference takes of caller loans: only those
 // of the parameter the reference holds a loan of, the arena's own (Bug 48's
 // exception, Bug 51). Returns the first stored caller loan that is not, or 0,
-// with the parameter it was stored through as 'through'.
-uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through);
+// with the parameter it was stored through as 'through'. 'root' as in loanArenaChecked.
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through);
 
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena a caller may keep, reached by a route that shows the body nothing of
@@ -157,8 +161,10 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
 
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
-// pointer, the one trusted route).
-int loanArenaChecked(PathSet *stored, PathSet *arenaholds);
+// pointer, the one trusted route), and holds no loan a caller lent through
+// 'root', the variable the arena was reached from (NULL where that is not
+// known: no caller loan at all).
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds, VarDclNode *root);
 
 // The same for a function naming no lifetimes: a caller loan among 'stored'
 // going where a reference holding 'refholds' points, at what a parameter lent
@@ -293,6 +299,14 @@ void loanHeldBy(uint32_t var, PathSet *holds);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// A call to this function, whose signature names no lifetime, was passed the
+// borrow that made this loan, and its result carries it by that unannotated
+// rule: name the signature where a holder's use is refused
+void loanTiedBy(uint32_t loan, FnDclNode *fn);
+
+// The same for each loan in 'set' that the borrow expression 'site' made
+void loanTiedAt(PathSet *set, INode *site, FnDclNode *fn);
+
 // The borrow a call returned carries this loan of a place reached through a
 // shared path, and the place's container may move what it lent when it
 // changes: the loan freezes the place, as a local's would
@@ -419,6 +433,10 @@ int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
 
 // The function the loan walk is in
 FnDclNode *flowPathCurrentFn(void);
+
+// A function's signature as written, from its name to the end of its result;
+// false where its text is not to be had
+int flowPathSigText(FnDclNode *fn, char *out, size_t size);
 
 // Report the GPU refusals held (ErrorGpuRefChoice and ErrorGpuRefIndexed), those
 // of a function 'reached' says a kernel reaches, and drop the rest. With no

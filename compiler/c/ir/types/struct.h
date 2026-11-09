@@ -66,6 +66,9 @@ typedef struct StructNode {
     uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
     struct GenericLateWhere *latewhere;  // An instance's members whose 'where' waits on an argument's layout, not yet decided (genericLateWhere); NULL once they are, and for every other type
+    struct StructNode *instfrom;   // The instance whose member check made this one (structInstanceNote); NULL for the first of a chain
+    struct FnDclNode *instmeth;    // The member of instfrom whose check made it
+    uint32_t instdepth;            // How many instances' member checks lie between it and the first of its chain
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
@@ -305,6 +308,10 @@ void structArrayWait(TypeCheckState *pstate, INode *array);
 // type's members are checked.
 void structLayoutEnter(void);
 void structLayoutExit(void);
+// Instances made while another's members are checked form a chain, whose depth the
+// queue of waiting member checks would otherwise hide from genericInstantiateEnter
+int structInstanceNest(INode *errnode);
+void structInstanceNote(INode *instance);
 // Is a layout in flight, so that no member may be checked yet?
 int structLayoutInFlight(void);
 
