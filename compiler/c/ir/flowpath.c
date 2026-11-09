@@ -1679,14 +1679,14 @@ static int pwByParm(VarDclNode *var) {
 }
 
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how,
-        int byparm) {
+        int byparm, int readsnothing) {
     VarDclNode *through;
     // A node of an arena a caller keeps takes no other parameter's borrow where
     // the function names no lifetime (every borrow in its signature would share
     // one) or the arena was reached through a struct's field, whatever it
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
-    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm)) {
+    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm, readsnothing)) {
         uint32_t foreign = loanArenaApart(stored, refholds, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
@@ -1821,8 +1821,19 @@ static PathSet *pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rv
         uint32_t own = pwPlaceOutlives(pl) ? loanNamedThroughIn(holds, pl->var) : 0;
         if (own)
             loanSelfStore(lval, own, pl, LoanEscapeStore);
+        // The node stored into: the object the stored-into place lies in. Its
+        // type may be one whose death reads no borrow; an unseen type (none
+        // found here) answers 'reads' (readsnothing = 0)
+        INode *ctype = NULL;
+        if (lval->tag == FldAccessTag)
+            ctype = iexpGetTypeDcl(((FnCallNode *)lval)->objfn);
+        else if (lval->tag == DerefTag)
+            ctype = iexpGetTypeDcl(lval);
+        if (ctype && (ctype->tag == RefTag || ctype->tag == VirtRefTag))
+            ctype = itypeGetTypeDcl(((RefNode *)ctype)->vtexp);
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
-            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var));
+            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var),
+            ctype && !itypeDropReadsBorrow(ctype));
         if (lval->tag == DerefTag)
             pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
     }
@@ -2272,7 +2283,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape(node, local, how);
             else
-                pwStoreApart(node, argsets[at], beyond, 0, others, how, 0);
+                pwStoreApart(node, argsets[at], beyond, 0, others, how, 0, 0);
             pwStoreLands(argsets[at], beyond, others, 0);
             continue;
         }
@@ -2305,8 +2316,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                     loanApart(node, apart, through, how);
             }
             else
+                // Only a store one borrow deep has a node to ask about
                 pwStoreApart(node, pathVars[target.var].holds, reach.far, 0, others, how,
-                    pwByParm(pathVars[target.var].var));
+                    pwByParm(pathVars[target.var].var), isref && depth == 1 && !itypeDropReadsBorrow(storedin));
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
