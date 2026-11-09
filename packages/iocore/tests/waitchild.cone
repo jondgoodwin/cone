@@ -11,8 +11,8 @@
 // 5. Deadline: TimedOut, not before the deadline.
 // 6. close with a wait in flight: that wait answers Cancelled, the handle names
 //    nothing after.
-// 7. A second WaitChild on the same handle: Linux's first reaped the child, so
-//    it fails; Windows' answers again with the same code.
+// 7. A second WaitChild on the same handle fails on both systems (Linux: the
+//    first reaped the child; Windows: the handle's 'waited' flag).
 // 8. Refused: a WaitChild on a handle that is no child fails.
 // 9. The race: a wait cancelled (or timed out) at every moment around its
 //    child's end, many times over. Each wait answers exactly once, Done or the
@@ -198,11 +198,7 @@ fn main() i32 {
     // 7. A second wait on the same handle
     lp.submit(Op.WaitChild(h), Target.Here(2u64));
     let g2 = await1(&mut lp, 2u64, 20i64);
-    #if #os == .windows {
-      expect(g2.status == diag.outcomeDone && g2.n == 0usize, "7: a second wait answers again (Windows)");
-    } #else {
-      expect(g2.status == diag.outcomeFailed, "7: a second wait fails: the first reaped the child (Linux)");
-    }
+    expect(g2.status == diag.outcomeFailed, "7: a second wait fails, on both systems");
     lp.close(h);
     raw = startChild(5u32, 0u32);
     h = adopt(&mut lp, raw);
@@ -218,11 +214,7 @@ fn main() i32 {
     await1(&mut lp, 4u64, 20i64);
     lp.submit(Op.WaitChild(h), Target.Here(5u64));
     let g4 = await1(&mut lp, 5u64, 20i64);
-    #if #os == .windows {
-      expect(g4.status == diag.outcomeDone, "2: a wait on an ended child answers at once");
-    } #else {
-      expect(g4.status == diag.outcomeFailed, "2: (Linux: reaped by the first wait)");
-    }
+    expect(g4.status == diag.outcomeFailed, "2: a wait on a child already waited for fails, ended or not");
     lp.close(h);
     raw = startChild(5u32, 0u32);
     lp.after(Instant.now() + Duration.fromMillis(1000i64), Target.Here(6u64));

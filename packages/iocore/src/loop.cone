@@ -74,6 +74,7 @@ struct HEntry {
   pub writes: *OpCore;
   pub writesTail: *OpCore;
   pub skip: u32;           // Windows: a socket whose completions skip the port on success: one done at once posts none
+  pub waited: u32 = 0u32;  // Windows: a child some WaitChild has answered for (a second fails, as Linux's reaping makes it)
 }
 
 // An answer a full channel held back, and the channel's sender (a clone of
@@ -1931,9 +1932,13 @@ pub struct Loop {
         var ec = 0u32;
         if proc == invalidHandle {
           self.decide(p, diag.outcomeFailed, 0usize, errorInvalidHandle);
+        } else if (*handles.get(Slot(r.handle.index, r.handle.gen))).waited != 0u32 {
+          // Answered for already: the child is spoken for, as a reaped one is on Linux
+          self.decide(p, diag.outcomeFailed, 0usize, errorNoChildren);
         } else if GetExitCodeProcess(proc, &mut ec) == 0i32 {
           self.decide(p, diag.outcomeFailed, 0usize, GetLastError());
         } else {
+          (*handles.get(Slot(r.handle.index, r.handle.gen))).waited = 1u32;
           self.decide(p, diag.outcomeDone, usize.from(ec), 0u32);
         }
         return;
