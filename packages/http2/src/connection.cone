@@ -353,13 +353,9 @@ pub struct Connection is Move {
     }
     if failed || closed {return;}
     if input.len() + n > cfg.maxBuffered {panic("http2: handleInput past the read credit", file, line);}
-    // Join when the consumer is behind and the bytes fit the last segment
-    // (see http1's handleInput): the arriving block dies instead of being held
-    if !input.isEmpty() && n <= input.lastRoom() {
-      let joined = input.appendLast(buf.view());
-    } else {
-      let over = input.push(buf);
-    }
+    // A small arrival joins the last segment when the consumer is behind and
+    // it fits (Chain.pushJoin): the arriving block dies instead of being held
+    let over = input.pushJoin(buf);
     bytesIn = bytesIn + u64.from(n);
     self.process();
   }

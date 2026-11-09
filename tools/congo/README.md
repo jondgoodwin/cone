@@ -22,6 +22,7 @@ congo clean hello.cone     delete a lone file's build
 congo run -D FAST -D N=2   a constant for #defined and #define
 congo build --no-cache     compile everything, whatever an earlier build left
 congo build --release --strip   no debug info, and no .pdb beside the .exe
+congo build --release --lto     optimise across the packages at link time (ThinLTO)
 congo publish              point an index registry at this package's current commit
 ```
 
@@ -39,6 +40,19 @@ the ELF. `--strip`, given to `build`, `run` or `test`, passes `--strip` to every
 `conec` compile, so the objects carry none, and writes no `.pdb` (and removes
 the one an earlier link left). A
 WebAssembly or SPIR-V release build carries none either way.
+
+`--lto`, given to `build`, `run` or `test` together with `--release` (alone it
+is refused), is link-time optimisation, never the default. Every native compile
+is passed `--lto` and writes ThinLTO bitcode, `<name>.bc`, where it would write
+an object, into `build/release-lto/` (the release build keeps its own
+`build/release/`); the link is then preceded by one `conec --lto-link` over all
+the packages' bitcode, which writes the objects (`<program>.lto/<i>.obj`) the
+linker takes. The program is optimised as one: a call into another package is
+inlined, a generic instance only one module uses is the program's own and
+specialised, and what nothing reaches is dropped. It costs a longer link (the
+ThinLTO step runs on every relink, whatever changed), a longer clean build, and
+a larger program; the measurements are in `compiler/c/doc/phases/generation.md`,
+"Link-time optimisation". The GPU kernels of a package are built as ever.
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
@@ -465,9 +479,9 @@ only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
 belong to the toolchain and not to any package. A release link on Windows also
 says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the build
 is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
-identical functions: the net under the compiler's size gate on a release
-program's generic instances, which keeps each small one as the program's own
-copy (`--private-instances`). `tls` is the example of a
+identical functions: the net under the compiler's keeping each of a release
+program's generic instance functions as the program's own copy
+(`--private-instances` caps that by size). `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).
