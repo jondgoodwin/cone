@@ -1,0 +1,303 @@
+// A connection's receive credit as a budget (the package's header, CREDIT),
+// a client and a server core driven against each other in memory:
+// - the slow-reader bound: the client opens the 100 streams the server
+//   allows and sends 60000 bytes on each; the server releases four (every
+//   25th) and none of the 96 others. What it holds unreleased, sampled after
+//   every piece that arrives, stays within the budget (an inequality: the
+//   peak itself is the schedule's). The control, a budget as large as the old
+//   rule needs (every stream's floor its whole window), exceeds that bound;
+// - first grants: a new stream is raised from its floor (5242) to 16384 as
+//   the upper half of the spare lasts (23 whole, the 24th the 5922 left);
+//   the lower half stays for a reader;
+// - one bulk stream reads its window up to the maximum;
+// - credit comes back: a stream that ends, is reset by the peer or is
+//   cancelled by this end gives what it drew back, and the spare is whole;
+// - SETTINGS not yet acknowledged: the peer sends the 65535 bytes it may
+//   before it has our smaller floor, and nothing is an error.
+
+mod creditbudget;
+
+import testing use *;
+import collections use List, String;
+import iobuf use IoBuf, Chain;
+import time use Instant;
+import http use *;
+import http2 use *;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn filled(n: usize) IoBuf {
+  var x = IoBuf(if n > 0usize {n} else {1usize});
+  let room = x.spare();
+  var i = 0usize;
+  while i < n {
+    room[i] = u8.from(i % 251usize);
+    i = i + 1usize;
+  }
+  x.setLen(n);
+  x
+}
+
+fn req(path: &str) RequestHead {
+  var h = RequestHead.make("POST", path, "example.com");
+  h.scheme = String.from("https");
+  h
+}
+
+// Hand 'to' the bytes of c, in pieces of at most 'piece' bytes
+fn feed(to: &mut Connection, c: &mut Chain, piece: usize, now: Instant) usize {
+  var total = 0usize;
+  while c.len() > 0usize && !to.isClosed() {
+    var n = c.len();
+    if n > piece {n = piece;}
+    let credit = to.readCredit();
+    if n > credit {n = credit;}
+    if n == 0usize {return total;}
+    var b = IoBuf(n);
+    let room = b.spare();
+    let k = c.copyOut(0usize, &mut room[0usize ..< n]);
+    b.setLen(k);
+    c.advance(k);
+    to.handleInput(b, now);
+    total = total + k;
+  }
+  total
+}
+
+fn pass(from: &mut Connection, to: &mut Connection, piece: usize, now: Instant) usize {
+  var out = from.pollTransmit(now);
+  feed(to, &mut out, piece, now)
+}
+
+fn settle(a: &mut Connection, b: &mut Connection, now: Instant) {
+  var rounds = 0u32;
+  while rounds < 100000u32 {
+    let x = pass(a, b, 1048576usize, now);
+    let y = pass(b, a, 1048576usize, now);
+    if x == 0usize && y == 0usize {return;}
+    rounds = rounds + 1u32;
+  }
+}
+
+struct Run {
+  peak: u64;        // the most the server held unreleased
+  read: u64;        // bytes the readers read
+  failed: bool;     // a Failed event, or a Reset the test did not ask for
+}
+
+// The server polls its events: Data is released when 'every' says (a stream
+// number, 0 for none), Request is answered with nothing
+fn serve(s: &mut Connection, every: usize, run: &mut Run) {
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case let Data(d) {
+        let st = d.stream;
+        let n = d.buf.len();
+        if every > 0usize && (usize.from(st / 2u32)) % every == 0usize {
+          s.release(st, n);
+          run.read = run.read + u64.from(n);
+        }
+      }
+      case let Failed(f) {run.failed = true;}
+      case let Reset(r) {run.failed = true;}
+      case let NeedData(e) {going = false;}
+      else {}
+    }
+  }
+}
+
+fn held(s: &Connection, streams: u32) u64 {
+  var t = 0u64;
+  var k = 0u32;
+  while k < streams {
+    t = t + u64.from(s.unreleased(2u32 * k + 1u32));
+    k = k + 1u32;
+  }
+  t
+}
+
+// 100 streams, 60000 bytes each, four read. The peak held unreleased
+fn slowReaders(budget: u64) Run {
+  var cfg = Config.make();
+  cfg.creditBudget = budget;
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(cfg, at(0));
+  settle(&mut c, &mut s, at(0));
+  var run = Run(0u64, 0u64, false);
+  var k = 0u32;
+  while k < 100u32 {
+    let id = c.sendRequest(req("/slow"), BodyLength.sized(60000u64));
+    c.sendData(id, filled(60000usize));
+    c.finish(id);
+    k = k + 1u32;
+  }
+  var rounds = 0u32;
+  while rounds < 100000u32 {
+    var moved = pass(&mut c, &mut s, 4096usize, at(1));
+    let h = held(&s, 100u32);
+    if h > run.peak {run.peak = h;}
+    serve(&mut s, 25usize, &mut run);
+    moved = moved + pass(&mut s, &mut c, 1048576usize, at(1));
+    if moved == 0usize {break;}
+    rounds = rounds + 1u32;
+  }
+  run
+}
+
+fn slowReaderBound() {
+  let bound = defaultCreditBudget;
+  let run = slowReaders(bound);
+  expect(run.peak <= bound, "slow readers: what the server holds unreleased stays within the budget");
+  expect(run.peak > 0u64, "...and it did hold something");
+  expectUInt(run.read, 4u64 * 60000u64, "the four streams that release read their whole bodies");
+  expect(!run.failed, "no stream failed");
+  let old = slowReaders(2u64 * 200u64 * 262144u64);
+  expect(old.peak > bound, "the control, a budget whose floor is the whole window (the old rule), exceeds that bound");
+}
+
+fn firstGrants() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  settle(&mut c, &mut s, at(0));
+  let spare0 = s.spareCredit();
+  expectUInt(spare0, 524376u64, "the spare: the 1 MiB budget less 100 floors of 5242");
+  var k = 0u32;
+  while k < 31u32 {
+    let id = c.sendRequest(req("/g"), BodyLength.sized(300000u64));
+    c.sendData(id, filled(100000usize));
+    k = k + 1u32;
+    if k == 1u32 {
+      settle(&mut c, &mut s, at(1));
+      expectUInt(s.window(1u32), 16384u64, "the first stream, opened with spare: its window");
+    }
+  }
+  settle(&mut c, &mut s, at(1));
+  expectUInt(s.window(2u32 * 22u32 + 1u32), 16384u64, "the 23rd stream: a whole first grant");
+  expectUInt(s.window(2u32 * 23u32 + 1u32), 5242u64 + 5922u64, "the 24th: the 5922 left of the first-grant half");
+  expectUInt(s.window(2u32 * 24u32 + 1u32), 5242u64, "the 25th: its floor");
+  expectUInt(u64.from(s.unreleased(2u32 * 24u32 + 1u32)), 5242u64, "...and the client could send only that");
+  expectUInt(s.spareCredit(), 262188u64, "the lower half of the spare is untouched");
+  // The reserved half is for a reader: release stream 61 (the 31st) as it arrives
+  let last = 2u32 * 30u32 + 1u32;
+  var rounds = 0u32;
+  while rounds < 100u32 {
+    var going = true;
+    while going {
+      match s.pollEvent() {
+        case let Data(x) {
+          if x.stream == last {s.release(last, x.buf.len());}
+        }
+        case let NeedData(e) {going = false;}
+        else {}
+      }
+    }
+    settle(&mut c, &mut s, at(2));
+    rounds = rounds + 1u32;
+  }
+  expect(s.window(last) > 16384u64 && s.window(last) <= 262144u64, "the 31st, opened at its floor, grows past 16 KiB by release");
+}
+
+fn bulkAndGiveBack() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  settle(&mut c, &mut s, at(0));
+  let spare0 = s.spareCredit();
+  let id = c.sendRequest(req("/bulk"), BodyLength.unsized());
+  var sent = 0usize;
+  var read = 0u64;
+  var rounds = 0u32;
+  while rounds < 2000u32 && read < 1000000u64 {
+    if sent < 1000000usize {
+      match c.sendData(id, filled(16384usize)) {
+        case let Some(b) {}
+        case is None[IoBuf] {sent = sent + 16384usize;}
+      }
+    }
+    settle(&mut c, &mut s, at(1));
+    var going = true;
+    while going {
+      match s.pollEvent() {
+        case let Data(d) {
+          read = read + u64.from(d.buf.len());
+          s.release(d.stream, d.buf.len());
+        }
+        case let NeedData(e) {going = false;}
+        else {}
+      }
+    }
+    rounds = rounds + 1u32;
+  }
+  expectUInt(s.window(id), 262144u64, "one bulk stream reads its window up to the maximum");
+  expect(s.spareCredit() < spare0, "...drawn from the spare");
+  // The peer ends the stream: what it drew comes back
+  c.finish(id);
+  settle(&mut c, &mut s, at(2));
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case let End(e) {s.finish(e.stream);}
+      case let NeedData(e) {going = false;}
+      else {}
+    }
+  }
+  settle(&mut c, &mut s, at(2));
+  expectUInt(s.spareCredit(), spare0, "a stream that ends gives back what it drew: the spare is whole");
+
+  // Reset by the peer, with bytes unreleased, and cancelled by this end
+  var k = 0u32;
+  var ids = List[u32]();
+  while k < 6u32 {
+    let n = c.sendRequest(req("/r"), BodyLength.unsized());
+    c.sendData(n, filled(30000usize));
+    ids.push(n);
+    k = k + 1u32;
+  }
+  settle(&mut c, &mut s, at(3));
+  expect(s.spareCredit() < spare0, "six open streams hold first grants");
+  c.cancel(*ids[0usize]);
+  c.cancel(*ids[1usize]);
+  c.cancel(*ids[2usize]);
+  s.cancel(*ids[3usize]);
+  s.cancel(*ids[4usize]);
+  s.cancel(*ids[5usize]);
+  settle(&mut c, &mut s, at(4));
+  var going2 = true;
+  while going2 {
+    match s.pollEvent() {
+      case let NeedData(e) {going2 = false;}
+      else {}
+    }
+  }
+  expectUInt(s.spareCredit(), spare0, "streams reset by the peer or cancelled here give their credit back");
+}
+
+// The client sends under the window it had before our SETTINGS, 65535 on a
+// stream, with a floor of 5242: not an error until the SETTINGS come back
+fn beforeAcknowledged() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let id = c.sendRequest(req("/early"), BodyLength.sized(65535u64));
+  c.sendData(id, filled(16384usize));
+  c.sendData(id, filled(16384usize));
+  c.sendData(id, filled(16384usize));
+  c.sendData(id, filled(16383usize));
+  c.finish(id);
+  // The client's bytes reach the server before the server's SETTINGS reach the client
+  let n = pass(&mut c, &mut s, 1048576usize, at(1));
+  var run = Run(0u64, 0u64, false);
+  serve(&mut s, 1usize, &mut run);
+  expectUInt(run.read, 65535u64, "65535 bytes sent before the peer saw our floor: all taken");
+  expect(!run.failed && !s.isClosed(), "...with no stream or connection error");
+  settle(&mut c, &mut s, at(2));
+  serve(&mut s, 1usize, &mut run);
+  expect(!run.failed && !s.isClosed(), "and none once the SETTINGS are acknowledged");
+}
+
+fn main() i32 {
+  slowReaderBound();
+  firstGrants();
+  bulkAndGiveBack();
+  beforeAcknowledged();
+  done()
+}

@@ -347,7 +347,7 @@ gets no exception [Jon 23 Sep: *"Keep as built, no exceptions."*].
 
 | Field | Meaning |
 | --- | --- |
-| `nodelist` | ordered **methods, static functions and macros only** — never fields. Every walk of it that reads a `FnDclNode` — the vtable, the subtype comparison, trait default folding — skips a `MacroDclTag` first, and on a trait skips a **static function** too (see below) |
+| `nodelist` | ordered **methods, static functions, macros, statics, aliases and consts** — never fields. Every walk of it that reads a `FnDclNode` — the vtable, the subtype comparison, trait default folding — checks the tag first, skips a `MacroDclTag`, and on a trait skips a **static function** too (see below). A `ConstDclNode` (`iNsTypeAddConst`, only in a struct or an enum, not a trait; a generic type's instance clones its own, `cloneConstDclShell`) is folded at every use and has no symbol, so generation and the vtable walks pass it by; its initializer is checked when the type is, or by the first use that reaches it (`owner`, set by `iNsTypeAddConst`, gives the walk state) |
 
 ⚠ **A static function of a trait is the trait's own, and four walks of `nodelist`
 have to say so.** `FlagMethFld` is what distinguishes it: no `self`, so there is

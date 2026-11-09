@@ -2092,6 +2092,19 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             ? iNsTypeFindFnField((INsTypeNode*)enumdcl, methsym) : NULL;
         if (wholemeth && fnCallNamesTemplateMethod(wholemeth, 1) && !fnCallNamesMethod(wholemeth))
             foundnode = wholemeth;
+        // A const of the enum is not reached through a variant's value either
+        else if (wholemeth && wholemeth->tag == ConstDclTag)
+            foundnode = wholemeth;
+    }
+    // A constant is the type's, never a value's (Jon, 22 Sep: a name folds on a
+    // type, not on a field), so it is named through the type
+    if (foundnode && foundnode->tag == ConstDclTag) {
+        StructNode *consttype = (StructNode*)((ConstDclNode*)foundnode)->owner;
+        errorMsgNode((INode*)callnode, ErrorConstViaValue,
+            "`%s` is a const of the type %s, not of a value of it: write it through the type, `%s.%s`.",
+            &methsym->namestr, &consttype->namesym->namestr, &consttype->namesym->namestr, &methsym->namestr);
+        callnode->vtype = errorType;
+        return -1;
     }
     int notpublic = foundnode && inodeIsPrivate(foundnode) && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
@@ -3419,7 +3432,8 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
-    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
+    // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
         return 0;
     member->dclnode = found;
     member->flags |= FlagQualified;

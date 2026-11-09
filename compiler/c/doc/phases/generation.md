@@ -2391,7 +2391,12 @@ intrinsics. The CPU is untouched, and the C library is called there. Core's
 every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
 `round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
-(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`. A float's
+`tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `exp2`, `ln`, `log2`, `log10`, `pow`, `sinh`,
+`cosh` and `tanh` methods are likewise their intrinsics (`Tan` to `Tanh`, `Log` for `ln`;
+`log10` is `Log2` times a constant); `hypot`, `cbrt` and `powi` are formulas there
+([intrinsic](../nodes/intrinsic.md)), and `isNaN` is `OpFUnordNotEqual`:
+`module_target_spirv_floatmath`.
 **A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
 exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
 `max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects

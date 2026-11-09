@@ -1298,9 +1298,11 @@ unnamed parameter and the store is refused, the message saying to name which
 parameter). A raw pointer in a stored value is outside this rule, as it is
 everywhere: nothing is tracked through one, and `trust` vouches for what it
 reaches. Only a reference to the
-arena made by a cast from a raw pointer is trusted: it carries no loan but
-what was stored through it (`loanArenaChecked`), so its stores are unseen, and
-the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+arena made by a cast from a raw pointer is trusted: the cast leaves it no
+loan, so it carries none but what was stored through it (`loanArenaChecked`),
+and its stores are unseen. A loan a caller lent through the parameter the arena
+was reached by (`self.h.ar` holds `self`'s) makes the store checked even where
+the stored value carries that same loan (`&self.n`). The one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
 every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
 tests). Any other reference whose origin the walk cannot place (an arena
 reached through a method's result) may point anywhere, so no local's borrow is
@@ -1820,6 +1822,24 @@ Only a method's receiver is followed so, not a free function's borrowed argument
 `collection_flow_reshape_through_call` pins the refusals and
 `collection_reshape_through_call_success` what stays accepted.
 
+**An element in an `imm` path.** A method's returned borrow is a plain `&Item`, whose permission
+alone says another holder may write it (`Place.shwrite` of the reference's type), so a source lent
+`&imm` lost its imm-ness at `src.items[0usize]`. `pwElemView` flags the receiver's loan
+(`Loan.elemview`) when the method returned an element out of the receiver's own block: a
+`&Struct` whose struct the receiver holds only in the block its pointer field points at
+(`pwHoldsElements`), the call handed no other borrow the element could come from, the receiver
+reached through a reference nothing writes by (`shared` and not `shwrite`), and no `var` global
+reaching the element's type (`reshapeMutGlobalsReach`: a method with a body of its own could
+return a borrow into one, which is not an `imm` path; this only reads the global-view fact and
+changes no global rule). `pwThrough` then reads a reference variable (a stand-in or a name) that
+holds only such loans, plus the caller loans of `&imm` parameters, as not written by another
+holder (`pwHoldsUnwritten`): `pwShapeLent` freezes the path as it does for `src.one.label.view()`
+and does not mark the loan. Any other loan in the holder's near set (a local, a global, a
+`&mut` parameter, a method that is not an element holder) keeps the type's answer. Not covered:
+`get`'s `Option[&T]`, a `&uni` source, the plain borrow `imm r = &src.one` (name it `&imm`).
+`collection_reshape_imm_source_success` pins what is accepted, `collection_flow_reshape_imm_source`
+and `collection_flow_reshape_imm_source_global` what stays refused.
+
 **What a call must reach to reshape the viewed value** is asked of the viewed value's owner.
 A marked loan records, beside its container (the `String`, the `List`), the struct that holds
 the container as a field where the borrow was taken through that field (`loanShapeOwnerSet`,
@@ -2043,6 +2063,12 @@ it whole makes it whole; a name use the main walk marked (`FlagMoveOut`,
 `FlagHollowOut`) makes it moved or hollow where the walk meets it; its scope's
 end makes it nothing, so the paths leaving the scope agree. The state is logged
 and joined as the loans are — a union — so it costs what the paths changed.
+Beside it goes, for a variable that may be hollow, the set of moves that may
+have hollowed it (`PathVar.hmask`, one bit for each move in `hollowall`, in
+`hollowuse`'s order, the last bit for every one from the 31st on), set where
+the walk meets a hollowing name use, cleared whenever the state loses
+*hollow*, and logged and joined with the state. A name use that is none of the
+listed ones sets every bit.
 
 **What it records** (`dropExit`, `dropStore`, `dropPartStore`), at each release
 the walk meets, for each variable that has anything to do as it dies: at an
@@ -2087,6 +2113,11 @@ handing it on, whose move its flag records. Each store is marked
 `FlagPartNoPrior`; certainly held, neither; mixed, `FlagDropTest`. A store
 reaching a hollowed variable gets a `HollowNode` round its value, which a
 mixed state marks `test`; one wrapped where no path is hollow is unwrapped.
+A hollow release, at an exit or a store, is told of the moves that may have
+hollowed the variable on the paths reaching it (the union of their masks,
+`dropHollowMoves`), not of every move in the function: a move written after the
+store, or hollowing a value stored since, is not among them, so what that move
+took out is freed with the rest.
 
 **Generation** (`genlDropFlagBegin`, `genlDropFlagSet`, `genlDropFlagIf`,
 `genlDropFlagUse` in `genlalloc.c`; [Generation](generation.md), "Drop flags"):

@@ -148,6 +148,39 @@ static int structGenClash(StructNode *inst, INode *tmpl, Name *name) {
     return 1;
 }
 
+// A written method of the template named like a field the instance generated, which entered the
+// instance first (the other order of structGenClash): refused once for each, naming the type the
+// loops describe and the field. The instance is then made with no methods at all, since a body
+// that calls the method would find the field and add errors that name nothing of the cause.
+static int structMethodFieldClash(StructNode *inst, StructNode *tmpl, Nodes *absent, Nodes *genruns) {
+    int clashed = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&tmpl->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->gen || structMemberAbsent(absent, *nodesp))
+            continue;
+        Name *name = ((FnDclNode*)*nodesp)->namesym;
+        INode *found = namespaceFind(&inst->namespace, name);
+        if (found == NULL || found->tag != FieldDclTag)
+            continue;
+        // The template cannot hold a written field of this name beside the method (a duplicate
+        // there), so a field of it in the instance was generated
+        const char *argname = "the type argument";
+        if (genruns && genruns->used > 0) {
+            INode *subj = ((FieldEachRun*)nodesGet(genruns, 0))->subj;
+            INode *dcl = subj && isTypeNode(subj) ? itypeGetTypeDcl(subj) : NULL;
+            Name *dclname = dcl ? inodeGetName(dcl) : NULL;
+            if (dclname)
+                argname = &dclname->namestr;
+        }
+        errorMsgNode(*nodesp, ErrorMetaGenClash,
+            "Field '%s' of '%s' clashes with the method '%s' of '%s': the instance would have a field and a method of one name. Rename the field.",
+            &name->namestr, argname, &name->namestr, &inst->namesym->namestr);
+        clashed = 1;
+    }
+    return clashed;
+}
+
 // The fields template->fields[from..to) are one loop's: make them for each field of T in turn
 static void structCloneGenFields(CloneState *cstate, StructNode *newnode, StructNode *node, uint32_t from, uint32_t to,
         Nodes **runs) {
@@ -376,7 +409,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     if (reenrich)
         structCloneEnrichAliases(cstate, node);
     nodelistInit(&newnode->nodelist, node->nodelist.avail);
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    // A written method that a generated field of its name hides is refused, and the instance is
+    // then made with no methods: the loops below walk none
+    NodeList nomethods = {0, 0, NULL};
+    NodeList *methods = structMethodFieldClash(newnode, node, absent, genruns) ? &nomethods : &node->nodelist;
+    for (nodelistFor(methods, cnt, nodesp)) {
         if (structMemberAbsent(absent, *nodesp))
             continue;
         if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->gen)
@@ -387,6 +424,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             break;
         case VarDclTag:
             iNsTypeAddStatic((INsTypeNode*)newnode, cloneVarDclShell((VarDclNode*)*nodesp));
+            break;
+        case ConstDclTag:
+            iNsTypeAddConst((INsTypeNode*)newnode, cloneConstDclShell((ConstDclNode*)*nodesp));
             break;
         case AliasDclTag: {
             // A type alias, 'alias Cursor = Rep[T];', whose target names the
@@ -407,7 +447,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // 'genfill' holds triples: the template, the shell, and the field's place (index + 1, 0 where
     // T is still a parameter of an enclosing generic and the method is kept as written)
     Nodes *genfill = NULL;
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodelistFor(methods, cnt, nodesp)) {
         if ((*nodesp)->tag != FnDclTag || !((FnDclNode*)*nodesp)->gen || structMemberAbsent(absent, *nodesp))
             continue;
         FnDclNode *tmpl = (FnDclNode*)*nodesp;
@@ -445,13 +485,15 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     if (yieldAny())
         yieldGenCloned(node, newnode);
     INode **copyp = newnode->nodelist.nodes;
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodelistFor(methods, cnt, nodesp)) {
         if (structMemberAbsent(absent, *nodesp))
             continue;
         if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->gen)
             continue;
         if ((*nodesp)->tag == VarDclTag)
             cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
+        else if ((*nodesp)->tag == ConstDclTag)
+            cloneConstDclFill(cstate, (ConstDclNode*)*copyp, (ConstDclNode*)*nodesp);
         else if ((*nodesp)->tag != MacroDclTag && (*nodesp)->tag != AliasDclTag)
             cloneFnDclFill(cstate, (FnDclNode*)*copyp, (FnDclNode*)*nodesp);
         if (late && structMemberAbsent(late, *nodesp)) {
@@ -499,7 +541,7 @@ void structCloneMapMembers(StructNode *original, StructNode *copy) {
     uint32_t cnt;
     for (nodelistFor(&original->nodelist, cnt, nodesp)) {
         uint16_t tag = (*nodesp)->tag;
-        if (tag != FnDclTag && tag != VarDclTag)
+        if (tag != FnDclTag && tag != VarDclTag && tag != ConstDclTag)
             continue;
         INode *found = namespaceFind(&copy->namespace, inodeGetName(*nodesp));
         if (found && found->tag == tag)
@@ -545,7 +587,7 @@ void structPrint(StructNode *node) {
     inodeFprint("{");
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         Name *namesym = inodeGetName(*nodesp);
-        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : "fn";
+        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : (*nodesp)->tag == ConstDclTag ? "const" : "fn";
         inodeFprint(cnt == node->nodelist.used ? "%s %s" : ", %s %s", kind, namesym ? &namesym->namestr : "");
         dclInfoPrint(*nodesp);
     }
@@ -895,6 +937,10 @@ static void structFoldItem(StructNode *node, FieldDclNode *field, StructNode *sr
         entry = (INode*)copy;
         break;
     }
+    case ConstDclTag:
+        errorMsgNode((INode*)alias, ErrorBadFold, "%s is a const of %s: it is reached through the type, not through a value, so it does not fold.",
+            &srcname->namestr, &src->namesym->namestr);
+        return;
     case FnDclTag:
     case FnOverloadDclTag:
     case MacroDclTag:

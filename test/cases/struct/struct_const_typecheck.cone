@@ -1,0 +1,38 @@
+// What a type's 'const' refuses, once it is read.
+//
+// Type check stage. The rules are a module const's: a constant expression, of
+// the type it is declared as, not defined in terms of itself. And a constant
+// is the type's, never a value's: `v.sides` is refused, in a method as outside
+// it, with the type's own spelling named.
+
+mod struct_const_typecheck;
+
+fn runtime() i32 {
+  3
+}
+
+struct Plain {
+  n: i32;
+  const fixed: i32 = 4;
+  const computed: i32 = runtime();     //~ ErrorNotLit:32 "Named constants must be assigned to a constant value"
+  const wrong: u8 = 300;               //~ ErrorLitRange:21
+  const loop1: i32 = loop2;
+  const loop2: i32 = loop1;            //~ ErrorCircular:22 "loop1 is defined in terms of itself"
+
+  fn viaSelf(self) i32 {
+    self.fixed                         //~ ErrorConstViaValue:9 "write it through the type, `Plain.fixed`"
+  }
+}
+
+enum Lamp {
+  Red, Green;
+  const count: u32 = 2;
+}
+
+fn main() i32 {
+  let p = Plain(1);
+  let lamp = Lamp.Green;
+  let a = p.fixed;                     //~ ErrorConstViaValue:12 "a const of the type Plain"
+  let b = lamp.count;                  //~ ErrorConstViaValue:15 "write it through the type, `Lamp.count`"
+  a + Plain.computed
+}
