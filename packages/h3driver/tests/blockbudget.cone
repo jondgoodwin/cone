@@ -21,7 +21,8 @@
 //    again in these raw clients, in a try bank of 24 MiB) are all ended by
 //    the budget without the pool ever refusing the server a buffer; the
 //    honest connection is still served and a new one is made and served.
-// Without the budget, 3 fills the pool and its refusal ends whichever
+// Without the budget (checked by disabling it) no floor is ended, and with
+// more of them (eighty) the pool fills and its refusal ends whichever
 // connection asks next, the honest ones included.
 
 mod blockbudget;
@@ -363,7 +364,11 @@ fn spin(w: &mut World, until: Instant) {
   var limit = until;
   var k = 0usize;
   while k < w.raws.len() {
+    let wasClosed = w.raws[k].closed;
     pumpRaw(w, k, now);
+    // A raw client that closed in this pass makes it busy too: the caller's
+    // loop reads 'closed' next, and a poll to 'until' would sleep past it
+    if w.raws[k].closed != wasClosed {busy = true;}
     if !w.raws[k].closed {
       busy = true;
       match w.raws[k].q.wakeAt() {
@@ -517,9 +522,7 @@ fn main() {
     settle(&mut w, 10u64);
     printStr("500 connections: the honest connection: served "); printStr(yes(served(&w, 10u64, 100u64))); printStr("\n");
     addRaw(&mut w, &cctx, 0u32);
-    let tf = Instant.now();
-    spinUntilClosed(&mut w, 0usize, 15i64);
-    printStr("  (one floor took "); printInt((Instant.now() - tf).millis()); printStr(" ms)\n");
+    spinUntilClosed(&mut w, 0usize, 10i64);
     printStr("  the floor connection: ended by the server "); printStr(yes(w.raws[0usize].closed));
     printStr(", by the budget "); printUInt(w.srv.stats().budgetEnded); printStr(" time\n");
     get(&mut w, honest, 11u64, 3000u64);
@@ -531,9 +534,7 @@ fn main() {
       addRaw(&mut w, &cctx, 0u32);
       n = n + 1u32;
     }
-    let t0 = Instant.now();
-    spinUntilClosed(&mut w, from, 60i64);
-    printStr("  (forty floors took "); printInt((Instant.now() - t0).millis()); printStr(" ms)\n");
+    spinUntilClosed(&mut w, from, 20i64);
     printStr("forty floor connections: ended "); printUInt(u64.from(closedCount(&w, from)));
     printStr(", budget ends in all "); printUInt(w.srv.stats().budgetEnded); printStr("\n");
     printStr("  the pool refused the server a buffer: "); printStr(yes(w.srv.stats().bufferRefused != 0u64)); printStr("\n");

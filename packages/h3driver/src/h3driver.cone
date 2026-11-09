@@ -295,13 +295,23 @@
 // a 0.94 MiB budget each (a full connection's streams are 120 in two layers,
 // 0.94 MiB). A program that sets maxConnections higher than Config.make
 // gives, against the same pool, shrinks every budget with it: raise the
-// pool (iobuf.setLimits) before Config.make instead. NOT COUNTED: bytes
-// already delivered to the program (the Data events' buffers), a datagram's
-// records in QUIC before the turn drains them, and bytes that QUIC's flow
-// control allows (a stream window of 256 KiB and a connection window of 16
-// MiB are credits, not blocks: a few connections that fill them, with a
-// program that does not release, fill a 64 MiB pool; the windows, not the
-// budget, bound that).
+// pool (iobuf.setLimits) before Config.make instead. THE SAFE WAY TO SERVE
+// MORE CONNECTIONS IS A BIGGER POOL, NOT A BIGGER maxConnections.
+//
+// NOT COUNTED, and not bounded by the budget. (1) Bytes QUIC's flow control
+// allows. A stream window (256 KiB) is a credit, not a block, and QUIC gives
+// the connection's credit back as bytes arrive, not as they are released
+// (quic's CREDIT rule), so the connection window (16 MiB) bounds only bytes
+// in flight and a connection's unread bytes are bounded by its streams'
+// windows alone (100 x 256 KiB): a few connections that fill them fill a 64
+// MiB pool. NOT BUILT: windows that come from a connection's share of the
+// pool. That needs a change to quic's credit and its own measurements (a
+// window of a connection's 0.94 MiB would throttle a fast link): it is the
+// next change. (2) What the program holds is the program's to bound: the
+// event deque (takeEvents) and the Data events' buffers, which stay in the
+// pool until it drops them; a program that stops draining events, or holds
+// buffers, can fill the pool. (3) A datagram's records in QUIC before the
+// turn drains them.
 //
 // LOSS, FOR TESTS. 'injectLoss(perMille, seed)' drops that share of the
 // datagrams this driver would send (a fixed pseudo-random sequence from
@@ -411,11 +421,15 @@ pub struct Config {
   pub maxWaiting: u32;            // requests per connection waiting for the peer's stream limit
   pub wakeStep: Duration;         // the least a passed wake time is moved on (WAKE TIMES)
 
-  // The defaults. 'maxConnections' and the protocol's 'maxRequestStreams' are
-  // scaled to the buffer pool as it is now (set iobuf's limits first): the
-  // pool is shared out in streams of two smallest blocks each, a request
-  // stream's cost at the least, and the connections' streams add up to no more
-  // than the pool has (see the package's header, THE BLOCK BUDGET)
+  // The defaults. 'maxConnections' and the protocol's 'maxRequestStreams' come
+  // from the buffer pool as it is now (set iobuf's limits first), by one rule:
+  //   maxRequestStreams = min(100, streamsInPool / 16), at least 4
+  //   maxConnections    = streamsInPool / (maxRequestStreams + 20), 1 to 10000
+  // where streamsInPool = three quarters of iobuf's maxBytes / (2 x a block):
+  // a request stream costs two smallest blocks at the least (the driver's
+  // and HTTP/3's), and 20 more streams are a connection's control, QPACK and
+  // unidirectional ones. A bigger pool gives more connections; nobody sets
+  // maxConnections (see the package's header, THE BLOCK BUDGET)
   pub fn make() Config {
     let streamsInPool = poolShare() / (streamLayers * page);
     var protocol = http3.Config.make();
