@@ -59,9 +59,14 @@ const hListener = 2u32;
 const hFile = 3u32;
 const hDatagram = 4u32;       // a bound UDP socket
 const hPipe = 5u32;           // one end of a pipe (adoptPipe)
+const hChild = 6u32;          // a child process (adoptChild)
 
-// An entry of the handle table (a slots.SlotTable: its cell's number and
-// generation are the Handle's)
+// The handle table, and the id of one entry in it (the pool's handle: its
+// cell's number and generation). The pool kind is spelled here only
+alias HEntries = GenPool[HEntry];
+alias HEntryId = PoolHandle;
+
+// An entry of the handle table (see HEntries)
 struct HEntry {
   pub raw: usize;          // the OS's: Windows' handle or socket, Linux's descriptor
   pub kind: u32;
@@ -75,6 +80,7 @@ struct HEntry {
   pub writes: *OpCore;
   pub writesTail: *OpCore;
   pub skip: u32;           // Windows: a socket whose completions skip the port on success: one done at once posts none
+  pub waited: u32 = 0u32;  // Windows: a child some WaitChild has answered for (a second fails, as Linux's reaping makes it)
 }
 
 // An answer a full channel held back, and the channel's sender (a clone of
@@ -122,7 +128,7 @@ pub struct Loop {
   done: List[*OpCore];     // an asker's records answered, for takeDone
   cancels: List[Asked];    // Linux: socket operations asked to end, answered at the next wait (linux.cone)
   held: List[Held];        // answers held back by a full channel
-  handles: SlotTable[HEntry];
+  handles: HEntries;
   wheel: Wheel;
   expiries: List[Expiry];
   entries: *OverlappedEntry;   // Windows: what one wait takes from the port
@@ -192,7 +198,7 @@ pub struct Loop {
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
       decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
       held: List[Held](),
-      handles: SlotTable[HEntry].make(64u32),
+      handles: HEntries.make(64u32),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
@@ -458,6 +464,30 @@ pub struct Loop {
     }
   }
 
+  // A child process, for WaitChild. What 'raw' is differs by system, and so
+  // does what the loop owns:
+  // - Windows: the process HANDLE (it needs SYNCHRONIZE and
+  //   PROCESS_QUERY_LIMITED_INFORMATION). The loop OWNS it from this call,
+  //   whatever the result: 'close' closes it, and a failed adopt has.
+  // - Linux: the process id. The loop owns only the pidfd it opens for it
+  //   (pidfd_open, Linux 5.3 and later), closed by 'close'; the pid stays the
+  //   caller's, and the child is reaped by the WaitChild that answers with its
+  //   end (a child never waited for stays a zombie until the caller reaps it).
+  //   Failed (the system's error number) if the pidfd cannot be made.
+  pub fn adoptChild(self: &mut, raw: usize) Result[Handle, IoError] {
+    #if #os == .windows {
+      Ok[Handle, IoError](self.register(raw, hChild, 0u16))
+    } #else {
+      let fd = sysPidfdOpen(i64.from(raw));
+      if fd < 0i64 {return Err[Handle, IoError](IoError(u32.from(lastErrno())));}
+      var code = 0u32;
+      var h = Handle.none();
+      code, h = lxAdopt(self, usize.from(fd), hChild, 0u16);
+      if code != 0u32 {return Err[Handle, IoError](IoError(code));}
+      Ok[Handle, IoError](h)
+    }
+  }
+
   // One end of a pipe, for PipeRead and PipeWrite. 'raw' is the OS's: on
   // Windows a HANDLE opened FILE_FLAG_OVERLAPPED (a named pipe's end; an
   // anonymous pipe cannot be), on Linux a descriptor (made non-blocking here).
@@ -496,14 +526,14 @@ pub struct Loop {
   // The hint word of h: a u32 kept for the layer that opened it (aio's calm
   // bit), 0 when it is opened; 0 for a handle that names nothing
   pub fn hint(self: &, h: Handle) u32 {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     if p as usize == 0usize {return 0u32;}
     (*p).hint
   }
 
   // Set h's hint word: false, and nothing set, if h names nothing
   pub fn setHint(self: &mut, h: Handle, v: u32) bool {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     if p as usize == 0usize {return false;}
     (*p).hint = v;
     true
@@ -520,6 +550,18 @@ pub struct Loop {
     lxCancelAll(self, i);
     lxCancelFiles(self, h);
     let e = handles.at(i) as &HEntry;
+    // Windows: a wait on a process is no I/O CancelIoEx reaches; each is
+    // cancelled by name (askCancel answers it at once)
+    #if #os == .windows {
+      if e.kind == hChild {
+        var w = e.reads;
+        while w as usize != 0usize {
+          let next = (*w).hnext;
+          if (*w).state == stFlight && (*w).asked == askedNone {self.askCancel(w, askedCancel);}
+          w = next;
+        }
+      }
+    }
     self.unpublish(i);
     #if #os == .windows {CancelIoEx(e.raw, null);}
     self.detachLists(i);
@@ -562,7 +604,7 @@ pub struct Loop {
     // Windows: a socket's completions skip the port when it finishes at once
     // (its start answers it then: 'finishNow'), where the system allows it
     var skip = 0u32;
-    #if #os == .windows { if kind != hFile && kind != hPipe && skipOnSuccess(raw) {skip = 1u32;} }
+    #if #os == .windows { if kind != hFile && kind != hChild && kind != hPipe && skipOnSuccess(raw) {skip = 1u32;} }
     let s = handles.add(HEntry(raw, kind, family, 0u32, null, null, null, null, skip));
     self.publish(s.index);
     Handle(s.index, s.gen)
@@ -570,7 +612,7 @@ pub struct Loop {
 
   // Whether h's completions skip the port on success
   fn skips(self: &, h: Handle) bool {
-    let p = handles.get(Slot(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     p as usize != 0usize && (*p).skip != 0u32
   }
 
@@ -649,7 +691,7 @@ pub struct Loop {
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self: &, h: Handle) u32 {
-    if handles.get(Slot(h.index, h.gen)) as usize == 0usize {return noEntry;}
+    if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {return noEntry;}
     h.index
   }
 
@@ -678,7 +720,7 @@ pub struct Loop {
       unboundTail = p;
       return;
     }
-    let e = handles.get(Slot(r.handle.index, r.handle.gen)) as &mut HEntry;
+    let e = handles.get(HEntryId(r.handle.index, r.handle.gen)) as &mut HEntry;
     if side == onReads {
       r.hprev = e.readsTail;
       if e.readsTail as usize == 0usize {e.reads = p;} else {(*e.readsTail).hnext = p;}
@@ -707,7 +749,7 @@ pub struct Loop {
     }
     // A closed handle's lists were let go at its close (detachLists), which
     // took every record off them: an entry is there for a record still on one
-    let ep = handles.get(Slot(r.handle.index, r.handle.gen));
+    let ep = handles.get(HEntryId(r.handle.index, r.handle.gen));
     if ep as usize == 0usize {return;}
     let e = ep as &mut HEntry;
     if side == onReads {
@@ -1250,6 +1292,10 @@ pub struct Loop {
         r.handle = sock;
         r.setPeer(addr);
       }
+      case let WaitChild(o) {
+        r.kind = diag.kindWaitChild;
+        r.handle = o.child;
+      }
     }
     r.deadline = deadline;
     r.group = group;
@@ -1425,6 +1471,7 @@ pub struct Loop {
     }
     if k == diag.kindRecvFrom {return self.startRecvFrom(p, r.handle);}
     if k == diag.kindSendTo {return self.startSendTo(p, r.handle);}
+    if k == diag.kindWaitChild {return self.startWait(p, r.handle);}
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
     if k == diag.kindWriteAt {return self.startFile(p, r.handle, r.at, true);}
     if k == diag.kindPipeRead {return self.startPipe(p, r.handle, false);}
@@ -1707,6 +1754,32 @@ pub struct Loop {
     }
   }
 
+  // The end of a child process. Windows: a wait completion packet of its own
+  // (the loop's timer uses the same kernel service) tied to the process
+  // handle, which posts this record's OVERLAPPED to the port under keyIo when
+  // the process ends; no thread waits. A process already ended posts at once.
+  // Linux: the handle's queue, tried when the pidfd is readable (lxStartWait)
+  fn startWait(self: &mut, p: *OpCore, child: Handle) u32 {
+    let r = p as &mut OpCore;
+    #if #os == .windows {
+      let proc = self.rawOf(child, hChild);
+      if proc == invalidHandle {return errorInvalidHandle;}
+      var packet = 0usize;
+      if NtCreateWaitCompletionPacket(&mut packet, genericAll, null) != 0i32 {return GetLastError();}
+      var already = 0u8;
+      let st = NtAssociateWaitCompletionPacket(packet, portHandle, proc, keyIo as *u8, p as *u8, 0i32, 0usize,
+        &mut already as *u8);
+      if st != 0i32 {
+        CloseHandle(packet);
+        return RtlNtStatusToDosError(st as u32);
+      }
+      r.raw = packet;
+      0u32
+    } #else {
+      lxStartWait(self, p)
+    }
+  }
+
   // A read from, or the buffer's bytes written to, a pipe's end. Windows:
   // ReadFile or WriteFile on the overlapped end (no offset), the end of the
   // stream (the other end closed) a read ending Done(0) -- ERROR_BROKEN_PIPE
@@ -1803,7 +1876,7 @@ pub struct Loop {
       }
       // An operation may have closed it (Linux: a connect that failed on its
       // try): its lists went with it
-      if handles.get(Slot(h.index, h.gen)) as usize == 0usize {break;}
+      if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {break;}
       p = next;
     }
     n
@@ -1821,6 +1894,23 @@ pub struct Loop {
     }
     if r.asked != askedNone {return;}
     r.asked = why;
+    #if #os == .windows {
+      if r.kind == diag.kindWaitChild {
+        // The wait's packet is taken back, a signalled one off the port too:
+        // when that succeeds nothing will come for this record, and it is
+        // answered here. When it does not (the packet is already out of the
+        // port, or in this batch), the completion is on its way and answers
+        let st = NtCancelWaitCompletionPacket(r.raw, 1u8);
+        if st == 0i32 || (st as u32) == 0xC0000120u32 {
+          kernelHeld = kernelHeld - 1u32;
+          self.unlinkSide(p);
+          CloseHandle(r.raw);
+          r.raw = 0usize;
+          self.decide(p, outcome, 0usize, 0u32);
+        }
+        return;
+      }
+    }
     if jobKind(r.kind) {
       // Away: the one field of its job part the loop sets. A Completer is told,
       // and answers; a job still queued is taken back, home with its buffer,
@@ -1882,6 +1972,10 @@ pub struct Loop {
       kernelHeld = kernelHeld - 1u32;
       self.unlinkSide(p);
       if r.state == stAbandoned {
+        if r.kind == diag.kindWaitChild && r.raw != 0usize {
+          CloseHandle(r.raw);
+          r.raw = 0usize;
+        }
         // Its answer went long ago: its socket closed, and the record ended
         // (its buffer home)
         if r.newSock != invalidHandle {
@@ -1917,6 +2011,27 @@ pub struct Loop {
     #if #os == .windows {
       let r = p as &mut OpCore;
       r.dequeued = at;
+      if r.kind == diag.kindWaitChild {
+        // The process has ended: its exit code is the count
+        if r.raw != 0usize {
+          CloseHandle(r.raw);
+          r.raw = 0usize;
+        }
+        let proc = self.rawOf(r.handle, hChild);
+        var ec = 0u32;
+        if proc == invalidHandle {
+          self.decide(p, diag.outcomeFailed, 0usize, errorInvalidHandle);
+        } else if (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited != 0u32 {
+          // Answered for already: the child is spoken for, as a reaped one is on Linux
+          self.decide(p, diag.outcomeFailed, 0usize, errorNoChildren);
+        } else if GetExitCodeProcess(proc, &mut ec) == 0i32 {
+          self.decide(p, diag.outcomeFailed, 0usize, GetLastError());
+        } else {
+          (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited = 1u32;
+          self.decide(p, diag.outcomeDone, usize.from(ec), 0u32);
+        }
+        return;
+      }
       let n = usize.from(bytes);
       if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
