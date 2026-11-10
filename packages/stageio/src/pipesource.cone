@@ -23,7 +23,8 @@
 // after BOTH streams have reached their end, whichever way each ended: so when it arrives every byte the child wrote has been
 // given to the sinks, and the sinks have had their ends. An Err on 'done' is a child that could not be started or whose pipes
 // or wait could not be set up; the sinks are then ended Failed with the same reason. A sink that stops its source Failed (it
-// wants no more) has the child killed, with the programs it started; 'kill' does the same on request. The standard input of the
+// wants no more), or a cancel of the group the streams run in (a change: it used to leave the child running), has the child
+// killed, with the programs it started; 'kill' does the same on request. The standard input of the
 // child is NUL, unless a PipeSink is given as the fourth argument (pipesink.cone): ChildStages(out, err, done, Some[PipeSink](s))
 // launches the child with a pipe for its input and hands it to 's' once the child runs (or Pipe.none() if it could not be set
 // up, which fails 's'). The input is the sink's own stream: its end or failure does not stop the child, and the exit on 'done'
@@ -35,7 +36,10 @@
 // therefore delays 'done' until it exits or closes it, even after the child itself is gone. A 'kill' ends the programs the
 // child started as well (a job object on Windows, a process group on Linux), which releases the pipes.
 //
-// KILL ON STOP. A sink that stops its source has the child killed. The likely later option is to close our read end and let
+// KILL ON STOP OR CANCEL. A sink that stops its source has the child killed. So does a cancel of the group the streams run in,
+// on every path: a read in flight, a buffer coming back, or the source idle with its window full (a consumer holding chunks).
+// This CHANGES the earlier behaviour, in which a group cancel left the child running. The likely later option is to close
+// our read end and let
 // the writer notice (EPIPE/SIGPIPE, Windows' broken pipe), which is what Rust's std and a shell pipeline do; the kill stays
 // the default for now.
 //
@@ -154,6 +158,8 @@ pub actor PipeSource is ChunkSource {
 
   // A halted source ends: with the stop's reason, or as cancelled
   fn finishHalted(self) {
+    // every path here is a halt (a stop, or a cancel seen idle in giveBack or at the pump's top): a ChildStages kills
+    halt = true;
     var w = None[Ending];
     w <-> why;
     var how = Ending.Failed(AnyError.msg("streams: cancelled"));
