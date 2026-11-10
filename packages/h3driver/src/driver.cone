@@ -111,7 +111,7 @@ struct Conn {
   peer: SocketAddr;
   q: quic.Connection;
   h: http3.Connection;
-  streams: Strms;
+  streams: Streams;
   byId: Dict[u64, RecId];    // a stream's number to its record
   waitBidi: Deque[RecId];    // its own streams waiting for QUIC to open them, in HTTP/3's order
   waitUni: Deque[RecId];
@@ -147,8 +147,8 @@ pub struct Driver {
   maxWaiting: u32;
   wakeStep: Duration;
   share: usize;                 // the pool's bytes the connections share (THE BLOCK BUDGET), as the pool was when this was made
-  listeners: Lsts;
-  conns: Conns;
+  listeners: Listeners;
+  conns: Connections;
   routes: Dict[CidKey, RecId];   // a server's: every connection ID to its connection
   dirty: List[u32];
   ready: Deque[Event];          // events, until takeEvents moves them
@@ -167,7 +167,7 @@ pub struct Driver {
     Driver(tokBase: (tokMark << markShift) | (number << numberShift),
       client: quic.Context.client(qcfg), h3cfg: hcfg, recvDepth: recvDepth, sendDepth: sendDepth,
       sendWatermark: sendWatermark, maxConnections: maxConnections, maxWaiting: maxWaiting,
-      wakeStep: wakeStep, share: poolShare(), listeners: Lsts.make(4u32), conns: Conns.make(16u32),
+      wakeStep: wakeStep, share: poolShare(), listeners: Listeners.make(4u32), conns: Connections.make(16u32),
       routes: Dict[CidKey, RecId](), dirty: List[u32](), ready: Deque[Event](),
       nextWake: forever(), lossPerMille: 0u32, lossState: 0u64, st: DriverStats.zero())
   }
@@ -428,7 +428,7 @@ pub struct Driver {
     match self.newClient(serverName, &localQ, &remoteQ, now) {
       case let Ok(q) {
         let s = conns.add(Conn(server: false, token: token, listener: RecId.none(), handle: handle, peer: addr,
-          q: q, h: http3.Connection.client(h3cfg, now), streams: Strms.make(16u32),
+          q: q, h: http3.Connection.client(h3cfg, now), streams: Streams.make(16u32),
           byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 2u64, ids: List[CidKey](), idEpoch: 0u64, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
@@ -1593,7 +1593,7 @@ pub struct Driver {
     match quic.Connection.accept(&l.ctx, d, &l.localQ, &peerQ, now) {
       case let Ok(q) {
         let s = conns.add(Conn(server: true, token: l.token, listener: listeners.slotAt(li), handle: l.handle,
-          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: Strms.make(16u32),
+          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: Streams.make(16u32),
           byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 3u64, ids: List[CidKey](), idEpoch: unread, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
