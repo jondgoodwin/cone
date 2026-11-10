@@ -21,6 +21,7 @@ pub struct World {
   pub bodies: List[Body];
   pub freeSlots: List[u32];
   pub joints: List[Joint];
+  pub jointsOf: List[List[u32]];     // per body (parallel to 'bodies'): the joints that name it, so destroyBody visits only its own
   pub bp: SweepAndPrune;
   pub cache: List[Contact];
   pub next: List[Contact];
@@ -40,7 +41,7 @@ pub struct World {
 
   pub fn make() World {
     World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape](), List[Body](), List[u32](),
-      List[Joint](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
+      List[Joint](), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
       List[u32](), List[u32](), List[Event](), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.)
   }
 
@@ -139,6 +140,7 @@ pub struct World {
     } else {
       id = u32.from(bodies.len());
       bodies.push(body);
+      jointsOf.push(List[u32]());
     }
     bp.add(id, self.bodyBox(usize.from(id), 0.), def.layer, def.mask, motion == MotionStatic);
     id
@@ -152,10 +154,16 @@ pub struct World {
     bp.remove(id);
     freeSlots.push(id);
     var k = 0usize;
-    while k < joints.len() {
-      if joints[k].alive && (joints[k].a == id || joints[k].b == id) { joints[k].alive = false; }
+    while k < jointsOf[i].len() {
+      let ji = usize.from(*jointsOf[i][k]);
+      if joints[ji].alive {
+        joints[ji].alive = false;
+        let other = if joints[ji].a == id { joints[ji].b } else { joints[ji].a };
+        if other != id { self.unindexJoint(other, u32.from(ji)); }
+      }
       k = k + 1usize;
     }
+    jointsOf[i].clear();
     next.clear();
     k = 0usize;
     while k < cache.len() {
@@ -307,6 +315,9 @@ pub struct World {
     j.fa = bA.rot.conjugate() * f;
     j.fb = bB.rot.conjugate() * f;
     joints.push(j);
+    let ji = u32.from(joints.len()) - 1u32;
+    jointsOf[usize.from(a)].push(ji);
+    if b != a { jointsOf[usize.from(b)].push(ji); }
     noCollideJoints = true;
     self.wake(a);
     self.wake(b);
@@ -423,7 +434,29 @@ pub struct World {
     let jj = joints[usize.from(j)];
     joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
   }
-  pub fn removeJoint(self: &mut, j: u32) { joints[usize.from(j)].alive = false; }
+  pub fn removeJoint(self: &mut, j: u32) {
+    if joints[usize.from(j)].alive {
+      joints[usize.from(j)].alive = false;
+      let a = joints[usize.from(j)].a;
+      let b = joints[usize.from(j)].b;
+      self.unindexJoint(a, j);
+      if b != a { self.unindexJoint(b, j); }
+    }
+  }
+
+  // Joint j is dead: drop it from body 'body's list of joints
+  fn unindexJoint(self: &mut, body: u32, j: u32) {
+    let bi = usize.from(body);
+    var k = 0usize;
+    while k < jointsOf[bi].len() {
+      if *jointsOf[bi][k] == j {
+        jointsOf[bi].swap(k, jointsOf[bi].len() - 1usize);
+        jointsOf[bi].truncate(jointsOf[bi].len() - 1usize);
+        return;
+      }
+      k = k + 1usize;
+    }
+  }
   // Make a joint breakable: it is removed, with an EvJointBroken event, in the first sub-step in which the force it
   // carries passes 'force' newtons or the torque it carries passes 'torque' N m (jointLoadOf says which rows count).
   // The load is the sub-step's row impulses over the sub-step's time, which is what PhysX's breakForce reads and what

@@ -46,7 +46,10 @@ enum VarFlowTemp {
     // walk, flowpath.c, pwLockApply). Generation follows whether it still holds
     // its lock with a flag, as a drop flag follows a value, since the code
     // after that ends the guard's scope too
-    VarSeamHeld = 0x0020
+    VarSeamHeld = 0x0020,
+    // Its drop flag also says which moves hollowed it: paths that hollowed it by
+    // different parts joined (Bug 69), so a release must not take their union
+    VarPartFlag = 0x0040
 };
 
 // What flow found of a local or parameter anywhere in its function, which

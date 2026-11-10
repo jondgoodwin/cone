@@ -214,6 +214,50 @@ static Nodes *dropHollowMoves(VarDclNode *var, uint32_t hmask) {
     return moved;
 }
 
+// The steps from a variable out to the part a move took, as a hash: a
+// dereference or an element, in order, whatever node took each
+static uint64_t dropMoveShape(INode *moved) {
+    uint64_t h = 1;
+    INode *exp = moved;
+    while (!(isNameUseNode(exp) && isExpNode(exp))) {
+        switch (exp->tag) {
+        case ArrIndexTag:
+            h = h * 31 + 1; exp = ((FnCallNode *)exp)->objfn; break;
+        case DerefTag:
+            h = h * 31 + 2; exp = ((StarNode *)exp)->vtexp; break;
+        case CastTag:
+            exp = ((CastNode *)exp)->exp; break;
+        default:
+            return 0;
+        }
+    }
+    return h;
+}
+
+// Is every move of 'a' matched by one of 'b' taking the same part?
+static int dropShapesCovered(VarDclNode *var, uint32_t a, uint32_t b) {
+    uint32_t used = var->hollowall->used;
+    for (uint32_t i = 0; i < used && i < DropHollowLast; ++i) {
+        if (!(a & (1u << i)))
+            continue;
+        uint64_t shape = dropMoveShape(nodesGet(var->hollowall, i));
+        int found = 0;
+        for (uint32_t j = 0; j < used && j < DropHollowLast && !found; ++j)
+            found = (b & (1u << j)) && shape != 0 && dropMoveShape(nodesGet(var->hollowall, j)) == shape;
+        if (!found)
+            return 0;
+    }
+    return 1;
+}
+
+int dropHollowShapesDiffer(VarDclNode *var, uint32_t a, uint32_t b) {
+    if (a == b || var->hollowall == NULL)
+        return 0;
+    if ((a | b) & (1u << DropHollowLast))
+        return 1;
+    return !dropShapesCovered(var, a, b) || !dropShapesCovered(var, b, a);
+}
+
 void dropMove(uint32_t var, INode *node, int hollow) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked)
@@ -395,8 +439,14 @@ void dropWalkEnd(int ok) {
         return;
     // A variable whose state differs by path at any release has a flag
     for (uint32_t i = 0; i < nentries; ++i) {
+        PathVar *pv = &pathVars[entries[i].var];
         if (dropMixed(entries[i].state))
-            pathVars[entries[i].var].flagged = 1;
+            pv->flagged = 1;
+        // Hollowed by different parts on joining paths: the flag says which
+        if (pv->partmix && (entries[i].state & DropHollow)) {
+            pv->flagged = 1;
+            pv->var->flowtempflags |= VarPartFlag;
+        }
     }
     for (uint32_t i = 0; i < nentries; ++i) {
         PathVar *pv = &pathVars[entries[i].var];
