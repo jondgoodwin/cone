@@ -232,13 +232,13 @@ fn hash3(d: &Array[u8], i: usize) usize {
 // lsym by length, dsym by distance (d - 1 up to 256, then 256 + (d - 1) / 128, since
 // every distance code over 256 starts at a multiple of 128 plus one).
 fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
-  var lsym = List[u8]();
-  var q = 0usize;
-  while q < 259usize { lsym.push(if q < 3usize {0u8} else {u8.from(lengthSymbol(q))}); q += 1usize; }
-  var dsym = List[u8]();
+  var lsym = Array[u8, 259]() <- fill 0u8;
+  var q = 3usize;
+  while q < 259usize { lsym[q] = u8.from(lengthSymbol(q)); q += 1usize; }
+  var dsym = Array[u8, 512]() <- fill 0u8;
   q = 0usize;
   while q < 512usize {
-    dsym.push(u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize})));
+    dsym[q] = u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize}));
     q += 1usize;
   }
   var acc = w.acc;
@@ -257,7 +257,7 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
     } else {
       let len = usize.from((t >> 16u32) & 0x7FFFu32);
       let d = usize.from(t & 0xFFFFu32);
-      let ls = usize.from(*lsym[len]);
+      let ls = usize.from(lsym[len]);
       acc = acc | (u64.from(*lit.codes[257usize + ls]) << n);
       n += u64.from(*lit.lens[257usize + ls]);
       acc = acc | (u64.from(len - usize.from(lenBase[ls])) << n);
@@ -267,7 +267,7 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
         w.out.push(u8.from((acc >> 16u64) & 255u64)); w.out.push(u8.from((acc >> 24u64) & 255u64));
         acc = acc >> 32u64; n -= 32u64;
       }
-      let ds = usize.from(*dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
+      let ds = usize.from(dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
       acc = acc | (u64.from(*dist.codes[ds]) << n);
       n += u64.from(*dist.lens[ds]);
       acc = acc | (u64.from(d - usize.from(distBase[ds])) << n);
