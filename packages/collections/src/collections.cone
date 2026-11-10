@@ -187,7 +187,8 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 
 // A growable list of T, in one block of 'cap' slots of which the first 'used'
 // hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
-// gives its block back only when it dies (or, with 'shrinkToFit', its spare room).
+// gives its block back only when it dies (or, with 'shrinkToFit' in the heap
+// region, its spare room).
 // The block comes from the list's region, the last field. It inserts and removes
 // anywhere, as String does ('insert', 'remove', 'swapRemove', 'removeIf', 'replace',
 // 'splitOff', 'extend', 'drain(start, end)'), and the methods of Array that keep the
@@ -678,9 +679,10 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     }
   }
 
-  // Give back the room beyond the values: the capacity becomes what the region
-  // gives a block of 'len' values (exactly 'len' where the region gives what is
-  // asked), and an empty list gives its block back whole. The block may move, as
+  // Give back the room beyond the values, in the heap region only: the capacity
+  // becomes what the heap gives a block of 'len' values. In any other region (an
+  // arena, ...) it is a no-op for a list with values, which keeps its block. An
+  // empty list gives its block back whole, in any region. The block may move, as
   // for 'reserve', so a borrow into it is stale afterwards.
   pub fn shrinkToFit(self: &mut) {
     if used == cap { return; }
