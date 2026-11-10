@@ -1,43 +1,138 @@
-// ======== Layer 2, writing: a Writer over a buffer being filled ========
+// ======== Layer 2, writing: a Writer over buffers being filled ========
 //
 // The producing side of a Reader: whoever has bytes to put out asks the writer
-// for room, writes into it, and says how many it wrote. When the buffer is
-// full, or the stage is done, the whole buffer is handed on (moved, to the next
-// stage or to a send), and the writer starts again on a fresh one.
+// for room, writes into it, and says how many it wrote; or hands it bytes and
+// numbers to put, and the writer finds the room. When the buffer is full, or
+// the stage is done, the whole buffer is handed on (moved, to the next stage or
+// to a send), and the writer starts again on a fresh one.
+//
+// TWO WAYS TO FILL, one writer. A stage that has a Transform pull into the
+// buffer's spare room, or reads straight into it, uses 'spare' and 'advance'.
+// Code that builds bytes (a file's header, a datagram, a frame) uses the puts:
+// they take everything, and when the buffer in use fills it joins a Chain of
+// filled buffers the writer holds and a fresh one goes on. The writer does no
+// I/O, takes no lock and calls nothing; the caller takes the filled buffers
+// when it likes ('take' or 'popFull' one at a time, 'finish' for all).
 //
 //   var w = Writer.make(65536usize);        // a 64 KiB buffer, empty
 //   let n = fillFrom(w.spare());            // write into the room...
 //   w.advance(n);                           // ...and say how much
 //   if w.isFull() {send(w.take());}         // the buffer moves on; w holds a new one
 //
+//   var w = Writer.make(4096usize);
+//   w.putBE[u32](0x47475546u32);            // a number, most significant byte first
+//   w.putLE[u64](tensorCount);              // least significant first
+//   w.putUintBE(frameLen, 3usize);          // an odd width: HTTP/2's 24-bit length
+//   w.put(name.view());                     // a slice, all of it, rolling over as needed
+//   let count = w.slot[u16]();              // room for a number known only later...
+//   w.fillBE(count, n);                     // ...filled when it is
+//   w.lengthPrefixedBE[u32](w => {          // or: the length of what the closure writes
+//     w.put(body);
+//   });
+//   let all = w.finish();                   // a Chain: every byte, in order
+//
+// THE FILL-IN-PLACE CALLS act on the buffer in use:
+//
 //   w.spare()       the room after the written bytes, '&mut Array[u8]', to fill
 //   w.advance(n)    n bytes of the room are written (a panic past the room)
-//   w.putSome(bytes)  copy in as many as fit: how many
-//   w.take()        the buffer, written bytes and all, moved out; a fresh one
-//                   of the same size takes its place
-//   w.intoBuf()     the buffer moved out; the writer is spent (holds none)
-//   w.len()  w.room()  w.isFull()  w.isEmpty()  w.view()  w.buffer()
+//   w.room()  w.isFull()  w.isEmpty()  w.view()  w.buffer()
+//   w.len()         the bytes held: those in the buffers held and in use
+//
+// THE PUTS take everything (a panic, at the caller's line, only if the pool
+// has no buffer to give):
+//
+//   w.put(bytes)         copy it all in; a new buffer whenever the current one fills
+//   w.putSome(bytes)     copy in as many as fit in the buffer in use: how many
+//   w.putByte(b)  w.repeat(b, n)  w.pad(align)    (pad: zeros up to a multiple of align of total())
+//   w.putLE(v)  w.putBE(v)     v a number of a fixed width (any integer or float, as its own type);
+//                        the order is in the name. A number that does not fit the room
+//                        left in the buffer starts a new one, so it is never split
+//   w.putUintLE(v, n)  w.putUintBE(v, n)    the low n bytes (1 to 8) of a u64; a panic if v needs more
+//   w.putFrom(r, n)      n bytes of a Reader, consumed; whole front segments that lie within n move
+//                        as they are when the buffer in use is empty, the rest is copied
+//   w.total()            the bytes written since the writer was made, whatever has been taken
+//
+// TAKING:
+//
+//   w.take()        the oldest buffer held; or, when none is held, the buffer in use, written
+//                   bytes and all, moved out, and a fresh one of the same size takes its place
+//   w.popFull()     the oldest buffer held, or the buffer in use when it is full, or None: never
+//                   a buffer that holds an unfilled slot or follows one
+//   w.finish()      every byte held, the buffer in use included, as a Chain, in order; a panic, at
+//                   the caller's line, if a slot is unfilled
+//   w.intoBuf()     the buffer in use moved out; the writer is spent (holds none). For a writer
+//                   that has held nothing
+//
+// SLOTS, for a number known only later (a count, a checksum):
+//
+//   w.slot[T]()     reserves size(T) bytes, never split, and gives a Slot[T]
+//   w.fillLE(s, v)  w.fillBE(s, v)    write it: a panic for a slot of another writer or one filled twice
+//   w.lengthPrefixedLE[T](f)  w.lengthPrefixedBE[T](f)    a slot, f(w), and the slot filled with the
+//                   bytes f wrote; a panic if they do not fit T
+//
+// A slot holds its buffer: while one is unfilled, 'take' and 'popFull' give no buffer from its buffer
+// on, so the bytes stay where the fill can reach them and nothing is copied.
+//
+// WHY THE BYTES ARE SAFE. The stores are IoBuf's (putNum, putUint, setNum and
+// Chain.setNum): each is one check of the room and one store of the number's
+// bytes, never a pointer that leaves iobuf. 'Numeric' means any integer or
+// float; usize and isize are accepted and are the machine's width, so a
+// portable format does not use them. Machines are little-endian.
 //
 // Like Reader this lives inside one stage: it does no I/O, takes no lock and
-// never waits. The buffer is an IoBuf from the buffer pool, so 'take' hands a
-// stage's output on without a copy and a dropped writer returns its block.
+// never waits. The buffers are IoBufs from the buffer pool, so 'take' hands a
+// stage's output on without a copy and a dropped writer returns its blocks.
 
-// A buffer being filled, and its size, for the next after 'take'
+// Which writer a slot came from: never 0
+let nextWriterId: Atomic[u32];
+
+fn @initpure init() {
+  nextWriterId = Atomic[u32].of(0u32);
+}
+
+// The room a slot reserved, where it is, and whether it has been filled
+struct SlotRec {
+  ord: usize;        // the ordinal of the buffer that holds it
+  at: usize;         // its offset in that buffer
+  filled: bool;
+}
+
+// Room reserved for a number in a Writer, to be filled later
+pub struct Slot[T] {
+  writer: u32;       // the writer that made it
+  serial: usize;     // its place in that writer's slots, counting from the writer's start
+}
+
+// A buffer being filled, the filled ones it holds, and its size, for the next after 'take'
 pub struct Writer is Move {
-  buf: IoBuf;
-  size: usize;       // the room a fresh buffer is made with after 'take'
+  buf: IoBuf;               // the buffer in use
+  chain: Chain;             // the filled buffers held, oldest first; the buffer in use follows them
+  size: usize;              // the room a fresh buffer is made with
+  first: usize;             // the ordinal of the chain's oldest buffer (the buffer in use is first + the chain's segments)
+  popped: usize;            // the bytes handed out of the writer so far
+  wid: u32;                 // this writer's id
+  recs: List[SlotRec];      // the slots since the last time none was open
+  base: usize;              // the serial of recs[0]
+  open: usize;              // slots not yet filled
 
   // A writer over a fresh buffer with room for at least size bytes
   pub fn make(size: usize) Writer {
-    Writer(IoBuf(size), size)
+    Writer.over2(IoBuf(size), size)
   }
 
-  // A writer over a buffer a caller has started (its written bytes stay); 'take'
-  // makes the next one as large as this one's capacity
+  // A writer over a buffer a caller has started (its written bytes stay); a
+  // fresh buffer is as large as this one's capacity
   pub fn over(buf: IoBuf) Writer {
     let size = buf.capacity();
-    Writer(buf, size)
+    Writer.over2(buf, size)
   }
+
+  fn over2(buf: IoBuf, size: usize) Writer {
+    Writer(buf, Chain.make(0xFFFFFFFFFFFFFFFFusize), size, 0usize, 0usize,
+      nextWriterId.add(1u32) + 1u32, List[SlotRec](), 0usize, 0usize)
+  }
+
+  // ---- The buffer in use ----
 
   // The room after the written bytes, to fill
   pub fn spare(self: &mut) &mut Array[u8] {buf.spare()}
@@ -49,35 +144,291 @@ pub struct Writer is Move {
     buf.setLen(buf.len() + n);
   }
 
-  // Copy in as many of bytes as fit: how many
+  // Copy in as many of bytes as fit in the buffer in use: how many
   pub fn putSome(self: &mut, bytes: &Array[u8]) usize {buf.append(bytes)}
 
-  // How many bytes are written, and how many more fit
-  pub fn len(self: &) usize {buf.len()}
+  // How many bytes are held (in the buffers held and the one in use), and how
+  // many more fit in the buffer in use
+  pub fn len(self: &) usize {chain.len() + buf.len()}
   pub fn room(self: &) usize {buf.room()}
-  pub fn isEmpty(self: &) bool {buf.isEmpty()}
+  pub fn isEmpty(self: &) bool {chain.isEmpty() && buf.isEmpty()}
   pub fn isFull(self: &) bool {buf.room() == 0usize}
 
-  // The bytes written
+  // The bytes written to the buffer in use
   pub fn view(self: &) &Array[u8] {buf.view()}
 
-  // The buffer itself, for a Transform's 'pull' to write into: it fills the
-  // spare room and sets the length, as 'spare' and 'advance' do
+  // The buffer in use itself, for a Transform's 'pull' to write into: it fills
+  // the spare room and sets the length, as 'spare' and 'advance' do
   pub fn buffer(self: &mut) &mut IoBuf {&mut buf}
 
-  // The buffer with its written bytes, moved out; a fresh empty one takes its
-  // place. A pool that has no more to give panics, as 'IoBuf(size)' does
-  pub fn take(self: &mut) IoBuf {
+  // The bytes written since the writer was made, whatever has been taken
+  pub fn total(self: &) usize {popped + chain.len() + buf.len()}
+
+  // ---- Taking ----
+
+  // The oldest buffer held, with its bytes, moved out; when none is held, the
+  // buffer in use with its written bytes, moved out and a fresh empty one of
+  // the same size in its place. A buffer that holds an unfilled slot, or
+  // follows one, is not given: a panic. A pool that has no more to give panics,
+  // as 'IoBuf(size)' does
+  pub fn take(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) IoBuf {
+    if chain.segments() > 0usize {
+      match self.popHeld() {
+        case let Some(b) {return b;}
+        case is None[IoBuf] {panic("streams: Writer.take with a slot not filled", file, line);}
+      }
+    }
+    if open != 0usize {panic("streams: Writer.take with a slot not filled", file, line);}
     var out = IoBuf(size);
     out <-> buf;
+    popped = popped + out.len();
     out
   }
 
   // The buffer with its written bytes, moved out, and none left in the
-  // writer: for the last hand-over of a stage
+  // writer: for the last hand-over of a stage that has held nothing
   pub fn intoBuf(self: &mut) IoBuf {
     var out = IoBuf();
     out <-> buf;
+    popped = popped + out.len();
     out
+  }
+
+  // The oldest buffer held, unless it holds or follows an unfilled slot
+  fn popHeld(self: &mut) Option[IoBuf] {
+    match self.oldestOpen() {
+      case let Some(ord) {if first >= ord {return None[IoBuf];}}
+      case is None[usize] {}
+    }
+    match chain.popFront() {
+      case var Some(held) {
+        first = first + 1usize;
+        popped = popped + held.len();
+        Some[IoBuf](held)
+      }
+      case is None[IoBuf] {None[IoBuf]}
+    }
+  }
+
+  // The ordinal of the oldest buffer that holds an unfilled slot, or None
+  fn oldestOpen(self: &) Option[usize] {
+    if open == 0usize {return None[usize];}
+    var i = 0usize;
+    while i < recs.len() {
+      if !recs[i].filled {return Some[usize](recs[i].ord);}
+      i = i + 1usize;
+    }
+    None[usize]
+  }
+
+  // The oldest filled buffer, or None: a buffer held, or the buffer in use
+  // when it is full; never one that holds an unfilled slot or follows one
+  pub fn popFull(self: &mut) Option[IoBuf] {
+    if chain.segments() == 0usize {
+      if buf.room() != 0usize || buf.len() == 0usize {return None[IoBuf];}
+      self.rollFor(1usize);
+    }
+    self.popHeld()
+  }
+
+  // Every byte held, in order, as a Chain, the buffer in use included: a
+  // panic, at the caller's line, if a slot is unfilled. The writer holds
+  // nothing after, and can go on being put to
+  pub fn finish(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Chain {
+    if open != 0usize {panic("streams: Writer.finish with a slot not filled", file, line);}
+    if buf.len() != 0usize {
+      var last = IoBuf();
+      last <-> buf;
+      _ = chain.push(last);
+    }
+    var all = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+    all <-> chain;
+    popped = popped + all.len();
+    first = 0usize;
+    recs.clear();
+    base = 0usize;
+    all
+  }
+
+  // ---- Rolling ----
+
+  // The buffer in use goes to the chain and a fresh one goes on, with room for
+  // at least n bytes
+  fn rollFor(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if n > buf.capacity() && buf.len() == 0usize {
+      buf = IoBuf(n, file, line);
+      return;
+    }
+    var fresh = IoBuf(if n > size {n} else {size}, file, line);
+    fresh <-> buf;
+    _ = chain.push(fresh);
+  }
+
+  // ---- Putting ----
+
+  // All of bytes, a new buffer whenever the current one fills
+  pub fn put(self: &mut, bytes: &Array[u8]) {
+    var at = buf.append(bytes);
+    while at < bytes.len {
+      self.rollFor(1usize);
+      at = at + buf.append(&bytes[at ..< bytes.len]);
+    }
+  }
+
+  pub fn putByte(self: &mut, b: u8) {
+    if !buf.putNum[u8](b, false) {
+      self.rollFor(1usize);
+      _ = buf.putNum[u8](b, false);
+    }
+  }
+
+  // n bytes of value b
+  pub fn repeat(self: &mut, b: u8, n: usize) {
+    var left = n;
+    while left > 0usize {
+      let k = buf.putRepeat(b, left);
+      left = left - k;
+      if left > 0usize {self.rollFor(1usize);}
+    }
+  }
+
+  // Zeros up to the next multiple of align of 'total()' (none if already there)
+  pub fn pad(self: &mut, align: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if align == 0usize {panic("streams: Writer.pad to an alignment of 0", file, line);}
+    let rem = self.total() % align;
+    if rem != 0usize {self.repeat(0u8, align - rem);}
+  }
+
+  // A number, its least significant byte first
+  pub fn putLE[T](self: &mut, v: T) inline where T is Numeric {
+    if !buf.putNum[T](v, false) {
+      self.rollFor(mem.sizeof[T]());
+      _ = buf.putNum[T](v, false);
+    }
+  }
+
+  // A number, its most significant byte first
+  pub fn putBE[T](self: &mut, v: T) inline where T is Numeric {
+    if !buf.putNum[T](v, true) {
+      self.rollFor(mem.sizeof[T]());
+      _ = buf.putNum[T](v, true);
+    }
+  }
+
+  // The low nbytes (1 to 8) of v, least significant first: a panic, at the
+  // caller's line, if v does not fit them
+  pub fn putUintLE(self: &mut, v: u64, nbytes: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.putUint(v, nbytes, false, file, line);
+  }
+
+  // The low nbytes (1 to 8) of v, most significant first: a panic if v does not fit them
+  pub fn putUintBE(self: &mut, v: u64, nbytes: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.putUint(v, nbytes, true, file, line);
+  }
+
+  fn putUint(self: &mut, v: u64, nbytes: usize, big: bool, file: &Array[u8], line: u32) {
+    if nbytes == 0usize || nbytes > 8usize {panic("streams: Writer.putUint takes 1 to 8 bytes", file, line);}
+    if nbytes < 8usize && (v >> u64.from(8usize * nbytes)) != 0u64 {
+      panic("streams: Writer.putUint: the value needs more bytes than asked", file, line);
+    }
+    if !buf.putUint(v, nbytes, big, file, line) {
+      self.rollFor(nbytes, file, line);
+      _ = buf.putUint(v, nbytes, big, file, line);
+    }
+  }
+
+  // ---- Slots ----
+
+  // Room for a number, to be filled later: contiguous, so the fill is one store
+  pub fn slot[T](self: &mut) Slot[T] where T is Numeric {
+    let n = mem.sizeof[T]();
+    if buf.room() < n {self.rollFor(n);}
+    let at = buf.len();
+    _ = buf.putRepeat(0u8, n);
+    recs.push(SlotRec(first + chain.segments(), at, false));
+    open = open + 1usize;
+    Slot[T](wid, base + recs.len() - 1usize)
+  }
+
+  // Fill a slot, the number's least significant byte first
+  pub fn fillLE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Numeric {
+    self.fill[T](s, v, false, file, line);
+  }
+
+  // Fill a slot, the number's most significant byte first
+  pub fn fillBE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Numeric {
+    self.fill[T](s, v, true, file, line);
+  }
+
+  fn fill[T](self: &mut, s: Slot[T], v: T, big: bool, file: &Array[u8], line: u32) where T is Numeric {
+    if s.writer != wid {panic("streams: Writer.fill with a slot of another writer", file, line);}
+    if s.serial < base || s.serial - base >= recs.len() || recs[s.serial - base].filled {
+      panic("streams: Writer.fill with a slot already filled", file, line);
+    }
+    let r = &mut recs[s.serial - base];
+    let curOrd = first + chain.segments();
+    let done = if r.ord == curOrd {buf.setNum[T](r.at, v, big)} else {chain.setNum[T](r.ord - first, r.at, v, big)};
+    if !done {panic("streams: Writer.fill: the slot's bytes are gone", file, line);}
+    r.filled = true;
+    open = open - 1usize;
+    if open == 0usize {
+      base = base + recs.len();
+      recs.clear();
+    }
+  }
+
+  // ---- The scoped form ----
+
+  // A slot for a T, f(w), and the slot filled with the number of bytes f
+  // wrote, least significant first: a panic, at the caller's line, if they
+  // do not fit a T
+  pub fn lengthPrefixedLE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Integer {
+    self.lengthPrefixed[T](f, false, file, line);
+  }
+
+  // As lengthPrefixedLE, most significant first
+  pub fn lengthPrefixedBE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Integer {
+    self.lengthPrefixed[T](f, true, file, line);
+  }
+
+  fn lengthPrefixed[T](self: &mut, f: &fn(w: &mut Writer), big: bool, file: &Array[u8], line: u32) where T is Integer {
+    let s = self.slot[T]();
+    let start = self.total();
+    f(self);
+    let n = self.total() - start;
+    match T.tryFrom(n) {
+      case let Ok(t) {self.fill[T](s, t, big, file, line);}
+      case let Err(e) {panic("streams: Writer.lengthPrefixed: the length does not fit its number", file, line);}
+    }
+  }
+
+  // ---- From a Reader ----
+
+  // n bytes from the front of r, consumed. Whole front segments that lie
+  // within n move as they are when the buffer in use is empty; the rest is
+  // copied. A panic, at the caller's line, if r holds fewer than n
+  pub fn putFrom(self: &mut, r: &mut Reader, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if n > r.len() {panic("streams: Writer.putFrom more than the reader holds", file, line);}
+    var left = n;
+    while left > 0usize {
+      let seg = r.contiguousLen();
+      if buf.len() == 0usize && seg <= left {
+        match r.popFront() {
+          case let Some(b) {
+            left = left - b.len();
+            _ = chain.push(b);
+          }
+          case is None[IoBuf] {panic("streams: Writer.putFrom: the reader ran dry", file, line);}
+        }
+      } else {
+        let want = if seg < left {seg} else {left};
+        match r.peek(want) {
+          case let Some(v) {self.put(v);}
+          case is None[&Array[u8]] {panic("streams: Writer.putFrom: the reader ran dry", file, line);}
+        }
+        r.consume(want);
+        left = left - want;
+      }
+    }
   }
 }

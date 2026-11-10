@@ -32,8 +32,29 @@
 //                  something but MoreOutput; the output appended to a List (drive.cone)
 //   Reader         the bytes that have arrived, as an iobuf Chain: 'peek(n)'
 //                  lends them as one slice, 'consume(n)' uses them up (reader.cone).
-//   Writer         a buffer being filled: 'spare()', 'advance(n)', and 'take()'
-//                  to hand the full buffer on (writer.cone).
+//   Writer         buffers being filled: 'spare()', 'advance(n)', and 'take()'
+//                  to hand the full buffer on; and the puts that build bytes and
+//                  numbers ('put', 'putBE', 'putLE', slots, 'lengthPrefixedBE'),
+//                  rolling into a new buffer when one fills (writer.cone).
+//   ByteCursor     a forward cursor over one message in memory: 'getBE[u32]()',
+//                  'getBytes(n)' and the rest answer an Option, so a parser reads
+//                  with '?'. A message in a Reader is lent by 'peek' and read
+//                  through one (bytecursor.cone).
+//
+// PARSING A MESSAGE IN A READER. 'peek(n)' lends the first n bytes as one
+// slice, a ByteCursor reads them, and 'consume(n)' uses them up after the
+// cursor is done. The cursor borrows the slice and the slice borrows the
+// Reader, so the checker refuses 'consume' while the cursor lives:
+//
+//   match r.peek(n) {
+//     case let Some(v) {
+//       var c = ByteCursor.over(v);
+//       let id = c.getBE[u32]()?;       // None leaves the cursor where it was
+//       ...
+//     }
+//     case is None[&Array[u8]] {}       // not all here yet: wait for more
+//   }
+//   r.consume(n);                       // the cursor is dead here
 //
 // THE RULES OF A TRANSFORM
 //
@@ -100,7 +121,7 @@
 
 mod streams;
 
-import iobuf use IoBuf, Chain;
+import iobuf use IoBuf, Chain, tryLoadNum, tryLoadUint;
 import collections use AnyError, List, String;
 
 // What a 'pull' found. For every Transform.
