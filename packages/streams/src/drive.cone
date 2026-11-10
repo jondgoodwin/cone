@@ -5,32 +5,42 @@
 // MoreOutput. Written once here for any Transform, so a one-shot helper is its two lines, and the loops that
 // also cap the output or feed a piece at a time (a stage between actors, an entry reader) keep their own.
 //
-//   var out = List[u8]();
+//   var out = Chain.make(limit);                             // limit: the most output the caller will hold
 //   let st = runAll(&mut inflater, gzBytes, &mut out);       // feed all, finish, pull to the end
 //   // st: Done (out holds the whole output), NeedInput (the input ended before the stream did), or Failed
 //
-//   pullAll(&mut t, &mut out)         pulls what the transform has now into 'out', through one 64 KiB
-//                                     buffer that it reuses, until the status is not MoreOutput; answers
-//                                     that status (NeedInput: feed more; Done; Failed)
+//   pullAll(&mut t, &mut out)         pulls what the transform has now onto 'out', a 64 KiB buffer at a
+//                                     time, until the status is not MoreOutput; answers that status
+//                                     (NeedInput: feed more; Done; Failed)
 //   runAll(&mut t, input, &mut out)   'feed(input)' in one call, 'finish()', then 'pullAll'
 //
-// Everything a pull wrote is appended to 'out', also on Failed: what was delivered before the failure is
-// good (the Transform's rules). The input is fed in one call; a transform takes any size, split anywhere.
+// The output is a Chain of the buffers the transform filled, with no second copy (the one-shot helper
+// used to copy every byte into a List). A caller that wants one contiguous block calls 'out.copyOut' once,
+// at its edge; one that passes the bytes on (to a Writer, a stage, a socket) copies nothing. A pull that
+// fills little of its buffer is joined into the chain's last segment ('pushJoin'), so many small pieces do
+// not each hold a 64 KiB block.
+//
+// Everything a pull wrote is pushed onto 'out', also on Failed: what was delivered before the failure is
+// good (the Transform's rules). If a pull would take 'out' past its bound, that pull's output is dropped
+// and the status is Failed (the transform's 'error()' is then empty: nothing was wrong with the input).
+// The input is fed in one call; a transform takes any size, split anywhere.
 
-// Pulls 't' until it says anything but MoreOutput, appending what it makes to 'out': the status it ended on
-pub fn pullAll[T: Transform](t: &mut T, out: &mut List[u8]) Status {
-  var buf = IoBuf(65536usize);
+// Pulls 't' until it says anything but MoreOutput, pushing what it makes onto 'out': the status it ended on
+pub fn pullAll[T: Transform](t: &mut T, out: &mut Chain) Status {
   var st = Status.MoreOutput;
   while st == Status.MoreOutput {
-    buf.clear();
+    var buf = IoBuf(65536usize);
     st = t.pull(&mut buf);
-    out.appendSlice(buf.view());
+    match out.pushJoin(buf) {
+      case is Some { return Status.Failed; }
+      case is None[IoBuf] {}
+    }
   }
   st
 }
 
-// Feeds 't' all of 'input', finishes it, and pulls it to the end, appending its output to 'out': the final status
-pub fn runAll[T: Transform](t: &mut T, input: &Array[u8], out: &mut List[u8]) Status {
+// Feeds 't' all of 'input', finishes it, and pulls it to the end, pushing its output onto 'out': the final status
+pub fn runAll[T: Transform](t: &mut T, input: &Array[u8], out: &mut Chain) Status {
   t.feed(input);
   t.finish();
   pullAll(t, out)
