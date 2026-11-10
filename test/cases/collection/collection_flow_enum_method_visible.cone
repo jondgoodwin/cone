@@ -37,3 +37,27 @@ fn viaFnValue(s: &mut Sv, f: &<mut fn(d: &mut Dict[i64, F]), k: i64) {
   f(&mut s.fs);                                     //~ ErrorShapeReshape "its body is not visible here"
   x.n = 1i64;
 }
+
+// A method with a 'self &' receiver is copied into each variant and dispatched by tag, and a variant may
+// override it: it is not read, so a call on the enum is refused, whether a variant's override clears the Dict
+// or none overrides.
+enum Evt {
+  pub fn wipe(self: &mut, d: &mut Dict[i64, F]) { }
+  pub fn quiet(self: &mut, d: &mut Dict[i64, F]) { }
+  pub struct Clearer {
+    pub fn wipe(self: &mut, d: &mut Dict[i64, F]) { d.clear(); }
+  }
+  pub struct Other { pub k: i64; }
+}
+
+fn viaOverride(s: &mut Sv, e: &mut Evt, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  e.wipe(&mut s.fs);                                //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}
+
+fn viaNoOverride(s: &mut Sv, e: &mut Evt, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  e.quiet(&mut s.fs);                               //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}
