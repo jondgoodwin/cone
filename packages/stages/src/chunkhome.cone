@@ -12,22 +12,16 @@
 // return its credit twice: the sink calls 'b.clearHome()' first (a chunk it keeps staged or hands back
 // is a plain buffer). The home holds a handle to the source, so the source lives while any of its
 // buffers are out. After the runtime stops (actors.isRunning() false) a death sends nothing: the block
-// goes to the pool and the credit is moot.
+// goes to the pool and the credit is moot. The check narrows the race with the stop; it does not close it.
 
-// The lender: one source handle, in a block of its own that the home owns
-fn chunkHomeGive(ctx: *u8, b: IoBuf) {
+// The lender: the source handle is the home's ctx, moved into its record and dropped with it
+fn chunkHomeGive(src: &ChunkSource, b: IoBuf) {
   if !actors.isRunning() {return;}
-  let s = &*(ctx as *ChunkSource);
-  s.giveBack(b);
+  src.giveBack(b);
 }
 
-fn chunkHomeRelease(ctx: *u8) {
-  mem.finalize(ctx as *ChunkSource);
-  libc.free(ctx);
-}
+fn chunkHomeRelease(src: &ChunkSource) {}
 
 pub fn chunkHome(src: ChunkSource) IoHome {
-  let slot = libc.malloc(mem.sizeof[ChunkSource]()) as *ChunkSource;
-  mem.writeRaw[ChunkSource](slot, src);
-  IoHome.make(slot as *u8, &chunkHomeGive, &chunkHomeRelease)
+  IoHome.make[ChunkSource](src, &chunkHomeGive, &chunkHomeRelease)
 }
