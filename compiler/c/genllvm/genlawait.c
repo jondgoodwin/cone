@@ -1146,13 +1146,16 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
             LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, flagat, "held");
             endblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropped");
             if (hollow) {
-                LLVMValueRef ishollow = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, DropFlagHollow, 0), "ishollow");
+                // A flag that also says which moves hollowed it holds them above its low two bits
+                LLVMValueRef state = (field->var->flowtempflags & VarPartFlag)
+                    ? LLVMBuildAnd(gen->builder, held, LLVMConstInt(i8, 3, 0), "state") : held;
+                LLVMValueRef ishollow = LLVMBuildICmp(gen->builder, LLVMIntEQ, state, LLVMConstInt(i8, DropFlagHollow, 0), "ishollow");
                 LLVMBasicBlockRef hollowblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "drophollow");
                 LLVMBasicBlockRef wholechk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropchk");
                 LLVMBuildCondBr(gen->builder, ishollow, hollowblk, wholechk);
                 LLVMPositionBuilderAtEnd(gen->builder, hollowblk);
                 LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
-                genlHollowReleaseRef(gen, ref, field->var, moved);
+                genlHollowReleaseRef(gen, ref, field->var, moved, held);
                 LLVMBuildBr(gen->builder, endblk);
                 LLVMPositionBuilderAtEnd(gen->builder, wholechk);
             }
@@ -1163,7 +1166,7 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
         }
         else if (hollow) {
             LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, field->type), at, "hollowref");
-            genlHollowReleaseRef(gen, ref, field->var, moved);
+            genlHollowReleaseRef(gen, ref, field->var, moved, NULL);
             continue;
         }
         genlFinalizeAt(gen, at, field->type);

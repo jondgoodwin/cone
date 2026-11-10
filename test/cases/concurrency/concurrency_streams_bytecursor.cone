@@ -1,0 +1,72 @@
+// A ByteCursor reads a message lent by a streams Reader's 'peek'. The cursor
+// borrows the slice and the slice borrows the Reader, so a 'consume' (or a
+// 'popFront', or a second 'peek') while the cursor is still used is refused with
+// ErrorShapeReshape: the bytes the cursor reads would go back to the pool under
+// it. The same calls with the cursor dead compile: a number read out before the
+// call, or a cursor not used again after it. The functions without annotations
+// compile.
+
+mod concurrency_streams_bytecursor;
+
+import iobuf use IoBuf;
+import streams use Reader, ByteCursor;
+
+// The pattern: read, let the cursor die, then consume
+fn headerThenConsume(r: &mut Reader) u32 {
+  var got = 0u32;
+  match r.peek(4usize) {
+    case let Some(v) {
+      var c = ByteCursor.over(v);
+      got = c.getBE[u32]().unwrap();
+    }
+    case is None[&Array[u8]] {}
+  }
+  r.consume(4usize);
+  got
+}
+
+// A cursor not used again after the call is fine too
+fn consumeAtTheEnd(r: &mut Reader) {
+  match r.peek(2usize) {
+    case let Some(v) {
+      var c = ByteCursor.over(v);
+      let a = c.getByte();
+      r.consume(2usize);
+    }
+    case is None[&Array[u8]] {}
+  }
+}
+
+fn consumeUnderCursor(r: &mut Reader) u8 {
+  match r.peek(2usize) {
+    case let Some(v) {
+      var c = ByteCursor.over(v);
+      r.consume(2usize);               //~ ErrorShapeReshape "borrow into it (made by 'peek'"
+      return c.getByte().unwrap();
+    }
+    case is None[&Array[u8]] {}
+  }
+  0u8
+}
+
+fn popUnderCursor(r: &mut Reader) u8 {
+  match r.peek(2usize) {
+    case let Some(v) {
+      var c = ByteCursor.over(v);
+      let gone = r.popFront();         //~ ErrorShapeReshape "borrow into it (made by 'peek'"
+      return c.getByte().unwrap();
+    }
+    case is None[&Array[u8]] {}
+  }
+  0u8
+}
+
+fn main() i32 {
+  var r = Reader.make(4096usize);
+  var b = IoBuf(16usize);
+  b.append("abcdef");
+  r.push(b);
+  let x = headerThenConsume(&mut r);
+  consumeAtTheEnd(&mut r);
+  0i32
+}
