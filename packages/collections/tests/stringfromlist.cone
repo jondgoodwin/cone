@@ -1,0 +1,55 @@
+// String.fromList takes a List[u8]'s block with no copy. Like fromBytes it checks
+// nothing about UTF-8, so invalid bytes give a String of the same bytes. Every
+// expected value is worked out by hand: "héllo" is 68 C3 A9 6C 6C 6F, six bytes.
+
+mod stringfromlist;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  let raw: &Array[u8] = "héllo";
+
+  // valid text: same bytes, NUL after them, and the block is the list's
+  var l = List[u8].withCapacity(32usize);
+  l.appendSlice(raw);
+  let before = l.view() as *u8;
+  var s = String.fromList(l);
+  expectUInt(u64.from(s.len()), 6, "fromList keeps the six bytes");
+  expectBool(s.equals("héllo"), true, "fromList holds the same text");
+  expectUInt(u64.from(libc.strlen(s.cstr())), 6, "the NUL is after the bytes");
+  expectBool((s.view() as &Array[u8]) as *u8 == before, true, "the String sits in the list's block: no copy");
+  // the spare room came along: appending a few bytes does not move the block
+  s.append("!?");
+  expectBool(s.equals("héllo!?"), true, "append after fromList");
+  expectBool((s.view() as &Array[u8]) as *u8 == before, true, "the list's spare capacity is the String's");
+
+  // invalid UTF-8: the same outcome as fromBytes, the bytes kept as they are
+  var bad = List[u8]();
+  bad.push(0x68u8); bad.push(0xFFu8); bad.push(0xC3u8);
+  let viaBytes = String.fromBytes(bad.view());
+  let viaList = String.fromList(bad);
+  expectUInt(u64.from(viaList.len()), 3, "invalid bytes: three kept");
+  expectBool(viaList.view() as &Array[u8] == viaBytes.view() as &Array[u8], true, "the same bytes as fromBytes");
+  expectUInt(u64.from((viaList.view() as &Array[u8])[1usize]), 255, "the invalid byte is untouched");
+
+  // an empty list, with and without a block
+  let e1 = String.fromList(List[u8]());
+  expectBool(e1.isEmpty(), true, "fromList of a list with no block is empty");
+  var withBlock = List[u8].withCapacity(8usize);
+  let e2 = String.fromList(withBlock);
+  expectBool(e2.isEmpty(), true, "fromList of an empty list with a block is empty");
+  expectUInt(u64.from(libc.strlen(e2.cstr())), 0, "and its NUL is first");
+
+  // a list exactly full: it grows by the NUL's byte, and the text is right
+  var full = List[u8]();
+  var k = 0;
+  while k < 4 { full.push(0x61u8); k = k + 1; }
+  expectUInt(u64.from(full.capacity()), 4, "four pushes fill the first block");
+  let f = String.fromList(full);
+  expectBool(f.equals("aaaa"), true, "a full list's text");
+  expectUInt(u64.from(libc.strlen(f.cstr())), 4, "a full list gets its NUL");
+
+  done()
+}
