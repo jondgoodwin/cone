@@ -1,0 +1,53 @@
+// What collection_flow_enum_method_visible leaves alone (Bug 83): 'Option.unwrap' and 'expect' on a borrow into a
+// Dict whose element holds an AnyError (a trait object), the borrow used with no call between that could reshape
+// the Dict. The match form is accepted beside them.
+
+mod collection_enum_method_visible_success;
+
+import collections use *;
+import stdio use *;
+
+struct F is Move { pub e: AnyError; pub n: i64; }
+struct Sv is Move { pub fs: Dict[i64, F]; }
+
+fn viaUnwrap(s: &mut Sv, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  x.n = x.n + 1i64;
+}
+
+fn viaExpect(s: &mut Sv, k: i64) {
+  let x = s.fs.getMut(&k).expect("present");
+  x.n = x.n + 10i64;
+}
+
+fn viaMatch(s: &mut Sv, k: i64) {
+  let x = match s.fs.getMut(&k) {
+    case let Some(v) { v }
+    case None { return; }
+  };
+  x.n = x.n + 100i64;
+}
+
+fn main() {
+  var s = Sv(Dict[i64, F]());
+  s.fs.insert(7i64, F(AnyError.msg("e"), 0i64));
+  viaUnwrap(&mut s, 7i64);
+  viaExpect(&mut s, 7i64);
+  viaMatch(&mut s, 7i64);
+  printInt(s.fs.getMut(&7i64).unwrap().n);
+  printStr("\n");
+}
+
+// A method naming the enum as its receiver is one function, read: this one touches no Dict, so it is accepted
+enum Lamp {
+  pub n: i64 = 7;
+  Red;
+  Off;
+  pub fn level(self: &mut Lamp, f: &mut F) i64 { f.n }
+}
+
+fn viaWhole(s: &mut Sv, l: &mut Lamp, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  let v = l.level(x);
+  x.n = v;
+}

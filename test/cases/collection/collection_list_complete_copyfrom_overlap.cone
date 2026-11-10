@@ -1,0 +1,101 @@
+// copyFrom where the two slices are of one array. A '&mut' and a '&' of the same array may be held
+// together (only a change of shape is guarded), so the Clone form must not clone a value it has just
+// finalized, and must agree with the Copy form's memmove when they overlap, the destination before
+// the source and after it. The i32 array is the reference (the Copy form); the same moves on Strings
+// (a use after free if a value were cloned after its finalizer) and on a counting type must give the
+// same order. Hand results for [0, 1, 2, 3, 4]:
+//   copy onto itself                 [0, 1, 2, 3, 4]
+//   dest [0, 3) from src [1, 4)      [1, 2, 3, 3, 4]
+//   dest [1, 4) from src [0, 3)      [0, 0, 1, 2, 4]
+// Each Tok's finalizer counts: 5 Toks are made, a copyFrom of 3 clones 3 and finalizes the 3
+// overwritten, and the same of 5 for the self copy.
+
+mod collection_list_complete_copyfrom_overlap;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal deaths = 0i64;
+
+struct Tok is Clone {
+  pub n: i64;
+  pub fn clone(self: &) Tok { Tok(n) }
+  fn final(self: &uni) { deaths = deaths + 1i64; }
+}
+
+fn showInts(label: &str, a: &Array[i32]) {
+  printStr(label);
+  var i = 0usize;
+  while i < a.len() { printStr(" "); printInt(i64.from(a[i])); i = i + 1usize; }
+  printStr("\n");
+}
+
+fn showStrs(label: &str, a: &Array[String]) {
+  printStr(label);
+  var i = 0usize;
+  while i < a.len() { printStr(" "); printStr(a[i].view()); i = i + 1usize; }
+  printStr("\n");
+}
+
+fn showToks(label: &str, a: &Array[Tok]) {
+  printStr(label);
+  var i = 0usize;
+  while i < a.len() { printStr(" "); printInt(a[i].n); i = i + 1usize; }
+  printStr(" deaths ");
+  printInt(deaths);
+  printStr("\n");
+}
+
+fn ints() List[i32] {
+  var l = List[i32]();
+  var i = 0i32;
+  while i < 5i32 { l.push(i); i = i + 1i32; }
+  l
+}
+
+fn strs() List[String] {
+  var l = List[String]();
+  l.push(String.from("a")); l.push(String.from("b")); l.push(String.from("c"));
+  l.push(String.from("d")); l.push(String.from("e"));
+  l
+}
+
+fn toks() List[Tok] {
+  var l = List[Tok]();
+  var i = 0i64;
+  while i < 5i64 { l.push(Tok(i)); i = i + 1i64; }
+  l
+}
+
+fn main() {
+  var a = ints();
+  var s = strs();
+  var t = toks();
+
+  // onto itself
+  a.viewMut().copyFrom(a.view());
+  showInts("ints self", a.view());
+  s.viewMut().copyFrom(s.view());
+  showStrs("strs self", s.view());
+  t.viewMut().copyFrom(t.view());
+  showToks("toks self", t.view());
+
+  // destination before source
+  a.viewMut().sliceMut(0usize, 3usize).copyFrom(a.view().slice(1usize, 4usize));
+  showInts("ints before", a.view());
+  s.viewMut().sliceMut(0usize, 3usize).copyFrom(s.view().slice(1usize, 4usize));
+  showStrs("strs before", s.view());
+  t.viewMut().sliceMut(0usize, 3usize).copyFrom(t.view().slice(1usize, 4usize));
+  showToks("toks before", t.view());
+
+  // destination after source (on fresh arrays)
+  var a2 = ints();
+  var s2 = strs();
+  var t2 = toks();
+  a2.viewMut().sliceMut(1usize, 4usize).copyFrom(a2.view().slice(0usize, 3usize));
+  showInts("ints after", a2.view());
+  s2.viewMut().sliceMut(1usize, 4usize).copyFrom(s2.view().slice(0usize, 3usize));
+  showStrs("strs after", s2.view());
+  t2.viewMut().sliceMut(1usize, 4usize).copyFrom(t2.view().slice(0usize, 3usize));
+  showToks("toks after", t2.view());
+}

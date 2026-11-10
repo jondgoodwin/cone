@@ -1,7 +1,9 @@
 // A 'const' in a generic actor's braces: each instance has it, folded and held
 // in no storage, and used bare in a behaviour of both 'Tally[i32]' and
-// 'Tally[f64]': each prints step (4) and limit (60 / 4 = 15). (Reaching it
-// through the instance from outside is concurrency_actor_generic_const_path.)
+// 'Tally[f64]': each answers step (4) and limit (60 / 4 = 15), and one Reporter
+// awaits both and prints, so the output order is fixed (two actors printing
+// at once interleave their pieces). (Reaching it through the instance from
+// outside is concurrency_actor_generic_const_path.)
 
 mod concurrency_actor_generic_const;
 
@@ -21,8 +23,23 @@ actor Tally[T] {
     total = total + delta;
   }
 
-  pub async fn report(self: &) {
-    printStr("step "); printUInt(step); printStr(" limit "); printUInt(limit); printStr("\n");
+  pub async fn stepOf(self) u64 {
+    step
+  }
+
+  pub async fn limitOf(self) u64 {
+    limit
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, ints: Tally[i32], reals: Tally[f64]) {
+    let s1 = await ints.stepOf();
+    let l1 = await ints.limitOf();
+    let s2 = await reals.stepOf();
+    let l2 = await reals.limitOf();
+    printStr("step "); printUInt(s1); printStr(" limit "); printUInt(l1); printStr("\n");
+    printStr("step "); printUInt(s2); printStr(" limit "); printUInt(l2); printStr("\n");
   }
 }
 
@@ -32,10 +49,10 @@ fn main() {
   {
     let a = Tally[i32](10);
     a.bump(4); a.bump(4); a.bump(4);
-    a.report();
     let b = Tally[f64](0.5);
     b.bump(4.0); b.bump(4.0);
-    b.report();
+    let r = Reporter();
+    r.report(a, b);
   }
   finalAll();
 }
