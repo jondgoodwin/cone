@@ -9,9 +9,15 @@
 
 // Where a package's build goes: build/<mode>/ in the package's folder; a
 // lone file's under the Congo home
-fn buildFolder(pkg: &Package, mode: &str) Path {
+fn buildFolder(repo: &Path, pkg: &Package, mode: &str) Path {
   if pkg.lone {
-    let root = loneBuildRoot(&pkg.src);
+    // A missing compiler is reported at the compile, after the source's errors
+    var conec: Path = "";
+    match findConec(repo) {
+      case let Ok(p) { conec = p.clone(); }
+      case is Err {}
+    }
+    let root = loneBuildRootFor(&pkg.src, &conec);
     return root.join(mode);
   }
   let folder = pkg.root.join("build");
@@ -45,23 +51,34 @@ struct Session {
   // '--strip': conec is passed --strip for every compile of the build, and a
   // link writes no PDB (congo.py, STRIP_DEBUG)
   pub strip: bool;
+  // '--lto' (with --release): every native compile writes ThinLTO bitcode
+  // (<name>.bc) in place of an object, and the link is preceded by conec's
+  // ThinLTO link of them all (congo.py, LTO)
+  pub lto: bool;
 }
 
-fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool) Session {
+fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool,
+    lto: bool) Session {
   Session(repo.clone(), reg, out.clone(), String.from(mode), Dict[String, Path](),
     Dict[String, Path](), List[String](), List[String](), Path.from(""), false, noLinkerYet(),
-    copyStrings(defines), useCache, strip)
+    copyStrings(defines), useCache, strip, lto)
+}
+
+// The folder name of a build mode: an --lto build has a folder of its own
+fn modeFolder(mode: &str, lto: bool) String {
+  if lto { cat(mode, "-lto") } else { String.from(mode) }
 }
 
 // Build pkg and everything it imports into its build folder, each package
 // compiled on its own; answer the executable, or for a library its object.
 // Every description is written, and every package compiled unless its key is
 // unchanged (cache.cone). The first failure ends Congo.
-fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool, strip: bool) Path {
+fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool, strip: bool, lto: bool) Path {
   let folders = registryFolders(repo);
-  let out = buildFolder(&pkg, mode);
+  let folder = modeFolder(mode, lto);
+  let out = buildFolder(repo, &pkg, folder.view());
   let indexes = registryIndexes();
-  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip, lto);
   let top = s.reg.add(pkg);
   match build(&mut s, top) {
     case var Ok(ok) {
@@ -180,6 +197,18 @@ fn loneBuildRoot(file: &Path) Path {
   lone.join(folder.view())
 }
 
+// The same for one compiler: <file>-<hash>/<c8>/, c8 the first 8 hex digits of
+// conec's content hash, so two compilers building one file keep separate builds
+// (congo.py's lone_build_root with the compiler given). An empty conec is no
+// compiler: the folder of all of them
+fn loneBuildRootFor(file: &Path, conec: &Path) Path {
+  let root = loneBuildRoot(file);
+  if conec.isEmpty() { return root; }
+  let hash = toolHash(conec);
+  let c8 = hash.sub(0usize, 8usize);
+  root.join(c8.view())
+}
+
 // A lone file with no manifest is a program of one module, named by its
 // 'mod' line. A file with none is named by the file here, and the compiler
 // refuses it for the missing line (ErrorNoModDcl).
@@ -224,7 +253,7 @@ fn lonePackage(given: &Path) Result[Package, String] {
 // reads, so that compile is never skipped. 'hasCore' and 'coreUnit' say
 // whether the build has core, and where.
 fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, includes: &Path, mode: &str,
-    defines: &List[String], strip: bool, top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
+    defines: &List[String], strip: bool, lto: bool, top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
   let unit = &plan.units[u];
   let pkg = &reg.packages[unit.pkg];
   let output = if top {pkg.output.clone()} else {String.from("library")};
@@ -239,7 +268,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
     }
   }
   let incl = includeFor(pkg, out);
-  let objName = cat(pkg.name.view(), ".obj");
+  let objName = cat(pkg.name.view(), if lto {".bc"} else {".obj"});
   let obj = out.join(objName.view());
   let isLibrary = output.equals("library");
   var outputs = List[Path]();
@@ -248,7 +277,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let outText = native(out);
   let descText = native(&desc);
   let rest = argList("-o", outText.view(), descText.view());
-  let command = conecCommand(conec, defines, strip, &rest);
+  let command = conecCommand(conec, defines, strip, lto, &rest);
   // What the compile reads: the manifest, the description, every source of
   // the package, the include file of every package the description names,
   // and where conec loads the prelude from the packages folder, what it
@@ -460,7 +489,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
       }
       makeFolder(&dest);
       var obj: Path = "";
-      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, s.strip, isTop,
+      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, s.strip, s.lto, isTop,
         announce || !isTop, s.useCache, hasCoreUnit, coreOfBuild) {
         case var Ok(ok) { obj <-> ok; }
         case let Err(e) {
@@ -669,6 +698,45 @@ fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
 // in the same order, each once. A C package's own object is linked like any
 // other: it defines nothing (as core's does not), and so needs no case of
 // its own. The linker is found at the session's first link.
+// An --lto build's modules, as bitcode, made into the objects the linker takes:
+// one conec ThinLTO link over all of them, which writes <i>.obj for the i-th
+// into a folder beside the program, which also keeps conec's cache of the
+// objects it made (congo.py, Session.lto_link)
+fn ltoLink(s: &Session, bitcode: &List[Path], exe: &Path, announce: bool) Result[List[Path], String] {
+  let folderName = cat(exe.stem(), ".lto");
+  let place = exe.parent().join(folderName.view());
+  makeFolder(&place);
+  var args = List[String]();
+  args.push(native(&s.conec));
+  args.push(String.from("--lto-link"));
+  args.push(String.from("-o"));
+  args.push(native(&place));
+  var i = 0usize;
+  while i < bitcode.len() {
+    args.push(native(&bitcode[i]));
+    i = i + 1usize;
+  }
+  if !runConec(&args) {
+    return Err[List[Path], String](String.from("the ThinLTO link failed"));
+  }
+  if announce {
+    var count = String();
+    count.appendUInt(u64.from(bitcode.len()));
+    count <- " modules (ThinLTO)";
+    say("Optimising", count.view());
+  }
+  var objs = List[Path]();
+  i = 0usize;
+  while i < bitcode.len() {
+    var name = String();
+    name.appendUInt(u64.from(i));
+    name <- ".obj";
+    objs.push(place.join(name.view()));
+    i = i + 1usize;
+  }
+  Ok[List[Path], String](objs)
+}
+
 fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: bool) Result[void, String] {
   if !s.hasLinker {
     var conestd: Path = "";
@@ -743,6 +811,12 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       j = j + 1usize;
     }
     i = i + 1usize;
+  }
+  if s.lto {
+    match ltoLink(s, &objOrder, exe, announce) {
+      case var Ok(ok) { objOrder <-> ok; }
+      case let Err(e) { return Err[void, String](e.clone()); }
+    }
   }
   if announce {
     let place = shown(exe);

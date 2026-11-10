@@ -92,7 +92,11 @@ fn main() {
 		bool or char as the value it lends, and any value with a <span class="pre">toText</span>
 		(<a href="lib-string.html#totext">Writing a value as text</a>). A send statement is one record, written whole:
 		output from several threads never tears a line. Standard output is held in the console's own buffer when it is a
-		file or a pipe; <span class="pre">print.flush()</span> writes it out before another program writes to the same place.</td></tr>
+		file or a pipe; <span class="pre">print.flush()</span> writes it out before another program writes to the same place.
+		<strong>A write to standard output whose reader has gone</strong> (a pipe nobody reads any more: <span class="pre">prog | head</span>)
+		ends the program at once and quietly, with exit status 141 on both systems (128 plus SIGPIPE, what the signal gives a shell): no
+		message, nothing more written. Where SIGPIPE is ignored (a program that uses the asynchronous I/O pipes ignores it) this is what
+		keeps that meaning; elsewhere the signal itself ends the program as always. A failed write to standard error is dropped.</td></tr>
 	<tr><td><span class="pre">libc</span><br><span class="pre">import libc;</span></td><td>The ISO C library as C
 		spells it: C names, C types, errors as C reports them. A raw layer for programs that call C; the
 		packages below wrap it.</td></tr>
@@ -118,8 +122,14 @@ fn main() {
 		<td><span class="pre">Pool[T]</span>: values added and removed one at a time, reached by a
 		generational <span class="pre">Ref</span> that stops reaching anything once its value is removed
 		(<a href="mem-regions.html">Region Strategies</a>).</td></tr>
+	<tr><td><span class="pre">pools</span><br><span class="pre">import pools use *;</span></td>
+		<td><span class="pre">GenPool[T]</span>, the first of the pool family: what <span class="pre">SlotTable</span> does
+		(below; <span class="pre">Slot</span> is its <span class="pre">Handle</span>), plus
+		<span class="pre">retire</span> and <span class="pre">free</span> (dead to every handle now, finalized later), a slab
+		given back when it empties (one empty slab is kept), and a walk over the live entries driven by a bitmap per
+		slab (<span class="pre">iter</span>, <span class="pre">entries</span>, <span class="pre">nextLive</span>).</td></tr>
 	<tr><td><span class="pre">slots</span><br><span class="pre">import slots use *;</span></td>
-		<td><span class="pre">SlotTable[T]</span>: records of one type in cells that never move, added and removed one at a time,
+		<td><span class="pre">SlotTable[T]</span> (now the <span class="pre">pools</span> package's <span class="pre">GenPool</span> under its old name, for one release): records of one type in cells that never move, added and removed one at a time,
 		found by a <span class="pre">Slot</span> (a cell number and a generation, so a stale one reaches nothing) or by
 		the address a cell has for as long as the record is in the table. A record is borrowed checked,
 		<span class="pre">borrow</span> and <span class="pre">borrowMut</span> (by Slot) or
@@ -171,10 +181,13 @@ fn main() {
 		<td>File paths taken apart and put together as text; never asks the file system anything.</td></tr>
 	<tr><td><span class="pre">env</span><br><span class="pre">import env;</span></td>
 		<td>The program's environment variables.</td></tr>
+	<tr><td><span class="pre">args</span><br><span class="pre">import args use *;</span></td>
+		<td>The command line read as options and values: <span class="pre">--name value</span>, <span class="pre">--name=value</span>,
+		<span class="pre">-abc</span>, <span class="pre">--</span>, and typed values with errors that name the option.</td></tr>
 	<tr><td><span class="pre">process</span><br><span class="pre">import process;</span></td>
 		<td>Running another program and waiting for it; the program's own arguments.</td></tr>
 	</table>
-	<p>All four are on <a href="lib-fs.html">their own page</a>.</p>
+	<p>All five are on <a href="lib-fs.html">their own page</a>.</p>
 
 	<h3 id="timepkgs">Time</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -792,9 +805,11 @@ fn main() i32 {
 		<span class="pre">Result[List[u8], DeflateError]</span>, the error holding a
 		<span class="pre">kind</span> (a bad header, a bad code, a match reaching before the start, a cut stream,
 		a checksum that does not match, more output than allowed, bytes after a gzip file) and a
-		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with the fixed Huffman code) or 2
-		(the same matcher with a dynamic Huffman code per block); level 2 runs about as fast as zlib's level 6 and
-		makes streams a few per cent bigger. The checksums check themselves: a stream that fails its Adler-32,
+		<span class="pre">reason</span>. The level is 0 (stored), 1 (LZ77 with one candidate a position and the fixed
+		Huffman code: the fastest) or 2 to 9 (the same matcher with a dynamic Huffman code per block and more
+		candidates the higher the level, the counts miniz_oxide uses; levels 4 to 9 also match lazily, holding a
+		match back one position to see whether the next is longer, as miniz_oxide does; a negative level is
+		zlib's default, 6, and a level over 9 is 9). The checksums check themselves: a stream that fails its Adler-32,
 		its CRC-32 or its length is refused.</p>
 	<p>For a stream that arrives in pieces, or output that must not be held whole, an
 		<span class="pre">Inflater</span> (and a <span class="pre">Deflater</span>) is made for a

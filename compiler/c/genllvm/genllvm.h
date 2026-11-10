@@ -308,6 +308,14 @@ void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlComdat(GenState *gen, LLVMValueRef global);
+// Link-time optimisation (genllto.cpp, the one C++ file): a module as bitcode
+// with its ThinLTO summary, and bitcode files linked into an object each.
+// Both return 0, or 1 with the reason in 'err'.
+int genlWriteThinBitcode(LLVMModuleRef mod, const char *path, char *err, size_t errsize);
+int genlThinLink(const char *outdir, const char *ext, const char **files, int n,
+        const char **keep, int nkeep, const char *cpu, const char *features, int pic,
+        const char *cachedir, char *err, size_t errsize);
+int genlLtoLink(ConeOptions *opt, int nfiles, char **files);
 // What this object file does with a declared symbol, which genlLinkage reads
 typedef enum GenlDefinition {
     GenlDeclared,   // Only names it: some other object defines it
@@ -521,6 +529,8 @@ void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
 void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
+// The same for an owning reference held outside its variable (a parked record)
+void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved);
 // Temporaries: one kept in its slot as it is made; those made since 'mark'
 // finalized, newest first, and forgotten (the end of their statement); and
 // finalized without being forgotten, before a jump out past them

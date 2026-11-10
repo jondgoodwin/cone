@@ -408,7 +408,7 @@ diagnostics = 12
 category = "reject"
 description = "An element, a view or a struct's borrow held while another reference to the same container pushes, clears, pops or truncates it, replaces an element that owns the bytes viewed (a String), or takes one out, is handed to a call whose body reshapes it (directly, through what it calls, through a struct holding the reference, or through a global), to a function pointer or a function defined elsewhere, a view held by a result that may hold it while another String grows, and an element or view handed to the very call beside the reference that changes it"
 tags = ["flow"]
-diagnostics = 19
+diagnostics = 20
 
 # A struct that wraps a container is shape-changing too, though it declares
 # nothing: the compiler finds it from its methods (a pointer written, a borrow
@@ -568,6 +568,27 @@ description = "A String's view taken through an element a list's index returned 
 tags = ["flow"]
 diagnostics = 3
 
+# A source lent '&imm' cures the view of its list's element, the documented cure of refborref.html
+# ("The cures"); a read-only or mutable source, and a struct that holds more than its elements, do not
+# (collection_flow_reshape_imm_source), nor does a type a 'mut' global can reach
+# (collection_flow_reshape_imm_source_global).
+[scenario.collection_reshape_imm_source_success]
+category = "run"
+description = "A view of a String in an element of a list a source holds, taken through '[]' with no name for the element, through the name it is given, from the list as the source, and two fields down, handed to a call that grows a String of another value of the same types, the source lent '&imm'"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.collection_flow_reshape_imm_source]
+category = "reject"
+description = "The same view with the source lent read-only or mutable (inline and named), and through a method of a struct that holds a '&mut Item' beside its list, so that it may hand back what it merely reaches: still refused"
+tags = ["flow"]
+diagnostics = 5
+
+[scenario.collection_flow_reshape_imm_source_global]
+category = "reject"
+description = "The same view of an element of an '&imm' source's list while a 'mut' global holds Items: refused, since a method with a body of its own could return a borrow into the global; and a method of the '&imm' source that returns one"
+tags = ["flow"]
+diagnostics = 3
+
 # A List held as an element of an array is followed as one held by a local or a field is: an
 # array's elements are not told apart by index, so a change to any of them is a change to the
 # one the borrow is into (collection_reshape_array_elem_success holds what is accepted).
@@ -677,6 +698,14 @@ description = "A struct of a package compiled on its own behind a '&<mut Trait +
 tags = ["flow", "genllvm", "runtime"]
 link = ["q/q.conebuild"]
 include = ["include/q.cone"]
+
+[scenario.collection_shapekeeping_str_link]
+category = "run"
+description = "A core compiled on its own, with a method on 'str' that is not inline: its include file records ShapeKeeping on 'str', the type the compiler makes and core only gives methods, and the program that imports core takes it as the file says rather than refusing it as a type declaring ShapeKeeping itself (ErrorShapeKeepingDeclared)"
+tags = ["flow", "parse", "runtime"]
+link = ["core/core.conebuild"]
+link_options = ["--path=test/cases/collection/collection_shapekeeping_str_link/core"]
+include = ["include/core.cone"]
 
 [scenario.collection_flow_shapekeeping_xpkg]
 category = "reject"
@@ -788,3 +817,73 @@ category = "reject"
 description = "Bug 49: a reference to the list's slot itself held across a push, a reference into a value the list holds by value held across a push, and a slot reference kept in use after a copy was read out of it are still refused (1339)"
 tags = ["flow"]
 diagnostics = 3
+
+[scenario.collection_flow_string_self_append]
+category = "reject"
+description = "A String's view appended to that same String, by appendBytes and by '<-', directly and through a view held in a 'let': each refused at the receiver, since appendBytes' reserve can move the block the view points into before its one block copy (#1076)"
+tags = ["flow"]
+diagnostics = 4
+
+[scenario.collection_heap_huge_list]
+category = "run"
+description = "Bug 80 (list): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.collection_heap_huge_listpush]
+category = "run"
+description = "Bug 80 (listpush): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.collection_heap_huge_wrap]
+category = "run"
+description = "Bug 80 (wrap): a count of values whose bytes do not fit a usize panics, and does not wrap to a small block that the list takes for one with room for them"
+tags = ["runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=collections\.cone:)\d+']
+
+[scenario.collection_heap_huge_string]
+category = "run"
+description = "Bug 80 (string): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.collection_heap_huge_deque]
+category = "run"
+description = "Bug 80 (deque): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.collection_heap_huge_dict]
+category = "run"
+description = "Bug 80 (dict): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.collection_heap_huge_grow]
+category = "run"
+description = "Bug 80 (grow): a heap allocation too big to get panics naming the bytes asked for, and never goes on with a null block"
+tags = ["runtime"]
+program_exit = "abort"
+
+[[scenario.collection_heap_huge_list.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_listpush.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_wrap.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_string.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_deque.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_dict.run]]
+name = "release"
+
+[[scenario.collection_heap_huge_grow.run]]
+name = "release"

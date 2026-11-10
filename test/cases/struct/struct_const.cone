@@ -1,0 +1,130 @@
+// A struct or an enum names fixed values of its own with 'const' in its braces
+// (mod-globals.html#const, "A type's const"): the rules of a module 'const' --
+// a constant expression, folded where it is used, no storage and no address --
+// reached as 'Type.name' from outside and by its bare name inside the type's
+// own functions and methods, where it is also a constant for another const of
+// the type to use.
+//
+// Each value printed here is worked out by hand in the comments. That a use
+// is the folded literal and not a read of a global is struct_const's check on
+// the IR before optimization, in cases.toml; what is refused is
+// struct_const_parse and struct_const_typecheck.
+
+mod struct_const;
+
+import stdio use *;
+
+struct Vec3 {
+  pub x: f64;
+  pub y: f64;
+  pub z: f64;
+  // A number, a struct of the type itself and a tuple
+  pub const scale: f64 = 2.0 * 3.0;
+  pub const zero: Vec3 = Vec3(0., 0., 0.);
+  pub const up: Vec3 = Vec3(0., 0., 1.);
+  pub const corner: (i32, i32) = (3, 4);
+  // A bare name of another const of the type, declared before and after it
+  pub const sides: i32 = 4;
+  pub const doubled: i32 = sides * 2;
+  pub const later: i32 = laterBase + 1;
+  const laterBase: i32 = 20;
+  // The type is inferred from the value, as a module const's is
+  pub const inferred = 7u32;
+  const hidden: u32 = 9;
+
+  pub fn lenz(self) f64 {
+    z * scale
+  }
+  pub fn cornerSum() i32 {
+    corner.0 + corner.1
+  }
+  pub fn plusHidden(n: u32) u32 {
+    hidden + n
+  }
+  pub fn origin() Vec3 {
+    zero
+  }
+}
+
+// An enum's const: a variant, and a number
+enum Lamp {
+  Red, Green;
+  pub const dflt: Lamp = Green;
+  pub const count: u32 = 2;
+
+  pub fn start() Lamp {
+    dflt
+  }
+  pub fn level(self: Lamp) i64 {
+    match self {
+      case is Red {1}
+      case is Green {2}
+    }
+  }
+}
+
+// A type that extends another reaches the base's const as the base does
+struct Base {
+  pub n: i32;
+  pub const step: i32 = 5;
+}
+
+struct Wider extends Base {
+  pub fn next(self) i32 {
+    n + step
+  }
+}
+
+// A generic function names a const of a type it is not generic over
+fn through[T](t: T) i32 {
+  Base.step
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label: &str, f: f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(f);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // 2.0 * 3.0
+  showF("scale", Vec3.scale);
+  showF("zero.z", Vec3.zero.z);
+  showF("up.z", Vec3.up.z);
+  // up.z (1.0) times scale (6.0)
+  showF("up.lenz", Vec3.up.lenz());
+  show("corner.1", i64.from(Vec3.corner.1));
+  // 3 + 4
+  show("cornerSum", i64.from(Vec3.cornerSum()));
+  // 4 * 2
+  show("doubled", i64.from(Vec3.doubled));
+  // 20 + 1, whichever is declared first
+  show("later", i64.from(Vec3.later));
+  show("inferred", i64.from(Vec3.inferred));
+  // 9 + 1
+  show("plusHidden", i64.from(Vec3.plusHidden(1)));
+  showF("origin.x", Vec3.origin().x);
+  // A const is a value like any other: a local copy may be changed
+  var v = Vec3.up;
+  v.z = 2.5;
+  showF("v.z", v.z);
+  showF("up.z again", Vec3.up.z);
+
+  show("Lamp.count", i64.from(Lamp.count));
+  show("Lamp.dflt level", Lamp.dflt.level());
+  show("Lamp.start level", Lamp.start().level());
+
+  show("Base.step", i64.from(Base.step));
+  show("Wider.step", i64.from(Wider.step));
+  show("Wider next", i64.from(Wider(10).next()));
+  show("through", i64.from(through(1.5)));
+  0
+}

@@ -1,0 +1,144 @@
+// The lent-buffer bookkeeping a body going to a sink needs, apart from where the body comes from: which
+// buffers the sink holds and what credit each gives back, the sink's window in memory, and the staging
+// buffers that hold a body's bytes while the window is full or the body is not yet chosen. A StreamRec
+// (streamservice.cone) holds one for a client response body; the same piece serves any other body that is
+// lent to a sink. How credit is released differs by user (the client's is 'rec.client.release(fetch, n)'),
+// so 'lendReturn' hands the bytes to give back to its caller, which releases them.
+
+// The sink's lent buffers and the staged bytes behind its window
+struct BodyLend {
+  lent: Dict[usize, usize];        // each buffer sent to the sink and not yet given back: its address, the bytes it held when sent
+                                   // (low 32 bits) and its capacity (high 32), 'packLent'. Sound as a key because the release job
+                                   // carries the buffer and clears the record before the buffer dies, so a block cannot be
+                                   // reissued while a record of it stands
+  // The sink's window, in memory: 'sinkHeld' is the capacities of the buffers sent and not yet given back, against
+  // linkWindow. While it is full, a piece's bytes join the staging buffers (the full ones 'staged', then the one being
+  // filled 'tail'), which go to the sink first, in order, as buffers come back
+  sinkHeld: usize;
+  staged: Deque[IoBuf];
+  tail: IoBuf;
+}
+
+// A lend with nothing lent and nothing staged
+fn newLend() BodyLend {
+  BodyLend(lent: Dict[usize, usize](), sinkHeld: 0usize, staged: Deque[IoBuf](), tail: IoBuf())
+}
+
+// A staging buffer's size (stages' linkBytes, the size a stage makes its chunks): pieces of fewer
+// bytes join a buffer of it. A receive's block is smaller, so a staged buffer is larger than a
+// piece that finds room in the window, and bytes stay in order only because a piece joins
+// whatever is staged
+const stageBlock = 65536usize;
+
+// What 'lent' keeps for a buffer, in one word: its bytes and its capacity
+fn packLent(bytes: usize, cap: usize) usize {(cap << 32usize) | bytes}
+fn lentBytes(v: usize) usize {v & 0xFFFFFFFFusize}
+fn lentCap(v: usize) usize {v >> 32usize}
+
+// Whether nothing is staged
+fn stagingEmpty(l: &BodyLend) bool {l.staged.isEmpty() && l.tail.len() == 0usize}
+
+// Whether the sink's window has room for a buffer of capacity cap: always for the
+// first, so a buffer larger than the window cannot stall the stream
+fn hasRoom(l: &BodyLend, cap: usize) bool {l.sinkHeld == 0usize || l.sinkHeld + cap <= linkWindow}
+
+// A buffer sent to the sink: recorded in 'lent' (its bytes, for the credit it
+// gives back; its capacity, for the window) before it goes
+fn deliver(l: &mut BodyLend, sink: &Option[ChunkSink], buf: IoBuf) {
+  let at = buf.base() as usize;
+  let n = buf.len();
+  let cap = buf.capacity();
+  let before = l.lent.getCopy(&at) || 0usize;
+  if before == 0usize {
+    l.lent.insert(at, packLent(n, cap));
+    l.sinkHeld = l.sinkHeld + cap;
+  } else {
+    l.lent.insert(at, packLent(lentBytes(before) + n, lentCap(before)));
+  }
+  match sink {
+    case let &Some(sk) {sk.accept(buf);}
+    else {}
+  }
+}
+
+// A piece's bytes added to the staging buffers; false if the pool refused one
+fn stagePiece(l: &mut BodyLend, buf: &IoBuf) bool {
+  let n = buf.len();
+  var off = 0usize;
+  while off < n {
+    if l.tail.room() == 0usize {
+      if l.tail.len() > 0usize {
+        var full = IoBuf();
+        full <-> l.tail;
+        l.staged.push(full);
+      }
+      let want = n - off;
+      match IoBuf.tryMake(if want > stageBlock {want} else {stageBlock}) {
+        case let Some(b) {l.tail = b;}
+        else {return false;}
+      }
+    }
+    off = off + l.tail.append(mem.sliceFromParts(buf.base() + off, n - off));
+  }
+  true
+}
+
+// The first staged buffer sent to the sink
+fn sendStaged(l: &mut BodyLend, sink: &Option[ChunkSink]) {
+  match l.staged.popFront() {
+    case let Some(b) {deliver(l, sink, b);}
+    else {
+      var t = IoBuf();
+      t <-> l.tail;
+      deliver(l, sink, t);
+    }
+  }
+}
+
+// Staged buffers sent to the sink, in order, while its window has room
+fn drainStaged(l: &mut BodyLend, sink: &Option[ChunkSink]) {
+  while !stagingEmpty(l) {
+    var cap = l.tail.capacity();
+    match l.staged.peekFront() {
+      case let Some(b) {cap = b.capacity();}
+      else {}
+    }
+    if !hasRoom(l, cap) {return;}
+    sendStaged(l, sink);
+  }
+}
+
+// A buffer given back, known by its address: the record of it is cleared and the window reopens by the
+// capacity recorded when the buffer was sent, never by what it comes back as. Returns the bytes recorded
+// as lent in it, the credit for the caller to release (0 for a buffer the record does not hold)
+fn lendReturn(l: &mut BodyLend, at: usize) usize {
+  let v = l.lent.remove(&at) || 0usize;
+  let c = lentCap(v);
+  l.sinkHeld = if c < l.sinkHeld {l.sinkHeld - c} else {0usize};
+  lentBytes(v)
+}
+
+// The staged bytes let go, with nothing more to send them to: the bytes dropped, which are credit for the
+// caller to release
+fn lendDiscard(l: &mut BodyLend) usize {
+  var n = l.tail.len();
+  var t = IoBuf();
+  t <-> l.tail;
+  while true {
+    match l.staged.popFront() {
+      case let Some(b) {n = n + b.len();}
+      else {break;}
+    }
+  }
+  n
+}
+
+// Every buffer the sink still holds written off (it is gone, and will give none back): the bytes recorded as
+// lent in them, credit for the caller to release, and the window reopened
+fn lendAbandon(l: &mut BodyLend) usize {
+  var n = 0usize;
+  each v in l.lent.values() {n = n + lentBytes(*v);}
+  l.lent.clear();
+  l.sinkHeld = 0usize;
+  n
+}

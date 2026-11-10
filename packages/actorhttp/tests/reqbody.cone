@@ -1,0 +1,803 @@
+// A server that takes request bodies as streams: ServerConfig.streamBodies, Exchange.body(), RequestBody
+// (requestbody.cone). The server's maxBody is 64 KiB throughout, which means nothing to it. Bodies come from a
+// test source (Gen, as upload.cone's) by Client.upload, over HTTP/1.1 in the clear and over HTTP/2 through TLS
+// (the tls package's test certificates). Checked, in each protocol, with a body of byte i = i % 251:
+//   - 'read' to the end, 8 MiB sized and 3,000,017 bytes unsized: every byte once, in order;
+//   - 'to' a counting sink: the same, the sink's one end Finished;
+//   - 'readAll(200000)' of 100,000 bytes: the whole body; of a 1 MiB body: the server answers 413 itself, the
+//     handler's readAll is an Err, the body's rest is discarded;
+//   - a GET: 'read' ends at once, nothing read;
+//   - a slow sink (5 ms a buffer) of 32 MiB: all of it arrives, and the bytes lent from the pool, sampled while it
+//     runs, stay far below the body (the server never gathers it);
+//   - a sink that stops its source Failed after 100,000 bytes of 8 MiB: its end is Failed, once, and the rest is
+//     not delivered;
+//   - a handler that answers 413 without taking the body, one that drops the RequestBody unread, one that drops
+//     it after one piece, one that never calls body(): each leaves no body delivered to anyone, the server
+//     answers a request after, and every buffer is back in the pool;
+// and, over HTTP/1.1 on a raw socket, 'Expect: 100-continue': a handler that reads gets the 100 and then the
+// body; one that answers 413 without reading sends no 100.
+
+mod reqbody;
+
+import stdio use *;
+import thread;
+import fs;
+import path use Path;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request, Response;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use BodyError, Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending, ChunkWindow;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+// ---------------------------------------------------------------------------
+// What the actors tell the main thread
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub sent: Atomic[u64];       // body bytes the source sent
+  pub stops: Atomic[u64];      // stops the source was told
+  pub endsSent: Atomic[u64];   // ends the source sent its sink
+  pub srvBytes: Atomic[u64];   // body bytes the server's handler got
+  pub srvBad: Atomic[u64];     // ...that were not the pattern
+  pub srvEnds: Atomic[u64];    // bodies read to a clean end
+  pub srvErr: Atomic[u64];     // reads or readAlls that were an Err
+  pub srvAllOk: Atomic[u64];   // readAlls that gave the body
+  pub sinkEnds: Atomic[u64];   // ends a server-side sink was given
+  pub sinkFin: Atomic[u64];    // ...Finished
+  pub sinkFail: Atomic[u64];   // ...Failed
+  pub handled: Atomic[u64];    // handlers that ended
+  pub status: Atomic[u64];     // the response's status (0: none)
+  pub bodyLen: Atomic[u64];    // its body's length
+  pub failed: Atomic[u64];     // uploads whose 'stream' was an Err
+  pub ended: Atomic[u64];      // scenarios run to their end
+  pub srvBig: Atomic[u64];     // ...of those, BodyError.isTooLarge
+  pub peak: Atomic[u64];       // the most pool bytes lent while a slow sink ran
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.sent.store(0u64);
+  tally.stops.store(0u64);
+  tally.endsSent.store(0u64);
+  tally.srvBytes.store(0u64);
+  tally.srvBad.store(0u64);
+  tally.srvEnds.store(0u64);
+  tally.srvErr.store(0u64);
+  tally.srvAllOk.store(0u64);
+  tally.sinkEnds.store(0u64);
+  tally.sinkFin.store(0u64);
+  tally.sinkFail.store(0u64);
+  tally.handled.store(0u64);
+  tally.status.store(0u64);
+  tally.bodyLen.store(0u64);
+  tally.failed.store(0u64);
+  tally.ended.store(0u64);
+  tally.peak.store(0u64);
+  tally.srvBig.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+// The pool's bytes lent now: both ends' buffers
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// How many bytes of a piece that starts at body offset pos are not the pattern
+fn badBytes(s: &Array[u8], pos: u64) u64 {
+  var bad = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    if s[i] != u8.from((pos + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+    i = i + 1usize;
+  }
+  bad
+}
+
+// ---------------------------------------------------------------------------
+// The source: byte i of the body is i % 251
+// ---------------------------------------------------------------------------
+
+const window = 262144usize;
+
+actor Gen is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  table: List[u8];
+  total: u64;
+  sent: u64;
+  chunk: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, total: u64, chunk: usize) {
+    var t = List[u8].withCapacity(chunk + 251usize);
+    var i = 0usize;
+    while i < chunk + 251usize {
+      t.push(u8.from(u64.from(i) % 251u64));
+      i = i + 1usize;
+    }
+    *self = Self(down: down, link: ChunkWindow.own(window), table: t, total: total, sent: 0u64, chunk: chunk, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {
+    tally.stops.add(1u64);
+    if !over {
+      over = true;
+      tally.endsSent.add(1u64);
+      down.end(why);
+    }
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if sent >= total {
+        over = true;
+        tally.endsSent.add(1u64);
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        let left = total - sent;
+        let n = if left < u64.from(chunk) {usize.from(left)} else {chunk};
+        match link.take(n) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let off = usize.from(sent % 251u64);
+            let all = table.view();
+            buf.append(&all[off ..< off + n]);
+            sent = sent + u64.from(n);
+            tally.sent.add(u64.from(n));
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The server's sinks
+// ---------------------------------------------------------------------------
+
+// Counts and checks the pattern, gives each buffer back at once. 'slowMs' holds the thread that long for
+// each; 'failAt' (not 0) stops the source Failed once that many bytes are in
+actor CountSink is ChunkSink {
+  up: Option[ChunkSource];
+  pos: u64;
+  slowMs: i64;
+  failAt: u64;
+  stopped: bool;
+
+  pub fn init(self: &new, slowMs: i64, failAt: u64) {
+    *self = Self(up: None[ChunkSource], pos: 0u64, slowMs: slowMs, failAt: failAt, stopped: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    tally.srvBytes.add(u64.from(c.len()));
+    tally.srvBad.add(badBytes(c.view(), pos));
+    pos = pos + u64.from(c.len());
+    if slowMs > 0i64 {thread.sleep(Duration.fromMillis(slowMs));}
+    if failAt > 0u64 && pos >= failAt && !stopped {
+      stopped = true;
+      match &up {
+        case let &Some(u) {u.stop(Ending.Failed(AnyError.msg("the sink failed")));}
+        else {}
+      }
+    }
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    tally.sinkEnds.add(1u64);
+    match &how {
+      case is Finished {tally.sinkFin.add(1u64);}
+      else {tally.sinkFail.add(1u64);}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+actor Handler {
+  ex: Exchange;
+
+  // Reads the body piece by piece to its end, counting; 'stopAfter' pieces (not 0) and it drops the body
+  async fn readBody(self, stopAfter: u64) bool {
+    let body = ex.body();
+    var pos = 0u64;
+    var pieces = 0u64;
+    var going = true;
+    while going {
+      let r = await body.read();
+      match r {
+        case let Ok(o) {
+          match o {
+            case let Some(piece) {
+              tally.srvBytes.add(u64.from(piece.len()));
+              tally.srvBad.add(badBytes(piece.view() as &Array[u8], pos));
+              pos = pos + u64.from(piece.len());
+              pieces = pieces + 1u64;
+              if stopAfter > 0u64 && pieces >= stopAfter {going = false;}
+            }
+            case is None[String] {tally.srvEnds.add(1u64); going = false;}
+          }
+        }
+        case let Err(e) {tally.srvErr.add(1u64); going = false;}
+      }
+    }
+    true
+  }
+
+  // After a body sent to a sink: wait for the sink's end
+  async fn awaitSink(self) bool {
+    let limit = Instant.now() + Duration.fromMillis(30000i64);
+    while tally.sinkEnds.load() == 0u64 && Instant.now() < limit {
+      let s = await aio.sleep(Duration.fromMillis(5i64));
+    }
+    true
+  }
+
+  // readAll through '?': the BodyError becomes an AnyError that still holds it
+  async fn gatherQ(self) Result[String, AnyError] {
+    let body = ex.body();
+    let r = await body.readAll(200000usize);
+    let s = r?;
+    Ok[String, AnyError](s)
+  }
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if p == "/get" {
+      ex.text(200u16, "got");
+    } else if p == "/read" {
+      let a = await self.readBody(0u64);
+      ex.text(200u16, "ok");
+    } else if p == "/readone" {
+      let a = await self.readBody(1u64);
+      ex.text(200u16, "ok");
+    } else if p == "/to" || p == "/slow" || p == "/fail" {
+      let body = ex.body();
+      let sink = CountSink(if p == "/slow" {5i64} else {0i64}, if p == "/fail" {100000u64} else {0u64});
+      body.to(sink);
+      let a = await self.awaitSink();
+      ex.text(200u16, "ok");
+    } else if p == "/all" {
+      let body = ex.body();
+      let r = await body.readAll(200000usize);
+      match r {
+        case let Ok(s) {
+          tally.srvAllOk.add(1u64);
+          tally.srvBytes.add(u64.from(s.len()));
+          tally.srvBad.add(badBytes(s.view() as &Array[u8], 0u64));
+          ex.text(200u16, "ok");
+        }
+        case let Err(e) {
+          tally.srvErr.add(1u64);
+          if e.isTooLarge() {tally.srvBig.add(1u64);}
+          ex.text(500u16, "too much");
+        }
+      }
+    } else if p == "/allq" {
+      let r = await self.gatherQ();
+      match r {
+        case let Ok(s) {ex.text(200u16, "ok");}
+        case let Err(e) {
+          tally.srvErr.add(1u64);
+          if e.holds[BodyError]() {
+            match e.downcastRef[BodyError]() {
+              case let Some(be) {if be.isTooLarge() {tally.srvBig.add(1u64);}}
+              else {}
+            }
+          }
+          ex.text(500u16, "too much");
+        }
+      }
+    } else if p == "/answerfirst" {
+      // answers while still holding the body (it is staged for the handler, whose reads then end with End)
+      ex.text(200u16, "ok");
+      let nap = await aio.sleep(Duration.fromMillis(300i64));
+      let a = await self.readBody(0u64);
+    } else if p == "/empty" {
+      let a = await self.readBody(0u64);
+      ex.text(200u16, "ok");
+    } else if p == "/refuse" {
+      ex.text(413u16, "no");
+    } else if p == "/dropbody" {
+      {
+        let body = ex.body();
+      }
+      ex.text(200u16, "ok");
+    } else if p == "/expect-read" {
+      let a = await self.readBody(0u64);
+      ex.text(200u16, "ok");
+    } else {
+      ex.text(404u16, "none");
+    }
+    tally.handled.add(1u64);
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client
+// ---------------------------------------------------------------------------
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn newClient(secure: bool) Client {
+  if !secure {return Client.standard();}
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = true;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn url(secure: bool, port: u16, path: &str) String {
+  var u = String.from(if secure {"https://127.0.0.1:"} else {"http://127.0.0.1:"});
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// One upload by POST: 'total' bytes from a Gen in chunks of 'chunk', sized or unsized
+actor Up {
+  client: Client;
+
+  pub async fn run(self, u: String, total: u64, chunk: usize, sized: bool) {
+    let framing = if sized {BodyLength.sized(total)} else {BodyLength.unsized()};
+    let up = client.upload(Request.make("POST", u.view()), framing);
+    let g = Gen(up.sink(), total, chunk);
+    g.start();
+    let r = await up.stream();
+    match r {
+      case let Ok(bs) {
+        tally.status.store(u64.from(bs.status));
+        var going = true;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {tally.bodyLen.add(u64.from(piece.len()));}
+                case is None[String] {going = false;}
+              }
+            }
+            case let Err(e) {tally.failed.add(1u64); going = false;}
+          }
+        }
+      }
+      case let Err(e) {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// A plain GET, to see the server still answers
+actor Plain {
+  client: Client;
+
+  pub async fn run(self, u: String) {
+    let r = await client.send(Request.get(u.view()));
+    match r {
+      case let Ok(ok) {tally.status.store(u64.from(ok.status)); tally.bodyLen.add(u64.from(ok.body.len()));}
+      case let Err(e) {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+fn home() {
+  printStr("  every buffer home: ");
+  printStr(yes(allHome()));
+  printStr("\n");
+}
+
+fn put(secure: bool, port: u16, path: &str, total: u64, chunk: usize, sized: bool) {
+  reset();
+  let u = Up(newClient(secure));
+  u.run(url(secure, port, path), total, chunk, sized);
+  waitFor(&tally.ended, 1u64);
+  waitFor(&tally.handled, 1u64);
+}
+
+fn server() {
+  printStr("  server: bytes ");
+  printUInt(tally.srvBytes.load());
+  printStr(", wrong ");
+  printUInt(tally.srvBad.load());
+  printStr(", clean ends ");
+  printUInt(tally.srvEnds.load());
+  printStr(", errs ");
+  printUInt(tally.srvErr.load());
+  printStr(" (too large ");
+  printUInt(tally.srvBig.load());
+  printStr(")");
+  printStr(", readAll ok ");
+  printUInt(tally.srvAllOk.load());
+  printStr(", sink ends ");
+  printUInt(tally.sinkEnds.load());
+  printStr(" (Finished ");
+  printUInt(tally.sinkFin.load());
+  printStr(", Failed ");
+  printUInt(tally.sinkFail.load());
+  printStr(")\n");
+}
+
+fn client() {
+  printStr("  client: status ");
+  printUInt(tally.status.load());
+  printStr(", failed ");
+  printUInt(tally.failed.load());
+  printStr("\n");
+}
+
+// A request after: the server still answers
+fn after(secure: bool, port: u16) {
+  reset();
+  let p = Plain(newClient(secure));
+  p.run(url(secure, port, "/get"));
+  waitFor(&tally.ended, 1u64);
+  printStr("  a request after: status ");
+  printUInt(tally.status.load());
+  printStr("\n");
+}
+
+fn scenarios(secure: bool, port: u16, label: &str) {
+  printStr("== ");
+  printStr(label);
+  printStr("\n");
+
+  printStr("read: sized 8 MiB\n");
+  put(secure, port, "/read", 8388608u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("read: unsized 3000017 in chunks of 40000\n");
+  put(secure, port, "/read", 3000017u64, 40000usize, false);
+  server();
+  client();
+  home();
+
+  printStr("to a counting sink: sized 8 MiB\n");
+  put(secure, port, "/to", 8388608u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("readAll(200000) of 100000 bytes\n");
+  put(secure, port, "/all", 100000u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("readAll(200000) of a 1 MiB body: the server answers 413\n");
+  put(secure, port, "/all", 1048576u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("readAll(200000)? of a 1 MiB body: the error reaches the handler's caller as an AnyError, TooLarge\n");
+  put(secure, port, "/allq", 1048576u64, 65536usize, true);
+  server();
+  client();
+  home();
+
+  printStr("body() taken after the answer, then read: 20000 bytes, every byte arrives and the read ends with End\n");
+  put(secure, port, "/answerfirst", 20000u64, 20000usize, true);
+  server();
+  client();
+  home();
+
+  printStr("a GET: read ends at once\n");
+  reset();
+  {
+    let c = newClient(secure);
+    let b = Plain(c);
+    b.run(url(secure, port, "/empty"));
+    waitFor(&tally.ended, 1u64);
+    waitFor(&tally.handled, 1u64);
+  }
+  server();
+  client();
+  home();
+
+  printStr("a slow sink: 32 MiB, 5 ms a buffer\n");
+  reset();
+  {
+    let u = Up(newClient(secure));
+    u.run(url(secure, port, "/slow"), 33554432u64, 65536usize, true);
+    let limit = Instant.now() + Duration.fromMillis(120000i64);
+    while tally.ended.load() == 0u64 && Instant.now() < limit {
+      let l = lent();
+      if l > tally.peak.load() {tally.peak.store(l);}
+      thread.sleep(Duration.fromMillis(2i64));
+    }
+    waitFor(&tally.handled, 1u64);
+  }
+  server();
+  client();
+  printStr("  the pool's lent bytes stayed below 8 MiB: ");
+  printStr(yes(tally.peak.load() < 8388608u64));
+  printStr("\n");
+  home();
+
+  printStr("a sink that stops its source Failed after 100000 bytes of 8 MiB\n");
+  put(secure, port, "/fail", 8388608u64, 65536usize, true);
+  printStr("  the server's bytes are far below the body: ");
+  printStr(yes(tally.srvBytes.load() < 4194304u64));
+  printStr("\n");
+  printStr("  the sink's one end, Failed: ");
+  printStr(yes(tally.sinkEnds.load() == 1u64 && tally.sinkFail.load() == 1u64));
+  printStr("\n");
+  home();
+  after(secure, port);
+
+  printStr("answered 413 without taking the body: 8 MiB offered\n");
+  put(secure, port, "/refuse", 8388608u64, 65536usize, true);
+  printStr("  nothing was delivered to the handler: ");
+  printStr(yes(tally.srvBytes.load() == 0u64));
+  printStr("\n");
+  waitFor(&tally.endsSent, 1u64);
+  printStr("  the source sent part of the body: ");
+  printStr(yes(tally.sent.load() < 8388608u64));
+  printStr("\n");
+  home();
+  after(secure, port);
+
+  printStr("body() dropped unread: 8 MiB offered\n");
+  put(secure, port, "/dropbody", 8388608u64, 65536usize, true);
+  printStr("  nothing was delivered to the handler: ");
+  printStr(yes(tally.srvBytes.load() == 0u64));
+  printStr("\n");
+  home();
+  after(secure, port);
+
+  printStr("body() read for one piece, then dropped: 8 MiB offered\n");
+  put(secure, port, "/readone", 8388608u64, 65536usize, true);
+  printStr("  the handler got less than the body: ");
+  printStr(yes(tally.srvBytes.load() < 8388608u64));
+  printStr("\n");
+  home();
+  after(secure, port);
+
+  printStr("body() never called: 8 MiB offered\n");
+  put(secure, port, "/nobody", 8388608u64, 65536usize, true);
+  printStr("  nothing was delivered to the handler: ");
+  printStr(yes(tally.srvBytes.load() == 0u64));
+  printStr("\n");
+  home();
+  after(secure, port);
+}
+
+// ---------------------------------------------------------------------------
+// 100 Continue, on a raw socket over HTTP/1.1
+// ---------------------------------------------------------------------------
+
+actor Raw {
+  pub async fn run(self, port: u16, path: String, answers: Sender[String]) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    match c {
+      case let Ok(sock) {
+        var head = String.from("POST ");
+        head.append(path.view());
+        head.append(" HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nExpect: 100-continue\r\n\r\n");
+        match IoBuf.tryMake(head.len()) {
+          case var Some(b) {
+            b.append(head.view() as &Array[u8]);
+            let w = await sock.write(b);
+          }
+          else {}
+        }
+        let r1 = await sock.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+        var first = String();
+        match r1 {
+          case let Ok(b) {first = String.fromBytes(b.view());}
+          case let Err(e) {first = String.from("error");}
+        }
+        answers.send(first.clone());
+        if first.view().startsWith("HTTP/1.1 100") {
+          match IoBuf.tryMake(20usize) {
+            case var Some(b) {
+              b.append("01234567890123456789" as &Array[u8]);
+              let w = await sock.write(b);
+            }
+            else {}
+          }
+          let r2 = await sock.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(5000i64)));
+          var second = String();
+          match r2 {
+            case let Ok(b) {second = String.fromBytes(b.view());}
+            case let Err(e) {second = String.from("error");}
+          }
+          answers.send(second);
+        }
+      }
+      case let Err(e) {answers.send(String.from("connect failed"));}
+    }
+  }
+}
+
+fn expectTest(port: u16, path: &str, label: &str) {
+  printStr(label);
+  printStr("\n");
+  reset();
+  var tx: Sender[String];
+  var rx: Receiver[String];
+  tx, rx = Channel[String].make();
+  let r = Raw();
+  r.run(port, String.from(path), tx.clone());
+  let first = rx.recv() || String();
+  printStr("  first reply is a 100 Continue: ");
+  printStr(yes(first.view().startsWith("HTTP/1.1 100")));
+  printStr(", a 413: ");
+  printStr(yes(first.view().startsWith("HTTP/1.1 413")));
+  printStr("\n");
+  if first.view().startsWith("HTTP/1.1 100") {
+    let second = rx.recv() || String();
+    printStr("  then a 200: ");
+    printStr(yes(second.view().startsWith("HTTP/1.1 200")));
+    printStr("\n");
+  }
+  waitFor(&tally.handled, 1u64);
+  printStr("  the handler got ");
+  printUInt(tally.srvBytes.load());
+  printStr(" body bytes\n");
+}
+
+// A server with no actor to take its requests and room for none (maxPending 0): each is answered 503 at its
+// head, its body is not delivered, and nothing it staged is kept
+fn busyTest(port: u16) {
+  printStr("a request no actor takes (maxPending 0): 4 MiB offered, twice\n");
+  var n = 0u32;
+  while n < 2u32 {
+    reset();
+    let u = Up(newClient(false));
+    u.run(url(false, port, "/read"), 4194304u64, 65536usize, true);
+    waitFor(&tally.ended, 1u64);
+    printStr("  status ");
+    printUInt(tally.status.load());
+    printStr(", the handler got ");
+    printUInt(tally.srvBytes.load());
+    printStr(" body bytes\n");
+    n = n + 1u32;
+  }
+  home();
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var cfg1 = ServerConfig.make().streamBodies();
+    cfg1.maxBody = 65536usize;
+    let plain = Acceptor(Server.none());
+    plain.open(cfg1, ptx.clone());
+    let port = prx.recv() || 0u16;
+    plain.serve();
+    var cfg2 = ServerConfig.make().streamBodies().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+    cfg2.maxBody = 65536usize;
+    let secure = Acceptor(Server.none());
+    secure.open(cfg2, ptx.clone());
+    let sport = prx.recv() || 0u16;
+    secure.serve();
+    printStr("two servers listen: ");
+    printStr(yes(port != 0u16 && sport != 0u16));
+    printStr("\n");
+    scenarios(false, port, "HTTP/1.1");
+    scenarios(true, sport, "HTTP/2 over TLS");
+    printStr("== 100 Continue (HTTP/1.1, raw)\n");
+    expectTest(port, "/expect-read", "a handler that reads");
+    expectTest(port, "/refuse", "a handler that answers 413 without reading");
+    var cfg3 = ServerConfig.make().streamBodies();
+    cfg3.maxPending = 0usize;
+    let busy = Acceptor(Server.none());
+    busy.open(cfg3, ptx.clone());
+    let bport = prx.recv() || 0u16;
+    printStr("== a full server (HTTP/1.1)\n");
+    busyTest(bport);
+    plain.stop();
+    secure.stop();
+    busy.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}

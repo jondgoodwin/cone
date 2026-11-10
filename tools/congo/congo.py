@@ -64,6 +64,8 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import concurrent.futures
+import contextlib
 import difflib
 import hashlib
 import json
@@ -96,6 +98,7 @@ REPO_DEPS = REPO / "deps"
 
 MANIFEST = "congo.toml"
 OBJ_EXT = ".obj" if IS_WINDOWS else ".o"
+LTO_EXT = ".bc"      # what an --lto compile writes in place of an object
 EXE_EXT = ".exe" if IS_WINDOWS else ""
 PRELUDE = "core"
 # What Windows ends a program with when a DLL it needs is not found
@@ -143,6 +146,12 @@ DEFINES: list[str] = []
 # of the build, and a Windows link writes no PDB. Without it every native build
 # carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
+
+# '--lto' given to build, run or test with --release: every native compile writes
+# ThinLTO bitcode (<name>.bc) in place of an object, and the link is preceded by
+# conec's ThinLTO link of them all, whose objects the linker takes. Into a build
+# folder of its own, so that neither build's files are the other's to rebuild
+LTO = [False]
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
@@ -2014,12 +2023,13 @@ def tool_hash(path: Path) -> str:
     return known[1]
 
 
-def conec_command(command: list[str]) -> list[str]:
-    """conec's command line as it is run: the -D defines, and --strip where the
-    build is stripped, put after the compiler."""
+def conec_command(command: list[str], lto: bool = False) -> list[str]:
+    """conec's command line as it is run: the -D defines, --strip where the
+    build is stripped, and --lto where a native compile is of an --lto build,
+    put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
     strip = ["--strip"] if STRIP_DEBUG[0] else []
-    return [command[0], *defines, *strip, *command[1:]]
+    return [command[0], *defines, *strip, *(["--lto"] if lto and LTO[0] else []), *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2124,10 +2134,10 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     desc = out / f"{unit.pkg.name}.conebuild"
     desc.write_text(description(unit, mode, output, includes or out, packages, homes),
                     encoding="utf-8")
-    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
+    obj = out / f"{unit.pkg.name}{LTO_EXT if LTO[0] else OBJ_EXT}"
     include = include_for(unit.pkg, out)
     outputs = [obj, include] if output == "library" else [obj]
-    command = conec_command([str(conec), "-o", str(out), str(desc)])
+    command = conec_command([str(conec), "-o", str(out), str(desc)], lto=True)
     files: list[tuple[str, Path]] = []
     if not unit.pkg.lone:
         files.append(("manifest", unit.pkg.root / MANIFEST))
@@ -2417,17 +2427,42 @@ def validate_kernels(spv: Path) -> tuple[bool | None, str]:
     return result.returncode == 0, utf8_text(result.stdout) + utf8_text(result.stderr)
 
 
+def mode_folder(mode: str) -> str:
+    """The folder name of a build mode: an --lto build has a folder of its own."""
+    return mode + "-lto" if LTO[0] else mode
+
+
 def build_folder(pkg: Package, mode: str) -> Path:
-    return lone_build_root(pkg.src) / mode if pkg.lone else pkg.root / "build" / mode
+    folder = mode_folder(mode)
+    if not pkg.lone:
+        return pkg.root / "build" / folder
+    # A missing compiler is reported at the compile, after the source's errors
+    try:
+        conec: Path | None = find_conec()
+    except CongoError:
+        conec = None
+    return lone_build_root(pkg.src, conec) / folder
 
 
-def lone_build_root(file: Path) -> Path:
+def lone_build_root(file: Path, conec: Path | None = None) -> Path:
     """A lone file's build goes under the Congo home, not beside the file: the
     folder a lone file sits in is nobody's package, and may well hold a 'build'
-    folder of its own that 'congo clean' must not delete."""
+    folder of its own that 'congo clean' must not delete. With the compiler
+    given, the folder is that compiler's own, <file>-<hash>/<c8>/, c8 being the
+    first 8 hex digits of conec's content hash, so that two compilers building
+    one file keep separate builds instead of rebuilding over each other.
+    Without it, the folder of all of them, which 'congo clean' removes."""
     spelled = str(file.resolve())
     digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()[:10]
-    return congo_home() / "lone" / f"{file.stem}-{digest}"
+    root = congo_home() / "lone" / f"{file.stem}-{digest}"
+    return root / tool_hash(conec)[:8] if conec is not None else root
+
+
+LINKER_LOCK = threading.Lock()
+# One lock for every library of the shared folder, not one each: checking a
+# library rewrites its generated files, which a thread compiling a dependent
+# of it is reading
+SHARED_LOCK = threading.Lock()
 
 
 class Session:
@@ -2539,9 +2574,13 @@ class Session:
                 prelude = None
             else:
                 prelude = searched_sources(core, "prelude")
-            obj = compile_unit(conec, unit, into, self.mode, is_top, env,
-                               packages, self.out, announce or not is_top, prelude,
-                               self.home)
+            # A library in the shared folder is compiled by one thread at a
+            # time ('congo test --jobs'): the next finds it current
+            with (SHARED_LOCK if not is_top and self.shared is not None
+                  else contextlib.nullcontext()):
+                obj = compile_unit(conec, unit, into, self.mode, is_top, env,
+                                   packages, self.out, announce or not is_top, prelude,
+                                   self.home)
             if not is_top or (into == self.out and unit.pkg.output == "library"):
                 self.objs[unit.pkg.key] = obj
             objs.append(obj)
@@ -2553,10 +2592,28 @@ class Session:
                                                        self.mode, env)
         return objs
 
+    def lto_link(self, bitcode: list[Path], exe: Path, announce: bool) -> list[Path]:
+        """An --lto build's modules, as bitcode, made into the objects the
+        linker takes: one conec ThinLTO link over all of them, which writes
+        <i>.obj for the i-th into a folder beside the program, which also keeps
+        conec's cache of the objects it made, so that the next link generates
+        only what changed."""
+        folder = exe.parent / f"{exe.stem}.lto"
+        folder.mkdir(parents=True, exist_ok=True)
+        started = time.time()
+        command = [str(self.conec), "--lto-link", "-o", str(folder), *map(str, bitcode)]
+        if not run_conec(command, dict(os.environ)):
+            raise CongoError(f"the ThinLTO link failed: {' '.join(command)}")
+        if announce:
+            say("Optimising", f"{len(bitcode)} modules (ThinLTO, {time.time() - started:.1f}s)")
+        return [folder / f"{i}{OBJ_EXT}" for i in range(len(bitcode))]
+
     def link(self, order: list[Unit], objs: list[Path], exe: Path,
              announce: bool = True) -> None:
         if self._linker is None:
-            self._linker = Linker(find_conestd(self.conec))
+            # Captures Visual Studio's environment, cached in a file: once at a time
+            with LINKER_LOCK:
+                self._linker = Linker(find_conestd(self.conec))
         linker = self._linker
         # The program's object first, then the packages it imports, last built first;
         # and the C libraries every one of them names, in the same order, each once.
@@ -2583,6 +2640,8 @@ class Session:
                     pass
                 raise
         linked = [objs[-1], *reversed(objs[:-1])]
+        if LTO[0]:
+            linked = self.lto_link(linked, exe, announce)
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
@@ -3171,6 +3230,29 @@ def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: b
         tally.failures.append(f"{pkg.name}: test {file.stem}")
 
 
+def prepare_package(pkg: Package, mode: str, shared: Path | None,
+                    tally: Tally) -> Session | None:
+    """The build step of test_package: build the package, and return the session
+    its tests and examples are built in; or None, with the failure counted in
+    `tally`, where the package does not build."""
+    say("Testing", f"{pkg.label()} ({pkg.root})")
+    # The package under test is found first, under its own name, so a test
+    # imports this copy -- whether or not it is in a registry, and whatever
+    # else a registry holds of that name
+    registry = open_registry()
+    registry.packages[pkg.name] = pkg
+    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
+    try:
+        build(pkg, mode, session)
+    except CongoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        tally.broken += 1
+        tally.failures.append(f"{pkg.name}: the package does not build")
+        say("Result", f"{pkg.name}: the package does not build")
+        return None
+    return session
+
+
 def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
                  later: list | None = None, shared: Path | None = None) -> Tally:
     """Build the package, then run each test and build each example. A test the
@@ -3179,23 +3261,18 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
     caller to run, alone, after every package's other tests. Where `shared` is a
     folder, every package of the build but this one is compiled there (Session.home)."""
     tally = Tally()
-    say("Testing", f"{pkg.label()} ({pkg.root})")
-    # The package under test is found first, under its own name, so a test
-    # imports this copy -- whether or not it is in a registry, and whatever
-    # else a registry holds of that name
-    registry = open_registry()
-    registry.packages[pkg.name] = pkg
-    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
+    session = prepare_package(pkg, mode, shared, tally)
+    if session is not None:
+        run_package(pkg, session, mode, name_filter, bless, later, tally)
+    return tally
+
+
+def run_package(pkg: Package, session: Session, mode: str, name_filter: str | None,
+                bless: bool, later: list | None, tally: Tally) -> None:
+    """The run step of test_package: the package's tests and examples, in the
+    session its build left."""
     tests = programs(pkg.root / TESTS, name_filter)
     examples = programs(pkg.root / EXAMPLES, name_filter)
-    try:
-        build(pkg, mode, session)
-    except CongoError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        tally.broken += 1
-        tally.failures.append(f"{pkg.name}: the package does not build")
-        say("Result", f"{pkg.name}: the package does not build")
-        return tally
     # Its kernels, where it has them, checked by the Vulkan SDK's validator
     # for Vulkan 1.3, counted as a test; where the SDK is not installed they
     # are only built, and that is said
@@ -3259,7 +3336,6 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
             tally.unbuilt += 1
             tally.failures.append(f"{pkg.name}: example {file.stem}")
     say("Result", f"{pkg.name}: {tally.summary()}")
-    return tally
 
 
 def package_manifests(folder: Path) -> list[Path]:
@@ -3280,7 +3356,113 @@ def shared_folder(folder: Path, mode: str) -> Path:
     keys, and is kept the same way."""
     settings = json.dumps([DEFINES, STRIP_DEBUG[0]])
     tag = hashlib.sha256(settings.encode("utf-8")).hexdigest()[:8]
-    return folder / SHARED_FOLDER / f"{mode}-{tag}"
+    return folder / SHARED_FOLDER / f"{mode_folder(mode)}-{tag}"
+
+
+def default_jobs() -> int:
+    """Half the logical processors, at least 1: what 'congo test' over a folder
+    of packages runs at once unless --jobs says otherwise."""
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+class ThreadOutput:
+    """Stands in for sys.stdout or sys.stderr while packages run on threads:
+    what a thread writes goes to the buffer it has set (thread-local), or, for a
+    thread with none, to the real stream. A package's output is then printed as
+    one block when it ends."""
+
+    def __init__(self, real, local: threading.local, attribute: str):
+        self.real = real
+        self.local = local
+        self.attribute = attribute
+
+    def write(self, text: str) -> int:
+        buffer = getattr(self.local, self.attribute, None)
+        if buffer is None:
+            return self.real.write(text)
+        buffer.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        if getattr(self.local, self.attribute, None) is None:
+            self.real.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self.real, name)
+
+
+def prewarm_imports(pkg: Package, session: Session, name_filter: str | None) -> None:
+    """Compile, now and in order, every library a test or example of the package
+    imports that the package build did not compile (stdio, say), so that the
+    programs built beside each other later find them current and write nothing
+    in the shared folder. What a program's own build compiles, no more. An error
+    is left for the program's build to report, in its own block."""
+    for folder in (TESTS, EXAMPLES):
+        if folder == TESTS and not (pkg.root / TESTS).is_dir():
+            continue
+        for file in programs(pkg.root / folder, name_filter):
+            try:
+                lone = lone_package(file)
+                restore(lone, session.registry)
+                order = build_order(lone, session.registry)
+                if len(order) > 1:
+                    session.compile(order[:-1], lone, announce=False)
+            except CongoError:
+                pass
+
+
+def run_packages_in_parallel(manifests: list[Path], jobs: int, mode: str,
+                             args: argparse.Namespace, shared: Path | None,
+                             later: list, total: Tally) -> None:
+    """'congo test' over a folder, several packages at once. First, one at a
+    time, every package is built (the shared folder is written by one process at
+    a time; the tests of a package are built later, beside the run). Then the
+    packages' tests and examples run on `jobs` threads, each package's output
+    printed as one block when it ends. Quiet tests are left in `later`."""
+    prepared: list[tuple[Package, Session, Tally]] = []
+    for manifest in manifests:
+        pkg = read_manifest(manifest)
+        tally = Tally()
+        session = prepare_package(pkg, mode, shared, tally)
+        if session is None:
+            total.add(tally)
+        else:
+            if pkg.output == "library":
+                prewarm_imports(pkg, session, args.name)
+            prepared.append((pkg, session, tally))
+    say("Running", f"{len(prepared)} packages, {jobs} at a time")
+    local = threading.local()
+    real_out, real_err = sys.stdout, sys.stderr
+    print_lock = threading.Lock()
+
+    def work(item: tuple[Package, Session, Tally]) -> Tally:
+        pkg, session, tally = item
+        local.out, local.err = [], []
+        try:
+            say("Running", f"{pkg.label()} ({pkg.root})")
+            run_package(pkg, session, mode, args.name, args.bless, later, tally)
+        except Exception as exc:    # a crash of Congo's own, counted as a failure
+            print(f"error: {pkg.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            tally.failed += 1
+            tally.failures.append(f"{pkg.name}: congo crashed: {exc}")
+        finally:
+            out, err = "".join(local.out), "".join(local.err)
+            local.out = local.err = None
+            with print_lock:
+                real_out.write(out)
+                real_out.flush()
+                real_err.write(err)
+                real_err.flush()
+        return tally
+
+    sys.stdout = ThreadOutput(real_out, local, "out")
+    sys.stderr = ThreadOutput(real_err, local, "err")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            for tally in pool.map(work, prepared):
+                total.add(tally)
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
 
 
 def cmd_test(args: argparse.Namespace) -> int:
@@ -3294,9 +3476,15 @@ def cmd_test(args: argparse.Namespace) -> int:
     total = Tally()
     later: list = []
     shared = shared_folder(here, mode) if len(manifests) > 1 else None
-    for manifest in manifests:
-        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
-                               later if len(manifests) > 1 else None, shared))
+    jobs = args.jobs if args.jobs is not None else default_jobs()
+    if jobs < 1:
+        raise CongoError("--jobs must be 1 or more")
+    if jobs == 1 or len(manifests) < 2:
+        for manifest in manifests:
+            total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
+                                   later if len(manifests) > 1 else None, shared))
+    else:
+        run_packages_in_parallel(manifests, jobs, mode, args, shared, later, total)
     if later:
         say("Quiet", f"{len(later)} test(s), one at a time, nothing else running")
         for pkg, session, file, _ in later:
@@ -3328,6 +3516,14 @@ def add_strip_argument(parser: argparse.ArgumentParser) -> None:
                              " build otherwise carries function names and line tables")
 
 
+def add_lto_argument(parser: argparse.ArgumentParser) -> None:
+    """'--lto': a release build optimised across its packages by ThinLTO."""
+    parser.add_argument("--lto", action="store_true",
+                        help="with --release, optimise across the packages at link time"
+                             " (ThinLTO): a slower link, a larger program, a faster one;"
+                             " built in build/release-lto")
+
+
 def add_cache_argument(parser: argparse.ArgumentParser) -> None:
     """'--no-cache': compile every package of the build, as if no compile
     before had left anything (README.md, "What a build does"), and capture
@@ -3352,6 +3548,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--release", action="store_true", help="an optimised build")
         add_define_argument(p)
         add_strip_argument(p)
+        add_lto_argument(p)
         add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
@@ -3364,7 +3561,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     test.add_argument("--release", action="store_true", help="an optimised build")
     add_define_argument(test)
     add_strip_argument(test)
+    add_lto_argument(test)
     add_cache_argument(test)
+    test.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
+                      help="over a folder of packages, run N packages' tests at once"
+                           " (default: half the logical processors); 1 runs the packages"
+                           " one at a time, build and run together, as before")
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")
@@ -3409,6 +3611,10 @@ def main(argv: list[str] | None = None) -> int:
     DEFINES[:] = getattr(args, "define", [])
     USE_CACHE[0] = not getattr(args, "no_cache", False)
     STRIP_DEBUG[0] = getattr(args, "strip", False)
+    LTO[0] = getattr(args, "lto", False)
+    if LTO[0] and not args.release:
+        print("congo: error: --lto optimises a release build: add --release", file=sys.stderr)
+        return 1
     try:
         return args.func(args)
     except CongoError as exc:

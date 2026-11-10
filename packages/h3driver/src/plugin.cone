@@ -47,9 +47,14 @@ pub struct Plugin {
   }
 
   // A server's UDP socket at addr, its connections' TLS cfg's certificate
-  // and key (QUIC's own bounds the defaults)
+  // and key (QUIC's own bounds the defaults, its credit budget the driver
+  // Config.make's: a connection's share of the pool)
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
-    let ctx = quic.Context.server(quic.Config.make(), &cfg.certFile, &cfg.keyFile)
+    var qcfg = quic.Config.make();
+    let made = Config.make();
+    qcfg.creditBudget = made.transport.creditBudget;
+    qcfg.maxStreamsBidi = made.transport.maxStreamsBidi;
+    let ctx = quic.Context.server(qcfg, &cfg.certFile, &cfg.keyFile)
       .mapError(fn(e: quic.QuicError) httpclient.Failure {serverFailure(e)})?;
     let l = drv.listen(lp, addr, ctx, token).mapError(fn(f: Failure) httpclient.Failure {clientFailure(f)})?;
     Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index))
@@ -84,6 +89,7 @@ pub struct Plugin {
   pub fn sendData(self: &mut, req: httpclient.H3Req, buf: IoBuf) Option[IoBuf] {drv.sendData(reqOf(req), buf)}
   pub fn finish(self: &mut, req: httpclient.H3Req) {drv.finish(reqOf(req));}
   pub fn release(self: &mut, req: httpclient.H3Req, n: usize) {drv.release(reqOf(req), n);}
+  pub fn stopBody(self: &mut, req: httpclient.H3Req) bool {drv.stopBody(reqOf(req))}
   pub fn cancel(self: &mut, lp: &mut Loop, req: httpclient.H3Req) bool {drv.cancel(lp, reqOf(req))}
 }
 

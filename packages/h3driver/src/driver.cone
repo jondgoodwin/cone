@@ -33,6 +33,26 @@ const kSend = 3u64;           // a connection's send: the connection
 const kVerify = 4u64;         // a client's certificate check on the blocking pool: the connection
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;   // a Chain bounded elsewhere (QUIC's window, the watermarks)
+
+// THE BLOCK BUDGET (the package's header). A stream's records in this driver
+// and in HTTP/3 each hold a block from the first byte, so a stream costs a
+// smallest block twice; a connection's other streams beyond its requests are
+// the control stream, QPACK's two, and QUIC's sixteen unidirectional.
+const streamExtras = 20usize;
+const streamLayers = 2usize;
+
+// The part of the pool's maxBytes that peers' blocks may take (iobuf's try
+// bank: three quarters of maxBytes at the default, a quarter held back)
+fn poolShare() usize {(stats().maxBytes / 4usize) * 3usize}
+
+// The bytes of blocks beyond their bytes that a connection's streams may
+// hold: its share of the pool
+fn blockBudget(share: usize, maxConnections: u32) usize {
+  var conns = usize.from(maxConnections);
+  if conns == 0usize {conns = 1usize;}
+  share / conns
+}
+
 const maxRounds = 16usize;                 // rounds of one connection's turn before it waits for the next
 const minRecvSize = 1500usize;             // a receive's buffer at the least: an Ethernet frame's payload
 const unread = 0xFFFFFFFFFFFFFFFFu64;      // a new server connection's IDs: read at once, whatever quic's epoch
@@ -111,6 +131,8 @@ struct Conn {
   h3Closed: bool;
   h3Error: Option[HttpError];   // HTTP/3's failure, when it closed with one
   ended: bool;              // its Closed has gone; it goes once its sends are answered
+  budget: usize;            // the bytes of blocks its streams may hold beyond their bytes (THE BLOCK BUDGET)
+  shed: bool;               // the budget ended it: its buffers went home, what arrives is dropped
 }
 
 // The driver of HTTP/3 connections on one Loop (see the package's header, THE DRIVER)
@@ -124,6 +146,7 @@ pub struct Driver {
   maxConnections: u32;
   maxWaiting: u32;
   wakeStep: Duration;
+  share: usize;                 // the pool's bytes the connections share (THE BLOCK BUDGET), as the pool was when this was made
   listeners: SlotTable[Lst];
   conns: SlotTable[Conn];
   routes: Dict[CidKey, Slot];   // a server's: every connection ID to its connection
@@ -144,7 +167,7 @@ pub struct Driver {
     Driver(tokBase: (tokMark << markShift) | (number << numberShift),
       client: quic.Context.client(qcfg), h3cfg: hcfg, recvDepth: recvDepth, sendDepth: sendDepth,
       sendWatermark: sendWatermark, maxConnections: maxConnections, maxWaiting: maxWaiting,
-      wakeStep: wakeStep, listeners: SlotTable[Lst].make(4u32), conns: SlotTable[Conn].make(16u32),
+      wakeStep: wakeStep, share: poolShare(), listeners: SlotTable[Lst].make(4u32), conns: SlotTable[Conn].make(16u32),
       routes: Dict[CidKey, Slot](), dirty: List[u32](), ready: Deque[Event](),
       nextWake: forever(), lossPerMille: 0u32, lossState: 0u64, st: DriverStats.zero())
   }
@@ -409,7 +432,8 @@ pub struct Driver {
           byId: Dict[u64, Slot](), waitBidi: Deque[Slot](), waitUni: Deque[Slot](),
           nextUni: 2u64, ids: List[CidKey](), idEpoch: 0u64, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
-          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false));
+          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
+          budget: blockBudget(share, maxConnections), shed: false));
         let c = conns.get(s) as &mut Conn;
         let size = recvSizeOf(false, self.clientUdp());
         var r = 0u32;
@@ -718,6 +742,24 @@ pub struct Driver {
     self.markDirty(req.conn.index);
   }
 
+  // A server's request whose body the program no longer wants (it answered without reading the upload, or
+  // dropped it): the client is asked to stop sending it, STOP_SENDING with H3_NO_ERROR (RFC 9114 section 4.1);
+  // what this end sends goes on, and the request no longer waits for the client's End to be Done. The twin of
+  // httpconn's Driver.stopBody. False, and nothing done, when req names no request, is a client's, or was
+  // read whole already
+  pub fn stopBody(self: &mut, req: ReqId) bool {
+    let cp = self.connOf(req.conn);
+    let sp = self.strmOf(cp, req);
+    if sp as usize == 0usize {return false;}
+    let c = cp as &mut Conn;
+    let s = sp as &mut Strm;
+    if !c.server || s.readDone {return false;}
+    c.h.stopBody(s.id);
+    s.readDone = true;
+    self.markDirty(req.conn.index);
+    true
+  }
+
   // Give a request up: its exchange is reset both ways
   // (H3_REQUEST_CANCELLED), and it is answered Cancelled now. False when it
   // has had its final answer
@@ -794,6 +836,7 @@ pub struct Driver {
       rounds = rounds + 1usize;
       var moved = self.quicEvents(lp, i, now);
       if self.feed(c, now) {moved = true;}
+      if self.overBudget(c) {moved = true;}
       if self.h3Events(i, now) {moved = true;}
       if self.h3Transmits(c, now) {moved = true;}
       if self.closeWhenDelivered(c) {moved = true;}
@@ -868,7 +911,7 @@ pub struct Driver {
           let stream, buf, fin = d.(stream, buf, fin);
           let s = self.strmById(c, u64.from(stream));
           let n = buf.len();
-          if s as usize == 0usize || (*s).inDone {
+          if s as usize == 0usize || (*s).inDone || c.shed {
             // A stream that is over here: its bytes dropped, their credit back
             if n > 0usize {c.q.release(stream, n);}
           } else {
@@ -925,6 +968,45 @@ pub struct Driver {
       }
     }
     moved
+  }
+
+  // The least a connection holds from the pool in its streams beyond their
+  // bytes (a smallest block per buffer, less the bytes), in this driver's
+  // records and in HTTP/3's
+  fn wasteBytes(self: &, c: &Conn) usize {
+    var n = c.h.wasteBytes();
+    var k = 0usize;
+    while k < c.streams.bound() {
+      if c.streams.isLive(u32.from(k)) {
+        let s = c.streams.at(u32.from(k)) as &Strm;
+        n = n + http3.chainWaste(&s.inbound) + http3.chainWaste(&s.pendingOut);
+      }
+      k = k + 1usize;
+    }
+    n
+  }
+
+  // A connection whose streams hold more than its budget beyond their bytes
+  // ends Overloaded, its blocks going home with it: the cost of its streams
+  // lands on it (THE BLOCK BUDGET). True when it was ended now.
+  fn overBudget(self: &mut, c: &mut Conn) bool {
+    if c.h.isClosed() || self.wasteBytes(c) <= c.budget {return false;}
+    st.budgetEnded = st.budgetEnded + 1u64;
+    c.h.starve("the connection's streams hold more of the pool's buffers than their bytes need, past its share of the pool (its block budget)");
+    // QUIC's closing period keeps the connection a while: its buffers go home
+    // now, and what still arrives is dropped (c.shed)
+    c.shed = true;
+    c.h.shed();
+    var k = 0usize;
+    while k < c.streams.bound() {
+      if c.streams.isLive(u32.from(k)) {
+        let s = c.streams.at(u32.from(k)) as &mut Strm;
+        self.dropInbound(c, s);
+        s.pendingOut.advance(s.pendingOut.len());
+      }
+      k = k + 1usize;
+    }
+    true
   }
 
   // A stream's record by its number, or null
@@ -1515,7 +1597,8 @@ pub struct Driver {
           byId: Dict[u64, Slot](), waitBidi: Deque[Slot](), waitUni: Deque[Slot](),
           nextUni: 3u64, ids: List[CidKey](), idEpoch: unread, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
-          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false));
+          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
+          budget: blockBudget(share, maxConnections), shed: false));
         l.conns = l.conns + 1u32;
         let c = conns.get(s) as &mut Conn;
         // The client's own choice of ID first: its Initials carry it until

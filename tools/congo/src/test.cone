@@ -490,7 +490,7 @@ fn report(line: &str, detail: &str) {
 // quiet) last; 1 leaves the quiet tests out, and 2 runs only them, for cmdTest
 // to run alone after every package's other tests
 fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: bool, bless: bool,
-    defines: &List[String], useCache: bool, strip: bool, phase: i32) Tally {
+    defines: &List[String], useCache: bool, strip: bool, lto: bool, phase: i32) Tally {
   var tally = emptyTally();
   let label = pkg.label();
   let rootPlace = native(&pkg.root);
@@ -500,9 +500,10 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   // imports this copy -- whether or not it is in a registry, and whatever
   // else a registry holds of that name
   let folders = registryFolders(repo);
-  let out = buildFolder(&pkg, mode);
+  let folder = modeFolder(mode, lto);
+  let out = buildFolder(repo, &pkg, folder.view());
   let indexes = registryIndexes();
-  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip, lto);
   let name = pkg.name.clone();
   let quietNames = copyStrings(&pkg.quiet);
   let isLibrary = pkg.output.equals("library");
@@ -687,7 +688,7 @@ fn packageManifests(folder: &Path) List[Path] {
 
 // Test the current package; or, in a folder of packages that is not a
 // package itself (a registry folder such as packages/), each package in it
-fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &List[String], noCache: bool, strip: bool) i32 {
+fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &List[String], noCache: bool, strip: bool, lto: bool) i32 {
   var mode: &str = "debug";
   if release { mode = "release"; }
   let repo = findRepo();
@@ -715,7 +716,7 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
       case let Err(e) { fail(e.clone()); }
     }
     if several && pkg.quiet.len() > 0usize { withQuiet.push(i); }
-    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, phase);
+    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, lto, phase);
     total.add(&tally);
     i = i + 1usize;
   }
@@ -728,7 +729,7 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
         case var Ok(ok) { pkg <-> ok; }
         case let Err(e) { fail(e.clone()); }
       }
-      let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, 2i32);
+      let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, lto, 2i32);
       total.add(&tally);
       j = j + 1usize;
     }

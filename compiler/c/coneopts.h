@@ -18,8 +18,8 @@ typedef struct ConeDefine {
     int64_t value;
 } ConeDefine;
 
-// The size gate's default, for --private-instances
-#define DefaultPrivateInstances 64
+// The size gate's default, for --private-instances: no limit
+#define DefaultPrivateInstances 0x7fffffff
 
 // Compiler options
 typedef struct ConeOptions {
@@ -54,7 +54,7 @@ typedef struct ConeOptions {
     int vulkan;      // 1=SPIR-V's Vulkan form, the one with compute entry points (genSetup decides it)
     int release;    // 0=debug (no optimizations). 1=release (default)
     int library;    // 1=generate a C-API compatible static library
-    int privateinst; // A release program's generic instance this small (LLVM instructions, before optimisation) is its own, not shared; 0=none (genlFn)
+    int privateinst; // A release program's generic instance function up to this size (LLVM instructions, before optimisation) is its own, not shared; 0=none (genlFn)
     int described;  // 1=a build description names the package: one object of several linked together
     int runtimebc;    // Compile with the LLVM bitcode file for the runtime
     int pic;        // Compile using position independent code
@@ -77,6 +77,8 @@ typedef struct ConeOptions {
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
+    int lto;             // --lto: a release native compile writes ThinLTO bitcode (<name>.bc) in place of an object
+    int ltolink;         // --lto-link: no compile; the bitcode files named link into one object each (genlLtoLink)
     int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
     int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half

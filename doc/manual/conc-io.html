@@ -639,6 +639,20 @@ actor Weather {
 		given <span class="pre">end(Finished)</span> or <span class="pre">end(Failed(error))</span> once. The sink gives each buffer
 		back, and that is what lets the connection read on, so a slow stage slows the server and nothing holds more than
 		the connection's own window.</p>
+	<p>A request body can come from a stage too: <span class="pre">client.upload(request, framing)</span> (the request's own body
+		empty; <span class="pre">framing</span> is <span class="pre">BodyLength.sized(n)</span> or <span class="pre">.unsized()</span>) starts the fetch at
+		once and gives an <span class="pre">Upload</span>. A pipeline that ends in <span class="pre">up.sink()</span> (a
+		<span class="pre">stages.ChunkSink</span>) is the body, a chunk at a time, so a large upload never sits whole in memory, and
+		<span class="pre">await up.stream()</span> is answered with the response as <span class="pre">client.stream</span> would be. The credit is
+		by copy: the chunk goes back to its source once the connection has taken the copy of it, so a slow server holds the
+		pipeline back. The sink counts a sized body: past the length, or short of it at the end, the fetch is cancelled and the
+		source stopped <span class="pre">Failed</span>. A streamed body cannot be sent twice, so the fetch is never retried and a 307 or
+		308 is the response, not followed (a 301, 302 or 303 that makes the next request a GET drops the body, as for a
+		string body); a response that comes before the body is all sent (an early 413, say) is delivered to
+		<span class="pre">stream()</span> and the source is stopped <span class="pre">Finished</span>. Because a kept HTTP/1.1 connection that
+		proves stale cannot be retried under a streamed body, such an upload takes a new connection, never a kept one (HTTP/2
+		multiplexes it on the shared connection as usual). An <span class="pre">Upload</span> dropped without
+		<span class="pre">stream()</span> cancels the fetch.</p>
 	<p>A body that arrives compressed (<span class="pre">Content-Encoding</span> gzip, deflate or zstd) goes through package
 		<span class="pre">httpdecode</span>: <span class="pre">httpdecode.request(req)</span> adds the
 		<span class="pre">Accept-Encoding</span> it can decode, and <span class="pre">httpdecode.to(body, sink, limit)</span> takes the
@@ -666,6 +680,19 @@ actor Weather {
 		<span class="pre">Failed</span>; dropping the Exchange leaves the body to the sink; if the sink too is dropped without a source ever attached to it,
 		the response ends as without a sink (an unsized body finished, a sized one reset), so a handler that forgets to wire
 		its sink does not pin the connection.
+		A server made with <span class="pre">ServerConfig.streamBodies()</span> delivers every request at its head, with
+		<span class="pre">request.body</span> empty, and the actor takes the body once with <span class="pre">ex.body()</span>:
+		<span class="pre">await body.read()</span> gives the pieces as they arrive, <span class="pre">body.to(sink)</span> sends them to a
+		<span class="pre">ChunkSink</span>, <span class="pre">await body.readAll(limit)</span> gathers them up to a limit (past it the server
+		answers 413 itself and discards the rest). <span class="pre">read</span> and <span class="pre">readAll</span> copy the bytes into
+			Strings (use <span class="pre">to(sink)</span> for a big body), and their error is a <span class="pre">BodyError</span>
+			(<span class="pre">TooLarge</span>, <span class="pre">Cancelled</span> or <span class="pre">Failed</span>), not the client's
+			<span class="pre">FetchError</span>. The connection's receive buffers are lent to the reader or the sink and their
+		credit returns as they are given back, so a slow reader holds the sender back and the server never holds more than the
+		credit window; <span class="pre">maxBody</span> means nothing to such a server. The first of <span class="pre">read</span>,
+		<span class="pre">to</span> and <span class="pre">readAll</span> answers an <span class="pre">Expect: 100-continue</span>
+		(an actor that answers 413 without reading sends no 100). A body whose actor answers without reading it, or drops it, is
+		not delivered. A sink that stops its source ends the request on the wire (HTTP/1.1 closes, HTTP/2 resets the stream).
 		<span class="pre">ServerConfig.secure(tlsConfig)</span> makes the connections TLS; its other fields bound the request
 		body a server takes (past it, 413) and the requests that may wait for an actor (past it, 503). An Exchange dropped
 		without an answer is answered 500. The package's header lists each choice; <span class="pre">tests/server.cone</span>,
@@ -678,8 +705,7 @@ actor Weather {
 	<h3 id="await-io-unbuilt">Not built yet</h3>
 	<ul>
 	<li>A socket's half-close, awaited; <span class="pre">fileio</span>, the file service.</li>
-	<li>A request's body streamed from an actor or to one (a client sends it whole; a server delivers it whole, up to a
-		limit), a stream that reconnects, Upgrade and WebSocket, and <span class="pre">httpclient</span> and
+	<li>A request's body streamed from an actor (a client sends it whole), a stream that reconnects, Upgrade and WebSocket, and <span class="pre">httpclient</span> and
 		<span class="pre">httpconn</span> running on <span class="pre">aio</span>'s own sockets (<span class="pre">actorhttp</span>
 		keeps a thread and a loop of its own).</li>
 	</ul>

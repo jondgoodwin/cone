@@ -260,6 +260,16 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         complete = structEnumDemandSet(pstate, (StructNode*)basedcl);
         member->dclnode = namespaceFind(namespace, member->namesym);
     }
+    // An actor's name is its handle, and its braces' members are the state's. A
+    // const of them belongs to the actor (it has no storage and nothing to share
+    // across workers, which is why a static is refused there), so it is reached
+    // through the actor's name: 'Meter.limit'
+    if (member->dclnode == NULL && basedcl->tag == StructTag) {
+        ActorInfo *actor = actorOfHandle(basedcl);
+        INode *astate = actor ? namespaceFind(&actor->state->namespace, member->namesym) : NULL;
+        if (astate && astate->tag == ConstDclTag)
+            member->dclnode = astate;
+    }
     if (member->dclnode == NULL && !complete) {
         errorMsgNode((INode*)member, ErrorCircular,
             "%s is not complete until this is resolved, so its variants cannot be named here: each depends on the other.",
@@ -2091,6 +2101,19 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             ? iNsTypeFindFnField((INsTypeNode*)enumdcl, methsym) : NULL;
         if (wholemeth && fnCallNamesTemplateMethod(wholemeth, 1) && !fnCallNamesMethod(wholemeth))
             foundnode = wholemeth;
+        // A const of the enum is not reached through a variant's value either
+        else if (wholemeth && wholemeth->tag == ConstDclTag)
+            foundnode = wholemeth;
+    }
+    // A constant is the type's, never a value's (Jon, 22 Sep: a name folds on a
+    // type, not on a field), so it is named through the type
+    if (foundnode && foundnode->tag == ConstDclTag) {
+        StructNode *consttype = (StructNode*)((ConstDclNode*)foundnode)->owner;
+        errorMsgNode((INode*)callnode, ErrorConstViaValue,
+            "`%s` is a const of the type %s, not of a value of it: write it through the type, `%s.%s`.",
+            &methsym->namestr, &consttype->namesym->namestr, &consttype->namesym->namestr, &methsym->namestr);
+        callnode->vtype = errorType;
+        return -1;
     }
     int notpublic = foundnode && inodeIsPrivate(foundnode) && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
@@ -3418,7 +3441,16 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
-    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
+    // An instance of a generic actor ('Tally[i32]') is its handle, and a const of the actor's
+    // braces is the state's: the instance's own, folded for its type arguments
+    if (found == NULL) {
+        ActorInfo *actor = actorOfHandle((INode*)inst);
+        INode *astate = actor ? namespaceFind(&actor->state->namespace, member->namesym) : NULL;
+        if (astate && astate->tag == ConstDclTag)
+            found = astate;
+    }
+    // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
         return 0;
     member->dclnode = found;
     member->flags |= FlagQualified;
@@ -3572,6 +3604,37 @@ static int fnCallNumberConvert(TypeCheckState *pstate, FnCallNode **nodep) {
 // struct is (fnCallNameResPath), and the call goes on as any call of a function.
 // A name the type does not declare as a static function is left as it was, and
 // diagnosed as a path this does not collapse. Returns 1 when collapsed.
+// 'f64.pi', 'u32.maxValue': a constant the compiler declares on a number type
+// (corenumber.c, nbrConstants), named with no call. The path becomes the bound
+// name of the constant, which type check folds to its literal. Through a type
+// parameter ('T.maxValue') this is reached once the instance has the number as T.
+// A name the type has no constant of is left, and diagnosed as a path this does
+// not collapse. Returns 1 when the node was replaced and checked.
+static int fnCallNumberConst(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->args != NULL || (node->flags & FlagIndex) || !isTypeNode(node->objfn)
+        || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    INode *found = namespaceFind(&((NbrNode*)nbrtype)->namespace, member->namesym);
+    if (found == NULL) {
+        errorMsgNode((INode*)member, ErrorNoMbr, "%s has no constant or member named %s.",
+            &((NbrNode*)nbrtype)->namesym->namestr, &member->namesym->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return 1;
+    }
+    if (found->tag != ConstDclTag)
+        return 0;
+    member->dclnode = found;
+    member->flags |= FlagQualified;
+    *((INode**)nodep) = (INode*)member;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
 static int fnCallNumberStatic(FnCallNode *node) {
     if (!isTypeNode(node->objfn))
         return 0;
@@ -5203,6 +5266,9 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // 'i32.parse(text)', 'u8.tryFrom(x)': made through core's generic functions
         else if (fnCallNumberConvert(pstate, nodep))
             return;
+        // 'f64.pi': a constant of a number type
+        else if (fnCallNumberConst(pstate, nodep))
+            return;
         // 'f32.fromBits(b)': a static function of a number type
         else if (fnCallNumberStatic(node)) {
             objfnChecked = 0;
@@ -5524,6 +5590,17 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // than a function (fnCallTypeInstancePath took those). Diagnosed rather
         // than left to read as a bad call.
         if (node->methfld != NULL) {
+            // A name a struct (a generic's instance, 'T.maxValue' at a struct) does
+            // not declare: it is the struct that lacks it
+            INode *owner = itypeGetTypeDcl(node->objfn);
+            if (isNameUseNode(node->methfld) && owner && owner->tag == StructTag
+                && namespaceFind(&((StructNode*)owner)->namespace, ((NameUseNode*)node->methfld)->namesym) == NULL
+                && actorOfHandle(owner) == NULL) {
+                errorMsgNode(node->methfld, ErrorUnkName, "%s has no constant or member named %s.",
+                    &inodeGetName(owner)->namestr, &((NameUseNode*)node->methfld)->namesym->namestr);
+                node->vtype = errorType;
+                return;
+            }
             errorMsgNode(node->objfn, ErrorUnkName,
                 "A path may pass through a module, a struct or a trait, and a number type has 'from'; reaching a member through anything else is not built.");
             node->vtype = errorType;

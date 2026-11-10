@@ -605,11 +605,43 @@ fn sending() {
   expectStr(sent(&mut t).view(), "", "then nothing");
 }
 
+// A server whose answer is whole while the request is still being sent: with stopBody it asks the client to
+// stop (STOP_SENDING H3_NO_ERROR, section 4.1) and what arrives after is dropped; without it, receiving goes
+// on and the reads end with End
+fn stopBodyCase(stop: bool) String {
+  var s = server();
+  var b = List[u8]();
+  headers(&mut b, postHead);
+  data(&mut b, "abc");
+  feed(&mut s, 0u64, b.view(), false);
+  var t = evs(&mut s);
+  s.sendResponse(0u64, ResponseHead.make(200u16), BodyLength.sized(2u64));
+  let r = s.sendData(0u64, bufOf("ok"));
+  s.finish(0u64);
+  if stop {s.stopBody(0u64);}
+  t.append(" | ");
+  t.append(sent(&mut s).view());
+  var more = List[u8]();
+  data(&mut more, "def");
+  feed(&mut s, 0u64, more.view(), true);
+  t.append(" | ");
+  t.append(evs(&mut s).view());
+  t
+}
+
+fn stopping() {
+  expectStr(stopBodyCase(true).view(), "request 0 POST /p unsized @example.com; data 0 abc | stop 0 H3_NO_ERROR; w0 fin | ",
+    "stopBody after a whole answer: the client is asked to stop, the answer goes out whole, what arrives later is dropped");
+  expectStr(stopBodyCase(false).view(), "request 0 POST /p unsized @example.com; data 0 abc | w0 fin | data 0 def; end 0",
+    "no stopBody: receiving goes on, the reads end with End");
+}
+
 fn main() i32 {
   order();
   malformed();
   responses();
   resets();
   sending();
+  stopping();
   done()
 }
