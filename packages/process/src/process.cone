@@ -305,6 +305,7 @@ const genericWrite = 0x40000000u32;
 const shareReadWrite = 3u32;                     // FILE_SHARE_READ | FILE_SHARE_WRITE
 const openExisting = 3u32;                       // OPEN_EXISTING
 const pipeAccessInbound = 1u32;                  // PIPE_ACCESS_INBOUND
+const pipeAccessOutbound = 2u32;                 // PIPE_ACCESS_OUTBOUND
 const flagOverlapped = 0x40000000u32;            // FILE_FLAG_OVERLAPPED
 const flagFirstInstance = 0x80000u32;            // FILE_FLAG_FIRST_PIPE_INSTANCE
 const pipeRejectRemote = 8u32;                   // PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS
@@ -626,6 +627,10 @@ pub struct Options {
   // as any program's does; false ends it here at once, with the exit code
   // the crash gives, and reports nothing (below, "A crash")
   pub crashReport: bool = true;
+  // For 'launch': give the child a pipe for its standard input, our end to be taken with 'Child.takeStdin'; false
+  // leaves it reading from NUL (/dev/null). Ignored by 'run' and 'runLine', and where 'inherit' is true (the child
+  // then shares this program's standard input)
+  pub stdin: bool = false;
 }
 
 // What a run gives back
@@ -708,7 +713,8 @@ const noEnd = 0xFFFFFFFFFFFFFFFFusize;
 
 // A child started by 'launch', still running or not: its standard output and standard error as the ends of two pipes of ours,
 // and the child itself, each as the operating system's raw value, so that a loop can take them over (iocore's
-// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is.
+// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is, unless 'Options.stdin' asks for a pipe
+// ('takeStdin': the same kind of end, but written to).
 //
 // - An end is OVERLAPPED on Windows (a HANDLE of a named pipe, to read with ReadFile and an OVERLAPPED) and a blocking
 //   descriptor on Linux (iocore's adoptPipe makes it non-blocking); 'noEnd' where the child inherited the stream instead.
@@ -724,6 +730,7 @@ pub struct Child {
   procId: u32;
   outEnd: usize;
   errEnd: usize;
+  inEnd: usize;        // our end of the child's standard input, or noEnd
   owned: bool;         // the Child still owns the process (takeProcess has not been called)
 
   // The child's process id
@@ -751,6 +758,14 @@ pub struct Child {
     e
   }
 
+  // Our end of its standard input (written to; the child sees end of input once it is closed), now the caller's to
+  // close or hand to a loop; 'noEnd' once taken, or unless 'Options.stdin' was true
+  pub fn takeStdin(self: &mut) usize {
+    let e = inEnd;
+    inEnd = noEnd;
+    e
+  }
+
   // The child itself (Windows: its process HANDLE, Linux: its pid), now the caller's: iocore's 'adoptChild' takes it
   // with the ownership its comment says
   pub fn takeProcess(self: &mut) usize {
@@ -762,6 +777,7 @@ pub struct Child {
     #if #os == .windows {
       closeIf(outEnd);
       closeIf(errEnd);
+      closeIf(inEnd);
       if owned {
         stop(job, proc);
         WaitForSingleObject(proc, infinite);
@@ -771,6 +787,7 @@ pub struct Child {
     } #else {
       if outEnd != noEnd { closeFd(i32.from(outEnd)); }
       if errEnd != noEnd { closeFd(i32.from(errEnd)); }
+      if inEnd != noEnd { closeFd(i32.from(inEnd)); }
       if owned {
         stopGroup(i32.from(proc), true);
         var status = 0i32;
@@ -822,7 +839,12 @@ pub fn launch(args: &Array[String], opts: Options = Options(), dir: &Path = "") 
 
 // A pipe for one of the child's outputs, with nothing of 'run''s reading kit: our end, overlapped, goes in 'ours'; the
 // child's end, inheritable, is returned, or 0 on failure
-fn makeEnd(ours: &mut usize) usize {
+fn makeEnd(ours: &mut usize) usize { makeEndDir(ours, false) }
+
+// The same for the child's standard input when 'input' is true: our end is outbound (written to), the child's is read
+fn makeEndDir(ours: &mut usize, input: bool) usize {
+  let access = if input {pipeAccessOutbound} else {pipeAccessInbound};
+  let theirAccess = if input {genericRead} else {genericWrite};
   var tries = 0u32;
   while tries < 8u32 {
     tries = tries + 1u32;
@@ -834,11 +856,11 @@ fn makeEnd(ours: &mut usize) usize {
     name.append("-");
     name.appendUInt(u64.from(pipeSerial));
     let wname = widen(name.view());
-    let mine = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
+    let mine = CreateNamedPipeW(wname, access | flagOverlapped | flagFirstInstance,
       pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if mine != invalidHandle {
       let sa = SecurityAttributes(24u32, null, 1i32);
-      let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
+      let theirs = CreateFileW(wname, theirAccess, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
       if theirs == invalidHandle {
         CloseHandle(mine);
@@ -872,6 +894,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
 
   var ourOut = noEnd;
   var ourErr = noEnd;
+  var ourIn = noEnd;
   var childIn = 0usize;
   var childOut = 0usize;
   var childErr = 0usize;
@@ -881,7 +904,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
     childErr = inheritStd(stdError, genericWrite);
   }
   else {
-    childIn = openNul(genericRead);
+    childIn = if opts.stdin {makeEndDir(&mut ourIn, true)} else {openNul(genericRead)};
     childOut = makeEnd(&mut ourOut);
     childErr = makeEnd(&mut ourErr);
   }
@@ -937,6 +960,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
   if failed {
     closeIf(ourOut);
     closeIf(ourErr);
+    closeIf(ourIn);
     if code == 0u32 { code = errorInvalidParameter; }
     return Err[Child, ProcessError](failure(op, program, dir, code));
   }
@@ -947,7 +971,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
   }
   ResumeThread(pi.hThread);
   CloseHandle(pi.hThread);
-  Ok[Child, ProcessError](Child(pi.hProcess, job, pi.dwProcessId, ourOut, ourErr, true))
+  Ok[Child, ProcessError](Child(pi.hProcess, job, pi.dwProcessId, ourOut, ourErr, ourIn, true))
 }
 
 fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: Options) Result[Child, ProcessError] {
@@ -991,8 +1015,10 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // meanwhile holds them), and the child the leader of a group of its own, so that 'kill' reaches what it started
   var outFds = Array[i32, 2]() <- fill -1i32;
   var errFds = Array[i32, 2]() <- fill -1i32;
+  var inFds = Array[i32, 2]() <- fill -1i32;
   let outp: *i32 = &[]outFds as *i32;
   let errp: *i32 = &[]errFds as *i32;
+  let inp: *i32 = &[]inFds as *i32;
   var actions = Array[u64, 32]() <- fill 0u64;
   var attr = Array[u64, 64]() <- fill 0u64;
   let aw: *u64 = &[]actions as *u64;
@@ -1011,8 +1037,19 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
       closeFd(outFds[1usize]);
       outFds[0usize] = -1i32;
     }
+    else if opts.stdin && makePipe2(inp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+      closeFd(outFds[0usize]);
+      closeFd(outFds[1usize]);
+      closeFd(errFds[0usize]);
+      closeFd(errFds[1usize]);
+      outFds[0usize] = -1i32;
+      errFds[0usize] = -1i32;
+    }
     else {
-      rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32);
+      // The child's standard input is the read end of a pipe of ours (dup2 clears close-on-exec on the copy), or /dev/null
+      if opts.stdin { rc = actionsDup2(ap, inFds[0usize], 0i32); }
+      else { rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32); }
       if rc == 0i32 { rc = actionsDup2(ap, outFds[1usize], 1i32); }
       if rc == 0i32 { rc = actionsDup2(ap, errFds[1usize], 2i32); }
     }
@@ -1037,14 +1074,17 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // The child's ends are the child's now
   closeFdIf(outFds[1usize]);
   closeFdIf(errFds[1usize]);
+  closeFdIf(inFds[0usize]);
   if rc != 0i32 {
     closeFdIf(outFds[0usize]);
     closeFdIf(errFds[0usize]);
+    closeFdIf(inFds[1usize]);
     return Err[Child, ProcessError](failure(op, program, dir, u32.from(rc)));
   }
   let oe = if outFds[0usize] >= 0i32 {usize.from(outFds[0usize])} else {noEnd};
   let ee = if errFds[0usize] >= 0i32 {usize.from(errFds[0usize])} else {noEnd};
-  Ok[Child, ProcessError](Child(usize.from(pid), 0usize, u32.from(pid), oe, ee, true))
+  let ie = if inFds[1usize] >= 0i32 {usize.from(inFds[1usize])} else {noEnd};
+  Ok[Child, ProcessError](Child(usize.from(pid), 0usize, u32.from(pid), oe, ee, ie, true))
 }
 
 // One of the child's streams, read without blocking: our end of its pipe,
