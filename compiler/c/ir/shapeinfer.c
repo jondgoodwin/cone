@@ -1863,6 +1863,33 @@ void shapeKeepDeferred(void) {
     skDeferredUsed = 0;
 }
 
+// The last value refused for a '+ ShapeKeeping' reference while a call's candidates were tried
+static StructNode *skRefusedImpl = NULL;
+static StructNode *skRefusedTrait = NULL;
+
+void shapeRefusedClear(void) {
+    skRefusedImpl = NULL;
+    skRefusedTrait = NULL;
+}
+
+void shapeRefusedNote(StructNode *impl, StructNode *trait) {
+    skRefusedImpl = impl;
+    skRefusedTrait = trait;
+}
+
+int shapeRefusedReport(INode *at) {
+    if (skRefusedImpl == NULL)
+        return 0;
+    char reason[900] = "";
+    shapeKeepsVia(skRefusedImpl, skRefusedTrait, reason, sizeof(reason));
+    errorMsgNode(at, ErrorNotShapeKeeping,
+        "No candidate takes this argument: a reference marked `+ ShapeKeeping` to `%s` says calls through it reshape nothing the caller holds a borrow into, and %s: %s.",
+        skRefusedTrait->namesym ? &skRefusedTrait->namesym->namestr : "the trait",
+        skRefusedImpl->namesym ? &skRefusedImpl->namesym->namestr : "this value", reason);
+    shapeRefusedClear();
+    return 1;
+}
+
 // A reference to a plain function, '&growWorld', made a virtual reference marked
 // '+ ShapeKeeping' (iexp.c): the reference's type carries only the signature, so the
 // function is read off the expression. A reference the compiler cannot trace to a

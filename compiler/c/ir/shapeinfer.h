@@ -115,6 +115,16 @@ enum { ShapeKeepsYes, ShapeKeepsNo, ShapeKeepsPending };
 int shapeKeepsVia(StructNode *impl, StructNode *trait, char *why, size_t size);
 void shapeKeepDeferred(void);
 
+// A call that no candidate took, because a value was refused for a virtual reference
+// marked '+ ShapeKeeping' (refMarksUnmet), says why in the 1500 form, as a function
+// taking the same value does, in place of "no candidate accepts the arguments".
+// shapeRefusedClear is called before a call's candidates are tried; refMarksUnmet
+// notes the last refusal (shapeRefusedNote); fnCallNoCandidate asks shapeRefusedReport
+// to report it at the call, which answers whether it did
+void shapeRefusedClear(void);
+void shapeRefusedNote(StructNode *impl, StructNode *trait);
+int shapeRefusedReport(INode *at);
+
 // A reference to a plain function made a virtual reference marked '+ ShapeKeeping':
 // the function is held to the same (reported at 'from')
 void shapeKeepFnRef(INode *from, INode *to);

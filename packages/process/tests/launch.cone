@@ -1,0 +1,278 @@
+// A child that runs on (process.launch), with the ends of its pipes handed back (PR 3 of the pipe op). The child is
+// this test's own executable, started again with '--child' and a mode, as children.cone's is.
+//
+// 1. Output and error come back apart, byte for byte, through the two ends (read here with the system's own calls, a
+//    few thousand bytes at a time, so that reading one end after the other cannot block the child), and the exit
+//    code comes from an iocore loop's WaitChild on the process, adopted with 'adoptChild'.
+// 2. Exit codes 0 and 7.
+// 3. 'kill' ends a sleeping child at once; its wait answers (Windows: exit code 1, POSIX: signal 9).
+// 4. A Child dropped without 'takeProcess' ends its child and (POSIX) reaps it: the child is gone, none left running or
+//    a zombie.
+// 5. A program that is not there is an Err named 'launch', and nothing is left open.
+// 6. 'takeStdout' and 'takeStderr' give an end away once: a second take answers 'noEnd'.
+
+mod launch;
+
+import testing use *;
+import collections use *;
+import libc;
+import path use Path;
+import process;
+import time use Duration, Instant;
+import iocore use *;
+import diag;
+
+extern {
+  fn @c(system) ExitProcess(code: u32);
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) OpenProcess(access: u32, inherit: i32, pid: u32) usize;
+  fn @c(system) WaitForSingleObject(h: usize, ms: u32) u32;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) CreateEventW(sa: *u8, manual: i32, initial: i32, name: *u16) usize;
+  fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: *u8) i32;
+  fn @c(system) GetOverlappedResult(h: usize, ov: *u8, got: *u32, block: i32) i32;
+  fn @c(system) GetLastError() u32;
+}
+extern {
+  fn @c usleep(us: u32) i32;
+  fn @c _exit(code: i32);
+  fn @c kill(pid: i32, signal: i32) i32;
+  fn @c("read") readFd(fd: i32, buf: *u8, n: usize) isize;
+  fn @c("close") closeFd(fd: i32) i32;
+}
+
+const synchronize = 0x100000u32;     // SYNCHRONIZE
+const noEnd = 0xFFFFFFFFFFFFFFFFusize;
+
+fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
+
+// n bytes to each stream: stdout 'a', stderr 'B'
+fn childStreams(n: usize) i32 {
+  var chunk = Array[u8, 4096]() <- fill 0u8;
+  let cp: *u8 = &[]chunk as *u8;
+  var done = 0usize;
+  while done < n {
+    let size = if n - done < 4096usize {n - done} else {4096usize};
+    var j = 0usize;
+    while j < 4096usize { chunk[j] = 'a'; j = j + 1usize; }
+    libc.fwrite(cp, 1usize, size, libc.stdout());
+    j = 0usize;
+    while j < 4096usize { chunk[j] = 'B'; j = j + 1usize; }
+    libc.fwrite(cp, 1usize, size, libc.stderr());
+    done = done + size;
+  }
+  libc.fflush(libc.stdout());
+  libc.fflush(libc.stderr());
+  0i32
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  if mode.equals("streams") { return childStreams(usize.from(number(&a[3usize]))); }
+  if mode.equals("exit") {
+    libc.fflush(libc.stdout());
+    #if #os == .windows {ExitProcess(u32.from(number(&a[3usize])));} #else {_exit(i32.from(number(&a[3usize])));};
+  }
+  if mode.equals("sleep") {
+    #if #os == .windows {Sleep(60000u32);} #else {usleep(60000000u32);};
+    return 0i32;
+  }
+  1i32
+}
+
+// All that comes through an end until its other end closes
+fn readAll(end: usize) String {
+  var data = String();
+  var buf = Array[u8, 4096]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  #if #os == .windows {
+    var ov = Array[usize, 5]() <- fill 0usize;
+    let ovw: *usize = &[]ov as *usize;
+    let op: *u8 = ovw as *u8;
+    ov[4usize] = CreateEventW(null, 1i32, 0i32, null);
+    var more = true;
+    while more {
+      ov[0usize] = 0usize;
+      ov[1usize] = 0usize;
+      var got = 0u32;
+      let ok = ReadFile(end, bp, 4096u32, null, op);
+      var failed = ok == 0i32 && GetLastError() != 997u32;
+      if ok == 0i32 && !failed {
+        WaitForSingleObject(ov[4usize], 20000u32);
+        if GetOverlappedResult(end, op, &mut got, 0i32) == 0i32 { failed = true; }
+      }
+      else if ok != 0i32 {
+        GetOverlappedResult(end, op, &mut got, 0i32);
+      }
+      if failed || got == 0u32 {
+        more = false;
+      } else {
+        data.appendBytes(mem.sliceFromParts(bp, usize.from(got)));
+      }
+    }
+    CloseHandle(ov[4usize]);
+    CloseHandle(end);
+  } #else {
+    var more = true;
+    while more {
+      let got = readFd(i32.from(end), bp, 4096usize);
+      if got <= 0isize {
+        more = false;
+      } else {
+        data.appendBytes(mem.sliceFromParts(bp, usize.from(got)));
+      }
+    }
+    closeFd(i32.from(end));
+  }
+  data
+}
+
+fn closeEnd(e: usize) {
+  if e == noEnd { return; }
+  #if #os == .windows { CloseHandle(e); } #else { closeFd(i32.from(e)); }
+}
+
+fn command(exe: &str, mode: &str, arg: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  if arg.len > 0usize { c.push(String.from(arg)); }
+  c
+}
+
+// The child's wait on a loop: its answer's status, count and code (status 99 when none came in time)
+struct Waited {
+  pub status: u32;
+  pub n: usize;
+  pub code: u32;
+}
+
+fn waitFor(lp: &mut Loop, raw: usize, seconds: i64) Waited {
+  var h = Handle.none();
+  match lp.adoptChild(raw) {
+    case let Ok(x) { h = x; }
+    case let Err(e) {}
+  }
+  lp.submit(Op.WaitChild(h), Target.Here(1u64));
+  var out = List[Completion]();
+  let until = Instant.now() + Duration.fromSeconds(seconds);
+  while Instant.now() < until {
+    lp.poll(until, &mut out);
+    each c in out.drain() {
+      if c.token == 1u64 {
+        lp.close(h);
+        return Waited(c.status, c.n, c.code);
+      }
+    }
+  }
+  lp.close(h);
+  Waited(99u32, 0usize, 0u32)
+}
+
+fn gone(id: u32) bool {
+  #if #os == .windows {
+    let h = OpenProcess(synchronize, 0i32, id);
+    if h == 0usize { return true; }
+    let r = WaitForSingleObject(h, 3000u32) == 0u32;
+    CloseHandle(h);
+    r
+  } #else {
+    kill(i32.from(id), 0i32) != 0i32
+  }
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+  {
+    var lp = Loop.mustMake();
+
+    // 1. Output and error, apart; the exit code
+    var cmd = command(exe.view(), "streams", "3000");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        expect(c.pid() != 0u32, "1: a process id");
+        let oe = c.takeStdout();
+        let ee = c.takeStderr();
+        expect(oe != noEnd && ee != noEnd, "1: both ends given");
+        expectBool(c.takeStdout() == noEnd, true, "6: a second take of an end answers noEnd");
+        let out = readAll(oe);
+        let err = readAll(ee);
+        expectUInt(u64.from(out.len()), 3000u64, "1: 3000 bytes of output");
+        expectUInt(u64.from(err.len()), 3000u64, "1: 3000 bytes of error");
+        expect(out.view()[0usize] == 'a' && out.view()[2999usize] == 'a', "1: ...all 'a'");
+        expect(err.view()[0usize] == 'B' && err.view()[2999usize] == 'B', "1: ...and all 'B', apart");
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 0u32, "1: the exit code 0 through WaitChild");
+      }
+      case is Err { expect(false, "1: launch started"); }
+    }
+
+    // 2. Exit code 7
+    cmd = command(exe.view(), "exit", "7");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        let o = readAll(c.takeStdout());
+        let e = readAll(c.takeStderr());
+        expect(o.len() == 0usize && e.len() == 0usize, "2: nothing written: the ends reach their end");
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        expect(w.status == diag.outcomeDone && w.n == 7usize, "2: exit code 7");
+      }
+      case is Err { expect(false, "2: launch started"); }
+    }
+
+    // 3. kill
+    cmd = command(exe.view(), "sleep", "");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        let t0 = Instant.now();
+        c.kill();
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        #if #os == .windows {
+          expect(w.status == diag.outcomeDone && w.n == 1usize, "3: kill ends a sleeping child (exit code 1)");
+        } #else {
+          expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 9u32, "3: kill ends a sleeping child (SIGKILL)");
+        }
+        expect((Instant.now() - t0).millis() < 15000i64, "3: ...at once, not when its sleep is over");
+        let rest = readAll(c.takeStdout());
+        expectUInt(u64.from(rest.len()), 0u64, "3: its output ends with it");
+        closeEnd(c.takeStderr());
+      }
+      case is Err { expect(false, "3: launch started"); }
+    }
+
+    // 4. A Child dropped with its process still running: the process is ended and gone
+    var id = 0u32;
+    {
+      cmd = command(exe.view(), "sleep", "");
+      match process.launch(cmd.view()) {
+        case var Ok(c) {
+          id = c.pid();
+        }
+        case is Err { expect(false, "4: launch started"); }
+      }
+    }
+    expect(id != 0u32 && gone(id), "4: a Child dropped ends and reaps its process");
+
+    // 5. A program that is not there
+    var missing = List[String]();
+    missing.push(String.from("cone-no-such-program-launch"));
+    match process.launch(missing.view()) {
+      case var Ok(c) { expect(false, "5: a missing program is an Err"); }
+      case let Err(e) { expect(e.op.equals("launch"), "5: the error names launch"); }
+    }
+    var none = List[String]();
+    match process.launch(none.view()) {
+      case var Ok(c) { expect(false, "5: no arguments is an Err"); }
+      case is Err { expect(true, "5: no arguments is an Err"); }
+    }
+  }
+  done()
+}

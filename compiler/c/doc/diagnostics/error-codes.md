@@ -1142,11 +1142,10 @@ holds (`lifetime_loop_rotation_*`, `lifetime_loop_rotation_cap_refused`).
 `ErrorNotLit` (1015) has one wording for each place a value must be a constant: a global, static or parameter
 ("Variable may only be initialized with a literal value"), a `const` ("Named constants must be assigned to a constant
 value"), a field default ("Field default must be a constant value"), and the local of a block that gives a global its
-value (`let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that local at scope 1 with no function round it
-(a parameter's scope 1 is checked at scope 0), and it is no global, so no setup can lift it; the report says "a block
-that gives a global its value cannot declare a local that is computed at run time" and that a function can declare
-locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
-constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
+value no longer (it was refused until Lead #982: `let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that
+local at scope 1 with no function round it (a parameter's scope 1 is checked at scope 0); it is no global, a local of the
+setup that runs the block, and may be started by any value. Nothing is reported at it: a `var` global's block is reported once, at the
+global. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
 reports nothing for the hidden variable holding its operand (`FlagQuesHeld`), since `propagateLower` always refuses that `?`.
 A `try` block with no function around it is `ErrorNotLit` at the `try`, once, whatever it holds ("A try block cannot give a
 global its value", `blockTypeCheck`): the block holds its value in a local of its own and no setup lifts it, so it takes
