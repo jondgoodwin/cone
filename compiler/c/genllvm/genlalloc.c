@@ -1157,6 +1157,7 @@ LLVMValueRef genlLockAcquire(GenState *gen, LLVMValueRef ref, RefNode *guardtype
 typedef struct {
     INode **steps;
     int len;
+    LLVMValueRef active;    // NULL if it surely happened; else an i1, whether it did (VarPartFlag)
 } MovedPath;
 
 static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth);
@@ -1336,6 +1337,7 @@ static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 // or to the temporary 'root' it was moved out through
 static MovedPath genlMovedPath(INode *moved, INode *root) {
     MovedPath path;
+    path.active = NULL;
     int len = 0;
     for (INode *exp = moved; exp != root && !(isNameUseNode(exp) && isExpNode(exp)); ) {
         switch (exp->tag) {
@@ -1372,19 +1374,110 @@ static MovedPath genlMovedPath(INode *moved, INode *root) {
 void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     VarDclNode *var = hnode->var;
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
-    genlHollowReleaseRef(gen, ref, var, hnode->moved);
+    LLVMValueRef held = NULL;
+    if ((var->flowtempflags & VarPartFlag) && var->llvmflag)
+        held = LLVMBuildLoad2(gen->builder, LLVMInt8TypeInContext(gen->context), var->llvmflag, "held");
+    genlHollowReleaseRef(gen, ref, var, hnode->moved, held);
+}
+
+// A drop flag of a variable with VarPartFlag holds, above its two low bits (a
+// DropFlagState), one bit for each of the first five moves that may hollow it
+// (VarDclNode.hollowuse, in order) and one shared by every later one
+#define PartFlagBits 5
+static uint32_t genlPartBit(Nodes *list, INode *item) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t index = 0;
+    if (list != NULL) {
+        for (nodesFor(list, cnt, nodesp)) {
+            if (*nodesp == item)
+                return 1u << (2 + (index < PartFlagBits ? index : PartFlagBits));
+            ++index;
+        }
+    }
+    return 0xFC;
+}
+
+// The flagged variable's value is hollowed by the move through 'nameuse': its
+// bit joins the others the flag holds
+void genlDropFlagHollow(GenState *gen, VarDclNode *var, INode *nameuse) {
+    if (!(var->flowtempflags & VarPartFlag)) {
+        genlDropFlagSet(gen, var, DropFlagHollow);
+        return;
+    }
+    if (var->llvmflag == NULL)
+        return;
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, var->llvmflag, "held");
+    LLVMValueRef kept = LLVMBuildAnd(gen->builder, held, LLVMConstInt(i8, 0xFC, 0), "keptmoves");
+    uint32_t bits = DropFlagHollow | genlPartBit(var->hollowuse, nameuse);
+    LLVMBuildStore(gen->builder, LLVMBuildOr(gen->builder, kept, LLVMConstInt(i8, bits, 0), "moves"), var->llvmflag);
+}
+
+// Generate the release for the paths that happened: each path not sure to
+// have happened is chosen by its bit, and the release is made for every way
+// they come out
+static void genlHollowChoose(GenState *gen, LLVMValueRef ref, RefNode *reftype, MovedPath *paths, int npaths,
+    int at, MovedPath *chosen, int nchosen) {
+    while (at < npaths && paths[at].active == NULL)
+        chosen[nchosen++] = paths[at++];
+    if (at == npaths) {
+        genlRegionDealiasPart(gen, ref, reftype, nchosen ? chosen : NULL, nchosen, 0);
+        return;
+    }
+    LLVMBasicBlockRef yes = genlInsertBlock(gen, "moved");
+    LLVMBasicBlockRef no = genlInsertBlock(gen, "kept");
+    LLVMBasicBlockRef end = genlInsertBlock(gen, "movedone");
+    LLVMBuildCondBr(gen->builder, paths[at].active, yes, no);
+    LLVMPositionBuilderAtEnd(gen->builder, yes);
+    chosen[nchosen] = paths[at];
+    genlHollowChoose(gen, ref, reftype, paths, npaths, at + 1, chosen, nchosen + 1);
+    LLVMBuildBr(gen->builder, end);
+    LLVMPositionBuilderAtEnd(gen->builder, no);
+    genlHollowChoose(gen, ref, reftype, paths, npaths, at + 1, chosen, nchosen);
+    LLVMBuildBr(gen->builder, end);
+    LLVMPositionBuilderAtEnd(gen->builder, end);
 }
 
 // The same for the owning reference 'ref' of variable 'var' held somewhere
 // else than its own storage (a parked record's field), out of whose referent
-// the moves 'moved' took what they name
-void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved) {
+// the moves 'moved' took what they name. A variable with VarPartFlag took
+// them on some paths and others on others: its flag value 'held' says which.
+void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved, LLVMValueRef held) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(var->vtype);
     int npaths = moved->used;
     MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
     for (int i = 0; i < npaths; ++i)
         paths[i] = genlMovedPath(nodesGet(moved, i), NULL);
-    genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
+    if (held == NULL || !(var->flowtempflags & VarPartFlag)) {
+        genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
+        return;
+    }
+    // At most this many moves are chosen at run time (a branch for each); the
+    // rest are taken as having happened, which can leak but not free twice
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    int choices = 0;
+    for (int i = 0; i < npaths; ++i) {
+        INode *use = NULL;
+        INode **nodesp;
+        uint32_t cnt;
+        uint32_t index = 0;
+        for (nodesFor(var->hollowall, cnt, nodesp)) {
+            if (*nodesp == nodesGet(moved, i)) {
+                use = nodesGet(var->hollowuse, index);
+                break;
+            }
+            ++index;
+        }
+        if (use == NULL || choices == 4)
+            continue;
+        uint32_t bit = genlPartBit(var->hollowuse, use);
+        LLVMValueRef has = LLVMBuildAnd(gen->builder, held, LLVMConstInt(i8, bit, 0), "hasmove");
+        paths[i].active = LLVMBuildICmp(gen->builder, LLVMIntNE, has, LLVMConstInt(i8, 0, 0), "moved");
+        ++choices;
+    }
+    MovedPath *chosen = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
+    genlHollowChoose(gen, ref, reftype, paths, npaths, 0, chosen, 0);
 }
 
 // A temporary is kept in a slot of its own as it is made, which its death
@@ -1793,6 +1886,8 @@ void genlDropFlagSet(GenState *gen, VarDclNode *var, int state) {
 LLVMBasicBlockRef genlDropFlagIf(GenState *gen, VarDclNode *var, int state) {
     LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
     LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, var->llvmflag, "held");
+    if (state == DropFlagHollow && (var->flowtempflags & VarPartFlag))
+        held = LLVMBuildAnd(gen->builder, held, LLVMConstInt(i8, 3, 0), "state");
     LLVMValueRef is = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, state, 0), "isheld");
     LLVMBasicBlockRef doblk = genlInsertBlock(gen, "dropflag");
     LLVMBasicBlockRef endblk = genlInsertBlock(gen, "dropflagdone");
@@ -1857,7 +1952,10 @@ void genlDropFlagUse(GenState *gen, INode *nameuse) {
     VarDclNode *var = (VarDclNode *)((NameUseNode *)nameuse)->dclnode;
     if (var->tag != VarDclTag)
         return;
-    genlDropFlagSet(gen, flowDropOwner(var), (nameuse->flags & FlagHollowOut) ? DropFlagHollow : DropFlagEmpty);
+    if (nameuse->flags & FlagHollowOut)
+        genlDropFlagHollow(gen, flowDropOwner(var), nameuse);
+    else
+        genlDropFlagSet(gen, flowDropOwner(var), DropFlagEmpty);
 }
 
 // Progressively dealias or drop all declared variables in nodes list
