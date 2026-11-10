@@ -185,6 +185,7 @@ enum TokenTypes {
     MustUseToken,  // '@mustUse'
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
+    NoAliasAttrToken, // '@noalias': after 'fn', a function whose returned pointer no other live pointer reaches
     IntrinsicAttrToken, // '@intrinsic': after 'fn' in core, a function whose meaning the compiler supplies
     ThreadLocalToken, // '@threadlocal': after a global's let or var, storage each thread has its own copy of
     WorkgroupToken, // '@workgroup': after a global's let or var, on a GPU storage each workgroup has its own copy of
