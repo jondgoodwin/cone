@@ -862,7 +862,7 @@ elsewhere, whichever walk arrived at it.
 | `ErrorImmutableWrite` (1297) | `mut`, `mut1` or a lock permission written on a reference to a type declaring `Immutable` (`refImmutableBan`, from `refTypeCheck` and `borrowTypeCheck`) |
 | `ErrorSoleOwnerMut` (1507) | `mut` written on an owner of a region declaring `Move` (`refSoleOwnerPermCheck`, from `refTypeCheck` and `refvirtTypeCheck`) |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
-| `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
+| `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax`; also a chain of instances each made by checking the previous one's members (`structInstanceNest`). The backstop for Bug 71, whose rule is: an instance whose template already appears in its parent chain gets its members checked only when a call needs them, or a construction outside the member check that created it; every other instance stays eager (`StructNode.memlazy`, `structMembersUse`). What goes unreported is in [generic](../nodes/generic.md), "A nested instance of its own template" |
 
 **`ErrorRecurse` (1049) is retired and its number must not be reused.** It
 refused every re-entry, which rule 4 replaced: a reference answers its own size,

@@ -69,6 +69,7 @@ typedef struct StructNode {
     struct StructNode *instfrom;   // The instance whose member check made this one (structInstanceNote); NULL for the first of a chain
     struct FnDclNode *instmeth;    // The member of instfrom whose check made it
     uint32_t instdepth;            // How many instances' member checks lie between it and the first of its chain
+    uint8_t memlazy;               // Its members are not checked yet: a nested instance of a template already in its chain waits for a use (structMembersUse)
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
@@ -310,8 +311,13 @@ void structLayoutEnter(void);
 void structLayoutExit(void);
 // Instances made while another's members are checked form a chain, whose depth the
 // queue of waiting member checks would otherwise hide from genericInstantiateEnter
-int structInstanceNest(INode *errnode);
-void structInstanceNote(INode *instance);
+int structInstanceNest(TypeCheckState *pstate, INode *errnode);
+void structInstanceNote(TypeCheckState *pstate, INode *instance);
+// An instance whose members wait for a use (memlazy) is checked now: a call on it, or
+// a construction ('construct') made outside the member check that created it
+void structMembersUse(TypeCheckState *pstate, INode *type, int construct);
+// Are this instance's members still unchecked, waiting for a use?
+int structMembersLazy(INode *type);
 // Is a layout in flight, so that no member may be checked yet?
 int structLayoutInFlight(void);
 

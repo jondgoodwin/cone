@@ -47,6 +47,8 @@ void dropExit(INode *exit, uint32_t *vars, uint32_t n);
 // The walk is done: 'ok' when it reported no error. Give each variable whose
 // state differs at a release its flag, and rebuild each release the walk met.
 void dropWalkEnd(int ok);
+// Do two sets of hollowing moves (masks) take different parts of the variable?
+int dropHollowShapesDiffer(VarDclNode *var, uint32_t a, uint32_t b);
 
 // -V 2: functions walked for drops, and variables given a flag
 void dropPrint();
