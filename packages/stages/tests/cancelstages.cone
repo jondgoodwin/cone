@@ -11,12 +11,13 @@
 //   0. the sink quits by itself: on its 10th chunk it cancels Gc;
 //   1. main cancels Gc from outside after the sink has taken 10 chunks (a stream
 //      abandoned half-way), and the producer NEVER sends an 'end' (the done-test: a
-//      producer that never ends; each stage drops its upstream handle at the cancel,
-//      so the actors do not keep each other alive and LSan finds nothing).
+//      producer that never ends; a stage keeps its upstream handle until the
+//      upstream's 'end', and finalAll breaks the cycle a source that never ends leaves).
 //
 // Checked for each: the sink took only a few chunks past the cancel, where 2,000
 // would reach it if the stages did not stop, and the source, which never looks at
-// its group, is left with no buffers back and stalls within its window; the sink's
+// its group, gets every buffer back (a cancelled stage gives back each chunk it is
+// sent: that credit is what wakes the stage above it) and so sends all 2,000; the sink's
 // 'end' is Failed (the first stage ended downstream when it
 // saw the cancel); the hash stage answered its digest sink once, with an error;
 // and every buffer is back in the pool (LSan checks the rest on Linux). A third
@@ -243,7 +244,7 @@ fn main() i32 {
 
   expect(s0.received.load() >= 10u64, "0: the sink took its 10 chunks");
   expect(s0.received.load() < 100u64, "0: and few past them, where 2,000 would reach it were the stages not stopped");
-  expect(s0.sent.load() < 100u64, "0: the source, given no more buffers back, stalled within its window (it never looked at its group)");
+  expectUInt(s0.sent.load(), 2000u64, "0: the source, given every buffer back, sent all its chunks (it never looked at its group)");
   expectUInt(s0.failed.load(), 1u64, "0: the sink's end is Failed (a stage above it was cancelled)");
   expectUInt(s0.finished.load(), 0u64, "0: and never Finished");
   expectUInt(s0.digestErr.load(), 1u64, "0: the hash stage answered its digest sink once, with an error");
@@ -251,7 +252,7 @@ fn main() i32 {
 
   expect(s1.received.load() >= 10u64, "1: the sink took at least 10 chunks before the cancel");
   expect(s1.received.load() < 100u64, "1: and few past it");
-  expect(s1.sent.load() < 100u64, "1: the source stalled within its window");
+  expectUInt(s1.sent.load(), 2000u64, "1: the source, given every buffer back, sent all its chunks");
   expectUInt(s1.failed.load(), 1u64, "1: the sink's end is Failed");
   expectUInt(s1.digestErr.load(), 1u64, "1: the digest sink got one error");
 
