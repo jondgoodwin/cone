@@ -316,13 +316,15 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
 // ---- Does a function write storage through one of its parameters? -------------
 
 // Can the compiler read what this function does: it has a body here, which is a
-// call of this very function and not of one of a trait's (a virtual call)?
+// call of this very function and not of one of a trait's (a virtual call)? An enum is
+// marked 'TraitType' too (its variants are its implementers), but its methods are
+// ordinary functions with bodies: only a true trait (not 'EnumType') hides them
 int siVisible(FnDclNode *fn) {
     if (fn == NULL || fn->genericinfo != NULL || (fn->flags & FlagExtern) || (fn->dclinfo.facts & DclIntrinsic)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
     INode *owner = inodeGetOwner((INode *)fn);
-    return !(owner && owner->tag == StructTag && (owner->flags & TraitType));
+    return !(owner && owner->tag == StructTag && (owner->flags & TraitType) && !(owner->flags & EnumType));
 }
 
 int siBodyReady(FnDclNode *fn) {
