@@ -125,6 +125,7 @@ void keywordInit() {
     keyAdd("@mustUse", MustUseToken);
     keyAdd("@c", CAttrToken);
     keyAdd("@initpure", InitPureToken);
+    keyAdd("@noalias", NoAliasAttrToken);
     keyAdd("@intrinsic", IntrinsicAttrToken);
     keyAdd("@threadlocal", ThreadLocalToken);
     keyAdd("@workgroup", WorkgroupToken);

@@ -1,0 +1,257 @@
+// List is a complete list: it inserts and removes anywhere (String's 'insert' and 'remove' are the
+// pattern), and the Array methods that keep the length are its own through its view. Each method at
+// its edges: index 0, the length, an empty list, a range of zero, the whole list.
+
+mod collection_list_complete;
+
+import stdio use *;
+import collections use *;
+
+fn show(label: &str, l: &List[i64]) {
+  printStr(label);
+  printStr(" [");
+  var i = 0usize;
+  while i < l.len() {
+    if i > 0usize { printStr(", "); }
+    printInt(l[i]);
+    i = i + 1usize;
+  }
+  printStr("]\n");
+}
+
+fn showSlice(label: &str, a: &Array[i64]) {
+  printStr(label);
+  printStr(" [");
+  var i = 0usize;
+  while i < a.len() {
+    if i > 0usize { printStr(", "); }
+    printInt(a[i]);
+    i = i + 1usize;
+  }
+  printStr("]\n");
+}
+
+fn mk(n: i64) List[i64] {
+  var l = List[i64]();
+  var i = 1i64;
+  while i <= n { l.push(i); i = i + 1i64; }
+  l
+}
+
+fn noneVal(o: Option[i64]) bool {
+  match o {
+    case let Some(x) { false }
+    case is None[i64] { true }
+  }
+}
+fn noneRef(o: Option[&i64]) bool {
+  match o {
+    case let Some(x) { false }
+    case is None[&i64] { true }
+  }
+}
+
+fn isEven(x: &i64) bool { *x % 2i64 == 0i64 }
+fn isThree(x: &i64) bool { *x == 3i64 }
+fn isNine(x: &i64) bool { *x == 9i64 }
+fn always(x: &i64) bool { true }
+
+fn main() {
+  // insert(i, v): front, middle, end, into an empty list
+  var a = List[i64]();
+  a.insert(0usize, 5i64);
+  show("insert empty", &a);
+  a.insert(0usize, 4i64);
+  a.insert(2usize, 6i64);
+  a.insert(1usize, 99i64);
+  show("insert 0 / end / middle", &a);
+
+  // insert(i, slice)
+  var b = mk(3i64);
+  let s = mk(2i64);
+  b.insert(0usize, s.view());
+  show("insert slice at 0", &b);
+  b.insert(5usize, s.view());
+  show("insert slice at len", &b);
+  b.insert(2usize, s.view().slice(0usize, 0usize));
+  show("insert empty slice", &b);
+  b.insert(3usize, s.view());
+  show("insert slice middle", &b);
+
+  // remove(i)
+  var c = mk(5i64);
+  show("remove 0 gives", &mk(1i64));
+  printInt(c.remove(0usize)); printStr("\n");
+  printInt(c.remove(3usize)); printStr("\n");
+  printInt(c.remove(1usize)); printStr("\n");
+  show("after remove(i)", &c);
+
+  // remove(start, end)
+  var d = mk(6i64);
+  d.remove(2usize, 2usize);
+  show("remove empty range", &d);
+  d.remove(0usize, 2usize);
+  show("remove front", &d);
+  d.remove(2usize, 4usize);
+  show("remove back", &d);
+  d.remove(0usize, 2usize);
+  show("remove whole", &d);
+  d.remove(0usize, 0usize);
+  show("remove range of empty", &d);
+
+  // removeIf
+  var e = mk(7i64);
+  e.removeIf(&isEven);
+  show("removeIf even", &e);
+  e.removeIf(&isNine);
+  show("removeIf none", &e);
+  e.removeIf(&always);
+  show("removeIf all", &e);
+  e.removeIf(&isThree);
+  show("removeIf empty", &e);
+
+  // swapRemove
+  var f = mk(4i64);
+  printInt(f.swapRemove(0usize)); printStr("\n");
+  show("swapRemove 0", &f);
+  printInt(f.swapRemove(2usize)); printStr("\n");
+  show("swapRemove last", &f);
+  printInt(f.swapRemove(0usize)); printStr("\n");
+  printInt(f.swapRemove(0usize)); printStr("\n");
+  show("swapRemove to empty", &f);
+
+  // replace: more, fewer, the same, empty range, whole, empty source
+  var g = mk(4i64);
+  let three = mk(3i64);
+  g.replace(1usize, 3usize, three.view());
+  show("replace 2 by 3", &g);
+  g.replace(0usize, 4usize, mk(1i64).view());
+  show("replace 4 by 1", &g);
+  g.replace(1usize, 1usize, three.view());
+  show("replace empty range", &g);
+  g.replace(0usize, g.len(), mk(2i64).view());
+  show("replace whole", &g);
+  g.replace(0usize, 1usize, three.view().slice(0usize, 0usize));
+  show("replace by nothing", &g);
+
+  // drain(start, end): the gap closes when the cursor dies
+  var h = mk(6i64);
+  {
+    var dr = h.drain(1usize, 4usize);
+    printInt(dr.next().unwrap()); printStr("\n");
+  }
+  show("drain(1, 4) after one", &h);
+  {
+    var dr = h.drain(0usize, 0usize);
+    printStr(if noneVal(dr.next()) {"none\n"} else {"some\n"});
+  }
+  show("drain empty range", &h);
+  var total = 0i64;
+  each x in h.drain(0usize, h.len()) { total = total + x; }
+  printInt(total); printStr("\n");
+  show("drain whole", &h);
+  var h2 = mk(4i64);
+  each x in h2.drain() { total = total + x; }
+  printInt(total); printStr("\n");
+  show("drain() still whole", &h2);
+
+  // splitOff
+  var k = mk(5i64);
+  var tail = k.splitOff(3usize);
+  show("splitOff 3", &k);
+  show("splitOff tail", &tail);
+  var all = k.splitOff(0usize);
+  show("splitOff 0 leaves", &k);
+  show("splitOff 0 gives", &all);
+  let none = all.splitOff(3usize);
+  show("splitOff len leaves", &all);
+  show("splitOff len gives", &none);
+
+  // extend
+  var m = mk(2i64);
+  m.extend(mk(3i64).drain());
+  show("extend", &m);
+  m.extend(List[i64]().drain());
+  show("extend nothing", &m);
+
+  // shrinkToFit, resize(n) with the default
+  var n = List[i64].withCapacity(100usize);
+  n.push(1i64);
+  n.push(2i64);
+  n.shrinkToFit();
+  printUInt(u64.from(n.capacity())); printStr("\n");
+  show("shrinkToFit", &n);
+  n.resize(4usize);
+  show("resize(4)", &n);
+  n.resize(1usize);
+  show("resize(1)", &n);
+  n.clear();
+  n.shrinkToFit();
+  printUInt(u64.from(n.capacity())); printStr("\n");
+
+  // Array methods through a list's view
+  var p = mk(5i64);
+  printInt(*p.first().unwrap()); printStr("\n");
+  printInt(*p.last().unwrap()); printStr("\n");
+  let nothing = List[i64]();
+  printStr(if noneRef(nothing.first()) && noneRef(nothing.last()) {"none none\n"} else {"WRONG\n"});
+  p.fill(7i64);
+  show("fill", &p);
+  var q = mk(5i64);
+  q.rotateLeft(2usize);
+  show("rotateLeft 2", &q);
+  q.rotateRight(2usize);
+  show("rotateRight 2", &q);
+  q.rotateLeft(0usize);
+  q.rotateLeft(5usize);
+  q.rotateRight(5usize);
+  show("rotate 0 and len", &q);
+  q.rotateRight(1usize);
+  show("rotateRight 1", &q);
+  var r = mk(3i64);
+  r.copyFrom(three.view());
+  r.copyFrom(mk(3i64).view().slice(0usize, 3usize));
+  show("copyFrom", &r);
+  var w = mk(5i64);
+  w.copyWithin(0usize, 3usize, 1usize);
+  show("copyWithin forward", &w);
+  w.copyWithin(1usize, 4usize, 0usize);
+  show("copyWithin back", &w);
+  w.copyWithin(2usize, 4usize, 2usize);
+  show("copyWithin in place", &w);
+  w.copyWithin(5usize, 5usize, 5usize);
+  w.copyWithin(0usize, 0usize, 5usize);
+  show("copyWithin empty", &w);
+  var wn = 0i64;
+  let l4 = mk(4i64);
+  let l3 = mk(3i64);
+  let l2 = mk(2i64);
+  each win in l4.windows(2usize) {
+    wn = wn * 10i64 + win[0usize] * 10i64 + win[1usize];
+  }
+  printInt(wn); printStr("\n");
+  var wc = 0i64;
+  each win in l3.windows(3usize) { wc = wc + 1i64; }
+  each win in l2.windows(3usize) { wc = wc + 100i64; }
+  each win in nothing.windows(1usize) { wc = wc + 100i64; }
+  printInt(wc); printStr("\n");
+  let sv = mk(4i64);
+  printStr(if sv.startsWith(mk(2i64).view()) {"starts\n"} else {"WRONG\n"});
+  printStr(if sv.startsWith(three.view()) {"starts\n"} else {"WRONG\n"});
+  printStr(if sv.startsWith(mk(5i64).view()) {"WRONG\n"} else {"no start\n"});
+  printStr(if sv.startsWith(List[i64]().view()) && sv.endsWith(List[i64]().view()) {"empty both\n"} else {"WRONG\n"});
+  var tl = List[i64]();
+  tl.push(3i64);
+  tl.push(4i64);
+  printStr(if sv.endsWith(tl.view()) {"ends\n"} else {"WRONG\n"});
+  printStr(if sv.endsWith(mk(2i64).view()) {"WRONG\n"} else {"no end\n"});
+  printStr(if mk(2i64).endsWith(mk(5i64).view()) {"WRONG\n"} else {"too long\n"});
+  match sv.position(&isEven) {
+    case let Some(i) { printUInt(u64.from(i)); printStr("\n"); }
+    case is None[usize] { printStr("none\n"); }
+  }
+  match sv.position(&isNine) {
+    case let Some(i) { printStr("WRONG\n"); }
+    case is None[usize] { printStr("none\n"); }
+  }
+}
