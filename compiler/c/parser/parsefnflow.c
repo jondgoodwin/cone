@@ -2888,6 +2888,12 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         initpure = 1;
         lexNextToken();
     }
+    // '@noalias' too, before or after '@c': the pointer the function returns is a
+    // fresh allocation, which no other live pointer reaches
+    if (lexIsToken(NoAliasAttrToken)) {
+        fnnode->dclinfo.facts |= DclNoAlias;
+        lexNextToken();
+    }
     // After '&fn' the '@c' marks the function-reference type, '&fn @c (Vec3) f32',
     // and a '(' after it opens the parameters: there is no string or 'system' to
     // read, and no name for one to spell
@@ -2903,6 +2909,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         hasc = parseCAttr(&fnnode->dclinfo, 0);
     if (!initpure && lexIsToken(InitPureToken)) {
         initpure = 1;
+        lexNextToken();
+    }
+    if (lexIsToken(NoAliasAttrToken)) {
+        fnnode->dclinfo.facts |= DclNoAlias;
         lexNextToken();
     }
     if (!intrinsic && lexIsToken(IntrinsicAttrToken)) {
