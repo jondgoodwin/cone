@@ -24,7 +24,11 @@
 // given to the sinks, and the sinks have had their ends. An Err on 'done' is a child that could not be started or whose pipes
 // or wait could not be set up; the sinks are then ended Failed with the same reason. A sink that stops its source Failed (it
 // wants no more) has the child killed, with the programs it started; 'kill' does the same on request. The standard input of the
-// child is NUL (the stdin sink is PR 6). Options are the defaults: 'inherit' is not offered, as the sources have nothing to read.
+// child is NUL, unless a PipeSink is given as the fourth argument (pipesink.cone): ChildStages(out, err, done, Some[PipeSink](s))
+// launches the child with a pipe for its input and hands it to 's' once the child runs (or Pipe.none() if it could not be set
+// up, which fails 's'). The input is the sink's own stream: its end or failure does not stop the child, and the exit on 'done'
+// does not wait for it. The ChildStages holds the process.Child until the exit is told (it is the child's owner and reaps it
+// as it drops; no raw pid is passed about). 'inherit' is not offered, as the sources have nothing to read.
 //
 // THE EXIT WAITS FOR THE PIPES. The exit is told only once both streams reach their end, and a stream ends when every holder
 // of the write end has closed it. A grandchild the child started and left holding the pipe (a daemon, a background job)
@@ -105,6 +109,8 @@ pub actor PipeSource is ChunkSource {
                 }
               }
               case let Err(e) {
+                // a read ended by its group's cancel is a halt too: a ChildStages kills its child for it (sourceEnded)
+                if actors.isCancelled() { halt = true; }
                 if halt { self.finishHalted(); }
                 else { self.finish(Ending.Failed(AnyError.from(e))); }
                 more = false;
@@ -185,16 +191,23 @@ pub actor ChildStages {
   exit: Option[Result[ChildExit, AnyError]];
   exitKnown: bool;
   told: bool;
+  stdinSink: Option[PipeSink];  // the sink that writes the child's standard input, given its pipe once the child runs
 
-  pub fn init(self: &new, out: ChunkSink, err: ChunkSink, done: OneshotSender[Result[ChildExit, AnyError]]) {
+  pub fn init(self: &new, out: ChunkSink, err: ChunkSink, done: OneshotSender[Result[ChildExit, AnyError]],
+    stdin: Option[PipeSink] = None[PipeSink]) {
     *self = Self(outSrc: Some[PipeSource](PipeSource(out)), errSrc: Some[PipeSource](PipeSource(err)),
       done: Some[OneshotSender[Result[ChildExit, AnyError]]](done), proc: None[process.Child], ended: 0u32,
-      consumerStopped: false, exit: None[Result[ChildExit, AnyError]], exitKnown: false, told: false);
+      consumerStopped: false, exit: None[Result[ChildExit, AnyError]], exitKnown: false, told: false, stdinSink: stdin);
   }
 
   // Launches args (args[0] the program) in dir ("" the current folder) and reads its streams
   pub async fn start(self, args: List[String], dir: Path) {
-    match process.launch(args.view(), process.Options(), &dir) {
+    var wantsIn = false;
+    match &stdinSink {
+      case let &Some(_) { wantsIn = true; }
+      case is None {}
+    }
+    match process.launch(args.view(), process.Options(stdin: wantsIn), &dir) {
       case var Ok(c) {
         // The pipes are adopted first and the process last: a failure before 'takeProcess' leaves the child with 'c', whose
         // drop kills it and waits for it (no handle leaked on Windows, no zombie on Linux). The loop closes the raw end of
@@ -203,8 +216,16 @@ pub actor ChildStages {
         let pe = await aio.adoptPipe(c.takeStderr());
         var out = Pipe.none();
         var err = Pipe.none();
+        var inp = Pipe.none();
         var child = aio.Child.none();
         var bad = None[IoError];
+        if wantsIn {
+          let pi = await aio.adoptPipe(c.takeStdin());
+          match pi {
+            case var Ok(p) { inp <-> p; }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+        }
         match po {
           case var Ok(p) { out <-> p; }
           case let Err(e) { bad = Some[IoError](e); }
@@ -219,18 +240,30 @@ pub actor ChildStages {
           case is None {}
         }
         if pipesOk {
-          // From here the process is the loop's: Windows' HANDLE whatever the result (closed when 'child' drops), Linux's
-          // pid stays ours and the wait that answers reaps it
-          let ch = await aio.adoptChild(c.takeProcess());
+          // Windows: the process HANDLE is the loop's from here, whatever the result (closed when 'child' drops). Linux: the
+          // pid is lent to adoptChild and 'c' stays its owner until the adopt has succeeded; only then is it let go
+          // ('takeProcess'), and the wait that answers reaps it. A failed adopt (pidfd_open) leaves the owner to kill and
+          // reap the pid as 'c' drops
+          var raw = 0usize;
+          #if #os == .windows {
+            raw = c.takeProcess();
+          } #else {
+            raw = usize.from(c.pid());
+          }
+          let ch = await aio.adoptChild(raw);
           match ch {
-            case var Ok(x) { child <-> x; }
+            case var Ok(x) {
+              child <-> x;
+              #if #os != .windows {
+                _ = c.takeProcess();
+              }
+            }
             case let Err(e) { bad = Some[IoError](e); }
           }
         }
         match bad {
           case let Some(e) {
-            // Killed here; waited for as 'c' drops when takeProcess did not run. The one case left is Linux's pidfd_open
-            // failing after takeProcess: the pid is killed but cannot be reaped from here (no public way to wait for a raw pid)
+            // Killed here; waited for as 'c' drops when takeProcess did not run (on Linux that includes a failed adopt)
             c.kill();
             self.fail(AnyError.from(e));
             return;
@@ -244,6 +277,9 @@ pub actor ChildStages {
         b <-> errSrc;
         match a { case let Some(s) { s.startFor(out, selfactor.clone()); } case is None {} }
         match b { case let Some(s) { s.startFor(err, selfactor.clone()); } case is None {} }
+        var si = None[PipeSink];
+        si <-> stdinSink;
+        match si { case let Some(s) { s.startOn(inp); } case is None {} }
         let w = await child.exited();
         exitKnown = true;
         match w {
@@ -310,6 +346,9 @@ pub actor ChildStages {
     var b = None[PipeSource];
     b <-> errSrc;
     ended = 2u32;
+    var si = None[PipeSink];
+    si <-> stdinSink;
+    match si { case let Some(s) { s.startOn(Pipe.none()); } case is None {} }
     match a { case let Some(s) { s.stop(Ending.Failed(AnyError.msg("the child could not be started"))); } case is None {} }
     match b { case let Some(s) { s.stop(Ending.Failed(AnyError.msg("the child could not be started"))); } case is None {} }
     self.check();

@@ -1,0 +1,404 @@
+// PipeSink and ChildStages with a standard input (PR 6 of the pipe op): a stream written to a child's stdin, and the three ways
+// that go wrong in both directions at once. The child is this test's own executable, started again with '--child' and a mode.
+// The source (PatSource) makes the pattern (byte i is i % 251) in chunks of 64 KiB inside a window of 256 KiB, and follows the
+// source rules: it stops at a stop, and at a buffer that comes back in a cancelled group (bug 84).
+//
+//   1. NEITHER SIDE MAY BLOCK THE OTHER. A child that writes 8 MiB to its output BEFORE it reads any of its input, while the
+//      test writes 8 MiB to its input: each pipe fills, and only independent readers and writers get through. The child checks
+//      the input's pattern and exits 0; the output arrives whole and in order; the sink's 'done' says 8 MiB written.
+//   2. A CHILD THAT EXITS WITHOUT READING its input: the writes fail (a broken pipe), the sink's 'done' is an Err, the source is
+//      stopped (it ends Failed), the exit is told (code 4), and no buffer stays out.
+//   3. A CANCEL MID-TRANSFER: a child that never reads and sleeps, an endless source, the pipe full and the write waiting. The
+//      group is cancelled: the write ends ('done' is an Err), the child is killed (the exit is told), the source ends.
+//   4. A PROGRAM THAT DOES NOT EXIST with a stdin sink: the exit is an Err and the sink's 'done' is an Err.
+//   5. AN EMPTY INPUT closes the pipe at once: a child that reads to the end of its input and counts it sees 0 bytes.
+//
+// Every buffer is back in its pool at the end.
+
+mod pipesink;
+
+import testing use *;
+import collections use List, String, AnyError;
+import path use Path;
+import libc;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import process;
+import actors;
+import cancelgroups use *;
+import aio use ChildExit;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+extern {
+  fn @c _setmode(fd: i32, mode: i32) i32;
+}
+
+fn binaryStreams() {
+  #if #os == .windows {
+    _setmode(0i32, 32768i32);
+    _setmode(1i32, 32768i32);
+    _setmode(2i32, 32768i32);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The child
+// ---------------------------------------------------------------------------
+
+fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
+
+fn writePattern(f: *libc.FILE, n: u64) {
+  let size = 65536usize;
+  var t = List[u8].withCapacity(size + 251usize);
+  var i = 0usize;
+  while i < size + 251usize {
+    t.push(u8.from(u64.from(i) % 251u64));
+    i = i + 1usize;
+  }
+  let all = t.view();
+  var done = 0u64;
+  while done < n {
+    let left = n - done;
+    let piece = if left < u64.from(size) {usize.from(left)} else {size};
+    let off = usize.from(done % 251u64);
+    libc.fwrite(&all[off] as *u8, 1usize, piece, f);
+    done = done + u64.from(piece);
+  }
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  binaryStreams();
+  if mode.equals("swap") {
+    // swap <outBytes> <inBytes>: the whole output first (it blocks while nobody reads it), then the input, checked
+    writePattern(libc.stdout(), number(&a[3usize]));
+    libc.fflush(libc.stdout());
+    var buf = Array[u8, 65536]() <- fill 0u8;
+    let bp: *u8 = &[]buf as *u8;
+    var count = 0u64;
+    var bad = 0u64;
+    var more = true;
+    while more {
+      let got = libc.fread(bp, 1usize, 65536usize, libc.stdin());
+      var j = 0usize;
+      while j < got {
+        if buf[j] != u8.from((count + u64.from(j)) % 251u64) { bad = bad + 1u64; }
+        j = j + 1usize;
+      }
+      count = count + u64.from(got);
+      if got < 65536usize { more = false; }
+    }
+    if bad != 0u64 || count != number(&a[4usize]) { return 2i32; }
+    return 0i32;
+  }
+  if mode.equals("noread") {
+    return 4i32;
+  }
+  if mode.equals("sleep") {
+    // neither reads nor writes: waits to be killed
+    var round = 0u64;
+    while round < 300u64 {
+      thread.sleep(Duration.fromMillis(100i64));
+      round = round + 1u64;
+    }
+    return 6i32;
+  }
+  if mode.equals("count") {
+    // reads its input to the end; exit 0 when it was empty, else 3
+    var buf = Array[u8, 4096]() <- fill 0u8;
+    let bp: *u8 = &[]buf as *u8;
+    let got = libc.fread(bp, 1usize, 4096usize, libc.stdin());
+    if got == 0usize { return 0i32; }
+    return 3i32;
+  }
+  1i32
+}
+
+fn command(exe: &str, mode: &str, a: &str, b: &str) List[String] {
+  var l = List[String]();
+  l.push(String.from(exe));
+  l.push(String.from("--child"));
+  l.push(String.from(mode));
+  if a.len > 0usize { l.push(String.from(a)); }
+  if b.len > 0usize { l.push(String.from(b)); }
+  l
+}
+
+// ---------------------------------------------------------------------------
+// The source, and a sink for the output
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub bytes: Atomic[u64];       // bytes the output sink got
+  pub bad: Atomic[u64];         // ...that were not the pattern
+  pub ends: Atomic[u64];        // ends seen (output and error sinks both)
+  pub fin: Atomic[u64];         // ...Finished
+  pub srcEnds: Atomic[u64];     // ends the PatSource sent
+  pub srcFail: Atomic[u64];     // ...Failed
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn clear() {
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.ends.store(0u64);
+  tally.fin.store(0u64);
+  tally.srcEnds.store(0u64);
+  tally.srcFail.store(0u64);
+}
+
+// Makes 'total' bytes of the pattern in chunks of 64 KiB
+actor PatSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  left: u64;
+  pos: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, total: u64) {
+    *self = Self(down: down, link: ChunkWindow.own(linkWindow), left: total, pos: 0u64, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if over { return; }
+    if actors.isCancelled() {
+      self.finish(Ending.Failed(AnyError.msg("streams: cancelled")));
+    } else {
+      self.pump();
+    }
+  }
+
+  pub async fn stop(self, why: Ending) {
+    if over { return; }
+    self.finish(why);
+  }
+
+  fn pump(self) {
+    var more = true;
+    while more {
+      if over { more = false; }
+      else if left == 0u64 { self.finish(Ending.Finished); more = false; }
+      else {
+        match link.take(linkBytes) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let n = if left < u64.from(linkBytes) {usize.from(left)} else {linkBytes};
+            var piece = List[u8].withCapacity(n);
+            var i = 0usize;
+            while i < n {
+              piece.push(u8.from((pos + u64.from(i)) % 251u64));
+              i = i + 1usize;
+            }
+            buf.append(piece.view());
+            pos = pos + u64.from(n);
+            left = left - u64.from(n);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+
+  fn finish(self, how: Ending) {
+    over = true;
+    tally.srcEnds.add(1u64);
+    match &how {
+      case is Failed { tally.srcFail.add(1u64); }
+      else {}
+    }
+    down.end(how);
+  }
+}
+
+// An output or error sink: counts, checks the pattern (when 'check'), gives every chunk back
+actor Out is ChunkSink {
+  up: Option[ChunkSource];
+  pos: u64;
+  check: bool;
+
+  pub fn init(self: &new, check: bool) {
+    *self = Self(up: None[ChunkSource], pos: 0u64, check: check);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    if check {
+      tally.bytes.add(u64.from(c.len()));
+      let s = c.view();
+      var i = 0usize;
+      while i < s.len {
+        if s[i] != u8.from((pos + u64.from(i)) % 251u64) { tally.bad.add(1u64); }
+        i = i + 1usize;
+      }
+      pos = pos + u64.from(c.len());
+    }
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    tally.ends.add(1u64);
+    match how {
+      case is Finished { tally.fin.add(1u64); }
+      else {}
+    }
+    up = None[ChunkSource];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The runs
+// ---------------------------------------------------------------------------
+
+fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  c.load() >= n
+}
+
+struct Run {
+  exit: OneshotReceiver[Result[ChildExit, AnyError]];
+  written: OneshotReceiver[Result[u64, AnyError]];
+}
+
+// The exit: code * 1000 + signal, 999999 for an Err, 888888 when it does not come in 60 s
+fn exitOf(rx: &mut OneshotReceiver[Result[ChildExit, AnyError]]) u64 {
+  match rx.recvTimeout(Duration.fromMillis(60000i64)) {
+    case let Some(r) {
+      match r {
+        case let Ok(x) { return u64.from(x.code) * 1000u64 + u64.from(x.signal); }
+        else { return 999999u64; }
+      }
+    }
+    case is None { return 888888u64; }
+  }
+}
+
+// The sink's bytes written, 999999999 for an Err, 888888888 when the answer does not come in 60 s
+fn writtenOf(rx: &mut OneshotReceiver[Result[u64, AnyError]]) u64 {
+  match rx.recvTimeout(Duration.fromMillis(60000i64)) {
+    case let Some(r) {
+      match r {
+        case let Ok(n) { return n; }
+        else { return 999999999u64; }
+      }
+    }
+    case is None { return 888888888u64; }
+  }
+}
+
+// Starts cmd with a stdin sink fed by a PatSource of 'total' bytes (in the group 'g', if given)
+fn begin(cmd: List[String], total: u64, g: Option[CancelGroup]) Run {
+  var tx: OneshotSender[Result[ChildExit, AnyError]];
+  var rx: OneshotReceiver[Result[ChildExit, AnyError]];
+  tx, rx = Oneshot[Result[ChildExit, AnyError]].make();
+  var wtx: OneshotSender[Result[u64, AnyError]];
+  var wrx: OneshotReceiver[Result[u64, AnyError]];
+  wtx, wrx = Oneshot[Result[u64, AnyError]].make();
+  let sink = PipeSink(wtx);
+  let c = ChildStages(Out(true), Out(false), tx, Some[PipeSink](sink));
+  let src = PatSource(sink, total);
+  let go = fn() [c, src, cmd] {
+    c.start(cmd.clone(), Path.from(""));
+    src.start();
+  };
+  match g {
+    case let Some(grp) { actors.withGroup(&grp, go); }
+    case is None { go(); }
+  }
+  Run(rx, wrx)
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+  initAll();
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+
+  // 1. the child writes 8 MiB before it reads; we write 8 MiB meanwhile
+  clear();
+  let t1 = Instant.now();
+  var r1 = begin(command(exe.view(), "swap", "8388608", "8388608"), 8388608u64, None[CancelGroup]);
+  let ex1 = exitOf(&mut r1.exit);
+  let w1 = writtenOf(&mut r1.written);
+  waitFor(&tally.ends, 2u64, 30000i64);
+  expectUInt(ex1, 0u64, "1: the child read all 8 MiB, in order, and exited 0");
+  expectUInt(w1, 8388608u64, "1: the sink wrote 8 MiB");
+  expect((Instant.now() - t1).millis() < 60000i64, "1: ...within a minute (neither side held the other)");
+  expectUInt(tally.bytes.load(), 8388608u64, "1: all 8 MiB of the output arrived");
+  expectUInt(tally.bad.load(), 0u64, "1: ...in order");
+  expectUInt(tally.srcFail.load(), 0u64, "1: the source was not stopped");
+
+  // 2. the child exits without reading
+  clear();
+  var r2 = begin(command(exe.view(), "noread", "", ""), 8388608u64, None[CancelGroup]);
+  let ex2 = exitOf(&mut r2.exit);
+  let w2 = writtenOf(&mut r2.written);
+  waitFor(&tally.srcEnds, 1u64, 30000i64);
+  expectUInt(ex2, 4000u64, "2: the exit says code 4");
+  expectUInt(w2, 999999999u64, "2: the sink's 'done' is an Err");
+  expectUInt(tally.srcFail.load(), 1u64, "2: the source was stopped, ending Failed");
+
+  // 3. a cancel mid-transfer: the pipe is full and the write waits
+  clear();
+  let gc = CancelGroup.make();
+  let gs = gc.child();
+  var r3 = begin(command(exe.view(), "sleep", "", ""), 1073741824u64, Some[CancelGroup](gs));
+  thread.sleep(Duration.fromMillis(1000i64));
+  expect(r3.written.tryRecv() is None, "3: the write is waiting on the full pipe");
+  expect(r3.exit.tryRecv() is None, "3: the child is still running");
+  gc.cancel();
+  let w3 = writtenOf(&mut r3.written);
+  let ex3 = exitOf(&mut r3.exit);
+  waitFor(&tally.srcEnds, 1u64, 30000i64);
+  expectUInt(w3, 999999999u64, "3: the cancelled write ended, the sink's 'done' is an Err");
+  #if #os == .windows {
+    expectUInt(ex3, 1000u64, "3: the child was killed (exit code 1) and its exit told");
+  } #else {
+    expectUInt(ex3, 9u64, "3: the child was killed (signal 9) and its exit told");
+  }
+  expectUInt(tally.srcEnds.load(), 1u64, "3: the source ended");
+
+  // 4. a program that does not exist
+  clear();
+  var r4 = begin(command("this-program-does-not-exist-pipesink", "x", "", ""), 1048576u64, None[CancelGroup]);
+  let ex4 = exitOf(&mut r4.exit);
+  let w4 = writtenOf(&mut r4.written);
+  expectUInt(ex4, 999999u64, "4: the exit is an Err");
+  expectUInt(w4, 999999999u64, "4: the sink's 'done' is an Err");
+
+  // 5. an empty input
+  clear();
+  var r5 = begin(command(exe.view(), "count", "", ""), 0u64, None[CancelGroup]);
+  let ex5 = exitOf(&mut r5.exit);
+  let w5 = writtenOf(&mut r5.written);
+  expectUInt(ex5, 0u64, "5: the child saw an empty input and exited 0");
+  expectUInt(w5, 0u64, "5: the sink wrote nothing");
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
