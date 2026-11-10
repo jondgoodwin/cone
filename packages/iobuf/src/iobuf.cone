@@ -189,14 +189,14 @@
 // in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
 //
 // HOMES. A buffer may be lent: 'buf.setHome(&home)' (home an IoHome, made by the lender with
-// 'IoHome.make(ctx, give, release)', which owns the Sendable ctx) makes its death, instead of releasing the
+// 'IoHome.make(ctx, give)', which owns the Sendable ctx) makes its death, instead of releasing the
 // block, call 'give(&ctx, m)'
 // with a fresh empty buffer m on the same block, which has no home and so releases the block when it dies.
 // That is how a sender that moved a buffer into a driver is told it is done with it, with no call from the
 // driver: the death is the signal, on whatever thread it falls (the I/O thread when a send completes).
 // 'buf.clearHome()' makes it plain again (a buffer handed back by hand must be cleared first, or its credit
 // returns twice). The home is counted: each homed buffer holds one count, as does the IoHome, and the
-// lender's 'release(&ctx)' runs when the last is gone. A plain buffer pays one test of its home word in
+// lender's ctx is dropped (its 'final' is the release) when the last is gone. A plain buffer pays one test of its home word in
 // 'final'. A 'give' must be quick and must not panic; one that sends to an actor checks 'actors.isRunning()'
 // first, which NARROWS the race with the runtime stopping but does not close it (a death on another thread
 // can pass the check just before the stop and still panic in the send). stages.chunkHome is the lender for a ChunkSource.
@@ -332,10 +332,11 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
-// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give, release)' moves the lender's
+// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give)' moves the lender's
 // state 'ctx' (a Sendable C) into one counted record that the home owns: each buffer given this home
-// ('setHome') holds one count too, and the record goes when the last count does, by 'release(&ctx)' and
-// then the drop of ctx. 'give(&ctx, b)' is called when a homed buffer dies, on whatever thread it dies on,
+// ('setHome') holds one count too, and the record goes when the last count does, by the drop of ctx (C's
+// own 'final' is the lender's release, and runs on whichever thread dropped the last count: the I/O
+// thread when the last homed buffer outlives its owner). 'give(&ctx, b)' is called when a homed buffer dies, on whatever thread it dies on,
 // with a fresh empty buffer on the same block (len 0, the same capacity, no home): the lender takes it
 // back, and if it only drops it the block goes to the pool. ctx is only ever borrowed by the callbacks and
 // never leaves the record, so safe code cannot hand a home a dangling pointer. 'give' runs on another
@@ -345,9 +346,9 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 pub struct IoHome is Move, Sendable {
   rec: *HomeRec;
 
-  pub fn make[C: Sendable](ctx: C, give: &fn(ctx: &C, b: IoBuf), release: &fn(ctx: &C)) IoHome {
+  pub fn make[C: Sendable](ctx: C, give: &fn(ctx: &C, b: IoBuf)) IoHome {
     let t = libc.malloc(mem.sizeof[TypedHome[C]]()) as *TypedHome[C];
-    mem.writeRaw[TypedHome[C]](t, TypedHome[C](ctx, give, release));
+    mem.writeRaw[TypedHome[C]](t, TypedHome[C](ctx, give));
     let r = libc.malloc(mem.sizeof[HomeRec]()) as *HomeRec;
     mem.writeRaw[HomeRec](r, HomeRec(t as *u8, &giveTyped[C], &releaseTyped[C], Atomic[usize].of(1usize)));
     IoHome(r)
@@ -362,7 +363,6 @@ pub struct IoHome is Move, Sendable {
 struct TypedHome[C] {
   ctx: C;
   give: &fn(ctx: &C, b: IoBuf);
-  release: &fn(ctx: &C);
 }
 
 fn giveTyped[C](p: *u8, b: IoBuf) {
@@ -373,8 +373,6 @@ fn giveTyped[C](p: *u8, b: IoBuf) {
 
 fn releaseTyped[C](p: *u8) {
   let t = p as *TypedHome[C];
-  let f = (*t).release;
-  f(&(*t).ctx);
   mem.finalize(t);
   libc.free(p);
 }
