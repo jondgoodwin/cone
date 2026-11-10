@@ -1,0 +1,201 @@
+// A program printing into a standard output whose reader has gone (conestd/console.c, ONE RULE, and the stdio manual
+// page): it ends at once and quietly, exit status 141 on both systems (128 + SIGPIPE on POSIX, where the child here
+// has made SIGPIPE ignored, as iocore's adoptPipe does for any program using aio's pipes), no panic text, nothing
+// more written. A failed write to standard error stays dropped: that child goes on and exits with its own code.
+//
+// The child is this test's own executable, started again with '--child' and a mode; the parent starts it with
+// process.launch, closes our end of the pipe at once (the child waits a second before it writes), and reads the
+// other stream to its end.
+//
+// 1. 'print' into a closed standard output: exit status 141, standard error empty (no "alive" line that follows the
+//    print, and no panic).
+// 2. 'eprint' into a closed standard error: the child goes on and exits 5, its standard output holding the line it
+//    printed after.
+
+mod epipe;
+
+import testing use *;
+import collections use *;
+import libc;
+import path use Path;
+import process;
+import stdio use *;
+import time use Duration, Instant;
+import iocore use *;
+import diag;
+
+extern {
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) CreateEventW(sa: *u8, manual: i32, initial: i32, name: *u16) usize;
+  fn @c(system) WaitForSingleObject(h: usize, ms: u32) u32;
+  fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: *u8) i32;
+  fn @c(system) GetOverlappedResult(h: usize, ov: *u8, got: *u32, block: i32) i32;
+  fn @c(system) GetLastError() u32;
+}
+extern {
+  fn @c usleep(us: u32) i32;
+  fn @c signal(sig: i32, handler: usize) usize;
+  fn @c("read") readFd(fd: i32, buf: *u8, n: usize) isize;
+  fn @c("close") closeFd(fd: i32) i32;
+}
+
+const noEnd = 0xFFFFFFFFFFFFFFFFusize;
+
+fn pause() {
+  #if #os == .windows {Sleep(1000u32);} #else {usleep(1000000u32);};
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  // As a program is in which something has made SIGPIPE ignored (iocore's adoptPipe)
+  #if #os != .windows { signal(13i32, 1usize); }
+  if mode.equals("printclosed") {
+    pause();
+    print <- "to a closed pipe\n";
+    print.flush();
+    eprint <- "alive\n";
+    eprint.flush();
+    return 0i32;
+  }
+  if mode.equals("eprintclosed") {
+    pause();
+    eprint <- "to a closed pipe\n";
+    eprint.flush();
+    print <- "went on\n";
+    print.flush();
+    return 5i32;
+  }
+  1i32
+}
+
+// All that comes through an end until its other end closes
+fn readAll(end: usize) String {
+  var data = String();
+  var buf = Array[u8, 4096]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  #if #os == .windows {
+    var ov = Array[usize, 5]() <- fill 0usize;
+    let ovw: *usize = &[]ov as *usize;
+    let op: *u8 = ovw as *u8;
+    ov[4usize] = CreateEventW(null, 1i32, 0i32, null);
+    var more = true;
+    while more {
+      ov[0usize] = 0usize;
+      ov[1usize] = 0usize;
+      var got = 0u32;
+      let ok = ReadFile(end, bp, 4096u32, null, op);
+      var failed = ok == 0i32 && GetLastError() != 997u32;
+      if ok == 0i32 && !failed {
+        WaitForSingleObject(ov[4usize], 20000u32);
+        if GetOverlappedResult(end, op, &mut got, 0i32) == 0i32 { failed = true; }
+      }
+      else if ok != 0i32 {
+        GetOverlappedResult(end, op, &mut got, 0i32);
+      }
+      if failed || got == 0u32 {
+        more = false;
+      } else {
+        data.appendBytes(mem.sliceFromParts(bp, usize.from(got)));
+      }
+    }
+    CloseHandle(ov[4usize]);
+    CloseHandle(end);
+  } #else {
+    var more = true;
+    while more {
+      let got = readFd(i32.from(end), bp, 4096usize);
+      if got <= 0isize {
+        more = false;
+      } else {
+        data.appendBytes(mem.sliceFromParts(bp, usize.from(got)));
+      }
+    }
+    closeFd(i32.from(end));
+  }
+  data
+}
+
+fn closeEnd(e: usize) {
+  if e == noEnd { return; }
+  #if #os == .windows { CloseHandle(e); } #else { closeFd(i32.from(e)); }
+}
+
+struct Waited {
+  pub status: u32;
+  pub n: usize;
+  pub code: u32;
+}
+
+fn waitFor(lp: &mut Loop, raw: usize, seconds: i64) Waited {
+  var h = Handle.none();
+  match lp.adoptChild(raw) {
+    case let Ok(x) { h = x; }
+    case let Err(e) {}
+  }
+  lp.submit(Op.WaitChild(h), Target.Here(1u64));
+  var out = List[Completion]();
+  let until = Instant.now() + Duration.fromSeconds(seconds);
+  while Instant.now() < until {
+    lp.poll(until, &mut out);
+    each c in out.drain() {
+      if c.token == 1u64 {
+        lp.close(h);
+        return Waited(c.status, c.n, c.code);
+      }
+    }
+  }
+  lp.close(h);
+  Waited(99u32, 0usize, 0u32)
+}
+
+fn command(exe: &str, mode: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+  {
+    var lp = Loop.mustMake();
+
+    // 1. print into a closed standard output
+    var cmd = command(exe.view(), "printclosed");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        closeEnd(c.takeStdout());
+        let err = readAll(c.takeStderr());
+        let w = waitFor(&mut lp, c.takeProcess(), 30i64);
+        expect(w.status == diag.outcomeDone, "1: the child ended");
+        expectUInt(u64.from(w.n), 141u64, "1: exit status 141");
+        expect(err.len() == 0usize, "1: nothing on standard error: no panic text, and not the line after the print");
+      }
+      case is Err { expect(false, "1: launch started"); }
+    }
+
+    // 2. eprint into a closed standard error
+    cmd = command(exe.view(), "eprintclosed");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        closeEnd(c.takeStderr());
+        let out = readAll(c.takeStdout());
+        let w = waitFor(&mut lp, c.takeProcess(), 30i64);
+        expect(w.status == diag.outcomeDone, "2: the child ended");
+        expectUInt(u64.from(w.n), 5u64, "2: a failed write to standard error is dropped: the child goes on, exit 5");
+        expect(out.view().startsWith("went on"), "2: ...and its standard output holds the line after it");
+      }
+      case is Err { expect(false, "2: launch started"); }
+    }
+  }
+  done()
+}

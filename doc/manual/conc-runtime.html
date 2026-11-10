@@ -236,9 +236,12 @@ actors.parallelRange(0usize, 100000usize, 256usize, fn(lo: usize, hi: usize) [ou
 		<span class="pre">Shareable</span>, <span class="pre">onDone</span> <span class="pre">Sendable</span>.</li>
 	<li><span class="pre">actors.parallelEach(lo, hi, piece, data)</span> is the loop a <span class="pre">parallel each</span>
 		becomes, called by the compiler's code with the loop it outlined into a function reference and a pointer to the
-		record of the variables it uses (the one place that form stays). It is the same loop with the grain chosen for the
-		workers (pieces of about an eighth of a worker's even share, but never split below 128 items, so a loop of 128 items
-		or fewer is one piece, run at once on the caller's thread), and with the messages the pieces send to actors gathered:
+		record of the variables it uses (the one place that form stays). It is the same loop with no grain: it splits on
+		demand, but only after a cost guard: the caller runs the items itself, one at a time, reading the clock after each,
+		and splits the rest once about 2 microseconds have passed with more than one item left. A loop of cheap items
+		(8 trivial ones) finishes on the caller's thread with no task and no wake. A piece begins with a budget of splits (the number of workers) and halves the budget at each cut; a piece
+		another worker takes, having run dry, begins again with a fresh budget. So a loop of costly items reaches every
+		worker, and a loop of cheap ones is cut only as far as workers go idle. And with the messages the pieces send to actors gathered:
 		a piece's sends are kept, not made, and made after the loop by the code that began it, in the order of the passes, so
 		that an actor sees the same order every run (<span class="pre">parallelRange</span> sends at once, in no defined
 		order).</li>
