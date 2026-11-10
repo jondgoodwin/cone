@@ -1,0 +1,157 @@
+// Bell, VadProbe, Heard and SpeechSource: what a loop of one thread (voicechat's) uses to sit beside the streams
+// without a sleep loop (voicewait.cone), on SDL's disk driver. Every wait is a deadline wait.
+//
+// 1. SENTENCES AND FLUSH POINTS: two sentences handed to a SpeechSource are all settled (played) when the speaker has
+//    played them, the bell was rung for it, and the silence between them is not counted as an underrun.
+// 2. BARGE-IN: a cut-off mid-sentence settles what was handed over (cleared from SDL's stream, or discarded as
+//    stale), and a sentence handed over after it plays whole.
+// 3. THE DETECTOR'S STATE: a microphone into a VadStage that is watched by a VadProbe and sends to Heard finds the
+//    same two utterances as the polling path, the probe's analysed count reaches the end of the file, and the bell
+//    was rung (speech began, utterances arrived).
+mod voicewait;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration, Instant;
+import actors;
+import voiceaudio use *;
+
+fn ms(n: u32, rate: u32) usize { usize.from(n) * usize.from(rate) / 1000usize }
+
+fn deadline(n: i64) Instant { Instant.now() + Duration.fromMillis(n) }
+
+// Wait on the bell until the check holds or the deadline; the count is read before the check, as a loop of one thread
+// does. kind 0: `want` blocks have settled; 1: the sink has ended and played; 2: `want` blocks have been put
+fn holds(sp: &SpeakerSink, kind: u32, want: u64) bool {
+  if kind == 0u32 { return sp.blocksPlayed() + sp.stale() >= want; }
+  if kind == 1u32 { return sp.played(); }
+  sp.blocksPut() >= want
+}
+
+fn waitBell(bell: &Bell, n: i64, sp: &SpeakerSink, kind: u32, want: u64) bool {
+  let limit = deadline(n);
+  var seen = bell.count();
+  while !holds(sp, kind, want) && Instant.now() < limit {
+    seen = bell.waitFor(seen, Duration.fromMillis(50));
+  }
+  holds(sp, kind, want)
+}
+
+fn blocksOf(samples: usize) u64 { speechBlocks(samples) }
+
+fn main() i32 {
+  initAll();
+  let R = DISK_RATE;
+  let S = 16000u32;
+  let outName = "voiceaudio-test-wait-out.raw";
+  let outPath = Path.from("voiceaudio-test-wait-out.raw");
+
+  // ---- 1. sentences and flush points
+  {
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        let bell = Bell.make();
+        var sp = SpeakerSink.startWith(spk, 60u32, 1000u32, bell.clone());
+        let voice = SpeechSource(sp.sink());
+        let a = toneMs(200u32, R, 440., 0.5);
+        let b = toneMs(150u32, R, 660., 0.5);
+        let want = blocksOf(a.len()) + blocksOf(b.len());
+        voice.speak(a, sp.generation());
+        voice.speak(b, sp.generation());
+        expectUInt(want, 51u64, "1: 8,820 and 6,615 samples are 28 and 21 blocks, and a flush point each");
+        let settled = waitBell(&bell, 20000i64, &sp, 0u32, want);
+        expect(settled, "1: every block and flush point handed over settled, and the bell was rung for it");
+        expectUInt(sp.stale(), 0u64, "1: none was stale");
+        expectUInt(sp.blocksPut(), want - 2u64, "1: the flush points are not blocks put");
+        expectUInt(sp.underruns(), 0u64, "1: the silence after a sentence is not an underrun");
+        voice.finish();
+        expect(waitBell(&bell, 10000i64, &sp, 1u32, 0u64), "1: and the end event comes after");
+        expectInt(i64.from(sp.stop()), 0i64, "1: the feeder ended cleanly");
+      }
+      case let Err(e) { require(false, "1: the disk speaker opens"); }
+    }
+    _ = fs.removeFile(&outPath);
+  }
+
+  // ---- 2. barge-in
+  {
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(spk) {
+        let bell = Bell.make();
+        var sp = SpeakerSink.startWith(spk, 60u32, 1000u32, bell.clone());
+        let voice = SpeechSource(sp.sink());
+        let a = toneMs(1500u32, R, 440., 0.5);
+        var enq = blocksOf(a.len());
+        voice.speak(a, sp.generation());
+        expect(waitBell(&bell, 10000i64, &sp, 2u32, 10u64), "2: the first sentence began to play");
+        sp.cutOff();
+        let c = toneMs(100u32, R, 880., 0.5);
+        enq = enq + blocksOf(c.len());
+        voice.speak(c, sp.generation());
+        let settled = waitBell(&bell, 20000i64, &sp, 0u32, enq);
+        expect(settled, "2: the cut sentence and the new one all settled");
+        expect(sp.stale() > 0u64 || sp.blocksPlayed() >= enq, "2: the old sentence's blocks were cleared or discarded");
+        voice.finish();
+        expect(waitBell(&bell, 10000i64, &sp, 1u32, 0u64), "2: the end event");
+        expectInt(i64.from(sp.stop()), 0i64, "2: the feeder ended cleanly");
+      }
+      case let Err(e) { require(false, "2: the disk speaker opens"); }
+    }
+    _ = fs.removeFile(&outPath);
+  }
+
+  // ---- 3. the detector's state and the utterances, for a plain thread
+  {
+    var x = noiseBed(5700u32, R, 0.002, 21u32);
+    addInto(&mut x, ms(1000u32, R), speechLike(1500u32, R, 0.05, 21u32).view());
+    addInto(&mut x, ms(3500u32, R), speechLike(1000u32, R, 0.05, 22u32).view());
+    let inPath = Path.from("voiceaudio-test-wait-in.raw");
+    var ok = false;
+    match writeRawF32(&inPath, x.view()) { case let Ok(u) { ok = true; } case let Err(e) {} }
+    require(ok, "3: the microphone file is written");
+    let drv = Driver.disk("voiceaudio-test-wait-in.raw", "voiceaudio-test-wait-out2.raw", "0.05");
+    match Microphone.open(&drv, S) {
+      case var Ok(mic) {
+        let bell = Bell.make();
+        let probe = VadProbe.make(bell.clone());
+        var heard = Heard.make(bell.clone());
+        let stage = VadStage(VadConfig.standard(S), 8u32, heard.sink());
+        stage.watch(probe.clone());
+        var src = MicSource.start(mic, 20u32, 64u32, 32u32, stage);
+        var got = List[Utterance]();
+        let limit = deadline(30000i64);
+        var seen = bell.count();
+        while got.len() < 2usize && Instant.now() < limit {
+          var more = true;
+          while more {
+            match heard.take() {
+              case var Some(u) { got.push(u); }
+              case is None { more = false; }
+            }
+          }
+          if got.len() < 2usize { seen = bell.waitFor(seen, Duration.fromMillis(50)); }
+        }
+        expectUInt(u64.from(got.len()), 2u64, "3: two utterances arrive at the plain thread");
+        expect(got.len() == 2usize && got[0usize].start > ms(900u32, S) && got[0usize].start < ms(1100u32, S), "3: the first starts near 1.0 s");
+        expect(got.len() == 2usize && got[1usize].start > ms(3400u32, S) && got[1usize].start < ms(3600u32, S), "3: the second starts near 3.5 s");
+        expect(probe.analysed() > ms(3000u32, S), "3: the probe's analysed count has advanced");
+        expectInt(i64.from(src.stop()), 0i64, "3: the capture thread ended cleanly");
+        actors.waitQuiet();
+        expect(probe.analysed() > ms(5000u32, S), "3: and reached the end of the file");
+        expect(!probe.speaking(), "3: no speech at the end");
+        expect(probe.noiseFloor() > 0.0f && probe.noiseFloor() < 0.03f, "3: the noise floor is published");
+        probe.setThresholdScale(3.0f);
+      }
+      case let Err(e) { require(false, "3: the disk microphone opens"); }
+    }
+    _ = fs.removeFile(&inPath);
+  }
+  _ = fs.removeFile(&Path.from("voiceaudio-test-wait-out2.raw"));
+  finalAll();
+  done()
+}
