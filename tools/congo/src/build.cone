@@ -9,9 +9,15 @@
 
 // Where a package's build goes: build/<mode>/ in the package's folder; a
 // lone file's under the Congo home
-fn buildFolder(pkg: &Package, mode: &str) Path {
+fn buildFolder(repo: &Path, pkg: &Package, mode: &str) Path {
   if pkg.lone {
-    let root = loneBuildRoot(&pkg.src);
+    // A missing compiler is reported at the compile, after the source's errors
+    var conec: Path = "";
+    match findConec(repo) {
+      case let Ok(p) { conec = p.clone(); }
+      case is Err {}
+    }
+    let root = loneBuildRootFor(&pkg.src, &conec);
     return root.join(mode);
   }
   let folder = pkg.root.join("build");
@@ -70,7 +76,7 @@ fn modeFolder(mode: &str, lto: bool) String {
 fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool, strip: bool, lto: bool) Path {
   let folders = registryFolders(repo);
   let folder = modeFolder(mode, lto);
-  let out = buildFolder(&pkg, folder.view());
+  let out = buildFolder(repo, &pkg, folder.view());
   let indexes = registryIndexes();
   var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip, lto);
   let top = s.reg.add(pkg);
@@ -189,6 +195,18 @@ fn loneBuildRoot(file: &Path) Path {
   let short = digest.sub(0usize, 10usize);
   let folder = cat(file.stem(), "-", short.view());
   lone.join(folder.view())
+}
+
+// The same for one compiler: <file>-<hash>/<c8>/, c8 the first 8 hex digits of
+// conec's content hash, so two compilers building one file keep separate builds
+// (congo.py's lone_build_root with the compiler given). An empty conec is no
+// compiler: the folder of all of them
+fn loneBuildRootFor(file: &Path, conec: &Path) Path {
+  let root = loneBuildRoot(file);
+  if conec.isEmpty() { return root; }
+  let hash = toolHash(conec);
+  let c8 = hash.sub(0usize, 8usize);
+  root.join(c8.view())
 }
 
 // A lone file with no manifest is a program of one module, named by its

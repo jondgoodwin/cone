@@ -54,6 +54,7 @@ extern {
       removed: &mut u32, ms: u32, alertable: i32) i32;
   fn @c(system) PostQueuedCompletionStatus(port: usize, bytes: u32, key: usize, ov: *u8) i32;
   fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetExitCodeProcess(h: usize, code: &mut u32) i32;
   fn @c(system) GetLastError() u32;
   fn @c(system) CancelIoEx(h: usize, ov: *u8) i32;
   fn @c(system) SetFileCompletionNotificationModes(h: usize, flags: u8) i32;
@@ -141,19 +142,22 @@ const infinite = 0xFFFFFFFFu32;                     // INFINITE
 const statusSuccess = 0usize;
 const statusCancelled = 0xC0000120usize;            // STATUS_CANCELLED
 const statusEndOfFile = 0xC0000011usize;            // STATUS_END_OF_FILE
+const statusPipeBroken = 0xC000014Busize;           // STATUS_PIPE_BROKEN: a pipe's other end is closed
 const statusInvalidBufferSize = 0xC0000206usize;    // STATUS_INVALID_BUFFER_SIZE: a datagram too large to send
 const statusBufferOverflow = 0x80000005usize;       // STATUS_BUFFER_OVERFLOW: a datagram longer than the buffer
 
 // Windows' error numbers iocore gives or reads
 pub const errorFileNotFound = 2u32;                 // ERROR_FILE_NOT_FOUND
 pub const errorHandleEof = 38u32;                   // ERROR_HANDLE_EOF
-pub const errorBusy = 170u32;                       // ERROR_BUSY: a lane's queue is full
+pub const errorNoChildren = 128u32;                 // ERROR_WAIT_NO_CHILDREN: a child already waited for (Linux's ECHILD is 10)
+pub const errorBusy = 170u32;                      // ERROR_BUSY: a lane's queue is full
 pub const errorInvalidParameter = 87u32;            // ERROR_INVALID_PARAMETER
 pub const errorInsufficientBuffer = 122u32;         // ERROR_INSUFFICIENT_BUFFER
 const errorNotEnoughMemory = 8u32;                  // ERROR_NOT_ENOUGH_MEMORY
 pub const errorInvalidHandle = 6u32;                // ERROR_INVALID_HANDLE
 pub const errorOperationAborted = 995u32;           // ERROR_OPERATION_ABORTED
 pub const errorIoPending = 997u32;                  // ERROR_IO_PENDING
+pub const errorBrokenPipe = 109u32;                 // ERROR_BROKEN_PIPE: a pipe's other end is closed
 pub const errorNotFound = 1168u32;                  // ERROR_NOT_FOUND
 pub const errorConnectionRefused = 1225u32;         // ERROR_CONNECTION_REFUSED
 pub const errorNetnameDeleted = 64u32;              // ERROR_NETNAME_DELETED: how a receive or send reads a reset
@@ -368,7 +372,7 @@ fn resetSocket(s: usize) {
 // Close what the OS gave for a handle of kind: a file, or a socket
 fn closeRaw(kind: u32, raw: usize) {
   #if #os == .windows {
-    if kind == hFile {CloseHandle(raw);} else {closesocket(raw);}
+    if kind == hFile || kind == hChild || kind == hPipe {CloseHandle(raw);} else {closesocket(raw);}
   } #else {
     sysClose(fdOf(raw));
   }

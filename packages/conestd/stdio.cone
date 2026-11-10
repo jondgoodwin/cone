@@ -45,8 +45,12 @@ extern fn cone_consoleAtExit(finish: &fn @c());
 
 // The functions an engine installs: one takes a finished record; one takes a
 // text sent alone, as its stream and bytes; one controls it, with op 0, to wait
-// until everything sent has been written, and op 1, to give a panic a moment to
-// that without waiting on anything it might hold
+// until everything sent has been written; op 1, a panic's, to wait for that
+// while the engine makes progress, without waiting on anything it might hold
+// (it gives up when 500 ms pass with no progress, or 10 s in all, and a second
+// call after a give-up returns at once); and op 2, a panic's last step, to write
+// one line to standard error saying how many lines were queued but not written,
+// if op 1 gave up with some unwritten (the actors' console.cone)
 alias ConsoleEngine = &fn(record: &uni core.TextOut);
 alias ConsoleBytes = &fn(fd: i32, p: *u8, n: usize);
 alias ConsoleControl = &fn(op: u32);
@@ -286,7 +290,7 @@ pub fn consoleDeliver(w: &uni core.TextOut) {
 
 // Write what waits: the engine's first, if one is installed (op 0 waits until
 // all that was sent has been written; op 1 is a panic's, which waits on nothing
-// it might hold and gives up), then the console's own
+// it might hold, waits while the engine makes progress, and gives up), then the console's own
 fn consoleFlush(op: u32) {
   let control = consoleEngineControl.load();
   if control != 0usize {
@@ -304,6 +308,15 @@ fn consoleFlush(op: u32) {
 // thread does not hold the console's lock itself
 fn consoleFlushForPanic() {
   if !inConsole {consoleFlush(1u32);}
+}
+
+// A panic's last step: the engine reports lines it dropped, if any
+fn consoleReportForPanic() {
+  let control = consoleEngineControl.load();
+  if control != 0usize && !inConsole {
+    let ctl = control as ConsoleControl;
+    ctl(2u32);
+  }
 }
 
 // At the program's end
