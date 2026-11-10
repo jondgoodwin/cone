@@ -177,13 +177,15 @@
 //   as deflate's RFC 1951 tables are. Everything else is in the values that
 //   use it: nothing is shared between two Decompressors, so one per thread or
 //   actor is safe; one is not safe to share.
-// - The block decoder takes the input as '&List[u8]', not as a slice: the
-//   borrow checker (error 1339) refuses a slice of one field of the
-//   Decompressor alongside '&mut' to the others, which change shape, as it
-//   cannot tell the fields apart; a '&List[u8]' lends no elements across the
-//   call. The compressor's matchers and literal writer read their input the
-//   same way, for the same reason (a slice of the input held while a List of
-//   sequences grows is refused), taking an 8-byte slice only inside a helper.
+// - The input is a streams Reader. The block decoder takes the block as an
+//   '&Array[u8]' lent by the Reader's peek. The borrow checker (error 1339)
+//   refuses a slice of one field of the Decompressor alongside '&mut' to the
+//   others, as it cannot tell the fields apart, so each step moves the Reader
+//   out of its field into a local (a swap) and back; the view then borrows the
+//   local. The compressor's matchers and literal writer still read their
+//   input as '&List[u8]', for the same reason (a slice of the input held
+//   while a List of sequences grows is refused), taking an 8-byte slice only
+//   inside a helper.
 //
 // Compressing:
 //
@@ -348,4 +350,4 @@ mod zstd;
 
 import collections use *;
 import iobuf use IoBuf;
-pub import streams use Status;
+pub import streams use Status, Reader;
