@@ -1063,8 +1063,12 @@ pub struct @opaque Array[T] is GcTraceElements {
   //
   // Equal elements keep the order they had. A merge sort over the runs it finds: an
   // ascending or a strictly descending run (which is reversed) is taken whole, a run
-  // shorter than 32 is lengthened by insertion, and the runs are merged in Powersort's
-  // order (Munro and Wild), which keeps the merges balanced however long the runs are.
+  // shorter than 32 is not: it and what follows (32 in all) are left unsorted
+  // (joined with the unsorted ones beside them while they fit in the buffer) to be sorted
+  // by a stable quicksort, which puts the elements equal to a pivot aside at once, so that
+  // few distinct values take a few levels (Rust's driftsort works this way). The runs are
+  // merged in Powersort's order (Munro and Wild), which keeps the merges balanced however
+  // long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
   // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
@@ -1510,32 +1514,147 @@ pub struct @opaque Array[T] is GcTraceElements {
     buf
   }
 
-  // Put the elements in the order 'order' gives, keeping the order of elements it calls
-  // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
-  // region; a default must be a literal, which 'heapRegion()' is not) (n / 2 elements, nothing for 20
-  // or fewer elements or for input that is already in order); a list passes its own region.
-  // A debug build panics if 'order' is not a consistent order (the result is not in order by
-  // it); a release build always returns some permutation of the elements
-  pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratchIn: *MemRegion = null) {
+  // Sort the range [start, start + len) of unsorted elements, stably, by a quicksort that
+  // partitions through 'buf' (room for n / 2 elements, got from 'scratch' if it is still
+  // null). Answers the buffer
+  fn sortUnsorted[F: fn(a: &T, b: &T) i32](self: &mut, start: usize, len: usize, bufIn: *T, scratch: *MemRegion, order: &F) *T {
+    var buf = bufIn;
+    if buf == null {
+      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      if buf == null { panic("sort: no memory for the merge buffer"); }
+    }
+    let part = mem.sliceFromPartsMut[T]((self as *T) + start, len);
+    part.stableQuick(buf, scratch, null, 2u32 * (64u32 - u32.from(u64.from(len).leadingZeros())), order);
+    buf
+  }
+
+  // Partition into the elements below 'pivot' (or, with 'orEqual', not above it), which stay
+  // first, and the others, each side keeping its order. One pass reads the range and writes each
+  // element to 'buf', the first side from the front and the others from the back; the others are
+  // then copied back reversed. The array is only read until then, so a comparison that panics
+  // leaves it as it was. Answers how many are in the first side
+  fn stablePartition[F: fn(a: &T, b: &T) i32](self: &mut, buf: *T, pivot: *T, orEqual: bool, order: &F) usize {
     let n = self.len;
-    let scratch = if scratchIn == null { heapRegion() } else { scratchIn };
+    let p = self as *T;
+    let bias = if orEqual { 1i32 } else { 0i32 };
+    var l = 0usize;
+    var i = 0usize;
+    while i < n {
+      let goLeft = order((p + i) as &T, pivot as &T) < bias;
+      let dst = if goLeft { l } else { n - 1usize - (i - l) };
+      mem.moveRaw(buf + dst, p + i, 1usize);
+      l = l + (if goLeft { 1usize } else { 0usize });
+      i = i + 1usize;
+    }
+    mem.moveRaw(p, buf, l);
+    var j = 0usize;
+    while j < n - l {
+      mem.moveRaw(p + l + j, buf + (n - 1usize - j), 1usize);
+      j = j + 1usize;
+    }
+    l
+  }
+
+  // A stable quicksort. 'pred' is the pivot of a partition that left all these elements at or
+  // above it (null if none): where a new pivot is not above it, it equals it, and so does
+  // every element not above the pivot; those are partitioned off as done and not visited
+  // again, which is what takes few distinct values in a few levels. A range still being
+  // split after 'limit' levels is left to the merge sort
+  fn stableQuick[F: fn(a: &T, b: &T) i32](self: &mut, buf: *T, scratch: *MemRegion, predIn: *T, limit: u32, order: &F) {
+    let base = self as *T;
+    var start = 0usize;
+    var n = self.len;
+    var pred = predIn;
+    while n > 32usize {
+      let v = mem.sliceFromPartsMut[T](base + start, n);
+      if limit == 0u32 {
+        v.sortRuns(order, scratch, false, buf);
+        return;
+      }
+      // The pivot: the median of three, of three medians of three for 50 or more elements
+      var a = n / 4usize;
+      var b = n / 4usize * 2usize;
+      var c = n / 4usize * 3usize;
+      var swaps = 0usize;
+      if n >= 50usize {
+        a = v.median3(a - 1usize, a, a + 1usize, &mut swaps, order);
+        b = v.median3(b - 1usize, b, b + 1usize, &mut swaps, order);
+        c = v.median3(c - 1usize, c, c + 1usize, &mut swaps, order);
+      }
+      let held = mem.readRaw[T]((base + start) + v.median3(a, b, c, &mut swaps, order));
+      if pred != null && order(pred as &T, &held) >= 0i32 {
+        let equal = v.stablePartition(buf, &held, true, order);
+        mem.forget[T](held);
+        start = start + equal;
+        n = n - equal;
+        pred = null;
+      }
+      else {
+        let mid = v.stablePartition(buf, &held, false, order);
+        mem.sliceFromPartsMut[T](base + start, mid).stableQuick(buf, scratch, pred, limit - 1u32, order);
+        mem.sliceFromPartsMut[T](base + start + mid, n - mid).stableQuick(buf, scratch, &held, limit - 1u32, order);
+        mem.forget[T](held);
+        return;
+      }
+    }
+    mem.sliceFromPartsMut[T](base + start, n).insertionSortBy(order);
+  }
+
+  // Merge the top two entries of the stack of runs (entry i holds the run at bases[i], lens[i]
+  // long, sorted or not). Two runs not yet sorted that together fit in the buffer are just
+  // joined, to be sorted as one; otherwise each is sorted and the two merged
+  fn collapseRuns[F: fn(a: &T, b: &T) i32](self: &mut, bases: &Array[usize, 72], lens: &mut Array[usize, 72], sorted: &mut Array[bool, 72], top: usize, bufIn: *T, scratch: *MemRegion, root: &mut SortScratch[T], order: &F) *T {
+    let x = top - 2usize;
+    let y = top - 1usize;
+    var buf = bufIn;
+    if !sorted[x] && !sorted[y] && lens[x] + lens[y] <= self.len / 2usize {
+      lens[x] = lens[x] + lens[y];
+      return buf;
+    }
+    if !sorted[x] { buf = self.sortUnsorted(bases[x], lens[x], buf, scratch, order); sorted[x] = true; }
+    if !sorted[y] { buf = self.sortUnsorted(bases[y], lens[y], buf, scratch, order); sorted[y] = true; }
+    buf = self.mergeRuns(bases[x], bases[y], bases[y] + lens[y], buf, scratch, root, order);
+    lens[x] = lens[x] + lens[y];
+    buf
+  }
+
+  // The stable sort. With 'quick', a run shorter than 32 is not
+  // lengthened by insertion but left to be sorted, joined with its neighbours, by a stable
+  // quicksort (Rust's driftsort in outline); without it, the old way, which the quicksort
+  // falls back on, on a part of the array, with the buffer of the whole. Answers the buffer
+  // (null if none was needed), for the caller to give back
+  fn sortRuns[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratch: *MemRegion, quick: bool, bufIn: *T) *T {
+    let n = self.len;
     if n <= 20usize || mem.sizeof[T]() == 0usize {
       self.insertionSortBy(order);
     }
     else {
       let p = self as *T;
+      // The shortest run that is kept as it is found, and how much a shorter one takes with
+      // it to be left unsorted (more for a large array, so that a stretch with no run is not
+      // tracked in thousands of small pieces; a longer piece would swallow nearly sorted input)
+      let minGood = if n / 2usize < 32usize { n / 2usize } else { 32usize };
+      let chunk = if n > 4096usize { 256usize } else { minGood };
       // The runs found and not yet merged, as a stack (at most 2 log2 n of them), and for each
       // the power of the boundary after it
       var bases = Array[usize, 72]() <- fill 0usize;
       var lens = Array[usize, 72]() <- fill 0usize;
       var powers = Array[u32, 72]() <- fill 0u32;
+      var sorted = Array[bool, 72]() <- fill true;
       var top = 0usize;
       var pos = 0usize;
-      var buf: *T = null;
+      var buf = bufIn;
       var root = SortScratch[T](null, 0usize);
       while pos < n {
         var len = self.naturalRun(pos, order);
-        if len < 32usize && pos + len < n {
+        var isSorted = true;
+        if quick {
+          if len < minGood && pos + len < n {
+            len = if n - pos < chunk { n - pos } else { chunk };
+            isSorted = false;
+          }
+        }
+        else if len < 32usize && pos + len < n {
           let end = if n - pos < 32usize { n } else { pos + 32usize };
           let part = mem.sliceFromPartsMut[T](p + pos, end - pos);
           var i = len;
@@ -1545,25 +1664,38 @@ pub struct @opaque Array[T] is GcTraceElements {
         if top > 0usize {
           let power = self.mergePower(bases[top - 1usize], lens[top - 1usize], len);
           while top > 1usize && powers[top - 2usize] > power {
-            buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, &mut root, order);
-            lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
+            buf = self.collapseRuns(&bases, &mut lens, &mut sorted, top, buf, scratch, &mut root, order);
             top = top - 1usize;
           }
           powers[top - 1usize] = power;
         }
         bases[top] = pos;
         lens[top] = len;
+        sorted[top] = isSorted;
         top = top + 1usize;
         pos = pos + len;
       }
       while top > 1usize {
-        buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, &mut root, order);
-        lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
+        buf = self.collapseRuns(&bases, &mut lens, &mut sorted, top, buf, scratch, &mut root, order);
         top = top - 1usize;
       }
-      if buf != null {
-        (scratch as &MemRegion).release(buf as *u8, (n / 2usize) * mem.sizeof[T]());
-      }
+      if !sorted[0usize] { buf = self.sortUnsorted(0usize, n, buf, scratch, order); }
+      return buf;
+    }
+    bufIn
+  }
+
+  // Put the elements in the order 'order' gives, keeping the order of elements it calls
+  // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
+  // region; a default must be a literal, which 'heapRegion()' is not) (n / 2 elements, nothing for 20
+  // or fewer elements or for input that is already in order); a list passes its own region.
+  // A debug build panics if 'order' is not a consistent order (the result is not in order by
+  // it); a release build always returns some permutation of the elements
+  pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratchIn: *MemRegion = null) {
+    let scratch = if scratchIn == null { heapRegion() } else { scratchIn };
+    let buf = self.sortRuns(order, scratch, true, null);
+    if buf != null {
+      (scratch as &MemRegion).release(buf as *u8, (self.len / 2usize) * mem.sizeof[T]());
     }
     #if #debug {
       if !self.isSortedBy(order) {
