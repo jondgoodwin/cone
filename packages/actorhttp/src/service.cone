@@ -32,6 +32,7 @@ fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: u
 }
 
 // The pools of this package, named for what each holds (the pool kind is spelled here and nowhere else)
+alias EntryId = Handle;                // a pool's handle for one entry (the token helpers below take one)
 alias Waits = GenPool[Wait];           // a client's fetches awaiting their reply
 alias XWaits = GenPool[Wait];          // the exchanges on the service's own connections awaiting theirs
 alias Streams = GenPool[StreamRec];   // a client's streamed responses
@@ -55,7 +56,7 @@ const tokGenShift = 33u64;
 const tokGenMask = 0x7Fu64;
 
 // (pub for tests/tokens.cone, not an API) The token for the entry h, with a flag bit (streamBit, connBit, or 0)
-pub fn tokenOf(h: Handle, flag: u64) u64 {
+pub fn tokenOf(h: EntryId, flag: u64) u64 {
   flag | ((u64.from(h.gen) & tokGenMask) << tokGenShift) | u64.from(h.index)
 }
 
@@ -67,7 +68,7 @@ pub fn byToken[T](pool: &GenPool[T], t: u64) *T {
   let i = tokCell(t);
   let h = pool.slotAt(i);
   if h.isNone() || (u64.from(h.gen) & tokGenMask) != ((t >> tokGenShift) & tokGenMask) {
-    return pool.get(Handle.none());
+    return pool.get(EntryId.none());
   }
   pool.at(i)
 }
