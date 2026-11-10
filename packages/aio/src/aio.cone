@@ -613,6 +613,9 @@ const opStat = 12u32;         // Result[FileStat, IoError]
 const opRun = 13u32;          // Result[process.Output, IoError]
 const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
 const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
+const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
+const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
+const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
 // reply the awaiting behaviour's answer goes back in (put in by the 'await';
@@ -1956,8 +1959,10 @@ fn answerRec(rp: *OpRec[Ask]) {
   }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
     actors.answerLentIn[Result[IoBuf, IoError]](back, rp as *Result[IoBuf, IoError], &takeRead);
+  } else if w == opWaitChild {
+    actors.answerLentIn[Result[ChildExit, IoError]](back, rp as *Result[ChildExit, IoError], &takeExit);
   } else if w == opAccept || w == opConnect {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
   } else if w == opRecvFrom {
@@ -1982,8 +1987,10 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   let e = IoError.timedOut();
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
     actors.answerNowIn[Result[IoBuf, IoError]](back, Err[IoBuf, IoError](e));
+  } else if w == opWaitChild {
+    actors.answerNowIn[Result[ChildExit, IoError]](back, Err[ChildExit, IoError](e));
   } else if w == opAccept || w == opConnect {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
   } else if w == opRecvFrom {
@@ -2082,6 +2089,17 @@ fn takeCount(p: *u8, to: *u8) {
     v = Ok[usize, IoError](core.n);
   }
   mem.writeRaw[Result[usize, IoError]](to as *Result[usize, IoError], v);
+}
+
+// A child's end: Done carries the exit code (the count) and, on Linux, the signal that ended it (the code)
+fn takeExit(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Err[ChildExit, IoError](errorOf(core.kind, core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[ChildExit, IoError](ChildExit(u32.from(core.n), core.code));
+  }
+  mem.writeRaw[Result[ChildExit, IoError]](to as *Result[ChildExit, IoError], v);
 }
 
 // A timer's: Done is the success, a Result with nothing in it
@@ -2293,6 +2311,34 @@ struct OpenFileJob {
     match lp.openFile(&path, access) {
       case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](newFile(ok)));}
       case let Err(e) {actors.answerNow[Result[File, IoError]](rp, Err[File, IoError](e));}
+    }
+  }
+}
+
+// A pipe end adopted on the I/O thread's Loop, which holds it
+struct AdoptPipeJob {
+  pub raw: usize;
+  pub reply: actors.Reply;
+
+  fn run(self, lp: &mut Loop) {
+    let raw, rp = self.(raw, reply);
+    match lp.adoptPipe(raw) {
+      case let Ok(ok) {actors.answerNow[Result[Pipe, IoError]](rp, Ok[Pipe, IoError](Pipe(ok)));}
+      case let Err(e) {actors.answerNow[Result[Pipe, IoError]](rp, Err[Pipe, IoError](e));}
+    }
+  }
+}
+
+// A child process adopted on the I/O thread's Loop
+struct AdoptChildJob {
+  pub raw: usize;
+  pub reply: actors.Reply;
+
+  fn run(self, lp: &mut Loop) {
+    let raw, rp = self.(raw, reply);
+    match lp.adoptChild(raw) {
+      case let Ok(ok) {actors.answerNow[Result[Child, IoError]](rp, Ok[Child, IoError](Child(ok)));}
+      case let Err(e) {actors.answerNow[Result[Child, IoError]](rp, Err[Child, IoError](e));}
     }
   }
 }
@@ -2617,6 +2663,109 @@ pub struct File is Move, Sendable {
   fn final(self: &uni) {
     closeHandle(h);
   }
+}
+
+// One end of a pipe the I/O thread's Loop holds (iocore's PIPES): a child's standard output or error, as 'process.launch'
+// hands it back. It moves, and closes when it dies.
+pub struct Pipe is Move, Sendable {
+  h: Handle;
+
+  // A Pipe naming nothing, which closes nothing
+  pub fn none() Pipe {Pipe(Handle.none())}
+
+  pub fn isNone(self: &) bool {h.isNone()}
+
+  // The iocore handle it names, on the I/O thread's Loop
+  pub fn handle(self: &) Handle {h}
+
+  // What the pipe holds, at most buf's room, appended to buf, which is moved in and comes back in the answer; an
+  // answer whose buffer gained nothing is the end of the stream (the other end closed and all it wrote read). A buf
+  // with no room fails (InvalidInput). The pipe's own capacity is the back-pressure: a writer waits while nobody reads
+  pub fn read(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readIn(buf, IoLimits.none())
+  }
+
+  // A read ended if lim says so; then the buffer goes home to its pool
+  pub fn readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    let p = takeRec(opPipeRead, diag.kindPipeRead, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[IoBuf, IoError]](p)
+  }
+
+  // All of buf, which is moved in; buf comes back in the answer once written. A failed write's buffer goes home
+  pub fn write(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.writeIn(buf, IoLimits.none())
+  }
+
+  pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    let p = takeRec(opPipeWrite, diag.kindPipeWrite, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[IoBuf, IoError]](p)
+  }
+
+  // Ask every read (write) in flight on this pipe to end
+  pub fn cancelRead(self: &) {
+    cancelSide(h, false);
+  }
+
+  pub fn cancelWrite(self: &) {
+    cancelSide(h, true);
+  }
+
+  fn final(self: &uni) {
+    closeHandle(h);
+  }
+}
+
+// How a child ended: its exit code, and on Linux the signal that ended it (then the code is 0); the signal is 0
+// otherwise and always on Windows
+pub struct ChildExit {
+  pub code: u32;
+  pub signal: u32;
+}
+
+// A child process the I/O thread's Loop holds (iocore's CHILDREN): it moves, and closes when it dies.
+pub struct Child is Move, Sendable {
+  h: Handle;
+
+  pub fn none() Child {Child(Handle.none())}
+
+  pub fn isNone(self: &) bool {h.isNone()}
+
+  pub fn handle(self: &) Handle {h}
+
+  // The child's end, 'exited': Done when it has ended, with how. The child is waited for once: a second wait on the same
+  // Child fails (iocore's CHILDREN)
+  pub fn exited(self: &) actors.Awaitable[Result[ChildExit, IoError]] {
+    self.exitedIn(IoLimits.none())
+  }
+
+  // A wait ended if lim says so; the child itself goes on
+  pub fn exitedIn(self: &, lim: IoLimits) actors.Awaitable[Result[ChildExit, IoError]] {
+    let p = takeRec(opWaitChild, diag.kindWaitChild, h, lim);
+    recAwaitable[Result[ChildExit, IoError]](p)
+  }
+
+  // Ask the wait in flight to end
+  pub fn cancelWait(self: &) {
+    cancelSide(h, false);
+  }
+
+  fn final(self: &uni) {
+    closeHandle(h);
+  }
+}
+
+// A pipe end ('process.Child.takeStdout' and 'takeStderr') given to the I/O thread's Loop, which owns it from then on
+// (iocore's adoptPipe)
+pub fn adoptPipe(raw: usize) actors.Awaitable[Result[Pipe, IoError]] {
+  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(raw, actors.Reply()))
+}
+
+// A child process ('process.Child.takeProcess') given to the I/O thread's Loop (iocore's adoptChild: Windows' HANDLE is
+// the Loop's from then on, Linux's pid stays the caller's, the Loop owning a pidfd)
+pub fn adoptChild(raw: usize) actors.Awaitable[Result[Child, IoError]] {
+  awaitable[AdoptChildJob, Result[Child, IoError]](AdoptChildJob(raw, actors.Reply()))
 }
 
 // The file at path, opened as access says (the package's header, A FILE)
