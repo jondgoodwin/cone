@@ -598,18 +598,19 @@ pub struct ConnectionCore {
   // One payload packet: reliable messages that are due, then the latest-wins
   // values in order of priority, as many as fit
   fn buildPacket(self: &mut, t: i64) List[u8] {
-    var p = streams.Writer.make(cfg.maxPacket);
+    var p = List[u8].withCapacity(cfg.maxPacket);
     let seq = nextSeq;
     nextSeq = nextSeq + 1u16;
-    p.putBE[u32](protocolId);
-    p.putByte(kindPayload);
-    p.putBE[u64](session);
-    p.putBE[u16](seq);
-    p.putBE[u16](remoteSeq);
-    p.putBE[u32](self.ackBits());
-    // The two counts are known only when the packet is full: slots
-    let relCount = p.slot[u8]();
-    let latCount = p.slot[u8]();
+    putU32(&mut p, protocolId);
+    putU8(&mut p, kindPayload);
+    putU64(&mut p, session);
+    putU16(&mut p, seq);
+    putU16(&mut p, remoteSeq);
+    putU32(&mut p, self.ackBits());
+    let relCountAt = p.len();
+    putU8(&mut p, 0u8);
+    let latCountAt = p.len();
+    putU8(&mut p, 0u8);
 
     // The slot this packet is remembered in
     if sent[usize.from(seq) % ringSize].used && !sent[usize.from(seq) % ringSize].acked {
@@ -624,7 +625,7 @@ pub struct ConnectionCore {
     slot.msgs.clear();
 
     // Reliable messages that are due, oldest first, while they fit
-    var budget = cfg.maxPacket - p.total();
+    var budget = cfg.maxPacket - p.len();
     var nRel = 0u8;
     let delay = self.resendDelay();
     var id = relOldest;
@@ -633,9 +634,9 @@ pub struct ConnectionCore {
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
         let need = reliableOverhead + s.data.len();
         if need > budget {break;}
-        p.putBE[u16](id);
-        p.putBE[u16](u16.from(s.data.len()));
-        p.put(s.data.view());
+        putU16(&mut p, id);
+        putU16(&mut p, u16.from(s.data.len()));
+        putBytes(&mut p, s.data.view());
         budget = budget - need;
         if s.lastSent >= 0i64 {st.reliableResent = st.reliableResent + 1u64;}
         s.lastSent = t;
@@ -645,7 +646,7 @@ pub struct ConnectionCore {
       }
       id = id + 1u16;
     }
-    p.fillBE(relCount, nRel);
+    p.set(relCountAt, nRel);
 
     // Latest-wins values: every waiting stream gains priority; the highest
     // that fit go in, and the ones that do not keep what they gathered
@@ -668,10 +669,10 @@ pub struct ConnectionCore {
       }
       if best == notFound {break;}
       let s = &mut outs[best];
-      p.putBE[u16](s.key);
-      p.putBE[u16](s.nextSeq);
-      p.putBE[u16](u16.from(s.data.len()));
-      p.put(s.data.view());
+      putU16(&mut p, s.key);
+      putU16(&mut p, s.nextSeq);
+      putU16(&mut p, u16.from(s.data.len()));
+      putBytes(&mut p, s.data.view());
       budget = budget - (latestOverhead + s.data.len());
       s.nextSeq = s.nextSeq + 1u16;
       s.pending = false;
@@ -680,15 +681,10 @@ pub struct ConnectionCore {
       nLat = nLat + 1u8;
       st.latestSent = st.latestSent + 1u64;
     }
-    p.fillBE(latCount, nLat);
+    p.set(latCountAt, nLat);
     st.packetsSent = st.packetsSent + 1u64;
-    st.bytesSent = st.bytesSent + u64.from(p.total());
-    // The datagram as the list the caller sends, copied out of the writer once
-    let chain = p.finish();
-    var dgram = List[u8]();
-    dgram.resize(chain.len(), 0u8);
-    _ = chain.copyOut(0usize, dgram.viewMut());
-    dgram
+    st.bytesSent = st.bytesSent + u64.from(p.len());
+    p
   }
 
   // ------------------------------------------------------------------

@@ -44,7 +44,7 @@
 //   w.put(bytes)         copy it all in; a new buffer whenever the current one fills
 //   w.putSome(bytes)     copy in as many as fit in the buffer in use: how many
 //   w.putByte(b)  w.repeat(b, n)  w.pad(align)    (pad: zeros up to a multiple of align of total())
-//   w.putLE(v)  w.putBE(v)     v a number of a fixed width (any integer or float, as its own type);
+//   w.putLE(v)  w.putBE(v)     v a number of a fixed width (u8 to u64, i8 to i64, f32, f64; not usize);
 //                        the order is in the name. A number that does not fit the room
 //                        left in the buffer starts a new one, so it is never split
 //   w.putUintLE(v, n)  w.putUintBE(v, n)    the low n bytes (1 to 8) of a u64; a panic if v needs more
@@ -75,19 +75,20 @@
 //
 // WHY THE BYTES ARE SAFE. The stores are IoBuf's (putNum, putUint, setNum and
 // Chain.setNum): each is one check of the room and one store of the number's
-// bytes, never a pointer that leaves iobuf. 'Numeric' means any integer or
-// float; usize and isize are accepted and are the machine's width, so a
-// portable format does not use them. Machines are little-endian.
+// bytes, never a pointer that leaves iobuf. The numbers are the fixed-width
+// ones (u8 to u64, i8 to i64, f32, f64); usize and isize are refused, as their
+// width is the machine's and a format written with them is not portable.
+// Machines are little-endian.
 //
 // Like Reader this lives inside one stage: it does no I/O, takes no lock and
 // never waits. The buffers are IoBufs from the buffer pool, so 'take' hands a
 // stage's output on without a copy and a dropped writer returns its blocks.
 
 // Which writer a slot came from: never 0
-let nextWriterId: Atomic[u32];
+let nextWriterId: Atomic[u64];
 
 fn @initpure init() {
-  nextWriterId = Atomic[u32].of(0u32);
+  nextWriterId = Atomic[u64].of(0u64);
 }
 
 // The room a slot reserved, where it is, and whether it has been filled
@@ -99,7 +100,7 @@ struct SlotRec {
 
 // Room reserved for a number in a Writer, to be filled later
 pub struct Slot[T] {
-  writer: u32;       // the writer that made it
+  writer: u64;       // the writer that made it
   serial: usize;     // its place in that writer's slots, counting from the writer's start
 }
 
@@ -110,7 +111,7 @@ pub struct Writer is Move {
   size: usize;              // the room a fresh buffer is made with
   first: usize;             // the ordinal of the chain's oldest buffer (the buffer in use is first + the chain's segments)
   popped: usize;            // the bytes handed out of the writer so far
-  wid: u32;                 // this writer's id
+  wid: u64;               // this writer's id
   recs: List[SlotRec];      // the slots since the last time none was open
   base: usize;              // the serial of recs[0]
   open: usize;              // slots not yet filled
@@ -129,7 +130,7 @@ pub struct Writer is Move {
 
   fn over2(buf: IoBuf, size: usize) Writer {
     Writer(buf, Chain.make(0xFFFFFFFFFFFFFFFFusize), size, 0usize, 0usize,
-      nextWriterId.add(1u32) + 1u32, List[SlotRec](), 0usize, 0usize)
+      nextWriterId.add(1u64) + 1u64, List[SlotRec](), 0usize, 0usize)
   }
 
   // ---- The buffer in use ----
@@ -300,7 +301,7 @@ pub struct Writer is Move {
   }
 
   // A number, its least significant byte first
-  pub fn putLE[T](self: &mut, v: T) inline where T is Numeric {
+  pub fn putLE[T](self: &mut, v: T) inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     if !buf.putNum[T](v, false) {
       self.rollFor(mem.sizeof[T]());
       _ = buf.putNum[T](v, false);
@@ -308,7 +309,7 @@ pub struct Writer is Move {
   }
 
   // A number, its most significant byte first
-  pub fn putBE[T](self: &mut, v: T) inline where T is Numeric {
+  pub fn putBE[T](self: &mut, v: T) inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     if !buf.putNum[T](v, true) {
       self.rollFor(mem.sizeof[T]());
       _ = buf.putNum[T](v, true);
@@ -340,7 +341,7 @@ pub struct Writer is Move {
   // ---- Slots ----
 
   // Room for a number, to be filled later: contiguous, so the fill is one store
-  pub fn slot[T](self: &mut) Slot[T] where T is Numeric {
+  pub fn slot[T](self: &mut) Slot[T] where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     let n = mem.sizeof[T]();
     if buf.room() < n {self.rollFor(n);}
     let at = buf.len();
@@ -351,16 +352,16 @@ pub struct Writer is Move {
   }
 
   // Fill a slot, the number's least significant byte first
-  pub fn fillLE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Numeric {
+  pub fn fillLE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     self.fill[T](s, v, false, file, line);
   }
 
   // Fill a slot, the number's most significant byte first
-  pub fn fillBE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Numeric {
+  pub fn fillBE[T](self: &mut, s: Slot[T], v: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     self.fill[T](s, v, true, file, line);
   }
 
-  fn fill[T](self: &mut, s: Slot[T], v: T, big: bool, file: &Array[u8], line: u32) where T is Numeric {
+  fn fill[T](self: &mut, s: Slot[T], v: T, big: bool, file: &Array[u8], line: u32) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
     if s.writer != wid {panic("streams: Writer.fill with a slot of another writer", file, line);}
     if s.serial < base || s.serial - base >= recs.len() || recs[s.serial - base].filled {
       panic("streams: Writer.fill with a slot already filled", file, line);
@@ -382,16 +383,16 @@ pub struct Writer is Move {
   // A slot for a T, f(w), and the slot filled with the number of bytes f
   // wrote, least significant first: a panic, at the caller's line, if they
   // do not fit a T
-  pub fn lengthPrefixedLE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Integer {
+  pub fn lengthPrefixedLE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 {
     self.lengthPrefixed[T](f, false, file, line);
   }
 
   // As lengthPrefixedLE, most significant first
-  pub fn lengthPrefixedBE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Integer {
+  pub fn lengthPrefixedBE[T](self: &mut, f: &fn(w: &mut Writer), file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 {
     self.lengthPrefixed[T](f, true, file, line);
   }
 
-  fn lengthPrefixed[T](self: &mut, f: &fn(w: &mut Writer), big: bool, file: &Array[u8], line: u32) where T is Integer {
+  fn lengthPrefixed[T](self: &mut, f: &fn(w: &mut Writer), big: bool, file: &Array[u8], line: u32) where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 {
     let s = self.slot[T]();
     let start = self.total();
     f(self);
