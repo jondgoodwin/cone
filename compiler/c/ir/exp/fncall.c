@@ -1233,6 +1233,10 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
                     return;
             }
         }
+        // A value refused for a '+ ShapeKeeping' reference is the reason, and is told as
+        // a function taking the same value tells it
+        if (status == OverloadNone && shapeRefusedReport(callnode))
+            return;
         errorMsgNode(callnode, ErrorNoCandidate,
             "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
     }
@@ -2277,6 +2281,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // Test every candidate the name declares, without altering the call
     fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
+    shapeRefusedClear();
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
 
     // A receiver held through a reference or a pointer still satisfies a method that
@@ -3187,6 +3192,7 @@ int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep) {
     // each analyzed first (Rule 1), as a function named alone is by its name use
     fnCallDemandCandidates((INode*)overloadnode);
     enum OverloadMatch status;
+    shapeRefusedClear();
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {
         fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
@@ -3441,6 +3447,14 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
+    // An instance of a generic actor ('Tally[i32]') is its handle, and a const of the actor's
+    // braces is the state's: the instance's own, folded for its type arguments
+    if (found == NULL) {
+        ActorInfo *actor = actorOfHandle((INode*)inst);
+        INode *astate = actor ? namespaceFind(&actor->state->namespace, member->namesym) : NULL;
+        if (astate && astate->tag == ConstDclTag)
+            found = astate;
+    }
     // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
     if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
         return 0;
@@ -5329,6 +5343,14 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
         }
         else if (dcl->tag == FnDclTag) {
+            // A generic function of a generic type, reached through the type itself
+            // ('Bag.from(x)' on 'struct Bag[T]'): the same refusal a plain method
+            // gets in nameUseTypeCheck. Without it the function's instance is made
+            // with the type's own parameter unbound, which the clone dereferenced
+            if (nameUseTemplateMember((NameUseNode*)node->objfn, dcl)) {
+                node->vtype = errorType;
+                return;
+            }
             gengeneric = (FnDclNode*)dcl;
             firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
         }

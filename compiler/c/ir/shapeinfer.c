@@ -316,12 +316,18 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
 // ---- Does a function write storage through one of its parameters? -------------
 
 // Can the compiler read what this function does: it has a body here, which is a
-// call of this very function and not of one of a trait's (a virtual call)?
+// call of this very function and not of one of a trait's (a virtual call)? An enum is
+// marked 'TraitType' too. A method whose receiver names the enum (Option.unwrap) is one
+// function over the whole enum, not dispatched, so it is read. One with a 'self &'
+// receiver is copied into each variant and dispatched by tag, and a variant may override
+// it: it stays unreadable, as a trait's is (sound, without a union of the copies)
 int siVisible(FnDclNode *fn) {
     if (fn == NULL || fn->genericinfo != NULL || (fn->flags & FlagExtern) || (fn->dclinfo.facts & DclIntrinsic)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
     INode *owner = inodeGetOwner((INode *)fn);
+    if (owner && owner->tag == StructTag && (owner->flags & TraitType) && (owner->flags & EnumType))
+        return structIsWholeEnumMethod((INode *)fn);
     return !(owner && owner->tag == StructTag && (owner->flags & TraitType));
 }
 
@@ -1861,6 +1867,33 @@ void shapeKeepDeferred(void) {
         }
     }
     skDeferredUsed = 0;
+}
+
+// The last value refused for a '+ ShapeKeeping' reference while a call's candidates were tried
+static StructNode *skRefusedImpl = NULL;
+static StructNode *skRefusedTrait = NULL;
+
+void shapeRefusedClear(void) {
+    skRefusedImpl = NULL;
+    skRefusedTrait = NULL;
+}
+
+void shapeRefusedNote(StructNode *impl, StructNode *trait) {
+    skRefusedImpl = impl;
+    skRefusedTrait = trait;
+}
+
+int shapeRefusedReport(INode *at) {
+    if (skRefusedImpl == NULL)
+        return 0;
+    char reason[900] = "";
+    shapeKeepsVia(skRefusedImpl, skRefusedTrait, reason, sizeof(reason));
+    errorMsgNode(at, ErrorNotShapeKeeping,
+        "No candidate takes this argument: a reference marked `+ ShapeKeeping` to `%s` says calls through it reshape nothing the caller holds a borrow into, and %s: %s.",
+        skRefusedTrait->namesym ? &skRefusedTrait->namesym->namestr : "the trait",
+        skRefusedImpl->namesym ? &skRefusedImpl->namesym->namestr : "this value", reason);
+    shapeRefusedClear();
+    return 1;
 }
 
 // A reference to a plain function, '&growWorld', made a virtual reference marked
