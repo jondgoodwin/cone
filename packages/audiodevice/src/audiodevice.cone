@@ -20,6 +20,12 @@
 // The Control that talks to the mixer is returned by `start` and belongs to
 // the game thread. Stop the device with `Device.stop` before dropping the
 // Control, since the mixer reads the sounds the Control owns.
+//
+// COUNTERS. The feeder writes three counts as it goes, and any thread reads them through the Device
+// (`blocksPut`, `underruns`, `worstWakeLateUs`). An underrun is the stream found empty when the feeder woke to
+// refill it, after the first block has been put (the start-up fill is not one): SDL's thread had nothing left to
+// play. The worst wake lateness is how much longer than its 2 ms a sleep of the feeder took, the largest so far, in
+// microseconds. None of this runs on SDL's thread: the feeder only reads `GetAudioStreamQueued`, as it already did.
 
 mod audiodevice;
 
@@ -27,8 +33,8 @@ import libc;
 import sdl;
 import thread;
 import collections use *;
-import sync use Receiver, Oneshot, OneshotSender, OneshotReceiver;
-import time use Duration;
+import sync use Receiver, Oneshot, OneshotSender, OneshotReceiver, Arc;
+import time use Duration, Instant;
 import audiomixer use *;
 
 // Frames the feeder renders at a time: 10 ms at 48 kHz
@@ -46,12 +52,20 @@ pub struct DeviceError is Error {
   }
 }
 
+// What the feeder counts, shared with the Device that reads it
+struct Counts is Sendable {
+  blocksPut: Atomic[u64];
+  underruns: Atomic[u64];
+  worstWakeLateUs: Atomic[u64];
+}
+
 struct Feed is Sendable {
   rate: u32;
   voices: u32;
   aheadMs: u32;
   engine: Engine;
   status: OneshotSender[i32];
+  counts: Arc[imm, Counts];
 }
 
 // The feeder thread: opens the stream, reports 0 (or a reason) through
@@ -76,13 +90,21 @@ fn feeder(init: Feed) i32 {
   while i < BLOCK_FRAMES * 2usize { buf.push(0.); i = i + 1usize; }
   let blockBytes = i32.from(BLOCK_FRAMES * 8usize);
   let wantBytes = i32.from(f.rate / 1000u32 * f.aheadMs) * 8i32;
+  let sleepNs = 2000000i64;
   while !f.engine.quit {
-    if sdl.GetAudioStreamQueued(stream) < wantBytes {
+    let queued = sdl.GetAudioStreamQueued(stream);
+    if queued < wantBytes {
+      // empty when it wakes, once the first block is in: SDL's thread ran dry
+      if queued <= 0i32 && f.counts.blocksPut.load() > 0u64 { f.counts.underruns.add(1u64); }
       f.engine.render(buf.viewMut(), BLOCK_FRAMES);
       let v = buf.view();
       sdl.PutAudioStreamData(stream, (&v[0usize] as *u8), blockBytes);
+      f.counts.blocksPut.add(1u64);
     } else {
+      let t0 = Instant.now().nanos();
       thread.sleep(Duration.fromMillis(2));
+      let late = Instant.now().nanos() - t0 - sleepNs;
+      if late > 0i64 { f.counts.worstWakeLateUs.max(u64.from(late / 1000i64)); }
     }
   }
   sdl.DestroyAudioStream(stream);
@@ -99,6 +121,14 @@ pub struct Started {
 pub struct Device {
   worker: Option[thread.Thread[i32]];
   pub rate: u32;
+  counts: Arc[imm, Counts];
+
+  // Blocks (10 ms each) the feeder has put in the stream
+  pub fn blocksPut(self: &) u64 { counts.blocksPut.load() }
+  // Times the feeder found the stream empty when it woke, after the first block: the device ran dry
+  pub fn underruns(self: &) u64 { counts.underruns.load() }
+  // The longest a 2 ms sleep of the feeder has overrun, in microseconds
+  pub fn worstWakeLateUs(self: &) u64 { counts.worstWakeLateUs.load() }
 
   // Open the default playback device at 'rate' Hz stereo and start feeding
   // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
@@ -111,7 +141,8 @@ pub struct Device {
     var sr: OneshotReceiver[i32];
     st, sr = Oneshot[i32].make();
     let engine = Engine.make(f32.from(rate), usize.from(voices), rx);
-    let worker = thread.start(Feed(rate, voices, aheadMs, engine, st), &feeder);
+    let counts = Arc[imm, Counts](Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)));
+    let worker = thread.start(Feed(rate, voices, aheadMs, engine, st, counts), &feeder);
     let got = sr.recv();
     var code = 3i32;
     match got {
@@ -122,7 +153,7 @@ pub struct Device {
       worker.join();
       return Err[Started, DeviceError](DeviceError(code));
     }
-    Ok[Started, DeviceError](Started(Device(Some(worker), rate), c))
+    Ok[Started, DeviceError](Started(Device(Some(worker), rate, counts), c))
   }
 
   // Stop feeding, close the device and wait for the feeder to end. 'control'

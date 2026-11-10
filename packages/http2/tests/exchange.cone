@@ -683,6 +683,40 @@ fn resetsMidBody() {
   settle(&mut c, &mut s, at(7));
   expectStr(drain(&mut s, true).view(), "", "nothing reaches the server");
   expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "the stream has left both tables");
+
+  // A streamed answer finished, then reset(NO_ERROR) asked while its last frame is still queued: the answer
+  // goes out whole, then the reset (the server asks as soon as it has finished)
+  let q = c.sendRequest(req("POST", "/echo"), BodyLength.unsized());
+  expect(c.sendData(q, patterned(7u64, 0u64, 1000usize)) is None, "a second upload begins");
+  settle(&mut c, &mut s, at(8));
+  expectStr(drain(&mut s, true).view(), "req 7 POST /echo unsized;data 7 1000;", "the server reads its start");
+  s.sendResponse(7u32, ResponseHead.make(200u16), BodyLength.unsized());
+  expect(s.sendData(7u32, patterned(8u64, 0u64, 500usize)) is None, "the answer's body");
+  s.finish(7u32);
+  s.reset(7u32, ErrorCode.NoError);
+  settle(&mut c, &mut s, at(9));
+  expectStr(drain(&mut c, true).view(), "resp 7 200 unsized;data 7 500;end 7;", "the client has the whole streamed answer, and no error");
+  expect(c.sendData(q, patterned(7u64, 1000u64, 1000usize)) is None, "the rest of the second upload is dropped");
+  c.finish(q);
+  settle(&mut c, &mut s, at(10));
+  expectStr(drain(&mut s, true).view(), "", "nothing more reaches the server");
+  expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "both streams have left both tables");
+
+  // The same without the reset: receiving goes on, and the request's reads end with End
+  let t = c.sendRequest(req("POST", "/echo"), BodyLength.unsized());
+  expect(c.sendData(t, patterned(9u64, 0u64, 1000usize)) is None, "a third upload begins");
+  settle(&mut c, &mut s, at(11));
+  expectStr(drain(&mut s, true).view(), "req 9 POST /echo unsized;data 9 1000;", "the server reads its start");
+  s.sendResponse(9u32, ResponseHead.make(200u16), BodyLength.unsized());
+  expect(s.sendData(9u32, patterned(10u64, 0u64, 500usize)) is None, "the answer's body");
+  s.finish(9u32);
+  settle(&mut c, &mut s, at(12));
+  expectStr(drain(&mut c, true).view(), "resp 9 200 unsized;data 9 500;end 9;", "the client has the whole answer");
+  expect(c.sendData(t, patterned(9u64, 1000u64, 1000usize)) is None, "the rest of the third upload is sent");
+  c.finish(t);
+  settle(&mut c, &mut s, at(13));
+  expectStr(drain(&mut s, true).view(), "data 9 1000;end 9;", "the server's reads go on and end with End");
+  expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "both streams have left both tables");
 }
 
 // A test server's GOAWAY with requests in flight: those above its last

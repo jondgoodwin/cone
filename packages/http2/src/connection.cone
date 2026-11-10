@@ -118,6 +118,7 @@ struct Stream {
   wireClosed: bool;         // both done, and accounted for
   resetByUs: bool;          // this end sent its RST_STREAM: frames still in flight are ignored
   announced: bool;          // the program knows of it (a client's own request; a server's Request event)
+  stopAfter: bool;          // a server's NO_ERROR reset asked, to go when its last frame is queued
   events: usize;            // its events queued, not yet polled
 
   // Sending
@@ -150,7 +151,7 @@ struct Stream {
 
 fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64) Stream {
   Stream(id: id, ours: ours, opened: false, counted: false, sendDone: false, recvDone: false,
-    wireClosed: false, resetByUs: false, announced: false, events: 0usize,
+    wireClosed: false, resetByUs: false, announced: false, stopAfter: false, events: 0usize,
     fields: List[HeaderField](), trailerFields: List[HeaderField](), hasTrailers: false,
     bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf](), outOff: 0usize,
     outBytes: 0usize, finishing: false, sendWindow: sendWindow, ready: false, responded: false,
@@ -674,13 +675,21 @@ pub struct Connection is Move {
   // that has answered whole may say NO_ERROR to stop the request's body,
   // section 8.1): what it had queued is dropped, frames still in flight are
   // ignored, and no event follows. A waiting request leaves the queue,
-  // never sent. A stream already ended does nothing
+  // never sent. A stream already ended does nothing. One exception, so that
+  // a server may ask for the stop as soon as it has finished its answer:
+  // NO_ERROR on a server stream whose 'finish' was called but whose last
+  // frame is still queued waits for that frame, then resets (the answer is
+  // not dropped)
   pub fn reset(self: &mut, stream: u32, code: ErrorCode) {
     if failed || closed {return;}
     let slot = self.slotOf(stream);
     if slot.isNone() {return;}
     let s = streams.get(slot) as &mut Stream;
     if s.sendDone && s.recvDone {return;}
+    if code.value() == 0u32 && !s.ours && !s.sendDone && s.finishing {
+      s.stopAfter = true;
+      return;
+    }
     if s.opened {
       if !writer.rstStream(stream, code) {
         self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
@@ -1534,6 +1543,20 @@ pub struct Connection is Move {
     s.finishing = false;
   }
 
+  // s's last frame has been queued. A NO_ERROR reset asked for before (reset, above) goes now, if the
+  // request is still open: the answer stands, the stream is closed, and no event follows
+  fn sentAll(self: &mut, s: &mut Stream) {
+    if s.stopAfter && !s.recvDone && !failed && !closed {
+      s.stopAfter = false;
+      if !writer.rstStream(s.id, ErrorCode.NoError) {
+        self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+        return;
+      }
+      self.abandon(s, true);
+    }
+    self.settle(s);
+  }
+
   // After s changed: once both its directions are done, it is closed on the
   // wire (its slot under the peer's limit freed, a waiting request opened),
   // and once its events are all taken too, it leaves the table. The last
@@ -1703,7 +1726,7 @@ pub struct Connection is Move {
       if last {
         s.sendDone = true;
         s.ready = false;
-        self.settle(s);
+        self.sentAll(s);
         return 2u32;
       }
       if s.outBytes > 0usize || s.finishing {return 1u32;}
@@ -1721,7 +1744,7 @@ pub struct Connection is Move {
       }
       s.sendDone = true;
       s.ready = false;
-      self.settle(s);
+      self.sentAll(s);
       return 2u32;
     }
     s.ready = false;
