@@ -313,6 +313,90 @@ fn starvedOps() {
   expectUInt(stats().lent, before, "starved: every block back in the pool");
 }
 
+// A partial drainTo leaves the first buffer's bytes where they were; a truncateTo
+// that then compacts that buffer must carry the older slots and marks with it
+fn drainedOffsets() {
+  // A slot in the drained buffer, filled after a truncate to a later mark
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 10usize).view());
+  let s = w.slot[u32]();
+  w.put(pattern(0usize, 5000usize).view());
+  var out = IoBuf(100usize);
+  expectUInt(u64.from(w.drainTo(out.whole())), 10u64, "drained: drainTo stops at the slot");
+  let m = w.mark();                                   // in a later buffer
+  w.put(pattern(0usize, 9000usize).view());
+  w.truncateTo(m);
+  w.fillBE(s, 0x01020304u32);
+  w.release(m);
+  let all = w.finish();
+  expectUInt(u64.from(all.len()), 5004u64, "drained: the slot and the bytes before the mark are held");
+  var ok = all.byteAt(0usize) == 1u8 && all.byteAt(1usize) == 2u8 && all.byteAt(2usize) == 3u8 && all.byteAt(3usize) == 4u8;
+  var i = 0usize;
+  while i < 5000usize {
+    if all.byteAt(4usize + i) != u8.from(i % 251usize) {ok = false;}
+    i = i + 1usize;
+  }
+  expect(ok, "drained: the slot is filled in place and the bytes after it are untouched");
+
+  // An older mark, truncated to after a truncate to a newer one
+  var v = Writer.make(4096usize);
+  v.put(pattern(0usize, 15usize).view());
+  let mo = v.mark();
+  v.put(pattern(0usize, 5000usize).view());
+  var sink = IoBuf(100usize);
+  expectUInt(u64.from(v.drainTo(sink.whole())), 15u64, "drained: drainTo stops at the older mark");
+  let mn = v.mark();
+  v.put(pattern(0usize, 9000usize).view());
+  v.truncateTo(mn);
+  v.truncateTo(mo);
+  expectUInt(u64.from(v.len()), 0u64, "drained: the older mark still cuts back to where it was");
+  v.release(mo);                                      // mn ended with the truncate to mo
+}
+
+// A mark taken before anything is written stays good when a whole buffer is put after it
+fn markOnEmpty() {
+  let plain = Writer.make(4096usize);
+  var w = Writer.make(4096usize);
+  let m = w.mark();
+  w.putBuf(pattern(0usize, 70000usize));
+  w.put(pattern(0usize, 5usize).view());
+  w.truncateTo(m);
+  expectUInt(u64.from(w.len()), 0u64, "markOnEmpty: truncateTo drops the put buffer and the bytes");
+  expectUInt(u64.from(w.room()), u64.from(plain.room()), "markOnEmpty: the buffer in use is still the writer's own");
+  w.release(m);
+
+  // The same through putFrom, which also moves whole segments
+  var r = Reader.make(unbounded);
+  _ = r.push(pattern(0usize, 6000usize));
+  var x = Writer.make(4096usize);
+  let m2 = x.mark();
+  x.putFrom(&mut r, 6000usize);
+  x.put(pattern(0usize, 5usize).view());
+  x.truncateTo(m2);
+  expectUInt(u64.from(x.len()), 0u64, "markOnEmpty: putFrom's whole segments are dropped too");
+  expectUInt(u64.from(x.room()), u64.from(plain.room()), "markOnEmpty: ...and the buffer in use is the writer's own");
+  x.release(m2);
+}
+
+// A partial drainTo of the buffer in use on a writer whose pool is out starves, never panics
+fn starvedDrain() {
+  let before = stats().lent;
+  {
+    var h = hoard();
+    _ = h.popFront();
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.put(pattern(0usize, 3000usize).view());
+    var sink = IoBuf(100usize);
+    let d = sink.whole();
+    expectUInt(u64.from(w.drainTo(&mut d[0usize ..< 100usize])), 0u64, "starvedDrain: the roll is refused, nothing is drained");
+    expect(w.starved(), "starvedDrain: the writer is starved");
+  }
+  expectUInt(stats().lent, before, "starvedDrain: every block back in the pool");
+}
+
 fn main() i32 {
   markRollTruncate();
   releaseFrees();
@@ -321,5 +405,8 @@ fn main() i32 {
   clearKeeps();
   slotUints();
   starvedOps();
+  drainedOffsets();
+  markOnEmpty();
+  starvedDrain();
   done()
 }
