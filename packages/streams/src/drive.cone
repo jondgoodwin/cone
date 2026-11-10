@@ -15,10 +15,12 @@
 //
 // Both answer Result[u64, AnyError], as Rust's io::copy and Go's io.Copy do:
 //   Ok(n)   the transform ended Done; n bytes were pushed by this call;
-//   Err(e)  the transform's own failure() when it failed (Failed); "the transform needs more input" when it
-//           ended NeedInput (the input stopped before the stream did; for pullAll alone, the normal
-//           answer when nothing more is fed); or "output passed the chain's bound of N bytes" when a
-//           pull would take 'out' past its bound.
+//   Err(e)  the transform's own failure() when it failed (Failed); "the input ended before the stream did"
+//           when it still answers NeedInput after finish() (runAll only); or "output passed the chain's
+//           bound of N bytes" when a pull would take 'out' past its bound.
+// NeedInput is split by whether finish() was called. runAll always calls it, so NeedInput there means the
+// input was cut short: Err. pullAll never does (the caller may feed more), so for it NeedInput is the normal
+// "drained what was fed, wants more": Ok(bytes so far).
 //
 // The output is a Chain of the buffers the transform filled, with no second copy (the one-shot helper
 // used to copy every byte into a List). A caller that wants one contiguous block calls 'out.copyOut' once,
@@ -30,9 +32,15 @@
 // failure or an end of input is good (the Transform's rules); only the pull that crosses the bound is
 // dropped. The input is fed in one call; a transform takes any size, split anywhere.
 
-// Pulls 't' until it says anything but MoreOutput, pushing what it makes onto 'out': the bytes pushed if it
-// ended Done, else why not (see above)
+// Pulls 't' until it says anything but MoreOutput, pushing what it makes onto 'out'. The caller has not said
+// that no more input will come (no finish() here), so Done and NeedInput are both Ok(bytes pushed by this
+// call): NeedInput is "drained what was fed, feed more". Err for a failure or the bound (see above)
 pub fn pullAll[T: Transform](t: &mut T, out: &mut Chain) Result[u64, AnyError] {
+  drain(t, out, false)
+}
+
+// The loop behind both: 'finished' says whether finish() was called, which decides what NeedInput means
+fn drain[T: Transform](t: &mut T, out: &mut Chain, finished: bool) Result[u64, AnyError] {
   var st = Status.MoreOutput;
   var pushed = 0u64;
   while st == Status.MoreOutput {
@@ -51,7 +59,10 @@ pub fn pullAll[T: Transform](t: &mut T, out: &mut Chain) Result[u64, AnyError] {
   }
   match st {
     case is Done { Ok[u64, AnyError](pushed) }
-    case is NeedInput { Err[u64, AnyError](AnyError.msg("the transform needs more input")) }
+    case is NeedInput {
+      if finished { Err[u64, AnyError](AnyError.msg("the input ended before the stream did")) }
+      else { Ok[u64, AnyError](pushed) }
+    }
     case is Failed { failedWith(t) }
     case is MoreOutput { failedWith(t) }    // not reached: the loop ends on anything else
   }
@@ -65,9 +76,11 @@ fn failedWith[T: Transform](t: &T) Result[u64, AnyError] {
   }
 }
 
-// Feeds 't' all of 'input', finishes it, and pulls it to the end, pushing its output onto 'out': as pullAll
+// Feeds 't' all of 'input', finishes it, and pulls it to the end, pushing its output onto 'out': Ok(bytes
+// pushed by this call) if it ended Done. finish() was called, so a transform that still answers NeedInput
+// had its input end early: Err "the input ended before the stream did". Err too for a failure or the bound
 pub fn runAll[T: Transform](t: &mut T, input: &Array[u8], out: &mut Chain) Result[u64, AnyError] {
   t.feed(input);
   t.finish();
-  pullAll(t, out)
+  drain(t, out, true)
 }

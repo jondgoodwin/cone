@@ -7,8 +7,10 @@
 //   - the same over zstd's Compressor and Decompressor;
 //   - the gzip stream made by runAll is byte for byte the one 'deflate.gzipCompress' makes;
 //   - a stream that is not valid is Err with the transform's own failure() text;
-//   - a stream cut short is Err (needs more input), and what was delivered is kept;
-//   - 'pullAll' on a transform with nothing fed is Err (needs more input) and pushes nothing;
+//   - a stream cut short, through runAll (which calls finish()), is Err "the input ended before the stream
+//     did", and what was delivered is kept;
+//   - 'pullAll' (no finish()) on a transform with nothing fed is Ok(0), and pushes nothing; on half a stream
+//     it is Ok with the bytes of that half, and runAll with the rest gives the other bytes: the counts add up;
 //   - output already in the Chain is kept: runAll pushes after it, and Ok counts only its own bytes;
 //   - a Chain bounded below the output refuses it: Err "output passed the chain's bound of N bytes",
 //     keeping what fitted before, and the transform itself did not fail.
@@ -64,6 +66,16 @@ fn textOf(r: Result[u64, AnyError]) String {
   }
 }
 
+// A Transform that makes nothing, wants input for ever, and never fails
+struct Stuck {
+  fed: usize;
+
+  pub fn feed(self: &mut, input: &Array[u8]) { self.fed = self.fed + input.len; }
+  pub fn pull(self: &mut, out: &mut IoBuf) Status { Status.NeedInput }
+  pub fn finish(self: &mut) {}
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}
+
 fn main() i32 {
   let data = corpus(300000usize);
 
@@ -113,12 +125,37 @@ fn main() i32 {
   let rCut = runAll(&mut cut, &packed.view()[0usize ..< packed.len() / 2usize], &mut some);
   expectUInt(countOf(&rCut), 0xFFFFFFFFFFFFFFFFu64, "cut short: Err");
   expect(some.len() > 0usize && some.len() < data.len(), "cut short: what was delivered is kept");
+  match cut.failure() {
+    case let Some(own) { expectStr(textOf(rCut).view(), (String() <- own).view(), "cut short: the Inflater itself fails at the early end, so the text is its own"); }
+    case is None { expectStr(textOf(rCut).view(), "the input ended before the stream did", "cut short: finish() was called, so the text says the input ended early"); }
+  }
 
-  // nothing fed
+  // zstd cut short: it too fails by its own text
+  var zcut = zstd.Decompressor.make();
+  var zsome = Chain.make(unbounded);
+  expectStr(textOf(runAll(&mut zcut, &frame.view()[0usize ..< frame.len() / 2usize], &mut zsome)).view(), "zstd: a block is cut off", "zstd cut short: its own text");
+
+  // a transform that waits for input and never fails: runAll (finish() called) is Err, pullAll (not) is Ok(0)
+  var stuck1 = Stuck(0usize);
+  var stuckOut = Chain.make(unbounded);
+  expectStr(textOf(runAll(&mut stuck1, &packed.view()[0usize ..< 4usize], &mut stuckOut)).view(), "the input ended before the stream did", "NeedInput after finish(): the input ended early");
+  var stuck2 = Stuck(0usize);
+  expectUInt(countOf(&pullAll(&mut stuck2, &mut stuckOut)), 0u64, "NeedInput without finish(): Ok, it wants more");
+
+  // nothing fed, finish() not called: NeedInput is Ok
   var idle = deflate.Inflater.make(deflate.Format.Gzip);
   var none = Chain.make(unbounded);
-  expectStr(textOf(pullAll(&mut idle, &mut none)).view(), "the transform needs more input", "nothing fed: pullAll says it needs more input");
+  expectUInt(countOf(&pullAll(&mut idle, &mut none)), 0u64, "nothing fed: pullAll is Ok(0), it only wants more");
   expectUInt(u64.from(none.len()), 0u64, "nothing fed: and pushes nothing");
+
+  // fed in two halves, finish() only after the second: the first pullAll is Ok with what was fed so far
+  var part = deflate.Inflater.make(deflate.Format.Gzip);
+  var partOut = Chain.make(unbounded);
+  part.feed(&packed.view()[0usize ..< packed.len() / 2usize]);
+  let rFirst = pullAll(&mut part, &mut partOut);
+  expect(countOf(&rFirst) == u64.from(partOut.len()) && partOut.len() > 0usize, "in halves: the first pullAll is Ok with the bytes of the first half");
+  let rSecond = runAll(&mut part, &packed.view()[packed.len() / 2usize ..< packed.len()], &mut partOut);
+  expectUInt(countOf(&rFirst) + countOf(&rSecond), 300000u64, "in halves: runAll with the rest is Ok and the two counts add up to the whole");
 
   // pushes after what the chain holds
   var inf2 = deflate.Inflater.make(deflate.Format.Gzip);
