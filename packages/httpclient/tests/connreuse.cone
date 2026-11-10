@@ -1,0 +1,189 @@
+// A late event for a fetch whose connection closed is not applied to the
+// connection that took the closed one's cell.
+//
+// The client keeps its connections in a pool whose cells are reused at once.
+// A fetch remembers its connection by the cell and by the connection's
+// generation (Fetch.connGen). With HTTP/3 the plug-in's order is its own, so a
+// connection's Closed can come before a request's final event; the Closed
+// frees the connection's record, and a new connection can take the cell
+// before the late event arrives. If the late event only asked "is the cell
+// occupied?" it would end an exchange on the NEW connection (its stream
+// count would drop while its own fetch is still under way).
+//
+// A scripted HTTP/3 plug-in stands in for QUIC, so the order is the test's:
+//   1. fetch A opens connection 1 (cell X); it is Connected; A's request goes out
+//   2. connection 1 is Closed, A's request not answered: the cell is free
+//   3. fetch B opens connection 2, which takes cell X; it is Connected;
+//      B's request goes out
+//   4. A's request's Done arrives late
+// Checked: A's late Done is ignored (its connection is gone; the cell now holds
+// another): A is not ended by it, and connection 2 still carries B (the client
+// counts no idle connection); B's own Done then ends B and leaves the
+// connection idle. (With a guard that only asked whether the cell was
+// occupied, the late Done ended A and dropped connection 2's stream count, so
+// idleNow read 1 while B was under way.)
+
+mod connreuse;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import tls;
+import httpclient use *;
+
+const tokA = 1u64;
+const tokB = 2u64;
+
+// The script: what the plug-in saw, and the one event it hands over next
+var @threadlocal connects = 0u64;
+var @threadlocal connectToken = 0u64;
+var @threadlocal requests = 0u64;
+var @threadlocal requestToken = 0u64;
+var @threadlocal lastReqConn = 0u64;
+var @threadlocal nextKind = 0u32;     // 0 none, 1 Connected, 2 Closed, 3 Done
+var @threadlocal nextToken = 0u64;
+var @threadlocal nextConn = 0u64;
+var @threadlocal nextReqConn = 0u64;
+var @threadlocal nextReqId = 0u64;
+
+pub struct Scripted {
+  pub made: u64;
+
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+  pub fn takeEvents(self: &mut, out: &mut List[H3Event]) usize {
+    if nextKind == 0u32 {return 0usize;}
+    let k = if nextKind == 1u32 {H3Kind.Connected} else if nextKind == 2u32 {H3Kind.Closed} else {H3Kind.Done};
+    var e = H3Event.make(k, nextToken, nextConn, H3Req(nextReqConn, nextReqId));
+    e.clean = nextKind == 3u32;
+    out.push(e);
+    nextKind = 0u32;
+    1usize
+  }
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, Failure] {
+    connects = connects + 1u64;
+    connectToken = token;
+    Ok[u64, Failure](connects)
+  }
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, Failure] {
+    Err[u64, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "scripted"))
+  }
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {0u16}
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool {false}
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abortAll(self: &mut, lp: &mut Loop) {}
+  pub fn takesRequests(self: &, conn: u64) bool {true}
+  pub fn hasRoom(self: &, conn: u64) bool {true}
+  pub fn peer(self: &, conn: u64) SocketAddr {SocketAddr.localhost(0u16)}
+  pub fn live(self: &) usize {0usize}
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) H3Req {
+    requests = requests + 1u64;
+    requestToken = token;
+    lastReqConn = conn;
+    H3Req(conn, requests)
+  }
+  pub fn respond(self: &mut, req: H3Req, head: ResponseHead, body: BodyLength) bool {false}
+  pub fn sendInterim(self: &mut, req: H3Req, head: ResponseHead) bool {false}
+  pub fn sendData(self: &mut, req: H3Req, buf: IoBuf) Option[IoBuf] {None}
+  pub fn finish(self: &mut, req: H3Req) {}
+  pub fn release(self: &mut, req: H3Req, n: usize) {}
+  pub fn stopBody(self: &mut, req: H3Req) bool {false}
+  pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool {false}
+}
+
+fn scripted(t: &tls.ClientConfig) Uni[Http3] {Uni[Scripted](Scripted(0u64))}
+
+// Run the client a few turns, counting final answers by sink token
+fn spin(cl: &mut Client, lp: &mut Loop, doneA: &mut u64, doneB: &mut u64, other: &mut u64) {
+  var round = 0u32;
+  while round < 6u32 {
+    round = round + 1u32;
+    var out = List[Event]();
+    cl.poll(lp, Instant.now() + Duration.fromMillis(20i64), &uni out);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      k = k + 1usize;
+      if e.kind == EventKind.Done && e.token == tokA {*doneA = *doneA + 1u64;}
+      else if e.kind == EventKind.Done && e.token == tokB {*doneB = *doneB + 1u64;}
+      else if e.isTerminal() {*other = *other + 1u64;}
+    }
+    out.clear();
+  }
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[Http3]](&scripted);
+  cfg.http3Origins.push(String.from("https://127.0.0.1:4433"));
+  var cl = Client.make(cfg);
+  var doneA = 0u64;
+  var doneB = 0u64;
+  var other = 0u64;
+
+  // 1. A opens connection 1, which connects; A's request goes out
+  let a = cl.send(&mut lp, Request.get("https://127.0.0.1:4433/a"), Sink.Here(tokA));
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  requireUInt(connects, 1u64, "A made connection 1");
+  nextKind = 1u32;
+  nextToken = connectToken;
+  nextConn = 1u64;
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  requireUInt(requests, 1u64, "A's request went out on it");
+  let reqA = H3Req(lastReqConn, requests);
+  let tokenA = requestToken;
+  expectUInt(u64.from(cl.stats().idleNow), 0u64, "connection 1 carries A");
+
+  // 2. Connection 1 is Closed with A's request unanswered: its record is gone
+  nextKind = 2u32;
+  nextToken = connectToken;
+  nextConn = 1u64;
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  expectUInt(cl.stats().closed, 1u64, "connection 1 closed");
+  expectUInt(u64.from(cl.stats().openNow), 0u64, "no connection open");
+  expect(cl.isLive(a), "A is still under way");
+
+  // 3. B opens connection 2, into the freed cell; its request goes out
+  let b = cl.send(&mut lp, Request.get("https://127.0.0.1:4433/b"), Sink.Here(tokB));
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  requireUInt(connects, 2u64, "B made connection 2");
+  nextKind = 1u32;
+  nextToken = connectToken;
+  nextConn = 2u64;
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  requireUInt(requests, 2u64, "B's request went out on it");
+  let reqB = H3Req(lastReqConn, requests);
+  let tokenB = requestToken;
+  expectUInt(u64.from(cl.stats().idleNow), 0u64, "connection 2 carries B");
+
+  // 4. A's request ends, late: ignored; connection 2 is not touched
+  nextKind = 3u32;
+  nextToken = tokenA;
+  nextConn = 1u64;
+  nextReqConn = reqA.conn;
+  nextReqId = reqA.req;
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  expectUInt(doneA, 0u64, "A's late Done was ignored");
+  expect(cl.isLive(a), "A is not ended by it");
+  expect(cl.isLive(b), "B is still under way");
+  expectUInt(u64.from(cl.stats().idleNow), 0u64, "A's late Done did not end an exchange on connection 2");
+
+  // B's own Done ends B and leaves connection 2 idle
+  nextKind = 3u32;
+  nextToken = tokenB;
+  nextConn = 2u64;
+  nextReqConn = reqB.conn;
+  nextReqId = reqB.req;
+  spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
+  expectUInt(doneB, 1u64, "B ended Done, once");
+  expectUInt(u64.from(cl.stats().idleNow), 1u64, "connection 2 is idle after B");
+  expectUInt(other, 0u64, "no other final answer");
+  done()
+}

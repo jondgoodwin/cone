@@ -89,6 +89,7 @@ struct Fetch {
   body: String;
   origin: u32;
   conn: u32;                 // its pooled connection, while active
+  connGen: u32;              // that connection's generation: its cell may be reused by another
   req: httpconn.ReqId;       // its request on the driver, the last attempt's
   qreq: H3Req;               // ...or on the HTTP/3 plug-in (none when the attempt is the driver's)
   deadline: Instant;
@@ -195,7 +196,7 @@ pub struct Client {
   pconns: PConns;
   total: u32;                // connections connecting, idle, busy or shared
   undecided: List[u32];      // pooled connections connected whose protocol is still to be chosen
-  origins: Origins;// never removed: an origin's number is its cell's
+  origins: Origins; // never removed: an origin's number is its cell's
   dev: List[httpconn.Event];
   comps: List[Completion];
   ready: List[Event];        // events for this thread, until pump hands them over
@@ -316,6 +317,13 @@ pub struct Client {
 
   fn pconnLive(self: &, i: u32) bool {pconns.at(i) as usize != 0usize}
 
+  // Whether the connection fetch f was dispatched on is still open: its cell
+  // holds that same connection, not one that took the cell after it closed
+  fn fetchConnLive(self: &, f: &Fetch) bool {
+    let p = pconns.at(f.conn);
+    p as usize != 0usize && (p as &PConn).gen == f.connGen
+  }
+
   fn originAt(self: &, i: u32) *Origin {origins.at(i)}
 
   fn idOf(self: &, fi: u32) FetchId {FetchId(fi, (self.fetchAt(fi) as &Fetch).gen)}
@@ -331,7 +339,7 @@ pub struct Client {
   fn newFetch(self: &mut) u32 {
     let h = fetches.add(Fetch(gen: 0u32, state: fQueued, seq: 0u64, intent: Intent.Visible, score: 0i64,
       sink: Sink.Here(0u64), method: Method.Get, methodText: String(), url: Url(),
-      headers: Headers(), body: String(), origin: noEntry, conn: noEntry,
+      headers: Headers(), body: String(), origin: noEntry, conn: noEntry, connGen: 0u32,
       req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
       ending: endNone, delivered: false, following: false, cutting: false, location: String(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
@@ -557,6 +565,7 @@ pub struct Client {
     f.origin = oi;
     f.state = fQueued;
     f.conn = noEntry;
+    f.connGen = 0u32;
     f.sent = 0usize;
     f.following = false;
     f.cutting = false;
@@ -1019,7 +1028,7 @@ pub struct Client {
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
     if p.state == pShared {removeValue(&mut og.shared, pc);}
     if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
-    if p.state != pClosing && p.state != pFree {
+    if p.state != pClosing {
       og.open = og.open - 1u32;
       total = total - 1u32;
     }
@@ -1390,7 +1399,7 @@ pub struct Client {
       if (t & tokReq) != 0u64 {
         if self.fetchLive(index) {
           let f = self.fetchAt(index) as &Fetch;
-          if (f.gen & genMask) == gen && f.state == fActive && f.conn != noEntry && self.pconnLive(f.conn) &&
+          if (f.gen & genMask) == gen && f.state == fActive && f.conn != noEntry && self.fetchConnLive(f) &&
               (self.connAt(f.conn) as &PConn).quic && f.qreq == e.req {
             self.onH3Request(lp, index, e);
             continue;
@@ -1632,6 +1641,7 @@ pub struct Client {
     let p = self.connAt(pc) as &mut PConn;
     f.state = fActive;
     f.conn = pc;
+    f.connGen = p.gen;
     f.sent = 0usize;
     f.req = httpconn.ReqId.none();
     f.qreq = H3Req.none();
@@ -1876,7 +1886,7 @@ pub struct Client {
     let pc = f.conn;
     // Its connection is gone if its Closed came first (the driver sends a
     // connection's request events before its Closed; the h3 plug-in's order is its own)
-    if self.pconnLive(pc) {self.connDone(lp, pc);}
+    if self.fetchConnLive(f) {self.connDone(lp, pc);}
     if f.following {
       self.follow(lp, fi);
     } else {
@@ -1888,7 +1898,7 @@ pub struct Client {
   fn reqFailed(self: &mut, lp: &mut Loop, fi: u32, fl: Failure) {
     let f = self.fetchAt(fi) as &mut Fetch;
     // Its connection is gone if its Closed came first (see reqDone)
-    let alive = self.pconnLive(f.conn);
+    let alive = self.fetchConnLive(f);
     if alive {self.learn(f.conn);}
     let proto = if alive {(self.connAt(f.conn) as &PConn).proto} else {protoUnknown};
     let multiplexed = proto == protoH2 || proto == protoH3;
@@ -1907,7 +1917,7 @@ pub struct Client {
   // Fetch fi's exchange was cancelled, or timed out (the driver's own timeout)
   fn reqStopped(self: &mut, lp: &mut Loop, fi: u32, timedOut: bool) {
     let f = self.fetchAt(fi) as &mut Fetch;
-    if self.pconnLive(f.conn) {self.connEnded(lp, f.conn);}
+    if self.fetchConnLive(f) {self.connEnded(lp, f.conn);}
     if f.cutting && f.ending == endNone {
       self.follow(lp, fi);
     } else if f.ending == endFailed {
