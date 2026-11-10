@@ -25,6 +25,8 @@ import testing use *;
 import collections use *;
 import libc;
 import actors;
+import thread;
+import time;
 
 // ---- the number of workers ----
 
@@ -69,6 +71,7 @@ struct Tally {
   pub marks: *u8;               // item i's count: a piece writes only its own items
   pub pieces: Atomic[u64];
   pub ran: Atomic[u64];         // bit i: worker i ran a piece
+  pub begun: Atomic[u64];       // items begun
   pub costly: bool;
 }
 
@@ -82,6 +85,18 @@ fn bodyCount(data: *u8, lo: usize, hi: usize) {
   var i = lo;
   while i < hi {
     if (*t).costly {
+      // A loop splits on demand: the caller runs its first items itself and
+      // offers the rest to the others only after a little time. Once 100 items
+      // have begun the loop has split, with items left for the others to take:
+      // wait until more than 8 workers have run an item, or three seconds go by
+      // (the check then reads the answer)
+      if (*t).begun.add(1u64) >= 99u64 && workerCount() >= 24u32 {
+        var waited = 0u64;
+        while bits((*t).ran.load()) <= 8u64 && waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
+      }
       cost(u64.from(i));
     }
     *((*t).marks + i) = *((*t).marks + i) + 1u8;
@@ -93,7 +108,7 @@ fn bodyCount(data: *u8, lo: usize, hi: usize) {
 // answer the tally
 fn runOf(n: usize, costly: bool, what: &str) Tally {
   let marks = libc.calloc(n, 1usize) as *u8;
-  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), costly);
+  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), costly);
   actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
   var once = true;
   var i = 0usize;
@@ -158,6 +173,7 @@ fn @initpure init() {
 actor Looper {
   vals: List[u64];
   ran: Atomic[u64];       // bit i: worker i ran a pass
+  begun: Atomic[u64];     // passes begun
 
   fn init(self: &new, n: u64) {
     var l = List[u64]();
@@ -166,7 +182,7 @@ actor Looper {
       l.push(i);
       i = i + 1u64;
     }
-    *self = Self(vals: l, ran: Atomic[u64].of(0u64));
+    *self = Self(vals: l, ran: Atomic[u64].of(0u64), begun: Atomic[u64].of(0u64));
   }
 
   pub async fn run(self, big: bool) u64 {
@@ -174,6 +190,14 @@ actor Looper {
       let w = actors.workerIndex();
       if w < 64u32 {
         ran.bitOr(1u64 << u64.from(w));
+      }
+      // The big loop waits as bodyCount does, once 100 passes have begun
+      if big && begun.add(1u64) >= 99u64 && workerCount() >= 24u32 {
+        var waited = 0u64;
+        while bits(ran.load()) <= 8u64 && waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
       }
       *v = cost(*v);
     }
