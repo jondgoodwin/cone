@@ -681,6 +681,156 @@ pub struct @opaque Array[T] is GcTraceElements {
     mem.sliceFromPartsMut[T]((self as *T) + start, end - start)
   }
 
+  // A borrow of the first element, or None when there are none; 'last' of the last
+  pub fn first(self: &) Option[&T] {
+    if self.len == 0usize { return None; }
+    Some[&T]((self as *T) as &T)
+  }
+
+  pub fn last(self: &) Option[&T] {
+    if self.len == 0usize { return None; }
+    Some[&T](((self as *T) + (self.len - 1usize)) as &T)
+  }
+
+  // Make every element a copy of v. A Copy type is written over; a type that is
+  // Clone but moves has each old element finalized and replaced by a clone of v
+  // (v itself is then dropped). A list reaches both through its view.
+  pub fn fillCopy overload fill(self: &mut, v: T) where T is Copy {
+    let p = self as *T;
+    var i = 0usize;
+    while i < self.len { mem.writeRaw[T](p + i, v); i = i + 1usize; }
+  }
+
+  pub fn fillClone overload fill(self: &mut, v: T) where T is Move && T is Clone {
+    let p = self as *T;
+    var i = 0usize;
+    while i < self.len {
+      mem.finalize[T](p + i);
+      mem.writeRaw[T](p + i, (&v).clone());
+      i = i + 1usize;
+    }
+  }
+
+  // Turn the elements k places toward the front, in place: [a, b, c, d] rotated left
+  // by 1 is [b, c, d, a]; what falls off the front comes round to the back.
+  // 'rotateRight' turns them toward the back: [a, b, c, d] by 1 is [d, a, b, c].
+  // Three reversals, so no element is copied or finalized, of any element type.
+  // A program error if k is more than the count, reported at the caller's line.
+  pub fn rotateLeft(self: &mut, k: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if k > self.len {
+      panic("Array.rotateLeft: more places than there are elements", file, line);
+    }
+    if k == 0usize || k == self.len { return; }
+    let n = self.len;
+    self.sliceMut(0usize, k).reverse();
+    self.sliceMut(k, n).reverse();
+    self.reverse();
+  }
+
+  pub fn rotateRight(self: &mut, k: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if k > self.len {
+      panic("Array.rotateRight: more places than there are elements", file, line);
+    }
+    if k == 0usize || k == self.len { return; }
+    let n = self.len;
+    self.rotateLeft(n - k, file, line);
+  }
+
+  // Put a copy of every element of src over the elements of this one: the two must
+  // be the same length, or it is a program error (at the caller's line). A Copy type
+  // by one block copy; a type that is Clone but moves has each old element finalized
+  // and replaced by a clone.
+  pub fn copyFromCopy overload copyFrom(self: &mut, src: &Array[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Copy {
+    if src.len != self.len {
+      panic("Array.copyFrom: the two are not the same length", file, line);
+    }
+    if self.len == 0usize { return; }
+    mem.moveRaw[T](self as *T, src as *T, self.len);
+  }
+
+  pub fn copyFromClone overload copyFrom(self: &mut, src: &Array[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Move && T is Clone {
+    if src.len != self.len {
+      panic("Array.copyFrom: the two are not the same length", file, line);
+    }
+    // The two may overlap (a '&mut' and a '&' of one array can be held together), so each
+    // value is cloned before the one it replaces is finalized, and the walk runs backward when
+    // src lies before this array: the result is that of the Copy form's memmove, every
+    // source read before it is overwritten.
+    let p = self as *T;
+    let q = src as *T;
+    let n = self.len;
+    var k = 0usize;
+    while k < n {
+      let i = if q < p { n - 1usize - k } else { k };
+      let c = (&src[i]).clone();
+      mem.finalize[T](p + i);
+      mem.writeRaw[T](p + i, c);
+      k = k + 1usize;
+    }
+  }
+
+  // Copy the elements from start up to, not including, end to the place dest in the
+  // same array, which may overlap where they came from: the source is read as if
+  // copied out first (Rust's 'copy_within', C's memmove): in [a, b, c, d, e],
+  // 'copyWithin(0, 3, 1)' is [a, a, b, c, e]. NOT the back-reference copy of a deflate window, which must repeat the pattern when
+  // its source and its destination overlap; that is another operation. Only a Copy type.
+  // A program error if start is after end, end past the count, or the range would not
+  // fit at dest (reported at the caller's line).
+  pub fn copyWithin(self: &mut, start: usize, end: usize, dest: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) where T is Copy {
+    if start > end || end > self.len || dest > self.len - (end - start) {
+      panic("Array.copyWithin: the range or its destination is not within the elements", file, line);
+    }
+    let p = self as *T;
+    if end > start { mem.moveRaw[T](p + dest, p + start, end - start); }
+  }
+
+  // The runs of n consecutive elements, each starting one after the last, as slices
+  // of the same elements: [a, b, c, d] in windows of 2 is [a, b], [b, c], [c, d]. None
+  // at all when there are fewer than n. A program error if n is 0.
+  pub fn windows(self: &, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ArrayWindows[T] {
+    if n == 0usize {
+      panic("windows: the window size is 0", file, line);
+    }
+    ArrayWindows[T](self, n, 0usize)
+  }
+
+  // Whether the elements begin with those of s, or end with them (equal by '=='); an
+  // empty s is at both ends. Only where T is Eq
+  pub fn startsWith(self: &, s: &Array[T]) bool where T is Eq {
+    if s.len > self.len { return false; }
+    let p = self as *T;
+    let q = s as *T;
+    var i = 0usize;
+    while i < s.len {
+      if !(((p + i) as &T) == ((q + i) as &T)) { return false; }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  pub fn endsWith(self: &, s: &Array[T]) bool where T is Eq {
+    if s.len > self.len { return false; }
+    let p = (self as *T) + (self.len - s.len);
+    let q = s as *T;
+    var i = 0usize;
+    while i < s.len {
+      if !(((p + i) as &T) == ((q + i) as &T)) { return false; }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  // The place of the first element 'pred(x)' is true of, or None
+  pub fn position[F: fn(x: &T) bool](self: &, pred: &F) Option[usize] {
+    let p = self as *T;
+    var i = 0usize;
+    while i < self.len {
+      if pred((p + i) as &T) { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
+
   // ---- Ordering: sorts, selection and searches ----
   //
   // 'order(a, b)' is the three-way comparison of two elements, as '<=>' answers it: negative
@@ -1860,6 +2010,22 @@ pub fn partitionIndex[F: fn(i: usize) bool](n: usize, pred: &F) usize {
     if pred(mid) { lo = mid + 1usize; } else { hi = mid; }
   }
   lo
+}
+
+// A cursor over a slice's overlapping runs of 'size' elements, which 'windows' gives:
+// 'next' gives each as a slice until fewer than 'size' elements are left. 'pos' is
+// the element the next run starts at.
+pub struct ArrayWindows['a, T] is Iterator[&Array[T]] {
+  pub items: &'a Array[T];
+  pub size: usize;
+  pub pos: usize;
+
+  pub fn next(self: &mut) Option[&'a Array[T]] {
+    if size > items.len || pos > items.len - size { return None; }
+    let w = mem.sliceFromParts[T]((items as *T) + pos, size);
+    pos = pos + 1usize;
+    Some[&Array[T]](w)
+  }
 }
 
 // A cursor over a slice's elements in runs of 'size', which 'chunks' gives: 'next'
