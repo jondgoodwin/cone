@@ -1,0 +1,77 @@
+// List's new methods change its length, so the checker refuses each while a view of the list (or a
+// borrow of an element) is live, exactly as for 'push': the shift can move the values, or the
+// block, under the borrow. The same program with the borrow dead before the call is accepted
+// (collection_list_complete).
+//
+// And 'insert(i, slice)' and 'replace' copy or clone the slice's values, so they exist only for a
+// type that is Copy or Clone; a type that is neither (a move-only one) is refused at the call.
+
+mod collection_list_complete_reject;
+
+import collections use *;
+
+fn insertUnderView() i64 {
+  var l = List[i64](4);
+  l.push(1);
+  let v = l.view();
+  l.insert(0usize, 2);                         //~ ErrorFrozen
+  v[0usize]
+}
+
+fn insertSliceUnderView() i64 {
+  var l = List[i64](4);
+  var m = List[i64](4);
+  l.push(1);
+  m.push(1);
+  let v = l.view();
+  l.insert(0usize, m.view());                  //~ ErrorFrozen
+  v[0usize]
+}
+
+fn removeUnderView() i64 {
+  var l = List[i64](4);
+  l.push(1);
+  let v = l.view();
+  l.remove(0usize);                            //~ ErrorFrozen
+  v[0usize]
+}
+
+fn removeRangeUnderView() i64 {
+  var l = List[i64](4);
+  l.push(1);
+  let v = l.view();
+  l.remove(0usize, 1usize);                    //~ ErrorFrozen
+  v[0usize]
+}
+
+fn replaceUnderView() i64 {
+  var l = List[i64](4);
+  var m = List[i64](4);
+  l.push(1);
+  let v = l.view();
+  l.replace(0usize, 1usize, m.view());         //~ ErrorFrozen
+  v[0usize]
+}
+
+fn insertUnderElement() i64 {
+  var l = List[i64](4);
+  l.push(1);
+  let e = &l[0usize];
+  l.insert(1usize, 2);                         //~ ErrorFrozen
+  *e
+}
+
+// A move-only element: no clone, no copy
+struct Once { pub n: i64; fn final(self: &uni) {} }
+
+fn insertSliceMoveOnly() {
+  var l = List[Once]();
+  var m = List[Once]();
+  l.insert(0usize, m.view());                  //~ ErrorNoCandidate
+}
+
+fn replaceMoveOnly() {
+  var l = List[Once]();
+  var m = List[Once]();
+  l.replace(0usize, 0usize, m.view());         //~ ErrorWhereAbsent
+}

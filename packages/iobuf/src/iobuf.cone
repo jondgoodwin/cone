@@ -189,15 +189,17 @@
 // in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
 //
 // HOMES. A buffer may be lent: 'buf.setHome(&home)' (home an IoHome, made by the lender with
-// 'IoHome.make(ctx, give, release)') makes its death, instead of releasing the block, call 'give(ctx, m)'
+// 'IoHome.make(ctx, give, release)', which owns the Sendable ctx) makes its death, instead of releasing the
+// block, call 'give(&ctx, m)'
 // with a fresh empty buffer m on the same block, which has no home and so releases the block when it dies.
 // That is how a sender that moved a buffer into a driver is told it is done with it, with no call from the
 // driver: the death is the signal, on whatever thread it falls (the I/O thread when a send completes).
 // 'buf.clearHome()' makes it plain again (a buffer handed back by hand must be cleared first, or its credit
 // returns twice). The home is counted: each homed buffer holds one count, as does the IoHome, and the
-// lender's 'release(ctx)' runs when the last is gone. A plain buffer pays one test of its home word in
-// 'final'. A 'give' must not panic or wait; one that sends to an actor checks 'actors.isRunning()' first
-// (a buffer that outlives the runtime would panic the send). stages.chunkHome is the lender for a ChunkSource.
+// lender's 'release(&ctx)' runs when the last is gone. A plain buffer pays one test of its home word in
+// 'final'. A 'give' must be quick and must not panic; one that sends to an actor checks 'actors.isRunning()'
+// first, which NARROWS the race with the runtime stopping but does not close it (a death on another thread
+// can pass the check just before the stop and still panic in the send). stages.chunkHome is the lender for a ChunkSource.
 //
 // SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
 // read-only, shared by any number of owners on any number of threads, as one
@@ -330,18 +332,24 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
-// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give, release)' is one owner of a
-// counted record: each buffer given this home ('setHome') holds one count too, and the record, with its
-// 'ctx', goes when the last count does, by 'release(ctx)'. 'give(ctx, b)' is called when a homed buffer
-// dies, on whatever thread it dies on, with a fresh empty buffer on the same block (len 0, the same
-// capacity, no home): the lender takes it back, and if it only drops it the block goes to the pool. 'give'
-// must not panic or wait, and must not send to an actor if the runtime may have stopped (actors.isRunning)
+// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give, release)' moves the lender's
+// state 'ctx' (a Sendable C) into one counted record that the home owns: each buffer given this home
+// ('setHome') holds one count too, and the record goes when the last count does, by 'release(&ctx)' and
+// then the drop of ctx. 'give(&ctx, b)' is called when a homed buffer dies, on whatever thread it dies on,
+// with a fresh empty buffer on the same block (len 0, the same capacity, no home): the lender takes it
+// back, and if it only drops it the block goes to the pool. ctx is only ever borrowed by the callbacks and
+// never leaves the record, so safe code cannot hand a home a dangling pointer. 'give' runs on another
+// thread, so it must be quick (a send from a thread that is not a worker takes the actors' inject-queue
+// mutex, briefly) and must not panic. A send to an actor from it can still panic if the runtime stops
+// between a check of actors.isRunning() and the send (see HOMES in the package header)
 pub struct IoHome is Move, Sendable {
   rec: *HomeRec;
 
-  pub fn make(ctx: *u8, give: &fn(ctx: *u8, b: IoBuf), release: &fn(ctx: *u8)) IoHome {
+  pub fn make[C: Sendable](ctx: C, give: &fn(ctx: &C, b: IoBuf), release: &fn(ctx: &C)) IoHome {
+    let t = libc.malloc(mem.sizeof[TypedHome[C]]()) as *TypedHome[C];
+    mem.writeRaw[TypedHome[C]](t, TypedHome[C](ctx, give, release));
     let r = libc.malloc(mem.sizeof[HomeRec]()) as *HomeRec;
-    mem.writeRaw[HomeRec](r, HomeRec(ctx, give, release, Atomic[usize].of(1usize)));
+    mem.writeRaw[HomeRec](r, HomeRec(t as *u8, &giveTyped[C], &releaseTyped[C], Atomic[usize].of(1usize)));
     IoHome(r)
   }
 
@@ -350,6 +358,29 @@ pub struct IoHome is Move, Sendable {
   }
 }
 
+// The lender's state and its callbacks, one block: the typed ctx of an IoHome
+struct TypedHome[C] {
+  ctx: C;
+  give: &fn(ctx: &C, b: IoBuf);
+  release: &fn(ctx: &C);
+}
+
+fn giveTyped[C](p: *u8, b: IoBuf) {
+  let t = p as *TypedHome[C];
+  let g = (*t).give;
+  g(&(*t).ctx, b);
+}
+
+fn releaseTyped[C](p: *u8) {
+  let t = p as *TypedHome[C];
+  let f = (*t).release;
+  f(&(*t).ctx);
+  mem.finalize(t);
+  libc.free(p);
+}
+
+// The record every IoHome points at: its ctx is a *TypedHome[C], give and release the matching
+// trampolines. Private to this file
 struct HomeRec {
   ctx: *u8;
   give: &fn(ctx: *u8, b: IoBuf);
@@ -373,7 +404,9 @@ pub struct IoBuf is Default, Move, Sendable {
   home: usize;                  // 0, or a *HomeRec of which this buffer holds one count
 
   // Lend this buffer to h: when it dies, h's 'give' is called with an empty buffer on the same block. A
-  // buffer already homed leaves its old home first
+  // buffer already homed leaves its old home first, WITHOUT that home's 'give': the old lender is never
+  // paid this buffer's credit. Right for a plain chunk; a chunk one lender owns must be cleared (and given
+  // back by hand) before another lender homes it
   pub fn setHome(self: &mut, h: &IoHome) {
     self.clearHome();
     let r = h.rec;
