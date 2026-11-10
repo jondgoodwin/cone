@@ -1,7 +1,7 @@
 // Cancelled work stops: a consumer that quits stops every stage above it. A
-// source that sends 2,000 chunks and NEVER looks at its group (so that it is the
-// stages that stop the stream, not a polite source) feeds a pipeline of three
-// stages and a sink:
+// source that sends 2,000 chunks, and stops when a buffer comes back in a cancelled
+// group (as a source must), feeds a pipeline of three stages and a sink. (A source
+// that ignores its group is the test cancelidle.)
 //
 //   source -> TransformStage[Deflater] -> TransformStage[Inflater] -> HashStage[Sha256] -> sink
 //
@@ -15,9 +15,9 @@
 //      upstream's 'end', and finalAll breaks the cycle a source that never ends leaves).
 //
 // Checked for each: the sink took only a few chunks past the cancel, where 2,000
-// would reach it if the stages did not stop, and the source, which never looks at
-// its group, gets every buffer back (a cancelled stage gives back each chunk it is
-// sent: that credit is what wakes the stage above it) and so sends all 2,000; the sink's
+// would reach it if the stages did not stop, and the source stopped early, within a
+// window or two of the cancel (a cancelled stage gives back each chunk it is sent:
+// that credit is what wakes the stage above it and carries the cancelled group to the source); the sink's
 // 'end' is Failed (the first stage ended downstream when it
 // saw the cancel); the hash stage answered its digest sink once, with an error;
 // and every buffer is back in the pool (LSan checks the rest on Linux). A third
@@ -84,8 +84,9 @@ fn block() List[u8] {
 }
 
 // Sends the same 64 KiB block 'left' times through a window of four buffers. It
-// NEVER looks at its group, so the stages above the sink are what stop the stream:
-// they hand back what they are sent and send nothing on
+// stops when a buffer comes back in a cancelled group, as a source must (the
+// ChunkSource contract), and sends no 'end' then. The stages above the sink hand
+// back what they are sent and send nothing on
 actor Source is ChunkSource {
   slot: usize;
   down: ChunkSink;
@@ -104,6 +105,7 @@ actor Source is ChunkSource {
 
   pub async fn giveBack(self, b: IoBuf) {
     link.give(b);
+    if actors.isCancelled() { over = true; }
     self.pump();
   }
 
@@ -244,7 +246,7 @@ fn main() i32 {
 
   expect(s0.received.load() >= 10u64, "0: the sink took its 10 chunks");
   expect(s0.received.load() < 100u64, "0: and few past them, where 2,000 would reach it were the stages not stopped");
-  expectUInt(s0.sent.load(), 2000u64, "0: the source, given every buffer back, sent all its chunks (it never looked at its group)");
+  expect(s0.sent.load() < 100u64, "0: the source stopped early: a buffer came back in the cancelled group");
   expectUInt(s0.failed.load(), 1u64, "0: the sink's end is Failed (a stage above it was cancelled)");
   expectUInt(s0.finished.load(), 0u64, "0: and never Finished");
   expectUInt(s0.digestErr.load(), 1u64, "0: the hash stage answered its digest sink once, with an error");
@@ -252,7 +254,7 @@ fn main() i32 {
 
   expect(s1.received.load() >= 10u64, "1: the sink took at least 10 chunks before the cancel");
   expect(s1.received.load() < 100u64, "1: and few past it");
-  expectUInt(s1.sent.load(), 2000u64, "1: the source, given every buffer back, sent all its chunks");
+  expect(s1.sent.load() < 100u64, "1: the source stopped early");
   expectUInt(s1.failed.load(), 1u64, "1: the sink's end is Failed");
   expectUInt(s1.digestErr.load(), 1u64, "1: the digest sink got one error");
 
