@@ -26,6 +26,7 @@ mod frames;
 
 import collections use List, String;
 import iobuf use IoBuf, Chain;
+import streams;
 
 // ---------------------------------------------------------------------------
 // The numbers RFC 9113 fixes
@@ -237,17 +238,19 @@ pub struct FrameHeader {
   // The header at the start of b (at least nine bytes), the reserved bit
   // ignored, as section 4.1 asks
   pub fn read(b: &Array[u8]) FrameHeader {
-    FrameHeader((usize.from(b[0usize]) << 16usize) | (usize.from(b[1usize]) << 8usize) | usize.from(b[2usize]),
-      b[3usize], b[4usize], readU32(b, 5usize) & maxStreamId)
+    var c = streams.ByteCursor.over(b);
+    let length = c.getUintBE(3usize).unwrap();
+    let kind = c.getByte().unwrap();
+    let flags = c.getByte().unwrap();
+    let stream = c.getBE[u32]().unwrap();
+    FrameHeader(usize.from(length), kind, flags, stream & maxStreamId)
   }
 
   // The header at the start of a Chain's unconsumed bytes (at least nine)
   pub fn peek(c: &Chain) FrameHeader {
-    let len = (usize.from(c.byteAt(0usize)) << 16usize) | (usize.from(c.byteAt(1usize)) << 8usize) |
-      usize.from(c.byteAt(2usize));
-    let s = (u32.from(c.byteAt(5usize)) << 24u32) | (u32.from(c.byteAt(6usize)) << 16u32) |
-      (u32.from(c.byteAt(7usize)) << 8u32) | u32.from(c.byteAt(8usize));
-    FrameHeader(len, c.byteAt(3usize), c.byteAt(4usize), s & maxStreamId)
+    var nine = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    _ = c.copyOut(0usize, &mut nine);
+    FrameHeader.read(&nine)
   }
 
   // Write it into the first nine bytes of out, the reserved bit clear
@@ -263,20 +266,19 @@ pub struct FrameHeader {
   fn has(self: &, flag: u8) bool {(flags & flag) != 0u8}
 }
 
-fn readU16(b: &Array[u8], at: usize) u16 {
-  (u16.from(b[at]) << 8u16) | u16.from(b[at + 1usize])
-}
-
-fn readU32(b: &Array[u8], at: usize) u32 {
-  (u32.from(b[at]) << 24u32) | (u32.from(b[at + 1usize]) << 16u32) |
-    (u32.from(b[at + 2usize]) << 8u32) | u32.from(b[at + 3usize])
-}
-
 fn writeU32(b: &mut Array[u8], at: usize, v: u32) {
   b[at] = u8.from(v >> 24u32);
   b[at + 1usize] = u8.from((v >> 16u32) & 0xFFu32);
   b[at + 2usize] = u8.from((v >> 8u32) & 0xFFu32);
   b[at + 3usize] = u8.from(v & 0xFFu32);
+}
+
+// The big-endian number at offset 'at' of a payload whose length the caller
+// has checked: a panic if it is not there
+fn readU32(b: &Array[u8], at: usize) u32 {
+  let rest = &b[at ..< b.len];
+  var c = streams.ByteCursor.over(rest);
+  c.getBE[u32]().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,10 +427,11 @@ fn blockStart(h: FrameHeader, p: &Array[u8]) Result[BlockStart, FrameError] {
 // A SETTINGS frame's parameters, each checked (section 6.5.2; RFC 8441,
 // section 3; RFC 9218, section 2.1), appended to values
 fn parseSettings(p: &Array[u8], client: bool, values: &mut List[Setting]) Option[FrameError] {
-  var i = 0usize;
-  while i < p.len {
-    let id = readU16(p, i);
-    let v = readU32(p, i + 2usize);
+  var cur = streams.ByteCursor.over(p);
+  while !cur.isEmpty() {
+    // The payload is a multiple of 6 bytes (checked with the length)
+    let id = cur.getBE[u16]().unwrap();
+    let v = cur.getBE[u32]().unwrap();
     if id == settingEnablePush {
       if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH other than 0 or 1"));}
       if client && v == 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH of 1 from a server"));}
@@ -444,7 +447,6 @@ fn parseSettings(p: &Array[u8], client: bool, values: &mut List[Setting]) Option
       if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_NO_RFC7540_PRIORITIES other than 0 or 1"));}
     }
     values.push(Setting(id, v));
-    i = i + 6usize;
   }
   None
 }
@@ -469,13 +471,17 @@ fn parseControl(h: FrameHeader, p: &Array[u8], client: bool) Result[Frame, Frame
     return Ok[Frame, FrameError](Frame.Settings(h.has(flagAck), values));
   }
   if h.kind == typePing {
-    let d = (u64.from(readU32(p, 0usize)) << 32u64) | u64.from(readU32(p, 4usize));
+    var c = streams.ByteCursor.over(p);
+    let d = c.getBE[u64]().unwrap();
     return Ok[Frame, FrameError](Frame.Ping(h.has(flagAck), d));
   }
   if h.kind == typeGoAway {
+    var c = streams.ByteCursor.over(p);
+    let last = c.getBE[u32]().unwrap();
+    let code = c.getBE[u32]().unwrap();
     var debug = List[u8]();
-    appendBytes(&mut debug, &p[8usize ..< p.len]);
-    return Ok[Frame, FrameError](Frame.GoAway(readU32(p, 0usize) & maxStreamId, ErrorCode.of(readU32(p, 4usize)), debug));
+    debug.appendSlice(c.getBytes(c.remaining()).unwrap());
+    return Ok[Frame, FrameError](Frame.GoAway(last & maxStreamId, ErrorCode.of(code), debug));
   }
   // WINDOW_UPDATE (section 6.9): an increment of 0 is an error of the
   // window it names
@@ -1025,24 +1031,22 @@ pub struct FrameWriter {
 
   fn header(self: &mut, length: usize, kind: u8, flags: u8, stream: u32) {
     if !self.room(frameHeaderLen) {return;}
-    let at = pack.len();
-    FrameHeader(length, kind, flags, stream).write(&mut pack.spare()[0usize ..< frameHeaderLen]);
-    pack.setLen(at + frameHeaderLen);
+    // The 24-bit length, the type, the flags, the stream with its reserved bit
+    // clear: four stores in the room 'room' made (iobuf's putUint and putNum)
+    _ = pack.putUint(u64.from(length), 3usize, true);
+    _ = pack.putNum[u8](kind, true);
+    _ = pack.putNum[u8](flags, true);
+    _ = pack.putNum[u32](stream & maxStreamId, true);
   }
 
   fn byte(self: &mut, b: u8) {
     if !self.room(1usize) {return;}
-    let at = pack.len();
-    let s = pack.spare();
-    s[0usize] = b;
-    pack.setLen(at + 1usize);
+    _ = pack.putNum[u8](b, true);
   }
 
   fn u32be(self: &mut, v: u32) {
     if !self.room(4usize) {return;}
-    let at = pack.len();
-    writeU32(pack.spare(), 0usize, v);
-    pack.setLen(at + 4usize);
+    _ = pack.putNum[u32](v, true);
   }
 
   fn bytes(self: &mut, b: &Array[u8]) {

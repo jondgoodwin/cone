@@ -1,0 +1,105 @@
+// ======== Layer 2, parsing bytes: a ByteCursor over one slice ========
+//
+// A forward cursor over a complete message: bytes already in memory, as a
+// slice. Each 'get' reads a number or a run at the cursor and moves past it,
+// or answers None and leaves the cursor where it was: a short message is a
+// value to answer, never a number made of whatever came next. With Cone's '?'
+// a parser reads straight through:
+//
+//   fn header(c: &mut ByteCursor) Option[Header] {
+//     let magic = c.getBE[u32]()?;
+//     let count = c.getLE[u16]()?;
+//     let len = c.getUintBE(3usize)?;           // an odd width: HTTP/2's 24-bit length
+//     let body = c.getBytes(usize.from(len))?;  // a sub-slice of the message, not a copy
+//     Some[Header](Header(magic, count, body))
+//   }
+//
+//   c.getLE[T]()  c.getBE[T]()   a number of a fixed width (u8 to u64, i8 to i64, f32, f64; not usize) as its own type
+//   c.getUintLE(n)  c.getUintBE(n)    n bytes (1 to 8) as a u64
+//   c.getByte()          the next byte
+//   c.getBytes(n)        the next n bytes as a slice of the message: no copy
+//   c.skip(n)            past n bytes: false, and not moved, when fewer remain
+//   c.pos()  c.remaining()  c.isEmpty()
+//
+// A MESSAGE IN A READER is parsed in place: 'peek' lends it as one slice, the
+// cursor reads it, and 'consume' uses it up once the cursor is done.
+//
+//   match r.peek(n) {                  // n bytes: a header's length, or a whole message's
+//     case let Some(v) {
+//       var c = ByteCursor.over(v);
+//       ... c.getBE[u32]() ...
+//     }
+//     case is None[&Array[u8]] {}      // not all here yet: wait for more
+//   }
+//   r.consume(n);                      // after the match, with the cursor dead
+//
+// The cursor borrows the slice, which borrows the Reader, so the checker
+// refuses 'r.consume(n)' (and a second 'peek') while the cursor, or anything
+// it handed out, is still used. That is the protocol: bytes the cursor reads
+// cannot go back to the pool under it. (test/cases/concurrency/
+// concurrency_streams_bytecursor.cone pins the refusal.)
+//
+// The loads are iobuf's tryLoadNum and tryLoadUint: one check and one load.
+
+// A cursor over a message in memory, borrowing it
+pub struct ByteCursor['a] {
+  bytes: &'a Array[u8];
+  at: usize;
+
+  // A cursor at the start of bytes
+  pub fn over(bytes: &Array[u8]) ByteCursor {ByteCursor(bytes, 0usize)}
+
+  // How far the cursor is from the start, how many bytes are left, and whether none are
+  pub fn pos(self: &) usize {at}
+  pub fn remaining(self: &) usize {bytes.len - at}
+  pub fn isEmpty(self: &) bool {at == bytes.len}
+
+  // The next number, its least significant byte first, or None, the cursor unmoved
+  pub fn getLE[T](self: &mut) Option[T] inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let v = tryLoadNum[T](bytes, at, false);
+    if v is Some[T] {at = at + mem.sizeof[T]();}
+    v
+  }
+
+  // The next number, its most significant byte first, or None, the cursor unmoved
+  pub fn getBE[T](self: &mut) Option[T] inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let v = tryLoadNum[T](bytes, at, true);
+    if v is Some[T] {at = at + mem.sizeof[T]();}
+    v
+  }
+
+  // The next nbytes (1 to 8) as an unsigned number, or None, the cursor unmoved
+  pub fn getUintLE(self: &mut, nbytes: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[u64] inline {
+    let v = tryLoadUint(bytes, at, nbytes, false, file, line);
+    if v is Some[u64] {at = at + nbytes;}
+    v
+  }
+
+  pub fn getUintBE(self: &mut, nbytes: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[u64] inline {
+    let v = tryLoadUint(bytes, at, nbytes, true, file, line);
+    if v is Some[u64] {at = at + nbytes;}
+    v
+  }
+
+  pub fn getByte(self: &mut) Option[u8] inline {
+    if at >= bytes.len {return None[u8];}
+    let b = bytes[at];
+    at = at + 1usize;
+    Some[u8](b)
+  }
+
+  // The next n bytes as a slice of the message, or None, the cursor unmoved
+  pub fn getBytes(self: &mut, n: usize) Option[&'a Array[u8]] {
+    if n > bytes.len - at {return None[&Array[u8]];}
+    let s = &bytes[at ..< at + n];
+    at = at + n;
+    Some[&Array[u8]](s)
+  }
+
+  // Past n bytes: false, the cursor unmoved, when fewer are left
+  pub fn skip(self: &mut, n: usize) bool {
+    if n > bytes.len - at {return false;}
+    at = at + n;
+    true
+  }
+}
