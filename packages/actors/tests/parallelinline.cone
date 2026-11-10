@@ -1,0 +1,203 @@
+// The cost guard of a 'parallel each' (parallel.cone, THE COST GUARD): the caller
+// runs the items itself, reading the clock after each, and splits the rest only
+// once about 2 us have passed with more than one item left.
+//
+//   - a trivial loop of 8 items runs entirely inline: each item is its own body
+//     call, none runs on a worker, and the workers were never started (so no
+//     push and no wake, which need them)
+//   - a loop of costly items splits: workers run some of them
+//   - a loop whose first items are fast and whose later ones are slow splits as
+//     soon as the slow part shows
+//   - in an actor's behaviour (the form cut at the loop's end) a trivial loop
+//     runs on the actor's own worker alone, and a costly one reaches others
+//
+// The file counts pieces as parallelsplit does, through actors.parallelEach.
+
+mod parallelinline;
+
+import testing use *;
+import collections use *;
+import libc;
+import actors;
+
+fn cost(i: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
+  while k < 100000u64 {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x
+}
+
+fn bits(v: u64) u64 {
+  var n = 0u64;
+  var x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n
+}
+
+struct Tally {
+  pub marks: *u8;
+  pub pieces: Atomic[u64];
+  pub ran: Atomic[u64];         // bit i: worker i ran a piece
+  pub slowFrom: usize;          // items from here on are costly
+}
+
+fn bodyCount(data: *u8, lo: usize, hi: usize) {
+  let t = data as *Tally;
+  (*t).pieces.add(1u64);
+  let w = actors.workerIndex();
+  if w < 64u32 {
+    (*t).ran.bitOr(1u64 << u64.from(w));
+  }
+  var i = lo;
+  while i < hi {
+    if i >= (*t).slowFrom {
+      cost(u64.from(i));
+    }
+    *((*t).marks + i) = *((*t).marks + i) + 1u8;
+    i = i + 1usize;
+  }
+}
+
+fn runOf(n: usize, slowFrom: usize, what: &str) Tally {
+  let marks = libc.calloc(n, 1usize) as *u8;
+  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), slowFrom);
+  actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
+  var once = true;
+  var i = 0usize;
+  while i < n {
+    if *(marks + i) != 1u8 {
+      once = false;
+    }
+    i = i + 1usize;
+  }
+  expect(once, what);
+  libc.free(marks);
+  t
+}
+
+// ---- in an actor's behaviour ----
+
+struct Outcome {
+  pub trivialWorkers: Atomic[u64];   // workers that ran a pass of the trivial loop
+  pub costlyWorkers: Atomic[u64];    // workers that ran a pass of the costly loop
+  pub wrong: Atomic[u64];
+}
+
+let outcome: Outcome;
+
+fn @initpure init() {
+  outcome = Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Looper {
+  vals: List[u64];
+  ran: Atomic[u64];
+
+  fn init(self: &new, n: u64) {
+    var l = List[u64]();
+    var i = 0u64;
+    while i < n {
+      l.push(i);
+      i = i + 1u64;
+    }
+    *self = Self(vals: l, ran: Atomic[u64].of(0u64));
+  }
+
+  pub async fn trivial(self) u64 {
+    parallel each v in vals.mutItems() {
+      let w = actors.workerIndex();
+      if w < 64u32 {
+        ran.bitOr(1u64 << u64.from(w));
+      }
+      *v = *v + 1u64;
+    }
+    var wrong = 0u64;
+    var i = 0u64;
+    each v in &vals {
+      if *v != i + 1u64 {
+        wrong = wrong + 1u64;
+      }
+      i = i + 1u64;
+    }
+    outcome.wrong.add(wrong);
+    outcome.trivialWorkers.store(bits(ran.load()));
+    0u64
+  }
+
+  pub async fn costly(self) u64 {
+    parallel each v in vals.mutItems() {
+      let w = actors.workerIndex();
+      if w < 64u32 {
+        ran.bitOr(1u64 << u64.from(w));
+      }
+      *v = cost(*v);
+    }
+    var wrong = 0u64;
+    var i = 0u64;
+    each v in &vals {
+      if *v != cost(i) {
+        wrong = wrong + 1u64;
+      }
+      i = i + 1u64;
+    }
+    outcome.wrong.add(wrong);
+    outcome.costlyWorkers.store(bits(ran.load()));
+    0u64
+  }
+}
+
+actor Driver {
+  pub async fn go(self) {
+    let a = Looper(8u64);
+    let b = Looper(64u64);
+    await a.trivial();
+    await b.costly();
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 8u32));
+
+  // A trivial loop of 8 items: inline. A loop that pushed a task would be seen:
+  // a piece a worker ran sets its bit, and a task a thief took counts as a
+  // steal. 200 loops, none of either, and one body call an item.
+  let before = actors.stats().steals;
+  var pieces = 0u64;
+  var onWorkers = 0u64;
+  var rep = 0usize;
+  while rep < 200usize {
+    let t = runOf(8usize, 1000usize, "8 trivial items, each once");
+    pieces = pieces + t.pieces.load();
+    onWorkers = onWorkers | t.ran.load();
+    rep = rep + 1usize;
+  }
+  expectUInt(pieces, 1600u64, "8 trivial items: one body call each, on the caller");
+  expectUInt(onWorkers, 0u64, "8 trivial items: none ran on a worker");
+  expectUInt(actors.stats().steals - before, 0u64, "8 trivial items: no task was stolen");
+
+  // Costly items split
+  let heavy = runOf(64usize, 0usize, "64 costly items, each once");
+  expect(bits(heavy.ran.load()) > 1u64, "64 costly items reach more than one worker");
+
+  // Fast first, slow later: splits once the slow part shows
+  let mixed = runOf(64usize, 4usize, "4 fast then 60 slow items, each once");
+  expect(bits(mixed.ran.load()) > 1u64, "4 fast then 60 slow items reach more than one worker");
+
+  // In a behaviour
+  {
+    let dr = Driver();
+    dr.go();
+  }
+  finalAll();
+  expectUInt(outcome.wrong.load(), 0u64, "behaviour loops: every item right");
+  expectUInt(outcome.trivialWorkers.load(), 1u64, "a trivial loop in a behaviour runs on the actor's worker alone");
+  expect(outcome.costlyWorkers.load() > 1u64, "a costly loop in a behaviour reaches more than one worker");
+  done()
+}

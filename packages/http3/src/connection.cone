@@ -718,6 +718,21 @@ pub struct Connection is Move {
     s.fin = true;
   }
 
+  // A server stops reading one request, the answer being whole or not: the peer is asked to stop sending it
+  // (STOP_SENDING with H3_NO_ERROR, section 4.1) and what arrives is dropped. What this end sends on the
+  // stream goes on. No event follows for the request's rest. Nothing if its side is over already
+  pub fn stopBody(self: &mut, stream: u64) {
+    if closed || gone || clientRole {return;}
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let s = streams.at(sl.index) as &mut H3Stream;
+        if s.kind != StreamKind.Request {return;}
+        self.stopReading(s, h3NoError);
+      }
+      case is None[Slot] {}
+    }
+  }
+
   // Give up one exchange: its stream is reset and reading it stopped, both
   // with code (H3_REQUEST_CANCELLED, as a client cancelling a request does,
   // section 4.1.1). No event follows for it
