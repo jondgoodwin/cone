@@ -504,6 +504,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->state = 0;
     pv->hmask = 0;
     pv->flagged = 0;
+    pv->partmix = 0;
     pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
@@ -608,6 +609,18 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
     return delta;
 }
 
+// A path of a join that left the variable hollow: if an earlier one hollowed it
+// by different parts, the release must be told which at run time (VarPartFlag)
+static void pathJoinParts(PathVar *pv, uint8_t state, uint32_t hmask) {
+    if (!(state & DropHollow) || hmask == 0)
+        return;
+    if (pv->jh && dropHollowShapesDiffer(pv->var, pv->jm1, hmask))
+        pv->partmix = 1;
+    if (!pv->jh)
+        pv->jm1 = hmask;
+    pv->jh = 1;
+}
+
 // Join the paths in 'deltas', each relative to the current state: a fact takes
 // the union of every path's value, a path that did not change it contributing
 // the current value -- as the current path itself does when 'withcurrent' is
@@ -628,6 +641,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jpending = NULL;
                 pv->jstate = 0;
                 pv->jhmask = 0;
+                pv->jh = 0;
                 pv->jfirst = entry->holds;
                 pv->japart = 0;
                 if (ntouched == touchedcap)
@@ -641,6 +655,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
             pv->jstate |= entry->state;
             pv->jhmask |= entry->hmask;
+            pathJoinParts(pv, entry->state, entry->hmask);
         }
     }
     int changed = 0;
@@ -655,6 +670,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
             hmask |= pv->hmask;
+            pathJoinParts(pv, pv->state, pv->hmask);
             if (pathGpuChoices && pv->holder && !pv->japart)
                 pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
