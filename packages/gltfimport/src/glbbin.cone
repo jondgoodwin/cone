@@ -1,0 +1,54 @@
+// ======== Writing a GLB: the binary buffer and the container ========
+//
+// For a program that makes a glTF in memory (a test fixture, an example): a
+// GlbBin collects the BIN chunk's bytes, and 'writeGlb' wraps a JSON text and
+// that buffer in the binary container. One writer here replaces the copy each
+// example and test kept of its own. The buffer is one block of 1 MiB at most
+// (a fixture's size): 'view' panics on more.
+
+pub struct GlbBin is Move {
+  w: streams.Writer;
+
+  pub fn make() GlbBin { GlbBin(streams.Writer.make(1048576usize)) }
+
+  pub fn putU8(self: &mut, v: u8) { w.putByte(v); }
+  pub fn putU16(self: &mut, v: u32) { w.putLE[u16](u16.from(v & 0xFFFFu32)); }
+  pub fn putI16(self: &mut, v: i32) { w.putLE[i16](i16.from(v)); }
+  pub fn putU32(self: &mut, v: u32) { w.putLE[u32](v); }
+  pub fn putF32(self: &mut, v: f32) { w.putLE[f32](v); }
+  pub fn putBytes(self: &mut, bytes: &Array[u8]) { w.put(bytes); }
+
+  // Zeros to the next multiple of 4 bytes, as a buffer view must start
+  pub fn align4(self: &mut) { w.pad(4usize); }
+
+  pub fn len(self: &) usize { w.len() }
+
+  // The bytes so far, as one slice
+  pub fn view(self: &) &Array[u8] {
+    if w.view().len != w.len() { panic("GlbBin: more than 1 MiB written", srcFile(), srcLine()); }
+    w.view()
+  }
+}
+
+// A GLB file's bytes: the header, the JSON chunk (padded with spaces to a
+// multiple of 4), then the BIN chunk
+pub fn writeGlb(json: &str, bin: &GlbBin) List[u8] {
+  let padded = (json.len() + 3usize) / 4usize * 4usize;
+  let binBytes = bin.view();
+  var out = streams.Writer.make(12usize + 8usize + padded + 8usize + binBytes.len + 4usize);
+  out.putLE[u32](0x46546C67u32);
+  out.putLE[u32](2u32);
+  out.putLE[u32](u32.from(12usize + 8usize + padded + 8usize + binBytes.len));
+  out.putLE[u32](u32.from(padded));
+  out.putLE[u32](0x4E4F534Au32);
+  out.put(json);
+  out.repeat(' ', padded - json.len());
+  out.putLE[u32](u32.from(binBytes.len));
+  out.putLE[u32](0x004E4942u32);
+  out.put(binBytes);
+  let chain = out.finish();
+  var file = List[u8]();
+  file.resize(chain.len(), 0u8);
+  _ = chain.copyOut(0usize, file.viewMut());
+  file
+}

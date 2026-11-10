@@ -39,17 +39,6 @@ import path use Path;
 
 // ---- building the asset ----
 
-struct Bin {
-  pub b: List[u8];
-
-  pub fn putU8(self: &mut, v: u8) { b.push(v); }
-  pub fn putU16(self: &mut, v: u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
-  pub fn putI16(self: &mut, v: i32) { self.putU16(u32.from(v) & 0xFFFFu32); }
-  pub fn putU32(self: &mut, v: u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
-  pub fn putF32(self: &mut, v: f32) { self.putU32(v.bits()); }
-  pub fn align4(self: &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
-}
-
 fn base64(d: &Array[u8]) String {
   let tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   var out = String();
@@ -83,8 +72,8 @@ fn pngBytes() List[u8] {
 
 // The binary buffer: views 0 to 4 as described above, then (variant 1) the
 // PNG as view 5
-fn buildBuffer(variant: i32) Bin {
-  var b = Bin(List[u8]());
+fn buildBuffer(variant: i32) GlbBin {
+  var b = GlbBin.make();
   let cube = Mesh.cube(1.);
   var v = 0usize;
   while v < 24usize {
@@ -175,26 +164,7 @@ fn buildJson(variant: i32, bufferLen: usize, pngLen: usize, bufferB64: &str) Str
 }
 
 // A GLB container: header, the JSON chunk padded with spaces, the BIN chunk
-fn glb(json: &String, bin: &List[u8]) List[u8] {
-  var js = json.clone();
-  while js.len() % 4usize != 0usize { js.appendByte(' '); }
-  var b = Bin(List[u8]());
-  let total = 12usize + 8usize + js.len() + 8usize + bin.len();
-  b.putU32(0x46546C67u32);
-  b.putU32(2u32);
-  b.putU32(u32.from(total));
-  b.putU32(u32.from(js.len()));
-  b.putU32(0x4E4F534Au32);
-  var i = 0usize;
-  while i < js.len() { b.putU8(js[i]); i += 1usize; }
-  b.putU32(u32.from(bin.len()));
-  b.putU32(0x004E4942u32);
-  i = 0usize;
-  while i < bin.len() { b.putU8(*bin[i]); i += 1usize; }
-  var out = List[u8]();
-  out <-> b.b;
-  out
-}
+fn glb(json: &String, bin: &GlbBin) List[u8] { writeGlb(json.view(), bin) }
 
 // ---- the checks, the same for each way in ----
 
@@ -318,7 +288,7 @@ fn checkModel(g: &Gltf, label: &str) {
 fn main() i32 {
   // 0: embedded base64
   let bin0 = buildBuffer(0);
-  let json0 = buildJson(0, bin0.b.len(), 0usize, base64(bin0.b.view()).view());
+  let json0 = buildJson(0, bin0.len(), 0usize, base64(bin0.view()).view());
   match loadGltfBytes(json0.view(), true) {
     case let Ok(g) { checkModel(&g, "embedded"); }
     case let Err(e) { expect(false, e.reason.view()); }
@@ -332,8 +302,8 @@ fn main() i32 {
   // 1: a .glb
   let bin1 = buildBuffer(1);
   let png = pngBytes();
-  let json1 = buildJson(1, bin1.b.len(), png.len(), "");
-  let file1 = glb(&json1, &bin1.b);
+  let json1 = buildJson(1, bin1.len(), png.len(), "");
+  let file1 = glb(&json1, &bin1);
   match loadGltfBytes(file1.view(), true) {
     case let Ok(g) { checkModel(&g, "glb"); }
     case let Err(e) { expect(false, e.reason.view()); }
@@ -346,8 +316,8 @@ fn main() i32 {
   let pngPath = dir.join("tex.png");
   let gltfPath = dir.join("cube.gltf");
   let bin2 = buildBuffer(0);
-  let json2 = buildJson(2, bin2.b.len(), 0usize, "");
-  require(fs.writeFile(&binPath, bin2.b.view()) is Ok, "a fixture file is written");
+  let json2 = buildJson(2, bin2.len(), 0usize, "");
+  require(fs.writeFile(&binPath, bin2.view()) is Ok, "a fixture file is written");
   require(fs.writeFile(&pngPath, png.view()) is Ok, "a fixture file is written");
   require(fs.writeFile(&gltfPath, json2.view()) is Ok, "a fixture file is written");
   match loadGltf(&gltfPath, true) {

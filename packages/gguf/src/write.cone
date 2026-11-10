@@ -142,20 +142,21 @@ pub struct Writer {
     self.addTensor(name, kind, dims, bytes)
   }
 
-  // The file's bytes
-  pub fn finish(self: &) Result[List[u8], GgufError] {
+  // The file's bytes, as the writer's own chain of buffers (a reader that
+  // wants one block copies it out with 'Chain.copyOut' at its edge)
+  pub fn finish(self: &) Result[Chain, GgufError] {
     // The alignment: general.alignment if put, else 32
     var alignment = 32u64;
     each e in &meta {
       if e.key.view() == "general.alignment" {
         let Some(a) = e.value.asU64() else {
-          return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
+          return Err[Chain, GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
         };
         alignment = a;
       }
     }
     if alignment == 0u64 || (alignment & (alignment - 1u64)) != 0u64 || alignment > maxAlignment() {
-      return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
+      return Err[Chain, GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
     }
 
     var out = streams.Writer.make(65536usize);
@@ -167,7 +168,7 @@ pub struct Writer {
       putStr(&mut out, e.key.view());
       out.putLE[u32](e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
-        case let Some(err) {return Err[List[u8], GgufError](err);}
+        case let Some(err) {return Err[Chain, GgufError](err);}
         case is None {}
       }
     }
@@ -188,11 +189,6 @@ pub struct Writer {
       out.pad(usize.from(alignment));
       out.put(p.data.view());
     }
-    // The file as one list, the bytes copied out of the writer's buffers once
-    let chain = out.finish();
-    var file = List[u8]();
-    file.resize(chain.len(), 0u8);
-    _ = chain.copyOut(0usize, file.viewMut());
-    Ok[List[u8], GgufError](file)
+    Ok[Chain, GgufError](out.finish())
   }
 }
