@@ -689,15 +689,12 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value))
             && !modAddSetup(name)) {
             // A local of the block that gives a global its value (scope 1 reached with no
-            // function around, where a parameter's scope is 0 here) is no global, and
-            // naming it the fault would mislead: the block may not declare a computed local
+            // function around, where a parameter's scope is 0 here) is no global: it is a
+            // local of the setup that runs the block, and may be started by any value.
+            // Whether the block is run at all is the global's to say, and it says so
+            // below it (a 'var' global's value must be a literal), so nothing is
+            // reported at the local
             if (name->scope == 1 && !(name->flags & FlagStatic) && pstate->fn == NULL && pstate->scope >= 1) {
-                // The variable holding a '?' operand reports nothing: with no function here
-                // and no try block (refused unchecked, block.c), propagateLower always
-                // refuses that '?', the one fault here
-                if (!(name->flags & FlagQuesHeld))
-                    errorMsgNode((INode*)name, ErrorNotLit,
-                        "A block that gives a global its value cannot declare a local that is computed at run time: only a constant can start a variable here. Put the work in a function, which can declare locals, and give the global a call to it.");
             }
             else
                 errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");

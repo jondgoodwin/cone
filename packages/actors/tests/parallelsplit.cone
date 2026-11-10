@@ -1,0 +1,272 @@
+// A 'parallel each' splits on demand, as rayon's adaptive splitter does: a
+// piece carries a budget of splits (the worker count to begin with), halves it
+// at each cut, and a piece a thief takes starts again with a fresh one. There is
+// no grain and no floor, so a loop of costly items reaches every worker.
+//
+//   - every item runs exactly once, in loops of 1, 2, 3, 611 and 100,000
+//     items, and whatever the number of workers (CONE_SPLIT_WORKERS, default 24;
+//     the file is run again at 1, 2 and 8 by hand, a process having one worker
+//     count)
+//   - the pieces: actors.parallelEach calls its body once a piece, so a body
+//     that counts its calls counts the pieces; there are never more pieces than
+//     items, and a one-item loop is one piece
+//   - a loop of 611 costly items run from main reaches more than 8 distinct
+//     workers when there are 24 of them (the old grain gave at most 8 pieces)
+//   - 'parallel each' from main over a list gives the plain loop's answer
+//   - 'parallel each' in an actor's behaviour (the form cut at the loop's end)
+//     runs each item exactly once, at 1, 2, 3 and 611 items, and the costly one
+//     reaches more than 8 workers when there are 24
+//
+// The actors' numbers are read after finalAll(), which waits until they are quiet.
+
+mod parallelsplit;
+
+import testing use *;
+import collections use *;
+import libc;
+import actors;
+import thread;
+import time;
+
+// ---- the number of workers ----
+
+fn workerCount() u32 {
+  let val = libc.getenv("CONE_SPLIT_WORKERS");
+  if val as usize == 0usize {
+    return 24u32;
+  }
+  var n = 0u32;
+  var p = val;
+  while *p >= 48u8 && *p <= 57u8 {
+    n = n * 10u32 + u32.from(*p - 48u8);
+    p = p + 1;
+  }
+  if n == 0u32 {24u32} else {n}
+}
+
+// Work of a few tens of microseconds an item
+fn cost(i: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
+  while k < 100000u64 {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x
+}
+
+fn bits(v: u64) u64 {
+  var n = 0u64;
+  var x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n
+}
+
+// ---- pieces, counted through the library form ----
+
+struct Tally {
+  pub marks: *u8;               // item i's count: a piece writes only its own items
+  pub pieces: Atomic[u64];
+  pub ran: Atomic[u64];         // bit i: worker i ran a piece
+  pub begun: Atomic[u64];       // items begun
+  pub costly: bool;
+}
+
+fn bodyCount(data: *u8, lo: usize, hi: usize) {
+  let t = data as *Tally;
+  (*t).pieces.add(1u64);
+  let w = actors.workerIndex();
+  if w < 64u32 {
+    (*t).ran.bitOr(1u64 << u64.from(w));
+  }
+  var i = lo;
+  while i < hi {
+    if (*t).costly {
+      // A loop splits on demand: the caller runs its first items itself and
+      // offers the rest to the others only after a little time. Once 100 items
+      // have begun the loop has split, with items left for the others to take:
+      // wait until more than 8 workers have run an item, or three seconds go by
+      // (the check then reads the answer)
+      if (*t).begun.add(1u64) >= 99u64 && workerCount() >= 24u32 {
+        var waited = 0u64;
+        while bits((*t).ran.load()) <= 8u64 && waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
+      }
+      cost(u64.from(i));
+    }
+    *((*t).marks + i) = *((*t).marks + i) + 1u8;
+    i = i + 1usize;
+  }
+}
+
+// Run actors.parallelEach over [0, n), check that every item was run once, and
+// answer the tally
+fn runOf(n: usize, costly: bool, what: &str) Tally {
+  let marks = libc.calloc(n, 1usize) as *u8;
+  var t = Tally(marks, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), costly);
+  actors.parallelEach(0usize, n, &bodyCount, &mut t as *Tally as *u8);
+  var once = true;
+  var i = 0usize;
+  while i < n {
+    if *(marks + i) != 1u8 {
+      once = false;
+    }
+    i = i + 1usize;
+  }
+  expect(once, what);
+  libc.free(marks);
+  t
+}
+
+// ---- 'parallel each' from main ----
+
+fn weigh(i: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
+  while k < (i * i) % 53u64 * 20u64 {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x
+}
+
+fn listLoopIsRight(n: u64) bool {
+  var l = List[u64]();
+  var i = 0u64;
+  while i < n {
+    l.push(i);
+    i = i + 1u64;
+  }
+  parallel each v in l.mutItems() {
+    *v = weigh(*v) + 1u64;
+  }
+  var right = u64.from(l.len) == n;
+  i = 0u64;
+  each v in &l {
+    if *v != weigh(i) + 1u64 {
+      right = false;
+    }
+    i = i + 1u64;
+  }
+  right
+}
+
+// ---- 'parallel each' in an actor's behaviour ----
+
+struct Outcome {
+  pub runs: Atomic[u64];        // loops finished
+  pub wrong: Atomic[u64];       // items wrong
+  pub bigWorkers: Atomic[u64];  // workers that ran a pass of the 611-item loop
+}
+
+let outcome: Outcome;
+
+fn @initpure init() {
+  outcome = Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Looper {
+  vals: List[u64];
+  ran: Atomic[u64];       // bit i: worker i ran a pass
+  begun: Atomic[u64];     // passes begun
+
+  fn init(self: &new, n: u64) {
+    var l = List[u64]();
+    var i = 0u64;
+    while i < n {
+      l.push(i);
+      i = i + 1u64;
+    }
+    *self = Self(vals: l, ran: Atomic[u64].of(0u64), begun: Atomic[u64].of(0u64));
+  }
+
+  pub async fn run(self, big: bool) u64 {
+    parallel each v in vals.mutItems() {
+      let w = actors.workerIndex();
+      if w < 64u32 {
+        ran.bitOr(1u64 << u64.from(w));
+      }
+      // The big loop waits as bodyCount does, once 100 passes have begun
+      if big && begun.add(1u64) >= 99u64 && workerCount() >= 24u32 {
+        var waited = 0u64;
+        while bits(ran.load()) <= 8u64 && waited < 3000u64 {
+          thread.sleep(time.Duration.fromMillis(1));
+          waited = waited + 1u64;
+        }
+      }
+      *v = cost(*v);
+    }
+    var wrong = 0u64;
+    var i = 0u64;
+    each v in &vals {
+      if *v != cost(i) {
+        wrong = wrong + 1u64;
+      }
+      i = i + 1u64;
+    }
+    outcome.runs.add(1u64);
+    outcome.wrong.add(wrong);
+    let used = bits(ran.load());
+    if big {
+      outcome.bigWorkers.store(used);
+    }
+    used
+  }
+}
+
+actor Driver {
+  pub async fn go(self) {
+    let a = Looper(1u64);
+    let b = Looper(2u64);
+    let c = Looper(3u64);
+    let d = Looper(611u64);
+    await a.run(false);
+    await b.run(false);
+    await c.run(false);
+    await d.run(true);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let workers = workerCount();
+  actors.configure(actors.Options(workers: workers));
+
+  // Each item once, and the pieces
+  let sizes = [1usize, 2usize, 3usize, 611usize, 100000usize];
+  var s = 0usize;
+  while s < 5usize {
+    let n = sizes[s];
+    let t = runOf(n, false, "every item once");
+    expect(t.pieces.load() >= 1u64 && t.pieces.load() <= u64.from(n), "pieces: at least one, no more than the items");
+    if n == 1usize {
+      expectUInt(t.pieces.load(), 1u64, "1 item: one piece");
+    }
+    s = s + 1usize;
+  }
+
+  // Costly items reach the workers
+  let big = runOf(611usize, true, "611 costly items, each once");
+  expect(workers < 24u32 || bits(big.ran.load()) > 8u64, "611 costly items reach more than 8 workers");
+
+  // From main, over a list
+  expect(listLoopIsRight(1u64), "a list of 1 from main");
+  expect(listLoopIsRight(100u64), "a list of 100 from main");
+  expect(listLoopIsRight(611u64), "a list of 611 from main");
+
+  // In an actor's behaviour
+  {
+    let dr = Driver();
+    dr.go();
+  }
+  finalAll();
+  expectUInt(outcome.runs.load(), 4u64, "four loops finished in a behaviour");
+  expectUInt(outcome.wrong.load(), 0u64, "and every item of them was right");
+  expect(workers < 24u32 || outcome.bigWorkers.load() > 8u64, "the 611-item loop in a behaviour reaches more than 8 workers");
+  done()
+}
