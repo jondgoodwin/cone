@@ -752,12 +752,20 @@ pub struct @opaque Array[T] is GcTraceElements {
     if src.len != self.len {
       panic("Array.copyFrom: the two are not the same length", file, line);
     }
+    // The two may overlap (a '&mut' and a '&' of one array can be held together), so each
+    // value is cloned before the one it replaces is finalized, and the walk runs backward when
+    // src lies before this array: the result is that of the Copy form's memmove, every
+    // source read before it is overwritten.
     let p = self as *T;
-    var i = 0usize;
-    while i < self.len {
+    let q = src as *T;
+    let n = self.len;
+    var k = 0usize;
+    while k < n {
+      let i = if q < p { n - 1usize - k } else { k };
+      let c = (&src[i]).clone();
       mem.finalize[T](p + i);
-      mem.writeRaw[T](p + i, (&src[i]).clone());
-      i = i + 1usize;
+      mem.writeRaw[T](p + i, c);
+      k = k + 1usize;
     }
   }
 
