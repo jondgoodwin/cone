@@ -1,0 +1,72 @@
+// Aligned raw blocks, core's 'RawBlocks.allocAligned' and 'releaseAligned': a
+// block of n bytes whose address is a multiple of a power-of-two 'align', for
+// a slab that finds its header by masking a cell's address. At 4 KiB, 64 KiB,
+// 256 KiB and 1 MiB (a size equal to the alignment, as a slab is) the address
+// has no low bits set, the whole block is written and read back, and it is
+// given back through releaseAligned; two blocks live together are distinct;
+// masking an address inside the block gives the block's start; a block of no
+// bytes, a small align (1) and a null release are all fine.
+
+mod region_aligned_blocks;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Allocates one block of 'size' aligned to 'size', writes every byte, reads
+// every byte back, and answers 1 when the address is aligned and every byte
+// held what was written, 0 otherwise
+fn check(size: usize) i64 {
+  let p = RawBlocks.allocAligned(size, size);
+  var ok = 1i64;
+  if (p as usize) & (size - 1usize) != 0usize { ok = 0i64; }
+  var k = 0usize;
+  var v = 0u8;
+  while k < size {
+    *(p + k) = v;
+    v = if v == 250u8 {0u8} else {v + 1u8};
+    k = k + 1usize;
+  }
+  k = 0usize;
+  v = 0u8;
+  while k < size {
+    if *(p + k) != v { ok = 0i64; }
+    v = if v == 250u8 {0u8} else {v + 1u8};
+    k = k + 1usize;
+  }
+  // The mask a cell inside the block would use to find the block's start
+  let inside = p + (size / 2usize);
+  if ((inside as usize) & ~(size - 1usize)) != (p as usize) { ok = 0i64; }
+  RawBlocks.releaseAligned(p);
+  ok
+}
+
+fn main() i32 {
+  show("4KiB", check(4096usize));
+  show("64KiB", check(65536usize));
+  show("256KiB", check(262144usize));
+  show("1MiB", check(1048576usize));
+
+  let a = RawBlocks.allocAligned(65536usize, 65536usize);
+  let b = RawBlocks.allocAligned(65536usize, 65536usize);
+  show("two-live-blocks-differ", if a != b {1i64} else {0i64});
+  show("second-aligned", if ((b as usize) & 65535usize) == 0usize {1i64} else {0i64});
+  RawBlocks.releaseAligned(a);
+  RawBlocks.releaseAligned(b);
+
+  let z = RawBlocks.allocAligned(0usize, 4096usize);
+  show("zero-bytes-aligned", if ((z as usize) & 4095usize) == 0usize {1i64} else {0i64});
+  RawBlocks.releaseAligned(z);
+
+  let s = RawBlocks.allocAligned(24usize, 1usize);
+  *(s + 23usize) = 5u8;
+  show("align-one", i64.from(*(s + 23usize)));
+  RawBlocks.releaseAligned(s);
+  RawBlocks.releaseAligned(null);
+  0i32
+}
