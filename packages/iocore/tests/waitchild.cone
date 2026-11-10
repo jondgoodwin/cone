@@ -1,0 +1,325 @@
+// A child process's end on a Loop (PR 2 of the pipe op): WaitChild over real
+// children, adopted with lp.adoptChild (Windows: the process HANDLE, which the
+// loop then owns; Linux: the pid, the loop owning a pidfd).
+//
+// 1. Exit codes: a child exiting 0, and one exiting 5: Done, n the code.
+// 2. A child ended before the wait is submitted: Done at once.
+// 3. A child ended from outside: Windows' TerminateProcess(7) is Done(7);
+//    Linux's SIGKILL is Done(0) with code 9, the signal.
+// 4. Cancel: a wait on a running child, cancelled: Cancelled; the child, ended
+//    afterwards, is still waited for.
+// 5. Deadline: TimedOut, not before the deadline.
+// 6. close with a wait in flight: that wait answers Cancelled, the handle names
+//    nothing after.
+// 7. A second WaitChild on the same handle fails on both systems (Linux: the
+//    first reaped the child; Windows: the handle's 'waited' flag).
+// 8. Refused: a WaitChild on a handle that is no child fails.
+// 9. The race: a wait cancelled (or timed out) at every moment around its
+//    child's end, many times over. Each wait answers exactly once, Done or the
+//    cancel, and nothing arrives after; a completion for a record already
+//    answered would crash or double-answer here.
+
+mod waitchild;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+extern {
+  fn @c(system) CreateProcessW(app: *u16, cmd: *u16, pa: *u8, ta: *u8, inherit: i32, flags: u32,
+      env: *u8, cwd: *u16, si: *u8, pi: *u8) i32;
+  fn @c(system) TerminateProcess(h: usize, code: u32) i32;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c("posix_spawn") lxSpawn(pid: *i32, path: *u8, fa: *u8, attr: *u8, argv: *usize, envp: *usize) i32;
+  fn @c("kill") lxKill(pid: i32, sig: i32) i32;
+}
+
+// A command line as UTF-16, NUL-ended
+fn wide(s: &str, out: &mut Array[u16, 200]) {
+  var k = 0usize;
+  while k < s.len {out[k] = u16.from(s[k]); k = k + 1usize;}
+}
+
+// A child that exits with code, after the given seconds (0 or 2 or 30) of waiting. The
+// OS's handle for it: Windows' process HANDLE, Linux's pid
+fn startChild(code: u32, seconds: u32) usize {
+  #if #os == .windows {
+    var cmd = Array[u16, 200]() <- fill 0u16;
+    if seconds == 0u32 {
+      if code == 0u32 {wide("cmd.exe /c exit 0", &mut cmd);} else {wide("cmd.exe /c exit 5", &mut cmd);}
+    } else if seconds == 2u32 {
+      wide("cmd.exe /c ping -n 3 127.0.0.1 >nul", &mut cmd);
+    } else {
+      wide("cmd.exe /c ping -n 40 127.0.0.1 >nul", &mut cmd);
+    }
+    var si = Array[usize, 13]() <- fill 0usize;
+    si[0] = 104usize;
+    var pi = Array[usize, 3]() <- fill 0usize;
+    // CREATE_NO_WINDOW; no inherited handles
+    if CreateProcessW(null, &mut cmd as *u16, null, null, 0i32, 0x08000000u32, null, null, &mut si as *u8, &mut pi as *u8) == 0i32 {
+      return 0usize;
+    }
+    CloseHandle(pi[1]);
+    pi[0]
+  } #else {
+    var path = Array[u8, 16]() <- fill 0u8;
+    var a0 = Array[u8, 16]() <- fill 0u8;
+    var a1 = Array[u8, 16]() <- fill 0u8;
+    var a2 = Array[u8, 32]() <- fill 0u8;
+    let p = "/bin/sh";
+    var k = 0usize;
+    while k < p.len {path[k] = p[k]; k = k + 1usize;}
+    a0[0] = 115u8;      // "sh"
+    a0[1] = 104u8;
+    a1[0] = 45u8;       // "-c"
+    a1[1] = 99u8;
+    var script = "exit 5";
+    if seconds == 0u32 {
+      if code == 0u32 {script = "exit 0";}
+    } else if seconds == 2u32 {
+      script = "exec sleep 2";
+    } else {
+      script = "exec sleep 40";
+    }
+    k = 0usize;
+    while k < script.len {a2[k] = script[k]; k = k + 1usize;}
+    var argv = Array[usize, 5]() <- fill 0usize;
+    argv[0] = &mut a0 as usize;
+    argv[1] = &mut a1 as usize;
+    argv[2] = &mut a2 as usize;
+    var envp = Array[usize, 1]() <- fill 0usize;
+    var pid = 0i32;
+    if lxSpawn(&mut pid, &mut path as *u8, null, null, &mut argv as *usize, &mut envp as *usize) != 0i32 {return 0usize;}
+    usize.from(pid)
+  }
+}
+
+// End a running child from outside
+fn kill(raw: usize) {
+  #if #os == .windows {
+    TerminateProcess(raw, 7u32);
+  } #else {
+    lxKill(i32.from(raw), 9i32);
+  }
+}
+
+struct Got {
+  pub status: u32;
+  pub n: usize;
+  pub code: u32;
+}
+
+// Answers that came while another was awaited, kept with their tokens
+struct Late {
+  pub token: u64;
+  pub got: Got;
+}
+
+var late: List[Late];
+
+fn @initpure init() {
+  late = List[Late]();
+}
+
+fn pump(lp: &mut Loop, until: Instant) {
+  var out = List[Completion]();
+  lp.poll(until, &mut out);
+  each c in out.drain() {
+    late.push(Late(c.token, Got(c.status, c.n, c.code)));
+  }
+}
+
+fn takeLate(tok: u64) Option[Got] {
+  var k = 0usize;
+  while k < late.len() {
+    if late[k].token == tok {
+      late.swap(k, late.len() - 1usize);
+      match late.pop() {
+        case let Some(l) {
+          let g = l.(got);
+          return Some[Got](g);
+        }
+        else {}
+      }
+    }
+    k = k + 1usize;
+  }
+  None[Got]
+}
+
+fn await1(lp: &mut Loop, tok: u64, seconds: i64) Got {
+  let until = Instant.now() + Duration.fromSeconds(seconds);
+  while true {
+    match takeLate(tok) {
+      case let Some(g) {return g;}
+      else {}
+    }
+    if Instant.now() >= until {break;}
+    pump(lp, until);
+  }
+  Got(99u32, 0usize, 0u32)
+}
+
+// Whether no answer with token tok comes in ms milliseconds
+fn quiet(lp: &mut Loop, tok: u64, ms: i64) bool {
+  let until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {pump(lp, until);}
+  var k = 0usize;
+  while k < late.len() {
+    if late[k].token == tok {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+fn adopt(lp: &mut Loop, raw: usize) Handle {
+  match lp.adoptChild(raw) {
+    case let Ok(h) {return h;}
+    case let Err(e) {}
+  }
+  Handle.none()
+}
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+
+    // 1. Exit codes
+    var raw = startChild(0u32, 0u32);
+    expect(raw != 0usize, "1: a child starts");
+    var h = adopt(&mut lp, raw);
+    expect(!h.isNone() && lp.isOpen(h), "1: ...and is adopted");
+    lp.submit(Op.WaitChild(h), Target.Here(1u64));
+    let g1 = await1(&mut lp, 1u64, 20i64);
+    expect(g1.status == diag.outcomeDone && g1.n == 0usize && g1.code == 0u32, "1: exit 0 is Done(0), code 0");
+    // 7. A second wait on the same handle
+    lp.submit(Op.WaitChild(h), Target.Here(2u64));
+    let g2 = await1(&mut lp, 2u64, 20i64);
+    expect(g2.status == diag.outcomeFailed, "7: a second wait fails, on both systems");
+    lp.close(h);
+    raw = startChild(5u32, 0u32);
+    h = adopt(&mut lp, raw);
+    lp.submit(Op.WaitChild(h), Target.Here(3u64));
+    let g3 = await1(&mut lp, 3u64, 20i64);
+    expect(g3.status == diag.outcomeDone && g3.n == 5usize && g3.code == 0u32, "1: exit 5 is Done(5), code 0");
+    lp.close(h);
+
+    // 2. A child that has ended already
+    raw = startChild(0u32, 0u32);
+    h = adopt(&mut lp, raw);
+    lp.submit(Op.WaitChild(h), Target.Here(4u64));
+    await1(&mut lp, 4u64, 20i64);
+    lp.submit(Op.WaitChild(h), Target.Here(5u64));
+    let g4 = await1(&mut lp, 5u64, 20i64);
+    expect(g4.status == diag.outcomeFailed, "2: a wait on a child already waited for fails, ended or not");
+    lp.close(h);
+    raw = startChild(5u32, 0u32);
+    lp.after(Instant.now() + Duration.fromMillis(1000i64), Target.Here(6u64));
+    await1(&mut lp, 6u64, 5i64);
+    h = adopt(&mut lp, raw);
+    lp.submit(Op.WaitChild(h), Target.Here(7u64));
+    let g5 = await1(&mut lp, 7u64, 20i64);
+    expect(g5.status == diag.outcomeDone && g5.n == 5usize, "2: a child ended before the adopt and the wait: Done(5)");
+    lp.close(h);
+
+    // 3. Ended from outside
+    raw = startChild(0u32, 30u32);
+    h = adopt(&mut lp, raw);
+    lp.submit(Op.WaitChild(h), Target.Here(10u64));
+    expect(quiet(&mut lp, 10u64, 200i64), "3: a wait on a running child waits");
+    kill(raw);
+    let g6 = await1(&mut lp, 10u64, 20i64);
+    #if #os == .windows {
+      expect(g6.status == diag.outcomeDone && g6.n == 7usize && g6.code == 0u32, "3: TerminateProcess(7) is Done(7)");
+    } #else {
+      expect(g6.status == diag.outcomeDone && g6.n == 0usize && g6.code == 9u32, "3: SIGKILL is Done(0), code 9");
+    }
+    lp.close(h);
+
+    // 4. Cancel
+    raw = startChild(0u32, 30u32);
+    h = adopt(&mut lp, raw);
+    let id = lp.submit(Op.WaitChild(h), Target.Here(20u64));
+    expect(quiet(&mut lp, 20u64, 100i64), "4: the wait waits");
+    expect(lp.cancel(id), "4: cancel taken");
+    let g7 = await1(&mut lp, 20u64, 5i64);
+    expect(g7.status == diag.outcomeCancelled, "4: Cancelled");
+    lp.submit(Op.WaitChild(h), Target.Here(21u64));
+    kill(raw);
+    let g8 = await1(&mut lp, 21u64, 20i64);
+    expect(g8.status == diag.outcomeDone, "4: the child is still waited for after a cancel");
+    lp.close(h);
+
+    // 5. Deadline
+    raw = startChild(0u32, 30u32);
+    h = adopt(&mut lp, raw);
+    let t0 = Instant.now();
+    lp.submitBy(Op.WaitChild(h), Target.Here(30u64), t0 + Duration.fromMillis(150i64));
+    let g9 = await1(&mut lp, 30u64, 5i64);
+    let took = (Instant.now() - t0).millis();
+    expect(g9.status == diag.outcomeTimedOut, "5: TimedOut");
+    expect(took >= 140i64, "5: ...not before the deadline");
+    kill(raw);
+    lp.submit(Op.WaitChild(h), Target.Here(31u64));
+    await1(&mut lp, 31u64, 20i64);
+    lp.close(h);
+
+    // 6. close with a wait in flight
+    raw = startChild(0u32, 2u32);
+    h = adopt(&mut lp, raw);
+    lp.submit(Op.WaitChild(h), Target.Here(40u64));
+    expect(quiet(&mut lp, 40u64, 50i64), "6: the wait waits");
+    expect(lp.close(h), "6: close");
+    let g10 = await1(&mut lp, 40u64, 5i64);
+    expect(g10.status == diag.outcomeCancelled, "6: the wait in flight answers Cancelled");
+    expect(!lp.isOpen(h), "6: ...and the handle names nothing");
+
+    // 8. Refused
+    lp.submit(Op.WaitChild(Handle.none()), Target.Here(50u64));
+    let g11 = await1(&mut lp, 50u64, 5i64);
+    expect(g11.status == diag.outcomeFailed, "8: a wait on no handle fails");
+    let l = lp.mustListen(SocketAddr.localhost(0u16));
+    lp.submit(Op.WaitChild(l), Target.Here(51u64));
+    let g12 = await1(&mut lp, 51u64, 5i64);
+    expect(g12.status == diag.outcomeFailed, "8: ...and one on a listener's handle");
+    lp.close(l);
+
+    // 9. The race: cancel or deadline at every moment around the child's end
+    var answers = 0usize;
+    var dones = 0usize;
+    var cuts = 0usize;
+    var doubles = 0usize;
+    var i = 0usize;
+    while i < 600usize {
+      raw = startChild(0u32, 0u32);
+      h = adopt(&mut lp, raw);
+      let tok = 1000u64 + u64.from(i);
+      let delay = Duration.fromMillis(i64.from(i % 30usize));
+      let id2 = if i % 2usize == 0usize {
+        lp.submit(Op.WaitChild(h), Target.Here(tok))
+      } else {
+        lp.submitBy(Op.WaitChild(h), Target.Here(tok), Instant.now() + delay)
+      };
+      if i % 2usize == 0usize {
+        let until = Instant.now() + delay;
+        while Instant.now() < until {pump(&mut lp, until);}
+        lp.cancel(id2);
+      }
+      let g = await1(&mut lp, tok, 20i64);
+      if g.status == diag.outcomeDone {dones = dones + 1usize; answers = answers + 1usize;}
+      else if g.status == diag.outcomeCancelled || g.status == diag.outcomeTimedOut {cuts = cuts + 1usize; answers = answers + 1usize;}
+      // Nothing more for it
+      if !quiet(&mut lp, tok, 3i64) {doubles = doubles + 1usize;}
+      lp.close(h);
+      i = i + 1usize;
+    }
+    expectUInt(u64.from(answers), 600u64, "9: every wait answered once, Done or cut");
+    expectUInt(u64.from(doubles), 0u64, "9: ...and none twice");
+    expect(dones > 0usize && cuts > 0usize, "9: the sweep saw both ends of the race");
+  }
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
