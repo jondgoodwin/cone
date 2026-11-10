@@ -5054,6 +5054,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         return;
     }
 
+    // 'Items[i32]' over a generic alias: its target, with the arguments in
+    if (genericAliasExpand(pstate, nodep))
+        return;
+
     // 'C.Cursor' in an instance: the type C's argument says its bound's
     // associated type is, which stands in its place (genericAssocPathNameRes)
     if (genericAssocPathTypeCheck(pstate, (INode**)nodep))

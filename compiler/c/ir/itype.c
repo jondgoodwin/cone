@@ -1597,6 +1597,15 @@ int itypeRefuseBareGeneric(INode *type) {
     if (!isNameUseNode(type))
         return 0;
     INode *dcl = ((NameUseNode*)type)->dclnode;
+    // A generic alias is a type only with its arguments, 'Items[i64]'
+    if (dcl && dcl->tag == AliasDclTag && ((AliasDclNode*)dcl)->genericinfo) {
+        AliasDclNode *alias = (AliasDclNode*)dcl;
+        uint32_t expected = alias->genericinfo->parms->used;
+        errorMsgNode(type, ErrorArgCount, "The alias %s takes %u type argument%s, and this gives 0.",
+            &alias->namesym->namestr, expected, expected == 1 ? "" : "s");
+        ((NameUseNode*)type)->dclnode = errorType;
+        return 1;
+    }
     while (dcl && dcl->tag == AliasDclTag && !(dcl->flags & FlagTypeAlias)) {
         INode *target = ((AliasDclNode*)dcl)->target;
         dcl = (target && isNameUseNode(target)) ? ((NameUseNode*)target)->dclnode : target;
@@ -2270,8 +2279,11 @@ int itypeIsGenericType(INode *type) {
     // 'Pair[i32, f32](1, 2.)' is a value: its type is its objfn
     if (!isNameUseNode(gentype->objfn) || (gentype->flags & FlagNew))
         return 0;
+    // 'Items[i64]' over a generic alias is the type its target comes to
+    INode *named = ((NameUseNode*)gentype->objfn)->dclnode;
+    int genalias = named && named->tag == AliasDclTag && ((AliasDclNode*)named)->genericinfo != NULL;
     INode *dclnode = nameUseGetDcl((NameUseNode*)gentype->objfn);
-    if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
+    if (!genalias && (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL))
         return 0;
     return gentype->args != NULL && gentype->args->used > 0 && nodesGet(gentype->args, 0) != NULL;
 }
