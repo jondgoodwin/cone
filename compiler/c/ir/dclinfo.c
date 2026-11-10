@@ -17,7 +17,7 @@ void dclInfoJoin(INode *node, INode *owner) {
     // What the declaration's own '@c', '@initpure', '@intrinsic',
     // '@threadlocal' and '@workgroup' stated survive the join; everything else
     // is written here
-    uint16_t facts = dclinfo->facts & (DclStated | DclInitPure | DclIntrinsic | DclThreadLocal | DclWorkgroup | DclActorGen);
+    uint16_t facts = dclinfo->facts & (DclStated | DclInitPure | DclNoAlias | DclIntrinsic | DclThreadLocal | DclWorkgroup | DclActorGen);
     // The parser's flag, read once: this is where the bit inodeIsPrivate reads
     // is written. A module carries a visibility only where it has a parent to be
     // visible outside of -- a submodule, which its parent's subfolder drew. A
