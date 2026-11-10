@@ -122,15 +122,33 @@ alias CStr = cstr;
 fn blockNew[T](r: *MemRegion, n: usize) *T inline {
   let bytes = blockBytes[T](n);
   let p = (r as &MemRegion).allocate(bytes, mem.alignof[T]()) as *T;
-  if p == null && bytes != 0usize { panic("collections: out of memory for a block"); }
+  if p == null && bytes != 0usize { blockFailed(); }
   p
 }
 
 fn blockGrow[T](r: *MemRegion, block: *T, old: usize, want: usize) *T inline {
   let bytes = blockBytes[T](want);
   let p = (r as &MemRegion).resize(block as *u8, old * mem.sizeof[T](), bytes, mem.alignof[T]()) as *T;
-  if p == null && bytes != 0usize { panic("collections: out of memory for a block"); }
+  if p == null && bytes != 0usize { blockFailed(); }
   p
+}
+
+// The failure paths of the block calls, each out of line and not returning, so LLVM
+// takes the edge into one as cold and the blocks above stay small enough to inline
+fn blockFailed() Never {
+  panic("collections: out of memory for a block")
+}
+
+fn blockTooBig() Never {
+  panic("collections: a block of this many values is too big")
+}
+
+fn listTooMany() Never {
+  panic("collections: List.reserve: more values than a usize can count")
+}
+
+fn tableFailed() Never {
+  panic("collections: out of memory for a table")
 }
 
 // The bytes of a block of n values of T. A count whose bytes do not fit a usize is a
@@ -139,7 +157,7 @@ fn blockGrow[T](r: *MemRegion, block: *T, old: usize, want: usize) *T inline {
 fn blockBytes[T](n: usize) usize inline {
   let size = mem.sizeof[T]();
   let bytes = n * size;
-  if size != 0usize && bytes / size != n { panic("collections: a block of this many values is too big"); }
+  if size != 0usize && bytes / size != n { blockTooBig(); }
   bytes
 }
 
@@ -254,7 +272,7 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   pub fn reserve(self: &mut, more: usize) {
     // 'used <= cap', so 'cap - used' does not wrap, where 'used + more' could
     if more <= cap - used { return; }
-    if more > (0usize - 1usize) - used { panic("collections: List.reserve: more values than a usize can count"); }
+    if more > (0usize - 1usize) - used { listTooMany(); }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
     if want < 4usize { want = 4usize; }
@@ -2106,7 +2124,7 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
   fn resize(self: &mut, buckets: usize) {
     let entrySize = mem.sizeof[DictEntry[K, V]]();
     let base = (region as &MemRegion).allocate(self.tableBytes(buckets), mem.alignof[DictEntry[K, V]]());
-    if base == null { panic("collections: out of memory for a table"); }
+    if base == null { tableFailed(); }
     let fresh = base + buckets * entrySize;
     libc.memset(fresh, 255i32, buckets + 8usize);
     let freshSlots = base as *DictEntry[K, V];
@@ -2689,7 +2707,7 @@ pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesR
   fn resize(self: &mut, buckets: usize) {
     if buckets > 4294967296usize { panic("collections: OrderedDict is past 2^32 buckets", srcFile(), srcLine()); }
     let base = (region as &MemRegion).allocate(buckets * 5usize + 8usize, mem.alignof[u32]());
-    if base == null { panic("collections: out of memory for a table"); }
+    if base == null { tableFailed(); }
     let fresh = base + buckets * 4usize;
     libc.memset(fresh, 255i32, buckets + 8usize);
     let freshIndex = base as *u32;
