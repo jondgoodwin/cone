@@ -2294,9 +2294,13 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
         // A writable borrow handed to a parameter declared read-only is read
         // only by the callee: it stores nothing through it (a '&mut' key
-        // given to an index's '&'-typed key)
+        // given to an index's '&'-typed key). Only where nothing in the
+        // pointee can change through a shared view (a lock, an atomic, a
+        // writable reference inside: itypeMayMutateShared)
         if (depth && isref && parmtype && parmtype->tag == RefTag
-                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)) {
+                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
+                && !permIsLock(((RefNode *)parmtype)->perm)
+                && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
             int pdepth = itypeWritableBorrowDepth(parmtype, 3);
             if (pdepth < depth)
                 depth = pdepth;

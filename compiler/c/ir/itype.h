@@ -143,6 +143,12 @@ int itypeHoldsTracedPlaced(INode *type);
 // struct is type checked.
 int itypeHoldsAtomic(INode *type);
 
+// May a callee holding only a read-only borrow of a value of this type still
+// change it: an atomic, a lock, a writable reference or raw pointer inside, an
+// arena, or a type not seen all of? Conservative (yes when unsure); 'most'
+// bounds the levels walked (past it, yes). Not remembered.
+int itypeMayMutateShared(INode *type, int most);
+
 // Does a value of this type hold a borrowed reference (not a function's) where
 // it sits, inline rather than through an owning reference or a pointer?
 int itypeHoldsBorrow(INode *type);

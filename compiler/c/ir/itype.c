@@ -1244,6 +1244,64 @@ int itypeHoldsAtomic(INode *type) {
     }
 }
 
+// May a callee holding only a read-only borrow of a value of this type still
+// change it (so store a borrow in it)? Conservative: yes for an atomic, a lock
+// (a struct declaring 'LockPermission', or a reference whose permission is a
+// lock), a writable reference found anywhere inside (a shared path writing
+// through '&mut'), a raw pointer, an arena, a virtual reference, and any type
+// not seen all of (a type parameter, a trait, a closure); no only for numbers,
+// and arrays, tuples, structs and references made wholly of types answering no.
+// Not remembered; past 8 levels it answers yes.
+int itypeMayMutateShared(INode *type, int most) {
+    if (type == NULL || most <= 0)
+        return 1;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeMayMutateShared(itypeGetTypeDcl(type), most) : 1;
+    case AliasDclTag:
+        return itypeMayMutateShared(((AliasDclNode *)type)->target, most);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 0;
+    case RefTag:
+    case ArrayRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (permIsLock(ref->perm) || (permGetFlags(ref->perm) & MayWrite))
+            return 1;
+        return itypeMayMutateShared(ref->vtexp, most - 1);
+    }
+    case ArrayTag:
+        return itypeMayMutateShared(arrayElemType(type), most - 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeMayMutateShared(*nodesp, most - 1))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (structDeclaresTrait(strnode, atomicValueTrait) || structDeclaresTrait(strnode, lockPermTrait)
+                || strnode->lends == LendsNoLoanMut)
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (itypeMayMutateShared(((IExpNode *)*nodesp)->vtype, most - 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 1;
+    }
+}
+
 // An owning reference into a region that is not traced ('Rc', 'Uni', any
 // counted region): a trace passes through it to the value it holds. The type a
 // thin one points at, or the element of the array body a fat one does; NULL
