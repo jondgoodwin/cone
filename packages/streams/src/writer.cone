@@ -87,8 +87,10 @@
 // The flag is set only where a block is asked for, at a rollover; the buffer in
 // use becomes one with no room, so a put that fits costs what it always did and
 // a put after the refusal fails its room check and lands in the same place.
-// 'popFull' still gives the buffers filled before the refusal; 'tryFinish'
-// gives None and every byte still held goes back to the pool. 'finish' on a
+// A starved writer drops what it holds; send only what you popped before it
+// starved: what is held may end mid-put or mid-frame, so 'popFull' and 'take'
+// give nothing once starved. 'tryFinish' gives None and every byte held goes
+// back to the pool. 'finish' on a
 // starved writer is a panic (a program that asks for Option uses tryFinish).
 // 'Writer.tryEmpty(size)' is the same without a first block, asked for at the
 // first put, for a writer built where it cannot fail (a struct's field).
@@ -246,6 +248,7 @@ pub struct Writer is Move {
   // follows one, is not given: a panic. A pool that has no more to give panics,
   // as 'IoBuf(size)' does
   pub fn take(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) IoBuf {
+    if refused {return IoBuf();}
     if chain.segments() > 0usize {
       match self.popHeld() {
         case let Some(b) {return b;}
@@ -304,6 +307,7 @@ pub struct Writer is Move {
   // The oldest filled buffer, or None: a buffer held, or the buffer in use
   // when it is full; never one that holds an unfilled slot or follows one
   pub fn popFull(self: &mut) Option[IoBuf] {
+    if refused {return None[IoBuf];}
     if chain.segments() == 0usize {
       if buf.room() != 0usize || buf.len() == 0usize {return None[IoBuf];}
       _ = self.rollFor(1usize);
