@@ -31,6 +31,14 @@ fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: u
     conn: 0usize, bodyDone: false)
 }
 
+// The pools of this package, named for what each holds (the pool kind is spelled here and nowhere else)
+alias Waits = GenPool[Wait];           // a client's fetches awaiting their reply
+alias XWaits = GenPool[Wait];          // the exchanges on the service's own connections awaiting theirs
+alias Streams = GenPool[StreamRec];   // a client's streamed responses
+alias Clients = GenPool[ClientRec];
+alias Conns = GenPool[ConnRec];
+alias Srvs = GenPool[SrvRec];
+
 // A sink's token for a stream's fetch: this bit and the stream's slot. A
 // whole fetch's token is its wait slot alone
 const streamBit = 0x100000000u64;
@@ -71,8 +79,8 @@ struct ClientRec {
   dying: bool;                   // no handle is left: it is ended, and goes when its connections have
   maxBody: usize;
   client: httpclient.Client;
-  waits: GenPool[Wait];
-  streams: GenPool[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
+  waits: Waits;
+  streams: Streams;     // the responses actors read as they arrive; each holds a count of 'refs'
   ups: Dict[u64, u32];               // an upload's stream id: its slot in 'streams' (upload.cone: its sink knows the id alone)
 }
 
@@ -98,16 +106,16 @@ const connBit = 0x100000000u64;
 // connections a program makes itself, and what is awaited on those. A service
 // hosted on aio's I/O thread (aio.Hosted: turn, complete, wakeAt, end)
 struct Service {
-  clients: GenPool[ClientRec];
+  clients: Clients;
   drv: httpconn.Driver;
-  conns: GenPool[ConnRec];
-  xwaits: GenPool[Wait];
-  srvs: GenPool[SrvRec];       // the servers listening, each with a driver of its own
+  conns: Conns;
+  xwaits: XWaits;
+  srvs: Srvs;       // the servers listening, each with a driver of its own
 
   fn make() Service {
-    Service(clients: GenPool[ClientRec].make(4u32),
-      drv: httpconn.Driver.make(httpconn.Config.make()), conns: GenPool[ConnRec].make(16u32),
-      xwaits: GenPool[Wait].make(16u32), srvs: GenPool[SrvRec].make(4u32))
+    Service(clients: Clients.make(4u32),
+      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns.make(16u32),
+      xwaits: XWaits.make(16u32), srvs: Srvs.make(4u32))
   }
 
   // The record in cell k, or null if that cell is free
@@ -522,7 +530,7 @@ struct CreateClientJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     sv.clients.add(ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
-      GenPool[Wait].make(16u32), GenPool[StreamRec].make(16u32), Dict[u64, u32]()));
+      Waits.make(16u32), Streams.make(16u32), Dict[u64, u32]()));
   }
 }
 
