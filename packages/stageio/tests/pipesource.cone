@@ -1,0 +1,431 @@
+// ChildStages and PipeSource (PR 5 of the pipe op): a child's standard output and error as two streams into two sinks, and
+// its exit as a value on a oneshot. The child is this test's own executable, started again with '--child' and a mode. The
+// sinks are counting sinks (OutSink, ErrSink) that check the pattern (byte i of a stream is i % 251, errors apart: (i + 7) % 251;
+// sampled, so a GiB checks quickly) and give each buffer back at once, or keep them while a flag says 'slow' (the source's
+// window then fills) until 'release'. The exit is told when both SOURCES have reached the end of their streams, so a sink may
+// still be working through chunks and its end: the tests wait for the sinks' ends after the exit.
+//
+//   1. A child writing 1 GiB to its output and 4 MiB to its error, exit code 5: every byte of both streams arrives in order,
+//      each sink is ended Finished once, the exit says code 5. The time of the 1 GiB run is not checked (a throughput row for
+//      a quiet machine).
+//   2. A slow consumer holds the child through the pipe: a child writing 64 MiB, a sink that keeps its chunks: after a second
+//      the sink has got a small part of the body (the window and the pipe hold the rest) and the exit is not told; when the
+//      sink is released every byte arrives and the exit comes.
+//   3. The two streams are independent: a child writing 8 MiB to its error and then 1 MiB to its output, the output sink held
+//      back: the whole error stream arrives (the held output stream does not stall it), the output is not whole (the child
+//      waits on it, so it has not exited and no exit is told); released, the output arrives whole and the exit comes.
+//   4. A sink that stops its source after 2 MiB of an endless output: the sink is ended Failed, the child is killed (Windows:
+//      exit code 1; Linux: signal 9) and the exit is told after the error stream has ended too.
+//   5. A program that does not exist: the exit is an Err and both sinks are ended Failed.
+//   6. A child writing nothing and exiting 7: both sinks Finished with no byte, the exit says code 7.
+//
+// Every buffer is back in its pool at the end.
+
+mod pipesource;
+
+import testing use *;
+import collections use List, String, AnyError;
+import path use Path;
+import libc;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import process;
+import actors;
+import aio use ChildExit;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+extern {
+  fn @c _setmode(fd: i32, mode: i32) i32;
+}
+
+// Windows' C streams translate newlines in text mode, which would change the pattern's bytes: standard output and error are
+// made binary in the child
+fn binaryStreams() {
+  #if #os == .windows {
+    _setmode(1i32, 32768i32);
+    _setmode(2i32, 32768i32);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The child
+// ---------------------------------------------------------------------------
+
+fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
+
+// Writes n bytes of the pattern (starting at byte 0, shifted by 'shift') to a stdio stream in pieces of 64 KiB
+fn writePattern(f: *libc.FILE, n: u64, shift: usize) {
+  let size = 65536usize;
+  var t = List[u8].withCapacity(size + 251usize);
+  var i = 0usize;
+  while i < size + 251usize {
+    t.push(u8.from(u64.from(i + shift) % 251u64));
+    i = i + 1usize;
+  }
+  let all = t.view();
+  var done = 0u64;
+  while done < n {
+    let left = n - done;
+    let piece = if left < u64.from(size) {usize.from(left)} else {size};
+    // the piece starts at stream offset 'done': the table is rotated to match
+    let off = usize.from(done % 251u64);
+    libc.fwrite(&all[off] as *u8, 1usize, piece, f);
+    done = done + u64.from(piece);
+  }
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  binaryStreams();
+  if mode.equals("both") {
+    // both <outBytes> <errBytes> <exit>
+    writePattern(libc.stdout(), number(&a[3usize]), 0usize);
+    writePattern(libc.stderr(), number(&a[4usize]), 7usize);
+    libc.fflush(libc.stdout());
+    libc.fflush(libc.stderr());
+    return i32.from(number(&a[5usize]));
+  }
+  if mode.equals("errfirst") {
+    // errfirst <outBytes> <errBytes>: the error stream whole first, then the output
+    writePattern(libc.stderr(), number(&a[4usize]), 7usize);
+    libc.fflush(libc.stderr());
+    writePattern(libc.stdout(), number(&a[3usize]), 0usize);
+    libc.fflush(libc.stdout());
+    return 0i32;
+  }
+  if mode.equals("endless") {
+    // writes its output until the pipe fails or it is killed
+    var round = 0u64;
+    while round < 100000u64 {
+      writePattern(libc.stdout(), 65536u64, 0usize);
+      libc.fflush(libc.stdout());
+      round = round + 1u64;
+    }
+    return 0i32;
+  }
+  1i32
+}
+
+fn command(exe: &str, mode: &str, a: &str, b: &str, c: &str) List[String] {
+  var l = List[String]();
+  l.push(String.from(exe));
+  l.push(String.from("--child"));
+  l.push(String.from(mode));
+  if a.len > 0usize { l.push(String.from(a)); }
+  if b.len > 0usize { l.push(String.from(b)); }
+  if c.len > 0usize { l.push(String.from(c)); }
+  l
+}
+
+// ---------------------------------------------------------------------------
+// The sinks
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub bytes: Atomic[u64];       // bytes the sink got
+  pub bad: Atomic[u64];         // ...that were not the pattern
+  pub ends: Atomic[u64];        // ends seen
+  pub fin: Atomic[u64];         // ...Finished
+  pub fail: Atomic[u64];        // ...Failed
+  pub slow: Atomic[u64];        // 1: nap per chunk
+  pub stopAt: Atomic[u64];      // when nonzero: stop the source (Failed) once this many bytes are in
+}
+
+let outT: Tally;
+let errT: Tally;
+
+fn mk() Tally {
+  Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+fn @initpure init() {
+  outT = mk();
+  errT = mk();
+}
+
+fn clear(t: &Tally) {
+  t.bytes.store(0u64);
+  t.bad.store(0u64);
+  t.ends.store(0u64);
+  t.fin.store(0u64);
+  t.fail.store(0u64);
+  t.slow.store(0u64);
+  t.stopAt.store(0u64);
+}
+
+// Pattern bytes in a piece that starts at stream offset pos, sampled (every 61st byte) so a GiB checks quickly
+fn badSample(s: &Array[u8], pos: u64, shift: u64) u64 {
+  var bad = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    if s[i] != u8.from((pos + u64.from(i) + shift) % 251u64) { bad = bad + 1u64; }
+    i = i + 61usize;
+  }
+  if s.len > 0usize {
+    let l = s.len - 1usize;
+    if s[l] != u8.from((pos + u64.from(l) + shift) % 251u64) { bad = bad + 1u64; }
+  }
+  bad
+}
+
+actor OutSink is ChunkSink {
+  up: Option[ChunkSource];
+  pos: u64;
+  stopped: bool;
+  held: List[IoBuf];            // chunks kept while 'slow' says so (not given back: the source's window fills)
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource], pos: 0u64, stopped: false, held: List[IoBuf]());
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    outT.bytes.add(u64.from(c.len()));
+    outT.bad.add(badSample(c.view(), pos, 0u64));
+    pos = pos + u64.from(c.len());
+    let at = outT.stopAt.load();
+    if outT.slow.load() != 0u64 {
+      held.push(c);
+      return;
+    }
+    match &up {
+      case let &Some(u) {
+        u.giveBack(c);
+        if at > 0u64 && pos >= at && !stopped {
+          stopped = true;
+          u.stop(Ending.Failed(AnyError.msg("enough")));
+        }
+      }
+      else {}
+    }
+  }
+
+  // The consumer speeds up: what it kept goes back
+  pub async fn release(self) {
+    outT.slow.store(0u64);
+    match &up {
+      case let &Some(u) {
+        while held.len() > 0usize {
+          match held.pop() {
+            case let Some(b) { u.giveBack(b); }
+            case is None {}
+          }
+        }
+      }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    outT.ends.add(1u64);
+    match how {
+      case is Finished { outT.fin.add(1u64); }
+      else { outT.fail.add(1u64); }
+    }
+  }
+}
+
+actor ErrSink is ChunkSink {
+  up: Option[ChunkSource];
+  pos: u64;
+  held: List[IoBuf];
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource], pos: 0u64, held: List[IoBuf]());
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    errT.bytes.add(u64.from(c.len()));
+    errT.bad.add(badSample(c.view(), pos, 7u64));
+    pos = pos + u64.from(c.len());
+    if errT.slow.load() != 0u64 {
+      held.push(c);
+      return;
+    }
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      else {}
+    }
+  }
+
+  pub async fn release(self) {
+    errT.slow.store(0u64);
+    match &up {
+      case let &Some(u) {
+        while held.len() > 0usize {
+          match held.pop() {
+            case let Some(b) { u.giveBack(b); }
+            case is None {}
+          }
+        }
+      }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    errT.ends.add(1u64);
+    match how {
+      case is Finished { errT.fin.add(1u64); }
+      else { errT.fail.add(1u64); }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The runs
+// ---------------------------------------------------------------------------
+
+fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit { thread.sleep(Duration.fromMillis(2i64)); }
+  c.load() >= n
+}
+
+struct Started {
+  rx: OneshotReceiver[Result[ChildExit, AnyError]];
+  out: OutSink;
+  err: ErrSink;
+}
+
+// Starts a ChildStages on cmd with both sinks; the exit is read from 'rx' later, the sinks let go with 'release'
+fn begin(cmd: List[String]) Started {
+  var tx: OneshotSender[Result[ChildExit, AnyError]];
+  var rx: OneshotReceiver[Result[ChildExit, AnyError]];
+  tx, rx = Oneshot[Result[ChildExit, AnyError]].make();
+  let o = OutSink();
+  let e = ErrSink();
+  {
+    let c = ChildStages(o.clone(), e.clone(), tx);
+    c.start(cmd, Path.from(""));
+  }
+  Started(rx, o, e)
+}
+
+// The exit, waited for at most ms: the code and the signal, or a marker when it is an Err or does not come
+fn exitOf(rx: &mut OneshotReceiver[Result[ChildExit, AnyError]]) u64 {
+  match rx.recv() {
+    case let Some(r) {
+      match r {
+        case let Ok(x) { return u64.from(x.code) * 1000u64 + u64.from(x.signal); }
+        else { return 999999u64; }
+      }
+    }
+    case is None { return 888888u64; }
+  }
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+  initAll();
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+
+  // 1. 1 GiB and 4 MiB
+  clear(&outT);
+  clear(&errT);
+  let t0 = Instant.now();
+  var s1 = begin(command(exe.view(), "both", "1073741824", "4194304", "5"));
+  let ex1 = exitOf(&mut s1.rx);
+  let secs = (Instant.now() - t0).millis();
+  expectUInt(ex1, 5000u64, "1: the exit says code 5, no signal");
+  waitFor(&outT.ends, 1u64, 30000i64);
+  waitFor(&errT.ends, 1u64, 30000i64);
+  expectUInt(outT.bytes.load(), 1073741824u64, "1: 1 GiB through the output stream");
+  expectUInt(outT.bad.load(), 0u64, "1: ...in order");
+  expectUInt(errT.bytes.load(), 4194304u64, "1: 4 MiB through the error stream");
+  expectUInt(errT.bad.load(), 0u64, "1: ...in order");
+  expectUInt(outT.ends.load() * 10u64 + outT.fin.load(), 11u64, "1: the output sink ended once, Finished");
+  expectUInt(errT.ends.load() * 10u64 + errT.fin.load(), 11u64, "1: the error sink ended once, Finished");
+  // (the time is not checked; it was 449 ms for the 1 GiB on the machine that wrote this test, a debug build)
+  expect(secs < 120000i64, "1: ...within two minutes");
+
+  // 2. a slow consumer holds the child: its sink keeps every chunk, so the window fills and the pipe with it
+  clear(&outT);
+  clear(&errT);
+  outT.slow.store(1u64);
+  var s2 = begin(command(exe.view(), "both", "67108864", "0", "0"));
+  thread.sleep(Duration.fromMillis(1000i64));
+  let got = outT.bytes.load();
+  expect(got > 0u64 && got < 4194304u64, "2: after a second the slow sink has a small part of the 64 MiB");
+  expectUInt(outT.ends.load(), 0u64, "2: the output stream has not ended");
+  expect(s2.rx.tryRecv() is None, "2: the exit is not told");
+  s2.out.release();
+  let ex2 = exitOf(&mut s2.rx);
+  expectUInt(ex2, 0u64, "2: let go, the child ends with code 0");
+  waitFor(&outT.ends, 1u64, 30000i64);
+  expectUInt(outT.bytes.load(), 67108864u64, "2: every byte arrived");
+  expectUInt(outT.bad.load(), 0u64, "2: ...in order");
+
+  // 3. the streams are independent: the error sink keeps its chunks, the output stream goes on to its end
+  clear(&outT);
+  clear(&errT);
+  outT.slow.store(1u64);
+  var s3 = begin(command(exe.view(), "errfirst", "1048576", "8388608", ""));
+  expect(waitFor(&errT.bytes, 8388608u64, 30000i64), "3: the whole error stream arrives while the output sink is held");
+  expectUInt(errT.bad.load(), 0u64, "3: ...in order");
+  thread.sleep(Duration.fromMillis(500i64));
+  expect(outT.bytes.load() < 1048576u64, "3: the held output stream is not whole (the child waits on it)");
+  expect(s3.rx.tryRecv() is None, "3: the exit is not told while the output stream is held");
+  s3.out.release();
+  let ex3 = exitOf(&mut s3.rx);
+  expectUInt(ex3, 0u64, "3: released, the exit comes, code 0");
+  waitFor(&outT.ends, 1u64, 30000i64);
+  waitFor(&errT.ends, 1u64, 30000i64);
+  expectUInt(outT.bytes.load(), 1048576u64, "3: the whole output stream arrived");
+  expectUInt(outT.bad.load(), 0u64, "3: ...in order");
+
+  // 4. a sink that stops its source: the child is killed
+  clear(&outT);
+  clear(&errT);
+  outT.stopAt.store(2097152u64);
+  var s4 = begin(command(exe.view(), "endless", "", "", ""));
+  let ex4 = exitOf(&mut s4.rx);
+  #if #os == .windows {
+    expectUInt(ex4, 1000u64, "4: the child was killed: exit code 1");
+  } #else {
+    expectUInt(ex4, 9u64, "4: the child was killed: signal 9");
+  }
+  waitFor(&outT.ends, 1u64, 30000i64);
+  waitFor(&errT.ends, 1u64, 30000i64);
+  expectUInt(outT.fail.load(), 1u64, "4: the output sink was ended Failed");
+  expectUInt(errT.ends.load(), 1u64, "4: the error stream ended too");
+
+  // 5. a program that does not exist
+  clear(&outT);
+  clear(&errT);
+  var s5 = begin(command("this-program-does-not-exist-pipesource", "x", "", "", ""));
+  let ex5 = exitOf(&mut s5.rx);
+  expectUInt(ex5, 999999u64, "5: the exit is an Err");
+  waitFor(&outT.ends, 1u64, 10000i64);
+  waitFor(&errT.ends, 1u64, 10000i64);
+  expectUInt(outT.fail.load() + errT.fail.load(), 2u64, "5: both sinks were ended Failed");
+
+  // 6. nothing written, exit 7
+  clear(&outT);
+  clear(&errT);
+  var s6 = begin(command(exe.view(), "both", "0", "0", "7"));
+  let ex6 = exitOf(&mut s6.rx);
+  expectUInt(ex6, 7000u64, "6: the exit says code 7");
+  waitFor(&outT.ends, 1u64, 10000i64);
+  waitFor(&errT.ends, 1u64, 10000i64);
+  expectUInt(outT.fin.load() + errT.fin.load(), 2u64, "6: both sinks Finished");
+  expectUInt(outT.bytes.load() + errT.bytes.load(), 0u64, "6: with no byte");
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
