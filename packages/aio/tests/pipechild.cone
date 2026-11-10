@@ -1,0 +1,240 @@
+// aio's Pipe and Child (PR 4 of the pipe op): the ends of a child's pipes and the child itself, started by
+// process.launch and handed to the I/O thread's Loop with aio.adoptPipe and aio.adoptChild, read and waited for
+// by an actor with no thread of the pool parked on them. The child is this test's own executable, started again with
+// '--child' and a mode.
+//
+// 1. A child writing 3000 bytes to each of its output and error: read to the end of the stream through the two Pipes
+//    (the end is an answer whose buffer gained nothing), 'a's and 'B's apart; the Child's wait: exit code 0.
+// 2. A child exiting 7: nothing on either pipe, wait: code 7, signal 0.
+// 3. A running child: a wait with a deadline answers TimedOut (the child goes on), 'kill' ends it, and the wait then
+//    answers (Windows: exit code 1; Linux: signal 9); a second wait on the same Child fails.
+
+mod pipechild;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import libc;
+import thread;
+import sync use Channel, Sender, Receiver;
+import time use Instant, Duration;
+import iocore use IoError;
+import ioerror use IoErrorKind;
+import iobuf use IoBuf;
+import process;
+import actors;
+import aio use IoLimits;
+
+extern {
+  fn @c(system) ExitProcess(code: u32);
+  fn @c(system) Sleep(ms: u32);
+}
+extern {
+  fn @c usleep(us: u32) i32;
+  fn @c _exit(code: i32);
+}
+
+fn take(rx: &mut Receiver[u64]) u64 { rx.recv() || 999u64 }
+
+fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
+
+fn childStreams(n: usize) i32 {
+  var chunk = Array[u8, 4096]() <- fill 0u8;
+  let cp: *u8 = &[]chunk as *u8;
+  var done = 0usize;
+  while done < n {
+    let size = if n - done < 4096usize {n - done} else {4096usize};
+    var j = 0usize;
+    while j < 4096usize { chunk[j] = 'a'; j = j + 1usize; }
+    libc.fwrite(cp, 1usize, size, libc.stdout());
+    j = 0usize;
+    while j < 4096usize { chunk[j] = 'B'; j = j + 1usize; }
+    libc.fwrite(cp, 1usize, size, libc.stderr());
+    done = done + size;
+  }
+  libc.fflush(libc.stdout());
+  libc.fflush(libc.stderr());
+  0i32
+}
+
+fn child(a: &List[String]) i32 {
+  let mode = &a[2usize];
+  if mode.equals("streams") { return childStreams(usize.from(number(&a[3usize]))); }
+  if mode.equals("exit") {
+    libc.fflush(libc.stdout());
+    #if #os == .windows {ExitProcess(u32.from(number(&a[3usize])));} #else {_exit(i32.from(number(&a[3usize])));};
+  }
+  if mode.equals("sleep") {
+    #if #os == .windows {Sleep(60000u32);} #else {usleep(60000000u32);};
+    return 0i32;
+  }
+  1i32
+}
+
+fn command(exe: &str, mode: &str, arg: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  if arg.len > 0usize { c.push(String.from(arg)); }
+  c
+}
+
+fn pipeOf(r: Result[aio.Pipe, IoError]) aio.Pipe {
+  var res = r;
+  var p = aio.Pipe.none();
+  match &mut res {
+    case var &mut Ok(ok) { p <-> *ok; }
+    else {}
+  }
+  p
+}
+
+fn childOf(r: Result[aio.Child, IoError]) aio.Child {
+  var res = r;
+  var c = aio.Child.none();
+  match &mut res {
+    case var &mut Ok(ok) { c <-> *ok; }
+    else {}
+  }
+  c
+}
+
+actor Tester {
+  // The bytes through a pipe to its end: how many, the first one, and whether any answer was an error
+  pub async fn drain(self, p: aio.Pipe, out: Sender[u64]) u64 {
+    var total = 0u64;
+    var first = 0u64;
+    var bad = 0u64;
+    var more = true;
+    while more {
+      let r = await p.read(IoBuf(4096usize));
+      var n = 0usize;
+      var b0 = 0u8;
+      match &r {
+        case let &Ok(buf) {
+          n = buf.len();
+          if n > 0usize { b0 = buf.view()[0usize]; }
+        }
+        else { bad = 1u64; }
+      }
+      if n == 0usize { more = false; }
+      else {
+        total = total + u64.from(n);
+        if first == 0u64 { first = u64.from(b0); }
+      }
+    }
+    out.send(total);
+    out.send(first);
+    out.send(bad);
+    0u64
+  }
+
+  pub async fn streams(self, cmd: List[String], out: Sender[u64]) {
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        let po = pipeOf(await aio.adoptPipe(c.takeStdout()));
+        let pe = pipeOf(await aio.adoptPipe(c.takeStderr()));
+        let ch = childOf(await aio.adoptChild(c.takeProcess()));
+        let d1 = await self.drain(po, out.clone());
+        let d2 = await self.drain(pe, out.clone());
+        let w = await ch.exited();
+        match &w {
+          case let &Ok(x) {
+            out.send(u64.from(x.code));
+            out.send(u64.from(x.signal));
+          }
+          else {
+            out.send(998u64);
+            out.send(998u64);
+          }
+        }
+      }
+      case is Err { out.send(997u64); }
+    }
+  }
+
+  pub async fn sleeper(self, cmd: List[String], out: Sender[u64]) {
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        let po = pipeOf(await aio.adoptPipe(c.takeStdout()));
+        let pe = pipeOf(await aio.adoptPipe(c.takeStderr()));
+        let ch = childOf(await aio.adoptChild(c.takeProcess()));
+        let t0 = Instant.now();
+        let w1 = await ch.exitedIn(IoLimits.until(t0 + Duration.fromMillis(300i64)));
+        match &w1 {
+          case let &Err(e) { out.send(if e.isTimedOut() {1u64} else {0u64}); }
+          else { out.send(0u64); }
+        }
+        out.send(if (Instant.now() - t0).millis() >= 280i64 {1u64} else {0u64});
+        c.kill();
+        let w2 = await ch.exited();
+        match &w2 {
+          case let &Ok(x) {
+            out.send(u64.from(x.code));
+            out.send(u64.from(x.signal));
+          }
+          else {
+            out.send(998u64);
+            out.send(998u64);
+          }
+        }
+        let w3 = await ch.exited();
+        match &w3 {
+          case let &Err(e) { out.send(1u64); }
+          else { out.send(0u64); }
+        }
+      }
+      case is Err { out.send(997u64); }
+    }
+  }
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a); }
+  initAll();
+
+  var exe = Path.from("");
+  match process.currentExe() {
+    case var Ok(e) { exe <-> e; }
+    case is Err { require(false, "currentExe"); }
+  }
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let t = Tester();
+
+  t.streams(command(exe.view(), "streams", "3000"), tx.clone());
+  expectUInt(take(&mut rx), 3000u64, "1: 3000 bytes through the output pipe");
+  expectUInt(take(&mut rx), 97u64, "1: ...'a's");
+  expectUInt(take(&mut rx), 0u64, "1: ...no read failed");
+  expectUInt(take(&mut rx), 3000u64, "1: 3000 bytes through the error pipe");
+  expectUInt(take(&mut rx), 66u64, "1: ...'B's, apart");
+  expectUInt(take(&mut rx), 0u64, "1: ...no read failed");
+  expectUInt(take(&mut rx), 0u64, "1: the child's exit code 0");
+  expectUInt(take(&mut rx), 0u64, "1: ...no signal");
+
+  t.streams(command(exe.view(), "exit", "7"), tx.clone());
+  expectUInt(take(&mut rx), 0u64, "2: nothing through the output pipe");
+  expectUInt(take(&mut rx), 0u64, "2: ...");
+  expectUInt(take(&mut rx), 0u64, "2: ...no read failed");
+  expectUInt(take(&mut rx), 0u64, "2: nothing through the error pipe");
+  expectUInt(take(&mut rx), 0u64, "2: ...");
+  expectUInt(take(&mut rx), 0u64, "2: ...no read failed");
+  expectUInt(take(&mut rx), 7u64, "2: exit code 7");
+  expectUInt(take(&mut rx), 0u64, "2: ...no signal");
+
+  t.sleeper(command(exe.view(), "sleep", ""), tx.clone());
+  expectUInt(take(&mut rx), 1u64, "3: a wait with a deadline answers TimedOut");
+  expectUInt(take(&mut rx), 1u64, "3: ...not before the deadline");
+  #if #os == .windows {
+    expectUInt(take(&mut rx), 1u64, "3: after kill, exit code 1");
+    expectUInt(take(&mut rx), 0u64, "3: ...no signal on Windows");
+  } #else {
+    expectUInt(take(&mut rx), 0u64, "3: after kill, no exit code");
+    expectUInt(take(&mut rx), 9u64, "3: ...the signal 9");
+  }
+  expectUInt(take(&mut rx), 1u64, "3: a second wait fails");
+  done()
+}

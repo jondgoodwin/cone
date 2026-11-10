@@ -45,6 +45,7 @@ struct SpeakJob is Sendable {
   stop: Arc[imm, Atomic[u32]];
   shared: Arc[imm, SpeakShared];
   aheadSamples: usize;
+  bell: Bell;
 }
 
 fn waitingSamples(stream: *sdl.AudioStream) usize {
@@ -55,12 +56,13 @@ fn waitingSamples(stream: *sdl.AudioStream) usize {
 
 // The feeder thread
 fn feedLoop(job: SpeakJob) i32 {
-  var stream, var edge, let stop, let shared, let aheadSamples = job.(stream, edge, stop, shared, aheadSamples);
+  var stream, var edge, let stop, let shared, let aheadSamples, let bell = job.(stream, edge, stop, shared, aheadSamples, bell);
   var putSamples = 0usize;           // samples handed to the stream so far (or cleared from it)
   var ends = Deque[usize]();         // for each block put, the running count at its end
   var dry = false;
   var flushed = false;
   var started = false;
+  var boundary = false;              // the last thing taken was a flush point
   while stop.load() == 0u32 {
     var waiting = waitingSamples(stream);
     // what has left the stream: the blocks whose end is at or below the samples that are gone
@@ -98,24 +100,36 @@ fn feedLoop(job: SpeakJob) i32 {
             ends.push(putSamples);
             shared.put.add(1u64);
             started = true;
+            boundary = false;
             dry = false;
             flushed = false;
+          } else {
+            // a FLUSH POINT (len 0, lost 0; AudioBlock.flushPoint): the end of a sentence. SDL's converter holds a few
+            // samples back until told, so tell it; the point counts as played when the blocks before it have. The
+            // silence after it is a boundary, not an underrun
+            sdl.FlushAudioStream(stream);
+            ends.push(putSamples);
+            boundary = true;
           }
         }
         else { more = false; }
       }
     }
-    if credited { edge.drained(); }
+    if credited {
+      edge.drained();
+      // all that was put has played: whoever waits on the bell may be waiting for exactly that
+      if ends.len() == 0usize { bell.ring(); }
+    }
     // the stream ran dry with the producer still going
     let over = edge.finished();
     if started && waiting == 0usize && !dry {
-      if !over { shared.underruns.add(1u64); }
+      if !over && !boundary { shared.underruns.add(1u64); }
       dry = true;
     }
     // the end: everything taken, so flush the converter's tail, and done once it has all played
     if over {
       if !flushed { sdl.FlushAudioStream(stream); flushed = true; }
-      if waiting == 0usize && ends.len() == 0usize { shared.done.store(1u32); }
+      if waiting == 0usize && ends.len() == 0usize { shared.done.store(1u32); bell.ring(); }
     }
     thread.sleep(Duration.fromMillis(2));
   }
@@ -133,6 +147,11 @@ pub struct SpeakerSink {
   // aheadMs: the sound kept queued in SDL's stream (60 for voice, see the header); maxQueuedMs: the most the producer
   // may have outstanding, in sound (blocks it has sent and that have not played)
   pub fn start(speaker: Speaker, aheadMs: u32, maxQueuedMs: u32) SpeakerSink {
+    SpeakerSink.startWith(speaker, aheadMs, maxQueuedMs, Bell.make())
+  }
+
+  // The same, with a bell the feeder rings whenever everything it has put in SDL's stream has played (and at the end)
+  pub fn startWith(speaker: Speaker, aheadMs: u32, maxQueuedMs: u32, bell: Bell) SpeakerSink {
     let rate = speaker.rate;
     var window = u32.from(usize.from(maxQueuedMs) * usize.from(rate) / 1000usize / BLOCK_SAMPLES);
     if window < 2u32 { window = 2u32; }
@@ -142,7 +161,7 @@ pub struct SpeakerSink {
     let shared = Arc[imm, SpeakShared](SpeakShared(Atomic[u32].of(0u32), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
       Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u32].of(0u32)));
     let aheadSamples = usize.from(rate) * usize.from(aheadMs) / 1000usize;
-    let t = thread.start(SpeakJob(speaker.stream, edge, stopFlag, shared, aheadSamples), &feedLoop);
+    let t = thread.start(SpeakJob(speaker.stream, edge, stopFlag, shared, aheadSamples, bell), &feedLoop);
     SpeakerSink(speaker, Some[thread.Thread[i32]](t), stopFlag, shared, handle)
   }
 
