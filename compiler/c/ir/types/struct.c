@@ -5042,7 +5042,7 @@ static void structCheckMembersBody(StructNode *node) {
     if (structDeclaresTrait(node, shapeKeepingTrait)
         && !(node->lexer != NULL && (node->lexer->flags & LexLineMarks)))
         errorMsgNode((INode*)node, ErrorShapeKeepingDeclared,
-            "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one.",
+            "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one. See the 1500 at the use, which names the reshaping call.",
             &node->namesym->namestr);
 
     structCheckCopy(node);
