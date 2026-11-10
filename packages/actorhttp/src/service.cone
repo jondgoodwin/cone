@@ -73,6 +73,15 @@ pub fn byToken[T](pool: &GenPool[T], t: u64) *T {
   pool.at(i)
 }
 
+// WHY DROPPING A STALE EVENT IS SAFE. A token's entry leaves its table only when its owner has finished with it:
+// a fetch's Wait is taken out whole at its terminal event and its reply answered then (onFetchEvent), a stream's
+// record goes when the stream ends, a connection's goes after its Closed event, and an exchange's Wait likewise ends
+// at its terminal event. So an event whose token no longer reaches a live entry belongs to something already
+// answered and released: nothing is left waiting on it (no reply unanswered, no connection-closed notice owed), and
+// the entry now in that cell, if any, is another one's and must not be touched. A Data event's buffer drops with the
+// event; the fetch or exchange it flowed to is gone, so no credit is owed for it.
+// Checked by staleEventDropped (end of this file), driven by tests/stale.cone.
+
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
   id: u64;
@@ -669,4 +678,27 @@ struct DropConnJob {
       sv.drv.close(lp, c.conn);
     }
   }
+}
+
+// (pub for tests/stale.cone, not an API) A stale connection event driven through a Service: a connection record is
+// added and freed, its cell reused by another record, and the first record's Closed event (its old token) is
+// delivered to onConnEvent. True if the second record is left as it was and its own event still takes effect
+pub fn staleEventDropped() bool {
+  var sv = Service.make();
+  var lpr = Loop.mustMake();
+  let h1 = sv.conns.add(ConnRec(true, 1u64, httpconn.ConnId.none(), false, false, false, false, 0u32,
+    None[actors.ReplyOf[Result[Conn, FetchError]]]));
+  let t1 = tokenOf(h1, connBit);
+  sv.freeConn(usize.from(h1.index));
+  let h2 = sv.conns.add(ConnRec(true, 2u64, httpconn.ConnId.none(), false, true, false, false, 0u32,
+    None[actors.ReplyOf[Result[Conn, FetchError]]]));
+  if h2.index != h1.index {return false;}
+  var stale = httpconn.Event.make(httpconn.EventKind.Closed, t1, httpconn.ConnId.none(), httpconn.ReqId.none());
+  sv.onConnEvent(&mut lpr, &stale);
+  let c = sv.conns.at(h2.index) as &mut ConnRec;
+  if !c.open || c.closed {return false;}
+  var live = httpconn.Event.make(httpconn.EventKind.Closed, tokenOf(h2, connBit), httpconn.ConnId.none(), httpconn.ReqId.none());
+  sv.onConnEvent(&mut lpr, &live);
+  let c2 = sv.conns.at(h2.index) as &mut ConnRec;
+  c2.closed && !c2.open
 }
