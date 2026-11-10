@@ -140,6 +140,11 @@ struct PConn {
   h3By: Instant;             // ...connected by then, or it falls back (http3Timeout)
 }
 
+// The client's tables of fetches and pooled connections (the pool kind is spelled here
+// and nowhere else; FetchId stays its own type, since it has its own methods)
+alias Fetches = GenPool[Fetch];
+alias PConns = GenPool[PConn];
+
 // What of its Config a client keeps once made: its limits (the driver has
 // the connection's, the TLS context the TLS config's)
 struct Limits {
@@ -175,19 +180,22 @@ struct Origin {
   h3c: u32;                  // its HTTP/3 connection, being made or open, or noEntry
 }
 
+// The client's table of origins (the pool kind is spelled here and nowhere else)
+alias Origins = GenPool[Origin];
+
 // A client of HTTP and HTTPS servers on one Loop (see the package's header)
 pub struct Client {
   cfg: Limits;
   drv: httpconn.Driver;
   tlsc: Result[tls.Client, Failure];    // its https connections' TLS context, or why it could not be made
-  fetches: GenPool[Fetch];
+  fetches: Fetches;
   liveFetches: u32;
   queuedN: u32;
   seq: u64;
-  pconns: GenPool[PConn];
+  pconns: PConns;
   total: u32;                // connections connecting, idle, busy or shared
   undecided: List[u32];      // pooled connections connected whose protocol is still to be chosen
-  origins: SlotTable[Origin];    // never removed: an origin's number is its cell's
+  origins: Origins;// never removed: an origin's number is its cell's
   dev: List[httpconn.Event];
   comps: List[Completion];
   ready: List[Event];        // events for this thread, until pump hands them over
@@ -242,9 +250,9 @@ pub struct Client {
     Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
         h3Origins, h3Timeout),
       drv: d, tlsc: tlsc,
-      fetches: GenPool[Fetch].make(recsPerBlock), liveFetches: 0u32,
-      queuedN: 0u32, seq: 0u64, pconns: GenPool[PConn].make(recsPerBlock),
-      total: 0u32, undecided: List[u32](), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event](),
+      fetches: Fetches.make(recsPerBlock), liveFetches: 0u32,
+      queuedN: 0u32, seq: 0u64, pconns: PConns.make(recsPerBlock),
+      total: 0u32, undecided: List[u32](), origins: Origins.make(8u32), dev: List[httpconn.Event](),
       comps: List[Completion](), ready: List[Event](),
       wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event](), attempts: List[u32]())
   }
