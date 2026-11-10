@@ -37,6 +37,7 @@ struct Seen {
   pub sinkBad: Atomic[u64];
   pub sinkGot: Atomic[u64];
   pub parentCancelled: Atomic[u64];
+  pub lateStart: Atomic[u64];    // passes that began after the cancel was already visible to them
 }
 
 let seen: Seen;
@@ -44,7 +45,7 @@ let seen: Seen;
 fn @initpure init() {
   seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
@@ -70,6 +71,7 @@ actor Worker {
   pub async fn spin(self) {
     parallel each i in 0usize ..< 64usize {
       seen.started.add(1u64);
+      if actors.isCancelled() {seen.lateStart.add(1u64);}
       let limit = bounded(2000i64);
       while !actors.isCancelled() && Instant.now() < limit {thread.yieldNow();}
       if actors.isCancelled() {seen.sawCancel.add(1u64);}
@@ -114,6 +116,7 @@ fn reset() {
   seen.sinkBad.store(0u64);
   seen.sinkGot.store(0u64);
   seen.parentCancelled.store(0u64);
+  seen.lateStart.store(0u64);
 }
 
 fn main() i32 {
@@ -166,8 +169,14 @@ fn main() i32 {
   expectUInt(seen.sawCancel.load(), 0u64, "2: ... and have seen no cancel");
   g2.cancel();
   actors.waitQuiet();
-  expectUInt(seen.started.load(), 64u64, "2: all 64 pieces ran");
-  expectUInt(seen.sawCancel.load(), 64u64, "2: every piece saw the cancel made outside, through its child group");
+  // The loop splits on demand, so how many passes had begun when the cancel came
+  // depends on the workers; the pieces not yet begun are skipped
+  expect(seen.started.load() <= 64u64, "2: no more than 64 passes ran");
+  expectUInt(seen.sawCancel.load(), seen.started.load(), "2: every pass that ran saw the cancel made outside, through its child group");
+  // The property: the cancel bounds the work. A piece begun runs to its end (so the passes that begin
+  // after the cancel is visible are those of pieces already begun; lateStart counts them), and the
+  // pieces not yet begun are skipped: so fewer than all 64 passes ran. This fails if a cancel stops nothing.
+  expect(seen.started.load() < 64u64, "2: the cancel stopped the loop: fewer than all 64 passes ran");
   expectUInt(seen.afterCancelled.load(), 1u64, "2: and the rest of the behaviour is in the cancelled group");
 
   // 3. a search cancels its own group, not its parent's
