@@ -14,13 +14,29 @@
 // heap's region (heapregion.c) points at them. The contract is core's, above
 // 'RawBlocks'. 'align' is not acted on yet: 'malloc' aligns to 16 bytes, which
 // is every block's alignment here.
+//
+// There is no room, no answer. A block that the C library cannot give panics,
+// naming the bytes asked for (cone_panicAlloc, as the compiler's own
+// allocation does), because the callers of these functions, collections among
+// them, take the block as theirs: a null kept as a block with the room that was
+// asked for is a write through null on the next push (Bug 80). A request for no
+// bytes is never a failure, whatever the C library answers for it.
 
-pub fn cone_rawBlockAlloc(bytes: usize, align: usize) *u8 {
-  libc.malloc(bytes)
+fn noRoom(bytes: usize, line: u32 = core.srcLine()) Never {
+  let file: cstr = "rawblocks.cone";
+  cone_panicAlloc(bytes, file.ptr(), 14usize, line)
+}
+
+pub fn @noalias cone_rawBlockAlloc(bytes: usize, align: usize) *u8 {
+  let p = libc.malloc(bytes);
+  if p == null && bytes != 0usize { noRoom(bytes); }
+  p
 }
 
 pub fn cone_rawBlockResize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
-  libc.realloc(block, newBytes)
+  let p = libc.realloc(block, newBytes);
+  if p == null && newBytes != 0usize { noRoom(newBytes); }
+  p
 }
 
 pub fn cone_rawBlockRelease(block: *u8) {

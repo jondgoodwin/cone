@@ -1,0 +1,820 @@
+// The pools package: sets of records that holders elsewhere name by a handle.
+// Order doesn't matter, freed cells are reused, and a stale handle reaches
+// nothing. GenPool[T] is the default kind (the others of the family come in
+// later changes). The pool owns its entries and its owner removes them;
+// everyone else holds a Handle: a 32-bit cell index and a 32-bit generation,
+// plain data, copied freely, owning nothing.
+//
+//   mod demo;
+//   import pools use *;
+//
+//   struct Conn {pub fd: i64; pub open: bool;}
+//
+//   fn demo() {
+//     var t = GenPool[Conn].make();
+//     imm a = t.add(Conn(7i64, true));          // a Handle
+//     match t.borrowMut(a) {                     // Some(&mut Conn), or None if a's entry is gone
+//       case let Some(c) {c.open = false;}       // no add, remove or take while c is used
+//       else {}
+//     }
+//     let p = t.get(a);                          // *Conn, or null if a's entry is gone
+//     imm same = t.at(a.index);                  // by index alone, for a token that carries no generation
+//     t.remove(a);                               // finalized; a stops reaching it, even after its cell is reused
+//     var it = t.iter();                         // a cursor over the live entries, in index order
+//     match it.next() {case let Some(c) {} case is None {}}
+//   }
+//
+//   t.add(v)           move v in: its Handle
+//   t.borrow(h)        Some(&T) of the entry h names, None if h is stale or none
+//   t.borrowMut(h)     Some(&mut T) of it, the same
+//   t.borrowAt(i)      Some(&T) of the live entry in cell i, None if the cell is not live or past the pool
+//   t.borrowMutAt(i)   Some(&mut T) of it, the same
+//   t.get(h)           *T of the entry h names, null if h is stale or none
+//   t.at(i)            *T of the live entry in cell i, null if the cell is not live or past the pool
+//   t.handleAt(i)      the Handle of the live entry in cell i (Handle.none() if not live)
+//   t.slotAt(i)        the old name of handleAt, kept until the 'slots' aliases go
+//   t.remove(h)        retire and free at once (the default): true; false if h was stale
+//   t.removeAt(i)      the same for whatever live entry occupies cell i
+//   t.retire(h)        the entry is dead to every handle and to at(i), not finalized, its cell not reused: true
+//   t.retireAt(i)      the same, by cell index
+//   t.free(h)          finalize a retired entry and free its cell: true; false if h names no retired entry
+//   t.freeAt(i)        the same, by cell index
+//   t.take(h)          move the entry h names out, by value, freeing its cell: Some(v); None if h was stale
+//   t.len()            how many live entries
+//   t.bound()          how many cells there are, live or free: cells 0 up to bound() are the ones to index
+//   t.isLive(i)        whether cell i holds a live entry
+//   t.iter()           a cursor over the live entries (&T), in index order, driven by a bitmap per slab
+//   t.entries()        the same, each with its cell index: (u32, &T)
+//   t.nextLive(i)      the first live cell at or after i, or noCell
+//   t.slabCount()      how many slabs are held (a statistic)
+//
+// STORAGE. Cells live in slabs of a power-of-two number of cells (about 64 KiB,
+// but at least 16 cells; 'make(n)' asks for n cells, rounded up). A cell is an
+// 8-byte header (its generation, and the next free cell when it is free) then
+// the value. The slabs NEVER MOVE and a live or retired cell is never moved, so
+// the address of an entry is good while it is in the pool, and an outside party
+// (the kernel, another thread, a pointer in a message) may hold it. The table of
+// slabs is a raw array reached by 'index >> shift'.
+//
+// GIVING BACK. A slab whose last occupied cell is freed goes back to the C
+// library, except that one empty slab is kept as a spare, so a pool at a slab
+// boundary does not allocate on every add and remove. A retired cell counts as
+// occupied. The table position of a returned slab remembers a starting
+// generation (its epoch), above every generation its cells held, so a Handle to
+// an entry of the old slab cannot match a cell of a new slab put in the same
+// place.
+//
+// DEATH. 'retire' makes an entry dead to every handle without finalizing it
+// (a GPU resource still in use by frames in flight is the case); 'free'
+// finalizes it and frees the cell; 'remove' does both. A cell whose generation
+// would wrap is retired for good and never reused.
+//
+// BORROWS OR POINTERS. As with a SlotTable: a borrow from a borrow method is a
+// borrow of the pool, so while it is still to be used the compiler refuses an
+// add, remove, retire, free or take, and likewise during a walk by 'iter'. get
+// and at give a raw pointer, for a party that must hold it past the borrow.
+//
+// ONE THREAD AT A TIME. A pool does no locking: the thread that owns it adds,
+// removes and looks entries up; an entry's address may be handed to others, who
+// must not use it after the owner has removed the entry. The pool's death
+// finalizes every entry still in it (retired ones included) and frees the slabs.
+
+mod pools;
+
+import libc;
+
+pub const noCell = 0xFFFFFFFFu32;
+const liveMark = 0xFFFFFFFEu32;      // a cell's 'next' while it holds a live entry
+const retiredMark = 0xFFFFFFFDu32;   // retired, waiting for free
+const deadMark = 0xFFFFFFFCu32;      // retired for good: its generation was used up
+
+// A cell's number and which occupant of it: plain data
+pub struct Handle {
+  pub index: u32;
+  pub gen: u32;
+
+  pub fn none() Handle {Handle(noCell, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn `==`(self, o: Handle) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: Handle) bool {index != o.index || gen != o.gen}
+}
+
+// A cell: bookkeeping, then the value
+struct Cell[T] {
+  pub gen: u32;
+  pub next: u32;          // free: the next free cell, noCell for the last; else a mark
+  pub value: T;
+}
+
+// What a table position knows about its slab
+struct SlabInfo {
+  pub used: u32;          // occupied cells: live, retired and dead
+  pub free: u32;          // the first free cell of the slab, or noCell
+  pub link: u32;          // next slab with free cells (or next returned position)
+  pub prev: u32;          // previous slab with free cells
+  pub inList: bool;       // on the list of slabs with free cells
+  pub startGen: u32;      // the epoch: the first generation of this position's cells
+}
+
+fn nullOf[T]() *T {null}
+
+pub struct GenPool[T] is Move {
+  slabs: *usize;          // per position: the address of the slab's cell 0, or 0 if returned
+  infos: *SlabInfo;
+  cap: u32;               // positions the two tables have room for
+  nslabs: u32;            // positions in use
+  shift: u32;
+  mask: u32;
+  perSlab: u32;
+  bmBytes: usize;         // the bitmap before the cells of a slab
+  partial: u32;           // head of the list of slabs with free cells
+  freePos: u32;           // head of the list of returned positions
+  live: u32;
+  spare: u32;             // the slab kept empty as a spare, or noCell. May be stale (the slab has been used since), which only 'emptied' checks
+  held: u32;              // slabs held
+
+  // An empty pool. 'perSlab' cells to a slab, rounded up to a power of two;
+  // 0 asks for about 64 KiB of cells (at least 16)
+  pub fn make(perSlab: u32 = 0u32) GenPool[T] {
+    var n = perSlab;
+    if n == 0u32 {
+      n = 16u32;
+      let want = 65536usize / mem.sizeof[Cell[T]]();
+      while usize.from(n) * 2usize <= want {n = n * 2u32;}
+    }
+    var p = 1u32;
+    var sh = 0u32;
+    while p < n {p = p * 2u32; sh = sh + 1u32;}
+    let words = (usize.from(p) + 63usize) / 64usize;
+    let bm = (words * 8usize + 15usize) / 16usize * 16usize;
+    GenPool[T](nullOf[usize](), nullOf[SlabInfo](), 0u32, 0u32, sh, p - 1u32, p, bm, noCell, noCell, 0u32, noCell, 0u32)
+  }
+
+  pub fn len(self: &) usize {usize.from(live)}
+  pub fn bound(self: &) usize {usize.from(nslabs) << usize.from(shift)}
+  pub fn slabCount(self: &) usize {usize.from(held)}
+
+  // 'shift' is log2 of the cells to a slab, which is 4..31 (a slab holds at
+  // least 16 cells, and a 32-bit index cannot name more than 2^31 to one). A
+  // shift of 32 or more is defined to give 0, which costs a compare and a
+  // select at every use; masking the amount says it is under 32, so the shift
+  // is one instruction. Every shift by 'shift' below reads it as 'sh()'.
+  fn sh(self: &) u32 {shift & 31u32}
+
+  fn info(self: &, k: u32) *SlabInfo {infos + usize.from(k)}
+
+  fn base(self: &, k: u32) *Cell[T] {
+    (*(slabs + usize.from(k))) as *Cell[T]
+  }
+
+  // The cell i names, or null if its slab is not held
+  fn cellOrNull(self: &, i: u32) *Cell[T] {
+    let k = i >> self.sh();
+    if k >= nslabs {return nullOf[Cell[T]]();}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return nullOf[Cell[T]]();}
+    (b as *Cell[T]) + usize.from(i & mask)
+  }
+
+  fn bitmap(self: &, k: u32) *u64 {
+    ((*(slabs + usize.from(k))) - self.bmBytes) as *u64
+  }
+
+  // The bit of cell i, in the slab whose cell 0 is at b (which the caller has
+  // in hand, so the slab table is not read again to find the bitmap)
+  fn setBitIn(self: &, b: usize, i: u32) {
+    let o = i & mask;
+    let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
+    *w = *w | (1u64 << u64.from(o & 63u32));
+  }
+
+  fn clearBitIn(self: &, b: usize, i: u32) {
+    let o = i & mask;
+    let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
+    *w = *w & ~(1u64 << u64.from(o & 63u32));
+  }
+
+  fn clearBit(self: &, i: u32) {
+    self.clearBitIn(*(slabs + usize.from(i >> self.sh())), i);
+  }
+
+  pub fn isLive(self: &, i: u32) bool {
+    let c = self.cellOrNull(i);
+    if c as usize == 0usize {return false;}
+    (*c).next == liveMark
+  }
+
+  // A slab on the list of those with free cells, at the head
+  fn listPush(self: &mut, k: u32) {
+    let inf = self.info(k);
+    (*inf).inList = true;
+    (*inf).prev = noCell;
+    (*inf).link = partial;
+    if partial != noCell {(*self.info(partial)).prev = k;}
+    partial = k;
+  }
+
+  fn listUnlink(self: &mut, k: u32) {
+    let inf = self.info(k);
+    if !(*inf).inList {return;}
+    if (*inf).prev == noCell {
+      partial = (*inf).link;
+    } else {
+      (*self.info((*inf).prev)).link = (*inf).link;
+    }
+    if (*inf).link != noCell {(*self.info((*inf).link)).prev = (*inf).prev;}
+    (*inf).inList = false;
+    (*inf).prev = noCell;
+    (*inf).link = noCell;
+  }
+
+  // A new slab at a returned position or a new one, all its cells free,
+  // chained in index order; it goes to the head of the list
+  fn grow(self: &mut) {
+    var k = freePos;
+    if k != noCell {
+      freePos = (*self.info(k)).link;
+    } else {
+      if nslabs == cap {
+        let nc = if cap == 0u32 {4u32} else {cap * 2u32};
+        slabs = libc.realloc(slabs as *u8, usize.from(nc) * mem.sizeof[usize]()) as *usize;
+        infos = libc.realloc(infos as *u8, usize.from(nc) * mem.sizeof[SlabInfo]()) as *SlabInfo;
+        if slabs as usize == 0usize || infos as usize == 0usize {
+          panic("pools: out of memory for the table of slabs");
+        }
+        cap = nc;
+      }
+      if usize.from(nslabs + 1u32) > (0xFFFFFFF0usize >> usize.from(shift)) {
+        panic("pools: too many cells for a 32-bit index");
+      }
+      k = nslabs;
+      nslabs = nslabs + 1u32;
+      mem.writeRaw[SlabInfo](self.info(k), SlabInfo(0u32, noCell, noCell, noCell, false, 1u32));
+    }
+    let raw = libc.malloc(self.bmBytes + usize.from(perSlab) * mem.sizeof[Cell[T]]());
+    if raw as usize == 0usize {
+      panic("pools: out of memory for a slab");
+    }
+    libc.memset(raw, 0i32, self.bmBytes);
+    let block = (raw + self.bmBytes) as *Cell[T];
+    let first = k << self.sh();
+    let g0 = (*self.info(k)).startGen;
+    var j = 0u32;
+    while j < perSlab {
+      let c = block + usize.from(j);
+      (*c).gen = g0;
+      (*c).next = if j + 1u32 < perSlab {first + j + 1u32} else {noCell};
+      j = j + 1u32;
+    }
+    mem.writeRaw[usize](slabs + usize.from(k), block as usize);
+    let inf = self.info(k);
+    (*inf).used = 0u32;
+    (*inf).free = first;
+    self.listPush(k);
+    held = held + 1u32;
+  }
+
+  // The rare half of 'add': drop the full slabs from the head of the list, and
+  // make a slab if none has room
+  fn headWithRoom(self: &mut) {
+    while partial != noCell && (*self.info(partial)).free == noCell {
+      self.listUnlink(partial);
+    }
+    if partial == noCell {
+      self.grow();
+    }
+  }
+
+  // v moved into a free cell: its Handle
+  pub fn add(self: &mut, v: T) Handle inline {
+    // A full slab may stay at the head of the list (a remove that frees a
+    // cell of it finds it there and does nothing, so a remove and an add on
+    // one slab leave the list alone). It is dropped here, when found full.
+    if partial == noCell || (*self.info(partial)).free == noCell {
+      self.headWithRoom();
+    }
+    let k = partial;
+    let inf = self.info(k);
+    let i = (*inf).free;
+    let b = *(slabs + usize.from(k));
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    (*inf).free = (*c).next;
+    (*inf).used = (*inf).used + 1u32;
+    (*c).next = liveMark;
+    self.setBitIn(b, i);
+    mem.writeRaw[T](&(*c).value as *T, v);
+    live = live + 1u32;
+    Handle(i, (*c).gen)
+  }
+
+  // The entry h names, or null if it is gone (or h names nothing)
+  pub fn get(self: &, h: Handle) *T {
+    let c = self.cellOrNull(h.index);
+    if c as usize == 0usize || (*c).next != liveMark || (*c).gen != h.gen {return nullOf[T]();}
+    &(*c).value as *T
+  }
+
+  // The live entry in cell i, or null
+  pub fn at(self: &, i: u32) *T {
+    let k = i >> self.sh();
+    if k >= nslabs {return nullOf[T]();}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return nullOf[T]();}
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    if (*c).next != liveMark {return nullOf[T]();}
+    &(*c).value as *T
+  }
+
+  pub fn borrow(self: &, h: Handle) Option[&T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  pub fn borrowMut(self: &mut, h: Handle) Option[&mut T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  pub fn borrowAt(self: &, i: u32) Option[&T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  pub fn borrowMutAt(self: &mut, i: u32) Option[&mut T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // The Handle of the live entry in cell i, or Handle.none()
+  pub fn handleAt(self: &, i: u32) Handle {
+    let c = self.cellOrNull(i);
+    if c as usize == 0usize || (*c).next != liveMark {return Handle.none();}
+    Handle(i, (*c).gen)
+  }
+
+  // The old name of handleAt, kept until step 10 deletes the 'slots' aliases
+  pub fn slotAt(self: &, i: u32) Handle {self.handleAt(i)}
+
+  // A cell has been emptied of its entry (already finalized or moved out and
+  // its bit cleared): give it a new generation and free it, or retire it for
+  // good if the generation is used up; then return its slab if that was the
+  // last occupied cell and a spare is already held
+  fn release(self: &mut, i: u32, k: u32, c: *Cell[T]) inline {
+    let inf = self.info(k);
+    if (*c).gen == 0xFFFFFFFFu32 {
+      (*c).next = deadMark;
+      return;
+    }
+    (*c).gen = (*c).gen + 1u32;
+    (*c).next = (*inf).free;
+    (*inf).free = i;
+    (*inf).used = (*inf).used - 1u32;
+    // most recently freed first, across slabs too. The slab at the head of
+    // the list (which 'add' leaves there while it is full) needs nothing.
+    if !(*inf).inList || partial != k {
+      self.relink(k);
+    }
+    if (*inf).used == 0u32 {
+      self.emptied(k);
+    }
+  }
+
+  // The rare half of 'release': k goes to the head of the list of slabs with
+  // free cells
+  fn relink(self: &mut, k: u32) {
+    self.listUnlink(k);
+    self.listPush(k);
+  }
+
+  // The slab k has nothing occupied: it is the spare, or goes back if another
+  // slab is still the empty spare. ('add' does not note that a slab it fills
+  // was the spare, so the spare is looked at here, where it is rare.)
+  fn emptied(self: &mut, k: u32) {
+    if spare != noCell && spare != k && (*self.info(spare)).used == 0u32 {
+      self.giveBack(k);
+    } else {
+      spare = k;
+    }
+  }
+
+  // Return the empty slab k, leaving its epoch behind
+  fn giveBack(self: &mut, k: u32) {
+    self.listUnlink(k);
+    let b = self.base(k);
+    var top = (*self.info(k)).startGen;
+    var j = 0u32;
+    while j < perSlab {
+      let g = (*(b + usize.from(j))).gen;
+      if g > top {top = g;}
+      j = j + 1u32;
+    }
+    let inf = self.info(k);
+    (*inf).startGen = top;
+    (*inf).link = freePos;
+    freePos = k;
+    libc.free((b as *u8) - self.bmBytes);
+    mem.writeRaw[usize](slabs + usize.from(k), 0usize);
+    held = held - 1u32;
+  }
+
+  // Finalize the entry in cell i and free the cell: true if there was one
+  pub fn removeAt(self: &mut, i: u32) bool inline {
+    let k = i >> self.sh();
+    if k >= nslabs {return false;}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return false;}
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    if (*c).next != liveMark {return false;}
+    self.dropCell(i, k, b, c);
+    true
+  }
+
+  pub fn remove(self: &mut, h: Handle) bool inline {
+    let i = h.index;
+    let k = i >> self.sh();
+    if k >= nslabs {return false;}
+    let b = *(slabs + usize.from(k));
+    if b == 0usize {return false;}
+    let c = (b as *Cell[T]) + usize.from(i & mask);
+    if (*c).next != liveMark || (*c).gen != h.gen {return false;}
+    self.dropCell(i, k, b, c);
+    true
+  }
+
+  // The live entry in cell i, in slab k (cell 0 at b), c its cell: finalized and freed
+  fn dropCell(self: &mut, i: u32, k: u32, b: usize, c: *Cell[T]) inline {
+    mem.finalize[T](&(*c).value as *T);
+    self.clearBitIn(b, i);
+    live = live - 1u32;
+    self.release(i, k, c);
+  }
+
+  // The live entry in cell i is dead to every handle, not finalized, and its
+  // cell is kept: true if there was one
+  pub fn retireAt(self: &mut, i: u32) bool {
+    let c = self.cellOrNull(i);
+    if c as usize == 0usize || (*c).next != liveMark {return false;}
+    (*c).next = retiredMark;
+    self.clearBit(i);
+    live = live - 1u32;
+    true
+  }
+
+  pub fn retire(self: &mut, h: Handle) bool {
+    let c = self.cellOrNull(h.index);
+    if c as usize == 0usize || (*c).next != liveMark || (*c).gen != h.gen {return false;}
+    self.retireAt(h.index)
+  }
+
+  // Finalize the retired entry in cell i and free the cell: true if there was one
+  pub fn freeAt(self: &mut, i: u32) bool {
+    let c = self.cellOrNull(i);
+    if c as usize == 0usize || (*c).next != retiredMark {return false;}
+    mem.finalize[T](&(*c).value as *T);
+    self.release(i, i >> self.sh(), c);
+    true
+  }
+
+  // Finalize the entry h named, which must have been retired, and free its cell
+  pub fn free(self: &mut, h: Handle) bool {
+    let c = self.cellOrNull(h.index);
+    if c as usize == 0usize || (*c).next != retiredMark || (*c).gen != h.gen {return false;}
+    self.freeAt(h.index)
+  }
+
+  // Move the entry h names out of the pool, by value, and free its cell: the
+  // value is the caller's now, so nothing is finalized
+  pub fn take(self: &mut, h: Handle) Option[T] {
+    let c = self.cellOrNull(h.index);
+    if c as usize == 0usize || (*c).next != liveMark || (*c).gen != h.gen {return None;}
+    let v = mem.readRaw[T](&(*c).value as *T);
+    self.clearBit(h.index);
+    live = live - 1u32;
+    self.release(h.index, h.index >> self.sh(), c);
+    Some[T](v)
+  }
+
+  // The first live cell at or after i, or noCell: found a word of the bitmap at a time
+  pub fn nextLive(self: &, i: u32) u32 {
+    if i == noCell {return noCell;}
+    var k = i >> self.sh();
+    var off = i & mask;
+    let words = (perSlab + 63u32) >> 6u32;
+    while k < nslabs {
+      if *(slabs + usize.from(k)) != 0usize {
+        let bm = self.bitmap(k);
+        var w = off >> 6u32;
+        var bits = *(bm + usize.from(w));
+        bits = (bits >> u64.from(off & 63u32)) << u64.from(off & 63u32);
+        while true {
+          if bits != 0u64 {
+            return (k << self.sh()) +(w << 6u32) + mem.trailingZeros[u64](bits);
+          }
+          w = w + 1u32;
+          if w >= words {break;}
+          bits = *(bm + usize.from(w));
+        }
+      }
+      k = k + 1u32;
+      off = 0u32;
+    }
+    noCell
+  }
+
+  // A cursor over the live entries, in index order. It borrows the pool, which
+  // may not change while the cursor, or an entry it gave, is used
+  pub fn iter(self: &) PoolIter[T] {
+    let words = (perSlab + 63u32) >> 6u32;
+    // 'w' past the last word, so the first call looks for the first slab
+    PoolIter[T](self, 0u32, words, words, 0u64, nullOf[u64](), nullOf[Cell[T]]())
+  }
+
+  // The same, each entry with its cell index
+  pub fn entries(self: &) PoolEntries[T] {PoolEntries[T](self, 0u32)}
+
+  // FOR TESTS, NOT AN API: set the generation of the free cell i (to start it
+  // near the top). Does nothing if the cell is not free.
+  pub fn setGenForTests(self: &mut, i: u32, g: u32) {
+    let c = self.cellOrNull(i);
+    if c as usize == 0usize {return;}
+    if (*c).next >= deadMark {return;}
+    (*c).gen = g;
+  }
+
+  fn final(self: &uni) {
+    var k = 0u32;
+    while k < nslabs {
+      if *(slabs + usize.from(k)) != 0usize {
+        let b = self.base(k);
+        var j = 0u32;
+        while j < perSlab {
+          let c = b + usize.from(j);
+          if (*c).next == liveMark || (*c).next == retiredMark {
+            mem.finalize[T](&(*c).value as *T);
+          }
+          j = j + 1u32;
+        }
+        libc.free((b as *u8) - self.bmBytes);
+      }
+      k = k + 1u32;
+    }
+    libc.free(slabs as *u8);
+    libc.free(infos as *u8);
+  }
+}
+
+// Walks with state: the slab being read (its base address and bitmap), the
+// word of the bitmap, and that word's bits not yet given, so an entry costs a
+// bit scan and no re-deriving from a cell index
+pub struct PoolIter['a, T] is Iterator[&T] {
+  pool: &'a GenPool[T];
+  nextSlab: u32;          // the next slab to look at
+  w: u32;                 // the word of the bitmap 'bits' came from
+  words: u32;             // words to a slab's bitmap
+  bits: u64;              // set bits of word w not yet given
+  bm: *u64;               // the slab's bitmap
+  cells: *Cell[T];        // the slab's cell 0
+
+  pub fn next(self: &mut) Option[&'a T] {
+    while true {
+      if bits != 0u64 {
+        let at = (w << 6u32) + mem.trailingZeros[u64](bits);
+        bits = bits & (bits - 1u64);
+        return Some[&T](&(*(cells + usize.from(at))).value as &T);
+      }
+      w = w + 1u32;
+      if w < words {
+        bits = *(bm + usize.from(w));
+      } else {
+        while nextSlab < pool.nslabs && *(pool.slabs + usize.from(nextSlab)) == 0usize {
+          nextSlab = nextSlab + 1u32;
+        }
+        if nextSlab >= pool.nslabs {
+          w = words;
+          return None;
+        }
+        cells = pool.base(nextSlab);
+        bm = pool.bitmap(nextSlab);
+        nextSlab = nextSlab + 1u32;
+        w = 0u32;
+        bits = *bm;
+      }
+    }
+    None
+  }
+}
+
+pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
+  pool: &'a GenPool[T];
+  pos: u32;
+
+  pub fn next(self: &mut) Option[(u32, &'a T)] {
+    let i = pool.nextLive(pos);
+    if i == noCell {pos = noCell; return None;}
+    pos = i + 1u32;
+    Some[(u32, &T)]((i, pool.at(i) as &T))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DensePool[T]: packed rows behind handles. The pool is the strong holder; a
+// holder keeps a Handle (the same 32-bit index and 32-bit generation as
+// GenPool's) that names an entry, while the entry's ROW moves: removing an
+// entry moves the last row into the hole, so the rows stay contiguous, in order,
+// with no holes, and a walk over them is a plain dense loop. Add, remove and
+// get(handle) are O(1): the handle goes through a sparse index (a GenPool of
+// row numbers, which gives the generations, the retiring of a wrapped cell and
+// the stale check) to its row, and each row records the sparse cell that names
+// it, to patch the index when the row moves.
+//
+// The rows are one growable contiguous block, not slabs: they move by design,
+// no row address leaves the pool (holders keep handles), and contiguity is what
+// makes the dense walk and rows() possible. All of that storage is behind
+// RowBlock, so a slab version would replace one small struct.
+//
+// A pool belongs to one actor or thread at a time. Nothing may add or remove
+// during a walk or while a borrow of an entry is held (the borrow checker
+// refuses it), because adding may move the whole block and removing moves rows.
+
+// The seam: the row storage. Values and the back index (each row's sparse cell)
+// in two parallel arrays, so the values are a plain array of T.
+struct RowBlock[T] is Move {
+  vals: *T;
+  cells: *u32;
+  n: usize;
+  cap: usize;
+
+  fn make() RowBlock[T] {RowBlock[T](nullOf[T](), nullOf[u32](), 0usize, 0usize)}
+
+  fn grow(self: &mut) {
+    let nc = if cap == 0usize {8usize} else {cap * 2usize};
+    vals = libc.realloc(vals as *u8, nc * mem.sizeof[T]()) as *T;
+    cells = libc.realloc(cells as *u8, nc * mem.sizeof[u32]()) as *u32;
+    if vals as usize == 0usize || cells as usize == 0usize {
+      panic("pools: out of memory for rows");
+    }
+    cap = nc;
+  }
+
+  // v moved in as the last row, naming sparse cell c
+  fn push(self: &mut, v: T, c: u32) {
+    if n == cap {self.grow();}
+    mem.writeRaw[T](vals + n, v);
+    *(cells + n) = c;
+    n = n + 1usize;
+  }
+
+  // Row r leaves (finalized if 'fin') and the last row moves into its place
+  fn dropRow(self: &mut, r: usize, fin: bool) {
+    if fin {mem.finalize[T](vals + r);}
+    let last = n - 1usize;
+    if r != last {
+      mem.writeRaw[T](vals + r, mem.readRaw[T](vals + last));
+      *(cells + r) = *(cells + last);
+    }
+    n = last;
+  }
+
+  fn final(self: &uni) {
+    var i = 0usize;
+    while i < n {
+      mem.finalize[T](vals + i);
+      i = i + 1usize;
+    }
+    libc.free(vals as *u8);
+    libc.free(cells as *u8);
+  }
+}
+
+pub struct DensePool[T] is Move {
+  index: GenPool[u32];    // sparse: a cell's row
+  block: RowBlock[T];
+
+  // An empty pool; 'perSlab' is for the sparse index (see GenPool.make)
+  pub fn make(perSlab: u32 = 0u32) DensePool[T] {
+    DensePool[T](GenPool[u32].make(perSlab), RowBlock[T].make())
+  }
+
+  pub fn len(self: &) usize {block.n}
+
+  // v moved into a new last row: its Handle
+  pub fn add(self: &mut, v: T) Handle {
+    let h = index.add(u32.from(block.n));
+    block.push(v, h.index);
+    h
+  }
+
+  // The row h names, or noCell if it is gone
+  pub fn rowIndex(self: &, h: Handle) u32 {
+    let p = index.get(h);
+    if p as usize == 0usize {return noCell;}
+    *p
+  }
+
+  pub fn isLive(self: &, h: Handle) bool {index.get(h) as usize != 0usize}
+
+  // The entry h names, or null if it is gone
+  pub fn get(self: &, h: Handle) *T {
+    let p = index.get(h);
+    if p as usize == 0usize {return nullOf[T]();}
+    block.vals + usize.from(*p)
+  }
+
+  pub fn borrow(self: &, h: Handle) Option[&T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  pub fn borrowMut(self: &mut, h: Handle) Option[&mut T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // The Handle of the entry in row r, or Handle.none() if there is no such row
+  pub fn handleAt(self: &, r: u32) Handle {
+    if usize.from(r) >= block.n {return Handle.none();}
+    index.handleAt(*(block.cells + usize.from(r)))
+  }
+
+  // The entry in row r, or None
+  pub fn borrowAt(self: &, r: u32) Option[&T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&T]((block.vals + usize.from(r)) as &T)
+  }
+
+  pub fn borrowMutAt(self: &mut, r: u32) Option[&mut T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&mut T]((block.vals + usize.from(r)) as &mut T)
+  }
+
+  // The rows as a slice, in row order. The pool may not change while it is held
+  pub fn rows(self: &) &Array[T] {mem.sliceFromParts(block.vals, block.n)}
+  pub fn rowsMut(self: &mut) &mut Array[T] {mem.sliceFromPartsMut(block.vals, block.n)}
+
+  // The row leaves, the last row takes its place, and the sparse index follows
+  fn dropAt(self: &mut, h: Handle, r: usize, fin: bool) {
+    block.dropRow(r, fin);
+    if r < block.n {
+      let moved = index.at(*(block.cells + r));
+      *moved = u32.from(r);
+    }
+    index.remove(h);
+  }
+
+  // Finalize the entry h names and take it out: true if there was one
+  pub fn remove(self: &mut, h: Handle) bool {
+    let p = index.get(h);
+    if p as usize == 0usize {return false;}
+    self.dropAt(h, usize.from(*p), true);
+    true
+  }
+
+  // Move the entry out by value; nothing is finalized
+  pub fn take(self: &mut, h: Handle) Option[T] {
+    let p = index.get(h);
+    if p as usize == 0usize {return None;}
+    let r = usize.from(*p);
+    let v = mem.readRaw[T](block.vals + r);
+    self.dropAt(h, r, false);
+    Some[T](v)
+  }
+
+  // Remove every entry (finalized, last row first). Every handle becomes stale,
+  // each cell's generation moving on
+  pub fn clear(self: &mut) {
+    while block.n > 0usize {
+      let r = block.n - 1usize;
+      let c = *(block.cells + r);
+      block.dropRow(r, true);
+      index.removeAt(c);
+    }
+  }
+
+  // A cursor over the rows in order. It borrows the pool, which may not change
+  // while the cursor, or an entry it gave, is used
+  pub fn iter(self: &) DenseIter[T] {DenseIter[T](self, 0usize)}
+
+  // FOR TESTS, NOT AN API: set the generation of the free sparse cell c (to
+  // start it near the top). Does nothing if the cell is not free.
+  pub fn setGenForTests(self: &mut, c: u32, g: u32) {
+    index.setGenForTests(c, g);
+  }
+}
+
+pub struct DenseIter['a, T] is Iterator[&T] {
+  pool: &'a DensePool[T];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a T] {
+    if pos >= pool.block.n {return None;}
+    let p = pool.block.vals + pos;
+    pos = pos + 1usize;
+    Some[&T](p as &T)
+  }
+}

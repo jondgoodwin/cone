@@ -722,8 +722,10 @@ uint8_t refMarksUnmet(uint8_t marks, INode *type, INode *trait) {
     if ((marks & RefMarkShareable) && !genericTypeIs(type, shareableTrait))
         return RefMarkShareable;
     if ((marks & RefMarkShapeKeeping) && type->tag == StructTag && trait && trait->tag == StructTag
-            && shapeKeepsVia((StructNode*)type, (StructNode*)trait, NULL, 0) == ShapeKeepsNo)
+            && shapeKeepsVia((StructNode*)type, (StructNode*)trait, NULL, 0) == ShapeKeepsNo) {
+        shapeRefusedNote((StructNode*)type, (StructNode*)trait);
         return RefMarkShapeKeeping;
+    }
     return 0;
 }
 

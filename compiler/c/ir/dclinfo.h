@@ -82,9 +82,11 @@ enum DclFacts {
                               // that what it does can be read from the tree before its
                               // flow pass and its declaration's check have ended
                               // (shapeinfer.c). Written by fnDclTypeCheck; a clone has none
-    DclSetup      = 0x4000    // Global only: a 'let' given a value that is not a constant,
+    DclSetup      = 0x4000,   // Global only: a 'let' given a value that is not a constant,
                               // set by its module's setups before 'init' (modAddSetup). It
                               // holds no initial value of its own: the value is the setup's
+    DclNoAlias    = 0x8000    // Fn only: '@noalias', the pointer it returns is one no other live
+                              // pointer reaches (a fresh allocation): LLVM's 'noalias' on the return
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

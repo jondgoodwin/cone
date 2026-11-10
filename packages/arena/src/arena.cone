@@ -282,8 +282,10 @@ struct ArenaCore is GcTraceElements {
   // fits, a zero-sized value included, and the first allocation goes to bumpSlow.
   fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize inline {
     let at = roundUp(top + hdr, align);
-    if at + size <= limit {
-      top = at + size;
+    let end = at + size;
+    // 'end >= at' is false when the sum wrapped round a usize, which 'end <= limit' alone would let by
+    if end <= limit && end >= at {
+      top = end;
       at
     }
     else {
@@ -294,7 +296,7 @@ struct ArenaCore is GcTraceElements {
   // The same when the current block has no room (or there is none): a new
   // block, and the value at its start
   fn bumpSlow(self: &mut, hdr: usize, align: usize, size: usize) usize {
-    self.grow(hdr + size + align);
+    self.grow(needBytes(hdr, size, align));
     let at = roundUp(top + hdr, align);
     top = at + size;
     at
@@ -322,12 +324,14 @@ struct ArenaCore is GcTraceElements {
   fn resize(self: &mut, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
     if block as usize == 0usize { return self.place(newBytes, align); }
     let at = block as usize;
-    if at + oldBytes == top && at + newBytes <= limit {
+    // 'at <= top <= limit' when the first holds, so 'limit - at' does not wrap
+    if at + oldBytes == top && newBytes <= limit - at {
       top = at + newBytes;
       return block;
     }
-    if roundUp(top, align) + newBytes > limit {
-      self.grow(doubled(newBytes + align));
+    let start = roundUp(top, align);
+    if start > limit || newBytes > limit - start {
+      self.grow(doubled(needBytes(0usize, newBytes, align)));
     }
     let moved = self.place(newBytes, align);
     var n = oldBytes;
@@ -501,6 +505,16 @@ pub struct DynArena['=a] is NoLoanMut {
 // The room a new block gets: a block's worth, or 'need' if that is more
 fn blockRoom(need: usize) usize {
   if need > blockBytes {need} else {blockBytes}
+}
+
+// The bytes a new block must hold for a value of 'size' bytes with 'hdr' bytes before it, aligned to 'align'
+// (the most it can lose to alignment is 'align'). A sum a usize cannot count is a panic, as a block's is
+// (newBlock), not a small number that would make a block too small for the value.
+fn needBytes(hdr: usize, size: usize, align: usize) usize {
+  if size > (0usize - 1usize) - hdr - align {
+    panic("arena: a block that large cannot be counted in a usize");
+  }
+  hdr + size + align
 }
 
 // Twice n, or the most a usize holds if that is more

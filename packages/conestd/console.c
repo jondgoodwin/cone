@@ -14,7 +14,16 @@
  * exit, when what waits is written.
  *
  * No function reports a failure: a write that fails is dropped, as the C
- * library's would have been for output nobody reads.
+ * library's would have been for output nobody reads. ONE RULE, for standard
+ * output alone: a write to descriptor 1 that fails because the reader has gone
+ * (EPIPE: on POSIX, a pipe or socket with no reader, once SIGPIPE does not end
+ * the program as it does by default; on Windows the system's ERROR_NO_DATA or
+ * ERROR_BROKEN_PIPE, which the C runtime reports as EINVAL) ENDS THE PROGRAM, quietly: no
+ * message, nothing more written, exit status 141 (128 + SIGPIPE, what the
+ * signal would have given a shell), on both systems. This is what 'prog | head'
+ * has always meant, kept for a program in which something has made SIGPIPE
+ * ignored (iocore's adoptPipe does, process-wide). A failed write to standard
+ * error stays dropped.
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -23,6 +32,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <errno.h>
+
+// Standard output's reader has gone: end the program now and quietly (the header: ONE RULE). Not 'exit': what waits to be
+// written would only be written to the same closed pipe, and nothing should run that could write to it
+static void consoleReaderGone(int fd) {
+    if (fd == 1)
+        _Exit(141);
+}
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -39,8 +56,14 @@ void cone_consoleWrite(int fd, const uint8_t *p, size_t n) {
     while (n > 0) {
         unsigned chunk = n > 0x40000000u ? 0x40000000u : (unsigned)n;
         int wrote = _write(fd, p, chunk);
-        if (wrote <= 0)
+        if (wrote <= 0) {
+            // The C runtime says EINVAL for a pipe with no reader (the system's ERROR_NO_DATA, or ERROR_BROKEN_PIPE),
+            // so the system's own error is read too
+            DWORD err = GetLastError();
+            if (errno == EPIPE || err == ERROR_NO_DATA || err == ERROR_BROKEN_PIPE)
+                consoleReaderGone(fd);
             return;
+        }
         p += wrote;
         n -= (size_t)wrote;
     }
@@ -69,6 +92,8 @@ void cone_consoleWrite(int fd, const uint8_t *p, size_t n) {
         if (wrote < 0) {
             if (errno == EINTR)
                 continue;
+            if (errno == EPIPE)
+                consoleReaderGone(fd);
             return;
         }
         p += wrote;
@@ -95,6 +120,8 @@ void cone_consoleWriteParts(int fd, const size_t *parts, size_t count) {
             if (wrote < 0) {
                 if (errno == EINTR)
                     continue;
+                if (errno == EPIPE)
+                    consoleReaderGone(fd);
                 return;
             }
             total -= (size_t)wrote;

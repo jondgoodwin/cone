@@ -1349,32 +1349,32 @@ target = "symbols"
 object = "g"
 excludes = ["g[", "g.add", "g.total"]
 
-# The same three objects in an optimized program: an instance's function small
-# enough to inline is the program's own copy (internal), while a library keeps
+# The same three objects in an optimized program: an instance's function, large
+# or small, is the program's own copy (internal), while a library keeps
 # its copies shared, and the instance's counter and the trait objects' vtables
 # stay shared everywhere, since each must be one object in the program. A
 # function's address is promised the same only within one object (nothing says
 # two objects, or two folded copies, share one), so only that is pinned.
 [scenario.module_generic_private]
 category = "run"
-description = "An optimized program, a library and a generic module's package: the program keeps a small generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
+description = "An optimized program, a library and a generic module's package: the program keeps a generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
 tags = ["genllvm", "runtime"]
 link = ["g/g.conebuild", "q/q.conebuild"]
 include = ["include/g.cone", "include/q.cone"]
 
 [[scenario.module_generic_private.check]]
-name = "the-program-keeps-a-small-instance-function-to-itself"
+name = "the-program-keeps-an-instance-function-to-itself"
 target = "symbols"
 contains = [
   "define internal g[i64].add comdat nodeduplicate",
   "define internal g[i64].sameAddress comdat nodeduplicate",
   "global linkonce_odr thread_local g[i64].total comdat any",
   "global linkonce_odr thread_local g[i64].adds comdat any",
-  "define linkonce_odr g[i64].heavy comdat any",
+  "define internal g[i64].heavy comdat nodeduplicate",
   "constant linkonce_odr q.Wrap[i64] as q.Shape (vtable) comdat any",
   "constant linkonce_odr q.Wrap[f64] as q.Shape (vtable) comdat any",
 ]
-excludes = ["define linkonce_odr g[i64].add comdat", "global internal thread_local", "constant internal q.Wrap"]
+excludes = ["define linkonce_odr g[i64]", "global internal thread_local", "constant internal q.Wrap"]
 
 [[scenario.module_generic_private.check]]
 name = "the-library-keeps-its-instance-shared"
@@ -4406,9 +4406,14 @@ diagnostics = 2
 
 [scenario.module_setup_block_local_reject]
 category = "reject"
-description = "A block giving a global its value cannot declare a local that is computed: the report says so and points to a function, not to the local as the fault; a local started by a constant is still fine, a 'var' global's block is refused at its local and again at the global, an 'if let' is refused at its hidden variable, and a parameter's non-literal default keeps the old wording"
+description = "A 'let' global's block may declare a computed local; a 'var' global's block is refused once, at the global (not also at the block's local), and a parameter's non-literal default keeps its own wording"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 2
+
+[scenario.module_setup_block_locals]
+category = "run"
+description = "A block giving a 'let' global its value declares 'let' and 'var' locals started by calls and other computed values, in nested blocks and an 'if let', and the setup that runs it holds them; the locals are scoped to the block"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.module_setup_try_reject]
 category = "reject"
@@ -4459,3 +4464,8 @@ name = "each-is-a-glsl-instruction"
 target = "asm"
 contains = [" Tan %", " Asin %", " Acos %", " Atan %", " Atan2 %", " Exp %", " Exp2 %", " Log %", " Log2 %", " Pow %", " Sinh %", " Cosh %", " Tanh %", " Sqrt %", " FAbs %", " Fma %", " OpFUnordNotEqual %"]
 excludes = ["OpUnordered", "OpExtInstImport \"OpenCL"]
+
+[scenario.module_noalias_reject]
+category = "reject"
+description = "'@noalias' on a function that does not return a pointer, and on an inline one whose value is not a call"
+tags = ["genllvm"]

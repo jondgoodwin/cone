@@ -141,6 +141,23 @@ fn main() i32 {
         expect(w < 1800u32 && w > 800u32, "the dummy device takes sound at about real time");
         sp.cutOff();
         expectUInt(u64.from(sp.waiting()), 0u64, "and a cut-off empties it");
+        // gaps: after the cut-off the stream is empty, so the next queue is a boundary gap, not an underrun
+        let short = toneMs(100u32, 24000u32, 440., 0.5);
+        sp.queue(short.view());
+        expectUInt(sp.boundaryGaps(), 1u64, "a queue into the stream a cut-off emptied is a boundary gap");
+        expectUInt(sp.underruns(), 0u64, "... and not an underrun");
+        // let it play out, then queue again with no flush between: the speech ran dry mid-sentence
+        pause(400u32);
+        expect(sp.waitingMs() == 0u32, "the 100 ms has played out");
+        sp.queue(short.view());
+        expectUInt(sp.underruns(), 1u64, "a queue into a stream that ran dry mid-sentence is an underrun");
+        // the same after a flush is a boundary gap
+        sp.flush();
+        pause(400u32);
+        expect(sp.waitingMs() == 0u32, "the second 100 ms has played out");
+        sp.queue(short.view());
+        expectUInt(sp.boundaryGaps(), 2u64, "after a flush the gap is a boundary, counted apart");
+        expectUInt(sp.underruns(), 1u64, "... and the underruns stay at one");
         sp.close();
       }
       case let Err(e) { require(false, "the dummy speaker opens"); }
