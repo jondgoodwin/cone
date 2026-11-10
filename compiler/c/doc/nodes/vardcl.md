@@ -267,9 +267,10 @@ nothing.
    (module.md, "Setups") takes it for a setup the module runs before its `init`,
    and `ErrorNotLit` is not reported; a `var` global, a static and the other
    globals it names keep the rule. A local declared in the block that gives a
-   global its value is no global and is never lifted: one started by a computed
-   value is `ErrorNotLit` with its own wording (a block cannot declare a local
-   computed at run time; a function can), not the variable's.
+   global its value is no global and is never lifted: it is a local of the setup
+   that runs the block and may be started by any value (nothing is reported at
+   it; the global's own check decides, so a `var` global's block is reported
+   once, at the global).
 5a. **A function's static joins the function.** `dclInfoJoin` with the function
    as owner, so its symbol is spelled after the function (`tick.calls`) and two
    functions' statics of one name stay apart. In an `inline` function the body
