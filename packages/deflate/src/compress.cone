@@ -53,15 +53,10 @@ struct BitWriter {
     }
   }
 
-  // A Huffman code goes in most-significant bit first
+  // A Huffman code goes in most-significant bit first: 'code' is as 'makeCode' keeps
+  // it, already bit-reversed
   pub fn putCode(self: &mut, code: u32, bits: u32) {
-    var rev = 0u32;
-    var i = 0u32;
-    while i < bits {
-      rev = (rev << 1u32) | ((code >> i) & 1u32);
-      i += 1u32;
-    }
-    self.put(rev, bits);
+    self.put(code, bits);
   }
 
   // Pad to a byte boundary
@@ -198,7 +193,18 @@ fn canonicalCodes(lens: &Array[u8], n: usize) List[u32] {
 }
 
 fn makeCode(lens: List[u8]) Code {
-  let codes = canonicalCodes(lens.view(), lens.len());
+  // The codes are kept bit-reversed, ready for the least-significant-first writer
+  var codes = canonicalCodes(lens.view(), lens.len());
+  var i = 0usize;
+  while i < lens.len() {
+    let bits = u32.from(*lens[i]);
+    var rev = 0u32;
+    var c = *codes[i];
+    var j = 0u32;
+    while j < bits { rev = (rev << 1u32) | (c & 1u32); c = c >> 1u32; j += 1u32; }
+    codes.set(i, rev);
+    i += 1usize;
+  }
   Code(lens, codes)
 }
 
@@ -220,24 +226,62 @@ fn hash3(d: &Array[u8], i: usize) usize {
 }
 
 // Write tokens [from, to) with the codes
+// The bit accumulator is held in locals and the output filled four bytes at a time
+// (a match needs at most 20 bits, then 28, so 32 bits are flushed before each part);
+// the codes are stored bit-reversed (see makeCode). Symbol lookups are by table:
+// lsym by length, dsym by distance (d - 1 up to 256, then 256 + (d - 1) / 128, since
+// every distance code over 256 starts at a multiple of 128 plus one).
 fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
+  var lsym = Array[u8, 259]() <- fill 0u8;
+  var q = 3usize;
+  while q < 259usize { lsym[q] = u8.from(lengthSymbol(q)); q += 1usize; }
+  var dsym = Array[u8, 512]() <- fill 0u8;
+  q = 0usize;
+  while q < 512usize {
+    dsym[q] = u8.from(distSymbol(if q < 256usize {q + 1usize} else {((q - 256usize) << 7u32) + 1usize}));
+    q += 1usize;
+  }
+  var acc = w.acc;
+  var n = u64.from(w.n);
   var i = from;
   while i < to {
     let t = tokens[i];
+    if n >= 32u64 {
+      w.out.push(u8.from(acc & 255u64)); w.out.push(u8.from((acc >> 8u64) & 255u64));
+      w.out.push(u8.from((acc >> 16u64) & 255u64)); w.out.push(u8.from((acc >> 24u64) & 255u64));
+      acc = acc >> 32u64; n -= 32u64;
+    }
     if (t & 0x80000000u32) == 0u32 {
-      w.putCode(*lit.codes[usize.from(t)], u32.from(*lit.lens[usize.from(t)]));
+      acc = acc | (u64.from(*lit.codes[usize.from(t)]) << n);
+      n += u64.from(*lit.lens[usize.from(t)]);
     } else {
       let len = usize.from((t >> 16u32) & 0x7FFFu32);
       let d = usize.from(t & 0xFFFFu32);
-      let ls = lengthSymbol(len);
-      w.putCode(*lit.codes[257usize + ls], u32.from(*lit.lens[257usize + ls]));
-      w.put(u32.from(len - usize.from(lenBase[ls])), u32.from(lenExtra[ls]));
-      let ds = distSymbol(d);
-      w.putCode(*dist.codes[ds], u32.from(*dist.lens[ds]));
-      w.put(u32.from(d - usize.from(distBase[ds])), u32.from(distExtra[ds]));
+      let ls = usize.from(lsym[len]);
+      acc = acc | (u64.from(*lit.codes[257usize + ls]) << n);
+      n += u64.from(*lit.lens[257usize + ls]);
+      acc = acc | (u64.from(len - usize.from(lenBase[ls])) << n);
+      n += u64.from(lenExtra[ls]);
+      if n >= 32u64 {
+        w.out.push(u8.from(acc & 255u64)); w.out.push(u8.from((acc >> 8u64) & 255u64));
+        w.out.push(u8.from((acc >> 16u64) & 255u64)); w.out.push(u8.from((acc >> 24u64) & 255u64));
+        acc = acc >> 32u64; n -= 32u64;
+      }
+      let ds = usize.from(dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
+      acc = acc | (u64.from(*dist.codes[ds]) << n);
+      n += u64.from(*dist.lens[ds]);
+      acc = acc | (u64.from(d - usize.from(distBase[ds])) << n);
+      n += u64.from(distExtra[ds]);
     }
     i += 1usize;
   }
+  // leave fewer than 8 bits in the writer
+  while n >= 8u64 {
+    w.out.push(u8.from(acc & 255u64));
+    acc = acc >> 8u64; n -= 8u64;
+  }
+  w.acc = acc;
+  w.n = u32.from(n);
 }
 
 // Write tokens [from, to) with the codes and the end-of-block code
