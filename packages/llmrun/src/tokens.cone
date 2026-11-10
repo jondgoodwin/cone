@@ -181,32 +181,31 @@ fn addStop(stops: &mut List[u32], id: u32) {
   stops.push(id);
 }
 
-// Text arriving token by token: the bytes of the tokens so far that are whole characters, kept back when a token
-// ends inside one
+// Text arriving token by token. A token's bytes can end inside a UTF-8 character; `push` gives back only whole
+// characters as a String and holds the unfinished tail (at most 3 bytes) in `pending` until a later token completes it.
+// (The tokenizer's own decode output stays bytes: nothing there promises UTF-8.)
 pub struct TextStream {
-  pending: List[u8];
+  pending: String;
 
-  pub fn make() TextStream { TextStream(List[u8]()) }
+  pub fn make() TextStream { TextStream(String()) }
 
-  // The tokens' bytes now ready to print (special tokens are left out, or shown as their text, as asked)
-  pub fn push(self: &mut, tokens: &bpetokenize.Tokenizer, id: u32, showSpecial: bool) List[u8] {
+  // The text now ready to print (special tokens are left out, or shown as their text, as asked)
+  pub fn push(self: &mut, tokens: &bpetokenize.Tokenizer, id: u32, showSpecial: bool) String {
     var one = List[u32]();
     one.push(id);
-    // An id outside the tokenizer's vocabulary adds no bytes (decodeInto refuses it and leaves 'pending' as it was)
-    _ = tokens.decodeInto(one.view(), !showSpecial, &mut pending);
+    // An id outside the tokenizer's vocabulary adds no bytes (decodeInto refuses it and leaves 'got' empty)
+    var got = List[u8]();
+    _ = tokens.decodeInto(one.view(), !showSpecial, &mut got);
+    pending.appendBytes(got.view());
     let whole = bpetokenize.utf8Complete(pending.view());
-    var out = List[u8].withCapacity(whole);
-    var i = 0usize;
-    while i < whole { out.push(*pending[i]); i = i + 1usize; }
-    var rest = List[u8]();
-    while i < pending.len() { rest.push(*pending[i]); i = i + 1usize; }
-    pending = rest;
+    let out = pending.sub(0usize, whole);
+    pending = pending.sub(whole, pending.len());
     out
   }
 
   // Whatever is held back (a character the tokens never finished), at the end
-  pub fn finish(self: &mut) List[u8] {
-    var out = List[u8]();
+  pub fn finish(self: &mut) String {
+    var out = String();
     out <-> pending;
     out
   }
