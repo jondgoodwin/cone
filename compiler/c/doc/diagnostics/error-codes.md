@@ -309,6 +309,11 @@ body (or a value) the linker would see; the remedy is to delete one body. Both
 are reported by generation, at the declaration generated second, naming the
 first.
 
+`ErrorNoAliasAttr` (1623) is the provisional `@noalias` on a function that cannot carry it,
+reported by generation: one whose return is not a pointer or thin reference, or an `inline`
+one whose value is not the call that allocates. The remedy is to drop the marker or fix the
+return.
+
 A module trait and a module's conformance to one take four codes, split where
 the remedy is: the author of the `mod` line, of the trait, or of the module's
 declarations. `ErrorModIs` is a `mod` line's `is` that does not name one module
