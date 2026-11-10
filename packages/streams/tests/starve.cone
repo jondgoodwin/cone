@@ -1,0 +1,290 @@
+// A Writer from tryMake whose pool refuses a block (iobuf's tryMake, the pool
+// at the reserve of its maxBytes): the refusal is recorded once and sticks.
+// 'starved()' says so, every later put, slot, fill and lengthPrefixed is
+// dropped, 'tryFinish' gives None and every byte held goes back to the pool,
+// and 'popFull' still gives the buffers filled before the refusal. Refusals
+// are forced by hoarding the pool and then freeing a known number of 4096-byte
+// blocks. 'putBuf' moves a caller's buffer in without a copy. A writer from
+// 'make' is unaffected by the hoard (its blocks are not the try bank's).
+
+mod starve;
+
+import testing use *;
+import iobuf use *;
+import streams use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+// Give k of the hoard's 4096-byte blocks back: the pool then lends exactly k to tryMake
+fn free(h: &mut Chain, k: usize) {
+  var i = 0usize;
+  while i < k {
+    _ = h.popFront();
+    i = i + 1usize;
+  }
+}
+
+fn lent() u64 {stats().lent}
+
+fn filled(n: usize, from: u8) IoBuf {
+  var b = IoBuf(n);
+  var i = 0usize;
+  while i < n {
+    _ = b.append(&[from + u8.from(i % 7usize)]);
+    i = i + 1usize;
+  }
+  b
+}
+
+// The pool has no block for the writer's first buffer
+fn firstBlock() {
+  let before = lent();
+  {
+    let h = hoard();
+    expect(Writer.tryMake(4096usize) is None[Writer], "first block: tryMake gives None");
+  }
+  expectUInt(lent(), before, "first block: every block back in the pool");
+  {
+    // The lazy form: starved at the first put
+    var h = hoard();
+    var w = Writer.tryEmpty(4096usize);
+    expect(!w.starved(), "tryEmpty: not starved before a put");
+    w.putByte(1u8);
+    expect(w.starved(), "tryEmpty: starved by the first put");
+    w.putBE[u32](7u32);
+    expectUInt(u64.from(w.len()), 0u64, "tryEmpty: later puts dropped");
+    expect(w.tryFinish() is None[Chain], "tryEmpty: tryFinish None");
+  }
+  expectUInt(lent(), before, "tryEmpty: every block back in the pool");
+}
+
+// The refusal comes at a rollover in the middle of a put; what was filled before is popFull's
+fn midPut() {
+  let before = lent();
+  {
+    var h = hoard();
+    free(&mut h, 2usize);
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.put(filled(4000usize, 1u8).view());
+    expect(!w.starved(), "mid-put: not starved while the room lasts");
+    w.put(filled(4000usize, 1u8).view());     // fills the first block, rolls to the second
+    expect(!w.starved(), "mid-put: the second block was lent");
+    w.put(filled(8000usize, 1u8).view());     // fills the second, the third is refused
+    expect(w.starved(), "mid-put: starved at the refused rollover");
+    let had = w.len();
+    w.putByte(9u8);
+    w.putBE[u64](1u64);
+    w.repeat(3u8, 100usize);
+    w.putUintBE(5u64, 3usize);
+    w.pad(8usize);
+    expectUInt(u64.from(w.len()), u64.from(had), "mid-put: later puts dropped");
+    // The two full blocks (8192 bytes) are there to send
+    var got = 0usize;
+    var blocks = 0u64;
+    var going = true;
+    while going {
+      match w.popFull() {
+        case let Some(b) {
+          got = got + b.len();
+          blocks = blocks + 1u64;
+        }
+        else {going = false;}
+      }
+    }
+    expectUInt(blocks, 2u64, "mid-put: popFull gave the two blocks filled before the refusal");
+    expectUInt(u64.from(got), 8192u64, "mid-put: ...all their bytes");
+    expect(w.tryFinish() is None[Chain], "mid-put: tryFinish None");
+    expectUInt(u64.from(w.len()), 0u64, "mid-put: nothing held after");
+  }
+  expectUInt(lent(), before, "mid-put: every block back in the pool");
+}
+
+fn twoBodies(w: &mut Writer) {
+  w.repeat(2u8, 3000usize);
+  w.repeat(2u8, 3000usize);
+}
+
+fn oneByte(w: &mut Writer) {w.putByte(1u8);}
+
+// The refusal comes inside lengthPrefixed; slots made after it are dummies
+fn inLengthPrefixed() {
+  let before = lent();
+  {
+    var h = hoard();
+    free(&mut h, 1usize);
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.putByte(1u8);
+    w.lengthPrefixedBE[u16](&twoBodies);   // the second block is refused
+    expect(w.starved(), "lengthPrefixed: starved");
+    let s = w.slot[u32]();      // a dummy
+    w.fillBE[u32](s, 5u32);
+    w.lengthPrefixedBE[u8](&oneByte);
+    expect(w.tryFinish() is None[Chain], "lengthPrefixed: tryFinish None (the dummy slot is no panic)");
+  }
+  expectUInt(lent(), before, "lengthPrefixed: every block back in the pool");
+  {
+    // A slot open when the refusal comes: filling it afterwards is a no-op too
+    var h = hoard();
+    free(&mut h, 1usize);
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    let s = w.slot[u32]();
+    w.repeat(0u8, 5000usize);
+    expect(w.starved(), "open slot: starved");
+    w.fillLE[u32](s, 7u32);
+    expect(w.tryFinish() is None[Chain], "open slot: tryFinish None");
+  }
+  expectUInt(lent(), before, "open slot: every block back in the pool");
+}
+
+// The refusal comes at putBuf's fresh start; the buffer put is held anyway
+fn atPutBuf() {
+  let before = lent();
+  {
+    var h = hoard();
+    free(&mut h, 1usize);
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    var b = filled(100usize, 50u8);
+    let base = b.base();
+    w.putByte(1u8);
+    w.putBuf(b);
+    expect(w.starved(), "putBuf: starved at the fresh start");
+    w.putByte(2u8);
+    w.putBuf(filled(10usize, 1u8));
+    expectUInt(u64.from(w.len()), 101u64, "putBuf: later puts dropped");
+    var n = 0u64;
+    var sameBase = false;
+    var going = true;
+    while going {
+      match w.popFull() {
+        case let Some(x) {
+          n = n + 1u64;
+          if x.len() == 100usize && x.base() == base {sameBase = true;}
+        }
+        else {going = false;}
+      }
+    }
+    expectUInt(n, 2u64, "putBuf: popFull gave the byte before it and the buffer");
+    expect(sameBase, "putBuf: the buffer itself, not a copy");
+    expect(w.tryFinish() is None[Chain], "putBuf: tryFinish None");
+  }
+  expectUInt(lent(), before, "putBuf: every block back in the pool");
+}
+
+fn sameBytes(b: &IoBuf, n: usize, from: u8) bool {
+  var ok = b.len() == n;
+  var i = 0usize;
+  while ok && i < n {
+    if b.view()[i] != from + u8.from(i % 7usize) {ok = false;}
+    i = i + 1usize;
+  }
+  ok
+}
+
+// putBuf with room to spare: bytes in order around the buffer, which moved in whole
+fn putBufOrder() {
+  let before = lent();
+  {
+    var w = Writer.make(4096usize);
+    w.put("ab");
+    var b = filled(300usize, 10u8);
+    let base = b.base();
+    w.putBuf(b);
+    w.put("cd");
+    var all = w.finish();
+    expectUInt(u64.from(all.segments()), 3u64, "putBuf: three segments (before, the buffer, after)");
+    var s1 = match all.popFront() {case var Some(x) {x} else {IoBuf()}};
+    var s2 = match all.popFront() {case var Some(x) {x} else {IoBuf()}};
+    var s3 = match all.popFront() {case var Some(x) {x} else {IoBuf()}};
+    expectStr(s1.view(), "ab", "putBuf: the bytes before");
+    expect(s2.base() == base, "putBuf: the buffer itself, no copy");
+    expect(sameBytes(&s2, 300usize, 10u8), "putBuf: its bytes");
+    expectStr(s3.view(), "cd", "putBuf: the bytes after");
+  }
+  {
+    // Into an empty buffer in use: the buffer goes first and the one in use stays
+    var w = Writer.make(4096usize);
+    w.putBuf(filled(20usize, 1u8));
+    w.put("zz");
+    let all = w.finish();
+    expectUInt(u64.from(all.segments()), 2u64, "putBuf first: two segments");
+    expectUInt(u64.from(all.len()), 22u64, "putBuf first: 22 bytes");
+  }
+  {
+    // A writer from tryMake with the pool open does the same, and finishes Some
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.put("ab");
+    w.putBuf(filled(50usize, 3u8));
+    w.put("cd");
+    match w.tryFinish() {
+      case let Some(all) {
+        expectUInt(u64.from(all.len()), 54u64, "tryMake: tryFinish Some with every byte");
+        expect(!w.starved(), "tryMake: not starved");
+      }
+      else {expect(false, "tryMake: tryFinish gave None with the pool open");}
+    }
+  }
+  expectUInt(lent(), before, "putBuf order: every block back in the pool");
+}
+
+// A writer from make is not made fallible by a hoarded try bank: it takes its blocks as ever
+fn plainUnchanged() {
+  let before = lent();
+  {
+    let h = hoard();
+    var w = Writer.make(4096usize);
+    w.repeat(7u8, 10000usize);
+    expect(!w.starved(), "make: never starved");
+    expectUInt(u64.from(w.finish().len()), 10000u64, "make: finish gives every byte");
+  }
+  expectUInt(lent(), before, "make: every block back in the pool");
+}
+
+fn main() i32 {
+  firstBlock();
+  midPut();
+  inLengthPrefixed();
+  atPutBuf();
+  putBufOrder();
+  plainUnchanged();
+  done()
+}
