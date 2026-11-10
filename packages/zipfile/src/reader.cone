@@ -109,10 +109,10 @@ fn descriptorFault(name: &str, flags: u16, crc: u32, csize: u64, size: u64, data
 //
 //   match ar.reader(data, i) {
 //     case var Ok(r) {
-//       var piece = List[u8]();
+//       var piece = IoBuf(65536usize);
 //       while true {
 //         piece.clear();
-//         imm s = r.pull(data, &mut piece, 65536usize);
+//         imm s = r.pull(data, &mut piece, piece.room());
 //         ... use piece ...
 //         if s != Status.MoreOutput { break; }
 //       }
@@ -168,9 +168,12 @@ pub struct EntryReader {
     Status.Failed
   }
 
-  // Appends at most 'max' (at least 1) bytes of the entry to 'out'. NeedInput never happens: the
-  // archive is all there. 'data' must be the bytes the reader was made from.
-  pub fn pull(self: &mut, data: &Array[u8], out: &mut List[u8], max: usize) Status {
+  // Appends at most 'max' (at least 1) bytes of the entry to 'out', and no more than 'out' has room for.
+  // NeedInput never happens: the archive is all there. 'data' must be the bytes the reader was made from.
+  // The codec writes straight into 'out' (one copy) when 'max' is at least 'out.room()'; a smaller 'max'
+  // costs one more copy, through a buffer of its own. A call with no room in 'out' delivers nothing and
+  // answers MoreOutput.
+  pub fn pull(self: &mut, data: &Array[u8], out: &mut IoBuf, max: usize) Status {
     if err is Some { return Status.Failed; }
     if done { return Status.Done; }
     let cap = if max == 0usize { 1usize } else { max };
@@ -186,16 +189,17 @@ pub struct EntryReader {
     s
   }
 
-  fn pullStored(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
+  fn pullStored(self: &mut, data: &Array[u8], out: &mut IoBuf, cap: usize) Status {
     let left = end - pos;
-    let n = if u64.from(cap) < left { cap } else { usize.from(left) };
+    var n = if u64.from(cap) < left { cap } else { usize.from(left) };
+    if out.room() < n { n = out.room(); }
     let from = usize.from(pos);
-    out.appendSlice(&data[from..<from + n]);
+    out.append(&data[from..<from + n]);
     pos += u64.from(n);
     if pos == end { Status.Done } else { Status.MoreOutput }
   }
 
-  fn pullDeflate(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
+  fn pullDeflate(self: &mut, data: &Array[u8], out: &mut IoBuf, cap: usize) Status {
     let s = pumpCapped(&mut inf, data, &mut pos, end, &mut fedAll, &mut told, out, cap);
     if s == deflate.Status.MoreOutput { return Status.MoreOutput; }
     if s == deflate.Status.Done { return Status.Done; }
@@ -214,7 +218,7 @@ pub struct EntryReader {
   // Method 93: the zstd package's Decompressor, fed the entry's bytes 64 KiB at a time. Its own limits
   // apply as they do to any zstd stream: the output is bounded by the entry's size, and a frame that asks
   // for a window past the Decompressor's default (128 MiB) is refused before anything of it is decoded.
-  fn pullZstd(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
+  fn pullZstd(self: &mut, data: &Array[u8], out: &mut IoBuf, cap: usize) Status {
     let s = pumpCapped(&mut zd, data, &mut pos, end, &mut fedAll, &mut told, out, cap);
     if s == zstd.Status.MoreOutput { return Status.MoreOutput; }
     if s == zstd.Status.Done { return Status.Done; }
@@ -346,8 +350,11 @@ fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipE
   // Room for the size the header gives, but a header can claim anything: the list grows from there
   let want = r.size();
   out.reserve(if want < 1048576u64 { usize.from(want) } else { 1048576usize });
+  var chunk = IoBuf(1048576usize);
   while true {
-    let s = r.pull(data, &mut out, 1048576usize);
+    chunk.clear();
+    let s = r.pull(data, &mut chunk, chunk.room());
+    out.appendSlice(chunk.view());
     if s == Status.Done { break; }
     if s == Status.Failed {
       match r.error() {
@@ -364,23 +371,30 @@ fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipE
 // (the next piece only when the codec asks, or the input piles up) and telling 'finish' once after the last.
 // Answers MoreOutput (the cap is reached), Done, Failed (the caller maps the codec's own error), or
 // NeedInput when the codec still wants input after 'finish': the data ends before the stream does.
-fn pumpCapped[T: Transform](t: &mut T, data: &Array[u8], pos: &mut u64, end: u64, fedAll: &mut bool, told: &mut bool, out: &mut List[u8], cap: usize) deflate.Status {
+fn pumpCapped[T: Transform](t: &mut T, data: &Array[u8], pos: &mut u64, end: u64, fedAll: &mut bool, told: &mut bool, out: &mut IoBuf, cap: usize) deflate.Status {
   let before = out.len();
   while true {
     let produced = out.len() - before;
-    if produced >= cap { return deflate.Status.MoreOutput; }
-    // WHY setLen: IoBuf(n) may return a pool block with capacity larger than n, and
-    // pullBuf fills ALL the room a buffer has, which would overshoot 'cap' (the
-    // entry's size limit). So the front of the block is called filled (setLen(pre),
-    // pre = capacity - n), leaving exactly n bytes of room; the output is what lies
-    // after 'pre'.
+    if produced >= cap || out.room() == 0usize { return deflate.Status.MoreOutput; }
     let want = cap - produced;
-    let ask = if want < 65536usize { want } else { 65536usize };
-    var buf = IoBuf(ask);
-    let pre = buf.capacity() - ask;
-    buf.setLen(pre);
-    let s = t.pull(&mut buf);
-    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    var s = deflate.Status.NeedInput;
+    if out.room() <= want {
+      // The codec fills ALL the room a buffer has, and 'out' has no more than the call wants: it
+      // writes straight into 'out'
+      s = t.pull(out);
+    } else {
+      // WHY setLen: IoBuf(n) may return a pool block with capacity larger than n, and
+      // pullBuf fills ALL the room a buffer has, which would overshoot 'cap' (the
+      // entry's size limit). So the front of the block is called filled (setLen(pre),
+      // pre = capacity - n), leaving exactly n bytes of room; the output is what lies
+      // after 'pre'.
+      let ask = if want < 65536usize { want } else { 65536usize };
+      var buf = IoBuf(ask);
+      let pre = buf.capacity() - ask;
+      buf.setLen(pre);
+      s = t.pull(&mut buf);
+      out.append(&buf.view()[pre ..< buf.len()]);
+    }
     if s != deflate.Status.NeedInput { 
       if s != deflate.Status.MoreOutput { return s; }
       continue;
