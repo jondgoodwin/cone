@@ -120,11 +120,27 @@ alias CStr = cstr;
 // these are the three calls, for a block of n values of T (or, for the tables
 // that keep their parts in one block, of bytes)
 fn blockNew[T](r: *MemRegion, n: usize) *T inline {
-  (r as &MemRegion).allocate(n * mem.sizeof[T](), mem.alignof[T]()) as *T
+  let bytes = blockBytes[T](n);
+  let p = (r as &MemRegion).allocate(bytes, mem.alignof[T]()) as *T;
+  if p == null && bytes != 0usize { panic("collections: out of memory for a block"); }
+  p
 }
 
 fn blockGrow[T](r: *MemRegion, block: *T, old: usize, want: usize) *T inline {
-  (r as &MemRegion).resize(block as *u8, old * mem.sizeof[T](), want * mem.sizeof[T](), mem.alignof[T]()) as *T
+  let bytes = blockBytes[T](want);
+  let p = (r as &MemRegion).resize(block as *u8, old * mem.sizeof[T](), bytes, mem.alignof[T]()) as *T;
+  if p == null && bytes != 0usize { panic("collections: out of memory for a block"); }
+  p
+}
+
+// The bytes of a block of n values of T. A count whose bytes do not fit a usize is a
+// request no region can meet: it panics rather than wrap to a small block that the
+// collection would then take for one with room for n (Bug 80)
+fn blockBytes[T](n: usize) usize inline {
+  let size = mem.sizeof[T]();
+  let bytes = n * size;
+  if size != 0usize && bytes / size != n { panic("collections: a block of this many values is too big"); }
+  bytes
 }
 
 fn blockFree[T](r: *MemRegion, block: *T, n: usize) inline {
@@ -2118,6 +2134,7 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
   fn resize(self: &mut, buckets: usize) {
     let entrySize = mem.sizeof[DictEntry[K, V]]();
     let base = (region as &MemRegion).allocate(self.tableBytes(buckets), mem.alignof[DictEntry[K, V]]());
+    if base == null { panic("collections: out of memory for a table"); }
     let fresh = base + buckets * entrySize;
     libc.memset(fresh, 255i32, buckets + 8usize);
     let freshSlots = base as *DictEntry[K, V];
@@ -2700,6 +2717,7 @@ pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesR
   fn resize(self: &mut, buckets: usize) {
     if buckets > 4294967296usize { panic("collections: OrderedDict is past 2^32 buckets", srcFile(), srcLine()); }
     let base = (region as &MemRegion).allocate(buckets * 5usize + 8usize, mem.alignof[u32]());
+    if base == null { panic("collections: out of memory for a table"); }
     let fresh = base + buckets * 4usize;
     libc.memset(fresh, 255i32, buckets + 8usize);
     let freshIndex = base as *u32;
