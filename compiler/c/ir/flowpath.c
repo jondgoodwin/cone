@@ -2292,6 +2292,15 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // call it is a store into the arena, so the arena's death is checked
         // against it
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
+        // A writable borrow handed to a parameter declared read-only is read
+        // only by the callee: it stores nothing through it (a '&mut' key
+        // given to an index's '&'-typed key)
+        if (depth && isref && parmtype && parmtype->tag == RefTag
+                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)) {
+            int pdepth = itypeWritableBorrowDepth(parmtype, 3);
+            if (pdepth < depth)
+                depth = pdepth;
+        }
         int arenaparm = !arenameth && parmtype && parmtype->tag == RefTag && ((RefNode *)parmtype)->lifename != NULL
             && isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
             && pwIsNoLoanMut(storedin) && !lifeSlotted(storedin);
