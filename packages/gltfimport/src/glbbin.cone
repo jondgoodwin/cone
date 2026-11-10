@@ -3,13 +3,15 @@
 // For a program that makes a glTF in memory (a test fixture, an example): a
 // GlbBin collects the BIN chunk's bytes, and 'writeGlb' wraps a JSON text and
 // that buffer in the binary container. One writer here replaces the copy each
-// example and test kept of its own. The buffer is one block of 1 MiB at most
-// (a fixture's size): 'view' panics on more.
+// example and test kept of its own. It has no size limit: the bytes go into a
+// streams.Writer's buffers, and 'view' joins them into one block (copying the
+// bytes written since the last 'view', once).
 
 pub struct GlbBin is Move {
-  w: streams.Writer;
+  w: streams.Writer;      // the bytes written since the last 'view'
+  flat: List[u8];         // the bytes before them, as one block
 
-  pub fn make() GlbBin { GlbBin(streams.Writer.make(1048576usize)) }
+  pub fn make() GlbBin { GlbBin(streams.Writer.make(65536usize), List[u8]()) }
 
   pub fn putU8(self: &mut, v: u8) { w.putByte(v); }
   pub fn putU16(self: &mut, v: u32) { w.putLE[u16](u16.from(v & 0xFFFFu32)); }
@@ -21,21 +23,27 @@ pub struct GlbBin is Move {
   // Zeros to the next multiple of 4 bytes, as a buffer view must start
   pub fn align4(self: &mut) { w.pad(4usize); }
 
-  pub fn len(self: &) usize { w.len() }
+  pub fn len(self: &) usize { flat.len() + w.len() }
 
   // The bytes so far, as one slice
-  pub fn view(self: &) &Array[u8] {
-    if w.view().len != w.len() { panic("GlbBin: more than 1 MiB written", srcFile(), srcLine()); }
-    w.view()
+  pub fn view(self: &mut) &Array[u8] {
+    if !w.isEmpty() {
+      let chain = w.finish();
+      let at = flat.len();
+      flat.resize(at + chain.len(), 0u8);
+      _ = chain.copyOut(0usize, &mut flat.viewMut()[at..<at + chain.len()]);
+      w = streams.Writer.make(65536usize);
+    }
+    flat.view()
   }
 }
 
 // A GLB file's bytes: the header, the JSON chunk (padded with spaces to a
 // multiple of 4), then the BIN chunk
-pub fn writeGlb(json: &str, bin: &GlbBin) List[u8] {
+pub fn writeGlb(json: &str, bin: &mut GlbBin) List[u8] {
   let padded = (json.len() + 3usize) / 4usize * 4usize;
   let binBytes = bin.view();
-  var out = streams.Writer.make(12usize + 8usize + padded + 8usize + binBytes.len + 4usize);
+  var out = streams.Writer.make(65536usize);
   out.putLE[u32](0x46546C67u32);
   out.putLE[u32](2u32);
   out.putLE[u32](u32.from(12usize + 8usize + padded + 8usize + binBytes.len));
