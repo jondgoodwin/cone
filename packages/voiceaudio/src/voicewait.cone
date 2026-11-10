@@ -1,0 +1,216 @@
+// ======== Waiting for audio, without a sleep loop: Bell, VadProbe, Heard, SpeechSource ========
+//
+// The pieces a loop of one thread (voicechat's) needs to sit beside the microphone's and the speaker's streams
+// (Ruminations/design-audio-streaming-2026-11-09.md, PR 6). The loop is busy for seconds at a time with models, so it
+// cannot be an actor; what it does instead is wait on a BELL that the streams ring when something happened that it
+// cares about, and then read what they left:
+//
+//   mic -> MicSource -> VadStage --> Heard (an actor; ValueSink[Utterance]) --> the loop's `take`
+//                          |  \-- VadProbe: the detector's state, read by the loop with no message
+//                          \----- rings the bell when speech begins
+//   the loop --> SpeechSource (an actor; ValueSource[AudioBlock]) --> SpeakerSink --> rings the bell when all it was
+//                                                                                     given has played
+//
+// A bell is a counter and a futex: `ring` adds one and wakes the waiter; `waitFor(seen, d)` returns at once if the count
+// has moved from `seen`, else sleeps until it does or `d` passes. A ring is never lost (the count moves), and a
+// spurious return is harmless: the waiter looks at what it wants and waits again.
+
+// A wakeup for one waiting thread, rung from any thread or actor
+struct BellWord is Sendable {
+  tick: Atomic[u32];
+}
+
+pub struct Bell is Sendable {
+  word: Arc[imm, BellWord];
+
+  pub fn make() Bell { Bell(Arc[imm, BellWord](BellWord(Atomic[u32].of(0u32)))) }
+  pub fn clone(self: &) Bell { Bell(word) }
+
+  pub fn ring(self: &) {
+    word.tick.add(1u32);
+    sync.futexWakeAll(&word.tick);
+  }
+
+  // The count now
+  pub fn count(self: &) u32 { word.tick.load() }
+
+  // Wait until the count is no longer `seen` or `d` has passed; answers the count then
+  pub fn waitFor(self: &, seen: u32, d: Duration) u32 {
+    if word.tick.load() == seen { sync.futexWaitTimeout(&word.tick, seen, d); }
+    word.tick.load()
+  }
+}
+
+// ---- VadProbe: the detector's state, readable from the loop's thread ----
+
+struct ProbeState is Sendable {
+  speaking: Atomic[u32];
+  level: Atomic[u32];          // the latest frame's rms, in millionths of full scale
+  floor: Atomic[u32];          // the noise floor, the same
+  analysed: Atomic[u64];       // samples analysed
+  speechStart: Atomic[u64];
+  scale: Atomic[u32];          // the threshold scale the loop asks for, in thousandths
+}
+
+// What a VadStage publishes about its Vad after every block (`VadStage.watch`), and the one thing the loop sets: the
+// threshold scale (`Vad.setThresholdScale`, 3 while the speaker plays). The bell is rung when speech begins.
+pub struct VadProbe is Sendable {
+  state: Arc[imm, ProbeState];
+  bell: Bell;
+
+  pub fn make(bell: Bell) VadProbe {
+    VadProbe(Arc[imm, ProbeState](ProbeState(Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32),
+      Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u32].of(1000u32))), bell)
+  }
+  pub fn clone(self: &) VadProbe { VadProbe(state,bell.clone()) }
+
+  pub fn speaking(self: &) bool { state.speaking.load() == 1u32 }
+  pub fn level(self: &) f32 { f32.from(state.level.load()) / 1000000.0f }
+  pub fn noiseFloor(self: &) f32 { f32.from(state.floor.load()) / 1000000.0f }
+  pub fn analysed(self: &) usize { usize.from(state.analysed.load()) }
+  pub fn speechStartSample(self: &) usize { usize.from(state.speechStart.load()) }
+
+  pub fn setThresholdScale(self: &, k: f32) { state.scale.store(u32.from(k * 1000.0f + 0.5f)); }
+
+  fn scaleValue(self: &) f32 { f32.from(state.scale.load()) / 1000.0f }
+
+  // After a block: copy the Vad's state out; true when speech has just begun
+  fn publish(self: &, v: &Vad) bool {
+    let was = state.speaking.load();
+    let now = if v.speaking() { 1u32 } else { 0u32 };
+    state.level.store(u32.from(v.level() * 1000000.0f + 0.5f));
+    state.floor.store(u32.from(v.noiseFloor() * 1000000.0f + 0.5f));
+    state.analysed.store(u64.from(v.analysed()));
+    state.speechStart.store(u64.from(v.speechStartSample()));
+    state.speaking.store(now);
+    now == 1u32 && was == 0u32
+  }
+}
+
+// ---- Heard: utterances for the loop's thread ----
+
+actor HeardSink is ValueSink[Utterance] {
+  tx: Sender[Utterance];
+  bell: Bell;
+  window: u32;
+  up: Option[ValueSource];
+
+  pub fn init(self: &new, tx: Sender[Utterance], bell: Bell, window: u32) {
+    *self = Self(tx: tx, bell: bell, window: window, up: None[ValueSource]);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    up = Some[ValueSource](source);
+    source.credit(window);
+  }
+
+  pub async fn accept(self, u: Utterance) {
+    _ = tx.send(u);
+    bell.ring();
+    match &up {
+      case let &Some(s) { s.credit(1u32); }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ValueSource];
+    bell.ring();
+  }
+}
+
+// Where a VadStage sends utterances so that a plain thread can take them: `sink` to hand to the stage, `take` for
+// the thread, and the bell rung for each utterance that arrives
+pub struct Heard {
+  rx: Receiver[Utterance];
+  handle: ValueSink[Utterance];
+
+  pub fn make(bell: Bell) Heard {
+    var tx: Sender[Utterance];
+    var rx: Receiver[Utterance];
+    tx, rx = Channel[Utterance].make();
+    let h = HeardSink(tx, bell, 4u32);
+    Heard(rx, h)
+  }
+
+  pub fn sink(self: &) ValueSink[Utterance] { handle.clone() }
+
+  // The next utterance, if one has arrived; never waits
+  pub fn take(self: &mut) Option[Utterance] { rx.tryRecv() }
+}
+
+// ---- SpeechSource: samples in, blocks out under the speaker's credit ----
+
+struct Piece {
+  x: List[f32];
+  pos: usize;
+  gen: u32;
+}
+
+// A producer for a SpeakerSink that the loop's thread can hand whole sentences to without waiting: it holds what it
+// has not yet been credit for and cuts it into blocks as credit arrives. Each sentence ends with a FLUSH POINT, an
+// empty block (len 0, lost 0): the SpeakerSink flushes SDL's converter there, and it counts as played when the sentence
+// before it has, so `blocks(sentence)` is the count to wait for. `gen` is the SpeakerSink's `generation()` when the
+// sentence began.
+pub actor SpeechSource is ValueSource {
+  down: ValueSink[AudioBlock];
+  pending: Deque[Piece];
+  credits: u32;
+  finishing: bool;
+  over: bool;
+
+  pub fn init(self: &new, down: ValueSink[AudioBlock]) {
+    *self = Self(down: down, pending: Deque[Piece](), credits: 0u32, finishing: false, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn credit(self, n: u32) {
+    credits = credits + n;
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  // A sentence: its samples, then a flush point
+  pub async fn speak(self, x: List[f32], gen: u32) {
+    pending.push(Piece(x, 0usize, gen));
+    self.pump();
+  }
+
+  // No more sentences: the sink is ended once everything is through
+  pub async fn finish(self) {
+    finishing = true;
+    self.pump();
+  }
+
+  fn pump(self) {
+    var more = true;
+    while more && credits > 0u32 {
+      match pending.popFront() {
+        case var Some(p) {
+          if p.pos < p.x.len() {
+            let b = AudioBlock.of(p.x.view(), p.pos, p.gen);
+            p.pos = p.pos + usize.from(b.len);
+            down.accept(b);
+            credits = credits - 1u32;
+            pending.pushFront(p);
+          } else {
+            // all its samples are through: the flush point, and the piece is done
+            down.accept(AudioBlock.flushPoint(p.gen));
+            credits = credits - 1u32;
+          }
+        }
+        else { more = false; }
+      }
+    }
+    if finishing && pending.len() == 0usize && !over {
+      over = true;
+      down.end(Ending.Finished);
+    }
+  }
+}
+
+// How many blocks a sentence of `samples` samples becomes in a SpeechSource: its blocks and the flush point
+pub fn speechBlocks(samples: usize) u64 {
+  u64.from((samples + BLOCK_SAMPLES - 1usize) / BLOCK_SAMPLES) + 1u64
+}
