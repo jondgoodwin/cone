@@ -36,7 +36,12 @@ No sound unless asked: `--audio system` (the default, and the only one that make
 
 ## How a turn goes
 
-1. **Listen.** `Microphone.pump` feeds `Vad`; an utterance ends after the end-silence (`VadConfig.hangoverMs`, 400 ms).
+1. **Listen.** The microphone is a `MicSource` (a capture thread and an attendant, voiceaudio) into a `VadStage`, so the
+   detector runs while the loop is busy with a model; the loop reads its state from a `VadProbe` and takes utterances
+   from `Heard`, and waits on a `Bell` that the streams ring (speech began, an utterance arrived, the speaker has played
+   what it was given) with a 20 ms timeout for Ctrl-C and the turn-end rule. An utterance ends after the end-silence
+   (`VadConfig.hangoverMs`, 400 ms). Sentences go to a `SpeechSource` under the `SpeakerSink`'s credit, so speaking never
+   waits; no `thread.sleep` is left in the loop.
 2. **Hear.** `Parakeet.transcribe` on the turn so far (the utterance, with its pre-roll and 200 ms of trail, joined to any
    earlier utterance of the same turn). A transcript with no letter or digit, or only a hesitation ("Um."), is ignored. Whether
    the turn is over is `turns.cone`'s rule: "Where a turn ends", below.
