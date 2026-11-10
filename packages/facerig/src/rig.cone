@@ -65,6 +65,9 @@ pub struct IdleChan {
   pub seed: u32;
 }
 
+// One flag per expression unit, true for a unit of the mouth
+pub alias MouthUnits = List[bool];
+
 pub struct FaceRig {
   pub units: List[UnitDef];
   pub unitTarget: List[i32];
@@ -84,7 +87,7 @@ pub struct FaceRig {
   pub time: f32;
   pub idleAmount: f32;             // 0 off, 1 the standard idle
   pub idle: List[IdleChan];
-  pub lowerFace: List[u8];         // 1 for a unit of the mouth, for speech to take over
+  pub lowerFace: MouthUnits;       // true for a unit of the mouth, for speech to take over
   pub seed: u32;
   pub scratch: List[f32];
   // The breath, when a body breathes it for the face: the lungs' fill 0 to 1 (negative: the face keeps its own
@@ -101,14 +104,14 @@ pub struct FaceRig {
     let exprs = standardExpressions();
     var manual = List[f32]();
     manual.resize(units.len(), 0.);
-    var lower = List[u8]();
-    lower.resize(units.len(), 0u8);
+    var lower = MouthUnits();
+    lower.resize(units.len(), false);
     var copy = List[UnitDef]();
     var i = 0usize;
     while i < units.len() {
       let u = &units[i];
       copy.push(UnitDef(u.name.clone(), u.au, u.side, u.kind, List[Influence](), u.sharesWith, u.jaw));
-      if u.au >= 10u32 && u.au <= 28u32 { lower.set(i, 1u8); }
+      if u.au >= 10u32 && u.au <= 28u32 { lower.set(i, true); }
       i = i + 1usize;
     }
     var now = List[f32]();
@@ -225,7 +228,7 @@ pub struct FaceRig {
             if eu.side == SIDE_BOTH || eu.side == side {
               let ui = findUnit(&units, eu.au, side);
               if ui >= 0i32 {
-                let lower = *lowerFace[usize.from(ui)] == 1u8;
+                let lower = *lowerFace[usize.from(ui)];
                 let share = if lower { 1. - 0.6 * act } else { 1. };
                 vals.set(usize.from(ui), *vals[usize.from(ui)] + w * eu.value * share);
               }
@@ -249,7 +252,7 @@ pub struct FaceRig {
       while c < idle.len() {
         let ch = idle[c];
         let nz = smoothNoise(time * ch.freq + 0.37 * f32.from(ch.seed), seed + ch.seed);
-        let mouthy = *lowerFace[ch.unit] == 1u8;
+        let mouthy = *lowerFace[ch.unit];
         let calm = if mouthy { 1. - 0.7 * act } else { 1. };
         vals.set(ch.unit, *vals[ch.unit] + idleAmount * calm * ch.amp * (0.5 + 0.5 * nz));
         c = c + 1usize;
