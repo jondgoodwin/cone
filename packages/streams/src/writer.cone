@@ -70,8 +70,28 @@
 //   w.lengthPrefixedLE[T](f)  w.lengthPrefixedBE[T](f)    a slot, f(w), and the slot filled with the
 //                   bytes f wrote; a panic if they do not fit T
 //
+//   w.slotUint(n)   reserves n bytes (1 to 8), for an odd width (zstd's 3-byte block header), and
+//                   gives a Slot[u64]; w.fillUintLE(s, v)  w.fillUintBE(s, v) write it
+//
 // A slot holds its buffer: while one is unfilled, 'take' and 'popFull' give no buffer from its buffer
 // on, so the bytes stay where the fill can reach them and nothing is copied.
+//
+// CLEARING, MARKS AND DRAINING:
+//
+//   w.clear()       drop everything held; the buffer in use stays, empty, for reuse (the others go back
+//                   to the pool). Slots and marks end. total() still counts the bytes taken before
+//   w.mark()        a Mark: the place the output has reached
+//   w.truncateTo(m) drop everything written since the mark m. m stays live; marks and slots made after
+//                   it end. w.release(m) ends a mark. A mark of another writer, or one spent (released,
+//                   or ended by finish, clear, intoBuf or a truncateTo to an older mark), is a panic.
+//                   A live mark holds its buffers as an unfilled slot does: 'take' and 'popFull' give
+//                   none from its buffer on, so a truncate never reaches a buffer already handed on
+//   w.drainTo(dest) copy out and remove up to dest.len bytes from the front: how many. Never past the
+//                   oldest unfilled slot or live mark. For a Transform's 'pull' draining a writer
+//
+// Starved (a writer from tryMake whose pool refused a block, below): mark gives a dummy; truncateTo,
+// release, fillUint and drainTo do nothing (drainTo gives 0); clear drops what is held and the
+// writer stays starved.
 //
 // A WRITER THAT CANNOT PANIC, for the buffers a peer's bytes cause (a server
 // building a response while a flood may have used the pool up):
@@ -123,7 +143,25 @@ fn @initpure init() {
 struct SlotRec {
   ord: usize;        // the ordinal of the buffer that holds it
   at: usize;         // its offset in that buffer
-  filled: bool;
+  pos: usize;        // total() where it starts
+  n: usize;          // its width in bytes
+  filled: bool;      // filled, or dropped by a truncateTo
+}
+
+// Where a mark is, and whether it is still live
+struct MarkRec {
+  ord: usize;        // the ordinal of the buffer it is in
+  at: usize;         // its offset in that buffer
+  pos: usize;        // total() where it is
+  slots: usize;      // the serial the next slot had when it was made
+  live: bool;
+}
+
+// A place in a Writer's output, to cut back to: 'mark' makes one, 'truncateTo'
+// drops everything written since, 'release' ends it
+pub struct Mark {
+  writer: u64;       // the writer that made it
+  serial: usize;     // its place in that writer's marks, counting from the writer's start
 }
 
 // Room reserved for a number in a Writer, to be filled later
@@ -143,6 +181,10 @@ pub struct Writer is Move {
   recs: List[SlotRec];      // the slots since the last time none was open
   base: usize;              // the serial of recs[0]
   open: usize;              // slots not yet filled
+  marks: List[MarkRec];     // the marks since the last time none was live
+  mbase: usize;             // the serial of marks[0]
+  mlive: usize;             // marks not yet released
+  drained: usize;           // the bytes drainTo took from the front of the chain's first buffer
   fallible: bool;           // blocks come from IoBuf.tryMake: a refusal is recorded, not a panic
   refused: bool;            // the pool refused a block (fallible only): every put since is dropped
 
@@ -183,7 +225,8 @@ pub struct Writer is Move {
 
   fn over2(buf: IoBuf, size: usize, fallible: bool) Writer {
     Writer(buf, Chain.make(0xFFFFFFFFFFFFFFFFusize), size, 0usize, 0usize,
-      nextWriterId.add(1u64) + 1u64, List[SlotRec](), 0usize, 0usize, fallible, false)
+      nextWriterId.add(1u64) + 1u64, List[SlotRec](), 0usize, 0usize,
+      List[MarkRec](), 0usize, 0usize, 0usize, fallible, false)
   }
 
   // ---- The buffer in use ----
@@ -252,10 +295,10 @@ pub struct Writer is Move {
     if chain.segments() > 0usize {
       match self.popHeld() {
         case let Some(b) {return b;}
-        case is None[IoBuf] {panic("streams: Writer.take with a slot not filled", file, line);}
+        case is None[IoBuf] {self.stuck(file, line);}
       }
     }
-    if open != 0usize && !refused {panic("streams: Writer.take with a slot not filled", file, line);}
+    if (open != 0usize || mlive != 0usize) && !refused {self.stuck(file, line);}
     var out = IoBuf();
     out <-> buf;
     popped = popped + out.len();
@@ -274,18 +317,26 @@ pub struct Writer is Move {
     var out = IoBuf();
     out <-> buf;
     popped = popped + out.len();
+    self.endMarks();
     out
   }
 
-  // The oldest buffer held, unless it holds or follows an unfilled slot
+  // Why take gives nothing: a slot, or a mark, holds the buffer
+  fn stuck(self: &, file: &Array[u8], line: u32) {
+    if open != 0usize {panic("streams: Writer.take with a slot not filled", file, line);}
+    panic("streams: Writer.take with a mark not released", file, line);
+  }
+
+  // The oldest buffer held, unless it holds or follows an unfilled slot or a live mark
   fn popHeld(self: &mut) Option[IoBuf] {
-    match self.oldestOpen() {
+    match self.holdOrd() {
       case let Some(ord) {if first >= ord {return None[IoBuf];}}
       case is None[usize] {}
     }
     match chain.popFront() {
       case var Some(held) {
         first = first + 1usize;
+        drained = 0usize;
         popped = popped + held.len();
         Some[IoBuf](held)
       }
@@ -293,15 +344,57 @@ pub struct Writer is Move {
     }
   }
 
-  // The ordinal of the oldest buffer that holds an unfilled slot, or None
-  fn oldestOpen(self: &) Option[usize] {
-    if open == 0usize {return None[usize];}
+  // The index of the oldest unfilled slot in recs, or noSlot
+  fn oldestSlot(self: &) usize {
+    if open == 0usize {return noSlot;}
     var i = 0usize;
     while i < recs.len() {
-      if !recs[i].filled {return Some[usize](recs[i].ord);}
+      if !recs[i].filled {return i;}
       i = i + 1usize;
     }
-    None[usize]
+    noSlot
+  }
+
+  // The index of the oldest live mark in marks, or noSlot
+  fn oldestMark(self: &) usize {
+    if mlive == 0usize {return noSlot;}
+    var i = 0usize;
+    while i < marks.len() {
+      if marks[i].live {return i;}
+      i = i + 1usize;
+    }
+    noSlot
+  }
+
+  // The ordinal of the oldest buffer that holds an unfilled slot or a live mark, or None
+  fn holdOrd(self: &) Option[usize] {
+    let s = self.oldestSlot();
+    let m = self.oldestMark();
+    if s == noSlot && m == noSlot {return None[usize];}
+    if m == noSlot {return Some[usize](recs[s].ord);}
+    if s == noSlot {return Some[usize](marks[m].ord);}
+    let a = recs[s].ord;
+    let b = marks[m].ord;
+    Some[usize](if a < b {a} else {b})
+  }
+
+  // The total() of the oldest unfilled slot or live mark, or None: drainTo goes no further
+  fn holdPos(self: &) Option[usize] {
+    let s = self.oldestSlot();
+    let m = self.oldestMark();
+    if s == noSlot && m == noSlot {return None[usize];}
+    if m == noSlot {return Some[usize](recs[s].pos);}
+    if s == noSlot {return Some[usize](marks[m].pos);}
+    let a = recs[s].pos;
+    let b = marks[m].pos;
+    Some[usize](if a < b {a} else {b})
+  }
+
+  // Every mark ends (their handles are spent)
+  fn endMarks(self: &mut) {
+    mbase = mbase + marks.len();
+    marks.clear();
+    mlive = 0usize;
   }
 
   // The oldest filled buffer, or None: a buffer held, or the buffer in use
@@ -330,8 +423,10 @@ pub struct Writer is Move {
     all <-> chain;
     popped = popped + all.len();
     first = 0usize;
+    drained = 0usize;
     recs.clear();
     base = 0usize;
+    self.endMarks();
     all
   }
 
@@ -345,10 +440,183 @@ pub struct Writer is Move {
     popped = popped + all.len();
     buf = IoBuf();
     first = 0usize;
+    drained = 0usize;
     recs.clear();
     base = 0usize;
     open = 0usize;
+    self.endMarks();
     None[Chain]
+  }
+
+  // ---- Clearing, marking and draining ----
+
+  // Drop everything held and keep the buffer in use, empty, for reuse: the
+  // other buffers go back to the pool. Every slot and mark ends (their handles
+  // are spent). total() still counts the bytes taken before. A starved writer
+  // drops what it holds and stays starved
+  pub fn clear(self: &mut) {
+    var gone = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+    gone <-> chain;
+    if refused {buf = IoBuf();} else {buf.clear();}
+    first = 0usize;
+    drained = 0usize;
+    base = base + recs.len();
+    recs.clear();
+    open = 0usize;
+    self.endMarks();
+  }
+
+  // A place in the output, to cut back to with truncateTo. While it is live,
+  // popFull and take give no buffer from its buffer on, as for an unfilled
+  // slot. A starved writer gives a dummy
+  pub fn mark(self: &mut) Mark {
+    if refused {return Mark(wid, noSlot);}
+    marks.push(MarkRec(first + chain.segments(), buf.len(), self.total(), base + recs.len(), true));
+    mlive = mlive + 1usize;
+    Mark(wid, mbase + marks.len() - 1usize)
+  }
+
+  // The index in marks of a live mark: a panic, at the caller's line, for a
+  // mark of another writer or one spent (released, or ended by finish, clear
+  // or a truncateTo to an older mark). noSlot for a starved writer
+  fn markIndex(self: &, m: Mark, file: &Array[u8], line: u32) usize {
+    if m.writer != wid {panic("streams: Writer mark of another writer", file, line);}
+    if refused {return noSlot;}
+    if m.serial < mbase || m.serial - mbase >= marks.len() || !marks[m.serial - mbase].live {
+      panic("streams: Writer mark already released", file, line);
+    }
+    m.serial - mbase
+  }
+
+  // End a mark: the buffers it held may go on. A panic for a mark of another
+  // writer or one spent
+  pub fn release(self: &mut, m: Mark, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let i = self.markIndex(m, file, line);
+    if i == noSlot {return;}
+    marks[i].live = false;
+    mlive = mlive - 1usize;
+    if mlive == 0usize {self.endMarks();}
+  }
+
+  // Drop everything written since the mark. The mark stays live (truncate to
+  // it again, or release it); marks made after it end, and so do slots made
+  // after it (filling one is a panic). A panic for a mark of another writer or
+  // one spent. A starved writer does nothing: it drops what it holds
+  pub fn truncateTo(self: &mut, m: Mark, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let i = self.markIndex(m, file, line);
+    if i == noSlot {return;}
+    let ord = marks[i].ord;
+    let at = marks[i].at;
+    let slotsAt = marks[i].slots;
+    if ord == first + chain.segments() {
+      if at <= buf.len() {buf.setLen(at);}
+    } else {
+      let k = ord - first;
+      var keep = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+      var j = 0usize;
+      while j < k {
+        match chain.popFront() {
+          case var Some(b) {_ = keep.push(b);}
+          else {}
+        }
+        j = j + 1usize;
+      }
+      match chain.popFront() {
+        case var Some(b) {
+          let a = if k == 0usize {at - drained} else {at};
+          if a <= b.len() {b.setLen(a);}
+          buf = b;
+        }
+        else {}
+      }
+      while chain.segments() > 0usize {_ = chain.popFront();}
+      chain <-> keep;
+      drained = 0usize;
+    }
+    var j = i + 1usize;
+    while j < marks.len() {
+      if marks[j].live {
+        marks[j].live = false;
+        mlive = mlive - 1usize;
+      }
+      j = j + 1usize;
+    }
+    var s = if slotsAt > base {slotsAt - base} else {0usize};
+    while s < recs.len() {
+      if !recs[s].filled {
+        recs[s].filled = true;
+        open = open - 1usize;
+      }
+      s = s + 1usize;
+    }
+    if open == 0usize && recs.len() > 0usize {
+      base = base + recs.len();
+      recs.clear();
+    }
+  }
+
+  // Copy out and remove up to dest.len bytes from the front of what is held:
+  // how many. Never past the oldest unfilled slot or live mark. Copies only the
+  // bytes it removes, and hands no buffer on. A starved writer gives 0
+  pub fn drainTo(self: &mut, dest: &mut Array[u8]) usize {
+    if refused {return 0usize;}
+    var want = dest.len;
+    let held = chain.len() + buf.len();
+    if held < want {want = held;}
+    match self.holdPos() {
+      case let Some(p) {
+        let avail = p - popped;
+        if avail < want {want = avail;}
+      }
+      case is None[usize] {}
+    }
+    var done = 0usize;
+    while done < want {
+      if chain.segments() == 0usize {
+        let r = want - done;
+        if r == buf.len() {
+          // All of the buffer in use: copy it out and empty it
+          let v = buf.view();
+          var i = 0usize;
+          while i < r {
+            dest[done + i] = v[i];
+            i = i + 1usize;
+          }
+          buf.clear();
+          popped = popped + r;
+          done = want;
+          var j = 0usize;
+          while j < marks.len() {
+            if marks[j].live && marks[j].ord == first {marks[j].at = 0usize;}
+            j = j + 1usize;
+          }
+        } else if !self.rollFor(1usize) {
+          return done;
+        }
+      } else {
+        let fl = chain.firstLen();
+        let step = if fl < want - done {fl} else {want - done};
+        let got = chain.take(&mut dest[done ..< done + step]);
+        popped = popped + got;
+        done = done + got;
+        if got == fl {
+          // The buffer is gone: a mark at its end is now at the start of the next
+          first = first + 1usize;
+          drained = 0usize;
+          var j = 0usize;
+          while j < marks.len() {
+            if marks[j].live && marks[j].ord < first {
+              marks[j].ord = first;
+              marks[j].at = 0usize;
+            }
+            j = j + 1usize;
+          }
+        } else {
+          drained = drained + got;
+        }
+      }
+    }
+    done
   }
 
   // ---- Rolling ----
@@ -473,13 +741,71 @@ pub struct Writer is Move {
 
   // Room for a number, to be filled later: contiguous, so the fill is one store
   pub fn slot[T](self: &mut) Slot[T] where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
-    let n = mem.sizeof[T]();
-    if buf.room() < n && !self.rollFor(n) {return Slot[T](wid, noSlot);}
+    Slot[T](wid, self.reserve(mem.sizeof[T]()))
+  }
+
+  // Room for an unsigned number of nbytes (1 to 8), to be filled later with
+  // fillUintLE or fillUintBE: for an odd width, as zstd's 3-byte block header
+  pub fn slotUint(self: &mut, nbytes: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Slot[u64] {
+    if nbytes == 0usize || nbytes > 8usize {panic("streams: Writer.slotUint takes 1 to 8 bytes", file, line);}
+    Slot[u64](wid, self.reserve(nbytes))
+  }
+
+  // n contiguous zero bytes, recorded as an open slot: its serial, or noSlot when starved
+  fn reserve(self: &mut, n: usize) usize {
+    if buf.room() < n && !self.rollFor(n) {return noSlot;}
     let at = buf.len();
+    let pos = self.total();
     _ = buf.putRepeat(0u8, n);
-    recs.push(SlotRec(first + chain.segments(), at, false));
+    recs.push(SlotRec(first + chain.segments(), at, pos, n, false));
     open = open + 1usize;
-    Slot[T](wid, base + recs.len() - 1usize)
+    base + recs.len() - 1usize
+  }
+
+  // Fill a slotUint, the number's least significant byte first: a panic for a
+  // slot of another writer, one filled twice, or a v that needs more bytes
+  pub fn fillUintLE(self: &mut, s: Slot[u64], v: u64, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.fillUint(s, v, false, file, line);
+  }
+
+  // As fillUintLE, most significant byte first
+  pub fn fillUintBE(self: &mut, s: Slot[u64], v: u64, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.fillUint(s, v, true, file, line);
+  }
+
+  fn fillUint(self: &mut, s: Slot[u64], v: u64, big: bool, file: &Array[u8], line: u32) {
+    if s.writer != wid {panic("streams: Writer.fill with a slot of another writer", file, line);}
+    if refused {return;}
+    if s.serial < base || s.serial - base >= recs.len() || recs[s.serial - base].filled {
+      panic("streams: Writer.fill with a slot already filled", file, line);
+    }
+    let i = s.serial - base;
+    let n = recs[i].n;
+    if n < 8usize && (v >> u64.from(8usize * n)) != 0u64 {
+      panic("streams: Writer.fillUint: the value needs more bytes than the slot has", file, line);
+    }
+    let ord = recs[i].ord;
+    let at = recs[i].at;
+    let curOrd = first + chain.segments();
+    var k = 0usize;
+    while k < n {
+      let sh = if big {8usize * (n - 1usize - k)} else {8usize * k};
+      let b = u8.from((v >> u64.from(sh)) & 0xFFu64);
+      let done = if ord == curOrd {buf.setNum[u8](at + k, b, false)} else {chain.setNum[u8](ord - first, at + k, b, false)};
+      if !done {panic("streams: Writer.fill: the slot's bytes are gone", file, line);}
+      k = k + 1usize;
+    }
+    self.doneSlot(i);
+  }
+
+  // Slot i of recs is filled
+  fn doneSlot(self: &mut, i: usize) {
+    recs[i].filled = true;
+    open = open - 1usize;
+    if open == 0usize {
+      base = base + recs.len();
+      recs.clear();
+    }
   }
 
   // Fill a slot, the number's least significant byte first
@@ -498,16 +824,12 @@ pub struct Writer is Move {
     if s.serial < base || s.serial - base >= recs.len() || recs[s.serial - base].filled {
       panic("streams: Writer.fill with a slot already filled", file, line);
     }
-    let r = &mut recs[s.serial - base];
+    let i = s.serial - base;
+    if recs[i].n != mem.sizeof[T]() {panic("streams: Writer.fill with a slot of another width", file, line);}
     let curOrd = first + chain.segments();
-    let done = if r.ord == curOrd {buf.setNum[T](r.at, v, big)} else {chain.setNum[T](r.ord - first, r.at, v, big)};
+    let done = if recs[i].ord == curOrd {buf.setNum[T](recs[i].at, v, big)} else {chain.setNum[T](recs[i].ord - first, recs[i].at, v, big)};
     if !done {panic("streams: Writer.fill: the slot's bytes are gone", file, line);}
-    r.filled = true;
-    open = open - 1usize;
-    if open == 0usize {
-      base = base + recs.len();
-      recs.clear();
-    }
+    self.doneSlot(i);
   }
 
   // ---- The scoped form ----
