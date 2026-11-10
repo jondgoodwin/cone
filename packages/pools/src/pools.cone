@@ -31,7 +31,8 @@
 //   t.borrowMutAt(i)   Some(&mut T) of it, the same
 //   t.get(h)           *T of the entry h names, null if h is stale or none
 //   t.at(i)            *T of the live entry in cell i, null if the cell is not live or past the pool
-//   t.slotAt(i)        the Handle of the live entry in cell i (Handle.none() if not live)
+//   t.handleAt(i)      the Handle of the live entry in cell i (Handle.none() if not live)
+//   t.slotAt(i)        the old name of handleAt, kept until the 'slots' aliases go
 //   t.remove(h)        retire and free at once (the default): true; false if h was stale
 //   t.removeAt(i)      the same for whatever live entry occupies cell i
 //   t.retire(h)        the entry is dead to every handle and to at(i), not finalized, its cell not reused: true
@@ -349,11 +350,14 @@ pub struct GenPool[T] is Move {
   }
 
   // The Handle of the live entry in cell i, or Handle.none()
-  pub fn slotAt(self: &, i: u32) Handle {
+  pub fn handleAt(self: &, i: u32) Handle {
     let c = self.cellOrNull(i);
     if c as usize == 0usize || (*c).next != liveMark {return Handle.none();}
     Handle(i, (*c).gen)
   }
+
+  // The old name of handleAt, kept until step 10 deletes the 'slots' aliases
+  pub fn slotAt(self: &, i: u32) Handle {self.handleAt(i)}
 
   // A cell has been emptied of its entry (already finalized or moved out and
   // its bit cleared): give it a new generation and free it, or retire it for
@@ -733,20 +737,20 @@ pub struct DensePool[T] is Move {
   }
 
   // The Handle of the entry in row r, or Handle.none() if there is no such row
-  pub fn handleAt(self: &, r: usize) Handle {
-    if r >= block.n {return Handle.none();}
-    index.slotAt(*(block.cells + r))
+  pub fn handleAt(self: &, r: u32) Handle {
+    if usize.from(r) >= block.n {return Handle.none();}
+    index.handleAt(*(block.cells + usize.from(r)))
   }
 
   // The entry in row r, or None
-  pub fn borrowRow(self: &, r: usize) Option[&T] {
-    if r >= block.n {return None;}
-    Some[&T]((block.vals + r) as &T)
+  pub fn borrowAt(self: &, r: u32) Option[&T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&T]((block.vals + usize.from(r)) as &T)
   }
 
-  pub fn borrowMutRow(self: &mut, r: usize) Option[&mut T] {
-    if r >= block.n {return None;}
-    Some[&mut T]((block.vals + r) as &mut T)
+  pub fn borrowMutAt(self: &mut, r: u32) Option[&mut T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&mut T]((block.vals + usize.from(r)) as &mut T)
   }
 
   // The rows as a slice, in row order. The pool may not change while it is held
