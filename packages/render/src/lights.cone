@@ -46,7 +46,7 @@
 // light of I candela at d metres has a radiance of I / d^2 / pi nits.
 //
 // THE API. Lights live in the renderer's 'lights' (a LightSet) and are named
-// by LightHandles (a slot and a generation: one removed is not reached). Add,
+// by LightIds (a slot and a generation: one removed is not reached). Add,
 // remove, move, aim, recolour and re-intensify by handle: each is a few
 // floats written into the light's row, and the whole table goes to the GPU
 // in one write at the next render, so a flicker of 30 lanterns costs nothing
@@ -82,7 +82,6 @@ pub const LIGHT_LAYER_ALL = 16777215u32;
 
 // 16 * 9 * 24
 const CLUSTER_COUNT = 3456usize;
-const LIGHT_FLOATS = 16usize;
 const LIGHT_BYTES = 64u64;
 const LIGHT_PARAMS_BYTES = 48u64;
 const NO_LIGHT = 4294967295u32;
@@ -141,31 +140,49 @@ pub fn spotRamp(innerAngle: f32, outerAngle: f32, scale: &mut f32, offset: &mut 
 fn lmin(a: f32, b: f32) f32 { if a < b { a } else { b } }
 fn lmax(a: f32, b: f32) f32 { if a > b { a } else { b } }
 
-// A light: a slot and a generation, so one removed is not reached by a
-// handle that outlives it
-pub struct LightHandle {
-  pub slot: u32;
-  pub gen: u32;
+// The pool of the scene's lights, and the handle that names one: a light removed is not
+// reached by a handle that outlives it
+pub alias LightRows = DensePool[LocalLight];
+pub alias LightId = Handle;
 
-  pub fn none() LightHandle { LightHandle(0u32, 0u32) }
-  pub fn isNone(self) bool { gen == 0u32 }
-  pub fn `==`(self, other: LightHandle) bool { slot == other.slot && gen == other.gen }
+// A light: one row of the table. The first sixteen floats are locallights.slang's four float4s --
+// position and range; colour times candela and the source radius; the axis and the kind (0 point,
+// 1 spot); the cone's scale and offset, the layers and the cone's outer half-angle -- then the
+// light's colour and candela as given, and the shadow flags
+pub struct LocalLight {
+  pub px: f32;
+  pub py: f32;
+  pub pz: f32;
+  pub range: f32;
+  pub ir: f32;
+  pub ig: f32;
+  pub ib: f32;
+  pub radius: f32;
+  pub ax: f32;
+  pub ay: f32;
+  pub az: f32;
+  pub kind: f32;
+  pub coneScale: f32;
+  pub coneOffset: f32;
+  pub layers: f32;
+  pub outer: f32;
+  pub cr: f32;
+  pub cg: f32;
+  pub cb: f32;
+  pub candela: f32;
+  pub flags: u32;                   // bit 0 casts a shadow if it can, bit 1 was given views last frame
+
+  // Whether the light gives any light (a dark one is left out of the assignment)
+  pub fn isLit(self) bool {
+    candela > 0. && (cr > 0. || cg > 0. || cb > 0.)
+  }
 }
 
 // The scene's point and spot lights, the grid they are assigned to and the
 // GPU buffers that hold both (see the comment at the head of this file)
 pub struct LightSet {
-  // The lights, dense (a removed light's row is filled by the last): a row
-  // is locallights.slang's four float4s -- 0..2 position, 3 range; 4..6
-  // colour times candela, 7 source radius; 8..10 axis, 11 kind (0 point,
-  // 1 spot); 12 the cone's scale, 13 its offset, 14 the layers, 15 the cone's
-  // outer half-angle
-  pub rows: List[f32];
-  pub colors: List[f32];            // four floats a light: its colour (rgb) and its candela
-  pub owners: List[u32];            // the slot of each
-  pub slotRow: List[u32];           // each slot's row, or NO_LIGHT
-  pub slotGen: List[u32];
-  pub freeSlots: List[u32];
+  // The lights, dense (a removed light's row is filled by the last)
+  pub lights: LightRows;
   // The GPU's: the rows, the clusters (headers, then lists), the parameters
   pub rowBuffer: Buffer;
   pub clusterBuffer: Buffer;
@@ -224,8 +241,7 @@ pub struct LightSet {
     counts.resize(CLUSTER_COUNT, 0u32);
     var lists = List[u32]();
     lists.resize(CLUSTER_COUNT * usize.from(MAX_LIGHTS_PER_CLUSTER), 0u32);
-    LightSet(List[f32](), List[f32](), List[u32](), List[u32](), List[u32](),
-      List[u32](), rowBuffer, clusterBuffer, FIRST_CLUSTER_ENTRIES, paramsBuffer, List[f32](),
+    LightSet(LightRows.make(), rowBuffer, clusterBuffer, FIRST_CLUSTER_ENTRIES, paramsBuffer, List[f32](),
       Array[f32, 8]() <- fill 0f, false, counts, lists, List[u32](), 0., Vec3(0., 0., 0.),
       Vec3(0., 0., -1.), 0.1, 1., 1000., 1., 1., 0u32, 0u32, 0u32, false, true, true,
       Array[f32, 25]() <- fill 0f, 0u32, true, List[f32](), List[u32](), LocalShadows.create(device))
@@ -236,67 +252,31 @@ pub struct LightSet {
   }
 
   // How many lights the scene holds
-  pub fn count(self: &) u32 { u32.from(owners.len()) }
+  pub fn count(self: &) u32 { u32.from(lights.len()) }
 
   // Whether 'h' names a light still in the scene
-  pub fn alive(self: &, h: LightHandle) bool {
-    if h.gen == 0u32 || usize.from(h.slot) >= slotGen.len() { return false; }
-    *slotGen[usize.from(h.slot)] == h.gen && *slotRow[usize.from(h.slot)] != NO_LIGHT
-  }
-
-  fn rowOf(self: &, h: LightHandle) usize { usize.from(*slotRow[usize.from(h.slot)]) }
+  pub fn alive(self: &, h: LightId) bool { lights.isLive(h) }
 
   // A new light in a row of the table, a point light unless 'spot'; none if
   // the scene is full
   fn insert(self: &mut, position: Vec3, color: Color, candela: f32, range: f32, spot: bool, axis: Vec3,
-      innerAngle: f32, outerAngle: f32) LightHandle {
-    if owners.len() >= usize.from(MAX_LIGHTS) { return LightHandle.none(); }
-    var slot = 0u32;
-    if freeSlots.len() > 0usize {
-      slot = *freeSlots[freeSlots.len() - 1usize];
-      freeSlots.pop();
-    } else {
-      slot = u32.from(slotRow.len());
-      slotRow.push(NO_LIGHT);
-      slotGen.push(1u32);
-    }
-    let row = owners.len();
-    slotRow.set(usize.from(slot), u32.from(row));
-    owners.push(slot);
+      innerAngle: f32, outerAngle: f32) LightId {
+    if lights.len() >= usize.from(MAX_LIGHTS) { return LightId.none(); }
     var scale = 0.f;
     var offset = 0.f;
     if spot { spotRamp(innerAngle, outerAngle, &mut scale, &mut offset); }
     let a = axis.normalize();
     let kind = if spot { 1.f } else { 0. };
-    rows.push(position.x);
-    rows.push(position.y);
-    rows.push(position.z);
-    rows.push(range);
-    rows.push(color.red * candela);
-    rows.push(color.green * candela);
-    rows.push(color.blue * candela);
-    rows.push(0.);
-    rows.push(a.x);
-    rows.push(a.y);
-    rows.push(a.z);
-    rows.push(kind);
-    rows.push(scale);
-    rows.push(offset);
-    rows.push(f32.from(LIGHT_LAYER_DEFAULT));
-    rows.push(outerAngle);
-    colors.push(color.red);
-    colors.push(color.green);
-    colors.push(color.blue);
-    colors.push(candela);
-    shadows.flags.push(0u32);
     assignDirty = true;
     rowsDirty = true;
-    LightHandle(slot, *slotGen[usize.from(slot)])
+    lights.add(LocalLight(position.x, position.y, position.z, range, color.red * candela, color.green * candela,
+      color.blue * candela, 0., a.x, a.y, a.z, kind, scale, offset, f32.from(LIGHT_LAYER_DEFAULT), outerAngle,
+      color.red, color.green, color.blue, candela, 0u32))
   }
 
   // A point light at 'position', of 'color' (linear) and 'candela', reaching
   // 'range' metres. None if the scene already holds MAX_LIGHTS.
-  pub fn addPoint(self: &mut, position: Vec3, color: Color, candela: f32, range: f32) LightHandle {
+  pub fn addPoint(self: &mut, position: Vec3, color: Color, candela: f32, range: f32) LightId {
     self.insert(position, color, candela, range, false, Vec3(0., 0., -1.), 0., 0.)
   }
 
@@ -304,58 +284,21 @@ pub struct LightSet {
   // 'innerAngle' of its axis and none beyond 'outerAngle' (half-angles in
   // radians, the outer under pi / 2), reaching 'range' metres
   pub fn addSpot(self: &mut, position: Vec3, direction: Vec3, color: Color, candela: f32, range: f32,
-      innerAngle: f32, outerAngle: f32) LightHandle {
+      innerAngle: f32, outerAngle: f32) LightId {
     self.insert(position, color, candela, range, true, direction, innerAngle, outerAngle)
   }
 
   // Take the light out of the scene (its row is filled by the last light's)
-  pub fn remove(self: &mut, h: LightHandle) bool {
-    if !self.alive(h) { return false; }
+  pub fn remove(self: &mut, h: LightId) bool {
+    if !lights.remove(h) { return false; }
     assignDirty = true;
     rowsDirty = true;
-    let row = self.rowOf(h);
-    let last = owners.len() - 1usize;
-    if row != last {
-      var k = 0usize;
-      while k < LIGHT_FLOATS {
-        rows.set(row * LIGHT_FLOATS + k, *rows[last * LIGHT_FLOATS + k]);
-        k = k + 1usize;
-      }
-      k = 0usize;
-      while k < 4usize {
-        colors.set(row * 4usize + k, *colors[last * 4usize + k]);
-        k = k + 1usize;
-      }
-      shadows.flags.set(row, *shadows.flags[last]);
-      let moved = *owners[last];
-      owners.set(row, moved);
-      slotRow.set(usize.from(moved), u32.from(row));
-    }
-    rows.truncate(last * LIGHT_FLOATS);
-    colors.truncate(last * 4usize);
-    shadows.flags.truncate(last);
-    owners.truncate(last);
-    slotRow.set(usize.from(h.slot), NO_LIGHT);
-    slotGen.set(usize.from(h.slot), h.gen + 1u32);
-    freeSlots.push(h.slot);
     true
   }
 
   // Take every light out
   pub fn clear(self: &mut) {
-    var i = 0usize;
-    while i < slotRow.len() {
-      if *slotRow[i] != NO_LIGHT {
-        slotGen.set(i, *slotGen[i] + 1u32);
-        slotRow.set(i, NO_LIGHT);
-        freeSlots.push(u32.from(i));
-      }
-      i = i + 1usize;
-    }
-    rows.clear();
-    colors.clear();
-    owners.clear();
-    shadows.flags.clear();
+    lights.clear();
     assignDirty = true;
     rowsDirty = true;
   }
@@ -363,167 +306,168 @@ pub struct LightSet {
   // Whether the light casts a shadow, if it can (the renderer's
   // 'setLightShadows' gives the budget): a point light's is six views of a
   // map, a spot's one. Off to start.
-  pub fn setCastsShadow(self: &mut, h: LightHandle, casts: bool) bool {
-    if !self.alive(h) { return false; }
-    let row = self.rowOf(h);
-    let flag = *shadows.flags[row];
-    shadows.flags.set(row, if casts { flag | 1u32 } else { flag & 2u32 });
+  pub fn setCastsShadow(self: &mut, h: LightId, casts: bool) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
+    (*l).flags = if casts { (*l).flags | 1u32 } else { (*l).flags & 2u32 };
     rowsDirty = true;
     true
   }
 
   // Whether the light was given shadow views for the last render
-  pub fn isShadowed(self: &, h: LightHandle) bool {
-    if !self.alive(h) { return false; }
-    let row = self.rowOf(h);
-    row < shadows.base.len() && *shadows.base[row] != NO_VIEW
+  pub fn isShadowed(self: &, h: LightId) bool {
+    let row = lights.rowIndex(h);
+    if row == noCell { return false; }
+    usize.from(row) < shadows.base.len() && *shadows.base[usize.from(row)] != NO_VIEW
   }
 
   // The share of its shadow that shows (1: all of it; see LightShadowSettings.fade)
-  pub fn shadowShare(self: &, h: LightHandle) f32 {
-    if !self.alive(h) { return 1.; }
-    let row = self.rowOf(h);
-    if row < shadows.fade.len() { *shadows.fade[row] } else { 1. }
+  pub fn shadowShare(self: &, h: LightId) f32 {
+    let row = lights.rowIndex(h);
+    if row == noCell { return 1.; }
+    if usize.from(row) < shadows.fade.len() { *shadows.fade[usize.from(row)] } else { 1. }
   }
 
   // Move the light to 'position'
-  pub fn move(self: &mut, h: LightHandle, position: Vec3) bool {
-    if !self.alive(h) { return false; }
+  pub fn move(self: &mut, h: LightId, position: Vec3) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     assignDirty = true;
     rowsDirty = true;
-    let base = self.rowOf(h) * LIGHT_FLOATS;
-    rows.set(base, position.x);
-    rows.set(base + 1usize, position.y);
-    rows.set(base + 2usize, position.z);
+    (*l).px = position.x;
+    (*l).py = position.y;
+    (*l).pz = position.z;
     true
   }
 
   // Turn a spot light to shine along 'direction'
-  pub fn aim(self: &mut, h: LightHandle, direction: Vec3) bool {
-    if !self.alive(h) { return false; }
+  pub fn aim(self: &mut, h: LightId, direction: Vec3) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     assignDirty = true;
     rowsDirty = true;
-    let base = self.rowOf(h) * LIGHT_FLOATS;
     let a = direction.normalize();
-    rows.set(base + 8usize, a.x);
-    rows.set(base + 9usize, a.y);
-    rows.set(base + 10usize, a.z);
+    (*l).ax = a.x;
+    (*l).ay = a.y;
+    (*l).az = a.z;
     true
   }
 
   // Whether the light in 'row' gives any light (a dark one is left out of the
   // assignment)
   fn isLit(self: &, row: usize) bool {
-    let b = row * 4usize;
-    *colors[b + 3usize] > 0. && (*colors[b] > 0. || *colors[b + 1usize] > 0. || *colors[b + 2usize] > 0.)
+    lights.rows()[row].isLit()
   }
 
-  // The table's colour times candela of 'row' made again from the two; 'was'
+  // The table's colour times candela of the light made again from the two; 'was'
   // whether it gave light before (the lists change only if that does)
-  fn writeIntensity(self: &mut, row: usize, was: bool) {
-    let c = *colors[row * 4usize + 3usize];
-    rows.set(row * LIGHT_FLOATS + 4usize, *colors[row * 4usize] * c);
-    rows.set(row * LIGHT_FLOATS + 5usize, *colors[row * 4usize + 1usize] * c);
-    rows.set(row * LIGHT_FLOATS + 6usize, *colors[row * 4usize + 2usize] * c);
+  fn writeIntensity(self: &mut, l: *LocalLight, was: bool) {
+    (*l).ir = (*l).cr * (*l).candela;
+    (*l).ig = (*l).cg * (*l).candela;
+    (*l).ib = (*l).cb * (*l).candela;
     rowsDirty = true;
-    if was != self.isLit(row) { assignDirty = true; }
+    if was != (*l).isLit() { assignDirty = true; }
   }
 
   // Change the light's colour (linear), keeping its candela
-  pub fn setColor(self: &mut, h: LightHandle, color: Color) bool {
-    if !self.alive(h) { return false; }
-    let row = self.rowOf(h);
-    let was = self.isLit(row);
-    colors.set(row * 4usize, color.red);
-    colors.set(row * 4usize + 1usize, color.green);
-    colors.set(row * 4usize + 2usize, color.blue);
-    self.writeIntensity(row, was);
+  pub fn setColor(self: &mut, h: LightId, color: Color) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
+    let was = (*l).isLit();
+    (*l).cr = color.red;
+    (*l).cg = color.green;
+    (*l).cb = color.blue;
+    self.writeIntensity(l, was);
     true
   }
 
   // Change the light's intensity in candela, keeping its colour (0: dark,
   // and left out of the assignment)
-  pub fn setIntensity(self: &mut, h: LightHandle, candela: f32) bool {
-    if !self.alive(h) { return false; }
-    let row = self.rowOf(h);
-    let was = self.isLit(row);
-    colors.set(row * 4usize + 3usize, candela);
-    self.writeIntensity(row, was);
+  pub fn setIntensity(self: &mut, h: LightId, candela: f32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
+    let was = (*l).isLit();
+    (*l).candela = candela;
+    self.writeIntensity(l, was);
     true
   }
 
   // Change both at once
-  pub fn setLight(self: &mut, h: LightHandle, color: Color, candela: f32) bool {
-    if !self.alive(h) { return false; }
-    let row = self.rowOf(h);
-    let was = self.isLit(row);
-    colors.set(row * 4usize, color.red);
-    colors.set(row * 4usize + 1usize, color.green);
-    colors.set(row * 4usize + 2usize, color.blue);
-    colors.set(row * 4usize + 3usize, candela);
-    self.writeIntensity(row, was);
+  pub fn setLight(self: &mut, h: LightId, color: Color, candela: f32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
+    let was = (*l).isLit();
+    (*l).cr = color.red;
+    (*l).cg = color.green;
+    (*l).cb = color.blue;
+    (*l).candela = candela;
+    self.writeIntensity(l, was);
     true
   }
 
   // Change how far the light reaches
-  pub fn setRange(self: &mut, h: LightHandle, range: f32) bool {
-    if !self.alive(h) { return false; }
+  pub fn setRange(self: &mut, h: LightId, range: f32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     assignDirty = true;
     rowsDirty = true;
-    rows.set(self.rowOf(h) * LIGHT_FLOATS + 3usize, range);
+    (*l).range = range;
     true
   }
 
   // The radius of the light's source, a sphere (a bulb: 0.015 m): it softens
   // the nearest falloff and gives the highlight its size
-  pub fn setSourceRadius(self: &mut, h: LightHandle, radius: f32) bool {
-    if !self.alive(h) { return false; }
+  pub fn setSourceRadius(self: &mut, h: LightId, radius: f32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     rowsDirty = true;
-    rows.set(self.rowOf(h) * LIGHT_FLOATS + 7usize, if radius > 0. { radius } else { 0. });
+    (*l).radius = if radius > 0. { radius } else { 0. };
     true
   }
 
   // Change a spot light's cone
-  pub fn setCone(self: &mut, h: LightHandle, innerAngle: f32, outerAngle: f32) bool {
-    if !self.alive(h) { return false; }
+  pub fn setCone(self: &mut, h: LightId, innerAngle: f32, outerAngle: f32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     assignDirty = true;
     rowsDirty = true;
-    let base = self.rowOf(h) * LIGHT_FLOATS;
     var scale = 0.f;
     var offset = 0.f;
     spotRamp(innerAngle, outerAngle, &mut scale, &mut offset);
-    rows.set(base + 12usize, scale);
-    rows.set(base + 13usize, offset);
-    rows.set(base + 15usize, outerAngle);
+    (*l).coneScale = scale;
+    (*l).coneOffset = offset;
+    (*l).outer = outerAngle;
     true
   }
 
   // The layers the light is on (bits 0 to 23): it reaches the materials that
   // share one
-  pub fn setLayers(self: &mut, h: LightHandle, mask: u32) bool {
-    if !self.alive(h) { return false; }
+  pub fn setLayers(self: &mut, h: LightId, mask: u32) bool {
+    let l = lights.get(h);
+    if l as usize == 0usize { return false; }
     rowsDirty = true;
-    rows.set(self.rowOf(h) * LIGHT_FLOATS + 14usize, f32.from(mask & LIGHT_LAYER_ALL));
+    (*l).layers = f32.from(mask & LIGHT_LAYER_ALL);
     true
   }
 
   // Where the light is
-  pub fn position(self: &, h: LightHandle) Vec3 {
-    if !self.alive(h) { return Vec3(0., 0., 0.); }
-    let base = self.rowOf(h) * LIGHT_FLOATS;
-    Vec3(*rows[base], *rows[base + 1usize], *rows[base + 2usize])
+  pub fn position(self: &, h: LightId) Vec3 {
+    let l = lights.get(h);
+    if l as usize == 0usize { return Vec3(0., 0., 0.); }
+    Vec3((*l).px, (*l).py, (*l).pz)
   }
 
   // How far the light reaches, or 0 if there is none
-  pub fn range(self: &, h: LightHandle) f32 {
-    if !self.alive(h) { return 0.; }
-    *rows[self.rowOf(h) * LIGHT_FLOATS + 3usize]
+  pub fn range(self: &, h: LightId) f32 {
+    let l = lights.get(h);
+    if l as usize == 0usize { return 0.; }
+    (*l).range
   }
 
   // The light's row in the table: the index the clusters' lists hold
-  pub fn rowIndex(self: &, h: LightHandle) u32 {
-    if !self.alive(h) { return NO_LIGHT; }
-    *slotRow[usize.from(h.slot)]
+  pub fn rowIndex(self: &, h: LightId) u32 {
+    let r = lights.rowIndex(h);
+    if r == noCell { NO_LIGHT } else { r }
   }
 
   // ---- The grid ----
@@ -582,16 +526,16 @@ pub struct LightSet {
   // the sphere through the apex and the rim of the base, otherwise the one
   // about the base's middle
   pub fn lightSphere(self: &, i: usize, center: &mut Vec3, radius: &mut f32) {
-    let b = i * LIGHT_FLOATS;
-    let p = Vec3(*rows[b], *rows[b + 1usize], *rows[b + 2usize]);
-    let range = *rows[b + 3usize];
-    if *rows[b + 11usize] < 0.5 {
+    let rs = lights.rows();
+    let p = Vec3(rs[i].px, rs[i].py, rs[i].pz);
+    let range = rs[i].range;
+    if rs[i].kind < 0.5 {
       *center = p;
       *radius = range;
       return;
     }
-    let axis = Vec3(*rows[b + 8usize], *rows[b + 9usize], *rows[b + 10usize]);
-    let outer = *rows[b + 15usize];
+    let axis = Vec3(rs[i].ax, rs[i].ay, rs[i].az);
+    let outer = rs[i].outer;
     let c = cos(outer);
     if c * c >= 0.5 {
       let t = range / (2. * c);
@@ -752,27 +696,27 @@ pub struct LightSet {
   // range^2, a point light's axis zero, the layers beside the axis, a point
   // light's cone zero
   fn writeRows(self: &mut, device: &mut Device) {
-    let n = owners.len();
+    let n = lights.len();
     gpuRows.clear();
+    let rs = lights.rows();
     var i = 0usize;
     while i < n {
-      let b = i * LIGHT_FLOATS;
-      let range = *rows[b + 3usize];
-      gpuRows.push(*rows[b]);
-      gpuRows.push(*rows[b + 1usize]);
-      gpuRows.push(*rows[b + 2usize]);
+      let range = rs[i].range;
+      gpuRows.push(rs[i].px);
+      gpuRows.push(rs[i].py);
+      gpuRows.push(rs[i].pz);
       gpuRows.push(if range > 0. { 1. / (range * range) } else { 0. });
-      gpuRows.push(*rows[b + 4usize]);
-      gpuRows.push(*rows[b + 5usize]);
-      gpuRows.push(*rows[b + 6usize]);
-      gpuRows.push(*rows[b + 7usize]);
-      let spot = *rows[b + 11usize] > 0.5;
-      gpuRows.push(if spot { *rows[b + 8usize] } else { 0. });
-      gpuRows.push(if spot { *rows[b + 9usize] } else { 0. });
-      gpuRows.push(if spot { *rows[b + 10usize] } else { 0. });
-      gpuRows.push(*rows[b + 14usize]);
-      gpuRows.push(if spot { *rows[b + 12usize] } else { 0. });
-      gpuRows.push(if spot { *rows[b + 13usize] } else { 0. });
+      gpuRows.push(rs[i].ir);
+      gpuRows.push(rs[i].ig);
+      gpuRows.push(rs[i].ib);
+      gpuRows.push(rs[i].radius);
+      let spot = rs[i].kind > 0.5;
+      gpuRows.push(if spot { rs[i].ax } else { 0. });
+      gpuRows.push(if spot { rs[i].ay } else { 0. });
+      gpuRows.push(if spot { rs[i].az } else { 0. });
+      gpuRows.push(rs[i].layers);
+      gpuRows.push(if spot { rs[i].coneScale } else { 0. });
+      gpuRows.push(if spot { rs[i].coneOffset } else { 0. });
       // The first of its shadow views, or -1
       gpuRows.push(if i < shadows.base.len() && *shadows.base[i] != NO_VIEW { f32.from(*shadows.base[i]) } else { -1. });
       // and how much of its shadow shows (lightshadow.cone)
@@ -838,7 +782,7 @@ pub struct LightSet {
     var grew = false;
     var listsMade = false;
 
-    let n = owners.len();
+    let n = lights.len();
     if n == 0usize {
       active = 0u32;
       pairs = 0u32;
@@ -874,9 +818,7 @@ pub struct LightSet {
       }
       var i = 0usize;
       while i < n {
-        let b = i * 4usize;
-        let lit = *colors[b + 3usize] > 0. && (*colors[b] > 0. || *colors[b + 1usize] > 0. || *colors[b + 2usize] > 0.);
-        if lit {
+        if lights.rows()[i].isLit() {
           var center = Vec3(0., 0., 0.);
           var radius = 0.f;
           self.lightSphere(i, &mut center, &mut radius);
