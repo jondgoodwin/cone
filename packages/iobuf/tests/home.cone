@@ -1,6 +1,6 @@
 // A buffer with a home: its death calls the home's 'give' with an empty buffer on the same block, and the
 // block is not released until that buffer dies in turn. The home is counted: it goes (and its lender's
-// 'release') after the owner and every homed buffer are gone. Plain buffers are untouched.
+// ctx is dropped: its 'final' is the release) after the owner and every homed buffer are gone. Plain buffers are untouched.
 //
 //   1. a homed buffer dropped: one give, empty, the same capacity, no home; the block returns on its death;
 //   2. clearHome before the drop: no give, the block returns; clearHome on a plain buffer is nothing;
@@ -34,8 +34,13 @@ fn @initpure init() {
 
 // The test lender's ctx: keep is 0 (the lender drops what it is given) or the address of a List[IoBuf]
 // that keeps it
-struct Lend {
+struct Lend is Move, Sendable {
   pub keep: usize;
+
+  // The lender's release: the home drops its ctx when the last count goes
+  fn final(self: &uni) {
+    lender.releases.add(1u64);
+  }
 }
 
 fn give(ctx: &Lend, b: IoBuf) {
@@ -48,11 +53,7 @@ fn give(ctx: &Lend, b: IoBuf) {
   }
 }
 
-fn release(ctx: &Lend) {
-  lender.releases.add(1u64);
-}
-
-fn mine() IoHome {IoHome.make[Lend](Lend(0usize), &give, &release)}
+fn mine() IoHome {IoHome.make[Lend](Lend(0usize), &give)}
 
 fn homed(h: &IoHome, n: usize) IoBuf {
   var b = IoBuf(n);
@@ -152,7 +153,7 @@ fn main() i32 {
   clear();
   {
     var keep = List[IoBuf]();
-    let h = IoHome.make[Lend](Lend(&mut keep as usize), &give, &release);
+    let h = IoHome.make[Lend](Lend(&mut keep as usize), &give);
     {
       let b = homed(&h, 100usize);
     }
