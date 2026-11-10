@@ -1,0 +1,157 @@
+// Step 0 under Bug 69 (throwaway): a branch that hollows different parts of one
+// owner on each side, joined, then the owner dropped, refilled or moved whole.
+// Side T moves the value out through both owners (**o); side F moves the inner
+// owner out (*o). Tally nibble n counts Counted(n)'s finals (want 1 each, for
+// the rows run); allocations not freed want 0.
+//
+// Plain rows use nibbles 0..7 of 'tally', resumed rows 0..7 of 'tally2'.
+// Combo k (0..5): after = k/2 (0 drop, 1 refill, 2 move whole), path = k%2
+// (0 = T, 1 = F). Counted(k) is the original; a refill's new value is
+// Counted(6 + (k-2)/... ) = nibble 6 (path T) or 7 (path F), after = 1 only.
+
+mod bug69mixed;
+
+import stdio use *;
+import libc;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import aio;
+
+let tally: Atomic[u64];
+let tally2: Atomic[u64];
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  tally = Atomic[u64].of(0u64);
+  tally2 = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+struct Counted {
+  pub n: u64;
+  fn final(self: &uni) {
+    if n < 16u64 {tally.add(1u64 << (n * 4u64));}
+    else {tally2.add(1u64 << ((n - 16u64) * 4u64));}
+  }
+}
+
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+fn giveC(c: Counted) {}
+fn giveI(c: One[Counted]) {}
+fn giveO(c: One[One[Counted]]) {}
+
+fn mk(n: u64) One[One[Counted]] {
+  One[One[Counted]](One[Counted](Counted(n)))
+}
+
+// k = after*2 + path; base 0 (plain) or 16 (resumed nibbles)
+fn plainRow(k: u64, base: u64) {
+  let after = k / 2u64;
+  let t = k % 2u64 == 0u64;
+  var o = mk(base + k);
+  if t {giveC(**o);} else {giveI(*o);}
+  if after == 1u64 {
+    o = mk(base + 6u64 + (k % 2u64));
+    let e = **o;
+    if e.n > 99u64 {printStr("never\n");}
+  } else if after == 2u64 {
+    o = mk(base + 8u64 + (k % 2u64));
+    giveO(o);
+  }
+}
+
+// The control: the same rows with the same part moved on both sides
+fn ctlRow(k: u64) {
+  let after = k / 2u64;
+  let t = k % 2u64 == 0u64;
+  var o = mk(k);
+  if t {giveC(**o);} else {giveC(**o);}
+  if after == 1u64 {
+    o = mk(6u64 + (k % 2u64));
+    let e = **o;
+    if e.n > 99u64 {printStr("never\n");}
+  } else if after == 2u64 {
+    o = mk(8u64 + (k % 2u64));
+    giveO(o);
+  }
+}
+
+actor Holder {
+  pub async fn row(self, k: u64, done: OneshotSender[u64]) {
+    let after = k / 2u64;
+    let t = k % 2u64 == 0u64;
+    var o = mk(16u64 + k);
+    if t {giveC(**o);} else {giveI(*o);}
+    let s = await aio.sleep(Duration.fromMillis(10i64));
+    if after == 1u64 {
+      o = mk(16u64 + 6u64 + (k % 2u64));
+      let e = **o;
+      if e.n > 99u64 {printStr("never\n");}
+    } else if after == 2u64 {
+      o = mk(16u64 + 8u64 + (k % 2u64));
+      giveO(o);
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn report(what: &str, t: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < 10u64 {
+    printStr(" ");
+    printUInt((t >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var k = 0u64;
+  while k < 6u64 {
+    let before = allocs.load() - frees.load();
+    plainRow(k, 0u64);
+    printStr("plain row "); printUInt(k); printStr(" leaked: ");
+    printUInt(allocs.load() - frees.load() - before); printStr("\n");
+    k = k + 1u64;
+  }
+  report("plain:  ", tally.load());
+  k = 0u64;
+  while k < 6u64 {
+    let before = allocs.load() - frees.load();
+    ctlRow(k);
+    printStr("control row "); printUInt(k); printStr(" leaked: ");
+    printUInt(allocs.load() - frees.load() - before); printStr("\n");
+    k = k + 1u64;
+  }
+  k = 0u64;
+  k = 0u64;
+  while k < 6u64 {
+    let before = allocs.load() - frees.load();
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.row(k, tx);
+    rx.recv();
+    actors.waitUntilIdle();
+    printStr("resumed row "); printUInt(k); printStr(" leaked: ");
+    printUInt(allocs.load() - frees.load() - before); printStr("\n");
+    k = k + 1u64;
+  }
+  actors.waitUntilIdle();
+  report("resumed:", tally2.load());
+  finalAll();
+  printStr("end\n");
+}
