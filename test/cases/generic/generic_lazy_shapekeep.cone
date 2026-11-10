@@ -1,0 +1,47 @@
+// Shape inference over a lazy nested instance, the keeping way. 'Keep[Option[i64]]',
+// made by the member check of 'Keep[i64]', waits for a use. Calling 'firstMut' on it
+// checks its members, and the compiler must find it shape-keeping there ('bump' writes
+// only a number field), so 'bump' may be called through the reference while the borrow
+// of an element is still to be used. An instance whose shape had not been inferred is
+// taken as shape-changing, and 'bump' would be refused here (the borrow's path is
+// shared and 'bump' writes a field). Unlike generic_lazy_shape, which is refused
+// whether or not the answer was inferred, this compiles only if it was.
+
+mod generic_lazy_shapekeep;
+
+import collections use *;
+import stdio use *;
+
+struct Keep[R] {
+  items: List[R];
+  count: i64;
+
+  pub fn bump(self: &mut Keep[R]) {
+    count = count + 1i64;
+  }
+
+  pub fn firstMut(self: &mut Keep[R]) &mut R {
+    &mut items[0usize]
+  }
+
+  pub fn lift(self: &Keep[R]) Keep[Option[R]] {
+    Keep[Option[R]](List[Option[R]](), 0i64)
+  }
+}
+
+fn main() {
+  let h = Keep[i64](List[i64](), 0i64);
+  var n = h.lift();
+  n.items.push(Some[i64](4));
+  let r = &mut n;
+  let f = r.firstMut();
+  r.bump();
+  *f = Some[i64](9);
+  printInt(r.count);
+  printStr(" ");
+  match n.items[0usize] {
+    case let Some(v) {printInt(v);}
+    else {printStr("none");}
+  }
+  printStr("\n");
+}
