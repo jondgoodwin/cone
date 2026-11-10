@@ -52,6 +52,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->instfrom = NULL;
     snode->instmeth = NULL;
     snode->instdepth = 0;
+    snode->memlazy = 0;
     return snode;
 }
 
@@ -259,6 +260,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->instfrom = NULL;
     newnode->instmeth = NULL;
     newnode->instdepth = 0;
+    newnode->memlazy = 0;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
     // whether they carry a borrow, hold a traced reference or an atomic value,
@@ -4882,8 +4884,20 @@ static StructNode *structNestReported = NULL;
 // so no instantiation is nested in another on the stack and the stack's depth never
 // grows (a method returning its own type at a larger argument, 'Wrap[Option[R]]',
 // made instances without end). False, reported once, where the chain is too long.
-int structInstanceNest(INode *errnode) {
-    StructNode *cur = structMembersCur;
+static StructNode *structEnumRoot(StructNode *node);
+
+// The instance an instance now made comes of: the one whose method body is being
+// checked (a body a call demanded is checked outside the members check that is
+// running), else the one whose members are. A variant stands for its enum.
+static StructNode *structCreator(TypeCheckState *pstate) {
+    INode *tn = pstate ? pstate->typenode : NULL;
+    if (tn && tn->tag == StructTag && itypeInstanceTypeArgs(tn) != NULL)
+        return structEnumRoot((StructNode*)tn);
+    return structMembersCur ? structEnumRoot(structMembersCur) : NULL;
+}
+
+int structInstanceNest(TypeCheckState *pstate, INode *errnode) {
+    StructNode *cur = structCreator(pstate);
     if (cur == NULL || cur->instdepth + 1 < TypeCheckLoopMax)
         return 1;
     StructNode *first = cur;
@@ -4912,18 +4926,93 @@ int structInstanceNest(INode *errnode) {
     return 0;
 }
 
-void structInstanceNote(INode *instance) {
-    if (instance == NULL || instance->tag != StructTag || structMembersCur == NULL)
+void structInstanceNote(TypeCheckState *pstate, INode *instance) {
+    StructNode *cur = structCreator(pstate);
+    if (instance == NULL || instance->tag != StructTag || cur == NULL)
         return;
     StructNode *node = (StructNode*)instance;
-    if (node == structMembersCur || node->instfrom != NULL || node->instdepth != 0)
+    if (node == cur || node->instfrom != NULL || node->instdepth != 0)
         return;
-    node->instfrom = structMembersCur;
-    node->instmeth = structMembersMeth;
-    node->instdepth = structMembersCur->instdepth + 1;
+    node->instfrom = cur;
+    node->instmeth = (structMembersCur && cur == structEnumRoot(structMembersCur)) ? structMembersMeth : NULL;
+    node->instdepth = cur->instdepth + 1;
 }
 
 static void structCheckMembersBody(StructNode *node);
+static void structCheckMembers(StructNode *node);
+
+// Does the template of this instance appear among the instances whose member checks
+// led to it? Then it is one link of a chain that may name itself at ever larger
+// arguments (Bug 71), and its members wait for a use.
+// An enum's variants are checked beside it and carry its methods' copies, so an
+// instance made by a variant's check is the enum's: a variant stands for its enum.
+static StructNode *structEnumRoot(StructNode *node) {
+    if (node->basetrait) {
+        StructNode *base = structBaseTraitDcl(node);
+        if (base && base->tag == StructTag && (base->flags & EnumType))
+            return base;
+    }
+    return node;
+}
+
+// A lazy instance's 'final' is checked at once: the drop that calls it is made
+// with the layout, and no use of the instance asks for it
+static void structDemandFinal(TypeCheckState *pstate, INode *node, void *extra) {
+    INode *fin = namespaceFind(&((StructNode*)node)->namespace, finalName);
+    if (fin && fin->tag == FnDclTag)
+        fnCallDemandCandidates(fin);
+}
+
+static int structTemplateInChain(StructNode *node) {
+    StructNode *templ = genericTypeTemplate(structEnumRoot(node));
+    if (templ == NULL)
+        return 0;
+    for (StructNode *from = node->instfrom; from; from = from->instfrom)
+        if (genericTypeTemplate(structEnumRoot(from)) == templ)
+            return 1;
+    return 0;
+}
+
+int structMembersLazy(INode *type) {
+    return type && type->tag == StructTag && ((StructNode*)type)->memlazy;
+}
+
+// The instance whose members wait, for a type that is one or a variant of one
+// (a variant is checked with its enum, as its methods are copies of the enum's)
+static StructNode *structLazyRoot(INode *type) {
+    if (type == NULL || type->tag != StructTag)
+        return NULL;
+    StructNode *node = structEnumRoot((StructNode*)type);
+    return node->memlazy ? node : NULL;
+}
+
+static void structMembersRelease(StructNode *node) {
+    if (!node->memlazy)
+        return;
+    node->memlazy = 0;
+    if (structLayoutInFlight())
+        structWait(&structMembersWaiting, node);
+    else
+        structCheckMembers(node);
+}
+
+void structMembersUse(TypeCheckState *pstate, INode *type, int construct) {
+    StructNode *node = structLazyRoot(type);
+    if (node == NULL)
+        return;
+    // The instance whose members are checked made it, and builds it (a method
+    // returning its own type at a larger argument) without needing its members
+    if (construct && node->instfrom != NULL && structCreator(pstate) == structEnumRoot(node->instfrom))
+        return;
+    structMembersRelease(node);
+    if (node->derived) {
+        INode **vp;
+        uint32_t cnt;
+        for (nodesFor(node->derived, cnt, vp))
+            if ((*vp)->tag == StructTag)
+                structMembersRelease((StructNode*)*vp);
+    }
+}
 
 static void structCheckMembers(StructNode *node) {
     StructNode *savedcur = structMembersCur;
@@ -5531,7 +5620,19 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // The members wait for every layout in flight to finish. An enum's wait
     // ahead of those of the variants it lays out below, in the order written.
-    structWait(&structMembersWaiting, node);
+    // (A nested instance of a template already in its chain waits for a use instead.)
+    // (a generic trait's instance stays eager; an enum carries 'TraitType' too)
+    if (((node->flags & (TraitType | EnumType)) != TraitType)
+        && ((node->instfrom != NULL && structTemplateInChain(node))
+            || (node->basetrait && structEnumRoot(node) != node && structEnumRoot(node)->memlazy))) {
+        node->memlazy = 1;
+        // The drop of a local calls 'final', and no use of the instance asks for it
+        INode *fin = namespaceFind(&node->namespace, finalName);
+        if (fin && fin->tag == FnDclTag)
+            structDeferCheck(pstate, structDemandFinal, (INode*)node, NULL);
+    }
+    else
+        structWait(&structMembersWaiting, node);
 
     // An enum's size, and whether its values move or stay on their thread, are
     // its variants', so its layout is not finished until theirs are. Each one
