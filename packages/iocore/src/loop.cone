@@ -61,8 +61,12 @@ const hDatagram = 4u32;       // a bound UDP socket
 const hPipe = 5u32;           // one end of a pipe (adoptPipe)
 const hChild = 6u32;          // a child process (adoptChild)
 
-// An entry of the handle table (a pools.GenPool: its cell's number and
-// generation are the Handle's)
+// The handle table, and the id of one entry in it (the pool's handle: its
+// cell's number and generation). The pool kind is spelled here only
+alias HEntries = GenPool[HEntry];
+alias HEntryId = PoolHandle;
+
+// An entry of the handle table (see HEntries)
 struct HEntry {
   pub raw: usize;          // the OS's: Windows' handle or socket, Linux's descriptor
   pub kind: u32;
@@ -124,7 +128,7 @@ pub struct Loop {
   done: List[*OpCore];     // an asker's records answered, for takeDone
   cancels: List[Asked];    // Linux: socket operations asked to end, answered at the next wait (linux.cone)
   held: List[Held];        // answers held back by a full channel
-  handles: GenPool[HEntry];
+  handles: HEntries;
   wheel: Wheel;
   expiries: List[Expiry];
   entries: *OverlappedEntry;   // Windows: what one wait takes from the port
@@ -194,7 +198,7 @@ pub struct Loop {
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
       decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
       held: List[Held](),
-      handles: GenPool[HEntry].make(64u32),
+      handles: HEntries.make(64u32),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
@@ -522,14 +526,14 @@ pub struct Loop {
   // The hint word of h: a u32 kept for the layer that opened it (aio's calm
   // bit), 0 when it is opened; 0 for a handle that names nothing
   pub fn hint(self: &, h: Handle) u32 {
-    let p = handles.get(PoolHandle(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     if p as usize == 0usize {return 0u32;}
     (*p).hint
   }
 
   // Set h's hint word: false, and nothing set, if h names nothing
   pub fn setHint(self: &mut, h: Handle, v: u32) bool {
-    let p = handles.get(PoolHandle(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     if p as usize == 0usize {return false;}
     (*p).hint = v;
     true
@@ -608,7 +612,7 @@ pub struct Loop {
 
   // Whether h's completions skip the port on success
   fn skips(self: &, h: Handle) bool {
-    let p = handles.get(PoolHandle(h.index, h.gen));
+    let p = handles.get(HEntryId(h.index, h.gen));
     p as usize != 0usize && (*p).skip != 0u32
   }
 
@@ -687,7 +691,7 @@ pub struct Loop {
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self: &, h: Handle) u32 {
-    if handles.get(PoolHandle(h.index, h.gen)) as usize == 0usize {return noEntry;}
+    if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {return noEntry;}
     h.index
   }
 
@@ -716,7 +720,7 @@ pub struct Loop {
       unboundTail = p;
       return;
     }
-    let e = handles.get(PoolHandle(r.handle.index, r.handle.gen)) as &mut HEntry;
+    let e = handles.get(HEntryId(r.handle.index, r.handle.gen)) as &mut HEntry;
     if side == onReads {
       r.hprev = e.readsTail;
       if e.readsTail as usize == 0usize {e.reads = p;} else {(*e.readsTail).hnext = p;}
@@ -745,7 +749,7 @@ pub struct Loop {
     }
     // A closed handle's lists were let go at its close (detachLists), which
     // took every record off them: an entry is there for a record still on one
-    let ep = handles.get(PoolHandle(r.handle.index, r.handle.gen));
+    let ep = handles.get(HEntryId(r.handle.index, r.handle.gen));
     if ep as usize == 0usize {return;}
     let e = ep as &mut HEntry;
     if side == onReads {
@@ -1872,7 +1876,7 @@ pub struct Loop {
       }
       // An operation may have closed it (Linux: a connect that failed on its
       // try): its lists went with it
-      if handles.get(PoolHandle(h.index, h.gen)) as usize == 0usize {break;}
+      if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {break;}
       p = next;
     }
     n
@@ -2017,13 +2021,13 @@ pub struct Loop {
         var ec = 0u32;
         if proc == invalidHandle {
           self.decide(p, diag.outcomeFailed, 0usize, errorInvalidHandle);
-        } else if (*handles.get(Slot(r.handle.index, r.handle.gen))).waited != 0u32 {
+        } else if (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited != 0u32 {
           // Answered for already: the child is spoken for, as a reaped one is on Linux
           self.decide(p, diag.outcomeFailed, 0usize, errorNoChildren);
         } else if GetExitCodeProcess(proc, &mut ec) == 0i32 {
           self.decide(p, diag.outcomeFailed, 0usize, GetLastError());
         } else {
-          (*handles.get(Slot(r.handle.index, r.handle.gen))).waited = 1u32;
+          (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited = 1u32;
           self.decide(p, diag.outcomeDone, usize.from(ec), 0u32);
         }
         return;
