@@ -1,0 +1,114 @@
+// Finalization through List's new methods is exact: a removed value is finalized once, a moved
+// value is not finalized, and a value the list gave up is not counted by it. Each Tok counts its
+// own death. The hand count, statement by statement ('l' and 's' hold Toks; a value moved into a
+// list or out of one does not die):
+//   l = [1..6]                          0 dead
+//   remove(1, 3)    drops 2, 3          2 dead, l = [1, 4, 5, 6]
+//   removeIf(even)  drops 4, 6          4 dead, l = [1, 5]
+//   replace(0, 1, [7, 8])  drops 1      5 dead, l = [7, 8, 5] (clones of 7, 8 made, none dies)
+//   drain(0, 2) and one next(): 7 is moved out to 'first' (alive), 8 is not reached
+//                   at the block's end 'first' dies and the cursor finalizes 8: 7 dead,
+//                   and the gap closes, l = [5]
+//   remove(0) moves 5 out to a binding; it dies at the block's end: 8 dead, l = []
+//   insert(0, s) with s = [7, 8] clones both: nothing dies, l = [7, 8] (clones)
+//   swapRemove(0) moves a clone of 7 out to a binding; it dies at the block's end: 9 dead
+//   splitOff(0) moves the clone of 8 to a new list t: nothing dies, l = []
+//   push 9, 10 on t, truncate(2) drops 10: 10 dead; truncate(0) drops the clone of 8 and 9: 12 dead
+
+mod collection_list_complete_final;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal deaths = 0i64;
+
+struct Tok is Clone {
+  pub n: i64;
+  pub fn clone(self: &) Tok { Tok(n) }
+  fn final(self: &uni) { deaths = deaths + 1i64; }
+}
+
+fn isEven(x: &Tok) bool { x.n % 2i64 == 0i64 }
+
+fn check(label: &str, want: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(deaths);
+  printStr(if deaths == want {" ok\n"} else {" WRONG\n"});
+}
+
+fn lens(label: &str, a: usize, b: usize) {
+  printStr(label);
+  printStr(" ");
+  printUInt(u64.from(a));
+  printStr(" ");
+  printUInt(u64.from(b));
+  printStr("\n");
+}
+
+fn main() i32 {
+  var l = List[Tok]();
+  var i = 1i64;
+  while i <= 6i64 { l.push(Tok(i)); i = i + 1i64; }
+  check("pushed", 0i64);
+
+  l.remove(1usize, 3usize);
+  check("remove(1, 3)", 2i64);
+  l.removeIf(&isEven);
+  check("removeIf", 4i64);
+
+  var s = List[Tok]();
+  s.push(Tok(7i64));
+  s.push(Tok(8i64));
+  l.replace(0usize, 1usize, s.view());
+  check("replace", 5i64);
+  lens("after replace", l.len(), s.len());
+
+  {
+    var d = l.drain(0usize, 2usize);
+    let first = d.next();
+    check("drain, one taken", 5i64);
+  }
+  check("drain, ended early", 7i64);
+  lens("after drain", l.len(), s.len());
+
+  {
+    let five = l.remove(0usize);
+    check("remove(i) moves out", 7i64);
+  }
+  check("moved-out value died", 8i64);
+
+  l.insert(0usize, s.view());
+  check("insert(i, slice) clones", 8i64);
+  lens("after insert", l.len(), s.len());
+
+  {
+    let seven = l.swapRemove(0usize);
+    check("swapRemove moves out", 8i64);
+  }
+  check("swapRemove value died", 9i64);
+
+  var t = l.splitOff(0usize);
+  check("splitOff", 9i64);
+  lens("after splitOff", l.len(), t.len());
+
+  t.push(Tok(9i64));
+  t.push(Tok(10i64));
+  t.truncate(2usize);
+  check("truncate(2)", 10i64);
+  t.truncate(0usize);
+  check("truncate(0)", 12i64);
+  lens("end", l.len(), t.len());
+
+  // Array's Clone forms through the view: each element overwritten is finalized once.
+  // fill takes its value, which dies at the end of the call (12 + 2 overwritten + 1)
+  var u = List[Tok]();
+  u.push(Tok(1i64));
+  u.push(Tok(2i64));
+  u.fill(Tok(5i64));
+  check("fill", 15i64);
+  u.copyFrom(s.view());
+  check("copyFrom", 17i64);
+  printInt(u[0usize].n + u[1usize].n); printStr("\n");
+  0i32
+}

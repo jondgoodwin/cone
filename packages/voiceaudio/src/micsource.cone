@@ -65,6 +65,14 @@ pub struct AudioBlock is Sendable {
     b
   }
 
+  // A flush point (len 0, lost 0): the end of a sentence. SpeakerSink flushes SDL's converter there, and the block
+  // counts as played when what came before it has (voicewait.cone)
+  pub fn flushPoint(gen: u32) AudioBlock {
+    var b = AudioBlock.empty();
+    b.gen = gen;
+    b
+  }
+
   // The marker for `lost` blocks dropped
   pub fn gap(lost: u64) AudioBlock {
     var b = AudioBlock.empty();
@@ -196,12 +204,18 @@ pub actor VadStage is ValueSink[AudioBlock], ValueSource {
   credits: u32;
   ended: Option[Ending];
   over: bool;
+  probe: Option[VadProbe];
 
   // window: how many blocks the source may have outstanding; down: where the utterances go
   pub fn init(self: &new, cfg: VadConfig, window: u32, down: ValueSink[Utterance]) {
     *self = Self(vad: Vad.make(cfg), up: None[ValueSource], down: Some[ValueSink[Utterance]](down), window: window,
-      waiting: Deque[Utterance](), credits: 0u32, ended: None[Ending], over: false);
+      waiting: Deque[Utterance](), credits: 0u32, ended: None[Ending], over: false, probe: None[VadProbe]);
     down.attach(selfactor);
+  }
+
+  // Publish the detector's state after every block into `p`, and take its threshold scale from it (voicewait.cone)
+  pub async fn watch(self, p: VadProbe) {
+    probe = Some[VadProbe](p);
   }
 
   pub async fn attach(self, source: ValueSource) {
@@ -211,6 +225,10 @@ pub actor VadStage is ValueSink[AudioBlock], ValueSource {
 
   pub async fn accept(self, b: AudioBlock) {
     var out = List[Utterance]();
+    match &probe {
+      case let &Some(p) { vad.setThresholdScale(p.scaleValue()); }
+      else {}
+    }
     if b.lost > 0u64 {
       vad.flush(&mut out);
     } else {
@@ -219,6 +237,10 @@ pub actor VadStage is ValueSink[AudioBlock], ValueSource {
         case let &Some(u) { u.credit(1u32); }
         else {}
       }
+    }
+    match &probe {
+      case let &Some(p) { if p.publish(&vad) { p.bell.ring(); } }
+      else {}
     }
     moveAll(out, &mut waiting);
     self.send();

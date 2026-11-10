@@ -99,6 +99,7 @@ actor Scaler {
   grid: Array[u64, 4];
   hits: Atomic[u64];
   ran: Atomic[u64];    // bit i: worker i ran a pass of 'wide'
+  begun: Atomic[u64];  // how many passes of 'wide' have begun
   inLoop: u64;         // 1 between a 'run' beginning its loop and the loop's end
   marks: u64;
 
@@ -110,7 +111,7 @@ actor Scaler {
       i = i + 1u64;
     }
     *self = Self(vals: l, scale: scale, grid: [1u64, 2u64, 3u64, 4u64], hits: Atomic[u64].of(0u64),
-      ran: Atomic[u64].of(0u64), inLoop: 0u64, marks: 0u64);
+      ran: Atomic[u64].of(0u64), begun: Atomic[u64].of(0u64), inLoop: 0u64, marks: 0u64);
   }
 
   // The worked example: 'add', 'k' and 'tag' are read by the pieces and used
@@ -137,13 +138,18 @@ actor Scaler {
     bad
   }
 
-  // The pieces really run on more than one worker: the first pass waits until
-  // a second worker has run a pass, or three seconds go by
+  // The pieces really run on more than one worker. A loop splits on demand: the
+  // caller runs its first items itself and offers the rest to the other workers
+  // only after a little time (the cost guard), so no pass can wait for another
+  // worker from the first item. A pass waits once 1000 passes have begun (the
+  // loop has split by then, with items left in the deques for the others to
+  // take) until a second worker has run a pass, or three seconds go by
   pub async fn wide(self) u64 {
     ran.store(0u64);
+    begun.store(0u64);
     parallel each i in 0usize ..< 3000usize {
       ran.bitOr(1u64 << u64.from(actors.workerIndex()));
-      if i == 0usize {
+      if begun.add(1u64) >= 999u64 {
         var waited = 0u64;
         while bits(ran.load()) < 2u64 && waited < 3000u64 {
           thread.sleep(time.Duration.fromMillis(1));

@@ -1,0 +1,63 @@
+// Bug 83. A method of an enum ('Option.unwrap', generic and inline) has a body the shape check reads, as any
+// generic or inline function's. It was taken for a trait's method (an enum is flagged as a trait too), so an
+// 'Option[&mut F]' whose F reaches a container through an 'AnyError' (a trait object, which reaches anything)
+// was refused at '.unwrap()' with "its body is not visible here". The body is read now; code the compiler
+// really cannot read is still refused beside it (collection_enum_method_visible_success holds what is accepted).
+//
+// Each function below is refused, with the same F (an AnyError and a number) in a Dict the call may reshape:
+//   - an extern handed the Dict, whose body is not visible;
+//   - a call through a trait's reference, a virtual call;
+//   - a call through a function value.
+
+mod collection_flow_enum_method_visible;
+
+import collections use *;
+
+struct F is Move { pub e: AnyError; pub n: i64; }
+struct Sv is Move { pub fs: Dict[i64, F]; }
+
+extern fn elsewhere(q: &mut Dict[i64, F]);
+
+trait Poke { pub fn poke(self: &mut, d: &mut Dict[i64, F]); }
+
+fn viaExtern(s: &mut Sv, m: &mut Dict[i64, F], k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  elsewhere(m);                                     //~ ErrorShapeReshape "'elsewhere' is handed something that reaches a 'Dict' it may change, and its body is not visible here"
+  x.n = 1i64;
+}
+
+fn viaVirtual(s: &mut Sv, p: &<mut Poke, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  p.poke(&mut s.fs);                                //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}
+
+fn viaFnValue(s: &mut Sv, f: &<mut fn(d: &mut Dict[i64, F]), k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  f(&mut s.fs);                                     //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}
+
+// A method with a 'self &' receiver is copied into each variant and dispatched by tag, and a variant may
+// override it: it is not read, so a call on the enum is refused, whether a variant's override clears the Dict
+// or none overrides.
+enum Evt {
+  pub fn wipe(self: &mut, d: &mut Dict[i64, F]) { }
+  pub fn quiet(self: &mut, d: &mut Dict[i64, F]) { }
+  pub struct Clearer {
+    pub fn wipe(self: &mut, d: &mut Dict[i64, F]) { d.clear(); }
+  }
+  pub struct Other { pub k: i64; }
+}
+
+fn viaOverride(s: &mut Sv, e: &mut Evt, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  e.wipe(&mut s.fs);                                //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}
+
+fn viaNoOverride(s: &mut Sv, e: &mut Evt, k: i64) {
+  let x = s.fs.getMut(&k).unwrap();
+  e.quiet(&mut s.fs);                               //~ ErrorShapeReshape "its body is not visible here"
+  x.n = 1i64;
+}

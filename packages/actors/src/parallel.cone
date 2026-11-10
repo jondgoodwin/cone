@@ -36,8 +36,8 @@
 //   actors.RangeBody       fn(lo usize, hi usize)
 //   actors.PieceFn         &fn(data *u8, lo usize, hi usize)
 //   actors.parallelEach(lo, hi, piece, data)
-//                          what a 'parallel each' becomes: parallelRange with a
-//                          grain chosen from the workers (at least 128), and the messages the
+//                          what a 'parallel each' becomes: parallelRange that
+//                          splits on demand (no grain), and the messages the
 //                          pieces send to actors gathered and sent after the
 //                          loop in iteration order (SENDS GATHERED). Called by
 //                          the compiler's code, with the loop it outlined into
@@ -144,6 +144,7 @@ struct LoopRec {
   pub onDone: &fn(arg: *u8);     // called by the last task, scheduled form only
   pub doneArg: *u8;
   pub scheduled: bool;          // a heap block, with an onDone to call
+  pub adaptive: bool;           // splits on demand (a 'parallel each'), not to 'grain'
 }
 
 // A task: a range of a loop. It is a plain value; a deque holds copies.
@@ -151,6 +152,8 @@ struct Task {
   pub rec: *LoopRec;
   pub lo: usize;
   pub hi: usize;
+  pub splits: u32;              // adaptive loops: how many more times this piece may split
+  pub stolen: bool;             // taken from another deque by a thief (set by stealTask)
 }
 
 // A queue of tasks under a lock (a Mutex per worker, held for a few
@@ -166,7 +169,7 @@ struct TaskDeque {
 
 fn nullRec() *LoopRec {null}
 
-fn emptyTask() Task {Task(nullRec(), 0usize, 0usize)}
+fn emptyTask() Task {Task(nullRec(), 0usize, 0usize, 0u32, false)}
 
 fn noDone(arg: *u8) {}
 
@@ -259,12 +262,13 @@ fn curDeque(s: *Sched) *TaskDeque {
 // at every steal.
 fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
   let n = (*s).nworkers;
-  let r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed);
+  let r = (*s).stealRot.addOrdered(1u32, MemOrder.Relaxed);
   var i = 0u32;
   while i < n {
     let v = workerAt(s, (r + i) % n);
     if v as usize != w as usize {
       if dequeTakeOldest(tasksOf(v), out) {
+        (*out).stolen = true;
         taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
         return true;
       }
@@ -272,6 +276,7 @@ fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
     i = i + 1u32;
   }
   if dequeTakeOldest(extDeque(s), out) {
+    (*out).stolen = true;
     taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
     return true;
   }
@@ -291,13 +296,39 @@ fn runTask(s: *Sched, t: Task) {
   let doneArg = (*rec).doneArg;
   let d = curDeque(s);
   var hi = t.hi;
-  while hi - t.lo > grain {
-    let mid = t.lo + (hi - t.lo) / 2usize;
-    if !dequePush(d, Task(rec, mid, hi)) {
-      break;
+  if (*rec).adaptive {
+    // Split on demand (the way rayon's adaptive splitter does, in our words): a
+    // piece carries a budget of splits. While the budget lasts and the piece
+    // has more than one item, cut it in half, put the upper half on this
+    // deque and keep the lower; each half has half the budget. A piece that a
+    // thief took (some worker had run dry) starts again with a fresh budget,
+    // at least one split per worker, so stolen work spreads in turn. When the
+    // budget is spent the piece runs whole: how many pieces a loop makes then
+    // follows how often workers go idle, not a fixed size.
+    var splits = t.splits;
+    if t.stolen {
+      let nw = (*s).nworkers;
+      let half = splits / 2u32;
+      splits = if half > nw {half} else {nw};
     }
-    notify(s);
-    hi = mid;
+    while splits > 0u32 && hi - t.lo > 1usize {
+      splits = splits / 2u32;
+      let mid = t.lo + (hi - t.lo) / 2usize;
+      if !dequePush(d, Task(rec, mid, hi, splits, false)) {
+        break;
+      }
+      notify(s);
+      hi = mid;
+    }
+  } else {
+    while hi - t.lo > grain {
+      let mid = t.lo + (hi - t.lo) / 2usize;
+      if !dequePush(d, Task(rec, mid, hi, 0u32, false)) {
+        break;
+      }
+      notify(s);
+      hi = mid;
+    }
   }
   body(data, t.lo, hi);
   finishItems(s, rec, hi - t.lo, scheduled, onDone, doneArg);
@@ -312,8 +343,8 @@ fn finishItems(s: *Sched, rec: *LoopRec, n: usize, scheduled: bool, onDone: &fn(
   if prev == n && scheduled {
     libc.free(rec as *u8);
     onDone(doneArg);
-    mem.atomicSub[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
-    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
+    (*s).liveScheduled.sub(1u64);
+    (*s).quiet.add(1u32);
     sync.futexWake(&(*s).quiet);
   }
 }
@@ -340,21 +371,52 @@ fn grainOf(g: usize) usize {
   if g == 0usize {1usize} else {g}
 }
 
-// The floor under the grain of a 'parallel each': a piece is not split below
-// this many items, so a loop of fewer runs as fewer pieces, down to one (and a
-// loop of this many or fewer is run at once on the caller's thread). 128 is the
-// ruled floor (Jon, 9 Oct 2026), measured on a 1,000-item loop of cheap items
-// (25 us to 2.2 us with 24 workers; big loops unchanged). It is the same for
-// every loop: the runtime cannot know what one pass costs
-const minEachGrain = 128usize;
+// THE COST GUARD of a 'parallel each'. Splitting costs a push, a wake and a
+// wait for workers: about 4 us for 8 items measured, against 40 ns to run them
+// where they are. So the caller runs the items of a loop itself, one at a time,
+// and reads the clock after each; only once the time it has spent passes
+// splitAfterNanos (about what a wake costs) with more than one item left does it
+// hand the rest to runTask, which splits on demand. A loop of cheap items
+// finishes inline, with no deque, no wake and the workers not even started; a
+// loop of costly items splits after its first; a loop whose first items are fast
+// and whose later ones are slow splits as soon as the slow part has used up the
+// threshold. The time spent on the run so far decides, never one sample alone.
+// Pieces a thief takes are not guarded: they split by their budget as before.
+// The clock is the spin's (clockTicks).
+const splitAfterNanos = 2000u64;
 
-// The grain 'parallel each' splits to, in the blocking form (parallelEach) and
-// in the form cut at the loop's end (startHeld): about an eighth of an even
-// share of the range for each worker, and never below minEachGrain
-fn eachGrain(len: usize, workers: usize) usize {
-  let g = len / (workers * 8usize);
-  if g < minEachGrain {minEachGrain} else {g}
+var @threadlocal guardLimit: u64 = 0u64;
+
+// splitAfterNanos in the clock's ticks, found once a thread
+fn guardTicks() u64 {
+  if guardLimit == 0u64 {
+    let q = clockFrequency() * splitAfterNanos / 1000000000u64;
+    guardLimit = if q > 0u64 {q} else {1u64};
+  }
+  guardLimit
 }
+
+// Run the items of [lo, hi) one body call each on this thread, until they are
+// done or the clock has passed the guard with more than one left: the first
+// item not run (hi when all were)
+fn runInline(body: PieceFn, data: *u8, lo: usize, hi: usize) usize {
+  let limit = guardTicks();
+  let t0 = clockTicks();
+  var at = lo;
+  while at < hi {
+    body(data, at, at + 1usize);
+    at = at + 1usize;
+    if hi - at > 1usize && clockTicks() - t0 >= limit {
+      return at;
+    }
+  }
+  hi
+}
+
+// A 'parallel each' has no grain: it splits on demand (runTask, adaptive), the
+// runtime not knowing what one pass costs. The fixed floor of 128 items it had
+// (Jon, 9 Oct 2026: 25 us to 2.2 us on 1,000 cheap items) capped an expensive
+// loop of 611 items at about 8 pieces; Jon, 9 Nov 2026, replaced it with this.
 
 // Run body over the range [lo, hi) of indexes, in pieces of at least grain
 // items (a range no longer than grain is one call, made at once on the
@@ -380,7 +442,7 @@ fn eachGrain(len: usize, workers: usize) usize {
 // any thread, or from inside an actor's behaviour, where the actor is not run
 // again until it returns; the workers are started if no actor has started them.
 pub fn parallelRange[F: fn(lo: usize, hi: usize) + Shareable](lo: usize, hi: usize, grain: usize, body: &F) {
-  rangeRun(lo, hi, grain, &callBody[F], body as *F as *u8);
+  rangeRun(lo, hi, grain, false, &callBody[F], body as *F as *u8);
 }
 
 // A piece of a loop whose body is a callable: the record is a pointer to it
@@ -391,7 +453,7 @@ fn callBody[F: fn(lo: usize, hi: usize) + Shareable](data: *u8, lo: usize, hi: u
 
 // The loop of a piece function and its record: what parallelRange, parallelEach
 // and the compiler's loops run on
-fn rangeRun(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8) {
+fn rangeRun(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, data: *u8) {
   if hi <= lo {
     return;
   }
@@ -400,21 +462,26 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8) {
     body(data, lo, hi);
     return;
   }
+  // The cost guard (above): an adaptive loop begins on this thread, item by item
+  var from = lo;
+  if adaptive {
+    from = runInline(body, data, lo, hi);
+    if from >= hi {
+      return;
+    }
+  }
   ensureRunning();
   let s = running.load() as *Sched;
-  var rec = LoopRec(hi - lo, g, body, data, &noDone, null, false);
+  var rec = LoopRec(hi - from, g, body, data, &noDone, null, false, adaptive);
   let p = &mut rec as *LoopRec;
-  runTask(s, Task(p, lo, hi));
+  runTask(s, Task(p, from, hi, (*s).nworkers, false));
   helpUntilDone(s, p);
 }
 
 // The loop a 'parallel each' becomes (the compiler outlines the loop's body
 // into a function, whose first parameter is a record of the variables it uses):
-// parallelRange over [lo, hi) with the grain chosen here (eachGrain): about an
-// eighth of an even share of the range for each worker, so that the pieces are
-// smaller than a worker's share and a worker that finishes early takes more, and
-// never below minEachGrain, so that the work stays in pieces large enough not to
-// be lost in the splitting. The workers are
+// a range loop that splits on demand (runTask, adaptive): no grain, a budget of
+// splits that a thief renews. The workers are
 // started if no actor has started them. The body's rules are the language's:
 // the compiler has checked them. Unlike parallelRange, it gathers the messages
 // the pieces send to actors and sends them after the loop, in iteration order
@@ -425,7 +492,6 @@ pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
   }
   ensureRunning();
   let s = running.load() as *Sched;
-  let grain = eachGrain(hi - lo, usize.from((*s).nworkers));
   // A loop begun in a group runs in a CHILD group of its own (a group's life is a
   // block's): a piece that cancels its current group stops this loop's later
   // pieces and nothing above it, and a cancel of the group above reaches the
@@ -437,7 +503,7 @@ pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
     cell = childCell(parent);
   }
   var job = EachLoop(body, data, 0usize, cell as usize);
-  rangeRun(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
+  rangeRun(lo, hi, 1usize, true, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
   dropCell(cell);
 }
@@ -663,7 +729,7 @@ pub fn parallelRangeThen[B: fn(lo: usize, hi: usize) + Sendable + Shareable, D: 
   mem.writeRaw[ThenBox](box, ThenBox(
     Uni[imm, fn(lo: usize, hi: usize) + Sendable + Shareable](body),
     Uni[fn() + Sendable](onDone)));
-  rangeThen(lo, hi, grain, &thenPiece, box as *u8, &thenDone, box as *u8);
+  rangeThen(lo, hi, grain, false, &thenPiece, box as *u8, &thenDone, box as *u8);
 }
 
 // What parallelRangeThen keeps while the loop runs, in a block of its own
@@ -687,7 +753,7 @@ fn thenDone(arg: *u8) {
 // The scheduled form over a piece function and its record, as parSeam's loop
 // is: onDone(doneArg) is called by the piece that finishes last, and data must
 // live until then
-fn rangeThen(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8,
+fn rangeThen(lo: usize, hi: usize, grain: usize, adaptive: bool, body: PieceFn, data: *u8,
     onDone: &fn(arg: *u8), doneArg: *u8) {
   let g = grainOf(grain);
   if hi <= lo || hi - lo <= g {
@@ -697,17 +763,28 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8,
     onDone(doneArg);
     return;
   }
+  // The cost guard (above): an adaptive loop begins on this thread, item by item.
+  // The behaviour form runs here on the actor's own worker, after the behaviour
+  // returned, so it can run items inline as a blocking loop's caller does
+  var from = lo;
+  if adaptive {
+    from = runInline(body, data, lo, hi);
+    if from >= hi {
+      onDone(doneArg);
+      return;
+    }
+  }
   ensureRunning();
   let s = running.load() as *Sched;
   let rec = libc.malloc(mem.sizeof[LoopRec]()) as *LoopRec;
   if rec as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[LoopRec](rec, LoopRec(hi - lo, g, body, data, onDone, doneArg, true));
-  mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
-  if !dequePush(curDeque(s), Task(rec, lo, hi)) {
+  mem.writeRaw[LoopRec](rec, LoopRec(hi - from, g, body, data, onDone, doneArg, true, adaptive));
+  (*s).liveScheduled.add(1u64);
+  if !dequePush(curDeque(s), Task(rec, from, hi, (*s).nworkers, false)) {
     // The deque is full: run the loop's first task here, which splits it
-    runTask(s, Task(rec, lo, hi));
+    runTask(s, Task(rec, from, hi, (*s).nworkers, false));
     return;
   }
   notify(s);
@@ -802,7 +879,6 @@ fn startHeld(w: *Worker, h: *Header) {
   let p = (*h).par;
   (*h).par = nullPar();
   let s = (*w).sched;
-  let grain = eachGrain((*p).hi - (*p).lo, usize.from((*s).nworkers));
   let job = libc.malloc(mem.sizeof[EachLoop]()) as *EachLoop;
   if job as usize == 0usize {
     die("actors: out of memory for a parallel loop");
@@ -812,7 +888,7 @@ fn startHeld(w: *Worker, h: *Header) {
   }
   mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize, (*p).child as usize));
   (*p).job = job;
-  rangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
+  rangeThen((*p).lo, (*p).hi, 1usize, true, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
 }
 
 // The loop has finished, on whichever thread ran its last piece: send what its

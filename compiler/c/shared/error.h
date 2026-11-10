@@ -308,6 +308,7 @@ enum ErrorCode {
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, an intrinsic, a trait's or a generic type's method -- or on something not a fn or a global
     ErrorLlvmName = 1541,       // A function or global whose final C name (its own '@c("...")', or its C-named module's prefix and its name) begins 'llvm.': LLVM's names for its intrinsics, which are no symbol to link and which the code generator cannot select. Pointed at the declaration
     ErrorCNameConflict = 1152, // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
+    ErrorNoAliasAttr = 1623,    // '@noalias' on a fn that cannot carry it: one not returning a pointer or thin reference, or an inline one whose value is not the call that allocates
     ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 
     // A module trait, and a module conforming to one with 'is'

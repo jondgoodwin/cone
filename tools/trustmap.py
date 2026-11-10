@@ -81,7 +81,8 @@ def install(collector, conec_path):
     """Replace Congo's compile of a unit with a report-only one (nothing is generated, a library's include
     file still is), and its GPU kernels with nothing."""
 
-    def compile_unit(conec, unit, out, mode, top, env, packages=(), includes=None, announce=True, prelude=()):
+    def compile_unit(conec, unit, out, mode, top, env, packages=(), includes=None, announce=True, prelude=(),
+                     homes=None):
         pkg = unit.pkg
         if pkg.lone:
             return one_compile(conec, unit, out, mode, env, packages, includes)
