@@ -5337,6 +5337,14 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
         }
         else if (dcl->tag == FnDclTag) {
+            // A generic function of a generic type, reached through the type itself
+            // ('Bag.from(x)' on 'struct Bag[T]'): the same refusal a plain method
+            // gets in nameUseTypeCheck. Without it the function's instance is made
+            // with the type's own parameter unbound, which the clone dereferenced
+            if (nameUseTemplateMember((NameUseNode*)node->objfn, dcl)) {
+                node->vtype = errorType;
+                return;
+            }
             gengeneric = (FnDclNode*)dcl;
             firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
         }
