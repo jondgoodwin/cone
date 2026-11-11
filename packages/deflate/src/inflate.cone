@@ -208,6 +208,8 @@ pub struct Inflater {
   header: GzipHeader;
   failed: bool;
   err: DeflateError;
+  // False switches 'fastRun' off, for tests/fastdiff.cone, which decodes with and without it
+  fast: bool;
 
   // An inflater for a stream in 'format'. A gzip stream may hold several
   // members, all inflated one after another (see 'setMultiMember').
@@ -217,8 +219,12 @@ pub struct Inflater {
     Inflater(format, BitIn(List[u8](), 0usize, 0u64, 0u32), 0u64, false, startStage, Phase.BlockHead,
       false, false, Huffman(), Huffman(), 0usize, 0usize, 0usize, List[u8](), 0usize, 0usize, 0usize,
       false, 0u64, defaultLimit(), 0u64, Adler32.start(), table, 0u32, true, 0u32, GzipHeader.plain(), false,
-      DeflateError.make(ErrorKind.BadBlock, 0u64, ""))
+      DeflateError.make(ErrorKind.BadBlock, 0u64, ""), true)
   }
+
+  // (pub for tests/fastdiff.cone, not an API) Turns the fast inner loop 'fastRun' on or off; off, every
+  // symbol takes the slow path. The output and the Status must not depend on it.
+  pub fn setFastLoop(self: &mut, on: bool) { fast = on; }
 
   // Appends input. It is copied, so the caller's bytes are its own again at
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
@@ -840,7 +846,7 @@ pub struct Inflater {
       }
       // While input and output room are ample, symbols run in 'fastRun'; it
       // stops at the first symbol it does not do whole, which goes below
-      if cap - produced >= 258usize {
+      if fast && cap - produced >= 258usize {
         produced = produced + self.fastRun(if cap - produced < 262144usize {cap - produced} else {262144usize});
         if produced >= cap && !limited {
           result = Status.MoreOutput;

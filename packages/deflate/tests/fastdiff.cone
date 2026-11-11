@@ -1,0 +1,303 @@
+// A differential test of the inflater's fast inner loop ('fastRun'). Every input is decoded twice,
+// once with the loop on and once with it off ('Inflater.setFastLoop'), and the two must agree on
+// the Status and on every output byte (and on how many bytes came out before a failure).
+// The inputs are
+//   - the 70 DEFLATE, zlib and gzip streams of tests/data/zoo.bin (the package's corpus), whole and
+//     in pieces;
+//   - about 1000 streams made here from a fixed seed: random valid raw streams at levels 1, 6 and 9
+//     (text of several kinds and sizes), the same streams damaged (single bit flips, truncations,
+//     bytes of the first 40 changed, where a dynamic block's code lengths are), and hand-built
+//     fixed-Huffman streams of random literals and matches, some of whose distances reach past
+//     the start of the output.
+// The counts it prints are pinned in fastdiff.out.
+
+mod fastdiff;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+import stdio use *;
+import fs;
+import path use Path;
+
+fn pullN(x: &mut Inflater, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
+// Inflates 's' in pieces of 'chunk' input bytes, taking 'maxPull' output bytes at a time, with the
+// fast loop 'fast'. 0 when it ends Done, 1 Failed, 2 stuck, 3 too many rounds, 8 over-long pull.
+fn run(fmt: Format, fast: bool, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
+  var inf = Inflater.make(fmt);
+  inf.setFastLoop(fast);
+  var pos = 0usize;
+  var piece = List[u8]();
+  var guard = 0usize;
+  while guard < 2000000usize {
+    guard += 1usize;
+    if pos < s.len {
+      let n = if s.len - pos < chunk {s.len - pos} else {chunk};
+      inf.feed(&s[pos..<pos + n]);
+      pos += n;
+      if pos == s.len { inf.finish(); }
+    } else if s.len == 0usize {
+      inf.finish();
+    }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = pullN(&mut inf, &mut piece, maxPull);
+      out.appendSlice(piece.view());
+      if piece.len() > maxPull { return 8; }
+    }
+    if st == Status.Done { return 0; }
+    if st == Status.Failed { return 1; }
+    if pos >= s.len { return 2; }
+  }
+  3
+}
+
+// Counters: streams compared, mismatches, Done, Failed, bytes decoded
+struct Tally {
+  compared: usize;
+  mismatches: usize;
+  dones: usize;
+  fails: usize;
+  firstBad: List[u8];
+  firstBadFmt: i32;
+}
+
+// Decodes 's' with the loop on and off; they must agree
+fn compare(t: &mut Tally, fmt: Format, s: &Array[u8], chunk: usize, maxPull: usize) {
+  var a = List[u8]();
+  var b = List[u8]();
+  let ra = run(fmt, true, s, chunk, maxPull, &mut a);
+  let rb = run(fmt, false, s, chunk, maxPull, &mut b);
+  t.compared += 1usize;
+  if ra == 0 { t.dones += 1usize; }
+  if ra == 1 { t.fails += 1usize; }
+  if ra != rb || a.view() != b.view() {
+    t.mismatches += 1usize;
+    if t.firstBad.len() == 0usize || s.len < t.firstBad.len() {
+      t.firstBad.clear();
+      t.firstBad.appendSlice(s);
+      t.firstBadFmt = ra * 10 + rb;
+    }
+  }
+}
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+fn formatOf(code: u8) Format {
+  if code == 0u8 { return Format.Raw; }
+  if code == 1u8 { return Format.Zlib; }
+  Format.Gzip
+}
+
+// ---- seeded numbers ----
+var seed = 20261111u64;
+fn rnd(n: usize) usize {
+  seed = seed * 6364136223846793005u64 + 1442695040888963407u64;
+  usize.from((seed >> 33u64) % u64.from(n))
+}
+
+// A text of about 'n' bytes: literals from an alphabet of 'alpha' symbols, and now and then a copy
+// of 3 to 300 bytes from up to 'reach' back
+fn makeText(n: usize, alpha: usize, copyIn: usize, reach: usize) List[u8] {
+  var d = List[u8]();
+  while d.len() < n {
+    if d.len() > 4usize && rnd(100usize) < copyIn {
+      let len = 3usize + rnd(298usize);
+      let r = if reach < d.len() {reach} else {d.len()};
+      var from = d.len() - 1usize - rnd(r);
+      var k = 0usize;
+      while k < len { d.push(*d[from]); from += 1usize; k += 1usize; }
+    } else {
+      d.push(u8.from(97usize + rnd(alpha)));
+    }
+  }
+  d
+}
+
+// ---- hand-built fixed-Huffman streams ----
+fn putBits(out: &mut List[u8], nb: &mut usize, v: usize, n: usize) {
+  var i = 0usize;
+  while i < n {
+    if *nb % 8usize == 0usize { out.push(0u8); }
+    if (v >> i) & 1usize == 1usize {
+      let last = out.len() - 1usize;
+      out.set(last, *out[last] | (1u8 << u8.from(*nb % 8usize)));
+    }
+    *nb = *nb + 1usize;
+    i += 1usize;
+  }
+}
+
+// A Huffman code is sent most significant bit first
+fn putCode(out: &mut List[u8], nb: &mut usize, code: usize, n: usize) {
+  var i = 0usize;
+  while i < n {
+    putBits(out, nb, (code >> (n - 1usize - i)) & 1usize, 1usize);
+    i += 1usize;
+  }
+}
+
+fn putLit(out: &mut List[u8], nb: &mut usize, sym: usize) {
+  if sym < 144usize { putCode(out, nb, 48usize + sym, 8usize); }
+  else if sym < 256usize { putCode(out, nb, 400usize + sym - 144usize, 9usize); }
+  else if sym < 280usize { putCode(out, nb, sym - 256usize, 7usize); }
+  else { putCode(out, nb, 192usize + sym - 280usize, 8usize); }
+}
+
+fn putMatch(out: &mut List[u8], nb: &mut usize, len: usize, dist: usize) {
+  let lb: Array[usize, 29] = [3usize, 4usize, 5usize, 6usize, 7usize, 8usize, 9usize, 10usize, 11usize, 13usize, 15usize, 17usize,
+    19usize, 23usize, 27usize, 31usize, 35usize, 43usize, 51usize, 59usize, 67usize, 83usize, 99usize, 115usize, 131usize,
+    163usize, 195usize, 227usize, 258usize];
+  let le: Array[usize, 29] = [0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 1usize, 1usize, 1usize, 1usize,
+    2usize, 2usize, 2usize, 2usize, 3usize, 3usize, 3usize, 3usize, 4usize, 4usize, 4usize, 4usize, 5usize, 5usize, 5usize,
+    5usize, 0usize];
+  let db: Array[usize, 30] = [1usize, 2usize, 3usize, 4usize, 5usize, 7usize, 9usize, 13usize, 17usize, 25usize, 33usize, 49usize,
+    65usize, 97usize, 129usize, 193usize, 257usize, 385usize, 513usize, 769usize, 1025usize, 1537usize, 2049usize, 3073usize,
+    4097usize, 6145usize, 8193usize, 12289usize, 16385usize, 24577usize];
+  let de: Array[usize, 30] = [0usize, 0usize, 0usize, 0usize, 1usize, 1usize, 2usize, 2usize, 3usize, 3usize, 4usize, 4usize,
+    5usize, 5usize, 6usize, 6usize, 7usize, 7usize, 8usize, 8usize, 9usize, 9usize, 10usize, 10usize, 11usize, 11usize, 12usize,
+    12usize, 13usize, 13usize];
+  var li = 28usize;
+  while lb[li] > len { li -= 1usize; }
+  putLit(out, nb, 257usize + li);
+  putBits(out, nb, len - lb[li], le[li]);
+  var di = 29usize;
+  while db[di] > dist { di -= 1usize; }
+  putCode(out, nb, di, 5usize);
+  putBits(out, nb, dist - db[di], de[di]);
+}
+
+// A final fixed-Huffman block of 'items' literals and matches; 'badIn' of 100 matches ask for a
+// distance past what has been made
+fn makeFixed(items: usize, badIn: usize) List[u8] {
+  var out = List[u8]();
+  var nb = 0usize;
+  putBits(&mut out, &mut nb, 1usize, 1usize);
+  putBits(&mut out, &mut nb, 1usize, 2usize);
+  var made = 0usize;
+  var i = 0usize;
+  while i < items {
+    if made >= 3usize && rnd(100usize) < 45usize {
+      let len = 3usize + rnd(256usize);
+      var dist = 1usize + rnd(if made < 32768usize {made} else {32768usize});
+      if rnd(100usize) < badIn { dist = made + 1usize + rnd(30000usize); if dist > 32768usize { dist = 32768usize; } }
+      putMatch(&mut out, &mut nb, len, dist);
+      made += len;
+    } else {
+      putLit(&mut out, &mut nb, rnd(256usize));
+      made += 1usize;
+    }
+    i += 1usize;
+  }
+  putLit(&mut out, &mut nb, 256usize);
+  out
+}
+
+fn main() i32 {
+  var tl = Tally(0usize, 0usize, 0usize, 0usize, List[u8](), 0);
+  // The package's corpus
+  let path = Path.from("../../../../tests/data/zoo.bin");
+  var file = String();
+  match fs.readFile(&path) {
+    case var Ok(ok) { file <-> ok; }
+    case let Err(e) { expect(false, "the data file is there"); return done(); }
+  }
+  let count = le32(&file, 0usize);
+  expectInt(i64.from(count), 70i64, "streams in the file");
+  var at = 4usize;
+  var r = 0usize;
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    at += 1usize + nameLen;
+    let fmt = formatOf(file[at]);
+    let streamLen = le32(&file, at + 1usize);
+    at += 5usize;
+    let stream = &file.view().bytes()[at..<at + streamLen];
+    at += streamLen;
+    let wantLen = le32(&file, at);
+    at += 8usize;
+    if wantLen <= 4096usize { at += wantLen; }
+    compare(&mut tl, fmt, stream, streamLen, 65536usize);
+    compare(&mut tl, fmt, stream, 997usize, 4096usize);
+    r += 1usize;
+  }
+  let zooCompared = tl.compared;
+
+  // Made here: 20 texts at 3 levels, each valid and with 13 damaged copies
+  var t = 0usize;
+  while t < 20usize {
+    let n = 2000usize + rnd(60000usize);
+    let text = makeText(n, 2usize + rnd(60usize), rnd(40usize), 1usize + rnd(32768usize));
+    var lv = 0usize;
+    while lv < 3usize {
+      let level = if lv == 0usize {1} else if lv == 1usize {6} else {9};
+      let good = rawDeflate(text.view(), level);
+      compare(&mut tl, Format.Raw, good.view(), good.len(), 65536usize);
+      var m = 0usize;
+      while m < 13usize {
+        var s = List[u8]();
+        s.appendSlice(good.view());
+        if m < 6usize {
+          // a bit flip, anywhere
+          let p = rnd(s.len());
+          s.set(p, *s[p] ^ (1u8 << u8.from(rnd(8usize))));
+        } else if m < 9usize {
+          // a truncation
+          s.truncate(rnd(s.len()));
+        } else {
+          // bytes of the first 40 changed (the dynamic block's header and code lengths)
+          var k = 0usize;
+          while k < 2usize {
+            let p = rnd(if s.len() < 40usize {s.len()} else {40usize});
+            s.set(p, u8.from(rnd(256usize)));
+            k += 1usize;
+          }
+        }
+        compare(&mut tl, Format.Raw, s.view(), if m % 4usize == 0usize {1500usize} else {s.len() + 1usize}, if m % 4usize == 0usize {3000usize} else {65536usize});
+        m += 1usize;
+      }
+      lv += 1usize;
+    }
+    t += 1usize;
+  }
+  let madeCompared = tl.compared - zooCompared;
+
+  // Hand-built fixed-Huffman streams; a fifth with bad distances
+  var h = 0usize;
+  while h < 160usize {
+    let bad = if h % 5usize == 4usize {4usize} else {0usize};
+    let s = makeFixed(50usize + rnd(3000usize), bad);
+    compare(&mut tl, Format.Raw, s.view(), s.len() + 1usize, 65536usize);
+    h += 1usize;
+  }
+
+  printStr("compared "); printInt(i64.from(tl.compared));
+  printStr(" (zoo "); printInt(i64.from(zooCompared));
+  printStr(", made "); printInt(i64.from(madeCompared));
+  printStr(", hand-built "); printInt(i64.from(tl.compared - zooCompared - madeCompared));
+  printStr("), done "); printInt(i64.from(tl.dones));
+  printStr(", failed "); printInt(i64.from(tl.fails));
+  printStr(", mismatches "); printInt(i64.from(tl.mismatches));
+  printStr("\n");
+  if tl.mismatches > 0usize {
+    printStr("smallest mismatching input ("); printInt(i64.from(tl.firstBadFmt)); printStr(" = fast*10+slow), bytes:");
+    var q = 0usize;
+    while q < tl.firstBad.len() { printStr(" "); printInt(i64.from(*tl.firstBad[q])); q += 1usize; }
+    printStr("\n");
+  }
+  expectInt(i64.from(tl.mismatches), 0i64, "fast loop on and off give the same Status and bytes");
+  expect(tl.dones > 300usize && tl.fails > 300usize, "the inputs include many that finish and many that fail");
+  done()
+}
