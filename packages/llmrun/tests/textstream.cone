@@ -1,0 +1,58 @@
+// TextStream gives back whole characters only: a character whose bytes arrive in different tokens is held until
+// its last byte comes. The tokenizer here is the 256 byte tokens alone (id i is the byte i), so one id is one byte
+// and a character can be cut anywhere; no model file is needed.
+
+mod textstream;
+
+import testing use *;
+import collections use *;
+import bpetokenize;
+import llmrun use *;
+
+fn byteTokens() List[String] {
+  var tokens = List[String]();
+  var b = 0u32;
+  while b < 256u32 {
+    var one = List[u8]();
+    one.push(u8.from(b));
+    tokens.push(bpetokenize.toByteLevel(one.view()));
+    b = b + 1u32;
+  }
+  tokens
+}
+
+fn feed(stream: &mut TextStream, tok: &bpetokenize.Tokenizer, id: u32, want: &str, label: &str) {
+  let got = stream.push(tok, id, false);
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  match bpetokenize.Tokenizer.build(byteTokens().view(), List[String]().view(), List[String]().view(),
+                                    bpetokenize.PreTokenizer.Whole) {
+    case let Ok(tok) {
+      var stream = TextStream.make();
+      feed(&mut stream, &tok, 104u32, "h", "an ASCII byte comes out at once");
+      // e-acute is C3 A9: nothing after the first byte, the character after the second
+      feed(&mut stream, &tok, 0xC3u32, "", "a lead byte is held");
+      feed(&mut stream, &tok, 0xA9u32, "é", "...and the character is whole with its last byte");
+      // the party popper is F0 9F 8E 89: held through three pushes
+      feed(&mut stream, &tok, 0xF0u32, "", "a four-byte lead is held");
+      feed(&mut stream, &tok, 0x9Fu32, "", "...still held");
+      feed(&mut stream, &tok, 0x8Eu32, "", "...still held");
+      feed(&mut stream, &tok, 0x89u32, "🎉", "...whole with its fourth byte");
+      // ASCII after a held lead byte comes out with it, in order, once the character is whole
+      feed(&mut stream, &tok, 0xE4u32, "", "a three-byte lead is held");
+      feed(&mut stream, &tok, 0xBDu32, "", "...with its second byte");
+      feed(&mut stream, &tok, 0xA0u32, "你", "...whole with its third");
+      feed(&mut stream, &tok, 105u32, "i", "text goes on");
+      // a character the tokens never finish comes back at the end
+      feed(&mut stream, &tok, 0xC3u32, "", "a lead byte again");
+      let rest = stream.finish();
+      expectBool(rest.len() == 1usize && rest.view()[0usize] == 0xC3u8, true, "finish gives back the unfinished tail");
+      let none = stream.finish();
+      expectStr(none.view(), "", "...once");
+    }
+    case let Err(e) { let m = String() <- e; expectStr(m.view(), "<built>", "byte vocabulary"); }
+  }
+  done()
+}
