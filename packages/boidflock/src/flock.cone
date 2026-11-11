@@ -235,7 +235,7 @@ pub struct Flock {
       // Cohesion: towards their centre, strongest beyond 4 m
       let toward = posSum * inv - b.pos;
       let dist = toward.length();
-      if dist > 0.01 { a = a + toward * (0.9 / dist * clampf(dist / 4., 0., 1.)); }
+      if dist > 0.01 { a = a + toward * (0.9 / dist * (dist / 4.).clamp(0., 1.)); }
     }
     // ---- where it is going: its group's waypoint, and a drifting wander ----
     let wp = *waypoints[usize.from(b.group)];
@@ -262,20 +262,20 @@ pub struct Flock {
     let highest = if higher2 > here { higher2 } else { here };
     let clearAhead = b.pos.y + b.vel.y * 1.6 - highest;
     let want = p.minClearance + 6.;
-    if clearAhead < want { a.y = a.y + clampf((want - clearAhead) / want, 0., 1.5) * 12.; }
+    if clearAhead < want { a.y = a.y + ((want - clearAhead) / want).clamp(0., 1.5) * 12.; }
     let clearHere = b.pos.y - here;
-    if clearHere < p.minClearance { a.y = a.y + clampf((p.minClearance - clearHere) / p.minClearance, 0., 1.) * 16.; }
+    if clearHere < p.minClearance { a.y = a.y + ((p.minClearance - clearHere) / p.minClearance).clamp(0., 1.) * 16.; }
     let rise = highest - here;
     if rise > 3. {
       // Sideways, away from the slope's uphill: the gradient from points 6 m round
       let gx = ground(b.pos.x + 6., b.pos.z) - ground(b.pos.x - 6., b.pos.z);
       let gz = ground(b.pos.x, b.pos.z + 6.) - ground(b.pos.x, b.pos.z - 6.);
       let gl = (gx * gx + gz * gz).sqrt();
-      if gl > 0.001 { a = a + Vec3(0. - gx / gl, 0., 0. - gz / gl) * (clampf(rise / 10., 0., 1.) * 4.); }
+      if gl > 0.001 { a = a + Vec3(0. - gx / gl, 0., 0. - gz / gl) * ((rise / 10.).clamp(0., 1.) * 4.); }
     }
     // Hold the cruise height above the ground
     let target = p.cruiseHeight + b.heightBias;
-    a.y = a.y + clampf((target - clearHere) * 0.25, -2., 2.);
+    a.y = a.y + ((target - clearHere) * 0.25).clamp(-2., 2.);
     // ---- limit, and the speed's own law ----
     let al = a.length();
     if al > MAX_ACCEL { a = a * (MAX_ACCEL / al); }
@@ -299,7 +299,7 @@ pub struct Flock {
     var right = b.forward.cross(worldUp);
     right = if right.length() < 0.0001 { Vec3(1., 0., 0.) } else { right.normalize() };
     let lateral = a.dot(right);
-    let bankTarget = clampf(lateral * 0.08, -0.9, 0.9);
+    let bankTarget = (lateral * 0.08).clamp(-0.9, 0.9);
     b.bank = b.bank + (bankTarget - b.bank) * (1. - libc.expf(-dt / 0.15));
     // ---- the wings ----
     let speed = b.vel.length();
@@ -323,8 +323,8 @@ pub struct Flock {
         b.timer = 0.4 + 0.4 * unit(seed, ui + steps * 17u32, 303u32);
       }
     }
-    let up01 = clampf(climb / 3., 0., 1.);
-    let down01 = clampf(0. - climb / 3., 0., 1.);
+    let up01 = (climb / 3.).clamp(0., 1.);
+    let down01 = (0. - climb / 3.).clamp(0., 1.);
     // Flapping: 7 Hz level, up to 13 Hz climbing hard, 4.5 Hz diving; gliding: wings held out with a slow slight beat
     let rateTarget = if b.mode == MODE_FLAP { 7. + 6. * up01 - 2.5 * down01 } else { 1.5 };
     let ampTarget = if b.mode == MODE_FLAP { 0.75 + 0.25 * up01 } else { 0.15 };
@@ -334,12 +334,6 @@ pub struct Flock {
     if b.phase > 2. * pi { b.phase = b.phase - 2. * pi; }
     b
   }
-}
-
-fn clampf(v: f32, lo: f32, hi: f32) f32 {
-  if v < lo { return lo; }
-  if v > hi { return hi; }
-  v
 }
 
 // A hash of (seed, a, b) to [0, 1): the PCG mix noise uses, chained (own)
