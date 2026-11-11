@@ -107,6 +107,40 @@ fn main() i32 {
     expectStr(got.view(), "When the weather turns cold in the evening, and the wind comes down from the hills, and the lamps are lit in every window of the village,|people gather by the fire and tell stories until late", "cut at the last comma of a long run");
   }
 
+  // many sentences in one buffer, then a partial tail finished by later pieces
+  var many = String();
+  var want = String();
+  var n = 0;
+  while n < 300 {
+    if n > 0 { want <- "|"; }
+    many <- "Item one is here. ";
+    want <- "Item one is here.";
+    n = n + 1;
+  }
+  many <- "Tail begins";
+  want <- "|Tail begins and ends.";
+  var ms = Sentences.make();
+  ms.push(many.view());
+  var got = String();
+  var count = 0;
+  var more = true;
+  while more {
+    match ms.next() {
+      case let Some(x) { if count > 0 { got <- "|"; } got <- x.text.view(); count = count + 1; }
+      case is None { more = false; }
+    }
+  }
+  expect(count == 300, "all sentences taken from one buffer");
+  ms.push(" and ends");
+  expectBool(has(ms.next()), false, "a partial tail waits");
+  ms.push(".");
+  expectBool(has(ms.next()), false, "the mark waits for the next character");
+  match ms.finish() {
+    case let Some(x) { got <- "|"; got <- x.text.view(); }
+    case is None {}
+  }
+  expectStr(got.view(), want.view(), "many sentences then a tail across pushes");
+
   // cleaning for speech
   expectStr(clean("**Bold** and `code`.").view(), "Bold and code.", "markdown marks are dropped");
   expectStr(clean("# Heading").view(), "Heading", "a heading mark");
