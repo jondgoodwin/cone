@@ -84,6 +84,63 @@ pub struct Zone {
     let zt = typeAt(self, floorDiv(t.unixNanos(), nsPerSecond));
     Offset(zt.off, self.chars.view().slice(zt.from, zt.to), zt.dst)
   }
+
+  // The wall clock of this place at t: the UTC reading of t moved by the offset
+  // in force. Every instant has exactly one
+  pub fn toLocal(self: &, t: Timestamp) DateTime {
+    let nanos = t.unixNanos();
+    let secs = floorDiv(nanos, nsPerSecond);
+    let off = i64.from(typeAt(self, secs).off);
+    dateTimeOfSeconds(secs + off, nanos - secs * nsPerSecond)
+  }
+
+  // The instants at which this place's wall clock reads 'clock' (a DateTime
+  // whose parts are the wall clock's, not UTC's), each given as the UTC
+  // DateTime of the instant: one, none (the clock skipped it) or two (the
+  // clock read it twice). Nothing is guessed: the caller chooses
+  pub fn fromLocal(self: &, clock: DateTime) LocalResult {
+    let nanos = todNanos(clock.hms);
+    let secs = nanos / nsPerSecond;
+    let subSecond = nanos - secs * nsPerSecond;
+    let wall = clock.ymd.unixDays() * 86400i64 + secs;
+    // The offsets a day before and a day after the wall time read as UTC are
+    // the only ones it can have, a transition being more than a day from the
+    // next
+    let o1 = i64.from(typeAt(self, wall - 86400i64).off);
+    let o2 = i64.from(typeAt(self, wall + 86400i64).off);
+    let u1 = wall - o1;
+    let u2 = wall - o2;
+    let ok1 = i64.from(typeAt(self, u1).off) == o1;
+    let ok2 = o2 != o1 && i64.from(typeAt(self, u2).off) == o2;
+    let lo = if u1 < u2 {u1} else {u2};
+    let hi = if u1 < u2 {u2} else {u1};
+    if ok1 && ok2 {
+      return LocalResult.Ambiguous(dateTimeOfSeconds(lo, subSecond), dateTimeOfSeconds(hi, subSecond));
+    }
+    if ok1 { return LocalResult.Single(dateTimeOfSeconds(u1, subSecond)); }
+    if ok2 { return LocalResult.Single(dateTimeOfSeconds(u2, subSecond)); }
+    LocalResult.Gap(dateTimeOfSeconds(lo, subSecond), dateTimeOfSeconds(hi, subSecond))
+  }
+}
+
+// What a wall-clock reading is, at one place. The DateTimes are the UTC
+// readings of the instants, as everywhere in this package
+pub enum LocalResult {
+  Single(DateTime);                  // the one instant
+  struct Gap {                       // the clock skipped this reading: the reading taken with
+    pub before: DateTime;            //   the offset after the change (an instant before it), and
+    pub after: DateTime;             //   with the offset before the change (one after it)
+  }
+  struct Ambiguous {                 // the clock read this twice: the first instant and the second
+    pub earlier: DateTime;
+    pub later: DateTime;
+  }
+}
+
+// The DateTime of whole seconds since 1970-01-01T00:00:00 and a nanosecond
+fn dateTimeOfSeconds(secs: i64, nanos: i64) DateTime {
+  let days = floorDiv(secs, 86400i64);
+  DateTime(civilFromDays(days), todFromNanos((secs - days * 86400i64) * nsPerSecond + nanos))
 }
 
 // ---------------------------------------------------------------------------

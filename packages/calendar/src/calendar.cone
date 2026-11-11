@@ -3,7 +3,8 @@
 // and a TimeOfDay in UTC; and RFC 3339's dates and HTTP's are written and
 // read. A DateTime is UTC, and a written offset ('+05:30') is only read, into
 // UTC; a Zone, read from a TZif file's bytes, says what offset a place has at
-// an instant, and no local date-time is made from it yet.
+// an instant, and turns an instant into the place's wall clock and a wall
+// clock into its instant or instants (none, or two, across a change).
 //
 //   mod when;
 //   import time use Timestamp;
@@ -31,6 +32,7 @@
 //   TimeError    why a text is not a date or a time              (FORMATS)
 //   Zone         the rules of one place, from a TZif file        (ZONES)
 //   Offset       the offset from UTC at an instant               (ZONES)
+//   LocalResult  what a wall clock reading is: one instant, none or two (ZONES)
 //
 // WHY A PACKAGE OF ITS OWN. The time package is a foundation that sync,
 // thread, fs and process import, and it needs nothing but libc. The calendar
@@ -173,6 +175,29 @@
 // At the instant of a transition the new offset applies, a nanosecond before
 // it the old one; before the first listed transition the file's first time
 // type does.
+//
+// LOCAL TIME. A DateTime is UTC everywhere else; here it is also read as a
+// place's wall clock, and the call says which.
+//
+//   z.toLocal(t)                    the DateTime on the wall clock at the
+//                                   Timestamp t. Every instant has one
+//   z.fromLocal(wall)               a LocalResult, for a wall clock reading
+//                                   given as a DateTime (its parts are the
+//                                   clock's), with the instants as UTC
+//                                   DateTimes (toTimestamp makes a Timestamp):
+//     Single(utc)                   the one instant
+//     Gap(before, after)            the clock skipped it (spring forward): the
+//                                   reading taken with the offset after the
+//                                   change, an instant before it, and taken
+//                                   with the offset before the change, one
+//                                   after it
+//     Ambiguous(earlier, later)     the clock read it twice (fall back): the
+//                                   first instant and the second
+//
+// Nothing is chosen for the caller: 02:30 on the night clocks go forward is a
+// Gap, never a guess. The sub-second part is kept. They are total, and work
+// from the zone's rules alone (no Timestamp's range is needed: a wall clock
+// year beyond 2262 works).
 
 mod calendar;
 
