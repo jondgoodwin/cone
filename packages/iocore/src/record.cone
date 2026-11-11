@@ -351,6 +351,37 @@ pub fn recordPools() u32 {poolsLive.load()}
 
 fn nextGen(g: u32) u32 {if g == 0xFFFFFFFFu32 {1u32} else {g + 1u32}}
 
+// The generation word. A stale OpId is cancelled on the Loop's thread by
+// comparing its generation with the record's, while another thread may be
+// giving that record back (aio's dissolveAt) or the owner filling it: so
+// 'gen' and 'state' are touched across threads only through these.
+// The writer stores 'state' first (Relaxed), then 'gen' (Release); the reader
+// loads 'gen' (Acquire), then 'state' (Relaxed). A reader that sees a
+// generation sees the state stored before it.
+fn publishWord(p: *OpCore, st: u32, gen: u32) {
+  mem.atomicStore[u32](&(*p).state as *u32, st, MemOrder.Relaxed);
+  mem.atomicStore[u32](&(*p).gen as *u32, gen, MemOrder.Release);
+}
+
+// Record p is free, at generation 'gen'
+fn publishFree(p: *OpCore, gen: u32) {publishWord(p, stFree, gen);}
+
+// Record p still holds the operation that was in flight at generation 'gen':
+// false for a record reused or given back since. Safe from any thread
+fn inFlightAt(p: *OpCore, gen: u32) bool {
+  if mem.atomicLoad[u32](&(*p).gen as *u32, MemOrder.Acquire) != gen {return false;}
+  mem.atomicLoad[u32](&(*p).state as *u32, MemOrder.Relaxed) == stFlight
+}
+
+// size bytes from src to dst, but for the 4 bytes at offset a and the 4 at b
+fn copyAround(dst: *u8, src: *u8, size: usize, a: usize, b: usize) {
+  let lo = if a < b {a} else {b};
+  let hi = if a < b {b} else {a};
+  libc.memcpy(dst, src, lo);
+  libc.memcpy(dst + lo + 4usize, src + lo + 4usize, hi - lo - 4usize);
+  libc.memcpy(dst + hi + 4usize, src + hi + 4usize, size - hi - 4usize);
+}
+
 // A chunk of free records, chained in index order onto the free list: the
 // lock is held
 fn growPool(h: *PoolHome) {
@@ -364,8 +395,7 @@ fn growPool(h: *PoolHome) {
     j = j - 1u32;
     let r = (block + usize.from(j) * st.stride) as *OpCore;
     (*r).index = c * recsPerChunk + j;
-    (*r).gen = 1u32;
-    (*r).state = stFree;
+    publishFree(r, 1u32);
     (*r).qnext = st.free;
     st.free = r;
   }
@@ -386,8 +416,7 @@ fn takeCell(h: *PoolHome) *OpCore {
 
 // Record p is free again: its generation moves on, onto the shared list
 fn giveCell(h: *PoolHome, p: *OpCore) {
-  (*p).gen = nextGen((*p).gen);
-  (*p).state = stFree;
+  publishFree(p, nextGen((*p).gen));
   let st = (h as &PoolHome).lists();
   st.lock.lock();
   (*p).qnext = st.free;
@@ -498,10 +527,19 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
     let index = (*p).index;
     let gen = (*p).gen;
     let r = p as *OpRec[A];
-    mem.writeRaw[OpRec[A]](r, OpRec[A](OpCore(index: index, gen: gen, home: home, state: stTaken,
+    var fresh = OpRec[A](OpCore(index: index, gen: gen, home: home, state: stTaken,
       handle: Handle.none(), deadline: forever(), work: &noWork, timer: TimerId.none(),
       newHandle: Handle.none(), jstate: Atomic[u32].of(jobHome), jasked: Atomic[u32].of(0u32),
-      jfd: 0i32 - 1i32), ask));
+      jfd: 0i32 - 1i32), ask);
+    // Whole but for the generation word: a stale-id cancel may be loading it
+    // from the Loop's thread, so 'gen' and 'state' are never written plainly
+    // here; the rest is copied around them, then the word is published
+    let base = &fresh as *u8;
+    let og = (&fresh.core.gen as *u8) as usize - base as usize;
+    let os = (&fresh.core.state as *u8) as usize - base as usize;
+    copyAround(r as *u8, base, mem.sizeof[OpRec[A]](), og, os);
+    mem.forget[OpRec[A]](fresh);
+    publishWord(p, stTaken, gen);
     (home as &PoolHome).live.add(1u32);
     r
   }
@@ -519,8 +557,7 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
   pub fn dissolveHere(self: &, p: *OpRec[A]) OpRec[A] {
     let r = mem.readRaw[OpRec[A]](p);
     let c = p as *OpCore;
-    (*c).gen = nextGen((*c).gen);
-    (*c).state = stFree;
+    publishFree(c, nextGen((*c).gen));
     (*c).qnext = null;
     let st = (home as &PoolHome).lists();
     if st.batchTail as usize == 0usize {st.batch = c;} else {(*st.batchTail).qnext = c;}
