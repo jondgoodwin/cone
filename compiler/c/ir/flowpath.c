@@ -504,6 +504,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->state = 0;
     pv->hmask = 0;
     pv->flagged = 0;
+    pv->partmix = 0;
     pv->guardname = NULL;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
@@ -608,6 +609,18 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
     return delta;
 }
 
+// A path of a join that left the variable hollow: if an earlier one hollowed it
+// by different parts, the release must be told which at run time (VarPartFlag)
+static void pathJoinParts(PathVar *pv, uint8_t state, uint32_t hmask) {
+    if (!(state & DropHollow) || hmask == 0)
+        return;
+    if (pv->jh && dropHollowShapesDiffer(pv->var, pv->jm1, hmask))
+        pv->partmix = 1;
+    if (!pv->jh)
+        pv->jm1 = hmask;
+    pv->jh = 1;
+}
+
 // Join the paths in 'deltas', each relative to the current state: a fact takes
 // the union of every path's value, a path that did not change it contributing
 // the current value -- as the current path itself does when 'withcurrent' is
@@ -628,6 +641,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jpending = NULL;
                 pv->jstate = 0;
                 pv->jhmask = 0;
+                pv->jh = 0;
                 pv->jfirst = entry->holds;
                 pv->japart = 0;
                 if (ntouched == touchedcap)
@@ -641,6 +655,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
             pv->jstate |= entry->state;
             pv->jhmask |= entry->hmask;
+            pathJoinParts(pv, entry->state, entry->hmask);
         }
     }
     int changed = 0;
@@ -655,6 +670,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
             hmask |= pv->hmask;
+            pathJoinParts(pv, pv->state, pv->hmask);
             if (pathGpuChoices && pv->holder && !pv->japart)
                 pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
@@ -2292,6 +2308,19 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // call it is a store into the arena, so the arena's death is checked
         // against it
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
+        // A writable borrow handed to a parameter declared read-only is read
+        // only by the callee: it stores nothing through it (a '&mut' key
+        // given to an index's '&'-typed key). Only where nothing in the
+        // pointee can change through a shared view (a lock, an atomic, a
+        // writable reference inside: itypeMayMutateShared)
+        if (depth && parmtype && parmtype->tag == RefTag
+                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
+                && !permIsLock(((RefNode *)parmtype)->perm)
+                && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
+            int pdepth = itypeWritableBorrowDepth(parmtype, 3);
+            if (pdepth < depth)
+                depth = pdepth;
+        }
         int arenaparm = !arenameth && parmtype && parmtype->tag == RefTag && ((RefNode *)parmtype)->lifename != NULL
             && isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
             && pwIsNoLoanMut(storedin) && !lifeSlotted(storedin);
@@ -2308,6 +2337,17 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // (loanStoredStatic)
         int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
+        // A writable borrow of an arena among the arguments is a place the
+        // callee may store anything into (it holds borrows through raw memory,
+        // and its own parameter is not a target the walk asks, Bug 51), so no
+        // argument's loan can be shown stored nowhere by its type
+        int arenaarg = 0;
+        for (uint32_t j = 0; j < nargs; ++j) {
+            INode *jt = iexpGetTypeDcl(parts[j]);
+            if (pwIsBorrowed(jt) && jt->tag == RefTag && (permGetFlags(((RefNode *)jt)->perm) & MayWrite)
+                    && pwIsNoLoanMut(((RefNode *)jt)->vtexp))
+                arenaarg = 1;
+        }
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
                 continue;
@@ -2322,15 +2362,19 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             // A parameter with no lifetime named shares none with the arena
             if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
-            // A borrow written as the argument is stored itself only where
-            // the place's type can hold a borrow of what it borrows: the
-            // world's pool and the list of its creatures, each lent '&mut' to
-            // one call, are not stored in each other
             PathSet *carried = argsets[i];
+            // A borrow written as the argument is stored itself only where
+            // the place's type can hold a borrow of something reachable inside
+            // what it borrows (itypeMayHoldBorrowInside: the type, its fields
+            // and elements, what it owns). The world's pool and the list of its
+            // creatures, each lent '&mut' to one call, are not stored in each
+            // other; 'put(&mut h, &mut l)' with 'h' holding a '&Pt' and 'l' a
+            // 'List[Pt]' is (Bug 77)
             INode *site = pwLendSite(parts[i]);
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
-                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
+            if (own && how == LoanEscapeCall && !arenaarg && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeMayHoldBorrowInside(storedin,
+                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp),
+                    !(permGetFlags(((RefNode *)iexpGetTypeDcl(site))->perm) & MayWrite)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }

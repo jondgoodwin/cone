@@ -100,7 +100,7 @@ fn main() i32 {
 		<span class="pre">List[T](n)</span> do; <span class="pre">capacity()</span>, <span class="pre">isEmpty()</span>
 		and <span class="pre">reserve(n)</span>; <span class="pre">set(i, v)</span> and <span class="pre">swap(i, j)</span>,
 		each a panic past the end; <span class="pre">clear()</span>; <span class="pre">truncate(n)</span>, which cuts the
-		list to <span class="pre">n</span> values, finalizing those it drops, and does nothing when
+		list to <span class="pre">n</span> values, finalizing those it drops (after it has stopped counting them), and does nothing when
 		<span class="pre">n</span> is not less than its length; <span class="pre">dedup()</span>, which drops each value that
 		equals the one before it, keeping the first of each run (for any <a href="mod-substitution.html#eqtrait">Eq</a>
 		type), <span class="pre">contains(&amp;x)</span> and <span class="pre">indexOf(&amp;x)</span> (the place of the
@@ -125,6 +125,26 @@ fn main() i32 {
 		(<span class="pre">iter</span>, <span class="pre">mutItems</span>, <span class="pre">indexed</span>,
 		<span class="pre">chunks</span>, <span class="pre">mutChunks</span>, <span class="pre">mutArrays</span>,
 		<span class="pre">drain</span>) are under <a href="#iteration">Walking a collection</a>.</p>
+	<p>A list inserts and removes anywhere, as a <a href="#string">String</a> does (its <span class="pre">insert</span> and
+		<span class="pre">remove</span> are the pattern). Each of these changes the length, so the compiler refuses it while a
+		view of the list, or a borrow of an element, is live, exactly as for <span class="pre">push</span>; each moves the
+		values after the place by one block move, and an index out of range is a panic naming the line of the call.
+		<span class="pre">insert(i, v)</span> puts <span class="pre">v</span> at <span class="pre">i</span> (0 up to the length) and
+		moves the tail up one; <span class="pre">insert(i, src)</span> does the same for a slice, copying or cloning its values as
+		<span class="pre">appendSlice</span> does. <span class="pre">remove(i)</span> moves the value at <span class="pre">i</span> out
+		and closes the gap; <span class="pre">remove(start, end)</span> finalizes the values from <span class="pre">start</span> up to,
+		not including, <span class="pre">end</span> and closes the gap; <span class="pre">swapRemove(i)</span> moves the value out and
+		puts the last value in its place, in constant time; <span class="pre">removeIf(pred)</span> drops (and finalizes) every value
+		<span class="pre">pred</span> is true of, in one pass. <span class="pre">replace(start, end, src)</span> takes the range away
+		and puts a copy of the slice in its place, which may be longer or shorter. <span class="pre">splitOff(i)</span> moves
+		the values from <span class="pre">i</span> on into a new list; <span class="pre">extend(it)</span> appends everything an
+		iterator gives; <span class="pre">shrinkToFit()</span> gives back the room beyond the values in the heap region, and is a no-op
+		in any other (an arena, ...) except that an empty list gives its block back;
+		<span class="pre">resize(n)</span> pads with the default value, for a <span class="pre">T</span> that is
+		<span class="pre">Default</span>. <span class="pre">drain(start, end)</span> is <span class="pre">drain()</span> for a range:
+		the cursor moves the values out one at a time, and the list closes the gap when the cursor ends (the values it did not
+		reach are finalized). An array&rsquo;s methods that keep the length are the list&rsquo;s too: see
+		<a href="#sorting">Sorting</a> and the list of array methods below.</p>
 
 	<h2 id="dict">Dict</h2>
 	<p><span class="pre">Dict[K, V]</span> is a SwissTable: an
@@ -1448,6 +1468,18 @@ let at, found = xs.binarySearch(42);            // earliest position not before 
             <span class="pre">partitionPoint(pred)</span>: how many leading values satisfy a predicate that is
             true then false; and core's free function <span class="pre">partitionIndex(n, pred)</span> for a table
             that is not an array.</li>
+        <li><span class="pre">first()</span> and <span class="pre">last()</span>: a borrow of the first or last element, or
+            None when there are none; <span class="pre">position(pred)</span>: the place of the first element
+            <span class="pre">pred</span> is true of, or None; <span class="pre">startsWith(s)</span> and
+            <span class="pre">endsWith(s)</span> (for an Eq element).</li>
+        <li><span class="pre">fill(v)</span>: every element a copy (or clone) of <span class="pre">v</span>;
+            <span class="pre">copyFrom(src)</span>: a copy of <span class="pre">src</span> over the elements, which must be the
+            same length (a panic if not); <span class="pre">copyWithin(start, end, dest)</span>: the range copied to
+            <span class="pre">dest</span> in the same array, read as if copied out first (C&rsquo;s memmove; for a Copy element.
+            It is not the back-reference copy of a deflate window, which repeats a pattern when source and
+            destination overlap); <span class="pre">rotateLeft(k)</span> and <span class="pre">rotateRight(k)</span>, in place;
+            <span class="pre">windows(n)</span>: an iterator of the overlapping runs of <span class="pre">n</span> elements,
+            as slices.</li>
         <li><span class="pre">reverse()</span>, <span class="pre">slice(start, end)</span> and
             <span class="pre">sliceMut(start, end)</span>.</li>
     </ul>

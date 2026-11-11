@@ -95,11 +95,14 @@ pub fn windowFor(a: &PolyMesh, b: &PolyMesh, v: &View, res: usize) Window {
   Window(cx - 0.5 * f64.from(w) / sc, cy - 0.5 * f64.from(h) / sc, sc, w, h)
 }
 
-// The covered cells (1) and uncovered (0) of the mesh in the view, row by row from y = y0
-pub fn rasterize(m: &PolyMesh, v: &View, win: &Window) List[u8] {
-  var cells = List[u8].withCapacity(win.w * win.h);
+// A coverage grid: one flag per cell, row by row, true where the cell is covered
+pub alias Cells = List[bool];
+
+// The covered cells (true) and uncovered (false) of the mesh in the view, row by row from y = y0
+pub fn rasterize(m: &PolyMesh, v: &View, win: &Window) Cells {
+  var cells = Cells.withCapacity(win.w * win.h);
   var i = 0usize;
-  while i < win.w * win.h { cells.push(0u8); i += 1usize; }
+  while i < win.w * win.h { cells.push(false); i += 1usize; }
   let tris = fanTriangles(m);
   var px = List[DVec3].withCapacity(m.positions.len());
   i = 0usize;
@@ -128,7 +131,7 @@ pub fn rasterize(m: &PolyMesh, v: &View, win: &Window) List[u8] {
           let w0 = ((b.x - qx) * (c.y - qy) - (b.y - qy) * (c.x - qx)) / area;
           let w1 = ((c.x - qx) * (a.y - qy) - (c.y - qy) * (a.x - qx)) / area;
           let w2 = 1.0 - w0 - w1;
-          if w0 >= -1.0e-9 && w1 >= -1.0e-9 && w2 >= -1.0e-9 { cells.set(y * win.w + x, 1u8); }
+          if w0 >= -1.0e-9 && w1 >= -1.0e-9 && w2 >= -1.0e-9 { cells.set(y * win.w + x, true); }
           x += 1usize;
         }
         y += 1usize;
@@ -139,21 +142,21 @@ pub fn rasterize(m: &PolyMesh, v: &View, win: &Window) List[u8] {
   cells
 }
 
-pub fn coveredCells(cells: &List[u8]) usize {
+pub fn coveredCells(cells: &Cells) usize {
   var n = 0usize;
   var i = 0usize;
-  while i < cells.len() { if *cells[i] != 0u8 { n += 1usize; } i += 1usize; }
+  while i < cells.len() { if *cells[i] { n += 1usize; } i += 1usize; }
   n
 }
 
 // Area overlap of two coverages on one grid: cells in both over cells in either
-pub fn iou(a: &List[u8], b: &List[u8]) f32 {
+pub fn iou(a: &Cells, b: &Cells) f32 {
   var both = 0usize;
   var either = 0usize;
   var i = 0usize;
   while i < a.len() {
-    let x = *a[i] != 0u8;
-    let y = *b[i] != 0u8;
+    let x = *a[i];
+    let y = *b[i];
     if x && y { both += 1usize; }
     if x || y { either += 1usize; }
     i += 1usize;
@@ -161,12 +164,12 @@ pub fn iou(a: &List[u8], b: &List[u8]) f32 {
   if either == 0usize { 1. } else { f32.from(both) / f32.from(either) }
 }
 
-fn filled(cells: &List[u8], w: usize, h: usize, x: i64, y: i64) bool {
-  if x < 0 || y < 0 || x >= i64.from(w) || y >= i64.from(h) { false } else { *cells[usize.from(y) * w + usize.from(x)] != 0u8 }
+fn filled(cells: &Cells, w: usize, h: usize, x: i64, y: i64) bool {
+  if x < 0 || y < 0 || x >= i64.from(w) || y >= i64.from(h) { false } else { *cells[usize.from(y) * w + usize.from(x)] }
 }
 
 // The outline of the covered cells as closed loops in the window's world units (see the top)
-pub fn traceOutline(cells: &List[u8], win: &Window) List[List[Vec2]] {
+pub fn traceOutline(cells: &Cells, win: &Window) List[List[Vec2]] {
   let w = win.w;
   let h = win.h;
   let cw = w + 1usize;
@@ -178,7 +181,7 @@ pub fn traceOutline(cells: &List[u8], win: &Window) List[List[Vec2]] {
   while y < h {
     var x = 0usize;
     while x < w {
-      if *cells[y * w + x] != 0u8 {
+      if *cells[y * w + x] {
         let xi = i64.from(x);
         let yi = i64.from(y);
         // interior on the left of each directed edge
