@@ -524,8 +524,9 @@ not happen today):
 
 - Bug 77: a body that writes no lifetimes may store a borrow from one input
   into a place reached from another, which its signature never states, and the
-  caller's check is skipped for a directly written `&mut x` argument (the
-  shortcut near `flowpath.c` 2332).
+  caller's check is skipped for a directly written borrow argument only where
+  the place's type cannot hold a borrow of anything reachable inside it
+  (`itypeMayHoldBorrowInside`, called from `pwPartsStore`).
 - Bug 76: an `Arena` can be moved while it holds borrows.
 - Lifetimes are dropped from types when types are compared (`refIsSame`,
   `refFindSuper`), so a generic `T`'s lifetime can be neither named nor checked,
