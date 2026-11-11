@@ -732,6 +732,87 @@ pub struct Inflater {
     }
   }
 
+  // The hot loop of a Huffman block: literals and matches whose codes the
+  // first-level tables hold, with the bit buffer and the positions in locals.
+  // It runs while at least 8 input bytes and 258 bytes of the 'maxOut' room
+  // remain, and stops before any symbol it does not do whole (an end of
+  // block, a long code, an invalid one, a distance past the start): that
+  // symbol is left unread for 'codes' to handle, with its checks and errors.
+  // Answers the bytes it appended to the history.
+  fn fastRun(self: &mut, maxOut: usize) usize {
+    var bits = bi.bits;
+    var nbits = bi.nbits;
+    var pos = bi.pos;
+    let inLen = bi.buf.len();
+    let src = bi.buf.view();
+    let lf = lit.fast.view();
+    let df = dist.fast.view();
+    let fmask = (1u64 << u64.from(FastBits)) - 1u64;
+    let start = base;
+    hist.reserve(maxOut);
+    var produced = 0usize;
+    while produced + 258usize <= maxOut && pos + 8usize <= inLen {
+      if nbits < 48u32 {
+        let w = u64.from(src[pos]) | (u64.from(src[pos + 1usize]) << 8u64) | (u64.from(src[pos + 2usize]) << 16u64)
+          | (u64.from(src[pos + 3usize]) << 24u64) | (u64.from(src[pos + 4usize]) << 32u64)
+          | (u64.from(src[pos + 5usize]) << 40u64) | (u64.from(src[pos + 6usize]) << 48u64)
+          | (u64.from(src[pos + 7usize]) << 56u64);
+        let k = (64u32 - nbits) / 8u32;
+        let take = k * 8u32;
+        let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
+        bits = bits | ((w & m) << u64.from(nbits));
+        pos = pos + usize.from(k);
+        nbits = nbits + take;
+      }
+      let e = lf[usize.from(bits & fmask)];
+      if e == 0u16 { break; }
+      let l = u32.from(e & 15u16);
+      let sym = usize.from(e >> 4u16);
+      if sym < 256usize {
+        bits = bits >> u64.from(l);
+        nbits = nbits - l;
+        hist.push(u8.from(sym));
+        produced = produced + 1usize;
+      } else {
+        if sym == 256usize || sym >= 286usize { break; }
+        let li = sym - 257usize;
+        var b = bits >> u64.from(l);
+        var nb = nbits - l;
+        let le = u32.from(lenExtra[li]);
+        let len = usize.from(lenBase[li]) + usize.from(b & ((1u64 << u64.from(le)) - 1u64));
+        b = b >> u64.from(le);
+        nb = nb - le;
+        let de = df[usize.from(b & fmask)];
+        if de == 0u16 { break; }
+        let ds = usize.from(de >> 4u16);
+        if ds >= 30usize { break; }
+        let dl = u32.from(de & 15u16);
+        b = b >> u64.from(dl);
+        nb = nb - dl;
+        let dx = u32.from(distExtra[ds]);
+        let d = usize.from(distBase[ds]) + usize.from(b & ((1u64 << u64.from(dx)) - 1u64));
+        b = b >> u64.from(dx);
+        nb = nb - dx;
+        if d > hist.len() - start { break; }
+        bits = b;
+        nbits = nb;
+        var from = hist.len() - d;
+        var j = 0usize;
+        while j < len {
+          hist.push(*hist[from]);
+          from = from + 1usize;
+          j = j + 1usize;
+        }
+        produced = produced + len;
+      }
+    }
+    // The bits above 'nbits' stay zero, as 'refill' keeps them
+    bi.bits = bits;
+    bi.nbits = nbits;
+    bi.pos = pos;
+    produced
+  }
+
   // One compressed block's symbols until the end-of-block code. Done at the
   // end of the block.
   fn codes(self: &mut, room: &mut usize) Status {
@@ -756,6 +837,15 @@ pub struct Inflater {
       if produced >= cap && !limited {
         result = Status.MoreOutput;
         break;
+      }
+      // While input and output room are ample, symbols run in 'fastRun'; it
+      // stops at the first symbol it does not do whole, which goes below
+      if cap - produced >= 258usize {
+        produced = produced + self.fastRun(if cap - produced < 262144usize {cap - produced} else {262144usize});
+        if produced >= cap && !limited {
+          result = Status.MoreOutput;
+          break;
+        }
       }
       let p0 = bi.pos;
       let b0 = bi.bits;
