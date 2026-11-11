@@ -95,46 +95,102 @@ pub struct Zone {
   }
 
   // The instants at which this place's wall clock reads 'clock' (a DateTime
-  // whose parts are the wall clock's, not UTC's), each given as the UTC
-  // DateTime of the instant: one, none (the clock skipped it) or two (the
-  // clock read it twice). Nothing is guessed: the caller chooses
+  // whose parts are the wall clock's, not UTC's): one, none (the clock skipped
+  // it) or two (the clock read it twice). Nothing is guessed: the caller
+  // chooses. For each distinct offset in force within 27 hours of the reading
+  // taken as UTC (no offset is more than 26 hours from UTC, and a change
+  // is any distance from the next), the instant clock - offset is kept if that
+  // offset is in force then. An instant beyond a Timestamp's range is held at
+  // its first or last
   pub fn fromLocal(self: &, clock: DateTime) LocalResult {
     let nanos = todNanos(clock.hms);
     let secs = nanos / nsPerSecond;
     let subSecond = nanos - secs * nsPerSecond;
     let wall = clock.ymd.unixDays() * 86400i64 + secs;
-    // The offsets a day before and a day after the wall time read as UTC are
-    // the only ones it can have, a transition being more than a day from the
-    // next
-    let o1 = i64.from(typeAt(self, wall - 86400i64).off);
-    let o2 = i64.from(typeAt(self, wall + 86400i64).off);
-    let u1 = wall - o1;
-    let u2 = wall - o2;
-    let ok1 = i64.from(typeAt(self, u1).off) == o1;
-    let ok2 = o2 != o1 && i64.from(typeAt(self, u2).off) == o2;
-    let lo = if u1 < u2 {u1} else {u2};
-    let hi = if u1 < u2 {u2} else {u1};
-    if ok1 && ok2 {
-      return LocalResult.Ambiguous(dateTimeOfSeconds(lo, subSecond), dateTimeOfSeconds(hi, subSecond));
+    var offs = List[i64]();
+    nearbyOffsets(self, wall - 97200i64, wall + 97200i64, &mut offs);
+    var first = 0i64;
+    var last = 0i64;
+    var found = 0i64;
+    var anyU = false;
+    var loAll = 0i64;
+    var hiAll = 0i64;
+    var i = 0usize;
+    while i < offs.len() {
+      let o = *offs[i];
+      let u = wall - o;
+      if !anyU || u < loAll { loAll = u; }
+      if !anyU || u > hiAll { hiAll = u; }
+      anyU = true;
+      if i64.from(typeAt(self, u).off) == o {
+        if found == 0i64 || u < first { first = u; }
+        if found == 0i64 || u > last { last = u; }
+        found = found + 1i64;
+      }
+      i = i + 1usize;
     }
-    if ok1 { return LocalResult.Single(dateTimeOfSeconds(u1, subSecond)); }
-    if ok2 { return LocalResult.Single(dateTimeOfSeconds(u2, subSecond)); }
-    LocalResult.Gap(dateTimeOfSeconds(lo, subSecond), dateTimeOfSeconds(hi, subSecond))
+    if found == 0i64 {
+      return LocalResult.Gap(timestampOfSeconds(loAll, subSecond), timestampOfSeconds(hiAll, subSecond));
+    }
+    if found == 1i64 { return LocalResult.Single(timestampOfSeconds(first, subSecond)); }
+    LocalResult.Ambiguous(timestampOfSeconds(first, subSecond), timestampOfSeconds(last, subSecond))
   }
 }
 
-// What a wall-clock reading is, at one place. The DateTimes are the UTC
-// readings of the instants, as everywhere in this package
+// What a wall-clock reading is, at one place
 pub enum LocalResult {
-  Single(DateTime);                  // the one instant
+  Single(Timestamp);                 // the one instant
   struct Gap {                       // the clock skipped this reading: the reading taken with
-    pub before: DateTime;            //   the offset after the change (an instant before it), and
-    pub after: DateTime;             //   with the offset before the change (one after it)
+    pub before: Timestamp;           //   the offset after the change (an instant before it), and
+    pub after: Timestamp;            //   with the offset before the change (one after it)
   }
   struct Ambiguous {                 // the clock read this twice: the first instant and the second
-    pub earlier: DateTime;
-    pub later: DateTime;
+    pub earlier: Timestamp;
+    pub later: Timestamp;
   }
+}
+
+// Adds to offs (distinct values) each offset in force at some instant in
+// [lo, hi]: those at its ends, after each listed transition inside it, and
+// after each start or end of the footer's daylight saving time inside it
+fn nearbyOffsets(z: &Zone, lo: i64, hi: i64, offs: &mut List[i64]) {
+  addOffset(offs, i64.from(typeAt(z, lo).off));
+  addOffset(offs, i64.from(typeAt(z, hi).off));
+  var i = 0usize;
+  while i < z.times.len() {
+    let t = *z.times[i];
+    if t >= lo && t <= hi { addOffset(offs, i64.from(typeAt(z, t).off)); }
+    i = i + 1usize;
+  }
+  if z.footer.present && z.footer.hasDst {
+    let f = &z.footer;
+    let year = i64.from(civilFromDays(floorDiv(lo, 86400i64)).year());
+    var y = year - 1i64;
+    while y <= year + 2i64 {
+      let startAt = ruleDay(&f.start, y) * 86400i64 + f.start.secs - i64.from(f.std.off);
+      let endAt = ruleDay(&f.end, y) * 86400i64 + f.end.secs - i64.from(f.dst.off);
+      if startAt >= lo && startAt <= hi { addOffset(offs, i64.from(typeAt(z, startAt).off)); }
+      if endAt >= lo && endAt <= hi { addOffset(offs, i64.from(typeAt(z, endAt).off)); }
+      y = y + 1i64;
+    }
+  }
+}
+
+fn addOffset(offs: &mut List[i64], o: i64) {
+  var i = 0usize;
+  while i < offs.len() {
+    if *offs[i] == o { return; }
+    i = i + 1usize;
+  }
+  offs.push(o);
+}
+
+// The Timestamp of whole seconds since 1970 and a nanosecond, held at the
+// Timestamp's first or last when outside its range
+fn timestampOfSeconds(secs: i64, nanos: i64) Timestamp {
+  if secs <= -9223372037i64 { return Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64); }
+  if secs >= 9223372036i64 { return Timestamp.fromUnixNanos(9223372036854775807i64); }
+  Timestamp.fromUnixNanos(secs * nsPerSecond + nanos)
 }
 
 // The DateTime of whole seconds since 1970-01-01T00:00:00 and a nanosecond

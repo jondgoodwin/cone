@@ -17,8 +17,18 @@
 //     after the change (EDT, the earlier instant) first.
 //   - Wall 01:30 on 1 November exists twice: 05:30Z (EDT, before the change at
 //     06:00Z) and 06:30Z (EST, after it). So Ambiguous(05:30Z, 06:30Z).
-// The DateTimes are written as RFC 3339 text for comparison, with a 'Z' that
-// means UTC for an instant and is only the text's ending for a wall clock reading.
+// The instants (Timestamps) are compared as RFC 3339 text in UTC, and a wall
+// clock reading (a DateTime) as the same text, whose 'Z' is then only its ending.
+//
+// One fixture is made here, data/Test_Quick_Changes.tzif (data/make_synthetic.py
+// writes it): offset +0 until 2020-01-01T00:00:00Z, +1 hour until
+// 2020-01-01T12:00:00Z, then +0 again, so two changes 12 hours apart. Its
+// answers, by hand: the clock jumps from 00:00 to 01:00 at the first, so wall
+// 00:30 on 1 January is skipped (with +1 it would be 23:30Z on the 31st, when
+// the offset was +0; with +0 it is 00:30Z, when it is +1); at the second the
+// clock goes from 13:00 back to 12:00, so wall 12:30 is read at 11:30Z (+1) and
+// at 12:30Z (+0). A search a day either side of the reading sees only +0 and
+// would call both Single or a gap with one instant.
 
 mod localtime;
 
@@ -62,6 +72,8 @@ fn instant(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64) Timesta
   Timestamp.fromUnixSeconds(0)
 }
 
+fn txt(t: Timestamp) String { DateTime.fromTimestamp(t).rfc3339() }
+
 fn named(kind: &str, label: &str) String {
   var m = String.from(kind);
   m.append(" ");
@@ -78,7 +90,7 @@ fn wallAt(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi
 // A wall clock reading that is one instant
 fn single(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64, want: &str) {
   match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
-    case let Single(u) { expectStr(u.rfc3339().view(), want, named(kind, label).view()); }
+    case let Single(u) { expectStr(txt(u).view(), want, named(kind, label).view()); }
     case let Gap(g) { expect(false, named(kind, "is a gap, not Single: ").view()); }
     case let Ambiguous(a) { expect(false, named(kind, "is ambiguous, not Single: ").view()); }
   }
@@ -89,8 +101,8 @@ fn gap(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i
   match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
     case let Single(u) { expect(false, named(kind, "is Single, not a Gap: ").view()); }
     case let Gap(g) {
-      expectStr(g.before.rfc3339().view(), before, named(kind, label).view());
-      expectStr(g.after.rfc3339().view(), after, named(kind, label).view());
+      expectStr(txt(g.before).view(), before, named(kind, label).view());
+      expectStr(txt(g.after).view(), after, named(kind, label).view());
     }
     case let Ambiguous(a) { expect(false, named(kind, "is ambiguous, not a Gap: ").view()); }
   }
@@ -102,8 +114,8 @@ fn twice(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi:
     case let Single(u) { expect(false, named(kind, "is Single, not ambiguous: ").view()); }
     case let Gap(g) { expect(false, named(kind, "is a gap, not ambiguous: ").view()); }
     case let Ambiguous(a) {
-      expectStr(a.earlier.rfc3339().view(), earlier, named(kind, label).view());
-      expectStr(a.later.rfc3339().view(), later, named(kind, label).view());
+      expectStr(txt(a.earlier).view(), earlier, named(kind, label).view());
+      expectStr(txt(a.later).view(), later, named(kind, label).view());
     }
   }
 }
@@ -187,10 +199,27 @@ fn moscow(z: &Zone, kind: &str) {
   single(z, kind, "MSK 2026-10-25 01:30:00", 2026, 10, 25, 1, 30, 0, 0, "2026-10-24T22:30:00Z");
 }
 
-// A wall clock year past a Timestamp's range (2262) still answers, from the rules alone
+// A wall clock past a Timestamp's last instant (2262-04-11T23:47:16.854775807Z)
+// has no Timestamp: the answer is held at the last one (and the first, before 1677)
 fn beyondTimestamps(z: &Zone, kind: &str) {
-  single(z, kind, "NY 3000-07-01 08:00:00", 3000, 7, 1, 8, 0, 0, 0, "3000-07-01T12:00:00Z");
-  single(z, kind, "NY 3000-01-01 08:00:00", 3000, 1, 1, 8, 0, 0, 0, "3000-01-01T13:00:00Z");
+  single(z, kind, "NY 3000-07-01 08:00:00 held", 3000, 7, 1, 8, 0, 0, 0, "2262-04-11T23:47:16.854775807Z");
+  single(z, kind, "NY 1000-07-01 08:00:00 held", 1000, 7, 1, 8, 0, 0, 0, "1677-09-21T00:12:43.145224192Z");
+}
+
+// The synthetic zone: +0 to 2020-01-01T00:00:00Z, +1 hour to 12:00:00Z, +0 after
+fn quick(z: &Zone) {
+  let kind = "quick";
+  wallAt(z, kind, "00:00:00Z", 2020, 1, 1, 0, 0, 0, 0, "2020-01-01T01:00:00Z");
+  wallAt(z, kind, "11:59:59Z", 2020, 1, 1, 11, 59, 59, 0, "2020-01-01T12:59:59Z");
+  wallAt(z, kind, "12:00:00Z", 2020, 1, 1, 12, 0, 0, 0, "2020-01-01T12:00:00Z");
+  single(z, kind, "2019-12-31 23:30:00", 2019, 12, 31, 23, 30, 0, 0, "2019-12-31T23:30:00Z");
+  gap(z, kind, "2020-01-01 00:00:00", 2020, 1, 1, 0, 0, 0, 0, "2019-12-31T23:00:00Z", "2020-01-01T00:00:00Z");
+  gap(z, kind, "2020-01-01 00:30:00", 2020, 1, 1, 0, 30, 0, 0, "2019-12-31T23:30:00Z", "2020-01-01T00:30:00Z");
+  single(z, kind, "2020-01-01 01:00:00", 2020, 1, 1, 1, 0, 0, 0, "2020-01-01T00:00:00Z");
+  single(z, kind, "2020-01-01 06:00:00", 2020, 1, 1, 6, 0, 0, 0, "2020-01-01T05:00:00Z");
+  twice(z, kind, "2020-01-01 12:00:00", 2020, 1, 1, 12, 0, 0, 0, "2020-01-01T11:00:00Z", "2020-01-01T12:00:00Z");
+  twice(z, kind, "2020-01-01 12:30:00", 2020, 1, 1, 12, 30, 0, 0, "2020-01-01T11:30:00Z", "2020-01-01T12:30:00Z");
+  single(z, kind, "2020-01-01 13:00:00", 2020, 1, 1, 13, 0, 0, 0, "2020-01-01T13:00:00Z");
 }
 
 fn main() i32 {
@@ -211,5 +240,7 @@ fn main() i32 {
   saoPaulo(&zoneOf(&spF), "fat");
   moscow(&zoneOf(&mS), "slim");
   moscow(&zoneOf(&mF), "fat");
+  let qk = loadFile("Test_Quick_Changes.tzif");
+  quick(&zoneOf(&qk));
   return done();
 }
