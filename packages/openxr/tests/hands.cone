@@ -9,8 +9,8 @@
 //   hand tracking; 'count' and 'addNames' agree.
 // - 'HandJoints': a hand not active has no valid joints; a located one counts
 //   the joints with a valid position; 'pinchDistance' is the distance between
-//   the thumb and index tips (-1 when either is invalid); 'pinchStrength' is -1
-//   without a valid aim state and the index strength with one.
+//   the thumb and index tips (None when either is invalid); 'pinchStrength' is
+//   None without a valid aim state and the index strength with one.
 // - A 'HandTracker' made on functions without hand tracking is not valid, and
 //   locating with it fails with ERROR_HANDLE_INVALID.
 
@@ -35,6 +35,13 @@ fn named(name: &str) ExtensionProperties {
 
 fn offered(names: &List[ExtensionProperties]) HandExtensions {
   HandExtensions.find(names.view() as *ExtensionProperties, u32.from(names.len()))
+}
+
+fn isNone(o: Option[f32]) bool {
+  match o {
+    case let Some(v) { false }
+    case is None { true }
+  }
 }
 
 fn main() i32 {
@@ -95,26 +102,26 @@ fn main() i32 {
   expectInt(i64.from(hand.validCount()), 0, "a hand not active has no valid joints");
   hand.active = true;
   expectInt(i64.from(hand.validCount()), 0, "an active hand with no flags has none");
-  expectFloat(hand.pinchDistance(), -1., 0.00001, "no pinch distance without joints");
+  expectBool(isNone(hand.pinchDistance()), true, "no pinch distance without joints");
   hand.joints[HAND_JOINT_THUMB_TIP_EXT].locationFlags = SPACE_LOCATION_POSITION_VALID_BIT;
   hand.joints[HAND_JOINT_INDEX_TIP_EXT].locationFlags = SPACE_LOCATION_POSITION_VALID_BIT | SPACE_LOCATION_ORIENTATION_VALID_BIT;
   hand.joints[HAND_JOINT_THUMB_TIP_EXT].pose.position = Vector3f(0.1, 0.2, 0.3);
   hand.joints[HAND_JOINT_INDEX_TIP_EXT].pose.position = Vector3f(0.1, 0.2, 0.35);
   expectInt(i64.from(hand.validCount()), 2, "two valid joints");
-  expectFloat(hand.pinchDistance(), 0.05, 0.0001, "thumb and index tips 5 cm apart");
+  expectFloat(hand.pinchDistance() || -1., 0.05, 0.0001, "thumb and index tips 5 cm apart");
   expectBool(hand.jointValid(HAND_JOINT_WRIST_EXT), false, "the wrist is not valid");
   hand.joints[HAND_JOINT_INDEX_TIP_EXT].locationFlags = SPACE_LOCATION_ORIENTATION_VALID_BIT;
-  expectFloat(hand.pinchDistance(), -1., 0.00001, "an index tip with no position gives none");
+  expectBool(isNone(hand.pinchDistance()), true, "an index tip with no position gives none");
   hand.active = false;
   expectInt(i64.from(hand.validCount()), 0, "an inactive hand has none valid");
 
-  expectFloat(hand.pinchStrength(), -1., 0.00001, "no pinch strength without aim");
+  expectBool(isNone(hand.pinchStrength()), true, "no pinch strength without aim");
   hand.active = true;
   hand.hasAim = true;
   hand.aim.pinchStrengthIndex = 0.75;
-  expectFloat(hand.pinchStrength(), -1., 0.00001, "an aim state not marked valid gives none");
+  expectBool(isNone(hand.pinchStrength()), true, "an aim state not marked valid gives none");
   hand.aim.status = HAND_TRACKING_AIM_VALID_BIT_FB | HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB;
-  expectFloat(hand.pinchStrength(), 0.75, 0.00001, "the index pinch strength");
+  expectFloat(hand.pinchStrength() || -1., 0.75, 0.00001, "the index pinch strength");
 
   // A tracker without the extension
   let lost = InstanceFns();
