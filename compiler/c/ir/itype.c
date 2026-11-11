@@ -356,6 +356,229 @@ int itypeHoldsBorrowOf(INode *type, INode *want) {
     }
 }
 
+// Can a call leave a holder of type 'holder' holding a borrow of a value 'x'
+// it was lent? Only if the holder can hold a borrow whose target type is
+// reachable inside x: x's own type, its fields and elements, and what it owns
+// through owning references and pointers (a borrow's referent is followed too,
+// to be safe). The holder is walked transitively. A type this cannot see all of
+// (a type parameter, an open trait, an opaque struct, a virtual reference, a
+// closure, an arena, a walk past the limits) is taken to hold, in the holder,
+// and to reach anything, in x, so the answer is conservative. Both are type
+// declarations. Not remembered.
+#define InsideMax 48
+typedef struct InsideSet {
+    INode *types[InsideMax];
+    int cnt;
+    int unseen;
+    int readonly;   // the loan is a read-only one
+    INode *asking[HoldsBorrowMaxDepth];
+    int askcnt;
+} InsideSet;
+
+static void insideCollect(InsideSet *set, INode *type) {
+    if (type == NULL || set->unseen) {
+        set->unseen |= type == NULL;
+        return;
+    }
+    switch (type->tag) {
+    case NameUseTag:
+        if (!isTypeNode(type)) {
+            set->unseen = 1;
+            return;
+        }
+        type = itypeGetTypeDcl(type);
+        if (type == NULL || type->tag == NameUseTag) {
+            set->unseen = 1;
+            return;
+        }
+        insideCollect(set, type);
+        return;
+    case AliasDclTag:
+        insideCollect(set, ((AliasDclNode *)type)->target);
+        return;
+    default:
+        break;
+    }
+    for (int i = 0; i < set->cnt; ++i) {
+        if (set->types[i] == type)
+            return;
+    }
+    if (set->cnt == InsideMax) {
+        set->unseen = 1;
+        return;
+    }
+    set->types[set->cnt++] = type;
+    switch (type->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return;
+    case VirtRefTag:
+        set->unseen = 1;
+        return;
+    case RefTag:
+    case ArrayRefTag:
+        insideCollect(set, ((RefNode *)type)->vtexp);
+        return;
+    case PtrTag:
+        insideCollect(set, ((StarNode *)type)->vtexp);
+        return;
+    case ArrayTag:
+        insideCollect(set, arrayElemType(type));
+        return;
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            insideCollect(set, *nodesp);
+        return;
+    }
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        if (st->lends == LendsNoLoanMut || ((st->flags & TraitType) && !(st->flags & EnumType))
+                || (st->flags & (DeclaredOpaque | OpaqueType)) || !(st->flags & TypeChecked)) {
+            set->unseen = 1;
+            return;
+        }
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp))
+            insideCollect(set, ((IExpNode *)*nodesp)->vtype);
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp))
+                insideCollect(set, *nodesp);
+        }
+        return;
+    }
+    case FnSigTag:
+    case VoidTag:
+        // A function pointer has no environment; a closure is a struct
+        return;
+    default:
+        set->unseen = 1;
+        return;
+    }
+}
+
+static int insideIsReached(InsideSet *set, INode *dcl) {
+    for (int i = 0; i < set->cnt; ++i) {
+        INode *t = set->types[i];
+        if (t == dcl)
+            return 1;
+        if (t->tag == ArrayTag && itypeGetTypeDcl(arrayElemType(t)) == dcl)
+            return 1;
+        if (dcl->tag == ArrayTag && itypeGetTypeDcl(arrayElemType(dcl)) == t)
+            return 1;
+    }
+    return 0;
+}
+
+static int insideHolds(InsideSet *set, INode *type) {
+    if (type == NULL)
+        return 1;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? insideHolds(set, itypeGetTypeDcl(type)) : 1;
+    case AliasDclTag:
+        return insideHolds(set, ((AliasDclNode *)type)->target);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 0;
+    case VirtRefTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag: {
+        INode *referent = ((RefNode *)type)->vtexp;
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef) {
+            // A read-only borrow cannot be made writable, so a plain '&mut'
+            // slot holds no read-only loan; what it points at is still asked
+            int slotshut = set->readonly && (permGetFlags(((RefNode *)type)->perm) & MayWrite)
+                && !permIsLock(((RefNode *)type)->perm);
+            if (!isTypeNode(referent))
+                return 1;
+            INode *refdcl = itypeGetTypeDcl(referent);
+            if (!slotshut && (refdcl == NULL || (refdcl->tag == StructTag && (refdcl->flags & TraitType))
+                    || insideIsReached(set, refdcl)))
+                return 1;
+            // What a borrow points at is a way to store only if it holds
+            // borrows itself (a '&str' holds none, whatever 'str' is made of)
+            if (refdcl != NULL && !itypeIsArena(refdcl) && !itypeCarriesBorrow(refdcl))
+                return 0;
+        }
+        return insideHolds(set, referent);
+    }
+    case PtrTag:
+        return insideHolds(set, ((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return insideHolds(set, arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (insideHolds(set, *nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        if (st->lends == LendsNoLoanMut || ((st->flags & TraitType) && !(st->flags & EnumType))
+                || (st->flags & (DeclaredOpaque | OpaqueType)) || !(st->flags & TypeChecked))
+            return 1;
+        if (!itypeCarriesBorrow(type))
+            return 0;
+        for (int i = 0; i < set->askcnt; ++i) {
+            if (set->asking[i] == type)
+                return 0;
+        }
+        if (set->askcnt == HoldsBorrowMaxDepth)
+            return 1;
+        set->asking[set->askcnt++] = type;
+        int holds = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (insideHolds(set, ((IExpNode *)*nodesp)->vtype)) {
+                holds = 1;
+                break;
+            }
+        }
+        if (!holds && st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (insideHolds(set, *nodesp)) {
+                    holds = 1;
+                    break;
+                }
+            }
+        }
+        --set->askcnt;
+        return holds;
+    }
+    case FnSigTag:
+    case VoidTag:
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
+    if (itypeHoldsNoBorrow(holder))
+        return 0;
+    InsideSet set;
+    set.readonly = readonly;
+    set.cnt = 0;
+    set.unseen = 0;
+    set.askcnt = 0;
+    insideCollect(&set, x);
+    if (set.unseen)
+        return 1;
+    return insideHolds(&set, holder);
+}
+
 // How many writable borrows deep a store into a value of this type can reach,
 // at most 'most': 0 when it holds no writable borrowed reference whose
 // referent can hold a borrow; else one more than what such a referent reaches
@@ -1241,6 +1464,68 @@ int itypeHoldsAtomic(INode *type) {
     }
     default:
         return 0;
+    }
+}
+
+// May a callee holding only a read-only borrow of a value of this type still
+// change it (so store a borrow in it)? Conservative: yes for an atomic, a lock
+// (a struct declaring 'LockPermission', or a reference whose permission is a
+// lock), a writable reference found anywhere inside (a shared path writing
+// through '&mut'), a raw pointer, an arena, a virtual reference, and any type
+// not seen all of (a type parameter, a trait, a closure); no only for numbers,
+// and arrays, tuples, structs and references made wholly of types answering no.
+// Not remembered; past 8 levels it answers yes.
+int itypeMayMutateShared(INode *type, int most) {
+    if (type == NULL || most <= 0)
+        return 1;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeMayMutateShared(itypeGetTypeDcl(type), most) : 1;
+    case AliasDclTag:
+        return itypeMayMutateShared(((AliasDclNode *)type)->target, most);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 0;
+    case RefTag:
+    case ArrayRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (permIsLock(ref->perm) || (permGetFlags(ref->perm) & MayWrite))
+            return 1;
+        return itypeMayMutateShared(ref->vtexp, most - 1);
+    }
+    case PtrTag:
+        // The raw pointer a container keeps its block by ('List', 'Dict'): what
+        // it points at is judged as a reference to it would be
+        return itypeMayMutateShared(((StarNode *)type)->vtexp, most - 1);
+    case ArrayTag:
+        return itypeMayMutateShared(arrayElemType(type), most - 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeMayMutateShared(*nodesp, most - 1))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (structDeclaresTrait(strnode, atomicValueTrait) || structDeclaresTrait(strnode, lockPermTrait)
+                || strnode->lends == LendsNoLoanMut)
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (itypeMayMutateShared(((IExpNode *)*nodesp)->vtype, most - 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 1;
     }
 }
 

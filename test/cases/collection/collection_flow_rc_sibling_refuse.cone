@@ -1,0 +1,36 @@
+// Bug 88. Two fields of one struct that are copyable owners ('Rc[mut, ..]') may own the very same
+// list ('R(l, l)'), so a view held through one is freed by a push through the other. A sibling field
+// is another collection only where the struct holds it by value or by a 'Uni' owner
+// (collection_flow_rc_sibling_success holds that); a field held through a '&mut' is refused too.
+
+mod collection_flow_rc_sibling_refuse;
+
+import collections use *;
+
+struct R {
+  a: Rc[mut, List[u8]];
+  b: Rc[mut, List[u8]];
+
+  fn viaMethod(self: &mut) u8 {
+    let s = a.view();
+    b.push(1u8);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+    s[0usize]
+  }
+}
+
+fn viaRef(r: &mut R) u8 {
+  let s = r.a.view();
+  r.b.push(1u8);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  s[0usize]
+}
+
+struct Q {
+  a: &mut List[u8];
+  b: &mut List[u8];
+}
+
+fn viaRefFields(q: &mut Q) u8 {
+  let s = q.a.view();
+  q.b.push(1u8);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  s[0usize]
+}

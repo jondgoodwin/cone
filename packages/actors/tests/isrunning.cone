@@ -1,0 +1,33 @@
+// actors.isRunning() says whether the runtime runs now: false before the first actor, true once one is
+// started (seen from main and from inside an actor), and false again after finalAll. A 'final' that may
+// run after the stop checks it before it sends, as a send then panics.
+
+mod isrunning;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+
+actor Probe {
+  pub async fn look(self, tx: OneshotSender[u64]) {
+    var t = tx;
+    t.send(if actors.isRunning() {1u64} else {0u64});
+  }
+}
+
+fn main() i32 {
+  initAll();
+  expect(!actors.isRunning(), "false before the first actor");
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let p = Probe();
+    p.look(tx);
+  }
+  expectUInt(rx.recv().unwrap(), 1u64, "true inside an actor");
+  expect(actors.isRunning(), "true from main while actors run");
+  finalAll();
+  expect(!actors.isRunning(), "false after finalAll");
+  done()
+}
