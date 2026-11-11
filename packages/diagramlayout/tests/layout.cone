@@ -28,6 +28,7 @@ import collections use *;
 import geomath use *;
 import mesh use Mesh;
 import diagramlayout use *;
+import vector2d use *;
 
 
 fn box(g: &mut Graph, key: &str) u32 { g.addNode(key, key, 80., 32.) }
@@ -423,7 +424,156 @@ fn tube() {
   expect(m.indices.len() / 3usize >= 2usize * 8usize * 5usize + 16usize, "a mesh of rings, a cone and a base");
 }
 
+fn edgeStyles() {
+  var g = Graph.make();
+  let a = g.addNode("a", "a", 60., 30.);
+  let b = g.addNode("b", "b", 60., 30.);
+  let c2 = g.addNode("c", "c", 60., 30.);
+  let plain = g.addEdge(a, b);
+  let line = g.addStyledEdge(b, c2, LINK_PLAIN, "", 0., 0.);
+  expectUInt(u64.from(g.edges[usize.from(plain)].style), u64.from(LINK_ARROW), "an edge is an arrow by default");
+  expectUInt(u64.from(g.edges[usize.from(line)].style), u64.from(LINK_PLAIN), "a styled edge keeps its style");
+  let again = g.addStyledEdge(b, c2, LINK_DOTTED, "x", 10., 10.);
+  expectUInt(u64.from(again), u64.from(line), "a second edge between the same nodes is the same edge, restyled");
+  expectUInt(u64.from(g.edges[usize.from(line)].style), u64.from(LINK_DOTTED), "restyled");
+  // drawing: each style on its own, the same two boxes, laid out and routed
+  var counts = List[usize]();
+  var s = 0u32;
+  while s < 4u32 {
+    var h = Graph.make();
+    let p = h.addNode("p", "p", 60., 30.);
+    let q = h.addNode("q", "q", 60., 30.);
+    h.addStyledEdge(p, q, s, "", 0., 0.);
+    layoutLayered(&mut h, &LayeredOptions.make());
+    routeEdges(&mut h, &RouteOptions.make());
+    // kill the nodes after routing so only the edge is drawn
+    h.nodes[usize.from(p)].alive = false;
+    h.nodes[usize.from(q)].alive = false;
+    var cv = Canvas.make(400., 400.);
+    drawGraph(&mut cv, &h, &DiagramStyle.light());
+    counts.push(cv.batch.triangleCount());
+    s = s + 1u32;
+  }
+  expect(*counts[0usize] > *counts[1usize], "an arrow has a head the plain line lacks");
+  expect(*counts[2usize] > *counts[0usize], "a dotted arrow is cut into many more pieces than a solid one");
+  expect(*counts[3usize] > *counts[1usize], "a dotted line is cut into many more pieces than a solid one");
+  expect(*counts[2usize] > *counts[3usize], "a dotted arrow keeps its head");
+}
+
+fn edgeLabels() {
+  // Two labelled edges from one source (a yes / no choice): with the labels measured, the gap between the
+  // layers is deep enough for them, and no label overlaps another or a box. Without measuring, the gap is rankSep.
+  var g = Graph.make();
+  let top = g.addNode("top", "top", 60., 30.);
+  var k = 0u32;
+  while k < 2u32 {
+    var key = String.from("n");
+    key.appendUInt(u64.from(k));
+    let n = g.addNode(key.view(), key.view(), 60., 30.);
+    g.addStyledEdge(top, n, LINK_ARROW, "label", 40., 30.);
+    k = k + 1u32;
+  }
+  var lo = LayeredOptions.make();
+  lo.rankSep = 20.;
+  layoutLayered(&mut g, &lo);
+  routeEdges(&mut g, &RouteOptions.make());
+  let gapY = g.top(1usize) - g.bottom(0usize);
+  expect(gapY >= 30. + 18. - 0.01, "the layer gap holds a label's height and air");
+  var clash = 0u32;
+  var e = 0usize;
+  while e < g.edges.len() {
+    let ed = &g.edges[e];
+    var q = 0usize;
+    while q < g.nodes.len() {
+      if ed.labelX - 20. < g.right(q) && ed.labelX + 20. > g.left(q) && ed.labelY - 15. < g.bottom(q) && ed.labelY + 15. > g.top(q) { clash = clash + 1u32; }
+      q = q + 1usize;
+    }
+    var f = e + 1usize;
+    while f < g.edges.len() {
+      let fd = &g.edges[f];
+      if (ed.labelX - fd.labelX).abs() < 40. && (ed.labelY - fd.labelY).abs() < 30. { clash = clash + 1u32; }
+      f = f + 1usize;
+    }
+    e = e + 1usize;
+  }
+  expectUInt(u64.from(clash), 0u64, "no label overlaps a box or another label");
+  // not measured: the gap is the plain rankSep
+  var h = Graph.make();
+  let t2 = h.addNode("t", "t", 60., 30.);
+  let u2 = h.addNode("u", "u", 60., 30.);
+  h.addEdge(t2, u2);
+  h.edges[0usize].label = String.from("label");
+  layoutLayered(&mut h, &lo);
+  expectFloat(f64.from(h.top(1usize) - h.bottom(0usize)), 20.0, 0.01, "an unmeasured label keeps no room");
+  // left to right: the gap is as wide as the label
+  var r = Graph.make();
+  let t3 = r.addNode("t", "t", 60., 30.);
+  let u3 = r.addNode("u", "u", 60., 30.);
+  r.addStyledEdge(t3, u3, LINK_ARROW, "a long label", 120., 20.);
+  lo.direction = DIR_LR;
+  layoutLayered(&mut r, &lo);
+  expect(r.left(1usize) - r.right(0usize) >= 120. + 18. - 0.01, "left to right, the gap holds the label's width");
+}
+
+fn notes() {
+  var d = SequenceDiagram.make();
+  let a = d.addParticipant("A", 60., 30.);
+  let b = d.addParticipant("B", 60., 30.);
+  let c = d.addParticipant("C", 60., 30.);
+  d.addMessage(a, b, "one", 40., MSG_CALL);
+  d.addMessage(b, c, "two", 40., MSG_CALL);
+  let nOver = d.addNote(NOTE_OVER, a, c, "over all", 400., 28., 1u32);
+  let nLeft = d.addNote(NOTE_LEFT, a, a, "left of A", 100., 28., 0u32);
+  let nRight = d.addNote(NOTE_RIGHT, c, c, "right of C\nsecond line", 100., 44., 2u32);
+  let nMid = d.addNote(NOTE_RIGHT, b, b, "right of B", 120., 28., 2u32);
+  layoutSequence(&mut d, &SequenceOptions.make());
+  let o = &d.notes[usize.from(nOver)];
+  let l = &d.notes[usize.from(nLeft)];
+  let r = &d.notes[usize.from(nRight)];
+  let mid = &d.notes[usize.from(nMid)];
+  expect(d.participants[0usize].x < d.participants[1usize].x && d.participants[1usize].x < d.participants[2usize].x, "participants still run left to right");
+  // rows: left note, message one, over note, message two, right notes
+  expect(l.y + l.h <= d.messages[0usize].y && d.messages[0usize].y < o.y, "the left note comes before message one, the over note after it");
+  expect(o.y + o.h <= d.messages[1usize].y, "the over note comes before message two");
+  expect(r.y > d.messages[1usize].y && mid.y > d.messages[1usize].y, "notes at the end come after the last message");
+  expect(d.lifelineBottom >= r.y + r.h, "the lifelines run past the last note");
+  // the over note covers its lifelines, centred between A and C
+  expect(o.x <= d.participants[0usize].x && o.x + o.w >= d.participants[2usize].x, "the over note covers both lifelines");
+  expectFloat(f64.from(o.x + o.w * 0.5), f64.from((d.participants[0usize].x + d.participants[2usize].x) * 0.5), 0.01, "centred between them");
+  expect(o.w >= 400., "and as wide as asked");
+  // beside a lifeline
+  expectFloat(f64.from(l.x + l.w), f64.from(d.participants[0usize].x - 10.), 0.01, "a left note's right edge is just left of the lifeline");
+  expect(l.x >= 4. - 0.01, "and it is inside the picture");
+  expectFloat(f64.from(r.x), f64.from(d.participants[2usize].x + 10.), 0.01, "a right note starts just right of the lifeline");
+  expect(r.x + r.w <= d.width + 0.01, "the picture is wide enough for a right note on the last participant");
+  // a right note beside a middle lifeline does not reach the next lifeline
+  expect(mid.x + mid.w < d.participants[2usize].x, "a right note on B stops short of C's lifeline");
+  // over a single participant: centred on it
+  var e = SequenceDiagram.make();
+  let p = e.addParticipant("P", 60., 30.);
+  let q = e.addParticipant("Q", 60., 30.);
+  e.addMessage(p, q, "m", 40., MSG_CALL);
+  let single = e.addNote(NOTE_OVER, q, q, "over Q", 90., 28., 0u32);
+  layoutSequence(&mut e, &SequenceOptions.make());
+  let s = &e.notes[usize.from(single)];
+  expectFloat(f64.from(s.x + s.w * 0.5), f64.from(e.participants[1usize].x), 0.01, "a note over one participant is centred on it");
+  // without notes nothing changes: the first message's row
+  var f = SequenceDiagram.make();
+  let fp = f.addParticipant("P", 60., 30.);
+  let fq = f.addParticipant("Q", 60., 30.);
+  f.addMessage(fp, fq, "m", 40., MSG_CALL);
+  layoutSequence(&mut f, &SequenceOptions.make());
+  expectFloat(f64.from(f.messages[0usize].y), f64.from(f.lifelineTop + 34.), 0.01, "no notes: the first message is a headGap under the heads");
+  // drawing runs: 6 head labels, 2 message labels, 5 note lines
+  var cv = Canvas.make(d.width, d.height);
+  drawSequence(&mut cv, &d, &DiagramStyle.light());
+  expectUInt(u64.from(cv.texts.len()), 13u64, "the notes' text is drawn, a line each");
+}
+
 fn main() i32 {
+  edgeStyles();
+  edgeLabels();
+  notes();
   model();
   layered();
   incremental();

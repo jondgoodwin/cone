@@ -17,6 +17,13 @@
 // buffer once. It sleeps (2 ms) when the stream is full enough, which is
 // also what lets a build run it as a test with the dummy driver.
 //
+// Which device: `Device.start` opens the default one. `Device.startOn` takes a
+// list of substrings and opens the first playback device (in SDL's order)
+// whose name contains any of them, ignoring case, and falls back to the
+// default when none does, or when the one that did would not open; `Started.deviceName` says which opened (None for
+// the default, which is not looked up). `playbackNames` lists the names. The choice is made on the
+// calling thread and the feeder is handed the device id.
+//
 // The Control that talks to the mixer is returned by `start` and belongs to
 // the game thread. Stop the device with `Device.stop` before dropping the
 // Control, since the mixer reads the sounds the Control owns.
@@ -60,6 +67,7 @@ struct Counts is Sendable {
 }
 
 struct Feed is Sendable {
+  devid: u32;
   rate: u32;
   voices: u32;
   aheadMs: u32;
@@ -77,7 +85,7 @@ fn feeder(init: Feed) i32 {
     return 1i32;
   }
   let spec = sdl.AudioSpec(sdl.AUDIO_F32, 2i32, i32.from(f.rate));
-  let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
+  let stream = sdl.OpenAudioDeviceStream(f.devid, &spec, null, null);
   if stream as usize == 0usize {
     sdl.QuitSubSystem(sdl.INIT_AUDIO);
     f.status.send(2i32);
@@ -116,6 +124,76 @@ fn feeder(init: Feed) i32 {
 pub struct Started {
   pub device: Device;
   pub control: Control;
+  pub deviceName: Option[String];   // the playback device's name when 'startOn' matched one; None for the default device
+}
+
+// A byte's lower case (ASCII only)
+fn lowerByte(b: u8) u8 {
+  if b >= 65u8 && b <= 90u8 { return b + 32u8; }
+  b
+}
+
+// Whether 'name' contains 'part', ignoring ASCII case (an empty 'part' matches nothing)
+fn containsFold(name: &String, part: &String) bool {
+  let n: &Array[u8] = name.view();
+  let p: &Array[u8] = part.view();
+  if p.len == 0usize { return false; }
+  var i = 0usize;
+  while i + p.len <= n.len {
+    var j = 0usize;
+    while j < p.len && lowerByte(n[i + j]) == lowerByte(p[j]) { j = j + 1usize; }
+    if j == p.len { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// Whether 'name' contains any of 'wants' (case-insensitive)
+fn nameMatches(name: &String, wants: &List[String]) bool {
+  var k = 0usize;
+  while k < wants.len() {
+    if containsFold(name, &wants[k]) { return true; }
+    k = k + 1usize;
+  }
+  false
+}
+
+// The index of the first of 'names' that 'nameMatches' wants, or names.len() when none
+fn firstMatch(names: &List[String], wants: &List[String]) usize {
+  var k = 0usize;
+  while k < names.len() {
+    if nameMatches(&names[k], wants) { return k; }
+    k = k + 1usize;
+  }
+  names.len()
+}
+
+// The playback devices' ids and names, in SDL's order; empty when audio would not start
+fn playbackDevices(ids: &mut List[u32], names: &mut List[String]) {
+  if !sdl.InitSubSystem(sdl.INIT_AUDIO) { return; }
+  var count = 0i32;
+  let arr = sdl.GetAudioPlaybackDevices(&mut count);
+  if arr as usize != 0usize {
+    var k = 0i32;
+    while k < count {
+      let id = *(arr + usize.from(k));
+      let raw = sdl.GetAudioDeviceName(id);
+      ids.push(id);
+      if raw as usize == 0usize { names.push(String()); }
+      else { names.push(String.fromCStr(cstr.fromPtr(raw))); }
+      k = k + 1i32;
+    }
+    sdl.free(arr as *u8);
+  }
+  sdl.QuitSubSystem(sdl.INIT_AUDIO);
+}
+
+// The names of the system's playback devices (what SDL3 hears of; silent)
+pub fn playbackNames() List[String] {
+  var ids = List[u32]();
+  var names = List[String]();
+  playbackDevices(&mut ids, &mut names);
+  names
 }
 
 pub struct Device {
@@ -134,6 +212,40 @@ pub struct Device {
   // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
   // Answers the device and the game thread's Control, or why not.
   pub fn start(rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
+    Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, None[String], rate, voices, aheadMs)
+  }
+
+  // As 'start', but on the first playback device whose name contains any of
+  // 'wants' (case-insensitive); with none matching (or none listed) it opens the
+  // default, and the Started's 'deviceName' is None.
+  pub fn startOn(wants: &List[String], rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
+    // Device ids belong to the audio subsystem's run: SDL numbers them afresh each time it starts, so an
+    // id listed under one run is "Invalid audio device instance ID" under the next. This call holds its
+    // own reference across the listing and the open (the feeder takes its own inside 'open'), so the
+    // subsystem does not stop between them; the hold is let go once 'open' has returned.
+    let held = sdl.InitSubSystem(sdl.INIT_AUDIO);
+    var ids = List[u32]();
+    var names = List[String]();
+    playbackDevices(&mut ids, &mut names);
+    let k = firstMatch(&names, wants);
+    var answer: Result[Started, DeviceError] = Err[Started, DeviceError](DeviceError(2i32));
+    var needDefault = true;
+    if k < names.len() {
+      answer = Device.open(ids[k], Some(names[k].clone()), rate, voices, aheadMs);
+      match answer {
+        case is Ok { needDefault = false; }
+        case is Err {}
+      }
+    }
+    // no match, or the matched device would not open: the default, unnamed
+    if needDefault {
+      answer = Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, None[String], rate, voices, aheadMs);
+    }
+    if held { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
+    answer
+  }
+
+  fn open(devid: u32, name: Option[String], rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
     var c: Control;
     var rx: Receiver[Cmd];
     c, rx = commandQueue(DEFAULT_QUEUE);
@@ -142,7 +254,7 @@ pub struct Device {
     st, sr = Oneshot[i32].make();
     let engine = Engine.make(f32.from(rate), usize.from(voices), rx);
     let counts = Arc[imm, Counts](Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)));
-    let worker = thread.start(Feed(rate, voices, aheadMs, engine, st, counts), &feeder);
+    let worker = thread.start(Feed(devid, rate, voices, aheadMs, engine, st, counts), &feeder);
     let got = sr.recv();
     var code = 3i32;
     match got {
@@ -153,7 +265,7 @@ pub struct Device {
       worker.join();
       return Err[Started, DeviceError](DeviceError(code));
     }
-    Ok[Started, DeviceError](Started(Device(Some(worker), rate, counts), c))
+    Ok[Started, DeviceError](Started(Device(Some(worker), rate, counts), c, name))
   }
 
   // Stop feeding, close the device and wait for the feeder to end. 'control'
