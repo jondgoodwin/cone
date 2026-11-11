@@ -655,6 +655,8 @@ void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
         fnSigRefusalMsg(node, whycode, why);
     else if (isExpNode(node) && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
         errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
+    else if (isExpNode(node) && structDefaultRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
+        errorMsgNode(node, code, "%s.%s", msg, privwhy);
     else
         errorMsgNode(node, code, "%s%s", msg, iexpImmBorrowHint(node, totype));
 }
