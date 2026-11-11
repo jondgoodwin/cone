@@ -1,0 +1,116 @@
+// Step 0 under Bug 69 (throwaway), case (c): the join before an 'await' the
+// behaviour is abandoned at (the seamlater style). Row 0 moved **o (T), row 1
+// moved *o (F); refilled after the await, never reached. Want nibble 0 = 1
+// (T's value finalized at the move), nibble 2 = 1 (F's inner owner's value
+// dropped at the move), 1 and 3 = 0; allocations not freed 0.
+
+mod bug69mixedlater;
+
+import stdio use *;
+import libc;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import collections use List;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+let park: Host[Park];
+let tally: Atomic[u64];
+let keptCount: Atomic[u64];
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  park = aio.host[Park](&makePark);
+  tally = Atomic[u64].of(0u64);
+  keptCount = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+fn makePark() Park {Park.make()}
+
+struct Counted {
+  pub n: u64;
+  fn final(self: &uni) {tally.add(1u64 << (n * 4u64));}
+}
+
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+struct Park {
+  kept: List[actors.ReplyOf[u64]];
+  pub fn make() Park {Park(List[actors.ReplyOf[u64]]())}
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct ParkJob {
+  pub fn run(self, lp: &mut Loop, s: &mut Park, rp: actors.ReplyOf[u64]) {
+    s.kept.push(rp);
+    keptCount.add(1u64);
+  }
+}
+
+fn giveC(c: Counted) {}
+fn giveI(c: One[Counted]) {}
+
+actor Holder {
+  pub async fn row(self, t: bool, base: u64, done: OneshotSender[u64]) {
+    var o = One[One[Counted]](One[Counted](Counted(base)));
+    if t {giveC(**o);} else {giveI(*o);}
+    let n = await park.awaitable[ParkJob, u64](ParkJob());
+    o = One[One[Counted]](One[Counted](Counted(base + 1u64)));
+    let e = **o;
+    if e.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn report(what: &str, t: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < 4u64 {
+    printStr(" ");
+    printUInt((t >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var rxs = List[OneshotReceiver[u64]]();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  rxs.push(rx1);
+  {
+    let h1 = Holder();
+    h1.row(true, 0u64, tx1);
+  }
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  rxs.push(rx2);
+  {
+    let h2 = Holder();
+    h2.row(false, 2u64, tx2);
+  }
+  while keptCount.load() < 2u64 {thread.sleep(Duration.fromMillis(1i64));}
+  actors.waitQuiet();
+  park.end();
+  actors.waitQuiet();
+  report("abandoned:", tally.load());
+  finalAll();
+  printStr("end\n");
+}

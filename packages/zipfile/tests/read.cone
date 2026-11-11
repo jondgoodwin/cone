@@ -6,6 +6,7 @@
 mod readtest;
 
 import testing use *;
+import iobuf use IoBuf;
 import collections use *;
 import zipfile use *;
 import deflate;
@@ -79,14 +80,13 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut usize) Result[List[u8], ZipError] {
   var r = ar.reader(data, i)?;
   var all = List[u8]();
-  var chunk = List[u8]();
+  var chunk = IoBuf(65536usize);
   while true {
     chunk.clear();
     let s = r.pull(data, &mut chunk, piece);
     *pulls += 1usize;
     if chunk.len() > piece { expect(false, "a pull gave more than it was allowed"); }
-    var k = 0usize;
-    while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
+    all.appendSlice(chunk.view());
     if s == Status.Failed {
       match r.error() {
         case let Some(e) { return Err[List[u8], ZipError](e); }
@@ -173,13 +173,28 @@ fn main() i32 {
       // A reader that has finished stays Done; one asked for 0 bytes still moves
       match ar.reader(basic.view(), 0usize) {
         case var Ok(r) {
-          var chunk = List[u8]();
+          var chunk = IoBuf(4096usize);
           var s = r.pull(basic.view(), &mut chunk, 0usize);
           while s == Status.MoreOutput { s = r.pull(basic.view(), &mut chunk, 0usize); }
           expect(s == Status.Done, "a pull of 0 bytes is treated as 1");
           expectUInt(r.delivered(), 12u64, "delivered counts the bytes");
           expectStr(r.name(), "hello.txt", "reader name");
           expect(r.pull(basic.view(), &mut chunk, 5usize) == Status.Done, "a finished reader stays Done");
+        }
+        case let Err(e) { expect(false, "reader opens"); }
+      }
+
+      // pull into an IoBuf: a 'max' of the room goes straight into it; a room with none says MoreOutput
+      match ar.reader(basic.view(), 0usize) {
+        case var Ok(r) {
+          var none = IoBuf(4096usize);
+          none.setLen(none.capacity());
+          expect(r.pull(basic.view(), &mut none, 100usize) == Status.MoreOutput, "a buffer with no room is given nothing");
+          expectUInt(r.delivered(), 0u64, "nothing delivered into no room");
+          var chunk = IoBuf(4096usize);
+          let s = r.pull(basic.view(), &mut chunk, chunk.room());
+          expect(s == Status.Done, "a pull of the room finishes a small entry");
+          expect(chunk.view() == "Hello, zip!\n", "the direct pull's bytes");
         }
         case let Err(e) { expect(false, "reader opens"); }
       }
