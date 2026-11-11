@@ -1,11 +1,14 @@
-// Aligned raw blocks, core's 'RawBlocks.allocAligned' and 'releaseAligned': a
-// block of n bytes whose address is a multiple of a power-of-two 'align', for
-// a slab that finds its header by masking a cell's address. At 4 KiB, 64 KiB,
-// 256 KiB and 1 MiB (a size equal to the alignment, as a slab is) the address
-// has no low bits set, the whole block is written and read back, and it is
-// given back through releaseAligned; two blocks live together are distinct;
-// masking an address inside the block gives the block's start; a block of no
-// bytes, a small align (1) and a null release are all fine.
+// Aligned raw blocks, core's 'RawBlocks.allocAligned' returning an owning
+// 'AlignedBlock': a block of n bytes whose address ('addr') is a multiple of a
+// power-of-two 'align', for a slab that finds its header by masking a cell's
+// address. At 4 KiB, 64 KiB, 256 KiB and 1 MiB (a size equal to the alignment,
+// as a slab is) the address has no low bits set and the whole block is written
+// and read back; the block is given back by its 'final' when it goes out of
+// scope (a wrong or second free would crash or corrupt the heap, and the
+// allocate-and-drop loop would not survive it); two blocks live together are
+// distinct; masking an address inside the block gives the block's start; a
+// block moved to another owner (a binding, a function) is freed once, by the
+// last owner; a block of no bytes and a small align (1) are fine.
 
 mod region_aligned_blocks;
 
@@ -20,9 +23,10 @@ fn show(label: &str, n: i64) {
 
 // Allocates one block of 'size' aligned to 'size', writes every byte, reads
 // every byte back, and answers 1 when the address is aligned and every byte
-// held what was written, 0 otherwise
+// held what was written, 0 otherwise. The block dies at the closing brace.
 fn check(size: usize) i64 {
-  let p = RawBlocks.allocAligned(size, size);
+  let blk = RawBlocks.allocAligned(size, size);
+  let p = blk.addr();
   var ok = 1i64;
   if (p as usize) & (size - 1usize) != 0usize { ok = 0i64; }
   var k = 0usize;
@@ -42,8 +46,19 @@ fn check(size: usize) i64 {
   // The mask a cell inside the block would use to find the block's start
   let inside = p + (size / 2usize);
   if ((inside as usize) & ~(size - 1usize)) != (p as usize) { ok = 0i64; }
-  RawBlocks.releaseAligned(p);
   ok
+}
+
+// Takes the block by move; it dies here
+fn consume(blk: AlignedBlock) i64 {
+  let p = blk.addr();
+  *p = 7u8;
+  i64.from(*p)
+}
+
+// Takes a block and hands it back, still the one owner
+fn passThrough(blk: AlignedBlock) AlignedBlock {
+  blk
 }
 
 fn main() i32 {
@@ -54,19 +69,31 @@ fn main() i32 {
 
   let a = RawBlocks.allocAligned(65536usize, 65536usize);
   let b = RawBlocks.allocAligned(65536usize, 65536usize);
-  show("two-live-blocks-differ", if a != b {1i64} else {0i64});
-  show("second-aligned", if ((b as usize) & 65535usize) == 0usize {1i64} else {0i64});
-  RawBlocks.releaseAligned(a);
-  RawBlocks.releaseAligned(b);
+  show("two-live-blocks-differ", if a.addr() != b.addr() {1i64} else {0i64});
+  show("second-aligned", if ((b.addr() as usize) & 65535usize) == 0usize {1i64} else {0i64});
+
+  // Moves: 'c' takes 'a'; the function takes it and dies with it; 'd' is the
+  // same block handed through a function. Each is freed once.
+  let c = a;
+  show("moved-aligned", if ((c.addr() as usize) & 65535usize) == 0usize {1i64} else {0i64});
+  show("consumed", consume(c));
+  let d = passThrough(b);
+  show("passed-through-aligned", if ((d.addr() as usize) & 65535usize) == 0usize {1i64} else {0i64});
+
+  // Many in a row: each is freed by its own death
+  var n = 0i64;
+  var i = 0i64;
+  while i < 200i64 {
+    n = n + check(4096usize);
+    i = i + 1i64;
+  }
+  show("repeated-ok", n);
 
   let z = RawBlocks.allocAligned(0usize, 4096usize);
-  show("zero-bytes-aligned", if ((z as usize) & 4095usize) == 0usize {1i64} else {0i64});
-  RawBlocks.releaseAligned(z);
+  show("zero-bytes-aligned", if ((z.addr() as usize) & 4095usize) == 0usize {1i64} else {0i64});
 
   let s = RawBlocks.allocAligned(24usize, 1usize);
-  *(s + 23usize) = 5u8;
-  show("align-one", i64.from(*(s + 23usize)));
-  RawBlocks.releaseAligned(s);
-  RawBlocks.releaseAligned(null);
+  *(s.addr() + 23usize) = 5u8;
+  show("align-one", i64.from(*(s.addr() + 23usize)));
   0i32
 }
