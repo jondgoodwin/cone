@@ -486,30 +486,6 @@ static INode *loanCallerPlace(uint32_t id) {
     return loans[id].part == LifePartHeld ? lifePointee(held) : held;
 }
 
-uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
-    if (refholds == NULL || stored == NULL)
-        return 0;
-    uint32_t n = refholds->cnt;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t id = refholds->ids[i];
-        if ((id & LoanFar) && !beyond)
-            continue;
-        id = loanOf(id);
-        INode *place = loans[id].kind == LoanCaller ? loanCallerPlace(id) : NULL;
-        if (place == NULL || !itypeCarriesBorrow(place) || itypeCarriesEndingBorrow(place))
-            continue;
-        uint32_t nstored = stored->cnt;
-        for (uint32_t k = 0; k < nstored; ++k) {
-            uint32_t sid = loanOf(stored->ids[k]);
-            if (loans[sid].kind == LoanCaller) {
-                *through = loanParm(id);
-                return sid;
-            }
-        }
-    }
-    return 0;
-}
-
 // Whether the loans an arena reference holds are to be checked. One holding no
 // loan but what was stored through it was made by a route the walk does not
 // follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena,
@@ -563,9 +539,9 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
 // that a caller may keep past this function, by a route that tells the body
-// nothing of what else the caller lent: the arena a parameter points at, where
-// the function names no lifetime; or an arena reached through a struct's field
-// whose root a caller lent, named lifetimes or not. That route is seen two
+// nothing of what else the caller lent: an arena reached through a struct's
+// field whose root a caller lent (the arena a parameter points at is checked
+// by loanStoredApart, as every signature's, elided or named). That route is seen two
 // ways: the pin an arena's method made of its receiver's place in this body
 // (viafield), or, where a helper made the node or the reference and left no
 // pin here, a far loan of a parameter whose type holds an arena in a field
@@ -587,17 +563,18 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // result, a node of the arena, and the caller never asks (a holder has
 // writable-borrow depth 0). The exception (#992): a node whose death reads no
 // borrow ('readsnothing') may hold a shorter one, as nothing reads it later.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing) {
+int loanArenaNodeBarred(PathSet *refholds, int byparm, int readsnothing) {
     if (refholds == NULL)
         return 0;
-    int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
+    int caller = 0, viafield = 0, heldfield = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         uint32_t id = loanOf(refholds->ids[i]);
         if (loans[id].kind == LoanCaller) {
             caller = 1;
             INode *place = lifePointee(loanParm(id)->vtype);
+            // The arena a parameter points at: loanStoredApart checks it
             if (itypeIsArena(place) && !lifeSlotted(place))
-                arenaparm = 1;
+                ;
             else if ((!byparm || !readsnothing) && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
@@ -613,7 +590,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
                 viafield = 1;
         }
     }
-    return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
+    return (viafield && caller) || heldfield;
 }
 
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through) {
@@ -664,8 +641,7 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
         // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
-        // takes none, so nothing stored can land in it; as loanStoredStatic
-        // skips one holding no borrow
+        // takes none, so nothing stored can land in it
         if (itypeHoldsNoBorrow(place))
             continue;
         int slotted = lifeSlotted(place) != NULL;
