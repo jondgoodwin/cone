@@ -1,0 +1,214 @@
+// The logsink package: a console sink for the trace package. It writes one text line an event:
+//
+//   2026-11-11T09:30:15.250Z INFO fetcher fetched bytes=5120 took=830000ns
+//   2026-11-11T09:30:15.251Z WARN fetcher the server said 503 status=503
+//   2026-11-11T09:30:15.251Z INFO fetcher request begin url="http://x/a b" span=7
+//
+//   mod app;
+//   import trace use Level;
+//   import logsink;
+//
+//   fn main() i32 {
+//     logsink.install(Level.Info);     // the one sink, wanting errors, warnings and info
+//     ...
+//   }
+//
+//   ConsoleSink                the sink: 'is trace.Sink'
+//   install(max)               installs one, wanting kinds no more detailed than 'max'
+//   installWith(max, clock, write)   the same with the clock and the writer given: for TESTS (public because a test
+//                              is a program of its own and cannot see a private name)
+//
+// THE LINE. Time, level, target, text, then each field as name=value, separated by single spaces; one event is
+// one line, ended by a newline.
+//
+//   time    RFC 3339 in UTC with milliseconds, always 24 bytes: '2026-11-11T09:30:15.250Z'. It is the wall clock
+//           read when 'record' runs (an event's own time is the facade's monotonic ticks, which is no date), so
+//           it may differ from the event's moment by the time a thread spent between emitting and recording.
+//   level   the kind's level, upper case: ERROR WARN INFO DEBUG TRACE
+//   target  the kind's target
+//   text    the event's message; an event with none (emit) shows the kind's name. An interval's start and end add
+//           ' begin' or ' end' and, after the fields, span=N. Control bytes in the text are written as \n \r \t
+//           or \xHH, so no event spans two lines.
+//   fields  name=value in the kind's order. Numbers as digits, a bool as true/false, a duration as 'Nns', a time
+//           (the facade's ticks) as its number. A text value shows bare when it is non-empty and holds no space,
+//           '=', '"' or backslash or control byte; else it is in double quotes with \" \\ \n \r \t \xHH escapes.
+//
+// THE FILTER. 'enabled' says yes to a kind whose level is not Off and no more detailed than 'max'. It is the
+// sink's own cut, beside the facade's by target (trace.setLevel, CONE_TRACE), which still applies too.
+//
+// LINES STAY WHOLE. 'record' runs on the emitting thread, many at once. It builds the line in a String of its
+// own (no state is shared between calls: the sink holds only its level and two function pointers, never written
+// after install) and writes it with ONE 'print <- line' of one text: that is a single stdio record, and a record
+// is taken away whole under the console's lock (conestd/stdio.cone), so lines of different threads never
+// interleave, however long.
+//
+// THE ACTORS CONSOLE OWNER. In a program that runs actors, stdio's engine hands every finished record to the
+// owner thread (actors/src/console.cone) instead of writing it. The sink needs to know nothing of that: it
+// prints through stdio like any code, so its line is one record to the owner too, in order with the emitting
+// thread's other prints, and 'trace.flush()' / the program's end drain it with the rest. A behaviour that logs
+// pays a hand-over, not a write. The sink never writes to the console by any other way (no fd of its own).
+//
+// NOT HERE: a file sink, rotation, colour, a stream other than standard output.
+//
+// The package imports trace, calendar, time, collections and stdio.
+
+mod logsink;
+
+import trace use Level;
+import calendar;
+import time use Timestamp;
+import collections use String;
+import stdio use *;
+
+pub struct ConsoleSink is trace.Sink {
+  max: Level;
+  clock: &fn() Timestamp;
+  write: &fn(line: &str);
+
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    k.level != Level.Off && k.level.rank() <= self.max.rank()
+  }
+
+  pub fn record(self: &, e: &trace.Event) {
+    var line = String.withCapacity(160usize);
+    appendTime(&mut line, (self.clock)());
+    let k = e.kind;
+    line.append(" ");
+    line.append(levelText(k.level));
+    line.append(" ");
+    line.append(k.target);
+    line.append(" ");
+    appendEscaped(&mut line, if e.message.len > 0usize {e.message} else {k.name});
+    if e.phase == trace.Phase.Begin {
+      line.append(" begin");
+    }
+    if e.phase == trace.Phase.End {
+      line.append(" end");
+    }
+    var i = 0usize;
+    while i < e.values.len {
+      line.append(" ");
+      line.append(k.names[i]);
+      line.append("=");
+      match e.values[i] {
+        case let I64(v) {line.appendInt(v);}
+        case let U64(v) {line.appendUInt(v);}
+        case let F64(v) {line.appendF64(v);}
+        case let Bool(v) {line.append(if v {"true"} else {"false"});}
+        case let Text(v) {appendValueText(&mut line, v);}
+        case let Duration(v) {line.appendInt(v); line.append("ns");}
+        case let Time(v) {line.appendUInt(v);}
+      }
+      i = i + 1usize;
+    }
+    if e.phase != trace.Phase.Event {
+      line.append(" span=");
+      line.appendUInt(e.span);
+    }
+    line.append("\n");
+    (self.write)(line.view());
+  }
+}
+
+fn levelText(l: Level) &str {
+  match l {
+    case is Level.Off {"OFF"}
+    case is Level.Error {"ERROR"}
+    case is Level.Warn {"WARN"}
+    case is Level.Info {"INFO"}
+    case is Level.Debug {"DEBUG"}
+    else {"TRACE"}
+  }
+}
+
+fn nowClock() Timestamp {Timestamp.now()}
+
+// One print of one text: one stdio record, taken away whole
+fn printLine(line: &str) {
+  print <- line;
+}
+
+// Installs a console sink wanting kinds up to 'max' (Level.Info: errors, warnings and info); false when a sink
+// was already installed (trace's rule)
+pub fn install(max: Level) bool {
+  installWith(max, &nowClock, &printLine)
+}
+
+// For tests: the clock and the writer are given. 'write' gets each whole line, with its newline, on the thread
+// that made the event, many at once
+pub fn installWith(max: Level, clock: &fn() Timestamp, write: &fn(line: &str)) bool {
+  trace.install(Uni[ConsoleSink](max, clock, write))
+}
+
+// '2026-11-11T09:30:15.250Z': calendar's whole-second text with the milliseconds put before the 'Z'
+fn appendTime(line: &mut String, t: Timestamp) {
+  let secs = t.unixSeconds();
+  let ms = (t.unixNanos() - secs * 1000000000i64) / 1000000i64;
+  let whole = calendar.rfc3339(Timestamp.fromUnixSeconds(secs));
+  let b: &Array[u8] = whole.view();
+  line.appendBytes(&b[0..<b.len - 1usize]);
+  line.append(".");
+  line.appendByte(u8.from(48i64 + ms / 100i64));
+  line.appendByte(u8.from(48i64 + ms / 10i64 % 10i64));
+  line.appendByte(u8.from(48i64 + ms % 10i64));
+  line.append("Z");
+}
+
+fn hexDigit(n: u8) u8 {
+  if n < 10u8 {48u8 + n} else {87u8 + n}
+}
+
+// A byte as an escape inside text; false when it needs none
+fn appendEscape(line: &mut String, c: u8, quoting: bool) bool {
+  if c == '\n' {line.append("\\n");}
+  else if c == '\r' {line.append("\\r");}
+  else if c == '\t' {line.append("\\t");}
+  else if c < 32u8 || c == 127u8 {
+    line.append("\\x");
+    line.appendByte(hexDigit(c / 16u8));
+    line.appendByte(hexDigit(c % 16u8));
+  }
+  else if quoting && c == '"' {line.append("\\\"");}
+  else if quoting && c == '\\' {line.append("\\\\");}
+  else {return false;}
+  true
+}
+
+// The message: control bytes escaped, nothing quoted
+fn appendEscaped(line: &mut String, s: &str) {
+  let b: &Array[u8] = s;
+  var i = 0usize;
+  while i < b.len {
+    if !appendEscape(line, b[i], false) {
+      line.appendByte(b[i]);
+    }
+    i = i + 1usize;
+  }
+}
+
+// A text field's value: bare when plain, else quoted
+fn appendValueText(line: &mut String, s: &str) {
+  let b: &Array[u8] = s;
+  var plain = b.len > 0usize;
+  var i = 0usize;
+  while i < b.len {
+    let c = b[i];
+    if c <= ' ' || c == '=' || c == '"' || c == '\\' || c == 127u8 {
+      plain = false;
+    }
+    i = i + 1usize;
+  }
+  if plain {
+    line.append(s);
+    return;
+  }
+  line.append("\"");
+  i = 0usize;
+  while i < b.len {
+    if !appendEscape(line, b[i], true) {
+      line.appendByte(b[i]);
+    }
+    i = i + 1usize;
+  }
+  line.append("\"");
+}

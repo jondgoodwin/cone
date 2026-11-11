@@ -1,0 +1,232 @@
+// Lines stay whole. Two cases, each a child process of this test with its output captured through a pipe, and
+// the parent checks what the child wrote: the sink as installed by 'logsink.install' (the real clock, the real
+// print), every line in the layout, no line torn or fused with another, each writer's own lines in order.
+//
+// 1. threads: 8 OS threads each emit 400 events at once; every 100th carries a 20,000-byte text, bigger than the
+//    console's 16 KiB buffer, which stdio writes as a chained record.
+// 2. actors: the same from 8 actors' behaviours, so the lines go through the actors console owner (a hand-over to
+//    its thread, not a write).
+
+mod whole;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+import process;
+import trace use Level, Kind3;
+import logsink;
+
+const writers = 8u64;
+const perWriter = 400u64;
+const pad = "0123456789abcdefghij0123456789";
+
+let lineKind: Kind3[u64, u64, &str];
+
+fn @initpure init() {
+  lineKind = Kind3[u64, u64, &str].make("line", "w", Level.Info, "id", "seq", "pad");
+}
+
+fn bigPad() String {
+  var s = String();
+  var i = 0u32;
+  while i < 2000u32 {
+    s <- "0123456789";
+    i = i + 1u32;
+  }
+  s
+}
+
+fn emitAll(id: u64) {
+  let wide = bigPad();
+  var i = 0u64;
+  while i < perWriter {
+    if i % 100u64 == 0u64 {
+      lineKind.emit(id, i, wide.view());
+    } else {
+      lineKind.emit(id, i, pad);
+    }
+    i = i + 1u64;
+  }
+}
+
+fn work(id: u64) u64 {
+  emitAll(id);
+  id
+}
+
+actor Logger {
+  pub async fn go(self, id: u64) {
+    emitAll(id);
+  }
+}
+
+fn install() {
+  trace.setDefaultLevel(Level.Info);
+  require(logsink.install(Level.Info), "the sink is installed");
+}
+
+fn childThreads() i32 {
+  install();
+  var ts = List[thread.Thread[u64]]();
+  var i = 0u64;
+  while i < writers {
+    ts.push(thread.start(i, &work));
+    i = i + 1u64;
+  }
+  while ts.len() > 0usize {
+    match ts.pop() {
+      case let Some(t) { t.join(); }
+      case is None { }
+    }
+  }
+  trace.flush();
+  0i32
+}
+
+fn childActors() i32 {
+  initAll();
+  install();
+  var i = 0u64;
+  while i < writers {
+    let l = Logger();
+    l.go(i);
+    i = i + 1u64;
+  }
+  finalAll();
+  0i32
+}
+
+fn child(mode: &str) i32 {
+  if mode == "threads" { return childThreads(); }
+  if mode == "actors" { return childActors(); }
+  2i32
+}
+
+fn command(exe: &str, mode: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c
+}
+
+fn ran(exe: &str, mode: &str) process.Output {
+  var o = process.Output(0u32, 0u32, false, String(), String());
+  let c = command(exe, mode);
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(180000i64))) {
+    case var Ok(ok) { o <-> ok; }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "<started>", mode);
+    }
+  }
+  o
+}
+
+// '2026-11-11T09:30:15.250Z': 24 bytes, digits and the fixed marks
+fn timeOk(t: &str) bool {
+  let b: &Array[u8] = t;
+  if b.len != 24usize {
+    return false;
+  }
+  var i = 0usize;
+  while i < 24usize {
+    let c = b[i];
+    if i == 4usize || i == 7usize || i == 13usize || i == 16usize {
+      if c != '-' && c != ':' { return false; }
+    } else if i == 10usize {
+      if c != 'T' { return false; }
+    } else if i == 19usize {
+      if c != '.' { return false; }
+    } else if i == 23usize {
+      if c != 'Z' { return false; }
+    } else if c < '0' || c > '9' {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn after(part: &'a str, prefix: &str) Option[&'a str] {
+  if part.len() > prefix.len() && part.startsWith(prefix) {
+    Some(part.sliceFrom(prefix.len()))
+  } else {
+    None
+  }
+}
+
+fn verify(text: &String, label: &Array[u8]) {
+  let wide = bigPad();
+  var next = List[u64]();
+  var k = 0u64;
+  while k < writers {
+    next.push(0u64);
+    k = k + 1u64;
+  }
+  var good = 0u64;
+  var bad = 0u64;
+  var misordered = 0u64;
+  let all = List[&str].from(text.lines());
+  var li = 0usize;
+  while li < all.len() {
+    let parts = List[&str].from(all[li].splitOnChar(' '));
+    li = li + 1usize;
+    if !(parts.len() == 7usize && timeOk(parts[0usize]) && parts[1usize] == "INFO" && parts[2usize] == "w"
+        && parts[3usize] == "line") {
+      bad = bad + 1u64;
+      continue;
+    }
+    var id = 0u64;
+    var seq = 0u64;
+    var padText = "";
+    match after(parts[4usize], "id=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { id = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    match after(parts[5usize], "seq=") {
+      case let Some(v) { match u64.parse(v) { case let Ok(n) { seq = n; } case is Err { bad = bad + 1u64; } } }
+      case is None { bad = bad + 1u64; }
+    }
+    match after(parts[6usize], "pad=") {
+      case let Some(v) { padText = v; }
+      case is None { bad = bad + 1u64; }
+    }
+    let padOk = if seq % 100u64 == 0u64 { padText == wide.view() } else { padText == pad };
+    if id >= writers || !padOk {
+      bad = bad + 1u64;
+      continue;
+    }
+    let slot = usize.from(id);
+    if next[slot] != seq {
+      misordered = misordered + 1u64;
+    }
+    next[slot] = seq + 1u64;
+    good = good + 1u64;
+  }
+  expectUInt(bad, 0u64, label);
+  expectUInt(misordered, 0u64, label);
+  expectUInt(good, writers * perWriter, label);
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") {
+    return child(a[2usize].view());
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  let t = ran(exe.view(), "threads");
+  expectUInt(u64.from(t.exitCode), 0u64, "8 threads: exits 0");
+  verify(&t.stdout, "8 threads: every line whole, in the layout, in order for each thread");
+  let b = ran(exe.view(), "actors");
+  expectUInt(u64.from(b.exitCode), 0u64, "8 actors: exits 0");
+  verify(&b.stdout, "8 actors: every line whole, in the layout, in order for each actor");
+  done()
+}

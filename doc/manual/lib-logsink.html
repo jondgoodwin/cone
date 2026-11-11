@@ -1,0 +1,90 @@
+<html>
+  <head>
+	  <title>The Console Log Sink - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">The Console Log Sink</div>
+		</div>
+
+    <div class="text">
+
+	<p>The <span class="pre">logsink</span> package is a <a href="lib-trace.html">trace</a> sink that writes each event
+		as one line of text on standard output. It is the quickest way to see what a program logs: install it, and the
+		kinds and log lines your packages emit appear, filtered by level. It writes only to the console: there is no
+		file sink, no rotation and no colour.</p>
+
+	<h2 id="example">An example</h2>
+<pre>
+mod app;
+
+import trace use Level, Log;
+import logsink;
+
+let log: Log;
+
+fn @initpure init() {
+  log = Log.make("app", Level.Info);
+}
+
+fn main() i32 {
+  logsink.install(Level.Info);
+  let id = 42u64;
+  log &lt;- $"user {id} logged in";
+  0i32
+}
+</pre>
+	<p>prints</p>
+<pre>
+2026-11-11T09:30:15.250Z INFO app user 42 logged in id=42
+</pre>
+
+	<h2 id="line">The line</h2>
+	<p>One event is one line: the time, the level, the target, the text, then each field as
+		<span class="pre">name=value</span>, separated by single spaces.</p>
+	<ul>
+		<li><b>Time</b>: RFC 3339 in UTC with milliseconds, always 24 bytes. It is the wall clock read when the sink
+			records the event (an event's own time is the facade's monotonic clock, which is no date).</li>
+		<li><b>Level</b>: the kind's, in capitals: <span class="pre">ERROR WARN INFO DEBUG TRACE</span>.</li>
+		<li><b>Target</b>: the kind's.</li>
+		<li><b>Text</b>: the event's message; an event with none shows the kind's name. The start and end of an interval
+			add <span class="pre">begin</span> or <span class="pre">end</span> after it, and
+			<span class="pre">span=N</span> after the fields. Control characters are written as
+			<span class="pre">\n \r \t \xHH</span>, so an event never spans two lines.</li>
+		<li><b>Fields</b>: numbers as digits, a bool as <span class="pre">true</span> or <span class="pre">false</span>,
+			a duration as <span class="pre">830000ns</span>, a time as the facade's tick count. A text value is bare when
+			it is not empty and holds no space, <span class="pre">=</span>, quote, backslash or control character;
+			otherwise it is in double quotes with <span class="pre">\"</span> and <span class="pre">\\</span> escaped.</li>
+	</ul>
+
+	<h2 id="names">What it has</h2>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Name</th><th>What it is</th></tr>
+	<tr><td><span class="pre">install(max)</span></td><td>Installs the sink with <span class="pre">trace.install</span>. It wants the kinds
+		whose level is no more detailed than <span class="pre">max</span>; answers false if a sink is already
+		installed. The facade's own levels (<span class="pre">setLevel</span>, <span class="pre">CONE_TRACE</span>) still apply.</td></tr>
+	<tr><td><span class="pre">ConsoleSink</span></td><td>The sink's type, a <span class="pre">trace.Sink</span>.</td></tr>
+	<tr><td><span class="pre">installWith(max, clock, write)</span></td><td>For tests: the same, with the clock and the function that
+		writes a line given.</td></tr>
+	</table>
+
+	<h2 id="whole">Lines stay whole</h2>
+	<p>A sink's <span class="pre">record</span> runs on the thread that emitted the event, many at once. This one
+		builds the line in a text of its own and prints it with a single <span class="pre">print</span> of one text,
+		which stdio takes away whole, so lines from different threads never mix. In a program that runs actors the line
+		is handed, whole, to the console's owner thread like any other print, so a behaviour that logs pays a
+		hand-over, not a write; <span class="pre">trace.flush()</span> and the end of the program drain it with the rest.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="lib-trace.html">Logging and Tracing</a> &mdash; the facade, the kinds and the sinks.</li>
+		<li><a href="library.html#threads">The Standard Library</a> &mdash; the <span class="pre">logsink</span> package in the catalogue.</li>
+	</ul>
+
+	</div>
+	</body>
+</html>

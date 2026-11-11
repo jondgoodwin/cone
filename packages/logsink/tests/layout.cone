@@ -1,0 +1,76 @@
+// The console sink's line, pinned: a fixed clock that moves a known number of milliseconds a call, the time,
+// level, target, text and fields of kinds of 0 to 4 fields of every type, a message, a formatted Log line,
+// an interval's begin and end, the quoting of text values, the escaping of control bytes, and a Debug kind that a
+// sink wanting Info never sees. The writer is the sink's own default, a print of the whole line.
+
+mod layout;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Kind0, Kind1, Kind2, Kind3, Kind4, Nanos, Ticks, Log;
+import calendar use DateTime;
+import time use Timestamp, Duration;
+import logsink;
+
+let started: Kind0;
+let count: Kind1[u64];
+let pair: Kind2[i64, &str];
+let mixed: Kind3[f64, bool, Nanos];
+let four: Kind4[u64, i64, &str, Ticks];
+let noisy: Kind0;
+let log: Log;
+
+fn @initpure init() {
+  started = Kind0.make("started", "app", Level.Info);
+  count = Kind1[u64].make("count", "app", Level.Info, "n");
+  pair = Kind2[i64, &str].make("pair", "net", Level.Warn, "delta", "label");
+  mixed = Kind3[f64, bool, Nanos].make("mixed", "app", Level.Error, "ratio", "ok", "took");
+  four = Kind4[u64, i64, &str, Ticks].make("four", "app", Level.Info, "a", "b", "c", "at");
+  noisy = Kind0.make("noisy", "app", Level.Debug);
+  log = Log.make("app", Level.Info);
+}
+
+// 2026-11-11T09:30:15.000Z, and 250 ms more each call; the 5th call crosses into the next second
+var calls = 0i64;
+var baseSecs = 0i64;
+
+fn clock() Timestamp {
+  let at = Timestamp.fromUnixSeconds(baseSecs) + Duration.fromMillis(calls * 250i64);
+  calls = calls + 1i64;
+  at
+}
+
+fn line(s: &str) {
+  print <- s;
+}
+
+fn main() i32 {
+  match DateTime.fromYmdHms(2026i64, 11i64, 11i64, 9i64, 30i64, 15i64) {
+    case let Some(dt) {
+      match dt.toTimestamp() {
+        case let Some(t) { baseSecs = t.unixSeconds(); }
+        case is None { expect(false, "the base time exists"); }
+      }
+    }
+    case is None { expect(false, "the base date exists"); }
+  }
+  trace.setDefaultLevel(Level.Trace);
+  expect(logsink.installWith(Level.Info, &clock, &line), "the sink is installed");
+  expect(!logsink.install(Level.Info), "a second install is refused");
+
+  started.emit();
+  count.emit(7u64);
+  pair.emit(-3i64, "plain");
+  pair.emit(-3i64, "two words");
+  pair.emit(0i64, "");
+  mixed.emit(0.5, true, Nanos(830000i64));
+  four.log(1u64, -2i64, "a=\"b\" back\\slash", Ticks(12345u64), "with a message");
+  four.log(3u64, 4i64, "tab\there", Ticks(0u64), "line one\nline two\x01");
+  noisy.emit();
+  let id = 42u64;
+  log <- $"user {id} logged in";
+  let span = pair.begin(9i64, "a request");
+  pair.end(span);
+  expect(calls == 11i64, "the clock was read once a line, and not for the Debug kind");
+  done()
+}
