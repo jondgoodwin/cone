@@ -1,0 +1,147 @@
+// Identities over random values of up to 4096 bits, from fixed seeds:
+// a*b/b == a, (a+b)-b == a, divmod recombines (q*d + r == a, r < d), the
+// word division agrees with the BigUint one, text round-trips in bases 10, 16
+// and 2, a shift is a multiply, and multiplication distributes over addition.
+// Values with runs of all-ones and all-zero limbs are mixed in, since those
+// reach the carry and the add-back paths of the division.
+
+mod properties;
+
+import testing use *;
+import collections use *;
+import bigint use BigUint;
+import random;
+
+// A random number of up to maxBits bits, the limb count itself random; one limb in
+// five is all ones, one in five zero
+fn draw(rng: &mut random.Rng, maxBits: usize) BigUint {
+  let maxLimbs = maxBits / 64usize;
+  let n = rng.index(maxLimbs + 1usize);
+  var l = List[u64]();
+  var i = 0usize;
+  while i < n {
+    let kind = rng.below(5u64);
+    if kind == 0u64 { l.push(0xFFFFFFFFFFFFFFFFu64); }
+    else if kind == 1u64 { l.push(0u64); }
+    else { l.push(rng.next()); }
+    i = i + 1usize;
+  }
+  BigUint.fromLimbs(l)
+}
+
+fn same(a: &BigUint, b: &BigUint) bool { a.cmp(b) == 0i32 }
+
+fn main() i32 {
+  var rng = random.Rng.fromSeed(20261111u64);
+  var failures = 0i32;
+  var round = 0i32;
+  while round < 300i32 {
+    let a = draw(&mut rng, 4096usize);
+    var b = draw(&mut rng, 2048usize);
+    if b.isZero() { b = BigUint.one(); }
+    let tag = "round";
+
+    // a*b/b == a
+    let ab = a.mul(&b);
+    match ab.divmod(&b) {
+      case let Ok(qr) {
+        if !same(&qr.quot, &a) || !qr.rem.isZero() { failures = failures + 1i32; }
+      }
+      case is Err { failures = failures + 1i32; }
+    }
+
+    // (a+b)-b == a, and a-(a+b) refuses unless b is zero
+    let sum = a.add(&b);
+    match sum.sub(&b) {
+      case let Ok(d) { if !same(&d, &a) { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    match a.sub(&sum) {
+      case is Ok { failures = failures + 1i32; }
+      case is Err { }
+    }
+
+    // divmod recombines: q*b + r == a and r < b
+    match a.divmod(&b) {
+      case let Ok(qr) {
+        let back = qr.quot.mul(&b).add(&qr.rem);
+        if !same(&back, &a) || qr.rem.cmp(&b) >= 0i32 { failures = failures + 1i32; }
+      }
+      case is Err { failures = failures + 1i32; }
+    }
+
+    // A word divisor, small and large, agrees with the same divisor as a BigUint
+    let w = if round % 2i32 == 0i32 { rng.next() >> 33u64 } else { rng.next() | 0x100000000u64 };
+    if w != 0u64 {
+      match a.divmodSmall(w) {
+        case let Ok(ws) {
+          match a.divmod(&BigUint.fromU64(w)) {
+            case let Ok(qr) {
+              if !same(&ws.quot, &qr.quot) || !same(&BigUint.fromU64(ws.rem), &qr.rem) {
+                failures = failures + 1i32;
+              }
+            }
+            case is Err { failures = failures + 1i32; }
+          }
+        }
+        case is Err { failures = failures + 1i32; }
+      }
+    }
+
+    // Text round trips
+    let dec = String() <- a;
+    match BigUint.parse(dec.view()) {
+      case let Ok(r) { if !same(&r, &a) { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    let hex = a.toStringBase(16u32);
+    match BigUint.parseHex(hex.view()) {
+      case let Ok(r) { if !same(&r, &a) { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    if round < 40i32 {
+      let bin = a.toStringBase(2u32);
+      match BigUint.parseBase(bin.view(), 2u32) {
+        case let Ok(r) { if !same(&r, &a) { failures = failures + 1i32; } }
+        case is Err { failures = failures + 1i32; }
+      }
+    }
+
+    // A shift is a multiply by a power of two; shifting back restores
+    let sh = rng.index(200usize);
+    let up = a.shiftLeft(sh);
+    if !same(&up, &a.mul(&BigUint.one().shiftLeft(sh))) { failures = failures + 1i32; }
+    if !same(&up.shiftRight(sh), &a) { failures = failures + 1i32; }
+
+    // a*(b+c) == a*b + a*c
+    let c = draw(&mut rng, 1024usize);
+    if !same(&a.mul(&b.add(&c)), &a.mul(&b).add(&a.mul(&c))) { failures = failures + 1i32; }
+
+    round = round + 1i32;
+  }
+  expectInt(i64.from(failures), 0i64, "300 rounds of identities, seed 20261111");
+
+  // A second seed, longer values, fewer rounds
+  var rng2 = random.Rng.fromSeed(7u64);
+  var bad = 0i32;
+  var k = 0i32;
+  while k < 20i32 {
+    let a = draw(&mut rng2, 4096usize);
+    let b = draw(&mut rng2, 4096usize);
+    if !b.isZero() {
+      match a.mul(&b).divmod(&b) {
+        case let Ok(qr) { if !same(&qr.quot, &a) || !qr.rem.isZero() { bad = bad + 1i32; } }
+        case is Err { bad = bad + 1i32; }
+      }
+      match a.divmod(&b) {
+        case let Ok(qr) {
+          if !same(&qr.quot.mul(&b).add(&qr.rem), &a) || qr.rem.cmp(&b) >= 0i32 { bad = bad + 1i32; }
+        }
+        case is Err { bad = bad + 1i32; }
+      }
+    }
+    k = k + 1i32;
+  }
+  expectInt(i64.from(bad), 0i64, "20 rounds of 4096-bit values, seed 7");
+  done()
+}
