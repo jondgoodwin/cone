@@ -494,12 +494,11 @@ pub struct Renderer {
   // has built one since (else it builds its own). Set by the caller before each 'render'.
   pub rtShare: EyeShare = EyeShare.Own;
   rtKept: bool = false;
-  // Sharing the sun's shadow maps between renders (a headset's two eyes): 0 each render draws its own; 1 this render draws
-  // them, its cascades grown by 'shadowGrow' metres (the eyes' distance apart), and keeps them; 2 this render draws none
-  // and reads the ones a render with 1 kept, if no other render has drawn shadows since (else it draws its own). Set by
-  // the caller before each 'render'.
-  pub shadowShare: u32 = 0u32;
-  pub shadowGrow: f32 = 0.;
+  // Sharing the sun's shadow maps between renders (a headset's two eyes), as 'rtShare' does the ray-traced structure: Build
+  // draws them, its cascades grown by 'shadow.settings.grow' metres (the eyes' distance apart), and keeps them; Reuse
+  // draws none and reads the ones a Build render kept, if no other render has drawn shadows since (else it draws its
+  // own). Set by the caller before each 'render'.
+  pub shadowShare: EyeShare = EyeShare.Own;
   shadowKept: bool = false;
   pub frameItemsLive: bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
@@ -1627,12 +1626,11 @@ pub struct Renderer {
     // The sun's cascades fitted to this camera (a function of the camera
     // alone, so the casters of each can be gathered before the batches)
     let shadowsOn = shadow.settings.enabled;
-    let shadowReuse = shadowsOn && shadowShare == 2u32 && shadowKept;
+    let shadowReuse = shadowsOn && shadowShare == EyeShare.Reuse && shadowKept;
     if shadowsOn && !shadowReuse {
-      shadow.cascades = computeCascadesGrown(camera, aspect, light.direction, &shadow.settings,
-        if shadowShare == 1u32 { shadowGrow } else { 0. });
+      shadow.cascades = computeCascades(camera, aspect, light.direction, &shadow.settings);
     }
-    shadowKept = shadowsOn && (shadowShare == 1u32 || shadowReuse);
+    shadowKept = shadowsOn && (shadowShare == EyeShare.Build || shadowReuse);
 
     // The scene (visibility.cone): what this camera sees of it, added to the
     // draw list's items in a list of this render's, and, for each shadow

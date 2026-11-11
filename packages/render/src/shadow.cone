@@ -98,6 +98,9 @@ pub struct ShadowSettings {
   pub casterDistance: f32 = 150.;
   // Snap each cascade's window to whole texels (off only to see why it is on)
   pub stabilize: bool = true;
+  // Metres added to every cascade's sphere, so a second camera that many metres from the first (a headset's other eye,
+  // sharing these maps through 'Renderer.shadowShare') lies inside the windows too
+  pub grow: f32 = 0.;
 
   // Shadows off: the other fields are left as they are
   pub fn off() ShadowSettings { ShadowSettings() }
@@ -178,12 +181,6 @@ pub fn sliceSphere(a: f32, b: f32, tanY: f32, aspect: f32, center: &mut f32) f32
 // camera's position and the light, and the radius on the field of view and
 // the splits alone.
 pub fn computeCascades(camera: &Camera, aspect: f32, sunDirection: Vec3, s: &ShadowSettings) CascadeSet {
-  computeCascadesGrown(camera, aspect, sunDirection, s, 0.)
-}
-
-// The same with every cascade's sphere 'grow' metres larger, so a second camera that many metres from this one
-// (a headset's other eye) lies inside the windows too
-pub fn computeCascadesGrown(camera: &Camera, aspect: f32, sunDirection: Vec3, s: &ShadowSettings, grow: f32) CascadeSet {
   var count = s.cascades;
   if count < 1u32 { count = 1u32; }
   if count > MAX_CASCADES { count = MAX_CASCADES; }
@@ -242,7 +239,7 @@ pub fn computeCascadesGrown(camera: &Camera, aspect: f32, sunDirection: Vec3, s:
     let center = eye + forward * t;
     set.centers[i] = center;
     // Leave room at the window's edge for the filter
-    let radius = (r + grow) * size / (size - 2. * pad);
+    let radius = (r + s.grow) * size / (size - 2. * pad);
     let texel = 2. * radius / size;
 
     // The centre in the sun's view, snapped to the lattice of texels
@@ -522,6 +519,7 @@ fn clampShadowSettings(s: &ShadowSettings) ShadowSettings {
   if c.blend < 0.02 { c.blend = 0.02; }
   if c.blend > 0.5 { c.blend = 0.5; }
   if c.pcfRadius < 0. { c.pcfRadius = 0.; }
+  if c.grow < 0. { c.grow = 0.; }
   c
 }
 
