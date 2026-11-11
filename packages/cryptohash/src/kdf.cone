@@ -8,20 +8,24 @@
 //
 // Both write into a caller's buffer, as far as the buffer goes, because the
 // output length is the caller's choice and the package has no list type to
-// return. Both answer false, and leave the buffer unchanged, for a request
-// the standard rules out.
+// return. Both answer a Result (which Cone warns about if it is dropped): Err
+// with a reason, and the buffer not written, for a request the standard rules
+// out. Both such requests are the caller's mistake and are known before the
+// call, so a caller that checks its length and count never sees the Err.
+// A caller must not use the buffer after an Err: it holds what the caller put
+// there, not a key.
 
 // PBKDF2-HMAC-SHA-256 (RFC 8018 section 5.2, with HMAC-SHA-256 as the PRF).
 // Fills 'out' with the derived key of length out.len from the password and
 // salt, with 'iterations' (the RFC's c) rounds of HMAC per 32-byte block.
-// Answers false if iterations is 0, or if out is longer than the RFC's limit
+// Answers Err if iterations is 0, or if out is longer than the RFC's limit
 // of (2^32 - 1) * 32 bytes. An empty 'out' is allowed and derives nothing.
 // Not a password hash for new designs on its own: a memory-hard function is
 // better, and the iteration count must be large (OWASP 2023 asks for 600000
 // with SHA-256). Not constant-time beyond HMAC: see above.
-pub fn pbkdf2Sha256(password: &Array[u8], salt: &Array[u8], iterations: u32, out: &mut Array[u8]) bool {
-  if iterations == 0u32 { return false; }
-  if u64.from(out.len) > 4294967295u64 * 32u64 { return false; }
+pub fn pbkdf2Sha256(password: &Array[u8], salt: &Array[u8], iterations: u32, out: &mut Array[u8]) Result[void, &str] {
+  if iterations == 0u32 { return Err[void, &str]("pbkdf2Sha256: iterations must be at least 1"); }
+  if u64.from(out.len) > 4294967295u64 * 32u64 { return Err[void, &str]("pbkdf2Sha256: output longer than (2^32 - 1) * 32 bytes"); }
   let base = HmacSha256.make(password);
   var block = 1u32;
   var pos = 0usize;
@@ -53,17 +57,17 @@ pub fn pbkdf2Sha256(password: &Array[u8], salt: &Array[u8], iterations: u32, out
     }
     block = block + 1u32;
   }
-  true
+  Ok[void, &str](nil)
 }
 
 // HKDF-SHA-256 (RFC 5869): extract, then expand. Fills 'out' with the output
 // keying material of length out.len from the input keying material 'ikm', an
 // optional 'salt' (empty means none, which RFC 5869 treats as 32 zero bytes;
 // HMAC pads an empty key with zeros, so it is the same) and the context
-// 'info'. Answers false if out is longer than 255 * 32 = 8160 bytes, the most
+// 'info'. Answers Err if out is longer than 255 * 32 = 8160 bytes, the most
 // the standard allows. Not constant-time beyond HMAC: see above.
-pub fn hkdfSha256(salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], out: &mut Array[u8]) bool {
-  if out.len > 8160usize { return false; }
+pub fn hkdfSha256(salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], out: &mut Array[u8]) Result[void, &str] {
+  if out.len > 8160usize { return Err[void, &str]("hkdfSha256: output longer than 255 * 32 = 8160 bytes"); }
   // extract: PRK = HMAC(salt, IKM)
   let prk = hmacSha256(salt, ikm);
   // expand: T(i) = HMAC(PRK, T(i-1) | info | i), OKM is T(1) | T(2) | ... cut to length
@@ -86,5 +90,5 @@ pub fn hkdfSha256(salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], out: &mut
     }
     counter = counter + 1u8;
   }
-  true
+  Ok[void, &str](nil)
 }

@@ -43,14 +43,16 @@ fn counting(first: u8, n: usize) List[u8] {
 
 fn pbk(label: &str, pw: &Array[u8], salt: &Array[u8], c: u32, n: usize, want: &str) {
   var buf = repeated(0u8, n);
-  expect(cryptohash.pbkdf2Sha256(pw, salt, c, buf.viewMut()), label);
+  let r = cryptohash.pbkdf2Sha256(pw, salt, c, buf.viewMut());
+  expect(r.isTrue(), label);
   let hex = hexOf(buf.view());
   expectStr(hex.view(), want, label);
 }
 
 fn hk(label: &str, salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], n: usize, want: &str) {
   var buf = repeated(0u8, n);
-  expect(cryptohash.hkdfSha256(salt, ikm, info, buf.viewMut()), label);
+  let r = cryptohash.hkdfSha256(salt, ikm, info, buf.viewMut());
+  expect(r.isTrue(), label);
   let hex = hexOf(buf.view());
   expectStr(hex.view(), want, label);
 }
@@ -85,15 +87,21 @@ fn main() i32 {
   hk("RFC 5869 case 3", empty.view(), ikm1.view(), empty.view(), 42usize,
      "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8");
 
-  // Refused requests leave the buffer alone
+  // A bad request is an Err, with a reason, and writes nothing: the buffer
+  // keeps the 0x77 marker the test put there, no derived bytes
   var small = repeated(0x77u8, 4usize);
-  expect(!cryptohash.pbkdf2Sha256("p", "s", 0u32, small.viewMut()), "PBKDF2 refuses 0 iterations");
-  expect(small[0usize] == 0x77u8, "buffer untouched after refused PBKDF2");
+  let r1 = cryptohash.pbkdf2Sha256("p", "s", 0u32, small.viewMut());
+  expect(!r1.isTrue(), "PBKDF2 refuses 0 iterations");
+  expect(r1.error().isTrue(), "the refusal gives a reason");
+  expect(small[0usize] == 0x77u8 && small[3usize] == 0x77u8, "buffer unwritten after refused PBKDF2");
   var big = repeated(0x77u8, 8161usize);
-  expect(!cryptohash.hkdfSha256("s", "k", "i", big.viewMut()), "HKDF refuses more than 8160 bytes");
-  expect(big[0usize] == 0x77u8, "buffer untouched after refused HKDF");
+  let r2 = cryptohash.hkdfSha256("s", "k", "i", big.viewMut());
+  expect(!r2.isTrue(), "HKDF refuses more than 8160 bytes");
+  expect(r2.error().isTrue(), "the refusal gives a reason");
+  expect(big[0usize] == 0x77u8 && big[8160usize] == 0x77u8, "buffer unwritten after refused HKDF");
   var maxb = repeated(0u8, 8160usize);
-  expect(cryptohash.hkdfSha256("s", "k", "i", maxb.viewMut()), "HKDF gives 8160 bytes");
+  let r3 = cryptohash.hkdfSha256("s", "k", "i", maxb.viewMut());
+  expect(r3.isTrue(), "HKDF gives 8160 bytes");
 
   done()
 }
