@@ -22,16 +22,17 @@ pub struct Sentence {
 }
 
 pub struct Sentences {
-  pending: List[u8];
+  // The reply so far: text, but a piece may end inside a character (the rest comes with the next piece), and
+  // nothing here reads a character, only ASCII marks and bytes
+  pending: String;
   latestFrom: usize;
 
-  pub fn make() Sentences { Sentences(List[u8](), 0usize) }
+  pub fn make() Sentences { Sentences(String(), 0usize) }
 
   // Add the next piece of the reply
   pub fn push(self: &mut, b: &Array[u8]) {
     latestFrom = pending.len();
-    var i = 0usize;
-    while i < b.len { pending.push(b[i]); i = i + 1usize; }
+    pending.appendBytes(b);
   }
 
   // The first finished sentence, if there is one
@@ -54,18 +55,12 @@ pub struct Sentences {
   }
 
   fn take(self: &mut, e: usize) Option[Sentence] {
-    var head = List[u8].withCapacity(e);
-    var h = 0usize;
-    while h < e { head.push(*pending[h]); h = h + 1usize; }
-    let text = String.fromBytes(head.view()).trim();
+    let text = pending.sub(0usize, e).trim();
     // the sentence is gone, and the white space after it
     var cut = e;
-    while cut < pending.len() && isSpace(*pending[cut]) { cut = cut + 1usize; }
+    while cut < pending.len() && isSpace(pending.view()[cut]) { cut = cut + 1usize; }
     let inLatest = e - 1usize >= latestFrom;
-    var rest = List[u8]();
-    var i = cut;
-    while i < pending.len() { rest.push(*pending[i]); i = i + 1usize; }
-    pending = rest;
+    pending = pending.sub(cut, pending.len());
     if latestFrom >= cut { latestFrom = latestFrom - cut; } else { latestFrom = 0usize; }
     if text.len() == 0usize { return self.next(); }
     Some[Sentence](Sentence(text, inLatest))
@@ -152,14 +147,9 @@ fn sentenceEnd(p: &Array[u8]) usize {
   0usize
 }
 
-fn appendAscii(out: &mut List[u8], s: &str) {
-  var i = 0usize;
-  while i < s.len() { out.push(s[i]); i = i + 1usize; }
-}
-
 // A sentence as the synthesizer should get it (see the header). Empty when there is nothing to say.
 pub fn speechText(text: &Array[u8]) String {
-  var out = List[u8]();
+  var out = String();
   var i = 0usize;
   while i < text.len {
     let c = text[i];
@@ -167,9 +157,9 @@ pub fn speechText(text: &Array[u8]) String {
       if c == '*' || c == '#' || c == '`' || c == '~' || c == '|' || c == '^' || c == '\\' || c == '<' || c == '>' || c == '[' || c == ']' || c == '{' || c == '}' {
         // markdown and brackets: dropped
       } else if c == '_' || c == '\n' || c == '\t' || c == '\r' {
-        out.push(' ');
+        out.appendByte(' ');
       } else {
-        out.push(c);
+        out.appendByte(c);
       }
       i = i + 1usize;
     } else if c >= 0xF0u8 {
@@ -179,20 +169,20 @@ pub fn speechText(text: &Array[u8]) String {
       // three bytes: punctuation worth keeping as plain, anything else (symbols, arrows, dingbats) dropped
       if c == 0xE2u8 && i + 2usize < text.len && text[i + 1usize] == 0x80u8 {
         let d = text[i + 2usize];
-        if d == 0x98u8 || d == 0x99u8 { out.push('\''); }
-        else if d == 0x9Cu8 || d == 0x9Du8 { out.push('"'); }
-        else if d == 0x93u8 { out.push('-'); }
-        else if d == 0x94u8 { appendAscii(&mut out, ", "); }
-        else if d == 0xA6u8 { appendAscii(&mut out, "..."); }
+        if d == 0x98u8 || d == 0x99u8 { out.appendByte('\''); }
+        else if d == 0x9Cu8 || d == 0x9Du8 { out.appendByte('"'); }
+        else if d == 0x93u8 { out.appendByte('-'); }
+        else if d == 0x94u8 { out.append(", "); }
+        else if d == 0xA6u8 { out.append("..."); }
       }
       i = i + 3usize;
     } else if c >= 0xC0u8 {
       // two bytes: Latin letters and the like are kept, a no-break space is a space
       if c == 0xC2u8 && i + 1usize < text.len && text[i + 1usize] == 0xA0u8 {
-        out.push(' ');
+        out.appendByte(' ');
       } else if i + 1usize < text.len {
-        out.push(c);
-        out.push(text[i + 1usize]);
+        out.appendByte(c);
+        out.appendByte(text[i + 1usize]);
       }
       i = i + 2usize;
     } else {
@@ -200,39 +190,39 @@ pub fn speechText(text: &Array[u8]) String {
     }
   }
   // one space between words
-  var spaced = List[u8]();
+  var spaced = String();
   var gap = true;
+  let ob = out.view();
   var k = 0usize;
-  while k < out.len() {
-    let b = *out[k];
+  while k < ob.len() {
+    let b = ob[k];
     if b == ' ' {
-      if !gap { spaced.push(' '); gap = true; }
+      if !gap { spaced.appendByte(' '); gap = true; }
     } else {
-      spaced.push(b);
+      spaced.appendByte(b);
       gap = false;
     }
     k = k + 1usize;
   }
-  while spaced.len() > 0usize && *spaced[spaced.len() - 1usize] == ' ' { spaced.truncate(spaced.len() - 1usize); }
+  while spaced.len() > 0usize && spaced.view()[spaced.len() - 1usize] == ' ' { spaced.truncate(spaced.len() - 1usize); }
   // a list's dash or number at the start is not said
+  let sp = spaced.view();
   var start = 0usize;
-  if spaced.len() > 1usize && *spaced[0usize] == '-' && *spaced[1usize] == ' ' { start = 2usize; }
+  if sp.len() > 1usize && sp[0usize] == '-' && sp[1usize] == ' ' { start = 2usize; }
   else {
     var d = 0usize;
-    while d < spaced.len() && isDigit(*spaced[d]) { d = d + 1usize; }
-    if d > 0usize && d + 1usize < spaced.len() && (*spaced[d] == '.' || *spaced[d] == ')') && *spaced[d + 1usize] == ' ' { start = d + 2usize; }
+    while d < sp.len() && isDigit(sp[d]) { d = d + 1usize; }
+    if d > 0usize && d + 1usize < sp.len() && (sp[d] == '.' || sp[d] == ')') && sp[d + 1usize] == ' ' { start = d + 2usize; }
   }
-  var result = List[u8]();
   var hasWord = false;
   var m = start;
-  while m < spaced.len() {
-    let b = *spaced[m];
+  while m < sp.len() {
+    let b = sp[m];
     if isLetter(b) || isDigit(b) || b >= 128u8 { hasWord = true; }
-    result.push(b);
     m = m + 1usize;
   }
   if !hasWord { return String(); }
-  String.fromList(result)
+  spaced.sub(start, spaced.len())
 }
 
 // Kokoro puts about 0.4 s of silence before a sentence's first sound and 0.5 to 0.7 s after its last (measured on 20
