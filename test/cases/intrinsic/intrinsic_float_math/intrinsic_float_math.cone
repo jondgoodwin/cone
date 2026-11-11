@@ -22,7 +22,11 @@
 //  - isNaN is true for a NaN alone, isInfinite for the two infinities alone, isFinite
 //    for everything else: zero of either sign, a subnormal, the largest finite.
 // A value that is not exact is judged by a relative tolerance (f64 1e-14, f32 1e-6),
-// printed as 'ok'; an exact value is printed whole, with the sign of a zero. Every
+// printed as 'ok'; an exact value is printed whole, with the sign of a zero. The one
+// exception is cbrt of a perfect cube (27, -8): the exact answer is known, but C does
+// not require libm's cbrt to be correctly rounded, and glibc and Windows' UCRT differ
+// (glibc gives 3.0000000000000004 for cbrt(27)), so it is judged within 2 ulp of
+// the exact value and printed as 'pass' or 'FAIL'. Every
 // operand comes through a C function the optimizer cannot see into, so the
 // calls run as the program runs; a last section gives the compiler's constant
 // folder a few. The .out is the same in a release and a debug build.
@@ -84,6 +88,24 @@ fn near(label: &str, got: f64, want: f64, tol: f64) {
 
 fn n(label: &str, got: f64, want: f64) { near(label, got, want, 1.0e-14); }
 fn n32(label: &str, got: f32, want: f64) { near(label, f64.from(got), want, 1.0e-6); }
+
+// A result libm need not round correctly: within 2 ulp of the exact value 'want'
+// (an ulp being the gap to the next float up). C's libm is not required to be
+// correctly rounded, and glibc and Windows' UCRT differ, so the test must not pin
+// one library's last digit. 'want' is exact and nonzero.
+fn ulps(label: &str, got: f64, want: f64) {
+  let a = want.abs();
+  let ulp = f64.fromBits(a.bits() + 1u64) - a;
+  printStr(label);
+  printStr(if (got - want).abs() <= 2.0 * ulp { " within 2 ulp: pass\n" } else { " within 2 ulp: FAIL\n" });
+}
+
+fn ulps32(label: &str, got: f32, want: f32) {
+  let a = want.abs();
+  let ulp = f32.fromBits(a.bits() + 1u32) - a;
+  printStr(label);
+  printStr(if (f64.from(got) - f64.from(want)).abs() <= 2.0 * f64.from(ulp) { " within 2 ulp: pass\n" } else { " within 2 ulp: FAIL\n" });
+}
 
 fn yn(v: bool) { printStr(if v { "yes" } else { "no" }); }
 
@@ -236,8 +258,8 @@ fn f64tests() {
   show("hypot(nan, -inf)", o(nan()).hypot(o(ninf())));
   show("hypot(nan, 1)", o(nan()).hypot(o(1.0)));
   // cbrt
-  show("cbrt(27)", o(27.0).cbrt());
-  show("cbrt(-8)", o(-8.0).cbrt());
+  ulps("cbrt(27)", o(27.0).cbrt(), 3.0);
+  ulps("cbrt(-8)", o(-8.0).cbrt(), -2.0);
   show("cbrt(0)", o(0.0).cbrt());
   show("cbrt(-0)", o(nzero()).cbrt());
   show("cbrt(inf)", o(pinf()).cbrt());
@@ -340,8 +362,8 @@ fn f32tests() {
   show32("hypot(nan, 1)", p(nan32()).hypot(p(1.0f32)));
   n32("hypot(1e30, 1e30)", p(1.0e30f32).hypot(p(1.0e30f32)), 1.4142135623730951e30);
   show32("hypot(1.4e-45, 0)", p(tiny32()).hypot(p(0.0f32)));
-  show32("cbrt(27)", p(27.0f32).cbrt());
-  show32("cbrt(-8)", p(-8.0f32).cbrt());
+  ulps32("cbrt(27)", p(27.0f32).cbrt(), 3.0f32);
+  ulps32("cbrt(-8)", p(-8.0f32).cbrt(), -2.0f32);
   show32("cbrt(-0)", p(nzero32()).cbrt());
   show32("cbrt(inf)", p(pinf32()).cbrt());
   show32("cbrt(nan)", p(nan32()).cbrt());
@@ -385,7 +407,7 @@ fn foldedtests() {
   show("powi(2, -2)", 2.0.powi(-2));
   show("powi(-1, 3) * 2", negone.powi(3) * 2.0);
   show("hypot(3, 4)", 3.0.hypot(4.0));
-  show("cbrt(-8)", (-8.0).cbrt());
+  ulps("cbrt(-8)", (-8.0).cbrt(), -2.0);
   show("sqrt(-1)", negone.sqrt());
   show("exp(-inf)", ninf().exp());
   show("tanh(inf)", pinf().tanh());
@@ -397,7 +419,7 @@ fn foldedtests() {
   show32("ln(0) f32", 0.0f32.ln());
   show32("hypot(3, 4) f32", 3.0f32.hypot(4.0f32));
   show32("powi(2, 10) f32", two32.powi(10));
-  show32("cbrt(27) f32", 27.0f32.cbrt());
+  ulps32("cbrt(27) f32", 27.0f32.cbrt(), 3.0f32);
   kind32("folded nan f32", nan32());
   kind32("folded inf f32", pinf32());
   kind32("folded 1 f32", 1.0f32);
