@@ -701,8 +701,8 @@ fn main() i32 {
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">cryptohash</span><br><span class="pre">import cryptohash;</span></td>
-		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, and a constant-time
-		comparison for MACs. A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
+		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, a constant-time
+		comparison for MACs, and key derivation over HMAC-SHA-256 (PBKDF2 and HKDF). A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
 		message. Written in Cone with no C library; the same bytes on Windows and Linux; checked against NIST's
 		and the RFCs' published vectors. Not a password hash.</td></tr>
 	</table>
@@ -724,7 +724,13 @@ fn main() i32 {
 		for one call; <span class="pre">verify(tag)</span> compares a received tag with the right one in constant time
 		(<span class="pre">constantTimeEq(a, b)</span> does it for any two byte strings). SHA-1 collisions can
 		be made: use it only for a format that names it. The package's header lists each method chosen and what was
-		left out, and what the compiler could still do to the constant-time loop.</p>
+		left out, and what the compiler could still do to the constant-time loop.
+		<span class="pre">pbkdf2Sha256(password, salt, iterations, out)</span> and
+		<span class="pre">hkdfSha256(salt, ikm, info, out)</span> fill the caller's buffer <span class="pre">out</span> (any length
+		up to the RFC's limit) and answer a <span class="pre">Result[void, &amp;str]</span>: <span class="pre">Err</span>, with the
+		buffer unwritten, for a request the RFC forbids (zero iterations, too long an output; a dropped Result is warned about).
+		They are not constant-time
+		beyond what HMAC already is, and the <span class="pre">trust</span> design may revisit that.</p>
 <pre>
 mod digest;
 
@@ -788,6 +794,14 @@ fn main() i32 {
 		(over <span class="pre">stages</span> and this package), which hands each entry to a sink of its own; an archive
 		written to a file without blocking a worker is <span class="pre">saveTo</span> in the same package, over
 		<span class="pre">ZipSource</span> and <span class="pre">stageio</span>.</td></tr>
+	<tr><td><span class="pre">tarfile</span><br><span class="pre">import tarfile;</span></td>
+		<td>tar archives (POSIX ustar, and the ustar archives GNU tar makes) read as their bytes arrive, entry by entry,
+		each entry's data coming out in pieces as big as the buffer given and never as a whole copy, and written
+		entry by entry (files and folders, a long name through the prefix field). PAX extended headers are read for
+		<span class="pre">path</span> and <span class="pre">size</span> only; any other record, GNU long names,
+		hard links, devices and base-256 numbers are refused with a reason, never guessed at. No compression: a
+		<span class="pre">.tar.gz</span> goes through <span class="pre">deflate</span>'s gzip inflater first. Over
+		<span class="pre">streams</span> and <span class="pre">iobuf</span>; <a href="#tarfile">tarfile</a> below.</td></tr>
 	<tr><td><span class="pre">zstd</span><br><span class="pre">import zstd;</span></td>
 		<td>Zstandard (RFC 8878) decompressed (every frame and block form, skippable frames, the content checksum,
 		a raw-content dictionary, a window limit) and compressed at levels 1 to 3 (the reference's fast and
@@ -853,6 +867,75 @@ fn main() i32 {
 <pre>
 88 bytes became 72 as a gzip file
 the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
+</pre>
+
+	<h3 id="tarfile">tarfile</h3>
+	<p>A <span class="pre">TarReader</span> works through an archive from its front, as a codec of
+		<span class="pre">streams</span> does: bytes in with <span class="pre">feed</span> (a copy, split anywhere) or
+		<span class="pre">feedBuf</span> (a filled <span class="pre">IoBuf</span>, taken as it is),
+		<span class="pre">finish</span> when no more will come, and <span class="pre">pull(&amp;mut buf)</span> to get on.
+		The answer is a <span class="pre">Step</span>: <span class="pre">Begin</span> (an entry's header was read;
+		<span class="pre">current()</span> gives its <span class="pre">name</span>, <span class="pre">kind</span>
+		(<span class="pre">File</span>, <span class="pre">Dir</span> or <span class="pre">Symlink</span>),
+		<span class="pre">size</span>, <span class="pre">mode</span>, <span class="pre">mtime</span> and symlink
+		<span class="pre">link</span>), <span class="pre">Data</span> (some of its data was appended to the buffer's spare room,
+		at most as much as that holds), <span class="pre">End</span>, <span class="pre">NeedInput</span>,
+		<span class="pre">Done</span> or <span class="pre">Failed</span>, after which <span class="pre">error()</span> holds a
+		<span class="pre">TarError</span> with a <span class="pre">kind</span>, the archive offset and a
+		<span class="pre">reason</span>. Every header's checksum is checked. An archive cut inside a header, an entry's
+		data or its padding is <span class="pre">Truncated</span>; one cut between entries reads as complete, as GNU tar
+		reads it. Names are given as stored and may be absolute or contain <span class="pre">..</span>: nothing here
+		extracts, so code that writes entries to disk must check each name first, or an archive can write outside
+		the folder it is unpacked into.</p>
+	<p>A <span class="pre">TarWriter</span> takes entries whole, <span class="pre">add(name, data, &amp;opts)</span> and
+		<span class="pre">addDir(name, &amp;opts)</span>, with an <span class="pre">EntryOptions</span> (mode and
+		modification time), and <span class="pre">finish()</span>; <span class="pre">pull(&amp;mut buf, max)</span> hands out
+		what has been made, so pull after each add and an archive of many files is never held. A name over 100 bytes goes
+		through the prefix field, split at the last <span class="pre">/</span> that leaves at most 155 and 100 bytes; one that
+		cannot be split so is refused (<span class="pre">BadArgument</span>), never shortened. An entry over 16 MiB is
+		<span class="pre">TooLarge</span>, because <span class="pre">add</span> copies the entry whole; an
+		<span class="pre">add</span> that takes the size first and the data in pieces is not built yet. For the same entries the bytes are those GNU tar makes with
+		<span class="pre">--format=ustar</span>.</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import iobuf use IoBuf;
+import tarfile;
+
+fn addAll(w: &amp;mut tarfile.TarWriter) Result[void, tarfile.TarError] {
+  w.addDir("docs", &amp;tarfile.EntryOptions.plain())?;
+  w.add("docs/readme.txt", "hello", &amp;tarfile.EntryOptions.plain())?;
+  Ok[void, tarfile.TarError](nil)
+}
+
+fn main() i32 {
+  var w = tarfile.TarWriter.make();
+  match addAll(&amp;mut w) {
+    case let Err(e) { printStr(e.reason.view()); return 1i32; }
+    case let Ok(v) {}
+  }
+  w.finish();
+  var archive = IoBuf(65536usize);
+  _ = w.pull(&amp;mut archive, 65536usize);
+
+  var tar = tarfile.TarReader.make();
+  tar.feed(archive.view());
+  tar.finish();
+  var out = IoBuf(4096usize);
+  while true {
+    let s = tar.pull(&amp;mut out);
+    if s == tarfile.Step.Begin { printStr(tar.current().name.view()); printStr("\n"); }
+    else if s == tarfile.Step.Data { out.clear(); }
+    else if s == tarfile.Step.Done || s == tarfile.Step.Failed { break; }
+  }
+  0i32
+}
+</pre>
+	<p>prints:</p>
+<pre>
+docs/
+docs/readme.txt
 </pre>
 
 	<h3 id="llmpkg">Language models: weights and layers</h3>

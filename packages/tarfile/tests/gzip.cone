@@ -1,0 +1,120 @@
+// A gzip-wrapped tar (a .tar.gz): no compression lives in tarfile; deflate's gzip Inflater feeds the
+// TarReader as its output comes, so the two compose with no whole copy of the tar between them.
+
+mod gziptest;
+
+import testing use *;
+import iobuf use IoBuf;
+import collections use *;
+import tarfile use *;
+import deflate;
+import fs;
+import path use Path;
+
+fn load(name: &str) List[u8] {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) {
+      var out = List[u8].withCapacity(s.len());
+      var k = 0usize;
+      while k < s.len() { out.push(s[k]); k += 1usize; }
+      out
+    }
+    case let Err(e) {
+      expect(false, "a fixture is missing");
+      List[u8]()
+    }
+  }
+}
+
+// Reads the entries of 'tar' as far as the bytes fed so far allow, into a text
+fn drainTar(tar: &mut TarReader, s: &mut String, data: &mut String) bool {
+  var out = IoBuf(4096usize);
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Begin {
+      let nm = tar.current().name.clone();
+      s.append(nm.view());
+      s.append(" ");
+      s.appendUInt(tar.current().size);
+      *data = String();
+    } else if st == Step.Data {
+      data.appendBytes(out.view());
+      out.clear();
+    } else if st == Step.End {
+      if data.len() > 0usize && data.len() < 20usize {
+        let d = data.clone();
+        s.append(" [");
+        s.append(d.view());
+        s.append("]");
+      }
+      s.append("\n");
+    } else if st == Step.Done {
+      s.append("done");
+      return true;
+    } else if st == Step.Failed {
+      s.append("failed");
+      return true;
+    } else {
+      return false;
+    }
+  }
+  true
+}
+
+// gzip the archive, then inflate it 'chunk' bytes of compressed input at a time into a TarReader
+fn throughGzip(tarBytes: &Array[u8], chunk: usize) String {
+  let packed = deflate.gzipCompress(tarBytes, 6i32);
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  var tar = TarReader.make();
+  var inflated = IoBuf(1000usize);
+  var s = String();
+  var data = String();
+  var at = 0usize;
+  var over = false;
+  while !over {
+    inflated.clear();
+    let st = inf.pull(&mut inflated);
+    if inflated.len() > 0usize {
+      tar.feed(inflated.view());
+      over = drainTar(&mut tar, &mut s, &mut data);
+    }
+    if st == deflate.Status.NeedInput {
+      if at < packed.len() {
+        var n = packed.len() - at;
+        if n > chunk { n = chunk; }
+        inf.feed(&packed.view()[at ..< at + n]);
+        at += n;
+      } else {
+        inf.finish();
+      }
+    } else if st == deflate.Status.Done {
+      tar.finish();
+      if !over { over = drainTar(&mut tar, &mut s, &mut data); }
+      if !over { s.append("tar did not end"); over = true; }
+    } else if st == deflate.Status.Failed {
+      s.append("gzip failed");
+      over = true;
+    }
+  }
+  s
+}
+
+fn main() i32 {
+  let gnu = load("gnu-short.tar");
+  let want = "hello.txt 11 [hello, tar\n]\nempty.txt 0\nsub/ 0\nsub/data.txt 991\ndone";
+  expectStr(throughGzip(gnu.view(), 100000usize).view(), want, "a .tar.gz fed whole");
+  expectStr(throughGzip(gnu.view(), 7usize).view(), want, "a .tar.gz fed 7 bytes at a time");
+  let ust = load("gnu-ustar-long.tar");
+  var w2 = String.from("hello.txt 11 [hello, tar\n]\n");
+  let dir1 = "this-is-a-deliberately-long-folder-name-to-push-the-path-past-one-hundred-bytes/";
+  w2.append(dir1);
+  w2.append(" 0\n");
+  w2.append(dir1);
+  w2.append("and-another-long-folder-name-in-it/ 0\n");
+  w2.append(dir1);
+  w2.append("and-another-long-folder-name-in-it/leaf.txt 15 [long name data\n]\ndone");
+  expectStr(throughGzip(ust.view(), 500usize).view(), w2.view(), "a ustar .tar.gz with long names");
+  done()
+}

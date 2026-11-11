@@ -1782,7 +1782,8 @@ locals, which only a call that reaches one of them is asked of):
   a struct that merely holds a String, and a field of the element written through the
   borrow of the element do not. The place the store names is skipped as a call's
   receiver is, where the loan freezes it or where it is another field of the same
-  root. A function that does so on its own account, handed a reference, is a callee
+  root, except past a copyable owner (`Place.owned`: two `Rc[mut, ..]` fields may own one
+  collection, `loanShapeDisjoint`, bug 88). A function that does so on its own account, handed a reference, is a callee
   that reshapes (`siTypeWriteHits`, which asks the same). The gate
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
