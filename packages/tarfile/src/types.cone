@@ -1,0 +1,125 @@
+// ======== Steps, failure, entries and options ========
+
+// What a 'pull' of a TarReader found
+pub enum Step {
+  // The reader holds no more of the archive than it has used: feed more, or 'finish' and pull again
+  NeedInput;
+  // An entry's header was read: 'current()' describes it, and its data (if any) follows as Data
+  Begin;
+  // Some of the entry's data was appended to the buffer given to 'pull'
+  Data;
+  // The entry is complete (its data and the padding after it have all gone by)
+  End;
+  // The archive is over: its end marker was read, or its bytes ended between entries
+  Done;
+  // The archive is not good; 'error()' says why
+  Failed;
+}
+
+// What a 'pull' of a TarWriter found
+pub enum Status {
+  // Everything written so far has been pulled: add another entry, or 'finish'
+  NeedInput;
+  // The limit of this pull was reached; more is ready, pull again
+  MoreOutput;
+  // The archive is finished and every byte has been pulled
+  Done;
+}
+
+// What kind of thing went wrong
+pub enum ErrorKind {
+  // A header is not a ustar header (no 'ustar' magic): these bytes are not a tar archive of the kind read here
+  NotTar;
+  // The archive ends inside a header, an entry's data or its padding
+  Truncated;
+  // A header is not what the format says: a checksum that fails, a number that is not octal, a name that is
+  // not UTF-8, a folder or link that carries data
+  Corrupt;
+  // The archive is well formed but asks for something this package does not do: an entry type other than a
+  // file, a folder or a symbolic link, a GNU long-name record, a PAX record other than 'path' and 'size', a
+  // number in base 256
+  Unsupported;
+  // An extended header or a size is larger than a limit allows
+  TooLarge;
+  // The caller asked for something that cannot be written: a name that is empty or does not fit in ustar, a
+  // mode or time that does not fit its field, an entry added after 'finish'
+  BadArgument;
+  // A read could not get a buffer from the pool for bytes that arrived in pieces; the read ends here, the
+  // process is fine
+  Overloaded;
+}
+
+// Why an operation failed: what kind, where in the archive (a byte offset, 0 if none applies), and a
+// sentence that says what and, where there is one, names the entry.
+pub struct TarError is Error {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) TarError {
+    TarError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn toText(self: &, out: &uni TextOut) { out <- reason.view(); }
+
+  pub fn clone(self: &) TarError {
+    TarError(kind, offset, reason.clone())
+  }
+}
+
+// A reason made of a sentence, an entry's name and a second sentence
+fn about(first: &str, name: &str, rest: &str) String {
+  var s = String.from(first);
+  s.append(" '");
+  s.append(name);
+  s.append("' ");
+  s.append(rest);
+  s
+}
+
+// What an entry is. Other types (hard links, devices, pipes, ...) are refused when read.
+pub enum EntryKind {
+  File;
+  Dir;
+  Symlink;
+}
+
+// One entry of an archive, as its header describes it. Names are exactly as the archive gives them (a
+// '..' or an absolute name is not refused here: this package does no extraction).
+pub struct Entry {
+  // The name as UTF-8 text; a folder's keeps the '/' it ends with. The ustar prefix field, when the archive
+  // has one, is joined to the front with a '/'; a PAX 'path' record replaces the name.
+  pub name: String;
+  pub kind: EntryKind;
+  // The bytes of data that follow the header (a PAX 'size' record replaces the field); 0 for a folder or link
+  pub size: u64;
+  // The permission bits (the low twelve bits of the mode field)
+  pub mode: u32;
+  // Seconds since 1970
+  pub mtime: i64;
+  // A symbolic link's target, else empty
+  pub link: String;
+  // Where the entry's header starts in the archive (an extended header before it is counted)
+  pub offset: u64;
+
+  pub fn blank() Entry {
+    Entry(String(), EntryKind.File, 0u64, 0u32, 0i64, String(), 0u64)
+  }
+
+  pub fn clone(self: &) Entry {
+    Entry(name.clone(), kind, size, mode, mtime, link.clone(), offset)
+  }
+}
+
+// How an entry is written
+pub struct EntryOptions {
+  // Unix permission bits (0o644 is 420); 0 chooses 420 for a file and 493 (0o755) for a folder
+  pub mode: u32;
+  // Modification time, seconds since 1970 UTC (not negative)
+  pub modified: i64;
+
+  pub fn plain() EntryOptions {
+    EntryOptions(0u32, 0i64)
+  }
+}
