@@ -224,6 +224,10 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
                 && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
                 errorMsgNode((INode*)retnode, ErrorPrivateMatch,
                     "Return expression type does not match return type on function.%s", privwhy);
+            else if (isExpNode(retnode->exp)
+                && structDefaultRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
+                errorMsgNode((INode*)retnode, ErrorInvType,
+                    "Return expression type does not match return type on function.%s", privwhy);
             else
                 errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function%s",
                     iexpImmBorrowHint(retnode->exp, fnsig->rettype));
