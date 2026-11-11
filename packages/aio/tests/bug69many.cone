@@ -1,0 +1,123 @@
+// Bug 69 drop flags with more than four hollowing moves, so the cap runs.
+// One owner o = One[One[Counted]] is hollowed on exactly one of six branches
+// (row k = 0..5), or on none (row 6), and then dropped. Even k move the value
+// out (**o), odd k move the inner owner out (*o). The flag has a bit for each of
+// the first five moves and one shared by the rest, and the release chooses at
+// run time among only the first four; the moves of k = 4 and k = 5 are taken as
+// having happened. That can leak but never free twice.
+// Expected, by hand: every Counted(k) is finalled exactly once (nibble k = 1
+// for k = 0..6; nibbles 7..9 = 0). A row leaks one allocation exactly when the
+// release assumes the inner owner moved (*o, the k=5 branch, always assumed)
+// while the row really moved only the value (**o): k = 0, 2, 4 leak the inner
+// box; k = 1, 3, 5, 6 leak nothing. So the plain rows leak 3 in all, and the
+// resumed rows (nibbles 16..22; the count is cumulative) 6.
+
+mod bug69many;
+
+import stdio use *;
+import libc;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import aio;
+
+let tally: Atomic[u64];
+let tally2: Atomic[u64];
+let allocs: Atomic[u64];
+let frees: Atomic[u64];
+
+fn @initpure init() {
+  tally = Atomic[u64].of(0u64);
+  tally2 = Atomic[u64].of(0u64);
+  allocs = Atomic[u64].of(0u64);
+  frees = Atomic[u64].of(0u64);
+}
+
+struct Counted {
+  pub n: u64;
+  fn final(self: &uni) {
+    if n < 16u64 {tally.add(1u64 << (n * 4u64));}
+    else {tally2.add(1u64 << ((n - 16u64) * 4u64));}
+  }
+}
+
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { allocs.add(1u64); malloc(size) }
+  fn free(self: &uni One) inline { frees.add(1u64); libc.free(self as *u8); }
+}
+
+fn giveC(c: Counted) {}
+fn giveI(c: One[Counted]) {}
+
+fn mk(n: u64) One[One[Counted]] {
+  One[One[Counted]](One[Counted](Counted(n)))
+}
+
+fn plainRow(k: u64) {
+  let o = mk(k);
+  if k == 0u64 {giveC(**o);}
+  else if k == 1u64 {giveI(*o);}
+  else if k == 2u64 {giveC(**o);}
+  else if k == 3u64 {giveI(*o);}
+  else if k == 4u64 {giveC(**o);}
+  else if k == 5u64 {giveI(*o);}
+}
+
+actor Holder {
+  pub async fn row(self, k: u64, done: OneshotSender[u64]) {
+    let o = mk(16u64 + k);
+    if k == 0u64 {giveC(**o);}
+    else if k == 1u64 {giveI(*o);}
+    else if k == 2u64 {giveC(**o);}
+    else if k == 3u64 {giveI(*o);}
+    else if k == 4u64 {giveC(**o);}
+    else if k == 5u64 {giveI(*o);}
+    let s = await aio.sleep(Duration.fromMillis(10i64));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn report(what: &str, t: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < 10u64 {
+    printStr(" ");
+    printUInt((t >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("  allocations not freed: ");
+  printUInt(allocs.load() - frees.load());
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var k = 0u64;
+  while k < 7u64 {
+    let before = allocs.load() - frees.load();
+    plainRow(k);
+    printStr("plain row "); printUInt(k); printStr(" leaked: ");
+    printUInt(allocs.load() - frees.load() - before); printStr("\n");
+    k = k + 1u64;
+  }
+  report("plain:  ", tally.load());
+  k = 0u64;
+  while k < 7u64 {
+    let before = allocs.load() - frees.load();
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let h = Holder();
+    h.row(k, tx);
+    rx.recv();
+    actors.waitUntilIdle();
+    printStr("resumed row "); printUInt(k); printStr(" leaked: ");
+    printUInt(allocs.load() - frees.load() - before); printStr("\n");
+    k = k + 1u64;
+  }
+  actors.waitUntilIdle();
+  report("resumed:", tally2.load());
+  finalAll();
+  printStr("end\n");
+}

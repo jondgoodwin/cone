@@ -165,6 +165,56 @@ struct StreamIn {
   seq: u16;
 }
 
+// The start of a packet: protocol id, kind, session. The kind, or None when
+// the packet is too short, or is of another protocol or session
+fn readPrefix(c: &mut streams.ByteCursor, protocol: u32, session: u64) Option[u8] {
+  let magic = c.getBE[u32]()?;
+  let kind = c.getByte()?;
+  let sess = c.getBE[u64]()?;
+  if magic != protocol || sess != session {return None[u8];}
+  Some[u8](kind)
+}
+
+fn copyOf(b: &Array[u8]) List[u8] {
+  var l = List[u8].withCapacity(b.len);
+  l.appendSlice(b);
+  l
+}
+
+// The rest of a payload packet, after its prefix, parsed whole: None when it
+// is short, malformed, or has bytes left over
+fn parseBody(c: &mut streams.ByteCursor) Option[Parsed] {
+  let seq = c.getBE[u16]()?;
+  let ack = c.getBE[u16]()?;
+  let bits = c.getBE[u32]()?;
+  var pk = Parsed(seq, ack, bits, List[RelRecv](), List[LatestItem]());
+  let nRel = c.getByte()?;
+  let nLat = c.getByte()?;
+  var i = 0u8;
+  while i < nRel {
+    let id = c.getBE[u16]()?;
+    let lf = c.getBE[u16]()?;
+    // The top two bits are reserved for fragmentation (not built): a
+    // message that sets either is refused
+    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    pk.rel.push(RelRecv(id, copyOf(body)));
+    i = i + 1u8;
+  }
+  i = 0u8;
+  while i < nLat {
+    let stream = c.getBE[u16]()?;
+    let lseq = c.getBE[u16]()?;
+    let lf = c.getBE[u16]()?;
+    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    pk.lat.push(LatestItem(stream, lseq, copyOf(body)));
+    i = i + 1u8;
+  }
+  if !c.isEmpty() {return None[Parsed];}
+  Some[Parsed](pk)
+}
+
 // What one packet carries, parsed before any of it is acted on
 struct Parsed {
   seq: u16;
@@ -647,11 +697,15 @@ pub struct ConnectionCore {
   // its latest-wins values (given if newer than any delivered)
   pub fn receive(self: &mut, data: &Array[u8], now: Instant, events: &mut List[CoreEvent]) bool {
     if state != CoreState.Active {return false;}
-    var c = PacketReader.start();
-    let magic = c.rdU32(data);
-    let kind = c.rdU8(data);
-    let sess = c.rdU64(data);
-    if !c.ok || magic != protocolId || sess != session || (kind != kindPayload && kind != kindDisconnect) {
+    var c = streams.ByteCursor.over(data);
+    let kind = match readPrefix(&mut c, protocolId, session) {
+      case let Some(k) {k}
+      else {
+        st.packetsInvalid = st.packetsInvalid + 1u64;
+        return false;
+      }
+    };
+    if kind != kindPayload && kind != kindDisconnect {
       st.packetsInvalid = st.packetsInvalid + 1u64;
       return false;
     }
@@ -666,34 +720,13 @@ pub struct ConnectionCore {
       events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
-    var pk = Parsed(c.rdU16(data), c.rdU16(data), c.rdU32(data), List[RelRecv](), List[LatestItem]());
-    let nRel = c.rdU8(data);
-    let nLat = c.rdU8(data);
-    var i = 0u8;
-    while i < nRel && c.ok {
-      let id = c.rdU16(data);
-      let lf = c.rdU16(data);
-      // The top two bits are reserved for fragmentation (not built): a
-      // message that sets either is refused
-      if (lf >> 14u16) != 0u16 {c.ok = false;}
-      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
-      pk.rel.push(RelRecv(id, body));
-      i = i + 1u8;
-    }
-    i = 0u8;
-    while i < nLat && c.ok {
-      let stream = c.rdU16(data);
-      let seq = c.rdU16(data);
-      let lf = c.rdU16(data);
-      if (lf >> 14u16) != 0u16 {c.ok = false;}
-      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
-      pk.lat.push(LatestItem(stream, seq, body));
-      i = i + 1u8;
-    }
-    if !c.ok || c.pos != data.len {
-      st.packetsInvalid = st.packetsInvalid + 1u64;
-      return false;
-    }
+    var pk = match parseBody(&mut c) {
+      case var Some(p) {p}
+      else {
+        st.packetsInvalid = st.packetsInvalid + 1u64;
+        return false;
+      }
+    };
 
     // It is ours
     let t = now.nanos();
