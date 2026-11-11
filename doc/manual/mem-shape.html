@@ -625,40 +625,9 @@ fn growFromRo(ed: &amp;mut Ed, src: &amp;Ed) {
 }
 </pre>
 
-	<h3 id="cures2">Two more idioms</h3>
-	<p>The packages use two more. Neither is a permission: each arranges the code so that the compiler can see what
-		it is shown.</p>
-	<p><b>Move the field into a local.</b> A value the function owns whole (a local) is not the shared one, so a
-		call handed it does not threaten a borrow of another field of the same type. Swap the field into a local
-		(<span class="pre">&lt;-&gt;</span>, or an <span class="pre">Option</span> taken and put back), use it, and
-		swap it back. The cost is a move of the list's header each way, and the field is left empty if the function
-		returns between the two swaps. The HTTP/3 package takes a stream's queue whole this way
-		(<span class="pre">data &lt;-&gt; s.out</span> in <span class="pre">http3/src/connection.cone</span>).</p>
-<pre>
-struct Dec {
-  inp: List[u8];
-  hist: List[u8];
-
-  fn step(self: &amp;mut) u8 {
-    let s = inp.view();
-    grow(&amp;mut hist);            // Error 1339: grow pushes, and hist is a List[u8], as inp is
-    s[0usize]
-  }
-
-  fn stepSwap(self: &amp;mut) u8 {
-    var h = List[u8]();
-    h &lt;-&gt; hist;                  // hist is now a local, and self.hist is empty
-    let s = inp.view();
-    grow(&amp;mut h);               // Ok: h is owned whole
-    let first = s[0usize];
-    h &lt;-&gt; hist;                  // put back; a return above this line would leave hist empty
-    first
-  }
-}
-
-fn grow(l: &amp;mut List[u8]) { l.push(7u8); }
-</pre>
-	<p><b>Pass a slice as a parameter.</b> A function is not asked about a slice it was handed: the call site that
+	<h3 id="cures2">Pass a slice as a parameter</h3>
+	<p>The packages use one more arrangement, which is not a permission but lets the compiler see what it is shown.
+		A function is not asked about a slice it was handed: the call site that
 		made the slice answers for it. A function that takes the list (<span class="pre">&amp;List[u8]</span>) and
 		views it itself cannot show that the list is not its other argument. Taking the slice
 		(<span class="pre">&amp;Array[u8]</span>) moves that proof to the caller, which can give it where the list is its own local
@@ -684,6 +653,10 @@ fn caller(out: &amp;mut List[u8]) u8 {
   var src = List[u8]();
   src.push(9u8);
   emitSlice(src.view(), out)    // the caller made the slice, so the caller answers for it
+}
+
+fn callerOwn(out: &amp;mut List[u8]) u8 {
+  emitSlice(out.view(), out)    // Error 1339: the slice is into out, which emitSlice pushes to
 }
 </pre>
 	<p>No rule that tells two fields apart is coming for two references that may be one value (two parameters,
