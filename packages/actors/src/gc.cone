@@ -774,6 +774,10 @@ pub struct ActorRegion {
     }
     var ring = Array[usize, 19]() <- fill 0usize;
     ring[pfRegionAt] = self as usize;
+    // Saved and restored, not set and cleared: finalizeDead runs user finalizers
+    // while this ring is live, so a collection reached from inside one on this
+    // worker must leave the outer collection's ring as it found it
+    let prevRing = curGcRing;
     curGcRing = &mut ring[0usize] as *usize;
     let oldChunks = self.first;
     self.first = null;
@@ -825,7 +829,7 @@ pub struct ActorRegion {
     self.live = self.liveNow + self.blocks;
     self.allocated = 0usize;
     self.nobjects = self.nobjects + self.nlarge;
-    curGcRing = null;
+    curGcRing = prevRing;
   }
 
   // The actor has died, its state finalized: every object on the final list
