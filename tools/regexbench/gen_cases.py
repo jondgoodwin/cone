@@ -357,6 +357,7 @@ def main():
     out.append("import testing use *;")
     out.append("import collections use *;")
     out.append("import regex;")
+    out.append("import stdio;")
     out.append("")
     out.append(HELPERS)
     out.append("fn main() i32 {")
@@ -376,6 +377,9 @@ def main():
         else:
             call = 'ask("%s", %s, %s, %s)' % (kind, cone_str(pat), cone_str(text), cone_str(repl))
         out.append("  expectStr(%s.view(), %s, %s);" % (call, cone_str(want), cone_str(label)))
+    out.append('  stdio.printStr("padded runs that error: ");')
+    out.append("  stdio.printUInt(u64.from(padErrors));")
+    out.append('  stdio.printStr("\\n");')
     out.append("  done()")
     out.append("}")
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
@@ -386,15 +390,33 @@ def main():
 HELPERS = r'''// The answer, asked of the pattern as written (the bounded backtracker answers groups
 // on a short text) and of the same pattern with a dead alternative of 132000 states
 // added (a program too big for the backtracker's bits, so the Pike VM answers): the two
-// must agree
+// must agree.
+//
+// Why padding, and why not every case in debug: a package test is its own module and
+// cannot reach a private item of 'regex' (a non-'pub' name is private to its module), so
+// there is no non-public engine selector to call; the padding is the only way to force the
+// Pike VM. Compiling 132000 states for each case is what takes the time (about 60 s for
+// all of them in a debug build), so a debug build pads every fourth case and a release
+// build every case.
+//
+// A padded pattern that fails to compile although the original did (the limit is 200000
+// states and the padding takes 132000, so an original of 68000 states or more would) is not
+// compared, and is counted in 'padErrors'; 'main' prints the count and the .out pins it.
+// No case in this file is that big, so it is 0: a case added that is, shows as a changed
+// count, to be looked at, rather than as a silently skipped comparison.
+var padErrors = 0usize;
+var askCount = 0usize;
 fn ask(kind: &str, pat: &str, text: &str, repl: &str) String {
   let a = askOne(kind, pat, text, repl);
   if a.view().startsWith("ERR") { return a; }
+  askCount = askCount + 1;
+  #if #debug { if askCount % 4 != 0 { return a; } }
   var padded = String.from("(?:");
   padded.append(pat);
   padded.append(")|(?:\\z[a-z]{1000}){132}");
   let b = askOne(kind, padded.view(), text, repl);
-  if b.view() == a.view() || b.view().startsWith("ERR") { return a; }
+  if b.view().startsWith("ERR") { padErrors = padErrors + 1; return a; }
+  if b.view() == a.view() { return a; }
   var s = String.from("ENGINES DIFFER: ");
   s.append(a.view());
   s.append(" / ");
