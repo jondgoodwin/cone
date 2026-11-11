@@ -2,7 +2,9 @@
 // (Bug 87; concurrency_threadlocal_borrow): it names the copy of the worker
 // running that code. So it is refused wherever it would be kept: in an
 // actor's field, in a global, as a 'static borrow (a field of 'static
-// borrows, a 'static result). Returning one to a caller is not refused here (concurrency_threadlocal_ok).
+// borrows, a 'static result), and as a result returned to a caller: a result's
+// signature cannot say how long a thread-local borrow lasts, and a caller could
+// hold it across its own 'await'.
 
 mod concurrency_threadlocal_escape;
 
@@ -31,6 +33,21 @@ actor A {
 fn toGlobal() { gh = Hold(&tl); }          //~ ErrorEscape "a borrow of it is never 'static"
 fn toGlobalPart() { gh.r = &tl; }          //~ ErrorEscape "a borrow of the thread-local 'tl'"
 fn toStatic() &'static u64 { &tl }         //~ ErrorEscape "a thread-local is the current worker's copy"
+
+fn lent() &mut u64 { &mut tl }             //~ ErrorEscape "thread-local"
+fn getTl() &mut u64 { &mut tl }            //~ ErrorEscape "thread-local"
+
+actor Oracle {
+  pub async fn get(self) u64 { 1u64 }
+}
+
+actor B {
+  pub async fn viaGetTl(self, c: Oracle) {
+    let r = getTl();
+    let n = await c.get();
+    *r = n;
+  }
+}
 
 fn main() {
   initAll();
