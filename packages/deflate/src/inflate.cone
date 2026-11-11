@@ -241,14 +241,27 @@ pub struct Inflater {
 
   // Appends input. It is copied, so the caller's bytes are its own again at
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
-  // next, or the input piles up.
+  // next, or the input piles up. The input held is in pool buffers, so input
+  // that would pass the pool's bound (64 MiB unless raised) fails the stream
+  // with TooLarge rather than panicking; feeding in pieces and pulling between
+  // keeps the held input small. After a failure, feed does nothing.
   pub fn feed(self: &mut, chunk: &Array[u8]) {
-    // The room left in the last segment first, then one new buffer for the rest
+    if failed { return; }
+    // The room left in the last segment first, then buffers of at most 1 MiB for the rest
     var at = bi.rd.appendLast(chunk);
     while at < chunk.len {
-      var b = IoBuf(chunk.len - at);
-      at = at + b.append(&chunk[at ..< chunk.len]);
-      _ = bi.rd.push(b);
+      let want = if chunk.len - at < 1048576usize {chunk.len - at} else {1048576usize};
+      match IoBuf.tryMake(want) {
+        case var Some(b) {
+          at = at + b.append(&chunk[at ..< chunk.len]);
+          _ = bi.rd.push(b);
+        }
+        case is None[IoBuf] {
+          self.fail(ErrorKind.TooLarge, "the input fed is more than the buffer pool will hold; feed it in pieces");
+          bi.rd = streams.Reader.make(0usize);
+          return;
+        }
+      }
     }
   }
 

@@ -10,11 +10,21 @@ fn inflateRun(inf: &mut Inflater, data: &Array[u8], start: usize, expected: usiz
   inf.limit = if expected > 0usize {u64.from(expected)} else {1073741824u64};
   // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
   inf.hist.reserve(if expected > 0usize {if expected < 67108864usize {expected} else {67108864usize}} else {65536usize});
-  inf.feed(&data[start ..< data.len]);
-  inf.finished = true;
-  let s = inf.runAll();
-  if s == Status.Failed {
-    return Some[DeflateError](inf.err.clone());
+  // The input goes in 1 MiB at a time with decoding between, so the input held stays small however
+  // large 'data' is (it would pass the buffer pool's bound at 64 MiB if fed whole)
+  var at = start;
+  while true {
+    if at < data.len {
+      let n = if data.len - at < 1048576usize {data.len - at} else {1048576usize};
+      inf.feed(&data[at ..< at + n]);
+      at = at + n;
+    }
+    if at >= data.len { inf.finished = true; }
+    let s = inf.runAll();
+    if s == Status.Failed {
+      return Some[DeflateError](inf.err.clone());
+    }
+    if s == Status.Done || at >= data.len { break; }
   }
   None[DeflateError]
 }
