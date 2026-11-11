@@ -163,9 +163,15 @@
 // KEEP-ALIVE. A connection is reused for the next exchange when both ends
 // speak HTTP/1.1, neither said 'Connection: close', the response was not
 // framed by the close, and each message was whole when the exchange ended:
-// a response that ends while the client is still sending its body, or a
-// server's response sent before the request's body was read, closes the
-// connection after it. An HTTP/1.0 peer's connection is never kept alive.
+// a response that ends while the client is still sending its body closes
+// the connection after it. A server's response sent before the request's
+// body was read leaves the connection reading that body, for as long as
+// its consumer holds it (TCP back-pressure and bodyTimeout bound that);
+// 'dropBody' says nobody wants it, and up to 256 KiB more is read out and
+// discarded, the connection kept if the body ends inside that and failed
+// (TooLarge) otherwise. The connection closes at once, as before, when the
+// response said 'Connection: close' or a 100-continue was never sent.
+// An HTTP/1.0 peer's connection is never kept alive.
 // A CLIENT SENDS ONE REQUEST AT A TIME on a connection (no pipelining:
 // 'sendRequest' while an exchange is in progress is a program error); the
 // client layer opens more connections for more requests at once. A server
@@ -284,10 +290,12 @@ enum WriteState {
 const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by the watermark instead
 const tailSize = 4096usize;               // a buffer small writes gather in, when the last queued has no room
 const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
-const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
+const maxDrainBytes = 262144u64;          // a server reads this much of a dropped, unread request body to keep the connection (Go's maxPostHandlerReadBytes)
+const maxCopy = 65536usize;              // the most a body buffer copied out of the input holds
 // What a reserve for a peek, or a body copy, that the buffer pool refused ends the connection with:
 // the pool is within its reserve of maxBytes (iobuf's tryMake)
-const noBufferText = "no buffer for the bytes: the buffer pool is full (iobuf maxBytes)";
+const drainBoundText = "the unread request body is longer than the 256 KiB the server reads to keep the connection";
+const noBufferText ="no buffer for the bytes: the buffer pool is full (iobuf maxBytes)";
 
 // One HTTP/1.1 connection's protocol state (see the package's header)
 pub struct Connection is Move {
@@ -314,6 +322,9 @@ pub struct Connection is Move {
   abandoned: bool;           // the rest of the body being sent is dropped
   requestSeen: bool;         // a server's request awaits its response
   answeringHead: bool;       // ...and was a HEAD
+  expectUnsent: bool;        // ...and asked for 100-continue, which has not been sent
+  draining: bool;            // a server's dropped request body is being read out and discarded
+  drained: u64;              // ...and this much of it has been handed on since the drop
   peer10: bool;              // ...and was HTTP/1.0
 
   keepAlive: bool;
@@ -356,7 +367,7 @@ pub struct Connection is Move {
       input: Reader.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
       headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
       ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
-      answeringHead: false, peer10: false, keepAlive: true,
+      answeringHead: false, expectUnsent: false, draining: false, drained: 0u64, peer10: false, keepAlive: true,
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
@@ -692,6 +703,7 @@ pub struct Connection is Move {
     if closed || failed {return;}
     if !requestSeen || ws != WriteState.Idle {panic("http1: sendInterim with no request awaiting a response", file, line);}
     if head.status < 100u16 || head.status > 199u16 || head.status == 101u16 {panic("http1: sendInterim takes a 1xx other than 101", file, line);}
+    if head.status == 100u16 {expectUnsent = false;}
     self.putStatusLine(head.status);
     self.putFields(&head.headers);
     self.put("\r\n");
@@ -759,6 +771,21 @@ pub struct Connection is Move {
   // Whether the driver should close the socket now: the connection has
   // ended and everything it had to send has been taken
   pub fn shouldClose(self: &) bool {(closed || failed) && out.len() == 0usize}
+
+  // A server's request body that nobody will read, after the response is whole: the rest of it is read out
+  // and discarded (the consumer releases each Data at once), up to maxDrainBytes (256 KiB, Go's
+  // maxPostHandlerReadBytes), and the connection is kept if the body ends inside that; past it the connection
+  // fails (TooLarge) and closes. A body known to be longer than the bound is refused at once. Returns false,
+  // and does nothing, when this is not a server whose response is whole and request body is not
+  pub fn dropBody(self: &mut) bool {
+    if clientRole || closed || failed || ws != WriteState.Done || !self.inBody() || draining {return false;}
+    draining = true;
+    drained = 0u64;
+    if rs == ReadState.Sized && remaining > maxDrainBytes {
+      self.fail(ErrorKind.TooLarge, 0u16, drainBoundText);
+    }
+    true
+  }
 
   // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
   // only way to cancel an exchange
@@ -909,6 +936,7 @@ pub struct Connection is Move {
         keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
         answeringHead = head.method == Method.Head;
         requestSeen = true;
+        expectUnsent = head.headers.hasToken("Expect", "100-continue");
         sawBytes = false;
         let body = self.startBody(framing.mode, framing.n);
         Event.Request(head, body)
@@ -1012,6 +1040,10 @@ pub struct Connection is Move {
       if eof {return self.closedMidBody();}
       return Event.NeedData;
     }
+    if draining && drained >= maxDrainBytes {
+      self.fail(ErrorKind.TooLarge, 0u16, drainBoundText);
+      return self.failedEvent();
+    }
     if self.blocked() {return Event.Paused;}
     var n = avail;
     if rs != ReadState.UntilClose && remaining < n {n = remaining;}
@@ -1036,6 +1068,7 @@ pub struct Connection is Move {
       input.consume(k);
     }
     let got = buf.len();
+    if draining {drained = drained + u64.from(got);}
     outstanding = outstanding + got;
     if rs != ReadState.UntilClose {remaining = remaining - u64.from(got);}
     Event.Data(buf)
@@ -1181,8 +1214,12 @@ pub struct Connection is Move {
   // kept for the next, or it closes
   fn endExchange(self: &mut) {
     if !clientRole && ws == WriteState.Done && rs != ReadState.Done {
-      // Answered before the request's body was read: the rest of it cannot
-      // be told from the next request, so the connection closes
+      // Answered before the request's body was read. The rest of it cannot be told from the next request, so
+      // the connection keeps reading it for as long as the consumer holds it (TCP back-pressure and bodyTimeout
+      // bound that), and dropBody bounds the reading of a body nobody wants. It closes at once when it is not
+      // to be kept (the response said close), or a 100-continue was never sent, so the client may never send
+      // the body
+      if keepAlive && !expectUnsent {return;}
       exchanges = exchanges + 1u64;
       closed = true;
       return;
@@ -1198,6 +1235,8 @@ pub struct Connection is Move {
       holding = false;
       abandoned = false;
       requestSeen = false;
+      draining = false;
+      drained = 0u64;
       answeringHead = false;
       headInFlight = false;
       armHead = false;

@@ -1395,7 +1395,16 @@ pub struct Driver {
       c.current = noEntry;
       let r = self.reqAt(ri) as &Req;
       if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
-      else if r.server && r.finished && sent {self.finishReq(lp, ri, endDone, None);}
+      else if r.server && r.finished && sent {
+        // A body the connection ended in the middle of says why on the Done (the peer left, a deadline, the
+        // drain bound), for a handler that was still reading it
+        if r.readDone {self.finishReq(lp, ri, endDone, None);}
+        else {
+          let why = if c.failure is Some {self.failureFor(i, ri, false)}
+            else {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the peer closed the connection before the request body ended")};
+          self.finishReq(lp, ri, endDone, Some[Failure](why));
+        }
+      }
       else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
     }
     while true {
@@ -2031,15 +2040,23 @@ pub struct Driver {
   // program no longer wants (it answered without reading the upload, or dropped it): over HTTP/2 the
   // stream is reset with RST_STREAM(NO_ERROR) (RFC 9113 section 8.1), so the client stops sending, the
   // answer is not cut, and the request needs no End from the client. Returns false, and does nothing, when
-  // req names no request; when it is a client's; when the connection is HTTP/1.1 (the core closes it after
-  // the answer); when the answer is not yet whole; or when the request was already read whole
+  // req names no request; when it is a client's; when the answer is not yet whole; or when the request was
+  // already read whole. Over HTTP/1.1 the connection reads the rest of the body out (up to 256 KiB, then it
+  // fails), so the next request is not lost in it, and the request ends with the body (true: draining began)
   pub fn stopBody(self: &mut, req: ReqId) bool {
     let ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     let r = self.reqAt(ri) as &mut Req;
     if !r.server || r.readDone || !r.finished {return false;}
     let c = self.connAt(r.conn) as &mut Conn;
-    if !c.isH2 || c.gen != r.connGen || c.state == cFree {return false;}
+    if c.gen != r.connGen || c.state == cFree {return false;}
+    if !c.isH2 {
+      // HTTP/1.1: the rest is read out and discarded, up to the core's bound; the request ends when the
+      // body does (its End), or the connection fails past the bound
+      if c.current != ri || !c.core.dropBody() {return false;}
+      self.markDirty(r.conn);
+      return true;
+    }
     stopBody2(c, r.stream);
     r.readDone = true;
     self.toFlushing(r.conn, ri);

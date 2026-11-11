@@ -1,0 +1,179 @@
+// A server answers before its request's body is read (HTTP/1.1). The connection keeps reading the body for as
+// long as the consumer holds it; once the consumer drops it ('dropBody') up to 256 KiB more is read out and
+// discarded and the connection is kept if the body ends inside that, and failed (TooLarge) if it does not.
+// A body of a known length past the bound is refused at the drop. A response that says close, or a request
+// whose 100-continue was never sent, closes at once.
+
+mod drain;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn at() Instant {Instant.fromNanos(1000000000i64)}
+
+struct Seen {
+  pub requests: u64;
+  pub bytes: u64;
+  pub ends: u64;
+  pub failed: u64;
+}
+
+// Everything the server core has for its consumer now; each Data released at once (the consumer discards it)
+fn poll(s: &mut Connection, st: &mut Seen) {
+  while true {
+    match s.pollEvent() {
+      case is Request {st.requests = st.requests + 1u64;}
+      case var Data(d) {
+        st.bytes = st.bytes + u64.from(d.buf.len());
+        s.release(d.buf.len());
+      }
+      case is End {st.ends = st.ends + 1u64;}
+      case is Failed {st.failed = st.failed + 1u64;}
+      case is NeedData {return;}
+      case is Paused {return;}
+      case is Closed {return;}
+      else {return;}
+    }
+  }
+}
+
+fn feed(s: &mut Connection, text: &str) {
+  var b = IoBuf(text.len + 1usize);
+  b.append(text);
+  s.handleInput(b, at());
+}
+
+fn feedBytes(s: &mut Connection, n: usize) {
+  var left = n;
+  while left > 0usize {
+    let k = if left > 8192usize {8192usize} else {left};
+    var b = IoBuf(k);
+    let room = b.whole();
+    var i = 0usize;
+    while i < k {room[i] = 'a'; i = i + 1usize;}
+    b.setLen(k);
+    s.handleInput(b, at());
+    left = left - k;
+  }
+}
+
+fn takeOutput(s: &mut Connection) {
+  var ch = s.pollTransmit(at());
+  while true {
+    match ch.popFront() {
+      case var Some(b) {}
+      else {break;}
+    }
+  }
+}
+
+fn answer(s: &mut Connection, st: &mut Seen) {
+  poll(s, st);
+  s.sendResponse(ResponseHead.make(200u16), BodyLength.sized(2u64));
+  var ok = IoBuf(4usize);
+  ok.append("ok");
+  s.sendData(ok);
+  s.finish();
+  takeOutput(s);
+}
+
+fn main() i32 {
+  {
+    // dropped, the body ends inside the bound: kept, and the next request is read
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nContent-Length: 200000\r\n\r\n");
+    feedBytes(&mut s, 50000usize);
+    answer(&mut s, &mut st);
+    expect(!s.isClosed(), "answered first: still open");
+    expect(s.dropBody(), "the body is dropped");
+    feedBytes(&mut s, 150000usize);
+    poll(&mut s, &mut st);
+    expectUInt(st.ends, 1u64, "the body ended inside the bound");
+    expect(!s.isClosed(), "and the connection is kept");
+    feed(&mut s, "GET /b HTTP/1.1\r\nHost: h\r\n\r\n");
+    poll(&mut s, &mut st);
+    expectUInt(st.requests, 2u64, "so the next request is read");
+    expectUInt(s.exchangeCount(), 1u64, "one exchange finished");
+  }
+  {
+    // dropped, of a known length past the bound: refused at the drop
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nContent-Length: 300000\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.dropBody(), "the body is dropped");
+    poll(&mut s, &mut st);
+    expectUInt(st.failed, 1u64, "a body longer than 256 KiB fails the connection");
+    expect(s.isClosed(), "and it closes");
+  }
+  {
+    // dropped, chunked past the bound: read out up to it, then failed
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.dropBody(), "the chunked body is dropped");
+    var i = 0usize;
+    while i < 8usize && !s.isClosed() {
+      feed(&mut s, "10000\r\n");
+      feedBytes(&mut s, 65536usize);
+      feed(&mut s, "\r\n");
+      poll(&mut s, &mut st);
+      i = i + 1usize;
+    }
+    expectUInt(st.failed, 1u64, "a chunked body past 256 KiB fails the connection");
+    expect(s.isClosed(), "and it closes");
+    expect(st.bytes >= 262144u64 && st.bytes <= 262144u64 + 65536u64, "having read out about the bound and no more");
+  }
+  {
+    // dropped, chunked, ending inside the bound: kept
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.dropBody(), "the chunked body is dropped");
+    feed(&mut s, "10000\r\n");
+    feedBytes(&mut s, 65536usize);
+    feed(&mut s, "\r\n0\r\n\r\n");
+    poll(&mut s, &mut st);
+    expectUInt(st.ends, 1u64, "the chunked body ended");
+    expect(!s.isClosed(), "and the connection is kept");
+  }
+  {
+    // never dropped: held for as long as the consumer reads; the connection waits, whatever is its size
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nContent-Length: 1000000\r\n\r\n");
+    answer(&mut s, &mut st);
+    var k = 0usize;
+    while k < 10usize {
+      feedBytes(&mut s, 65536usize);
+      poll(&mut s, &mut st);
+      k = k + 1usize;
+    }
+    expect(!s.isClosed(), "a held body keeps the connection open");
+    expectUInt(st.bytes, 655360u64, "and every byte is handed on");
+  }
+  {
+    // an Expect: 100-continue that was never answered: closes at once (the body may never come)
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 1000\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.isClosed(), "answered without a 100: the connection closes");
+  }
+  {
+    // the response says close: closes at once
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nConnection: close\r\nContent-Length: 1000\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.isClosed(), "a request that said close: the connection closes");
+  }
+  done()
+}
