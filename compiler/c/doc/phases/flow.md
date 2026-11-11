@@ -1108,10 +1108,20 @@ the store itself is the error (`ErrorSelfStore`, `loanSelfStore`, from `pwStoreE
 reference by name, never a caller loan, so a borrow the function was given, or one read out of a
 borrow field, still stores). A borrow reached through *another* reference parameter is not this
 error: the caller sees it, as the other arguments' loans. One exception keeps two such places
-lent to one call apart: a borrow written as an argument is stored only where the
-place's type can hold a borrow of what it borrows (`itypeHoldsBorrowOf`), so
-`arrive(&mut world, &mut seen, name)` leaves `world`, a `List[Named]`, holding
-nothing of `seen`, a `List[&Array[u8]]`, and each is free while the other is used.
+lent to one call apart: a borrow written as an argument (or an auto-borrowed
+receiver) is stored only where the place's type can hold a borrow whose target
+type is reachable *inside* what it borrows (`itypeMayHoldBorrowInside`: the
+type itself, its fields and elements, what it owns through owning references and
+pointers; a type either side shows only in part, such as a type parameter, trait,
+virtual reference, closure or arena, answers "can hold"; a read-only borrow is
+held by no `&mut` slot). So `arrive(&mut world, &mut all, name)` leaves `world`,
+which holds `&str` and handles, holding nothing of `all`, a `List[Ref[Creature]]`
+with no `str` inside, and each is free while the other is used; `put(&mut h, &mut l)`
+with `h` holding a `&Pt` and `l` a `List[Pt]` is not (`&l[0]` is a `&Pt`: the old
+test asked only of `l`'s own type, Bug 77). Calls only (not the struct-literal
+join), and not where another argument is a writable borrow of an arena. A
+parameter declared `&` is no store target when the pointee cannot change through
+a shared view (`itypeMayMutateShared`), whatever the argument written.
 
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
 carries the loans of every argument: Cone's rule for a signature without
@@ -2125,6 +2135,22 @@ an `i8` slot named `<var>.held`, stored `1` (whole) where the variable begins
 with a value — its declaration, a parameter at function or inline-body entry —
 and `0` where it begins without one; `0` at each marked move, `2` at each
 marked hollowing, `1` after each store over it whole.
+
+**Paths that hollow it by different parts** (Bug 69; `VarPartFlag`). Where
+paths that left the variable hollow join with different sets of moves *taking
+different parts* (`pathJoinParts`, `dropHollowShapesDiffer`: the same part
+moved at two nodes is not different), the union in `hmask` would release a
+part one path still owns. The variable is then flagged (`PathVar.partmix`;
+`dropWalkEnd` sets `VarPartFlag` where a release sees it hollow), and its
+flag holds, above the two low bits, one bit for each of the first five
+hollowing moves and one for every later one (`genlDropFlagHollow`: the bit is
+ORed in at the move; a store of `0` or `1` clears them). Every hollow release
+of such a variable (`genlHollowReleaseRef`, with the flag's value, also for a
+parked record's drop) tests the bits of up to four of its moves and is
+generated for each combination (`genlHollowChoose`); beyond four, or in the
+shared bit, a move is taken as having happened, which can leak but not free
+twice. A variable with no such join has none of this, and its code is as it
+was.
 
 ### A seam
 

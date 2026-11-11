@@ -55,8 +55,8 @@ struct ExRec {
   sinkFailed: bool;            // its pipeline was stopped or the body failed: chunks arriving go straight back
   sinkEnded: bool;             // its 'end(Finished)' has come: finish the body once the chunks are sent
   sinkUp: Option[ChunkSource]; // the source feeding it
-  sinkChunks: Deque[IoBuf];    // chunks arrived, whose bytes the connection has not all taken
-  sinkOff: usize;              // ...of the first, how many it has taken
+  sinkChunks: Deque[IoBuf];    // chunks arrived, not yet taken by the connection (a refused one waits at the front)
+  sinkHome: Option[IoHome];    // the source's home: a chunk sent carries it, and its death returns the credit
   sinkIn: u64;                 // body bytes the sink has been given, for the declared length
   sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
   // The request's body as a stream (ServerConfig.streamBodies; requestbody.cone). 'inMode' says the exchange is
@@ -80,10 +80,13 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
-    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false,
+    sinkChunks: Deque[IoBuf](), sinkHome: None[IoHome], sinkIn: 0u64, sinkGone: false,
     inMode: false, inAwait: false, inContinue: false, inEnded: false, inDiscard: false, inRefused: false,
     inSink: None[ChunkSink], inKept: None[Ending], inLend: newLend())
 }
+
+// A server's exchanges, in a pool of its own
+alias Exchanges = GenPool[ExRec];
 
 // A listening server the service owns: its own driver (so its bounds are its
 // own), its listener, its requests, those waiting for an actor and the actors
@@ -99,7 +102,7 @@ struct SrvRec {
   streamBodies: bool;         // requests are delivered at their heads (requestbody.cone)
   drv: httpconn.Driver;
   listener: httpconn.ListenerId;
-  exs: SlotTable[ExRec];
+  exs: Exchanges;
   byReq: Dict[u64, usize];    // a request's key (its number on the driver, or h3Key's) to its slot
   reading: Dict[u64, Request];   // a request's key to the request being read in
   ready: Deque[ReadyEx];      // the requests whole and waiting for an actor
@@ -355,6 +358,12 @@ fn srvRespond(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: Body
     h.headers.add("Alt-Svc", a.view());
   }
   srv.drv.respond(x.req, h, framing);
+}
+
+// Body bytes, moved in: None when taken, or the buffer back when the connection refuses it (Writable comes
+// when there is room)
+fn srvSendBuf(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) Option[IoBuf] {
+  if x.onH3 {srv.h3.sendData(x.qreq, b)} else {srv.drv.sendData(x.req, b)}
 }
 
 // Body bytes: whether they were taken (else Writable comes when there is room)
@@ -732,7 +741,7 @@ struct ListenJob {
         }
         let id = newId();
         sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, streamBodies, drv, l,
-          SlotTable[ExRec].make(16u32), Dict[u64, usize](), Dict[u64, Request](),
+          Exchanges.make(16u32), Dict[u64, usize](), Dict[u64, Request](),
           Deque[ReadyEx](), Deque[actors.ReplyOf[Result[Exchange, ServerError]]](), 0usize, h3, h3on, h3listener, altSvc,
           Dict[QKey, u64](), 1u64, Deque[actors.ReplyOf[bool]]()));
         rp.answer(Ok[Server, ServerError](Server(id, bound, secure, h3on)));

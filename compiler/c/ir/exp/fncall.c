@@ -1059,6 +1059,8 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                     fnSigRefusalMsg(*argsp, whycode, why);
                 else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
                     errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
+                else if (structDefaultRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter.%s", privwhy);
                 else
                     errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
                         iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
@@ -2052,6 +2054,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (!isMethodType(objdereftype)) {
         return 0;
     }
+    structMembersUse(pstate, objdereftype, 0);
 
     // 'mask.select(a, b)' chooses between two vectors of any lane type, which
     // no signature can say
@@ -3456,7 +3459,8 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
             found = astate;
     }
     // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
-    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag
+        && found->tag != AliasDclTag))
         return 0;
     member->dclnode = found;
     member->flags |= FlagQualified;
@@ -5601,7 +5605,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // a struct or a trait. One that arrives here is one it could not -- an
         // alias, a number type's member other than 'from' (fnCallNumberFrom
         // took that), a generic parameter, or a generic instance's member other
-        // than a function (fnCallTypeInstancePath took those). Diagnosed rather
+        // than a function, const or alias (fnCallTypeInstancePath took those). Diagnosed rather
         // than left to read as a bad call.
         if (node->methfld != NULL) {
             // A name a struct (a generic's instance, 'T.maxValue' at a struct) does

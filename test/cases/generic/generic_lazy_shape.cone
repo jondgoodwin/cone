@@ -1,0 +1,34 @@
+// Shape inference over a lazy nested instance. 'Holder[R]' holds a list, pushes
+// onto it and lends an element, so it changes shape; 'Holder[Option[i64]]', made by
+// the member check of 'Holder[i64]', waits for a use. Calling 'first' on it checks
+// its members, and the compiler must find it shape-changing there, so a push while
+// that borrow is still to be used is refused.
+
+mod generic_lazy_shape;
+
+import collections use *;
+
+struct Holder[R] {
+  items: List[R];
+
+  pub fn push(self: &mut Holder[R], r: R) {
+    items.push(r);
+  }
+
+  pub fn first(self: &Holder[R]) &R {
+    &items[0usize]
+  }
+
+  pub fn lift(self: &Holder[R]) Holder[Option[R]] {
+    Holder[Option[R]](List[Option[R]]())
+  }
+}
+
+fn main() {
+  let h = Holder[i64](List[i64]());
+  var n = h.lift();
+  n.push(None[i64]);
+  let f = n.first();
+  n.push(None[i64]);   //~ ErrorFrozen:3 "may not be borrowed mutably"
+  let g = f;
+}
