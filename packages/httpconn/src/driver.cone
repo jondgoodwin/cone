@@ -1394,8 +1394,15 @@ pub struct Driver {
       let ri = c.current;
       c.current = noEntry;
       let r = self.reqAt(ri) as &Req;
+      // The core refused or timed out what the peer sent: a request whose answer was handed over whole is
+      // Done all the same; a body read that failed after the answer is the handler's Err, not a failed request
+      var bodyFailed = false;
+      match &c.failure {
+        case let &Some(cf) {bodyFailed = cf.stage == Stage.Http;}
+        else {}
+      }
       if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
-      else if r.server && r.finished && sent {
+      else if r.server && r.finished && (sent || (!r.readDone && bodyFailed)) {
         // A body the connection ended in the middle of says why on the Done (the peer left, a deadline, the
         // drain bound), for a handler that was still reading it
         if r.readDone {self.finishReq(lp, ri, endDone, None);}

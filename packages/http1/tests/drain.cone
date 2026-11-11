@@ -168,12 +168,37 @@ fn main() i32 {
     expect(s.isClosed(), "answered without a 100: the connection closes");
   }
   {
-    // the response says close: closes at once
+    // the server's response says close (it refused the body): closes at once
     var s = Connection.server(Config.make(), at());
     var st = Seen(0u64, 0u64, 0u64, 0u64);
-    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nConnection: close\r\nContent-Length: 1000\r\n\r\n");
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nContent-Length: 1000\r\n\r\n");
+    poll(&mut s, &mut st);
+    var h = ResponseHead.make(413u16);
+    h.headers.add("Connection", "close");
+    s.sendResponse(h, BodyLength());
+    expect(s.isClosed(), "a response that says close: the connection closes at once");
+  }
+  {
+    // the client's own Connection: close: the body is still read for a handler that holds it, then it closes
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nConnection: close\r\nContent-Length: 20000\r\n\r\n");
+    feedBytes(&mut s, 5000usize);
     answer(&mut s, &mut st);
-    expect(s.isClosed(), "a request that said close: the connection closes");
+    expect(!s.isClosed(), "a client that said close: the body is still read");
+    feedBytes(&mut s, 15000usize);
+    poll(&mut s, &mut st);
+    expectUInt(st.bytes, 20000u64, "every byte is handed on");
+    expectUInt(st.ends, 1u64, "and the body ends");
+    expect(s.isClosed(), "then the connection closes");
+  }
+  {
+    // ...but a dropped body closes it straight away
+    var s = Connection.server(Config.make(), at());
+    var st = Seen(0u64, 0u64, 0u64, 0u64);
+    feed(&mut s, "POST /a HTTP/1.1\r\nHost: h\r\nConnection: close\r\nContent-Length: 20000\r\n\r\n");
+    answer(&mut s, &mut st);
+    expect(s.dropBody() && s.isClosed(), "a dropped body of a client that said close: the connection closes at once");
   }
   done()
 }
