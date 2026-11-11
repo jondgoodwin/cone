@@ -1,0 +1,88 @@
+// The unicode package: each property and the simple case mapping, on chosen
+// code points whose answers come from the Unicode 18.0.0 data files by hand
+// (UnicodeData.txt fields 2, 12 and 13; PropList.txt White_Space;
+// DerivedCoreProperties.txt Alphabetic, Uppercase, Lowercase), then over every
+// code point but the surrogates against totals unicodetables.py computes from
+// those same files with its own code (counts of each property, and the sums
+// of the toUpper and toLower code points).
+
+mod classes;
+
+import testing use *;
+import unicode;
+
+fn up(c: char, want: u32, label: &Array[u8]) bool { expectUInt(u64.from(u32.from(unicode.toUpper(c))), u64.from(want), label) }
+fn lo(c: char, want: u32, label: &Array[u8]) bool { expectUInt(u64.from(u32.from(unicode.toLower(c))), u64.from(want), label) }
+
+fn main() i32 {
+  // ASCII
+  expect(unicode.isAlphabetic('a') && unicode.isAlphabetic('Z'), "ascii letters");
+  expect(!unicode.isAlphabetic('1') && !unicode.isAlphabetic('_') && !unicode.isAlphabetic(' '), "ascii not letters");
+  expect(unicode.isNumeric('0') && unicode.isNumeric('9') && !unicode.isNumeric('a'), "ascii digits");
+  expect(unicode.isWhitespace(' ') && unicode.isWhitespace('\t') && unicode.isWhitespace('\n') && !unicode.isWhitespace('x'), "ascii space");
+  expect(unicode.isUpper('A') && !unicode.isUpper('a') && unicode.isLower('a') && !unicode.isLower('A'), "ascii case");
+  up('a', 65u32, "a up"); up('z', 90u32, "z up"); up('A', 65u32, "A up"); up('{', 123u32, "{ up");
+  lo('A', 97u32, "A low"); lo('Z', 122u32, "Z low"); lo('a', 97u32, "a low"); lo('@', 64u32, "@ low");
+
+  // Beyond ASCII
+  expect(unicode.isAlphabetic('é') && unicode.isLower('é') && !unicode.isUpper('é'), "e acute");
+  up('é', 0xC9u32, "e acute up"); lo('É', 0xE9u32, "E acute low");
+  up('ÿ', 0x178u32, "y diaeresis up"); lo('Ÿ', 0xFFu32, "Y diaeresis low");
+  up('µ', 0x39Cu32, "micro up");
+  up('ß', 0xDFu32, "sharp s stays");           // full upper case "SS" is SpecialCasing, not here
+  lo('İ', 0x69u32, "dotted I low");            // simple mapping; the full one is i + U+0307
+  up('ı', 0x49u32, "dotless i up");
+  up('ǅ', 0x1C4u32, "Dz titlecase up"); lo('ǅ', 0x1C6u32, "Dz titlecase low");
+  expect(unicode.isAlphabetic('ǅ') && !unicode.isUpper('ǅ') && !unicode.isLower('ǅ'), "titlecase is neither");
+  up('ς', 0x3A3u32, "final sigma up"); lo('Σ', 0x3C3u32, "Sigma low");
+  up('ж', 0x416u32, "zhe up"); lo('Ж', 0x436u32, "Zhe low");
+  up('ẞ', 0x1E9Eu32, "capital sharp s up"); lo('ẞ', 0xDFu32, "capital sharp s low");
+  up('ა', 0x1C90u32, "georgian an up");       // Mkhedruli has uppercase since Unicode 11
+  up('\U00010428', 0x10400u32, "deseret up"); lo('\U00010400', 0x10428u32, "Deseret low");
+  up('中', 0x4E2Du32, "han up"); lo('中', 0x4E2Du32, "han low");
+  expect(unicode.isAlphabetic('中') && !unicode.isUpper('中') && !unicode.isLower('中'), "han letter, no case");
+
+  // Numbers: Nd, Nl and No, not alphabetic unless a letter number
+  expect(unicode.isNumeric('٣') && !unicode.isAlphabetic('٣'), "arabic-indic three");
+  expect(unicode.isNumeric('²') && unicode.isNumeric('½'), "superscript two, one half");
+  expect(unicode.isNumeric('Ⅰ') && unicode.isAlphabetic('Ⅰ') && unicode.isUpper('Ⅰ'), "roman numeral one");
+  lo('Ⅰ', 0x2170u32, "roman numeral one low");
+  expect(unicode.isNumeric('\U0001D7D8') && unicode.isNumeric('\U0001F10B'), "math double-struck zero, dingbat zero");
+
+  // White_Space: 25 code points; U+200B, U+180E and U+FEFF are not
+  expect(unicode.isWhitespace('\u0085') && unicode.isWhitespace(' ') && unicode.isWhitespace(' '), "nel, nbsp, ogham");
+  expect(unicode.isWhitespace(' ') && unicode.isWhitespace(' ') && unicode.isWhitespace(' ') && unicode.isWhitespace(' '), "en quad, hair, separators");
+  expect(unicode.isWhitespace(' ') && unicode.isWhitespace(' ') && unicode.isWhitespace('　'), "narrow nbsp, medium math, ideographic");
+  expect(!unicode.isWhitespace('​') && !unicode.isWhitespace('᠎') && !unicode.isWhitespace('﻿'), "zero width are not space");
+
+  // The ends
+  expect(!unicode.isAlphabetic('\u0000') && !unicode.isAlphabetic('\U0010FFFF') && !unicode.isNumeric('\U0010FFFF'), "ends");
+  up('\U0010FFFF', 0x10FFFFu32, "last up"); lo('\u0000', 0u32, "first low");
+
+  // Every code point but the surrogates, against the generator's totals
+  var alpha = 0u64; var upper = 0u64; var lower = 0u64; var white = 0u64; var numeric = 0u64;
+  var sumUp = 0u64; var sumLow = 0u64;
+  var x = 0u32;
+  while x <= 0x10FFFFu32 {
+    if x < 0xD800u32 || x > 0xDFFFu32 {
+      let c = char.from(x);
+      if unicode.isAlphabetic(c) { alpha = alpha + 1u64; }
+      if unicode.isUpper(c) { upper = upper + 1u64; }
+      if unicode.isLower(c) { lower = lower + 1u64; }
+      if unicode.isWhitespace(c) { white = white + 1u64; }
+      if unicode.isNumeric(c) { numeric = numeric + 1u64; }
+      sumUp = sumUp + u64.from(u32.from(unicode.toUpper(c)));
+      sumLow = sumLow + u64.from(u32.from(unicode.toLower(c)));
+    }
+    x = x + 1u32;
+  }
+  expectUInt(alpha, 160254u64, "alphabetic count");
+  expectUInt(upper, 2026u64, "uppercase count");
+  expectUInt(lower, 2740u64, "lowercase count");
+  expectUInt(white, 25u64, "white space count");
+  expectUInt(numeric, 2247u64, "numeric count");
+  expectUInt(sumUp, 620504297126u64, "toUpper sum");
+  expectUInt(sumLow, 620509398487u64, "toLower sum");
+
+  return done();
+}

@@ -1,0 +1,75 @@
+// The unicode package: the properties of a char and its simple case mapping,
+// from run tables generated from the Unicode Character Database
+// (unicodetables.py writes unicodetables.cone; its header names the version).
+// Pure Cone over core, no C library.
+//
+//   mod demo;
+//   import unicode;
+//
+//   fn main() {
+//     let a = unicode.isAlphabetic('é');   // true
+//     let u = unicode.toUpper('é');        // 'É'
+//   }
+//
+// WHAT EACH ANSWERS (the names of Rust's char methods, the same sets)
+//   isAlphabetic   the Alphabetic property (letters, letter numbers, some marks)
+//   isNumeric      general category Nd, Nl or No
+//   isWhitespace   the White_Space property (the 25 code points; not U+200B)
+//   isUpper        the Uppercase property;  isLower  the Lowercase property
+//   toUpper / toLower   UnicodeData's simple one-to-one mapping; a char with
+//                  none is given back. U+00DF stays U+00DF in toUpper, though
+//                  its full upper case is "SS" (SpecialCasing.txt): a mapping
+//                  that changes length is not here, and is awaiting a ruling.
+//
+// LOOKUP. Each table is the first code point of each run of equal value, in
+// order; a lookup is a binary search for the last start not above the char.
+// The case mappings answer ASCII before any table. The tables are about 37 KB
+// in all.
+
+mod unicode;
+
+fn code(c: char) u32 inline { u32.from(c) }
+
+// The index of the last start at or below x, for starts[0] == 0
+fn runOf(starts: &Array[u32], x: u32) usize {
+  var lo = 0usize;
+  var hi = starts.len();
+  // starts[lo] <= x < starts[hi] (past the end is infinity)
+  while hi - lo > 1usize {
+    let mid = lo + (hi - lo) / 2usize;
+    if starts[mid] <= x { lo = mid; } else { hi = mid; }
+  }
+  lo
+}
+
+fn flags(c: char) u8 {
+  flagBits[runOf(&flagStarts, code(c))]
+}
+
+pub fn isAlphabetic(c: char) bool { (flags(c) & 1u8) != 0u8 }
+pub fn isUpper(c: char) bool { (flags(c) & 2u8) != 0u8 }
+pub fn isLower(c: char) bool { (flags(c) & 4u8) != 0u8 }
+pub fn isWhitespace(c: char) bool { (flags(c) & 8u8) != 0u8 }
+pub fn isNumeric(c: char) bool { (flags(c) & 16u8) != 0u8 }
+
+fn shifted(x: u32, delta: i32) char {
+  char.from(u32.from(i64.from(x) + i64.from(delta)))
+}
+
+pub fn toUpper(c: char) char {
+  let x = code(c);
+  if x < 128u32 {
+    if x >= 97u32 && x <= 122u32 { return char.from(x - 32u32); }
+    return c;
+  }
+  shifted(x, upperDelta[runOf(&upperStarts, x)])
+}
+
+pub fn toLower(c: char) char {
+  let x = code(c);
+  if x < 128u32 {
+    if x >= 65u32 && x <= 90u32 { return char.from(x + 32u32); }
+    return c;
+  }
+  shifted(x, lowerDelta[runOf(&lowerStarts, x)])
+}
