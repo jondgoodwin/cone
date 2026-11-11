@@ -1,8 +1,8 @@
 // The Driver: its tables, the completions it is handed, and the turn that
 // moves each connection along (see the package's header).
 //
-// How it is built. Listeners and connections are records in two SlotTables;
-// each connection's streams are records in a SlotTable of its own, found
+// How it is built. Listeners and connections are records in two GenPools;
+// each connection's streams are records in a GenPool of its own, found
 // from a stream's number by a Dict (the stream map: the number is HTTP/3's
 // and QUIC's alike). A ConnId or ReqId is a record's cell and generation, so
 // an id kept after its record went names nothing. Every operation the
@@ -106,15 +106,15 @@ struct Lst {
 struct Conn {
   server: bool;
   token: u64;
-  listener: Slot;           // a server's listener
+  listener: RecId;           // a server's listener
   handle: Handle;           // the socket it sends on: its own (a client's) or its listener's
   peer: SocketAddr;
   q: quic.Connection;
   h: http3.Connection;
-  streams: SlotTable[Strm];
-  byId: Dict[u64, Slot];    // a stream's number to its record
-  waitBidi: Deque[Slot];    // its own streams waiting for QUIC to open them, in HTTP/3's order
-  waitUni: Deque[Slot];
+  streams: Streams;
+  byId: Dict[u64, RecId];    // a stream's number to its record
+  waitBidi: Deque[RecId];    // its own streams waiting for QUIC to open them, in HTTP/3's order
+  waitUni: Deque[RecId];
   nextUni: u64;             // the number of the next unidirectional stream of its own HTTP/3 writes first
   ids: List[CidKey];        // a server's: the keys the routing table has for it
   idEpoch: u64;             // ...as of this localIdsEpoch
@@ -147,9 +147,9 @@ pub struct Driver {
   maxWaiting: u32;
   wakeStep: Duration;
   share: usize;                 // the pool's bytes the connections share (THE BLOCK BUDGET), as the pool was when this was made
-  listeners: SlotTable[Lst];
-  conns: SlotTable[Conn];
-  routes: Dict[CidKey, Slot];   // a server's: every connection ID to its connection
+  listeners: Listeners;
+  conns: Connections;
+  routes: Dict[CidKey, RecId];   // a server's: every connection ID to its connection
   dirty: List[u32];
   ready: Deque[Event];          // events, until takeEvents moves them
   nextWake: Instant;
@@ -167,8 +167,8 @@ pub struct Driver {
     Driver(tokBase: (tokMark << markShift) | (number << numberShift),
       client: quic.Context.client(qcfg), h3cfg: hcfg, recvDepth: recvDepth, sendDepth: sendDepth,
       sendWatermark: sendWatermark, maxConnections: maxConnections, maxWaiting: maxWaiting,
-      wakeStep: wakeStep, share: poolShare(), listeners: SlotTable[Lst].make(4u32), conns: SlotTable[Conn].make(16u32),
-      routes: Dict[CidKey, Slot](), dirty: List[u32](), ready: Deque[Event](),
+      wakeStep: wakeStep, share: poolShare(), listeners: Listeners.make(4u32), conns: Connections.make(16u32),
+      routes: Dict[CidKey, RecId](), dirty: List[u32](), ready: Deque[Event](),
       nextWake: forever(), lossPerMille: 0u32, lossState: 0u64, st: DriverStats.zero())
   }
 
@@ -188,7 +188,7 @@ pub struct Driver {
     lossState = if seed == 0u64 {0x9E3779B97F4A7C15u64} else {seed};
   }
 
-  fn tok(self: &, kind: u64, s: Slot) u64 {
+  fn tok(self: &, kind: u64, s: RecId) u64 {
     tokBase | (kind << kindShift) | ((u64.from(s.gen) & genMask) << genShift) | (u64.from(s.index) & indexMask)
   }
 
@@ -427,9 +427,9 @@ pub struct Driver {
     let now = Instant.now();
     match self.newClient(serverName, &localQ, &remoteQ, now) {
       case let Ok(q) {
-        let s = conns.add(Conn(server: false, token: token, listener: Slot.none(), handle: handle, peer: addr,
-          q: q, h: http3.Connection.client(h3cfg, now), streams: SlotTable[Strm].make(16u32),
-          byId: Dict[u64, Slot](), waitBidi: Deque[Slot](), waitUni: Deque[Slot](),
+        let s = conns.add(Conn(server: false, token: token, listener: RecId.none(), handle: handle, peer: addr,
+          q: q, h: http3.Connection.client(h3cfg, now), streams: Streams.make(16u32),
+          byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 2u64, ids: List[CidKey](), idEpoch: 0u64, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
           quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
@@ -523,7 +523,7 @@ pub struct Driver {
 
   // A listener's address (its port, when it was bound to port 0)
   pub fn localAddr(self: &, lp: &Loop, l: ListenerId) Result[SocketAddr, IoError] {
-    let p = listeners.get(Slot(l.index, l.gen));
+    let p = listeners.get(RecId(l.index, l.gen));
     if p as usize == 0usize {return Err[SocketAddr, IoError](IoError.ofKind(IoErrorKind.InvalidInput));}
     lp.localAddr((*p).handle)
   }
@@ -531,7 +531,7 @@ pub struct Driver {
   // Take no more connections on a listener; its socket closes once the
   // connections on it have ended. False for a listener that has gone
   pub fn stopListening(self: &mut, lp: &mut Loop, l: ListenerId) bool {
-    let p = listeners.get(Slot(l.index, l.gen));
+    let p = listeners.get(RecId(l.index, l.gen));
     if p as usize == 0usize {return false;}
     (*p).accepting = false;
     if (*p).conns == 0u32 {
@@ -628,7 +628,7 @@ pub struct Driver {
 
   fn connOf(self: &, id: ConnId) *Conn {
     if id.isNone() {return null;}
-    conns.get(Slot(id.index, id.gen))
+    conns.get(RecId(id.index, id.gen))
   }
 
   // ---------------------------------------------------------------------------
@@ -736,7 +736,7 @@ pub struct Driver {
   pub fn release(self: &mut, req: ReqId, n: usize) {
     let c = self.connOf(req.conn);
     if c as usize == 0usize {return;}
-    let s = (*c).streams.get(Slot(req.index, req.gen));
+    let s = (*c).streams.get(RecId(req.index, req.gen));
     if s as usize == 0usize {return;}
     (*c).h.release((*s).id, n);
     self.markDirty(req.conn.index);
@@ -778,7 +778,7 @@ pub struct Driver {
   // A request's stream record while its final answer is still to come, or null
   fn strmOf(self: &, c: *Conn, req: ReqId) *Strm {
     if c as usize == 0usize || req.isNone() {return null;}
-    let s = (*c).streams.get(Slot(req.index, req.gen));
+    let s = (*c).streams.get(RecId(req.index, req.gen));
     if s as usize == 0usize || !(*s).req {return null;}
     s
   }
@@ -897,7 +897,7 @@ pub struct Driver {
           let id = u64.from(p.stream);
           match c.byId.getCopy(&id) {
             case let Some(sl) {}
-            case is None[Slot] {
+            case is None[RecId] {
               var s = newStrm(id, false, true);
               // The peer's unidirectional stream: this end writes nothing on it
               if (id & 2u64) != 0u64 {s.finWritten = true;}
@@ -1013,7 +1013,7 @@ pub struct Driver {
   fn strmById(self: &, c: &Conn, id: u64) *Strm {
     match c.byId.getCopy(&id) {
       case let Some(sl) {return c.streams.get(sl);}
-      case is None[Slot] {}
+      case is None[RecId] {}
     }
     null
   }
@@ -1199,12 +1199,12 @@ pub struct Driver {
     s
   }
 
-  fn slotOf(self: &, c: &Conn, stream: u64) Slot {
+  fn slotOf(self: &, c: &Conn, stream: u64) RecId {
     match c.byId.getCopy(&stream) {
       case let Some(sl) {return sl;}
-      case is None[Slot] {}
+      case is None[RecId] {}
     }
-    Slot.none()
+    RecId.none()
   }
 
   fn reqIdOf(self: &, c: &Conn, cid: ConnId, stream: u64) ReqId {
@@ -1571,7 +1571,7 @@ pub struct Driver {
           return;
         }
       }
-      case is None[Slot] {}
+      case is None[RecId] {}
     }
     let l = listeners.at(li) as &mut Lst;
     if !isInitial(d) || !l.accepting {
@@ -1593,8 +1593,8 @@ pub struct Driver {
     match quic.Connection.accept(&l.ctx, d, &l.localQ, &peerQ, now) {
       case let Ok(q) {
         let s = conns.add(Conn(server: true, token: l.token, listener: listeners.slotAt(li), handle: l.handle,
-          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: SlotTable[Strm].make(16u32),
-          byId: Dict[u64, Slot](), waitBidi: Deque[Slot](), waitUni: Deque[Slot](),
+          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: Streams.make(16u32),
+          byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 3u64, ids: List[CidKey](), idEpoch: unread, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
           quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
@@ -1750,20 +1750,20 @@ fn datagramOf(comp: &Completion) &Array[u8] {mem.sliceFromParts(comp.buf.base(),
 fn diagCancelled() u32 {diag.outcomeCancelled}
 
 // The first of a connection's streams waiting for QUIC to open them, of a
-// kind, or Slot.none()
-fn waitFront(c: &Conn, bidi: bool) Slot {
+// kind, or RecId.none()
+fn waitFront(c: &Conn, bidi: bool) RecId {
   if bidi {
     match c.waitBidi.peekFront() {
       case let Some(sl) {return *sl;}
-      case is None[&Slot] {}
+      case is None[&RecId] {}
     }
   } else {
     match c.waitUni.peekFront() {
       case let Some(sl) {return *sl;}
-      case is None[&Slot] {}
+      case is None[&RecId] {}
     }
   }
-  Slot.none()
+  RecId.none()
 }
 
 fn waitPop(c: &mut Conn, bidi: bool) {

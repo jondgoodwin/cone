@@ -15,6 +15,13 @@
 // every time, not only when Asker happened to run first. (A behaviour parked
 // on the future when it is abandoned is ended quietly instead:
 // concurrency_future_abandoned_parked.)
+//
+// 'awaiting' is flushed before the 'await': a panic waits for the console's
+// owner thread to write what is queued, but gives up after 500 ms without
+// progress, and a loaded machine can starve the owner that long, so the line
+// would be lost (stdout empty, a "console: 1 line was queued but not written"
+// line on stderr). Flushing orders the line's arrival before the panic
+// rather than leaving it a race with it.
 
 mod concurrency_future_abandoned;
 
@@ -35,6 +42,7 @@ actor Stuck {
 actor Asker {
   pub async fn collect(self, f: actors.Future[u64]) {
     printStr("awaiting\n");
+    print.flush();
     let n = await f;
     printStr("never printed\n");
   }

@@ -39,6 +39,14 @@
 //   b.whole()             the whole block, '&mut Array[u8]'
 //   b.setLen(n)           say how many bytes it holds (a panic past capacity)
 //   b.append(bytes)       copy in as many as fit: how many
+//   b.putNum(v, big)      a number or float v after the held bytes, most significant
+//                         byte first when big: false, nothing written, if it does not fit
+//   b.putUint(v, n, big)  the low n bytes (1 to 8) of a u64, as putNum
+//   b.setNum(at, v, big)  overwrite held bytes at 'at' with v
+//   b.putRepeat(byte, n)  n copies of a byte, as many as fit: how many
+//   tryLoadNum(bytes, at, big), tryLoadUint(bytes, at, n, big)
+//                         the number at an offset of a slice, or None when
+//                         the slice ends first (the loads under streams' ByteCursor)
 //   b.clear()             hold none
 //   b.base()              the block's address, for the OS
 //   b.freeze()            the buffer moved into shared, read-only Bytes
@@ -58,6 +66,8 @@
 //   c.findByte(b, from)   the offset of byte b
 //   c.matchesAt(i, pat)   whether pat is there at offset i
 //   c.byteAt(i)  c.peek(i)                  one byte (a panic, or None, past the end)
+//   c.setNum(k, at, v, big)  overwrite held bytes of the k-th segment with a number
+//                         (a slot's fill in streams' Writer)
 //   c.contiguous(from, n) Some slice when the n bytes lie in one segment
 //   c.copyOut(from, dest) copy bytes out: how many
 //   c.advance(n)          consume n bytes: segments wholly consumed go home
@@ -478,6 +488,46 @@ pub struct IoBuf is Default, Move, Sendable {
     n
   }
 
+  // A whole number or float v after the held bytes, its bytes in the order
+  // 'big' says (most significant first when true, else least): false, and
+  // nothing written, when the room is too small. This is the trusted store
+  // under streams' ByteWriter: one check and one store
+  pub fn putNum[T](self: &mut, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let n = mem.sizeof[T]();
+    if cap - used < n {return false;}
+    storeNum[T](data + used, v, big);
+    used = used + n;
+    true
+  }
+
+  // The low nbytes (1 to 8) of v after the held bytes, in the order 'big'
+  // says: false, and nothing written, when the room is too small. A panic, at
+  // the caller's line, for an nbytes outside 1 to 8
+  pub fn putUint(self: &mut, v: u64, nbytes: usize, big: bool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool inline {
+    if nbytes == 0usize || nbytes > 8usize {panic("iobuf: putUint takes 1 to 8 bytes", file, line);}
+    if cap - used < nbytes {return false;}
+    storeUint(data + used, v, nbytes, big);
+    used = used + nbytes;
+    true
+  }
+
+  // Overwrite held bytes at offset 'at' with v: false, and nothing written,
+  // when they are not all held
+  pub fn setNum[T](self: &mut, at: usize, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let n = mem.sizeof[T]();
+    if at > used || used - at < n {return false;}
+    storeNum[T](data + at, v, big);
+    true
+  }
+
+  // n bytes of value b after the held bytes, as many as fit: how many
+  pub fn putRepeat(self: &mut, b: u8, n: usize) usize {
+    let k = if n < cap - used {n} else {cap - used};
+    if k > 0usize {libc.memset(data + used, i32.from(b), k);}
+    used = used + k;
+    k
+  }
+
   fn final(self: &uni) {
     if home != 0usize {
       let r = home as *HomeRec;
@@ -492,6 +542,81 @@ pub struct IoBuf is Default, Move, Sendable {
       (bufpool.bufferPool() as &MemRegion).release(data, cap);
     }
   }
+}
+
+// The trusted stores and loads of numbers in bytes, under every checked
+// caller above and in streams. Machines are little-endian (x86-64, arm64,
+// wasm), so the least-significant-first order is the memory order of a number
+// and the other is its bytes reversed; a number's bytes are copied, never
+// reached through a cast pointer, so an unaligned place is no different.
+fn storeNum[T](dst: *u8, v: T, big: bool) inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+  let n = mem.sizeof[T]();
+  var tmp = v;
+  let src = &mut tmp as *u8;
+  if big {
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (n - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src, n);
+  }
+}
+
+fn storeUint(dst: *u8, v: u64, nbytes: usize, big: bool) inline {
+  var tmp = v;
+  let src = &mut tmp as *u8;
+  if big {
+    var i = 0usize;
+    while i < nbytes {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (nbytes - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src, nbytes);
+  }
+}
+
+// The number of type T in bytes b at offset 'at', its bytes in the order 'big'
+// says, or None when b does not hold all of them from there. One check, one
+// load; the cursor of streams moves on a Some
+pub fn tryLoadNum[T](b: &Array[u8], at: usize, big: bool) Option[T] inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+  let n = mem.sizeof[T]();
+  if at > b.len || b.len - at < n {return None[T];}
+  var tmp = T.from(0u8);
+  let dst = &mut tmp as *u8;
+  let src = &b[0usize] as *u8;
+  if big {
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (at + n - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src + at, n);
+  }
+  Some[T](tmp)
+}
+
+// An unsigned number of nbytes (1 to 8) at offset 'at', widened to u64, or
+// None when b does not hold them from there. A panic for an nbytes outside 1 to 8
+pub fn tryLoadUint(b: &Array[u8], at: usize, nbytes: usize, big: bool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[u64] inline {
+  if nbytes == 0usize || nbytes > 8usize {panic("iobuf: tryLoadUint takes 1 to 8 bytes", file, line);}
+  if at > b.len || b.len - at < nbytes {return None[u64];}
+  var tmp = 0u64;
+  let dst = &mut tmp as *u8;
+  let src = &b[0usize] as *u8;
+  if big {
+    var i = 0usize;
+    while i < nbytes {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (at + nbytes - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src + at, nbytes);
+  }
+  Some[u64](tmp)
 }
 
 
@@ -819,6 +944,19 @@ pub struct Chain is Move, Sendable {
     }
     total = total - b.used;
     Some[IoBuf](b)
+  }
+
+  // Overwrite held bytes of the k-th segment, from the segment's own start,
+  // with v: false, and nothing written, when k is past the segments or the
+  // bytes are not all held. For a patch of a number written earlier (a slot of
+  // streams' ByteWriter); the chain's length does not change
+  pub fn setNum[T](self: &mut, k: usize, at: usize, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    if k >= count {return false;}
+    let b = self.at(k) as &IoBuf;
+    let n = mem.sizeof[T]();
+    if at > b.used || b.used - at < n {return false;}
+    storeNum[T](b.data + at, v, big);
+    true
   }
 
   // Its death: every segment it still holds, back to its pool
