@@ -7,8 +7,53 @@ import testing use *;
 import collections use *;
 import regex;
 
-// The answer to a question, in the notation gen_cases.py explains
+// The answer, asked of the pattern as written (the bounded backtracker answers groups
+// on a short text) and of the same pattern with a dead alternative of 132000 states
+// added (a program too big for the backtracker's bits, so the Pike VM answers): the two
+// must agree
 fn ask(kind: &str, pat: &str, text: &str, repl: &str) String {
+  let a = askOne(kind, pat, text, repl);
+  if a.view().startsWith("ERR") { return a; }
+  var padded = String.from("(?:");
+  padded.append(pat);
+  padded.append(")|(?:\\z[a-z]{1000}){132}");
+  let b = askOne(kind, padded.view(), text, repl);
+  if b.view() == a.view() || b.view().startsWith("ERR") { return a; }
+  var s = String.from("ENGINES DIFFER: ");
+  s.append(a.view());
+  s.append(" / ");
+  s.append(b.view());
+  s
+}
+
+// Every match as 'start..end', found by asking for the groups again and again
+fn capsList(re: &regex.Regex, t: &str) String {
+  var out = String();
+  var pos = 0usize;
+  var lastEnd = 0xFFFFFFFFFFFFFFFFusize;
+  var first = true;
+  while pos <= t.len() {
+    match re.capturesFrom(t, pos) {
+      case let Some(c) {
+        let m = c.span(0).unwrap();
+        if m.start == m.end && m.end == lastEnd { pos = m.end + 1; }
+        else {
+          if !first { out.append(" "); }
+          first = false;
+          out <- m.start, "..", m.end;
+          lastEnd = m.end;
+          pos = m.end;
+        }
+      }
+      case is None { pos = t.len() + 1; }
+    }
+  }
+  if first { out.append("-"); }
+  out
+}
+
+// The answer to a question, in the notation gen_cases.py explains
+fn askOne(kind: &str, pat: &str, text: &str, repl: &str) String {
   let bytes = kind == "bfind" || kind == "bcaps";
   var out = String();
   var built = regex.Regex.parse(pat);
@@ -33,6 +78,7 @@ fn ask(kind: &str, pat: &str, text: &str, repl: &str) String {
           }
         }
         if first { out.append("-"); }
+        if capsList(&re, t).view() != out.view() { out.append(" !CAPS-DIFFER"); }
       }
       else if kind == "caps" || kind == "bcaps" {
         match re.captures(t) {
