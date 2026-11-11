@@ -73,6 +73,13 @@ int itypeCarriesEndingBorrow(INode *type);
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
 
+// Can a call leave a holder of type 'holder' holding a borrow of a value of
+// type 'x' it was lent: can the holder hold a borrow whose target type is
+// reachable inside x (its own type, its fields and elements, what it owns)?
+// 'readonly': the lent borrow is a read-only one, which no '&mut' slot holds.
+// Conservative: yes for a type either side shows only in part.
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly);
+
 // Is it certain no value of this type holds a borrowed reference anywhere?
 // Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
 // type parameter, closure, virtual reference) answers no.

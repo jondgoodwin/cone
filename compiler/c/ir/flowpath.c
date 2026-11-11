@@ -2313,7 +2313,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // given to an index's '&'-typed key). Only where nothing in the
         // pointee can change through a shared view (a lock, an atomic, a
         // writable reference inside: itypeMayMutateShared)
-        if (depth && isref && parmtype && parmtype->tag == RefTag
+        if (depth && parmtype && parmtype->tag == RefTag
                 && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
                 && !permIsLock(((RefNode *)parmtype)->perm)
                 && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
@@ -2337,6 +2337,17 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // (loanStoredStatic)
         int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
+        // A writable borrow of an arena among the arguments is a place the
+        // callee may store anything into (it holds borrows through raw memory,
+        // and its own parameter is not a target the walk asks, Bug 51), so no
+        // argument's loan can be shown stored nowhere by its type
+        int arenaarg = 0;
+        for (uint32_t j = 0; j < nargs; ++j) {
+            INode *jt = iexpGetTypeDcl(parts[j]);
+            if (pwIsBorrowed(jt) && jt->tag == RefTag && (permGetFlags(((RefNode *)jt)->perm) & MayWrite)
+                    && pwIsNoLoanMut(((RefNode *)jt)->vtexp))
+                arenaarg = 1;
+        }
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
                 continue;
@@ -2352,6 +2363,19 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
             PathSet *carried = argsets[i];
+            // A borrow written as the argument is stored itself only where
+            // the place's type can hold a borrow of something reachable inside
+            // what it borrows (itypeMayHoldBorrowInside: the type, its fields
+            // and elements, what it owns). The world's pool and the list of its
+            // creatures, each lent '&mut' to one call, are not stored in each
+            // other; 'put(&mut h, &mut l)' with 'h' holding a '&Pt' and 'l' a
+            // 'List[Pt]' is (Bug 77)
+            INode *site = pwLendSite(parts[i]);
+            uint32_t own = site ? loanAt(site) : 0;
+            if (own && how == LoanEscapeCall && !arenaarg && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeMayHoldBorrowInside(storedin,
+                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp),
+                    !(permGetFlags(((RefNode *)iexpGetTypeDcl(site))->perm) & MayWrite)))
+                carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
         if (others == NULL)
