@@ -1,0 +1,108 @@
+// readBytes: a file's bytes as a Chain, read straight into pool buffers.
+//
+//   - an empty file is an empty chain;
+//   - a small file is one segment holding exactly its bytes;
+//   - a file of every byte value, NULs among them, comes back byte for byte;
+//   - a file of 3 MiB + 5 bytes (past the 64 KiB first buffer and the 1 MiB largest) is several segments
+//     holding all of it, equal to what 'readFile' reads;
+//   - a file exactly one buffer long (65536 bytes) comes back whole, with no empty segment after it;
+//   - a file not there, and a folder, fail with the same kinds as 'readFile', named "readBytes";
+//   - a NUL in the path fails with EINVAL.
+//
+// It works in a folder of its own under TEMP, which it clears first and removes at the end.
+
+mod readbytes;
+
+import testing use *;
+import collections use *;
+import libc;
+import posix;
+import path use Path;
+import fs;
+import iobuf use Chain;
+import ioerror use IoErrorKind;
+
+fn makeRoot(name: &str) Path {
+  var variable: cstr = "TMPDIR";
+  #if #os == .windows { variable = "TEMP"; }
+  let temp = libc.getenv(variable);
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
+  var root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case let Ok(t) { root = t.join(name); }
+    case is Err { require(false, "TEMP has an absolute path"); }
+  }
+  let up = root.parent();
+  let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root
+}
+
+// n bytes, every value in turn
+fn pattern(n: usize) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n { d.push(u8.from((i * 7usize + i / 256usize) % 256usize)); i += 1usize; }
+  d
+}
+
+// A file of 'data' named 'name' under root, read with readBytes, checked against data
+fn roundTrip(root: &Path, name: &str, data: &List[u8], what: &str) usize {
+  let p = root.join(name);
+  require(fs.writeFile(&p, data.view()) is Ok, "write the file");
+  var segments = 0usize;
+  match fs.readBytes(&p) {
+    case let Ok(chain) {
+      expectUInt(u64.from(chain.len()), u64.from(data.len()), what);
+      var back = List[u8]();
+      back.resize(chain.len(), 0u8);
+      _ = chain.copyOut(0usize, back.viewMut());
+      expect(back.view() == data.view(), what);
+      segments = chain.segments();
+    }
+    case is Err { expect(false, what); }
+  }
+  segments
+}
+
+fn main() i32 {
+  let root = makeRoot("cone-fs-test-readbytes");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+
+  expectUInt(u64.from(roundTrip(&root, "empty", &List[u8](), "an empty file is an empty chain")), 0u64, "no segment for an empty file");
+  expectUInt(u64.from(roundTrip(&root, "small", &pattern(1000usize), "a small file, byte for byte")), 1u64, "a small file is one segment");
+  _ = roundTrip(&root, "every", &pattern(70000usize), "every byte value, NULs among them");
+  expectUInt(u64.from(roundTrip(&root, "exact", &pattern(65536usize), "a file exactly one buffer long")), 1u64, "and no empty segment after it");
+  let big = pattern(3145733usize);
+  expect(roundTrip(&root, "big", &big, "3 MiB + 5 bytes") > 2usize, "a large file is several segments");
+
+  // the same bytes as readFile
+  let bp = root.join("big");
+  match fs.readFile(&bp) {
+    case let Ok(s) { expect(s.view().bytes() == big.view(), "readFile and readBytes read the same bytes"); }
+    case is Err { expect(false, "readFile reads the big file"); }
+  }
+
+  // failures
+  match fs.readBytes(&root.join("not-there")) {
+    case let Err(e) {
+      expect(e.kind() == IoErrorKind.NotFound, "a file not there: NotFound");
+      expect(e.op.view() == "readBytes", "and the failure is readBytes's");
+    }
+    case is Ok { expect(false, "a file not there fails"); }
+  }
+  match fs.readBytes(&root) {
+    case let Err(e) { expect(e.code == posix.EISDIR, "a folder: EISDIR"); }
+    case is Ok { expect(false, "a folder fails"); }
+  }
+  match fs.readBytes("bad\x00name") {
+    case let Err(e) { expect(e.code == posix.EINVAL, "a NUL in the path: EINVAL"); }
+    case is Ok { expect(false, "a NUL in the path fails"); }
+  }
+
+  expect(fs.removeAll(&root) is Ok, "remove the test's folder");
+  expect(!fs.exists(&root), "the test's folder is gone");
+  done()
+}

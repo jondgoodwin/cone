@@ -427,6 +427,7 @@ int structVirtRefHidden(StructNode *trait, StructNode *strnode);
 // refusal has another cause. The second spelling takes a reference to each.
 int structPrivateWhy(char *buf, size_t size, StructNode *trait, StructNode *strnode);
 int structPrivateRefWhy(char *buf, size_t size, INode *fromtype, INode *totype);
+int structDefaultRefWhy(char *buf, size_t size, INode *fromtype, INode *totype);
 
 // The first field 'trait' requires that 'strnode' (or, for a trait or enum, one of its
 // implementers or variants, returned in 'offender' when given) holds under a different
