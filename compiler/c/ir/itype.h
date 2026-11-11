@@ -73,6 +73,13 @@ int itypeCarriesEndingBorrow(INode *type);
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
 
+// Can a call leave a holder of type 'holder' holding a borrow of a value of
+// type 'x' it was lent: can the holder hold a borrow whose target type is
+// reachable inside x (its own type, its fields and elements, what it owns)?
+// 'readonly': the lent borrow is a read-only one, which no '&mut' slot holds.
+// Conservative: yes for a type either side shows only in part.
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly);
+
 // Is it certain no value of this type holds a borrowed reference anywhere?
 // Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
 // type parameter, closure, virtual reference) answers no.
@@ -142,6 +149,12 @@ int itypeHoldsTracedPlaced(INode *type);
 // (not through a reference or a pointer)? Remembered per struct once the
 // struct is type checked.
 int itypeHoldsAtomic(INode *type);
+
+// May a callee holding only a read-only borrow of a value of this type still
+// change it: an atomic, a lock, a writable reference or raw pointer inside, an
+// arena, or a type not seen all of? Conservative (yes when unsure); 'most'
+// bounds the levels walked (past it, yes). Not remembered.
+int itypeMayMutateShared(INode *type, int most);
 
 // Does a value of this type hold a borrowed reference (not a function's) where
 // it sits, inline rather than through an owning reference or a pointer?
