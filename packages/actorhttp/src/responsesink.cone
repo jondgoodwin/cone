@@ -6,16 +6,13 @@
 // exchange's record (serverservice.cone, ExRec) and sends them as the connection
 // takes them.
 //
-// CREDIT BY COPY. For each piece of a chunk the service thread takes a buffer of its own
-// from the pool, copies the piece into it and gives that copy to the connection
-// (srvSend). The chunk itself goes back to the source ('giveBack') once all its
-// pieces are accepted. So the connection's watermark is the credit: while the
-// peer reads slowly the connection refuses, the chunk stays queued, the source is not
-// given its buffer back and sends no more. What is held is the source's window of
-// bytes (and one copy in the connection's queue at most as far as its watermark).
-// Chunks are sent one by one (a pool buffer holds at most sendChunk bytes of one
-// chunk); small chunks are not joined here, the cores join small buffers themselves
-// (h2). A sized body's length is counted on the service thread as the chunks
+// OWNED CREDIT. The service thread gives the chunk itself to the connection (srvSendBuf), moved, with
+// the source's home on it (iobuf IoHome, stages.chunkHome): the buffer is not copied, and when the connection
+// is done with it, wherever that is (the kernel's send completing, a TLS write, an h2 frame cut, a reset),
+// its death sends the source 'giveBack'. While the peer reads slowly the connection refuses the chunk, which
+// stays queued here as a plain buffer (its credit not returned), the source is not given its buffer back
+// and sends no more. What is held is the source's window of bytes. A chunk is sent whole, as it
+// came; small chunks are not joined here, the cores join small buffers themselves. A sized body's length is counted on the service thread as the chunks
 // arrive: past the length, or short of it at the end, the exchange is cancelled
 // (srvCancel) and the source stopped Failed, because the cores panic on either.
 //
@@ -50,7 +47,6 @@ fn sinkDrain(x: &mut ExRec) {
       else {break;}
     }
   }
-  x.sinkOff = 0usize;
 }
 
 // The exchange's source is stopped with why (once), and the chunks held go back
@@ -76,34 +72,32 @@ fn sinkFail(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec, text: &str) {
 fn pumpSink(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
   if x.over || x.sinkFailed {return;}
   while x.sinkChunks.len() > 0usize {
-    let total = x.sinkChunks[0usize].len();
-    let off = x.sinkOff;
-    if off >= total {
-      // an empty chunk, or the last piece went: it goes back
-      match x.sinkChunks.popFront() {
-        case var Some(b) {sinkGive(x, b);}
-        else {}
-      }
-      x.sinkOff = 0usize;
-    } else {
-      let left = total - off;
-      let n = if left < sendChunk {left} else {sendChunk};
-      // A pool that refuses the buffer ends the exchange, as for a String write
-      var b = match IoBuf.tryMake(n) {
-        case var Some(got) {got}
-        else {
-          sinkFail(srv, lp, x, "the buffer pool refused a buffer for the response body");
-          return;
+    match x.sinkChunks.popFront() {
+      case var Some(b) {
+        let n = b.len();
+        if n == 0usize {
+          // an empty chunk: it goes back
+          sinkGive(x, b);
+        } else {
+          // The chunk itself goes to the connection, moved, wearing the source's home: its death, wherever
+          // the connection is done with it, returns the credit
+          match &x.sinkHome {
+            case let &Some(h) {b.setHome(h);}
+            else {}
+          }
+          match srvSendBuf(srv, x, b) {
+            case is None[IoBuf] {x.written = x.written + u64.from(n);}
+            case var Some(back) {
+              // Refused (Writable comes when there is room): a plain chunk again, waiting at the front, so that
+              // its credit is not returned now
+              back.clearHome();
+              x.sinkChunks.pushFront(back);
+              return;
+            }
+          }
         }
-      };
-      {
-        let all = x.sinkChunks[0usize].view() as &Array[u8];
-        b.append(&all[off ..< off + n]);
       }
-      // Refused: Writable comes when there is room
-      if !srvSend(srv, x, b) {return;}
-      x.sinkOff = off + n;
-      x.written = x.written + u64.from(n);
+      else {break;}
     }
   }
   if x.sinkEnded && !x.finished {
@@ -233,6 +227,7 @@ struct SinkAttachJob {
       up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
       return;
     }
+    x.sinkHome = Some[IoHome](chunkHome(up.clone()));
     x.sinkUp = Some[ChunkSource](up);
   }
 }
