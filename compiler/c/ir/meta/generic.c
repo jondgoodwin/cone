@@ -3777,7 +3777,7 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
         structDeferCheck(pstate, genericLateWhere, instance, wait);
     }
 
-    structInstanceNote(instance);
+    structInstanceNote(pstate, instance);
 
     // Remember instantiation for the future
     if (!genericinfo->memonodes)
@@ -4190,7 +4190,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // generic again at larger type arguments, so this is where depth is counted.
     // An instance made while another's members are checked is deeper by one than
     // that one (structInstanceNest): the stack is not, as those checks are queued.
-    if (!structInstanceNest((INode*)srcgencall))
+    if (!structInstanceNest(pstate, (INode*)srcgencall))
         return newErrorNode((INode*)srcgencall);
     if (!genericInstantiateEnter((INode*)srcgencall))
         return newErrorNode((INode*)srcgencall);

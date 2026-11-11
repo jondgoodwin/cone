@@ -2126,6 +2126,22 @@ with a value â€” its declaration, a parameter at function or inline-body entry â
 and `0` where it begins without one; `0` at each marked move, `2` at each
 marked hollowing, `1` after each store over it whole.
 
+**Paths that hollow it by different parts** (Bug 69; `VarPartFlag`). Where
+paths that left the variable hollow join with different sets of moves *taking
+different parts* (`pathJoinParts`, `dropHollowShapesDiffer`: the same part
+moved at two nodes is not different), the union in `hmask` would release a
+part one path still owns. The variable is then flagged (`PathVar.partmix`;
+`dropWalkEnd` sets `VarPartFlag` where a release sees it hollow), and its
+flag holds, above the two low bits, one bit for each of the first five
+hollowing moves and one for every later one (`genlDropFlagHollow`: the bit is
+ORed in at the move; a store of `0` or `1` clears them). Every hollow release
+of such a variable (`genlHollowReleaseRef`, with the flag's value, also for a
+parked record's drop) tests the bits of up to four of its moves and is
+generated for each combination (`genlHollowChoose`); beyond four, or in the
+shared bit, a move is taken as having happened, which can leak but not free
+twice. A variable with no such join has none of this, and its code is as it
+was.
+
 ### A seam
 
 An actor's behaviour may `await`: the behaviour is cut there, a **seam**,
