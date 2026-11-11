@@ -1,0 +1,360 @@
+// The Writer's puts, slots and takes, and the ByteCursor that reads what they
+// wrote:
+//
+//   - rollover at every boundary: a put that exactly fills the buffer, one byte
+//     past, an endian put that would straddle (it starts a new buffer), an empty
+//     put, and putByte, repeat and pad across an edge;
+//   - the endian puts in both orders for every width and for floats, and the
+//     odd widths 1 to 8 (a value that does not fit is a panic: writerslot*.cone);
+//   - slots: filled in the buffer in use and in one already held, the writer's
+//     'popFull' holding back from an unfilled slot, and lengthPrefixed nested
+//     two deep;
+//   - putFrom: a whole segment moves without a copy (the same block), and the
+//     copy path;
+//   - the cursor: every width in both orders, short input giving None with the
+//     cursor unmoved, getBytes without a copy, and '?' in a function returning
+//     an Option;
+//   - every block is back in the pool at the end.
+//
+// That a slot unfilled at 'finish', a slot of another writer, a slot filled
+// twice and a length that overflows its number are panics is pinned by
+// writerslot*.cone; that 'consume' under a live cursor is refused by
+// test/cases/concurrency/concurrency_streams_bytecursor.cone.
+
+mod bytewriter;
+
+import testing use *;
+import collections use *;
+import iobuf use *;
+import streams use *;
+
+fn lent() u64 { stats().lent }
+
+// Every byte of a chain, in a list
+fn flat(c: &Chain) List[u8] {
+  var l = List[u8]();
+  l.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, l.viewMut());
+  l
+}
+
+fn filled(n: usize, from: u8) IoBuf {
+  var b = IoBuf(n);
+  let s = b.spare();
+  var i = 0usize;
+  while i < n {
+    s[i] = from + u8.from(i & 0x7Fusize);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn rollover() {
+  let before = lent();
+  {
+    // The buffer is the pool's 4096-byte class whatever size is asked
+    var w = Writer.make(100usize);
+    let cap = w.room();
+    expectUInt(u64.from(cap), 4096u64, "the buffer is 4096 bytes");
+    // An empty put does nothing
+    w.put("");
+    expectUInt(u64.from(w.total()), 0u64, "an empty put writes nothing");
+    expect(w.popFull() is None[IoBuf], "nothing to pop");
+    // Exactly filling
+    var a = List[u8]();
+    a.resize(cap, 'a');
+    w.put(a.view());
+    expectUInt(u64.from(w.total()), 4096u64, "a put exactly filling");
+    expectUInt(u64.from(w.len()), 4096u64, "all held");
+    // popFull gives the full buffer in use, and a fresh one goes on
+    match w.popFull() {
+      case let Some(b) {
+        expectUInt(u64.from(b.len()), 4096u64, "the full buffer is popped");
+      }
+      case is None[IoBuf] {expect(false, "a full buffer pops");}
+    }
+    expectUInt(u64.from(w.len()), 0u64, "nothing held after the pop");
+    expectUInt(u64.from(w.total()), 4096u64, "the total remembers it");
+    // One past: 4097 bytes make two buffers
+    var c = List[u8]();
+    c.resize(cap + 1usize, 'c');
+    w.put(c.view());
+    expectUInt(u64.from(w.total()), 4096u64 + 4097u64, "a put one past");
+    match w.popFull() {
+      case let Some(b) {expectUInt(u64.from(b.len()), 4096u64, "the first of two is full");}
+      case is None[IoBuf] {expect(false, "the first of two pops");}
+    }
+    expect(w.popFull() is None[IoBuf], "the one byte left is not full");
+    let rest = w.finish();
+    expectUInt(u64.from(rest.len()), 1u64, "finish gives the byte left");
+    // A number that would straddle starts a new buffer
+    var d = List[u8]();
+    d.resize(cap - 2usize, 'd');
+    var x = Writer.make(100usize);
+    x.put(d.view());
+    x.putBE[u32](0x01020304u32);
+    expectUInt(u64.from(x.total()), u64.from(cap + 2usize), "the straddling put wrote its four bytes");
+    match x.popFull() {
+      case let Some(b) {
+        expectUInt(u64.from(b.len()), u64.from(cap - 2usize), "the first buffer stopped before the number");
+      }
+      case is None[IoBuf] {expect(false, "the straddle rolled a buffer");}
+    }
+    let tail = x.finish();
+    expectStr(flat(&tail).view(), "\x01\x02\x03\x04", "the number is whole in the next buffer");
+    // putByte, repeat, pad across an edge
+    var v = Writer.make(100usize);
+    v.put(d.view());
+    v.putByte('x');
+    v.putByte('y');
+    v.putByte('z');
+    expectUInt(u64.from(v.total()), u64.from(cap + 1usize), "putByte across an edge");
+    v.repeat('q', 5000usize);
+    expectUInt(u64.from(v.total()), u64.from(cap + 1usize + 5000usize), "repeat across edges");
+    v.pad(8usize);
+    let t1 = v.total();
+    expectUInt(u64.from(t1 % 8usize), 0u64, "pad aligns the total");
+    v.pad(8usize);
+    expectUInt(u64.from(v.total()), u64.from(t1), "pad again adds nothing");
+    let all = v.finish();
+    let f = flat(&all);
+    expectUInt(u64.from(f.len()), u64.from(t1), "finish gives every byte");
+    expect(f[cap - 2usize] == 'x' && f[cap - 1usize] == 'y' && f[cap] == 'z', "the bytes are in order");
+    expect(f[cap + 1usize] == 'q' && f[t1 - 1usize] == 0u8, "repeat, then the zeros of pad");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+fn endian() {
+  let before = lent();
+  {
+    var w = Writer.make(64usize);
+    w.putLE[u8](1u8);
+    w.putLE[u16](0x0203u16);
+    w.putLE[u32](0x04050607u32);
+    w.putLE[u64](0x08090A0B0C0D0E0Fu64);
+    w.putBE[u16](0x0203u16);
+    w.putBE[u32](0x04050607u32);
+    w.putBE[u64](0x08090A0B0C0D0E0Fu64);
+    w.putBE[i16](-2i16);
+    w.putLE[i32](-2i32);
+    w.putLE[f32](1.0f32);
+    w.putBE[f32](1.0f32);
+    w.putLE[f64](1.0f64);
+    w.putBE[f64](-2.0f64);
+    var n = 1usize;
+    while n <= 8usize {
+      w.putUintLE(0x0102030405060708u64 >> u64.from(8usize * (8usize - n)), n);
+      w.putUintBE(0x0102030405060708u64 >> u64.from(8usize * (8usize - n)), n);
+      n = n + 1usize;
+    }
+    let chain = w.finish();
+    let f = flat(&chain);
+    var c = ByteCursor.over(f.view());
+    expectUInt(u64.from(c.getLE[u8]().unwrap()), 1u64, "u8");
+    expectUInt(u64.from(c.getLE[u16]().unwrap()), 0x0203u64, "u16 LE");
+    expectUInt(u64.from(c.getLE[u32]().unwrap()), 0x04050607u64, "u32 LE");
+    expectUInt(c.getLE[u64]().unwrap(), 0x08090A0B0C0D0E0Fu64, "u64 LE");
+    expectUInt(u64.from(c.getBE[u16]().unwrap()), 0x0203u64, "u16 BE");
+    expectUInt(u64.from(c.getBE[u32]().unwrap()), 0x04050607u64, "u32 BE");
+    expectUInt(c.getBE[u64]().unwrap(), 0x08090A0B0C0D0E0Fu64, "u64 BE");
+    expectInt(i64.from(c.getBE[i16]().unwrap()), -2i64, "i16 BE");
+    expectInt(i64.from(c.getLE[i32]().unwrap()), -2i64, "i32 LE");
+    expectFloat(f64.from(c.getLE[f32]().unwrap()), 1.0f64, 0.0f64, "f32 LE");
+    expectFloat(f64.from(c.getBE[f32]().unwrap()), 1.0f64, 0.0f64, "f32 BE");
+    expectFloat(c.getLE[f64]().unwrap(), 1.0f64, 0.0f64, "f64 LE");
+    expectFloat(c.getBE[f64]().unwrap(), -2.0f64, 0.0f64, "f64 BE");
+    n = 1usize;
+    while n <= 8usize {
+      let want = 0x0102030405060708u64 >> u64.from(8usize * (8usize - n));
+      expectUInt(c.getUintLE(n).unwrap(), want, "getUintLE of every width");
+      expectUInt(c.getUintBE(n).unwrap(), want, "getUintBE of every width");
+      n = n + 1usize;
+    }
+    expect(c.isEmpty(), "all read");
+    // The bytes themselves, by hand: u16 BE 0x0203 is 02 03; u32 LE is 07 06 05 04
+    expectUInt(u64.from(f[1usize]), 3u64, "u16 LE low byte first");
+    expectUInt(u64.from(f[3usize]), 7u64, "u32 LE low byte first");
+    expectUInt(u64.from(f[15usize]), 2u64, "u16 BE high byte first");
+    expectUInt(u64.from(f[17usize]), 4u64, "u32 BE high byte first");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+fn innerBody(w: &mut Writer) {
+  w.put("xyz");
+}
+
+fn outerBody(w: &mut Writer) {
+  w.putByte('a');
+  w.lengthPrefixedLE[u8](&innerBody);
+  w.putByte('b');
+}
+
+fn slots() {
+  let before = lent();
+  {
+    var w = Writer.make(64usize);
+    w.putByte('<');
+    let s = w.slot[u32]();
+    w.put("body");
+    w.fillBE(s, 4u32);
+    w.putByte('>');
+    let c = w.finish();
+    expectStr(flat(&c).view(), "<\x00\x00\x00\x04body>", "a slot filled in the buffer in use");
+  }
+  {
+    // A slot in a buffer already held: the pop holds back, the fill reaches it
+    var w = Writer.make(64usize);
+    let s = w.slot[u16]();
+    var a = List[u8]();
+    a.resize(5000usize, 'a');
+    w.put(a.view());
+    expect(w.popFull() is None[IoBuf], "popFull holds back from an unfilled slot");
+    expectUInt(u64.from(w.len()), 5002u64, "nothing left the writer");
+    w.fillLE(s, 0x0201u16);
+    match w.popFull() {
+      case let Some(b) {
+        expectUInt(u64.from(b.len()), 4096u64, "after the fill the buffer pops");
+        expectUInt(u64.from(b.view()[0usize]), 1u64, "the slot's low byte");
+        expectUInt(u64.from(b.view()[1usize]), 2u64, "the slot's high byte");
+      }
+      case is None[IoBuf] {expect(false, "the buffer pops after the fill");}
+    }
+    let c = w.finish();
+    expectUInt(u64.from(c.len()), 906u64, "the rest");
+  }
+  {
+    // A slot in the second buffer holds back only from there on
+    var w = Writer.make(64usize);
+    var a = List[u8]();
+    a.resize(4090usize, 'a');
+    w.put(a.view());
+    let s = w.slot[u64]();
+    w.put(a.view());
+    match w.popFull() {
+      case let Some(b) {expectUInt(u64.from(b.len()), 4090u64, "the buffer before the slot's pops");}
+      case is None[IoBuf] {expect(false, "the buffer before pops");}
+    }
+    expect(w.popFull() is None[IoBuf], "the slot's buffer does not");
+    w.fillBE(s, 0x1122334455667788u64);
+    let c = w.finish();
+    let f = flat(&c);
+    expectUInt(u64.from(f[0usize]), 0x11u64, "the slot is whole at the start of its buffer");
+    expectUInt(u64.from(f[7usize]), 0x88u64, "its last byte");
+    expectUInt(u64.from(f.len()), 4098u64, "the rest");
+  }
+  {
+    // lengthPrefixed, two deep
+    var w = Writer.make(64usize);
+    w.lengthPrefixedBE[u16](&outerBody);
+    let c = w.finish();
+    expectStr(flat(&c).view(), "\x00\x06a\x03xyzb", "nested length prefixes");
+  }
+}
+
+fn putFrom() {
+  let before = lent();
+  {
+    var r = Reader.make(1000000usize);
+    let seg = filled(4096usize, 1u8);
+    let base = seg.base();
+    _ = r.push(seg);
+    _ = r.push(filled(4096usize, 9u8));
+    var w = Writer.make(64usize);
+    // Whole first segment moves
+    w.putFrom(&mut r, 4096usize);
+    expectUInt(u64.from(r.len()), 4096u64, "the reader gave up the segment");
+    match w.popFull() {
+      case let Some(b) {
+        expect(b.base() == base, "the very block moved, no copy");
+        expectUInt(u64.from(b.len()), 4096u64, "whole");
+      }
+      case is None[IoBuf] {expect(false, "the moved segment is full and pops");}
+    }
+    // Part of the next: copied
+    w.putFrom(&mut r, 100usize);
+    expectUInt(u64.from(r.len()), 3996u64, "100 consumed");
+    expectUInt(u64.from(w.view().len), 100u64, "copied into the writer's own buffer");
+    expectUInt(u64.from(w.view()[0usize]), 9u64, "the right bytes");
+    // The buffer is not empty, so the rest is copied too
+    w.putFrom(&mut r, 3996usize);
+    expect(r.isEmpty(), "reader drained");
+    expectUInt(u64.from(w.total()), 4096u64 + 4096u64, "all of it written");
+    let c = w.finish();
+    expectUInt(u64.from(c.len()), 4096u64, "the rest");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+fn header(c: &mut ByteCursor) Option[u64] {
+  let magic = c.getBE[u32]()?;
+  let n = c.getLE[u16]()?;
+  let len = c.getUintBE(3usize)?;
+  Some[u64](u64.from(magic) + u64.from(n) + len)
+}
+
+fn cursor() {
+  var w = Writer.make(64usize);
+  w.putBE[u32](100u32);
+  w.putLE[u16](20u16);
+  w.putUintBE(3u64, 3usize);
+  w.put("tail!");
+  let ch = w.finish();
+  let f = flat(&ch);
+  var c = ByteCursor.over(f.view());
+  expectUInt(header(&mut c).unwrap(), 123u64, "? through a header");
+  expectUInt(u64.from(c.pos()), 9u64, "the cursor is past it");
+  expectUInt(u64.from(c.remaining()), 5u64, "five left");
+  expect(c.getLE[u64]() is None[u64], "a short get is None");
+  expectUInt(u64.from(c.pos()), 9u64, "and does not move");
+  expect(c.getUintBE(6usize) is None[u64], "a short uint is None");
+  expect(!c.skip(6usize), "a short skip is false");
+  expectUInt(u64.from(c.pos()), 9u64, "unmoved");
+  match c.getBytes(4usize) {
+    case let Some(s) {
+      expectStr(s, "tail", "getBytes");
+      expect(&s[0usize] as *u8 == &f.view()[9usize] as *u8, "getBytes copies nothing");
+    }
+    case is None[&Array[u8]] {expect(false, "getBytes");}
+  }
+  expect(c.getBytes(2usize) is None[&Array[u8]], "getBytes past the end");
+  expect(c.skip(0usize), "skip 0");
+  expectUInt(u64.from(c.getByte().unwrap()), u64.from('!'), "getByte");
+  expect(c.getByte() is None[u8], "getByte at the end");
+  expect(c.isEmpty(), "empty");
+  let head = &f.view()[0usize ..< 6usize];
+  var short = ByteCursor.over(head);
+  expect(header(&mut short) is None[u64], "a short header is None through ?");
+}
+
+fn inReader() {
+  let before = lent();
+  {
+    var r = Reader.make(10000usize);
+    _ = r.push(filled(6usize, 0u8));
+    var got = 0u64;
+    match r.peek(4usize) {
+      case let Some(v) {
+        var c = ByteCursor.over(v);
+        got = u64.from(c.getBE[u32]().unwrap());
+      }
+      case is None[&Array[u8]] {}
+    }
+    r.consume(4usize);
+    expectUInt(got, 0x00010203u64, "a message parsed in the reader's slice");
+    expectUInt(u64.from(r.len()), 2u64, "then consumed");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+fn main() i32 {
+  rollover();
+  endian();
+  slots();
+  putFrom();
+  cursor();
+  inReader();
+  done()
+}

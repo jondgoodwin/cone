@@ -115,7 +115,6 @@ fn clampLightShadowSettings(s: &LightShadowSettings) LightShadowSettings {
 pub struct LocalShadows {
   pub settings: LightShadowSettings;
   pub map: Texture;
-  pub flags: List[u32];             // a row each: bit 0 casts a shadow if it can, bit 1 was given views last frame
   pub base: List[u32];              // a row each: its first view this frame, or NO_VIEW
   pub views: List[f32];             // 16 floats (a matrix) a view in use
   pub viewRow: List[u32];           // the row of the light each view belongs to
@@ -132,7 +131,7 @@ pub struct LocalShadows {
     let mapDesc = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
     var map = device.createTexture(&mapDesc);
-    LocalShadows(LightShadowSettings(), map, List[u32](), List[u32](), List[f32](),
+    LocalShadows(LightShadowSettings(), map, List[u32](), List[f32](),
       List[u32](), List[u32](), List[f32](), List[f32](), 0u32, 0u32, 0u32, 0u32, 0u64)
   }
 
@@ -200,7 +199,7 @@ fn faceUp(face: u32) Vec3 {
 // budget, at the head of this file); true if the choice is not what it was
 // last frame (the lights' table must be written again)
 fn selectLocalShadows(ls: &mut LightSet) bool {
-  let n = ls.owners.len();
+  let n = ls.lights.len();
   let s = ls.shadows.settings;
   // Last frame's choice, kept in each row's flag
   var previous = List[u32]();
@@ -229,11 +228,10 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
   // The candidates: lights that may cast, give light and reach something in view
   i = 0usize;
   while i < n {
-    let flag = *ls.shadows.flags[i];
-    if (flag & 1u32) != 0u32 && ls.isLit(i) && i < ls.reachRows.len() && *ls.reachRows[i] > 0u32 {
-      let b = i * LIGHT_FLOATS;
-      let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-      let range = *ls.rows[b + 3usize];
+    let l = &ls.lights.rows()[i];
+    if (l.flags & 1u32) != 0u32 && l.isLit() && i < ls.reachRows.len() && *ls.reachRows[i] > 0u32 {
+      let p = Vec3(l.px, l.py, l.pz);
+      let range = l.range;
       var score = range * range / (1. + (p - ls.eye).lengthSquared());
       if *previous[i] != NO_VIEW && s.fade <= 0. { score = score * 1.4; }
       ls.shadows.candRows.push(u32.from(i));
@@ -259,17 +257,17 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
     ls.shadows.candScore.set(best, -2.);
     taken = taken + 1usize;
     let row = usize.from(*ls.shadows.candRows[best]);
-    let b = row * LIGHT_FLOATS;
-    let spot = *ls.rows[b + 11usize] > 0.5;
+    let l = &ls.lights.rows()[row];
+    let spot = l.kind > 0.5;
     let need = if spot { 1u32 } else { 6u32 };
     if used + need > s.maxViews { continue; }
-    let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-    let range = *ls.rows[b + 3usize];
+    let p = Vec3(l.px, l.py, l.pz);
+    let range = l.range;
     ls.shadows.base.set(row, used);
     if spot {
-      let axis = Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
+      let axis = Vec3(l.ax, l.ay, l.az);
       let up = if axis.y > 0.99 || axis.y < -0.99 { Vec3(1., 0., 0.) } else { Vec3(0., 1., 0.) };
-      var fov = 2. * *ls.rows[b + 15usize] + radians(FACE_GUARD);
+      var fov = 2. * l.outer + radians(FACE_GUARD);
       if fov > radians(170.) { fov = radians(170.); }
       let m = viewMatrixOf(p, axis, up, fov, s.near, range);
       pushMatrix(&mut ls.shadows.views, &m);
@@ -304,9 +302,9 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
     while c < ls.shadows.candRows.len() {
       let row = usize.from(*ls.shadows.candRows[c]);
       if *ls.shadows.base[row] == NO_VIEW {
-        let b = row * LIGHT_FLOATS;
-        let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-        let range = *ls.rows[b + 3usize];
+        let l = &ls.lights.rows()[row];
+        let p = Vec3(l.px, l.py, l.pz);
+        let range = l.range;
         let score = range * range / (1. + (p - ls.eye).lengthSquared());
         if score > left { left = score; }
       }
@@ -317,9 +315,9 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
       while c < ls.shadows.candRows.len() {
         let row = usize.from(*ls.shadows.candRows[c]);
         if *ls.shadows.base[row] != NO_VIEW {
-          let b = row * LIGHT_FLOATS;
-          let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-          let range = *ls.rows[b + 3usize];
+          let l = &ls.lights.rows()[row];
+          let p = Vec3(l.px, l.py, l.pz);
+          let range = l.range;
           let score = range * range / (1. + (p - ls.eye).lengthSquared());
           var f = (score / left - 1.) / s.fade;
           if f < 0. { f = 0.; }
@@ -337,8 +335,9 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
     let df = *ls.shadows.fade[i] - *previousFade[i];
     if df > 0.002 || df < -0.002 { changed = true; }
     // Remember who has views, for the bonus
-    let flag = *ls.shadows.flags[i];
-    ls.shadows.flags.set(i, if *ls.shadows.base[i] != NO_VIEW { flag | 2u32 } else { flag & 1u32 });
+    let flag = ls.lights.rows()[i].flags;
+    let rm = ls.lights.rowsMut();
+    rm[i].flags = if *ls.shadows.base[i] != NO_VIEW { flag | 2u32 } else { flag & 1u32 };
     i = i + 1usize;
   }
   changed
