@@ -1,0 +1,160 @@
+// Bug 84: a cancel that lands after a stage's last message is never noticed. TransformStage runs its
+// cancel check only inside a message handler, so a stage left idle keeps 'up' (its upstream), the
+// upstream keeps the stage, and the stage's ChunkWindow keeps IoBufs lent: finalAll finds them live.
+//
+//   source -> TransformStage[Ident] -> sink      (Ident passes bytes through: no codec in this test)
+//
+// The source works in a group Gs, a child of the consumer's group Gc; it sends 8 chunks, never
+// looks at its group and never sends an 'end' (a producer that never ends); the sink gives every
+// chunk back. The order is certain with no sleep: main waits until the pipeline is idle (the
+// actors runtime has no message queued or running), so the stage's last message is handled; only
+// then it cancels Gc. After finalAll every buffer must be back in its pool.
+
+mod cancelidle;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+
+fn chunkBytes() usize { 4096usize }
+
+struct Seen {
+  pub sent: Atomic[u64];
+  pub received: Atomic[u64];
+  pub back: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// Passes its input through unchanged
+struct Ident {
+  pend: List[u8];
+  fin: bool;
+
+  pub fn make() Ident { Ident(List[u8](), false) }
+
+  pub fn feed(self: &mut, input: &Array[u8]) {
+    var i = 0usize;
+    while i < input.len { pend.push(input[i]); i += 1usize; }
+  }
+
+  pub fn pull(self: &mut, out: &mut IoBuf) Status {
+    let n = out.append(pend.view());
+    if n < pend.len() {
+      var rest = List[u8]();
+      var i = n;
+      while i < pend.len() { rest.push(pend[i]); i += 1usize; }
+      pend = rest;
+      return Status.MoreOutput;
+    }
+    pend.clear();
+    if fin { Status.Done } else { Status.NeedInput }
+  }
+
+  pub fn finish(self: &mut) { fin = true; }
+
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}
+
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  left: u64;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], left: u64) {
+    *self = Self(down: down, link: ChunkWindow.own(16384usize), data: data, left: left);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    seen.back.add(1u64);
+    self.pump();
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  fn pump(self) {
+    var more = true;
+    while more {
+      if left == 0u64 {
+        more = false;
+      } else {
+        match link.take(chunkBytes()) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(data.view());
+            left = left - 1u64;
+            seen.sent.add(1u64);
+            down <- buf;
+          }
+        }
+      }
+    }
+  }
+}
+
+actor Sink is ChunkSink {
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource]);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    seen.received.add(1u64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let base = iobuf.stats().lent;
+  let gc = CancelGroup.make();
+  {
+    let gs = gc.child();
+    let sink = Sink();
+    let stage = TransformStage[Ident](sink, Ident.make());
+    var d = List[u8]();
+    var i = 0usize;
+    while i < chunkBytes() { d.push(97u8); i += 1usize; }
+    let src = Source(stage, d, 8u64);
+    actors.withGroup(&gs, fn() [src] { src.start(); });
+  }
+  // the pipeline settles: every chunk is through, and no message is left anywhere
+  actors.waitUntilIdle();
+  let before = seen.back.load();
+  gc.cancel();
+  finalAll();
+
+  expectUInt(seen.sent.load(), 8u64, "the source sent its 8 chunks");
+  expectUInt(seen.received.load(), 8u64, "the sink took them all");
+  expectUInt(before, 8u64, "and the stage gave every one back before the cancel");
+  expectUInt(iobuf.stats().lent, base, "every buffer is back in its pool");
+  done()
+}
