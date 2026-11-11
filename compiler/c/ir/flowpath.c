@@ -2856,6 +2856,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             continue;
         // An argument that borrows a sibling field, a place apart from the loan's own, is a value this
         // function owns whole (reshapeCall's 'apart'); a method's receiver is asked as before
+        // Only the first 16 arguments are looked at (reshapeCallBody reads 'apart' for k < 16 only): a
+        // call with more falls back to the old answer for the rest, which is the refusal, never an accept
         uint8_t apart[16];
         int anyapart = 0;
         memset(apart, 0, sizeof(apart));
