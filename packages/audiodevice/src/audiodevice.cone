@@ -20,9 +20,8 @@
 // Which device: `Device.start` opens the default one. `Device.startOn` takes a
 // list of substrings and opens the first playback device (in SDL's order)
 // whose name contains any of them, ignoring case, and falls back to the
-// default when none does, or when the one that did would not open; `Started.deviceName` says which opened (empty for
-// the default, which is not looked up). `playbackNames` lists the names, and
-// `nameMatches` is the matching on its own. The choice is made on the
+// default when none does, or when the one that did would not open; `Started.deviceName` says which opened (None for
+// the default, which is not looked up). `playbackNames` lists the names. The choice is made on the
 // calling thread and the feeder is handed the device id.
 //
 // The Control that talks to the mixer is returned by `start` and belongs to
@@ -125,7 +124,7 @@ fn feeder(init: Feed) i32 {
 pub struct Started {
   pub device: Device;
   pub control: Control;
-  pub deviceName: String;   // the playback device's name when 'startOn' matched one, else empty (the default)
+  pub deviceName: Option[String];   // the playback device's name when 'startOn' matched one; None for the default device
 }
 
 // A byte's lower case (ASCII only)
@@ -150,7 +149,7 @@ fn containsFold(name: &String, part: &String) bool {
 }
 
 // Whether 'name' contains any of 'wants' (case-insensitive)
-pub fn nameMatches(name: &String, wants: &List[String]) bool {
+fn nameMatches(name: &String, wants: &List[String]) bool {
   var k = 0usize;
   while k < wants.len() {
     if containsFold(name, &wants[k]) { return true; }
@@ -160,7 +159,7 @@ pub fn nameMatches(name: &String, wants: &List[String]) bool {
 }
 
 // The index of the first of 'names' that 'nameMatches' wants, or names.len() when none
-pub fn firstMatch(names: &List[String], wants: &List[String]) usize {
+fn firstMatch(names: &List[String], wants: &List[String]) usize {
   var k = 0usize;
   while k < names.len() {
     if nameMatches(&names[k], wants) { return k; }
@@ -213,12 +212,12 @@ pub struct Device {
   // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
   // Answers the device and the game thread's Control, or why not.
   pub fn start(rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
-    Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, String(), rate, voices, aheadMs)
+    Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, None[String], rate, voices, aheadMs)
   }
 
   // As 'start', but on the first playback device whose name contains any of
   // 'wants' (case-insensitive); with none matching (or none listed) it opens the
-  // default, and the Started's 'deviceName' is empty.
+  // default, and the Started's 'deviceName' is None.
   pub fn startOn(wants: &List[String], rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
     // Device ids belong to the audio subsystem's run: SDL numbers them afresh each time it starts, so an
     // id listed under one run is "Invalid audio device instance ID" under the next. This call holds its
@@ -232,7 +231,7 @@ pub struct Device {
     var answer: Result[Started, DeviceError] = Err[Started, DeviceError](DeviceError(2i32));
     var needDefault = true;
     if k < names.len() {
-      answer = Device.open(ids[k], names[k].clone(), rate, voices, aheadMs);
+      answer = Device.open(ids[k], Some(names[k].clone()), rate, voices, aheadMs);
       match answer {
         case is Ok { needDefault = false; }
         case is Err {}
@@ -240,13 +239,13 @@ pub struct Device {
     }
     // no match, or the matched device would not open: the default, unnamed
     if needDefault {
-      answer = Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, String(), rate, voices, aheadMs);
+      answer = Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, None[String], rate, voices, aheadMs);
     }
     if held { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
     answer
   }
 
-  fn open(devid: u32, name: String, rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
+  fn open(devid: u32, name: Option[String], rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
     var c: Control;
     var rx: Receiver[Cmd];
     c, rx = commandQueue(DEFAULT_QUEUE);

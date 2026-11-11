@@ -1,7 +1,7 @@
-// Choosing a playback device by name: the matching over a made-up list of
-// names (no device is touched), then `playbackNames` and `startOn` on SDL's
-// "dummy" audio driver, which plays nothing: a name nothing matches falls back
-// to the default device.
+// Choosing a playback device by name, through `playbackNames` and `Device.startOn` on SDL's "dummy"
+// audio driver, which plays nothing: a name nothing matches falls back to the default device
+// (Started.deviceName is None); a name that matches opens that device, whatever the case, and says so.
+// The matching itself is private to the package, so it is tested here by what it makes startOn open.
 mod names;
 
 import testing use *;
@@ -11,54 +11,53 @@ import thread;
 import time use Duration;
 import audiodevice use *;
 
-fn main() i32 {
-  var names = List[String]();
-  names.push(String.from("Speakers (Realtek(R) Audio)"));
-  names.push(String.from("Headphones (Oculus Virtual Audio Device)"));
-  names.push(String.from("Headset Earphone (Meta Quest)"));
-  var wants = List[String]();
-  wants.push(String.from("oculus"));
-  wants.push(String.from("QUEST"));
-  expect(!nameMatches(&names[0usize], &wants), "speakers match neither");
-  expect(nameMatches(&names[1usize], &wants), "Oculus matches, whatever the case");
-  expect(nameMatches(&names[2usize], &wants), "Quest matches, whatever the case");
-  expectUInt(u64.from(firstMatch(&names, &wants)), 1u64, "the first match is chosen");
-  var none = List[String]();
-  none.push(String.from("rift"));
-  none.push(String());
-  expectUInt(u64.from(firstMatch(&names, &none)), 3u64, "no match answers the list's length");
-  var empty = List[String]();
-  expectUInt(u64.from(firstMatch(&names, &empty)), 3u64, "no wants, no match");
+// Start on 'wants', hold 50 ms, stop. Answers 0 when the default opened (deviceName None), 1 when a named
+// device opened, -1 when nothing opened or the feeder did not end cleanly. Silent: the driver is the dummy.
+fn opened(wants: &List[String]) i32 {
+  match Device.startOn(wants, 48000u32, 8u32, 40u32) {
+    case var Ok(s) {
+      var answer = 0i32;
+      match s.deviceName {
+        case is Some { answer = 1i32; }
+        case is None[String] {}
+      }
+      let device, var control = s.(device, control);
+      thread.sleep(Duration.fromMillis(50));
+      if device.stop(&mut control) != 0i32 { return -1i32; }
+      answer
+    }
+    case is Err { -1i32 }
+  }
+}
 
+fn main() i32 {
   env.set("SDL_AUDIODRIVER", "dummy");
   let seen = playbackNames();
   expect(seen.len() < 100usize, "the dummy driver lists its devices without trouble");
-  match Device.startOn(&none, 48000u32, 8u32, 40u32) {
-    case var Ok(s) {
-      expectUInt(u64.from(s.deviceName.len()), 0u64, "no match opens the default, unnamed");
-      let device, var control = s.(device, control);
-      thread.sleep(Duration.fromMillis(50));
-      expectInt(i64.from(device.stop(&mut control)), 0i64, "the feeder ended cleanly");
-    }
-    case is Err {
-      require(false, "the dummy audio device opened by default");
-    }
-  }
+  require(seen.len() > 0usize, "the dummy driver lists a device");
+
+  var none = List[String]();
+  none.push(String.from("no-such-device"));
+  none.push(String());
+  expectInt(i64.from(opened(&none)), 0i64, "no match opens the default, unnamed");
+  var empty = List[String]();
+  expectInt(i64.from(opened(&empty)), 0i64, "no wants, no match: the default");
+
   // A listed name opens that device by its id (the id must still be good when it is opened: the
   // audio subsystem is not left to stop between the listing and the open), and says so.
-  require(seen.len() > 0usize, "the dummy driver lists a device");
   var named = List[String]();
   named.push(seen[0usize].clone());
-  match Device.startOn(&named, 48000u32, 8u32, 40u32) {
-    case var Ok(s) {
-      expect(s.deviceName.len() > 0usize, "a listed name opens that device, named");
-      let device, var control = s.(device, control);
-      thread.sleep(Duration.fromMillis(50));
-      expectInt(i64.from(device.stop(&mut control)), 0i64, "the named device's feeder ended cleanly");
-    }
-    case is Err {
-      require(false, "the dummy driver's listed device opened");
-    }
-  }
+  expectInt(i64.from(opened(&named)), 1i64, "a listed name opens that device, named");
+
+  // any of the wants will do, and the first want need not match
+  var second = List[String]();
+  second.push(String.from("no-such-device"));
+  second.push(seen[0usize].clone());
+  expectInt(i64.from(opened(&second)), 1i64, "the second want matches");
+
+  // whatever the case: the dummy driver's one device is "System audio playback device"
+  var upper = List[String]();
+  upper.push(String.from("PLAYBACK DEVICE"));
+  expectInt(i64.from(opened(&upper)), 1i64, "a name matches whatever the case");
   done()
 }
