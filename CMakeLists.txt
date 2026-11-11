@@ -47,6 +47,17 @@ set(LLVM_LINK_COMPONENTS
 
 llvm_map_components_to_libnames(llvm_libs support core irreader ${LLVM_LINK_COMPONENTS})
 
+# Debian/Ubuntu's LLVM builds Polly as a plugin (LLVMPolly.so) and ships no
+# libPolly.a or libPollyISL.a, yet LLVMExtensions (which LTO needs) lists them
+# as dependencies, so a static link stops on a missing libPolly.a. conec uses
+# no Polly: drop whichever of them has no archive in this LLVM install.
+foreach(polly_lib Polly PollyISL)
+	find_library(polly_archive_${polly_lib} NAMES ${polly_lib} PATHS ${LLVM_LIBRARY_DIRS} NO_DEFAULT_PATH)
+	if(NOT polly_archive_${polly_lib})
+		list(REMOVE_ITEM llvm_libs ${polly_lib})
+	endif()
+endforeach()
+
 
 add_executable(conec 
 	compiler/c/conec.c
