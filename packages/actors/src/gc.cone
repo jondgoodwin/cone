@@ -201,11 +201,11 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
   // chunks, once, and the slot rewritten to point at the copy; a large object
   // stays where it is and is marked
   fn mark(self: &uni ActorGc, slot: *usize) {
-    let sp = curActorRegion;
-    if sp == null {
+    let ring = curGcRing;
+    if ring == null {
       return;
     }
-    (sp as &mut ActorRegion).queueMark(self as *ActorGc, slot);
+    (*(ring + pfRegionAt) as &mut ActorRegion).queueMark(ring, self as *ActorGc, slot);
   }
 }
 
@@ -215,7 +215,12 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
 
 // The space a collection is in, for 'mark'; and the space the next allocation is
 // for. Thread-local: workers run actors, and so collect and allocate, at once
-var @threadlocal curActorRegion: *ActorRegion = null;
+// A collection's prefetch ring, on its 'collect' frame, null outside one: pfRing header and slot
+// pairs, then the oldest queued reference, the number queued, and the region collecting
+var @threadlocal curGcRing: *usize = null;
+const pfHeadAt = 16usize;
+const pfCountAt = 17usize;
+const pfRegionAt = 18usize;
 var @threadlocal target: *ActorRegion = null;
 
 // A chunk of the region: this header, then objects, each a multiple of 16
@@ -282,9 +287,6 @@ pub struct ActorRegion {
   nfreed: usize = 0usize;
   blocks: usize = 0usize;         // bytes held in the blocks of collections made here
   epoch: u32 = 0u32;
-  pf: *usize = null;              // a collection's prefetch ring (pfRing header and slot pairs), on the collect frame; null outside one
-  pfHead: usize = 0usize;         // the oldest queued reference
-  pfCount: usize = 0usize;        // references queued
 
   // A region holding nothing, made where it will stay: its three functions set
   // and its 'region' pointed at them
@@ -585,33 +587,32 @@ pub struct ActorRegion {
   // object is a cache miss, which was most of a collection's time: its lines are prefetched
   // here and the reference is marked 'pfRing' references later, by which time they have arrived.
   // 'drain' marks what is left when it runs out of objects to scan
-  fn queueMark(self: &mut, header: *ActorGc, slot: *usize) {
+  fn queueMark(self: &mut, ring: *usize, header: *ActorGc, slot: *usize) {
     mem.prefetch[u8](header as *u8);
     mem.prefetch[u8]((header as *u8) + 64usize);
-    let ring = self.pf;
-    if self.pfCount == pfRing {
-      let at = self.pfHead;
-      let oh = *(ring + at * 2usize);
-      let os = *(ring + at * 2usize + 1usize);
-      *(ring + at * 2usize) = header as usize;
-      *(ring + at * 2usize + 1usize) = slot as usize;
-      self.pfHead = (at + 1usize) & (pfRing - 1usize);
+    let head = *(ring + pfHeadAt);
+    let count = *(ring + pfCountAt);
+    if count == pfRing {
+      let oh = *(ring + head * 2usize);
+      let os = *(ring + head * 2usize + 1usize);
+      *(ring + head * 2usize) = header as usize;
+      *(ring + head * 2usize + 1usize) = slot as usize;
+      *(ring + pfHeadAt) = (head + 1usize) & (pfRing - 1usize);
       self.markObject(oh as *ActorGc, os as *usize);
     } else {
-      let at = (self.pfHead + self.pfCount) & (pfRing - 1usize);
+      let at = (head + count) & (pfRing - 1usize);
       *(ring + at * 2usize) = header as usize;
       *(ring + at * 2usize + 1usize) = slot as usize;
-      self.pfCount = self.pfCount + 1usize;
+      *(ring + pfCountAt) = count + 1usize;
     }
   }
 
   // Mark every queued reference
-  fn flushMarks(self: &mut) {
-    while self.pfCount > 0usize {
-      let at = self.pfHead;
-      let ring = self.pf;
-      self.pfHead = (at + 1usize) & (pfRing - 1usize);
-      self.pfCount = self.pfCount - 1usize;
+  fn flushMarks(self: &mut, ring: *usize) {
+    while *(ring + pfCountAt) > 0usize {
+      let at = *(ring + pfHeadAt);
+      *(ring + pfHeadAt) = (at + 1usize) & (pfRing - 1usize);
+      *(ring + pfCountAt) = *(ring + pfCountAt) - 1usize;
       self.markObject(*(ring + at * 2usize) as *ActorGc, *(ring + at * 2usize + 1usize) as *usize);
     }
   }
@@ -661,6 +662,7 @@ pub struct ActorRegion {
   // Scan the new chunks in order, and the large objects reached, until nothing
   // is left to scan (Cheney's scan: copying appends to the chunks being scanned)
   fn drain(self: &mut) {
+    let ring = curGcRing;
     var going = true;
     while going {
       going = false;
@@ -681,8 +683,8 @@ pub struct ActorRegion {
           going = true;
         }
       }
-      if !going && self.pfCount > 0usize {
-        self.flushMarks();
+      if !going && *(ring + pfCountAt) > 0usize {
+        self.flushMarks(ring);
         going = true;
       }
       if !going && self.ngray > 0usize {
@@ -770,11 +772,9 @@ pub struct ActorRegion {
     if self.epoch == 0u32 {
       self.epoch = 1u32;
     }
-    curActorRegion = self as *ActorRegion;
-    var ring = Array[usize, 16]() <- fill 0usize;
-    self.pf = &mut ring[0usize] as *usize;
-    self.pfHead = 0usize;
-    self.pfCount = 0usize;
+    var ring = Array[usize, 19]() <- fill 0usize;
+    ring[pfRegionAt] = self as usize;
+    curGcRing = &mut ring[0usize] as *usize;
     let oldChunks = self.first;
     self.first = null;
     self.last = null;
@@ -825,7 +825,7 @@ pub struct ActorRegion {
     self.live = self.liveNow + self.blocks;
     self.allocated = 0usize;
     self.nobjects = self.nobjects + self.nlarge;
-    curActorRegion = null;
+    curGcRing = null;
   }
 
   // The actor has died, its state finalized: every object on the final list
