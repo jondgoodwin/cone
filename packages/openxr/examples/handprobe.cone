@@ -65,7 +65,7 @@ fn makeVkDevice(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.
 }
 
 fn fail(what: &str, r: i32) {
-  print <- what; print <- " failed: "; print <- openxr.resultName(r); print <- "\n";
+  print <- what; print <- " failed: "; print <- openxr.resultName(r); print <- " ("; print <- r; print <- ")\n";
 }
 
 // One line about a hand
@@ -158,16 +158,36 @@ fn main(argc: i32, argv: **u8) i32 {
     return 1i32;
   }
 
+  // Every hand extension offered first. If the runtime refuses that set (the
+  // Oculus runtime over Link has refused it with microgestures and
+  // simultaneous hands and controllers both asked for), try again with the
+  // joints and the aim only, which is all this probe reads.
+  var xrInstance = 0usize as openxr.Instance;
+  var useHands = hands;
   var names = List[*u8]();
   names.push(&"XR_KHR_vulkan_enable2" as *u8);
   if hasLocalFloor { names.push(&"XR_EXT_local_floor" as *u8); }
-  hands.addNames(&mut names);
-  let ici = openxr.InstanceCreateInfo(applicationInfo: openxr.applicationInfo("openxr handprobe", "Cone", openxr.API_VERSION_1_0),
+  useHands.addNames(&mut names);
+  var ici = openxr.InstanceCreateInfo(applicationInfo: openxr.applicationInfo("openxr handprobe", "Cone", openxr.API_VERSION_1_0),
     enabledApiLayerNames: null, enabledExtensionCount: u32.from(names.len()),
     enabledExtensionNames: names.viewMut() as **u8);
-  var xrInstance = 0usize as openxr.Instance;
   r = openxr.createInstance(&ici, &mut xrInstance);
+  if openxr.failed(r) && (hands.microgestures || hands.simultaneous) {
+    fail("xrCreateInstance with every hand extension", r);
+    useHands.microgestures = false;
+    useHands.simultaneous = false;
+    names = List[*u8]();
+    names.push(&"XR_KHR_vulkan_enable2" as *u8);
+    if hasLocalFloor { names.push(&"XR_EXT_local_floor" as *u8); }
+    useHands.addNames(&mut names);
+    ici.enabledExtensionCount = u32.from(names.len());
+    ici.enabledExtensionNames = names.viewMut() as **u8;
+    print <- "Trying again with hand tracking and aim only\n";
+    r = openxr.createInstance(&ici, &mut xrInstance);
+  }
   if openxr.failed(r) { fail("xrCreateInstance", r); return 1i32; }
+  print <- "Instance made with microgestures: "; print <- useHands.microgestures;
+  print <- ", simultaneous hands and controllers: "; print <- useHands.simultaneous; print <- "\n";
   var fns = openxr.InstanceFns.load(xrInstance);
   if fns.missing != 0u32 || !fns.hasVulkanEnable2() {
     print <- "The OpenXR instance lacks some of its functions\n";
