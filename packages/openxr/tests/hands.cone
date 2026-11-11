@@ -1,0 +1,127 @@
+// The openxr package's hand tracking, without OpenXR or a headset. Only a
+// failure prints.
+//
+// - The extension values against their extension numbers (XR_EXT_hand_tracking
+//   is 52, XR_FB_hand_tracking_aim 112), the joint indices against the
+//   specification's order, and the aim flags against their bits.
+// - 'HandExtensions.find' on a made-up list of offered extensions: it finds
+//   the four, none of them when absent, and not the aim extension without
+//   hand tracking; 'count' and 'addNames' agree.
+// - 'HandJoints': a hand not active has no valid joints; a located one counts
+//   the joints with a valid position; 'pinchDistance' is the distance between
+//   the thumb and index tips (-1 when either is invalid); 'pinchStrength' is -1
+//   without a valid aim state and the index strength with one.
+// - A 'HandTracker' made on functions without hand tracking is not valid, and
+//   locating with it fails with ERROR_HANDLE_INVALID.
+
+mod hands;
+
+import testing use *;
+import libc;
+import collections use *;
+import openxr use *;
+
+fn ext(n: i32, offset: i32) i32 { 1000000000i32 + (n - 1i32) * 1000i32 + offset }
+
+fn named(name: &str) ExtensionProperties {
+  var p = ExtensionProperties(extensionName: Array[u8, 128]() <- fill 0u8, extensionVersion: 1u32);
+  var i = 0usize;
+  while i < name.len() {
+    p.extensionName[i] = name[i];
+    i = i + 1usize;
+  }
+  p
+}
+
+fn offered(names: &List[ExtensionProperties]) HandExtensions {
+  HandExtensions.find(names.view() as *ExtensionProperties, u32.from(names.len()))
+}
+
+fn main() i32 {
+  // Values
+  expectInt(i64.from(TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT), i64.from(ext(52i32, 0i32)), "SYSTEM_HAND_TRACKING_PROPERTIES_EXT");
+  expectInt(i64.from(TYPE_HAND_TRACKER_CREATE_INFO_EXT), i64.from(ext(52i32, 1i32)), "HAND_TRACKER_CREATE_INFO_EXT");
+  expectInt(i64.from(TYPE_HAND_JOINTS_LOCATE_INFO_EXT), i64.from(ext(52i32, 2i32)), "HAND_JOINTS_LOCATE_INFO_EXT");
+  expectInt(i64.from(TYPE_HAND_JOINT_LOCATIONS_EXT), i64.from(ext(52i32, 3i32)), "HAND_JOINT_LOCATIONS_EXT");
+  expectInt(i64.from(TYPE_HAND_TRACKING_AIM_STATE_FB), i64.from(ext(112i32, 1i32)), "HAND_TRACKING_AIM_STATE_FB");
+  expectInt(i64.from(HandTrackerCreateInfoEXT(hand: HAND_LEFT_EXT).type), i64.from(TYPE_HAND_TRACKER_CREATE_INFO_EXT), "create-info type");
+  expectInt(i64.from(HandJointsLocateInfoEXT(baseSpace: 0usize as Space, time: 0i64).type), i64.from(TYPE_HAND_JOINTS_LOCATE_INFO_EXT), "locate-info type");
+  expectInt(i64.from(HAND_LEFT_EXT), 1, "left");
+  expectInt(i64.from(HAND_RIGHT_EXT), 2, "right");
+  expectUInt(u64.from(HAND_JOINT_COUNT_EXT), 26u64, "26 joints");
+  expectUInt(u64.from(HAND_JOINT_WRIST_EXT), 1u64, "wrist");
+  expectUInt(u64.from(HAND_JOINT_THUMB_TIP_EXT), 5u64, "thumb tip");
+  expectUInt(u64.from(HAND_JOINT_INDEX_TIP_EXT), 10u64, "index tip");
+  expectUInt(u64.from(HAND_JOINT_MIDDLE_TIP_EXT), 15u64, "middle tip");
+  expectUInt(u64.from(HAND_JOINT_RING_TIP_EXT), 20u64, "ring tip");
+  expectUInt(u64.from(HAND_JOINT_LITTLE_TIP_EXT), 25u64, "little tip");
+  expectUInt(HAND_TRACKING_AIM_COMPUTED_BIT_FB, 1u64, "aim computed");
+  expectUInt(HAND_TRACKING_AIM_VALID_BIT_FB, 2u64, "aim valid");
+  expectUInt(HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB, 4u64, "index pinching");
+  expectUInt(HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB, 256u64, "menu pressed");
+
+  // The extensions a runtime offers
+  var none = List[ExtensionProperties]();
+  none.push(named("XR_KHR_vulkan_enable2"));
+  none.push(named("XR_EXT_local_floor"));
+  let nothing = offered(&none);
+  expectBool(nothing.tracking, false, "no hand tracking offered");
+  expectUInt(u64.from(nothing.count()), 0u64, "none to enable");
+
+  var all = List[ExtensionProperties]();
+  all.push(named("XR_KHR_vulkan_enable2"));
+  all.push(named("XR_META_simultaneous_hands_and_controllers"));
+  all.push(named("XR_FB_hand_tracking_aim"));
+  all.push(named("XR_EXT_hand_tracking"));
+  all.push(named("XR_META_hand_tracking_microgestures"));
+  let everything = offered(&all);
+  expectBool(everything.tracking && everything.aim && everything.microgestures && everything.simultaneous, true, "all four offered");
+  expectUInt(u64.from(everything.count()), 4u64, "four to enable");
+  var names = List[*u8]();
+  everything.addNames(&mut names);
+  expectUInt(u64.from(names.len()), 4u64, "four names added");
+  expectInt(i64.from(libc.strcmp(cstr.fromPtr(*names[0]), "XR_EXT_hand_tracking")), 0, "the first is hand tracking");
+
+  var onlyAim = List[ExtensionProperties]();
+  onlyAim.push(named("XR_FB_hand_tracking_aim"));
+  onlyAim.push(named("XR_META_hand_tracking_microgestures"));
+  let aimAlone = offered(&onlyAim);
+  expectBool(aimAlone.aim, false, "aim is not enabled without hand tracking");
+  expectBool(aimAlone.microgestures, true, "microgestures offered");
+  expectUInt(u64.from(aimAlone.count()), 1u64, "one to enable");
+
+  // A hand
+  var hand = HandJoints.none();
+  expectInt(i64.from(hand.validCount()), 0, "a hand not active has no valid joints");
+  hand.active = true;
+  expectInt(i64.from(hand.validCount()), 0, "an active hand with no flags has none");
+  expectFloat(hand.pinchDistance(), -1., 0.00001, "no pinch distance without joints");
+  hand.joints[HAND_JOINT_THUMB_TIP_EXT].locationFlags = SPACE_LOCATION_POSITION_VALID_BIT;
+  hand.joints[HAND_JOINT_INDEX_TIP_EXT].locationFlags = SPACE_LOCATION_POSITION_VALID_BIT | SPACE_LOCATION_ORIENTATION_VALID_BIT;
+  hand.joints[HAND_JOINT_THUMB_TIP_EXT].pose.position = Vector3f(0.1, 0.2, 0.3);
+  hand.joints[HAND_JOINT_INDEX_TIP_EXT].pose.position = Vector3f(0.1, 0.2, 0.35);
+  expectInt(i64.from(hand.validCount()), 2, "two valid joints");
+  expectFloat(hand.pinchDistance(), 0.05, 0.0001, "thumb and index tips 5 cm apart");
+  expectBool(hand.jointValid(HAND_JOINT_WRIST_EXT), false, "the wrist is not valid");
+  hand.joints[HAND_JOINT_INDEX_TIP_EXT].locationFlags = SPACE_LOCATION_ORIENTATION_VALID_BIT;
+  expectFloat(hand.pinchDistance(), -1., 0.00001, "an index tip with no position gives none");
+  hand.active = false;
+  expectInt(i64.from(hand.validCount()), 0, "an inactive hand has none valid");
+
+  expectFloat(hand.pinchStrength(), -1., 0.00001, "no pinch strength without aim");
+  hand.active = true;
+  hand.hasAim = true;
+  hand.aim.pinchStrengthIndex = 0.75;
+  expectFloat(hand.pinchStrength(), -1., 0.00001, "an aim state not marked valid gives none");
+  hand.aim.status = HAND_TRACKING_AIM_VALID_BIT_FB | HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB;
+  expectFloat(hand.pinchStrength(), 0.75, 0.00001, "the index pinch strength");
+
+  // A tracker without the extension
+  let lost = InstanceFns();
+  var tracker = HandTracker.create(&lost, 0usize as Session, HAND_LEFT_EXT, true);
+  expectBool(tracker.isValid(), false, "no tracker without hand tracking");
+  expectInt(i64.from(tracker.locate(&lost, 0usize as Space, 0i64, &mut hand)), i64.from(ERROR_HANDLE_INVALID), "locating with none fails");
+  expectBool(hand.active, false, "and the hand is not active");
+  tracker.destroy(&lost);
+  done()
+}

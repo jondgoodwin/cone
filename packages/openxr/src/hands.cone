@@ -1,0 +1,179 @@
+// ---- Hand tracking ----
+//
+// What XR_EXT_hand_tracking and XR_FB_hand_tracking_aim need beyond the
+// bindings: which of the hand extensions to enable (the ones the runtime
+// offers, and only those), a tracker for a hand, and a located hand with its 26
+// joints and, where the runtime has the aim extension, its aim state.
+//
+// A program that wants hands:
+//
+//   1. lists the runtime's instance extensions, asks 'HandExtensions.find' and
+//      adds 'addNames' to the names it enables;
+//   2. after the session is made, with 'fns.hasHandTracking()', makes a
+//      'HandTracker.create' for each hand ('withAim' only when 'aim' was found);
+//   3. each frame, with the frame's predicted display time, 'locate's each
+//      tracker into a 'HandJoints' in the reference space it draws in.
+//
+// Hands are not controllers: a runtime that tracks hands reports 'active' false
+// while the hand is out of view or while a controller is held.
+
+// The hand-related instance extensions a runtime offers
+pub struct HandExtensions {
+  // XR_EXT_hand_tracking: the joints
+  pub tracking: bool = false;
+  // XR_FB_hand_tracking_aim: aim pose and pinch strengths (offered and wanted only with 'tracking')
+  pub aim: bool = false;
+  // XR_META_hand_tracking_microgestures
+  pub microgestures: bool = false;
+  // XR_META_simultaneous_hands_and_controllers
+  pub simultaneous: bool = false;
+
+  // Which of them 'offered' (as 'enumerateInstanceExtensionProperties' filled
+  // it, 'count' entries) lists. The aim extension extends hand tracking, so it
+  // is found only along with it.
+  pub fn find(offered: *ExtensionProperties, count: u32) HandExtensions {
+    var h = HandExtensions();
+    var i = 0usize;
+    while i < usize.from(count) {
+      let name = &(offered + i).extensionName as *u8;
+      if libc.strcmp(cstr.fromPtr(name), "XR_EXT_hand_tracking") == 0i32 { h.tracking = true; }
+      if libc.strcmp(cstr.fromPtr(name), "XR_FB_hand_tracking_aim") == 0i32 { h.aim = true; }
+      if libc.strcmp(cstr.fromPtr(name), "XR_META_hand_tracking_microgestures") == 0i32 { h.microgestures = true; }
+      if libc.strcmp(cstr.fromPtr(name), "XR_META_simultaneous_hands_and_controllers") == 0i32 { h.simultaneous = true; }
+      i = i + 1usize;
+    }
+    if !h.tracking { h.aim = false; }
+    h
+  }
+
+  // How many extensions 'addNames' adds
+  pub fn count(self: &) u32 {
+    var n = 0u32;
+    if tracking { n = n + 1u32; }
+    if aim { n = n + 1u32; }
+    if microgestures { n = n + 1u32; }
+    if simultaneous { n = n + 1u32; }
+    n
+  }
+
+  // Add the names of the ones found (static C strings) to the extension names
+  // an instance is made with
+  pub fn addNames(self: &, names: &mut List[*u8]) {
+    if tracking { names.push(&"XR_EXT_hand_tracking" as *u8); }
+    if aim { names.push(&"XR_FB_hand_tracking_aim" as *u8); }
+    if microgestures { names.push(&"XR_META_hand_tracking_microgestures" as *u8); }
+    if simultaneous { names.push(&"XR_META_simultaneous_hands_and_controllers" as *u8); }
+  }
+}
+
+// One hand, located: whether it is tracked, its 26 joints (indexed by
+// HAND_JOINT_..._EXT), and the aim state where it was asked for and filled.
+// 'locate' fills it; it is not moved while a locate call is made.
+pub struct HandJoints {
+  // The runtime is tracking this hand
+  pub active: bool = false;
+  // Joint locations: SPACE_LOCATION_ flags, pose, radius
+  pub joints: Array[HandJointLocationEXT, 26];
+  // The aim state, meaningful when 'hasAim' and its status has HAND_TRACKING_AIM_VALID_BIT_FB
+  pub aim: HandTrackingAimStateFB;
+  // The aim state was asked for in the last locate
+  pub hasAim: bool = false;
+
+  pub fn none() HandJoints {
+    HandJoints(false, Array[HandJointLocationEXT, 26]() <- fill zeroed[HandJointLocationEXT](),
+      HandTrackingAimStateFB(aimPose: identityPose()), false)
+  }
+
+  // Whether joint 'joint' (HAND_JOINT_..._EXT) has a valid position
+  pub fn jointValid(self: &, joint: usize) bool {
+    active && (joints[joint].locationFlags & SPACE_LOCATION_POSITION_VALID_BIT) != 0u64
+  }
+
+  // How many of the 26 joints have a valid position (0 when the hand is not tracked)
+  pub fn validCount(self: &) u32 {
+    var n = 0u32;
+    var i = 0usize;
+    while i < 26usize {
+      if jointValid(i) { n = n + 1u32; }
+      i = i + 1usize;
+    }
+    n
+  }
+
+  // Where joint 'joint' is, in the base space it was located in
+  pub fn position(self: &, joint: usize) Vector3f { joints[joint].pose.position }
+
+  // The distance in metres between the thumb tip and the index fingertip, or
+  // -1 when either has no valid position: the hand's own measure of a pinch,
+  // which does not need the aim extension
+  pub fn pinchDistance(self: &) f32 {
+    if !jointValid(HAND_JOINT_THUMB_TIP_EXT) || !jointValid(HAND_JOINT_INDEX_TIP_EXT) { return -1.; }
+    let a = joints[HAND_JOINT_THUMB_TIP_EXT].pose.position;
+    let b = joints[HAND_JOINT_INDEX_TIP_EXT].pose.position;
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    let dz = a.z - b.z;
+    libc.sqrtf(dx * dx + dy * dy + dz * dz)
+  }
+
+  // The runtime's index-finger pinch strength, 0 to 1, or -1 where there is no
+  // valid aim state (no XR_FB_hand_tracking_aim, or the hand not tracked)
+  pub fn pinchStrength(self: &) f32 {
+    if !active || !hasAim || (aim.status & HAND_TRACKING_AIM_VALID_BIT_FB) == 0u64 { return -1.; }
+    aim.pinchStrengthIndex
+  }
+}
+
+// A hand tracker for one hand. Made after the session, with the instance's
+// 'fns' (which must have 'hasHandTracking'), ended with 'destroy' before the
+// session ends.
+pub struct HandTracker {
+  pub handle: HandTrackerEXT;
+  // HAND_LEFT_EXT or HAND_RIGHT_EXT
+  pub hand: i32;
+  // Locate the aim state along with the joints (XR_FB_hand_tracking_aim was enabled)
+  pub withAim: bool;
+
+  // No tracker
+  pub fn none() HandTracker { HandTracker(0usize as HandTrackerEXT, 0i32, false) }
+
+  // Make a tracker for 'hand' (HAND_LEFT_EXT, HAND_RIGHT_EXT); check 'isValid'
+  pub fn create(fns: &InstanceFns, session: Session, hand: i32, withAim: bool) HandTracker {
+    var t = HandTracker.none();
+    if !fns.hasHandTracking() { return t; }
+    let info = HandTrackerCreateInfoEXT(hand: hand);
+    var handle = 0usize as HandTrackerEXT;
+    if failed(fns.createHandTrackerEXT(session, &info, &mut handle)) { return t; }
+    t.handle = handle;
+    t.hand = hand;
+    t.withAim = withAim;
+    t
+  }
+
+  pub fn isValid(self: &) bool { handle as usize != 0usize }
+
+  // Locate the hand's joints in 'baseSpace' at 'time' into 'out' (and the aim
+  // state, if 'withAim'). The result is the call's XrResult; on a failure 'out'
+  // says the hand is not active.
+  pub fn locate(self: &, fns: &InstanceFns, baseSpace: Space, time: i64, out: &mut HandJoints) i32 {
+    out.active = false;
+    out.hasAim = withAim;
+    if !isValid() { return ERROR_HANDLE_INVALID; }
+    var locations = HandJointLocationsEXT(jointCount: HAND_JOINT_COUNT_EXT,
+      jointLocations: &mut out.joints as *HandJointLocationEXT);
+    if withAim {
+      out.aim = HandTrackingAimStateFB(aimPose: identityPose());
+      locations.next = &mut out.aim as *u8;
+    }
+    let info = HandJointsLocateInfoEXT(baseSpace: baseSpace, time: time);
+    let r = fns.locateHandJointsEXT(handle, &info, &mut locations);
+    if succeeded(r) { out.active = locations.isActive != 0u32; }
+    r
+  }
+
+  // End the tracker
+  pub fn destroy(self: &mut, fns: &InstanceFns) {
+    if isValid() { fns.destroyHandTrackerEXT(handle); }
+    handle = 0usize as HandTrackerEXT;
+  }
+}
