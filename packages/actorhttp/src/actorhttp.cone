@@ -224,7 +224,7 @@
 // Upload it returns has 'sink()', a stages.ChunkSink the body's pipeline ends in
 // ('FileSource(up.sink(), name).start()'), and 'stream()', answered like 'client.stream' with the
 // response's BodyStream (a response, or a failure, that comes first waits for it; once only).
-// The credit is by copy, the length counted by the sink, a streamed fetch never retried and a 307
+// The credit is owned (a chunk is moved to the fetch, its death returns the credit), the length counted by the sink, a streamed fetch never retried and a 307
 // or 308 its response; a response before the body is all sent stops the source Finished; the fetch
 // failing, cancelled or timing out stops it Failed(the FetchError); an Upload dropped without
 // 'stream' cancels the fetch (upload.cone is the longer account).
@@ -354,9 +354,9 @@
 // body: its writes answer 0. After 'start', 'bodySink()' instead of 'write' and
 // 'finish' makes a stages.ChunkSink of the body: a pipeline (a file source, a gzip
 // stage) that ends in it is the response, a chunk at a time, and a large or generated
-// body never sits whole in memory. The credit is by copy: the service thread copies
-// each chunk into pool buffers of its own and gives the chunk back to its source once
-// the connection has accepted the copy, so a slow client holds the pipeline back at
+// body never sits whole in memory. The credit is owned: the service thread moves
+// each chunk to the connection as it is, and the chunk's death, once the connection is
+// done with it, returns the credit to its source, so a slow client holds the pipeline back at
 // the same watermark as 'write'. The sink's end is 'finish'; Failed resets the
 // exchange; a sized body is counted there, and past or short of its length the
 // exchange is reset and the source stopped Failed; a body the protocol forbids
@@ -402,7 +402,9 @@
 // server answer 413 itself and discard the rest. A body whose actor answers without taking it, or drops
 // it, is not delivered: its staged bytes are released and the rest is read and dropped as it arrives
 // (HTTP/1.1 also closes the connection after the answer; an HTTP/2 or HTTP/3 stream runs on until the
-// client ends it, the core not resetting it when the response is whole). A sink that stops its source
+// client ends it, unless the response is whole and the body is not wanted: then an HTTP/2 stream is reset with
+// NO_ERROR and an HTTP/3 client is asked to stop with STOP_SENDING H3_NO_ERROR, #1075 and #1085; a handler
+// still holding the body is unaffected, its reads end with End). A sink that stops its source
 // ends the request on the wire (HTTP/1.1 closes, HTTP/2 RST_STREAM, HTTP/3 resets). A server without
 // the setting is unchanged. 'read' and 'readAll' copy the bytes into Strings (use 'to(sink)' for a big
 // body); their Err is a BodyError (kind() TooLarge, Cancelled, Failed; isTooLarge()), the server's own,
@@ -431,7 +433,7 @@ mod actorhttp;
 
 import pools use GenPool, Handle;
 import collections use List, Deque, String, Dict, AnyError;
-import iobuf use IoBuf;
+import iobuf use IoBuf, IoHome;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
 import http use *;
@@ -441,7 +443,7 @@ import tls;
 import sse;
 import aio use IoLimits;
 import actors;
-import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink, linkWindow, ValueSink, ValueSource, ValueReader, readValue;
+import stages use ChunkSink, ChunkSource, Ending, chunkHome, ReaderSink, readSink, linkWindow, ValueSink, ValueSource, ValueReader, readValue;
 import streams;
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
