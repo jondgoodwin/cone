@@ -1,0 +1,470 @@
+// ======== An archive read as its bytes arrive ========
+//
+// A TarReader works through a tar archive from its front: each entry's header, then the entry's data, handed
+// on in bounded pieces as it arrives, then the padding to the next 512-byte block. Like a codec of package
+// streams it holds no I/O: bytes in with 'feed' (or 'feedBuf', which takes a filled IoBuf as it is), output
+// out with 'pull', 'finish' for the end of the input. Its output has a shape: entries, each beginning with a
+// Step.Begin and ending with a Step.End, with the entry's data in between. An entry's data is never held
+// whole: each pull copies at most the room of the buffer it is given, from the reader's own buffers.
+//
+//   var tar = TarReader.make();
+//   tar.feed(bytesThatArrived);               // any size, split anywhere (a copy is kept of what is not used yet)
+//   var out = IoBuf(65536usize);
+//   while true {
+//     let s = tar.pull(&mut out);             // fills out's spare room: out must have some
+//     if s == Step.Begin     { ... tar.current().name ...; }
+//     else if s == Step.Data { ... out.view() ...; out.clear(); }
+//     else if s == Step.End  { ... }
+//     else if s == Step.NeedInput { break; }  // feed more, or 'finish' and pull again
+//     else { break; }                         // Done, or Failed: tar.error() says why
+//   }
+//
+// WHAT IS READ. ustar headers (POSIX 'ustar\0' + '00', with the prefix field joined to the name) and GNU tar's
+// ('ustar ' + ' \0', whose bytes where POSIX has a prefix are GNU's own and are not read). Entry types: regular
+// files (type '0' or NUL), folders ('5') and symbolic links ('2'). A PAX extended header ('x') before an entry is
+// read for 'path' and 'size' and for nothing else: any other record, and a PAX global header ('g'), are refused
+// (Unsupported), as are GNU long-name records ('L', 'K'), hard links, devices, pipes and every other type.
+// Numbers are octal; a number in GNU's base-256 form is refused (Unsupported). The checksum of every header is
+// checked. The end is a block of zeros (the second one is not required), or the input ending between entries.
+//
+// THE BOUND. An extended header may be at most 1 MiB (TooLarge). The reader holds at most 16 MiB of fed bytes
+// not yet used: pull until NeedInput before feeding more.
+
+// Where the reader is in an entry
+enum Mode {
+  // Between entries: the next header
+  Head;
+  // An extended header's records
+  Pax;
+  // The entry's data
+  Body;
+  // The padding after the entry's data
+  Pad;
+  // Over: the end marker was read, or the reader failed
+  Over;
+}
+
+// A header block, read
+struct Head {
+  zero: bool;
+  typeflag: u8;
+  entry: Entry;
+}
+
+fn refusal[T](kind: ErrorKind, offset: u64, reason: &str) Result[T, TarError] {
+  Err[T, TarError](TarError.make(kind, offset, reason))
+}
+
+// The text of a name field as a String, if it is UTF-8
+fn text(b: &Array[u8], at: usize, n: usize) Option[String] {
+  let part = &b[at ..< at + n];
+  if !validUtf8(part) { return None[String]; }
+  Some[String](String.fromBytes(part))
+}
+
+// "the size field of a header is ..."
+fn fieldSays(what: &str, rest: &str) String {
+  var s = String.from("the ");
+  s.append(what);
+  s.append(" field of a header ");
+  s.append(rest);
+  s
+}
+
+// "the data of 'name'"
+fn ofEntry(first: &str, name: &str) String {
+  var s = String.from(first);
+  s.append(" '");
+  s.append(name);
+  s.append("'");
+  s
+}
+
+// A header number: octal in its field; base 256 is refused
+fn number(b: &Array[u8], at: usize, n: usize, what: &str, pos: u64) Result[u64, TarError] {
+  if (b[at] & 0x80u8) != 0u8 {
+    return refusal[u64](ErrorKind.Unsupported, pos, fieldSays(what, "is in base 256, which is not read").view());
+  }
+  match octal(b, at, n) {
+    case let Some(v) { Ok[u64, TarError](v) }
+    case is None[u64] { refusal[u64](ErrorKind.Corrupt, pos, fieldSays(what, "is not an octal number").view()) }
+  }
+}
+
+// One 512-byte block, as a header
+fn parseHeader(b: &Array[u8], pos: u64) Result[Head, TarError] {
+  if allZero(b, 0usize, 512usize) {
+    return Ok[Head, TarError](Head(true, 0u8, Entry.blank()));
+  }
+  // 'ustar' at 257, then POSIX's NUL and '00', or GNU's two spaces
+  var posix = false;
+  let hasMagic = b[257usize] == 117u8 && b[258usize] == 115u8 && b[259usize] == 116u8 && b[260usize] == 97u8 && b[261usize] == 114u8;
+  if hasMagic && b[262usize] == 0u8 && b[263usize] == 48u8 && b[264usize] == 48u8 { posix = true; }
+  else if hasMagic && b[262usize] == 32u8 && b[263usize] == 32u8 && b[264usize] == 0u8 { posix = false; }
+  else { return refusal[Head](ErrorKind.NotTar, pos, "not a tar archive: a header does not carry the 'ustar' mark"); }
+  let stored = number(b, 148usize, 8usize, "checksum", pos)?;
+  if stored != checksum(b) {
+    return refusal[Head](ErrorKind.Corrupt, pos, "a header's checksum does not match its bytes");
+  }
+  let nl = fieldLen(b, 0usize, 100usize);
+  var name = match text(b, 0usize, nl) {
+    case var Some(s) { s }
+    else { return refusal[Head](ErrorKind.Corrupt, pos, "an entry's name is not UTF-8"); }
+  };
+  if posix {
+    let pl = fieldLen(b, 345usize, 155usize);
+    if pl > 0usize {
+      var full = match text(b, 345usize, pl) {
+        case var Some(s) { s }
+        else { return refusal[Head](ErrorKind.Corrupt, pos, "an entry's name prefix is not UTF-8"); }
+      };
+      full.append("/");
+      full.append(name.view());
+      name = full;
+    }
+  }
+  let typeflag = b[156usize];
+  let mode = number(b, 100usize, 8usize, "mode", pos)?;
+  let size = number(b, 124usize, 12usize, "size", pos)?;
+  let mtime = number(b, 136usize, 12usize, "modified-time", pos)?;
+  var kind = EntryKind.File;
+  var link = String();
+  if typeflag == 53u8 { kind = EntryKind.Dir; }
+  else if typeflag == 50u8 {
+    kind = EntryKind.Symlink;
+    let ll = fieldLen(b, 157usize, 100usize);
+    link = match text(b, 157usize, ll) {
+      case var Some(s) { s }
+      else { return refusal[Head](ErrorKind.Corrupt, pos, "a link's target is not UTF-8"); }
+    };
+  }
+  Ok[Head, TarError](Head(false, typeflag, Entry(name, kind, size, u32.from(mode & 0xFFFu64), i64.from(mtime), link, pos)))
+}
+
+// What an extended header said that is read: 'path' and 'size'
+struct Pax {
+  path: Option[String];
+  size: Option[u64];
+}
+
+fn allNonZero(b: &Array[u8]) bool {
+  var k = 0usize;
+  while k < b.len {
+    if b[k] == 0u8 { return false; }
+    k += 1usize;
+  }
+  true
+}
+
+// The records of an extended header ("<length> <key>=<value>\n" each). Any key but 'path' and 'size' is refused.
+fn parsePax(b: &Array[u8], pos: u64) Result[Pax, TarError] {
+  var path = None[String];
+  var size = None[u64];
+  var p = 0usize;
+  while p < b.len {
+    // the record's length: decimal digits, a space
+    var q = p;
+    while q < b.len && b[q] != 32u8 { q += 1usize; }
+    if q >= b.len { return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header record has no length"); }
+    let len = match decimal(b, p, q) {
+      case let Some(v) { v }
+      else { return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header record's length is not a number"); }
+    };
+    if len < u64.from(q - p) + 4u64 || len > u64.from(b.len - p) {
+      return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header record's length is wrong");
+    }
+    let end = p + usize.from(len);
+    if b[end - 1usize] != 10u8 {
+      return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header record does not end with a newline");
+    }
+    let body = q + 1usize;
+    var eq = body;
+    while eq < end - 1usize && b[eq] != 61u8 { eq += 1usize; }
+    if eq >= end - 1usize { return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header record has no '='"); }
+    let key = &b[body ..< eq];
+    let value = &b[eq + 1usize ..< end - 1usize];
+    if key.len == 4usize && key[0usize] == 112u8 && key[1usize] == 97u8 && key[2usize] == 116u8 && key[3usize] == 104u8 {
+      if value.len == 0usize || !validUtf8(value) || !allNonZero(value) {
+        return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header's path is empty or is not UTF-8");
+      }
+      path = Some[String](String.fromBytes(value));
+    } else if key.len == 4usize && key[0usize] == 115u8 && key[1usize] == 105u8 && key[2usize] == 122u8 && key[3usize] == 101u8 {
+      match decimal(value, 0usize, value.len) {
+        case let Some(v) { size = Some[u64](v); }
+        case is None[u64] { return refusal[Pax](ErrorKind.Corrupt, pos, "an extended header's size is not a number"); }
+      }
+    } else {
+      var why = String.from("an extended header record '");
+      if validUtf8(key) { why.appendBytes(key); } else { why.append("?"); }
+      why.append("' is not read; only 'path' and 'size' are");
+      return refusal[Pax](ErrorKind.Unsupported, pos, why.view());
+    }
+    p = end;
+  }
+  Ok[Pax, TarError](Pax(path, size))
+}
+
+// The most an extended header's records may come to
+let maxPax: usize = 1048576usize;
+
+// An archive being read as it arrives. See the top of this file.
+pub struct TarReader is Move {
+  rd: Reader;
+  ended: bool;
+  mode: Mode;
+  err: Option[TarError];
+  // Archive offset of the next byte not yet taken off the reader
+  pos: u64;
+  cur: Entry;
+  // The data of the entry still to come, and the padding after it
+  left: u64;
+  padLeft: usize;
+  // An extended header's size, while in Mode.Pax; and what it said, until the entry it belongs to
+  paxSize: usize;
+  paxPending: bool;
+  paxPath: Option[String];
+  paxData: Option[u64];
+  // Where the extended header began
+  paxAt: u64;
+  entries: usize;
+
+  // A reader at the start of an archive
+  pub fn make() TarReader {
+    TarReader(Reader.make(16777216usize), false, Mode.Head, None[TarError], 0u64, Entry.blank(), 0u64, 0usize,
+      0usize, false, None[String], None[u64], 0u64, 0usize)
+  }
+
+  // More of the archive's bytes, of any size, split anywhere. They are copied, so the caller's are its own
+  // again on return. Bytes fed after 'finish' are ignored.
+  pub fn feed(self: &mut, input: &Array[u8]) {
+    if ended || err is Some { return; }
+    var at = 0usize;
+    while at < input.len {
+      // First into the room the last segment has (each byte copied once)
+      at += rd.appendLast(&input[at ..< input.len]);
+      if at >= input.len { break; }
+      let n = if input.len - at < 65536usize { input.len - at } else { 65536usize };
+      var b = match IoBuf.tryMake(n) {
+        case var Some(m) { m }
+        else {
+          err = Some[TarError](TarError.make(ErrorKind.Overloaded, pos, "the buffer pool has no room for more of the archive"));
+          return;
+        }
+      };
+      let k = b.append(&input[at ..< at + n]);
+      at += k;
+      self.hold(b);
+      if err is Some { return; }
+    }
+  }
+
+  // A filled buffer of the archive's bytes, taken as it is (nothing is copied unless it is small). Bytes fed
+  // after 'finish' are ignored.
+  pub fn feedBuf(self: &mut, buf: IoBuf) {
+    if ended || err is Some { return; }
+    self.hold(buf);
+  }
+
+  fn hold(self: &mut, buf: IoBuf) {
+    match rd.push(buf) {
+      case let Some(refused) {
+        err = Some[TarError](TarError.make(ErrorKind.TooLarge, pos, "more archive was fed than is held; pull until NeedInput before feeding more"));
+      }
+      case is None[IoBuf] {}
+    }
+  }
+
+  // Says that no more bytes will come: an archive that is cut inside an entry is then a Truncated failure
+  pub fn finish(self: &mut) { ended = true; }
+
+  // The entry that began last (after Step.Begin; it stays until the next)
+  pub fn current(self: &) &Entry { &cur }
+
+  // How many entries are complete
+  pub fn entriesDone(self: &) usize { entries }
+
+  // Why a pull answered Failed (a copy); None until it has
+  pub fn error(self: &) Option[TarError] {
+    match &err {
+      case let Some(e) { Some[TarError](e.clone()) }
+      case is None { None[TarError] }
+    }
+  }
+
+  fn fail(self: &mut, kind: ErrorKind, at: u64, reason: &str) Option[Step] {
+    if err is None { err = Some[TarError](TarError.make(kind, at, reason)); }
+    mode = Mode.Over;
+    Some[Step](Step.Failed)
+  }
+
+  fn failWith(self: &mut, e: TarError) Option[Step] {
+    if err is None { err = Some[TarError](e); }
+    mode = Mode.Over;
+    Some[Step](Step.Failed)
+  }
+
+  // Not enough bytes yet: more are wanted, or the archive is cut
+  fn needMore(self: &mut, what: &str) Option[Step] {
+    if ended {
+      var why = String.from("the archive ends inside ");
+      why.append(what);
+      why.append(" (truncated?)");
+      return self.fail(ErrorKind.Truncated, pos, why.view());
+    }
+    Some[Step](Step.NeedInput)
+  }
+
+  fn overloaded(self: &mut) Option[Step] {
+    self.fail(ErrorKind.Overloaded, pos, "the archive's bytes came in pieces too small to hold together, and the buffer pool is full; the read is refused")
+  }
+
+  // Appends the entry's data to 'out', into its spare room, and says what happened. 'out' must have room.
+  pub fn pull(self: &mut, out: &mut IoBuf) Step {
+    if out.room() == 0usize && err is None {
+      err = Some[TarError](TarError.make(ErrorKind.BadArgument, pos, "pull was given a buffer with no room"));
+      mode = Mode.Over;
+    }
+    while true {
+      if err is Some { return Step.Failed; }
+      var r = None[Step];
+      if mode == Mode.Head { r = self.stepHead(); }
+      else if mode == Mode.Pax { r = self.stepPax(); }
+      else if mode == Mode.Body { r = self.stepBody(out); }
+      else if mode == Mode.Pad { r = self.stepPad(); }
+      else { return Step.Done; }
+      match r {
+        case let Some(s) { return s; }
+        case is None[Step] {}
+      }
+    }
+    Step.Done
+  }
+
+  fn stepHead(self: &mut) Option[Step] {
+    if rd.len() < 512usize {
+      if ended && rd.len() == 0usize && !paxPending {
+        mode = Mode.Over;
+        return Some[Step](Step.Done);
+      }
+      return self.needMore("a header");
+    }
+    if !rd.tryReserve(512usize) { return self.overloaded(); }
+    var res = refusal[Head](ErrorKind.Corrupt, pos, "a header could not be read");
+    match rd.peek(512usize) {
+      case let Some(v) { res = parseHeader(v, pos); }
+      case is None[&Array[u8]] {}
+    }
+    rd.consume(512usize);
+    let at = pos;
+    pos += 512u64;
+    match res {
+      case let Err(e) { self.failWith(e) }
+      case var Ok(h) { self.opened(&mut h, at) }
+    }
+  }
+
+  fn opened(self: &mut, h: &mut Head, at: u64) Option[Step] {
+    if h.zero {
+      if paxPending { return self.fail(ErrorKind.Corrupt, at, "an extended header is followed by the end of the archive"); }
+      mode = Mode.Over;
+      return Some[Step](Step.Done);
+    }
+    let t = h.typeflag;
+    if t == 120u8 {
+      // 'x': an extended header
+      if paxPending { return self.fail(ErrorKind.Corrupt, at, "two extended headers in a row"); }
+      if h.entry.size > u64.from(maxPax) {
+        return self.fail(ErrorKind.TooLarge, at, "an extended header is larger than 1 MiB");
+      }
+      paxSize = usize.from(h.entry.size);
+      paxPending = true;
+      paxPath = None[String];
+      paxData = None[u64];
+      paxAt = at;
+      mode = Mode.Pax;
+      return None[Step];
+    }
+    if t != 0u8 && t != 48u8 && t != 53u8 && t != 50u8 {
+      var why = String.from("entry '");
+      why.append(h.entry.name.view());
+      why.append("' is of type ");
+      if t == 103u8 { why.append("'g' (a PAX global header)"); }
+      else if t == 76u8 || t == 75u8 { why.append("'L' or 'K' (a GNU long name)"); }
+      else if t == 49u8 { why.append("'1' (a hard link)"); }
+      else { why.append("number "); why.appendUInt(u64.from(t)); }
+      why.append(", which is not read (only files, folders and symbolic links are)");
+      return self.fail(ErrorKind.Unsupported, at, why.view());
+    }
+    var e = Entry.blank();
+    e <-> h.entry;
+    if paxPending {
+      e.offset = paxAt;
+      match paxPath.take() {
+        case var Some(p) { e.name = p; }
+        case is None[String] {}
+      }
+      match paxData.take() {
+        case let Some(s) { e.size = s; }
+        case is None[u64] {}
+      }
+      paxPending = false;
+    }
+    if e.kind != EntryKind.File && e.size != 0u64 {
+      return self.fail(ErrorKind.Corrupt, at, about("the folder or link", e.name.view(), "carries data").view());
+    }
+    cur = e;
+    left = cur.size;
+    padLeft = padFor(cur.size);
+    mode = Mode.Body;
+    Some[Step](Step.Begin)
+  }
+
+  fn stepPax(self: &mut) Option[Step] {
+    let whole = paxSize + padFor(u64.from(paxSize));
+    if rd.len() < whole { return self.needMore("an extended header"); }
+    if paxSize > 0usize && !rd.tryReserve(paxSize) { return self.overloaded(); }
+    var res = Ok[Pax, TarError](Pax(None[String], None[u64]));
+    if paxSize > 0usize {
+      match rd.peek(paxSize) {
+        case let Some(v) { res = parsePax(v, pos); }
+        case is None[&Array[u8]] {}
+      }
+    }
+    rd.consume(whole);
+    pos += u64.from(whole);
+    match res {
+      case let Err(e) { self.failWith(e) }
+      case var Ok(p) {
+        paxPath = p.path.take();
+        paxData = p.size.take();
+        mode = Mode.Head;
+        None[Step]
+      }
+    }
+  }
+
+  fn stepBody(self: &mut, out: &mut IoBuf) Option[Step] {
+    if left == 0u64 { mode = Mode.Pad; return None[Step]; }
+    var n = out.room();
+    if u64.from(n) > left { n = usize.from(left); }
+    if n > rd.len() { n = rd.len(); }
+    if n == 0usize { return self.needMore(ofEntry("the data of", cur.name.view()).view()); }
+    let before = out.len();
+    let k = rd.copyOut(0usize, &mut out.spare()[0usize ..< n]);
+    rd.consume(k);
+    out.setLen(before + k);
+    pos += u64.from(k);
+    left -= u64.from(k);
+    Some[Step](Step.Data)
+  }
+
+  fn stepPad(self: &mut) Option[Step] {
+    if rd.len() < padLeft { return self.needMore(ofEntry("the padding after", cur.name.view()).view()); }
+    rd.consume(padLeft);
+    pos += u64.from(padLeft);
+    padLeft = 0usize;
+    mode = Mode.Head;
+    entries += 1usize;
+    Some[Step](Step.End)
+  }
+}

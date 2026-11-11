@@ -148,6 +148,7 @@ struct SrvEv {
   head: RequestHead;
   framing: BodyLength;
   buf: IoBuf;
+  why: httpclient.Failure;   // a final answer's failure from the driver, with a detail when it names why a body ended early
 }
 
 // The layers of a TLS listener's connections: a server session each, from one context
@@ -213,9 +214,10 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: httpconn.Event) {
   else if k == httpconn.EventKind.Done {kind = sDone;}
   else if e.isTerminal() {kind = sOver;}
   if kind == sOther {return;}
+  let why = if kind == sDone || kind == sOver {httpclient.Failure.fromConn(&e.failure)} else {httpclient.Failure.none()};
   let req, conn, framing, head, buf = e.(req, conn, body, request, buf);
   let peer = if kind == sRequest {srv.drv.peer(conn)} else {SocketAddr.localhost(0u16)};
-  onSrvEv(srv, lp, SrvEv(kind, req.number(), req, httpclient.H3Req.none(), peer, head, framing, buf));
+  onSrvEv(srv, lp, SrvEv(kind, req.number(), req, httpclient.H3Req.none(), peer, head, framing, buf, why));
 }
 
 // An event of the server's HTTP/3 plug-in, the same way: each request has a
@@ -250,7 +252,7 @@ fn onH3ServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: httpclient.H3Event) {
   if kind == sDone || kind == sOver {let gone = srv.qkeys.remove(&qk);}
   let peer = if kind == sRequest {srv.h3.peer(e.conn)} else {SocketAddr.localhost(0u16)};
   let framing, head, buf = e.(body, request, buf);
-  onSrvEv(srv, lp, SrvEv(kind, key, httpconn.ReqId.none(), q, peer, head, framing, buf));
+  onSrvEv(srv, lp, SrvEv(kind, key, httpconn.ReqId.none(), q, peer, head, framing, buf, httpclient.Failure.none()));
 }
 
 // A request's event, from either driver: a request's head goes whole into
@@ -335,7 +337,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
     }
   } else if k == sDone || k == sOver {
     let slot = slotOfKey(srv, key);
-    if slot < srv.exs.bound() {endEx(srv, slot, k == sDone);}
+    if slot < srv.exs.bound() {endEx(srv, slot, k == sDone, &e.why);}
     srv.byReq.remove(&key);
     srv.reading.remove(&key);
   }
@@ -389,8 +391,9 @@ fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
 // whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), over HTTP/3 the client is asked
 // to stop with STOP_SENDING H3_NO_ERROR (RFC 9114 section 4.1), so it stops sending. It is called at the
 // response's end and at the drop, and does its work at whichever comes second. A handler still holding the
-// body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1 gets false from
-// the driver (the core closes the connection after the answer)
+// body (it reads it, it is staged for it) is not affected: its reads end with End, on HTTP/1.1 too (the
+// connection keeps reading it). On HTTP/1.1 the driver reads the dropped body out instead, up to 256 KiB,
+// and keeps the connection if it ends inside that
 fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
   if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
   if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
@@ -464,7 +467,7 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
 }
 
 // The request's final answer has come
-fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
+fn endEx(srv: &mut SrvRec, slot: usize, done: bool, why: &httpclient.Failure) {
   let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   x.over = true;
   x.ok = done;
@@ -486,7 +489,7 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
   } else {
     answerKeptIn[Result[u64, ServerError]](&mut x.finishReply, Err[u64, ServerError](ServerError.closed()));
   }
-  if x.inMode {inTerminal(srv, x);}
+  if x.inMode {inTerminal(srv, x, why);}
   if x.stage == exReady {
     x.stage = exDead;
   } else if !x.handle && !x.inAwait {
@@ -555,9 +558,10 @@ fn onStreamedData(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
 
 // The request's final answer has come: a sink still open gets its end (the peer left, or the pool refused
 // a staging buffer); one that is yet to be chosen is told when it is
-fn inTerminal(srv: &mut SrvRec, x: &mut ExRec) {
+fn inTerminal(srv: &mut SrvRec, x: &mut ExRec, why: &httpclient.Failure) {
   if x.inEnded || x.inDiscard {return;}
   let how = if x.inRefused {Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure())))}
+    else if why.error.detail.len() > 0usize {Ending.Failed(AnyError.from(FetchError.failed(why.clone())))}
     else {Ending.Failed(AnyError.from(FetchError.failed(
       httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the request ended before its body did"))))};
   x.inEnded = true;

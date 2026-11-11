@@ -433,6 +433,26 @@ ANNOT_BODY_RE = re.compile(
 )
 
 
+FORBID_RE = re.compile(r'^//~!(\^*)[ \t]*"((?:[^"\\]|\\.)*)"[ \t]*$')
+
+
+@dataclass(frozen=True)
+class Forbidden:
+    """Text no diagnostic reported on ``line`` of ``path`` may contain: ``//~! "text"``.
+
+    The negative of an annotation's quoted substring. It names no code and no
+    column, and it claims nothing: it only fails the scenario when a diagnostic
+    on that line carries the text, whatever that diagnostic's code.
+    """
+    text: str
+    line: int
+    annot_line: int
+    path: str
+
+    def describe(self) -> str:
+        return f'"{self.text}" at line {self.line}'
+
+
 @dataclass(frozen=True)
 class Annotation:
     """One expected located diagnostic, written as ``//~`` in the source.
@@ -480,7 +500,7 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
     found: list[Annotation] = []
     for number, line in enumerate(text.split("\n"), start=1):
         at = line.find("//~")
-        if at < 0:
+        if at < 0 or line.startswith("//~!", at):
             continue
         marker = ANNOT_RE.match(line[at:])
         carets, body = marker.group(1), marker.group(2)
@@ -519,6 +539,45 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
             last_line=count_lines(text),
         ))
     return found
+
+
+def parse_forbidden(source: Path) -> list[Forbidden]:
+    """Read ``//~! "text"`` (and ``//~!^ "text"``, carets counting lines as ``//~`` does)."""
+    text = source.read_text(encoding="utf-8", errors="replace")
+    if "//~!" not in text:
+        return []
+    return forbidden_in_text(text, source.relative_to(REPO).as_posix(), str(source))
+
+
+def forbidden_in_text(text: str, path: str, label: str) -> list[Forbidden]:
+    source = label
+    text = text.replace("\r\n", "\n")
+    found: list[Forbidden] = []
+    for number, line in enumerate(text.split("\n"), start=1):
+        at = line.find("//~!")
+        if at < 0:
+            continue
+        parsed = FORBID_RE.match(line[at:].rstrip())
+        if not parsed:
+            raise SuiteError(
+                f"{source}:{number}: cannot read annotation {line[at:].strip()!r}\n"
+                f'  expected: //~!<carets> "text"')
+        carets = parsed.group(1)
+        if number - len(carets) < 1:
+            raise SuiteError(f"{source}:{number}: {len(carets)} carets point above line 1")
+        found.append(Forbidden(
+            text=parsed.group(2).replace('\\"', '"').replace("\\\\", "\\"),
+            line=number - len(carets), annot_line=number, path=path))
+    return found
+
+
+def forbidden_hits(forbidden: list[Forbidden], actual: list["Diagnostic"]
+                   ) -> list[tuple[Forbidden, "Diagnostic"]]:
+    """Every (forbidden text, diagnostic) pair where the diagnostic is on the
+    text's line, in the file it was written in, and contains it."""
+    return [(f, d) for f in forbidden for d in actual
+            if d.line == f.line and normalize_path(d.path or "") == f.path
+            and f.text in d.message]
 
 
 MODULE_RE = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
@@ -738,6 +797,7 @@ class Scenario:
     timeout: float | None = None
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
+    forbidden: list[Forbidden] = field(default_factory=list)
 
     @property
     def source_rel(self) -> str:
@@ -963,6 +1023,13 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 *members, *support_closure(members, group_dir, support))
             scenario.annotations = [a for file in scenario.annot_sources
                                     for a in parse_annotations(file, codes)]
+            scenario.forbidden = [f for file in scenario.annot_sources
+                                  for f in parse_forbidden(file)]
+            if scenario.forbidden and category not in ("compile", "run", *ANNOTATABLE):
+                first = scenario.forbidden[0]
+                raise SuiteError(
+                    f"{REPO / first.path}:{first.annot_line}: //~! needs a scenario"
+                    f" that compiles a source for diagnostics; {name!r} is {category!r}")
             body = source.read_text(encoding="utf-8", errors="replace")
             scenario.last_line = count_lines(body)
             # compile and run may annotate a warning (code 3000 and up) and nothing
@@ -2366,6 +2433,47 @@ def demangle_selftest() -> None:
         raise SuiteError("the demangler disagrees with the worked examples:\n" + "\n".join(wrong))
 
 
+def forbidden_selftest() -> int:
+    """``//~!``: read from source, absent text passes, present text is reported.
+
+    Returns how many checks ran. Runs before any case, like the others.
+    """
+    import types
+
+    wrong = []
+    src = 'let x = 1\n//~! "does not declare"\nlet y = 2   //~! "a \\"q\\""\n//~!^^ "up"\n'
+    got = forbidden_in_text(src, "t/x.cone", "selftest")
+    want = [("does not declare", 2), ('a "q"', 3), ("up", 2)]
+    if [(f.text, f.line) for f in got] != want:
+        wrong.append(f"  parse: read {[(f.text, f.line) for f in got]!r}, expected {want!r}")
+    for bad in ('//~! no quotes\n', '//~!^ "x" trailing\n', '//~!^^ "x"\n'):
+        try:
+            forbidden_in_text(bad, "t/x.cone", "selftest")
+        except SuiteError:
+            pass
+        else:
+            wrong.append(f"  parse: accepted {bad!r}, expected a refusal")
+    forbid = forbidden_in_text('//~! "does not declare `is`"\n', "t/x.cone", "selftest")
+    absent = Diagnostic(1, "no such method", "t/x.cone", 1, 1)
+    present = Diagnostic(1, "T does not declare `is` here", "t/x.cone", 1, 1)
+    elsewhere = Diagnostic(1, "T does not declare `is` here", "t/x.cone", 2, 1)
+    other_file = Diagnostic(1, "T does not declare `is` here", "t/y.cone", 1, 1)
+    if forbidden_hits(forbid, [absent, elsewhere, other_file]):
+        wrong.append("  scenario with the text absent from its line was reported")
+    if forbidden_hits(forbid, [absent, present]) != [(forbid[0], present)]:
+        wrong.append("  scenario with the text present on its line was not reported")
+    runner = types.SimpleNamespace(by_number={})
+    scenario = types.SimpleNamespace(forbidden=forbid)
+    for diags, status in (([absent], PASS), ([present], FAIL)):
+        result = types.SimpleNamespace(status=PASS, problems=[])
+        Runner.check_forbidden(runner, result, scenario, diags)
+        if result.status != status:
+            wrong.append(f"  runner: status {result.status!r} for {diags[0].message!r}, expected {status!r}")
+    if wrong:
+        raise SuiteError("the //~! annotation misbehaves:\n" + "\n".join(wrong))
+    return 8
+
+
 # The scenario 'timeout' key: what parse_timeout accepts, and the fragment of
 # the message for each thing it refuses.
 TIMEOUT_ACCEPTED = [(60, 60.0), (60.0, 60.0), (0.5, 0.5), (1, 1.0)]
@@ -2809,6 +2917,7 @@ class Runner:
         missing, extra = match_diagnostics(scenario.annotations, located)
         extra += [d for d in warnings if d.line is None]
         self.report_missing(result, missing, scenario.source_rel)
+        self.check_forbidden(result, scenario, diagnostics)
         if extra:
             result.status = FAIL
             result.problems.append("warnings, where the category expects zero:\n" + indent(
@@ -2849,6 +2958,15 @@ class Runner:
                     f"expected unlocated {want.get('code')} "
                     f"\"{want.get('message', '')}\", which was not produced")
         return leftover
+
+    def check_forbidden(self, result: Result, scenario: Scenario,
+                        diagnostics: list[Diagnostic]) -> None:
+        """``//~!``: fail for each diagnostic that contains text forbidden on its line."""
+        hits = forbidden_hits(scenario.forbidden, [d for d in diagnostics if d.line is not None])
+        if hits:
+            result.status = FAIL
+            result.problems.append("diagnostics containing text a //~! forbids:\n" + indent(
+                "\n".join(f"{f.describe()}: {d.describe(self.by_number)}" for f, d in hits)))
 
     def report_missing(self, result: Result, missing: list[Annotation],
                        source_rel: str = "") -> None:
@@ -2892,6 +3010,7 @@ class Runner:
         extra += self.claim_unlocated(result, scenario, unlocated)
 
         self.report_missing(result, missing, scenario.source_rel)
+        self.check_forbidden(result, scenario, diagnostics)
         if extra:
             result.status = FAIL
             result.problems.append("produced, but not annotated:\n" + indent(
@@ -2930,6 +3049,7 @@ class Runner:
         extra += self.claim_unlocated(
             result, scenario, [d for d in warnings if d.line is None])
         self.report_missing(result, missing, scenario.source_rel)
+        self.check_forbidden(result, scenario, diagnostics)
         if extra:
             result.status = FAIL
             result.problems.append("warnings produced, but not annotated:\n" + indent(
@@ -3973,7 +4093,9 @@ def main(argv: list[str]) -> int:
         # is reported here as one fault rather than as many failed checks.
         demangle_selftest()
         timeout_checks = timeout_selftest()
+        forbid_checks = forbidden_selftest()
         if args.selftest:
+            print(f"//~! forbidden text: {forbid_checks} checks hold")
             print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
             print(f"scenario timeout: {timeout_checks} checks of the key and the limit it chooses hold")
             return 0
