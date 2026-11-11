@@ -1080,6 +1080,13 @@ void genlGlobalSyms(GenState *gen, INode *node);
 // of a generic trait or enum splits its members as a non-generic one does: its
 // methods belong to the implementers, its static functions to itself, and
 // genlGlobalImpl generates their bodies.
+// A member of an instance whose members wait for a use (structMembersUse), which no
+// use has checked: it is not generated. One checked some other way (a vtable
+// slot, say) is generated like any other.
+static int genlMemberUnchecked(INode *type, INode *member) {
+    return structMembersLazy(type) && !(member->flags & TypeChecked);
+}
+
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag)
         return;
@@ -1088,6 +1095,8 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     uint32_t cnt;
     for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
         if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+            continue;
+        if (genlMemberUnchecked(instance, *nodesp))
             continue;
         genlGlobalSyms(gen, *nodesp);
     }
@@ -1131,6 +1140,8 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 // A trait's methods are not its own to generate: a requirement has
                 // no body, and a default was cloned into each implementer, which
                 // owns and names the copy. Its static functions are its own --
@@ -1215,6 +1226,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalImpl(gen, *nodesp);

@@ -514,6 +514,7 @@ void genlDropFlagSet(GenState *gen, VarDclNode *var, int state);
 LLVMBasicBlockRef genlDropFlagIf(GenState *gen, VarDclNode *var, int state);
 void genlDropFlagEnd(GenState *gen, LLVMBasicBlockRef endblk);
 void genlDropFlagUse(GenState *gen, INode *nameuse);
+void genlDropFlagHollow(GenState *gen, VarDclNode *var, INode *nameuse);
 // Release an owning value: one owner of an owning reference goes away, through
 // the region's 'dealiasRef', as the value's death for a 'Move' region, and as
 // nothing for any other; each element of a tuple
@@ -529,8 +530,10 @@ void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
 void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
-// The same for an owning reference held outside its variable (a parked record)
-void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved);
+// The same for an owning reference held outside its variable (a parked record).
+// 'held' is its drop flag's value, for a variable with VarPartFlag: which of
+// 'moved' happened is then told by it at run time
+void genlHollowReleaseRef(GenState *gen, LLVMValueRef ref, VarDclNode *var, Nodes *moved, LLVMValueRef held);
 // Temporaries: one kept in its slot as it is made; those made since 'mark'
 // finalized, newest first, and forgotten (the end of their statement); and
 // finalized without being forgotten, before a jump out past them

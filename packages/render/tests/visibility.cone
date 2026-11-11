@@ -152,7 +152,7 @@ fn rangeChecks() {
   var vis = Visibility.create(0.1);
   let h = vis.addItem(mesh(1u32), MaterialHandle.none(), Mat4.identity(), Color(1., 1., 1., 1.), lc, lh, 1.7);
   vis.setRange(h, 10., 100., 20.);
-  let it = *vis.items[usize.from(h.slot)];
+  let it = *vis.items.at(h.slot);
   expectFloat(f64.from(rangeShare(&it, 5.)), 0., 0.00001, "before the range: none");
   expectFloat(f64.from(rangeShare(&it, 10.)), 0., 0.00001, "at its start: none");
   expectFloat(f64.from(rangeShare(&it, 20.)), 0.5, 0.00001, "half way up the ramp: 1/2");
@@ -162,7 +162,7 @@ fn rangeChecks() {
   expectFloat(f64.from(rangeShare(&it, 100.)), 0., 0.00001, "at its end: none");
   expectFloat(f64.from(rangeShare(&it, 500.)), 0., 0.00001, "past it: none");
   vis.setRange(h, 0., 0., 0.);
-  let free = *vis.items[usize.from(h.slot)];
+  let free = *vis.items.at(h.slot);
   expectFloat(f64.from(rangeShare(&free, 5000.)), 1., 0.00001, "no range: whole at any distance");
 }
 
@@ -206,10 +206,12 @@ fn slotsOf(out: &List[DrawItem]) List[u32] {
 fn bruteForce(vis: &Visibility, f: &Frustum, mask: u32) List[u32] {
   var r = List[u32]();
   var i = 0usize;
-  while i < vis.items.len() {
-    let it = vis.items[i];
-    if it.alive && (it.layers & mask) != 0u32 {
-      if f.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { r.push(u32.from(i)); }
+  while i < vis.slotCount() {
+    if vis.items.isLive(u32.from(i)) {
+      let it = *vis.items.at(u32.from(i));
+      if (it.layers & mask) != 0u32 {
+        if f.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { r.push(u32.from(i)); }
+      }
     }
     i = i + 1usize;
   }
@@ -283,7 +285,7 @@ fn cullChecks() {
     let k = usize.from(rng.next() % 3000u64);
     let h = *handles[k];
     if vis.alive(h) {
-      let old = vis.items[usize.from(h.slot)].model;
+      let old = (*vis.items.at(h.slot)).model;
       var m = old;
       let kind = i % 3;
       if kind == 0 {
@@ -424,9 +426,11 @@ fn casterChecks() {
     many.collectCasters(&vol, &cam, 720., &mut got);
     var want = List[u32]();
     var j = 0usize;
-    while j < many.items.len() {
-      let it = many.items[j];
-      if vol.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { want.push(u32.from(j)); }
+    while j < many.slotCount() {
+      if many.items.isLive(u32.from(j)) {
+        let it = *many.items.at(u32.from(j));
+        if vol.testAabb(Aabb3.fromCenter(it.center, it.half)) != Outside { want.push(u32.from(j)); }
+      }
       j = j + 1usize;
     }
     let gotSlots = slotsOf(&got);
