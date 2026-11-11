@@ -48,15 +48,24 @@ set(LLVM_LINK_COMPONENTS
 llvm_map_components_to_libnames(llvm_libs support core irreader ${LLVM_LINK_COMPONENTS})
 
 # Debian/Ubuntu's LLVM builds Polly as a plugin (LLVMPolly.so) and ships no
-# libPolly.a or libPollyISL.a, yet LLVMExtensions (which LTO needs) lists them
-# as dependencies, so a static link stops on a missing libPolly.a. conec uses
-# no Polly: drop whichever of them has no archive in this LLVM install.
-foreach(polly_lib Polly PollyISL)
-	find_library(polly_archive_${polly_lib} NAMES ${polly_lib} PATHS ${LLVM_LIBRARY_DIRS} NO_DEFAULT_PATH)
-	if(NOT polly_archive_${polly_lib})
-		list(REMOVE_ITEM llvm_libs ${polly_lib})
+# libPolly.a, yet its LLVMExtensions target (which LTO needs) lists the static
+# Polly target as a dependency, so a static link stops on a missing
+# libPolly.a. conec uses no Polly: where this LLVM has no archive, take Polly
+# out of LLVMExtensions' dependencies.
+if(TARGET Polly)
+	get_target_property(polly_location Polly IMPORTED_LOCATION_RELWITHDEBINFO)
+	foreach(polly_cfg "" _RELEASE _DEBUG _RELWITHDEBINFO _MINSIZEREL)
+		if(NOT polly_location)
+			get_target_property(polly_location Polly IMPORTED_LOCATION${polly_cfg})
+		endif()
+	endforeach()
+	if(NOT polly_location OR NOT EXISTS "${polly_location}")
+		get_target_property(ext_deps LLVMExtensions INTERFACE_LINK_LIBRARIES)
+		list(REMOVE_ITEM ext_deps Polly)
+		set_property(TARGET LLVMExtensions PROPERTY INTERFACE_LINK_LIBRARIES "${ext_deps}")
+		message(STATUS "No Polly archive in this LLVM: linking without it")
 	endif()
-endforeach()
+endif()
 
 
 add_executable(conec 
