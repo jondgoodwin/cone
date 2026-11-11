@@ -51,7 +51,8 @@ pub actor PipeSink is ChunkSink {
     rx.attach(source);
   }
 
-  // The pipe to write: Pipe.none() says there is none (the child could not be set up) and fails the sink
+  // The pipe to write: Pipe.none() says there is none (the child could not be set up) and fails the sink at once: 'done' gets the error and
+  // the source is told to stop, whether or not a chunk has arrived
   pub async fn startOn(self, p: Pipe) {
     pipe = p;
     ready = true;
@@ -65,7 +66,20 @@ pub actor PipeSink is ChunkSink {
           self.over(h);
         }
       }
-      case is None { selfactor.go(); }
+      case is None {
+        if pipe.isNone() && cur is None {
+          // no pipe and no chunk in hand for go to fail on: fail now, so the source is not left to send first
+          self.shut();
+          match &up {
+            case let &Some(u) { u.stop(Ending.Failed(AnyError.msg("streams: the child's input pipe could not be made"))); }
+            case is None {}
+          }
+          up = None[ChunkSource];
+          self.report(Err[u64, AnyError](AnyError.msg("streams: the child's input pipe could not be made")));
+        } else {
+          selfactor.go();
+        }
+      }
     }
   }
 
