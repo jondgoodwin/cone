@@ -90,6 +90,11 @@ int loanWhole(uint32_t loan);
 // which come along with it.
 int loanIsLocal(uint32_t loan);
 
+// Is a loan a borrow of a thread-local (the current worker's copy)? loanIsLocal
+// counts it too, so it ends at a seam and may not outlive the call
+int loanIsThreadLocal(uint32_t loan);
+int loanVarIsThreadLocal(VarDclNode *var);
+
 // A loan in 'set' rooted in this function's own storage, or 0
 uint32_t loanLocalIn(PathSet *set);
 

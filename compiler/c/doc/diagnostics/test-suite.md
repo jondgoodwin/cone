@@ -427,6 +427,12 @@ fn main() {
   bless corrects the fields you wrote and never adds one you left off.
 - Mark `follow-on` for a diagnostic that exists only as a consequence of another.
   Without it, an unrelated change to error recovery breaks the scenario.
+- `//~! "text"` is the negative: the scenario fails if any diagnostic reported on
+  that line (own line; `//~!^` the line above, as for `//~`) contains the text.
+  It names no code or column, claims no diagnostic, and bless never touches it.
+  Use it to prove an explanation is absent, e.g. `//~! "does not declare `is`"`.
+  It is allowed wherever `//~` is, plus `compile`/`run` scenarios. The runner's
+  `--selftest` pins its behaviour.
 
 **An annotation may live in a support module.** A diagnostic carries the path of
 the file the offending node came from, and an annotation matches only a
