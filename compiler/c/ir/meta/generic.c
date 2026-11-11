@@ -4316,6 +4316,13 @@ GenericInfo *genericGetInfo(INode *node) {
 // The arguments are counted and checked against the alias's bounds here, where
 // the use is. Returns 1 when the use was a generic alias's (replaced, or an
 // error), 0 when it was not.
+//
+// An alias whose expansion names itself ('alias L[T] = List[L[T]]') would expand
+// without end: the aliases being expanded are tracked, and a use met while its own
+// alias is still being expanded is refused where it is written.
+static AliasDclNode *aliasExpanding[64];
+static int aliasExpandingN = 0;
+
 int genericAliasExpand(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     if (!(node->flags & FlagIndex) || node->methfld != NULL || !isNameUseNode(node->objfn))
@@ -4349,6 +4356,19 @@ int genericAliasExpand(TypeCheckState *pstate, FnCallNode **nodep) {
         *nodep = (FnCallNode*)newErrorNode((INode*)node);
         return 1;
     }
+    for (int i = 0; i < aliasExpandingN; ++i) {
+        if (aliasExpanding[i] == alias) {
+            errorMsgNode((INode*)node, ErrorCircular,
+                "%s is defined in terms of itself, so it names no type.", &alias->namesym->namestr);
+            *nodep = (FnCallNode*)newErrorNode((INode*)node);
+            return 1;
+        }
+    }
+    if (aliasExpandingN >= 64) {
+        errorMsgNode((INode*)node, ErrorInstDepth, "Aliases expand too deeply to follow.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return 1;
+    }
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, (INode*)node, NULL, pstate->scope, info->parms, node->args);
@@ -4358,7 +4378,9 @@ int genericAliasExpand(TypeCheckState *pstate, FnCallNode **nodep) {
     // Placed where the use was written, so what the expansion refuses is reported there
     inodeLexCopy(copy, (INode*)node);
     *(INode**)nodep = copy;
+    aliasExpanding[aliasExpandingN++] = alias;
     inodeTypeCheckAny(pstate, (INode**)nodep);
+    --aliasExpandingN;
     return 1;
 }
 
