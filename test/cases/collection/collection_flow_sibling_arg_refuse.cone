@@ -1,0 +1,56 @@
+// Error 1339, a sibling field handed as an argument is another collection only where the struct holds
+// it by value or by a 'Uni' owner. Refused: a sibling held through an 'Rc[mut, ..]' owner or a '&mut'
+// reference (it may be the same list), the very field the view is into, the same field of another
+// reference to the same type, and two parameters that may be one list.
+
+mod collection_flow_sibling_arg_refuse;
+
+import collections use *;
+
+fn grow(h: &mut List[u8]) { h.push(9u8); }
+fn growRc(h: &mut Rc[mut, List[u8]]) { h.push(9u8); }
+
+struct R {
+  a: Rc[mut, List[u8]];
+  b: Rc[mut, List[u8]];
+
+  fn viaRc(self: &mut) u8 {
+    let s = a.view();
+    growRc(&mut b);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+    s[0usize]
+  }
+}
+
+struct Q {
+  a: &mut List[u8];
+  b: &mut List[u8];
+}
+
+fn viaRefFields(q: &mut Q) u8 {
+  let s = q.a.view();
+  grow(q.b);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  s[0usize]
+}
+
+struct D {
+  inp: List[u8];
+  hist: List[u8];
+
+  fn same(self: &mut) u8 {
+    let s = inp.view();
+    grow(&mut inp);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+    s[0usize]
+  }
+}
+
+fn otherRef(x: &mut D, y: &mut D) u8 {
+  let s = x.inp.view();
+  grow(&mut y.inp);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  s[0usize]
+}
+
+fn fa(a: &mut List[u8], b: &mut List[u8]) u8 {
+  let s = a.view();
+  grow(b);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  s[0usize]
+}

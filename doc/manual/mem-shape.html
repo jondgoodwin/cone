@@ -109,6 +109,29 @@ struct Holder {
   }
 }
 </pre>
+	<p>A sibling field is another collection. A borrow into one field and a push through another field of the same
+		struct, which the struct holds by value (or by a <span class="pre">Uni</span> owner), is accepted, whether the
+		push is a method of that field or a function handed <span class="pre">&amp;mut</span> of it. The exception is a
+		sibling held through an <span class="pre">Rc[mut, ..]</span> owner or a <span class="pre">&amp;mut</span>
+		reference: two such fields may hold one list, so they are refused. So are the very field the borrow is into,
+		the same field of another reference to the same type, and two parameters that may be one list (<span
+		class="pre">fa</span> below). A helper that takes the whole struct (<span class="pre">self</span>, or a
+		<span class="pre">&amp;mut D</span>) is asked what it may reshape among the fields it reaches, and is still
+		refused if it pushes to a list of the borrowed type, whichever field; the cure is to hand the helper the
+		fields it uses.</p>
+<pre>
+fn grow(h: &amp;mut List[u8]) { h.push(1u8); }
+
+struct D {
+  inp: List[u8];
+  hist: List[u8];
+  fn step(self: &amp;mut) u8 {
+    let s = inp.view();
+    grow(&amp;mut hist);            // Ok: hist is another list than inp
+    s[0usize]
+  }
+}
+</pre>
 	<p>A borrow that may write (<span class="pre">&amp;mut l[0usize]</span>, <span class="pre">l.viewMut()</span>) is an
 		alias loan the same way, and so is a read-only one. Either lets the path be read, lent again and written, and
 		refuses only a change of its shape, by the same name or by another:</p>
