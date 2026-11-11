@@ -114,7 +114,7 @@ def main():
         f.write(out)
     # The totals tests/everychar.cone checks, over every code point but the surrogates
     nonsur = [c for c in range(N) if not 0xD800 <= c <= 0xDFFF]
-    print("totals: alphabetic %d upper %d lower %d white %d numeric %d toUpper %d toLower %d" % (
+    print("totals: alphabetic %d upper %d lower %d white %d numeric %d toUpperSimple %d toLowerSimple %d" % (
         sum(flags[c] & 1 != 0 for c in nonsur), sum(flags[c] & 2 != 0 for c in nonsur),
         sum(flags[c] & 4 != 0 for c in nonsur), sum(flags[c] & 8 != 0 for c in nonsur),
         sum(flags[c] & 16 != 0 for c in nonsur), sum(c + upper[c] for c in nonsur),
