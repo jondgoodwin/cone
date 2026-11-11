@@ -33,6 +33,22 @@ struct BitIn {
 
   // Top up the bit buffer to at least 57 bits
   fn refill(self: &mut) {
+    // Eight bytes at once while the input has them: the whole bytes that fit
+    // (the same ones the loop below would take one at a time)
+    if pos + 8usize <= buf.len() {
+      let v = buf.view();
+      let w = u64.from(v[pos]) | (u64.from(v[pos + 1usize]) << 8u64) | (u64.from(v[pos + 2usize]) << 16u64)
+        | (u64.from(v[pos + 3usize]) << 24u64) | (u64.from(v[pos + 4usize]) << 32u64)
+        | (u64.from(v[pos + 5usize]) << 40u64) | (u64.from(v[pos + 6usize]) << 48u64)
+        | (u64.from(v[pos + 7usize]) << 56u64);
+      let k = (64u32 - nbits) / 8u32;
+      let take = k * 8u32;
+      let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
+      bits = bits | ((w & m) << u64.from(nbits));
+      pos = pos + usize.from(k);
+      nbits = nbits + take;
+      return;
+    }
     while nbits <= 56u32 {
       let b = if pos < buf.len() {u64.from(*buf[pos])} else {0u64};
       bits = bits | (b << u64.from(nbits));
