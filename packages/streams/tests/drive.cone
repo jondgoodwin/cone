@@ -1,13 +1,19 @@
-// runAll and pullAll, the loop that drives any Transform to its end, checked over the four codecs:
+// runAll and pullAll, the loop that drives any Transform to its end, checked over the four codecs. Both answer
+// Result[u64, AnyError]: Ok(bytes pushed) on Done, else an Err with text.
 //
 //   - a gzip stream made by runAll over a Deflater, inflated by runAll over an Inflater, is the input
-//     again (300,000 bytes, so the output takes five pulls through the one 64 KiB buffer): both end Done;
+//     again (300,000 bytes, so the output takes five pulls through 64 KiB buffers): both Ok, and the Ok
+//     count is the number of bytes the chain holds;
 //   - the same over zstd's Compressor and Decompressor;
 //   - the gzip stream made by runAll is byte for byte the one 'deflate.gzipCompress' makes;
-//   - a stream that is not valid ends Failed, and the transform's failure() says why;
-//   - a stream cut short ends with a status that is not Done;
-//   - 'pullAll' on a transform with nothing fed answers NeedInput and appends nothing;
-//   - output already in the List is kept: runAll appends.
+//   - a stream that is not valid is Err with the transform's own failure() text;
+//   - a stream cut short, through runAll (which calls finish()), is Err "the input ended before the stream
+//     did", and what was delivered is kept;
+//   - 'pullAll' (no finish()) on a transform with nothing fed is Ok(0), and pushes nothing; on half a stream
+//     it is Ok with the bytes of that half, and runAll with the rest gives the other bytes: the counts add up;
+//   - output already in the Chain is kept: runAll pushes after it, and Ok counts only its own bytes;
+//   - a Chain bounded below the output refuses it: Err "output passed the chain's bound of N bytes",
+//     keeping what fitted before, and the transform itself did not fail.
 //
 // The data is a pseudo-random run of five words (as the codecs' tests use).
 
@@ -15,9 +21,12 @@ mod drive;
 
 import testing use *;
 import collections use *;
+import iobuf use IoBuf, Chain;
 import streams use *;
 import deflate;
 import zstd;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
 
 fn corpus(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
@@ -33,62 +42,141 @@ fn corpus(n: usize) List[u8] {
   d
 }
 
+// The chain's bytes as one List, copied out once
+fn bytesOf(c: &Chain) List[u8] {
+  var out = List[u8]();
+  out.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, out.viewMut());
+  out
+}
+
+// The Ok count, or the maximum u64 for an Err
+fn countOf(r: &Result[u64, AnyError]) u64 {
+  match r {
+    case let &Ok(n) { *n }
+    case is Err { 0xFFFFFFFFFFFFFFFFu64 }
+  }
+}
+
+// The Err's text, or "<ok>"
+fn textOf(r: Result[u64, AnyError]) String {
+  match r {
+    case let Err(e) { String() <- e }
+    case is Ok { String.from("<ok>") }
+  }
+}
+
+// A Transform that makes nothing, wants input for ever, and never fails
+struct Stuck {
+  fed: usize;
+
+  pub fn feed(self: &mut, input: &Array[u8]) { self.fed = self.fed + input.len; }
+  pub fn pull(self: &mut, out: &mut IoBuf) Status { Status.NeedInput }
+  pub fn finish(self: &mut) {}
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}
+
 fn main() i32 {
   let data = corpus(300000usize);
 
   // gzip, there and back
   var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
-  var packed = List[u8]();
-  let stDef = runAll(&mut def, data.view(), &mut packed);
-  expect(stDef == Status.Done, "gzip: the Deflater ends Done");
+  var packedChain = Chain.make(unbounded);
+  let rDef = runAll(&mut def, data.view(), &mut packedChain);
+  expectUInt(countOf(&rDef), u64.from(packedChain.len()), "gzip: the Deflater is Ok, with the bytes it pushed");
+  let packed = bytesOf(&packedChain);
   expect(packed.view() == deflate.gzipCompress(data.view(), 2).view(), "gzip: and makes the bytes the one-shot gzipCompress makes");
   var inf = deflate.Inflater.make(deflate.Format.Gzip);
-  var back = List[u8]();
-  let stInf = runAll(&mut inf, packed.view(), &mut back);
-  expect(stInf == Status.Done, "gzip: the Inflater ends Done");
-  expect(back.view() == data.view(), "gzip: and gives the input back");
+  var backChain = Chain.make(unbounded);
+  let rInf = runAll(&mut inf, packed.view(), &mut backChain);
+  expectUInt(countOf(&rInf), 300000u64, "gzip: the Inflater is Ok with 300,000 bytes");
+  expectUInt(u64.from(backChain.len()), 300000u64, "gzip: the chain holds all 300,000 bytes");
+  expect(backChain.segments() > 1usize, "gzip: in several segments, not one copied block");
+  expect(bytesOf(&backChain).view() == data.view(), "gzip: and gives the input back");
 
   // zstd, there and back
   var comp = zstd.Compressor.make(2);
-  var frame = List[u8]();
-  expect(runAll(&mut comp, data.view(), &mut frame) == Status.Done, "zstd: the Compressor ends Done");
+  var frameChain = Chain.make(unbounded);
+  let rComp = runAll(&mut comp, data.view(), &mut frameChain);
+  expectUInt(countOf(&rComp), u64.from(frameChain.len()), "zstd: the Compressor is Ok, with the bytes it pushed");
+  let frame = bytesOf(&frameChain);
   var dec = zstd.Decompressor.make();
-  var again = List[u8]();
-  expect(runAll(&mut dec, frame.view(), &mut again) == Status.Done, "zstd: the Decompressor ends Done");
-  expect(again.view() == data.view(), "zstd: and gives the input back");
+  var againChain = Chain.make(unbounded);
+  let rDec = runAll(&mut dec, frame.view(), &mut againChain);
+  expectUInt(countOf(&rDec), 300000u64, "zstd: the Decompressor is Ok with 300,000 bytes");
+  expect(bytesOf(&againChain).view() == data.view(), "zstd: and gives the input back");
 
-  // bad input
+  // bad input: the transform's own text
   var bad = deflate.Inflater.make(deflate.Format.Gzip);
-  var junk = List[u8]();
+  var junk = Chain.make(unbounded);
   var noise = List[u8]();
   var i = 0usize;
   while i < 200usize { noise.push(u8.from((i * 37usize + 11usize) % 251usize)); i += 1usize; }
-  let stBad = runAll(&mut bad, noise.view(), &mut junk);
-  expect(stBad == Status.Failed, "bad input: the Inflater ends Failed");
+  let rBad = runAll(&mut bad, noise.view(), &mut junk);
+  expectUInt(countOf(&rBad), 0xFFFFFFFFFFFFFFFFu64, "bad input: Err");
   match bad.failure() {
-    case is Some { expect(true, "bad input: and failure() says why"); }
-    case is None { expect(false, "bad input: and failure() says why"); }
+    case let Some(own) { expectStr(textOf(rBad).view(), (String() <- own).view(), "bad input: and the text is the transform's failure()"); }
+    case is None { expect(false, "bad input: the transform has a failure()"); }
   }
 
   // a stream cut short
   var cut = deflate.Inflater.make(deflate.Format.Gzip);
-  var some = List[u8]();
-  let stCut = runAll(&mut cut, &packed.view()[0usize ..< packed.len() / 2usize], &mut some);
-  expect(stCut != Status.Done, "cut short: the stream does not end Done");
+  var some = Chain.make(unbounded);
+  let rCut = runAll(&mut cut, &packed.view()[0usize ..< packed.len() / 2usize], &mut some);
+  expectUInt(countOf(&rCut), 0xFFFFFFFFFFFFFFFFu64, "cut short: Err");
   expect(some.len() > 0usize && some.len() < data.len(), "cut short: what was delivered is kept");
+  match cut.failure() {
+    case let Some(own) { expectStr(textOf(rCut).view(), (String() <- own).view(), "cut short: the Inflater itself fails at the early end, so the text is its own"); }
+    case is None { expectStr(textOf(rCut).view(), "the input ended before the stream did", "cut short: finish() was called, so the text says the input ended early"); }
+  }
 
-  // nothing fed
+  // zstd cut short: it too fails by its own text
+  var zcut = zstd.Decompressor.make();
+  var zsome = Chain.make(unbounded);
+  expectStr(textOf(runAll(&mut zcut, &frame.view()[0usize ..< frame.len() / 2usize], &mut zsome)).view(), "zstd: a block is cut off", "zstd cut short: its own text");
+
+  // a transform that waits for input and never fails: runAll (finish() called) is Err, pullAll (not) is Ok(0)
+  var stuck1 = Stuck(0usize);
+  var stuckOut = Chain.make(unbounded);
+  expectStr(textOf(runAll(&mut stuck1, &packed.view()[0usize ..< 4usize], &mut stuckOut)).view(), "the input ended before the stream did", "NeedInput after finish(): the input ended early");
+  var stuck2 = Stuck(0usize);
+  expectUInt(countOf(&pullAll(&mut stuck2, &mut stuckOut)), 0u64, "NeedInput without finish(): Ok, it wants more");
+
+  // nothing fed, finish() not called: NeedInput is Ok
   var idle = deflate.Inflater.make(deflate.Format.Gzip);
-  var none = List[u8]();
-  expect(pullAll(&mut idle, &mut none) == Status.NeedInput, "nothing fed: pullAll says NeedInput");
-  expectUInt(u64.from(none.len()), 0u64, "nothing fed: and appends nothing");
+  var none = Chain.make(unbounded);
+  expectUInt(countOf(&pullAll(&mut idle, &mut none)), 0u64, "nothing fed: pullAll is Ok(0), it only wants more");
+  expectUInt(u64.from(none.len()), 0u64, "nothing fed: and pushes nothing");
 
-  // appends
+  // fed in two halves, finish() only after the second: the first pullAll is Ok with what was fed so far
+  var part = deflate.Inflater.make(deflate.Format.Gzip);
+  var partOut = Chain.make(unbounded);
+  part.feed(&packed.view()[0usize ..< packed.len() / 2usize]);
+  let rFirst = pullAll(&mut part, &mut partOut);
+  expect(countOf(&rFirst) == u64.from(partOut.len()) && partOut.len() > 0usize, "in halves: the first pullAll is Ok with the bytes of the first half");
+  let rSecond = runAll(&mut part, &packed.view()[packed.len() / 2usize ..< packed.len()], &mut partOut);
+  expectUInt(countOf(&rFirst) + countOf(&rSecond), 300000u64, "in halves: runAll with the rest is Ok and the two counts add up to the whole");
+
+  // pushes after what the chain holds
   var inf2 = deflate.Inflater.make(deflate.Format.Gzip);
-  var kept = List[u8]();
-  kept.push(65u8);
-  _ = runAll(&mut inf2, packed.view(), &mut kept);
-  expectUInt(u64.from(kept.len()), 300001u64, "appends: what was in the List stays, the output follows");
-  expectUInt(u64.from(*kept[0usize]), 65u64, "appends: the first byte is still the one put there");
+  var kept = Chain.make(unbounded);
+  var seed = IoBuf(16usize);
+  _ = seed.append("A");
+  _ = kept.push(seed);
+  let rKept = runAll(&mut inf2, packed.view(), &mut kept);
+  expectUInt(countOf(&rKept), 300000u64, "pushes after: Ok counts only this call's bytes");
+  expectUInt(u64.from(kept.len()), 300001u64, "pushes after: what was in the Chain stays, the output follows");
+  expectUInt(u64.from(kept.byteAt(0usize)), 65u64, "pushes after: the first byte is still the one put there");
+
+  // a chain bounded below the output refuses it
+  var inf3 = deflate.Inflater.make(deflate.Format.Gzip);
+  var small = Chain.make(100000usize);
+  let rSmall = runAll(&mut inf3, packed.view(), &mut small);
+  expectStr(textOf(rSmall).view(), "output passed the chain's bound of 100000 bytes", "bounded: Err says the output passed the bound, with the bound");
+  expect(small.len() <= 100000usize && small.len() > 0usize, "bounded: what fitted before the refusal is kept");
+  match inf3.failure() {
+    case is None { expect(true, "bounded: the transform itself did not fail"); }
+    case is Some { expect(false, "bounded: the transform itself did not fail"); }
+  }
   done()
 }

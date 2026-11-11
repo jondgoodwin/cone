@@ -39,6 +39,8 @@
 // as its end, fails with EINVAL before anything is asked of the system.
 // Cone has no '?' yet, so a caller matches each Result; a value is moved out
 // of a matched 'Ok' by binding it ('case let Ok(ok) { text = ok; }').
+// 'readBytes' reads a file as a Chain of buffers (iobuf's), with no String between: a caller that needs
+// one contiguous block copies it out once ('chain.copyOut'), one that passes the bytes on copies nothing.
 // Asking whether something is there is not a failure: 'exists', 'isDir' and
 // 'isFile' answer a bool, false for anything they cannot see.
 //
@@ -158,6 +160,7 @@ mod fs;
 import libc;
 import posix;
 import collections use String, List;
+import iobuf use IoBuf, Chain, largestClass;
 import path use Path;
 import sync;
 import time;
@@ -371,6 +374,45 @@ pub fn readFile(path: &Path) Result[String, FsError] {
   libc.fclose(f);
   if broke { return fail[String]("readFile", path, code); }
   Ok[String, FsError](out)
+}
+
+// The whole of a file as a Chain of buffers, read straight into them: no String built and copied from.
+// A Chain, not one IoBuf, because a file is any size and a buffer is a pool block (a file past the
+// pool's bound could never be one): the buffers start at 64 KiB and double to the pool's largest block
+// (1 MiB), so a file under 64 KiB is one segment and a large one a short chain. A caller that wants one
+// contiguous block calls 'copyOut' once, at its edge; one that passes the bytes on copies nothing. Fails
+// with ENOMEM (a kind of its own, OutOfMemory) when the pool will not give a buffer without growing past
+// its bound (IoBuf.tryMake), where 'readFile' would grow its String without limit.
+pub fn readBytes(path: &Path) Result[Chain, FsError] {
+  if hasNul(path) { return fail[Chain]("readBytes", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  let f = libc.fopen(c.cstr(), "rb");
+  if f == null { return fail[Chain]("readBytes", path, openErrno(path)); }
+  var chain = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var size = 65536usize;
+  var going = true;
+  var nomem = false;
+  while going {
+    match IoBuf.tryMake(size) {
+      case let Some(got) {
+        var buf = got;
+        let want = buf.room();
+        let n = libc.fread(buf.base() + buf.len(), 1usize, want, f);
+        buf.setLen(buf.len() + n);
+        going = n == want;
+        _ = chain.push(buf);
+      }
+      case is None[IoBuf] { nomem = true; going = false; }
+    }
+    if size < largestClass { size = size * 2usize; }
+  }
+  let broke = libc.ferror(f) != 0i32;
+  let code = lastErrno();
+  libc.fclose(f);
+  if nomem { return fail[Chain]("readBytes", path, posix.ENOMEM); }
+  if broke { return fail[Chain]("readBytes", path, code); }
+  Ok[Chain, FsError](chain)
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
