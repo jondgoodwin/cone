@@ -26,7 +26,7 @@ pub struct Sentences {
   // nothing here reads a character, only ASCII marks and bytes
   pending: String;
   // Bytes at the front of `pending` already given out (a sentence and the white space after it); they are dropped
-  // from the buffer when the next piece comes, so taking a sentence does not copy what follows it
+  // from the buffer once they are half of it, so taking a sentence does not copy what follows it
   start: usize;
   // Where the latest piece begins in `pending`
   latestFrom: usize;
@@ -35,8 +35,9 @@ pub struct Sentences {
 
   // Add the next piece of the reply
   pub fn push(self: &mut, b: &Array[u8]) {
-    if start > 0usize {
-      pending = pending.sub(start, pending.len());
+    // drop the consumed front only once it is half the buffer (amortised: each byte is moved O(1) times)
+    if start > 0usize && start * 2usize >= pending.len() {
+      pending.remove(0usize, start);
       start = 0usize;
     }
     latestFrom = pending.len();

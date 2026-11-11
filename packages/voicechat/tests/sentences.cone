@@ -8,9 +8,13 @@ import voicechat use *;
 
 // Push 'text' in pieces of 'chunk' bytes; the sentences found as they are found, and the rest at the end, joined by '|'
 fn cut(text: &str, chunk: usize) String {
+  let b: &Array[u8] = text;
+  cutb(b, chunk)
+}
+
+fn cutb(b: &Array[u8], chunk: usize) String {
   var s = Sentences.make();
   var out = String();
-  let b: &Array[u8] = text;
   var i = 0usize;
   while i < b.len {
     var piece = List[u8]();
@@ -140,6 +144,23 @@ fn main() i32 {
     case is None {}
   }
   expectStr(got.view(), want.view(), "many sentences then a tail across pushes");
+
+  // many small pieces with takes between: the output must not depend on when the front is dropped
+  var para = String();
+  var pw = String();
+  n = 0;
+  while n < 200 {
+    if n > 0 { pw <- "|"; }
+    para <- "Sentence number is text here, ok. ";
+    pw <- "Sentence number is text here, ok.";
+    n = n + 1;
+  }
+  para <- "Last one.";
+  pw <- "|Last one.";
+  expectStr(cutb(para.view(), 1usize).view(), pw.view(), "small pieces, one byte");
+  expectStr(cutb(para.view(), 4usize).view(), pw.view(), "small pieces, four bytes");
+  expectStr(cutb(para.view(), 5usize).view(), pw.view(), "small pieces, five bytes");
+  expectStr(cutb(para.view(), 37usize).view(), pw.view(), "pieces of several sentences");
 
   // cleaning for speech
   expectStr(clean("**Bold** and `code`.").view(), "Bold and code.", "markdown marks are dropped");
