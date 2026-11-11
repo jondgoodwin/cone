@@ -2144,6 +2144,8 @@ was.
 
 ### A seam
 
+**A thread-local's borrow ends at a seam.** A global's borrow is 'static and survives one, but a @threadlocal seen from an actor is the *current worker's* copy, and the continuation may run on another worker (Bug 87). So loanIsLocal counts a loan of a thread-local (loanIsThreadLocal) with the function's own storage, not with a global's: the seam ends it (ErrorFrozen, message naming the reason), and a store where it outlives the call, or a return, is ErrorEscape; a 'static position takes a global's loans only (loanOfGlobal excludes it).
+
 An actor's behaviour may `await`: the behaviour is cut there, a **seam**,
 where it returns to the actor's dispatcher to wait, and what it needs
 afterwards waits in a continuation, a record, until the reply comes. A seam is

@@ -1,0 +1,37 @@
+// A borrow of a '@threadlocal' may not outlive the call that took it
+// (Bug 87; concurrency_threadlocal_borrow): it names the copy of the worker
+// running that code. So it is refused wherever it would be kept: in an
+// actor's field, in a global, as a 'static borrow (a field of 'static
+// borrows, a 'static result). Returning one to a caller is not refused here (concurrency_threadlocal_ok).
+
+mod concurrency_threadlocal_escape;
+
+import actors;
+
+var @threadlocal tl: u64 = 0u64;
+let seedg: u64 = 1u64;
+
+struct Hold { pub r: &'static u64; }
+var gh: Hold;
+
+fn @initpure init() { gh = Hold(&seedg); }
+
+actor A {
+  keep: Hold;
+
+  pub async fn setField(self) {
+    keep = Hold(&tl);            //~ ErrorEscape "a borrow of it is never 'static"
+  }
+
+  pub async fn setFieldPart(self) {
+    keep.r = &tl;                //~ ErrorEscape "a borrow of the thread-local 'tl'"
+  }
+}
+
+fn toGlobal() { gh = Hold(&tl); }          //~ ErrorEscape "a borrow of it is never 'static"
+fn toGlobalPart() { gh.r = &tl; }          //~ ErrorEscape "a borrow of the thread-local 'tl'"
+fn toStatic() &'static u64 { &tl }         //~ ErrorEscape "a thread-local is the current worker's copy"
+
+fn main() {
+  initAll();
+}

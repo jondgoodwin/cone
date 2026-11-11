@@ -1,0 +1,82 @@
+// A borrow of a '@threadlocal' is good only within the code that took it. A
+// thread-local seen from an actor is the current worker's copy (the manual,
+// actors), and an 'await' lets the method resume on another worker, so a
+// borrow of it held across the 'await' would read another worker's copy: a
+// data race in safe code (Bug 87). Every shape that carries the borrow past
+// the seam is refused, at the 'await', as a borrow of a local is:
+//
+// - the borrow itself, shared or mutable; a copy of it; a struct holding it; a
+//   closure capturing it; and one passed to a synchronous callee after the
+//   'await'.
+//
+// A borrow that does not live across the seam is accepted, in the sibling
+// concurrency_threadlocal_ok. Nor may one be stored where it outlives the call
+// (an actor's field, a global, a 'static holder), or returned: a caller could
+// keep it across its own seam (concurrency_threadlocal_escape).
+
+mod concurrency_threadlocal_borrow;
+
+import actors;
+
+var @threadlocal tl: u64 = 0u64;
+
+struct Hold { pub r: &mut u64; }
+struct HoldI { pub r: &u64; }
+
+fn plain(r: &u64) u64 { *r }
+
+actor Oracle {
+  pub async fn get(self) u64 { 1u64 }
+}
+
+actor A {
+  body: u64;
+
+  pub async fn sharedRef(self, c: Oracle) {
+    let r = &tl;
+    let n = await c.get();     //~ ErrorFrozen "A thread-local is the current worker's copy; after the 'await' this code may run on another worker"
+    body = *r + n;
+  }
+
+  pub async fn mutRef(self, c: Oracle) {
+    let r = &mut tl;
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'r' holds of 'tl'"
+    *r = n;
+  }
+
+  pub async fn copyRef(self, c: Oracle) {
+    let r = &tl;
+    let q = r;
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'q' holds of 'tl'"
+    body = *q + n;
+  }
+
+  pub async fn inStruct(self, c: Oracle) {
+    let h = HoldI(&tl);
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'h' holds of 'tl'"
+    body = *h.r + n;
+  }
+
+  pub async fn inStructMut(self, c: Oracle) {
+    let h = Hold(&mut tl);
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'h' holds of 'tl'"
+    *h.r = n;
+  }
+
+  pub async fn closure(self, c: Oracle) {
+    let r = &tl;
+    let f = fn() [q = r] u64 { *q };
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'f' holds of 'tl'"
+    body = f() + n;
+  }
+
+  pub async fn viaSync(self, c: Oracle) {
+    let r = &tl;
+    let n = await c.get();     //~ ErrorFrozen "The borrow 'r' holds of 'tl'"
+    body = plain(r) + n;
+  }
+}
+
+fn main() {
+  initAll();
+}

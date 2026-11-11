@@ -445,6 +445,7 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size) {
 
 // Does the function being walked hold an 'await'? Then an operand list is
 // walked in the order generation makes it (awaitOrder)
+static PathSet *pwWithoutThreadLocal(PathSet *set);
 static int pwSeams = 0;
 
 // The order to walk 'nodes' in: as written, but where a seam cuts it
@@ -3549,6 +3550,11 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
             BreakRetNode *ret = (BreakRetNode *)*nodesp;
             if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp)) {
                 PathSet *carried = pwValue(&ret->exp, 1);
+                // A borrow of a thread-local may be returned to the caller (it is good within
+                // the stretch of code that took it, Bug 87), unless the result is ''static':
+                // that claims a borrow good for the whole program
+                if (itypeCarriesEndingBorrow(pwSig->rettype))
+                    carried = pwWithoutThreadLocal(carried);
                 pwNoteReach(carried, PwReachReturned);
                 uint32_t local = loanLocalIn(carried);
                 uint32_t apart;
@@ -3988,6 +3994,18 @@ void pathSeamLive(INode *seam, uint32_t var) {
 static int pwIsGuard(VarDclNode *var) {
     INode *type = var->vtype ? itypeGetTypeDcl(var->vtype) : NULL;
     return type && type->tag == RefTag && permHeldKind(((RefNode *)type)->perm);
+}
+
+// A loan set without its borrows of a thread-local
+static PathSet *pwWithoutThreadLocal(PathSet *set) {
+    if (set == NULL)
+        return set;
+    PathSet *kept = set;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (loanIsThreadLocal(loanOf(set->ids[i])))
+            kept = pathSetWithout(kept, set->ids[i]);
+    }
+    return kept;
 }
 
 // A loan set with only its global loans
