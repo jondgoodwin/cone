@@ -363,11 +363,30 @@ fn publishWord(p: *OpCore, st: u32, gen: u32) {
   mem.atomicStore[u32](&(*p).gen as *u32, gen, MemOrder.Release);
 }
 
+// Record p's state alone, stored atomically (Relaxed): every write of a
+// record's state goes through here or publishWord
+fn setState(p: *OpCore, st: u32) {
+  mem.atomicStore[u32](&(*p).state as *u32, st, MemOrder.Relaxed);
+}
+
 // Record p is free, at generation 'gen'
 fn publishFree(p: *OpCore, gen: u32) {publishWord(p, stFree, gen);}
 
 // Record p still holds the operation that was in flight at generation 'gen':
-// false for a record reused or given back since. Safe from any thread
+// false for a record reused or given back since. Safe from any thread.
+//
+// Check-then-act is safe: the callers (Loop.cancel, lxSettleCancels) act on
+// the record (askCancel, lxCancel) after this returns true, on the Loop's
+// thread. An OpId (or a Request's, a remote cancel's) names only a record the
+// Loop's own submit or after took, and the only thread that moves such a
+// record out of stFlight (decide, complete, lxCancel, abandon) is the Loop's
+// thread, which is the one that is cancelling, so nothing moves it between
+// the check and the act. Another thread's only writes to a record that stays
+// in flight are none; it writes gen and state only of a record already
+// given back (giveCell), which this check refuses. A record issued in place
+// on a worker (shared.cone: stampIssued .. answeredHere) is never named by an
+// OpId: it is taken by the issuer, answered by it before it is handed over
+// (linkIssued), and from then on is the Loop's thread's alone.
 fn inFlightAt(p: *OpCore, gen: u32) bool {
   if mem.atomicLoad[u32](&(*p).gen as *u32, MemOrder.Acquire) != gen {return false;}
   mem.atomicLoad[u32](&(*p).state as *u32, MemOrder.Relaxed) == stFlight
