@@ -14,7 +14,7 @@
 // judged by its point nearest the axis, so a tile that is partly inside a band is shaded as the inner band.
 //
 // What a program does, with a headset opened with 'HeadsetOptions.foveation' (device.fragmentShadingRate):
-//   let fovea = Foveation.make(FOVEATION_MEDIUM);             // once
+//   let fovea = Foveation.make(FoveationLevel.Medium);           // once
 //   fovea.prepare(&mut device, &frame, headset.eyeWidth, headset.eyeHeight);   // each located frame (cheap: made once)
 //   renderer.setShadingRate(&device, fovea.rate(eye), fovea.texelWidth, fovea.texelHeight);
 //   renderer.render(...);                                      // its main lit pass only
@@ -22,38 +22,40 @@
 // The shadows, the captures, the mirrors' pictures, the post-processing, a program's passes after 'render' and the
 // window's mirror are not shaded by it.
 
-pub const FOVEATION_OFF = 0u32;
-pub const FOVEATION_LOW = 1u32;
-pub const FOVEATION_MEDIUM = 2u32;
-pub const FOVEATION_HIGH = 3u32;
+// How much of the periphery is shaded coarsely
+pub enum FoveationLevel {
+  Off, Low, Medium, High;
 
-// The name of a level ("off", "low", "medium", "high"), or 99 for anything else
-pub fn foveationLevelNamed(name: &str) u32 {
-  if name == "off" { return FOVEATION_OFF; }
-  if name == "low" { return FOVEATION_LOW; }
-  if name == "medium" { return FOVEATION_MEDIUM; }
-  if name == "high" { return FOVEATION_HIGH; }
-  99u32
-}
+  // The level a name spells ("off", "low", "medium", "high"), or None for anything else
+  pub fn named(name: &str) Option[FoveationLevel] {
+    if name == "off" { return Some[FoveationLevel](FoveationLevel.Off); }
+    if name == "low" { return Some[FoveationLevel](FoveationLevel.Low); }
+    if name == "medium" { return Some[FoveationLevel](FoveationLevel.Medium); }
+    if name == "high" { return Some[FoveationLevel](FoveationLevel.High); }
+    None
+  }
 
-pub fn foveationLevelName(level: u32) &str {
-  if level == FOVEATION_LOW { return "low"; }
-  if level == FOVEATION_MEDIUM { return "medium"; }
-  if level == FOVEATION_HIGH { return "high"; }
-  "off"
+  pub fn name(self: FoveationLevel) &str {
+    match self {
+      case is FoveationLevel.Low {"low"}
+      case is FoveationLevel.Medium {"medium"}
+      case is FoveationLevel.High {"high"}
+      else {"off"}
+    }
+  }
 }
 
 // Degrees off the lens's axis out to which an eye is shaded at full rate, and then out to which at 2 x 2 (beyond it,
 // as coarse as the GPU does up to 4 x 4; 'low' has none of that: 2 x 2 to the corners)
-fn fullDegrees(level: u32) f32 {
-  if level == FOVEATION_LOW { return 35.; }
-  if level == FOVEATION_HIGH { return 20.; }
+fn fullDegrees(level: FoveationLevel) f32 {
+  if level == FoveationLevel.Low { return 35.; }
+  if level == FoveationLevel.High { return 20.; }
   28.
 }
 
-fn halfDegrees(level: u32) f32 {
-  if level == FOVEATION_LOW { return 89.; }
-  if level == FOVEATION_HIGH { return 40.; }
+fn halfDegrees(level: FoveationLevel) f32 {
+  if level == FoveationLevel.Low { return 89.; }
+  if level == FoveationLevel.High { return 40.; }
   52.
 }
 
@@ -70,7 +72,7 @@ fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo { lo } else if v > hi { hi }
 pub struct Foveation {
   rates: List[Texture];            // eye 0's, then eye 1's, once made
   fovs: List[f32];                 // the four angles each was made from (left, right, up, down), eye 0's then eye 1's
-  pub level: u32;                  // FOVEATION_...
+  pub level: FoveationLevel;
   pub texelWidth: u32 = 0u32;      // the tile of one texel, in pixels
   pub texelHeight: u32 = 0u32;
   pub fullPercent: f32 = 0.;       // of the first eye's pixels, shaded at full rate, at 2 x 2, and coarser
@@ -80,7 +82,7 @@ pub struct Foveation {
   pub coarseHeight: u32 = 4u32;
   pub coarseLimit: u32 = 4u32;     // 2: the outer band is 2 x 2 too (set before 'prepare': a way to see what 4 x 4 costs or looks like)
 
-  pub fn make(level: u32) Foveation {
+  pub fn make(level: FoveationLevel) Foveation {
     Foveation(List[Texture](), List[f32](), level)
   }
 
@@ -94,7 +96,7 @@ pub struct Foveation {
   // changed; 'eyeWidth' by 'eyeHeight' is each eye's size in pixels. Answers whether both are ready (they are not
   // on a device without the feature, or for level off).
   pub fn prepare(self: &mut, device: &mut Device, frame: &HeadsetFrame, eyeWidth: u32, eyeHeight: u32) bool {
-    if level == FOVEATION_OFF || !device.fragmentShadingRate { return false; }
+    if level == FoveationLevel.Off || !device.fragmentShadingRate { return false; }
     var e = 0usize;
     while e < 2usize {
       let f = frame.views[e].fov;

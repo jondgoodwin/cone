@@ -392,6 +392,11 @@ fn textureBytes(t: &Texture) u64 {
   total
 }
 
+// How a headset's two eyes' renders share work that is the same for both (the ray-traced structure: 'rtShare')
+pub enum EyeShare {
+  Own, Build, Reuse;   // each eye's render does its own; the left eye's builds it and keeps it; the right eye's reuses it
+}
+
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
 pub struct Renderer {
@@ -484,10 +489,10 @@ pub struct Renderer {
   // the render in progress draws with (0 raster, 1 ray-traced)
   pub rayTracing: bool = false;
   pub extActive: usize = 0usize;
-  // Sharing the ray-traced structure between renders (a headset's two eyes): 0 each render builds its own; 1 this
-  // render builds it and keeps it; 2 this render uses the one a render with 1 kept, if no other render has built
-  // one since (else it builds its own). Set by the caller before each 'render'.
-  pub rtShare: u32 = 0u32;
+  // Sharing the ray-traced structure between renders (a headset's two eyes): Own, each render builds its own; Build,
+  // this render builds it and keeps it; Reuse, this render uses the one a render with Build kept, if no other render
+  // has built one since (else it builds its own). Set by the caller before each 'render'.
+  pub rtShare: EyeShare = EyeShare.Own;
   rtKept: bool = false;
   pub frameItemsLive: bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
@@ -1724,10 +1729,10 @@ pub struct Renderer {
       e.bake(encoder);
     }
     // The structure rays are cast into, built from the draw list (raytrace.cone)
-    if extActive == 1usize && !(rtShare == 2u32 && rtKept) {
+    if extActive == 1usize && !(rtShare == EyeShare.Reuse && rtKept) {
       var r = &mut rt[0usize];
       r.update(device, encoder, &mut meshes, &materials, &drawList.items, mainItems);
-      rtKept = rtShare == 1u32;
+      rtKept = rtShare == EyeShare.Build;
     }
     // With the depth pyramid, the view is drawn in two render passes with the
     // pyramid built between them (hiz.cone); otherwise in one

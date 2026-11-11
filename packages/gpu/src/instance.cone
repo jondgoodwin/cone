@@ -407,6 +407,12 @@ struct AdapterBackend {
 pub alias DeviceMaker = &fn(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
   device: &mut vulkan.Device) i32;
 
+// The optional features a device made through 'requestDeviceVia' may ask for
+pub struct DeviceFeatures {
+  pub fragmentShadingRate: bool = false;   // VK_KHR_fragment_shading_rate's attachment rates (foveation)
+  pub rayTracing: bool = false;            // ray queries and acceleration structures
+}
+
 // What the layer's own path passes where a maker is asked for: it makes the
 // device itself, with vkCreateDevice, and never calls this
 fn makeDeviceDirect(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
@@ -439,35 +445,15 @@ pub struct Adapter {
   pub fn requestDevice(self: &) Device { self.requestDeviceWith(true) }
 
   // The same, made by 'maker' (a runtime's, OpenXR's: see DeviceMaker), with
-  // the features and extensions every drawing device has and no ray tracing.
+  // the features and extensions every drawing device has, and 'features' besides. 'window': VK_KHR_swapchain too, for
+  // a program that also presents to a window (a headset's mirror): the device can make a swapchain of a surface
+  // ('createSwapChain' and 'createMirrorSwapChain'); needs an adapter from 'Instance.requestAdapterForSurface'.
+  // 'features' (DeviceFeatures) are asked for and enabled where the GPU has them ('fragmentShadingRateSupport',
+  // 'supportsRayTracing'); check 'device.fragmentShadingRate' and 'device.rayTracing' for whether they were. A GPU or
+  // runtime that refuses the device with a feature answers an invalid device, and the caller may ask again without.
   // Check 'isValid'.
-  pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true, false, false)
-  }
-
-  // The same with VK_KHR_swapchain enabled besides what the runtime adds, for
-  // a program that also presents to a window (a headset's mirror): the device
-  // can make a swapchain of a surface ('createSwapChain' and
-  // 'createMirrorSwapChain'). Needs an adapter from
-  // 'Instance.requestAdapterForSurface'.
-  pub fn requestDeviceViaWindow(self: &, maker: DeviceMaker, user: *u8) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true, true, false)
-  }
-
-  // The same with the choice of a window ('window': VK_KHR_swapchain too, as 'requestDeviceViaWindow') and of
-  // VK_KHR_fragment_shading_rate's attachment rates ('fragmentShadingRate': asked for, and enabled where
-  // 'fragmentShadingRateSupport' says the GPU has them; check 'device.fragmentShadingRate' for whether it was). The
-  // device is the one 'requestDeviceVia' makes in every other respect. A GPU or runtime that refuses the device with
-  // the extension answers an invalid device, and the caller may ask again without.
-  pub fn requestDeviceViaWith(self: &, maker: DeviceMaker, user: *u8, window: bool, fragmentShadingRate: bool) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true, window, fragmentShadingRate)
-  }
-
-  // The same, also asking for ray queries and acceleration structures ('rayTracing', enabled where 'supportsRayTracing' says
-  // the GPU has them; check 'device.rayTracing'), with or without the shading rates. A runtime that refuses the device
-  // answers an invalid one, and the caller may ask again without.
-  pub fn requestDeviceViaRay(self: &, maker: DeviceMaker, user: *u8, window: bool, fragmentShadingRate: bool, rayTracing: bool) Device {
-    self.makeDevice(rayTracing, &ComputeRequest(), maker, user, true, window, fragmentShadingRate)
+  pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8, window: bool, features: DeviceFeatures) Device {
+    self.makeDevice(features.rayTracing, &ComputeRequest(), maker, user, true, window, features.fragmentShadingRate)
   }
 
   // Whether this GPU offers fragment shading rates from an attachment (VK_KHR_fragment_shading_rate with
