@@ -862,7 +862,12 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
   }
 
-  // Move element i left, past the larger elements before it
+  // Move element i left, past the larger elements before it.
+  // It holds element i in flight ('held') while the larger ones shift right, so a
+  // comparator that panics mid-shift leaves one value duplicated and 'held' not
+  // written back. Harmless while a panic ends the program with nothing unwound
+  // (doc/design/panics.md); once panics unwind, this needs a hole guard that
+  // writes 'held' back on unwind (Rust's CopyOnDrop pattern).
   fn insertTail[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, order: &F) inline {
     let p = self as *T;
     if i > 0usize && order((p + i) as &T, (p + i - 1usize) as &T) < 0i32 {
