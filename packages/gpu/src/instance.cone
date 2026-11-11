@@ -407,6 +407,12 @@ struct AdapterBackend {
 pub alias DeviceMaker = &fn(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
   device: &mut vulkan.Device) i32;
 
+// The optional features a device made through 'requestDeviceVia' may ask for
+pub struct DeviceFeatures {
+  pub fragmentShadingRate: bool = false;   // VK_KHR_fragment_shading_rate's attachment rates (foveation)
+  pub rayTracing: bool = false;            // ray queries and acceleration structures
+}
+
 // What the layer's own path passes where a maker is asked for: it makes the
 // device itself, with vkCreateDevice, and never calls this
 fn makeDeviceDirect(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
@@ -439,19 +445,22 @@ pub struct Adapter {
   pub fn requestDevice(self: &) Device { self.requestDeviceWith(true) }
 
   // The same, made by 'maker' (a runtime's, OpenXR's: see DeviceMaker), with
-  // the features and extensions every drawing device has and no ray tracing.
+  // the features and extensions every drawing device has, and 'features' besides. 'window': VK_KHR_swapchain too, for
+  // a program that also presents to a window (a headset's mirror): the device can make a swapchain of a surface
+  // ('createSwapChain' and 'createMirrorSwapChain'); needs an adapter from 'Instance.requestAdapterForSurface'.
+  // 'features' (DeviceFeatures) are asked for and enabled where the GPU has them ('fragmentShadingRateSupport',
+  // 'supportsRayTracing'); check 'device.fragmentShadingRate' and 'device.rayTracing' for whether they were. A GPU or
+  // runtime that refuses the device with a feature answers an invalid device, and the caller may ask again without.
   // Check 'isValid'.
-  pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true, false)
+  pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8, window: bool, features: DeviceFeatures) Device {
+    self.makeDevice(features.rayTracing, &ComputeRequest(), maker, user, true, window, features.fragmentShadingRate)
   }
 
-  // The same with VK_KHR_swapchain enabled besides what the runtime adds, for
-  // a program that also presents to a window (a headset's mirror): the device
-  // can make a swapchain of a surface ('createSwapChain' and
-  // 'createMirrorSwapChain'). Needs an adapter from
-  // 'Instance.requestAdapterForSurface'.
-  pub fn requestDeviceViaWindow(self: &, maker: DeviceMaker, user: *u8) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true, true)
+  // Whether this GPU offers fragment shading rates from an attachment (VK_KHR_fragment_shading_rate with
+  // attachmentFragmentShadingRate), and the tile and fragment sizes it has
+  pub fn fragmentShadingRateSupport(self: &) FragmentShadingRateSupport {
+    if !self.isValid() { return FragmentShadingRateSupport(); }
+    queryFragmentShadingRate(&backend.fns, backend.physical)
   }
 
   // The GPU's Vulkan handle and the queue family its device draws with, for a
@@ -481,7 +490,7 @@ pub struct Adapter {
   // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
   // ray tracing either; check 'device.rayTracing'.
   pub fn requestDeviceWith(self: &, rayTracing: bool) Device {
-    self.makeDevice(rayTracing, &ComputeRequest(), &makeDeviceDirect, nullp(), false, true)
+    self.makeDevice(rayTracing, &ComputeRequest(), &makeDeviceDirect, nullp(), false, true, false)
   }
 
   // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
@@ -509,13 +518,13 @@ pub struct Adapter {
   // (features.cone says what, and what 'device.compute' then answers). Ray tracing is not asked for.
   // Check 'isValid'.
   pub fn requestComputeDevice(self: &, request: &ComputeRequest) Device {
-    self.makeDevice(false, request, &makeDeviceDirect, nullp(), false, true)
+    self.makeDevice(false, request, &makeDeviceDirect, nullp(), false, true, false)
   }
 
   // 'external': the device is made by 'maker'. 'swapchain': VK_KHR_swapchain is enabled (always, for a device the layer makes
   // itself; asked for, for a runtime's, whose own extensions are the runtime's to add)
   fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest, maker: DeviceMaker, user: *u8, external: bool,
-      swapchain: bool) Device {
+      swapchain: bool, rateWanted: bool) Device {
     var result = Device(DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
       vulkan.RayFns()), CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
@@ -541,11 +550,32 @@ pub struct Adapter {
       shaderSubgroupExtendedTypes: vkBool(on.subgroupExtendedTypes));
     var f11 = vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
       storageBuffer16BitAccess: vkBool(on.storage16Bit), uniformAndStorageBuffer16BitAccess: vkBool(on.storage16Bit));
+    // Fragment shading rates from an attachment (VK_KHR_fragment_shading_rate), if asked for and the GPU has them:
+    // the feature structure goes at the head of the chain, and the extension is added to the list below; it may go with
+    // ray tracing (the rate's structure then leads to the ray structures). Without it nothing here differs from a
+    // device made before.
+    let rateSupport = queryFragmentShadingRate(&backend.fns, backend.physical);
+    let useRate = rateWanted && rateSupport.supported;
+    var ratef = vulkan.PhysicalDeviceFragmentShadingRateFeaturesKHR(
+      pNext: if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null }, attachmentFragmentShadingRate: vulkan.TRUE);
     let f13 = vulkan.PhysicalDeviceVulkan13Features(
-      pNext: if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null },
+      pNext: if useRate { &mut ratef as *u8 } else if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null },
       synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
-    let exts: Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
-      &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8];
+    var exts: Array[*u8, 5] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
+      &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8, &"VK_KHR_fragment_shading_rate" as *u8];
+    var extCount = if useRay { 4u32 } else if swapchain { 1u32 } else { 0u32 };
+    if useRay && !swapchain {
+      // (a runtime's device without a window: no swapchain extension, the three ray ones in its place)
+      exts[0usize] = &"VK_KHR_acceleration_structure" as *u8;
+      exts[1usize] = &"VK_KHR_ray_query" as *u8;
+      exts[2usize] = &"VK_KHR_deferred_host_operations" as *u8;
+      extCount = 3u32;
+    }
+    if useRate {
+      // (the extension takes the place after the ones in use)
+      exts[usize.from(extCount)] = &"VK_KHR_fragment_shading_rate" as *u8;
+      extCount = extCount + 1u32;
+    }
     // Anisotropic filtering, the one optional core feature asked for: on
     // where the GPU has it (every desktop one does), else samplers filter
     // trilinearly only ('Device.maxAnisotropy' is 0)
@@ -573,7 +603,7 @@ pub struct Adapter {
     }
     let dci = vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
-      enabledExtensionCount: if useRay { 4u32 } else if swapchain { 1u32 } else { 0u32 }, ppEnabledExtensionNames: &exts as **u8,
+      enabledExtensionCount: extCount, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     var device = 0usize as vulkan.Device;
     let made = if external {
@@ -583,6 +613,13 @@ pub struct Adapter {
     };
     if !check(made, "vkCreateDevice") { return result; }
     result.backend.device = device;
+    if useRate {
+      result.fragmentShadingRate = true;
+      result.shadingRateTexelWidth = rateSupport.texelWidth;
+      result.shadingRateTexelHeight = rateSupport.texelHeight;
+      result.maxFragmentWidth = rateSupport.maxFragmentWidth;
+      result.maxFragmentHeight = rateSupport.maxFragmentHeight;
+    }
     result.backend.fns = Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
     result.queue.fns = result.backend.fns;
     let fns = result.backend.fns;

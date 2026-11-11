@@ -13,6 +13,13 @@ pub struct Device {
                                    // false on a GPU that lacks them, which then draws exactly as it always did
   pub compute: ComputeCapabilities = ComputeCapabilities();   // compute features (features.cone): the flags are what the
                                    // device was made with, the numbers the GPU's
+  pub fragmentShadingRate: bool = false;   // the device was made with VK_KHR_fragment_shading_rate's attachment rates
+                                   // (Adapter.requestDeviceVia): shading rate images, 'beginRenderPassWithDepthAndRate'; false
+                                   // draws exactly as it always did (no pipeline carries anything of it)
+  pub shadingRateTexelWidth: u32 = 0u32;   // the pixels of one texel of a shading rate image, across and down (the GPU's
+  pub shadingRateTexelHeight: u32 = 0u32;  // least), when fragmentShadingRate
+  pub maxFragmentWidth: u32 = 1u32;        // the largest fragment the GPU shades at once, in pixels, across and down
+  pub maxFragmentHeight: u32 = 1u32;
   pub maxStorageBufferBindingSize: u64 = MAX_STORAGE_BUFFER_BINDING_SIZE;   // the most bytes a bound storage buffer ranges over
                                    // (WebGPU's 128 MiB; the GPU's own with ComputeRequest.largeBuffers)
   pub maxStorageBuffersPerStage: u32 = MAX_STORAGE_BUFFERS_PER_SHADER_STAGE;   // the most storage buffers one shader stage sees (8; ditto)
@@ -118,10 +125,21 @@ pub struct Device {
     Fence(backend.device, backend.fns, fence, false)
   }
 
+  // How many of the frame's 128 command buffers it has used so far, how many of those are command encoders and how many
+  // were asked for beyond the sixteenth (refused: that work is dropped)
+  pub fn commandBuffersUsed(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].used }
+  pub fn commandBuffersDropped(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].dropped }
+  pub fn commandEncodersMade(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders }
+
+  // Hold frames to 'n' command buffers (at most the 128 a frame has; 0: all of them), to see what a program does that asks for
+  // more than its frame has
+  pub fn setCommandBufferLimit(self: &mut, n: u32) { queue.backend.commandBufferLimit = n; }
+
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self: &mut) CommandEncoder {
     beginQueueFrame(&mut queue);
     let cmd = nextCommandBuffer(&mut queue);
+    queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders = queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders + 1u32;
     CommandEncoder(EncoderBackend(cmd, queue.fns))
   }
 
@@ -251,7 +269,13 @@ pub struct Device {
     let sampled = (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
     let storage = (desc.usage & TEXTURE_USAGE_STORAGE_BINDING) != 0u32;
     let volume = desc.dimension == TEXTURE_DIMENSION_3D;
-    if !attachment && !sampled && !storage {
+    let rate = (desc.usage & TEXTURE_USAGE_SHADING_RATE) != 0u32;
+    if rate && (!fragmentShadingRate || desc.format != TEXTURE_FORMAT_R8_UINT || attachment || sampled || storage || volume
+        || desc.mipLevelCount != 1u32 || desc.depthOrArrayLayers != 1u32) {
+      fail("createTexture: a shading rate image (TEXTURE_USAGE_SHADING_RATE) is one level and one layer of r8uint, only on a device made with the fragment shading rate, and neither drawn into nor sampled");
+      return result;
+    }
+    if !attachment && !sampled && !storage && !rate {
       fail("createTexture: a texture is drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT), sampled (TEXTURE_USAGE_TEXTURE_BINDING), a storage texture (TEXTURE_USAGE_STORAGE_BINDING), or more than one");
       return result;
     }
@@ -306,6 +330,10 @@ pub struct Device {
     if storage {
       kind = KIND_STORAGE;
       vkUsage = vulkan.IMAGE_USAGE_STORAGE_BIT;
+    }
+    if rate {
+      kind = KIND_SHADING_RATE;
+      vkUsage = vulkan.IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
     }
     if (desc.usage & TEXTURE_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT; }
     if (desc.usage & TEXTURE_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_DST_BIT; }
@@ -546,8 +574,17 @@ pub struct Device {
     var rendering = vulkan.PipelineRenderingCreateInfo(colorAttachmentCount: colorCount,
       pColorAttachmentFormats: &colorFormats as *u32);
     if hasDepth { rendering.depthAttachmentFormat = vkFormat(desc.depthFormat); }
+    // On a device made with the fragment shading rate, a pipeline with a color target may be drawn in a pass with a
+    // shading rate image: it carries the flag Vulkan asks of it, and the combiners that let the image decide
+    // (the pipeline's size 1 x 1 and the primitive's are kept; the image's replaces them). Without an image in the
+    // pass it shades as it always did. Without the feature the pipeline is made exactly as before.
+    let rated = fragmentShadingRate && desc.colorFormat != TEXTURE_FORMAT_UNDEFINED;
+    var rateState = vulkan.PipelineFragmentShadingRateStateCreateInfoKHR(
+      combinerOps: [vulkan.FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR, vulkan.FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR]);
+    if rated { rendering.pNext = &rateState as *u8; }
 
     let ci = vulkan.GraphicsPipelineCreateInfo(pNext: &rendering as *u8, stageCount: 2u32,
+      flags: if rated { vulkan.PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR } else { 0u32 },
       pStages: &stages as *vulkan.PipelineShaderStageCreateInfo,
       pVertexInputState: &vertexInput as *vulkan.PipelineVertexInputStateCreateInfo,
       pInputAssemblyState: &inputAssembly as *vulkan.PipelineInputAssemblyStateCreateInfo,
