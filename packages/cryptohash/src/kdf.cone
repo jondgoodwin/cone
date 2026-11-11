@@ -1,0 +1,90 @@
+// -------- key derivation over HMAC-SHA-256 --------
+//
+// Neither function is constant-time beyond what HMAC-SHA-256 already is: the
+// number of HMAC calls depends on 'iterations' and on the output length, which
+// are not secrets, and nothing else here branches on or indexes by a secret
+// byte, but no more than that is promised. The 'trust' design (Design 9) may
+// revisit this.
+//
+// Both write into a caller's buffer, as far as the buffer goes, because the
+// output length is the caller's choice and the package has no list type to
+// return. Both answer false, and leave the buffer unchanged, for a request
+// the standard rules out.
+
+// PBKDF2-HMAC-SHA-256 (RFC 8018 section 5.2, with HMAC-SHA-256 as the PRF).
+// Fills 'out' with the derived key of length out.len from the password and
+// salt, with 'iterations' (the RFC's c) rounds of HMAC per 32-byte block.
+// Answers false if iterations is 0, or if out is longer than the RFC's limit
+// of (2^32 - 1) * 32 bytes. An empty 'out' is allowed and derives nothing.
+// Not a password hash for new designs on its own: a memory-hard function is
+// better, and the iteration count must be large (OWASP 2023 asks for 600000
+// with SHA-256). Not constant-time beyond HMAC: see above.
+pub fn pbkdf2Sha256(password: &Array[u8], salt: &Array[u8], iterations: u32, out: &mut Array[u8]) bool {
+  if iterations == 0u32 { return false; }
+  if u64.from(out.len) > 4294967295u64 * 32u64 { return false; }
+  let base = HmacSha256.make(password);
+  var block = 1u32;
+  var pos = 0usize;
+  while pos < out.len {
+    var ib = Array[u8, 4]() <- fill 0u8;
+    ib[0] = u8.from((block >> 24u32) & 0xffu32);
+    ib[1] = u8.from((block >> 16u32) & 0xffu32);
+    ib[2] = u8.from((block >> 8u32) & 0xffu32);
+    ib[3] = u8.from(block & 0xffu32);
+    var m = base.copyOf();
+    m.update(salt);
+    m.update(&ib);
+    var u = m.finish();
+    var t = u;
+    var c = 1u32;
+    while c < iterations {
+      var m2 = base.copyOf();
+      m2.update(&u);
+      u = m2.finish();
+      var j = 0usize;
+      while j < 32usize { t[j] = t[j] ^ u[j]; j = j + 1usize; }
+      c = c + 1u32;
+    }
+    var k = 0usize;
+    while k < 32usize && pos < out.len {
+      out[pos] = t[k];
+      pos = pos + 1usize;
+      k = k + 1usize;
+    }
+    block = block + 1u32;
+  }
+  true
+}
+
+// HKDF-SHA-256 (RFC 5869): extract, then expand. Fills 'out' with the output
+// keying material of length out.len from the input keying material 'ikm', an
+// optional 'salt' (empty means none, which RFC 5869 treats as 32 zero bytes;
+// HMAC pads an empty key with zeros, so it is the same) and the context
+// 'info'. Answers false if out is longer than 255 * 32 = 8160 bytes, the most
+// the standard allows. Not constant-time beyond HMAC: see above.
+pub fn hkdfSha256(salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], out: &mut Array[u8]) bool {
+  if out.len > 8160usize { return false; }
+  // extract: PRK = HMAC(salt, IKM)
+  let prk = hmacSha256(salt, ikm);
+  // expand: T(i) = HMAC(PRK, T(i-1) | info | i), OKM is T(1) | T(2) | ... cut to length
+  let base = HmacSha256.make(&prk);
+  var t = Array[u8, 32]() <- fill 0u8;
+  var counter = 1u8;
+  var pos = 0usize;
+  while pos < out.len {
+    var m = base.copyOf();
+    if counter > 1u8 { m.update(&t); }
+    m.update(info);
+    var cb = Array[u8, 1]() <- fill counter;
+    m.update(&cb);
+    t = m.finish();
+    var k = 0usize;
+    while k < 32usize && pos < out.len {
+      out[pos] = t[k];
+      pos = pos + 1usize;
+      k = k + 1usize;
+    }
+    counter = counter + 1u8;
+  }
+  true
+}
