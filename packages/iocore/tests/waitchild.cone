@@ -17,7 +17,9 @@
 // 9. The race: a wait cancelled (or timed out) at every moment around its
 //    child's end, many times over. Each wait answers exactly once, Done or the
 //    cancel, and nothing arrives after; a completion for a record already
-//    answered would crash or double-answer here.
+//    answered would crash or double-answer here. Each end is also forced, so
+//    that load cannot hide one: a wait cancelled at once on a child that cannot
+//    have ended, and a wait never cut on a child that ends at once.
 
 mod waitchild;
 
@@ -315,6 +317,36 @@ fn main() i32 {
       if !quiet(&mut lp, tok, 3i64) {doubles = doubles + 1usize;}
       lp.close(h);
       i = i + 1usize;
+    }
+    // Whether the sweep met both ends depends on how fast a child starts and ends,
+    // which a loaded machine moves wholly to one side. So each end is also forced,
+    // by ordering the events and not by timing: a wait on a child that cannot end
+    // yet (30 s) cancelled at once is always cut; a wait on a child that ends at
+    // once, never cancelled, is always Done. Each forced round is checked as the
+    // sweep's rounds are: answered once, nothing after.
+    {
+      var f = 0usize;
+      while f < 2usize {
+        let running = f == 0usize;
+        raw = startChild(0u32, if running {30u32} else {0u32});
+        h = adopt(&mut lp, raw);
+        let ftok = 5000u64 + u64.from(f);
+        let fid = lp.submit(Op.WaitChild(h), Target.Here(ftok));
+        if running {lp.cancel(fid);}
+        let g = await1(&mut lp, ftok, 20i64);
+        if g.status == diag.outcomeDone {dones = dones + 1usize;}
+        else if g.status == diag.outcomeCancelled || g.status == diag.outcomeTimedOut {cuts = cuts + 1usize;}
+        expect(g.status == (if running {diag.outcomeCancelled} else {diag.outcomeDone}), "9: a forced end answers as ordered");
+        if !quiet(&mut lp, ftok, 3i64) {doubles = doubles + 1usize;}
+        if running {
+          // the cancelled child is still there: end it and wait for it
+          lp.submit(Op.WaitChild(h), Target.Here(ftok + 10u64));
+          kill(raw);
+          await1(&mut lp, ftok + 10u64, 20i64);
+        }
+        lp.close(h);
+        f = f + 1usize;
+      }
     }
     expectUInt(u64.from(answers), 600u64, "9: every wait answered once, Done or cut");
     expectUInt(u64.from(doubles), 0u64, "9: ...and none twice");

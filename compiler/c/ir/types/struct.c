@@ -5131,7 +5131,7 @@ static void structCheckMembersBody(StructNode *node) {
     if (structDeclaresTrait(node, shapeKeepingTrait)
         && !(node->lexer != NULL && (node->lexer->flags & LexLineMarks)))
         errorMsgNode((INode*)node, ErrorShapeKeepingDeclared,
-            "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one.",
+            "%s may not declare ShapeKeeping: the compiler finds it, from the methods a virtual reference marked '+ ShapeKeeping' dispatches to, where a value becomes one. See the 1500 at the use, which names the reshaping call.",
             &node->namesym->namestr);
 
     structCheckCopy(node);
@@ -6089,6 +6089,48 @@ int structPrivateRefWhy(char *buf, size_t size, INode *fromtype, INode *totype) 
     int fits = itypeMatches(totype, fromtype, Coercion) != NoMatch;
     inodeCheckState = svState;
     return fits && structPrivateMember(buf, size, (StructNode*)to, (StructNode*)from);
+}
+
+// Why a reference to a type is refused where a reference to a trait is wanted, when
+// the reason is a default: the type lacks a method the trait gives a body, and does not
+// declare 'is' the trait, so the trait's default does not fill it (a structural fit
+// takes no defaults). Into 'buf', leading space included; 1 with the words, else 0.
+// Only when the type has every required method, so a default is the one thing missing.
+int structDefaultRefWhy(char *buf, size_t size, INode *fromtype, INode *totype) {
+    buf[0] = '\0';
+    INode *from = itypeGetTypeDcl(fromtype);
+    INode *to = itypeGetTypeDcl(totype);
+    if ((from->tag != RefTag && from->tag != VirtRefTag) || (to->tag != RefTag && to->tag != VirtRefTag))
+        return 0;
+    from = itypeGetTypeDcl(((RefNode*)from)->vtexp);
+    to = itypeGetTypeDcl(((RefNode*)to)->vtexp);
+    if (from->tag != StructTag || to->tag != StructTag || from == to)
+        return 0;
+    StructNode *strnode = (StructNode*)from;
+    StructNode *trait = (StructNode*)to;
+    if (!(trait->flags & TraitType) || (strnode->flags & TraitType) || structDeclaresTrait(strnode, trait))
+        return 0;
+    FnDclNode *missing = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        INode *binding = namespaceFind(&strnode->namespace, meth->namesym);
+        if (meth->value == NULL) {
+            if (binding == NULL || iNsTypeFindVrefMethod(binding, meth, (INode*)strnode) == NULL)
+                return 0;
+        }
+        else if (binding == NULL && missing == NULL)
+            missing = meth;
+    }
+    if (missing == NULL)
+        return 0;
+    snprintf(buf, size, " %s does not declare `is %s`, so %s's default for `%s` does not apply: declare `is %s` to take its defaults, or write `%s` in %s.",
+        &strnode->namesym->namestr, &trait->namesym->namestr, &trait->namesym->namestr,
+        &missing->namesym->namestr, &trait->namesym->namestr, &missing->namesym->namestr, &strnode->namesym->namestr);
+    return 1;
 }
 
 // Is from-type a subtype of to-struct (we know they are not the same)
