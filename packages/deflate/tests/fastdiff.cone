@@ -9,6 +9,9 @@
 //     bytes of the first 40 changed, where a dynamic block's code lengths are), and hand-built
 //     fixed-Huffman streams of random literals and matches, some of whose distances reach past
 //     the start of the output.
+// Also compared: the error kind after a failure, totalIn, and takeRest after Done. Fixed cases cover
+// the history edge, distance 32768, the input ending at every offset near the loop's end, stored
+// blocks, and an output limit (TooLarge).
 // The counts it prints are pinned in fastdiff.out.
 
 mod fastdiff;
@@ -32,9 +35,18 @@ fn pullN(x: &mut Inflater, out: &mut List[u8], max: usize) Status {
 
 // Inflates 's' in pieces of 'chunk' input bytes, taking 'maxPull' output bytes at a time, with the
 // fast loop 'fast'. 0 when it ends Done, 1 Failed, 2 stuck, 3 too many rounds, 8 over-long pull.
-fn run(fmt: Format, fast: bool, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
+fn run(fmt: Format, fast: bool, s: &Array[u8], chunk: usize, maxPull: usize, limit: u64, out: &mut List[u8], info: &mut Info) i32 {
   var inf = Inflater.make(fmt);
   inf.setFastLoop(fast);
+  if limit > 0u64 { inf.setLimit(limit); }
+  let r = runLoop(&mut inf, s, chunk, maxPull, out);
+  info.totalIn = inf.totalIn();
+  if r == 1 { info.kind = inf.error().kind; }
+  if r == 0 { info.rest = inf.takeRest(); }
+  r
+}
+
+fn runLoop(inf: &mut Inflater, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
   var pos = 0usize;
   var piece = List[u8]();
   var guard = 0usize;
@@ -51,7 +63,7 @@ fn run(fmt: Format, fast: bool, s: &Array[u8], chunk: usize, maxPull: usize, out
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = pullN(&mut inf, &mut piece, maxPull);
+      st = pullN(inf, &mut piece, maxPull);
       out.appendSlice(piece.view());
       if piece.len() > maxPull { return 8; }
     }
@@ -62,26 +74,46 @@ fn run(fmt: Format, fast: bool, s: &Array[u8], chunk: usize, maxPull: usize, out
   3
 }
 
+// What else must agree: the error kind after a failure, the input used, the bytes left after a stream
+struct Info {
+  kind: ErrorKind;
+  totalIn: u64;
+  rest: List[u8];
+}
+
+fn newInfo() Info { Info(ErrorKind.BadBlock, 0u64, List[u8]()) }
+
 // Counters: streams compared, mismatches, Done, Failed, bytes decoded
 struct Tally {
   compared: usize;
   mismatches: usize;
   dones: usize;
   fails: usize;
+  tooLarge: usize;
   firstBad: List[u8];
   firstBadFmt: i32;
 }
 
 // Decodes 's' with the loop on and off; they must agree
 fn compare(t: &mut Tally, fmt: Format, s: &Array[u8], chunk: usize, maxPull: usize) {
+  compareLimit(t, fmt, s, chunk, maxPull, 0u64);
+}
+
+// The same, with the output limit set to 'limit' (0 leaves the default)
+fn compareLimit(t: &mut Tally, fmt: Format, s: &Array[u8], chunk: usize, maxPull: usize, limit: u64) {
   var a = List[u8]();
   var b = List[u8]();
-  let ra = run(fmt, true, s, chunk, maxPull, &mut a);
-  let rb = run(fmt, false, s, chunk, maxPull, &mut b);
+  var ia = newInfo();
+  var ib = newInfo();
+  let ra = run(fmt, true, s, chunk, maxPull, limit, &mut a, &mut ia);
+  let rb = run(fmt, false, s, chunk, maxPull, limit, &mut b, &mut ib);
   t.compared += 1usize;
   if ra == 0 { t.dones += 1usize; }
   if ra == 1 { t.fails += 1usize; }
-  if ra != rb || a.view() != b.view() {
+  let same = ra == rb && a.view() == b.view() && ia.totalIn == ib.totalIn && ia.rest.view() == ib.rest.view()
+    && (ra != 1 || ia.kind == ib.kind);
+  if ra == 1 && ia.kind == ErrorKind.TooLarge { t.tooLarge += 1usize; }
+  if !same {
     t.mismatches += 1usize;
     if t.firstBad.len() == 0usize || s.len < t.firstBad.len() {
       t.firstBad.clear();
@@ -205,8 +237,42 @@ fn makeFixed(items: usize, badIn: usize) List[u8] {
   out
 }
 
+// A final fixed-Huffman block: 'lits' literals, then (if 'len' > 0) one match of 'len' at 'dist',
+// then a literal 'z'
+fn litsThenMatch(lits: usize, len: usize, dist: usize) List[u8] {
+  var out = List[u8]();
+  var nb = 0usize;
+  putBits(&mut out, &mut nb, 1usize, 1usize);
+  putBits(&mut out, &mut nb, 1usize, 2usize);
+  var i = 0usize;
+  while i < lits { putLit(&mut out, &mut nb, 97usize + i % 26usize); i += 1usize; }
+  if len > 0usize { putMatch(&mut out, &mut nb, len, dist); }
+  putLit(&mut out, &mut nb, 122usize);
+  putLit(&mut out, &mut nb, 256usize);
+  out
+}
+
+// A non-final stored block of 'n' bytes, then a final fixed block with a match of 'len' at 'dist'
+// (which may reach back into the stored bytes)
+fn storedThenMatch(n: usize, len: usize, dist: usize) List[u8] {
+  var out = List[u8]();
+  var nb = 0usize;
+  putBits(&mut out, &mut nb, 0usize, 1usize);
+  putBits(&mut out, &mut nb, 0usize, 2usize);
+  out.push(u8.from(n % 256usize)); out.push(u8.from(n / 256usize));
+  out.push(u8.from((65535usize - n) % 256usize)); out.push(u8.from((65535usize - n) / 256usize));
+  var i = 0usize;
+  while i < n { out.push(u8.from(65usize + (i * 7usize) % 26usize)); i += 1usize; }
+  nb = out.len() * 8usize;
+  putBits(&mut out, &mut nb, 1usize, 1usize);
+  putBits(&mut out, &mut nb, 1usize, 2usize);
+  putMatch(&mut out, &mut nb, len, dist);
+  putLit(&mut out, &mut nb, 256usize);
+  out
+}
+
 fn main() i32 {
-  var tl = Tally(0usize, 0usize, 0usize, 0usize, List[u8](), 0);
+  var tl = Tally(0usize, 0usize, 0usize, 0usize, 0usize, List[u8](), 0);
   // The package's corpus
   let path = Path.from("../../../../tests/data/zoo.bin");
   var file = String();
@@ -282,6 +348,67 @@ fn main() i32 {
     compare(&mut tl, Format.Raw, s.view(), s.len() + 1usize, 65536usize);
     h += 1usize;
   }
+
+  // Fixed cases: a distance at the history edge (all the output so far), one short of it, exactly
+  // 32768, and one past it (BadDistance, or reaching past the start)
+  let edges: Array[usize, 7] = [1usize, 5usize, 100usize, 32767usize, 32768usize, 32769usize, 40000usize];
+  var e = 0usize;
+  while e < 7usize {
+    let lits = edges[e];
+    let dists: Array[usize, 4] = [lits, if lits > 1usize {lits - 1usize} else {1usize}, 32768usize, 32769usize];
+    var di = 0usize;
+    while di < 4usize {
+      let s = litsThenMatch(lits, 258usize, dists[di]);
+      compare(&mut tl, Format.Raw, s.view(), s.len() + 1usize, 65536usize);
+      compare(&mut tl, Format.Raw, s.view(), 1000usize, 700usize);
+      di += 1usize;
+    }
+    e += 1usize;
+  }
+  // Input that ends at every offset near the fast loop's end: short streams in pieces of 1 to 12
+  var sh = 0usize;
+  while sh < 40usize {
+    let s = litsThenMatch(sh, if sh > 3usize {10usize} else {0usize}, 3usize);
+    var c = 1usize;
+    while c <= 12usize { compare(&mut tl, Format.Raw, s.view(), c, 65536usize); c += 1usize; }
+    compare(&mut tl, Format.Raw, s.view(), s.len() + 1usize, 65536usize);
+    sh += 1usize;
+  }
+  // Stored blocks: alone (level 0), and followed by a block whose match reaches into them
+  var sb = 0usize;
+  while sb < 3usize {
+    let text = makeText(3000usize + sb * 40000usize, 20usize, 20usize, 30000usize);
+    let z = rawDeflate(text.view(), 0);
+    compare(&mut tl, Format.Raw, z.view(), z.len() + 1usize, 65536usize);
+    compare(&mut tl, Format.Raw, z.view(), 777usize, 5000usize);
+    sb += 1usize;
+  }
+  let sm1 = storedThenMatch(100usize, 50usize, 100usize);
+  compare(&mut tl, Format.Raw, sm1.view(), sm1.len() + 1usize, 65536usize);
+  compare(&mut tl, Format.Raw, sm1.view(), 3usize, 40usize);
+  let sm2 = storedThenMatch(100usize, 50usize, 101usize);
+  compare(&mut tl, Format.Raw, sm2.view(), sm2.len() + 1usize, 65536usize);
+  let sm3 = storedThenMatch(60000usize, 258usize, 32768usize);
+  compare(&mut tl, Format.Raw, sm3.view(), sm3.len() + 1usize, 65536usize);
+  compare(&mut tl, Format.Raw, sm3.view(), 4096usize, 3000usize);
+  // The output limit with the loop on: limits at, one under, half of and anywhere in the output
+  var lm = 0usize;
+  while lm < 24usize {
+    let text = makeText(5000usize + rnd(40000usize), 2usize + rnd(60usize), rnd(40usize), 32768usize);
+    let good = rawDeflate(text.view(), if lm % 2usize == 0usize {6} else {1});
+    let n = u64.from(text.len());
+    let lim = if lm % 4usize == 0usize {n} else if lm % 4usize == 1usize {n - 1u64} else if lm % 4usize == 2usize {n / 2u64} else {1u64 + u64.from(rnd(text.len()))};
+    compareLimit(&mut tl, Format.Raw, good.view(), good.len() + 1usize, 65536usize, lim);
+    compareLimit(&mut tl, Format.Raw, good.view(), 1200usize, 2000usize, lim);
+    lm += 1usize;
+  }
+  var lh = 0usize;
+  while lh < 16usize {
+    let s = makeFixed(100usize + rnd(1000usize), 0usize);
+    compareLimit(&mut tl, Format.Raw, s.view(), s.len() + 1usize, 65536usize, 1u64 + u64.from(rnd(20000usize)));
+    lh += 1usize;
+  }
+  expect(tl.tooLarge > 15usize, "the limit cases include many that stop on TooLarge");
 
   printStr("compared "); printInt(i64.from(tl.compared));
   printStr(" (zoo "); printInt(i64.from(zooCompared));
