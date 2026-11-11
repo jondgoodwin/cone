@@ -1,0 +1,26 @@
+// Bug 77, the caller half: a '&' receiver is no place the call stores into. 'scan' takes 'self: &' and a '&mut' visitor; the visitor may hold a borrow of 'idx' (the receiver), but 'idx' is not a place that holds the visitor, so 'idx.rebuild()' after the call is allowed. (bench.cone in spatialindex has this shape.)
+mod lifetime_call_ok_readonly_receiver_visitor;
+import stdio use *;
+import collections use List;
+struct Idx {
+  pub items: List[i64];
+  pub fn scan[F: fn(x: i64) bool](self: &, visit: &mut F) {
+    var i = 0usize;
+    while i < items.len() {
+      if !visit(items[i]) {return;}
+      i = i + 1usize;
+    }
+  }
+  pub fn rebuild(self: &mut) { items.push(0i64); }
+}
+fn main() {
+  var idx = Idx(List[i64]());
+  idx.items.push(5i64);
+  idx.items.push(6i64);
+  var hits = 0i64;
+  var cb = fn(x: i64) bool { hits = hits + x; true };
+  idx.scan(&mut cb);
+  idx.rebuild();
+  idx.scan(&mut cb);
+  print <- hits, " ", idx.items.len(), "\n";
+}
