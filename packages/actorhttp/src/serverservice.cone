@@ -55,8 +55,8 @@ struct ExRec {
   sinkFailed: bool;            // its pipeline was stopped or the body failed: chunks arriving go straight back
   sinkEnded: bool;             // its 'end(Finished)' has come: finish the body once the chunks are sent
   sinkUp: Option[ChunkSource]; // the source feeding it
-  sinkChunks: Deque[IoBuf];    // chunks arrived, whose bytes the connection has not all taken
-  sinkOff: usize;              // ...of the first, how many it has taken
+  sinkChunks: Deque[IoBuf];    // chunks arrived, not yet taken by the connection (a refused one waits at the front)
+  sinkHome: Option[IoHome];    // the source's home: a chunk sent carries it, and its death returns the credit
   sinkIn: u64;                 // body bytes the sink has been given, for the declared length
   sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
   // The request's body as a stream (ServerConfig.streamBodies; requestbody.cone). 'inMode' says the exchange is
@@ -80,7 +80,7 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
-    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false,
+    sinkChunks: Deque[IoBuf](), sinkHome: None[IoHome], sinkIn: 0u64, sinkGone: false,
     inMode: false, inAwait: false, inContinue: false, inEnded: false, inDiscard: false, inRefused: false,
     inSink: None[ChunkSink], inKept: None[Ending], inLend: newLend())
 }
@@ -358,6 +358,12 @@ fn srvRespond(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: Body
     h.headers.add("Alt-Svc", a.view());
   }
   srv.drv.respond(x.req, h, framing);
+}
+
+// Body bytes, moved in: None when taken, or the buffer back when the connection refuses it (Writable comes
+// when there is room)
+fn srvSendBuf(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) Option[IoBuf] {
+  if x.onH3 {srv.h3.sendData(x.qreq, b)} else {srv.drv.sendData(x.req, b)}
 }
 
 // Body bytes: whether they were taken (else Writable comes when there is room)
