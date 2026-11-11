@@ -118,10 +118,21 @@ pub struct Device {
     Fence(backend.device, backend.fns, fence, false)
   }
 
+  // How many of the frame's 128 command buffers it has used so far, how many of those are command encoders and how many
+  // were asked for beyond the sixteenth (refused: that work is dropped)
+  pub fn commandBuffersUsed(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].used }
+  pub fn commandBuffersDropped(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].dropped }
+  pub fn commandEncodersMade(self: &) u32 { queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders }
+
+  // Hold frames to 'n' command buffers (at most the 128 a frame has; 0: all of them), to see what a program does that asks for
+  // more than its frame has
+  pub fn setCommandBufferLimit(self: &mut, n: u32) { queue.backend.commandBufferLimit = n; }
+
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self: &mut) CommandEncoder {
     beginQueueFrame(&mut queue);
     let cmd = nextCommandBuffer(&mut queue);
+    queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders = queue.backend.frames[usize.from(queue.backend.frameIndex)].encoders + 1u32;
     CommandEncoder(EncoderBackend(cmd, queue.fns))
   }
 

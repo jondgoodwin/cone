@@ -13,9 +13,12 @@ struct FrameState {
   fence: vulkan.Fence;          // signalled by the frame's last submission
   pending: bool;                // its fence will be signalled
   pool: vulkan.CommandPool;     // recording thread 0's pool (one per thread, when there are threads)
-  buffers: Array[vulkan.CommandBuffer, 16];   // allocated from the pool, reused each time the frame comes round
+  buffers: Array[vulkan.CommandBuffer, 128];   // (MAX_FRAME_COMMAND_BUFFERS)   // allocated from the pool, reused each time the frame comes round
   allocated: u32;
   used: u32;
+  encoders: u32;                // of 'used': command encoders made (createCommandEncoder)
+  uploadBuffers: u32;           // of 'used': upload command buffers begun
+  dropped: u32;                 // command buffers asked for after the 128th, refused
   upload: vulkan.CommandBuffer; // recording uploads and textures' first layouts, until the next submission
   spare: vulkan.CommandBuffer;  // the upload buffer a flush ran, to record the next uploads into
   staging: StagingBlock;        // where uploads are copied from, from its start
@@ -108,6 +111,7 @@ struct QueueBackend {
   flushFence: vulkan.Fence;     // signalled by a mid-frame flush of uploads (made the first time, reset after each wait)
   frameIndex: u32;              // which of 'frames' is being recorded
   inFrame: bool;
+  commandBufferLimit: u32;      // a frame's command buffers, if less than MAX_FRAME_COMMAND_BUFFERS (0: that; for tests of a frame that runs out)
   memory: vulkan.PhysicalDeviceMemoryProperties;
 }
 
@@ -511,6 +515,9 @@ fn beginQueueFrame(queue: &mut CommandQueue) {
   }
   check(queue.fns.resetCommandPool(device, queue.backend.frames[i].pool, 0u32), "vkResetCommandPool");
   queue.backend.frames[i].used = 0u32;
+  queue.backend.frames[i].encoders = 0u32;
+  queue.backend.frames[i].uploadBuffers = 0u32;
+  queue.backend.frames[i].dropped = 0u32;
   queue.backend.frames[i].upload = nullCommandBuffer();
   queue.backend.frames[i].spare = nullCommandBuffer();
   destroyRetired(&queue.fns, device, &mut queue.backend.frames[i], false);
@@ -523,8 +530,14 @@ fn beginQueueFrame(queue: &mut CommandQueue) {
 // The next unused command buffer of the current frame's pool, begun
 fn nextCommandBuffer(queue: &mut CommandQueue) vulkan.CommandBuffer {
   let i = usize.from(queue.backend.frameIndex);
-  if queue.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
-    fail("a frame recorded more than 16 command buffers");
+  var limit = MAX_FRAME_COMMAND_BUFFERS;
+  if queue.backend.commandBufferLimit != 0u32 && queue.backend.commandBufferLimit < limit { limit = queue.backend.commandBufferLimit; }
+  if queue.backend.frames[i].used >= limit {
+    queue.backend.frames[i].dropped = queue.backend.frames[i].dropped + 1u32;
+    var msg = String.from("a frame recorded more than ");
+    msg <- u64.from(limit);
+    msg <- " command buffers";
+    fail(msg.view());
     return nullCommandBuffer();
   }
   if queue.backend.frames[i].used == queue.backend.frames[i].allocated {
@@ -568,6 +581,7 @@ fn uploadCommands(queue: &mut CommandQueue) vulkan.CommandBuffer {
   var cmd = queue.backend.frames[i].spare;
   if isNull(cmd) {
     cmd = nextCommandBuffer(queue);
+    queue.backend.frames[i].uploadBuffers = queue.backend.frames[i].uploadBuffers + 1u32;
   } else {
     // The one a flush ran, recorded again (its pool lets a begun buffer reset itself)
     queue.backend.frames[i].spare = nullCommandBuffer();
