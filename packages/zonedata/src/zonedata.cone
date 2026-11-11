@@ -16,19 +16,22 @@
 //   named(name)            the Zone of an IANA name, 'Europe/Kyiv'
 //   localZone()            the Zone the machine is set to
 //   localZoneName()        the IANA name of that zone
-//   validName(name)        whether a text may be a zone's name (see below)
-//   windowsToIana(id)      the IANA name of a Windows zone id
+//   isValidName(name)      whether a text may be a zone's name (see below)
+//   windowsToIana(id)      the IANA name of a Windows zone id (windowszones.cone,
+//                          generated from CLDR by tools/zonedata/genwindowszones.py)
 //   ZoneError, ZoneErrorKind
 //
 // **What differs by system.**
 //   - Linux and other POSIX systems: 'named' reads /usr/share/zoneinfo/<name>.
 //     'localZone' reads the TZ variable, then /etc/localtime. A TZ that is a name
 //     ('Europe/Paris', or ':Europe/Paris') or an absolute path to a zone file
-//     is read; one that is set and empty means UTC; a POSIX rule such as
-//     'EST5EDT,M3.2.0,M11.1.0' is not read, unless a file of that very name is
-//     there. With no TZ, /etc/localtime is read. 'localZoneName' answers TZ's
-//     name or, when /etc/localtime is a link into the zoneinfo folder, the
-//     name after 'zoneinfo/'; a copy of the file has no name and is an Err.
+//     is read (the path directly, outside the zoneinfo folder, as glibc does);
+//     one that is set and empty means UTC; a POSIX rule that names no file,
+//     such as 'EST5EDT,M3.2.0,M11.1.0' or '<+03>-3', becomes a Zone of that
+//     rule alone (no history), read by calendar's footer parser. With no TZ,
+//     /etc/localtime is read. 'localZoneName' answers TZ's name or, when
+//     /etc/localtime is a link into the zoneinfo folder, the name after
+//     'zoneinfo/'; a copy of the file, or a TZ rule, has no name and is an Err.
 //   - Windows holds no zone files. 'named' answers the Err
 //     'no zone data source on this platform; import tzdata' (the kind is
 //     NoSource). 'localZoneName' asks Windows for the zone's id (as 'Eastern
@@ -36,7 +39,7 @@
 //     for it, and so is the same Err until a data source exists.
 //
 // A name is checked before any file is opened, so a name cannot reach outside
-// the zoneinfo folder: see 'validName'.
+// the zoneinfo folder: see 'isValidName'.
 
 mod zonedata;
 
@@ -84,7 +87,7 @@ fn failure[T](kind: ZoneErrorKind, name: &str, reason: &str) Result[T, ZoneError
 // IANA's names use, as in 'America/Port-au-Prince' and 'Etc/GMT+5'), no part
 // empty and none '.' or '..'. So no name is absolute, begins or ends with '/',
 // holds '\', ':' or a NUL, or climbs out of a folder.
-pub fn validName(name: &str) bool {
+pub fn isValidName(name: &str) bool {
   let b: &Array[u8] = name;
   if b.len == 0usize { return false; }
   var partStart = 0usize;
@@ -133,13 +136,41 @@ fn readZone(p: &str, name: &str) Result[Zone, ZoneError] {
   }
 }
 
-const zoneinfoDir = "/usr/share/zoneinfo/";
+// The Zone of a POSIX TZ rule alone ('EST5EDT,M3.2.0,M11.1.0', '<+03>-3'), or
+// None if the text is no rule. calendar already reads this syntax as the footer
+// of a TZif file, so the rule is wrapped in the smallest version 2 file (no
+// transitions, one type, the rule as the footer) and read by Zone.fromTzif.
+fn ruleZone(rule: &str) Option[Zone] {
+  // Two 44-byte headers, 'TZif2' then counts; the second has 1 type and 4
+  // characters; then the type (offset 0, not DST, abbreviation 0) and "UTC\0"
+  var h = Array[u8, 98]() <- fill 0u8;
+  var k = 0usize;
+  while k < 2usize {
+    let at = k * 44usize;
+    h[at] = 'T'; h[at + 1usize] = 'Z'; h[at + 2usize] = 'i'; h[at + 3usize] = 'f'; h[at + 4usize] = '2';
+    k = k + 1usize;
+  }
+  h[44usize + 39usize] = 1u8;      // typecnt
+  h[44usize + 43usize] = 4u8;      // charcnt
+  h[94usize] = 'U'; h[95usize] = 'T'; h[96usize] = 'C';     // after the 6-byte type at 88
+  var file = String();
+  file.appendBytes(&h);
+  file.appendByte('\n');
+  file.append(rule);
+  file.appendByte('\n');
+  match Zone.fromTzif(file.view()) {
+    case let Ok(z) { Some[Zone](z) }
+    case let Err(e) { None }
+  }
+}
+
+const zoneinfoDir ="/usr/share/zoneinfo/";
 
 // The Zone of an IANA name ('Europe/Kyiv'). On Linux it is read from
 // /usr/share/zoneinfo; Windows has no such folder and answers the Err of kind
 // NoSource until a data package is imported
 pub fn named(name: &str) Result[Zone, ZoneError] {
-  if !validName(name) {
+  if !isValidName(name) {
     return failure[Zone](ZoneErrorKind.BadName, name,
       "not a zone name: parts of letters, digits and _-+. joined by '/', none empty, '.' or '..'");
   }
@@ -154,8 +185,11 @@ pub fn named(name: &str) Result[Zone, ZoneError] {
 
 // -------- the local zone --------
 
-// The Zone the machine is set to: TZ, then /etc/localtime on Linux; the
-// Windows zone's IANA name, then 'named', on Windows
+// The Zone the machine is set to. On Linux: TZ, then /etc/localtime. TZ may be
+// a name, ':name', an absolute path to a zone file (read directly, outside the
+// zoneinfo directory, as glibc does), empty (UTC), or a POSIX rule string such
+// as 'EST5EDT,M3.2.0,M11.1.0' that names no file (a Zone of that rule alone).
+// On Windows: the Windows zone's IANA name, then 'named'
 pub fn localZone() Result[Zone, ZoneError] {
   #if #os == .windows {
     match localZoneName() {
@@ -196,7 +230,20 @@ fn localPosix() Result[Zone, ZoneError] {
       let t = tz.view();
       if t.len() == 0usize { return named("UTC"); }
       if t.startsWith("/") { return readZone(t, t); }
-      return named(t);
+      let r = named(t);
+      // A rule such as 'EST5EDT,M3.2.0,M11.1.0' is no valid name, and one such
+      // as 'EST5' names no file: both may be a rule
+      let mayBeRule = match &r {
+        case let Ok(z) { false }
+        case let Err(e) { e.kind == ZoneErrorKind.BadName || e.kind == ZoneErrorKind.NotFound }
+      };
+      if mayBeRule {
+        match ruleZone(t) {
+          case let Some(z) { return Ok[Zone, ZoneError](z); }
+          case is None { }
+        }
+      }
+      return r;
     }
     case is None { }
   }
@@ -208,7 +255,7 @@ fn afterZoneinfo(p: &str) Option[String] {
   match p.find("zoneinfo/") {
     case let Some(at) {
       let rest = p.sliceFrom(at + 9usize);
-      if validName(rest) { Some[String](String.from(rest)) } else { None }
+      if isValidName(rest) { Some[String](String.from(rest)) } else { None }
     }
     case is None { None }
   }
@@ -230,7 +277,13 @@ fn localNamePosix() Result[String, ZoneError] {
           }
         }
       }
-      if validName(t) { return Ok[String, ZoneError](String.from(t)); }
+      if isValidName(t) { return Ok[String, ZoneError](String.from(t)); }
+      match ruleZone(t) {
+        case let Some(z) {
+          return failure[String](ZoneErrorKind.NoLocalZone, t, "TZ is a POSIX rule, which has no IANA name");
+        }
+        case is None { }
+      }
       return failure[String](ZoneErrorKind.BadName, t, "TZ is not a zone name");
     }
     case is None { }
@@ -293,155 +346,4 @@ fn localNameWindows() Result[String, ZoneError] {
       failure[String](ZoneErrorKind.NoLocalZone, "", why.view())
     }
   }
-}
-
-// The IANA name a Windows zone id stands for ('Eastern Standard Time' is
-// 'America/New_York'), or None for an id not in the table. The table is the
-// main IANA name of each of Windows' zones (CLDR's windowsZones, territory 001)
-pub fn windowsToIana(id: &str) Option[&'static str] {
-  if id == "AUS Central Standard Time" { return Some[&str]("Australia/Darwin"); }
-  if id == "AUS Eastern Standard Time" { return Some[&str]("Australia/Sydney"); }
-  if id == "Afghanistan Standard Time" { return Some[&str]("Asia/Kabul"); }
-  if id == "Alaskan Standard Time" { return Some[&str]("America/Anchorage"); }
-  if id == "Alberta Standard Time" { return Some[&str]("America/Edmonton"); }
-  if id == "Aleutian Standard Time" { return Some[&str]("America/Adak"); }
-  if id == "Altai Standard Time" { return Some[&str]("Asia/Barnaul"); }
-  if id == "Arab Standard Time" { return Some[&str]("Asia/Riyadh"); }
-  if id == "Arabian Standard Time" { return Some[&str]("Asia/Dubai"); }
-  if id == "Arabic Standard Time" { return Some[&str]("Asia/Baghdad"); }
-  if id == "Argentina Standard Time" { return Some[&str]("America/Argentina/Buenos_Aires"); }
-  if id == "Astrakhan Standard Time" { return Some[&str]("Europe/Astrakhan"); }
-  if id == "Atlantic Standard Time" { return Some[&str]("America/Halifax"); }
-  if id == "Aus Central W. Standard Time" { return Some[&str]("Australia/Eucla"); }
-  if id == "Azerbaijan Standard Time" { return Some[&str]("Asia/Baku"); }
-  if id == "Azores Standard Time" { return Some[&str]("Atlantic/Azores"); }
-  if id == "Bahia Standard Time" { return Some[&str]("America/Bahia"); }
-  if id == "Bangladesh Standard Time" { return Some[&str]("Asia/Dhaka"); }
-  if id == "Belarus Standard Time" { return Some[&str]("Europe/Minsk"); }
-  if id == "Bougainville Standard Time" { return Some[&str]("Pacific/Bougainville"); }
-  if id == "British Columbia Standard Time" { return Some[&str]("America/Vancouver"); }
-  if id == "Canada Central Standard Time" { return Some[&str]("America/Regina"); }
-  if id == "Cape Verde Standard Time" { return Some[&str]("Atlantic/Cape_Verde"); }
-  if id == "Caucasus Standard Time" { return Some[&str]("Asia/Yerevan"); }
-  if id == "Cen. Australia Standard Time" { return Some[&str]("Australia/Adelaide"); }
-  if id == "Central America Standard Time" { return Some[&str]("America/Guatemala"); }
-  if id == "Central Asia Standard Time" { return Some[&str]("Asia/Almaty"); }
-  if id == "Central Brazilian Standard Time" { return Some[&str]("America/Cuiaba"); }
-  if id == "Central Europe Standard Time" { return Some[&str]("Europe/Budapest"); }
-  if id == "Central European Standard Time" { return Some[&str]("Europe/Warsaw"); }
-  if id == "Central Pacific Standard Time" { return Some[&str]("Pacific/Guadalcanal"); }
-  if id == "Central Standard Time (Mexico)" { return Some[&str]("America/Mexico_City"); }
-  if id == "Central Standard Time" { return Some[&str]("America/Chicago"); }
-  if id == "Chatham Islands Standard Time" { return Some[&str]("Pacific/Chatham"); }
-  if id == "China Standard Time" { return Some[&str]("Asia/Shanghai"); }
-  if id == "Cuba Standard Time" { return Some[&str]("America/Havana"); }
-  if id == "Dateline Standard Time" { return Some[&str]("Etc/GMT+12"); }
-  if id == "E. Africa Standard Time" { return Some[&str]("Africa/Nairobi"); }
-  if id == "E. Australia Standard Time" { return Some[&str]("Australia/Brisbane"); }
-  if id == "E. Europe Standard Time" { return Some[&str]("Europe/Chisinau"); }
-  if id == "E. South America Standard Time" { return Some[&str]("America/Sao_Paulo"); }
-  if id == "Easter Island Standard Time" { return Some[&str]("Pacific/Easter"); }
-  if id == "Eastern Standard Time (Mexico)" { return Some[&str]("America/Cancun"); }
-  if id == "Eastern Standard Time" { return Some[&str]("America/New_York"); }
-  if id == "Egypt Standard Time" { return Some[&str]("Africa/Cairo"); }
-  if id == "Ekaterinburg Standard Time" { return Some[&str]("Asia/Yekaterinburg"); }
-  if id == "FLE Standard Time" { return Some[&str]("Europe/Kyiv"); }
-  if id == "Fiji Standard Time" { return Some[&str]("Pacific/Fiji"); }
-  if id == "GMT Standard Time" { return Some[&str]("Europe/London"); }
-  if id == "GTB Standard Time" { return Some[&str]("Europe/Bucharest"); }
-  if id == "Georgian Standard Time" { return Some[&str]("Asia/Tbilisi"); }
-  if id == "Greenland Standard Time" { return Some[&str]("America/Nuuk"); }
-  if id == "Greenwich Standard Time" { return Some[&str]("Atlantic/Reykjavik"); }
-  if id == "Haiti Standard Time" { return Some[&str]("America/Port-au-Prince"); }
-  if id == "Hawaiian Standard Time" { return Some[&str]("Pacific/Honolulu"); }
-  if id == "India Standard Time" { return Some[&str]("Asia/Kolkata"); }
-  if id == "Iran Standard Time" { return Some[&str]("Asia/Tehran"); }
-  if id == "Israel Standard Time" { return Some[&str]("Asia/Jerusalem"); }
-  if id == "Jordan Standard Time" { return Some[&str]("Asia/Amman"); }
-  if id == "Kaliningrad Standard Time" { return Some[&str]("Europe/Kaliningrad"); }
-  if id == "Kamchatka Standard Time" { return Some[&str]("Asia/Kamchatka"); }
-  if id == "Korea Standard Time" { return Some[&str]("Asia/Seoul"); }
-  if id == "Libya Standard Time" { return Some[&str]("Africa/Tripoli"); }
-  if id == "Line Islands Standard Time" { return Some[&str]("Pacific/Kiritimati"); }
-  if id == "Lord Howe Standard Time" { return Some[&str]("Australia/Lord_Howe"); }
-  if id == "Magadan Standard Time" { return Some[&str]("Asia/Magadan"); }
-  if id == "Magallanes Standard Time" { return Some[&str]("America/Punta_Arenas"); }
-  if id == "Manitoba Standard Time" { return Some[&str]("America/Winnipeg"); }
-  if id == "Marquesas Standard Time" { return Some[&str]("Pacific/Marquesas"); }
-  if id == "Mauritius Standard Time" { return Some[&str]("Indian/Mauritius"); }
-  if id == "Mid-Atlantic Standard Time" { return Some[&str]("Etc/GMT+2"); }
-  if id == "Middle East Standard Time" { return Some[&str]("Asia/Beirut"); }
-  if id == "Montevideo Standard Time" { return Some[&str]("America/Montevideo"); }
-  if id == "Morocco Standard Time" { return Some[&str]("Africa/Casablanca"); }
-  if id == "Mountain Standard Time (Mexico)" { return Some[&str]("America/Mazatlan"); }
-  if id == "Mountain Standard Time" { return Some[&str]("America/Denver"); }
-  if id == "Myanmar Standard Time" { return Some[&str]("Asia/Yangon"); }
-  if id == "N. Central Asia Standard Time" { return Some[&str]("Asia/Novosibirsk"); }
-  if id == "Namibia Standard Time" { return Some[&str]("Africa/Windhoek"); }
-  if id == "Nepal Standard Time" { return Some[&str]("Asia/Kathmandu"); }
-  if id == "New Zealand Standard Time" { return Some[&str]("Pacific/Auckland"); }
-  if id == "Newfoundland Standard Time" { return Some[&str]("America/St_Johns"); }
-  if id == "Norfolk Standard Time" { return Some[&str]("Pacific/Norfolk"); }
-  if id == "North Asia East Standard Time" { return Some[&str]("Asia/Irkutsk"); }
-  if id == "North Asia Standard Time" { return Some[&str]("Asia/Krasnoyarsk"); }
-  if id == "North Korea Standard Time" { return Some[&str]("Asia/Pyongyang"); }
-  if id == "Omsk Standard Time" { return Some[&str]("Asia/Omsk"); }
-  if id == "Pacific SA Standard Time" { return Some[&str]("America/Santiago"); }
-  if id == "Pacific Standard Time (Mexico)" { return Some[&str]("America/Tijuana"); }
-  if id == "Pacific Standard Time" { return Some[&str]("America/Los_Angeles"); }
-  if id == "Pakistan Standard Time" { return Some[&str]("Asia/Karachi"); }
-  if id == "Paraguay Standard Time" { return Some[&str]("America/Asuncion"); }
-  if id == "Qyzylorda Standard Time" { return Some[&str]("Asia/Qyzylorda"); }
-  if id == "Romance Standard Time" { return Some[&str]("Europe/Paris"); }
-  if id == "Russia Time Zone 10" { return Some[&str]("Asia/Srednekolymsk"); }
-  if id == "Russia Time Zone 11" { return Some[&str]("Asia/Kamchatka"); }
-  if id == "Russia Time Zone 3" { return Some[&str]("Europe/Samara"); }
-  if id == "Russian Standard Time" { return Some[&str]("Europe/Moscow"); }
-  if id == "SA Eastern Standard Time" { return Some[&str]("America/Cayenne"); }
-  if id == "SA Pacific Standard Time" { return Some[&str]("America/Bogota"); }
-  if id == "SA Western Standard Time" { return Some[&str]("America/La_Paz"); }
-  if id == "SE Asia Standard Time" { return Some[&str]("Asia/Bangkok"); }
-  if id == "Saint Pierre Standard Time" { return Some[&str]("America/Miquelon"); }
-  if id == "Sakhalin Standard Time" { return Some[&str]("Asia/Sakhalin"); }
-  if id == "Samoa Standard Time" { return Some[&str]("Pacific/Apia"); }
-  if id == "Sao Tome Standard Time" { return Some[&str]("Africa/Sao_Tome"); }
-  if id == "Saratov Standard Time" { return Some[&str]("Europe/Saratov"); }
-  if id == "Singapore Standard Time" { return Some[&str]("Asia/Singapore"); }
-  if id == "South Africa Standard Time" { return Some[&str]("Africa/Johannesburg"); }
-  if id == "South Sudan Standard Time" { return Some[&str]("Africa/Juba"); }
-  if id == "Sri Lanka Standard Time" { return Some[&str]("Asia/Colombo"); }
-  if id == "Sudan Standard Time" { return Some[&str]("Africa/Khartoum"); }
-  if id == "Syria Standard Time" { return Some[&str]("Asia/Damascus"); }
-  if id == "Taipei Standard Time" { return Some[&str]("Asia/Taipei"); }
-  if id == "Tasmania Standard Time" { return Some[&str]("Australia/Hobart"); }
-  if id == "Tocantins Standard Time" { return Some[&str]("America/Araguaina"); }
-  if id == "Tokyo Standard Time" { return Some[&str]("Asia/Tokyo"); }
-  if id == "Tomsk Standard Time" { return Some[&str]("Asia/Tomsk"); }
-  if id == "Tonga Standard Time" { return Some[&str]("Pacific/Tongatapu"); }
-  if id == "Transbaikal Standard Time" { return Some[&str]("Asia/Chita"); }
-  if id == "Turkey Standard Time" { return Some[&str]("Europe/Istanbul"); }
-  if id == "Turks And Caicos Standard Time" { return Some[&str]("America/Grand_Turk"); }
-  if id == "US Eastern Standard Time" { return Some[&str]("America/Indiana/Indianapolis"); }
-  if id == "US Mountain Standard Time" { return Some[&str]("America/Phoenix"); }
-  if id == "UTC+12" { return Some[&str]("Etc/GMT-12"); }
-  if id == "UTC+13" { return Some[&str]("Etc/GMT-13"); }
-  if id == "UTC-02" { return Some[&str]("Etc/GMT+2"); }
-  if id == "UTC-08" { return Some[&str]("Etc/GMT+8"); }
-  if id == "UTC-09" { return Some[&str]("Etc/GMT+9"); }
-  if id == "UTC-11" { return Some[&str]("Etc/GMT+11"); }
-  if id == "UTC" { return Some[&str]("Etc/UTC"); }
-  if id == "Ulaanbaatar Standard Time" { return Some[&str]("Asia/Ulaanbaatar"); }
-  if id == "Venezuela Standard Time" { return Some[&str]("America/Caracas"); }
-  if id == "Vladivostok Standard Time" { return Some[&str]("Asia/Vladivostok"); }
-  if id == "Volgograd Standard Time" { return Some[&str]("Europe/Volgograd"); }
-  if id == "W. Australia Standard Time" { return Some[&str]("Australia/Perth"); }
-  if id == "W. Central Africa Standard Time" { return Some[&str]("Africa/Lagos"); }
-  if id == "W. Europe Standard Time" { return Some[&str]("Europe/Berlin"); }
-  if id == "W. Mongolia Standard Time" { return Some[&str]("Asia/Hovd"); }
-  if id == "West Asia Standard Time" { return Some[&str]("Asia/Tashkent"); }
-  if id == "West Bank Standard Time" { return Some[&str]("Asia/Hebron"); }
-  if id == "West Pacific Standard Time" { return Some[&str]("Pacific/Port_Moresby"); }
-  if id == "Yakutsk Standard Time" { return Some[&str]("Asia/Yakutsk"); }
-  if id == "Yukon Standard Time" { return Some[&str]("America/Whitehorse"); }
-  None
 }
