@@ -2627,5 +2627,13 @@ int loanIsExclusive(uint32_t entry) {
 // that diverges from the loan's can be what the loan points into
 int loanShapeDisjoint(uint32_t loan, Place *pl) {
     Place *lp = loanShapePlace(&loans[loan]);
-    return lp->var == pl->var && lp->deref == pl->deref && !placeOverlaps(lp, pl);
+    if (lp->var != pl->var || lp->deref != pl->deref || placeOverlaps(lp, pl))
+        return 0;
+    // Two fields past an owner others may own too (an 'Rc[mut, ..]' field) may own one collection:
+    // only a path diverging before every such dereference (Place.owned) is another collection
+    uint8_t n = lp->nsteps < pl->nsteps ? lp->nsteps : pl->nsteps;
+    uint8_t d = 0;
+    while (d < n && !(lp->steps[d] != pl->steps[d] && (lp->steps[d] & 1) == 0 && (pl->steps[d] & 1) == 0))
+        ++d;
+    return lp->owned <= d && pl->owned <= d;
 }

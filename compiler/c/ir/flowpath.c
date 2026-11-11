@@ -1127,8 +1127,6 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     *pl = refpl;
     pl->ownertype = reftype->tag == RefTag || reftype->tag == VirtRefTag ? reftype : NULL;
-    if (pwMayAlias(reftype))
-        pl->owned = 1;
     if (pwMayAliasWritten(reftype))
         pl->shwrite = 1;
     // A dereference cut off by the step limit is not marked shared: the place
@@ -1140,6 +1138,10 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
             pl->sharedlen = pl->nsteps;
         }
     }
+    // 'owned' is then 1 + the index of this dereference (Place.owned): the fields past it are
+    // a collection another field's owner may own too
+    if (pwMayAlias(reftype))
+        pl->owned = pl->nsteps;
     return 1;
 }
 
