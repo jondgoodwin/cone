@@ -469,9 +469,11 @@ represented; this section is what they must add up to.
 - **A store.** Storing a borrow of lifetime `'v` into a place held for `'s`
   needs `'v >= 's`. When both come from the caller, the body can rely on that
   only if the signature states it: `where 'v >= 's`. The where clause is the
-  requirement written down accurately. Naming the two with one lifetime is
-  stricter than the requirement, because it forces every caller to pass equal
-  lifetimes.
+  requirement written down accurately. Naming the two with one
+  lifetime (or eliding both, which is the same) is a choice the author makes: it
+  is stricter than the requirement, because it forces every caller to pass equal
+  lifetimes, and is right when the author wants that tie. The where clause is the
+  form that leaves callers free.
 
   ```
   struct Host['h] { pub r: &'h Pt; }
@@ -509,23 +511,21 @@ represented; this section is what they must add up to.
   reads at the arena's death, 6 Nov). `Arena`'s type carries no lifetime and an
   `Arena` can move, so moving one breaks the invariant (Bug 76). Which of the two
   ways above closes it is open, and Jon's.
-- **Elision is syntax.** It writes no lifetime names (unannotated borrows read
-  as one shared name, Jon 6 Nov), so it cannot state an ordering, and a store's
-  requirement is an ordering ("at least as long"), not an equality. So a
-  function that stores a borrow, or a `T` that holds one, into a place reached
-  from another input writes its lifetimes: names on both, and the where clause.
-  One shared name would be stricter than the requirement, and so wrong as a
-  contract, even though nothing dangles.
+- **Elision is one explicit name, then the normal rules.** An elided signature
+  means exactly what it would mean with one explicit lifetime name, otherwise
+  unused, written on every unannotated borrow (Jon 11 Nov: the elided form is
+  first turned into an explicit lifetime, and then the normal lifetime rules
+  apply). So an elided store between two parameters ties their lifetimes: it is
+  legal, and every caller is held to the tie, passing lifetimes that satisfy it.
+  A callee that wants the store flexible, with the lifetimes not forced equal,
+  names them apart and writes the where clause. Nothing about elision forbids a
+  store.
 - **Raw pointers** carry no lifetime. A reference made from one is outside both
   checks, and `trust` vouches for it.
 
 **Where it is not yet enforced** (each a check against the contract that does
 not happen today):
 
-- Bug 77: a body that writes no lifetimes may store a borrow from one input
-  into a place reached from another, which its signature never states, and the
-  caller's check is skipped for a directly written `&mut x` argument (the
-  shortcut near `flowpath.c` 2332).
 - Bug 76: an `Arena` can be moved while it holds borrows.
 - Lifetimes are dropped from types when types are compared (`refIsSame`,
   `refFindSuper`), so a generic `T`'s lifetime can be neither named nor checked,
@@ -607,7 +607,7 @@ gap:
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`; the loan walk for what a call may store (`pwCallStores`) and for a variable that follows what it holds | **flow** |
-| a store, and a call that may store, is checked from both sides of the signature: the body for what it stores, each caller for the lifetimes it passes | the contract in [Lifetimes: one invariant, checked from both sides of a call](#lifetimes-one-invariant-checked-from-both-sides-of-a-call); `pwStoreApart`, `loanStoredApart` (named signatures) and `pwCallStores` enforce part of it, and its gaps are listed there (Bug 77: elided stores, the caller shortcut; Bug 76: a moving `Arena`) | **flow**, incomplete
+| a store, and a call that may store, is checked from both sides of the signature: the body for what it stores, each caller for the lifetimes it passes | the contract in [Lifetimes: one invariant, checked from both sides of a call](#lifetimes-one-invariant-checked-from-both-sides-of-a-call); `pwStoreApart`, `loanStoredApart` (named signatures) and `pwCallStores` enforce part of it, and its gaps are listed there (Bug 76: a moving `Arena`) | **flow**, incomplete
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
 | freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use (a `mut` borrow, an alias loan, only against what needs the source unique, and a change of shape) | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
 
