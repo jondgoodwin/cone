@@ -100,9 +100,10 @@ pub struct Zone {
   // chooses. For each distinct offset in force within 27 hours of the reading
   // taken as UTC (no offset is more than 26 hours from UTC, and a change
   // is any distance from the next), the instant clock - offset is kept if that
-  // offset is in force then. An instant beyond a Timestamp's range is held at
-  // its first or last
-  pub fn fromLocal(self: &, clock: DateTime) LocalResult {
+  // offset is in force then. None when any of those instants, kept or not, is
+  // outside a Timestamp's range (1677-09-21 to 2262-04-11): the reading has
+  // no instant to name, as DateTime.toTimestamp's None says
+  pub fn fromLocal(self: &, clock: DateTime) Option[LocalResult] {
     let nanos = todNanos(clock.hms);
     let secs = nanos / nsPerSecond;
     let subSecond = nanos - secs * nsPerSecond;
@@ -129,11 +130,14 @@ pub struct Zone {
       }
       i = i + 1usize;
     }
+    // If any candidate is beyond a Timestamp's range, so is the lowest or the
+    // highest: no answer is given that lacks one
+    if !inTimestamps(loAll, subSecond) || !inTimestamps(hiAll, subSecond) { return None; }
     if found == 0i64 {
-      return LocalResult.Gap(timestampOfSeconds(loAll, subSecond), timestampOfSeconds(hiAll, subSecond));
+      return Some[LocalResult](LocalResult.Gap(timestampOfSeconds(loAll, subSecond), timestampOfSeconds(hiAll, subSecond)));
     }
-    if found == 1i64 { return LocalResult.Single(timestampOfSeconds(first, subSecond)); }
-    LocalResult.Ambiguous(timestampOfSeconds(first, subSecond), timestampOfSeconds(last, subSecond))
+    if found == 1i64 { return Some[LocalResult](LocalResult.Single(timestampOfSeconds(first, subSecond))); }
+    Some[LocalResult](LocalResult.Ambiguous(timestampOfSeconds(first, subSecond), timestampOfSeconds(last, subSecond)))
   }
 }
 
@@ -185,11 +189,20 @@ fn addOffset(offs: &mut List[i64], o: i64) {
   offs.push(o);
 }
 
-// The Timestamp of whole seconds since 1970 and a nanosecond, held at the
-// Timestamp's first or last when outside its range
+// Whether whole seconds since 1970 and a nanosecond (0 to 999999999, after
+// the seconds) are a Timestamp's: from -9223372037 s + 145224192 ns to
+// 9223372036 s + 854775807 ns
+fn inTimestamps(secs: i64, nanos: i64) bool {
+  if secs < -9223372037i64 || secs > 9223372036i64 { return false; }
+  if secs == -9223372037i64 { return nanos >= 145224192i64; }
+  if secs == 9223372036i64 { return nanos <= 854775807i64; }
+  true
+}
+
+// The Timestamp of whole seconds since 1970 and a nanosecond, in range
+// (inTimestamps)
 fn timestampOfSeconds(secs: i64, nanos: i64) Timestamp {
-  if secs <= -9223372037i64 { return Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64); }
-  if secs >= 9223372036i64 { return Timestamp.fromUnixNanos(9223372036854775807i64); }
+  if secs == -9223372037i64 { return Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64 + (nanos - 145224192i64)); }
   Timestamp.fromUnixNanos(secs * nsPerSecond + nanos)
 }
 

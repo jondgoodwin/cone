@@ -25,3 +25,14 @@ v2 = (header(0, 0, 0, 2, 2, len(chars))
       + chars + b"\nAAA0\n")
 with open("Test_Quick_Changes.tzif", "wb") as f:
     f.write(v1 + v2)
+
+# Test_Range_Edge.tzif: offset -1 hour ('AAA') until 2262-04-11T23:46:40Z (9223372000 seconds, 36
+# seconds before the last instant a Timestamp holds), then offset 0 ('BBB'), footer 'BBB0'.
+T = 9223372000
+chars = b"AAA\0BBB\0"
+v2 = (header(0, 0, 0, 1, 2, len(chars))
+      + struct.pack(">q", T) + bytes([1])
+      + struct.pack(">ibB", -3600, 0, 0) + struct.pack(">ibB", 0, 0, 4)
+      + chars + b"\nBBB0\n")
+with open("Test_Range_Edge.tzif", "wb") as f:
+    f.write(v1 + v2)

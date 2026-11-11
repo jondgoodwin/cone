@@ -28,7 +28,8 @@
 // the offset was +0; with +0 it is 00:30Z, when it is +1); at the second the
 // clock goes from 13:00 back to 12:00, so wall 12:30 is read at 11:30Z (+1) and
 // at 12:30Z (+0). A search a day either side of the reading sees only +0 and
-// would call both Single or a gap with one instant.
+// would call both Single or a gap with one instant. The other,
+// data/Test_Range_Edge.tzif (same script), tests the limit of a Timestamp's range.
 
 mod localtime;
 
@@ -87,9 +88,27 @@ fn wallAt(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi
   expectStr(got.rfc3339().view(), want, named(kind, label).view());
 }
 
+// What fromLocal says, which must be a Some (else the test fails and a Single of the epoch stands in)
+fn found(z: &Zone, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64) LocalResult {
+  match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
+    case let Some(r) { return r; }
+    case is None { }
+  }
+  require(false, "fromLocal gave an answer");
+  LocalResult.Single(Timestamp.fromUnixSeconds(0))
+}
+
+// A wall clock reading with no instant to name: None
+fn none(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64) {
+  match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
+    case let Some(r) { expect(false, named(kind, label).view()); }
+    case is None { expect(true, named(kind, label).view()); }
+  }
+}
+
 // A wall clock reading that is one instant
 fn single(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64, want: &str) {
-  match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
+  match found(z, y, mo, d, h, mi, s, nanos) {
     case let Single(u) { expectStr(txt(u).view(), want, named(kind, label).view()); }
     case let Gap(g) { expect(false, named(kind, "is a gap, not Single: ").view()); }
     case let Ambiguous(a) { expect(false, named(kind, "is ambiguous, not Single: ").view()); }
@@ -98,7 +117,7 @@ fn single(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi
 
 // One that is skipped
 fn gap(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64, before: &str, after: &str) {
-  match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
+  match found(z, y, mo, d, h, mi, s, nanos) {
     case let Single(u) { expect(false, named(kind, "is Single, not a Gap: ").view()); }
     case let Gap(g) {
       expectStr(txt(g.before).view(), before, named(kind, label).view());
@@ -110,7 +129,7 @@ fn gap(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i
 
 // One that is read twice
 fn twice(z: &Zone, kind: &str, label: &str, y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64, nanos: i64, earlier: &str, later: &str) {
-  match z.fromLocal(dt(y, mo, d, h, mi, s, nanos)) {
+  match found(z, y, mo, d, h, mi, s, nanos) {
     case let Single(u) { expect(false, named(kind, "is Single, not ambiguous: ").view()); }
     case let Gap(g) { expect(false, named(kind, "is a gap, not ambiguous: ").view()); }
     case let Ambiguous(a) {
@@ -199,11 +218,35 @@ fn moscow(z: &Zone, kind: &str) {
   single(z, kind, "MSK 2026-10-25 01:30:00", 2026, 10, 25, 1, 30, 0, 0, "2026-10-24T22:30:00Z");
 }
 
-// A wall clock past a Timestamp's last instant (2262-04-11T23:47:16.854775807Z)
-// has no Timestamp: the answer is held at the last one (and the first, before 1677)
+// A wall clock whose instant is past a Timestamp's range, 1677-09-21T00:12:43.145224192Z
+// to 2262-04-11T23:47:16.854775807Z, has none to name: None
 fn beyondTimestamps(z: &Zone, kind: &str) {
-  single(z, kind, "NY 3000-07-01 08:00:00 held", 3000, 7, 1, 8, 0, 0, 0, "2262-04-11T23:47:16.854775807Z");
-  single(z, kind, "NY 1000-07-01 08:00:00 held", 1000, 7, 1, 8, 0, 0, 0, "1677-09-21T00:12:43.145224192Z");
+  none(z, kind, "NY 3000-07-01 08:00:00", 3000, 7, 1, 8, 0, 0, 0);
+  none(z, kind, "NY 1000-07-01 08:00:00", 1000, 7, 1, 8, 0, 0, 0);
+  // The edges, New York being EDT (UTC-4) in April 2262 and in 1677 on local mean time
+  // (UTC-4:56:02): the wall clock of the last instant is 19:47:16.854775807 on 11 April,
+  // the first instant's is 19:16:41.145224192 on 20 September (00:12:43.145224192 less
+  // 4:56:02 is 19:16:41.145224192 the day before). One nanosecond inside is Some, one outside None.
+  single(z, kind, "NY 2262-04-11 19:47:16.854775807", 2262, 4, 11, 19, 47, 16, 854775807, "2262-04-11T23:47:16.854775807Z");
+  none(z, kind, "NY 2262-04-11 19:47:16.854775808", 2262, 4, 11, 19, 47, 16, 854775808);
+  single(z, kind, "NY 1677-09-20 19:16:41.145224192", 1677, 9, 20, 19, 16, 41, 145224192, "1677-09-21T00:12:43.145224192Z");
+  none(z, kind, "NY 1677-09-20 19:16:41.145224191", 1677, 9, 20, 19, 16, 41, 145224191);
+}
+
+// The range edge zone: -1 hour until 2262-04-11T23:46:40Z, 36 seconds before the last
+// Timestamp, then 0. A reading whose candidates straddle the limit is None even though
+// one of them would be the answer: wall 23:46:50 is Single at 23:46:50Z (offset 0), but
+// the -1 hour candidate, 00:46:50 on the 12th, is outside, so nothing is said.
+fn rangeEdge(z: &Zone) {
+  let kind = "edge";
+  none(z, kind, "2262-04-11 23:46:50", 2262, 4, 11, 23, 46, 50, 0);
+  // Just inside: both candidates are in range; neither is in force then (23:46:50Z has
+  // offset 0, 22:46:50Z has offset -1h), so a gap, 22:46:50Z to 23:46:50Z
+  gap(z, kind, "2262-04-11 22:46:50", 2262, 4, 11, 22, 46, 50, 0, "2262-04-11T22:46:50Z", "2262-04-11T23:46:50Z");
+  // At the edge: the -1 hour candidate of 22:47:16.854775807 is the last instant itself
+  gap(z, kind, "2262-04-11 22:47:16.854775807", 2262, 4, 11, 22, 47, 16, 854775807,
+    "2262-04-11T22:47:16.854775807Z", "2262-04-11T23:47:16.854775807Z");
+  none(z, kind, "2262-04-11 22:47:16.854775808", 2262, 4, 11, 22, 47, 16, 854775808);
 }
 
 // The synthetic zone: +0 to 2020-01-01T00:00:00Z, +1 hour to 12:00:00Z, +0 after
@@ -242,5 +285,7 @@ fn main() i32 {
   moscow(&zoneOf(&mF), "fat");
   let qk = loadFile("Test_Quick_Changes.tzif");
   quick(&zoneOf(&qk));
+  let re = loadFile("Test_Range_Edge.tzif");
+  rangeEdge(&zoneOf(&re));
   return done();
 }
