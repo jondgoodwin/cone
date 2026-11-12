@@ -1,0 +1,71 @@
+// What loading a .glb costs: a file of a 1 MiB JSON chunk (a long "extras"
+// text, which the loader parses) and a 3 MiB BIN chunk, loaded from its bytes.
+// The load copies or slices the chunks out of the input, then parses the JSON and
+// takes the buffer, so this times that path. The best of five rounds of 10
+// loads is printed. Run it in a release build:
+//
+//   congo run --release examples/loadbench.cone
+
+mod loadbench;
+
+import stdio use *;
+import collections use *;
+import time use *;
+import streams;
+import gltfimport use *;
+
+fn glbFile(binBytes: usize, extraBytes: usize) List[u8] {
+  var j = String();
+  j.append("{\"asset\":{\"version\":\"2.0\"},\"extras\":{\"pad\":\"");
+  var i = 0usize;
+  while i < extraBytes { j.appendByte('x'); i += 1usize; }
+  j.append("\"},\"buffers\":[{\"byteLength\":");
+  j.appendInt(i64.from(binBytes));
+  j.append("}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":");
+  j.appendInt(i64.from(binBytes));
+  j.append("}]}");
+  while j.len() % 4usize != 0usize { j.appendByte(' '); }
+  let total = 12usize + 8usize + j.len() + 8usize + binBytes;
+  var w = streams.Writer.make(total + 16usize);
+  w.putLE[u32](0x46546C67u32);
+  w.putLE[u32](2u32);
+  w.putLE[u32](u32.from(total));
+  w.putLE[u32](u32.from(j.len()));
+  w.putLE[u32](0x4E4F534Au32);
+  w.put(j.view());
+  w.putLE[u32](u32.from(binBytes));
+  w.putLE[u32](0x004E4942u32);
+  w.repeat(7u8, binBytes);
+  let chain = w.finish();
+  var file = List[u8]();
+  file.resize(chain.len(), 0u8);
+  _ = chain.copyOut(0usize, file.viewMut());
+  file
+}
+
+fn main() i32 {
+  let file = glbFile(3145728usize, 1048576usize);
+  printStr("glb bytes ");
+  printInt(i64.from(file.len()));
+  printStr("\n");
+  var best = 0i64;
+  var round = 0usize;
+  while round < 5usize {
+    let t = Instant.now();
+    var n = 0usize;
+    while n < 10usize {
+      match loadGltfBytes(file.view(), false) {
+        case is Ok {}
+        case let Err(e) { printStr(e.reason.view()); printStr("\n"); return 1i32; }
+      }
+      n = n + 1usize;
+    }
+    let ns = i64.from(t.elapsed().nanos()) / 10i64;
+    if round == 0usize || ns < best { best = ns; }
+    round = round + 1usize;
+  }
+  printStr("load (loadGltfBytes) best of 5: ");
+  printInt(best / 1000i64);
+  printStr(" us\n");
+  0i32
+}

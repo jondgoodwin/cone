@@ -17,6 +17,7 @@ import fs;
 import path use Path;
 import collections use *;
 import geomath use *;
+import imagedecode;
 import time use Instant;
 import pbrmaterial use *;
 import surfacepatterns use *;
@@ -53,65 +54,37 @@ fn cstrString(s: *u8) String {
   out
 }
 
-fn put32(out: &mut List[u8], v: u32) {
-  out.push(u8.from(v & 0xFFu32));
-  out.push(u8.from((v >> 8u32) & 0xFFu32));
-  out.push(u8.from((v >> 16u32) & 0xFFu32));
-  out.push(u8.from((v >> 24u32) & 0xFFu32));
-}
-
 // A 24-bit BMP of an RGBA map over the ground (r, g, b), rows bottom first as the format has them
 fn saveBmp(dir: &String, name: &str, m: &TexelMap, gr: f32, gg: f32, gb: f32) bool {
   let w = m.width;
   let h = m.height;
-  let rowSize = (w * 3 + 3) / 4 * 4;
-  let pixelBytes = rowSize * h;
-  var out = List[u8].withCapacity(usize.from(54 + pixelBytes));
-  out.push('B');
-  out.push('M');
-  put32(&mut out, u32.from(54 + pixelBytes));
-  put32(&mut out, 0u32);
-  put32(&mut out, 54u32);
-  put32(&mut out, 40u32);
-  put32(&mut out, u32.from(w));
-  put32(&mut out, u32.from(h));
-  out.push(1u8);
-  out.push(0u8);
-  out.push(24u8);
-  out.push(0u8);
-  put32(&mut out, 0u32);
-  put32(&mut out, u32.from(pixelBytes));
-  put32(&mut out, 2835u32);
-  put32(&mut out, 2835u32);
-  put32(&mut out, 0u32);
-  put32(&mut out, 0u32);
+  // The map laid over the ground as RGB, then imagedecode's one BMP writer
+  var rgb = List[u8].withCapacity(usize.from(w * h * 3));
   var y = 0;
   while y < h {
     var x = 0;
     while x < w {
       let a = f32.from(m.at(x, y, 3)) / 255.;
-      var c = 2;
-      while c >= 0 {
+      var c = 0;
+      while c < 3 {
         let g = if c == 0 { gr } else if c == 1 { gg } else { gb };
-        out.push(unitByte((f32.from(m.at(x, y, c)) * a + g * (1. - a)) / 255.));
-        c = c - 1;
+        rgb.push(unitByte((f32.from(m.at(x, y, c)) * a + g * (1. - a)) / 255.));
+        c = c + 1;
       }
       x = x + 1;
     }
-    var pad = w * 3;
-    while pad < rowSize {
-      out.push(0u8);
-      pad = pad + 1;
-    }
     y = y + 1;
   }
+  let bmp = imagedecode.encodeBmp(w, h, 3, rgb.view(), true);
   var path = dir.clone();
   path <- "/tuft-";
   path <- name;
   path <- ".bmp";
-  let v = out.view();
   let file = Path.from(path.view());
-  fs.writeFile(&file, v) is Ok
+  match bmp.contiguous(0usize, bmp.len()) {
+    case let Some(v) { fs.writeFile(&file, v) is Ok }
+    case is None { false }
+  }
 }
 
 fn report(dir: &String, name: &str, p: &NeedleTuftParams) bool {
