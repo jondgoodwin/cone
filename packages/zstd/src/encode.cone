@@ -334,6 +334,8 @@ struct HufEnc is Default {
   count: List[u32];
   lens: List[u8];
   codes: List[u32];
+  // code | (length << 16) per symbol, for encodeStream: one load a literal
+  pk: List[u32];
   maxSym: usize;
   tableLog: u32;
   // Scratch: the counts being merged, the symbols by count, the merge tree
@@ -505,6 +507,14 @@ struct HufEnc is Default {
       }
       s += 1usize;
     }
+    pk.clear();
+    pk.resize(256usize, 0u32);
+    s = 0usize;
+    while s <= maxSym {
+      let l = u32.from(*lens[s]);
+      if l > 0u32 { pk.set(s, (*codes[s] & ((1u32 << l) - 1u32)) | (l << 16u32)); }
+      s += 1usize;
+    }
   }
 
   // Appends the tree description (RFC 8878 section 4.2.1.1): the weights of
@@ -597,14 +607,56 @@ struct HufEnc is Default {
   // Appends one Huffman stream of lits[from, to): the last literal first,
   // so the decoder, reading backward, meets the first one first
   fn encodeStream(self: &, lits: &Array[u8], from: usize, to: usize, out: &mut List[u8]) {
+    if from > to || to > lits.len { panic("zstd: a literal stream lies outside the literals"); }
+    // The table is read by pointer: a byte indexes it, so the 256 entries, checked here once, cover every access
+    if pk.len() != 256usize { panic("zstd: the literal code table is not 256 entries"); }
+    // The stores below write 64 bits at a time: 7 held bits and 5 codes fit only while no code is over 11 bits,
+    // and the bytes stay inside BitRun's reservation only then. tableLog is the longest code length (assignCodes)
+    if tableLog > maxHuffBits() { panic("zstd: a literal code is longer than 11 bits"); }
+    let t = pk.view() as *u32 as *u8;
+    let src = lits as *u8;
     let cnt = to - from;
     var bw = BitRun.open(out, cnt + cnt / 2usize + 16usize);
+    var acc = 0u64;
+    var n = 0u32;
+    var w = bw.w;
     var i = to;
+    // Five literals to a store: at most 7 held bits and 5 codes of 11 bits fit in 64
+    while i >= from + 5usize {
+      let e0 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 1usize)))) as *u32));
+      let e1 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 2usize)))) as *u32));
+      let e2 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 3usize)))) as *u32));
+      let e3 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 4usize)))) as *u32));
+      let e4 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 5usize)))) as *u32));
+      i -= 5usize;
+      acc = acc | ((e0 & 65535u64) << u64.from(n));
+      n = n + u32.from(e0 >> 16u64);
+      acc = acc | ((e1 & 65535u64) << u64.from(n));
+      n = n + u32.from(e1 >> 16u64);
+      acc = acc | ((e2 & 65535u64) << u64.from(n));
+      n = n + u32.from(e2 >> 16u64);
+      acc = acc | ((e3 & 65535u64) << u64.from(n));
+      n = n + u32.from(e3 >> 16u64);
+      acc = acc | ((e4 & 65535u64) << u64.from(n));
+      n = n + u32.from(e4 >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
+    }
     while i > from {
       i -= 1usize;
-      let b = usize.from(lits[i]);
-      bw.put(u64.from(*codes[b]), u32.from(*lens[b]));
+      let e = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + i))) as *u32));
+      acc = acc | ((e & 65535u64) << u64.from(n));
+      n = n + u32.from(e >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
     }
+    bw.acc = acc;
+    bw.n = n;
+    bw.w = w;
     bw.finish(out);
   }
 }
