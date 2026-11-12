@@ -1358,6 +1358,57 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     used = 0usize;
   }
 
+  // Move the value at position index out, or None when index is out of range (as
+  // 'get' answers), the values on the shorter side of it closing the gap: [a, b, c, d]
+  // with 1 removed gives b and leaves [a, c, d]. At most half the values move, and
+  // the order of the rest is kept. Every borrow into the deque is then stale.
+  pub fn removeAt(self: &mut, index: usize) Option[T] {
+    if index >= used { return None; }
+    let value = mem.readRaw(ptr + self.slot(index));
+    if index < used - index - 1usize {
+      // Fewer values before it: they move one place toward the back, and the front moves on
+      var k = index;
+      while k > 0usize {
+        mem.moveRaw(ptr + self.slot(k), ptr + self.slot(k - 1usize), 1usize);
+        k = k - 1usize;
+      }
+      head = if head + 1usize == cap {0usize} else {head + 1usize};
+    }
+    else {
+      // Fewer values after it: they move one place toward the front
+      var k = index;
+      while k + 1usize < used {
+        mem.moveRaw(ptr + self.slot(k), ptr + self.slot(k + 1usize), 1usize);
+        k = k + 1usize;
+      }
+    }
+    used = used - 1usize;
+    Some[T](value)
+  }
+
+  // Keep the values that 'pred(x)' says are so of (a borrow of it) and finalize the
+  // rest, in one pass front to back that moves each kept value once; the order of the
+  // kept is unchanged and the block is kept. 'pred' is given each value once, in order.
+  // (Rust's 'retain'; List's 'removeIf' is the same pass with the sense turned round.)
+  pub fn retain[F: fn(x: &T) bool](self: &mut, pred: &F) {
+    let n = used;
+    // The values are counted only as they are settled, so none that is finalized is counted
+    used = 0usize;
+    var w = 0usize;
+    var r = 0usize;
+    while r < n {
+      if pred((ptr + self.slot(r)) as &T) {
+        if w != r { mem.moveRaw(ptr + self.slot(w), ptr + self.slot(r), 1usize); }
+        w = w + 1usize;
+      }
+      else {
+        if mem.needsFinal[T]() { mem.finalize(ptr + self.slot(r)); }
+      }
+      r = r + 1usize;
+    }
+    used = w;
+  }
+
   // A cursor over its values, front to back: 'next' gives a borrow of each in
   // turn until it answers None. The deque may not change while it is used.
   pub fn items(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
