@@ -1,0 +1,362 @@
+// ======== Layer 3, the pipe end: PipeSource reads a child's output into a stream, ChildStages runs the child ========
+//
+// A ChunkSource over package aio's Pipe, the edge where iocore's Op.PipeRead moves an IoBuf (PR 5 of the pipe op): each read
+// is into a buffer the window lends, so the bytes arrive where the stage will use them, with no copy, and no thread of the
+// pool is parked on the pipe. It is SocketSource's shape over a pipe.
+//
+//   PipeSource(down)          made with the sink after it, as every source is
+//   src.startOn(pipe)         reads a pipe the program already has (a child's end, adopted by aio.adoptPipe)
+//
+// It reads 64 KiB at a time (linkBytes) into a window of 256 KiB (linkWindow), and reads on only while a buffer is free: a slow
+// consumer holds the child back, through the pipe's own capacity (the child blocks writing). The stream ends Finished when the
+// other end closes (all that was written has been read), or Failed with the read's error. The pipe is closed when the stream
+// ends. A stop or a cancel ends a read in flight, as in SocketSource.
+//
+// CHILDSTAGES. A child's standard output and standard error as two streams, and its exit as a value:
+//
+//   let done: OneshotSender[Result[ChildExit, AnyError]] ...
+//   let c = ChildStages(outSink, errSink, done);       // each sink is a ChunkSink, as after any source
+//   c.start(args, dir);                                // launches the child (process.launch) and reads both
+//
+// The two streams are read independently (a consumer that holds one back does not stop the other, and a child that fills its
+// error pipe is not deadlocked by our reading its output), each into its own window. The exit is told on 'done' once, and only
+// after BOTH streams have reached their end, whichever way each ended: so when it arrives every byte the child wrote has been
+// given to the sinks, and the sinks have had their ends. An Err on 'done' is a child that could not be started or whose pipes
+// or wait could not be set up; the sinks are then ended Failed with the same reason. A sink that stops its source Failed (it
+// wants no more), or a cancel of the group the streams run in (a change: it used to leave the child running), has the child
+// killed, with the programs it started; 'kill' does the same on request. The standard input of the
+// child is NUL, unless a PipeSink is given as the fourth argument (pipesink.cone): ChildStages(out, err, done, Some[PipeSink](s))
+// launches the child with a pipe for its input and hands it to 's' once the child runs (or Pipe.none() if it could not be set
+// up, which fails 's'). The input is the sink's own stream: its end or failure does not stop the child, and the exit on 'done'
+// does not wait for it. The ChildStages holds the process.Child until the exit is told (it is the child's owner and reaps it
+// as it drops; no raw pid is passed about). 'inherit' is not offered, as the sources have nothing to read.
+//
+// THE EXIT WAITS FOR THE PIPES. The exit is told only once both streams reach their end, and a stream ends when every holder
+// of the write end has closed it. A grandchild the child started and left holding the pipe (a daemon, a background job)
+// therefore delays 'done' until it exits or closes it, even after the child itself is gone. A 'kill' ends the programs the
+// child started as well (a job object on Windows, a process group on Linux), which releases the pipes.
+//
+// KILL ON STOP OR CANCEL. A sink that stops its source has the child killed. So does a cancel of the group the streams run in,
+// on every path: a read in flight, a buffer coming back, or the source idle with its window full (a consumer holding chunks).
+// This CHANGES the earlier behaviour, in which a group cancel left the child running. The likely later option is to close
+// our read end and let
+// the writer notice (EPIPE/SIGPIPE, Windows' broken pipe), which is what Rust's std and a shell pipeline do; the kill stays
+// the default for now.
+//
+// A KILL AFTER THE EXIT. Once the exit is known the child is not killed again (its pid may belong to another process by then);
+// a 'kill' that arrives in the short time between the loop's reaping and this actor's learning of it is the one case left, as in
+// process.Child's note.
+
+// Reads a pipe, 64 KiB at a time, into a window of 256 KiB
+pub actor PipeSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  pipe: Pipe;
+  pumping: bool;
+  over: bool;
+  halt: bool;                   // cancelled or stopped while a read was in flight
+  why: Option[Ending];          // the stop's reason, kept for the end when a read was in flight
+  reading: Option[CancelGroup]; // the read in flight's own child group, which a stop cancels
+  owner: Option[ChildStages];   // told when the stream ends (a ChildStages' source), then let go
+  stopped: bool;               // the end was a stop: the consumer wants no more
+
+  pub fn init(self: &new, down: ChunkSink) {
+    *self = Self(down: down, link: ChunkWindow.own(linkWindow), pipe: Pipe.none(), pumping: false,
+      over: false, halt: false, why: None[Ending], reading: None[CancelGroup], owner: None[ChildStages],
+      stopped: false);
+    down.attach(selfactor);
+  }
+
+  // Reads the stream of a pipe that is already made
+  pub async fn startOn(self, p: Pipe) {
+    pipe = p;
+    selfactor.pump();
+  }
+
+  // As startOn, for a ChildStages' own source: it is told when the stream ends
+  pub async fn startFor(self, p: Pipe, boss: ChildStages) {
+    owner = Some[ChildStages](boss);
+    pipe = p;
+    selfactor.pump();
+  }
+
+  // Reads while there is a buffer to read into
+  pub async fn pump(self) {
+    if pumping || over { return; }
+    pumping = true;
+    var more = true;
+    while more {
+      if halt || actors.isCancelled() {
+        self.finishHalted();
+        more = false;
+      } else {
+        match link.take(linkBytes) {
+          case is None { more = false; }
+          case let Some(b) {
+            // the read runs in a child group of ours, so a stop can end it
+            let g = actors.currentGroup().child();
+            reading = Some[CancelGroup](g);
+            let r = await pipe.readIn(b, IoLimits.within(g));
+            reading = None[CancelGroup];
+            match r {
+              case let Ok(buf) {
+                if halt {
+                  link.give(buf);
+                  self.finishHalted();
+                  more = false;
+                } else if buf.isEmpty() {
+                  link.give(buf);
+                  self.finish(Ending.Finished);
+                  more = false;
+                } else {
+                  down <- buf;
+                }
+              }
+              case let Err(e) {
+                // a read ended by its group's cancel is a halt too: a ChildStages kills its child for it (sourceEnded)
+                if actors.isCancelled() { halt = true; }
+                if halt { self.finishHalted(); }
+                else { self.finish(Ending.Failed(AnyError.from(e))); }
+                more = false;
+              }
+            }
+          }
+        }
+      }
+    }
+    pumping = false;
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if over { return; }
+    if actors.isCancelled() {
+      // a read in flight ends by its group's cancel: the pump sees 'halt' when it resumes
+      if pumping { halt = true; } else { self.finishHalted(); }
+    } else if !pumping {
+      selfactor.pump();
+    }
+  }
+
+  // The consumer wants no more (ChunkSource.stop): a read in flight is cancelled (its own child group), then the pipe is
+  // closed and the sink gets its one end, Failed(reason). After the end, or a second stop, nothing happens. Buffers still
+  // out come back through giveBack.
+  pub async fn stop(self, reason: Ending) {
+    if over || halt { return; }
+    stopped = true;
+    if pumping {
+      halt = true;
+      why = Some[Ending](reason);
+      match &reading {
+        case let &Some(g) { g.cancel(); }
+        case is None {}
+      }
+    } else {
+      self.finish(reason);
+    }
+  }
+
+  // A halted source ends: with the stop's reason, or as cancelled
+  fn finishHalted(self) {
+    // every path here is a halt (a stop, or a cancel seen idle in giveBack or at the pump's top): a ChildStages kills
+    halt = true;
+    var w = None[Ending];
+    w <-> why;
+    var how = Ending.Failed(AnyError.msg("streams: cancelled"));
+    match w {
+      case let Some(e) { how = e; }
+      case is None {}
+    }
+    self.finish(how);
+  }
+
+  // The stream is over: the pipe is closed, the sink told, then the owner if there is one
+  fn finish(self, how: Ending) {
+    over = true;
+    var old = Pipe.none();
+    old <-> pipe;
+    let failed = stopped || halt;
+    down.end(how);
+    var o = None[ChildStages];
+    o <-> owner;
+    match o {
+      case let Some(boss) { boss.sourceEnded(failed); }
+      case is None {}
+    }
+  }
+}
+
+// A child's output and error as two streams, and its exit as a value (the header, CHILDSTAGES)
+pub actor ChildStages {
+  outSrc: Option[PipeSource];
+  errSrc: Option[PipeSource];
+  done: Option[OneshotSender[Result[ChildExit, AnyError]]];
+  proc: Option[process.Child];
+  ended: u32;                   // streams over
+  consumerStopped: bool;        // one of them was stopped: the child was asked to end
+  exit: Option[Result[ChildExit, AnyError]];
+  exitKnown: bool;
+  told: bool;
+  stdinSink: Option[PipeSink];  // the sink that writes the child's standard input, given its pipe once the child runs
+
+  pub fn init(self: &new, out: ChunkSink, err: ChunkSink, done: OneshotSender[Result[ChildExit, AnyError]],
+    stdin: Option[PipeSink] = None[PipeSink]) {
+    *self = Self(outSrc: Some[PipeSource](PipeSource(out)), errSrc: Some[PipeSource](PipeSource(err)),
+      done: Some[OneshotSender[Result[ChildExit, AnyError]]](done), proc: None[process.Child], ended: 0u32,
+      consumerStopped: false, exit: None[Result[ChildExit, AnyError]], exitKnown: false, told: false, stdinSink: stdin);
+  }
+
+  // Launches args (args[0] the program) in dir ("" the current folder) and reads its streams
+  pub async fn start(self, args: List[String], dir: Path) {
+    var wantsIn = false;
+    match &stdinSink {
+      case let &Some(_) { wantsIn = true; }
+      case is None {}
+    }
+    match process.launch(args.view(), process.Options(stdin: wantsIn), &dir) {
+      case var Ok(c) {
+        // The pipes are adopted first and the process last: a failure before 'takeProcess' leaves the child with 'c', whose
+        // drop kills it and waits for it (no handle leaked on Windows, no zombie on Linux). The loop closes the raw end of
+        // a pipe whose adopt failed (iocore's adoptPipe), and the ends adopted close as 'out' and 'err' drop.
+        let po = await aio.adoptPipe(c.takeStdout());
+        let pe = await aio.adoptPipe(c.takeStderr());
+        var out = Pipe.none();
+        var err = Pipe.none();
+        var inp = Pipe.none();
+        var child = aio.Child.none();
+        var bad = None[IoError];
+        if wantsIn {
+          let pi = await aio.adoptPipe(c.takeStdin());
+          match pi {
+            case var Ok(p) { inp <-> p; }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+        }
+        match po {
+          case var Ok(p) { out <-> p; }
+          case let Err(e) { bad = Some[IoError](e); }
+        }
+        match pe {
+          case var Ok(p) { err <-> p; }
+          case let Err(e) { bad = Some[IoError](e); }
+        }
+        var pipesOk = true;
+        match &bad {
+          case let &Some(_) { pipesOk = false; }
+          case is None {}
+        }
+        if pipesOk {
+          // Windows: the process HANDLE is the loop's from here, whatever the result (closed when 'child' drops). Linux: the
+          // pid is lent to adoptChild and 'c' stays its owner until the adopt has succeeded; only then is it let go
+          // ('takeProcess'), and the wait that answers reaps it. A failed adopt (pidfd_open) leaves the owner to kill and
+          // reap the pid as 'c' drops
+          var raw = 0usize;
+          #if #os == .windows {
+            raw = c.takeProcess();
+          } #else {
+            raw = usize.from(c.pid());
+          }
+          let ch = await aio.adoptChild(raw);
+          match ch {
+            case var Ok(x) {
+              child <-> x;
+              #if #os != .windows {
+                _ = c.takeProcess();
+              }
+            }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+        }
+        match bad {
+          case let Some(e) {
+            // Killed here; waited for as 'c' drops when takeProcess did not run (on Linux that includes a failed adopt)
+            c.kill();
+            self.fail(AnyError.from(e));
+            return;
+          }
+          case is None {}
+        }
+        proc = Some[process.Child](c);
+        var a = None[PipeSource];
+        a <-> outSrc;
+        var b = None[PipeSource];
+        b <-> errSrc;
+        match a { case let Some(s) { s.startFor(out, selfactor.clone()); } case is None {} }
+        match b { case let Some(s) { s.startFor(err, selfactor.clone()); } case is None {} }
+        var si = None[PipeSink];
+        si <-> stdinSink;
+        match si { case let Some(s) { s.startOn(inp); } case is None {} }
+        let w = await child.exited();
+        exitKnown = true;
+        match w {
+          case let Ok(x) { exit = Some[Result[ChildExit, AnyError]](Ok[ChildExit, AnyError](x)); }
+          case let Err(e) { exit = Some[Result[ChildExit, AnyError]](Err[ChildExit, AnyError](AnyError.from(e))); }
+        }
+        self.check();
+      }
+      case let Err(e) { self.fail(AnyError.from(e)); }
+    }
+  }
+
+  // End the child and every program it started, if it is running
+  pub async fn kill(self) {
+    if exitKnown { return; }
+    match &proc {
+      case let &Some(c) { c.kill(); }
+      case is None {}
+    }
+  }
+
+  // A stream is over (failed: its sink stopped it, wanting no more): that stops the child
+  pub async fn sourceEnded(self, failed: bool) {
+    ended = ended + 1u32;
+    if failed && !consumerStopped {
+      consumerStopped = true;
+      if !exitKnown {
+        // kill on stop (header, KILL ON STOP): later, perhaps close our read end and let the writer notice instead
+        match &proc {
+          case let &Some(c) { c.kill(); }
+          case is None {}
+        }
+      }
+    }
+    self.check();
+  }
+
+  // Both streams are over and the exit is known: it is told, once
+  fn check(self) {
+    if told || ended < 2u32 || !exitKnown { return; }
+    told = true;
+    var e = None[Result[ChildExit, AnyError]];
+    e <-> exit;
+    var d = None[OneshotSender[Result[ChildExit, AnyError]]];
+    d <-> done;
+    match d {
+      case var Some(tx) {
+        match e {
+          case let Some(r) { tx.send(r); }
+          case is None {}
+        }
+      }
+      case is None {}
+    }
+    proc = None[process.Child];
+  }
+
+  // The child could not be set up: the sources end Failed, and the oneshot says why
+  fn fail(self, e: AnyError) {
+    exitKnown = true;
+    exit = Some[Result[ChildExit, AnyError]](Err[ChildExit, AnyError](e));
+    var a = None[PipeSource];
+    a <-> outSrc;
+    var b = None[PipeSource];
+    b <-> errSrc;
+    ended = 2u32;
+    var si = None[PipeSink];
+    si <-> stdinSink;
+    match si { case let Some(s) { s.startOn(Pipe.none()); } case is None {} }
+    match a { case let Some(s) { s.stop(Ending.Failed(AnyError.msg("the child could not be started"))); } case is None {} }
+    match b { case let Some(s) { s.stop(Ending.Failed(AnyError.msg("the child could not be started"))); } case is None {} }
+    self.check();
+  }
+}

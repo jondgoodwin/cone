@@ -1039,6 +1039,13 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
         genlBorrowAttrs(gen, glofn, glofn->llvmvar);
+        // '@noalias': the pointer returned is a fresh allocation. Honors --no-noalias
+        if ((glofn->dclinfo.facts & DclNoAlias) && LLVMGetTypeKind(LLVMGetReturnType(fntype)) != LLVMPointerTypeKind)
+            errorMsgNode((INode*)glofn, ErrorNoAliasAttr, "'@noalias' says the pointer a function returns is a fresh block, "
+                "so the function must return a pointer or a thin reference: this one returns neither.");
+        else if ((glofn->dclinfo.facts & DclNoAlias) && !gen->opt->no_noalias && !gen->opt->gpu)
+            LLVMAddAttributeAtIndex(glofn->llvmvar, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("noalias", 7), 0));
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
@@ -1073,6 +1080,13 @@ void genlGlobalSyms(GenState *gen, INode *node);
 // of a generic trait or enum splits its members as a non-generic one does: its
 // methods belong to the implementers, its static functions to itself, and
 // genlGlobalImpl generates their bodies.
+// A member of an instance whose members wait for a use (structMembersUse), which no
+// use has checked: it is not generated. One checked some other way (a vtable
+// slot, say) is generated like any other.
+static int genlMemberUnchecked(INode *type, INode *member) {
+    return structMembersLazy(type) && !(member->flags & TypeChecked);
+}
+
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag)
         return;
@@ -1081,6 +1095,8 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     uint32_t cnt;
     for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
         if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+            continue;
+        if (genlMemberUnchecked(instance, *nodesp))
             continue;
         genlGlobalSyms(gen, *nodesp);
     }
@@ -1124,6 +1140,8 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 // A trait's methods are not its own to generate: a requirement has
                 // no body, and a default was cloned into each implementer, which
                 // owns and names the copy. Its static functions are its own --
@@ -1208,6 +1226,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalImpl(gen, *nodesp);

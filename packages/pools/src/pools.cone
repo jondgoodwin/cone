@@ -31,7 +31,8 @@
 //   t.borrowMutAt(i)   Some(&mut T) of it, the same
 //   t.get(h)           *T of the entry h names, null if h is stale or none
 //   t.at(i)            *T of the live entry in cell i, null if the cell is not live or past the pool
-//   t.slotAt(i)        the Handle of the live entry in cell i (Handle.none() if not live)
+//   t.handleAt(i)      the Handle of the live entry in cell i (Handle.none() if not live)
+//   t.slotAt(i)        the old name of handleAt, kept until the 'slots' aliases go
 //   t.remove(h)        retire and free at once (the default): true; false if h was stale
 //   t.removeAt(i)      the same for whatever live entry occupies cell i
 //   t.retire(h)        the entry is dead to every handle and to at(i), not finalized, its cell not reused: true
@@ -181,19 +182,19 @@ pub struct GenPool[T] is Move {
 
   // The bit of cell i, in the slab whose cell 0 is at b (which the caller has
   // in hand, so the slab table is not read again to find the bitmap)
-  fn setBitIn(self: &, b: usize, i: u32) {
+  fn setBitIn(self: &mut,b: usize, i: u32) {
     let o = i & mask;
     let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
     *w = *w | (1u64 << u64.from(o & 63u32));
   }
 
-  fn clearBitIn(self: &, b: usize, i: u32) {
+  fn clearBitIn(self: &mut,b: usize, i: u32) {
     let o = i & mask;
     let w = ((b - self.bmBytes) as *u64) + usize.from(o >> 6u32);
     *w = *w & ~(1u64 << u64.from(o & 63u32));
   }
 
-  fn clearBit(self: &, i: u32) {
+  fn clearBit(self: &mut,i: u32) {
     self.clearBitIn(*(slabs + usize.from(i >> self.sh())), i);
   }
 
@@ -349,11 +350,14 @@ pub struct GenPool[T] is Move {
   }
 
   // The Handle of the live entry in cell i, or Handle.none()
-  pub fn slotAt(self: &, i: u32) Handle {
+  pub fn handleAt(self: &, i: u32) Handle {
     let c = self.cellOrNull(i);
     if c as usize == 0usize || (*c).next != liveMark {return Handle.none();}
     Handle(i, (*c).gen)
   }
+
+  // The old name of handleAt, kept until step 10 deletes the 'slots' aliases
+  pub fn slotAt(self: &, i: u32) Handle {self.handleAt(i)}
 
   // A cell has been emptied of its entry (already finalized or moved out and
   // its bit cleared): give it a new generation and free it, or retire it for
@@ -613,5 +617,204 @@ pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
     if i == noCell {pos = noCell; return None;}
     pos = i + 1u32;
     Some[(u32, &T)]((i, pool.at(i) as &T))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DensePool[T]: packed rows behind handles. The pool is the strong holder; a
+// holder keeps a Handle (the same 32-bit index and 32-bit generation as
+// GenPool's) that names an entry, while the entry's ROW moves: removing an
+// entry moves the last row into the hole, so the rows stay contiguous, in order,
+// with no holes, and a walk over them is a plain dense loop. Add, remove and
+// get(handle) are O(1): the handle goes through a sparse index (a GenPool of
+// row numbers, which gives the generations, the retiring of a wrapped cell and
+// the stale check) to its row, and each row records the sparse cell that names
+// it, to patch the index when the row moves.
+//
+// The rows are one growable contiguous block, not slabs: they move by design,
+// no row address leaves the pool (holders keep handles), and contiguity is what
+// makes the dense walk and rows() possible. All of that storage is behind
+// RowBlock, so a slab version would replace one small struct.
+//
+// A pool belongs to one actor or thread at a time. Nothing may add or remove
+// during a walk or while a borrow of an entry is held (the borrow checker
+// refuses it), because adding may move the whole block and removing moves rows.
+
+// The seam: the row storage. Values and the back index (each row's sparse cell)
+// in two parallel arrays, so the values are a plain array of T.
+struct RowBlock[T] is Move {
+  vals: *T;
+  cells: *u32;
+  n: usize;
+  cap: usize;
+
+  fn make() RowBlock[T] {RowBlock[T](nullOf[T](), nullOf[u32](), 0usize, 0usize)}
+
+  fn grow(self: &mut) {
+    let nc = if cap == 0usize {8usize} else {cap * 2usize};
+    vals = libc.realloc(vals as *u8, nc * mem.sizeof[T]()) as *T;
+    cells = libc.realloc(cells as *u8, nc * mem.sizeof[u32]()) as *u32;
+    if vals as usize == 0usize || cells as usize == 0usize {
+      panic("pools: out of memory for rows");
+    }
+    cap = nc;
+  }
+
+  // v moved in as the last row, naming sparse cell c
+  fn push(self: &mut, v: T, c: u32) {
+    if n == cap {self.grow();}
+    mem.writeRaw[T](vals + n, v);
+    *(cells + n) = c;
+    n = n + 1usize;
+  }
+
+  // Row r leaves (finalized if 'fin') and the last row moves into its place
+  fn dropRow(self: &mut, r: usize, fin: bool) {
+    if fin {mem.finalize[T](vals + r);}
+    let last = n - 1usize;
+    if r != last {
+      mem.writeRaw[T](vals + r, mem.readRaw[T](vals + last));
+      *(cells + r) = *(cells + last);
+    }
+    n = last;
+  }
+
+  fn final(self: &uni) {
+    var i = 0usize;
+    while i < n {
+      mem.finalize[T](vals + i);
+      i = i + 1usize;
+    }
+    libc.free(vals as *u8);
+    libc.free(cells as *u8);
+  }
+}
+
+pub struct DensePool[T] is Move {
+  index: GenPool[u32];    // sparse: a cell's row
+  block: RowBlock[T];
+
+  // An empty pool; 'perSlab' is for the sparse index (see GenPool.make)
+  pub fn make(perSlab: u32 = 0u32) DensePool[T] {
+    DensePool[T](GenPool[u32].make(perSlab), RowBlock[T].make())
+  }
+
+  pub fn len(self: &) usize {block.n}
+
+  // v moved into a new last row: its Handle
+  pub fn add(self: &mut, v: T) Handle {
+    let h = index.add(u32.from(block.n));
+    block.push(v, h.index);
+    h
+  }
+
+  // The row h names, or noCell if it is gone
+  pub fn rowIndex(self: &, h: Handle) u32 {
+    let p = index.get(h);
+    if p as usize == 0usize {return noCell;}
+    *p
+  }
+
+  pub fn isLive(self: &, h: Handle) bool {index.get(h) as usize != 0usize}
+
+  // The entry h names, or null if it is gone
+  pub fn get(self: &, h: Handle) *T {
+    let p = index.get(h);
+    if p as usize == 0usize {return nullOf[T]();}
+    block.vals + usize.from(*p)
+  }
+
+  pub fn borrow(self: &, h: Handle) Option[&T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  pub fn borrowMut(self: &mut, h: Handle) Option[&mut T] {
+    let p = self.get(h);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // The Handle of the entry in row r, or Handle.none() if there is no such row
+  pub fn handleAt(self: &, r: u32) Handle {
+    if usize.from(r) >= block.n {return Handle.none();}
+    index.handleAt(*(block.cells + usize.from(r)))
+  }
+
+  // The entry in row r, or None
+  pub fn borrowAt(self: &, r: u32) Option[&T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&T]((block.vals + usize.from(r)) as &T)
+  }
+
+  pub fn borrowMutAt(self: &mut, r: u32) Option[&mut T] {
+    if usize.from(r) >= block.n {return None;}
+    Some[&mut T]((block.vals + usize.from(r)) as &mut T)
+  }
+
+  // The rows as a slice, in row order. The pool may not change while it is held
+  pub fn rows(self: &) &Array[T] {mem.sliceFromParts(block.vals, block.n)}
+  pub fn rowsMut(self: &mut) &mut Array[T] {mem.sliceFromPartsMut(block.vals, block.n)}
+
+  // The row leaves, the last row takes its place, and the sparse index follows
+  fn dropAt(self: &mut, h: Handle, r: usize, fin: bool) {
+    block.dropRow(r, fin);
+    if r < block.n {
+      let moved = index.at(*(block.cells + r));
+      *moved = u32.from(r);
+    }
+    index.remove(h);
+  }
+
+  // Finalize the entry h names and take it out: true if there was one
+  pub fn remove(self: &mut, h: Handle) bool {
+    let p = index.get(h);
+    if p as usize == 0usize {return false;}
+    self.dropAt(h, usize.from(*p), true);
+    true
+  }
+
+  // Move the entry out by value; nothing is finalized
+  pub fn take(self: &mut, h: Handle) Option[T] {
+    let p = index.get(h);
+    if p as usize == 0usize {return None;}
+    let r = usize.from(*p);
+    let v = mem.readRaw[T](block.vals + r);
+    self.dropAt(h, r, false);
+    Some[T](v)
+  }
+
+  // Remove every entry (finalized, last row first). Every handle becomes stale,
+  // each cell's generation moving on
+  pub fn clear(self: &mut) {
+    while block.n > 0usize {
+      let r = block.n - 1usize;
+      let c = *(block.cells + r);
+      block.dropRow(r, true);
+      index.removeAt(c);
+    }
+  }
+
+  // A cursor over the rows in order. It borrows the pool, which may not change
+  // while the cursor, or an entry it gave, is used
+  pub fn iter(self: &) DenseIter[T] {DenseIter[T](self, 0usize)}
+
+  // FOR TESTS, NOT AN API: set the generation of the free sparse cell c (to
+  // start it near the top). Does nothing if the cell is not free.
+  pub fn setGenForTests(self: &mut, c: u32, g: u32) {
+    index.setGenForTests(c, g);
+  }
+}
+
+pub struct DenseIter['a, T] is Iterator[&T] {
+  pool: &'a DensePool[T];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a T] {
+    if pos >= pool.block.n {return None;}
+    let p = pool.block.vals + pos;
+    pos = pos + 1usize;
+    Some[&T](p as &T)
   }
 }

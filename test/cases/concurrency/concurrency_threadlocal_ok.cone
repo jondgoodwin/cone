@@ -1,0 +1,50 @@
+// A borrow of a '@threadlocal' that does not live across an 'await' is
+// accepted (Bug 87; concurrency_threadlocal_borrow): within one stretch of
+// code the worker does not change. Here a borrow taken and used between the
+// 'await's, passed to a synchronous callee, ended by its block before the
+// 'await', and a place borrowed in the same expression as the 'await' (the
+// borrow is taken after the seam). The thread-local itself is never read for
+// the printed result, which does not depend on the worker.
+
+mod concurrency_threadlocal_ok;
+
+import stdio use *;
+import actors;
+
+var @threadlocal tl: u64 = 0u64;
+
+fn plain(r: &u64) u64 { *r }
+fn bump(r: &mut u64) { *r = *r + 1u64; }
+
+actor Oracle {
+  pub async fn get(self) u64 { 1u64 }
+}
+
+actor A {
+  pub async fn go(self, c: Oracle) u64 {
+    { let r = &mut tl; bump(r); }
+    let n = await c.get();
+    let q = &mut tl;
+    bump(q);
+    let seen = plain(q);
+    let m = 0u64 * plain(&tl) + await c.get();
+    seen - seen + n + m
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, a: A, c: Oracle) {
+    print <- "go ", await a.go(c), "\n";
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Oracle();
+    let a = A();
+    let r = Reporter();
+    r.report(a, c);
+  }
+  finalAll();
+}

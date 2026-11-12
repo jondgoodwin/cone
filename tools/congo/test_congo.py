@@ -36,6 +36,19 @@ CONGO = [CONGO_EXE] if CONGO_EXE else [sys.executable, str(HERE / "congo.py")]
 IS_WINDOWS = congo.IS_WINDOWS
 
 
+def compiler_folder(env: dict[str, str]) -> str:
+    """The folder a lone file's build keeps for the compiler the environment
+    names (else the repository's): the first 8 hex digits of conec's content hash."""
+    named = env.get("CONEC")
+    return congo.tool_hash(Path(named) if named else congo.REPO_CONEC)[:8]
+
+
+def lone_out(test, stem: str, mode: str = "debug") -> Path:
+    """Where the lone file named <stem>-<hash> built into: lone/<stem>-<hash>/<c8>/<mode>."""
+    root = next((test.root / "home" / "lone").glob(f"{stem}-*"))
+    return root / compiler_folder(test.env) / mode
+
+
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(text).lstrip("\n"), encoding="utf-8")
@@ -535,7 +548,8 @@ class Scenarios(unittest.TestCase):
         self.assertFalse((self.root / "build").exists())
         spelled = str((self.root / "lone.cone").resolve())
         digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()
-        self.assertTrue((self.root / "home" / "lone" / f"lone-{digest[:10]}" / "debug"
+        self.assertTrue((self.root / "home" / "lone" / f"lone-{digest[:10]}"
+                         / compiler_folder(self.env) / "debug"
                          / f"lone{congo.EXE_EXT}").is_file())
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
@@ -616,7 +630,8 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(self.program_output(run), "lone 42\n")
         spelled = str((self.root / name / f"{name}.cone").resolve())
         digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()
-        self.assertTrue((self.root / "home" / "lone" / f"{name}-{digest[:10]}" / "debug"
+        self.assertTrue((self.root / "home" / "lone" / f"{name}-{digest[:10]}"
+                         / compiler_folder(self.env) / "debug"
                          / f"lone{congo.EXE_EXT}").is_file())
 
     def test_a_compile_error_names_a_non_ascii_path(self):
@@ -690,7 +705,7 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(compiled, ["libc", "core", "stdio", "greet", "app"])
         self.assertIn("greeting", run.stderr)
         self.assertIn("greet.cone is not used", run.stderr)
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         self.assertIn("pub extern fn hello(n: i64);", (out / "greet.cone").read_text())
 
     def test_an_include_file_imports_another_package(self):
@@ -754,7 +769,7 @@ class Scenarios(unittest.TestCase):
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["libc", "core", "stdio", "b", "a", "app"])
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         desc = (out / "app.conebuild").read_text()
         # The package lines: the whole closure, b included though the program
         # does not import it, each after what it imports, the prelude first
@@ -762,7 +777,7 @@ class Scenarios(unittest.TestCase):
         tops = [line.split(":")[0] for line in desc.splitlines()
                 if line.startswith("import ")]
         self.assertEqual(tops, ["import libc", "import core", "import stdio", "import b", "import a"])
-        self.assertRegex(desc, r'\nimport b: ".*/app-[0-9a-f]+/debug/b\.cone"\n')
+        self.assertRegex(desc, r'\nimport b: ".*/app-[0-9a-f]+/[0-9a-f]{8}/debug/b\.cone"\n')
         # The program's own module imports only what it writes
         module = desc[desc.index("app: {"):]
         self.assertIn("import a:", module)
@@ -771,10 +786,62 @@ class Scenarios(unittest.TestCase):
         # a's description lists b both ways: its module imports b, and b's is
         # the one include file its compile loads
         a_desc = (out / "a.conebuild").read_text()
-        self.assertRegex(a_desc, r'\nimport b: ".*/app-[0-9a-f]+/debug/b\.cone"\n')
+        self.assertRegex(a_desc, r'\nimport b: ".*/app-[0-9a-f]+/[0-9a-f]{8}/debug/b\.cone"\n')
         self.assertRegex(a_desc[a_desc.index("a: {"):], r'import b: ".*/debug/b\.cone"')
         # a's generated include file imports b, as a's source does
         self.assertIn("\nimport b;\n", (out / "a.cone").read_text())
+
+    def test_a_generic_alias_is_used_from_another_package(self):
+        # A package's 'pub alias Items[T] = List[T]' is a public name of the
+        # package: the program names 'a.Items[i64]' (and 'a.Rows[i64]', an alias
+        # of that alias with a bound), and each use is expanded where it is
+        # written, through a's generated include file
+        packages = self.root / "genalias"
+        self.registry(packages)
+        write(packages / "a" / "congo.toml",
+              '[package]\nname = "a"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "a" / "src" / "a.cone", """
+            mod a;
+
+            import collections use List;
+
+            pub alias Items[T] = List[T];
+            pub alias Rows[T: Copy] = Items[T];
+
+            pub fn make(n: i64) Items[i64] {
+              var xs = Items[i64]();
+              xs <- n, n + 1, n + 2;
+              xs
+            }
+            """)
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import a;
+
+            fn total(xs: &a.Rows[i64]) i64 {
+              var sum = 0i64;
+              each x in xs {
+                sum = sum + x;
+              }
+              sum
+            }
+
+            fn main() i32 {
+              let xs: a.Items[i64] = a.make(10i64);
+              var ys = a.Rows[i64]();
+              ys <- 1i64, 2i64;
+              stdio.print <- total(&xs);
+              stdio.print <- "\\n";
+              stdio.print <- total(&ys);
+              stdio.print <- "\\n";
+              0i32
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # make(10) is 10, 11, 12: 33; ys is 1, 2: 3
+        self.assertEqual(self.program_output(run), "33\n3\n")
 
     def test_an_include_file_records_the_types_that_change_shape(self):
         # A struct wrapping a List is shape-changing though it declares nothing,
@@ -852,7 +919,7 @@ class Scenarios(unittest.TestCase):
         run = self.congo("run", "good.cone", cwd=self.root)
         # The gauge's borrow reads the number it bumped; the bag's first is read before the push
         self.assertEqual(self.program_output(run), "42\n7\n")
-        out = next((self.root / "home" / "lone").glob("good-*")) / "debug"
+        out = lone_out(self, "good")
         included = (out / "shapes.cone").read_text()
         self.assertIn("pub struct Bag is ShapeChanging {", included)
         self.assertIn("pub struct Shelf is Sendable, ShapeChanging {", included)
@@ -998,7 +1065,7 @@ class Scenarios(unittest.TestCase):
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["libc", "core", "stdio", "b", "a", "c", "app"])
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         # b's generated include file declares b's 'init' and 'final' and its
         # submodule's, which is what the program's stitched pair calls
         generated = (out / "b.cone").read_text()
@@ -1094,7 +1161,7 @@ class Scenarios(unittest.TestCase):
         # Stack(3, 4) swapped is (4, 3): a is 4; total is 4 + 3 from vec's
         # object, plus 100 from vec.cell's; 20 is Large, whose code is 2
         self.assertEqual(self.program_output(run), "4\n107\n2\n")
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         generated = (out / "coll.cone").read_text()
         # The root's blocks are private, whatever their source said; a block
         # inside one keeps its 'pub', which opens it only to the package, so the
@@ -1156,7 +1223,7 @@ class Scenarios(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root)
         # StrToIntA("1234") is 1234; StrToIntA("-56") is -56, and -56 + 100 = 44
         self.assertEqual(self.program_output(run), "1234\n44\n")
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         # The program is compiled against the C package's generated include
         # file, which keeps its '@c' line, and the C package's object, which
         # defines nothing, is linked like any other
@@ -1536,7 +1603,7 @@ class Scenarios(unittest.TestCase):
             """))
         # geomath's include file imports libc, and the example's description
         # finds geomath at its own compile's output
-        out = next((self.root / "home" / "lone").glob("tour-*")) / "debug"
+        out = lone_out(self, "tour")
         self.assertIn("import libc;", (out / "geomath.cone").read_text())
         self.assertRegex((out / "tour.conebuild").read_text(),
                          r'\nimport geomath: ".*/geomath\.cone"\n')
@@ -2383,7 +2450,7 @@ class RuntimeLibraries(unittest.TestCase):
         # Windows finds no tri3.dll beside it or on PATH
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
         self.assertNotEqual(run.returncode, 0)
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         # ... and says so, by the program's full path, the loader's dialog
         # suppressed (ErrorMode)
         self.assertIn(f"{(out / 'app.exe').resolve()} could not start: a DLL it needs was"
@@ -2450,7 +2517,7 @@ class RuntimeLibraries(unittest.TestCase):
               'paths = ["clib"]\nruntime = ["tri3"]\n\n[link.linux]\nruntime = ["nosuch"]\n')
         run = self.congo("run", "app.cone", cwd=self.root)
         self.assertEqual(self.program_output(run), "42\n")
-        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        out = lone_out(self, "app")
         source = pkg / "clib" / "tri3.dll"
         self.assertEqual((out / "tri3.dll").read_bytes(), source.read_bytes())
         # A DLL that is nowhere is named with the package, whichever table
@@ -2561,7 +2628,7 @@ class RuntimeLibraries(unittest.TestCase):
         self.env["PATH"] = f"{places['path']};{self.env['PATH']}"
         for name in ("paths", "deps", "lib", "path"):
             self.congo("run", "app.cone", cwd=self.root)
-            copied = next((self.root / "home" / "lone").glob("app-*")) / "debug" / "fake.dll"
+            copied = lone_out(self, "app") / "fake.dll"
             self.assertEqual(copied.read_bytes(), name.encode(), name)
             (places[name] / "fake.dll").unlink()
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
@@ -2728,7 +2795,7 @@ class GpuKernels(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root)
         self.assertIn("Compiling kern v0.1.0 for the GPU", run.stdout)
         self.assertEqual(self.program_output(run), "half of 8 is 4\n")
-        lone = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        lone = lone_out(self, "app")
         self.assertEqual(entry_points(lone / "kern.spv"), ["scale"])
         self.assertTrue((lone / "app.exe").is_file())
 
@@ -2974,7 +3041,7 @@ class GpuFolder(unittest.TestCase):
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
         self.assertEqual(self.program_output(run), "a quarter of 8 is 2\n")
-        lone = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        lone = lone_out(self, "app")
         self.assertEqual(entry_points(lone / "shapes.spv"), ["scale"])
 
     def test_a_program_with_a_gpu_folder(self):
@@ -3399,6 +3466,48 @@ class BuildCache(unittest.TestCase):
         # Another conec, at another path
         del self.env["CONEC"]
         self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+
+    def test_two_compilers_keep_separate_lone_builds(self):
+        """A lone file built by two compilers keeps a build for each, in
+        lone/<file>-<hash>/<c8>/: switching between them recompiles nothing
+        after each has built once, and one's objects are never the other's."""
+        write(self.root / "twice.cone", """
+            mod twice;
+
+            import stdio use *;
+
+            fn main() i32 {
+              print <- "twice\\n";
+              0i32
+            }
+            """)
+        tools = self.root / "tools"
+        tools.mkdir()
+        other = tools / congo.REPO_CONEC.name
+        shutil.copyfile(congo.REPO_CONEC, other)
+        shutil.copyfile(congo.conestd_path(congo.REPO_CONEC),
+                        tools / congo.conestd_path(congo.REPO_CONEC).name)
+        with other.open("ab") as file:      # another file by its content, doing what conec does
+            file.write(b"\0")
+        a, b = dict(self.env), dict(self.env, CONEC=str(other))
+        a.pop("CONEC", None)
+
+        def run(env):
+            self.env = env
+            return self.congo("run", "twice.cone", cwd=self.root)
+
+        first = compiled(run(a))
+        self.assertIn("twice", first)
+        self.assertIn("twice", compiled(run(b)))        # its own build, made once
+        self.assertEqual(compiled(run(a)), [])          # back to the first: nothing again
+        self.assertEqual(compiled(run(b)), [])
+        self.assertEqual(self.program_output(run(a)), "twice\n")
+        folders = sorted(p.name for p in next((self.root / "home" / "lone").glob("twice-*")).iterdir())
+        self.assertEqual(folders, sorted([compiler_folder(a), compiler_folder(b)]))
+        self.assertNotEqual(compiler_folder(a), compiler_folder(b))
+        # 'congo clean' on the file removes every compiler's build
+        self.congo("clean", "twice.cone", cwd=self.root)
+        self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
     def wrapper(self) -> Path:
         """A conec that runs the repository's, and then, where

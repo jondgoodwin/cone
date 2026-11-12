@@ -1057,7 +1057,9 @@ variable, a finished value) is passed as before.
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their
 `alloc` and `free` call core's `RawBlocks`, the raw blocks layer, which `conestd`
 defines (`rawblocks.cone`: `cone_rawBlockAlloc`, `cone_rawBlockResize`,
-`cone_rawBlockRelease`, each a forward to `libc`'s `malloc`, `realloc` or `free`,
+`cone_rawBlockRelease`, each a forward to `libc`'s `malloc`, `realloc` or `free`;
+`cone_rawBlockAllocAligned` and `cone_rawBlockReleaseAligned` forward to `libc`'s
+`alignedAlloc` and `alignedFree`, a pair of their own,
 `libc`'s ordinary `extern` declarations, which `core`'s import of `libc` puts in
 every compile). A program's own declaration of `free` meets `libc`'s as any two
 declarations of one C name do (`genlClaimSymbol`). `conestd` also supplies stdio
@@ -1687,6 +1689,20 @@ one of its parts, or a `&uni` or `&imm` of a global, is refused (cases
 ever points here, build the program with `--no-noalias` (or `CONE_NO_NOALIAS`
 set in the environment, which reaches every `conec` a build tool starts) and
 compare.
+
+### noalias on an allocation's return
+
+`fn @noalias` (`DclNoAlias`, an attribute beside `@c` and `@initpure`) says the pointer the
+function returns is a fresh block, one no other live pointer reaches. A function with a symbol
+(`cone_rawBlockAlloc`, `Rcw.alloc`) gets `noalias` on its return in `genlGloFnName`, so every
+direct call sees it. An inline one (`RawBlocks.alloc`; `Uni`, `Rc` and `Arc`'s `alloc`; and
+`MemRegion.allocate`, which calls the region's function through a pointer) has no symbol: the
+attribute goes on the call that gives the inlined value (`genlFnCallInternal`), where that value
+is a call. Where it cannot be kept it is refused, `ErrorNoAliasAttr` (1623), never ignored: a function
+whose LLVM return is not a pointer, or an inline one whose value is not a call. The spelling is
+PROVISIONAL (Jon approved it "for now", 9 Nov). `--no-noalias` and the GPU leave it off. The region contract in core (above
+`MemRegion`) is what a user-written region must meet. Arenas, pools and `Arena.alloc` are not
+marked.
 
 ### A split method
 
