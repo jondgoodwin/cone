@@ -1,0 +1,23 @@
+// A streaming 'feed' of more than the buffer pool holds (64 MiB in one chunk, nothing pulled) never
+// panics: the Decompressor fails with TooLarge, and a pull answers Failed.
+
+mod bigfeed;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import iobuf use IoBuf;
+
+fn main() i32 {
+  var chunk = List[u8]();
+  chunk.resize(73400320usize, 0u8);
+  var d = Decompressor.make();
+  d.feed(chunk.view());
+  var out = IoBuf(4096usize);
+  expect(d.pull(&mut out) == Status.Failed, "the pull answers Failed");
+  match d.error() {
+    case let Some(e) { expect(e.kind == ErrorKind.TooLarge, "the failure is TooLarge"); }
+    else { expect(false, "there is an error"); }
+  }
+  done()
+}
