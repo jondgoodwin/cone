@@ -10,10 +10,13 @@
 // Before the wake rule (duty 3: a push to one's own empty queue wakes a
 // sleeper when none is looking) 19 of 20 rounds stranded (round 1 passes: the
 // workers still spin from the start), on master 79d75ad82 and on #989's head
-// with duties 1 and 2. With the argument 'off' the rule is switched off
-// (Options.wakeOnPush: false) and the program prints how many rounds stranded
-// instead of checking it (it strands again: 19 of 20). The rule is off by
-// default, so the checked run turns it on explicitly.
+// with duties 1 and 2. The rule is off by default; the checked run (no
+// argument) relies on the scheduler's monitor (THE MONITOR, Options.monitorMicros)
+// to wake a worker for Y within a tick or two. With the argument 'off' the
+// monitor is off too (monitorMicros: 0) and the program prints how many rounds
+// stranded instead of checking it (it strands again: 19 of 20). With 'rule'
+// the wake rule is on instead (wakeOnPush: true, monitor off), checked. A run with
+// an argument prints the longest wait for Y, in microseconds.
 
 mod lostwake;
 
@@ -27,11 +30,13 @@ import time;
 let flag: Atomic[u64];
 let seen: Atomic[u64];
 let stranded: Atomic[u64];
+let longest: Atomic[u64];   // the longest wait for Y, in microseconds (one writer at a time: X's turns do not overlap)
 
 fn @initpure init() {
   flag = Atomic[u64].of(0u64);
   seen = Atomic[u64].of(0u64);
   stranded = Atomic[u64].of(0u64);
+  longest = Atomic[u64].of(0u64);
 }
 
 actor Y {
@@ -43,10 +48,13 @@ actor Y {
 actor X {
   pub async fn go(self, y: Y, round: u64) {
     y.set();
-    var tries = 0u32;
-    while flag.load() < round && tries < 300u32 {
-      thread.sleep(time.Duration.fromMillis(1i64));
-      tries = tries + 1u32;
+    let t0 = time.Instant.now();
+    while flag.load() < round && t0.elapsed().micros() < 300000i64 {
+      thread.sleep(time.Duration.fromMicros(50i64));
+    }
+    let waited = u64.from(t0.elapsed().micros());
+    if waited > longest.load() {
+      longest.store(waited);
     }
     if flag.load() < round {
       stranded.add(1u64);
@@ -58,11 +66,10 @@ actor X {
 fn main() i32 {
   initAll();
   let args = process.args();
-  let off = match args.get(1) {
-    case let Some(s) {true}
-    else {false}
-  };
-  actors.configure(actors.Options(workers: 8u32, wakeOnPush: !off));
+  let off = args.len() >= 2usize && args[1usize].equals("off");
+  let rule = args.len() >= 2usize && args[1usize].equals("rule");
+  actors.configure(actors.Options(workers: 8u32, wakeOnPush: rule,
+    monitorMicros: if off || rule {0u32} else {500u32}));
   var round = 1u64;
   while round <= 20u64 {
     thread.sleep(time.Duration.fromMillis(30i64));
@@ -73,6 +80,9 @@ fn main() i32 {
     round = round + 1u64;
   }
   expectUInt(seen.load(), 20u64, "every round's turn ended");
+  if args.len() >= 2usize {
+    printStr("longest wait for Y "); printUInt(longest.load()); printStr(" us\n");
+  }
   if off {
     printStr("stranded "); printUInt(stranded.load()); printStr(" of 20\n");
   } else {
