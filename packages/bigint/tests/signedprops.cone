@@ -1,0 +1,83 @@
+// Identities for BigInt over random signed values of up to 2048 bits, fixed seed:
+// (a+b)-b == a, a-b == -(b-a), a*b/b == a, truncating divmod recombines with the
+// dividend's sign on the remainder, Euclidean remainder in [0, |b|) and recombining,
+// multiplication distributes, text round-trips, and zero is never negative.
+
+mod signedprops;
+
+import testing use *;
+import collections use *;
+import bigint use BigInt, BigUint;
+import random;
+
+fn draw(rng: &mut random.Rng, maxBits: usize) BigInt {
+  let n = rng.index(maxBits / 64usize + 1usize);
+  var l = List[u64]();
+  var i = 0usize;
+  while i < n {
+    let kind = rng.below(6u64);
+    if kind == 0u64 { l.push(0xFFFFFFFFFFFFFFFFu64); }
+    else if kind == 1u64 { l.push(0u64); }
+    else { l.push(rng.next()); }
+    i = i + 1usize;
+  }
+  BigInt.fromParts(rng.below(2u64) == 1u64, BigUint.fromLimbs(l))
+}
+
+fn same(a: &BigInt, b: &BigInt) bool { a.cmp(b) == 0i32 }
+
+fn unwrap(r: Result[BigInt, bigint.BigUintError]) BigInt {
+  match r {
+    case let Ok(n) { n }
+    case is Err { BigInt.zero() }
+  }
+}
+
+fn main() i32 {
+  var rng = random.Rng.fromSeed(8675309u64);
+  var failures = 0i32;
+  var round = 0i32;
+  while round < 300i32 {
+    let a = draw(&mut rng, 2048usize);
+    var b = draw(&mut rng, 1024usize);
+    if b.isZero() { b = BigInt.fromI64(-3i64); }
+    if !same(&a.add(&b).sub(&b), &a) { failures = failures + 1i32; }
+    if !same(&a.sub(&b), &b.sub(&a).negate()) { failures = failures + 1i32; }
+    if !same(&a.add(&a.negate()), &BigInt.zero()) { failures = failures + 1i32; }
+    if a.add(&a.negate()).isNegative() { failures = failures + 1i32; }
+    let ab = a.mul(&b);
+    if ab.isNegative() != (!a.isZero() && a.isNegative() != b.isNegative()) { failures = failures + 1i32; }
+    match ab.divmod(&b) {
+      case let Ok(qr) { if !same(&qr.quot, &a) || !qr.rem.isZero() { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    match a.divmod(&b) {
+      case let Ok(qr) {
+        if !same(&qr.quot.mul(&b).add(&qr.rem), &a) { failures = failures + 1i32; }
+        if qr.rem.magnitude().cmp(&b.magnitude()) >= 0i32 { failures = failures + 1i32; }
+        if !qr.rem.isZero() && qr.rem.isNegative() != a.isNegative() { failures = failures + 1i32; }
+      }
+      case is Err { failures = failures + 1i32; }
+    }
+    let q = unwrap(a.divEuclid(&b));
+    let r = unwrap(a.remEuclid(&b));
+    if !same(&q.mul(&b).add(&r), &a) { failures = failures + 1i32; }
+    if r.isNegative() || r.magnitude().cmp(&b.magnitude()) >= 0i32 { failures = failures + 1i32; }
+    let c = draw(&mut rng, 512usize);
+    if !same(&a.mul(&b.add(&c)), &a.mul(&b).add(&a.mul(&c))) { failures = failures + 1i32; }
+    let dec = String() <- a;
+    match BigInt.parse(dec.view()) {
+      case let Ok(p) { if !same(&p, &a) { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    var hex = String();
+    a.toTextBase(&uni hex.textOut(), 16u32);
+    match BigInt.parseBase(hex.view(), 16u32) {
+      case let Ok(p) { if !same(&p, &a) { failures = failures + 1i32; } }
+      case is Err { failures = failures + 1i32; }
+    }
+    round = round + 1i32;
+  }
+  expectInt(i64.from(failures), 0i64, "300 rounds of signed identities");
+  done()
+}
