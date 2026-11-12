@@ -1,0 +1,231 @@
+// The lazy DFA against the Pike VM, on random patterns and random texts with fixed seeds,
+// and under cache pressure.
+//
+// A pattern of 10000 states or more is left to the Pike VM, so the same pattern with a dead
+// alternative of 132000 states added ("padding", as tests/semantics does) is searched by the
+// Pike VM alone while the pattern as written is searched by the DFAs. The two must give the
+// same answer to isMatch, to findFrom from every character boundary, and to matches().
+// A package test cannot reach a private name, hence the padding.
+
+mod dfa;
+import testing use *;
+import collections use *;
+import stdio;
+import regex;
+
+struct Rng {
+  pub s: u64;
+
+  pub fn next(self: &mut) u32 {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    u32.from(s >> 33u64)
+  }
+
+  pub fn below(self: &mut, n: u32) u32 { self.next() % n }
+}
+
+// -------- random patterns --------
+
+const atoms: Array[&str, 12] = ["a", "b", "c", "a", "b", ".", "[ab]", "[^a]", "é", "\\n", " ", "_"];
+const looks: Array[&str, 8] = ["(?-u:\\b)", "(?-u:\\B)", "\\A", "\\z", "(?m:^)", "(?m:$)", "^", "$"];
+const quants: Array[&str, 8] = ["*", "+", "?", "*?", "+?", "??", "{2}", "{1,3}"];
+
+fn genAlt(r: &mut Rng, out: &mut String, depth: u32) {
+  var n = 1u32 + r.below(2u32);
+  if r.below(8u32) == 0u32 { n = 3u32; }
+  var k = 0u32;
+  while k < n {
+    if k > 0u32 { out.append("|"); }
+    genCat(r, out, depth);
+    k = k + 1u32;
+  }
+}
+
+fn genCat(r: &mut Rng, out: &mut String, depth: u32) {
+  let n = 1u32 + r.below(4u32);
+  var k = 0u32;
+  while k < n { genPiece(r, out, depth); k = k + 1u32; }
+}
+
+fn genPiece(r: &mut Rng, out: &mut String, depth: u32) {
+  let k = r.below(20u32);
+  if k < 4u32 {
+    // an assertion, not repeated
+    out.append(looks[usize.from(r.below(8u32))]);
+    return;
+  }
+  if k < 7u32 && depth < 3u32 {
+    if k == 4u32 { out.append("("); } else { out.append("(?:"); }
+    genAlt(r, out, depth + 1u32);
+    out.append(")");
+  }
+  else { out.append(atoms[usize.from(r.below(12u32))]); }
+  let q = r.below(12u32);
+  if q < 8u32 { out.append(quants[usize.from(q)]); }
+}
+
+const hayParts: Array[&str, 10] = ["a", "a", "b", "b", "c", " ", "\n", "_", "é", "ab"];
+
+fn genHay(r: &mut Rng, long: bool) String {
+  var s = String();
+  // the DFAs search only a text of dfaMinText (512) bytes or more, so most of these are longer
+  let n = if long { 600u32 + r.below(200u32) } else { r.below(24u32) };
+  var k = 0u32;
+  while k < n { s.append(hayParts[usize.from(r.below(10u32))]); k = k + 1u32; }
+  s
+}
+
+// -------- asking --------
+
+fn spanText(m: Option[regex.Match]) String {
+  var s = String();
+  match m {
+    case let Some(x) { s <- x.start, "..", x.end; }
+    case is None { s.append("-"); }
+  }
+  s
+}
+
+// Every answer the engines could differ on, in one line
+fn describe(re: &regex.Regex, hay: &str) String {
+  var s = String();
+  s.append(if re.isMatch(hay) { "Y " } else { "N " });
+  var k = 0usize;
+  while k <= hay.len() {
+    if hay.isCharBoundary(k) {
+      s.append(spanText(re.findFrom(hay, k)).view());
+      s.append(" ");
+    }
+    // a long text is asked from a few places only
+    k = k + (if hay.len() > 400 { 61usize } else { 1usize });
+  }
+  s.append("| ");
+  var it = re.matches(hay);
+  while true {
+    match it.next() {
+      case let Some(m) { s <- m.start, "..", m.end, " "; }
+      case is None { break; }
+    }
+  }
+  s
+}
+
+fn padded(pat: &str) String {
+  var p = String.from("(?:");
+  p.append(pat);
+  p.append(")|(?:\\z[a-z]{1000}){132}");
+  p
+}
+
+var skipped = 0usize;
+var compared = 0usize;
+
+// The answers of the DFAs and of the Pike VM on these texts, as one string each; empty
+// strings if the pattern was refused (it is then skipped, and counted)
+fn bothAnswers(pat: &str, hays: &List[String], budget: usize, setBudget: bool, dfa: &mut String, pike: &mut String) {
+  match regex.Regex.parse(pat) {
+    case let Ok(re) {
+      match regex.Regex.parse(padded(pat).view()) {
+        case let Ok(pre) {
+          var re2 = re;
+          if setBudget { re2.setCacheBudget(budget); }
+          var i = 0usize;
+          while i < hays.len() {
+            let da = describe(&re2, hays[i].view());
+            let pa = describe(&pre, hays[i].view());
+            dfa.append(da.view());
+            dfa.append("\n");
+            pike.append(pa.view());
+            pike.append("\n");
+            i = i + 1;
+          }
+          compared = compared + 1;
+        }
+        case is Err { skipped = skipped + 1; }
+      }
+    }
+    case is Err { skipped = skipped + 1; }
+  }
+}
+
+fn main() i32 {
+  // hand-picked patterns that stress the assertions and the leftmost-first order
+  let fixed: Array[&str, 14] = ["a*", "(a|ab)(c|bcd)?", "(?-u:\\b)", "(?-u:\\B)", "(?m:^)", "(?m:$)", "$", "^a|b$", "(?-u:\\ba)", "a+?b*", "(?:a|b)*?c", "(?m:^)$", "é*", "(a*)*b"];
+  var hays = List[String]();
+  var r = Rng(7u64);
+  var j = 0u32;
+  while j < 10u32 { hays.push(genHay(&mut r, j % 3u32 != 0u32)); j = j + 1u32; }
+  hays.push(String.from(""));
+  hays.push(String.from("abcdbcd ab\n\nb"));
+  var f = 0usize;
+  while f < 14 {
+    var a = String();
+    var b = String();
+    bothAnswers(fixed[f], &hays, 0, false, &mut a, &mut b);
+    expectStr(a.view(), b.view(), fixed[f]);
+    f = f + 1;
+  }
+  // random patterns
+  var count = 240u32;
+  #if #debug { count = 24u32; }
+  var rp = Rng(20261111u64);
+  var i = 0u32;
+  while i < count {
+    var pat = String();
+    genAlt(&mut rp, &mut pat, 0u32);
+    var hs = List[String]();
+    j = 0u32;
+    while j < 8u32 { hs.push(genHay(&mut rp, j % 2u32 == 0u32)); j = j + 1u32; }
+    var a = String();
+    var b = String();
+    bothAnswers(pat.view(), &hs, 0, false, &mut a, &mut b);
+    expectStr(a.view(), b.view(), pat.view());
+    i = i + 1u32;
+  }
+  stdio.printStr("random patterns compared: ");
+  stdio.printUInt(u64.from(compared));
+  stdio.printStr(", refused: ");
+  stdio.printUInt(u64.from(skipped));
+  stdio.printStr("\n");
+
+  // cache pressure: a pattern that needs 2^11 states, on texts that visit most of them, with
+  // cache budgets from far too small (the search gives up to the Pike VM) to ample; the
+  // answers must not depend on the budget
+  var big = List[String]();
+  var rb = Rng(99u64);
+  j = 0u32;
+  while j < 3u32 {
+    var s = String();
+    var n = 0u32;
+    while n < 4000u32 { if rb.below(2u32) == 0u32 { s.append("a"); } else { s.append("b"); } n = n + 1u32; }
+    big.push(s);
+    j = j + 1u32;
+  }
+  // a text where a few states are hot and the rest are rare: the cache is dropped and the search goes on
+  var skew = String();
+  var n2 = 0u32;
+  while n2 < 6000u32 {
+    if rb.below(16u32) == 0u32 { skew.append("ab"); } else { skew.append("b"); }
+    n2 = n2 + 1u32;
+  }
+  big.push(skew);
+  let pressure: Array[&str, 2] = ["[ab]*a[ab]{10}", "(?:a|b)+?abb[ab]{9}"];
+  let budgets: Array[usize, 6] = [900, 4000, 20000, 60000, 250000, 4000000];
+  var pi = 0usize;
+  while pi < 2 {
+    var want = String();
+    var base = String();
+    bothAnswers(pressure[pi], &big, 0, false, &mut base, &mut want);
+    expectStr(base.view(), want.view(), pressure[pi]);
+    var bi = 0usize;
+    while bi < 6 {
+      var got = String();
+      var ignore = String();
+      bothAnswers(pressure[pi], &big, budgets[bi], true, &mut got, &mut ignore);
+      expectStr(got.view(), want.view(), pressure[pi]);
+      bi = bi + 1;
+    }
+    pi = pi + 1;
+  }
+  done()
+}

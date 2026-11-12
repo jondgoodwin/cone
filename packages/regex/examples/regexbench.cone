@@ -9,7 +9,9 @@
 // checksum (of every match's and group's offsets) must equal the twin's before any
 // time counts. The corpus is built before the clock starts. Rows: p1-is p1-find
 // p2-is p2-find p3-find p3-caps p4-find p4-caps p5-is p5-find p6-find compile
-// adv64k adv1m. An '-is' row asks isMatch of each line of the corpus in turn;
+// adv64k adv1m, and p7-find (no twin: 4 MiB of random a and b against `[ab]*a[ab]{12}`, a
+// pattern that needs 2^13 lazy-DFA states, to show the cache budget at work). An optional
+// third argument is the lazy DFA's cache budget in bytes (0: the Pike VM answers). An '-is' row asks isMatch of each line of the corpus in turn;
 // '-find' every match of the whole corpus; '-caps' every match's groups.
 
 mod regexbench;
@@ -142,6 +144,7 @@ fn patternOf(row: &str) &str {
   else if row.startsWith("p3") { "(?-u)(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)" }
   else if row.startsWith("p4") { "(?-u)(GET|POST|PUT) /(\\w+)\\?x=(\\d+)" }
   else if row.startsWith("p5") { p5 }
+  else if row.startsWith("p7") { "[ab]*a[ab]{12}" }
   else { "(?-u)\\w+ing\\b" }
 }
 
@@ -273,8 +276,21 @@ fn main() i32 {
     var reps = 1;
     if row.startsWith("p5") { text = dictCorpus(); reps = 10; }
     else if row.startsWith("p6") { text = textCorpus(); }
+    else if row.startsWith("p7") {
+      // 4 MiB of random a and b: the pattern needs 2^13 DFA states, which is what the cache budget is for
+      var r = Rng(4u64);
+      text = String.withCapacity(4194304usize);
+      while text.len() < 4194304usize { text.appendByte(if r.below(2u32) == 0u32 { 'a' } else { 'b' }); }
+    }
     else { text = logCorpus(); }
-    let re = built(patternOf(row));
+    var re = built(patternOf(row));
+    // an optional third argument: the lazy DFA's cache budget in bytes
+    if args.len() > 2usize {
+      match u64.parse(args[2usize].view()) {
+        case let Ok(b) { re.setCacheBudget(usize.from(b)); }
+        case is Err { printStr("budget is not a number\n"); return 2i32; }
+      }
+    }
     let t0 = Instant.now();
     var rep = 0;
     while rep < reps {
