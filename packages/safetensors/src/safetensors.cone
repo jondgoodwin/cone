@@ -23,7 +23,7 @@
 
 mod safetensors;
 
-import collections use List, String;
+import collections use List, String, Dict;
 import path use Path;
 import fs;
 import json use Json;
@@ -79,9 +79,21 @@ pub struct Safetensors {
   pub tensors: List[TensorInfo];
   // The header's metadata, name and value
   pub metadata: List[String];
+  // Tensor name to its place in 'tensors', built as the header is read
+  byName: Dict[String, usize];
 
   // The index of the tensor 'name'
   pub fn indexOf(self: &, name: &str) Option[usize] {
+    match byName.get(name) {
+      case let Some(i) {
+        match tensors.get(*i) {
+          case let Some(t) { if t.name.view() == name { return Some[usize](*i); } }
+          case is None {}
+        }
+      }
+      case is None {}
+    }
+    // Not in the table the reader built, or the list has been edited since: scan
     var i = 0usize;
     while i < tensors.len() {
       if tensors[i].name.view() == name { return Some[usize](i); }
@@ -239,7 +251,7 @@ pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, SafetensorsError] 
   let dataStart = 8usize + hlen;
   let root = json.parse(&file[8usize..<dataStart])?;
   if !root.isObject() { return stErr("the header is not an object"); }
-  var out = Safetensors(List[TensorInfo](), List[String]());
+  var out = Safetensors(List[TensorInfo](), List[String](), Dict[String, usize]());
   var k = 0usize;
   let dataLen = file.len - dataStart;
   while k < root.len() {
@@ -342,6 +354,7 @@ pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, SafetensorsError] 
       m <- " has a range its dtype and shape do not give";
       return stErr(m.view());
     }
+    if !out.byName.contains(key) { out.byName.insert(String.from(key), out.tensors.len()); }
     out.tensors.push(info);
   }
   Ok[Safetensors, SafetensorsError](out)
