@@ -3366,10 +3366,21 @@ pub extern {
 //                                    as C's 'free' takes it; a null block is
 //                                    nothing
 //
-// Blocks are aligned as 'malloc' aligns them, to 16 bytes. 'align' is what the
-// caller needs, a power of two; it is not yet acted on, so a request past 16
-// bytes is not refused and gets 16. A block goes back to this layer, never to
-// the C library directly.
+//   allocAligned(bytes, align)       an 'AlignedBlock' of at least 'bytes' bytes
+//                                    (0 gives one) whose address is a multiple of
+//                                    'align', a power of two of any size, so a slab
+//                                    aligned to its size finds its header by
+//                                    masking a cell's address; an 'align' that is
+//                                    not a power of two panics, as does no room
+//
+// Blocks of 'alloc' and 'resize' are aligned as 'malloc' aligns them, to 16
+// bytes. Their 'align' is what the caller needs, a power of two; it is not yet
+// acted on, so a request past 16 bytes is not refused and gets 16: ask
+// 'allocAligned' for more. An aligned block is owned by its 'AlignedBlock', whose
+// 'final' gives it back with the matching free, so the wrong free cannot be
+// called: the Windows runtime frees an aligned block with a call of its own, and
+// the address alone cannot say which kind it is. There is no resize of an aligned
+// block. A block goes back to this layer, never to the C library directly.
 //
 // A request the C library cannot meet panics ("out of memory allocating N
 // bytes", conestd's rawblocks.cone), so no caller is handed a null it would take
@@ -3381,12 +3392,33 @@ pub struct @opaque RawBlocks {
     rawBlockResize(block, oldBytes, newBytes, align)
   }
   pub fn release(block: *u8) inline {rawBlockRelease(block);}
+  pub fn allocAligned(bytes: usize, align: usize) AlignedBlock inline {
+    AlignedBlock(rawBlockAllocAligned(bytes, align), bytes, align)
+  }
+}
+
+// An aligned raw block (RawBlocks.allocAligned) and its one owner: it moves, and
+// its death gives the block back with the matching aligned free. The address is
+// reached through 'addr', for a pool's own trusted code; it is no owner and must
+// not outlive the block. ('addr' is not yet inside 'trust', which is not built.)
+pub struct AlignedBlock is Move {
+  base: *u8;
+  bytes: usize;
+  align: usize;
+
+  pub fn addr(self: &) *u8 inline {base}
+
+  fn final(self: &uni) inline {
+    rawBlockReleaseAligned(self.base);
+  }
 }
 
 extern {
   fn @noalias @c("cone_rawBlockAlloc") rawBlockAlloc(bytes: usize, align: usize) *u8;
   fn @c("cone_rawBlockResize") rawBlockResize(block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8;
   fn @c("cone_rawBlockRelease") rawBlockRelease(block: *u8);
+  fn @noalias @c("cone_rawBlockAllocAligned") rawBlockAllocAligned(bytes: usize, align: usize) *u8;
+  fn @c("cone_rawBlockReleaseAligned") rawBlockReleaseAligned(block: *u8);
 }
 
 // The two regions every module reaches. A region is a struct declaring the

@@ -28,6 +28,9 @@
 // CANCELLATION. The write in flight runs in a child group of the group the sink works in, so a cancel ends it ('done' gets
 // "streams: cancelled"), and the buffer goes home to its pool.
 
+// Why a sink given Pipe.none() fails, told to 'done' and to the source alike
+const noPipeWhy = "streams: the child's input pipe could not be made";
+
 // Writes a stream to a pipe, in order
 pub actor PipeSink is ChunkSink {
   rx: ChunkInbox;
@@ -51,7 +54,8 @@ pub actor PipeSink is ChunkSink {
     rx.attach(source);
   }
 
-  // The pipe to write: Pipe.none() says there is none (the child could not be set up) and fails the sink
+  // The pipe to write: Pipe.none() says there is none (the child could not be set up) and fails the sink at once: 'done' gets the error and
+  // the source is told to stop, whether or not a chunk has arrived
   pub async fn startOn(self, p: Pipe) {
     pipe = p;
     ready = true;
@@ -60,12 +64,25 @@ pub actor PipeSink is ChunkSink {
     match e {
       case let Some(h) {
         if pipe.isNone() {
-          self.report(Err[u64, AnyError](AnyError.msg("streams: the child's input pipe could not be made")));
+          self.report(Err[u64, AnyError](AnyError.msg(noPipeWhy)));
         } else {
           self.over(h);
         }
       }
-      case is None { selfactor.go(); }
+      case is None {
+        if pipe.isNone() && cur is None {
+          // no pipe and no chunk in hand for go to fail on: fail now, so the source is not left to send first
+          self.shut();
+          match &up {
+            case let &Some(u) { u.stop(Ending.Failed(AnyError.msg(noPipeWhy))); }
+            case is None {}
+          }
+          up = None[ChunkSource];
+          self.report(Err[u64, AnyError](AnyError.msg(noPipeWhy)));
+        } else {
+          selfactor.go();
+        }
+      }
     }
   }
 
@@ -106,7 +123,7 @@ pub actor PipeSink is ChunkSink {
             why = Some[AnyError](AnyError.msg("streams: cancelled"));
           } else if pipe.isNone() {
             good = false;
-            why = Some[AnyError](AnyError.msg("streams: the child's input pipe could not be made"));
+            why = Some[AnyError](AnyError.msg(noPipeWhy));
           }
           if good && cb.len() > 0usize {
             // the write takes the chunk and answers with it; a failed write loses it, so the source's credit is given

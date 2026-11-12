@@ -372,11 +372,21 @@ fn threadBit(i: usize, ran: &Atomic[u64]) u64 {
   let w = actors.workerIndex();
   let bit = if w == actors.noWorker {1u64 << 63u64} else {1u64 << u64.from(w)};
   ran.bitOr(bit);
+  // The caller runs the passes one at a time and hands the rest to the workers only
+  // once it has spent a couple of microseconds (the cost guard, parallel.cone), and
+  // never while a pass holds it. So pass 0 spends that time and does not hold;
+  // every later pass holds until a second thread has run one. (Holding pass 0
+  // too waited for a thread that cannot start before the hold ends: the whole
+  // cap, 3000 sleeps of 1 ms, which are 6 to 50 s on a loaded Windows.)
+  if i == 0usize {
+    let burnUntil = time.Instant.now() + time.Duration.fromMillis(1);
+    while time.Instant.now() < burnUntil {}
+    return 0u64;
+  }
   // Hold this pass until a second thread has run one, or three seconds pass
-  var waited = 0u64;
-  while bits(ran.load()) < 2u64 && waited < 3000u64 {
+  let until = time.Instant.now() + time.Duration.fromSeconds(3);
+  while bits(ran.load()) < 2u64 && time.Instant.now() < until {
     thread.sleep(time.Duration.fromMillis(1));
-    waited = waited + 1u64;
   }
   u64.from(i)
 }

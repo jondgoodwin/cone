@@ -20,6 +20,12 @@ pub const SIDE_EAST = 2u32;
 pub const SIDE_SOUTH = 3u32;
 pub const SIDE_WEST = 4u32;
 
+// How an edge is drawn (GraphEdge.style). Named LINK_ because msdftext already has an EDGE_LINE.
+pub const LINK_ARROW = 0u32;        // a solid line with an arrowhead at the target (Mermaid -->)
+pub const LINK_PLAIN = 1u32;        // a solid line, no arrowhead (Mermaid ---)
+pub const LINK_DOTTED = 2u32;       // a dotted line with an arrowhead (Mermaid -.->)
+pub const LINK_DOTTED_PLAIN = 3u32; // a dotted line, no arrowhead (Mermaid -.-)
+
 pub struct Port {
   pub name: String;
   pub side: u32;                    // SIDE_...
@@ -51,6 +57,11 @@ pub struct GraphEdge {
   pub kind: u32;
   pub route: List[Vec2];            // the polyline the router wrote: from the source's border to the target's
   pub alive: bool;
+  pub style: u32;                   // LINK_...: how the drawing strokes it
+  pub labelW: f32;                  // the label's size, from the caller's measurement; 0: not measured, no room is kept for it
+  pub labelH: f32;
+  pub labelX: f32;                  // the label's centre, written by 'placeEdgeLabels' (routeEdges calls it) when labelW > 0
+  pub labelY: f32;
 }
 
 pub struct GraphGroup {
@@ -113,8 +124,21 @@ pub struct Graph {
   pub fn addEdge(self: &mut, a: u32, b: u32) u32 {
     let at = self.findEdge(a, b);
     if at >= 0 { return u32.from(at); }
-    edges.push(GraphEdge(a, b, -1, -1, String(), 0u32, List[Vec2](), true));
+    edges.push(GraphEdge(a, b, -1, -1, String(), 0u32, List[Vec2](), true, LINK_ARROW, 0., 0., 0., 0.));
     u32.from(edges.len() - 1usize)
+  }
+
+  // An edge a to b with a drawing style (LINK_...) and a label of the measured size labelW x labelH. The layered
+  // layout keeps room for the label and 'placeEdgeLabels' finds it a spot. An existing edge between the two is
+  // updated rather than doubled (as for addEdge).
+  pub fn addStyledEdge(self: &mut, a: u32, b: u32, style: u32, label: &str, labelW: f32, labelH: f32) u32 {
+    let id = self.addEdge(a, b);
+    let k = usize.from(id);
+    edges[k].style = style;
+    edges[k].label = String.from(label);
+    edges[k].labelW = labelW;
+    edges[k].labelH = labelH;
+    id
   }
 
   pub fn addEdgeByKey(self: &mut, a: &str, b: &str) bool {
