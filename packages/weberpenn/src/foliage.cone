@@ -233,8 +233,8 @@ fn addPlumes(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng, 
     let st = &tree.stems[s];
     if st.level >= fp.plumeFromLevel && st.points.len() >= 2usize {
       let n = st.points.len();
-      let half = minf(fp.plumeMax, fp.plumeWidth * st.length) * (0.85 + 0.3 * rng.unit());
-      let tone = clampf(0.25 + 0.45 * clampf(st.points[n - 1usize].y / maxf(0.5, tree.height), 0., 1.) + 0.3 * rng.unit(), 0., 1.);
+      let half = fp.plumeMax.min(fp.plumeWidth * st.length) * (0.85 + 0.3 * rng.unit());
+      let tone = (0.25 + 0.45 * (st.points[n - 1usize].y / tree.height.max(0.5)).clamp(0., 1.) + 0.3 * rng.unit()).clamp(0., 1.);
       var rib = 0;
       while rib < 2 {
         let firstV = u32.from(m.positions.len());
@@ -250,8 +250,8 @@ fn addPlumes(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng, 
             let flat = unitv(tan.cross(v3(0., 1., 0.)));
             let edge = unitv(flat.cross(tan));
             let across = if rib == 0 { flat } else { unitv(edge + v3(0., 0.4, 0.)) };
-            let u01 = (t - fp.plumeStart) / maxf(0.01, 1. - fp.plumeStart);
-            let w = half * libc.sinf(pi * libc.sqrtf(clampf(u01 * 0.85 + 0.15, 0., 1.))) * (0.35 + 0.65 * (1. - 0.4 * u01));
+            let u01 = (t - fp.plumeStart) / (1. - fp.plumeStart).max(0.01);
+            let w = half * libc.sinf(pi * libc.sqrtf((u01 * 0.85 + 0.15).clamp(0., 1.))) * (0.35 + 0.65 * (1. - 0.4 * u01));
             let drop = v3(0., 0. - fp.plumeDroop * w, 0.);
             let radial = unitv(p - centre);
             let nn = unitv(unitv(across.cross(tan)) * (1. - fp.lean) + radial * fp.lean + v3(0., 0.25, 0.));
@@ -350,7 +350,7 @@ fn stemAt(st: &Stem, t: f32, dir: &mut Vec3) Vec3 {
 
 // Pads along every limb (see FoliageParams.padWidth)
 fn addPads(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
-  let reach = maxf(0.5, tree.reach);
+  let reach = tree.reach.max(0.5);
   var s = 0usize;
   while s < tree.stems.len() {
     let st = &tree.stems[s];
@@ -363,7 +363,7 @@ fn addPads(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
       var k = 0;
       while k < count {
         let ta = fp.padStart + (1. - fp.padStart) * f32.from(k) / f32.from(count);
-        let tb = minf(1., ta + fp.padLength / L);
+        let tb = (ta + fp.padLength / L).min(1.);
         var dA = v3(0., 1., 0.);
         var dB = v3(0., 1., 0.);
         let pa = stemAt(st, ta, &mut dA);
@@ -372,7 +372,7 @@ fn addPads(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
           let tan = unitv(pb - pa);
           let w0 = flatAcross(tan);
           let mid = (pa + pb) * 0.5;
-          let inner = 1. - clampf(libc.sqrtf(mid.x * mid.x + mid.z * mid.z) / reach, 0., 1.);
+          let inner = 1. - (libc.sqrtf(mid.x * mid.x + mid.z * mid.z) / reach).clamp(0., 1.);
           let cell = if fp.cells >= 4 && rng.unit() < fp.tawnyShare * inner { 3 } else { 2 };
           let wa = narrow * fp.padWidth * (1. - 0.4 * ta) * 0.5 * (0.85 + 0.3 * rng.unit());
           let wb = narrow * fp.padWidth * (1. - 0.4 * tb) * 0.5 * (0.85 + 0.3 * rng.unit());
@@ -402,14 +402,14 @@ fn addTufts(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
   if fp.cells >= 4 { addPads(m, tree, fp, rng); }
   var tufts = List[Tuft]();
   let up = v3(0., 1., 0.);
-  let reach = maxf(0.5, tree.reach);
+  let reach = tree.reach.max(0.5);
   var s = 0usize;
   while s < tree.stems.len() {
     let st = &tree.stems[s];
     if !st.dead && st.level >= fp.tuftFromLevel && st.points.len() >= 2usize {
       let alongOnly = st.level > fp.tuftFromLevel;
       let span = st.length * (1. - fp.tuftStart);
-      let n = if alongOnly { 0 } else { i32.from(libc.floorf(span / maxf(0.05, fp.tuftSpacing))) };
+      let n = if alongOnly { 0 } else { i32.from(libc.floorf(span / fp.tuftSpacing.max(0.05))) };
       var sgn = if rng.unit() < 0.5 { 1.f } else { -1. };
       var k = 0;
       while k <= n {
@@ -432,7 +432,7 @@ fn addTufts(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
         let size = fp.tuftSize * (1. + fp.tuftSizeV * rng.signed()) * (if tip { 1.25 } else { 0.8 + 0.3 * t });
         var cell = 0;
         if fp.cells > 1 && fp.tawnyShare > 0. {
-          let inner = 1. - clampf(libc.sqrtf(at.x * at.x + at.z * at.z) / reach, 0., 1.);
+          let inner = 1. - (libc.sqrtf(at.x * at.x + at.z * at.z) / reach).clamp(0., 1.);
           if rng.unit() < fp.tawnyShare * inner { cell = 1; }
         }
         tufts.push(Tuft(at, axis, size, cell, tip));
@@ -479,7 +479,7 @@ fn addSprays(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) 
       var k = 0;
       while k < count {
         let ta = fp.sprayStart + (1. - fp.sprayStart) * f32.from(k) / f32.from(count);
-        let tb = minf(1., ta + fp.sprayLength / L);
+        let tb = (ta + fp.sprayLength / L).min(1.);
         var dirA = v3(0., 1., 0.);
         var dirB = v3(0., 1., 0.);
         let pa = stemAt(st, ta, &mut dirA);
@@ -519,7 +519,7 @@ struct Hull {
 }
 
 fn buildHull(tree: &Tree) Hull {
-  let top = maxf(1., tree.height);
+  let top = tree.height.max(1.);
   var radius = List[f32]();
   var ax = List[f32]();
   var az = List[f32]();
@@ -581,7 +581,7 @@ fn buildHull(tree: &Tree) Hull {
 
 // The hull's radius at height y
 fn hullRadius(h: &Hull, y: f32) f32 {
-  let f = clampf(y / h.top * f32.from(HULL_BINS) - 0.5, 0., f32.from(HULL_BINS) - 1.001);
+  let f = (y / h.top * f32.from(HULL_BINS) - 0.5).clamp(0., f32.from(HULL_BINS) - 1.001);
   let i = usize.from(i32.from(libc.floorf(f)));
   let k = f - libc.floorf(f);
   *h.radius[i] * (1. - k) + *h.radius[i + 1usize] * k
@@ -590,14 +590,14 @@ fn hullRadius(h: &Hull, y: f32) f32 {
 // The hull's outward normal at p (the gradient of r - R(y): out, and up where the crown narrows upward) and
 // how deep p is inside it, 0 on the hull to 1 on the axis
 fn hullNormal(h: &Hull, p: Vec3, depth: &mut f32) Vec3 {
-  let bin = usize.from(i32.from(clampf(p.y / h.top * f32.from(HULL_BINS), 0., f32.from(HULL_BINS) - 1.)));
+  let bin = usize.from(i32.from((p.y / h.top * f32.from(HULL_BINS)).clamp(0., f32.from(HULL_BINS) - 1.)));
   let dx = p.x - *h.axisX[bin];
   let dz = p.z - *h.axisZ[bin];
   let len = libc.sqrtf(dx * dx + dz * dz);
   let rh = if len < 0.001 { v3(1., 0., 0.) } else { v3(dx / len, 0., dz / len) };
   let dy = h.top / f32.from(HULL_BINS);
-  let slope = clampf((hullRadius(h, p.y + dy) - hullRadius(h, p.y - dy)) / (2. * dy), -3., 3.);
-  *depth = clampf(1. - len / hullRadius(h, p.y).max(0.3), 0., 1.);
+  let slope = ((hullRadius(h, p.y + dy) - hullRadius(h, p.y - dy)) / (2. * dy)).clamp(-3., 3.);
+  *depth = (1. - len / hullRadius(h, p.y).max(0.3)).clamp(0., 1.);
   unitv(v3(rh.x, 0. - slope, rh.z))
 }
 
@@ -648,7 +648,7 @@ fn addBentCard(m: &mut mesh.Mesh, hull: &Hull, fp: &FoliageParams, pl: Array[Vec
 fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
   let hull = buildHull(tree);
   let rows = fp.brShadeRows.max(1);
-  let top = maxf(1., tree.height);
+  let top = tree.height.max(1.);
   let up = v3(0., 1., 0.);
   var s = 1usize;
   while s < tree.stems.len() {
@@ -658,12 +658,12 @@ fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut R
       let limb = st.level == fp.tuftFromLevel;
       let scale = if limb { 1.f } else { 0.65 };
       let cardLen = fp.brLength * scale;
-      let step = maxf(0.05, fp.brStep) * cardLen;
+      let step = fp.brStep.max(0.05) * cardLen;
       let count = i32.from(libc.ceilf((1. - fp.brStart) * L / step)).max(1);
       var k = 0;
       while k < count {
         let ta = fp.brStart + (1. - fp.brStart) * (f32.from(k) + 0.4 * rng.unit()) / f32.from(count);
-        let tb = minf(1., ta + cardLen * (0.85 + 0.3 * rng.unit()) / L);
+        let tb = (ta + cardLen * (0.85 + 0.3 * rng.unit()) / L).min(1.);
         var d0 = v3(0., 1., 0.);
         var d1 = v3(0., 1., 0.);
         var d2 = v3(0., 1., 0.);
@@ -680,7 +680,7 @@ fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut R
           var dep = 0.f;
           let mid = (p0 + p2) * 0.5;
           hullNormal(&hull, mid, &mut dep);
-          let shade = clampf(dep * fp.brShadeDepth + fp.brShadeLow * (1. - clampf(mid.y / top, 0., 1.)) + 0.12 * rng.signed(), 0., 0.999);
+          let shade = (dep * fp.brShadeDepth + fp.brShadeLow * (1. - (mid.y / top).clamp(0., 1.)) + 0.12 * rng.signed()).clamp(0., 0.999);
           let row = i32.from(libc.floorf(shade * f32.from(rows)));
           let flip = rng.unit() < 0.5;
           let alt = fp.brAlt >= 0 && mid.y / top > fp.brAltFrom && rng.unit() < fp.brAltShare;
@@ -733,7 +733,7 @@ pub fn foliageMesh(tree: &Tree, fp: &FoliageParams) mesh.Mesh {
     addSprays(&mut m, tree, fp, &mut rng);
     return m;
   }
-  let crown = maxf(0.5, tree.reach);
+  let crown = tree.reach.max(0.5);
   let centre = v3(0., tree.height * 0.55, 0.);
   if fp.kind == FOLIAGE_PLUMES {
     addPlumes(&mut m, tree, fp, &mut rng, centre);
@@ -742,9 +742,9 @@ pub fn foliageMesh(tree: &Tree, fp: &FoliageParams) mesh.Mesh {
   var i = 0usize;
   while i < tree.sites.len() {
     let s = *tree.sites[i];
-    let h = clampf(s.pos.y / maxf(0.5, tree.height), 0., 1.);
-    let o = clampf(libc.sqrtf(s.pos.x * s.pos.x + s.pos.z * s.pos.z) / crown, 0., 1.);
-    let tone = clampf(0.3 * h + 0.4 * o + 0.3 * rng.unit(), 0., 1.);
+    let h = (s.pos.y / tree.height.max(0.5)).clamp(0., 1.);
+    let o = (libc.sqrtf(s.pos.x * s.pos.x + s.pos.z * s.pos.z) / crown).clamp(0., 1.);
+    let tone = (0.3 * h + 0.4 * o + 0.3 * rng.unit()).clamp(0., 1.);
     let leafFirst = m.positions.len();
     if fp.kind == FOLIAGE_MAPLE {
       let size = fp.leafSize * (1. + fp.leafSizeV * rng.signed());

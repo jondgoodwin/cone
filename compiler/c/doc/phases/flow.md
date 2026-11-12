@@ -1218,9 +1218,11 @@ receiver included, only the loans rooted at a global (`pwCall`'s
 while it is used; and a `&mut` argument to such a type, with no writable
 borrow past it, takes of the others only those (`pwCallStores`). The callee
 is held to the same: naming no lifetimes, it may return no caller loan in a
-result of such a type (`loanNotGlobalIn`), nor store one where a parameter
-points at one (`loanStoredStatic`, from `pwStoreApart`): `ErrorEscape` or
-`ErrorCallEscape` (`loanApart`).
+result of such a type, nor store one where a parameter points at one. These
+are not separate checks: an elided signature's borrows are its one unnamed
+lifetime, a name like any other, and the walk that holds a named signature
+(`loanCallerApart` for a return, `loanStoredApart` from `pwStoreApart` for a
+store) refuses both: `ErrorEscape` or `ErrorCallEscape` (`loanApart`).
 
 A value returned, or stored through `*p`, where the type the function's own
 names give that place is a virtual reference bounded by `'a`
@@ -2592,7 +2594,7 @@ the record takes its owner's state instead, not the binding's.
 | | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
 | `ir/flowloan.c` | `loanMake`, `loanCaller`, `loanHeldBy` | a borrow's loan, a parameter's caller loan, and who may hold it |
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
-| | `loanCallerApart`, `loanStoredApart`, `loanStoredStatic`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or, unnamed, one stored where a parameter points at a value holding only `'static` borrows; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
+| | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | lifetimes, named or elided (one path): a caller loan whose part flows to no lifetime where it goes; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |

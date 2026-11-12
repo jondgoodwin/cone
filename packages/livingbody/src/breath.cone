@@ -96,12 +96,12 @@ pub struct Breathing {
 
   // The rate for a drive
   pub fn rateFor(self: &, d: f32) f32 {
-    params.restRate + (params.maxRate - params.restRate) * libc.powf(clampf(d, 0., 1.), 0.9)
+    params.restRate + (params.maxRate - params.restRate) * libc.powf(d.clamp(0., 1.), 0.9)
   }
 
   // The depth for a drive
   pub fn depthFor(self: &, d: f32) f32 {
-    let c = clampf(d, 0., 1.);
+    let c = d.clamp(0., 1.);
     1. + (params.maxDepth - 1.) * (1. - (1. - c) * (1. - c))
   }
 
@@ -110,8 +110,8 @@ pub struct Breathing {
     // 1. exertion
     let over = if work > params.threshold { work - params.threshold } else { 0. };
     let repay = if work < params.threshold { 1.f } else { 0.25 };
-    debt = clampf(debt + dt * (params.debtGain * over - params.debtRepay * debt * repay), 0., 1.5);
-    let target = clampf(work + params.debtDrive * (if debt > 1. { 1. } else { debt }), 0., 1.);
+    debt = (debt + dt * (params.debtGain * over - params.debtRepay * debt * repay)).clamp(0., 1.5);
+    let target = (work + params.debtDrive * (if debt > 1. { 1. } else { debt })).clamp(0., 1.);
     let tau = if target > drive { params.onsetTau } else { params.recoverTau };
     drive = drive + (target - drive) * (1. - libc.expf(-dt / tau));
     // 2. the clock
@@ -122,8 +122,8 @@ pub struct Breathing {
       phase = phase - libc.floorf(phase);
       sighing = sighNext;
       sighNext = false;
-      cycleDepth = clampf(rng.normal(1., 0.09), 0.7, 1.3);
-      cycleRate = clampf(rng.normal(1., 0.05), 0.85, 1.15);
+      cycleDepth = rng.normal(1., 0.09).clamp(0.7, 1.3);
+      cycleRate = rng.normal(1., 0.05).clamp(0.85, 1.15);
       if sighing { cycleDepth = 2.2; }
     }
     // 3. the waveform
@@ -145,11 +145,11 @@ pub struct Breathing {
 }
 
 // Where inspiration ends in the cycle: 0.40 at rest, 0.50 flat out
-fn inspirationEnd(drive: f32) f32 { 0.40 + 0.10 * clampf(drive, 0., 1.) }
+fn inspirationEnd(drive: f32) f32 { 0.40 + 0.10 * drive.clamp(0., 1.) }
 
 // The lungs' fill at a phase of the cycle (0 to 1) for a drive (0 to 1): the inspiration, the expiration and the pause
 pub fn lungFill(phase: f32, drive: f32, sigh: bool) f32 {
-  let d = clampf(drive, 0., 1.);
+  let d = drive.clamp(0., 1.);
   let tI = inspirationEnd(d);
   var pause = 0.10 * (1. - d) * (1. - d);
   if sigh { pause = 0.22; }

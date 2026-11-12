@@ -1,0 +1,134 @@
+// Connection churn onto reused cells: connect, one GET, close, over and over.
+// The pools (httpconn's connections and requests, the client's connections
+// and fetches) hand a freed cell to the next connection, so after the first
+// few every connection lands in a cell that held one before. This measures
+// what that costs per connection (the server, on a thread of its own, answers
+// every GET 200 with 64 bytes; plain TCP over loopback). Run it in a release
+// build, from any directory:
+//
+//   congo run --release packages/httpclient/examples/churn.cone
+//
+// It prints, for each of five rounds of 5,000 connections, the time per
+// connection (connect + GET + close) in microseconds. Compare two builds
+// by running them alternately (A B A B) and taking the median round.
+
+mod churn;
+
+import stdio use *;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+struct ServerArgs {
+  pub portTx: Sender[u16];
+  pub stop: Arc[imm, Atomic[bool]];
+}
+
+fn serveThread(a: ServerArgs) u64 {
+  var lp = Loop.mustMake();
+  var cfg = httpconn.Config.make();
+  cfg.acceptDepth = 64u32;
+  var drv = httpconn.Driver.make(cfg);
+  var port = 0u16;
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
+    case let Ok(l) {
+      match drv.localAddr(&lp, l) {
+        case let Ok(addr) {port = addr.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  a.portTx.send(port);
+  var evs = List[httpconn.Event]();
+  var served = 0u64;
+  while !a.stop.load() {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni evs);
+    var k = 0usize;
+    while k < evs.len() {
+      let e = &mut evs[k];
+      if e.kind == httpconn.EventKind.Request {
+        drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+        var b = IoBuf(64usize);
+        b.setLen(64usize);
+        drv.sendData(e.req, b);
+        drv.finish(e.req);
+        served = served + 1u64;
+      }
+      k = k + 1usize;
+    }
+    evs.clear();
+  }
+  drv.abortAll(&mut lp);
+  drv.pump(&mut lp, &uni evs);
+  served
+}
+
+// n GETs, one at a time, each on a new connection (the idle one closed first)
+fn runChurn(cl: &mut Client, lp: &mut Loop, url: &str, n: u64) u64 {
+  var done = 0u64;
+  var out = List[Event]();
+  let t0 = Instant.now();
+  while done < n {
+    cl.closeIdle(lp);
+    cl.get(lp, url, Sink.Here(1u64));
+    var got = false;
+    while !got {
+      cl.poll(lp, forever(), &uni out);
+      var k = 0usize;
+      while k < out.len() {
+        let e = &mut out[k];
+        k = k + 1usize;
+        if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+        else if e.isTerminal() {
+          got = true;
+          if e.kind == EventKind.Done {done = done + 1u64;} else {return 0u64;}
+        }
+      }
+      out.clear();
+    }
+  }
+  u64.from((Instant.now() - t0).nanos()) / n
+}
+
+fn main() i32 {
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  let srv = thread.start(ServerArgs(portTx, stop), &serveThread);
+  var port = 0u16;
+  match portRx.recv() {
+    case let Some(p) {port = p;}
+    case is None[u16] {}
+  }
+  if port == 0u16 {return 1i32;}
+  var url = String.from("http://127.0.0.1:");
+  url.appendUInt(u64.from(port));
+  url.append("/x");
+  var lp = Loop.mustMake();
+  var cl = Client.make(Config.make());
+  runChurn(&mut cl, &mut lp, url.view(), 1000u64);
+  var round = 0u32;
+  while round < 5u32 {
+    round = round + 1u32;
+    let ns = runChurn(&mut cl, &mut lp, url.view(), 5000u64);
+    printStr("round ");
+    printUInt(u64.from(round));
+    printStr(": ");
+    printUInt(ns / 1000u64);
+    printStr(" us per connection");
+    if ns == 0u64 {printStr(" (A GET FAILED)");}
+    printStr("\n");
+  }
+  cl.abortAll(&mut lp);
+  stop.store(true);
+  srv.join();
+  0i32
+}
