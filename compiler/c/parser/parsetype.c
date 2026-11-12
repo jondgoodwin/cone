@@ -1993,6 +1993,15 @@ AliasDclNode *parseAlias(ParseState *parse) {
     }
     AliasDclNode *newnode = newTypeAliasDclNode(lex->val.ident, NULL);
     lexNextToken();
+    // 'alias Name[T: Bound] = Target[T];': type parameters, written as a generic type's are
+    // and expanded at each use (genericAliasExpand), so the alias is pure shorthand
+    if (lexIsToken(LBracketToken)) {
+        Nodes *parms = parseGenericParms(parse, 1, NULL, NULL);
+        if (parms->used > 0) {
+            newnode->genericinfo = newGenericInfo();
+            newnode->genericinfo->parms = parms;
+        }
+    }
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
         // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'Uni[Profile]' name
