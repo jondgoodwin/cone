@@ -1,0 +1,76 @@
+// A stale id cancels nothing. Cancel reads a record's generation word (gen,
+// then state; record.cone's inFlightAt) while another thread may be giving
+// the record back or filling it again, so that word is atomic: written state
+// first and then gen with Release, read gen with Acquire and then state.
+//
+// 1. 3,000 rounds: a receive on a silent socket is submitted, cancelled and
+//    answered, then its old id is cancelled again: false, however often the
+//    record has been reused since, and the receive in flight now (which may
+//    sit in the very record the stale id names) is not touched.
+//
+// This pins the by-value contract on one thread. It cannot fail on x86 for
+// want of the ordering; the cross-thread read against aio's dissolveAt is for
+// the server's TSan run. The sweep over aio's and actorhttp's tests covers
+// the two-thread path.
+
+mod stalecancel;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion]();
+    let listener = lp.mustListen(SocketAddr.localhost(0u16));
+    var port = 0u16;
+    match lp.localAddr(listener) {
+      case let Ok(a) {port = a.port();}
+      case let Err(e) {}
+    }
+    lp.submit(Op.Accept(listener), Target.Here(1u64));
+    lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(2u64));
+    waitFor(&mut lp, &mut out, 2usize);
+    var a = Handle.none();
+    var k = 0usize;
+    while k < out.len() {
+      if out[k].token == 1u64 {a = out[k].handle;}
+      k = k + 1usize;
+    }
+    out.clear();
+    require(lp.isOpen(a), "a connected pair");
+
+    var stale = OpId.none();
+    var wrong = 0u64;
+    var round = 0u32;
+    while round < 3000u32 {
+      // The receive in flight now; the stale id of the last round is cancelled first
+      let live = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(10u64));
+      if lp.cancel(stale) {wrong = wrong + 1u64;}
+      if !lp.cancel(live) {wrong = wrong + 1u64;}
+      waitFor(&mut lp, &mut out, 1usize);
+      if out.len() != 1usize {wrong = wrong + 1u64;}
+      out.clear();
+      if lp.cancel(live) {wrong = wrong + 1u64;}
+      stale = live;
+      round = round + 1u32;
+    }
+    expectUInt(wrong, 0u64, "a stale id cancelled nothing, and a live one was cancelled");
+    let c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered once");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  }
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done()
+}
