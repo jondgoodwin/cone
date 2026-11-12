@@ -198,7 +198,7 @@ pub struct Loop {
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
       decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
       held: List[Held](),
-      handles: HEntries.make(64u32),
+      handles: HEntries(64usize),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
@@ -342,7 +342,7 @@ pub struct Loop {
   pub fn localAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let i = self.handleIndex(h);
     if i == noEntry {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
-    let e = handles.at(i) as &HEntry;
+    let e = handles.borrowAt(i).unwrap();
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
     if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
@@ -526,16 +526,18 @@ pub struct Loop {
   // The hint word of h: a u32 kept for the layer that opened it (aio's calm
   // bit), 0 when it is opened; 0 for a handle that names nothing
   pub fn hint(self: &, h: Handle) u32 {
-    let p = handles.get(HEntryId(h.index, h.gen));
-    if p as usize == 0usize {return 0u32;}
-    (*p).hint
+    match handles.borrow(HEntryId(h.index, h.gen)) {
+      case let Some(e) {e.hint}
+      case None {0u32}
+    }
   }
 
   // Set h's hint word: false, and nothing set, if h names nothing
   pub fn setHint(self: &mut, h: Handle, v: u32) bool {
-    let p = handles.get(HEntryId(h.index, h.gen));
-    if p as usize == 0usize {return false;}
-    (*p).hint = v;
+    match handles.borrowMut(HEntryId(h.index, h.gen)) {
+      case let Some(e) {e.hint = v;}
+      case None {return false;}
+    }
     true
   }
 
@@ -549,7 +551,7 @@ pub struct Loop {
     // queued on a file is cancelled by the pool's own record)
     lxCancelAll(self, i);
     lxCancelFiles(self, h);
-    let e = handles.at(i) as &HEntry;
+    let e = handles.borrowAt(i).unwrap();
     // Windows: a wait on a process is no I/O CancelIoEx reaches; each is
     // cancelled by name (askCancel answers it at once)
     #if #os == .windows {
@@ -589,9 +591,9 @@ pub struct Loop {
   pub fn reset(self: &mut, h: Handle) bool {
     let i = self.handleIndex(h);
     if i == noEntry {return false;}
-    if (*handles.at(i)).kind != hSocket {return false;}
+    if (handles.borrowAt(i).unwrap()).kind != hSocket {return false;}
     lxCancelAll(self, i);
-    let e = handles.at(i) as &HEntry;
+    let e = handles.borrowAt(i).unwrap();
     self.unpublish(i);
     #if #os == .windows {CancelIoEx(e.raw, null);}
     self.detachLists(i);
@@ -612,8 +614,10 @@ pub struct Loop {
 
   // Whether h's completions skip the port on success
   fn skips(self: &, h: Handle) bool {
-    let p = handles.get(HEntryId(h.index, h.gen));
-    p as usize != 0usize && (*p).skip != 0u32
+    match handles.borrow(HEntryId(h.index, h.gen)) {
+      case let Some(e) {e.skip != 0u32}
+      case None {false}
+    }
   }
 
   // Record p finished by the kernel at once, moving 'bytes', on a socket that
@@ -644,8 +648,11 @@ pub struct Loop {
   // Cell i's handle published in the shared table, if there is one
   fn publish(self: &, i: u32) {
     if shared.isNone() {return;}
-    let e = handles.at(i);
-    publishEntry(&shared, i, handles.slotAt(i).gen, (*e).raw, (*e).kind, (*e).skip);
+    let e = match handles.borrowAt(i) {
+      case let Some(v) {v}
+      case None {return;}
+    };
+    publishEntry(&shared, i, handles.slotAt(i).gen, e.raw, e.kind, e.skip);
   }
 
   // Cell i's handle no longer published: under its entry's lock, so no thread
@@ -691,7 +698,7 @@ pub struct Loop {
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self: &, h: Handle) u32 {
-    if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {return noEntry;}
+    if handles.borrow(HEntryId(h.index, h.gen)) is None {return noEntry;}
     h.index
   }
 
@@ -699,7 +706,7 @@ pub struct Loop {
   fn rawOf(self: &, h: Handle, kind: u32) usize {
     let i = self.handleIndex(h);
     if i == noEntry {return invalidHandle;}
-    let e = handles.at(i) as &HEntry;
+    let e = handles.borrowAt(i).unwrap();
     if e.kind != kind {return invalidHandle;}
     e.raw
   }
@@ -720,7 +727,7 @@ pub struct Loop {
       unboundTail = p;
       return;
     }
-    let e = handles.get(HEntryId(r.handle.index, r.handle.gen)) as &mut HEntry;
+    let e = handles.borrowMut(HEntryId(r.handle.index, r.handle.gen)).unwrap();
     if side == onReads {
       r.hprev = e.readsTail;
       if e.readsTail as usize == 0usize {e.reads = p;} else {(*e.readsTail).hnext = p;}
@@ -749,9 +756,10 @@ pub struct Loop {
     }
     // A closed handle's lists were let go at its close (detachLists), which
     // took every record off them: an entry is there for a record still on one
-    let ep = handles.get(HEntryId(r.handle.index, r.handle.gen));
-    if ep as usize == 0usize {return;}
-    let e = ep as &mut HEntry;
+    let e = match handles.borrowMut(HEntryId(r.handle.index, r.handle.gen)) {
+      case let Some(v) {v}
+      case None {return;}
+    };
     if side == onReads {
       if prev as usize == 0usize {e.reads = next;} else {(*prev).hnext = next;}
       if next as usize == 0usize {e.readsTail = prev;} else {(*next).hprev = prev;}
@@ -764,7 +772,7 @@ pub struct Loop {
   // Handle entry i is about to go: every record on its lists leaves them
   // (what is still the kernel's completes later, on no list)
   fn detachLists(self: &mut, i: u32) {
-    let e = handles.at(i) as &mut HEntry;
+    let e = handles.borrowMutAt(i).unwrap();
     var p = e.reads;
     while p as usize != 0usize {
       let next = (*p).hnext;
@@ -1529,7 +1537,7 @@ pub struct Loop {
       if acceptExAddr == 0usize {return errorInvalidParameter;}
       let li = self.handleIndex(listener);
       if li == noEntry {return errorInvalidHandle;}
-      let e = handles.at(li) as &HEntry;
+      let e = handles.borrowAt(li).unwrap();
       if e.kind != hListener {return errorInvalidHandle;}
       let s = tcpSocket(e.family);
       if s == invalidHandle {return wsaError();}
@@ -1864,7 +1872,7 @@ pub struct Loop {
   pub fn cancelHandle(self: &mut, h: Handle, write: bool) usize {
     let i = self.handleIndex(h);
     if i == noEntry {return 0usize;}
-    let e = handles.at(i) as &HEntry;
+    let e = handles.borrowAt(i).unwrap();
     var p = if write {e.writes} else {e.reads};
     var n = 0usize;
     while p as usize != 0usize {
@@ -1876,7 +1884,7 @@ pub struct Loop {
       }
       // An operation may have closed it (Linux: a connect that failed on its
       // try): its lists went with it
-      if handles.get(HEntryId(h.index, h.gen)) as usize == 0usize {break;}
+      if handles.borrow(HEntryId(h.index, h.gen)) is None {break;}
       p = next;
     }
     n
@@ -2021,13 +2029,13 @@ pub struct Loop {
         var ec = 0u32;
         if proc == invalidHandle {
           self.decide(p, diag.outcomeFailed, 0usize, errorInvalidHandle);
-        } else if (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited != 0u32 {
+        } else if (handles.borrow(HEntryId(r.handle.index, r.handle.gen)).unwrap()).waited != 0u32 {
           // Answered for already: the child is spoken for, as a reaped one is on Linux
           self.decide(p, diag.outcomeFailed, 0usize, errorNoChildren);
         } else if GetExitCodeProcess(proc, &mut ec) == 0i32 {
           self.decide(p, diag.outcomeFailed, 0usize, GetLastError());
         } else {
-          (*handles.get(HEntryId(r.handle.index, r.handle.gen))).waited = 1u32;
+          handles.borrowMut(HEntryId(r.handle.index, r.handle.gen)).unwrap().waited = 1u32;
           self.decide(p, diag.outcomeDone, usize.from(ec), 0u32);
         }
         return;
@@ -2377,11 +2385,11 @@ pub struct Loop {
         // Unpublished first: nothing is issued on it from another thread after
         self.unpublish(h);
         #if #os == .windows {
-          CancelIoEx((*handles.at(h)).raw, null);
+          CancelIoEx((handles.borrowAt(h).unwrap()).raw, null);
         } #else {
           lxCancelAll(self, h);
           // Linux: the file jobs on it
-          let e = handles.at(h) as &HEntry;
+          let e = handles.borrowAt(h).unwrap();
           var p = e.reads;
           while p as usize != 0usize {
             let next = (*p).hnext;
@@ -2401,9 +2409,10 @@ pub struct Loop {
     h = 0u32;
     while usize.from(h) < handles.bound() {
       if handles.isLive(h) {
-        let e = handles.at(h) as &HEntry;
+        let kind = handles.borrowAt(h).unwrap().kind;
+        let raw = handles.borrowAt(h).unwrap().raw;
         self.detachLists(h);
-        closeRaw(e.kind, e.raw);
+        closeRaw(kind, raw);
         handles.removeAt(h);
       }
       h = h + 1u32;

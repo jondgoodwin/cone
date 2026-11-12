@@ -167,7 +167,7 @@ pub struct Driver {
     Driver(tokBase: (tokMark << markShift) | (number << numberShift),
       client: quic.Context.client(qcfg), h3cfg: hcfg, recvDepth: recvDepth, sendDepth: sendDepth,
       sendWatermark: sendWatermark, maxConnections: maxConnections, maxWaiting: maxWaiting,
-      wakeStep: wakeStep, share: poolShare(), listeners: Listeners.make(4u32), conns: Connections.make(16u32),
+      wakeStep: wakeStep, share: poolShare(), listeners: Listeners(4usize), conns: Connections(16usize),
       routes: Dict[CidKey, RecId](), dirty: List[u32](), ready: Deque[Event](),
       nextWake: forever(), lossPerMille: 0u32, lossState: 0u64, st: DriverStats.zero())
   }
@@ -213,14 +213,14 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !conns.isLive(cell) {continue;}
-      let c = conns.at(cell) as &mut Conn;
+      let c = conns.borrowMutAt(cell).unwrap();
       if c.more {
         self.drive(lp, cell, now, false);
       } else if c.wake <= now {
         self.drive(lp, cell, now, true);
       }
       if conns.isLive(cell) {
-        let c2 = conns.at(cell) as &Conn;
+        let c2 = conns.borrowAt(cell).unwrap();
         if c2.more {next = Instant();}
         else if c2.wake < next {next = c2.wake;}
       }
@@ -232,7 +232,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !listeners.isLive(cell) {continue;}
-      let l = listeners.at(cell) as &mut Lst;
+      let l = listeners.borrowMutAt(cell).unwrap();
       if l.owed == 0u32 {continue;}
       if !lp.isOpen(l.handle) {
         l.owed = 0u32;
@@ -266,7 +266,7 @@ pub struct Driver {
     let now = Instant.now();
     if kind == kRecvL {
       if !listeners.isLive(cell) || (u64.from(listeners.slotAt(cell).gen) & genMask) != gen {return true;}
-      let l = listeners.at(cell) as &mut Lst;
+      let l = listeners.borrowMutAt(cell).unwrap();
       let cancelled = comp.status == diagCancelled();
       if comp.isDone() {
         st.datagramsIn = st.datagramsIn + 1u64;
@@ -291,7 +291,7 @@ pub struct Driver {
       return true;
     }
     if !conns.isLive(cell) || (u64.from(conns.slotAt(cell).gen) & genMask) != gen {return true;}
-    let c = conns.at(cell) as &mut Conn;
+    let c = conns.borrowMutAt(cell).unwrap();
     if kind == kRecvC {
       c.recvsOut = c.recvsOut - 1u32;
       let cancelled = comp.status == diagCancelled();
@@ -353,7 +353,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if listeners.isLive(cell) {
-        lp.close((listeners.at(cell) as &Lst).handle);
+        lp.close((listeners.borrowAt(cell).unwrap()).handle);
         listeners.removeAt(cell);
       }
     }
@@ -428,13 +428,13 @@ pub struct Driver {
     match self.newClient(serverName, &localQ, &remoteQ, now) {
       case let Ok(q) {
         let s = conns.add(Conn(server: false, token: token, listener: RecId.none(), handle: handle, peer: addr,
-          q: q, h: http3.Connection.client(h3cfg, now), streams: Streams.make(16u32),
+          q: q, h: http3.Connection.client(h3cfg, now), streams: Streams(16usize),
           byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 2u64, ids: List[CidKey](), idEpoch: 0u64, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
           quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
           budget: blockBudget(share, maxConnections), shed: false));
-        let c = conns.get(s) as &mut Conn;
+        let c = conns.borrowMut(s).unwrap();
         let size = recvSizeOf(false, self.clientUdp());
         var r = 0u32;
         while r < recvDepth {
@@ -569,14 +569,14 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !conns.isLive(cell) {continue;}
-      let c = conns.at(cell) as &mut Conn;
+      let c = conns.borrowMutAt(cell).unwrap();
       if c.ended {continue;}
       c.h.abort(http3.h3NoError);
       // Should HTTP/3 have closed already, QUIC's close goes all the same
       c.q.close(http3.h3NoError);
       self.drive(lp, cell, now, false);
       if conns.isLive(cell) {
-        let c2 = conns.at(cell) as &mut Conn;
+        let c2 = conns.borrowMutAt(cell).unwrap();
         if !c2.ended {
           // QUIC had not closed (its close went, or nothing could): it ends now
           c2.quicClosed = true;
@@ -805,7 +805,7 @@ pub struct Driver {
   // ---------------------------------------------------------------------------
 
   fn markDirty(self: &mut, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if !c.dirty {
       c.dirty = true;
       dirty.push(i);
@@ -819,7 +819,7 @@ pub struct Driver {
 
   // Move connection i as far as it can go now; byWake: its wake time asked
   fn drive(self: &mut, lp: &mut Loop, i: u32, now: Instant, byWake: bool) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     c.dirty = false;
     c.more = false;
     if c.ended {
@@ -873,7 +873,7 @@ pub struct Driver {
 
   // QUIC's events: true when there were any
   fn quicEvents(self: &mut, lp: &mut Loop, i: u32, now: Instant) bool {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     var moved = false;
     var going = true;
     while going {
@@ -978,7 +978,7 @@ pub struct Driver {
     var k = 0usize;
     while k < c.streams.bound() {
       if c.streams.isLive(u32.from(k)) {
-        let s = c.streams.at(u32.from(k)) as &Strm;
+        let s = c.streams.borrowAt(u32.from(k)).unwrap();
         n = n + http3.chainWaste(&s.inbound) + http3.chainWaste(&s.pendingOut);
       }
       k = k + 1usize;
@@ -1000,7 +1000,7 @@ pub struct Driver {
     var k = 0usize;
     while k < c.streams.bound() {
       if c.streams.isLive(u32.from(k)) {
-        let s = c.streams.at(u32.from(k)) as &mut Strm;
+        let s = c.streams.borrowMutAt(u32.from(k)).unwrap();
         self.dropInbound(c, s);
         s.pendingOut.advance(s.pendingOut.len());
       }
@@ -1029,7 +1029,7 @@ pub struct Driver {
 
   // The handshake is done: Connected or Accepted, once
   fn handshakeDone(self: &mut, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if c.told {return;}
     c.told = true;
     let id = ConnId(i, conns.slotAt(i).gen);
@@ -1054,7 +1054,7 @@ pub struct Driver {
       k = k + 1usize;
       if c.h.isClosed() {return moved;}
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &mut Strm;
+      let s = c.streams.borrowMutAt(cell).unwrap();
       while !s.inDone {
         if s.inbound.len() == 0usize {
           if s.inFin {
@@ -1090,7 +1090,7 @@ pub struct Driver {
 
   // HTTP/3's events, to the program: true when there were any
   fn h3Events(self: &mut, i: u32, now: Instant) bool {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if c.h3Closed {return false;}
     let cid = ConnId(i, conns.slotAt(i).gen);
     var moved = false;
@@ -1419,7 +1419,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &Strm;
+      let s = c.streams.borrowAt(cell).unwrap();
       if !s.opened || c.q.queued(i64.from(s.id)) > 0u64 {return false;}
     }
     c.closeWait = false;
@@ -1432,7 +1432,7 @@ pub struct Driver {
   // SendTo now; a batched send (sendmmsg, GSO, USO) would gather the payloads
   // this loop takes from pollTransmit into one operation
   fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) usize {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     let slot = conns.slotAt(i);
     var n = 0usize;
     while c.sendsOut < sendDepth {
@@ -1467,7 +1467,7 @@ pub struct Driver {
   // A server's requests whose End has come and whose response QUIC has had
   // acknowledged whole: Done
   fn serverDone(self: &mut, i: u32, now: Instant) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if !c.server {return;}
     let cid = ConnId(i, conns.slotAt(i).gen);
     var k = 0usize;
@@ -1475,7 +1475,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &mut Strm;
+      let s = c.streams.borrowMutAt(cell).unwrap();
       if s.req && s.readDone && s.finWritten && c.q.queued(i64.from(s.id)) == 0u64 {
         self.answer(c, cid, cell, s, EventKind.Done, Failure.none());
       }
@@ -1484,14 +1484,14 @@ pub struct Driver {
 
   // Writable for each request a refusal is waiting on, once there is room
   fn writables(self: &mut, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     let cid = ConnId(i, conns.slotAt(i).gen);
     var k = 0usize;
     while k < c.streams.bound() {
       let cell = u32.from(k);
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &mut Strm;
+      let s = c.streams.borrowMutAt(cell).unwrap();
       if s.req && s.wantWritable && self.heldInQuic(c, s) < sendWatermark && c.h.writeRoom(s.id) > 0usize {
         s.wantWritable = false;
         self.emit(Event.make(EventKind.Writable, s.token, cid, ReqId(cid, cell, c.streams.slotAt(cell).gen), s.id));
@@ -1507,7 +1507,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &mut Strm;
+      let s = c.streams.borrowMutAt(cell).unwrap();
       if s.opened && !s.req && s.inbound.len() == 0usize && !c.q.hasStream(i64.from(s.id)) {
         let id = s.id;
         let removed = c.byId.remove(&id);
@@ -1519,7 +1519,7 @@ pub struct Driver {
   // A server connection's routing keys, read again when its connection IDs
   // have changed (ROUTING)
   fn refreshIds(self: &mut, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if !c.server || c.ended {return;}
     let epoch = c.q.localIdsEpoch();
     if epoch == c.idEpoch {return;}
@@ -1573,7 +1573,7 @@ pub struct Driver {
       }
       case is None[RecId] {}
     }
-    let l = listeners.at(li) as &mut Lst;
+    let l = listeners.borrowMutAt(li).unwrap();
     if !isInitial(d) || !l.accepting {
       st.unrouted = st.unrouted + 1u64;
       return;
@@ -1593,14 +1593,14 @@ pub struct Driver {
     match quic.Connection.accept(&l.ctx, d, &l.localQ, &peerQ, now) {
       case let Ok(q) {
         let s = conns.add(Conn(server: true, token: l.token, listener: listeners.slotAt(li), handle: l.handle,
-          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: Streams.make(16u32),
+          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: Streams(16usize),
           byId: Dict[u64, RecId](), waitBidi: Deque[RecId](), waitUni: Deque[RecId](),
           nextUni: 3u64, ids: List[CidKey](), idEpoch: unread, recvsOut: 0u32, sendsOut: 0u32,
           dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
           quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false,
           budget: blockBudget(share, maxConnections), shed: false));
         l.conns = l.conns + 1u32;
-        let c = conns.get(s) as &mut Conn;
+        let c = conns.borrowMut(s).unwrap();
         // The client's own choice of ID first: its Initials carry it until
         // it has the server's
         let previous = routes.insert(key, s);
@@ -1619,7 +1619,7 @@ pub struct Driver {
   // QUIC and HTTP/3 have both closed: every request still open is Failed,
   // the one Closed goes, and the connection goes once its sends are answered
   fn endConn(self: &mut, lp: &mut Loop, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if c.ended {return;}
     c.ended = true;
     let cid = ConnId(i, conns.slotAt(i).gen);
@@ -1658,7 +1658,7 @@ pub struct Driver {
       let cell = u32.from(k);
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
-      let s = c.streams.at(cell) as &mut Strm;
+      let s = c.streams.borrowMutAt(cell).unwrap();
       if s.req {
         let e = HttpError.coded(left, http3.h3NoError, ErrorScope.Connection, "the connection closed");
         let f = self.reqFailure(c, s, e);
@@ -1687,7 +1687,7 @@ pub struct Driver {
   // Its record goes: a client's socket closes (its receives answer
   // Cancelled, and are dropped), a server's listener loses one connection
   fn free(self: &mut, lp: &mut Loop, i: u32) {
-    let c = conns.at(i) as &mut Conn;
+    let c = conns.borrowMutAt(i).unwrap();
     if c.server {
       let lp2 = listeners.get(c.listener);
       if lp2 as usize != 0usize {

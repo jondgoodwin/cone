@@ -123,9 +123,9 @@ struct Service {
   srvs: Srvs;       // the servers listening, each with a driver of its own
 
   fn make() Service {
-    Service(clients: Clients.make(4u32),
-      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns.make(16u32),
-      xwaits: XWaits.make(16u32), srvs: Srvs.make(4u32))
+    Service(clients: Clients(4usize),
+      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns(16usize),
+      xwaits: XWaits(16usize), srvs: Srvs(4usize))
   }
 
   // The record in cell k, or null if that cell is free
@@ -173,7 +173,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        pumpClient(self.clientAt(k) as &mut ClientRec, lp);
+        pumpClient(self.clients.borrowMutAt(u32.from(k)).unwrap(), lp);
       }
       k = k + 1usize;
     }
@@ -181,7 +181,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        pumpServer(self.srvAt(s) as &mut SrvRec, lp);
+        pumpServer(self.srvs.borrowMutAt(u32.from(s)).unwrap(), lp);
       }
       s = s + 1usize;
     }
@@ -196,7 +196,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let w = (self.clientAt(k) as &ClientRec).client.wakeAt();
+        let w = (self.clients.borrowAt(u32.from(k)).unwrap()).client.wakeAt();
         if w < limit {limit = w;}
       }
       k = k + 1usize;
@@ -204,7 +204,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &SrvRec;
+        let srec = self.srvs.borrowAt(u32.from(s)).unwrap();
         let sw = srec.drv.wakeAt();
         if sw < limit {limit = sw;}
         let hw = srec.h3.wakeAt();
@@ -221,7 +221,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let rec = self.clientAt(k) as &mut ClientRec;
+        let rec = self.clients.borrowMutAt(u32.from(k)).unwrap();
         if rec.client.complete(lp, c) {return true;}
       }
       k = k + 1usize;
@@ -229,7 +229,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &mut SrvRec;
+        let srec = self.srvs.borrowMutAt(u32.from(s)).unwrap();
         if srec.drv.complete(lp, c) {return true;}
         if srec.h3.complete(lp, c) {return true;}
       }
@@ -247,14 +247,14 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        (self.clientAt(k) as &mut ClientRec).client.abortAll(lp);
+        (self.clients.borrowMutAt(u32.from(k)).unwrap()).client.abortAll(lp);
       }
       k = k + 1usize;
     }
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &mut SrvRec;
+        let srec = self.srvs.borrowMutAt(u32.from(s)).unwrap();
         srec.drv.abortAll(lp);
         srec.h3.end(lp);
       }
@@ -269,7 +269,7 @@ struct Service {
     var k = 0usize;
     while k < srvs.bound() {
       if srvs.isLive(u32.from(k)) {
-        let srec = self.srvAt(k) as &mut SrvRec;
+        let srec = self.srvs.borrowMutAt(u32.from(k)).unwrap();
         if srec.closing && srec.live == 0usize {
           if !srec.aborted {
             srec.aborted = true;
@@ -290,7 +290,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let rec = self.clientAt(k) as &ClientRec;
+        let rec = self.clients.borrowAt(u32.from(k)).unwrap();
         if rec.dying && rec.client.live() == 0u32 {
           let ds = rec.client.driverStats();
           if ds.connects == ds.closed && rec.client.http3Live() == 0usize {
@@ -368,7 +368,7 @@ struct Service {
     } else if k == httpconn.EventKind.Writable {
       self.sendBody(lp, slot);
     } else if e.isTerminal() {
-      let c = conns.at(u32.from(w.conn)) as &mut ConnRec;
+      let c = conns.borrowMutAt(u32.from(w.conn)).unwrap();
       if c.busy > 0u32 {c.busy = c.busy - 1u32;}
       let timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
         e.timing.ended, 1u32, 0u32, false);
@@ -399,7 +399,7 @@ struct Service {
 
   // As much of exchange slot's body as its connection takes now
   fn sendBody(self: &mut, lp: &mut Loop, slot: usize) {
-    let w = xwaits.at(u32.from(slot)) as &mut Wait;
+    let w = xwaits.borrowMutAt(u32.from(slot)).unwrap();
     if w.bodyDone {return;}
     while w.sent < w.body.len() {
       let left = w.body.len() - w.sent;
@@ -540,7 +540,7 @@ struct CreateClientJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     sv.clients.add(ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
-      Waits.make(16u32), Streams.make(16u32), Dict[u64, u32]()));
+      Waits(16usize), Streams(16usize), Dict[u64, u32]()));
   }
 }
 
@@ -553,7 +553,7 @@ struct RefJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
     if add {
       rec.refs = rec.refs + 1u32;
       return;
@@ -575,11 +575,11 @@ struct FetchJob {
         Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
     let wh = rec.waits.add(waitFor(rp, rec.maxBody));
     let slot = usize.from(wh.index);
     let fetch = rec.client.send(lp, req, httpclient.Sink.Here(tokenOf(wh, 0u64)));
-    (rec.waits.at(u32.from(slot)) as &mut Wait).fetch = fetch;
+    (rec.waits.borrowMutAt(u32.from(slot)).unwrap()).fetch = fetch;
   }
 }
 
@@ -599,7 +599,7 @@ struct ConnectJob {
     let ch = sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
       connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp)));
     let slot = usize.from(ch.index);
-    let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
+    let c = sv.conns.borrowMutAt(u32.from(slot)).unwrap();
     let sink = httpconn.Sink.Here(tokenOf(ch, connBit));
     // The driver is handed a copy of the host: it holds Strings, and nothing
     // shows the job's is none of them
@@ -639,10 +639,10 @@ struct ExchangeJob {
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }
-    let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
+    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
     let xh = sv.xwaits.add(waitFor(rp, defaultMaxBody));
     let slot = usize.from(xh.index);
-    let w = sv.xwaits.at(u32.from(slot)) as &mut Wait;
+    let w = sv.xwaits.borrowMutAt(u32.from(slot)).unwrap();
     w.conn = k;
     w.body = body;
     c.busy = c.busy + 1u32;
@@ -668,7 +668,7 @@ struct DropConnJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {return;}
-    let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
+    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
     c.dropped = true;
     if c.closed {
       sv.freeConn(k);
@@ -695,10 +695,10 @@ pub fn staleEventDropped() bool {
   if h2.index != h1.index {return false;}
   var stale = httpconn.Event.make(httpconn.EventKind.Closed, t1, httpconn.ConnId.none(), httpconn.ReqId.none());
   sv.onConnEvent(&mut lpr, &stale);
-  let c = sv.conns.at(h2.index) as &mut ConnRec;
+  let c = sv.conns.borrowMutAt(h2.index).unwrap();
   if !c.open || c.closed {return false;}
   var live = httpconn.Event.make(httpconn.EventKind.Closed, tokenOf(h2, connBit), httpconn.ConnId.none(), httpconn.ReqId.none());
   sv.onConnEvent(&mut lpr, &live);
-  let c2 = sv.conns.at(h2.index) as &mut ConnRec;
+  let c2 = sv.conns.borrowMutAt(h2.index).unwrap();
   c2.closed && !c2.open
 }

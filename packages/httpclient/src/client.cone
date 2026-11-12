@@ -251,9 +251,9 @@ pub struct Client {
     Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
         h3Origins, h3Timeout),
       drv: d, tlsc: tlsc,
-      fetches: Fetches.make(recsPerBlock), liveFetches: 0u32,
-      queuedN: 0u32, seq: 0u64, pconns: PConns.make(recsPerBlock),
-      total: 0u32, undecided: List[u32](), origins: Origins.make(8u32), dev: List[httpconn.Event](),
+      fetches: Fetches(usize.from(recsPerBlock)), liveFetches: 0u32,
+      queuedN: 0u32, seq: 0u64, pconns: PConns(usize.from(recsPerBlock)),
+      total: 0u32, undecided: List[u32](), origins: Origins(8usize), dev: List[httpconn.Event](),
       comps: List[Completion](), ready: List[Event](),
       wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event](), attempts: List[u32]())
   }
@@ -267,7 +267,7 @@ pub struct Client {
     var idle = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      let og = origins.at(u32.from(o)) as &Origin;
+      let og = origins.borrowAt(u32.from(o)).unwrap();
       idle = idle + u32.from(og.idle.len());
       var j = 0usize;
       while j < og.shared.len() {
@@ -345,7 +345,7 @@ pub struct Client {
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
       maxRedirects: 0u32, timing: Timing.zero(), streamed: false, upLen: BodyLength(), upq: Deque[IoBuf](),
       upPushed: 0u64, upEnded: false, upFinished: false, upGone: false, upWritable: false, upAsked: false));
-    (fetches.at(h.index) as &mut Fetch).gen = h.gen;
+    (fetches.borrowMutAt(h.index).unwrap()).gen = h.gen;
     liveFetches = liveFetches + 1u32;
     h.index
   }
@@ -359,7 +359,7 @@ pub struct Client {
     let h = pconns.add(PConn(gen: 0u32, state: pConnecting, id: httpconn.ConnId.none(), origin: noEntry,
       active: 0u32, uses: 0u32, opened: Instant.now(), proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
       lookup: OpId.none(), h3By: Instant()));
-    (pconns.at(h.index) as &mut PConn).gen = h.gen;
+    (pconns.borrowMutAt(h.index).unwrap()).gen = h.gen;
     h.index
   }
 
@@ -373,7 +373,7 @@ pub struct Client {
     let port = u.effectivePort();
     var k = 0usize;
     while k < origins.len() {
-      let og = origins.at(u32.from(k)) as &Origin;
+      let og = origins.borrowAt(u32.from(k)).unwrap();
       if og.port == port && og.secure == secure && og.host.view() == u.host.view() {return u32.from(k);}
       k = k + 1usize;
     }
@@ -570,7 +570,7 @@ pub struct Client {
     f.following = false;
     f.cutting = false;
     f.drained = 0usize;
-    (self.originAt(oi) as &mut Origin).queue.push(fi);
+    (self.origins.borrowMutAt(u32.from(oi)).unwrap()).queue.push(fi);
     queuedN = queuedN + 1u32;
     if queuedN > st.queuedMax {st.queuedMax = queuedN;}
     wantSchedule = true;
@@ -635,7 +635,7 @@ pub struct Client {
     var n = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      let og = origins.at(u32.from(o)) as &mut Origin;
+      let og = origins.borrowMutAt(u32.from(o)).unwrap();
       while og.idle.len() > 0usize {
         self.retire(lp, *og.idle[0usize], true);
         n = n + 1u32;
@@ -707,7 +707,7 @@ pub struct Client {
     if !self.fetchLive(fi) {return;}
     let f = self.fetchAt(fi) as &mut Fetch;
     if f.state == fQueued && f.origin != noEntry {
-      let og = self.originAt(f.origin) as &mut Origin;
+      let og = self.origins.borrowMutAt(u32.from(f.origin)).unwrap();
       if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
     }
     if !f.watch.isNone() {
@@ -905,7 +905,7 @@ pub struct Client {
   // A pooled connection's event: connected, or closed
   fn onConn(self: &mut, lp: &mut Loop, pc: u32, e: &httpconn.Event) {
     let p = self.connAt(pc) as &mut PConn;
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     if e.kind == httpconn.EventKind.Connected {
       if p.state == pConnecting {
         p.state = pIdle;
@@ -969,7 +969,7 @@ pub struct Client {
     }
     if p.state != pBusy {return;}
     p.active = 0u32;
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     if !drv.isIdle(p.id) {
       self.retire(lp, pc, false);
     } else if self.pastLifetime(pc) {
@@ -1024,7 +1024,7 @@ pub struct Client {
   fn retire(self: &mut, lp: &mut Loop, pc: u32, close: bool) {
     self.forgetUndecided(pc);
     let p = self.connAt(pc) as &mut PConn;
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
     if p.state == pShared {removeValue(&mut og.shared, pc);}
     if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
@@ -1060,7 +1060,7 @@ pub struct Client {
   fn learn(self: &mut, pc: u32) {
     let p = self.connAt(pc) as &mut PConn;
     if p.proto != protoUnknown || (p.state != pIdle && p.state != pBusy) {return;}
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     var h2 = false;
     match drv.protocol(p.id) {
       case let Some(v) {h2 = v == Version.Http2;}
@@ -1095,7 +1095,7 @@ pub struct Client {
     if !p.awaiting {return;}
     p.awaiting = false;
     removeValue(&mut undecided, pc);
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     og.undecided = og.undecided - 1u32;
   }
 
@@ -1110,7 +1110,7 @@ pub struct Client {
 
   // Open a connection to origin oi
   fn openConn(self: &mut, lp: &mut Loop, oi: u32) {
-    let og = self.originAt(oi) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(oi)).unwrap();
     let pc = self.newConn();
     let p = self.connAt(pc) as &mut PConn;
     p.origin = oi;
@@ -1154,7 +1154,7 @@ pub struct Client {
   fn closeAnIdle(self: &mut, lp: &mut Loop) bool {
     var o = 0usize;
     while o < origins.len() {
-      let og = origins.at(u32.from(o)) as &mut Origin;
+      let og = origins.borrowMutAt(u32.from(o)).unwrap();
       if og.queue.len() == 0usize && og.idle.len() > 0usize {
         let pc = *og.idle[0usize];
         self.retire(lp, pc, true);
@@ -1195,7 +1195,7 @@ pub struct Client {
   // there, the origin is https and known to speak it (prior knowledge, or an
   // Alt-Svc not yet past its max-age), and no attempt has fallen back lately
   fn wantsH3(self: &, oi: u32) bool {
-    let og = self.originAt(oi) as &Origin;
+    let og = self.origins.borrowAt(u32.from(oi)).unwrap();
     if !og.secure || og.h3Port == 0u16 || !self.hasH3() {return false;}
     let now = Instant.now();
     now < og.h3Until && now >= og.h3Broken
@@ -1208,7 +1208,7 @@ pub struct Client {
     if !self.hasH3() {return;}
     let f = self.fetchAt(fi) as &Fetch;
     if f.origin == noEntry {return;}
-    let og = self.originAt(f.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(f.origin)).unwrap();
     if !og.secure {return;}
     var k = 0usize;
     while k < headers.len() {
@@ -1245,7 +1245,7 @@ pub struct Client {
   // the origin's fetches are TCP's; h3Did when this dispatched or opened
   // anything; else h3Held
   fn scheduleH3(self: &mut, lp: &mut Loop, oi: u32) u32 {
-    let og = self.originAt(oi) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(oi)).unwrap();
     var qc = og.h3c;
     if qc != noEntry {
       let p = self.connAt(qc) as &PConn;
@@ -1287,7 +1287,7 @@ pub struct Client {
   // attempt's deadline), then the plug-in's connect to its first IPv4
   // address, on the Alt-Svc's port
   fn openH3(self: &mut, lp: &mut Loop, oi: u32) {
-    let og = self.originAt(oi) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(oi)).unwrap();
     let pc = self.newConn();
     let p = self.connAt(pc) as &mut PConn;
     p.origin = oi;
@@ -1333,7 +1333,7 @@ pub struct Client {
       self.dropAttempt(lp, pc, true);
       return;
     }
-    let og = self.originAt(p.origin) as &Origin;
+    let og = self.origins.borrowAt(u32.from(p.origin)).unwrap();
     let host = og.host.clone();
     let token = tokConn | (u64.from(p.gen & genMask) << 32u64) | u64.from(pc);
     match h3.connect(lp, addr, host.view(), token) {
@@ -1347,7 +1347,7 @@ pub struct Client {
   // HTTP/3 is not tried again for h3BrokenFor, and its fetches take TCP
   fn dropAttempt(self: &mut, lp: &mut Loop, pc: u32, fellBack: bool) {
     let p = self.connAt(pc) as &mut PConn;
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     removeValue(&mut attempts, pc);
     if og.h3c == pc {og.h3c = noEntry;}
     if fellBack {
@@ -1426,7 +1426,7 @@ pub struct Client {
   // closed (one that never connected falls back)
   fn onH3Conn(self: &mut, lp: &mut Loop, pc: u32, e: &H3Event) {
     let p = self.connAt(pc) as &mut PConn;
-    let og = self.originAt(p.origin) as &mut Origin;
+    let og = self.origins.borrowMutAt(u32.from(p.origin)).unwrap();
     if e.kind == H3Kind.Connected {
       if p.state == pConnecting {
         removeValue(&mut attempts, pc);
@@ -1497,7 +1497,7 @@ pub struct Client {
 
   // Where the first of origin oi's queue is in it
   fn firstIn(self: &, oi: u32) usize {
-    let og = self.originAt(oi) as &Origin;
+    let og = self.origins.borrowAt(u32.from(oi)).unwrap();
     var best = 0usize;
     var k = 1usize;
     while k < og.queue.len() {
@@ -1509,7 +1509,7 @@ pub struct Client {
 
   // Where the first of origin oi's queue that is not a streamed upload is in it (the queue's length: none)
   fn firstPlain(self: &, oi: u32) usize {
-    let og = self.originAt(oi) as &Origin;
+    let og = self.origins.borrowAt(u32.from(oi)).unwrap();
     var best = og.queue.len();
     var k = 0usize;
     while k < og.queue.len() {
@@ -1546,7 +1546,7 @@ pub struct Client {
         o = o + 1u32;
         continue;
       }
-      let og = self.originAt(o) as &mut Origin;
+      let og = self.origins.borrowMutAt(u32.from(o)).unwrap();
       while og.queue.len() > 0usize && og.idle.len() > 0usize {
         var pc = *og.idle[og.idle.len() - 1usize];
         var pos = self.firstIn(o);
@@ -1626,7 +1626,7 @@ pub struct Client {
       var bestF = noEntry;
       o = 0u32;
       while o < u32.from(origins.len()) {
-        let og = self.originAt(o) as &Origin;
+        let og = self.origins.borrowAt(u32.from(o)).unwrap();
         if og.queue.len() > usize.from(og.connecting) && og.open < cfg.maxPerOrigin && self.mayOpen(o) {
           let fi = *og.queue[self.firstIn(o)];
           if bestF == noEntry || self.before(fi, bestF) {
@@ -1650,7 +1650,7 @@ pub struct Client {
   // speak HTTP/2, while one is being made or its protocol is still to be
   // chosen (it will most likely be shared)
   fn mayOpen(self: &, oi: u32) bool {
-    let og = self.originAt(oi) as &Origin;
+    let og = self.origins.borrowAt(u32.from(oi)).unwrap();
     // HTTP/3 being tried, or open, or to be tried: no TCP connection
     if og.h3c != noEntry || self.wantsH3(oi) {return false;}
     var j = 0usize;

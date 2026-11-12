@@ -296,7 +296,7 @@ pub struct Connection is Move {
     encodeVarint(&mut decOut, streamDecoder);
     Connection(clientRole: client, cfg: cfg, now: now,
       enc: QpackEncoder.make(&cfg.qpack), dec: QpackDecoder.make(cfg.qpack),
-      streams: H3Streams.make(16u32), ids: Dict[u64, H3StreamId](),
+      streams: H3Streams(16usize), ids: Dict[u64, H3StreamId](),
       requestRecords: 0usize, activeRequests: 0usize,
       controlId: base, encoderId: base + 4u64, decoderId: base + 8u64,
       controlOut: control, encoderOut: encOut, decoderOut: decOut,
@@ -327,7 +327,7 @@ pub struct Connection is Move {
     }
     if slot.isNone() {return;}
     let i = usize.from(slot.index);
-    let s = streams.at(slot.index) as &mut H3Stream;
+    let s = streams.borrowMutAt(slot.index).unwrap();
     if s.kind == StreamKind.Request {
       if s.rs == ReadState.Stopped || s.rs == ReadState.Done {
         if fin {s.peerEnded = true;}
@@ -360,7 +360,7 @@ pub struct Connection is Move {
       case is None[H3StreamId] {return;}
     }
     let i = usize.from(slot.index);
-    let s = streams.at(slot.index) as &mut H3Stream;
+    let s = streams.borrowMutAt(slot.index).unwrap();
     if s.kind == StreamKind.Request {
       s.peerEnded = true;
       if s.rs != ReadState.Done && s.rs != ReadState.Stopped {
@@ -401,7 +401,7 @@ pub struct Connection is Move {
       case is None[H3StreamId] {return;}
     }
     let i = usize.from(slot.index);
-    let s = streams.at(slot.index) as &mut H3Stream;
+    let s = streams.borrowMutAt(slot.index).unwrap();
     if s.kind != StreamKind.Request || s.writeDone {return;}
     self.dropOutput(s);
     s.writeDone = true;
@@ -429,7 +429,7 @@ pub struct Connection is Move {
     var i = 0usize;
     while i < streams.bound() {
       if streams.isLive(u32.from(i)) {
-        let s = streams.at(u32.from(i)) as &H3Stream;
+        let s = streams.borrowAt(u32.from(i)).unwrap();
         if s.kind == StreamKind.Request && s.accepted && !s.reported && !wholeIn(s) {cut = true;}
       }
       i = i + 1usize;
@@ -445,7 +445,7 @@ pub struct Connection is Move {
     if closed || gone {return 0usize;}
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let s = streams.at(sl.index) as &H3Stream;
+        let s = streams.borrowAt(sl.index).unwrap();
         if s.kind == StreamKind.Ignored || s.kind == StreamKind.Encoder || s.kind == StreamKind.Decoder ||
             s.rs == ReadState.Stopped {
           return cfg.streamBuffer;
@@ -462,7 +462,7 @@ pub struct Connection is Move {
   pub fn release(self: &mut, stream: u64, n: usize) {
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let s = streams.at(sl.index) as &mut H3Stream;
+        let s = streams.borrowMutAt(sl.index).unwrap();
         s.outstanding = if n >= s.outstanding {0usize} else {s.outstanding - n};
       }
       case is None[H3StreamId] {}
@@ -508,12 +508,12 @@ pub struct Connection is Move {
       let i = (wrr + k) % n;
       k = k + 1usize;
       if streams.isLive(u32.from(i)) {
-        let s = streams.at(u32.from(i)) as &H3Stream;
+        let s = streams.borrowAt(u32.from(i)).unwrap();
         if s.kind == StreamKind.Request && !s.writeDone && (queuedOf(s) > 0usize || s.fin) {found = i;}
       }
     }
     if found < n {
-      let s = streams.at(u32.from(found)) as &mut H3Stream;
+      let s = streams.borrowMutAt(u32.from(found)).unwrap();
       flushTail(s);
       // The queue is taken whole: empty is what it is next
       var data = Chain.make(noBound);
@@ -565,7 +565,7 @@ pub struct Connection is Move {
         let i = (rr + k) % n;
         k = k + 1usize;
         if streams.isLive(u32.from(i)) {
-          let s = streams.at(u32.from(i)) as &mut H3Stream;
+          let s = streams.borrowMutAt(u32.from(i)).unwrap();
           if s.kind == StreamKind.Request && s.accepted {
             var hit = false;
             match self.step(s) {
@@ -644,7 +644,7 @@ pub struct Connection is Move {
     if closed || gone {return;}
     let sl = self.writable(stream);
     if sl.isNone() {return;}
-    let r = streams.at(sl.index) as &mut H3Stream;
+    let r = streams.borrowMutAt(sl.index).unwrap();
     if !r.requestSeen || r.ws != WriteState.Idle {panic("http3: sendResponse with no request awaiting one", file, line);}
     self.respond(r, head, body, file, line);
   }
@@ -657,7 +657,7 @@ pub struct Connection is Move {
     if closed || gone {return;}
     let sl = self.writable(stream);
     if sl.isNone() {return;}
-    let r = streams.at(sl.index) as &mut H3Stream;
+    let r = streams.borrowMutAt(sl.index).unwrap();
     if !r.requestSeen || r.ws != WriteState.Idle {panic("http3: sendInterim with no request awaiting a response", file, line);}
     var fields = List[HeaderField]();
     let none = BodyLength();
@@ -674,7 +674,7 @@ pub struct Connection is Move {
     if closed || gone {return None;}
     let sl = self.writable(stream);
     if sl.isNone() {return None;}
-    let s = streams.at(sl.index) as &mut H3Stream;
+    let s = streams.borrowMutAt(sl.index).unwrap();
     if s.ws != WriteState.Body {panic("http3: sendData with no body being sent", file, line);}
     let n = buf.len();
     if n == 0usize {return None;}
@@ -705,7 +705,7 @@ pub struct Connection is Move {
     if closed || gone {return;}
     let sl = self.writable(stream);
     if sl.isNone() {return;}
-    let s = streams.at(sl.index) as &mut H3Stream;
+    let s = streams.borrowMutAt(sl.index).unwrap();
     if s.ws == WriteState.Idle {panic("http3: finish with no message begun", file, line);}
     if s.ws == WriteState.Done {return;}
     if s.wSized && s.wremaining != 0u64 {panic("http3: finish short of the body's Content-Length", file, line);}
@@ -725,7 +725,7 @@ pub struct Connection is Move {
     if closed || gone || clientRole {return;}
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let s = streams.at(sl.index) as &mut H3Stream;
+        let s = streams.borrowMutAt(sl.index).unwrap();
         if s.kind != StreamKind.Request {return;}
         self.stopReading(s, h3NoError);
       }
@@ -740,7 +740,7 @@ pub struct Connection is Move {
     if closed || gone {return;}
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let s = streams.at(sl.index) as &mut H3Stream;
+        let s = streams.borrowMutAt(sl.index).unwrap();
         if s.kind != StreamKind.Request {return;}
         s.reported = true;
         self.stopReading(s, code);
@@ -804,7 +804,7 @@ pub struct Connection is Move {
   pub fn writeRoom(self: &, stream: u64) usize {
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let q = queuedOf(streams.at(sl.index) as &H3Stream);
+        let q = queuedOf(streams.borrowAt(sl.index).unwrap());
         return if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q};
       }
       case is None[H3StreamId] {return 0usize;}
@@ -823,7 +823,7 @@ pub struct Connection is Move {
     var i = 0usize;
     while i < streams.bound() {
       if streams.isLive(u32.from(i)) {
-        let s = streams.at(u32.from(i)) as &H3Stream;
+        let s = streams.borrowAt(u32.from(i)).unwrap();
         n = n + chainWaste(&s.input) + chainWaste(&s.out);
       }
       i = i + 1usize;
@@ -838,7 +838,7 @@ pub struct Connection is Move {
     var i = 0usize;
     while i < streams.bound() {
       if streams.isLive(u32.from(i)) {
-        let s = streams.at(u32.from(i)) as &mut H3Stream;
+        let s = streams.borrowMutAt(u32.from(i)).unwrap();
         s.input.advance(s.input.len());
         s.out.advance(s.out.len());
       }
@@ -928,7 +928,7 @@ pub struct Connection is Move {
   // reset, and everything taken), any other once the peer's side is
   fn reap(self: &mut, i: usize) {
     if !streams.isLive(u32.from(i)) {return;}
-    let s = streams.at(u32.from(i)) as &H3Stream;
+    let s = streams.borrowAt(u32.from(i)).unwrap();
     var done = false;
     if s.kind == StreamKind.Request {
       done = s.peerEnded && (s.rs == ReadState.Done || s.rs == ReadState.Stopped) && s.writeDone;
@@ -948,7 +948,7 @@ pub struct Connection is Move {
   fn writable(self: &, stream: u64) H3StreamId {
     match ids.getCopy(&stream) {
       case let Some(sl) {
-        let r = streams.at(sl.index) as &H3Stream;
+        let r = streams.borrowAt(sl.index).unwrap();
         if r.kind == StreamKind.Request && r.accepted && !r.reported && !r.writeDone {return sl;}
       }
       case is None[H3StreamId] {}
@@ -1393,7 +1393,7 @@ pub struct Connection is Move {
           let id, result = u.(streamId, result);
           match ids.getCopy(&id) {
             case let Some(sl) {
-              let s = streams.at(sl.index) as &mut H3Stream;
+              let s = streams.borrowMutAt(sl.index).unwrap();
               s.blocked = false;
               match result {
                 case let Ok(size) {s.section = Some[List[HeaderField]](got);}
@@ -1552,7 +1552,7 @@ pub struct Connection is Move {
       var i = 0usize;
       while i < streams.bound() {
         if streams.isLive(u32.from(i)) {
-          let s = streams.at(u32.from(i)) as &mut H3Stream;
+          let s = streams.borrowMutAt(u32.from(i)).unwrap();
           if s.kind == StreamKind.Request && s.accepted && !s.reported && s.id >= id {
             let e = HttpError(ErrorKind.Refused, 0u16, true,
               String.from("above the server's GOAWAY: not processed, safe to retry"), None[u64], ErrorScope.Stream);
@@ -1615,7 +1615,7 @@ pub struct Connection is Move {
     var i = 0usize;
     while i < streams.bound() {
       if streams.isLive(u32.from(i)) {
-        let s = streams.at(u32.from(i)) as &mut H3Stream;
+        let s = streams.borrowMutAt(u32.from(i)).unwrap();
         let whole = spareWhole && wholeIn(s);
         if s.kind == StreamKind.Request && s.accepted && !s.reported && !(s.rs == ReadState.Done && s.writeDone) && !whole {
           s.reported = true;
