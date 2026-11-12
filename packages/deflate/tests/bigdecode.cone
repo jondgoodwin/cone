@@ -1,0 +1,32 @@
+// The one-shot decoders on 70 MiB, past the buffer pool's bound (64 MiB): zlib and gzip compress it and
+// decompress it back, with no expected size, and the bytes are the data. Never a panic.
+
+mod bigdecode;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+fn main() i32 {
+  let n = 73400320usize;
+  var data = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n { data.push(u8.from((i / 7usize + i / 4093usize) % 251usize)); i += 1usize; }
+  let z = zlibCompress(data.view(), 1);
+  match zlibDecompress(z.view(), 0usize) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "zlib: all the bytes came out");
+      expect(out.view() == data.view(), "zlib: the bytes are the data");
+    }
+    case let Err(e) { expect(false, "zlib of a large stream"); }
+  }
+  let g = gzipCompress(data.view(), 1);
+  match gzipDecompress(g.view(), 0usize) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "gzip: all the bytes came out");
+      expect(out.view() == data.view(), "gzip: the bytes are the data");
+    }
+    case let Err(e) { expect(false, "gzip of a large stream"); }
+  }
+  done()
+}

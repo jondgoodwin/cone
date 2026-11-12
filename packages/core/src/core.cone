@@ -862,7 +862,12 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
   }
 
-  // Move element i left, past the larger elements before it
+  // Move element i left, past the larger elements before it.
+  // It holds element i in flight ('held') while the larger ones shift right, so a
+  // comparator that panics mid-shift leaves one value duplicated and 'held' not
+  // written back. Harmless while a panic ends the program with nothing unwound
+  // (doc/design/panics.md); once panics unwind, this needs a hole guard that
+  // writes 'held' back on unwind (Rust's CopyOnDrop pattern).
   fn insertTail[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, order: &F) inline {
     let p = self as *T;
     if i > 0usize && order((p + i) as &T, (p + i - 1usize) as &T) < 0i32 {
@@ -896,6 +901,120 @@ pub struct @opaque Array[T] is GcTraceElements {
   fn insertionSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
     let n = self.len;
     var i = 1usize;
+    while i < n {
+      self.insertTail(i, order);
+      i = i + 1usize;
+    }
+  }
+
+  // Order two elements in place, with no branch (the places they are read from are chosen, not
+  // the values): both are read before either is written, and the comparison comes before any
+  // read, so a comparison that panics leaves both where they were
+  fn ce[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, j: usize, order: &F) inline {
+    let p = self as *T;
+    let swap = order((p + j) as &T, (p + i) as &T) < 0i32;
+    // choose which place each is read from, so each value is moved once, whichever way it went
+    let first = if swap { p + j } else { p + i };
+    let second = if swap { p + i } else { p + j };
+    let a = mem.readRaw[T](first);
+    let b = mem.readRaw[T](second);
+    mem.writeRaw[T](p + i, a);
+    mem.writeRaw[T](p + j, b);
+  }
+
+  // The 25 compare-exchanges that sort 9 elements (checked by the 0-1 principle over all 512 inputs)
+  fn net9[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) inline {
+    self.ce(0usize, 3usize, order);
+    self.ce(1usize, 7usize, order);
+    self.ce(2usize, 5usize, order);
+    self.ce(4usize, 8usize, order);
+    self.ce(0usize, 7usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(3usize, 8usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(0usize, 2usize, order);
+    self.ce(1usize, 3usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(7usize, 8usize, order);
+    self.ce(1usize, 4usize, order);
+    self.ce(3usize, 6usize, order);
+    self.ce(5usize, 7usize, order);
+    self.ce(0usize, 1usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(6usize, 8usize, order);
+    self.ce(2usize, 3usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(6usize, 7usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+  }
+
+  // The 48 compare-exchanges that sort 13 elements (Batcher's odd-even mergesort of 16 without
+  // the exchanges that reach past 13; checked by the 0-1 principle over all 8192 inputs)
+  fn net13[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) inline {
+    self.ce(0usize, 1usize, order);
+    self.ce(2usize, 3usize, order);
+    self.ce(0usize, 2usize, order);
+    self.ce(1usize, 3usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(4usize, 5usize, order);
+    self.ce(6usize, 7usize, order);
+    self.ce(4usize, 6usize, order);
+    self.ce(5usize, 7usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(0usize, 4usize, order);
+    self.ce(2usize, 6usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(1usize, 5usize, order);
+    self.ce(3usize, 7usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(8usize, 9usize, order);
+    self.ce(10usize, 11usize, order);
+    self.ce(8usize, 10usize, order);
+    self.ce(9usize, 11usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(8usize, 12usize, order);
+    self.ce(10usize, 12usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(11usize, 12usize, order);
+    self.ce(0usize, 8usize, order);
+    self.ce(4usize, 12usize, order);
+    self.ce(4usize, 8usize, order);
+    self.ce(2usize, 10usize, order);
+    self.ce(6usize, 10usize, order);
+    self.ce(2usize, 4usize, order);
+    self.ce(6usize, 8usize, order);
+    self.ce(10usize, 12usize, order);
+    self.ce(1usize, 9usize, order);
+    self.ce(5usize, 9usize, order);
+    self.ce(3usize, 11usize, order);
+    self.ce(7usize, 11usize, order);
+    self.ce(3usize, 5usize, order);
+    self.ce(7usize, 9usize, order);
+    self.ce(1usize, 2usize, order);
+    self.ce(3usize, 4usize, order);
+    self.ce(5usize, 6usize, order);
+    self.ce(7usize, 8usize, order);
+    self.ce(9usize, 10usize, order);
+    self.ce(11usize, 12usize, order);
+  }
+
+  // The leaf of the unstable sort, for up to 20 elements. An element of 8 bytes or less starts
+  // with a network of compare-exchanges on its first 13 (or 9) elements, which does not wait
+  // on a comparison's result as insertion does, then inserts the rest; a larger element is
+  // sorted by insertion alone (a move costs it more than a mispredicted branch)
+  fn leafSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    let n = self.len;
+    var i = 1usize;
+    if mem.sizeof[T]() <= 8usize {
+      if n >= 13usize { self.net13(order); i = 13usize; }
+      else if n >= 9usize { self.net9(order); i = 9usize; }
+    }
     while i < n {
       self.insertTail(i, order);
       i = i + 1usize;
@@ -1092,7 +1211,7 @@ pub struct @opaque Array[T] is GcTraceElements {
     while true {
       let v = mem.sliceFromPartsMut[T](base + start, n);
       if n <= 20usize {
-        v.insertionSortBy(order);
+        v.leafSortBy(order);
         return;
       }
       if limit == 0u32 {
@@ -1178,14 +1297,14 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
   }
 
-  // Put the elements in the order 'order' gives, in place, without allocating. Equal
-  // elements may change their order. A debug build panics if 'order' is not a consistent
+  // Put the elements in the order 'order' gives, in place, without allocating. The sort is
+  // unstable: equal elements may change their order. A debug build panics if 'order' is not a consistent
   // order (the result is not in order by it). Input that rises and then falls (an organ pipe)
   // is slower than List.sortBy takes: a quicksort loses to a sort that merges the runs it
   // finds on that pattern
   pub fn sortUnstableBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
     if self.len <= 20usize {
-      self.insertionSortBy(order);
+      self.leafSortBy(order);
     }
     else {
       self.pdqSort(order, null, true, self.splitLimit());

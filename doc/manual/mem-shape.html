@@ -650,6 +650,45 @@ fn growFromRo(ed: &amp;mut Ed, src: &amp;Ed) {
 }
 </pre>
 
+	<h3 id="cures2">Pass a slice as a parameter</h3>
+	<p>The packages use one more arrangement, which is not a permission but lets the compiler see what it is shown.
+		A function is not asked about a slice it was handed: the call site that
+		made the slice answers for it. A function that takes the list (<span class="pre">&amp;List[u8]</span>) and
+		views it itself cannot show that the list is not its other argument. Taking the slice
+		(<span class="pre">&amp;Array[u8]</span>) moves that proof to the caller, which can give it where the list is its own local
+		(a caller handed a plain <span class="pre">&amp;List[u8]</span> beside a <span class="pre">&amp;mut</span> is refused
+		in its turn, for the same reason). The zstd package's
+		<span class="pre">emit</span> in <span class="pre">zstd/src/matcher.cone</span> takes
+		<span class="pre">src: &amp;List[u8]</span> beside <span class="pre">seqs: &amp;mut Seqs</span> and is the
+		kind of function this fits.</p>
+<pre>
+fn emit(src: &amp;List[u8], out: &amp;mut List[u8]) u8 {
+  let s = src.view();
+  out.push(1u8);                // Error 1339: out may be src
+  s[0usize]
+}
+
+fn emitSlice(src: &amp;Array[u8], out: &amp;mut List[u8]) u8 {
+  let first = src[0usize];
+  out.push(first);              // Ok: src is a slice parameter, and is not asked about here
+  src[0usize]
+}
+
+fn caller(out: &amp;mut List[u8]) u8 {
+  var src = List[u8]();
+  src.push(9u8);
+  emitSlice(src.view(), out)    // the caller made the slice, so the caller answers for it
+}
+
+fn callerOwn(out: &amp;mut List[u8]) u8 {
+  emitSlice(out.view(), out)    // Error 1339: the slice is into out, which emitSlice pushes to
+}
+</pre>
+	<p>No rule that tells two fields apart is coming for two references that may be one value (two parameters,
+		or <span class="pre">self</span> and a parameter, as in the zstd matcher's <span class="pre">emit</span> or a
+		list appended to itself). Those are what the three cures above are for: <span class="pre">&amp;imm</span>,
+		<span class="pre">&amp;uni</span>, or a copy.</p>
+
 	<h2 id="shapekeeping">Calls through a virtual reference: ShapeKeeping</h2>
 	<p>Rarely needed, but it decides whether a visitor or a callback can be called while a collection is borrowed. A call
 		through a virtual reference, <span class="pre">&amp;&lt;fn(x: &amp;mut World)</span> or

@@ -1,0 +1,72 @@
+// An archive larger than the buffer pool's bound (64 MiB), made of five 16 MiB entries and drained from the writer
+// as it grows, fed whole to a reader in one call: the reader holds a bounded amount, so the feed is refused
+// with TooLarge, never a panic. Fed in pieces with pulls between, the same archive reads back whole.
+
+mod bigarchive;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import tarfile use *;
+
+fn drain(w: &mut TarWriter, all: &mut List[u8]) {
+  var buf = IoBuf(1048576usize);
+  var s = Status.MoreOutput;
+  while s == Status.MoreOutput {
+    buf.clear();
+    s = w.pull(&mut buf, 1048576usize);
+    all.appendSlice(buf.view());
+  }
+}
+
+fn main() i32 {
+  let n = 16777216usize;
+  var body = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n { body.push(u8.from((i / 5usize + i / 4093usize) % 251usize)); i += 1usize; }
+  var w = TarWriter.make();
+  var arch = List[u8]();
+  var k = 0usize;
+  while k < 5usize {
+    var name = String.from("e");
+    name.appendUInt(u64.from(k));
+    expect(w.add(name.view(), body.view(), &EntryOptions.plain()) is Ok, "add a 16 MiB entry");
+    drain(&mut w, &mut arch);
+    k += 1usize;
+  }
+  w.finish();
+  drain(&mut w, &mut arch);
+  expect(arch.len() > 67108864usize, "the archive is over the pool bound");
+
+  var whole = TarReader.make();
+  whole.feed(arch.view());
+  whole.finish();
+  match whole.error() {
+    case let Some(e) { expect(e.kind == ErrorKind.TooLarge, "a whole archive fed at once is refused as TooLarge"); }
+    case is None { expect(false, "a whole archive over the held bound is refused"); }
+  }
+
+  var tar = TarReader.make();
+  var out = IoBuf(1048576usize);
+  var at = 0usize;
+  var files = 0usize;
+  var bytes = 0usize;
+  var fin = false;
+  while !fin {
+    let st = tar.pull(&mut out);
+    if st == Step.NeedInput {
+      if at >= arch.len() { tar.finish(); }
+      else {
+        let m = if arch.len() - at < 1048576usize { arch.len() - at } else { 1048576usize };
+        tar.feed(&arch.view()[at ..< at + m]);
+        at += m;
+      }
+    } else if st == Step.Begin { files += 1usize; }
+    else if st == Step.Data { bytes += out.len(); out.clear(); }
+    else if st == Step.Done || st == Step.Failed { fin = true; }
+  }
+  expect(tar.error() is None, "the pieces read without a failure");
+  expectInt(i64.from(files), 5i64, "five entries");
+  expectInt(i64.from(bytes), i64.from(5usize * n), "all the data");
+  done()
+}
