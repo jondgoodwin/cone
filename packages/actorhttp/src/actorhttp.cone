@@ -401,10 +401,13 @@
 // most the credit window of a body and 'maxBody' means nothing to it; 'readAll' past its limit has the
 // server answer 413 itself and discard the rest. A body whose actor answers without taking it, or drops
 // it, is not delivered: its staged bytes are released and the rest is read and dropped as it arrives
-// (HTTP/1.1 also closes the connection after the answer; an HTTP/2 or HTTP/3 stream runs on until the
+// (an HTTP/1.1 connection reads up to 256 KiB of it past the answer and is kept if the body ends inside that,
+// else it closes; an HTTP/2 or HTTP/3 stream runs on until the
 // client ends it, unless the response is whole and the body is not wanted: then an HTTP/2 stream is reset with
-// NO_ERROR and an HTTP/3 client is asked to stop with STOP_SENDING H3_NO_ERROR, #1075 and #1085; a handler
-// still holding the body is unaffected, its reads end with End). A sink that stops its source
+// NO_ERROR and an HTTP/3 client is asked to stop with STOP_SENDING H3_NO_ERROR, #1075 and #1085). A handler
+// still holding the body is unaffected on every protocol, even HTTP/1.1: its reads deliver every byte and end
+// with End, however late it reads (TCP back-pressure and the body timeout bound the wait); if the connection
+// closes first, its Err names why (the peer left, a deadline). A sink that stops its source
 // ends the request on the wire (HTTP/1.1 closes, HTTP/2 RST_STREAM, HTTP/3 resets). A server without
 // the setting is unchanged. 'read' and 'readAll' copy the bytes into Strings (use 'to(sink)' for a big
 // body); their Err is a BodyError (kind() TooLarge, Cancelled, Failed; isTooLarge()), the server's own,
