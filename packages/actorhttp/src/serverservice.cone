@@ -55,8 +55,8 @@ struct ExRec {
   sinkFailed: bool;            // its pipeline was stopped or the body failed: chunks arriving go straight back
   sinkEnded: bool;             // its 'end(Finished)' has come: finish the body once the chunks are sent
   sinkUp: Option[ChunkSource]; // the source feeding it
-  sinkChunks: Deque[IoBuf];    // chunks arrived, whose bytes the connection has not all taken
-  sinkOff: usize;              // ...of the first, how many it has taken
+  sinkChunks: Deque[IoBuf];    // chunks arrived, not yet taken by the connection (a refused one waits at the front)
+  sinkHome: Option[IoHome];    // the source's home: a chunk sent carries it, and its death returns the credit
   sinkIn: u64;                 // body bytes the sink has been given, for the declared length
   sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
   // The request's body as a stream (ServerConfig.streamBodies; requestbody.cone). 'inMode' says the exchange is
@@ -80,10 +80,13 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
-    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false,
+    sinkChunks: Deque[IoBuf](), sinkHome: None[IoHome], sinkIn: 0u64, sinkGone: false,
     inMode: false, inAwait: false, inContinue: false, inEnded: false, inDiscard: false, inRefused: false,
     inSink: None[ChunkSink], inKept: None[Ending], inLend: newLend())
 }
+
+// A server's exchanges, in a pool of its own
+alias Exchanges = GenPool[ExRec];
 
 // A listening server the service owns: its own driver (so its bounds are its
 // own), its listener, its requests, those waiting for an actor and the actors
@@ -99,7 +102,7 @@ struct SrvRec {
   streamBodies: bool;         // requests are delivered at their heads (requestbody.cone)
   drv: httpconn.Driver;
   listener: httpconn.ListenerId;
-  exs: SlotTable[ExRec];
+  exs: Exchanges;
   byReq: Dict[u64, usize];    // a request's key (its number on the driver, or h3Key's) to its slot
   reading: Dict[u64, Request];   // a request's key to the request being read in
   ready: Deque[ReadyEx];      // the requests whole and waiting for an actor
@@ -145,6 +148,7 @@ struct SrvEv {
   head: RequestHead;
   framing: BodyLength;
   buf: IoBuf;
+  why: httpclient.Failure;   // a final answer's failure from the driver, with a detail when it names why a body ended early
 }
 
 // The layers of a TLS listener's connections: a server session each, from one context
@@ -210,9 +214,10 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: httpconn.Event) {
   else if k == httpconn.EventKind.Done {kind = sDone;}
   else if e.isTerminal() {kind = sOver;}
   if kind == sOther {return;}
+  let why = if kind == sDone || kind == sOver {httpclient.Failure.fromConn(&e.failure)} else {httpclient.Failure.none()};
   let req, conn, framing, head, buf = e.(req, conn, body, request, buf);
   let peer = if kind == sRequest {srv.drv.peer(conn)} else {SocketAddr.localhost(0u16)};
-  onSrvEv(srv, lp, SrvEv(kind, req.number(), req, httpclient.H3Req.none(), peer, head, framing, buf));
+  onSrvEv(srv, lp, SrvEv(kind, req.number(), req, httpclient.H3Req.none(), peer, head, framing, buf, why));
 }
 
 // An event of the server's HTTP/3 plug-in, the same way: each request has a
@@ -247,7 +252,7 @@ fn onH3ServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: httpclient.H3Event) {
   if kind == sDone || kind == sOver {let gone = srv.qkeys.remove(&qk);}
   let peer = if kind == sRequest {srv.h3.peer(e.conn)} else {SocketAddr.localhost(0u16)};
   let framing, head, buf = e.(body, request, buf);
-  onSrvEv(srv, lp, SrvEv(kind, key, httpconn.ReqId.none(), q, peer, head, framing, buf));
+  onSrvEv(srv, lp, SrvEv(kind, key, httpconn.ReqId.none(), q, peer, head, framing, buf, httpclient.Failure.none()));
 }
 
 // A request's event, from either driver: a request's head goes whole into
@@ -332,7 +337,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
     }
   } else if k == sDone || k == sOver {
     let slot = slotOfKey(srv, key);
-    if slot < srv.exs.bound() {endEx(srv, slot, k == sDone);}
+    if slot < srv.exs.bound() {endEx(srv, slot, k == sDone, &e.why);}
     srv.byReq.remove(&key);
     srv.reading.remove(&key);
   }
@@ -355,6 +360,12 @@ fn srvRespond(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: Body
     h.headers.add("Alt-Svc", a.view());
   }
   srv.drv.respond(x.req, h, framing);
+}
+
+// Body bytes, moved in: None when taken, or the buffer back when the connection refuses it (Writable comes
+// when there is room)
+fn srvSendBuf(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) Option[IoBuf] {
+  if x.onH3 {srv.h3.sendData(x.qreq, b)} else {srv.drv.sendData(x.req, b)}
 }
 
 // Body bytes: whether they were taken (else Writable comes when there is room)
@@ -380,8 +391,9 @@ fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
 // whole: over HTTP/2 the stream is reset with NO_ERROR (RFC 9113 section 8.1), over HTTP/3 the client is asked
 // to stop with STOP_SENDING H3_NO_ERROR (RFC 9114 section 4.1), so it stops sending. It is called at the
 // response's end and at the drop, and does its work at whichever comes second. A handler still holding the
-// body (it reads it, it is staged for it) is not affected: its reads end with End. HTTP/1.1 gets false from
-// the driver (the core closes the connection after the answer)
+// body (it reads it, it is staged for it) is not affected: its reads end with End, on HTTP/1.1 too (the
+// connection keeps reading it). On HTTP/1.1 the driver reads the dropped body out instead, up to 256 KiB,
+// and keeps the connection if it ends inside that
 fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
   if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
   if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
@@ -455,7 +467,7 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
 }
 
 // The request's final answer has come
-fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
+fn endEx(srv: &mut SrvRec, slot: usize, done: bool, why: &httpclient.Failure) {
   let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   x.over = true;
   x.ok = done;
@@ -477,7 +489,7 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
   } else {
     answerKeptIn[Result[u64, ServerError]](&mut x.finishReply, Err[u64, ServerError](ServerError.closed()));
   }
-  if x.inMode {inTerminal(srv, x);}
+  if x.inMode {inTerminal(srv, x, why);}
   if x.stage == exReady {
     x.stage = exDead;
   } else if !x.handle && !x.inAwait {
@@ -546,9 +558,10 @@ fn onStreamedData(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
 
 // The request's final answer has come: a sink still open gets its end (the peer left, or the pool refused
 // a staging buffer); one that is yet to be chosen is told when it is
-fn inTerminal(srv: &mut SrvRec, x: &mut ExRec) {
+fn inTerminal(srv: &mut SrvRec, x: &mut ExRec, why: &httpclient.Failure) {
   if x.inEnded || x.inDiscard {return;}
   let how = if x.inRefused {Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure())))}
+    else if why.error.detail.len() > 0usize {Ending.Failed(AnyError.from(FetchError.failed(why.clone())))}
     else {Ending.Failed(AnyError.from(FetchError.failed(
       httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the request ended before its body did"))))};
   x.inEnded = true;
@@ -732,7 +745,7 @@ struct ListenJob {
         }
         let id = newId();
         sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, streamBodies, drv, l,
-          SlotTable[ExRec].make(16u32), Dict[u64, usize](), Dict[u64, Request](),
+          Exchanges.make(16u32), Dict[u64, usize](), Dict[u64, Request](),
           Deque[ReadyEx](), Deque[actors.ReplyOf[Result[Exchange, ServerError]]](), 0usize, h3, h3on, h3listener, altSvc,
           Dict[QKey, u64](), 1u64, Deque[actors.ReplyOf[bool]]()));
         rp.answer(Ok[Server, ServerError](Server(id, bound, secure, h3on)));

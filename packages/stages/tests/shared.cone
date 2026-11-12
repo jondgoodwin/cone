@@ -101,7 +101,14 @@ actor Counting is ChunkSink {
         case let Chunk(b) {
           n = n + 1u64;
           if slot == 2usize && n % 7u64 == 0u64 {
-            let r = await aio.sleep(Duration.fromMillis(1i64));
+            // wait until the next chunk has arrived and queued behind this one
+            // (1 ms at a time, at most 5 s): how soon the stage upstream sends
+            // it is not promised, so a fixed wait would not always see one
+            var tries = 0u64;
+            while rx.queued() == 0usize && tries < 5000u64 {
+              let r = await aio.sleep(Duration.fromMillis(1i64));
+              tries = tries + 1u64;
+            }
           }
           s.bytes.add(u64.from(b.len()));
           turn = rx.finished(b);
