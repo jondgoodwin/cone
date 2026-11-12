@@ -18,13 +18,18 @@
 // never written as a PAX or GNU long-name record. The archive ends with two blocks of zeros.
 //
 // THE BOUND. 'add' copies an entry into the writer whole, and the writer's pooled buffer panics past the pool's
-// 64 MiB bound, so an entry of more than 16 MiB is TooLarge. Pull before the next add, since what is not pulled is
-// held. The way past the bound is not built yet: an 'add' that takes the size up front and then pulls the data in
+// 64 MiB bound, so an entry of more than 16 MiB is TooLarge. What is not pulled is held, and the held bytes count
+// against the same bound: an 'add' that would take the bytes held (headers and padding too) past 48 MiB, three
+// entries' worth, is TooLarge as well, and the caller pulls and adds again. The way past the bound is not built yet: an 'add' that takes the size up front and then pulls the data in
 // pieces, which ustar allows because its header needs only the size first. Real archives hold larger files, so
 // that is the next tarfile PR.
 
 // The most data one entry may carry
 let maxEntry: usize = 16777216usize;
+
+// The most the writer may hold, made and not yet pulled: 48 MiB, which leaves the pool's 64 MiB bound room for the
+// copy 'pull' makes when it moves what was made on to the chain
+let maxHeld: usize = 50331648usize;
 
 // Whether a name could be a ustar name field and prefix field, and where it splits: None, or the offset of the '/'
 // where the prefix ends (0 for no prefix at all)
@@ -68,9 +73,10 @@ pub struct TarWriter is Move {
   ready: Chain;
   finished: bool;
   added: usize;
+  held: usize;
 
   pub fn make() TarWriter {
-    TarWriter(Writer.make(65536usize), Chain.make(0xFFFFFFFFFFFFFFFFusize), false, 0usize)
+    TarWriter(Writer.make(65536usize), Chain.make(0xFFFFFFFFFFFFFFFFusize), false, 0usize, 0usize)
   }
 
   // How many entries have been added
@@ -78,10 +84,14 @@ pub struct TarWriter is Move {
 
   pub fn isFinished(self: &) bool { finished }
 
-  // Adds a regular file
+  // Adds a regular file. TooLarge if the data is over 16 MiB, or if the bytes made and not yet pulled, with this
+  // entry, would pass 48 MiB: pull, then add again.
   pub fn add(self: &mut, name: &str, data: &Array[u8], opts: &EntryOptions) Result[void, TarError] {
     if data.len > maxEntry {
       return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "is larger than 16 MiB, the most one entry may carry").view());
+    }
+    if held + 512usize + data.len + padFor(u64.from(data.len)) > maxHeld {
+      return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "would take the bytes held and not pulled past 48 MiB, pull first").view());
     }
     self.entry(name, false, data, opts)
   }
@@ -145,9 +155,11 @@ pub struct TarWriter is Move {
     h.setNum[u8](155usize, 32u8, false);
 
     w.put(h.view());
+    held += 512usize;
     if data.len > 0usize {
       w.put(data);
       w.repeat(0u8, padFor(u64.from(data.len)));
+      held += data.len + padFor(u64.from(data.len));
     }
     added += 1usize;
     Ok[void, TarError](nil)
@@ -157,6 +169,7 @@ pub struct TarWriter is Move {
   pub fn finish(self: &mut) {
     if finished { return; }
     w.repeat(0u8, 1024usize);
+    held += 1024usize;
     finished = true;
   }
 
@@ -184,6 +197,7 @@ pub struct TarWriter is Move {
       let before = dst.len();
       let k = ready.copyOut(0usize, &mut dst.spare()[0usize ..< n]);
       ready.advance(k);
+      held -= if k < held { k } else { held };
       dst.setLen(before + k);
     }
     if ready.len() > 0usize { Status.MoreOutput } else if finished { Status.Done } else { Status.NeedInput }
