@@ -261,7 +261,8 @@ fn closing() {
     expect(!c.canSendRequest(), "and no request may follow");
   }
   {
-    // A request whose body the server answers before reading: both close
+    // A request whose body the server answers before reading: the server keeps reading the body, the client
+    // (its body abandoned) closes, and the server then ends in the middle of the body
     var c = Connection.client(Config.make(), at());
     var s = Connection.server(Config.make(), at());
     var sv = Serving(String(), false, String(), 0u64);
@@ -269,11 +270,14 @@ fn closing() {
     c.sendRequest(RequestHead.make("POST", "/early", "h"), BodyLength.sized(100000u64));
     pump(&mut c, &mut s);
     serve(&mut s, &mut sv);
-    expect(s.isClosed(), "the server answered before the body: it will close");
+    expect(!s.isClosed(), "the server answered before the body: it keeps reading it");
     pump(&mut c, &mut s);
     read(&mut c, &mut g);
     expect(g.status == 413u16 && g.ended, "the client reads the early answer");
     expect(c.isClosed(), "and closes: its body is abandoned");
+    s.handleInput(IoBuf(), at());
+    serve(&mut s, &mut sv);
+    expect(s.isClosed(), "the peer left in the middle of the body: the server ends");
     var refused = false;
     match c.sendData(fill(0u64, 100usize)) {
       case is Some {refused = true;}

@@ -1,0 +1,70 @@
+// The compressor's output is held in pool buffers (a fallible Writer), so a pool with no room for it
+// is a value, never a panic: the pull answers Failed, 'failure' says why, and a later deflater is fine.
+//   - with the pool used up, the first block of output is refused;
+//   - with room for one block only, a pull that wants more than that is refused part-way.
+
+mod bigpull;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+
+// Takes every block the pool will give, of 64 KiB
+fn exhaust(held: &mut List[IoBuf]) {
+  while true {
+    match IoBuf.tryMake(65536usize) {
+      case var Some(b) { held.push(b); }
+      case is None[IoBuf] { return; }
+    }
+  }
+}
+
+fn data(n: usize) List[u8] {
+  var d = List[u8]();
+  d.reserve(n);
+  var x = 12345u32;
+  var i = 0usize;
+  while i < n { x = x * 1103515245u32 + 12345u32; d.push(u8.from((x >> 16u32) & 255u32)); i += 1usize; }
+  d
+}
+
+fn main() i32 {
+  let input = data(1048576usize);
+  // The output buffers, taken before the pool is used up
+  var room1 = IoBuf(1048576usize);
+  var room2 = IoBuf(1048576usize);
+  var held = List[IoBuf]();
+  exhaust(&mut held);
+  expect(held.len() > 0usize, "the pool gave blocks");
+
+  // No room at all
+  var a = Deflater.make(Format.Gzip, 0);
+  a.feed(input.view());
+  a.finish();
+  let sa = a.pull(&mut room1);
+  expect(sa == Status.Failed, "no pool room: the pull fails");
+  expect(a.failure().isTrue(), "no pool room: failure says why");
+  expect(a.pull(&mut room1) == Status.Failed, "a pull after the failure is no harm");
+  a.feed(input.view());
+
+  // Room for one block: stored blocks of 64 KiB, so the second is refused
+  _ = held.pop();
+  var b = Deflater.make(Format.Raw, 0);
+  b.feed(input.view());
+  b.finish();
+  let sb = b.pull(&mut room2);
+  expect(sb == Status.Failed, "room for one block: the pull fails part-way");
+  expect(b.failure().isTrue(), "room for one block: failure says why");
+
+  // Given the room back, a deflater compresses it all
+  held.clear();
+  var c = Deflater.make(Format.Raw, 6);
+  c.feed(input.view());
+  c.finish();
+  var out = IoBuf(1048576usize + 65536usize);
+  var sc = Status.MoreOutput;
+  while sc == Status.MoreOutput { out.clear(); sc = c.pull(&mut out); }
+  expect(sc == Status.Done, "with the pool back, the stream is Done");
+  done()
+}

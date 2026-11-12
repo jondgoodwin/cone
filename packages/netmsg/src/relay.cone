@@ -95,18 +95,19 @@ actor Relay {
     while !stopped && failures <= relayMaxFailures {
       let r = await front.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
       var client = SocketAddr.localhost(0u16);
-      var data = List[u8]();
+      var data = IoBuf();
       var got = false;
-      match &r {
-        case let &Ok(ok) {
-          client = ok.from;
-          data = copyBytes(ok.buf.view());
+      match r {
+        case let Ok(dg) {
+          let buf, from = dg.(buf, from);
+          client = from;
+          data = buf;
           got = true;
           failures = 0u32;
         }
-        case let &Err(e) {
-          if aio.isCancelled(*e) {return;}
-          if !aio.isTruncated(*e) {failures = failures + 1u32;}
+        case let Err(e) {
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
         }
       }
       if got && !stopped {
@@ -141,17 +142,17 @@ actor Relay {
     var failures = 0u32;
     while !stopped && n < legs.len() && failures <= relayMaxFailures {
       let r = await legs[n].up.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
-      match &r {
-        case let &Ok(ok) {
+      match r {
+        case let Ok(dg) {
           failures = 0u32;
           if !stopped && n < legs.len() {
-            legs[n].toClient.send(Instant.now(), copyBytes(ok.buf.view()));
+            legs[n].toClient.send(Instant.now(), dg.(buf));
             self.deliver();
           }
         }
-        case let &Err(e) {
-          if aio.isCancelled(*e) {return;}
-          if !aio.isTruncated(*e) {failures = failures + 1u32;}
+        case let Err(e) {
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
         }
       }
     }
@@ -166,14 +167,12 @@ actor Relay {
   }
 
   // One datagram out of leg n: to the server (upstream) or to the client
-  async fn out(self, n: usize, upstream: bool, data: List[u8]) {
+  async fn out(self, n: usize, upstream: bool, data: IoBuf) {
     if stopped || n >= legs.len() {return;}
-    var b = IoBuf(data.len().max(1usize));
-    b.append(data.view());
     if upstream {
-      let r = await legs[n].up.sendTo(server, b);
+      let r = await legs[n].up.sendTo(server, data);
     } else {
-      let r = await front.sendTo(legs[n].client, b);
+      let r = await front.sendTo(legs[n].client, data);
     }
   }
 
@@ -191,7 +190,7 @@ actor Relay {
   fn deliver(self) {
     if stopped {return;}
     let now = Instant.now();
-    var d = List[List[u8]]();
+    var d = Packets();
     var i = 0usize;
     while i < legs.len() {
       legs[i].toServer.deliver(now, &mut d);

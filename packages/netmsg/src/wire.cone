@@ -1,8 +1,13 @@
 // Bytes on the wire: how every number in a packet is written and read, the
 // comparison of sequence numbers that wrap, and the keyed hash that makes a
-// connection challenge. Plain functions over byte lists; no I/O, no clock.
+// connection challenge. No I/O, no clock.
 //
 // Numbers go in network byte order: the most significant byte first.
+//
+// The packets and datagrams of the protocol itself are built with streams.Writer
+// (putBE and the slots) and parsed with streams.ByteCursor. The putU* functions
+// and PacketReader below are for the application's own messages, which are
+// byte lists (NetEvent.Message and Update carry a List[u8]).
 
 // ---------------------------------------------------------------------------
 // Writing
@@ -30,20 +35,12 @@ pub fn putU64(out: &mut List[u8], v: u64) {
 }
 
 pub fn putBytes(out: &mut List[u8], data: &Array[u8]) {
-  var i = 0usize;
-  while i < data.len {
-    out.push(data[i]);
-    i = i + 1usize;
-  }
+  out.appendSlice(data);
 }
 
 // n zero bytes
 pub fn putZeros(out: &mut List[u8], n: usize) {
-  var i = 0usize;
-  while i < n {
-    out.push(0u8);
-    i = i + 1usize;
-  }
+  out.resize(out.len() + n, 0u8);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +106,7 @@ pub struct PacketReader {
       ok = false;
       return out;
     }
-    var i = 0usize;
-    while i < n {
-      out.push(data[pos + i]);
-      i = i + 1usize;
-    }
+    out.appendSlice(&data[pos ..< pos + n]);
     pos = pos + n;
     out
   }
