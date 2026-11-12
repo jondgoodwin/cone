@@ -1738,7 +1738,10 @@ locals, which only a call that reaches one of them is asked of):
   (`loanPlaceInGlobal`: by the name, or through a reference whose own loans were of one, as the
   `[]` of `gl.items[0usize].label.view()` leaves in its stand-in), and `pwShapeLent` marks such a
   loan for the check though its path is not shared (it still freezes against the same name, as any
-  unmarked loan of a path does). `reshapeCall` asks the ordinary check first, then, for such a loan,
+  unmarked loan of a path does). Every kind of loan is marked, an exclusive `&mut gl[0usize]` too
+  (Bug 89: it was left to its own freezing, which stops only the global's name in this function,
+  never a callee that writes the global by name; `collection_flow_reshape_global_excl`).
+  `reshapeCall` asks the ordinary check first, then, for such a loan,
   answers yes to a call that is not exempt (`reshapeExempt`: an intrinsic, an init, `+ ShapeKeeping`)
   when its code is unknown (a virtual call or a call of a function value, a `&fn` held in a field,
   parameter, global or local; an `extern` C function handed anything whose type can reach something
