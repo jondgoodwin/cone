@@ -1,0 +1,195 @@
+// ======== Layer 3, the pipe end for input: PipeSink writes a stream to a child's standard input ========
+//
+// A ChunkSink over package aio's Pipe, the edge where iocore's Op.PipeWrite moves an IoBuf (PR 5 of the pipe op): the
+// chunk is written as it is, with no copy, and goes back to its source when the write is done.
+//
+//   let sink = PipeSink(done);          // done: OneshotSender[Result[u64, AnyError]], told once: the bytes written, or why not
+//   let c = ChildStages(out, err, exit, Some[PipeSink](sink));   // the child's stdin is the sink's pipe (pipesource.cone)
+//   let src = FileSource(sink, "in.bin");                        // any source feeds it
+//   sink.startOn(pipe)                  // for a pipe the program already has (a child's stdin end, adopted by aio.adoptPipe)
+//
+// The pipe comes after the sink and its source (a ChildStages launches the child, then gives the sink its pipe): chunks that
+// arrive before it are held, one in hand and the rest queued by the ChunkInbox, which also holds the source's credit, so the
+// source stops sending when its window is full. When the pipe is given the held chunks are written in order.
+//
+// THE END. When the stream ends Finished the pipe is closed, so the child sees the end of its input, and 'done' gets Ok(bytes).
+// A stream that ends Failed closes it too and 'done' gets the error.
+//
+// WHEN IT FAILS. A write that fails (the child exited or closed its stdin without reading all: a broken pipe), a group that
+// is cancelled, or a pipe that could not be made (startOn given Pipe.none(), which a ChildStages does when the child could not
+// be set up): the chunk in hand and the queue go back unhandled, the pipe is closed, the source is told to stop (ChunkSource.stop,
+// once), and 'done' gets the error. A child that exits without reading its input therefore does not leave the source or
+// the sink hanging; nor does the sink stop the child (the exit is ChildStages' own value).
+//
+// BACK-PRESSURE AND DEADLOCK. A write waits on the pipe's capacity while the child does not read, and holds no thread of the pool
+// (the I/O thread's Loop completes it). The sink works in its own actor, apart from the PipeSources reading the child's output
+// and error, so a child that writes a lot while we write a lot is not held up by us: our reads go on whatever our writes wait on.
+//
+// CANCELLATION. The write in flight runs in a child group of the group the sink works in, so a cancel ends it ('done' gets
+// "streams: cancelled"), and the buffer goes home to its pool.
+
+// Why a sink given Pipe.none() fails, told to 'done' and to the source alike
+const noPipeWhy = "streams: the child's input pipe could not be made";
+
+// Writes a stream to a pipe, in order
+pub actor PipeSink is ChunkSink {
+  rx: ChunkInbox;
+  pipe: Pipe;
+  ready: bool;                  // startOn has been called
+  cur: Option[IoBuf];           // the chunk in hand, until it is written
+  going: bool;                  // the write loop is running
+  written: u64;
+  reported: bool;
+  done: OneshotSender[Result[u64, AnyError]];
+  up: Option[ChunkSource];      // to stop the source on a failure; let go at the source's end
+  ending: Option[Ending];       // the stream's end, arrived before the pipe with no chunk in hand
+
+  pub fn init(self: &new, done: OneshotSender[Result[u64, AnyError]]) {
+    *self = Self(rx: ChunkInbox.make(), pipe: Pipe.none(), ready: false, cur: None[IoBuf], going: false, written: 0u64,
+      reported: false, done: done, up: None[ChunkSource], ending: None[Ending]);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source.clone());
+    rx.attach(source);
+  }
+
+  // The pipe to write: Pipe.none() says there is none (the child could not be set up) and fails the sink at once: 'done' gets the error and
+  // the source is told to stop, whether or not a chunk has arrived
+  pub async fn startOn(self, p: Pipe) {
+    pipe = p;
+    ready = true;
+    var e = None[Ending];
+    e <-> ending;
+    match e {
+      case let Some(h) {
+        if pipe.isNone() {
+          self.report(Err[u64, AnyError](AnyError.msg(noPipeWhy)));
+        } else {
+          self.over(h);
+        }
+      }
+      case is None {
+        if pipe.isNone() && cur is None {
+          // no pipe and no chunk in hand for go to fail on: fail now, so the source is not left to send first
+          self.shut();
+          match &up {
+            case let &Some(u) { u.stop(Ending.Failed(AnyError.msg(noPipeWhy))); }
+            case is None {}
+          }
+          up = None[ChunkSource];
+          self.report(Err[u64, AnyError](AnyError.msg(noPipeWhy)));
+        } else {
+          selfactor.go();
+        }
+      }
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    match rx.arrive(c) {
+      case let Chunk(b) {
+        cur = Some[IoBuf](b);
+        selfactor.go();
+      }
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    match rx.arriveEnd(how) {
+      case let End(h) { if ready { self.over(h); } else { self.late(h); } }
+      else {}
+    }
+  }
+
+  // Writes the chunk in hand, and those queued after it, once the pipe is known
+  pub async fn go(self) {
+    if going || !ready { return; }
+    going = true;
+    var more = true;
+    while more {
+      var held = None[IoBuf];
+      held <-> cur;
+      match held {
+        case is None { more = false; }
+        case let Some(b) {
+          var good = true;
+          var why = None[AnyError];
+          var cb = b;
+          if actors.isCancelled() {
+            good = false;
+            why = Some[AnyError](AnyError.msg("streams: cancelled"));
+          } else if pipe.isNone() {
+            good = false;
+            why = Some[AnyError](AnyError.msg(noPipeWhy));
+          }
+          if good && cb.len() > 0usize {
+            // the write takes the chunk and answers with it; a failed write loses it, so the source's credit is given
+            // back with an empty buffer of the same capacity (as FileSink does)
+            let n = cb.len();
+            let cap = cb.capacity();
+            let g = actors.currentGroup().child();
+            let w = await pipe.writeIn(cb, IoLimits.within(g));
+            match w {
+              case let Ok(back) { cb = back; written = written + u64.from(n); }
+              case let Err(e) { cb = IoBuf(cap); good = false; why = Some[AnyError](AnyError.from(e)); }
+            }
+          }
+          if good {
+            match rx.finished(cb) {
+              case let Chunk(n) { cur = Some[IoBuf](n); }
+              case let End(h) { self.over(h); more = false; }
+              case is Wait { more = false; }
+            }
+          } else {
+            rx.fail(cb);
+            self.shut();
+            var reason = AnyError.msg("streams: the pipe sink failed");
+            match &why {
+              case let &Some(e) { reason = textOf(e); }
+              case is None {}
+            }
+            match &up {
+              case let &Some(u) { u.stop(Ending.Failed(reason)); }
+              case is None {}
+            }
+            match why {
+              case let Some(e) { self.report(Err[u64, AnyError](e)); }
+              case is None { self.report(Err[u64, AnyError](AnyError.msg("streams: the pipe sink failed"))); }
+            }
+            more = false;
+          }
+        }
+      }
+    }
+    going = false;
+  }
+
+  // The pipe is closed: the child sees the end of its input
+  fn shut(self) {
+    var old = Pipe.none();
+    old <-> pipe;
+  }
+
+  // The stream's end, handled
+  fn over(self, how: Ending) {
+    self.shut();
+    match how {
+      case is Finished { self.report(Ok[u64, AnyError](written)); }
+      case let Failed(e) { self.report(Err[u64, AnyError](e)); }
+    }
+  }
+
+  // The end arrived before the pipe: it waits for the pipe, which is then closed at once
+  fn late(self, how: Ending) {
+    ending = Some[Ending](how);
+  }
+
+  fn report(self, r: Result[u64, AnyError]) {
+    if reported { return; }
+    reported = true;
+    done.send(r);
+  }
+}

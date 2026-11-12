@@ -135,6 +135,14 @@ pub struct HeadsetOptions {
   pub mirrorWindow: usize = 0usize;
   pub mirrorWidth: u32 = 0u32;
   pub mirrorHeight: u32 = 0u32;
+  // Ask for VK_KHR_fragment_shading_rate's attachment rates on the headset's device (foveation.cone), if the GPU
+  // offers them. Not offered, or refused by the runtime's device creation, the device is made without, one line
+  // says so, and 'Headset.foveated' is false.
+  pub foveation: bool = false;
+  // Ask for ray queries and acceleration structures (VK_KHR_ray_query, VK_KHR_acceleration_structure) on the headset's device,
+  // if the GPU has them, alongside foveation's extension. Not offered, or refused by the runtime's device creation, the device
+  // is made without, one line says so, and the HeadsetGpu's 'device.rayTracing' is false.
+  pub rayTracing: bool = false;
 }
 
 // The GPU a headset's runtime chose and the program draws with: made by
@@ -372,6 +380,7 @@ pub struct Headset is Default {
   buttonDown: Array[bool, 8] = [false, false, false, false, false, false, false, false];   // last frame's, hand * 4 + button
   syncs: u64 = 0u64;                // xrSyncActions calls so far
   syncFailures: u64 = 0u64;         // of them, the ones that failed
+  pub foveated: bool = false;       // the device has the fragment shading rate (HeadsetOptions.foveation, and the GPU offered it)
 
   // No headset: what a field holds before one is opened for it (not valid)
   pub fn none() Headset { Headset() }
@@ -514,10 +523,31 @@ pub struct Headset is Default {
       gpu.instance.requestAdapterFor(physical)
     };
     if !gpu.adapter.isValid() { return; }
-    gpu.device = if mirroring { gpu.adapter.requestDeviceViaWindow(&makeVkDevice, &maker as *u8) } else {
-      gpu.adapter.requestDeviceVia(&makeVkDevice, &maker as *u8)
-    };
+    // (With foveation asked for: the extension is added to the device the program asks the runtime to make, only if
+    // the GPU offers it; if the runtime refuses that device, or the GPU lacks the extension, it is made without it.)
+    var askRate = options.foveation;
+    if askRate && !gpu.adapter.fragmentShadingRateSupport().supported {
+      logLine("render: foveation: the GPU does not offer fragment shading rates from an attachment; no foveation");
+      askRate = false;
+    }
+    var askRay = options.rayTracing;
+    if askRay && !gpu.adapter.supportsRayTracing() {
+      logLine("render: ray queries: the GPU does not offer them; no ray tracing on the headset's device");
+      askRay = false;
+    }
+    gpu.device = gpu.adapter.requestDeviceVia(&makeVkDevice, &maker as *u8, mirroring, DeviceFeatures(askRate, askRay));
+    if !gpu.device.isValid() && askRay {
+      logLine("render: ray queries: the device could not be made with them; made without, no ray tracing");
+      askRay = false;
+      gpu.device = gpu.adapter.requestDeviceVia(&makeVkDevice, &maker as *u8, mirroring, DeviceFeatures(askRate, false));
+    }
+    if !gpu.device.isValid() && askRate {
+      logLine("render: foveation: the device could not be made with VK_KHR_fragment_shading_rate; made without it, no foveation");
+      askRate = false;
+      gpu.device = gpu.adapter.requestDeviceVia(&makeVkDevice, &maker as *u8, mirroring, DeviceFeatures());
+    }
     if !gpu.device.isValid() { return; }
+    foveated = gpu.device.fragmentShadingRate;
 
     // The session on that device
     let binding = openxr.GraphicsBindingVulkanKHR(instance: gpu.instance.vulkanHandle(), physicalDevice: gpu.adapter.vulkanPhysicalDevice(),

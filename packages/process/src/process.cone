@@ -194,6 +194,7 @@ import collections use String, List;
 import path use Path;
 import env;
 import time;
+import thread;
 import ioerror use osKind;
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,7 @@ extern {
   fn @c(system) CreateNamedPipeW(name: *u16, openMode: u32, pipeMode: u32, instances: u32,
       outSize: u32, inSize: u32, timeout: u32, sa: *u8) usize;
   fn @c(system) CreateEventW(sa: *u8, manual: i32, initial: i32, name: *u16) usize;
+  fn @c(system) SetEvent(h: usize) i32;
   fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: &mut Overlapped) i32;
   fn @c(system) GetOverlappedResult(h: usize, ov: &mut Overlapped, got: &mut u32, block: i32) i32;
   fn @c(system) CancelIoEx(h: usize, ov: &mut Overlapped) i32;
@@ -305,6 +307,7 @@ const genericWrite = 0x40000000u32;
 const shareReadWrite = 3u32;                     // FILE_SHARE_READ | FILE_SHARE_WRITE
 const openExisting = 3u32;                       // OPEN_EXISTING
 const pipeAccessInbound = 1u32;                  // PIPE_ACCESS_INBOUND
+const pipeAccessOutbound = 2u32;                 // PIPE_ACCESS_OUTBOUND
 const flagOverlapped = 0x40000000u32;            // FILE_FLAG_OVERLAPPED
 const flagFirstInstance = 0x80000u32;            // FILE_FLAG_FIRST_PIPE_INSTANCE
 const pipeRejectRemote = 8u32;                   // PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS
@@ -626,6 +629,10 @@ pub struct Options {
   // as any program's does; false ends it here at once, with the exit code
   // the crash gives, and reports nothing (below, "A crash")
   pub crashReport: bool = true;
+  // For 'launch': give the child a pipe for its standard input, our end to be taken with 'Child.takeStdin'; false
+  // leaves it reading from NUL (/dev/null). Ignored by 'run' and 'runLine', and where 'inherit' is true (the child
+  // then shares this program's standard input)
+  pub stdin: bool = false;
 }
 
 // What a run gives back
@@ -708,7 +715,8 @@ const noEnd = 0xFFFFFFFFFFFFFFFFusize;
 
 // A child started by 'launch', still running or not: its standard output and standard error as the ends of two pipes of ours,
 // and the child itself, each as the operating system's raw value, so that a loop can take them over (iocore's
-// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is.
+// 'adoptPipe' for an end, 'adoptChild' for the process). Its standard input is NUL, as 'run''s is, unless 'Options.stdin' asks for a pipe
+// ('takeStdin': the same kind of end, but written to).
 //
 // - An end is OVERLAPPED on Windows (a HANDLE of a named pipe, to read with ReadFile and an OVERLAPPED) and a blocking
 //   descriptor on Linux (iocore's adoptPipe makes it non-blocking); 'noEnd' where the child inherited the stream instead.
@@ -724,6 +732,7 @@ pub struct Child {
   procId: u32;
   outEnd: usize;
   errEnd: usize;
+  inEnd: usize;        // our end of the child's standard input, or noEnd
   owned: bool;         // the Child still owns the process (takeProcess has not been called)
 
   // The child's process id
@@ -751,6 +760,14 @@ pub struct Child {
     e
   }
 
+  // Our end of its standard input (written to; the child sees end of input once it is closed), now the caller's to
+  // close or hand to a loop; 'noEnd' once taken, or unless 'Options.stdin' was true
+  pub fn takeStdin(self: &mut) usize {
+    let e = inEnd;
+    inEnd = noEnd;
+    e
+  }
+
   // The child itself (Windows: its process HANDLE, Linux: its pid), now the caller's: iocore's 'adoptChild' takes it
   // with the ownership its comment says
   pub fn takeProcess(self: &mut) usize {
@@ -762,6 +779,7 @@ pub struct Child {
     #if #os == .windows {
       closeIf(outEnd);
       closeIf(errEnd);
+      closeIf(inEnd);
       if owned {
         stop(job, proc);
         WaitForSingleObject(proc, infinite);
@@ -771,6 +789,7 @@ pub struct Child {
     } #else {
       if outEnd != noEnd { closeFd(i32.from(outEnd)); }
       if errEnd != noEnd { closeFd(i32.from(errEnd)); }
+      if inEnd != noEnd { closeFd(i32.from(inEnd)); }
       if owned {
         stopGroup(i32.from(proc), true);
         var status = 0i32;
@@ -788,9 +807,9 @@ pub struct Child {
 // in 'dir' as there. An Err is a program that could not be started. Its standard output and error come back as the
 // ends of pipes (the Child's 'takeStdout', 'takeStderr'), or are this program's own where 'opts.inherit' is true.
 //
-// WHICH OPTIONS APPLY. 'inherit' applies, as in 'run'. 'timeout' and 'crashReport' are IGNORED here, whatever they
-// are set to: the caller stops the child with 'kill' when it wants it stopped, and a crash goes to the system's
-// reporting.
+// WHICH OPTIONS APPLY. 'inherit' and 'crashReport' apply, as in 'run' (with 'crashReport: false' on Windows the child
+// is this program's debuggee, handled by a thread of its own that lasts as long as the child). 'timeout' is IGNORED
+// here, whatever it is set to: the caller stops the child with 'kill' when it wants it stopped.
 //
 // A DROPPED CHILD IS KILLED AND REAPED. When the returned Child dies with its process not given away, the child and
 // the programs it started are ended and waited for. This is unlike Rust's std::process::Child, which detaches. For a
@@ -820,9 +839,32 @@ pub fn launch(args: &Array[String], opts: Options = Options(), dir: &Path = "") 
   }
 }
 
+// 'launch' for a command line written out by hand, as 'runLine' is to 'run' ('cmd /c ...' on Windows; on POSIX the shell's
+// '/bin/sh -c' line). The same options apply as for 'launch'
+pub fn launchLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Child, ProcessError] {
+  if hasByte(line, 0u8) {
+    return Err[Child, ProcessError](failure("launchLine", line, dir, invalidParameter()));
+  }
+  #if #os == .windows {
+    spawnWindows("launchLine", line, line, dir, opts)
+  }
+  #else {
+    var shell = List[String]();
+    shell.push(String.from("/bin/sh"));
+    shell.push(String.from("-c"));
+    shell.push(String.from(line));
+    spawnPosix("launchLine", line, shell.view(), dir, opts)
+  }
+}
+
 // A pipe for one of the child's outputs, with nothing of 'run''s reading kit: our end, overlapped, goes in 'ours'; the
 // child's end, inheritable, is returned, or 0 on failure
-fn makeEnd(ours: &mut usize) usize {
+fn makeEnd(ours: &mut usize) usize { makeEndDir(ours, false) }
+
+// The same for the child's standard input when 'input' is true: our end is outbound (written to), the child's is read
+fn makeEndDir(ours: &mut usize, input: bool) usize {
+  let access = if input {pipeAccessOutbound} else {pipeAccessInbound};
+  let theirAccess = if input {genericRead} else {genericWrite};
   var tries = 0u32;
   while tries < 8u32 {
     tries = tries + 1u32;
@@ -834,11 +876,11 @@ fn makeEnd(ours: &mut usize) usize {
     name.append("-");
     name.appendUInt(u64.from(pipeSerial));
     let wname = widen(name.view());
-    let mine = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
+    let mine = CreateNamedPipeW(wname, access | flagOverlapped | flagFirstInstance,
       pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if mine != invalidHandle {
       let sa = SecurityAttributes(24u32, null, 1i32);
-      let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
+      let theirs = CreateFileW(wname, theirAccess, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
       if theirs == invalidHandle {
         CloseHandle(mine);
@@ -872,6 +914,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
 
   var ourOut = noEnd;
   var ourErr = noEnd;
+  var ourIn = noEnd;
   var childIn = 0usize;
   var childOut = 0usize;
   var childErr = 0usize;
@@ -881,7 +924,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
     childErr = inheritStd(stdError, genericWrite);
   }
   else {
-    childIn = openNul(genericRead);
+    childIn = if opts.stdin {makeEndDir(&mut ourIn, true)} else {openNul(genericRead)};
     childOut = makeEnd(&mut ourOut);
     childErr = makeEnd(&mut ourErr);
   }
@@ -919,11 +962,25 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
       childIn, childOut, childErr, list);
     // Suspended until it is in its job, so that nothing it starts escapes the job
     var flags = extendedStartupInfo | createSuspended;
-    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
-    if CreateProcessW(null, wline, null, null, 1i32, flags, null, wdir, &mut si, &mut pi) == 0i32 {
-      failed = true;
-      code = GetLastError();
+    // 'crashReport: false': the child is this program's debuggee, started and its events handled by a thread of its own
+    var environment: *u16 = null;
+    if !opts.crashReport {
+      flags = flags | debugOnlyThisProcess;
+      environment = debuggeeEnvironment();
+      if environment as usize != 0usize { flags = flags | unicodeEnvironment; }
     }
+    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
+    if opts.crashReport {
+      if CreateProcessW(null, wline, null, null, 1i32, flags, null, wdir, &mut si, &mut pi) == 0i32 {
+        failed = true;
+        code = GetLastError();
+      }
+    }
+    else {
+      code = startDebuggee(wline, wdir, &mut si, flags, environment, &mut pi);
+      if code != 0u32 { failed = true; }
+    }
+    if environment as usize != 0usize { libc.free(environment as *u8); }
     DeleteProcThreadAttributeList(list);
   }
   libc.free(list);
@@ -937,6 +994,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
   if failed {
     closeIf(ourOut);
     closeIf(ourErr);
+    closeIf(ourIn);
     if code == 0u32 { code = errorInvalidParameter; }
     return Err[Child, ProcessError](failure(op, program, dir, code));
   }
@@ -947,7 +1005,7 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
   }
   ResumeThread(pi.hThread);
   CloseHandle(pi.hThread);
-  Ok[Child, ProcessError](Child(pi.hProcess, job, pi.dwProcessId, ourOut, ourErr, true))
+  Ok[Child, ProcessError](Child(pi.hProcess, job, pi.dwProcessId, ourOut, ourErr, ourIn, true))
 }
 
 fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: Options) Result[Child, ProcessError] {
@@ -991,8 +1049,10 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // meanwhile holds them), and the child the leader of a group of its own, so that 'kill' reaches what it started
   var outFds = Array[i32, 2]() <- fill -1i32;
   var errFds = Array[i32, 2]() <- fill -1i32;
+  var inFds = Array[i32, 2]() <- fill -1i32;
   let outp: *i32 = &[]outFds as *i32;
   let errp: *i32 = &[]errFds as *i32;
+  let inp: *i32 = &[]inFds as *i32;
   var actions = Array[u64, 32]() <- fill 0u64;
   var attr = Array[u64, 64]() <- fill 0u64;
   let aw: *u64 = &[]actions as *u64;
@@ -1010,9 +1070,23 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
       closeFd(outFds[0usize]);
       closeFd(outFds[1usize]);
       outFds[0usize] = -1i32;
+      outFds[1usize] = -1i32;
+    }
+    else if opts.stdin && makePipe2(inp, closeOnExec) != 0i32 {
+      rc = *libc.errno();
+      closeFd(outFds[0usize]);
+      closeFd(outFds[1usize]);
+      closeFd(errFds[0usize]);
+      closeFd(errFds[1usize]);
+      outFds[0usize] = -1i32;
+      outFds[1usize] = -1i32;
+      errFds[0usize] = -1i32;
+      errFds[1usize] = -1i32;
     }
     else {
-      rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32);
+      // The child's standard input is the read end of a pipe of ours (dup2 clears close-on-exec on the copy), or /dev/null
+      if opts.stdin { rc = actionsDup2(ap, inFds[0usize], 0i32); }
+      else { rc = actionsOpen(ap, 0i32, "/dev/null", openReadOnly, 0u32); }
       if rc == 0i32 { rc = actionsDup2(ap, outFds[1usize], 1i32); }
       if rc == 0i32 { rc = actionsDup2(ap, errFds[1usize], 2i32); }
     }
@@ -1022,10 +1096,22 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
     rc = attrFlags(tp, spawnSetGroup);
     if rc == 0i32 { rc = attrGroup(tp, 0i32); }
   }
+  // 'crashReport: false': no core dump is left for the system to take; the limit is zero for the child, whose it
+  // becomes, and put back
+  var saved = RLimit(0u64, 0u64);
+  var limited = false;
+  if rc == 0i32 && !opts.crashReport {
+    if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
+      var none = RLimit(0u64, saved.hard);
+      setLimit(limitCore, &mut none as *RLimit);
+      limited = true;
+    }
+  }
   var pid = 0i32;
   if rc == 0i32 {
     rc = spawnProgram(&mut pid as *i32, file.cstr(), ap, tp, argv, cone_environ());
   }
+  if limited { setLimit(limitCore, &mut saved as *RLimit); }
   actionsDestroy(ap);
   attrDestroy(tp);
   k = 0usize;
@@ -1037,14 +1123,17 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // The child's ends are the child's now
   closeFdIf(outFds[1usize]);
   closeFdIf(errFds[1usize]);
+  closeFdIf(inFds[0usize]);
   if rc != 0i32 {
     closeFdIf(outFds[0usize]);
     closeFdIf(errFds[0usize]);
+    closeFdIf(inFds[1usize]);
     return Err[Child, ProcessError](failure(op, program, dir, u32.from(rc)));
   }
   let oe = if outFds[0usize] >= 0i32 {usize.from(outFds[0usize])} else {noEnd};
   let ee = if errFds[0usize] >= 0i32 {usize.from(errFds[0usize])} else {noEnd};
-  Ok[Child, ProcessError](Child(usize.from(pid), 0usize, u32.from(pid), oe, ee, true))
+  let ie = if inFds[1usize] >= 0i32 {usize.from(inFds[1usize])} else {noEnd};
+  Ok[Child, ProcessError](Child(usize.from(pid), 0usize, u32.from(pid), oe, ee, ie, true))
 }
 
 // One of the child's streams, read without blocking: our end of its pipe,
@@ -1233,6 +1322,69 @@ fn pump(d: &mut Debuggee, ms: u32) bool {
     ContinueDebugEvent(d.ev.pid, d.ev.tid, status);
   }
   d.exited
+}
+
+// What the thread that starts a debuggee is given, and what it leaves: the call to CreateProcessW, and its answer.
+// It lives in the caller's frame until 'done' is set, and the thread touches it no more after that
+struct DebugStart {
+  pub wline: *u16;
+  pub wdir: *u16;
+  pub si: *StartupInfoEx;
+  pub flags: u32;
+  pub environment: *u16;
+  pub pi: ProcessInformation;
+  pub code: u32;
+  pub done: usize;
+}
+
+// The thread of a debuggee ('crashReport: false'): a debuggee's events are handled by the thread that started it, so
+// that thread starts it, tells the caller, and handles its events until it exits (one thread for each such child, for
+// as long as the child lives; no pool, no count)
+fn debuggeeThread(arg: usize) u32 {
+  let p = arg as *DebugStart;
+  var si = *(*p).si;
+  var pi = ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  var code = 0u32;
+  var mine = 0usize;
+  if CreateProcessW(null, (*p).wline, null, null, 1i32, (*p).flags, (*p).environment as *u8, (*p).wdir,
+      &mut si, &mut pi) == 0i32 {
+    code = GetLastError();
+    if code == 0u32 { code = errorInvalidParameter; }
+  }
+  else if DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &mut mine, 0u32, 0i32,
+      duplicateSameAccess) == 0i32 {
+    mine = 0usize;
+  }
+  let done = (*p).done;
+  (*p).pi = pi;
+  (*p).code = code;
+  SetEvent(done);
+  // From here the caller's record is not ours
+  if code != 0u32 || mine == 0usize { return 0u32; }
+  var d = Debuggee(true, mine, false, false, DebugEvent(0u32, 0u32, 0u32, Array[u64, 20]() <- fill 0u64));
+  while !d.exited {
+    if pump(&mut d, 100u32) { break; }
+    if WaitForSingleObject(mine, 0u32) == 0u32 {
+      pump(&mut d, 1000u32);
+      break;
+    }
+  }
+  CloseHandle(mine);
+  0u32
+}
+
+// Start a debuggee on a thread of its own and wait for the start: 0, or the system's error number
+fn startDebuggee(wline: *u16, wdir: *u16, si: &mut StartupInfoEx, flags: u32, environment: *u16,
+    pi: &mut ProcessInformation) u32 {
+  let done = CreateEventW(null, 1i32, 0i32, null);
+  if done == 0usize { return GetLastError(); }
+  var st = DebugStart(wline, wdir, si as *StartupInfoEx, flags, environment,
+    ProcessInformation(0usize, 0usize, 0u32, 0u32), 0u32, done);
+  thread.start[usize, u32](&mut st as *DebugStart as usize, &debuggeeThread).detach();
+  WaitForSingleObject(done, infinite);
+  CloseHandle(done);
+  *pi = st.pi;
+  st.code
 }
 
 // The environment a debuggee is started with: this program's, with

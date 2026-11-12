@@ -16,8 +16,10 @@
 //   3. fetch B opens connection 2, which takes cell X; it is Connected;
 //      B's request goes out
 //   4. A's request's Done arrives late
-// Checked: A's late Done is ignored (its connection is gone; the cell now holds
-// another): A is not ended by it, and connection 2 still carries B (the client
+// Since Bug 86 the client fails A at the Closed (a close ends every fetch on the
+// connection), so A has its one final answer (Failed) at step 2. Checked: A's
+// late Done is ignored (its connection is gone; the cell now holds another): A
+// gets no second answer, and connection 2 still carries B (the client
 // counts no idle connection); B's own Done then ends B and leaves the
 // connection idle. (With a guard that only asked whether the cell was
 // occupied, the late Done ended A and dropped connection 2's stream count, so
@@ -148,7 +150,8 @@ fn main() i32 {
   spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
   expectUInt(cl.stats().closed, 1u64, "connection 1 closed");
   expectUInt(u64.from(cl.stats().openNow), 0u64, "no connection open");
-  expect(cl.isLive(a), "A is still under way");
+  expect(!cl.isLive(a), "A was failed by the close (Bug 86)");
+  expectUInt(other, 1u64, "A's one final answer is its Failed");
 
   // 3. B opens connection 2, into the freed cell; its request goes out
   let b = cl.send(&mut lp, Request.get("https://127.0.0.1:4433/b"), Sink.Here(tokB));
@@ -171,7 +174,8 @@ fn main() i32 {
   nextReqId = reqA.req;
   spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
   expectUInt(doneA, 0u64, "A's late Done was ignored");
-  expect(cl.isLive(a), "A is not ended by it");
+  expect(!cl.isLive(a), "A stays ended");
+  expectUInt(other, 1u64, "A's late Done gave no second final answer");
   expect(cl.isLive(b), "B is still under way");
   expectUInt(u64.from(cl.stats().idleNow), 0u64, "A's late Done did not end an exchange on connection 2");
 
@@ -184,6 +188,6 @@ fn main() i32 {
   spin(&mut cl, &mut lp, &mut doneA, &mut doneB, &mut other);
   expectUInt(doneB, 1u64, "B ended Done, once");
   expectUInt(u64.from(cl.stats().idleNow), 1u64, "connection 2 is idle after B");
-  expectUInt(other, 0u64, "no other final answer");
+  expectUInt(other, 1u64, "no final answer but A's Failed");
   done()
 }
