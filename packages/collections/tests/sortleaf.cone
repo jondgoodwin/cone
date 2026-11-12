@@ -1,0 +1,217 @@
+// The leaf of the unstable sort: up to 20 elements are sorted by a network of
+// compare-exchanges on the first 13 (or 9), then insertion, when the element is 8 bytes or
+// less; a larger element is sorted by insertion alone.
+//
+// What each check protects:
+// - Every permutation of 0 to n-1 for n = 1 to 9 (409,113 of them in all) is sorted: a
+//   mistyped pair in the 9-element network leaves some order unsorted.
+// - Every 0-1 input of n = 1 to 20 values (2 million of them in all) is sorted. By the 0-1
+//   principle, a network that sorts every 0-1 input sorts every input, so this is the
+//   proof for the 13-element network (n = 13 is exactly it) and checks the insertion that
+//   follows it (n = 14 to 20) and the choice of network for n = 10 to 12. It is run on u8, u32 and u64
+//   (the network path) and on a 16-byte struct (the insertion path).
+// - Equal keys: an element of 8 bytes (a key of 0 to 3, and an id) is sorted by key, with every
+//   id present exactly once, at every size 0 to 40 and 200 random fillings each: an unstable
+//   sort is still a sort, and a compare-exchange that copied one of two equal elements over the
+//   other would lose an id.
+// - A reversed and a sorted input of each size 0 to 40, for the swap-free and the all-swap runs.
+
+mod sortleaf;
+
+import testing use *;
+import collections use *;
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn orderU8(a: &u8, b: &u8) i32 { *a <=> *b }
+fn orderU32(a: &u32, b: &u32) i32 { *a <=> *b }
+fn orderU64(a: &u64, b: &u64) i32 { *a <=> *b }
+
+// 8 bytes: the network path
+struct Small {
+  pub key: u32;
+  pub id: u32;
+}
+
+fn orderSmall(a: &Small, b: &Small) i32 { a.key <=> b.key }
+
+// 16 bytes: the insertion path
+struct Wide {
+  pub key: u32;
+  pub id: u32;
+  pub pad: u64;
+}
+
+fn orderWide(a: &Wide, b: &Wide) i32 { a.key <=> b.key }
+
+// Every permutation of 0 to n-1, by Heap's algorithm over the list, each sorted and checked
+fn permutations(n: usize, bad: &mut u64, count: &mut u64) {
+  var a = List[u32]();
+  var c = List[usize]();
+  var i = 0usize;
+  while i < n { a.push(u32.from(i)); c.push(0usize); i = i + 1usize; }
+  var perm = 0u64;
+  var k = 0usize;
+  // sort a copy of the current arrangement, check it
+  var more = true;
+  while more {
+    var t = List[u32]();
+    var j = 0usize;
+    while j < n { t.push(a[j]); j = j + 1usize; }
+    t.sortUnstableBy(&orderU32);
+    j = 0usize;
+    while j < n {
+      if t[j] != u32.from(j) { *bad = *bad + 1u64; j = n; }
+      j = j + 1usize;
+    }
+    *count = *count + 1u64;
+    perm = perm + 1u64;
+    // Heap's algorithm, one step
+    var moved = false;
+    while !moved && k < n {
+      if c[k] < k {
+        if k % 2usize == 0usize {
+          let h = a[0usize]; a[0usize] = a[k]; a[k] = h;
+        } else {
+          let h = a[c[k]]; a[c[k]] = a[k]; a[k] = h;
+        }
+        c[k] = c[k] + 1usize;
+        k = 0usize;
+        moved = true;
+      } else {
+        c[k] = 0usize;
+        k = k + 1usize;
+      }
+    }
+    if !moved { more = false; }
+  }
+}
+
+fn allPermutations() {
+  var bad = 0u64;
+  var count = 0u64;
+  var n = 1usize;
+  while n <= 9usize { permutations(n, &mut bad, &mut count); n = n + 1usize; }
+  expectInt(i64.from(bad), 0i64, "every permutation of 1 to 9 values sorts");
+  expectInt(i64.from(count), 409113i64, "the permutations run: 1! + 2! + ... + 9!");
+}
+
+fn zeroOne() {
+  var bad = 0u64;
+  var count = 0u64;
+  var n = 1usize;
+  while n <= 20usize {
+    var bits = 0u64;
+    let total = 1u64 << u64.from(n);
+    while bits < total {
+      var a = List[u8]();
+      var b = List[u32]();
+      var c = List[u64]();
+      var d = List[Wide]();
+      var i = 0usize;
+      var ones = 0usize;
+      while i < n {
+        let v = (bits >> u64.from(i)) & 1u64;
+        a.push(u8.from(v));
+        b.push(u32.from(v));
+        c.push(v);
+        d.push(Wide(u32.from(v), u32.from(i), 0u64));
+        ones = ones + usize.from(v);
+        i = i + 1usize;
+      }
+      a.sortUnstableBy(&orderU8);
+      b.sortUnstableBy(&orderU32);
+      c.sortUnstableBy(&orderU64);
+      d.sortUnstableBy(&orderWide);
+      // sorted: n - ones zeros, then ones ones
+      i = 0usize;
+      while i < n {
+        let want = if i < n - ones { 0u64 } else { 1u64 };
+        if u64.from(a[i]) != want || u64.from(b[i]) != want || c[i] != want || u64.from(d[i].key) != want {
+          bad = bad + 1u64;
+          i = n;
+        }
+        i = i + 1usize;
+      }
+      count = count + 1u64;
+      bits = bits + 1u64;
+    }
+    n = n + 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "every 0-1 input of 1 to 20 values sorts, u8, u32, u64 and a 16-byte struct");
+  expectInt(i64.from(count), 2097150i64, "the 0-1 inputs run: 2 + 4 + ... + 2^20");
+}
+
+fn equalKeys() {
+  var bad = 0u64;
+  var seed = 88172645463325252u64;
+  var n = 0usize;
+  while n <= 40usize {
+    var trial = 0usize;
+    while trial < 200usize {
+      var l = List[Small]();
+      var w = List[Wide]();
+      var i = 0usize;
+      while i < n {
+        let k = u32.from(nextRand(&mut seed) >> 40u64) % 4u32;
+        l.push(Small(k, u32.from(i)));
+        w.push(Wide(k, u32.from(i), 0u64));
+        i = i + 1usize;
+      }
+      l.sortUnstableBy(&orderSmall);
+      w.sortUnstableBy(&orderWide);
+      var seenL = List[bool]();
+      var seenW = List[bool]();
+      i = 0usize;
+      while i < n { seenL.push(false); seenW.push(false); i = i + 1usize; }
+      i = 0usize;
+      while i < n {
+        if i > 0usize && (l[i].key < l[i - 1usize].key || w[i].key < w[i - 1usize].key) { bad = bad + 1u64; }
+        if l[i].id >= u32.from(n) || seenL[usize.from(l[i].id)] { bad = bad + 1u64; }
+        else { seenL[usize.from(l[i].id)] = true; }
+        if w[i].id >= u32.from(n) || seenW[usize.from(w[i].id)] { bad = bad + 1u64; }
+        else { seenW[usize.from(w[i].id)] = true; }
+        i = i + 1usize;
+      }
+      trial = trial + 1usize;
+    }
+    n = n + 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "keys 0 to 3 at sizes 0 to 40: in order, every id once, 8 and 16 bytes");
+}
+
+fn sortedAndReversed() {
+  var bad = 0u64;
+  var n = 0usize;
+  while n <= 40usize {
+    var up = List[u32]();
+    var down = List[u32]();
+    var i = 0usize;
+    while i < n { up.push(u32.from(i)); down.push(u32.from(n - i)); i = i + 1usize; }
+    up.sortUnstableBy(&orderU32);
+    down.sortUnstableBy(&orderU32);
+    i = 0usize;
+    while i < n {
+      if up[i] != u32.from(i) { bad = bad + 1u64; }
+      if down[i] != u32.from(i + 1usize) { bad = bad + 1u64; }
+      i = i + 1usize;
+    }
+    n = n + 1usize;
+  }
+  expectInt(i64.from(bad), 0i64, "sorted and reversed input, sizes 0 to 40");
+}
+
+fn main() i32 {
+  allPermutations();
+  zeroOne();
+  equalKeys();
+  sortedAndReversed();
+  done()
+}
