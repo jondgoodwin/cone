@@ -32,6 +32,7 @@ fn restLayout(kind: u32) u32 {
   if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
   if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
   if kind == KIND_STORAGE { return vulkan.IMAGE_LAYOUT_GENERAL; }
+  if kind == KIND_SHADING_RATE { return vulkan.IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR; }
   if kind == KIND_DEPTH_SAMPLED { return vulkan.IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; }
   vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 }
@@ -49,7 +50,7 @@ fn firstLayout(fns: &DevFns, cmd: vulkan.CommandBuffer, image: vulkan.Image, kin
     aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
     stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   }
-  if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED || kind == KIND_STORAGE {
+  if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED || kind == KIND_STORAGE || kind == KIND_SHADING_RATE {
     stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   }
   let all = vulkan.ImageSubresourceRange(aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
@@ -80,13 +81,28 @@ pub struct CommandEncoder {
     let none = RenderPassDepthStencilAttachment(TextureView(TextureBackend(vulkan.Image(0u64),
       vulkan.ImageView(0u64), KIND_NONE, false, 0usize as vulkan.Device, backend.fns, vulkan.DeviceMemory(0u64)),
       0u32, 0u32, TEXTURE_FORMAT_UNDEFINED));
-    beginPass(&backend.fns, backend.cmd, attachment, false, &none)
+    beginPass(&backend.fns, backend.cmd, attachment, false, &none, vulkan.ImageView(0u64), 0u32, 0u32)
   }
 
   // Begin drawing into a color attachment and a depth attachment
   pub fn beginRenderPassWithDepth(self: &mut, attachment: &RenderPassColorAttachment,
       depth: &RenderPassDepthStencilAttachment) RenderPass {
-    beginPass(&backend.fns, backend.cmd, attachment, true, depth)
+    beginPass(&backend.fns, backend.cmd, attachment, true, depth, vulkan.ImageView(0u64), 0u32, 0u32)
+  }
+
+  // The same, shaded at the rates 'rate' says (a texture made with TEXTURE_USAGE_SHADING_RATE, on a device made
+  // with the fragment shading rate: 'device.fragmentShadingRate'): one of its texels for each 'texelWidth' by
+  // 'texelHeight' tile of the attachments (the device's 'shadingRateTexelWidth' and 'Height'), its value the
+  // size of the fragment shaded there, (log2 of the width) * 4 + (log2 of the height): 0 is the usual one
+  // shading to a pixel, 5 shades 2 x 2 pixels at once. Every pipeline of a device with the feature is made to
+  // take it. The depth is still tested and written at every pixel. Not on such a device, it is the plain pass.
+  pub fn beginRenderPassWithDepthAndRate(self: &mut, attachment: &RenderPassColorAttachment,
+      depth: &RenderPassDepthStencilAttachment, rate: &TextureView, texelWidth: u32, texelHeight: u32) RenderPass {
+    if rate.backend.kind != KIND_SHADING_RATE {
+      fail("beginRenderPassWithDepthAndRate: the rate is not a texture made with TEXTURE_USAGE_SHADING_RATE");
+      return beginPass(&backend.fns, backend.cmd, attachment, true, depth, vulkan.ImageView(0u64), 0u32, 0u32);
+    }
+    beginPass(&backend.fns, backend.cmd, attachment, true, depth, rate.backend.view, texelWidth, texelHeight)
   }
 
   // Begin a depth-only pass: no color attachment, just 'depth', a view of
@@ -295,7 +311,7 @@ pub struct CommandEncoder {
 // each needs after what earlier commands did with it, then the whole
 // attachment as the viewport and the scissor rectangle
 fn beginPass(fns: &DevFns, cmd: vulkan.CommandBuffer, color: &RenderPassColorAttachment, hasDepth: bool,
-    depth: &RenderPassDepthStencilAttachment) RenderPass {
+    depth: &RenderPassDepthStencilAttachment, rateView: vulkan.ImageView, rateTexelWidth: u32, rateTexelHeight: u32) RenderPass {
   // An encoder that does not record begins a pass that records nothing
   if isNull(cmd) {
     return RenderPass(PassBackend(cmd, *fns, vulkan.Image(0u64), 0u32, false, vulkan.PipelineLayout(0u64),
@@ -368,7 +384,12 @@ fn beginPass(fns: &DevFns, cmd: vulkan.CommandBuffer, color: &RenderPassColorAtt
   var depthPointer: *vulkan.RenderingAttachmentInfo = null;
   if hasDepth { depthPointer = &depthInfo as *vulkan.RenderingAttachmentInfo; }
 
+  // The shading rate image, if there is one: chained to the rendering info
+  let rateInfo = vulkan.RenderingFragmentShadingRateAttachmentInfoKHR(imageView: rateView,
+    imageLayout: vulkan.IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR,
+    shadingRateAttachmentTexelSize: vulkan.Extent2D(rateTexelWidth, rateTexelHeight));
   let ri = vulkan.RenderingInfo(
+    pNext: if rateView.h != 0u64 { &rateInfo as *u8 } else { null },
     renderArea: vulkan.Rect2D(vulkan.Offset2D(0i32, 0i32), vulkan.Extent2D(view.width, view.height)),
     colorAttachmentCount: 1u32, pColorAttachments: &colorInfo as *vulkan.RenderingAttachmentInfo,
     pDepthAttachment: depthPointer, pStencilAttachment: null);

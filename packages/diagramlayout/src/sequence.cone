@@ -15,7 +15,13 @@
 // over the gaps it crosses; each gap is the largest such demand, at least 'minGap'.
 // The sequence is in the order given: layout does not reorder messages (time is
 // the vertical axis and means something). Not built: combined fragments (alt, loop,
-// opt), notes, lifeline creation and destruction.
+// opt), lifeline creation and destruction.
+// NOTES (Mermaid 'Note over A,B', 'Note left of A', 'Note right of A'): a box of the
+// caller's measured size, in a row of its own between two messages ('before' is the
+// index of the message it comes before; the number of messages for one at the end).
+// 'over' centres on its participant, or spans from one lifeline to another; 'left of' and
+// 'right of' sit beside the lifeline. Layout widens the gaps (and the margin on the left,
+// the width on the right) so a note covers no other lifeline and stays inside the picture.
 
 pub const MSG_CALL = 0u32;
 pub const MSG_ASYNC = 1u32;
@@ -47,10 +53,27 @@ pub struct Activation {
   pub w: f32;
 }
 
+pub const NOTE_OVER = 0u32;         // over one participant (from == to) or spanning from one to another
+pub const NOTE_LEFT = 1u32;         // left of 'from'
+pub const NOTE_RIGHT = 2u32;        // right of 'from'
+
+pub struct Note {
+  pub kind: u32;                    // NOTE_...
+  pub from: u32;                    // a participant
+  pub to: u32;                      // the other end of an 'over' note (equal to 'from' for a single participant)
+  pub text: String;                 // '\n' starts a new line when drawn
+  pub w: f32;                       // the box's size, from the caller's measurement (text and padding)
+  pub h: f32;
+  pub before: u32;                  // the index of the message this note comes before
+  pub x: f32;                       // the box's left edge, written by layout
+  pub y: f32;                       // its top edge
+}
+
 pub struct SequenceDiagram {
   pub participants: List[Participant];
   pub messages: List[Message];
   pub activations: List[Activation];
+  pub notes: List[Note];
   pub width: f32;
   pub height: f32;
   pub lifelineTop: f32;
@@ -58,7 +81,14 @@ pub struct SequenceDiagram {
   pub rowHeight: f32;
 
   pub fn make() SequenceDiagram {
-    SequenceDiagram(List[Participant](), List[Message](), List[Activation](), 0., 0., 0., 0., 0.)
+    SequenceDiagram(List[Participant](), List[Message](), List[Activation](), List[Note](), 0., 0., 0., 0., 0.)
+  }
+
+  // A note of the measured box size w x h, placed before message 'before' (the message count: at the end).
+  // For NOTE_OVER, 'to' may be another participant (the note spans both); for NOTE_LEFT and NOTE_RIGHT it is ignored.
+  pub fn addNote(self: &mut, kind: u32, from: u32, to: u32, text: &str, w: f32, h: f32, before: u32) u32 {
+    notes.push(Note(kind, from, if kind == NOTE_OVER { to } else { from }, String.from(text), w, h, before, 0., 0.));
+    u32.from(notes.len() - 1usize)
   }
 
   pub fn addParticipant(self: &mut, name: &str, w: f32, h: f32) u32 {
@@ -120,6 +150,26 @@ pub fn layoutSequence(d: &mut SequenceDiagram, o: &SequenceOptions) {
     }
     m = m + 1usize;
   }
+  // notes ask for gaps: an 'over' that spans lifelines spreads its width over the gaps it crosses;
+  // a note beside a lifeline needs the gap on that side as wide as the box and its clearances
+  var nt = 0usize;
+  while nt < d.notes.len() {
+    let nn = &d.notes[nt];
+    let a = usize.from(nn.from);
+    let b = usize.from(nn.to);
+    if nn.kind == NOTE_OVER && a != b {
+      let lo = if a < b { a } else { b };
+      let hi = if a < b { b } else { a };
+      let per = (nn.w - 20.) / f32.from(hi - lo);
+      var g = lo;
+      while g < hi { if per > *gap[g] { gap.set(g, per); } g = g + 1usize; }
+    } else if nn.kind == NOTE_LEFT && a > 0usize {
+      if nn.w + 18. > *gap[a - 1usize] { gap.set(a - 1usize, nn.w + 18.); }
+    } else if nn.kind == NOTE_RIGHT && a + 1usize < np {
+      if nn.w + 18. > *gap[a] { gap.set(a, nn.w + 18.); }
+    }
+    nt = nt + 1usize;
+  }
   var x = o.margin + d.participants[0usize].w * 0.5;
   i = 0usize;
   while i < np {
@@ -127,22 +177,70 @@ pub fn layoutSequence(d: &mut SequenceDiagram, o: &SequenceOptions) {
     if i + 1usize < np { x = x + *gap[i]; }
     i = i + 1usize;
   }
+  // note boxes' left edges; a box that sticks out on the left moves everything right
+  nt = 0usize;
+  var minLeft = 1.0e30f;
+  var maxRight = 0.0f;
+  while nt < d.notes.len() {
+    let a = usize.from(d.notes[nt].from);
+    let b = usize.from(d.notes[nt].to);
+    let kind = d.notes[nt].kind;
+    let ax = d.participants[a].x;
+    var left = 0.0f;
+    if kind == NOTE_OVER {
+      let bx = d.participants[b].x;
+      let lox = if ax < bx { ax } else { bx };
+      let hix = if ax < bx { bx } else { ax };
+      if d.notes[nt].w < hix - lox + 20. { d.notes[nt].w = hix - lox + 20.; }
+      left = (lox + hix) * 0.5 - d.notes[nt].w * 0.5;
+    } else if kind == NOTE_LEFT {
+      left = ax - 10. - d.notes[nt].w;
+    } else {
+      left = ax + 10.;
+    }
+    d.notes[nt].x = left;
+    if left < minLeft { minLeft = left; }
+    if left + d.notes[nt].w > maxRight { maxRight = left + d.notes[nt].w; }
+    nt = nt + 1usize;
+  }
+  if d.notes.len() > 0usize && minLeft < 4. {
+    let shift = 4. - minLeft;
+    i = 0usize;
+    while i < np { d.participants[i].x = d.participants[i].x + shift; i = i + 1usize; }
+    nt = 0usize;
+    while nt < d.notes.len() { d.notes[nt].x = d.notes[nt].x + shift; nt = nt + 1usize; }
+    x = x + shift;
+    maxRight = maxRight + shift;
+  }
   var headH = 0.0f;
   i = 0usize;
   while i < np { if d.participants[i].h > headH { headH = d.participants[i].h; } i = i + 1usize; }
   d.lifelineTop = o.margin + headH;
   var y = d.lifelineTop + o.headGap;
   d.rowHeight = o.rowHeight;
+  // rows in time order: the notes that come before message m, then message m; the notes at the end last
   m = 0usize;
-  while m < d.messages.len() {
-    d.messages[m].y = y;
-    y = y + o.rowHeight + if d.messages[m].kind == MSG_SELF { o.rowHeight * 0.4 } else { 0. };
+  while m <= d.messages.len() {
+    nt = 0usize;
+    while nt < d.notes.len() {
+      let at = usize.from(d.notes[nt].before);
+      if at == m || (m == d.messages.len() && at > m) {
+        d.notes[nt].y = y - 12.;
+        y = y - 12. + d.notes[nt].h + o.rowHeight * 0.6;
+      }
+      nt = nt + 1usize;
+    }
+    if m < d.messages.len() {
+      d.messages[m].y = y;
+      y = y + o.rowHeight + if d.messages[m].kind == MSG_SELF { o.rowHeight * 0.4 } else { 0. };
+    }
     m = m + 1usize;
   }
   d.lifelineBottom = y - o.rowHeight * 0.4 + o.tailGap;
   d.height = d.lifelineBottom + headH + o.margin;
   d.width = d.participants[np - 1usize].x + d.participants[np - 1usize].w * 0.5 + o.margin;
   if d.width < x + o.margin { d.width = x + o.margin; }
+  if d.width < maxRight + 4. { d.width = maxRight + 4.; }
   // activations
   d.activations.clear();
   var open = List[List[usize]]();      // per participant, the indices into activations of the still open ones

@@ -102,11 +102,18 @@ pub fn drawGraph(c: &mut Canvas, g: &Graph, st: &DiagramStyle) {
   while e < g.edges.len() {
     if g.edges[e].alive && g.edges[e].route.len() >= 2usize {
       let path = roundedPath(&g.edges[e].route, st.cornerRadius);
+      let es = g.edges[e].style;
       var style = StrokeStyle.make(st.edgeWidth);
+      if es == LINK_DOTTED || es == LINK_DOTTED_PLAIN {
+        style = StrokeStyle.dashed(st.edgeWidth, st.edgeWidth * 1.5, st.edgeWidth * 2.5);
+        style.cap = CAP_ROUND;
+      }
       style.join = JOIN_ROUND;
-      c.strokeArrows(&path, &Paint.solid(st.edgeColor), &style, &ArrowStyle.none(), &st.arrow);
+      let head = if es == LINK_PLAIN || es == LINK_DOTTED_PLAIN { ArrowStyle.none() } else { st.arrow };
+      c.strokeArrows(&path, &Paint.solid(st.edgeColor), &style, &ArrowStyle.none(), &head);
       if g.edges[e].label.len() > 0usize {
-        let spot = labelSpot(&g.edges[e].route);
+        // the spot the layout chose for a measured label, else the middle of the longest segment
+        let spot = if g.edges[e].labelW > 0. { Vec2(g.edges[e].labelX, g.edges[e].labelY) } else { labelSpot(&g.edges[e].route) };
         c.textHalo(g.edges[e].label.view(), spot.x, spot.y, 0.5, 0.5, st.fontSize * 0.85, st.textColor, st.background, 3.);
       }
     }
@@ -127,6 +134,27 @@ pub fn drawGraph(c: &mut Canvas, g: &Graph, st: &DiagramStyle) {
   }
 }
 
+// Text centred on (cx, cy), one line to each '\n'
+fn drawLines(c: &mut Canvas, text: &str, cx: f32, cy: f32, size: f32, color: Color) {
+  var parts = List[String]();
+  var rest = text;
+  var more = true;
+  while more {
+    match rest.find("\n") {
+      case let Some(k) { parts.push(String.from(rest.slice(0usize, k))); rest = rest.sliceFrom(k + 1usize); }
+      else { parts.push(String.from(rest)); more = false; }
+    }
+  }
+  let lh = size * 1.25;
+  var y = cy - lh * f32.from(parts.len() - 1usize) * 0.5;
+  var p = 0usize;
+  while p < parts.len() {
+    c.text(parts[p].view(), cx, y, 0.5, 0.5, size, color);
+    y = y + lh;
+    p = p + 1usize;
+  }
+}
+
 pub fn drawSequence(c: &mut Canvas, d: &SequenceDiagram, st: &DiagramStyle) {
   let np = d.participants.len();
   // lifelines
@@ -144,8 +172,17 @@ pub fn drawSequence(c: &mut Canvas, d: &SequenceDiagram, st: &DiagramStyle) {
     c.strokeRoundRect(a.x, a.y0, a.w, a.y1 - a.y0, 0., &Paint.solid(st.edgeColor), &StrokeStyle.make(1.2));
     i = i + 1usize;
   }
+  // notes: a pale yellow box with the text centred, a new line at each '\n'
+  i = 0usize;
+  while i < d.notes.len() {
+    let nn = &d.notes[i];
+    c.fillRoundRect(nn.x, nn.y, nn.w, nn.h, 3., &Paint.solid(Color(1., 0.96, 0.72, 1.)));
+    c.strokeRoundRect(nn.x, nn.y, nn.w, nn.h, 3., &Paint.solid(Color(0.74, 0.62, 0.22, 1.)), &StrokeStyle.make(1.2));
+    drawLines(c, nn.text.view(), nn.x + nn.w * 0.5, nn.y + nn.h * 0.5, st.fontSize * 0.9, st.textColor);
+    i = i + 1usize;
+  }
   // messages
-  let filled = ArrowStyle.make(ARROW_TRIANGLE, 10., 7.);
+  let filled =ArrowStyle.make(ARROW_TRIANGLE, 10., 7.);
   let open = ArrowStyle.make(ARROW_OPEN, 9., 8.);
   let half = 6.0f;
   var m = 0usize;

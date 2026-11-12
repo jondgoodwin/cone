@@ -1,0 +1,55 @@
+// Bug 88's fix must leave alone a struct's sibling fields that are different collections: held by
+// value or by a 'Uni' owner, a push through one cannot free a view into the other. A struct reached
+// through one 'Rc' is still one struct, whose own fields are disjoint.
+
+mod collection_flow_rc_sibling_success;
+
+import stdio use *;
+import collections use *;
+
+struct V {
+  a: List[u8];
+  b: List[u8];
+
+  fn run(self: &mut) u8 {
+    a.push(5u8);
+    let s = a.view();
+    b.push(1u8);
+    s[0usize]
+  }
+}
+
+struct U {
+  a: Uni[List[u8]];
+  b: Uni[List[u8]];
+
+  fn run(self: &mut) u8 {
+    a.push(6u8);
+    let s = a.view();
+    b.push(1u8);
+    s[0usize]
+  }
+}
+
+struct Pair { a: List[u8]; b: List[u8]; }
+
+fn throughRc(p: Rc[mut, Pair]) u8 {
+  p.a.push(7u8);
+  let s = p.a.view();
+  p.b.push(1u8);
+  s[0usize]
+}
+
+fn main() {
+  var v = V(List[u8](), List[u8]());
+  printStr("byValue = ");
+  printInt(i64.from(v.run()));
+  printStr("\n");
+  var u = U(Uni[List[u8]](List[u8]()), Uni[List[u8]](List[u8]()));
+  printStr("uni = ");
+  printInt(i64.from(u.run()));
+  printStr("\n");
+  printStr("throughRc = ");
+  printInt(i64.from(throughRc(Rc[mut, Pair](Pair(List[u8](), List[u8]())))));
+  printStr("\n");
+}
