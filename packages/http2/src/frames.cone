@@ -834,39 +834,38 @@ const packSize = 4096usize;               // a packing buffer's room: the pool's
 // Frames in, buffers out, for one direction of one connection (see the
 // package's header, THE WRITER)
 pub struct FrameWriter {
-  out: Chain;                 // the buffers ready, in order
-  pack: IoBuf;                // the buffer headers and small payloads are packed into; empty when none
+  w: streams.Writer;          // the frames' bytes, packed into the pool's buffers (streams' fallible Writer)
   peerMax: usize;             // the peer's SETTINGS_MAX_FRAME_SIZE
   maxControl: usize;          // maxQueuedControlFrames
   control: usize;             // control frames queued since the last take
-  starved: bool;              // the pool refused a packing buffer (iobuf's tryMake): what is written after is dropped, and the connection fails
 
   pub fn make(cfg: &FrameConfig) FrameWriter {
-    FrameWriter(out: Chain.make(noBound), pack: IoBuf(), peerMax: defaultMaxFrameSize,
-      maxControl: cfg.maxQueuedControlFrames, control: 0usize, starved: false)
+    FrameWriter(w: streams.Writer.tryEmpty(packSize), peerMax: defaultMaxFrameSize,
+      maxControl: cfg.maxQueuedControlFrames, control: 0usize)
   }
 
   // Whether the pool refused a buffer to pack into: the frames since are not
   // all there, so the connection can only end
-  pub fn isStarved(self: &) bool {starved}
+  pub fn isStarved(self: &) bool {w.starved()}
 
   // The peer's SETTINGS_MAX_FRAME_SIZE arrived (the reader has checked it)
   pub fn setPeerMaxFrameSize(self: &mut, n: usize) {peerMax = n;}
   pub fn peerMaxFrameSize(self: &) usize {peerMax}
 
   // The bytes queued, and the control frames among them
-  pub fn queuedBytes(self: &) usize {out.len() + pack.len()}
+  pub fn queuedBytes(self: &) usize {w.len()}
   pub fn queuedControlFrames(self: &) usize {control}
 
   // Every buffer queued, moved out at once as a Chain, in order, for one
-  // gather write; an empty Chain when none
+  // gather write; an empty Chain when none, and when the pool has refused a
+  // buffer (the frames are not all there: they go back to the pool and the
+  // connection can only end)
   pub fn take(self: &mut) Chain {
-    self.flush();
-    // The queue is taken whole: empty is what it is next
-    var all = Chain.make(noBound);
-    all <-> out;
     control = 0usize;
-    all
+    match w.tryFinish() {
+      case let Some(all) {all}
+      else {Chain.make(noBound)}
+    }
   }
 
   // A DATA frame: its header packed, then 'data' itself, moved in whole as a
@@ -1030,73 +1029,21 @@ pub struct FrameWriter {
   }
 
   fn header(self: &mut, length: usize, kind: u8, flags: u8, stream: u32) {
-    if !self.room(frameHeaderLen) {return;}
-    // The 24-bit length, the type, the flags, the stream with its reserved bit
-    // clear: four stores in the room 'room' made (iobuf's putUint and putNum)
-    _ = pack.putUint(u64.from(length), 3usize, true);
-    _ = pack.putNum[u8](kind, true);
-    _ = pack.putNum[u8](flags, true);
-    _ = pack.putNum[u32](stream & maxStreamId, true);
+    // The 24-bit length, the type, the flags, the stream with its reserved bit clear
+    w.putUintBE(u64.from(length), 3usize);
+    w.putBE[u8](kind);
+    w.putBE[u8](flags);
+    w.putBE[u32](stream & maxStreamId);
   }
 
-  fn byte(self: &mut, b: u8) {
-    if !self.room(1usize) {return;}
-    _ = pack.putNum[u8](b, true);
-  }
+  fn byte(self: &mut, b: u8) {w.putByte(b);}
 
-  fn u32be(self: &mut, v: u32) {
-    if !self.room(4usize) {return;}
-    _ = pack.putNum[u32](v, true);
-  }
+  fn u32be(self: &mut, v: u32) {w.putBE[u32](v);}
 
-  fn bytes(self: &mut, b: &Array[u8]) {
-    if b.len == 0usize {return;}
-    if !self.room(b.len) {return;}
-    _ = pack.append(b);
-  }
+  fn bytes(self: &mut, b: &Array[u8]) {w.put(b);}
 
-  fn zeros(self: &mut, n: usize) {
-    if n == 0usize {return;}
-    if !self.room(n) {return;}
-    let at = pack.len();
-    let s = pack.spare();
-    var i = 0usize;
-    while i < n {
-      s[i] = 0u8;
-      i = i + 1usize;
-    }
-    pack.setLen(at + n);
-  }
+  fn zeros(self: &mut, n: usize) {w.repeat(0u8, n);}
 
   // A buffer of the caller's, a segment of its own after what is packed
-  fn segment(self: &mut, buf: IoBuf) {
-    self.flush();
-    _ = out.push(buf);
-  }
-
-  // Room for n more bytes in the packing buffer: when it has too little,
-  // it goes to the queue and a new one is begun. False once the pool has refused
-  // that buffer (iobuf's tryMake), and from then on: nothing more is packed
-  fn room(self: &mut, n: usize) bool {
-    if starved {return false;}
-    if pack.room() >= n {return true;}
-    self.flush();
-    let got = match IoBuf.tryMake(if n > packSize {n} else {packSize}) {
-      case var Some(b) {b}
-      else {
-        starved = true;
-        return false;
-      }
-    };
-    pack = got;
-    true
-  }
-
-  // The packing buffer to the queue; until the next byte, there is none
-  fn flush(self: &mut) {
-    if pack.len() == 0usize {return;}
-    var p = IoBuf();
-    p <-> pack;
-    _ = out.push(p);
-  }
+  fn segment(self: &mut, buf: IoBuf) {w.putBuf(buf);}
 }

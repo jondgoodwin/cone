@@ -1,0 +1,336 @@
+// handprobe: does the headset track hands? It opens a session on the runtime
+// (the headset worn, hand tracking switched on in the headset's settings),
+// asks for XR_EXT_hand_tracking and, where offered, XR_FB_hand_tracking_aim,
+// makes a hand tracker for each hand, and every half second says, for each
+// hand: whether it is tracked, how many of its 26 joints have a valid
+// position, the index-thumb pinch (the distance between the two fingertips in
+// millimetres, and the runtime's pinch strength where the aim extension gives
+// it) and where the wrist is, in metres, in the local-floor space (x right, y
+// up, -z ahead; the origin on the floor under where the headset was started).
+// It draws nothing (the headset shows nothing while it runs: its frames carry
+// no layers) and makes no sound.
+//
+//   congo run packages/openxr/examples/handprobe.cone -- [--seconds N]
+//
+// --seconds N: run N seconds of the runtime's frame time and leave (default 20).
+// It needs the OpenXR loader and a runtime with a headset (Link, or the
+// simulator, which may not track hands: then it says so); with none it says so
+// and exits 1. It needs the Vulkan loader too: the session is made on the GPU
+// the runtime picks, as a headset's session must be.
+
+mod handprobe;
+
+import stdio use *;
+import libc;
+import collections use *;
+import vulkan;
+import gpu;
+import openxr;
+
+struct Maker {
+  fns: openxr.InstanceFns;
+  instance: openxr.Instance;
+  systemId: u64;
+}
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+// Vulkan's instance and device are made by the runtime, as OpenXR has it
+fn makeVkInstance(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32 {
+  let m = user as *Maker;
+  let info = openxr.VulkanInstanceCreateInfoKHR(systemId: m.systemId, pfnGetInstanceProcAddr: vulkan.instanceProcAddrFn(),
+    vulkanCreateInfo: createInfo as *vulkan.InstanceCreateInfo, vulkanAllocator: null);
+  var vkResult = vulkan.ERROR_INITIALIZATION_FAILED;
+  let r = m.fns.createVulkanInstanceKHR(m.instance, &info, instance, &mut vkResult);
+  if openxr.failed(r) { return vulkan.ERROR_INITIALIZATION_FAILED; }
+  vkResult
+}
+
+fn makeVkDevice(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
+    device: &mut vulkan.Device) i32 {
+  let m = user as *Maker;
+  let info = openxr.VulkanDeviceCreateInfoKHR(systemId: m.systemId, pfnGetInstanceProcAddr: vulkan.instanceProcAddrFn(),
+    vulkanPhysicalDevice: physical, vulkanCreateInfo: createInfo as *vulkan.DeviceCreateInfo, vulkanAllocator: null);
+  var vkResult = vulkan.ERROR_INITIALIZATION_FAILED;
+  let r = m.fns.createVulkanDeviceKHR(m.instance, &info, device, &mut vkResult);
+  if openxr.failed(r) { return vulkan.ERROR_INITIALIZATION_FAILED; }
+  vkResult
+}
+
+fn fail(what: &str, r: i32) {
+  print <- what; print <- " failed: "; print <- openxr.resultName(r); print <- " ("; print <- r; print <- ")\n";
+}
+
+// One line about a hand
+fn report(name: &str, h: &openxr.HandJoints, seconds: f64) {
+  print <- "t="; print <- seconds; print <- "s "; printStr(name);
+  if !h.active {
+    print <- ": not tracked\n";
+    return;
+  }
+  print <- ": tracked, joints valid "; print <- u64.from(h.validCount()); print <- "/26";
+  print <- ", pinch ";
+  match h.pinchDistance() {
+    case let Some(d) { print <- f64.from(d) * 1000.0; print <- " mm"; }
+    case is None { print <- "n/a"; }
+  }
+  match h.pinchStrength() {
+    case let Some(s) { print <- " (strength "; print <- f64.from(s); print <- ")"; }
+    case is None { if h.hasAim { print <- " (aim state not valid)"; } }
+  }
+  if h.jointValid(openxr.HAND_JOINT_WRIST_EXT) {
+    let w = h.position(openxr.HAND_JOINT_WRIST_EXT);
+    print <- ", wrist ("; print <- f64.from(w.x); print <- ", "; print <- f64.from(w.y); print <- ", "; print <- f64.from(w.z); print <- ")";
+  } else {
+    print <- ", wrist not valid";
+  }
+  print <- "\n";
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var seconds = 20i64;
+  var a = 1;
+  while a < argc {
+    let arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--seconds") && a + 1 < argc {
+      let s = *(argv + usize.from(a + 1));
+      seconds = 0i64;
+      var i = 0usize;
+      while *(s + i) >= '0' && *(s + i) <= '9' {
+        seconds = seconds * 10i64 + i64.from(*(s + i) - '0');
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --seconds N\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+
+  if !openxr.available() {
+    print <- "No OpenXR loader (openxr_loader.dll) was found\n";
+    return 1i32;
+  }
+  if !vulkan.available() {
+    print <- "No Vulkan loader was found\n";
+    return 1i32;
+  }
+
+  // The instance extensions offered: Vulkan 2 is needed; the hand ones are asked for when offered
+  var count = 0u32;
+  var r = openxr.enumerateInstanceExtensionProperties(null, 0u32, &mut count, null);
+  if openxr.failed(r) { fail("Asking the OpenXR runtime for its extensions", r); return 1i32; }
+  var props = List[openxr.ExtensionProperties]();
+  props.resize(usize.from(count), openxr.ExtensionProperties(extensionName: Array[u8, 128]() <- fill 0u8,
+    extensionVersion: 0u32));
+  let offered = props.viewMut() as *openxr.ExtensionProperties;
+  r = openxr.enumerateInstanceExtensionProperties(null, count, &mut count, offered);
+  if openxr.failed(r) { fail("Listing the extensions", r); return 1i32; }
+  var hasVulkan2 = false;
+  var hasLocalFloor = false;
+  var e = 0usize;
+  while e < usize.from(count) {
+    let name = &(offered + e).extensionName as *u8;
+    if libc.strcmp(cstr.fromPtr(name), "XR_KHR_vulkan_enable2") == 0i32 { hasVulkan2 = true; }
+    if libc.strcmp(cstr.fromPtr(name), "XR_EXT_local_floor") == 0i32 { hasLocalFloor = true; }
+    e = e + 1usize;
+  }
+  print <- "Instance extensions offered: "; print <- u64.from(count); print <- "\n";
+  if !hasVulkan2 {
+    print <- "XR_KHR_vulkan_enable2 is not offered; stopping\n";
+    return 1i32;
+  }
+  let hands = openxr.HandExtensions.find(offered, count);
+  print <- "XR_EXT_hand_tracking offered: "; print <- hands.tracking;
+  print <- ", XR_FB_hand_tracking_aim: "; print <- hands.aim;
+  print <- ", microgestures: "; print <- hands.microgestures;
+  print <- ", simultaneous hands and controllers: "; print <- hands.simultaneous; print <- "\n";
+  if !hands.tracking {
+    print <- "This runtime does not offer hand tracking; stopping\n";
+    return 1i32;
+  }
+
+  // Every hand extension offered first ('addNames' enables microgestures'
+  // dependency, XR_EXT_hand_interaction, with it). If the runtime still refuses
+  // that set, try again with the joints and the aim only, which is all this
+  // probe reads.
+  var xrInstance = 0usize as openxr.Instance;
+  var useHands = hands;
+  var names = List[*u8]();
+  names.push(&"XR_KHR_vulkan_enable2" as *u8);
+  if hasLocalFloor { names.push(&"XR_EXT_local_floor" as *u8); }
+  useHands.addNames(&mut names);
+  var ici = openxr.InstanceCreateInfo(applicationInfo: openxr.applicationInfo("openxr handprobe", "Cone", openxr.API_VERSION_1_0),
+    enabledApiLayerNames: null, enabledExtensionCount: u32.from(names.len()),
+    enabledExtensionNames: names.viewMut() as **u8);
+  r = openxr.createInstance(&ici, &mut xrInstance);
+  if openxr.failed(r) && (hands.microgestures || hands.simultaneous) {
+    fail("xrCreateInstance with every hand extension", r);
+    useHands.microgestures = false;
+    useHands.simultaneous = false;
+    names = List[*u8]();
+    names.push(&"XR_KHR_vulkan_enable2" as *u8);
+    if hasLocalFloor { names.push(&"XR_EXT_local_floor" as *u8); }
+    useHands.addNames(&mut names);
+    ici.enabledExtensionCount = u32.from(names.len());
+    ici.enabledExtensionNames = names.viewMut() as **u8;
+    print <- "Trying again with hand tracking and aim only\n";
+    r = openxr.createInstance(&ici, &mut xrInstance);
+  }
+  if openxr.failed(r) { fail("xrCreateInstance", r); return 1i32; }
+  print <- "Instance made with microgestures: "; print <- useHands.microgestures;
+  print <- ", simultaneous hands and controllers: "; print <- useHands.simultaneous; print <- "\n";
+  var fns = openxr.InstanceFns.load(xrInstance);
+  if fns.missing != 0u32 || !fns.hasVulkanEnable2() {
+    print <- "The OpenXR instance lacks some of its functions\n";
+    return 1i32;
+  }
+  print <- "Hand tracking functions found: "; print <- fns.hasHandTracking(); print <- "\n";
+
+  var ip = openxr.InstanceProperties(runtimeVersion: 0u64, runtimeName: Array[u8, 128]() <- fill 0u8);
+  fns.getInstanceProperties(xrInstance, &mut ip);
+  print <- "Runtime: "; printCStr(&ip.runtimeName as *u8); print <- "\n";
+
+  // The headset, and whether the system says it tracks hands
+  var systemId = 0u64;
+  let getInfo = openxr.SystemGetInfo();
+  r = fns.getSystem(xrInstance, &getInfo, &mut systemId);
+  if openxr.failed(r) { fail("xrGetSystem (is a headset connected?)", r); return 1i32; }
+  var handProps = openxr.SystemHandTrackingPropertiesEXT();
+  var sp = openxr.zeroed[openxr.SystemProperties]();
+  sp.type = openxr.TYPE_SYSTEM_PROPERTIES;
+  sp.next = &mut handProps as *u8;
+  fns.getSystemProperties(xrInstance, systemId, &mut sp);
+  print <- "System: "; printCStr(&sp.systemName as *u8);
+  print <- ", supports hand tracking: "; print <- handProps.supportsHandTracking == openxr.TRUE; print <- "\n";
+
+  // Vulkan on the GPU the runtime picks, and a session on it
+  var requirements = openxr.GraphicsRequirementsVulkanKHR();
+  r = fns.getVulkanGraphicsRequirements2KHR(xrInstance, systemId, &mut requirements);
+  if openxr.failed(r) { fail("xrGetVulkanGraphicsRequirements2KHR", r); return 1i32; }
+  var maker = Maker(fns, xrInstance, systemId);
+  var vkInstance = gpu.Instance.createWith("openxr handprobe", &makeVkInstance, &maker as *u8, false);
+  if !vkInstance.isValid() { print <- "Vulkan's instance could not be made\n"; return 1i32; }
+  let deviceInfo = openxr.VulkanGraphicsDeviceGetInfoKHR(systemId: systemId, vulkanInstance: vkInstance.vulkanHandle());
+  var physical = 0usize as vulkan.PhysicalDevice;
+  r = fns.getVulkanGraphicsDevice2KHR(xrInstance, &deviceInfo, &mut physical);
+  if openxr.failed(r) { fail("xrGetVulkanGraphicsDevice2KHR", r); return 1i32; }
+  var adapter = vkInstance.requestAdapterFor(physical);
+  if !adapter.isValid() { print <- "The GPU could not be used\n"; return 1i32; }
+  var device = adapter.requestDeviceVia(&makeVkDevice, &maker as *u8, false, gpu.DeviceFeatures());
+  if !device.isValid() { print <- "Vulkan's device could not be made\n"; return 1i32; }
+  let binding = openxr.GraphicsBindingVulkanKHR(instance: vkInstance.vulkanHandle(), physicalDevice: adapter.vulkanPhysicalDevice(),
+    device: device.vulkanHandle(), queueFamilyIndex: device.vulkanQueueFamily(), queueIndex: 0u32);
+  let sci = openxr.SessionCreateInfo(next: &binding as *u8, systemId: systemId);
+  var session = 0usize as openxr.Session;
+  r = fns.createSession(xrInstance, &sci, &mut session);
+  if openxr.failed(r) { fail("xrCreateSession", r); return 1i32; }
+
+  let spaceType = if hasLocalFloor { openxr.REFERENCE_SPACE_TYPE_LOCAL_FLOOR } else { openxr.REFERENCE_SPACE_TYPE_LOCAL };
+  let rci = openxr.ReferenceSpaceCreateInfo(referenceSpaceType: spaceType, poseInReferenceSpace: openxr.identityPose());
+  var space = 0usize as openxr.Space;
+  r = fns.createReferenceSpace(session, &rci, &mut space);
+  if openxr.failed(r) { fail("xrCreateReferenceSpace", r); return 1i32; }
+
+  // A tracker for each hand
+  var trackers = [openxr.HandTracker.create(&fns, session, openxr.HAND_LEFT_EXT, hands.aim),
+    openxr.HandTracker.create(&fns, session, openxr.HAND_RIGHT_EXT, hands.aim)];
+  if !trackers[0].isValid() || !trackers[1].isValid() {
+    print <- "The hand trackers could not be made\n";
+    return 1i32;
+  }
+  print <- "Hand trackers made; aim state asked for: "; print <- hands.aim; print <- "\n";
+
+  // The frame loop: no layers, and each frame the hands located at its display time
+  var left = openxr.HandJoints.none();
+  var right = openxr.HandJoints.none();
+  var running = false;
+  var quitting = false;
+  var exitAsked = false;
+  var firstTime = 0i64;
+  var lastLog = -1000000000i64;
+  var locateFailures = 0u64;
+  var frames = 0u64;
+  var trackedFrames = 0u64;
+  var lastState = 0i32;
+  var guard = 0u64;
+  while !quitting && guard < 2000000u64 {
+    guard = guard + 1u64;
+    var buffer = openxr.EventDataBuffer(varying: Array[u8, 4000]() <- fill 0u8);
+    var more = true;
+    while more {
+      buffer.type = openxr.TYPE_EVENT_DATA_BUFFER;
+      buffer.next = null;
+      if fns.pollEvent(xrInstance, &mut buffer) != openxr.SUCCESS {
+        more = false;
+      } else if buffer.type == openxr.TYPE_EVENT_DATA_SESSION_STATE_CHANGED {
+        let ev = &buffer as *openxr.EventDataSessionStateChanged;
+        if ev.state != lastState {
+          print <- "Session state: "; printStr(openxr.sessionStateName(ev.state)); print <- "\n";
+          lastState = ev.state;
+        }
+        if ev.state == openxr.SESSION_STATE_READY {
+          let begin = openxr.SessionBeginInfo();
+          if openxr.succeeded(fns.beginSession(session, &begin)) { running = true; }
+        } else if ev.state == openxr.SESSION_STATE_STOPPING {
+          if running { fns.endSession(session); }
+          running = false;
+        } else if ev.state == openxr.SESSION_STATE_EXITING || ev.state == openxr.SESSION_STATE_LOSS_PENDING {
+          quitting = true;
+        }
+      } else if buffer.type == openxr.TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING {
+        quitting = true;
+      }
+    }
+    if !running { continue; }
+
+    var state = openxr.FrameState();
+    let waitInfo = openxr.FrameWaitInfo();
+    if openxr.failed(fns.waitFrame(session, &waitInfo, &mut state)) { continue; }
+    let beginInfo = openxr.FrameBeginInfo();
+    if openxr.failed(fns.beginFrame(session, &beginInfo)) { continue; }
+    frames = frames + 1u64;
+    let t = state.predictedDisplayTime;
+    if firstTime == 0i64 { firstTime = t; }
+
+    let lr = trackers[0].locate(&fns, space, t, &mut left);
+    let rr = trackers[1].locate(&fns, space, t, &mut right);
+    if openxr.failed(lr) || openxr.failed(rr) {
+      locateFailures = locateFailures + 1u64;
+      if locateFailures <= 3u64 { fail("xrLocateHandJointsEXT", if openxr.failed(lr) { lr } else { rr }); }
+    }
+    if left.active || right.active { trackedFrames = trackedFrames + 1u64; }
+    if t - lastLog >= 500000000i64 {
+      lastLog = t;
+      let elapsed = f64.from(t - firstTime) * 1.0e-9;
+      report("left ", &left, elapsed);
+      report("right", &right, elapsed);
+    }
+
+    let endInfo = openxr.FrameEndInfo(displayTime: t, environmentBlendMode: openxr.ENVIRONMENT_BLEND_MODE_OPAQUE,
+      layerCount: 0u32, layers: null);
+    fns.endFrame(session, &endInfo);
+    if !exitAsked && t - firstTime >= seconds * 1000000000i64 {
+      fns.requestExitSession(session);
+      exitAsked = true;
+    }
+  }
+
+  print <- "Frames: "; print <- frames; print <- ", with a hand tracked: "; print <- trackedFrames;
+  print <- ", locate failures: "; print <- locateFailures; print <- "\n";
+  trackers[0].destroy(&fns);
+  trackers[1].destroy(&fns);
+  fns.destroySpace(space);
+  fns.destroySession(session);
+  device.waitIdle();
+  fns.destroyInstance(xrInstance);
+  0i32
+}

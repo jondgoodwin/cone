@@ -28,6 +28,19 @@
 // 9. The same with the stall limit set to a minute and the overall ceiling to
 //    300 ms: the last line says the ceiling of 300 ms ended the wait, and the
 //    child's own wait is at least 300 ms.
+// 10. A panic takes the queue over when the owner is starved or slow (the
+//     owner writes nothing for the panic's 500 ms): with the owner held before it takes
+//     its lock, and with it held in the middle of a batch (holding the lock), 100 queued
+//     lines all appear, whole and in order, before the program ends, and the last line is
+//     no report of dropped lines.
+// 11. An owner wedged in a write (holding the writer's lock past the ceiling, here
+//     1500 ms): the panic ends at the ceiling with the report of 100 dropped lines.
+// 12. A line printed by a panic hook appears (the second flush writes it).
+// 13. A flush blocked in another thread wakes when the panic has written the queue.
+// 14. No interleave: 4 writers print numbered lines to print and eprint (the first of
+//     each, and every 2,500th, 20,000 bytes), a fifth actor panics in mid-run: every
+//     line present is whole, each writer's lines in order with none twice or missing
+//     before its last.
 
 mod consoleowner;
 
@@ -57,8 +70,19 @@ actor Writer {
         print <- "L:", id, ":", i, ":", pad, ":", id, ":", i, "\n";
         eprint <- "E:", id, ":", i, ":", pad, ":", id, ":", i, "\n";
       }
+      progress.add(1u32);
       i = i + 1u32;
     }
+  }
+}
+
+// Panics once the writers have printed 'atLeast' lines between them
+actor Killer {
+  pub async fn go(self, atLeast: u32) {
+    while progress.load() < atLeast {
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    panic("killed");
   }
 }
 
@@ -99,8 +123,10 @@ struct Stall {
 }
 
 let stall: Stall;
+let progress: Atomic[u32];
 
 fn @initpure init() {
+  progress = Atomic[u32].of(0u32);
   stall = Stall(Atomic[u32].of(0u32), Atomic[u32].of(0u32));
   panicStartNs = Atomic[i64].of(0i64);
 }
@@ -303,7 +329,78 @@ fn childHeldPanic(stallMs: u32, ceilingMs: u32) i32 {
   panic("held")
 }
 
+// 100 lines queued while the owner is paused (setOwnerPause 'pauseMode', 'pauseMs'), then a panic.
+// 'variant': 0 plain; 1 the panic hook prints a line; 2 another thread's flush blocks, and the hook waits
+// for it to wake and write; 3 the wedge (the panic's ceiling is 1500 ms, its wait is timed by the hook)
+fn wakeFlusher(n: u32) u32 {
+  print.flush();
+  var s = String();
+  s <- "flush woke\n";
+  libc.fwrite(s.cstr().ptr(), 1usize, s.len(), libc.stderr());
+  libc.fflush(libc.stderr());
+  n
+}
+
+fn onHookPrint(msg: &str, file: &str, line: u32) {
+  print <- "from hook\n";
+}
+
+fn onHookWait(msg: &str, file: &str, line: u32) {
+  thread.sleep(Duration.fromMillis(500i64));
+}
+
+fn childPaused(pauseMode: u32, pauseMs: u32, variant: u32) i32 {
+  initAll();
+  let d = Idle();
+  d.nothing();
+  actors.waitQuiet();
+  if variant == 3u32 {
+    actors.setPanicWait(0u32, 1500u32);
+  }
+  actors.setOwnerPause(pauseMode, pauseMs);
+  var i = 0u32;
+  while i < 100u32 {
+    print <- "H:", i, "\n";
+    i = i + 1u32;
+  }
+  if variant == 2u32 {
+    let t = thread.start(0u32, &wakeFlusher);
+    t.detach();
+    thread.sleep(Duration.fromMillis(100i64));
+    setPanicHook(&onHookWait);
+  }
+  if variant == 1u32 {
+    setPanicHook(&onHookPrint);
+  }
+  if variant == 3u32 {
+    setPanicHook(&onPanic);
+    panicStartNs.store(Instant.now().nanos());
+    panic("held");
+  }
+  panic("paused")
+}
+
+fn childInterleave() i32 {
+  initAll();
+  var i = 0u32;
+  while i < 4u32 {
+    let w = Writer();
+    w.go(i, 20000u32);
+    i = i + 1u32;
+  }
+  let k = Killer();
+  k.go(6000u32);
+  finalAll();
+  0i32
+}
+
 fn child(mode: &str) i32 {
+  if mode == "starved" { return childPaused(1u32, 1500u32, 0u32); }
+  if mode == "midbatch" { return childPaused(2u32, 1500u32, 0u32); }
+  if mode == "hookprint" { return childPaused(1u32, 1500u32, 1u32); }
+  if mode == "flushwake" { return childPaused(1u32, 1500u32, 2u32); }
+  if mode == "wedged" { return childPaused(3u32, 60000u32, 3u32); }
+  if mode == "interleave" { return childInterleave(); }
   if mode == "heldpanic" { return childHeldPanic(0u32, 0u32); }
   if mode == "ceiling" { return childHeldPanic(60000u32, 300u32); }
   if mode == "abandon" { return childAbandon(); }
@@ -535,6 +632,89 @@ fn heldPanicCase(exe: &str, mode: &str, minMs: i64, maxMs: i64, lastWant: &str, 
   expectStr(last.view(), lastWant, label);
 }
 
+// The lines of 'text' are exactly "H:0" .. "H:99", in order, then 'tail' if it is not empty
+fn expectHundred(text: &String, tail: &str, label: &Array[u8]) {
+  var want = String();
+  var i = 0u32;
+  while i < 100u32 { want <- "H:", i, "\n"; i = i + 1u32; }
+  if tail.len() > 0usize { want <- tail, "\n"; }
+  let got = List[&str].from(text.lines());
+  let exp = List[&str].from(want.lines());
+  var same = got.len() == exp.len();
+  var j = 0usize;
+  while same && j < got.len() {
+    same = got[j] == exp[j];
+    j = j + 1usize;
+  }
+  expectBool(same, true, label);
+}
+
+// A panic with the owner paused: the panic writes all 100 lines itself, in order
+fn pausedCase(exe: &str, mode: &str, tail: &str, label: &Array[u8]) {
+  let o = ran(exe, mode);
+  expectBool(o.exitCode != 0u32, true, "paused panic: the program fails");
+  expectBool(o.stderr.contains("paused"), true, "paused panic: the message is written");
+  expectBool(lastLine(&o.stderr).view().startsWith("console:"), false, "paused panic: no report of dropped lines");
+  expectHundred(&o.stdout, tail, label);
+}
+
+// Lines of 'text' that begin with 'tag' are whole and each writer's are in order with
+// none twice or missing, up to its last (a panic ends the run): how many were good
+fn verifyPrefix(text: &String, tag: &str, ids: u32, label: &Array[u8]) {
+  let big = bigPad();
+  var next = List[u32]();
+  var k = 0u32;
+  while k < ids {
+    next.push(0u32);
+    k = k + 1u32;
+  }
+  var good = 0u64;
+  var bad = 0u64;
+  let all = List[&str].from(text.lines());
+  var li = 0usize;
+  while li < all.len() {
+    let line = all[li];
+    li = li + 1usize;
+    if line.startsWith("panic ") || line.startsWith("console:") || line.len() == 0usize {
+      continue;
+    }
+    let parts = List[&str].from(line.splitOnChar(':'));
+    if !(parts.len() == 6usize && parts[0usize] == tag) {
+      bad = bad + 1u64;
+      continue;
+    }
+    var id = 0u64;
+    var seq = 0u64;
+    var id2 = 0u64;
+    var seq2 = 1u64;
+    match u64.parse(parts[1usize]) { case let Ok(v) { id = v; } case is Err { bad = bad + 1u64; } }
+    match u64.parse(parts[2usize]) { case let Ok(v) { seq = v; } case is Err { bad = bad + 1u64; } }
+    match u64.parse(parts[4usize]) { case let Ok(v) { id2 = v; } case is Err { bad = bad + 1u64; } }
+    match u64.parse(parts[5usize]) { case let Ok(v) { seq2 = v; } case is Err { bad = bad + 1u64; } }
+    let padOk = if seq % 2500u64 == 0u64 { parts[3usize] == big.view() } else { parts[3usize] == pad };
+    if id != id2 || seq != seq2 || id >= u64.from(ids) || !padOk {
+      bad = bad + 1u64;
+      continue;
+    }
+    let slot = usize.from(id);
+    if u64.from(next[slot]) != seq {
+      bad = bad + 1u64;
+    }
+    next[slot] = u32.from(seq) + 1u32;
+    good = good + 1u64;
+  }
+  expectUInt(bad, 0u64, label);
+  expectBool(good > 0u64, true, label);
+}
+
+fn interleaveCase(exe: &str) {
+  let o = ran(exe, "interleave");
+  expectBool(o.exitCode != 0u32, true, "interleave: the program fails");
+  expectBool(o.stderr.contains("killed"), true, "interleave: the message is written");
+  verifyPrefix(&o.stdout, "L", 4u32, "interleave: every print line whole, in order, none twice or missing");
+  verifyPrefix(&o.stderr, "E", 4u32, "interleave: every eprint line whole, in order, none twice or missing");
+}
+
 fn main() i32 {
   let a = process.args();
   if a.len() >= 3usize && a[1usize].equals("--child") {
@@ -558,5 +738,15 @@ fn main() i32 {
   heldPanicCase(exe.view(), "ceiling", 300i64, 0i64,
     "console: 100 lines were queued but not written (ceiling of 300 ms reached)",
     "ceiling: the last line says 100 lines were dropped and the ceiling ended the wait");
+  pausedCase(exe.view(), "starved", "", "starved owner: the panic wrote all 100 lines in order");
+  pausedCase(exe.view(), "midbatch", "", "owner held mid-batch: the panic wrote all 100 lines in order");
+  pausedCase(exe.view(), "hookprint", "from hook", "hook: all 100 lines, then the hook's line");
+  let f = ran(exe.view(), "flushwake");
+  expectBool(f.stderr.contains("flush woke"), true, "a flush blocked in another thread woke");
+  expectHundred(&f.stdout, "", "flush wake: the 100 lines were written");
+  heldPanicCase(exe.view(), "wedged", 1500i64, 0i64,
+    "console: 100 lines were queued but not written (ceiling of 1500 ms reached)",
+    "wedged owner: the panic ended at the ceiling and said 100 lines were dropped");
+  interleaveCase(exe.view());
   done()
 }

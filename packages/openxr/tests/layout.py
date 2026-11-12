@@ -22,7 +22,7 @@ srcdir = os.path.join(here, '..', 'src')
 files = ['openxr.cone', 'handles.cone', 'constants.cone', 'structs.cone', 'fntypes.cone']
 # The files of functions: no C struct is declared in them (the tables of
 # addresses, whose fields are usize), so layout has nothing to check there
-function_files = ['load.cone', 'instancefns.cone']
+function_files = ['load.cone', 'instancefns.cone', 'hands.cone']
 assert sorted(files + function_files) == sorted(f for f in os.listdir(srcdir) if f.endswith('.cone')), \
     'layout.py lists a different set of files than src/ holds'
 src = ''

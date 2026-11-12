@@ -463,6 +463,13 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     // on: everything below reads the declaration's type and tag
     AliasDclNode *alias = name->dclnode->tag == AliasDclTag ? (AliasDclNode*)name->dclnode : NULL;
     if (alias) {
+        if (alias->genericinfo) {
+            uint32_t expected = alias->genericinfo->parms->used;
+            errorMsgNode((INode*)name, ErrorArgCount, "The alias %s takes %u type argument%s, and this gives 0.",
+                &alias->namesym->namestr, expected, expected == 1 ? "" : "s");
+            name->vtype = errorType;
+            return;
+        }
         INode *dcl = aliasDclResolve(name->dclnode);
         if (dcl == NULL) {
             // The fold that made the alias failed to bind it, and said so

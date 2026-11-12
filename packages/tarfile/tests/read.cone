@@ -1,0 +1,202 @@
+// Reading: archives GNU tar made (tests/data: gnu-short.tar is GNU's own format, gnu-ustar-long.tar is
+// 'tar --format=ustar' with a name that needs the prefix field), fed whole and in pieces of every awkward size,
+// each entry's data coming out in pieces no bigger than the buffer pulled into.
+
+mod readtest;
+
+import testing use *;
+import iobuf use IoBuf;
+import collections use *;
+import tarfile use *;
+import fs;
+import path use Path;
+
+fn load(name: &str) List[u8] {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) {
+      var out = List[u8].withCapacity(s.len());
+      var k = 0usize;
+      while k < s.len() { out.push(s[k]); k += 1usize; }
+      out
+    }
+    case let Err(e) {
+      expect(false, "a fixture is missing");
+      List[u8]()
+    }
+  }
+}
+
+// Reads the whole archive, 'chunk' bytes at a time, into a text: a line for each entry (kind, name, size, mode,
+// mtime, and its data in brackets if it has any), and how it ended
+fn dump(arch: &Array[u8], chunk: usize, room: usize) String {
+  var pieces = 0usize;
+  dumpCounting(arch, chunk, room, &mut pieces)
+}
+
+// The same, counting the pieces the data came in
+fn dumpCounting(arch: &Array[u8], chunk: usize, room: usize, pieces: &mut usize) String {
+  var tar = TarReader.make();
+  // The pool may give a block bigger than asked for: fill all but 'room' bytes of it, and read after the filler
+  var out = IoBuf(room);
+  let pad = out.capacity() - room;
+  out.putRepeat(0u8, pad);
+  var s = String();
+  var data = String();
+  var at = 0usize;
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Begin {
+      let e = tar.current();
+      if e.kind == EntryKind.Dir { s.append("D "); }
+      else if e.kind == EntryKind.Symlink { s.append("L "); }
+      else { s.append("F "); }
+      s.append(e.name.view());
+      s.append(" ");
+      s.appendUInt(e.size);
+      s.append(" ");
+      s.appendUInt(u64.from(e.mode));
+      s.append(" ");
+      s.appendInt(e.mtime);
+      data = String();
+    } else if st == Step.Data {
+      pieces += 1usize;
+      expect(out.len() - pad <= room, "a piece is never more than the room it was given");
+      data.appendBytes(&out.view()[pad ..< out.len()]);
+      out.setLen(pad);
+    } else if st == Step.End {
+      if data.len() > 0usize { s.append(" ["); s.append(data.view()); s.append("]"); }
+      s.append("\n");
+    } else if st == Step.NeedInput {
+      if at < arch.len {
+        var n = arch.len - at;
+        if n > chunk { n = chunk; }
+        tar.feed(&arch[at ..< at + n]);
+        at += n;
+      } else {
+        tar.finish();
+      }
+    } else if st == Step.Done {
+      s.append("done\n");
+      break;
+    } else {
+      s.append("failed: ");
+      match tar.error() {
+        case let Some(e) { s.append(e.reason.view()); }
+        case is None[TarError] { s.append("no error"); }
+      }
+      s.append("\n");
+      break;
+    }
+  }
+  s
+}
+
+fn lines40() String {
+  var d = String();
+  var i = 1u64;
+  while i <= 40u64 {
+    d.append("line ");
+    d.appendUInt(i);
+    d.append(" of the data file\n");
+    i += 1u64;
+  }
+  d
+}
+
+fn shortWant() String {
+  var w = String.from("F hello.txt 11 420 1700000000 [hello, tar\n]\n");
+  w.append("F empty.txt 0 420 1700000000\n");
+  w.append("D sub/ 0 493 1700000000\n");
+  w.append("F sub/data.txt 991 420 1700000000 [");
+  w.append(lines40().view());
+  w.append("]\ndone\n");
+  w
+}
+
+fn longWant() String {
+  var w = String.from("F hello.txt 11 420 1700000000 [hello, tar\n]\n");
+  let dir1 = "this-is-a-deliberately-long-folder-name-to-push-the-path-past-one-hundred-bytes/";
+  w.append("D ");
+  w.append(dir1);
+  w.append(" 0 493 1700000000\n");
+  w.append("D ");
+  w.append(dir1);
+  w.append("and-another-long-folder-name-in-it/ 0 493 1700000000\n");
+  w.append("F ");
+  w.append(dir1);
+  w.append("and-another-long-folder-name-in-it/leaf.txt 15 420 1700000000 [long name data\n]\ndone\n");
+  w
+}
+
+fn main() i32 {
+  let gnu = load("gnu-short.tar");
+  let ust = load("gnu-ustar-long.tar");
+  expectUInt(u64.from(gnu.len()), 4608u64, "the GNU fixture is the size tar made");
+
+  let want1 = shortWant();
+  let want2 = longWant();
+  expectStr(dump(gnu.view(), 1000000usize, 65536usize).view(), want1.view(), "GNU format, all at once");
+  expectStr(dump(ust.view(), 1000000usize, 65536usize).view(), want2.view(), "ustar with prefix names, all at once");
+
+  // split at every awkward size, and data pulled through a small buffer
+  let sizes =[1usize, 2usize, 7usize, 100usize, 511usize, 512usize, 513usize, 1000usize];
+  var k = 0usize;
+  var same1 = true;
+  var same2 = true;
+  while k < 8usize {
+    if dump(gnu.view(), sizes[k], 50usize).view() != want1.view() { same1 = false; }
+    if dump(ust.view(), sizes[k], 50usize).view() != want2.view() { same2 = false; }
+    k += 1usize;
+  }
+  expect(same1, "GNU format, fed in pieces of 1 to 1000 bytes into a 50-byte buffer");
+  expect(same2, "ustar, fed in pieces of 1 to 1000 bytes into a 50-byte buffer");
+
+  // a big buffer takes each file's data in one piece (hello.txt, data.txt); a small one in several
+  var big = 0usize;
+  var small = 0usize;
+  dumpCounting(gnu.view(), 100000usize, 65536usize, &mut big);
+  dumpCounting(gnu.view(), 100000usize, 50usize, &mut small);
+  expectUInt(u64.from(big), 2u64, "two pieces into a big buffer");
+  expect(small > 4usize, "more pieces into a small one");
+
+  // offsets and counts
+  var tar = TarReader.make();
+  tar.feed(gnu.view());
+  tar.finish();
+  var out = IoBuf(4096usize);
+  var offs = String();
+  while true {
+    let st = tar.pull(&mut out);
+    if st == Step.Begin { offs.appendUInt(tar.current().offset); offs.append(" "); }
+    else if st == Step.Data { out.clear(); }
+    else if st == Step.Done || st == Step.Failed { break; }
+  }
+  expectStr(offs.view(), "0 1024 1536 2048 ", "each entry's header offset");
+  expectUInt(u64.from(tar.entriesDone()), 4u64, "entries done");
+
+  // an IoBuf fed as it is
+  var t2 = TarReader.make();
+  var b = IoBuf(8192usize);
+  b.append(gnu.view());
+  t2.feedBuf(b);
+  t2.finish();
+  var names = 0usize;
+  while true {
+    let st = t2.pull(&mut out);
+    if st == Step.Begin { names += 1usize; }
+    else if st == Step.Data { out.clear(); }
+    else if st == Step.Done || st == Step.Failed { break; }
+  }
+  expectUInt(u64.from(names), 4u64, "feedBuf: four entries");
+
+  // an empty input is an empty archive; a bare end marker too
+  expectStr(dump(List[u8]().view(), 10usize, 100usize).view(), "done\n", "no bytes at all");
+  var zeros = List[u8]();
+  var z = 0usize;
+  while z < 1024usize { zeros.push(0u8); z += 1usize; }
+  expectStr(dump(zeros.view(), 10usize, 100usize).view(), "done\n", "two zero blocks");
+
+  done()
+}

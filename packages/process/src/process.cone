@@ -194,6 +194,7 @@ import collections use String, List;
 import path use Path;
 import env;
 import time;
+import thread;
 import ioerror use osKind;
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,7 @@ extern {
   fn @c(system) CreateNamedPipeW(name: *u16, openMode: u32, pipeMode: u32, instances: u32,
       outSize: u32, inSize: u32, timeout: u32, sa: *u8) usize;
   fn @c(system) CreateEventW(sa: *u8, manual: i32, initial: i32, name: *u16) usize;
+  fn @c(system) SetEvent(h: usize) i32;
   fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: &mut Overlapped) i32;
   fn @c(system) GetOverlappedResult(h: usize, ov: &mut Overlapped, got: &mut u32, block: i32) i32;
   fn @c(system) CancelIoEx(h: usize, ov: &mut Overlapped) i32;
@@ -805,9 +807,9 @@ pub struct Child {
 // in 'dir' as there. An Err is a program that could not be started. Its standard output and error come back as the
 // ends of pipes (the Child's 'takeStdout', 'takeStderr'), or are this program's own where 'opts.inherit' is true.
 //
-// WHICH OPTIONS APPLY. 'inherit' applies, as in 'run'. 'timeout' and 'crashReport' are IGNORED here, whatever they
-// are set to: the caller stops the child with 'kill' when it wants it stopped, and a crash goes to the system's
-// reporting.
+// WHICH OPTIONS APPLY. 'inherit' and 'crashReport' apply, as in 'run' (with 'crashReport: false' on Windows the child
+// is this program's debuggee, handled by a thread of its own that lasts as long as the child). 'timeout' is IGNORED
+// here, whatever it is set to: the caller stops the child with 'kill' when it wants it stopped.
 //
 // A DROPPED CHILD IS KILLED AND REAPED. When the returned Child dies with its process not given away, the child and
 // the programs it started are ended and waited for. This is unlike Rust's std::process::Child, which detaches. For a
@@ -960,11 +962,25 @@ fn spawnWindows(op: &str, program: &str, line: &str, dir: &Path, opts: Options) 
       childIn, childOut, childErr, list);
     // Suspended until it is in its job, so that nothing it starts escapes the job
     var flags = extendedStartupInfo | createSuspended;
-    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
-    if CreateProcessW(null, wline, null, null, 1i32, flags, null, wdir, &mut si, &mut pi) == 0i32 {
-      failed = true;
-      code = GetLastError();
+    // 'crashReport: false': the child is this program's debuggee, started and its events handled by a thread of its own
+    var environment: *u16 = null;
+    if !opts.crashReport {
+      flags = flags | debugOnlyThisProcess;
+      environment = debuggeeEnvironment();
+      if environment as usize != 0usize { flags = flags | unicodeEnvironment; }
     }
+    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
+    if opts.crashReport {
+      if CreateProcessW(null, wline, null, null, 1i32, flags, null, wdir, &mut si, &mut pi) == 0i32 {
+        failed = true;
+        code = GetLastError();
+      }
+    }
+    else {
+      code = startDebuggee(wline, wdir, &mut si, flags, environment, &mut pi);
+      if code != 0u32 { failed = true; }
+    }
+    if environment as usize != 0usize { libc.free(environment as *u8); }
     DeleteProcThreadAttributeList(list);
   }
   libc.free(list);
@@ -1080,10 +1096,22 @@ fn spawnPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
     rc = attrFlags(tp, spawnSetGroup);
     if rc == 0i32 { rc = attrGroup(tp, 0i32); }
   }
+  // 'crashReport: false': no core dump is left for the system to take; the limit is zero for the child, whose it
+  // becomes, and put back
+  var saved = RLimit(0u64, 0u64);
+  var limited = false;
+  if rc == 0i32 && !opts.crashReport {
+    if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
+      var none = RLimit(0u64, saved.hard);
+      setLimit(limitCore, &mut none as *RLimit);
+      limited = true;
+    }
+  }
   var pid = 0i32;
   if rc == 0i32 {
     rc = spawnProgram(&mut pid as *i32, file.cstr(), ap, tp, argv, cone_environ());
   }
+  if limited { setLimit(limitCore, &mut saved as *RLimit); }
   actionsDestroy(ap);
   attrDestroy(tp);
   k = 0usize;
@@ -1294,6 +1322,69 @@ fn pump(d: &mut Debuggee, ms: u32) bool {
     ContinueDebugEvent(d.ev.pid, d.ev.tid, status);
   }
   d.exited
+}
+
+// What the thread that starts a debuggee is given, and what it leaves: the call to CreateProcessW, and its answer.
+// It lives in the caller's frame until 'done' is set, and the thread touches it no more after that
+struct DebugStart {
+  pub wline: *u16;
+  pub wdir: *u16;
+  pub si: *StartupInfoEx;
+  pub flags: u32;
+  pub environment: *u16;
+  pub pi: ProcessInformation;
+  pub code: u32;
+  pub done: usize;
+}
+
+// The thread of a debuggee ('crashReport: false'): a debuggee's events are handled by the thread that started it, so
+// that thread starts it, tells the caller, and handles its events until it exits (one thread for each such child, for
+// as long as the child lives; no pool, no count)
+fn debuggeeThread(arg: usize) u32 {
+  let p = arg as *DebugStart;
+  var si = *(*p).si;
+  var pi = ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  var code = 0u32;
+  var mine = 0usize;
+  if CreateProcessW(null, (*p).wline, null, null, 1i32, (*p).flags, (*p).environment as *u8, (*p).wdir,
+      &mut si, &mut pi) == 0i32 {
+    code = GetLastError();
+    if code == 0u32 { code = errorInvalidParameter; }
+  }
+  else if DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &mut mine, 0u32, 0i32,
+      duplicateSameAccess) == 0i32 {
+    mine = 0usize;
+  }
+  let done = (*p).done;
+  (*p).pi = pi;
+  (*p).code = code;
+  SetEvent(done);
+  // From here the caller's record is not ours
+  if code != 0u32 || mine == 0usize { return 0u32; }
+  var d = Debuggee(true, mine, false, false, DebugEvent(0u32, 0u32, 0u32, Array[u64, 20]() <- fill 0u64));
+  while !d.exited {
+    if pump(&mut d, 100u32) { break; }
+    if WaitForSingleObject(mine, 0u32) == 0u32 {
+      pump(&mut d, 1000u32);
+      break;
+    }
+  }
+  CloseHandle(mine);
+  0u32
+}
+
+// Start a debuggee on a thread of its own and wait for the start: 0, or the system's error number
+fn startDebuggee(wline: *u16, wdir: *u16, si: &mut StartupInfoEx, flags: u32, environment: *u16,
+    pi: &mut ProcessInformation) u32 {
+  let done = CreateEventW(null, 1i32, 0i32, null);
+  if done == 0usize { return GetLastError(); }
+  var st = DebugStart(wline, wdir, si as *StartupInfoEx, flags, environment,
+    ProcessInformation(0usize, 0usize, 0u32, 0u32), 0u32, done);
+  thread.start[usize, u32](&mut st as *DebugStart as usize, &debuggeeThread).detach();
+  WaitForSingleObject(done, infinite);
+  CloseHandle(done);
+  *pi = st.pi;
+  st.code
 }
 
 // The environment a debuggee is started with: this program's, with
