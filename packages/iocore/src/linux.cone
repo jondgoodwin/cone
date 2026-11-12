@@ -395,7 +395,7 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     lp.decide(p, diag.outcomeFailed, 0usize, noSuchHandle());
     return triedDone;
   }
-  let fd = fdOf((*lp.handles.at(ei)).raw);
+  let fd = fdOf((lp.handles.borrowAt(ei).unwrap()).raw);
   let k = r.kind;
   if k == diag.kindRecv {
     var n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);
@@ -611,7 +611,7 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
       noDelay(sock);
       var code = 0u32;
       var h = Handle.none();
-      code, h = lxAdopt(lp, sock, hSocket, (*lp.handles.at(ei)).family);
+      code, h = lxAdopt(lp, sock, hSocket, (lp.handles.borrowAt(ei).unwrap()).family);
       if code != 0u32 {
         lp.decide(p, diag.outcomeFailed, 0usize, code);
       } else {
@@ -665,9 +665,10 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
 fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
   #if #os == .windows {return;} #else {
   while true {
-    let e = lp.handles.at(ei);
-    if e as usize == 0usize {break;}
-    let head = if side == onReads {(*e).reads} else {(*e).writes};
+    let head = match lp.handles.borrowAt(ei) {
+      case let Some(e) {if side == onReads {e.reads} else {e.writes}}
+      case None {break;}
+    };
     if head as usize == 0usize {break;}
     if lxTry(lp, head, at) == triedWait {break;}
   }
@@ -677,10 +678,10 @@ fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
 // epoll says handle entry ei (generation gen) has events
 fn lxEvent(lp: &mut Loop, ei: u32, gen: u32, events: u32, at: Instant) {
   #if #os == .windows {return;} #else {
-  if lp.handles.get(HEntryId(ei, gen)) as usize == 0usize {return;}
+  if lp.handles.borrow(HEntryId(ei, gen)) is None {return;}
   if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, onReads, at);}
   // The operations may have closed it (a failed connect does): look again
-  if lp.handles.get(HEntryId(ei, gen)) as usize == 0usize {return;}
+  if lp.handles.borrow(HEntryId(ei, gen)) is None {return;}
   if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, onWrites, at);}
   }
 }
@@ -872,7 +873,7 @@ fn lxSettleCancels(lp: &mut Loop) {
 // running ends as it ends. They are the jobs on its lists
 fn lxCancelFiles(lp: &mut Loop, h: Handle) {
   #if #os == .windows {return;} #else {
-  let e = lp.handles.at(h.index) as &HEntry;
+  let e = lp.handles.borrowAt(h.index).unwrap();
   if e.kind != hFile {return;}
   var side = 0u32;
   while side < 2u32 {
@@ -891,15 +892,15 @@ fn lxCancelFiles(lp: &mut Loop, h: Handle) {
 // file's lists hold its jobs, which the pool's own records end)
 fn lxCancelAll(lp: &mut Loop, ei: u32) {
   #if #os == .windows {return;} #else {
-  if (*lp.handles.at(ei)).kind == hFile {return;}
+  if (lp.handles.borrowAt(ei).unwrap()).kind == hFile {return;}
   while true {
-    let head = (*lp.handles.at(ei)).reads;
+    let head = (lp.handles.borrowAt(ei).unwrap()).reads;
     if head as usize == 0usize {break;}
     lp.unlinkSide(head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
   }
   while true {
-    let head = (*lp.handles.at(ei)).writes;
+    let head = (lp.handles.borrowAt(ei).unwrap()).writes;
     if head as usize == 0usize {break;}
     lp.unlinkSide(head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
