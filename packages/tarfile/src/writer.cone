@@ -1,0 +1,191 @@
+// ======== An archive made entry by entry ========
+//
+// A TarWriter holds the archive being made. Entries are added whole ('add', 'addDir'); each is written when
+// added, as a ustar header and the data padded to a block. 'pull' hands out what has been made and drops it, so
+// an archive of many files can go to a file or socket holding one entry at a time: pull after each add.
+//
+//   var tar = TarWriter.make();
+//   var opts = EntryOptions.plain();
+//   tar.addDir("docs", &opts);
+//   tar.add("docs/readme.txt", "hello".bytes(), &opts);
+//   tar.finish();
+//   var out = IoBuf(65536usize);
+//   while tar.pull(&mut out, 65536usize) != Status.Done { ... out.view() ...; out.clear(); }
+//
+// WHAT IS WRITTEN. POSIX ustar ('ustar\0' + '00'): regular files and folders, owner and group 0 and no names, the
+// mode and time of the options. A name longer than 100 bytes is split at a '/' into the prefix field (up to 155
+// bytes) and the name field (up to 100): a name that cannot be split so is BadArgument, never shortened and
+// never written as a PAX or GNU long-name record. The archive ends with two blocks of zeros.
+//
+// THE BOUND. 'add' copies an entry into the writer whole, and the writer's pooled buffer panics past the pool's
+// 64 MiB bound, so an entry of more than 16 MiB is TooLarge. Pull before the next add, since what is not pulled is
+// held. The way past the bound is not built yet: an 'add' that takes the size up front and then pulls the data in
+// pieces, which ustar allows because its header needs only the size first. Real archives hold larger files, so
+// that is the next tarfile PR.
+
+// The most data one entry may carry
+let maxEntry: usize = 16777216usize;
+
+// Whether a name could be a ustar name field and prefix field, and where it splits: None, or the offset of the '/'
+// where the prefix ends (0 for no prefix at all)
+fn splitName(name: &Array[u8]) Option[usize] {
+  if name.len <= 100usize { return Some[usize](0usize); }
+  // the rest after the '/' must fit 100 bytes and be there; the prefix before it must fit 155
+  // the last such '/' is chosen, as GNU tar does
+  let low = if name.len > 101usize { name.len - 101usize } else { 1usize };
+  var i = if name.len - 2usize < 155usize { name.len - 2usize } else { 155usize };
+  while i >= low && i >= 1usize {
+    if name[i] == 47u8 { return Some[usize](i); }
+    i -= 1usize;
+  }
+  None[usize]
+}
+
+// Sets b[at ..< at + bytes.len] to the bytes
+fn setBytes(h: &mut IoBuf, at: usize, bytes: &Array[u8]) {
+  var k = 0usize;
+  while k < bytes.len {
+    h.setNum[u8](at + k, bytes[k], false);
+    k += 1usize;
+  }
+}
+
+// A number as octal digits in a field of n bytes, zero-filled to the left, then a NUL
+fn setOctal(h: &mut IoBuf, at: usize, n: usize, v: u64) {
+  var rest = v;
+  var k = n - 1usize;
+  h.setNum[u8](at + k, 0u8, false);
+  while k > 0usize {
+    k -= 1usize;
+    h.setNum[u8](at + k, 48u8 + u8.from(rest & 7u64), false);
+    rest = rest >> 3u64;
+  }
+}
+
+// A ustar archive being made. See the top of this file.
+pub struct TarWriter is Move {
+  w: Writer;
+  ready: Chain;
+  finished: bool;
+  added: usize;
+
+  pub fn make() TarWriter {
+    TarWriter(Writer.make(65536usize), Chain.make(0xFFFFFFFFFFFFFFFFusize), false, 0usize)
+  }
+
+  // How many entries have been added
+  pub fn count(self: &) usize { added }
+
+  pub fn isFinished(self: &) bool { finished }
+
+  // Adds a regular file
+  pub fn add(self: &mut, name: &str, data: &Array[u8], opts: &EntryOptions) Result[void, TarError] {
+    if data.len > maxEntry {
+      return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "is larger than 16 MiB, the most one entry may carry").view());
+    }
+    self.entry(name, false, data, opts)
+  }
+
+  // Adds a folder (its name is written with the '/' a folder's ends in)
+  pub fn addDir(self: &mut, name: &str, opts: &EntryOptions) Result[void, TarError] {
+    var empty = List[u8]();
+    self.entry(name, true, empty.view(), opts)
+  }
+
+  fn entry(self: &mut, name: &str, dir: bool, data: &Array[u8], opts: &EntryOptions) Result[void, TarError] {
+    if finished {
+      return refusal[void](ErrorKind.BadArgument, 0u64, "an entry was added after finish");
+    }
+    var full = String.from(name);
+    if dir && !(full.len() > 0usize && full[full.len() - 1usize] == 47u8) { full.append("/"); }
+    let nb = full.view().bytes();
+    if nb.len == 0usize || (dir && nb.len == 1usize) {
+      return refusal[void](ErrorKind.BadArgument, 0u64, "an entry has no name");
+    }
+    var k = 0usize;
+    while k < nb.len {
+      if nb[k] == 0u8 { return refusal[void](ErrorKind.BadArgument, 0u64, about("the name", name, "has a NUL in it").view()); }
+      k += 1usize;
+    }
+    let cut = match splitName(nb) {
+      case let Some(c) { c }
+      else {
+        return refusal[void](ErrorKind.BadArgument, 0u64, about("the name", name, "does not fit a ustar header (100 bytes, or 155 and 100 split at a '/')").view());
+      }
+    };
+    if opts.modified < 0i64 || u64.from(opts.modified) > 0x1FFFFFFFFu64 {
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the time of", name, "does not fit a header").view());
+    }
+    var mode = opts.mode;
+    if mode == 0u32 { mode = if dir { 493u32 } else { 420u32 }; }
+    if mode > 0xFFFu32 {
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the mode of", name, "has bits above the twelve a header holds").view());
+    }
+
+    var h = IoBuf(512usize);
+    h.putRepeat(0u8, 512usize);
+    if cut == 0usize {
+      setBytes(&mut h, 0usize, nb);
+    } else {
+      setBytes(&mut h, 345usize, &nb[0usize ..< cut]);
+      setBytes(&mut h, 0usize, &nb[cut + 1usize ..< nb.len]);
+    }
+    setOctal(&mut h, 100usize, 8usize, u64.from(mode));
+    setOctal(&mut h, 108usize, 8usize, 0u64);
+    setOctal(&mut h, 116usize, 8usize, 0u64);
+    setOctal(&mut h, 124usize, 12usize, u64.from(data.len));
+    setOctal(&mut h, 136usize, 12usize, u64.from(opts.modified));
+    setBytes(&mut h, 148usize, "        ".bytes());
+    h.setNum[u8](156usize, if dir { 53u8 } else { 48u8 }, false);
+    setBytes(&mut h, 257usize, "ustar".bytes());
+    setBytes(&mut h, 263usize, "00".bytes());
+    // the checksum: six octal digits, a NUL, a space
+    let sum = checksum(h.view());
+    setOctal(&mut h, 148usize, 7usize, sum);
+    h.setNum[u8](155usize, 32u8, false);
+
+    w.put(h.view());
+    if data.len > 0usize {
+      w.put(data);
+      w.repeat(0u8, padFor(u64.from(data.len)));
+    }
+    added += 1usize;
+    Ok[void, TarError](nil)
+  }
+
+  // Ends the archive: two blocks of zeros. Nothing is added after.
+  pub fn finish(self: &mut) {
+    if finished { return; }
+    w.repeat(0u8, 1024usize);
+    finished = true;
+  }
+
+  // Moves what the writer holds to the chain 'pull' reads from
+  fn settle(self: &mut) {
+    if w.isEmpty() { return; }
+    var all = w.finish();
+    while true {
+      match all.popFront() {
+        case let Some(b) { _ = ready.push(b); }
+        case is None[IoBuf] { break; }
+      }
+    }
+  }
+
+  // Appends at most 'max' of the bytes made since the last pull to 'dst', and no more than 'dst' has room for.
+  // NeedInput: all pulled, add another entry or 'finish'. MoreOutput: pull again, into a buffer with room. Done:
+  // finished, and every byte pulled.
+  pub fn pull(self: &mut, dst: &mut IoBuf, max: usize) Status {
+    self.settle();
+    var n = ready.len();
+    if n > max { n = max; }
+    if n > dst.room() { n = dst.room(); }
+    if n > 0usize {
+      let before = dst.len();
+      let k = ready.copyOut(0usize, &mut dst.spare()[0usize ..< n]);
+      ready.advance(k);
+      dst.setLen(before + k);
+    }
+    if ready.len() > 0usize { Status.MoreOutput } else if finished { Status.Done } else { Status.NeedInput }
+  }
+}

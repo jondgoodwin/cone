@@ -2,7 +2,13 @@
 // in Rust's regex syntax is parsed, compiled to a byte-level automaton, and run
 // by a Pike VM: every search takes time proportional to the pattern's size times
 // the text's length, whatever the pattern, so a pattern built from a user's input
-// is no denial of service.
+// is no denial of service. When the groups of a match are wanted ('captures',
+// 'capturesFrom', 'replace' with a '$1'), a bounded backtracker finds them where the
+// states x text positions it must remember fit 32 KB of bits (RE2's budget): it is
+// quicker than the Pike VM there. A longer text is searched by the Pike VM for the
+// match's bounds alone, and the backtracker then finds the groups inside the match
+// if the match is short enough; else the Pike VM finds them. Both give the same
+// answer, and either way the time is bounded by states x positions.
 //
 //   mod demo;
 //   import stdio use *;
@@ -57,15 +63,14 @@
 // between two bytes of one character.
 //
 // SCRATCH. A search needs working space of the size of the program (states x
-// slots). Each call of 'isMatch', 'find', 'findFrom', 'captures', 'replace' and
+// slots), or for the backtracker up to 32 KB of bits. Each call of 'isMatch', 'find', 'findFrom', 'captures', 'replace' and
 // 'replaceAll' makes its own; 'matches' and 'split' make one for the whole
 // iteration. A Regex is not changed by a search, so one may be shared.
 //
 // LIMITS. A pattern may be nested 250 deep, a repetition count may be at most 1000,
 // and a program at most 200000 states (the error is ErrorKind.TooBig).
 //
-// METHOD CHOICES. Left out for now, each to come as its own step: a bounded
-// backtracker for captures on short texts, a lazy DFA for 'isMatch' and 'find',
+// METHOD CHOICES. Left out for now, each to come as its own step: a lazy DFA for 'isMatch' and 'find',
 // literal prefilters beyond a pattern's own leading literal (which is scanned for
 // with a plain loop), a reusable cache, a closure form of 'replaceAll', and
 // Unicode classes.

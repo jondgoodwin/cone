@@ -90,6 +90,11 @@ int loanWhole(uint32_t loan);
 // which come along with it.
 int loanIsLocal(uint32_t loan);
 
+// Is a loan a borrow of a thread-local (the current worker's copy)? loanIsLocal
+// counts it too, so it ends at a seam and may not outlive the call
+int loanIsThreadLocal(uint32_t loan);
+int loanVarIsThreadLocal(VarDclNode *var);
+
 // A loan in 'set' rooted in this function's own storage, or 0
 uint32_t loanLocalIn(PathSet *set);
 
@@ -389,6 +394,9 @@ int loanShapeOwnerByValue(uint32_t loan);
 int loanShapeInFlight(uint32_t loan);
 int loanShapeSamePlace(uint32_t loan, Place *pl);
 int loanShapeDisjoint(uint32_t loan, Place *pl);
+// the borrow expression 'site', whose loan is in 'set', is of a place apart from the shape loan's
+// (an argument that is a sibling field)
+int loanShapeDisjointAt(uint32_t loan, PathSet *set, INode *site);
 void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee);
 void loanShapePend(INode *call, uint32_t loan, int why, Name *callee);
 

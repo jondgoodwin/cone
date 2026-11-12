@@ -486,5 +486,84 @@ pub fn routeEdges(g: &mut Graph, o: &RouteOptions) RouteStats {
     }
     e = e + 1usize;
   }
+  placeEdgeLabels(g);
   stats
+}
+
+fn rectsOverlap(ax: f32, ay: f32, aw: f32, ah: f32, bx0: f32, by0: f32, bx1: f32, by1: f32) bool {
+  ax - aw * 0.5 < bx1 && ax + aw * 0.5 > bx0 && ay - ah * 0.5 < by1 && ay + ah * 0.5 > by0
+}
+
+// Does a label of this size centred at (x, y) overlap a node box or a label already placed (edges before 'upto')?
+fn labelClash(g: &Graph, upto: usize, x: f32, y: f32, w: f32, h: f32) bool {
+  var n = 0usize;
+  while n < g.nodes.len() {
+    if g.nodes[n].alive && rectsOverlap(x, y, w, h, g.left(n) - 2., g.top(n) - 2., g.right(n) + 2., g.bottom(n) + 2.) { return true; }
+    n = n + 1usize;
+  }
+  var e = 0usize;
+  while e < upto {
+    let q = &g.edges[e];
+    if q.alive && q.labelW > 0. && q.route.len() >= 2usize &&
+       rectsOverlap(x, y, w, h, q.labelX - q.labelW * 0.5 - 2., q.labelY - q.labelH * 0.5 - 2., q.labelX + q.labelW * 0.5 + 2., q.labelY + q.labelH * 0.5 + 2.) { return true; }
+    e = e + 1usize;
+  }
+  false
+}
+
+// Gives every routed edge with a measured label (labelW > 0) a spot for it, on its route and clear of every box and
+// of the labels placed before it. It tries the middle of the last segment (the one into the target) first, then points
+// sliding outwards along it, then the same on the other segments; if none is clear it uses the middle of the longest.
+// Known limit: a crowded fan of wide labels on edges leaving one node can still overlap one another, because the layout
+// reserves a label's depth between layers, not its width across them. routeEdges calls it at its end, so a caller that
+// routes does not call it again.
+pub fn placeEdgeLabels(g: &mut Graph) {
+  var e = 0usize;
+  while e < g.edges.len() {
+    if g.edges[e].alive && g.edges[e].labelW > 0. && g.edges[e].route.len() >= 2usize {
+      let lw = g.edges[e].labelW;
+      let lh = g.edges[e].labelH;
+      let r = &g.edges[e].route;
+      // the longest segment, for the first try
+      var bestLen = -1.0f;
+      var bestAt = 1usize;
+      var s = 1usize;
+      while s < r.len() {
+        let d = r[s].distance(*r[s - 1usize]);
+        if d > bestLen { bestLen = d; bestAt = s; }
+        s = s + 1usize;
+      }
+      var spot = (*r[bestAt]).lerp(*r[bestAt - 1usize], 0.5);
+      let first = spot;
+      var found = false;
+      // The last segment (into the target) first: edges that fan out reach boxes that are apart, so their labels
+      // are apart too. Then the others in order. Along each from its middle outwards in 1/32 steps.
+      let lead = r.len() - 1usize;
+      var pass = 0usize;
+      while !found && pass < r.len() {
+        s = if pass == 0usize { lead } else { pass };
+        if pass == 0usize || s != lead {
+          var k = 0u32;
+          while !found && k <= 16u32 {
+            var sgn = 0u32;
+            while !found && sgn < 2u32 {
+              if !(k == 0u32 && sgn == 1u32) {
+                let off = f32.from(k) / 32.;
+                let t = if sgn == 0u32 { 0.5 + off } else { 0.5 - off };
+                let p = (*r[s - 1usize]).lerp(*r[s], t);
+                if !labelClash(g, e, p.x, p.y, lw, lh) { spot = p; found = true; }
+              }
+              sgn = sgn + 1u32;
+            }
+            k = k + 1u32;
+          }
+        }
+        pass = pass + 1usize;
+      }
+      if !found { spot = first; }
+      g.edges[e].labelX = spot.x;
+      g.edges[e].labelY = spot.y;
+    }
+    e = e + 1usize;
+  }
 }

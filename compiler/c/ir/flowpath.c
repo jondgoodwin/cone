@@ -1127,8 +1127,6 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     *pl = refpl;
     pl->ownertype = reftype->tag == RefTag || reftype->tag == VirtRefTag ? reftype : NULL;
-    if (pwMayAlias(reftype))
-        pl->owned = 1;
     if (pwMayAliasWritten(reftype))
         pl->shwrite = 1;
     // A dereference cut off by the step limit is not marked shared: the place
@@ -1140,6 +1138,10 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
             pl->sharedlen = pl->nsteps;
         }
     }
+    // 'owned' is then 1 + the index of this dereference (Place.owned): the fields past it are
+    // a collection another field's owner may own too
+    if (pwMayAlias(reftype))
+        pl->owned = pl->nsteps;
     return 1;
 }
 
@@ -2852,12 +2854,26 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // writes. Anything made of the borrow afterwards is asked
         if (gv && recvpl && pathSetHasLoan(pathVars[recvpl->var].holds, loan))
             continue;
+        // An argument that borrows a sibling field, a place apart from the loan's own, is a value this
+        // function owns whole (reshapeCall's 'apart'); a method's receiver is asked as before
+        // Only the first 16 arguments are looked at (reshapeCallBody reads 'apart' for k < 16 only): a
+        // call with more falls back to the old answer for the rest, which is the refusal, never an accept
+        uint8_t apart[16];
+        int anyapart = 0;
+        memset(apart, 0, sizeof(apart));
+        for (uint32_t j = meth ? 1 : 0; j < nargs && j < 16; ++j) {
+            INode *ba = nodesGet(call->args, j);
+            while (ba->tag == CastTag && !(ba->flags & FlagConvert))
+                ba = ((CastNode *)ba)->exp;
+            apart[j] = ba->tag == BorrowTag && loanShapeDisjointAt(loan, argsets[j], ba);
+            anyapart |= apart[j];
+        }
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
-        // change what it is
+        // (or an argument's place) change what it is
         INode *ro = owner && loanShapeOwnerByValue(loan) ? recvfield : NULL;
         while (c < ncont && (conts[c] != cont || owners[c] != owner || ros[c] != ro || rus[c] != ru || gvs[c] != gv
-                || sks[c] != sk || local || nmine))
+                || sks[c] != sk || local || nmine || anyapart))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -2872,7 +2888,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             gvs[c] = gv;
             sks[c] = sk;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk, anyapart ? apart : NULL);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -2880,8 +2896,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 answers[c] = 0;
             }
             ncont = c + 1;
-            if (local || nmine)
-                rus[c] = -1;        // not kept for another loan
+            if (local || nmine || anyapart)
+                rus[c] = -1;       // not kept for another loan
         }
         if (!answers[c])
             continue;

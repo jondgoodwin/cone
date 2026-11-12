@@ -370,14 +370,34 @@ static int loanVarIsGlobal(VarDclNode *var) {
     return var->scope == 0 || (var->flags & FlagStatic);
 }
 
+// Why a borrow of a thread-local may not last past the code that took it
+static const char *loanThreadLocalWhy = " A thread-local is the current worker's copy; after the 'await' this code may run on another worker, so a borrow of it cannot be kept across the 'await'.";
+
+// A thread-local variable: a global, but each worker has its own copy of it
+int loanVarIsThreadLocal(VarDclNode *var) {
+    return var->scope == 0 && (var->dclinfo.facts & DclThreadLocal);
+}
+
+// A borrow of a thread-local, whole or through its parts (not through a
+// reference stored in it): it names the copy of the worker running the code
+// that took it, and the code may change worker at a seam (Bug 87)
+int loanIsThreadLocal(uint32_t id) {
+    Loan *loan = &loans[id];
+    return loan->kind != LoanCaller && !loan->place.deref
+        && loanVarIsThreadLocal(pathVars[loan->place.var].var);
+}
+
 int loanOfGlobal(uint32_t id) {
-    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var);
+    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var)
+        && !loanIsThreadLocal(id);
 }
 
 int loanIsLocal(uint32_t id) {
     Loan *loan = &loans[id];
+    // A thread-local counts with the function's own storage: its borrow ends
+    // at a seam and may be stored nowhere that outlives the call
     return loan->kind != LoanCaller && !loan->place.deref
-        && !loanVarIsGlobal(pathVars[loan->place.var].var);
+        && (!loanVarIsGlobal(pathVars[loan->place.var].var) || loanVarIsThreadLocal(pathVars[loan->place.var].var));
 }
 
 uint32_t loanLocalIn(PathSet *set) {
@@ -1141,6 +1161,13 @@ void loanEscape(INode *node, uint32_t loan, int how) {
                 loanTempEnds(temp));
         return;
     }
+    if (loanIsThreadLocal(loan)) {
+        errorMsgNode(node, how == LoanEscapeStore || how == LoanEscapeReturn ? ErrorEscape : ErrorCallEscape,
+            "%s a borrow of the thread-local '%s' (made %s) where it may outlive this function: a thread-local is the current worker's copy, so a borrow of it is good only within the code that took it, and may not be stored in an actor's field, a global or a message, or be a 'static borrow. Read the value instead, or take the borrow again where it is used.",
+            how == LoanEscapeStore ? "Stored here is" : how == LoanEscapeReturn ? "Returned here is"
+                : "A value here carries", srcname, where);
+        return;
+    }
     char advice[400];
     loanCaptureAdvice(loan, advice, sizeof(advice));
     switch (how) {
@@ -1340,7 +1367,9 @@ void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field)
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     errorMsgNode(node, ErrorEscape,
         "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries a borrow of '%s' (made %s).%s%s",
-        what, srcname, loanWhere(&loans[loan], where, sizeof(where)), hint, loanCaptureAdvice(loan, advice, sizeof(advice)));
+        what, srcname, loanWhere(&loans[loan], where, sizeof(where)),
+        loanIsThreadLocal(loan) ? "" : hint,
+        loanIsThreadLocal(loan) ? " A thread-local is the current worker's copy, so a borrow of it is never 'static: it is good only within the code that took it." : loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
 void loanNotBound(INode *node, uint32_t loan, Name *bound) {
@@ -1477,9 +1506,9 @@ static void loanReport(Pending *pend, INode *usenode) {
     if (pend->kind == AccessSeam) {
         char of[200];
         errorMsgNode(pend->access, ErrorFrozen,
-            "The borrow '%s' holds %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and '%s' is used again %s.",
+            "The borrow '%s' holds %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and '%s' is used again %s.%s",
             &holder->namesym->namestr, loanSeamOf(pend->loan, of, sizeof(of)), where,
-            &holder->namesym->namestr, used);
+            &holder->namesym->namestr, used, loanIsThreadLocal(pend->loan) ? loanThreadLocalWhy : "");
         return;
     }
     loanTieNote(loan, holder, tie, sizeof(tie));
@@ -1806,8 +1835,8 @@ void loanSeamFlight(INode *seam) {
             char where[160];
             loanWhere(&loans[id], where, sizeof(where));
             errorMsgNode(seam, ErrorFrozen,
-                "A borrow %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and a call or value still being made around it uses that borrow after it.",
-                loanSeamOf(id, of, sizeof(of)), where);
+                "A borrow %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and a call or value still being made around it uses that borrow after it.%s",
+                loanSeamOf(id, of, sizeof(of)), where, loanIsThreadLocal(id) ? loanThreadLocalWhy : "");
             return;
         }
     }
@@ -2603,5 +2632,29 @@ int loanIsExclusive(uint32_t entry) {
 // that diverges from the loan's can be what the loan points into
 int loanShapeDisjoint(uint32_t loan, Place *pl) {
     Place *lp = loanShapePlace(&loans[loan]);
-    return lp->var == pl->var && lp->deref == pl->deref && !placeOverlaps(lp, pl);
+    if (lp->var != pl->var || lp->deref != pl->deref || placeOverlaps(lp, pl))
+        return 0;
+    // Two fields past an owner others may own too (an 'Rc[mut, ..]' field) may own one collection:
+    // only a path diverging before every such dereference (Place.owned) is another collection
+    uint8_t n = lp->nsteps < pl->nsteps ? lp->nsteps : pl->nsteps;
+    uint8_t d = 0;
+    while (d < n && !(lp->steps[d] != pl->steps[d] && (lp->steps[d] & 1) == 0 && (pl->steps[d] & 1) == 0))
+        ++d;
+    return lp->owned <= d && pl->owned <= d;
+}
+
+// Is the argument borrow 'site' (the borrow expression itself), whose loan is among those its value
+// carries ('set': the loan it made, and what the root of its place holds), of a place that
+// diverges from the shape loan's, as loanShapeDisjoint says of one place? Then the argument is a
+// value of the function's own, apart from the collection the loan points into. A place reached
+// through a reference read from a borrowed one ('far') says nothing of where it is
+int loanShapeDisjointAt(uint32_t loan, PathSet *set, INode *site) {
+    if (set == NULL)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        Loan *l = &loans[loanOf(set->ids[i])];
+        if (l->site == site && l->kind != LoanCaller)
+            return !l->source && !l->place.far && loanShapeDisjoint(loan, &l->place);
+    }
+    return 0;
 }

@@ -1784,7 +1784,12 @@ locals, which only a call that reaches one of them is asked of):
   a struct that merely holds a String, and a field of the element written through the
   borrow of the element do not. The place the store names is skipped as a call's
   receiver is, where the loan freezes it or where it is another field of the same
-  root. A function that does so on its own account, handed a reference, is a callee
+  root, except past a copyable owner (`Place.owned`: two `Rc[mut, ..]` fields may own one
+  collection, `loanShapeDisjoint`, bug 88). An argument that is a borrow (`&mut hist`) of
+  such a sibling place (`loanShapeDisjointAt`, the loan whose site is the borrow, 1339 Option A) is a
+  value the function owns whole to `reshapeCallBody` (its `apart` argument): it counts only for
+  what it reaches through references, pointers and virtual references, and the per-type answer cache
+  is skipped for the call. A method's receiver is not asked this way. A function that does so on its own account, handed a reference, is a callee
   that reshapes (`siTypeWriteHits`, which asks the same). The gate
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
@@ -2155,6 +2160,8 @@ twice. A variable with no such join has none of this, and its code is as it
 was.
 
 ### A seam
+
+**A thread-local's borrow ends at a seam.** A global's borrow is 'static and survives one, but a @threadlocal seen from an actor is the *current worker's* copy, and the continuation may run on another worker (Bug 87). So loanIsLocal counts a loan of a thread-local (loanIsThreadLocal) with the function's own storage, not with a global's: the seam ends it (ErrorFrozen, message naming the reason), and a store where it outlives the call, or a return, is ErrorEscape; a 'static position takes a global's loans only (loanOfGlobal excludes it).
 
 An actor's behaviour may `await`: the behaviour is cut there, a **seam**,
 where it returns to the actor's dispatcher to wait, and what it needs
