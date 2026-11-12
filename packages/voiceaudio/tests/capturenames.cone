@@ -1,0 +1,59 @@
+// Choosing a recording device by name, through `captureNames` and `Microphone.openOn` on SDL's "dummy"
+// audio driver, which records silence and opens no real device: a name nothing matches falls back to the
+// default device (Microphone.deviceName is None); a name that matches opens that device, whatever the case,
+// and says so. The matching itself is private to the package, so it is tested by what openOn opens.
+mod capturenames;
+
+import testing use *;
+import collections use *;
+import voiceaudio use *;
+
+// Open on 'wants', close. Answers 0 when the default opened (deviceName None), 1 when a named device
+// opened, -1 when nothing opened.
+fn opened(driver: &Driver, wants: &List[String]) i32 {
+  match Microphone.openOn(driver, wants, 16000u32) {
+    case var Ok(mic) {
+      var answer = 0i32;
+      match mic.deviceName {
+        case is Some { answer = 1i32; }
+        case is None[String] {}
+      }
+      mic.close();
+      answer
+    }
+    case is Err { -1i32 }
+  }
+}
+
+fn main() i32 {
+  let driver = Driver.dummy();
+  var seen = List[String]();
+  match captureNames(&driver) {
+    case var Ok(n) { seen = n; }
+    case is Err {}
+  }
+  expect(seen.len() < 100usize, "the dummy driver lists its devices without trouble");
+  require(seen.len() > 0usize, "the dummy driver lists a recording device");
+
+  var none = List[String]();
+  none.push(String.from("no-such-device"));
+  none.push(String());
+  expectInt(i64.from(opened(&driver, &none)), 0i64, "no match opens the default, unnamed");
+  var empty = List[String]();
+  expectInt(i64.from(opened(&driver, &empty)), 0i64, "no wants, no match: the default");
+
+  var named = List[String]();
+  named.push(seen[0usize].clone());
+  expectInt(i64.from(opened(&driver, &named)), 1i64, "a listed name opens that device, named");
+
+  var second = List[String]();
+  second.push(String.from("no-such-device"));
+  second.push(seen[0usize].clone());
+  expectInt(i64.from(opened(&driver, &second)), 1i64, "the second want matches");
+
+  // the dummy driver's one device is "System audio recording device"
+  var upper = List[String]();
+  upper.push(String.from("RECORDING DEVICE"));
+  expectInt(i64.from(opened(&driver, &upper)), 1i64, "a name matches whatever the case");
+  done()
+}
