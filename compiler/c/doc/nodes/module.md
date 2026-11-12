@@ -988,7 +988,15 @@ under his authorisation]. The regions' `alloc` and `free` call `RawBlocks`, core
 raw blocks layer: three inline functions (`alloc`, `resize`, `release`) over three
 private `extern` declarations bound by `@c` to `cone_rawBlockAlloc`,
 `cone_rawBlockResize` and `cone_rawBlockRelease`, which conestd's `rawblocks.cone`
-defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. It is
+defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. A second
+pair, `allocAligned` (`cone_rawBlockAllocAligned`) and a release
+(`cone_rawBlockReleaseAligned`), reached only through the owning move type
+`AlignedBlock` that `allocAligned` returns (its `final` is the release, so the
+wrong free cannot be called; `addr` gives the address), gives a block aligned to any power of two through
+`libc.alignedAlloc` and `libc.alignedFree` (conestd's `cnames.c`: `_aligned_malloc`
+on Windows, `posix_memalign` on POSIX); it is a separate pair because `release` is
+handed the address alone and the Windows runtime frees an aligned block only with
+`_aligned_free`. It is
 the one place that names where the heap's bytes come from: the heap region
 (`heapregion.c`), `Uni`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
 blocks and an actor's chunks and large objects go through it, so an allocator

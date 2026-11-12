@@ -791,6 +791,58 @@ class Scenarios(unittest.TestCase):
         # a's generated include file imports b, as a's source does
         self.assertIn("\nimport b;\n", (out / "a.cone").read_text())
 
+    def test_a_generic_alias_is_used_from_another_package(self):
+        # A package's 'pub alias Items[T] = List[T]' is a public name of the
+        # package: the program names 'a.Items[i64]' (and 'a.Rows[i64]', an alias
+        # of that alias with a bound), and each use is expanded where it is
+        # written, through a's generated include file
+        packages = self.root / "genalias"
+        self.registry(packages)
+        write(packages / "a" / "congo.toml",
+              '[package]\nname = "a"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "a" / "src" / "a.cone", """
+            mod a;
+
+            import collections use List;
+
+            pub alias Items[T] = List[T];
+            pub alias Rows[T: Copy] = Items[T];
+
+            pub fn make(n: i64) Items[i64] {
+              var xs = Items[i64]();
+              xs <- n, n + 1, n + 2;
+              xs
+            }
+            """)
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import a;
+
+            fn total(xs: &a.Rows[i64]) i64 {
+              var sum = 0i64;
+              each x in xs {
+                sum = sum + x;
+              }
+              sum
+            }
+
+            fn main() i32 {
+              let xs: a.Items[i64] = a.make(10i64);
+              var ys = a.Rows[i64]();
+              ys <- 1i64, 2i64;
+              stdio.print <- total(&xs);
+              stdio.print <- "\\n";
+              stdio.print <- total(&ys);
+              stdio.print <- "\\n";
+              0i32
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # make(10) is 10, 11, 12: 33; ys is 1, 2: 3
+        self.assertEqual(self.program_output(run), "33\n3\n")
+
     def test_an_include_file_records_the_types_that_change_shape(self):
         # A struct wrapping a List is shape-changing though it declares nothing,
         # found from its methods; a gauge that lends a number it bumps is not.

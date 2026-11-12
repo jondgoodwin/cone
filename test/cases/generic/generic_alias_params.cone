@@ -1,0 +1,48 @@
+// An alias may take type parameters, with bounds: 'alias Items[T] = List[T];'.
+// It is shorthand only. Each use, 'Items[i64]', is the target with the arguments
+// substituted, so 'Items[i64]' and 'List[i64]' are one type: a value of either
+// goes where the other is wanted, with no conversion. Covered: an alias of a
+// collection and of a pool; an alias of an alias, with a bound passed through;
+// an alias in a struct field, a parameter and a return type, and in a
+// construction. Every printed value is worked out by hand from the statements.
+
+mod generic_alias_params;
+
+import stdio use *;
+import collections use List;
+import pools use *;
+
+alias Items[T] = List[T];
+alias Cells[T: Copy] = GenPool[T];
+alias Rows[T: Copy] = Items[T];      // an alias of an alias, the bound again at each use
+
+struct Shelf {
+  pub names: Items[i64];
+  pub cells: Cells[i64];
+}
+
+fn total(xs: &Items[i64]) i64 {
+  var sum = 0i64;
+  each x in &*xs { sum = sum + *x; }
+  sum
+}
+
+// The alias and its target are one type: a List[i64] is passed as Items[i64]
+fn totalOfList(xs: &List[i64]) i64 { total(xs) }
+
+fn build() Rows[i64] {
+  var r = Rows[i64]();
+  r <- 10, 20, 30;
+  r
+}
+
+fn main() {
+  var s = Shelf(Items[i64](), Cells[i64].make());
+  s.names <- 1, 2, 3;
+  let h = s.cells.add(7);
+  let g = s.cells.add(8);
+  printStr("names = "); printInt(total(&s.names)); printStr("\n");     // 1 + 2 + 3 = 6
+  printStr("cells = "); printInt(i64.from(s.cells.len())); printStr("\n");   // two adds: 2
+  let rows = build();
+  printStr("rows = "); printInt(totalOfList(&rows)); printStr("\n");   // 10 + 20 + 30 = 60
+}

@@ -1,10 +1,10 @@
 // A frame that runs out of command buffers, on a real GPU. A frame holds
-// 16; the 17th encoder made in it is refused, once, with one failure, and
+// 128; the 129th encoder made in it is refused, once, with one failure, and
 // is not valid. Every command asked of it, and of the passes it begins, is
 // not done and nothing crashes: a compute pass and a render pass with and
 // without depth, every command each takes, the copies, the timestamps; and
 // finishing it gives a command buffer the queue does not submit. A copy the
-// refused encoder was asked to make does not land, and the frame's own 16
+// refused encoder was asked to make does not land, and the frame's own 128
 // command buffers run. An encoder once finished does nothing more either.
 // The next frame records as before. Only a failure prints (and gpu's own
 // one line, to stderr, for the refusal); nothing printed depends on which
@@ -93,11 +93,11 @@ fn main() i32 {
   device.waitIdle();
   require(failures() == 0u32, "everything made");
 
-  // ---- A frame of 16 command buffers, the last copying 'source' ----
+  // ---- A frame of 128 command buffers, the last copying 'source' ----
   var i = 0;
-  while i < 15 {
+  while i < 127 {
     var encoder = device.createCommandEncoder();
-    expectBool(encoder.isValid(), true, "an encoder within the frame's 16");
+    expectBool(encoder.isValid(), true, "an encoder within the frame's 128");
     expectBool(device.queue.submit(encoder.finish()), true, "an empty command buffer submitted");
     i = i + 1;
   }
@@ -106,13 +106,13 @@ fn main() i32 {
   let lastBuffer = last.finish();
   expectBool(last.isValid(), false, "a finished encoder records nothing more");
   last.copyBufferToBuffer(&source, 0u64, &target, 128u64, 128u64);   // not done: it is finished
-  expectBool(device.queue.submit(lastBuffer), true, "the 16th command buffer submitted");
-  expectUInt(u64.from(failures()), 0u64, "16 command buffers in a frame");
+  expectBool(device.queue.submit(lastBuffer), true, "the 128th command buffer submitted");
+  expectUInt(u64.from(failures()), 0u64, "128 command buffers in a frame");
 
-  // ---- The 17th: refused, and everything asked of it not done ----
+  // ---- The 129th: refused, and everything asked of it not done ----
   var refused = device.createCommandEncoder();
-  expectBool(refused.isValid(), false, "the 17th encoder of a frame is not valid");
-  expectUInt(u64.from(failures()), 1u64, "the 17th encoder refused, with one failure");
+  expectBool(refused.isValid(), false, "the 129th encoder of a frame is not valid");
+  expectUInt(u64.from(failures()), 1u64, "the 129th encoder refused, with one failure");
   let immediates = Array[u32, 4]() <- fill 0u32;
   {
     var pass = refused.beginComputePass();
@@ -156,7 +156,7 @@ fn main() i32 {
   device.endFrame();
   device.waitIdle();
   expectUInt(u64.from(failures()), 1u64, "nothing asked of the refused encoder counted again");
-  expectUInt(u64.from(notEqual(dst, 128usize, 7u8)), 0u64, "the 16th command buffer's copy made");
+  expectUInt(u64.from(notEqual(dst, 128usize, 7u8)), 0u64, "the 128th command buffer's copy made");
   expectUInt(u64.from(notEqual(dst + 128usize, 128usize, 0u8)), 0u64,
     "the copies asked of the finished and the refused encoders not made");
 
