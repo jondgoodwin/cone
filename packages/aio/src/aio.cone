@@ -373,6 +373,18 @@
 // doubled completion. The thread-locals (onIo, hereHot, actors' turnAsked and
 // inHook) are one thread's own.
 //
+// The pass's whole state, the Loop and the lists the I/O thread's pass uses
+// (the Completions, the records taken back, the services hosted and when one
+// wants its turn), is in the IoThread record, which lives as long as the
+// process, and not on that thread's stack: its holder's alone, and passed
+// between holders by the baton's atomic hand-over. A holder lets the baton go
+// only with the record pool's batch flushed (dissolveAt: 'onIo' picks the
+// unlocked give-back, so it is true on the holder alone), and runs between
+// turns, never inside a behaviour, so actors' 'curGroup' and 'curActor' are
+// zero (the worker hooks run at the top of its loop). Today the I/O thread
+// holds the baton and runs the whole pass; a worker's pass is still the short
+// one (quickPass), which leaves aio's jobs and the services to it.
+//
 // HOSTED SERVICES. Another package's code that runs ON the I/O thread, with its
 // Loop: the actorhttp package's HTTP clients, connections and servers
 // (httpconn's Drivers and httpclient's Clients, driven as they always are, by
@@ -714,7 +726,9 @@ let takenAway: Atomic[u64];
 // The threads' blocks of counts (HereCounts), newest first, pushed under ioLock
 let countsAt: Atomic[usize];
 
-// True on the I/O thread, and on a worker through its pass (A WORKER'S PASS)
+// True on the thread that holds the baton (A WORKER'S PASS), and on it alone: the
+// I/O thread but for when it stands aside, and a worker through its pass. The
+// record pool's batch (dissolveAt), Host.end's refusal and a statistic read it
 var @threadlocal onIo = false;
 
 // The record's buffer replaced by b, through a reference, so that the one it
@@ -906,9 +920,18 @@ struct IoThread {
   pub seen: u64;                // the I/O thread's own: 'asks' at its last look,
   pub lookedAt: Instant;        //   and when that was
   pub lastAsk: Atomic[i64];     // while it stands aside, when a turn last asked (Instant's nanoseconds)
-  pub loopAt: usize;            // the thread's Loop and its two lists, for the holder of the baton:
-  pub outAt: usize;             //   written before 'ready', all three on the thread's stack
-  pub gotAt: usize;
+  // The pass's state (A WORKER'S PASS), the baton's holder's alone: the
+  // thread's Loop, written whole before 'ready' and read out to die when the
+  // thread ends (ioMain); the Completions a poll returned and the records it
+  // took back, lists a pass empties before it ends; the services hosted here,
+  // oldest first; and the earliest instant one wants its turn, taken at their
+  // last turns. Written in place (mem.writeRaw) and read out at the end, for
+  // the block is never finalized
+  pub lp: Loop;
+  pub out: List[Completion];
+  pub got: List[*OpCore];
+  pub hosts: List[*HostHead];
+  pub until: Instant;
 }
 
 // Guards the queues, 'io', 'ended' and the pool's making
@@ -1205,9 +1228,9 @@ fn quickPass(t: *IoThread) usize {
   (*t).rhead = nullCore();
   (*t).rtail = nullCore();
   ioLock.unlock();
-  let lp = (*t).loopAt as *Loop as &mut Loop;
-  let out = (*t).outAt as *List[Completion] as &mut List[Completion];
-  let got = (*t).gotAt as *List[*OpCore] as &mut List[*OpCore];
+  let lp = &mut (*t).lp;
+  let out = &mut (*t).out;
+  let got = &mut (*t).got;
   startRecs(r, lp);
   lp.poll(Instant.now(), out);
   out.clear();
@@ -1311,12 +1334,16 @@ fn standAside(t: *IoThread) {
   // answer taken here goes to a worker asleep, parting actors sharing a worker.
   // The words a worker leaves for the baton's holder are workers' now: only
   // holders' releases read them, and this thread holds it no more
+  // Holding no baton, this thread is not 'onIo' (A WORKER'S PASS): the flag
+  // follows the baton, as it does on a worker
+  onIo = false;
   var stay = true;
   while stay {
     stay = (*t).waker.waitAside(tick) && !turnsQuiet(t);
   }
   workersBusy(t);           // a fresh count: what it counted aside says nothing of now
   takeBaton(t);
+  onIo = true;
   (*t).waker.lowerAside();
 }
 
@@ -1371,7 +1398,17 @@ fn ioMain(arg: IoArg) u32 {
   let pool = thePool();
   {
     let born = Instant.now();
-    var lp = Loop.mustMake();
+    // The pass's state lives in the IoThread record (A WORKER'S PASS), so
+    // whichever thread holds the baton can run the pass; this function is the
+    // one holder that runs it all, and reaches the state through these
+    mem.writeRaw[Loop](&(*me).lp as *Loop, Loop.mustMake());
+    mem.writeRaw[List[Completion]](&(*me).out as *List[Completion], List[Completion]());
+    mem.writeRaw[List[*OpCore]](&(*me).got as *List[*OpCore], List[*OpCore]());
+    mem.writeRaw[List[*HostHead]](&(*me).hosts as *List[*HostHead], List[*HostHead]());
+    mem.writeRaw[Instant](&(*me).until as *Instant, forever());
+    let lp = &mut (*me).lp;
+    let out = &mut (*me).out;
+    let got = &mut (*me).got;
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
     // This hold on the Loop's shared table is NEVER released, on purpose: the
     // IoThread block is kept for the life of the process, and any thread reads
@@ -1382,26 +1419,19 @@ fn ioMain(arg: IoArg) u32 {
     // use-after-free iocore's sharedend test pins
     mem.writeRaw[Shared](&(*me).shared as *Shared, lp.share());
     onIo = true;
-    var out = List[Completion]();
-    var got = List[*OpCore]();
     (*me).baton.store(1u32);
-    (*me).loopAt = &mut lp as *Loop as usize;
-    (*me).outAt = &mut out as *List[Completion] as usize;
-    (*me).gotAt = &mut got as *List[*OpCore] as usize;
     actors.workerHooks(&afterTurn, &beforePark);
     (*me).ready.store(1u32);
     sync.futexWake(&(*me).ready);
-    var hosts = List[*HostHead]();     // the services hosted here, oldest first: this thread's alone
-    var until = forever();                   // the earliest wakeAt, taken at the services' last turns
     var more = true;
     var quick = false;                      // back from standing aside: this look does not wait
     // With no service hosted the pass is aio's alone: every step for the
     // services is skipped, one test each
     while more {
-      lp.poll(if quick {Instant.now()} else {until}, &mut out);
+      lp.poll(if quick {Instant.now()} else {(*me).until}, out);
       quick = false;
-      if hosts.len() != 0usize {
-        offerAll(&hosts, &mut lp, &mut out);
+      if (*me).hosts.len() != 0usize {
+        offerAll(&(*me).hosts, lp, out);
       }
       out.clear();
       ioLock.lock();
@@ -1412,46 +1442,53 @@ fn ioMain(arg: IoArg) u32 {
       (*me).rhead = nullCore();
       (*me).rtail = nullCore();
       if (*me).fhead as usize != 0usize {
-        takeFresh(me, &mut hosts);
+        takeFresh(me, &mut (*me).hosts);
       }
-      if hosts.len() != 0usize {
-        takeHostJobs(&hosts);
+      if (*me).hosts.len() != 0usize {
+        takeHostJobs(&(*me).hosts);
       }
       let stop = ended.load();
       ioLock.unlock();
       if stop {
         keepCounters(lp.counters(), born);
         dropJobs(h);
-        endUnstarted(r, &mut lp);
-        if hosts.len() != 0usize {
-          endAllHosts(&mut hosts, &mut lp);
+        endUnstarted(r, lp);
+        if (*me).hosts.len() != 0usize {
+          endAllHosts(&mut (*me).hosts, lp);
         }
         more = false;
       } else {
-        lp.takeDone(&mut got);
+        lp.takeDone(got);
         var k = 0usize;
         while k < got.len() {
-          doneRec(&mut lp, *got[k]);
+          doneRec(lp, *got[k]);
           k = k + 1usize;
         }
         got.clear();
-        runJobs(h, &mut lp);
-        if hosts.len() == 0usize {
-          startRecs(r, &mut lp);
+        runJobs(h, lp);
+        if (*me).hosts.len() == 0usize {
+          startRecs(r, lp);
         } else {
-          serveHosts(&mut hosts, &mut lp);
-          startRecs(r, &mut lp);
-          until = turnHosts(&hosts, &mut lp);
+          serveHosts(&mut (*me).hosts, lp);
+          startRecs(r, lp);
+          (*me).until = turnHosts(&(*me).hosts, lp);
         }
       }
       pool.flushHere();
       // Workers are passing: leave the port to them. Never with a service
       // hosted: its completions are for this thread
-      if more && hosts.len() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+      if more && (*me).hosts.len() == 0usize && workersBusy(me) && !lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
         standAside(me);
         quick = true;
       }
     }
+    // The state is read out of the record to die here, in the order the
+    // locals did: the services' list, the two lists, then the Loop, which
+    // cancels and drains every operation in flight
+    let dyingLoop = mem.readRaw[Loop](&(*me).lp as *Loop);
+    let dyingOut = mem.readRaw[List[Completion]](&(*me).out as *List[Completion]);
+    let dyingGot = mem.readRaw[List[*OpCore]](&(*me).got as *List[*OpCore]);
+    let dyingHosts = mem.readRaw[List[*HostHead]](&(*me).hosts as *List[*HostHead]);
   }
   pool.flushHere();
   0u32
@@ -1693,11 +1730,14 @@ pub struct Host[S: Hosted] is Shareable {
   // abandoned), its 'end' runs with the Loop alive, and it is dropped. Jobs
   // queued for it from then on are dropped. A hosting package calls this in
   // its finalizer, which runs before aio's (THE PROGRAM'S END); a service never
-  // given a job has nothing to end. Not from the I/O thread (a panic), and once
+  // given a job has nothing to end. Not from the thread that holds the baton (the
+  // I/O thread, today: a panic), and once
   // only matters: a second call returns when the first's end is done
   pub fn end(self: &, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    // 'onIo' is true on the baton's holder alone (A WORKER'S PASS), and the
+    // holder is who ends a service at its next pass
     if onIo {
-      die("aio: Host.end on the I/O thread, which would wait for itself", file, line);
+      die("aio: Host.end from the thread that holds the baton, which would wait for itself", file, line);
     }
     let hh = at as *HostHead;
     ioLock.lock();
