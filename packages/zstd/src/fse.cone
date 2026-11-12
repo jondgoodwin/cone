@@ -31,13 +31,16 @@ fn fwdPeek(src: &Array[u8], start: usize, end: usize, bit: usize) u32 {
 // A backward bitstream over src[start, end). 'acc' holds 'n' bits not yet
 // read in its low bits, the next to read the highest of them; 'pos' is the
 // next byte to load (counting down to 'start'); 'over' counts the zero bits
-// read past the start, which a valid stream never needs.
+// read past the start, which a valid stream never needs. 'pad' counts the
+// zero bits 'refillSeq' appended below the real ones once the real ones were
+// all loaded (they are part of 'n'; the sequences' fast reads need them).
 struct BackBits {
   start: usize;
   pos: usize;
   acc: u64;
   n: u32;
   over: u32;
+  pad: u32;
 
   // A reader of src[start, end), at its end: None when the stream is empty or
   // its last byte is 0 (no closing 1 bit)
@@ -46,7 +49,7 @@ struct BackBits {
     let last = src[end - 1usize];
     if last == 0u8 { return None[BackBits]; }
     // The bits below the closing 1
-    var b = BackBits(start, end - 1usize, u64.from(last), 7u32 - last.leadingZeros(), 0u32);
+    var b = BackBits(start, end - 1usize, u64.from(last), 7u32 - last.leadingZeros(), 0u32, 0u32);
     b.refill(src);
     Some[BackBits](b)
   }
@@ -69,6 +72,53 @@ struct BackBits {
       acc = (acc << 8u64) | u64.from(src[pos]);
       n = n + 8u32;
     }
+  }
+
+  // The sequences' refill: load bytes until 56 or more bits are held, and
+  // when the stream has no more, append zero bits below the real ones up to 63
+  // held (counted in 'pad'). So after it 'n' is 56 to 63 whatever the input,
+  // and 'readFast' may take bits without testing. Call it when n < 56.
+  //
+  // Bounds: the eight-byte load happens only when pos >= start + 8, and pos
+  // starts at end - 1 (a checked read of src[end - 1] in 'open' passed, so
+  // end <= src.len) and only goes down, so [pos - 8, pos) lies inside
+  // [start, src.len). Of the bytes it takes, m = (63 - n) >> 3 is 1 to 7 (n is
+  // at most 55 here) and pos - m >= start. The byte loop is checked indexing.
+  fn refillSeq(self: &mut, src: &Array[u8]) inline {
+    if n < 56u32 && pos >= start + 8usize {
+      let w = mem.readRaw[u64](((src as *u8) + (pos - 8usize)) as *u64);
+      let m = u64.from((63u32 - n) >> 3u32);
+      acc = (acc << (8u64 * m)) | (w >> (64u64 - 8u64 * m));
+      pos = pos - usize.from(m);
+      n = n + u32.from(8u64 * m);
+      return;
+    }
+    self.refillSlow(src);
+  }
+
+  // The end of 'refillSeq': fewer than eight bytes left, or n >= 56
+  fn refillSlow(self: &mut, src: &Array[u8]) {
+    while n < 56u32 && pos > start {
+      pos = pos - 1usize;
+      acc = (acc << 8u64) | u64.from(src[pos]);
+      n = n + 8u32;
+    }
+    if n < 56u32 {
+      // pos == start: no real bytes are left
+      let p = 63u32 - n;
+      acc = if n == 0u32 {0u64} else {acc << u64.from(p)};
+      pad = pad + p;
+      n = 63u32;
+    }
+  }
+
+  // Read k bits (0 to 31) with no test: the caller has shown that n >= k and
+  // 8 <= n <= 64 (the bits are the k below the top n of 'acc', which the
+  // two-step shift takes right for k = 0 and n = 64 as well)
+  fn readFast(self: &mut, k: u32) u32 inline {
+    let v = ((acc << u64.from(64u32 - n)) >> 1u64) >> u64.from(63u32 - k);
+    n = n - k;
+    u32.from(v)
   }
 
   // Read k bits, 0 to 32
@@ -106,7 +156,7 @@ struct BackBits {
   fn overflowed(self: &) bool { over > 0u32 }
 
   // Whether every bit was read, and no more
-  fn exact(self: &) bool { over == 0u32 && n == 0u32 && pos == start }
+  fn exact(self: &) bool { over == 0u32 && n == pad && pos == start }
 }
 
 // -------- FSE --------
@@ -183,6 +233,8 @@ struct FseTable is Default {
   // Scratch for building: each state's symbol, each symbol's next count
   spread: List[u8];
   next: List[u32];
+  // For the three sequence tables only (see 'fold'): the same cells widened
+  seq: List[u64];
 
   // The table of a distribution, by RFC 8878 section 4.1.1: the symbols of
   // count -1 at the top, the others spread with the step (size / 2 + size /
@@ -235,6 +287,30 @@ struct FseTable is Default {
     }
     self.log = log;
     true
+  }
+
+  // Widens each cell of a sequence table so the decoder reads one cell and
+  // nothing else: bits 0 to 31 the base the symbol's extra bits are added to,
+  // 32 to 39 how many extra bits, 40 to 47 how many bits the next state reads,
+  // 48 to 63 that state's baseline. 'kind' 0 is literal lengths, 1 match
+  // lengths, 2 offsets (base 1 << code, code extra bits). Every symbol was
+  // made by 'build' or 'rle' from a distribution of at most maxSymbol + 1
+  // symbols, so each is below the arrays' sizes (the lookups are checked).
+  fn fold(self: &mut, kind: u32) {
+    seq.clear();
+    var i = 0usize;
+    while i < cells.len() {
+      let c = *cells[i];
+      let sym = usize.from(c & 0xFFu32);
+      var base = 0u32;
+      var eb = 0u32;
+      if kind == 0u32 { base = llBase[sym]; eb = llBits[sym]; }
+      else if kind == 1u32 { base = mlBase[sym]; eb = mlBits[sym]; }
+      else { base = 1u32 << u32.from(sym); eb = u32.from(sym); }
+      seq.push(u64.from(base) | (u64.from(eb) << 32u64) | (u64.from((c >> 8u32) & 0xFFu32) << 40u64)
+        | (u64.from(c >> 16u32) << 48u64));
+      i = i + 1usize;
+    }
   }
 
   // The table of one symbol that always repeats: one state, no bits
