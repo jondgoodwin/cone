@@ -1,0 +1,165 @@
+// Deque 'remove(index)' and 'removeIf'. Positions count from the front; 'remove' answers the
+// value and closes the gap from the shorter side (out of range is a panic: see
+// dequeremoverange); 'removeIf' drops the values its test says yes to. Both are checked at every head position of a block
+// (so the values wrap round its end in some) against a plain List used as the model.
+// Hand-worked cases first: pushFront 1, 2, 3 into a fresh deque (block of 4, head 0)
+// puts 1 in slot 3, 2 in slot 2 and 3 in slot 1, so the order from the front is 3, 2, 1,
+// with the last value at the block's end. Removing position 1 (the 2) is a tie between
+// the sides (one value each), which moves the values after it, so the order is 3, 1.
+
+mod dequeremove;
+
+import testing use *;
+import collections use *;
+
+fn digits(d: &Deque[i64]) i64 {
+  var c = d.items();
+  var n = 0i64;
+  while true {
+    match c.next() {
+      case let Some(e) {n = n * 10i64 + *e;}
+      case is None {break;}
+    }
+  }
+  n
+}
+
+fn empty() {
+  var d = Deque[i64]();
+  d.removeIf(fn(x: &i64) bool { true });
+  expect(d.isEmpty(), "removeIf on an empty deque leaves it empty");
+  var e = Deque[i64]() <- 5;
+  expectInt(e.remove(0usize), 5, "the only value comes out");
+  expect(e.isEmpty(), "leaving it empty");
+  e.removeIf(fn(x: &i64) bool { false });
+  expect(e.isEmpty(), "and removeIf of nothing leaves it so");
+}
+
+fn wrapped() {
+  // Front order 3, 2, 1 with 1 in the block's last slot and 3 in slot 1
+  var d = Deque[i64]();
+  d.pushFront(1);
+  d.pushFront(2);
+  d.pushFront(3);
+  expectInt(digits(&d), 321, "pushed at the front");
+  expectInt(d.remove(1usize), 2, "the middle one comes out");
+  expectInt(digits(&d), 31, "the front one moved back");
+  d.pushFront(4);
+  d.pushFront(5);
+  // 5, 4, 3, 1: wraps; remove the last (index 3) and the first (index 0)
+  expectInt(digits(&d), 5431, "four, wrapped");
+  expectInt(d.remove(3usize), 1, "the last comes out");
+  expectInt(d.remove(0usize), 5, "the first comes out");
+  expectInt(digits(&d), 43, "leaving 4, 3");
+  expectUInt(u64.from(d.len()), 2, "two held");
+  expectUInt(u64.from(d.capacity()), 4, "in the block it had");
+}
+
+// Every head position (0 to 9 values pushed and popped first, so the head wanders round
+// blocks of 4, 8 and 16) and every length 0 to 9, every index 0 to length (one past is
+// out of range, left out): the deque and the model must agree on what came out and what is left.
+fn againstModel() {
+  var ok = true;
+  var checks = 0i64;
+  var shift = 0i64;
+  while shift < 10i64 {
+    var n = 0i64;
+    while n < 10i64 {
+      var i = 0i64;
+      while i < n {
+        var d = Deque[i64]();
+        var m = List[i64]();
+        var s = 0i64;
+        while s < shift { d.push(0i64); s = s + 1i64; }
+        s = 0i64;
+        while s < shift { d.popFront(); s = s + 1i64; }
+        var k = 1i64;
+        while k <= n { d.push(k); m.push(k); k = k + 1i64; }
+        let got = d.remove(usize.from(i));
+        let want = m.remove(usize.from(i));
+        if got != want { ok = false; }
+        if d.len() != m.len() { ok = false; }
+        var j = 0usize;
+        while j < m.len() && j < d.len() {
+          if *d[j] != m[j] { ok = false; }
+          j = j + 1usize;
+        }
+        // The deque still works at both ends afterwards
+        d.pushFront(100i64);
+        d.push(200i64);
+        if (d.popFront() || -1i64) != 100i64 { ok = false; }
+        if (d.pop() || -1i64) != 200i64 { ok = false; }
+        if d.len() != m.len() { ok = false; }
+        checks = checks + 1i64;
+        i = i + 1i64;
+      }
+      n = n + 1i64;
+    }
+    shift = shift + 1i64;
+  }
+  expect(ok, "remove agrees with the model at every head position, length and index");
+  expectInt(checks, 450, "all 450 cases ran");
+}
+
+fn retaining() {
+  var d = Deque[i64]();
+  d.pushFront(6);
+  d.pushFront(5);
+  d.pushFront(4);
+  d.push(7);
+  d.push(8);
+  expectInt(digits(&d), 45678, "wrapped, five held");
+  d.removeIf(fn(x: &i64) bool { *x % 2i64 != 0i64 });
+  expectInt(digits(&d), 468, "the odd ones go, the even stay in order");
+  d.removeIf(fn(x: &i64) bool { false });
+  expectInt(digits(&d), 468, "dropping none changes nothing");
+  d.removeIf(fn(x: &i64) bool { *x == 6i64 });
+  expectInt(digits(&d), 48, "one dropped from the middle");
+  d.removeIf(fn(x: &i64) bool { true });
+  expect(d.isEmpty(), "dropping all empties it");
+  expectUInt(u64.from(d.capacity()), 8, "and keeps the block");
+  d.push(9);
+  expectInt(digits(&d), 9, "which is usable again");
+}
+
+// removeIf at every head position against the model, dropping all but the multiples of 3
+fn retainAgainstModel() {
+  var ok = true;
+  var shift = 0i64;
+  while shift < 10i64 {
+    var n = 0i64;
+    while n < 10i64 {
+      var d = Deque[i64]();
+      var s = 0i64;
+      while s < shift { d.push(0i64); s = s + 1i64; }
+      s = 0i64;
+      while s < shift { d.popFront(); s = s + 1i64; }
+      var m = List[i64]();
+      var k = 1i64;
+      while k <= n {
+        d.push(k);
+        if k % 3i64 == 0i64 { m.push(k); }
+        k = k + 1i64;
+      }
+      d.removeIf(fn(x: &i64) bool { *x % 3i64 != 0i64 });
+      if d.len() != m.len() { ok = false; }
+      var j = 0usize;
+      while j < m.len() && j < d.len() {
+        if *d[j] != m[j] { ok = false; }
+        j = j + 1usize;
+      }
+      n = n + 1i64;
+    }
+    shift = shift + 1i64;
+  }
+  expect(ok, "removeIf agrees with the model at every head position and length");
+}
+
+fn main() i32 {
+  empty();
+  wrapped();
+  againstModel();
+  retaining();
+  retainAgainstModel();
+  done()
+}

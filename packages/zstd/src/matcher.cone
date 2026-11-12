@@ -56,11 +56,11 @@ struct Seqs is Default {
 // repeat where one fits, by RFC 8878 section 3.1.1.5, which shifts the
 // repeats by one when there are no literals) and the repeats are moved
 // exactly as the decoder will move them.
-fn emit(src: &List[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mut Reps, seqs: &mut Seqs) {
+fn emit(src: &Array[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mut Reps, seqs: &mut Seqs) {
   seqs.lits.reserve(ll);
   var i = 0usize;
   while i < ll {
-    seqs.lits.push(*src[anchor + i]);
+    seqs.lits.push(src[anchor + i]);
     i += 1usize;
   }
   var code = 0u32;
@@ -110,11 +110,11 @@ fn emit(src: &List[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mu
 }
 
 // The literals after the last sequence
-fn emitRest(src: &List[u8], anchor: usize, end: usize, seqs: &mut Seqs) {
+fn emitRest(src: &Array[u8], anchor: usize, end: usize, seqs: &mut Seqs) {
   seqs.lits.reserve(end - anchor);
   var i = anchor;
   while i < end {
-    seqs.lits.push(*src[i]);
+    seqs.lits.push(src[i]);
     i += 1usize;
   }
 }
@@ -122,8 +122,8 @@ fn emitRest(src: &List[u8], anchor: usize, end: usize, seqs: &mut Seqs) {
 // The 4 and 8 bytes at src[p], least significant first. One slice of
 // exactly that many bytes is one bounds check, and its byte loads then fold
 // into one load.
-fn rd32(src: &List[u8], p: usize) u32 { word32(src.view(), p) }
-fn rd64(src: &List[u8], p: usize) u64 { word64(src.view(), p) }
+fn rd32(src: &Array[u8], p: usize) u32 { word32(src, p) }
+fn rd64(src: &Array[u8], p: usize) u64 { word64(src, p) }
 
 fn word32(b: &Array[u8], p: usize) u32 {
   let s = &b[p..<p + 4usize];
@@ -138,8 +138,8 @@ fn word64(b: &Array[u8], p: usize) u64 {
 }
 
 // How many bytes from src[a] equal those from src[c] (c < a), not reaching 'end'
-fn matchLen(src: &List[u8], a: usize, c: usize, end: usize) usize {
-  let b = src.view();
+fn matchLen(src: &Array[u8], a: usize, c: usize, end: usize) usize {
+  let b = src;
   var k = 0usize;
   while a + k + 8usize <= end {
     let x = word64(b, a + k) ^ word64(b, c + k);
@@ -176,36 +176,36 @@ fn repFits(p: usize, r: u32, window: usize) bool {
 // accept; their tags are the tag of the buffer's first 4 bytes (Compressor).
 
 // The multiplicative products, before the shift
-fn prodFast(src: &List[u8], p: usize, mls: u32) u64 {
+fn prodFast(src: &Array[u8], p: usize, mls: u32) u64 {
   if mls == 7u32 { return (rd64(src, p) << 8u64) * 58295818150454627u64; }
   (rd64(src, p) << 16u64) * 227718039650203u64
 }
-fn prod5(src: &List[u8], p: usize) u64 { (rd64(src, p) << 24u64) * 889523592379u64 }
-fn prod8(src: &List[u8], p: usize) u64 { rd64(src, p) * 0xCF1BBCDCB7A56463u64 }
+fn prod5(src: &Array[u8], p: usize) u64 { (rd64(src, p) << 24u64) * 889523592379u64 }
+fn prod8(src: &Array[u8], p: usize) u64 { rd64(src, p) * 0xCF1BBCDCB7A56463u64 }
 
 // The tag of the 4 bytes at src[p]: the bytes every candidate is verified on. A candidate whose 4 bytes equal the
 // probe's has the probe's tag, so a tag mismatch rejects only candidates the verify would reject
-pub fn tag4(src: &List[u8], p: usize) u8 {
+pub fn tag4(src: &Array[u8], p: usize) u8 {
   u8.from(((u64.from(rd32(src, p)) * 2654435761u64) >> 20u64) & 255u64)
 }
 
 // The candidate in the slot a product picks, or 'none' (the probe's own position) when its tag is not the tag of
 // the 4 bytes at 'none'
-fn probeTag(src: &List[u8], table: &List[u32], tags: &List[u8], pr: u64, shift: u64, none: usize) usize {
+fn probeTag(src: &Array[u8], table: &List[u32], tags: &List[u8], pr: u64, shift: u64, none: usize) usize {
   let h = usize.from(pr >> shift);
   if *tags[h] != tag4(src, none) { return none; }
   usize.from(*table[h])
 }
 
 // Enters 'pos' in the slot a product picks, with the tag of the 4 bytes at pos
-fn putTag(src: &List[u8], table: &mut List[u32], tags: &mut List[u8], pr: u64, shift: u64, pos: usize) {
+fn putTag(src: &Array[u8], table: &mut List[u32], tags: &mut List[u8], pr: u64, shift: u64, pos: usize) {
   let h = usize.from(pr >> shift);
   table.set(h, u32.from(pos));
   tags.set(h, tag4(src, pos));
 }
 
 // matchFast with tags: 'tags' is as long as 'table'
-fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
+fn matchFast(src: &Array[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
     tags: &mut List[u8], reps: &mut Reps, seqs: &mut Seqs) {
   let shift = 64u64 - u64.from(log);
   var ip = start;
@@ -225,7 +225,7 @@ fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, 
         var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
         var s = ip;
         var c = cand;
-        while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+        while s > anchor && c > 0usize && src[s - 1usize] == src[c - 1usize] {
           s -= 1usize;
           c -= 1usize;
           ml += 1usize;
@@ -257,7 +257,7 @@ fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, 
 }
 
 // matchDouble with tags: 'longG' and 'shortG' as long as 'longT' and 'shortT'
-fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
+fn matchDouble(src: &Array[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
     longT: &mut List[u32], shortT: &mut List[u32], longG: &mut List[u8], shortG: &mut List[u8],
     reps: &mut Reps, seqs: &mut Seqs) {
   let shiftL = 64u64 - u64.from(longLog);
@@ -302,7 +302,7 @@ fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog:
         continue;
       }
       let off = u32.from(s - c);
-      while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+      while s > anchor && c > 0usize && src[s - 1usize] == src[c - 1usize] {
         s -= 1usize;
         c -= 1usize;
         ml += 1usize;
