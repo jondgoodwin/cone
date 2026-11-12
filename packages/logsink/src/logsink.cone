@@ -15,8 +15,7 @@
 //
 //   ConsoleSink                the sink: 'is trace.Sink'
 //   install(max)               installs one, wanting kinds no more detailed than 'max'
-//   installWith(max, clock, write)   the same with the clock and the writer given: for TESTS (public because a test
-//                              is a program of its own and cannot see a private name)
+//   formatLine(e, at, line)  the line layout as a pure function of an event and a time: what 'record' writes
 //
 // THE LINE. Time, level, target, text, then each field as name=value, separated by single spaces; one event is
 // one line, ended by a newline.
@@ -62,8 +61,6 @@ import stdio use *;
 
 pub struct ConsoleSink is trace.Sink {
   max: Level;
-  clock: &fn() Timestamp;
-  write: &fn(line: &str);
 
   pub fn enabled(self: &, k: &trace.Info) bool {
     k.level != Level.Off && k.level.rank() <= self.max.rank()
@@ -71,43 +68,50 @@ pub struct ConsoleSink is trace.Sink {
 
   pub fn record(self: &, e: &trace.Event) {
     var line = String.withCapacity(160usize);
-    appendTime(&mut line, (self.clock)());
-    let k = e.kind;
-    line.append(" ");
-    line.append(levelText(k.level));
-    line.append(" ");
-    line.append(k.target);
-    line.append(" ");
-    appendEscaped(&mut line, if e.message.len > 0usize {e.message} else {k.name});
-    if e.phase == trace.Phase.Begin {
-      line.append(" begin");
-    }
-    if e.phase == trace.Phase.End {
-      line.append(" end");
-    }
-    var i = 0usize;
-    while i < e.values.len {
-      line.append(" ");
-      line.append(k.names[i]);
-      line.append("=");
-      match e.values[i] {
-        case let I64(v) {line.appendInt(v);}
-        case let U64(v) {line.appendUInt(v);}
-        case let F64(v) {line.appendF64(v);}
-        case let Bool(v) {line.append(if v {"true"} else {"false"});}
-        case let Text(v) {appendValueText(&mut line, v);}
-        case let Duration(v) {line.appendInt(v); line.append("ns");}
-        case let Time(v) {line.appendUInt(v);}
-      }
-      i = i + 1usize;
-    }
-    if e.phase != trace.Phase.Event {
-      line.append(" span=");
-      line.appendUInt(e.span);
-    }
-    line.append("\n");
-    (self.write)(line.view());
+    formatLine(e, Timestamp.now(), &mut line);
+    print <- line.view();
   }
+}
+
+// Appends the line for event 'e' as of time 'at' (a wall-clock time, not the event's own ticks), ended by a
+// newline. Pure: it reads nothing else and writes only 'line'. 'record' calls it with the real clock; a test
+// calls it with a fixed time to pin the layout.
+pub fn formatLine(e: &trace.Event, at: Timestamp, line: &mut String) {
+  appendTime(line, at);
+  let k = e.kind;
+  line.append(" ");
+  line.append(levelText(k.level));
+  line.append(" ");
+  line.append(k.target);
+  line.append(" ");
+  appendEscaped(line, if e.message.len > 0usize {e.message} else {k.name});
+  if e.phase == trace.Phase.Begin {
+    line.append(" begin");
+  }
+  if e.phase == trace.Phase.End {
+    line.append(" end");
+  }
+  var i = 0usize;
+  while i < e.values.len {
+    line.append(" ");
+    line.append(k.names[i]);
+    line.append("=");
+    match e.values[i] {
+      case let I64(v) {line.appendInt(v);}
+      case let U64(v) {line.appendUInt(v);}
+      case let F64(v) {line.appendF64(v);}
+      case let Bool(v) {line.append(if v {"true"} else {"false"});}
+      case let Text(v) {appendValueText(line, v);}
+      case let Duration(v) {line.appendInt(v); line.append("ns");}
+      case let Time(v) {line.appendUInt(v);}
+    }
+    i = i + 1usize;
+  }
+  if e.phase != trace.Phase.Event {
+    line.append(" span=");
+    line.appendUInt(e.span);
+  }
+  line.append("\n");
 }
 
 fn levelText(l: Level) &str {
@@ -121,23 +125,17 @@ fn levelText(l: Level) &str {
   }
 }
 
-fn nowClock() Timestamp {Timestamp.now()}
-
-// One print of one text: one stdio record, taken away whole
-fn printLine(line: &str) {
-  print <- line;
-}
-
-// Installs a console sink wanting kinds up to 'max' (Level.Info: errors, warnings and info); false when a sink
-// was already installed (trace's rule)
+// Installs a console sink wanting kinds up to 'max' (Level.Info: errors, warnings and info), and sets trace's
+// default level to 'max' too, as Rust's fmt().with_max_level(..).init() does: a sink at Info that is shown no
+// Info line (the facade's default is Warn) would be a trap. A target named by trace.setLevel or CONE_TRACE keeps
+// its own level, and a later setDefaultLevel overrides this one. False when a sink was already installed
+// (trace's rule); the default level is then left alone.
 pub fn install(max: Level) bool {
-  installWith(max, &nowClock, &printLine)
-}
-
-// For tests: the clock and the writer are given. 'write' gets each whole line, with its newline, on the thread
-// that made the event, many at once
-pub fn installWith(max: Level, clock: &fn() Timestamp, write: &fn(line: &str)) bool {
-  trace.install(Uni[ConsoleSink](max, clock, write))
+  if !trace.install(Uni[ConsoleSink](max)) {
+    return false;
+  }
+  trace.setDefaultLevel(max);
+  true
 }
 
 // '2026-11-11T09:30:15.250Z': calendar's whole-second text with the milliseconds put before the 'Z'

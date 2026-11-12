@@ -1,7 +1,7 @@
 // The console sink's line, pinned: a fixed clock that moves a known number of milliseconds a call, the time,
 // level, target, text and fields of kinds of 0 to 4 fields of every type, a message, a formatted Log line,
 // an interval's begin and end, the quoting of text values, the escaping of control bytes, and a Debug kind that a
-// sink wanting Info never sees. The writer is the sink's own default, a print of the whole line.
+// sink wanting Info never sees. The layout is pinned through logsink.formatLine, called by a sink of the test's own.
 
 mod layout;
 
@@ -9,6 +9,7 @@ import testing use *;
 import stdio use *;
 import trace use Level, Kind0, Kind1, Kind2, Kind3, Kind4, Nanos, Ticks, Log;
 import calendar use DateTime;
+import collections use String;
 import time use Timestamp, Duration;
 import logsink;
 
@@ -40,8 +41,19 @@ fn clock() Timestamp {
   at
 }
 
-fn line(s: &str) {
-  print <- s;
+// A sink of the test's own: it wants what a console sink at Info wants, and writes each event through
+// logsink.formatLine with the fixed clock
+struct Pin is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    k.level != Level.Off && k.level.rank() <= Level.Info.rank()
+  }
+
+  pub fn record(self: &, e: &trace.Event) {
+    var s = String();
+    logsink.formatLine(e, clock(), &mut s);
+    print <- s.view();
+  }
 }
 
 fn main() i32 {
@@ -55,8 +67,7 @@ fn main() i32 {
     case is None { expect(false, "the base date exists"); }
   }
   trace.setDefaultLevel(Level.Trace);
-  expect(logsink.installWith(Level.Info, &clock, &line), "the sink is installed");
-  expect(!logsink.install(Level.Info), "a second install is refused");
+  expect(trace.install(Uni[Pin](0u64)), "the sink is installed");
 
   started.emit();
   count.emit(7u64);

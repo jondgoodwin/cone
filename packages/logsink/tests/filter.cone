@@ -1,13 +1,19 @@
-// The sink's level filter: 'enabled' wants a kind no more detailed than the level the sink was given, so a sink
-// at Warn writes the Error and Warn kinds only, while the facade's own level (here Trace for every target) lets
-// all through to be asked. A kind the sink refuses is off in the facade: its arguments are never evaluated.
+// The sink's level filter and install's default level. Each case is a child process of this test with its output
+// captured, and the parent reads the lines it wrote (the layout itself is pinned in 'layout'):
+//
+// 1. warn: 'install(Level.Warn)' then one kind of each level emitted. Only the Error and the Warn kind are written,
+//    and an Info kind's argument is never evaluated: the kind is off in the facade.
+// 2. info: 'install(Level.Info)' and NOTHING else (no setDefaultLevel): the Info line appears, because install
+//    sets trace's default level to its 'max' (the facade's own default is Warn). The Debug and Trace kinds do not.
 
 mod filter;
 
 import testing use *;
+import collections use *;
 import stdio use *;
+import time use Duration;
+import process;
 import trace use Level, Kind0, Kind1;
-import time use Timestamp;
 import logsink;
 
 let errorKind: Kind0;
@@ -24,30 +30,69 @@ fn @initpure init() {
   traceKind = Kind0.make("t", "app", Level.Trace);
 }
 
-var written = 0u32;
 var evaluated = 0u32;
-
-fn clock() Timestamp {Timestamp.fromUnixSeconds(1762853415i64)}
-
-fn line(s: &str) {
-  written = written + 1u32;
-  print <- s;
-}
 
 fn bump() u64 {
   evaluated = evaluated + 1u32;
   1u64
 }
 
-fn main() i32 {
-  trace.setDefaultLevel(Level.Trace);
-  expect(logsink.installWith(Level.Warn, &clock, &line), "the sink is installed");
+fn child(mode: &str) i32 {
+  let max = if mode == "warn" {Level.Warn} else {Level.Info};
+  if !logsink.install(max) { return 2i32; }
   errorKind.emit();
   warnKind.emit();
   infoKind.emit(bump());
   debugKind.emit();
   traceKind.emit();
-  expect(written == 2u32, "only the Error and the Warn kind were written");
-  expect(evaluated == 0u32, "an Info argument was not evaluated: the kind is off");
+  trace.flush();
+  if mode == "warn" && evaluated != 0u32 { return 3i32; }
+  0i32
+}
+
+fn ran(exe: &str, mode: &str) process.Output {
+  var o = process.Output(0u32, 0u32, false, String(), String());
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(60000i64))) {
+    case var Ok(ok) { o <-> ok; }
+    case let Err(e) {
+      let m = String() <- e;
+      expectStr(m.view(), "<started>", mode);
+    }
+  }
+  o
+}
+
+// Whether line 'n' of the output holds 'what' (after the 24-byte time)
+fn lineHas(all: &List[&str], n: usize, what: &str) bool {
+  n < all.len() && all[n].len() > 25usize && all[n].sliceFrom(25usize).startsWith(what)
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") {
+    return child(a[2usize].view());
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  let w = ran(exe.view(), "warn");
+  expectUInt(u64.from(w.exitCode), 0u64, "warn: exits 0 (the Info argument was not evaluated)");
+  let wl = List[&str].from(w.stdout.lines());
+  expectUInt(u64.from(wl.len()), 2u64, "warn: two lines");
+  expect(lineHas(&wl, 0usize, "ERROR app e"), "warn: the Error kind");
+  expect(lineHas(&wl, 1usize, "WARN app w"), "warn: the Warn kind");
+  let i = ran(exe.view(), "info");
+  expectUInt(u64.from(i.exitCode), 0u64, "info: exits 0");
+  let il = List[&str].from(i.stdout.lines());
+  expectUInt(u64.from(il.len()), 3u64, "info: three lines");
+  expect(lineHas(&il, 0usize, "ERROR app e"), "info: the Error kind");
+  expect(lineHas(&il, 1usize, "WARN app w"), "info: the Warn kind");
+  expect(lineHas(&il, 2usize, "INFO app i n=1"), "info: the Info kind, shown with no setDefaultLevel");
   done()
 }
