@@ -112,7 +112,7 @@ fn cellRoom[T](r: *MemRegion, n: usize) u32 {
   if got > 0xFFFFFFF0usize {0xFFFFFFF0u32} else {u32.from(got)}
 }
 
-pub struct GenPool[T] is ShapeChanging, CarriesRegion {
+pub struct GenPool[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   cells: *Cell[T];        // the block
   top: u32;               // cells used so far: 0 up to top are the cells ever taken
   cap: u32;               // cells the block has room for
@@ -350,6 +350,11 @@ pub struct GenPool[T] is ShapeChanging, CarriesRegion {
   // The same, each entry with its cell index
   pub fn entries(self: &) PoolEntries[T] {PoolEntries[T](self, 0u32)}
 
+  // How a collector reaches what the pool holds, in its block: a writable
+  // reference to the value of each cell that holds one (a live cell, or a
+  // retired one, which keeps its value until the pool dies), in index order
+  pub fn gcTraceElements(self: &mut) PoolGcTraceItems[T] {PoolGcTraceItems[T](self, 0u32)}
+
   // FOR TESTS, NOT AN API: set the generation of the free cell i (to start it
   // near the top). Does nothing if the cell is not free.
   pub fn setGenForTests(self: &mut, i: u32, g: u32) {
@@ -394,6 +399,29 @@ pub struct PoolIter['a, T] is Iterator[&T] {
   }
 }
 
+// A cursor over the values a pool holds, for a collector to trace them: 'next'
+// gives a writable reference to each in turn. It borrows the pool mutably,
+// which may not change while the cursor is used
+pub struct PoolGcTraceItems['a, T] is Iterator[&mut T] {
+  pool: &'a mut GenPool[T];
+  pos: u32;
+
+  pub fn next(self: &mut) Option[&'a mut T] {
+    let p = pool.cells;
+    var k = pos;
+    while k < pool.top {
+      let c = p + usize.from(k);
+      k = k + 1u32;
+      if (*c).next == liveMark || (*c).next == retiredMark {
+        pos = k;
+        return Some[&mut T](&(*c).value as *T as &mut T);
+      }
+    }
+    pos = k;
+    None
+  }
+}
+
 pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
   pool: &'a GenPool[T];
   pos: u32;
@@ -429,12 +457,18 @@ pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
 
 // The seam: the row storage. Values and the back index (each row's sparse cell)
 // in two parallel arrays, so the values are a plain array of T.
-struct RowBlock[T] is Move {
+struct RowBlock[T] is Move, GcTraceElements {
   vals: *T;
   cells: *u32;
   n: usize;
   cap: usize;
   region: *MemRegion;
+
+  // How a collector reaches the values, in the rows: a writable reference to
+  // each, in row order. A DensePool is traced by its fields, this block among
+  // them (the sparse index holds only numbers), so the pool declares nothing of
+  // its own; one cursor each would trace every value twice
+  fn gcTraceElements(self: &mut) RowGcTraceItems[T] {RowGcTraceItems[T](self, 0usize)}
 
   fn make(region: *MemRegion) RowBlock[T] {RowBlock[T](nullOf[T](), nullOf[u32](), 0usize, 0usize, region)}
 
@@ -487,7 +521,7 @@ struct RowBlock[T] is Move {
   }
 }
 
-pub struct DensePool[T] is ShapeChanging, CarriesRegion {
+pub struct DensePool[T] is ShapeChanging, Sendable, CarriesRegion {
   index: GenPool[u32];    // sparse: a cell's row
   block: RowBlock[T];
 
@@ -622,5 +656,19 @@ pub struct DenseIter['a, T] is Iterator[&T] {
     let p = pool.block.vals + pos;
     pos = pos + 1usize;
     Some[&T](p as &T)
+  }
+}
+
+// A cursor over the values a row block holds, row by row, for a collector to
+// trace them. It borrows the block mutably, which may not change while it is used
+struct RowGcTraceItems['a, T] is Iterator[&mut T] {
+  block: &'a mut RowBlock[T];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a mut T] {
+    if pos >= block.n {return None;}
+    let p = block.vals + pos;
+    pos = pos + 1usize;
+    Some[&mut T](p as &mut T)
   }
 }
