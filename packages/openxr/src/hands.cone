@@ -23,16 +23,20 @@ pub struct HandExtensions {
   pub tracking: bool = false;
   // XR_FB_hand_tracking_aim: aim pose and pinch strengths (offered and wanted only with 'tracking')
   pub aim: bool = false;
-  // XR_META_hand_tracking_microgestures
+  // XR_META_hand_tracking_microgestures (found only along with XR_EXT_hand_interaction,
+  // which it depends on; 'addNames' enables both)
   pub microgestures: bool = false;
   // XR_META_simultaneous_hands_and_controllers
   pub simultaneous: bool = false;
 
   // Which of them 'offered' (as 'enumerateInstanceExtensionProperties' filled
   // it, 'count' entries) lists. The aim extension extends hand tracking, so it
-  // is found only along with it.
+  // is found only along with it. Microgestures depends on XR_EXT_hand_interaction
+  // (the registry's 'depends'), so it is found only when that is offered too: an
+  // instance asked for it alone fails with ERROR_EXTENSION_DEPENDENCY_NOT_ENABLED.
   pub fn find(offered: *ExtensionProperties, count: u32) HandExtensions {
     var h = HandExtensions();
+    var interaction = false;
     var i = 0usize;
     while i < usize.from(count) {
       let name = &(offered + i).extensionName as *u8;
@@ -40,18 +44,20 @@ pub struct HandExtensions {
       if libc.strcmp(cstr.fromPtr(name), "XR_FB_hand_tracking_aim") == 0i32 { h.aim = true; }
       if libc.strcmp(cstr.fromPtr(name), "XR_META_hand_tracking_microgestures") == 0i32 { h.microgestures = true; }
       if libc.strcmp(cstr.fromPtr(name), "XR_META_simultaneous_hands_and_controllers") == 0i32 { h.simultaneous = true; }
+      if libc.strcmp(cstr.fromPtr(name), "XR_EXT_hand_interaction") == 0i32 { interaction = true; }
       i = i + 1usize;
     }
     if !h.tracking { h.aim = false; }
+    if !interaction { h.microgestures = false; }
     h
   }
 
-  // How many extensions 'addNames' adds
+  // How many extensions 'addNames' adds (microgestures adds two: it and XR_EXT_hand_interaction)
   pub fn count(self: &) u32 {
     var n = 0u32;
     if tracking { n = n + 1u32; }
     if aim { n = n + 1u32; }
-    if microgestures { n = n + 1u32; }
+    if microgestures { n = n + 2u32; }
     if simultaneous { n = n + 1u32; }
     n
   }
@@ -61,7 +67,10 @@ pub struct HandExtensions {
   pub fn addNames(self: &, names: &mut List[*u8]) {
     if tracking { names.push(&"XR_EXT_hand_tracking" as *u8); }
     if aim { names.push(&"XR_FB_hand_tracking_aim" as *u8); }
-    if microgestures { names.push(&"XR_META_hand_tracking_microgestures" as *u8); }
+    if microgestures {
+      names.push(&"XR_EXT_hand_interaction" as *u8);
+      names.push(&"XR_META_hand_tracking_microgestures" as *u8);
+    }
     if simultaneous { names.push(&"XR_META_simultaneous_hands_and_controllers" as *u8); }
   }
 }
