@@ -42,6 +42,11 @@ extern {
 
 const noEnd = 0xFFFFFFFFFFFFFFFFusize;
 
+// The owned ends and process the 'take' calls give, as the raw numbers the helpers below read and close
+fn rawOut(o: Option[process.ChildStdout]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn rawErr(o: Option[process.ChildStderr]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn rawProc(o: Option[process.ChildProcess]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+
 fn pause() {
   #if #os == .windows {Sleep(1000u32);} #else {usleep(1000000u32);};
 }
@@ -126,8 +131,8 @@ struct Waited {
   pub n: usize;
   pub code: u32;
 }
-
 fn waitFor(lp: &mut Loop, raw: usize, seconds: i64) Waited {
+
   var h = Handle.none();
   match lp.adoptChild(raw) {
     case let Ok(x) { h = x; }
@@ -173,9 +178,9 @@ fn main(argc: i32, argv: **u8) i32 {
     var cmd = command(exe.view(), "printclosed");
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        closeEnd(c.takeStdout());
-        let err = readAll(c.takeStderr());
-        let w = waitFor(&mut lp, c.takeProcess(), 30i64);
+        closeEnd(rawOut(c.takeStdout()));
+        let err = readAll(rawErr(c.takeStderr()));
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 30i64);
         expect(w.status == diag.outcomeDone, "1: the child ended");
         expectUInt(u64.from(w.n), 141u64, "1: exit status 141");
         expect(err.len() == 0usize, "1: nothing on standard error: no panic text, and not the line after the print");
@@ -187,9 +192,9 @@ fn main(argc: i32, argv: **u8) i32 {
     cmd = command(exe.view(), "eprintclosed");
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        closeEnd(c.takeStderr());
-        let out = readAll(c.takeStdout());
-        let w = waitFor(&mut lp, c.takeProcess(), 30i64);
+        closeEnd(rawErr(c.takeStderr()));
+        let out = readAll(rawOut(c.takeStdout()));
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 30i64);
         expect(w.status == diag.outcomeDone, "2: the child ended");
         expectUInt(u64.from(w.n), 5u64, "2: a failed write to standard error is dropped: the child goes on, exit 5");
         expect(out.view().startsWith("went on"), "2: ...and its standard output holds the line after it");
