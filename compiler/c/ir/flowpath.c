@@ -1127,8 +1127,6 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     *pl = refpl;
     pl->ownertype = reftype->tag == RefTag || reftype->tag == VirtRefTag ? reftype : NULL;
-    if (pwMayAlias(reftype))
-        pl->owned = 1;
     if (pwMayAliasWritten(reftype))
         pl->shwrite = 1;
     // A dereference cut off by the step limit is not marked shared: the place
@@ -1140,6 +1138,10 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
             pl->sharedlen = pl->nsteps;
         }
     }
+    // 'owned' is then 1 + the index of this dereference (Place.owned): the fields past it are
+    // a collection another field's owner may own too
+    if (pwMayAlias(reftype))
+        pl->owned = pl->nsteps;
     return 1;
 }
 
@@ -2308,6 +2310,19 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // call it is a store into the arena, so the arena's death is checked
         // against it
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
+        // A writable borrow handed to a parameter declared read-only is read
+        // only by the callee: it stores nothing through it (a '&mut' key
+        // given to an index's '&'-typed key). Only where nothing in the
+        // pointee can change through a shared view (a lock, an atomic, a
+        // writable reference inside: itypeMayMutateShared)
+        if (depth && parmtype && parmtype->tag == RefTag
+                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
+                && !permIsLock(((RefNode *)parmtype)->perm)
+                && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
+            int pdepth = itypeWritableBorrowDepth(parmtype, 3);
+            if (pdepth < depth)
+                depth = pdepth;
+        }
         int arenaparm = !arenameth && parmtype && parmtype->tag == RefTag && ((RefNode *)parmtype)->lifename != NULL
             && isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
             && pwIsNoLoanMut(storedin) && !lifeSlotted(storedin);
@@ -2324,6 +2339,17 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // (loanStoredStatic)
         int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
+        // A writable borrow of an arena among the arguments is a place the
+        // callee may store anything into (it holds borrows through raw memory,
+        // and its own parameter is not a target the walk asks, Bug 51), so no
+        // argument's loan can be shown stored nowhere by its type
+        int arenaarg = 0;
+        for (uint32_t j = 0; j < nargs; ++j) {
+            INode *jt = iexpGetTypeDcl(parts[j]);
+            if (pwIsBorrowed(jt) && jt->tag == RefTag && (permGetFlags(((RefNode *)jt)->perm) & MayWrite)
+                    && pwIsNoLoanMut(((RefNode *)jt)->vtexp))
+                arenaarg = 1;
+        }
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
                 continue;
@@ -2338,15 +2364,19 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             // A parameter with no lifetime named shares none with the arena
             if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
-            // A borrow written as the argument is stored itself only where
-            // the place's type can hold a borrow of what it borrows: the
-            // world's pool and the list of its creatures, each lent '&mut' to
-            // one call, are not stored in each other
             PathSet *carried = argsets[i];
+            // A borrow written as the argument is stored itself only where
+            // the place's type can hold a borrow of something reachable inside
+            // what it borrows (itypeMayHoldBorrowInside: the type, its fields
+            // and elements, what it owns). The world's pool and the list of its
+            // creatures, each lent '&mut' to one call, are not stored in each
+            // other; 'put(&mut h, &mut l)' with 'h' holding a '&Pt' and 'l' a
+            // 'List[Pt]' is (Bug 77)
             INode *site = pwLendSite(parts[i]);
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
-                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
+            if (own && how == LoanEscapeCall && !arenaarg && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeMayHoldBorrowInside(storedin,
+                    itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp),
+                    !(permGetFlags(((RefNode *)iexpGetTypeDcl(site))->perm) & MayWrite)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
@@ -2824,12 +2854,26 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // writes. Anything made of the borrow afterwards is asked
         if (gv && recvpl && pathSetHasLoan(pathVars[recvpl->var].holds, loan))
             continue;
+        // An argument that borrows a sibling field, a place apart from the loan's own, is a value this
+        // function owns whole (reshapeCall's 'apart'); a method's receiver is asked as before
+        // Only the first 16 arguments are looked at (reshapeCallBody reads 'apart' for k < 16 only): a
+        // call with more falls back to the old answer for the rest, which is the refusal, never an accept
+        uint8_t apart[16];
+        int anyapart = 0;
+        memset(apart, 0, sizeof(apart));
+        for (uint32_t j = meth ? 1 : 0; j < nargs && j < 16; ++j) {
+            INode *ba = nodesGet(call->args, j);
+            while (ba->tag == CastTag && !(ba->flags & FlagConvert))
+                ba = ((CastNode *)ba)->exp;
+            apart[j] = ba->tag == BorrowTag && loanShapeDisjointAt(loan, argsets[j], ba);
+            anyapart |= apart[j];
+        }
         uint32_t c = 0;
         // The answer is the same for the loans of one type, unless the loan's own locals
-        // change what it is
+        // (or an argument's place) change what it is
         INode *ro = owner && loanShapeOwnerByValue(loan) ? recvfield : NULL;
         while (c < ncont && (conts[c] != cont || owners[c] != owner || ros[c] != ro || rus[c] != ru || gvs[c] != gv
-                || sks[c] != sk || local || nmine))
+                || sks[c] != sk || local || nmine || anyapart))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -2844,7 +2888,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             gvs[c] = gv;
             sks[c] = sk;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk, anyapart ? apart : NULL);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -2852,8 +2896,8 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 answers[c] = 0;
             }
             ncont = c + 1;
-            if (local || nmine)
-                rus[c] = -1;        // not kept for another loan
+            if (local || nmine || anyapart)
+                rus[c] = -1;       // not kept for another loan
         }
         if (!answers[c])
             continue;

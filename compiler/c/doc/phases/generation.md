@@ -1057,7 +1057,9 @@ variable, a finished value) is passed as before.
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). Their
 `alloc` and `free` call core's `RawBlocks`, the raw blocks layer, which `conestd`
 defines (`rawblocks.cone`: `cone_rawBlockAlloc`, `cone_rawBlockResize`,
-`cone_rawBlockRelease`, each a forward to `libc`'s `malloc`, `realloc` or `free`,
+`cone_rawBlockRelease`, each a forward to `libc`'s `malloc`, `realloc` or `free`;
+`cone_rawBlockAllocAligned` and `cone_rawBlockReleaseAligned` forward to `libc`'s
+`alignedAlloc` and `alignedFree`, a pair of their own,
 `libc`'s ordinary `extern` declarations, which `core`'s import of `libc` puts in
 every compile). A program's own declaration of `free` meets `libc`'s as any two
 declarations of one C name do (`genlClaimSymbol`). `conestd` also supplies stdio
