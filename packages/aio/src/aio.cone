@@ -355,6 +355,24 @@
 // it runs only there. Its jobs, and aio's own, stay the I/O thread's: a pass
 // with any queued takes nothing. opStats' workerDone counts the passes' answers.
 //
+// MEMORY ORDERS OF THE BATON AND THE HOOK PATH. Every word that decides who may
+// touch the Loop or whether a pass runs is SeqCst (Atomic's own load, store,
+// swap, add, sub, which are SeqCst): the baton (tryBaton's swap takes it, a
+// store of 0 gives it up, so the Loop and its lists pass from holder to holder
+// acquire/release at least), 'again' (a Dekker pair with the baton: a worker
+// stores again=1 and then looks at the baton, the holder frees the baton and then
+// looks at again; with anything weaker both could miss the other's store and
+// a worker's send go unpolled, so this pair needs the total order), 'hot', the
+// waker's 'aside' word (iocore), 'ended', and actors' hook pointer
+// (workerHooksAt, published once). Three words are RELAXED, and carry nothing
+// else with them: 'asks' (a count the I/O thread compares between wakes to
+// guess a rate), 'lastAsk' (a time, read to guess whether turns are quiet) and
+// 'workerDone' (a statistic). A stale read of the first two makes the thread
+// stand aside, or return to the port, one tick (500 us) early or late, a
+// timing cost that the 300 us and 500 us bounds already allow, never a lost or
+// doubled completion. The thread-locals (onIo, hereHot, actors' turnAsked and
+// inHook) are one thread's own.
+//
 // HOSTED SERVICES. Another package's code that runs ON the I/O thread, with its
 // Loop: the actorhttp package's HTTP clients, connections and servers
 // (httpconn's Drivers and httpclient's Clients, driven as they always are, by

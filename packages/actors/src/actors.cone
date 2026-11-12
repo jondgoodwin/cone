@@ -4203,7 +4203,14 @@ var @threadlocal me: usize = 0usize;
 // (askAfterTurn), the actor marked idle or queued again; 'idle' runs each time
 // a worker is about to publish itself a sleeper, its spin over, and true sends
 // it back to look for work. Neither may wait, and neither runs an actor. One
-// pair for the process, set once, before the first ask
+// pair for the process, set once, before the first ask. Memory orders: the
+// pair is written, then its address stored in workerHooksAt, an Atomic, so
+// SeqCst (release), and read back by load, SeqCst (acquire), so a worker that
+// sees the address sees the pair; 'turnAsked' and 'inHook' are thread-locals
+// (one thread's own); in schedule the hook rule reads the worker's own head
+// and tail (Atomic loads, SeqCst), and the searching and injectLen words the
+// idle hook's path touches are Atomic and SeqCst, as in the rest of the park
+// protocol (THE PARK WORD); 'woken' is the worker's own
 struct WorkerHooks {
   after: &fn();
   idle: &fn() bool;
