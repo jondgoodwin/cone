@@ -1,0 +1,93 @@
+// Timed awaits, for the runtime's two lock-guarded side tables, to standard
+// error. Each mode makes the same number of awaits (200000) from 8 asking
+// actors to one answering actor, and prints the milliseconds:
+//
+//   plain     awaits in no group, no record: neither table is touched (the control)
+//   group     awaits made in a cancel group with nothing live across the await:
+//             each takes a ticket (gTicket) and notes and takes an entry in the
+//             group table (gLock, gTable, gCount)
+//   registry  awaits in no group, each from a fresh actor, so that every one
+//             makes the first park of its actor's table and so an entry in the
+//             pending registry (regLock, regHead), taken out again at its death
+//
+//   congo run --release examples/globalsbench.cone -- plain
+//   congo run --release examples/globalsbench.cone -- group
+//   congo run --release examples/globalsbench.cone -- registry
+//
+// For the console's own queue, see consolebench.cone.
+
+mod globalsbench;
+
+import stdio use *;
+import collections use *;
+import actors;
+import cancelgroups use *;
+import time use Instant;
+import process;
+
+const askers = 8u32;
+const perAsker = 25000u32;
+
+actor Answer {
+  pub async fn val(self, n: u64) u64 {n + 1u64}
+}
+
+actor Asker {
+  // nothing live across the await: an empty record, so a ticket in a group
+  pub async fn once(self, ans: Answer, n: u64) {
+    let v = await ans.val(n);
+  }
+}
+
+fn main() i32 {
+  let args = process.args();
+  var mode = 0u32;
+  if args.len() >= 2usize && args[1usize].equals("group") {
+    mode = 1u32;
+  }
+  else if args.len() >= 2usize && args[1usize].equals("registry") {
+    mode = 2u32;
+  }
+  let ans = Answer();
+  let start = Instant.now();
+  if mode == 2u32 {
+    var i = 0u32;
+    while i < askers * perAsker {
+      let a = Asker();
+      a.once(ans, u64.from(i));
+      if i % 2000u32 == 1999u32 {
+        actors.waitQuiet();     // so that 200000 actors are not all alive at once
+      }
+      i = i + 1u32;
+    }
+  }
+  else {
+    var pool = List[Asker]();
+    var k = 0u32;
+    while k < askers {
+      pool.push(Asker());
+      k = k + 1u32;
+    }
+    let g = CancelGroup.make();
+    var i = 0u32;
+    while i < perAsker {
+      var j = 0u32;
+      while j < askers {
+        let a = pool[usize.from(j)];
+        let n = u64.from(i);
+        if mode == 1u32 {
+          actors.withGroup(&g, fn() [a, ans, n] { a.once(ans, n); });
+        }
+        else {
+          a.once(ans, n);
+        }
+        j = j + 1u32;
+      }
+      i = i + 1u32;
+    }
+  }
+  actors.waitQuiet();
+  let took = start.elapsed();
+  eprint <- (if mode == 1u32 {"group"} else if mode == 2u32 {"registry"} else {"plain"}), ": ", took.millis(), " ms for ", u64.from(askers) * u64.from(perAsker), " awaits\n";
+  0i32
+}

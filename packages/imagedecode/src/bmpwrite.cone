@@ -1,0 +1,51 @@
+// ======== BMP, writing ========
+//
+// One 24-bit BMP writer for every package that wants to save a picture: the
+// 54-byte header (file header and the 40-byte information header, 2835
+// pixels a meter each way), then the rows bottom first, each pixel stored
+// blue, green, red, each row padded with zeros to a multiple of 4 bytes.
+
+// The picture as a BMP file's bytes, as one buffer of a Chain (so
+// 'Chain.contiguous(0, len)' lends it whole). 'pixels' is width * height
+// pixels of 'channels' bytes each (3 red, green, blue; 4 adds alpha, which is
+// dropped), in rows left to right; 'bottomFirst' says the first row is the
+// picture's bottom (render's Image) rather than its top (a canvas, a read-back).
+pub fn encodeBmp(width: i32, height: i32, channels: i32, pixels: &Array[u8], bottomFirst: bool) Chain {
+  let rowSize = (width * 3i32 + 3i32) / 4i32 * 4i32;
+  let pixelBytes = rowSize * height;
+  let pad = usize.from(rowSize - width * 3i32);
+  var w = streams.Writer.make(usize.from(54i32 + pixelBytes));
+  // The file header: 'BM', the file's size, 0, where the pixels start
+  w.put("BM");
+  w.putLE[u32](u32.from(54i32 + pixelBytes));
+  w.putLE[u32](0u32);
+  w.putLE[u32](54u32);
+  // The information header: its size, width, height, 1 plane, 24 bits a
+  // pixel, no compression, the pixels' size, the resolution, no palette
+  w.putLE[u32](40u32);
+  w.putLE[u32](u32.from(width));
+  w.putLE[u32](u32.from(height));
+  w.putLE[u16](1u16);
+  w.putLE[u16](24u16);
+  w.putLE[u32](0u32);
+  w.putLE[u32](u32.from(pixelBytes));
+  w.putLE[u32](2835u32);
+  w.putLE[u32](2835u32);
+  w.putLE[u32](0u32);
+  w.putLE[u32](0u32);
+  var row = 0i32;
+  while row < height {
+    let y = if bottomFirst { row } else { height - 1i32 - row };
+    var x = 0i32;
+    while x < width {
+      let p = usize.from((y * width + x) * channels);
+      w.putByte(pixels[p + 2usize]);
+      w.putByte(pixels[p + 1usize]);
+      w.putByte(pixels[p]);
+      x = x + 1i32;
+    }
+    w.repeat(0u8, pad);
+    row = row + 1i32;
+  }
+  w.finish()
+}

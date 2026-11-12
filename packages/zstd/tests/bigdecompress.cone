@@ -1,0 +1,64 @@
+// A one-shot decompress of a frame whose output and input pass the buffer pool's bound (64 MiB) is a
+// value, never a panic. 70 MiB of raw blocks in one frame, fed to 'decompress' with no expected size.
+
+mod bigdecompress;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+fn put32(f: &mut List[u8], v: u32) {
+  var k = 0u32;
+  while k < 4u32 { f.push(u8.from((v >> (8u32 * k)) & 255u32)); k += 1u32; }
+}
+
+// A frame of raw blocks of 1000 bytes (its window is 1 KiB, no content size, no checksum)
+fn rawFrame(f: &mut List[u8], content: &Array[u8]) {
+  put32(f, 0xFD2FB528u32);
+  f.push(0x00u8);
+  f.push(0x00u8);
+  var p = 0usize;
+  while true {
+    let n = if content.len - p < 1000usize {content.len - p} else {1000usize};
+    let last = if p + n == content.len {1usize} else {0usize};
+    let h = last | (n << 3usize);
+    f.push(u8.from(h & 255usize)); f.push(u8.from((h >> 8usize) & 255usize)); f.push(u8.from(h >> 16usize));
+    var k = 0usize;
+    while k < n { f.push(content[p + k]); k += 1usize; }
+    p += n;
+    if last == 1usize { break; }
+  }
+}
+
+fn main() i32 {
+  let n = 73400320usize;
+  var data = List[u8]();
+  data.reserve(n);
+  var i = 0usize;
+  while i < n { data.push(u8.from((i * 31usize + i / 251usize) % 256usize)); i += 1usize; }
+  var frame = List[u8]();
+  frame.reserve(n + n / 100usize);
+  rawFrame(&mut frame, data.view());
+  expect(frame.len() > 67108864usize, "the frame is over the pool bound");
+  match decompress(frame.view(), 0usize) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "all the bytes came out");
+      expect(out.view() == data.view(), "the bytes are the data");
+    }
+    case let Err(e) { expect(false, "decompress of a large frame"); }
+  }
+  // A compressed frame whose output is over the bound, with the size given
+  var text = List[u8]();
+  text.reserve(n);
+  i = 0usize;
+  while i < n { text.push(u8.from((i / 7usize + i / 4093usize) % 251usize)); i += 1usize; }
+  let z = compress(text.view(), 1);
+  match decompress(z.view(), n) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "compressed: all the bytes came out");
+      expect(out.view() == text.view(), "compressed: the bytes are the data");
+    }
+    case let Err(e) { expect(false, "decompress of a large compressed frame"); }
+  }
+  done()
+}

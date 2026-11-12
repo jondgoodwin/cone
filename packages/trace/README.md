@@ -34,7 +34,7 @@ site (see the header comment of `src/trace.cone`, "Logging", and the page's
 
 ## Not here yet
 
-- Sinks (a buffered binary file, ETW, console text), the packages' own
+- Sinks (a buffered binary file, ETW; console text is the `logsink` package), the packages' own
   instrumentation, metrics, and tools: each a package of its own, later.
 - A fan-out as a sink of its own, `Fanout is Sink { first: Uni[Sink]; second:
   Uni[Sink]; }` made by `fanout(a, b) Uni[Sink]`, nestable for more than two.
