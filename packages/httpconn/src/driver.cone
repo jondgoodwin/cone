@@ -963,7 +963,7 @@ pub struct Driver {
       let ri = *c.writers[k];
       let r = self.reqs.borrowMutAt(ri).unwrap();
       if !r.wantWritable || r.finished {
-        removeAt(&mut c.writers, k);
+        c.writers.remove(k);
         continue;
       }
       if writeRoom2(c, r.stream) < cfg.h2.writeWatermark / 2usize {
@@ -971,7 +971,7 @@ pub struct Driver {
         continue;
       }
       r.wantWritable = false;
-      removeAt(&mut c.writers, k);
+      c.writers.remove(k);
       var ev = Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
       ev.stream = r.stream;
       self.emit(ev);
@@ -1098,7 +1098,7 @@ pub struct Driver {
     if c.flushing.len() == 0usize || !self.flushed(i) {return;}
     while c.flushing.len() > 0usize {
       let ri = *c.flushing[0usize];
-      removeAt(&mut c.flushing, 0usize);
+      c.flushing.remove(0usize);
       self.finishReq(lp, ri, endDone, None);
     }
   }
@@ -1352,7 +1352,7 @@ pub struct Driver {
     let sent = self.flushed(i);
     while c.flushing.len() > 0usize {
       let ri = *c.flushing[0usize];
-      removeAt(&mut c.flushing, 0usize);
+      c.flushing.remove(0usize);
       if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
       else if sent {self.finishReq(lp, ri, endDone, None);}
       else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
@@ -2249,23 +2249,11 @@ fn dropWaiting(q: &mut Deque[Waiting], ri: u32) {
   }
 }
 
-fn removeAt(l: &mut List[u32], k: usize) {
-  var j = k;
-  while j + 1usize < l.len() {
-    l.swap(j, j + 1usize);
-    j = j + 1usize;
-  }
-  l.pop();
-}
-
+// Remove the first v from l, keeping the order
 fn removeValue(l: &mut List[u32], v: u32) {
-  var k = 0usize;
-  while k < l.len() {
-    if *l[k] == v {
-      removeAt(l, k);
-      return;
-    }
-    k = k + 1usize;
+  match l.indexOf(&v) {
+    case let Some(k) {l.remove(k);}
+    case is None[usize] {}
   }
 }
 
