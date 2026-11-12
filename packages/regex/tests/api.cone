@@ -91,5 +91,41 @@ fn main() i32 {
   }
   expectUInt(u64.from(parts.len()), 3u64, "split parts");
   expectStr(parts[2].view(), "c", "last part");
+  // the bounded backtracker's budget (262144 bits = states x positions): '(x+)(y)' has 10
+  // states, so a text of 26213 bytes is the last the backtracker answers whole; one byte
+  // more, the Pike VM finds the bounds and (match as long as the text) the groups too.
+  // The answers do not change across the limit.
+  let xy = built("(x+)(y)");
+  var k = 26208usize;
+  while k <= 26218usize {
+    var text = String();
+    var i = 0usize;
+    while i < k { text.appendByte('x'); i = i + 1; }
+    text.append("y");
+    match xy.captures(text.view()) {
+      case let Some(c) {
+        var got = String();
+        got <- spanText(c.span(0)).view(), " ", spanText(c.span(1)).view(), " ", spanText(c.span(2)).view();
+        var want = String();
+        want <- "0..", k + 1, " 0..", k, " ", k, "..", k + 1;
+        expectStr(got.view(), want.view(), "groups at the budget limit");
+      }
+      case is None { expectBool(true, false, "no match at the budget limit"); }
+    }
+    k = k + 1;
+  }
+  // a long text with a short match: the Pike VM finds its bounds, the backtracker its groups
+  var long = String();
+  var j = 0usize;
+  while j < 40000usize { long.append("zxz"); j = j + 1; }
+  long.append("xxy");
+  match xy.captures(long.view()) {
+    case let Some(c) {
+      expectStr(spanText(c.span(0)).view(), "120000..120003", "long text, whole match");
+      expectStr(spanText(c.span(1)).view(), "120000..120002", "long text, group 1");
+      expectStr(spanText(c.span(2)).view(), "120002..120003", "long text, group 2");
+    }
+    case is None { expectBool(true, false, "long text: no match"); }
+  }
   done()
 }
