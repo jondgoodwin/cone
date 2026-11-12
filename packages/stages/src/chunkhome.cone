@@ -1,0 +1,25 @@
+// ======== Layer 3, owned credit: a buffer's death gives its credit back ========
+//
+// A sink that is handed a chunk may pass it on to a driver instead of copying it. The chunk is then
+// moved, and the credit must come back when the driver is done with it, which only its death says.
+// 'chunkHome(src)' makes an IoHome (iobuf) whose lender is the source: the sink calls
+// 'buf.setHome(&home)' on each chunk before it moves it away, and when that buffer dies, on whatever
+// thread (the I/O thread when a send completes, a worker when a core drops it), the source gets
+// 'giveBack' of a fresh empty buffer on the same block, so its window counts the capacity back. The
+// source's ChunkSource trait and its actors are unchanged.
+//
+// RULES. A homed buffer that the sink also gives back by hand ('src.giveBack(b)', 'link.give(b)') would
+// return its credit twice: the sink calls 'b.clearHome()' first (a chunk it keeps staged or hands back
+// is a plain buffer). The home holds a handle to the source, so the source lives while any of its
+// buffers are out. After the runtime stops (actors.isRunning() false) a death sends nothing: the block
+// goes to the pool and the credit is moot. The check narrows the race with the stop; it does not close it.
+
+// The lender: the source handle is the home's ctx, moved into its record and dropped with it
+fn chunkHomeGive(src: &ChunkSource, b: IoBuf) {
+  if !actors.isRunning() {return;}
+  src.giveBack(b);
+}
+
+pub fn chunkHome(src: ChunkSource) IoHome {
+  IoHome.make[ChunkSource](src, &chunkHomeGive)
+}

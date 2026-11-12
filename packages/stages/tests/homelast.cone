@@ -1,0 +1,161 @@
+// The last handle to a source actor sits in a home's ctx, so the death of the last homed buffer, on a thread
+// that is not a runtime worker (standing for the I/O thread), drops it. An actor's death runs 'final' exactly
+// once on whichever thread let go last (actors.cone header, AN ACTOR'S LIFE: "the thread dropping the last
+// handle to an idle actor, or the worker that ran its last message"), so the final may run on that thread.
+//
+//   1. 1,000 sources, each with a home holding its only handle and one homed buffer: the owners drop their
+//      homes here, a plain thread drops the buffers. Every source is finalized exactly once, on the thread
+//      that dropped the last handle or on the worker that ran its giveBack; every block goes home;
+//   1b. the same for 1,000 idle sources whose homes a plain thread clears (no giveBack is queued): each final
+//      runs exactly once, on that thread and not on a worker (the case 1 mostly misses, as the queued giveBack
+//      makes a worker run the last message);
+//   2. 1,000 more dropped by the thread while this thread runs finalAll(): no crash and no hang, no source is
+//      finalized twice (a source that outlives the stop is never finalized, as documented).
+
+mod homelasttest;
+
+import testing use *;
+import thread;
+import sync use Channel, Sender, Receiver;
+import collections use List;
+import iobuf use IoBuf;
+import actors;
+import stages use *;
+
+struct Seen {
+  pub finals: Atomic[u64];     // finalizers run
+  pub onWorker: Atomic[u64];   // ...of them on a runtime worker
+  pub back: Atomic[u64];       // giveBack calls
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Src is ChunkSource {
+  n: u64;
+
+  pub fn init(self: &new) {
+    *self = Self(n: 0u64);
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    n = n + 1u64;
+    seen.back.add(1u64);
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  fn final(self: &uni) {
+    seen.finals.add(1u64);
+    if actors.workerIndex() != actors.noWorker {seen.onWorker.add(1u64);}
+  }
+}
+
+// A buffer homed to a source whose only handle the home holds; the home's owner is dropped here
+fn lend() IoBuf {
+  var b = IoBuf(4096usize);
+  let h = chunkHome(Src());
+  b.setHome(&h);
+  b
+}
+
+fn drain(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  while r.recv() is Some[IoBuf] {
+    n = n + 1u64;
+  }
+  n
+}
+
+fn clearAll(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  var going = true;
+  while going {
+    match r.recv() {
+      case let Some(b) {
+        var x = b;
+        x.clearHome();
+        n = n + 1u64;
+      }
+      case is None {going = false;}
+    }
+  }
+  n
+}
+
+fn main() i32 {
+  initAll();
+  var tx: Sender[IoBuf];
+  var rx: Receiver[IoBuf];
+
+  // 1. the last handle dropped off the workers
+  tx, rx = Channel[IoBuf].bounded(64usize);
+  let t = thread.start(rx, &drain);
+  var i = 0u64;
+  {
+    let s = tx;
+    while i < 1000u64 {
+      s.send(lend());
+      i = i + 1u64;
+    }
+  }
+  expectUInt(t.join(), 1000u64, "1. the thread dropped a thousand buffers");
+  actors.waitUntilIdle();
+  expectUInt(seen.finals.load(), 1000u64, "1. every source finalized, exactly once");
+  expect(seen.onWorker.load() <= 1000u64, "1. on a worker or on the dropping thread");
+  expectUInt(iobuf.stats().lent, 0u64, "1. every block home");
+
+  // 1b. the last handle dropped by an IDLE source's home on a plain thread (clearHome sends no giveBack, so
+  // nothing is queued): the final runs on that thread, off the workers
+  var quiet = List[IoBuf]();
+  i = 0u64;
+  while i < 1000u64 {
+    quiet.push(lend());
+    i = i + 1u64;
+  }
+  actors.waitUntilIdle();
+  let finals1 = seen.finals.load();
+  let workers1 = seen.onWorker.load();
+  tx, rx = Channel[IoBuf].bounded(8usize);
+  let tc = thread.start(rx, &clearAll);
+  {
+    let s = tx;
+    while quiet.len() > 0usize {
+      s.send(quiet.remove(quiet.len() - 1usize));
+    }
+  }
+  expectUInt(tc.join(), 1000u64, "1b. the thread cleared a thousand homes");
+  expectUInt(seen.finals.load() - finals1, 1000u64, "1b. every source finalized, exactly once");
+  expectUInt(seen.onWorker.load() - workers1, 0u64, "1b. on the dropping thread, not a worker");
+  expectUInt(iobuf.stats().lent, 0u64, "1b. every block home");
+
+  // 2. the same, racing finalAll
+  var bufs = List[IoBuf]();
+  i = 0u64;
+  while i < 1000u64 {
+    bufs.push(lend());
+    i = i + 1u64;
+  }
+  let before = seen.finals.load();
+  tx, rx = Channel[IoBuf].bounded(8usize);
+  let t2 = thread.start(rx, &drain);
+  {
+    let s = tx;
+    i = 0u64;
+    while bufs.len() > 0usize {
+      s.send(bufs.remove(bufs.len() - 1usize));
+      if i == 500u64 {finalAll();}
+      i = i + 1u64;
+    }
+  }
+  expectUInt(t2.join(), 1000u64, "2. the thread dropped a thousand more, the runtime stopped among them");
+  expect(!actors.isRunning(), "2. the runtime has stopped");
+  expect(seen.finals.load() - before <= 1000u64, "2. no source finalized twice");
+  expectUInt(iobuf.stats().lent, 0u64, "2. every block home");
+  done()
+}

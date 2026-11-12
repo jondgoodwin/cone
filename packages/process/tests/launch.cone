@@ -10,6 +10,14 @@
 //    a zombie.
 // 5. A program that is not there is an Err named 'launch', and nothing is left open.
 // 6. 'takeStdout' and 'takeStderr' give an end away once: a second take answers 'noEnd'.
+// 7. With 'Options.stdin', 'takeStdin' gives the end the child reads as its standard input: 100000 bytes written (more
+//    than a pipe holds, the child reading them as they come) and the end closed, the child sees exactly those bytes and
+//    then end of input (it reports their count and sum); a second take answers 'noEnd'.
+// 8. Without 'Options.stdin' the child reads NUL (no bytes) and 'takeStdin' answers 'noEnd'.
+// 9. A Child dropped still holding its stdin end closes it and is reaped.
+// 10. With 'crashReport: false' a panicking child ends at once with the exit code of the crash (Windows: the
+//    exception's, 3221226505; POSIX: SIGABRT), as 'run''s does.
+// 11. (Windows) A parent that exits while its 'crashReport: false' child sleeps takes the child with it.
 
 mod launch;
 
@@ -32,6 +40,7 @@ extern {
   fn @c(system) ReadFile(h: usize, buf: *u8, size: u32, read: *u32, ov: *u8) i32;
   fn @c(system) GetOverlappedResult(h: usize, ov: *u8, got: *u32, block: i32) i32;
   fn @c(system) GetLastError() u32;
+  fn @c(system) WriteFile(h: usize, buf: *u8, size: u32, written: *u32, ov: *u8) i32;
 }
 extern {
   fn @c usleep(us: u32) i32;
@@ -39,6 +48,7 @@ extern {
   fn @c kill(pid: i32, signal: i32) i32;
   fn @c("read") readFd(fd: i32, buf: *u8, n: usize) isize;
   fn @c("close") closeFd(fd: i32) i32;
+  fn @c("write") writeFd(fd: i32, buf: *u8, n: usize) isize;
 }
 
 const synchronize = 0x100000u32;     // SYNCHRONIZE
@@ -66,12 +76,49 @@ fn childStreams(n: usize) i32 {
   0i32
 }
 
+// Reads its standard input to the end and reports "count sum" of the bytes
+fn childSum() i32 {
+  var buf = Array[u8, 4096]() <- fill 0u8;
+  let bp: *u8 = &[]buf as *u8;
+  var count = 0u64;
+  var sum = 0u64;
+  var more = true;
+  while more {
+    let got = libc.fread(bp, 1usize, 4096usize, libc.stdin());
+    var j = 0usize;
+    while j < got { sum = sum + u64.from(buf[j]); j = j + 1usize; }
+    count = count + u64.from(got);
+    if got < 4096usize { more = false; }
+  }
+  var line = String();
+  line.appendUInt(count);
+  line.append(" ");
+  line.appendUInt(sum);
+  libc.fwrite(line.cstr().ptr(), 1usize, line.len(), libc.stdout());
+  libc.fflush(libc.stdout());
+  0i32
+}
+
 fn child(a: &List[String]) i32 {
   let mode = &a[2usize];
+  if mode.equals("sum") { return childSum(); }
   if mode.equals("streams") { return childStreams(usize.from(number(&a[3usize]))); }
   if mode.equals("exit") {
     libc.fflush(libc.stdout());
     #if #os == .windows {ExitProcess(u32.from(number(&a[3usize])));} #else {_exit(i32.from(number(&a[3usize])));};
+  }
+  if mode.equals("panic") { panic("on purpose"); }
+  if mode.equals("orphan") {
+    // Windows: launch a sleeping 'crashReport: false' child, give its process away, and exit with its process id
+    let c = command(a[0usize].view(), "sleep", "");
+    match process.launch(c.view(), process.Options(crashReport: false)) {
+      case var Ok(k) {
+        let id = k.pid();
+        k.takeProcess();
+        #if #os == .windows {ExitProcess(id);} #else {_exit(0i32);};
+      }
+      case is Err { return 1i32; }
+    }
   }
   if mode.equals("sleep") {
     #if #os == .windows {Sleep(60000u32);} #else {usleep(60000000u32);};
@@ -125,6 +172,44 @@ fn readAll(end: usize) String {
     closeFd(i32.from(end));
   }
   data
+}
+
+// All of data through our end of a child's stdin (Windows: overlapped, waited for; POSIX: blocking). True if all went.
+fn writeAll(end: usize, data: &String) bool {
+  let all: &Array[u8] = data.view();
+  let total = all.len;
+  let base: *u8 = all as *u8;
+  var done = 0usize;
+  #if #os == .windows {
+    var ov = Array[usize, 5]() <- fill 0usize;
+    let ovw: *usize = &[]ov as *usize;
+    let op: *u8 = ovw as *u8;
+    ov[4usize] = CreateEventW(null, 1i32, 0i32, null);
+    var ok = true;
+    while ok && done < total {
+      ov[0usize] = 0usize;
+      ov[1usize] = 0usize;
+      var got = 0u32;
+      let want = if total - done > 4096usize {4096u32} else {u32.from(total - done)};
+      let r = WriteFile(end, base + done, want, null, op);
+      if r == 0i32 && GetLastError() != 997u32 {
+        ok = false;
+      } else {
+        if r == 0i32 { WaitForSingleObject(ov[4usize], 20000u32); }
+        if GetOverlappedResult(end, op, &mut got, 0i32) == 0i32 || got == 0u32 { ok = false; }
+        else { done = done + usize.from(got); }
+      }
+    }
+    CloseHandle(ov[4usize]);
+    ok
+  } #else {
+    var ok = true;
+    while ok && done < total {
+      let w = writeFd(i32.from(end), base + done, total - done);
+      if w <= 0isize { ok = false; } else { done = done + usize.from(w); }
+    }
+    ok
+  }
 }
 
 fn closeEnd(e: usize) {
@@ -260,6 +345,102 @@ fn main(argc: i32, argv: **u8) i32 {
       }
     }
     expect(id != 0u32 && gone(id), "4: a Child dropped ends and reaps its process");
+
+    // 7. Standard input through a pipe: 100000 bytes, then end of input
+    var data = String();
+    var want = 0u64;
+    {
+      var n = 0usize;
+      while n < 100000usize {
+        let b = u8.from(97usize + n % 26usize);
+        data.appendByte(b);
+        want = want + u64.from(b);
+        n = n + 1usize;
+      }
+    }
+    var wantLine = String.from("100000 ");
+    wantLine.appendUInt(want);
+    cmd = command(exe.view(), "sum", "");
+    match process.launch(cmd.view(), process.Options(stdin: true)) {
+      case var Ok(c) {
+        let ie = c.takeStdin();
+        expect(ie != noEnd, "7: the stdin end is given");
+        expectBool(c.takeStdin() == noEnd, true, "7: a second take of the stdin end answers noEnd");
+        let oe = c.takeStdout();
+        let ee = c.takeStderr();
+        expect(writeAll(ie, &data), "7: 100000 bytes written");
+        closeEnd(ie);
+        let out = readAll(oe);
+        closeEnd(ee);
+        expect(out.equals(wantLine.view()), "7: the child read exactly those bytes, then end of input");
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 0u32, "7: exit code 0");
+      }
+      case is Err { expect(false, "7: launch with stdin started"); }
+    }
+
+    // 8. No stdin option: NUL
+    cmd = command(exe.view(), "sum", "");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        expectBool(c.takeStdin() == noEnd, true, "8: no stdin end without the option");
+        let out = readAll(c.takeStdout());
+        closeEnd(c.takeStderr());
+        expect(out.equals("0 0"), "8: the child reads NUL: no bytes");
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        expect(w.status == diag.outcomeDone && w.n == 0usize, "8: exit code 0");
+      }
+      case is Err { expect(false, "8: launch started"); }
+    }
+
+    // 9. A Child dropped with its stdin end: the child is ended and gone
+    id = 0u32;
+    {
+      cmd = command(exe.view(), "sum", "");
+      match process.launch(cmd.view(), process.Options(stdin: true)) {
+        case var Ok(c) { id = c.pid(); }
+        case is Err { expect(false, "9: launch with stdin started"); }
+      }
+    }
+    expect(id != 0u32 && gone(id), "9: a Child dropped with its stdin end open ends and reaps its process");
+
+    // 10. 'crashReport: false': a panic ends the child at once with the exit code Windows would have given it (the
+    // exception's own code), or POSIX's SIGABRT; the options of a launch otherwise unchanged (the output ends)
+    cmd = command(exe.view(), "panic", "");
+    match process.launch(cmd.view(), process.Options(crashReport: false)) {
+      case var Ok(c) {
+        let o = readAll(c.takeStdout());
+        let e = readAll(c.takeStderr());
+        expect(e.view().startsWith("panic at "), "10: the panic's line on standard error");
+        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        #if #os == .windows {
+          expect(w.status == diag.outcomeDone && w.n == 3221226505usize, "10: an unreported panic's exit code");
+        } #else {
+          expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 6u32, "10: an unreported panic: SIGABRT");
+        }
+      }
+      case is Err { expect(false, "10: launch started"); }
+    }
+
+    // 11. (Windows) A parent that exits with a 'crashReport: false' child still running: the debuggee dies with it
+    // (kill on exit, the debug API's default; the pool thread of the old path did the same, as the thread ended with
+    // the program). The orphan mode exits with the child's process id.
+    #if #os == .windows {
+      cmd = command(exe.view(), "orphan", "");
+      match process.launch(cmd.view()) {
+        case var Ok(c) {
+          closeEnd(c.takeStdout());
+          closeEnd(c.takeStderr());
+          let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+          expect(w.status == diag.outcomeDone && w.n != 0usize && w.n != 1usize, "11: the orphan parent exited with a pid");
+          expect(gone(u32.from(w.n)), "11: its crashReport:false child died with it");
+        }
+        case is Err { expect(false, "11: launch started"); }
+      }
+    } #else {
+      expect(true, "11: (Windows only)");
+      expect(true, "11: (Windows only)");
+    }
 
     // 5. A program that is not there
     var missing = List[String]();
