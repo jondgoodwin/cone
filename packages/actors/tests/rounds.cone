@@ -1,0 +1,119 @@
+// The runtime's live state across two rounds of work, in one init (the program
+// runs init once). Each round is lines from main and from an actor and a cancel
+// group's await, parked, cancelled and answered.
+//
+// What lives across the rounds, and what the test sees of it:
+// 1. The console's owner: one thread for the process, started by round 1's first
+//    actor (consoleStarted is false before it). Round 2's first actor starts no
+//    second one (two would share a write buffer and double or garble lines). The
+//    lines of both rounds, printed by main and by an actor, come out whole and in
+//    order. The owner asleep when round 2 begins must be woken by round 2's first
+//    print, or the program hangs there.
+// 2. The cancel groups' side table: an entry for a made-up actor with a grouped
+//    await outstanding is made after round 1 and still counted (groupAwaitsLive)
+//    through round 2, where it is the one entry beside round 2's own; that
+//    actor's death then removes it.
+// 3. In each round, an await made in a cancel group is parked, the group is
+//    cancelled, and the answer then lets the second half run in the cancelled
+//    group: it prints that it sees the cancel, and the table is back to what it
+//    held before the round.
+//
+// A handle that outlives finalAll and dies later is tests/finalsend.cone's.
+
+mod rounds;
+
+import testing use *;
+import stdio use *;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+let held: Atomic[u64];       // answerers that have a request in hand
+let gate: Atomic[u64];       // set to let them answer
+
+// The made-up actor held between the rounds: main's own, so main's thread-local
+var @threadlocal parked: usize = 0usize;
+
+fn @initpure init() {
+  held = Atomic[u64].of(0u64);
+  gate = Atomic[u64].of(0u64);
+}
+
+actor Slow {
+  // answers once the gate is set (or after five seconds)
+  pub async fn answer(self, n: u64) u64 {
+    held.add(1u64);
+    let limit = Instant.now() + Duration.fromMillis(5000i64);
+    while gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    n + 7u64
+  }
+}
+
+actor Talker {
+  pub async fn say(self, round: u64, n: u64) {
+    var i = 0u64;
+    while i < n {
+      print <- "round ", round, " line ", i, "\n";
+      i = i + 1u64;
+    }
+  }
+
+  pub async fn awaited(self, slow: Slow, round: u64) {
+    let s = await slow.answer(round);
+    let seen = if actors.isCancelled() {"cancelled"} else {"not cancelled"};
+    print <- "round ", round, " answer ", s, ", ", seen, "\n";
+  }
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+fn waitHeld(n: u64) {
+  let limit = bounded(5000i64);
+  while held.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+// One round: lines from main and from an actor, and a cancel group's await,
+// parked, cancelled and answered. 'extra' is the entries the table already
+// holds. The answerers' count and gate start over for each round
+fn runRound(round: u64, extra: usize) {
+  held.store(0u64);
+  gate.store(0u64);
+  print <- "round ", round, " begins\n";
+  let talker = Talker();
+  let slow = Slow();
+  talker.say(round, 3u64);
+  let g = CancelGroup.make();
+  actors.withGroup(&g, fn() [talker, slow] { talker.awaited(slow, round); });
+  waitHeld(1u64);
+  expectUInt(u64.from(actors.groupAwaitsLive()), u64.from(extra + 1usize), "the await is in the table");
+  print <- "round ", round, " await parked\n";
+  g.cancelWith(Cause.Shutdown);
+  gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(u64.from(actors.groupAwaitsLive()), u64.from(extra), "the table is back to what it held before");
+  print <- "round ", round, " ends\n";
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  expect(!actors.consoleStarted(), "no console owner before the first actor");
+  print <- "before any actor\n";
+  runRound(1u64, 0usize);
+  expect(actors.consoleStarted(), "the owner is up after round 1's first actor");
+
+  // An entry that outlives round 1: a made-up actor with a grouped await
+  let held0 = CancelGroup.make();
+  actors.withGroup(&held0, fn() { parked = actors.testActorWithGroupedAwait(); });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "one entry made, to be held through round 2");
+  print <- "between the rounds\n";
+
+  runRound(2u64, 1usize);
+  expect(actors.consoleStarted(), "round 2 leaves the owner started");
+  actors.testKillActor(parked);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "the held actor's death removed its entry");
+  print <- "final\n";
+  finalAll();
+  done()
+}
