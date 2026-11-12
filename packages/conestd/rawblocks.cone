@@ -42,3 +42,21 @@ pub fn cone_rawBlockResize(block: *u8, oldBytes: usize, newBytes: usize, align: 
 pub fn cone_rawBlockRelease(block: *u8) {
   libc.free(block);
 }
+
+// An aligned block (RawBlocks.allocAligned): a different pair from alloc and
+// release, because the Windows runtime frees an _aligned_malloc block only with
+// _aligned_free, and release is handed the address alone and cannot tell. The
+// two pairs never mix. An align that is not a power of two panics, as does no room.
+pub fn @noalias cone_rawBlockAllocAligned(bytes: usize, align: usize) *u8 {
+  if align == 0usize || (align & (align - 1usize)) != 0usize {
+    let file: cstr = "rawblocks.cone";
+    cone_panicAlign(align, file.ptr(), 14usize, core.srcLine());
+  }
+  let p = libc.alignedAlloc(bytes, align);
+  if p == null { noRoom(bytes); }
+  p
+}
+
+pub fn cone_rawBlockReleaseAligned(block: *u8) {
+  libc.alignedFree(block);
+}
