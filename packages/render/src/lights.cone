@@ -307,9 +307,11 @@ pub struct LightSet {
   // 'setLightShadows' gives the budget): a point light's is six views of a
   // map, a spot's one. Off to start.
   pub fn setCastsShadow(self: &mut, h: LightId, casts: bool) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
-    (*l).flags = if casts { (*l).flags | 1u32 } else { (*l).flags & 2u32 };
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
+    l.flags = if casts { l.flags | 1u32 } else { l.flags & 2u32 };
     rowsDirty = true;
     true
   }
@@ -330,26 +332,30 @@ pub struct LightSet {
 
   // Move the light to 'position'
   pub fn move(self: &mut, h: LightId, position: Vec3) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     assignDirty = true;
     rowsDirty = true;
-    (*l).px = position.x;
-    (*l).py = position.y;
-    (*l).pz = position.z;
+    l.px = position.x;
+    l.py = position.y;
+    l.pz = position.z;
     true
   }
 
   // Turn a spot light to shine along 'direction'
   pub fn aim(self: &mut, h: LightId, direction: Vec3) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     assignDirty = true;
     rowsDirty = true;
     let a = direction.normalize();
-    (*l).ax = a.x;
-    (*l).ay = a.y;
-    (*l).az = a.z;
+    l.ax = a.x;
+    l.ay = a.y;
+    l.az = a.z;
     true
   }
 
@@ -362,21 +368,23 @@ pub struct LightSet {
   // The table's colour times candela of the light made again from the two; 'was'
   // whether it gave light before (the lists change only if that does)
   fn writeIntensity(self: &mut, l: *LocalLight, was: bool) {
-    (*l).ir = (*l).cr * (*l).candela;
-    (*l).ig = (*l).cg * (*l).candela;
-    (*l).ib = (*l).cb * (*l).candela;
+    l.ir = l.cr * l.candela;
+    l.ig = l.cg * l.candela;
+    l.ib = l.cb * l.candela;
     rowsDirty = true;
-    if was != (*l).isLit() { assignDirty = true; }
+    if was != l.isLit() { assignDirty = true; }
   }
 
   // Change the light's colour (linear), keeping its candela
   pub fn setColor(self: &mut, h: LightId, color: Color) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
-    let was = (*l).isLit();
-    (*l).cr = color.red;
-    (*l).cg = color.green;
-    (*l).cb = color.blue;
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
+    let was = l.isLit();
+    l.cr = color.red;
+    l.cg = color.green;
+    l.cb = color.blue;
     self.writeIntensity(l, was);
     true
   }
@@ -384,84 +392,100 @@ pub struct LightSet {
   // Change the light's intensity in candela, keeping its colour (0: dark,
   // and left out of the assignment)
   pub fn setIntensity(self: &mut, h: LightId, candela: f32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
-    let was = (*l).isLit();
-    (*l).candela = candela;
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
+    let was = l.isLit();
+    l.candela = candela;
     self.writeIntensity(l, was);
     true
   }
 
   // Change both at once
   pub fn setLight(self: &mut, h: LightId, color: Color, candela: f32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
-    let was = (*l).isLit();
-    (*l).cr = color.red;
-    (*l).cg = color.green;
-    (*l).cb = color.blue;
-    (*l).candela = candela;
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
+    let was = l.isLit();
+    l.cr = color.red;
+    l.cg = color.green;
+    l.cb = color.blue;
+    l.candela = candela;
     self.writeIntensity(l, was);
     true
   }
 
   // Change how far the light reaches
   pub fn setRange(self: &mut, h: LightId, range: f32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     assignDirty = true;
     rowsDirty = true;
-    (*l).range = range;
+    l.range = range;
     true
   }
 
   // The radius of the light's source, a sphere (a bulb: 0.015 m): it softens
   // the nearest falloff and gives the highlight its size
   pub fn setSourceRadius(self: &mut, h: LightId, radius: f32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     rowsDirty = true;
-    (*l).radius = if radius > 0. { radius } else { 0. };
+    l.radius = if radius > 0. { radius } else { 0. };
     true
   }
 
   // Change a spot light's cone
   pub fn setCone(self: &mut, h: LightId, innerAngle: f32, outerAngle: f32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     assignDirty = true;
     rowsDirty = true;
     var scale = 0.f;
     var offset = 0.f;
     spotRamp(innerAngle, outerAngle, &mut scale, &mut offset);
-    (*l).coneScale = scale;
-    (*l).coneOffset = offset;
-    (*l).outer = outerAngle;
+    l.coneScale = scale;
+    l.coneOffset = offset;
+    l.outer = outerAngle;
     true
   }
 
   // The layers the light is on (bits 0 to 23): it reaches the materials that
   // share one
   pub fn setLayers(self: &mut, h: LightId, mask: u32) bool {
-    let l = lights.get(h);
-    if l as usize == 0usize { return false; }
+    let l = match lights.borrowMut(h) {
+      case let Some(v) {v}
+      case is None {return false;}
+    };
     rowsDirty = true;
-    (*l).layers = f32.from(mask & LIGHT_LAYER_ALL);
+    l.layers = f32.from(mask & LIGHT_LAYER_ALL);
     true
   }
 
   // Where the light is
   pub fn position(self: &, h: LightId) Vec3 {
-    let l = lights.get(h);
-    if l as usize == 0usize { return Vec3(0., 0., 0.); }
-    Vec3((*l).px, (*l).py, (*l).pz)
+    let l = match lights.borrow(h) {
+      case let Some(v) {v}
+      case is None {return Vec3(0., 0., 0.);}
+    };
+    Vec3(l.px, l.py, l.pz)
   }
 
   // How far the light reaches, or 0 if there is none
   pub fn range(self: &, h: LightId) f32 {
-    let l = lights.get(h);
-    if l as usize == 0usize { return 0.; }
-    (*l).range
+    let l = match lights.borrow(h) {
+      case let Some(v) {v}
+      case is None {return 0.;}
+    };
+    l.range
   }
 
   // The light's row in the table: the index the clusters' lists hold
