@@ -63,10 +63,15 @@ let consoleEngineControl: core.Atomic[usize];
 
 const consoleCap = 16384usize;
 // What waits to be written to standard output, and how much of it
-var consoleBuf = Array[u8, 16384]() <- fill 0u8;
-var consoleLen = 0usize;
-// Whether standard output is a terminal: -1 until the first record asks
-var consoleOutTty = -1i32;
+// (all three are atomics, read and written only under cone_consoleLock, in the
+// relaxed order: the lock orders them. The buffer is a block conestd's 'init'
+// makes and never frees, held as its address: a panic prints after 'finalAll',
+// so nothing may take it down first. Before 'init' (another module's may print)
+// the address is 0 and a record is written at once, unbuffered)
+let consoleBuf: core.Atomic[usize];
+let consoleLen: core.Atomic[usize];
+// Whether standard output is a terminal: 0 until the first record asks, then 1 + the answer
+let consoleOutTty: core.Atomic[i32];
 // Whether this thread is inside the engine, holding its lock: a panic in there
 // must not wait for it
 var @threadlocal inConsole = false;
@@ -85,18 +90,26 @@ pub fn cone_consoleInstall(take: usize, bytes: usize, control: usize) {
 
 // What waits is written (the lock is held)
 fn consolePending() {
-  if consoleLen > 0usize {
-    cone_consoleWrite(1i32, &mut consoleBuf[0usize] as *u8, consoleLen);
-    consoleLen = 0usize;
+  if consoleLen.loadOrdered(core.MemOrder.Relaxed) > 0usize {
+    cone_consoleWrite(1i32, consoleBuf.loadOrdered(core.MemOrder.Relaxed) as *u8, consoleLen.loadOrdered(core.MemOrder.Relaxed));
+    consoleLen.storeOrdered(0usize, core.MemOrder.Relaxed);
   }
+}
+
+// n bytes at p added to the buffer, which has room (the lock is held)
+fn bufferAppend(p: *u8, n: usize) {
+  let len = consoleLen.loadOrdered(core.MemOrder.Relaxed);
+  core.mem.moveRaw[u8]((consoleBuf.loadOrdered(core.MemOrder.Relaxed) as *u8) + len, p, n);
+  consoleLen.storeOrdered(len + n, core.MemOrder.Relaxed);
 }
 
 // Whether standard output is a terminal, asked once (the lock is held)
 fn consoleTty() bool {
-  if consoleOutTty < 0i32 {
-    consoleOutTty = cone_consoleIsTty(1i32);
+  if consoleOutTty.loadOrdered(core.MemOrder.Relaxed) == 0i32 {
+    let isTty = if cone_consoleIsTty(1i32) != 0i32 { 2i32 } else { 1i32 };
+    consoleOutTty.storeOrdered(isTty, core.MemOrder.Relaxed);
   }
-  consoleOutTty != 0i32
+  consoleOutTty.loadOrdered(core.MemOrder.Relaxed) == 2i32
 }
 
 // n bytes at p as one record of stream fd, 1 or 2
@@ -117,13 +130,12 @@ fn consoleOne(fd: i32, p: *u8, n: usize) {
     cone_consoleWrite(1i32, p, n);
   }
   else {
-    if n > consoleCap - consoleLen {consolePending();}
-    if n >= consoleCap {
+    if n > consoleCap - consoleLen.loadOrdered(core.MemOrder.Relaxed) {consolePending();}
+    if n >= consoleCap || consoleBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
       cone_consoleWrite(1i32, p, n);
     }
     else {
-      core.mem.moveRaw[u8](&mut consoleBuf[0usize] as *u8 + consoleLen, p, n);
-      consoleLen = consoleLen + n;
+      bufferAppend(p, n);
     }
   }
   inConsole = false;
@@ -246,8 +258,7 @@ fn consoleParts(fd: i32, w: &core.TextOut) {
 
 // A part of a record, appended to the buffer
 fn bufferPart(p: *u8, n: usize, ctx: *u8) {
-  core.mem.moveRaw[u8](&mut consoleBuf[0usize] as *u8 + consoleLen, p, n);
-  consoleLen = consoleLen + n;
+  bufferAppend(p, n);
 }
 
 // A record of several parts, or any size, as one record of stream fd
@@ -264,8 +275,8 @@ fn consoleMany(fd: i32, w: &core.TextOut) {
     consoleParts(1i32, w);
   }
   else {
-    if size > consoleCap - consoleLen {consolePending();}
-    if size >= consoleCap {
+    if size > consoleCap - consoleLen.loadOrdered(core.MemOrder.Relaxed) {consolePending();}
+    if size >= consoleCap || consoleBuf.loadOrdered(core.MemOrder.Relaxed) == 0usize {
       consoleParts(1i32, w);
     }
     else {
