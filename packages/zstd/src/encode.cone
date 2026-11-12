@@ -340,7 +340,7 @@ struct HufEnc is Default {
   tableLog: u32;
   // Scratch: the counts being merged, the symbols by count, the merge tree
   freq: List[u32];
-  order: List[u16];
+  order: List[u64];
   weight: List[u64];
   parent: List[u32];
   depth: List[u8];
@@ -403,18 +403,18 @@ struct HufEnc is Default {
     while s <= maxSym {
       let f = *freq[s];
       if f > 0u32 {
-        order.push(u16.from(s));
+        order.push((u64.from(f) << 16u64) | u64.from(s));
       }
       s += 1usize;
     }
-    // By count, then by symbol (a stable sort of symbols pushed in order)
-    order.sortByKey(fn(sym: &u16) u32 { *freq[usize.from(*sym)] });
+    // By count, then by symbol: each entry is count << 16 | symbol, so its natural order is that order
+    order.sort();
     let m = order.len();
     weight.clear();
     parent.clear();
     var i = 0usize;
     while i < m {
-      weight.push(u64.from(*freq[usize.from(*order[i])]));
+      weight.push(*order[i] >> 16u64);
       parent.push(0u32);
       i += 1usize;
     }
@@ -457,7 +457,7 @@ struct HufEnc is Default {
     i = 0usize;
     while i < m {
       let dp = *depth[i];
-      lens.set(usize.from(*order[i]), dp);
+      lens.set(usize.from(*order[i] & 65535u64), dp);
       if u32.from(dp) > longest { longest = u32.from(dp); }
       i += 1usize;
     }
