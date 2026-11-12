@@ -267,7 +267,7 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   // The bitstream, the last sequence first: each sequence's codes are
   // written after the next one's extra bits, so that reading backward the
   // decoder takes a sequence's extra bits, then moves its states on
-  var bw = BitOut.make();
+  var bw = BitRun.open(out, nb * 16usize + 16usize);
   let last = nb - 1usize;
   var llc = usize.from(*enc.llCodes[last]);
   var ofc = usize.from(*enc.ofCodes[last]);
@@ -275,24 +275,24 @@ fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
   var llState = enc.ll.first(llc);
   var ofState = enc.of.first(ofc);
   var mlState = enc.ml.first(mlc);
-  bw.put(out, u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
-  bw.put(out, u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
-  bw.put(out, u64.from(*seqs.off[last]), u32.from(ofc));
+  bw.put(u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
+  bw.put(u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
+  bw.put(u64.from(*seqs.off[last]), u32.from(ofc));
   var n = last;
   while n > 0usize {
     n -= 1usize;
     llc = usize.from(*enc.llCodes[n]);
     ofc = usize.from(*enc.ofCodes[n]);
     mlc = usize.from(*enc.mlCodes[n]);
-    ofState = enc.of.encode(&mut bw, out, ofState, ofc);
-    mlState = enc.ml.encode(&mut bw, out, mlState, mlc);
-    llState = enc.ll.encode(&mut bw, out, llState, llc);
-    bw.put(out, u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
-    bw.put(out, u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
-    bw.put(out, u64.from(*seqs.off[n]), u32.from(ofc));
+    ofState = enc.of.encodeRun(&mut bw, ofState, ofc);
+    mlState = enc.ml.encodeRun(&mut bw, mlState, mlc);
+    llState = enc.ll.encodeRun(&mut bw, llState, llc);
+    bw.put(u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
+    bw.put(u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
+    bw.put(u64.from(*seqs.off[n]), u32.from(ofc));
   }
-  enc.ml.flush(&mut bw, out, mlState);
-  enc.of.flush(&mut bw, out, ofState);
-  enc.ll.flush(&mut bw, out, llState);
-  bw.close(out);
+  enc.ml.flushRun(&mut bw, mlState);
+  enc.of.flushRun(&mut bw, ofState);
+  enc.ll.flushRun(&mut bw, llState);
+  bw.finish(out);
 }

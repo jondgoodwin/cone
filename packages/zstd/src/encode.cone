@@ -52,6 +52,46 @@ struct BitOut {
   }
 }
 
+// The same writer for the hot streams (the sequences, the Huffman literals):
+// the bytes go straight to room reserved in the List beforehand, through a
+// pointer, and each put stores the whole 64-bit container and moves the
+// pointer past its complete bytes, so a put is a few instructions with no
+// branch, no List call, and 'acc' and 'n' live in registers once inlined.
+// The output bytes are the same as BitOut's. The caller reserves a bound on
+// the stream's size and puts nothing else into the List until 'finish'.
+struct BitRun {
+  acc: u64;
+  n: u32;
+  w: *u8;
+  start: *u8;
+
+  // 'room' bytes (a bound on the stream's size) are reserved, and 8 more for
+  // the last store's overhang; 'out' must not be empty (its pointer is real)
+  fn open(out: &mut List[u8], room: usize) BitRun {
+    out.reserve(room + 8usize);
+    let p = (out.viewMut() as *u8) + out.len();
+    BitRun(0u64, 0u32, p, p)
+  }
+
+  // The low 'bits' (0 to 32) bits of v
+  fn put(self: &mut, v: u64, bits: u32) inline {
+    acc = acc | ((v & ((1u64 << u64.from(bits)) - 1u64)) << u64.from(n));
+    n = n + bits;
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(n >> 3u32);
+    acc = acc >> u64.from(n & 248u32);
+    n = n & 7u32;
+  }
+
+  // Ends the stream (the closing 1 bit, zero padding to a byte) and gives
+  // the bytes to 'out', which is where they were written
+  fn finish(self: &mut, out: &mut List[u8]) {
+    self.put(1u64, 1u32);
+    if n > 0u32 { w = w + 1usize; }
+    out.appendSlice(mem.sliceFromParts[u8](start, w - start));
+  }
+}
+
 // -------- FSE --------
 
 // log2(x) for x from 1 to 2^16, in 1/256 bits, the part after the point taken
@@ -263,6 +303,19 @@ struct FseEnc is Default {
     let nb = (state + *deltaBits[sym]) >> 16u32;
     bw.put(out, u64.from(state), nb);
     u32.from(*states[usize.from(i64.from(state >> nb) + i64.from(*deltaFind[sym]))])
+  }
+
+  // 'encode' for a BitRun
+  fn encodeRun(self: &, bw: &mut BitRun, state: u32, sym: usize) u32 inline {
+    if rle { return 0u32; }
+    let nb = (state + *deltaBits[sym]) >> 16u32;
+    bw.put(u64.from(state), nb);
+    u32.from(*states[usize.from(i64.from(state >> nb) + i64.from(*deltaFind[sym]))])
+  }
+
+  // 'flush' for a BitRun
+  fn flushRun(self: &, bw: &mut BitRun, state: u32) {
+    if !rle { bw.put(u64.from(state), log); }
   }
 
   // The final state, which the decoder reads first
@@ -545,13 +598,14 @@ struct HufEnc is Default {
   // Appends one Huffman stream of lits[from, to): the last literal first,
   // so the decoder, reading backward, meets the first one first
   fn encodeStream(self: &, lits: &List[u8], from: usize, to: usize, out: &mut List[u8]) {
-    var bw = BitOut.make();
+    let cnt = to - from;
+    var bw = BitRun.open(out, cnt + cnt / 2usize + 16usize);
     var i = to;
     while i > from {
       i -= 1usize;
       let b = usize.from(*lits[i]);
-      bw.put(out, u64.from(*codes[b]), u32.from(*lens[b]));
+      bw.put(u64.from(*codes[b]), u32.from(*lens[b]));
     }
-    bw.close(out);
+    bw.finish(out);
   }
 }
