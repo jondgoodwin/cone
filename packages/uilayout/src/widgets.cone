@@ -196,7 +196,7 @@ pub fn knob(ui: &mut Ui, parent: usize, min: f32, max: f32, value: f32, step: f3
 fn quantize(v: f32, min: f32, max: f32, step: f32) f32 {
   var r = v;
   if step > 0. {r = min + roundf((v - min) / step) * step;}
-  clampf(r, min, max)
+  r.clamp(min, max)
 }
 
 pub fn sliderValue(ui: &Ui, id: usize) f32 {ui.sliders[ui.nodes[id].data].value}
@@ -248,14 +248,14 @@ fn sliderSetFromPointer(ui: &mut Ui, id: usize, x: f32, y: f32) {
   let ts = thumbSize(ui, id);
   var t = 0.f;
   if ui.sliders[d].vertical {
-    let usable = maxf(1., ui.nodes[id].h - ts);
+    let usable = (ui.nodes[id].h - ts).max(1.);
     t = 1. - (y - ui.nodes[id].gy - ts * 0.5) / usable;
   }
   else {
-    let usable = maxf(1., ui.nodes[id].w - ts);
+    let usable = (ui.nodes[id].w - ts).max(1.);
     t = (x - ui.nodes[id].gx - ts * 0.5) / usable;
   }
-  t = clampf(t, 0., 1.);
+  t = t.clamp(0., 1.);
   setSliderValue(ui, id, ui.sliders[d].min + t * (ui.sliders[d].max - ui.sliders[d].min));
 }
 
@@ -424,26 +424,26 @@ pub fn scrollbarRects(ui: &Ui, node: usize, vertical: bool) Aabb2 {
   if vertical {
     if !n.scrollV || n.contentH <= n.h + 0.5 {return none;}
     let trackH = n.h - 4.;
-    let thumbH = maxf(20., trackH * n.h / n.contentH);
-    let travel = maxf(0., trackH - thumbH);
-    let span = maxf(1., n.contentH - n.h);
+    let thumbH = (trackH * n.h / n.contentH).max(20.);
+    let travel = (trackH - thumbH).max(0.);
+    let span = (n.contentH - n.h).max(1.);
     let top = n.gy + 2. + travel * n.scrollY / span;
     return Aabb2(Vec2(n.gx + n.w - sz - 2., top), Vec2(n.gx + n.w - 2., top + thumbH));
   }
   if !n.scrollH || n.contentW <= n.w + 0.5 {return none;}
   let trackW = n.w - 4.;
-  let thumbW = maxf(20., trackW * n.w / n.contentW);
-  let travel = maxf(0., trackW - thumbW);
-  let span = maxf(1., n.contentW - n.w);
+  let thumbW = (trackW * n.w / n.contentW).max(20.);
+  let travel = (trackW - thumbW).max(0.);
+  let span = (n.contentW - n.w).max(1.);
   let left = n.gx + 2. + travel * n.scrollX / span;
   Aabb2(Vec2(left, n.gy + n.h - sz - 2.), Vec2(left + thumbW, n.gy + n.h - 2.))
 }
 
 fn scrollTo(ui: &mut Ui, node: usize, x: f32, y: f32) bool {
-  let maxX = maxf(0., ui.nodes[node].contentW - ui.nodes[node].w);
-  let maxY = maxf(0., ui.nodes[node].contentH - ui.nodes[node].h);
-  let nx = if ui.nodes[node].scrollH {clampf(x, 0., maxX)} else {0.};
-  let ny = if ui.nodes[node].scrollV {clampf(y, 0., maxY)} else {0.};
+  let maxX = (ui.nodes[node].contentW - ui.nodes[node].w).max(0.);
+  let maxY = (ui.nodes[node].contentH - ui.nodes[node].h).max(0.);
+  let nx = if ui.nodes[node].scrollH {x.clamp(0., maxX)} else {0.};
+  let ny = if ui.nodes[node].scrollV {y.clamp(0., maxY)} else {0.};
   if nx == ui.nodes[node].scrollX && ny == ui.nodes[node].scrollY {return false;}
   ui.setScrollOffset(node, nx, ny);
   ui.emit(UE_SCROLLED, node, NIL, nx, ny, 0i32, 0u32);
@@ -488,16 +488,16 @@ fn scrollEvent(ui: &mut Ui, node: usize, ev: &Ev) bool {
     let n = ui.nodes[node];
     if ui.input.win.vertical {
       let trackH = n.h - 4.;
-      let thumbH = maxf(20., trackH * n.h / n.contentH);
-      let travel = maxf(1., trackH - thumbH);
-      let t = clampf((ev.y - ui.input.win.grabY - n.gy - 2.) / travel, 0., 1.);
+      let thumbH = (trackH * n.h / n.contentH).max(20.);
+      let travel = (trackH - thumbH).max(1.);
+      let t = ((ev.y - ui.input.win.grabY - n.gy - 2.) / travel).clamp(0., 1.);
       scrollTo(ui, node, n.scrollX, t * (n.contentH - n.h));
     }
     else {
       let trackW = n.w - 4.;
-      let thumbW = maxf(20., trackW * n.w / n.contentW);
-      let travel = maxf(1., trackW - thumbW);
-      let t = clampf((ev.x - ui.input.win.grabX - n.gx - 2.) / travel, 0., 1.);
+      let thumbW = (trackW * n.w / n.contentW).max(20.);
+      let travel = (trackW - thumbW).max(1.);
+      let t = ((ev.x - ui.input.win.grabX - n.gx - 2.) / travel).clamp(0., 1.);
       scrollTo(ui, node, t * (n.contentW - n.w), n.scrollY);
     }
     return true;
@@ -522,9 +522,9 @@ fn splitEvent(ui: &mut Ui, node: usize, ev: &Ev) bool {
     let box = inner(ui, node, ui.nodes[node].w, ui.nodes[node].h);
     let d = ui.gapOf(node);
     let origin = if vert {ui.nodes[node].gx + box.min.x} else {ui.nodes[node].gy + box.min.y};
-    let avail = maxf(1., (if vert {box.max.x} else {box.max.y}) - d);
+    let avail = ((if vert {box.max.x} else {box.max.y}) - d).max(1.);
     let pos = (if vert {ev.x} else {ev.y}) - origin - d * 0.5;
-    ui.nodes[node].splitRatio = clampf(pos / avail, 0., 1.);
+    ui.nodes[node].splitRatio = (pos / avail).clamp(0., 1.);
     ui.touchArrange(node);
     return true;
   }
