@@ -34,10 +34,10 @@ fn radiusAt(p: &TreeParams, lv: i32, r0: f32, z: f32, flared: bool) f32 {
   let taper = p.levelParams[usize.from(lv)].taper;
   var r = r0 * (1. - taper * z * 0.97);
   if lv == 0 && flared {
-    let y = maxf(0., 1. - 8. * z);
+    let y = (1. - 8. * z).max(0.);
     r = r * (1. + p.flare * (libc.powf(100., y) - 1.) / 100. * 1.);
   }
-  maxf(r, p.minRadius)
+  r.max(p.minRadius)
 }
 
 // Build one stem from 'job': its points, radii and frames, the clones it
@@ -66,7 +66,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
     if lp.curveBack != 0. {
       let half = (n + 1) / 2;
       if i < half { pitch = lp.curve / f32.from(half); }
-      else { pitch = lp.curveBack / f32.from(maxf(1., f32.from(n - half)) ); }
+      else { pitch = lp.curveBack / f32.from(f32.from(n - half).max(1.) ); }
     } else { pitch = lp.curve / f32.from(n); }
     pitch = pitch + lp.curveV / f32.from(n) * rng.signed();
     let yaw = lp.curveV / f32.from(n) * rng.signed();
@@ -78,7 +78,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
     // Attraction up: the axis turned towards the vertical, more the more it leans
     if p.attractionUp != 0. && lv >= 1 {
       let a = axisOf(q);
-      let decl = degrees(libc.acosf(clampf(a.y, -1., 1.)));
+      let decl = degrees(libc.acosf(a.y.clamp(-1., 1.)));
       let turn = p.attractionUp * decl / f32.from(n);
       if a.y > -0.99 && a.y < 0.99 {
         // rotate about the axis perpendicular to a in the vertical plane through a
@@ -113,8 +113,8 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
       while ns > 0 {
         ns = ns - 1;
         let a = axisOf(q);
-        let steep = libc.sqrtf(maxf(0., 1. - a.y * a.y));
-        let sa = maxf(0., lp.splitAngle + lp.splitAngleV * rng.signed()) * (0.7 + 0.3 * steep);
+        let steep = libc.sqrtf((1. - a.y * a.y).max(0.));
+        let sa = (lp.splitAngle + lp.splitAngleV * rng.signed()).max(0.) * (0.7 + 0.3 * steep);
         let az = rng.unit() * 6.2831853;
         let ax = v3(libc.cosf(az), 0., libc.sinf(az));
         // the clone: turned by sa about a horizontal-in-frame axis at the azimuth
@@ -122,7 +122,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
         let rem = job.length * (1. - z);
         let rz = radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale;
         jobs.push(Job(lv, job.parent, pos, qc, rem, rz * 0.7,
-          job.share * rem / maxf(0.001, job.length), Vec2(0. - sa * 0.5, 0.), job.gen + 1));
+          job.share * rem / job.length.max(0.001), Vec2(0. - sa * 0.5, 0.), job.gen + 1));
         q = (Quat.angleAxis(radians(0. - sa * 0.35), (q * ax)) * q).normalize();
         radScale = radScale * 0.8;
       }
@@ -130,7 +130,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
     i = i + 1;
   }
   // The tip is thin
-  rad.set(rad.len() - 1usize, maxf(p.minRadius, rad[rad.len() - 1usize] * 0.5));
+  rad.set(rad.len() - 1usize, p.minRadius.max(rad[rad.len() - 1usize] * 0.5));
   let si = i32.from(tree.stems.len());
   // Highest point and farthest reach
   var k = 0usize;
@@ -191,9 +191,9 @@ fn makeStubs(p: &TreeParams, rng: &mut Rng, pts: &List[Vec3], rad: &List[f32], f
     var qa = Quat.identity();
     let at = pointAt(pts, frames, t, &mut qa);
     let qc = pitchQ(rollQ(qa, rng.unit() * 360.), 82. + 22. * rng.unit());
-    let along = (t - p.stubFrom) / maxf(0.001, p.stubTo - p.stubFrom);
+    let along = (t - p.stubFrom) / (p.stubTo - p.stubFrom).max(0.001);
     let len = p.stubLength * (1. - 0.65 * along) * (0.5 + 0.9 * rng.unit());
-    let r = clampf(radiusAtT(rad, t) * 0.1, 0.012, 0.045);
+    let r = (radiusAtT(rad, t) * 0.1).clamp(0.012, 0.045);
     out.push(Stub(at, qc, len, r));
     k = k + 1;
   }
@@ -203,7 +203,7 @@ fn makeStubs(p: &TreeParams, rng: &mut Rng, pts: &List[Vec3], rad: &List[f32], f
 // The point and frame at the fraction t along a stem's polyline (equal segments)
 fn pointAt(pts: &List[Vec3], frames: &List[Quat], t: f32, outQ: &mut Quat) Vec3 {
   let n = pts.len() - 1usize;
-  let f = clampf(t, 0., 1.) * f32.from(n);
+  let f = t.clamp(0., 1.) * f32.from(n);
   var i = usize.from(i32.from(f.floor()));
   if i >= n { i = n - 1usize; }
   let k = f - f32.from(i32.from(i));
@@ -213,7 +213,7 @@ fn pointAt(pts: &List[Vec3], frames: &List[Quat], t: f32, outQ: &mut Quat) Vec3 
 
 fn radiusAtT(rad: &List[f32], t: f32) f32 {
   let n = rad.len() - 1usize;
-  let f = clampf(t, 0., 1.) * f32.from(n);
+  let f = t.clamp(0., 1.) * f32.from(n);
   var i = usize.from(i32.from(f.floor()));
   if i >= n { i = n - 1usize; }
   let k = f - f32.from(i32.from(i));
@@ -234,7 +234,7 @@ fn placeChildren(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, pts: &List
   if lv == 0 { want = lp.branches * job.share; }
   else {
     let full = nominalLength(p, trunk, lv);
-    want = lp.branches * (0.2 + 0.8 * clampf(L / maxf(0.001, full), 0., 1.)) * job.share;
+    want = lp.branches * (0.2 + 0.8 * (L / full.max(0.001)).clamp(0., 1.)) * job.share;
   }
   var count = i32.from(want.floor());
   if rng.unit() < want - want.floor() { count = count + 1; }
@@ -249,7 +249,7 @@ fn placeChildren(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, pts: &List
     // (a whorl's node strays from even spacing by 'nodeJitter' of the spacing: tiers a year apart are not equal)
     let jit = if cp.nodeJitter > 0. { cp.nodeJitter * rng.signed() } else { 0. };
     let t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + jit + 0.25 * rng.signed() * (if per == 1 { 1. } else { 0. })) / f32.from(groups);
-    let tr = clampf((t - zone0) / (1. - zone0), 0., 1.);
+    let tr = ((t - zone0) / (1. - zone0)).clamp(0., 1.);
     var qa = Quat.identity();
     let at = pointAt(pts, frames, t, &mut qa);
     let offLen = t * L;
@@ -286,7 +286,7 @@ fn placeChildren(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, pts: &List
       if lv == 0 {
         cl = L * (cp.length + cp.lengthV * rng.signed()) * shapeRatio(p, 1. - tr);
       } else {
-        cl = (cp.length + cp.lengthV * rng.signed()) * maxf(0., L - 0.6 * offLen);
+        cl = (cp.length + cp.lengthV * rng.signed()) * (L - 0.6 * offLen).max(0.);
       }
       // a conifer's incomplete whorl: a limb missing by chance, the likelier and the shorter on
       // the side the wind comes from (a shore tree is one-sided)
@@ -299,9 +299,9 @@ fn placeChildren(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, pts: &List
       }
       let dropped = skipChance > 0. && rng.unit() < skipChance;
       let rp = radiusAtT(rad, t);
-      let ratio = clampf(cl / maxf(0.001, L), 0.01, 1.);
+      let ratio = (cl / L.max(0.001)).clamp(0.01, 1.);
       let rc = if cp.radiusShare > 0. { rp * cp.radiusShare * (1. + 0.15 * rng.signed()) }
-        else { minf(rp, rp * libc.powf(ratio, p.ratioPower)) };
+        else { rp.min(rp * libc.powf(ratio, p.ratioPower)) };
       if cl > 0.02 && rc > 0. && !dropped {
         // the radius at the base: radiusAt tapers from 'radius', so start at rc
         jobs.push(Job(c, si, at, qc, cl, rc, 1., Vec2(0., 0.), 0));
