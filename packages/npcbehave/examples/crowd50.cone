@@ -25,6 +25,7 @@ import fs;
 import path use Path;
 import collections use *;
 import geomath use *;
+import imagedecode;
 import npcbehave use *;
 
 const SIZE = 900;
@@ -93,47 +94,13 @@ struct Canvas {
   }
 
   fn toBmp(self: &) List[u8] {
-    var out = List[u8].withCapacity(usize.from(54 + SIZE * SIZE * 3));
-    out.push('B');
-    out.push('M');
-    put32(&mut out, u32.from(54 + SIZE * SIZE * 3));
-    put32(&mut out, 0u32);
-    put32(&mut out, 54u32);
-    put32(&mut out, 40u32);
-    put32(&mut out, u32.from(SIZE));
-    put32(&mut out, u32.from(SIZE));
-    out.push(1u8);
-    out.push(0u8);
-    out.push(24u8);
-    out.push(0u8);
-    put32(&mut out, 0u32);
-    put32(&mut out, u32.from(SIZE * SIZE * 3));
-    put32(&mut out, 2835u32);
-    put32(&mut out, 2835u32);
-    put32(&mut out, 0u32);
-    put32(&mut out, 0u32);
-    // Rows bottom first, blue green red
-    var y = SIZE - 1;
-    while y >= 0 {
-      var x = 0;
-      while x < SIZE {
-        let p = usize.from((y * SIZE + x) * 3);
-        out.push(*px[p + 2usize]);
-        out.push(*px[p + 1usize]);
-        out.push(*px[p]);
-        x = x + 1;
-      }
-      y = y - 1;
-    }
+    // imagedecode's BMP writer (rows top first); copied out of its buffer once
+    let chain = imagedecode.encodeBmp(SIZE, SIZE, 3, px.view(), false);
+    var out = List[u8]();
+    out.resize(chain.len(), 0u8);
+    _ = chain.copyOut(0usize, out.viewMut());
     out
   }
-}
-
-fn put32(out: &mut List[u8], v: u32) {
-  out.push(u8.from(v & 0xFFu32));
-  out.push(u8.from((v >> 8u32) & 0xFFu32));
-  out.push(u8.from((v >> 16u32) & 0xFFu32));
-  out.push(u8.from((v >> 24u32) & 0xFFu32));
 }
 
 fn px(x: f32) i32 { i32.from((x + HALF) * SCALE) }
