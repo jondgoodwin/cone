@@ -327,8 +327,10 @@ pub struct Client {
   // The live fetch id names, or noEntry
   fn fetchIndex(self: &, id: FetchId) u32 {
     if id.isNone() {return noEntry;}
-    let f = fetches.at(id.index);
-    if f as usize == 0usize || (f as &Fetch).gen != id.gen {return noEntry;}
+    match fetches.borrowAt(id.index) {
+      case let Some(f) {if f.gen != id.gen {return noEntry;}}
+      else {return noEntry;}
+    }
     id.index
   }
 
@@ -447,7 +449,7 @@ pub struct Client {
       }
       else {}
     }
-    if !f.url.isHttp() {
+    if !self.fetches.borrowAt(fi).unwrap().url.isHttp() {
       self.refuse(lp, fi, Stage.Url, "only http and https URLs are fetched");
       return id;
     }
@@ -455,9 +457,9 @@ pub struct Client {
       self.refuse(lp, fi, Stage.Queue, "maxQueued requests already wait for a connection");
       return id;
     }
-    var dl = f.deadline;
+    var dl = self.fetches.borrowAt(fi).unwrap().deadline;
     var cancelled = false;
-    let g = f.group;
+    let g = self.fetches.borrowAt(fi).unwrap().group;
     match g {
       case let Some(gv) {
         if gv.isCancelled() {cancelled = true;}
@@ -465,7 +467,7 @@ pub struct Client {
       }
       else {}
     }
-    f.deadline = dl;
+    self.fetches.borrowMutAt(fi).unwrap().deadline = dl;
     if cancelled {
       self.finishFetch(lp, fi, endCancelled, None);
       return id;
@@ -475,14 +477,19 @@ pub struct Client {
       return id;
     }
     // Its deadline and group, watched by one timer on the loop
-    let wt = drv.upperToken(lp, kWatch, (u64.from(f.gen & watchGenMask) << 24u64) | u64.from(fi));
+    let fgen = self.fetches.borrowAt(fi).unwrap().gen;
+    let wt = drv.upperToken(lp, kWatch, (u64.from(fgen & watchGenMask) << 24u64) | u64.from(fi));
     match g {
       case let Some(gv) {
         let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
-        f.watch = lp.afterIn(at, Target.Here(wt), gv);
+        let w = lp.afterIn(at, Target.Here(wt), gv);
+        self.fetches.borrowMutAt(fi).unwrap().watch = w;
       }
       else {
-        if dl < forever() {f.watch = lp.after(dl, Target.Here(wt));}
+        if dl < forever() {
+          let w = lp.after(dl, Target.Here(wt));
+          self.fetches.borrowMutAt(fi).unwrap().watch = w;
+        }
       }
     }
     self.enqueue(fi);
@@ -631,23 +638,25 @@ pub struct Client {
     var n = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      let og = origins.borrowMutAt(u32.from(o)).unwrap();
-      while og.idle.len() > 0usize {
-        self.retire(lp, *og.idle[0usize], true);
+      // Each retire may reshape the pools, so each use of the origin borrows it afresh
+      let oi = u32.from(o);
+      while self.origins.borrowAt(oi).unwrap().idle.len() > 0usize {
+        let first = *self.origins.borrowAt(oi).unwrap().idle[0usize];
+        self.retire(lp, first, true);
         n = n + 1u32;
       }
       // An HTTP/2 connection carrying no fetch is idle too
-      var j = og.shared.len();
+      var j = self.origins.borrowAt(oi).unwrap().shared.len();
       while j > 0usize {
         j = j - 1usize;
-        let pc = *og.shared[j];
+        let pc = *self.origins.borrowAt(oi).unwrap().shared[j];
         if (self.pconns.borrowAt(pc).unwrap()).active == 0u32 {
           self.retire(lp, pc, true);
           n = n + 1u32;
         }
       }
       // ...and an HTTP/3 one
-      let qc = og.h3c;
+      let qc = self.origins.borrowAt(oi).unwrap().h3c;
       if qc != noEntry {
         let p = self.pconns.borrowAt(qc).unwrap();
         if p.state == pShared && p.active == 0u32 {
@@ -701,19 +710,23 @@ pub struct Client {
   // Fetch fi's one final answer: sent to its sink, and the fetch freed
   fn finishFetch(self: &mut, lp: &mut Loop, fi: u32, how: u32, fl: Option[Failure]) {
     if !self.fetchLive(fi) {return;}
-    let f = self.fetches.borrowMutAt(fi).unwrap();
-    if f.state == fQueued && f.origin != noEntry {
-      let og = self.origins.borrowMutAt(u32.from(f.origin)).unwrap();
+    let f0 = self.fetches.borrowMutAt(fi).unwrap();
+    if f0.state == fQueued && f0.origin != noEntry {
+      let og = self.origins.borrowMutAt(u32.from(f0.origin)).unwrap();
       if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
     }
-    if !f.watch.isNone() {
-      lp.cancel(f.watch);
-      f.watch = OpId.none();
+    if !f0.watch.isNone() {
+      lp.cancel(f0.watch);
+      f0.watch = OpId.none();
     }
-    if f.held > 0usize {
-      self.creditReq(f.req, f.qreq, f.held);
-      f.held = 0usize;
+    if f0.held > 0usize {
+      let rq = f0.req;
+      let qrq = f0.qreq;
+      let h = f0.held;
+      self.creditReq(rq, qrq, h);
+      self.fetches.borrowMutAt(fi).unwrap().held = 0usize;
     }
+    let f = self.fetches.borrowMutAt(fi).unwrap();
     f.timing.ended = Instant.now();
     var k: EventKind = EventKind.Done;
     var failure = fl;
@@ -940,8 +953,8 @@ pub struct Client {
     let establishing = was == pConnecting || (p.uses <= 1u32 && s == httpconn.Stage.Tls);
     if !e.clean && establishing && og.open == og.connecting {
       let fl = Failure.fromConn(&e.failure);
-      while og.queue.len() > 0usize {
-        let fi = *og.queue[0usize];
+      while self.origins.borrowAt(u32.from(oi)).unwrap().queue.len() > 0usize {
+        let fi = *self.origins.borrowAt(u32.from(oi)).unwrap().queue[0usize];
         let f = self.fetches.borrowMutAt(fi).unwrap();
         f.timing.attempts = f.timing.attempts + 1u32;
         self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
@@ -1107,37 +1120,43 @@ pub struct Client {
   // Open a connection to origin oi
   fn openConn(self: &mut, lp: &mut Loop, oi: u32) {
     let og = self.origins.borrowMutAt(u32.from(oi)).unwrap();
-    let pc = self.newConn();
-    let p = self.pconns.borrowMutAt(pc).unwrap();
-    p.origin = oi;
     og.open = og.open + 1u32;
     og.connecting = og.connecting + 1u32;
-    total = total + 1u32;
-    st.connects = st.connects + 1u64;
-    let sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen & genMask) << 32u64) | u64.from(pc));
+    let secure = og.secure;
+    let port = og.port;
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
     let host = og.host.clone();
-    if !og.secure {
-      p.id = drv.connect(lp, host.view(), og.port, sink);
+    let pc = self.newConn();
+    let p = self.pconns.borrowMutAt(pc).unwrap();
+    p.origin = oi;
+    total = total + 1u32;
+    st.connects = st.connects + 1u64;
+    let sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen & genMask) << 32u64) | u64.from(pc));
+    // The driver's calls may reshape the pools: the entry is borrowed afresh to store the id
+    if !secure {
+      let id = drv.connect(lp, host.view(), port, sink);
+      self.pconns.borrowMutAt(pc).unwrap().id = id;
       return;
     }
     var why: Option[Failure] = None;
     match &tlsc {
       case let &Ok(c) {
-        p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view())), sink);
+        let id = drv.connectWith(lp, host.view(), port, Uni[tls.Stream](c.stream(host.view())), sink);
+        self.pconns.borrowMutAt(pc).unwrap().id = id;
       }
       case let &Err(x) {why = Some[Failure](x.clone());}
     }
     match why {
       case var Some(fl) {
         // No TLS context: nothing for this origin can be fetched
-        og.open = og.open - 1u32;
-        og.connecting = og.connecting - 1u32;
+        let og2 = self.origins.borrowMutAt(u32.from(oi)).unwrap();
+        og2.open = og2.open - 1u32;
+        og2.connecting = og2.connecting - 1u32;
         total = total - 1u32;
         self.freeConnRec(pc);
-        while og.queue.len() > 0usize {
-          let fi = *og.queue[0usize];
+        while self.origins.borrowAt(u32.from(oi)).unwrap().queue.len() > 0usize {
+          let fi = *self.origins.borrowAt(u32.from(oi)).unwrap().queue[0usize];
           self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
         }
       }
@@ -1241,8 +1260,7 @@ pub struct Client {
   // the origin's fetches are TCP's; h3Did when this dispatched or opened
   // anything; else h3Held
   fn scheduleH3(self: &mut, lp: &mut Loop, oi: u32) u32 {
-    let og = self.origins.borrowMutAt(u32.from(oi)).unwrap();
-    var qc = og.h3c;
+    var qc = self.origins.borrowAt(u32.from(oi)).unwrap().h3c;
     if qc != noEntry {
       let p = self.pconns.borrowAt(qc).unwrap();
       if p.state == pShared && (!self.takes(qc) || self.pastLifetime(qc)) {
@@ -1254,17 +1272,17 @@ pub struct Client {
       }
     }
     if qc == noEntry {
-      if og.queue.len() == 0usize || !self.wantsH3(oi) {return h3No;}
+      if self.origins.borrowAt(u32.from(oi)).unwrap().queue.len() == 0usize || !self.wantsH3(oi) {return h3No;}
       if total >= cfg.maxTotal && !self.closeAnIdle(lp) {return h3Held;}
       self.openH3(lp, oi);
       return h3Did;
     }
     var did = false;
     if (self.pconns.borrowAt(qc).unwrap()).state == pShared {
-      while og.queue.len() > 0usize && self.roomOn(qc) {
+      while self.origins.borrowAt(u32.from(oi)).unwrap().queue.len() > 0usize && self.roomOn(qc) {
         let pos = self.firstIn(oi);
-        let fi = *og.queue[pos];
-        removeAt(&mut og.queue, pos);
+        let fi = *self.origins.borrowAt(u32.from(oi)).unwrap().queue[pos];
+        removeAt(&mut self.origins.borrowMutAt(u32.from(oi)).unwrap().queue, pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, qc);
         did = true;
@@ -1297,9 +1315,13 @@ pub struct Client {
     st.connects = st.connects + 1u64;
     st.h3Attempts = st.h3Attempts + 1u64;
     attempts.push(pc);
-    let tok = drv.upperToken(lp, kWatch, resolveBit | (u64.from(p.gen & watchGenMask) << 24u64) | u64.from(pc));
+    let pgen = p.gen;
+    let limit = p.h3By;
     let host = og.host.clone();
-    p.lookup = lp.submitBy(resolveOp(host.view(), og.h3Port, IoBuf(resolveSize)), Target.Here(tok), p.h3By);
+    let h3Port = og.h3Port;
+    let tok = drv.upperToken(lp, kWatch, resolveBit | (u64.from(pgen & watchGenMask) << 24u64) | u64.from(pc));
+    let op = lp.submitBy(resolveOp(host.view(), h3Port, IoBuf(resolveSize)), Target.Here(tok), limit);
+    self.pconns.borrowMutAt(pc).unwrap().lookup = op;
   }
 
   // An HTTP/3 attempt's lookup has answered: the connect, or the fallback
@@ -1332,8 +1354,9 @@ pub struct Client {
     let og = self.origins.borrowAt(u32.from(p.origin)).unwrap();
     let host = og.host.clone();
     let token = tokConn | (u64.from(p.gen & genMask) << 32u64) | u64.from(pc);
-    match h3.connect(lp, addr, host.view(), token) {
-      case let Ok(q) {p.qid = q;}
+    let res = h3.connect(lp, addr, host.view(), token);
+    match res {
+      case let Ok(q) {self.pconns.borrowMutAt(pc).unwrap().qid = q;}
       case let Err(x) {self.dropAttempt(lp, pc, true);}
     }
   }
@@ -1437,19 +1460,21 @@ pub struct Client {
     // each request before it, but a fetch it left unanswered would wait for
     // its deadline): each fails at once, or is retried as any other loss of
     // its connection would be
+    let oidx = p.origin;
     self.failFetchesOn(lp, pc, e);
-    let was = p.state;
+    let was = self.pconns.borrowAt(pc).unwrap().state;
     removeValue(&mut attempts, pc);
-    if og.h3c == pc {og.h3c = noEntry;}
+    let og2 = self.origins.borrowMutAt(u32.from(oidx)).unwrap();
+    if og2.h3c == pc {og2.h3c = noEntry;}
     if was == pConnecting {
       // Its handshake failed: TCP for a while
-      og.connecting = og.connecting - 1u32;
-      og.open = og.open - 1u32;
+      og2.connecting = og2.connecting - 1u32;
+      og2.open = og2.open - 1u32;
       total = total - 1u32;
-      og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
+      og2.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
       st.h3Fallbacks = st.h3Fallbacks + 1u64;
     } else if was == pShared {
-      og.open = og.open - 1u32;
+      og2.open = og2.open - 1u32;
       total = total - 1u32;
     }
     st.closed = st.closed + 1u64;
@@ -1542,22 +1567,22 @@ pub struct Client {
         o = o + 1u32;
         continue;
       }
-      let og = self.origins.borrowMutAt(u32.from(o)).unwrap();
-      while og.queue.len() > 0usize && og.idle.len() > 0usize {
-        var pc = *og.idle[og.idle.len() - 1usize];
+      while self.origins.borrowAt(o).unwrap().queue.len() > 0usize && self.origins.borrowAt(o).unwrap().idle.len() > 0usize {
+        var pc = *self.origins.borrowAt(o).unwrap().idle[self.origins.borrowAt(o).unwrap().idle.len() - 1usize];
         var pos = self.firstIn(o);
-        if (self.fetches.borrowAt(*og.queue[pos]).unwrap()).streamed {
+        if (self.fetches.borrowAt(*self.origins.borrowAt(o).unwrap().queue[pos]).unwrap()).streamed {
           // A streamed body cannot be sent again if a kept connection turns out to be stale under it (canRetry),
           // and a handshake costs little against a large body: it takes a connection nothing has been sent on
           // yet, and what else waits may take the kept ones
-          pc = self.freshIdle(og);
+          pc = self.freshIdle(self.origins.borrowAt(o).unwrap());
           if pc == noEntry {
             pos = self.firstPlain(o);
-            if pos < og.queue.len() {
-              pc = *og.idle[og.idle.len() - 1usize];
-            } else if og.connecting == 0u32 && (og.open >= cfg.maxPerOrigin || total >= cfg.maxTotal) {
+            if pos < self.origins.borrowAt(o).unwrap().queue.len() {
+              pc = *self.origins.borrowAt(o).unwrap().idle[self.origins.borrowAt(o).unwrap().idle.len() - 1usize];
+            } else if self.origins.borrowAt(o).unwrap().connecting == 0u32 && (self.origins.borrowAt(o).unwrap().open >= cfg.maxPerOrigin || total >= cfg.maxTotal) {
               // no room for a new connection: the kept one idle longest makes it
-              self.retire(lp, *og.idle[0usize], true);
+              let oldest = *self.origins.borrowAt(o).unwrap().idle[0usize];
+              self.retire(lp, oldest, true);
               continue;
             } else {
               break;
@@ -1575,9 +1600,9 @@ pub struct Client {
           self.retire(lp, pc, true);
           continue;
         }
-        removeValue(&mut og.idle, pc);
-        let fi = *og.queue[pos];
-        removeAt(&mut og.queue, pos);
+        removeValue(&mut self.origins.borrowMutAt(o).unwrap().idle, pc);
+        let fi = *self.origins.borrowAt(o).unwrap().queue[pos];
+        removeAt(&mut self.origins.borrowMutAt(o).unwrap().queue, pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, pc);
         did = true;
@@ -1586,8 +1611,8 @@ pub struct Client {
       // stream each, while the peer allows another; the rest wait here, in
       // the order, for a stream to end
       var j = 0usize;
-      while j < og.shared.len() && og.queue.len() > 0usize {
-        let pc = *og.shared[j];
+      while j < self.origins.borrowAt(o).unwrap().shared.len() && self.origins.borrowAt(o).unwrap().queue.len() > 0usize {
+        let pc = *self.origins.borrowAt(o).unwrap().shared[j];
         let p = self.pconns.borrowAt(pc).unwrap();
         if !drv.takesRequests(p.id) || self.pastLifetime(pc) {
           self.keepShared(lp, pc);      // out of the list: j now names the next
@@ -1598,20 +1623,20 @@ pub struct Client {
           continue;
         }
         let pos = self.firstIn(o);
-        let fi = *og.queue[pos];
-        removeAt(&mut og.queue, pos);
+        let fi = *self.origins.borrowAt(o).unwrap().queue[pos];
+        removeAt(&mut self.origins.borrowMutAt(o).unwrap().queue, pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, pc);
         did = true;
       }
       // One HTTP/2 connection to an origin is enough: others left over (made
       // before the origin was known to speak it) close once they carry nothing
-      if og.queue.len() == 0usize && og.shared.len() > 1usize &&
-          drv.takesRequests((self.pconns.borrowAt(*og.shared[0usize]).unwrap()).id) {
-        var k = og.shared.len();
+      if self.origins.borrowAt(o).unwrap().queue.len() == 0usize && self.origins.borrowAt(o).unwrap().shared.len() > 1usize &&
+          drv.takesRequests((self.pconns.borrowAt(*self.origins.borrowAt(o).unwrap().shared[0usize]).unwrap()).id) {
+        var k = self.origins.borrowAt(o).unwrap().shared.len();
         while k > 1usize {
           k = k - 1usize;
-          let pc = *og.shared[k];
+          let pc = *self.origins.borrowAt(o).unwrap().shared[k];
           if (self.pconns.borrowAt(pc).unwrap()).active == 0u32 {self.retire(lp, pc, true);}
         }
       }
@@ -1687,39 +1712,46 @@ pub struct Client {
     st.sent = st.sent + 1u64;
     if f.timing.reused {st.reused = st.reused + 1u64;}
     let token = tokReq | (u64.from(f.gen & genMask) << 32u64) | u64.from(fi);
-    if !p.quic {
-      f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here(token));
+    let quic = p.quic;
+    let pid = p.id;
+    let qid = p.qid;
+    // The driver's and the plug-in's calls may reshape the pools: the entry is borrowed afresh
+    if !quic {
+      let rq = drv.request(lp, pid, head, body, httpconn.Sink.Here(token));
+      self.fetches.borrowMutAt(fi).unwrap().req = rq;
       return;
     }
     // HTTP/3: its body, if any, goes at once (the plug-in tells Writable only
     // after a refusal)
-    let qid = p.qid;
     let q = h3.request(lp, qid, head, body, token);
-    f.qreq = q;
-    if !q.isNone() && (f.body.len() > 0usize || f.streamed) {self.sendBody(lp, fi);}
+    let f2 = self.fetches.borrowMutAt(fi).unwrap();
+    f2.qreq = q;
+    if !q.isNone() && (f2.body.len() > 0usize || f2.streamed) {self.sendBody(lp, fi);}
   }
 
   // A streamed fetch's queued pieces, as many as its connection takes now; then, the body being
   // all pushed, the connection is told it is whole, else the pusher is told there is room
   fn feedUpload(self: &mut, lp: &mut Loop, fi: u32) {
-    let f = self.fetches.borrowMutAt(fi).unwrap();
-    f.upWritable = true;
-    if f.upGone || f.upFinished {return;}
+    let f0 = self.fetches.borrowMutAt(fi).unwrap();
+    f0.upWritable = true;
+    if f0.upGone || f0.upFinished {return;}
     while true {
-      var b = match f.upq.popFront() {
+      var b = match self.fetches.borrowMutAt(fi).unwrap().upq.popFront() {
         case var Some(got) {got}
         else {break;}
       };
       match self.offerPiece(fi, b) {
         case var Some(back) {
           // refused: kept at the front; Writable comes when there is room
-          f.upq.pushFront(back);
-          f.upWritable = false;
+          let f1 = self.fetches.borrowMutAt(fi).unwrap();
+          f1.upq.pushFront(back);
+          f1.upWritable = false;
           return;
         }
         else {}
       }
     }
+    let f = self.fetches.borrowMutAt(fi).unwrap();
     if f.upEnded {
       f.upFinished = true;
       let qreq = f.qreq;
@@ -1738,37 +1770,44 @@ pub struct Client {
 
   // As much of fetch fi's body as its connection takes now
   fn sendBody(self: &mut, lp: &mut Loop, fi: u32) {
-    let f = self.fetches.borrowMutAt(fi).unwrap();
-    if f.streamed {
+    if self.fetches.borrowAt(fi).unwrap().streamed {
       self.feedUpload(lp, fi);
       return;
     }
     // The body is viewed only where its bytes are copied: a view held across the
-    // driver's calls would be one into a String the driver might change
-    while f.sent < f.body.len() {
-      let left = f.body.len() - f.sent;
+    // driver's calls would be one into a String the driver might change. Every call may
+    // reshape the pool, so the fetch is borrowed afresh after each
+    while true {
+      let g = self.fetches.borrowAt(fi).unwrap();
+      let sent = g.sent;
+      let blen = g.body.len();
+      if sent >= blen {break;}
+      let left = blen - sent;
       let n = if left < sendChunk {left} else {sendChunk};
       // A pool that refuses the buffer (iobuf's tryMake) ends the fetch: its
       // exchange is cancelled, and it ends Failed, Overloaded (reqStopped)
       var b = match IoBuf.tryMake(n) {
         case var Some(got) {got}
         else {
-          if f.ending == endNone {f.ending = endFailed;}
+          let h = self.fetches.borrowMutAt(fi).unwrap();
+          if h.ending == endNone {h.ending = endFailed;}
           self.cancelReq(lp, fi);
           return;
         }
       };
-      let all = f.body.view();
-      b.append(&all[f.sent ..< f.sent + n]);
+      let all = self.fetches.borrowAt(fi).unwrap().body.view();
+      b.append(&all[sent ..< sent + n]);
       if self.sendPiece(fi, b) {
-        f.sent = f.sent + n;
+        self.fetches.borrowMutAt(fi).unwrap().sent = sent + n;
       } else {
         return;      // refused: Writable comes when there is room
       }
     }
-    let qreq = f.qreq;
+    let g2 = self.fetches.borrowAt(fi).unwrap();
+    let qreq = g2.qreq;
+    let rq = g2.req;
     if qreq.isNone() {
-      drv.finish(f.req);
+      drv.finish(rq);
       return;
     }
     h3.finish(qreq);
@@ -1879,10 +1918,13 @@ pub struct Client {
     let n = buf.len();
     if f.following {
       // A redirect's body: read and dropped, cut off past drainLimit
-      self.creditReq(f.req, f.qreq, n);
-      f.drained = f.drained + n;
-      if f.drained > drainLimit && !f.cutting {
-        f.cutting = true;
+      let rq = f.req;
+      let qrq = f.qreq;
+      self.creditReq(rq, qrq, n);
+      let g = self.fetches.borrowMutAt(fi).unwrap();
+      g.drained = g.drained + n;
+      if g.drained > drainLimit && !g.cutting {
+        g.cutting = true;
         self.cancelReq(lp, fi);
       }
       return;
@@ -1909,8 +1951,10 @@ pub struct Client {
     let pc = f.conn;
     // Its connection is gone if its Closed came first (the driver sends a
     // connection's request events before its Closed; the h3 plug-in's order is its own)
-    if self.fetchConnLive(f) {self.connDone(lp, pc);}
-    if f.following {
+    let alive = self.fetchConnLive(f);
+    let following = f.following;
+    if alive {self.connDone(lp, pc);}
+    if following {
       self.follow(lp, fi);
     } else {
       self.finishFetch(lp, fi, endDone, None);
@@ -1922,14 +1966,17 @@ pub struct Client {
     let f = self.fetches.borrowMutAt(fi).unwrap();
     // Its connection is gone if its Closed came first (see reqDone)
     let alive = self.fetchConnLive(f);
-    if alive {self.learn(f.conn);}
-    let proto = if alive {(self.pconns.borrowAt(f.conn).unwrap()).proto} else {protoUnknown};
+    let fconn = f.conn;
+    if alive {self.learn(fconn);}
+    let proto = if alive {(self.pconns.borrowAt(fconn).unwrap()).proto} else {protoUnknown};
     let multiplexed = proto == protoH2 || proto == protoH3;
-    if alive {self.connEnded(lp, f.conn);}
-    if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
-      self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
+    if alive {self.connEnded(lp, fconn);}
+    let ending = self.fetches.borrowAt(fi).unwrap().ending;
+    if ending == endLimit || ending == endCancelled || ending == endTimedOut {
+      self.finishFetch(lp, fi, if ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
     } else if self.canRetry(fi, &fl, multiplexed) {
-      f.retries = f.retries + 1u32;
+      let f2 = self.fetches.borrowMutAt(fi).unwrap();
+      f2.retries = f2.retries + 1u32;
       st.retries = st.retries + 1u64;
       self.enqueue(fi);
     } else {
@@ -1940,14 +1987,19 @@ pub struct Client {
   // Fetch fi's exchange was cancelled, or timed out (the driver's own timeout)
   fn reqStopped(self: &mut, lp: &mut Loop, fi: u32, timedOut: bool) {
     let f = self.fetches.borrowMutAt(fi).unwrap();
-    if self.fetchConnLive(f) {self.connEnded(lp, f.conn);}
-    if f.cutting && f.ending == endNone {
+    let alive = self.fetchConnLive(f);
+    let fconn = f.conn;
+    if alive {self.connEnded(lp, fconn);}
+    let g = self.fetches.borrowAt(fi).unwrap();
+    let cutting = g.cutting;
+    let ending = g.ending;
+    if cutting && ending == endNone {
       self.follow(lp, fi);
-    } else if f.ending == endFailed {
+    } else if ending == endFailed {
       self.finishFetch(lp, fi, endFailed, Some[Failure](
         Failure.make(Stage.Limit, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for the request's body")));
-    } else if f.ending == endTimedOut || f.ending == endLimit {
-      self.finishFetch(lp, fi, f.ending, None);
+    } else if ending == endTimedOut || ending == endLimit {
+      self.finishFetch(lp, fi, ending, None);
     } else if timedOut {
       self.finishFetch(lp, fi, endTimedOut, None);
     } else {

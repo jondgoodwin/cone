@@ -105,7 +105,7 @@ struct Conn {
   isH2: bool;                // the protocol chosen is HTTP/2
   decided: bool;             // the protocol is chosen: the layer has opened
   cleartext: bool;           // its layer has no handshake (Plain): no ALPN, prior knowledge decides
-  layer: Uni[Layer];
+  layer: Option[Uni[Layer]];  // None only while a Layer call has it out (takeLayer/putLayer)
   sink: Sink;
   addrs: List[SocketAddr];   // a client's addresses to try, in order
   nextAddr: usize;
@@ -277,6 +277,28 @@ pub struct Driver {
   // before it reads it; close-site audit: Ruminations\httpconn-close-audit-2026-11-09.md
   fn connLive(self: &, i: u32) bool {conns.isLive(i)}
 
+  // A Layer call that may change (a virtual '&mut' call the compiler cannot see into) is
+  // not made through a borrow of the pool, which the call might reshape: the layer is taken
+  // out of its cell, called as a local, and put back. Nothing runs between the pair
+  fn takeLayer(self: &mut, i: u32) Uni[Layer] {
+    match self.conns.borrowMutAt(i).unwrap().layer.take() {
+      case var Some(l) {l}
+      else {panic("httpconn: a connection's layer is out for a call", srcFile(), srcLine())}
+    }
+  }
+
+  fn putLayer(self: &mut, i: u32, l: Uni[Layer]) {
+    self.conns.borrowMutAt(i).unwrap().layer = Some[Uni[Layer]](l);
+  }
+
+  // Live, and open: the check after a call that may have closed the connection
+  fn stillOpen(self: &, i: u32) bool {
+    match self.conns.borrowAt(i) {
+      case let Some(c) {c.state == cOpen}
+      else {false}
+    }
+  }
+
   fn reqLive(self: &, i: u32) bool {reqs.isLive(i)}
 
   // Whether connection i is live and is the occupant that has generation gen
@@ -319,7 +341,7 @@ pub struct Driver {
       decided: false,
       // A layer open from the start has no handshake, so no ALPN: cleartext
       cleartext: layer.isOpen(),
-      layer: layer, sink: sink, addrs: List[SocketAddr](), nextAddr: 0usize,
+      layer: Some[Uni[Layer]](layer), sink: sink, addrs: List[SocketAddr](), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false, feedHeld: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
@@ -449,29 +471,30 @@ pub struct Driver {
 
   // Move connection i as far as it can go now
   fn drive(self: &mut, lp: &mut Loop, i: u32) {
-    let c = self.conns.borrowMutAt(i).unwrap();
     let now = Instant.now();
-    if c.state == cClosing {
+    let st = self.conns.borrowAt(i).unwrap().state;
+    if st == cClosing {
       self.lingerRecv(lp, i);
       return;
     }
-    if c.state != cOpen {return;}
+    if st != cOpen {return;}
     // decide, feed and receive (below) may close the connection: its record is
-    // gone then, so each is followed by a look-up, not a read of 'c'
+    // gone then, so each is followed by a look-up. Each call may reshape the
+    // pool, so each use of the entry borrows it afresh
     self.decide(lp, i, now);
-    if !self.connLive(i) || c.state != cOpen {return;}
+    if !self.stillOpen(i) {return;}
     self.feed(lp, i, now);
-    if !self.connLive(i) || c.state != cOpen {return;}
-    if c.decided {
-      if c.isH2 {
+    if !self.stillOpen(i) {return;}
+    if self.conns.borrowAt(i).unwrap().decided {
+      if self.conns.borrowAt(i).unwrap().isH2 {
         self.startStreams(lp, i, now);
         self.events2(lp, i, now);
-        if c.state != cOpen {return;}
+        if !self.stillOpen(i) {return;}
         self.startStreams(lp, i, now);
       } else {
         self.startNext(i, now);
         self.events(lp, i, now);
-        if c.state != cOpen {return;}
+        if !self.stillOpen(i) {return;}
         self.startNext(i, now);
       }
     }
@@ -479,9 +502,13 @@ pub struct Driver {
     // Credit that has grown while this drive ran (the core used its input) lets
     // 'feed' go on with what the layer holds; and a layer that failed in
     // 'transmit' (a pool refusal) is read at once
-    if (c.feedHeld && coreCredit(c) >= self.feedNeed(c)) || c.layer.failed() {self.markDirty(i);}
+    let again = {
+      let c = self.conns.borrowAt(i).unwrap();
+      (c.feedHeld && coreCredit(c) >= self.feedNeed(c)) || lay(c).failed()
+    };
+    if again {self.markDirty(i);}
     self.layerCall(lp, i);
-    if c.isH2 {
+    if self.conns.borrowAt(i).unwrap().isH2 {
       self.flushDone2(lp, i);
       self.writable2(i);
       self.idle2(i, now);
@@ -500,9 +527,9 @@ pub struct Driver {
   // Until then the core is not fed or asked anything, and no request starts
   fn decide(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.conns.borrowMutAt(i).unwrap();
-    if c.decided || !c.layer.isOpen() {return;}
+    if c.decided || !lay(c).isOpen() {return;}
     c.decided = true;
-    let p = c.layer.alpn();
+    let p = lay(c).alpn();
     var h2 = p.view() == "h2";
     if p.len() == 0usize && c.cleartext {h2 = cfg.h2PriorKnowledge;}
     if !h2 && p.len() > 0usize && p.view() != "http/1.1" {
@@ -542,17 +569,19 @@ pub struct Driver {
         c.feedHeld = true;
         break;
       }
-      let b = self.conns.borrowMutAt(i).unwrap().layer.plainOut();
+      var l = self.takeLayer(i);
+      let b = l.plainOut();
+      self.putLayer(i, l);
       if b.len() == 0usize {break;}
       coreInput(self.conns.borrowMutAt(i).unwrap(), b, now);
     }
-    let ended = self.conns.borrowAt(i).unwrap().layer.peerEnded();
+    let ended = lay(self.conns.borrowAt(i).unwrap()).peerEnded();
     let c = self.conns.borrowMutAt(i).unwrap();
     if ended && !c.eofFed {
       c.eofFed = true;
       coreInput(c, IoBuf(), now);
     }
-    if self.conns.borrowAt(i).unwrap().layer.failed() {
+    if lay(self.conns.borrowAt(i).unwrap()).failed() {
       self.layerFailed(lp, i);
     }
   }
@@ -563,16 +592,16 @@ pub struct Driver {
   // connection with a small 'maxBuffered' is not made to wait for more credit
   // than it can ever have
   fn feedNeed(self: &, c: &Conn) usize {
-    if cfg.recvSize > feedRecord || !c.layer.givesRecords() {cfg.recvSize} else {feedRecord}
+    if cfg.recvSize > feedRecord || !lay(c).givesRecords() {cfg.recvSize} else {feedRecord}
   }
 
   // The layer has failed: its text is the reason, a pool refusal (the layer's
   // 'overloaded') being Overloaded and the rest Closed
   fn layerFailed(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.conns.borrowMutAt(i).unwrap();
-    let text = c.layer.failureText();
-    let kind = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
-    c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), kind, text.view()));
+    let text = lay(c).failureText();
+    let kind = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), kind, text.view()));
     self.closeNow(lp, i, true, false);
   }
 
@@ -580,9 +609,11 @@ pub struct Driver {
   // certificate check by the OS): its answer comes back to the layer
   fn layerCall(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.conns.borrowMutAt(i).unwrap();
-    if !c.callOp.isNone() || !c.layer.wantsCall() {return;}
+    if !c.callOp.isNone() || !lay(c).wantsCall() {return;}
     let gen = c.gen;
-    let call = self.conns.borrowMutAt(i).unwrap().layer.takeCall();
+    var l = self.takeLayer(i);
+    let call = l.takeCall();
+    self.putLayer(i, l);
     let op = lp.submit(call, Target.Here(self.tok(kCall, i, gen)));
     self.conns.borrowMutAt(i).unwrap().callOp = op;
   }
@@ -1011,7 +1042,9 @@ pub struct Driver {
       self.conns.borrowMutAt(i).unwrap().allTaken = false;
       var wire = Chain.make(noBound);
       while wire.segments() < gatherSegments && wire.len() < gatherBytes {
-        let b = self.conns.borrowMutAt(i).unwrap().layer.wireOut(now);
+        var l = self.takeLayer(i);
+        let b = l.wireOut(now);
+        self.putLayer(i, l);
         if b.len() == 0usize {
           let c = self.conns.borrowMutAt(i).unwrap();
           if !c.decided {
@@ -1025,7 +1058,11 @@ pub struct Driver {
           }
           while true {
             match plain.popFront() {
-              case var Some(p) {self.conns.borrowMutAt(i).unwrap().layer.plainIn(p);}
+              case var Some(p) {
+                var l = self.takeLayer(i);
+                l.plainIn(p);
+                self.putLayer(i, l);
+              }
               else {break;}
             }
           }
@@ -1050,7 +1087,7 @@ pub struct Driver {
       c2.sendsOut = c2.sendsOut + 1u32;
       // A layer's own bytes (a TLS handshake's) are not the request's
       let cur = c2.current;
-      if cur != noEntry && c2.layer.isOpen() {(self.reqs.borrowMutAt(cur).unwrap()).wrote = true;}
+      if cur != noEntry && lay(c2).isOpen() {(self.reqs.borrowMutAt(cur).unwrap()).wrote = true;}
     }
   }
 
@@ -1069,7 +1106,7 @@ pub struct Driver {
   // (HTTP/1.1: HTTP/2's requests are done by their own marks, flushDone2)
   fn flushed(self: &, i: u32) bool {
     let c = self.conns.borrowAt(i).unwrap();
-    c.sendsOut == 0u32 && c.core.queued() == 0usize && c.layer.pending() == 0usize
+    c.sendsOut == 0u32 && c.core.queued() == 0usize && lay(c).pending() == 0usize
   }
 
   // A request waiting to send its body hears when it may
@@ -1089,7 +1126,7 @@ pub struct Driver {
   // armed then), so a deadline pushed back by every arrival costs nothing
   fn armTimer(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.conns.borrowMutAt(i).unwrap();
-    var t = if c.layer.isOpen() {forever()} else {c.openBy};
+    var t = if lay(c).isOpen() {forever()} else {c.openBy};
     match coreTimeout(c) {
       case let Some(at) {if at < t {t = at;}}
       case is None[Instant] {}
@@ -1131,7 +1168,7 @@ pub struct Driver {
       return;
     }
     if c.recvOut || c.readyOut || c.eof || c.shut {return;}
-    if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
+    if coreCredit(c) < cfg.recvSize || lay(c).wireRoom() < cfg.recvSize {return;}
     if !reading && cfg.idleRecvReady && !c.readyHit {
       let sock = c.sock;
       let gen = c.gen;
@@ -1176,26 +1213,32 @@ pub struct Driver {
       if c.closeAsked && idle && !c.core.isClosed() {c.core.abort();}
     }
     if !coreShouldClose(c) {return;}
-    if c.sendsOut > 0u32 || c.layer.pending() > 0usize {return;}
+    if c.sendsOut > 0u32 || lay(c).pending() > 0usize {return;}
     if !c.shut {
-      c.layer.closeSend();
-      if c.layer.pending() > 0usize {
+      var l = self.takeLayer(i);
+      l.closeSend();
+      self.putLayer(i, l);
+      if lay(self.conns.borrowAt(i).unwrap()).pending() > 0usize {
         self.transmit(lp, i, now);
         return;
       }
     }
     // Requests still waiting can no longer be sent on it
     self.answerAll(lp, i, false);
-    if c.eof {
+    let c2 = self.conns.borrowMutAt(i).unwrap();
+    if c2.eof {
       self.closeNow(lp, i, false, false);
       return;
     }
-    c.state = cClosing;
-    c.shut = true;
-    lp.shutdown(c.sock);
-    if !c.timer.isNone() {lp.cancel(c.timer);}
-    c.timer = lp.after(now + cfg.lingerTimeout, Target.Here(self.tok(kTimer, i, c.gen)));
-    c.timerAt = now + cfg.lingerTimeout;
+    c2.state = cClosing;
+    c2.shut = true;
+    lp.shutdown(c2.sock);
+    if !c2.timer.isNone() {lp.cancel(c2.timer);}
+    let gen = c2.gen;
+    let tm = lp.after(now + cfg.lingerTimeout, Target.Here(self.tok(kTimer, i, gen)));
+    let c3 = self.conns.borrowMutAt(i).unwrap();
+    c3.timer = tm;
+    c3.timerAt = now + cfg.lingerTimeout;
     self.lingerRecv(lp, i);
   }
 
@@ -1401,10 +1444,10 @@ pub struct Driver {
     // A layer that has failed on its own (a refused certificate) is the
     // reason: the peer's reset after its alert can be handled before the
     // layer's failure is read (feed), and must not hide it
-    if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
-      let text = c.layer.failureText();
-      let lk = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
-      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), lk, text.view()));
+    if (stage == Stage.Read || stage == Stage.Write) && lay(c).failed() {
+      let text = lay(c).failureText();
+      let lk = if lay(c).overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+      c.failure = Some[Failure](Failure.make(Stage.Tls, lay(c).failureCode(), lk, text.view()));
     } else {
       c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
     }
@@ -1447,7 +1490,9 @@ pub struct Driver {
     if kind == kCall {
       if comp.id != c.callOp {return true;}
       c.callOp = OpId.none();
-      c.layer.callDone(comp, now);
+      var l = self.takeLayer(index);
+      l.callDone(comp, now);
+      self.putLayer(index, l);
       self.markDirty(index);
       return true;
     }
@@ -1476,11 +1521,15 @@ pub struct Driver {
         st.bytesIn = st.bytesIn + u64.from(n);
         if n == 0usize {
           c.eof = true;
-          c.layer.wireIn(IoBuf(), now);
+          var l = self.takeLayer(index);
+          l.wireIn(IoBuf(), now);
+          self.putLayer(index, l);
         } else {
           var b = IoBuf();
           b <-> comp.buf;
-          c.layer.wireIn(b, now);
+          var l = self.takeLayer(index);
+          l.wireIn(b, now);
+          self.putLayer(index, l);
         }
         self.markDirty(index);
       } else if comp.status == diag.outcomeFailed {
@@ -1513,7 +1562,7 @@ pub struct Driver {
         // The linger is over
         self.closeNow(lp, index, false, false);
       } else if c.state == cOpen {
-        if !c.layer.isOpen() && now >= c.openBy {
+        if !lay(c).isOpen() && now >= c.openBy {
           self.failConn(lp, index, Stage.Tls, 0u32, ErrorKind.TimedOut, "no handshake within handshakeTimeout");
           return true;
         }
@@ -1589,7 +1638,10 @@ pub struct Driver {
       case is None[SocketAddr] {
         let b = IoBuf(resolveSize);
         c.state = cResolving;
-        c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here(self.tok(kResolve, i, c.gen)), c.connectBy);
+        let gen = c.gen;
+        let limit = c.connectBy;
+        let op = lp.submitBy(resolveOp(host, port, b), Target.Here(self.tok(kResolve, i, gen)), limit);
+        self.conns.borrowMutAt(i).unwrap().connOp = op;
       }
     }
     id
@@ -1642,7 +1694,10 @@ pub struct Driver {
     c.nextAddr = c.nextAddr + 1usize;
     c.state = cConnecting;
     c.peer = a;
-    c.connOp = lp.submitBy(Op.Connect(a), Target.Here(self.tok(kConnect, i, c.gen)), c.connectBy);
+    let gen = c.gen;
+    let limit = c.connectBy;
+    let op = lp.submitBy(Op.Connect(a), Target.Here(self.tok(kConnect, i, gen)), limit);
+    self.conns.borrowMutAt(i).unwrap().connOp = op;
   }
 
   // A request on a client connection, its events to sink (see the package's
@@ -1733,13 +1788,19 @@ pub struct Driver {
     match group {
       case let Some(g) {
         let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
-        r.watch = lp.afterIn(at, Target.Here(self.tok(kWatch, ri, r.gen)), g);
+        let rgen = r.gen;
+        let w = lp.afterIn(at, Target.Here(self.tok(kWatch, ri, rgen)), g);
+        self.reqs.borrowMutAt(ri).unwrap().watch = w;
       }
       else {
-        if dl < forever() {r.watch = lp.after(dl, Target.Here(self.tok(kWatch, ri, r.gen)));}
+        if dl < forever() {
+          let rgen = r.gen;
+          let w = lp.after(dl, Target.Here(self.tok(kWatch, ri, rgen)));
+          self.reqs.borrowMutAt(ri).unwrap().watch = w;
+        }
       }
     }
-    c.waiting.push(Waiting(ri, head));
+    self.conns.borrowMutAt(ci).unwrap().waiting.push(Waiting(ri, head));
     self.markDirty(ci);
     id
   }
@@ -2133,7 +2194,7 @@ pub struct Driver {
   pub fn layerInfo(self: &, conn: ConnId) String {
     let ci = self.connIndex(conn);
     if ci == noEntry {return String();}
-    (self.conns.borrowAt(ci).unwrap()).layer.describe()
+    lay(self.conns.borrowAt(ci).unwrap()).describe()
   }
 
   // The address a connection is connected to (the one being tried, while
