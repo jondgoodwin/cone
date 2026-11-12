@@ -16,7 +16,7 @@ pub fn box(p: Vec3, extent: Vec3) f32 {
   let qy = p.y.abs() - extent.y;
   let qz = p.z.abs() - extent.z;
   let outside = len3(Vec3(qx.max(0.), qy.max(0.), qz.max(0.)));
-  outside + maxf(qx, maxf(qy, qz)).min(0.)
+  outside + qx.max(qy.max(qz)).min(0.)
 }
 
 // A box of 'extent' whose edges and corners are rounded by 'radius' (its
@@ -45,7 +45,7 @@ pub fn torus(p: Vec3, major: f32, minor: f32) f32 {
 pub fn cylinder(p: Vec3, halfHeight: f32, radius: f32) f32 {
   let dx = len2(p.x, p.z) - radius;
   let dy = p.y.abs() - halfHeight;
-  maxf(dx, dy).min(0.) + len2(dx.max(0.), dy.max(0.))
+  dx.max(dy).min(0.) + len2(dx.max(0.), dy.max(0.))
 }
 
 // A cone about the y axis, cut flat at both ends: radius 'bottom' at
@@ -56,7 +56,7 @@ pub fn cone(p: Vec3, halfHeight: f32, bottom: f32, top: f32) f32 {
   let qy = p.y;
   // To the nearer cap's disc
   let capR = if qy < 0. { bottom } else { top };
-  let ax = qx - minf(qx, capR);
+  let ax = qx - qx.min(capR);
   let ay = qy.abs() - halfHeight;
   // To the slanted side, from (top, halfHeight) along (top - bottom, 2 halfHeight)
   let kx = top - bottom;
@@ -66,7 +66,7 @@ pub fn cone(p: Vec3, halfHeight: f32, bottom: f32, top: f32) f32 {
   let sx = qx - top + kx * t;
   let sy = qy - halfHeight + ky * t;
   let inside = sx < 0. && ay < 0.;
-  let d = sqrtf(minf(ax * ax + ay * ay, sx * sx + sy * sy));
+  let d = sqrtf((ax * ax + ay * ay).min(sx * sx + sy * sy));
   if inside { -d } else { d }
 }
 
@@ -133,7 +133,7 @@ pub fn triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) f32 {
   let qa = Vec3(pa.x - ba.x * ea, pa.y - ba.y * ea, pa.z - ba.z * ea);
   let qb = Vec3(pb.x - cb.x * eb, pb.y - cb.y * eb, pb.z - cb.z * eb);
   let qc = Vec3(pc.x - ac.x * ec, pc.y - ac.y * ec, pc.z - ac.z * ec);
-  sqrtf(minf(dot3(qa, qa), minf(dot3(qb, qb), dot3(qc, qc))))
+  sqrtf(dot3(qa, qa).min(dot3(qb, qb).min(dot3(qc, qc))))
 }
 
 // The distance to a membrane stretched between two spars, a0 to a1 and b0 to
@@ -178,8 +178,8 @@ pub fn membrane(p: Vec3, a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3, scallop: f32) f
   }
   let v = w * (1. - scallop * 4. * u * (1. - u));
   var d = len3(a0.lerp(a1, u).lerp(b0.lerp(b1, u), v) - p);
-  d = minf(d, minf(capsule(p, a0, a1, 0.), minf(capsule(p, a0, b0, 0.), capsule(p, a1, b1, 0.))));
-  if scallop <= 0. { d = minf(d, capsule(p, b0, b1, 0.)); }
+  d = d.min(capsule(p, a0, a1, 0.).min(capsule(p, a0, b0, 0.).min(capsule(p, a1, b1, 0.))));
+  if scallop <= 0. { d = d.min(capsule(p, b0, b1, 0.)); }
   d
 }
 
@@ -194,5 +194,5 @@ pub fn plane(p: Vec3, n: Vec3, offset: f32) f32 { dot3(p, n) + offset }
 pub fn ellipsoid(p: Vec3, radii: Vec3) f32 {
   let k0 = len3(Vec3(p.x / radii.x, p.y / radii.y, p.z / radii.z));
   let k1 = len3(Vec3(p.x / (radii.x * radii.x), p.y / (radii.y * radii.y), p.z / (radii.z * radii.z)));
-  if k1 > 0. { k0 * (k0 - 1.) / k1 } else { 0. - minf(radii.x, minf(radii.y, radii.z)) }
+  if k1 > 0. { k0 * (k0 - 1.) / k1 } else { 0. - radii.x.min(radii.y.min(radii.z)) }
 }
