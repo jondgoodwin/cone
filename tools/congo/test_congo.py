@@ -2325,6 +2325,48 @@ class Testing(unittest.TestCase):
         self.assertIn("2 packages: 1 test: 0 passed, 0 failed, 1 skipped (debug only);"
                       " 0 examples: 0 built, 0 failed to build", run.stdout)
 
+    def test_a_release_test_builds_and_runs_release(self):
+        # '#debug' is a build fact: a test that prints it shows which build it
+        # is. 'test --release' must compile it in release (the description
+        # says so and the program prints 240), a plain 'test' in debug (24),
+        # each in its own build folder, for a package and for a folder of them
+        pkg = self.root / "moded"
+        write(pkg / "congo.toml",
+              '[package]\nname = "moded"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "moded.cone", "mod moded;\n\npub fn one() i32 { 1i32 }\n")
+        write(pkg / "tests" / "which.cone", """
+            mod which;
+
+            import stdio use *;
+            import moded;
+
+            fn main() i32 {
+              var n = 240u32;
+              #if #debug { n = 24u32; }
+              printUInt(u64.from(n));
+              printStr("\\n");
+              0i32
+            }
+            """)
+        write(pkg / "tests" / "which.out", "24\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test which ... ok", run.stdout)
+        self.assertIn("build: debug",
+                      (pkg / "build" / "debug" / "tests" / "which" / "which.conebuild").read_text())
+        run = self.congo("test", "--release", cwd=pkg, ok=False)
+        self.assertIn("test which ... FAILED", run.stdout)
+        self.assertIn("+240", run.stdout)
+        self.assertIn("build: release",
+                      (pkg / "build" / "release" / "tests" / "which" / "which.conebuild").read_text())
+        write(pkg / "tests" / "which.out", "240\n")
+        run = self.congo("test", "--release", cwd=pkg)
+        self.assertIn("test which ... ok", run.stdout)
+        shelf = self.root / "moded-shelf"
+        shutil.copytree(pkg, shelf / "moded", ignore=shutil.ignore_patterns("build"))
+        self.congo("new", "other", str(shelf / "other"), "--lib", cwd=self.root)
+        run = self.congo("test", "--release", "-j", "2", cwd=shelf)
+        self.assertIn("test which ... ok", run.stdout)
+
     def test_a_test_that_skips_itself(self):
         # A test that exits with 77 (testing.skip) ran no checks: it is reported
         # as skipped with the last line it printed, nothing is compared or
