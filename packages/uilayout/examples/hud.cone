@@ -57,7 +57,7 @@ struct Canvas {
 
   fn pushClip(self: &mut, x: f32, y: f32, cw: f32, ch: f32) {
     let c = clip();
-    clips.push(Aabb2(Vec2(maxf(c.min.x, x), maxf(c.min.y, y)), Vec2(minf(c.max.x, x + cw), minf(c.max.y, y + ch))));
+    clips.push(Aabb2(Vec2(c.min.x.max(x), c.min.y.max(y)), Vec2(c.max.x.min(x + cw), c.max.y.min(y + ch))));
   }
 
   fn popClip(self: &mut) {
@@ -75,9 +75,9 @@ struct Canvas {
     let dr = f32.from((dst >> 16u32) & 255u32);
     let dg = f32.from((dst >> 8u32) & 255u32);
     let db = f32.from(dst & 255u32);
-    let r = u32.from(clampf(dr + (f32.from(colorR(color)) - dr) * a + 0.5, 0., 255.));
-    let g = u32.from(clampf(dg + (f32.from(colorG(color)) - dg) * a + 0.5, 0., 255.));
-    let b = u32.from(clampf(db + (f32.from(colorB(color)) - db) * a + 0.5, 0., 255.));
+    let r = u32.from((dr + (f32.from(colorR(color)) - dr) * a + 0.5).clamp(0., 255.));
+    let g = u32.from((dg + (f32.from(colorG(color)) - dg) * a + 0.5).clamp(0., 255.));
+    let b = u32.from((db + (f32.from(colorB(color)) - db) * a + 0.5).clamp(0., 255.));
     px.set(i, (r << 16u32) | (g << 8u32) | b);
   }
 
@@ -89,26 +89,26 @@ struct Canvas {
 
 // The signed distance from a point to a rounded box (negative inside)
 fn sdRound(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) f32 {
-  let rr = minf(r, minf(hw, hh));
+  let rr = r.min(hw.min(hh));
   let qx = (px - cx).abs() - (hw - rr);
   let qy = (py - cy).abs() - (hh - rr);
   let ox = qx.max(0.);
   let oy = qy.max(0.);
-  (ox * ox + oy * oy).sqrt() + maxf(qx, qy).min(0.) - rr
+  (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.) - rr
 }
 
 fn fillRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32) {
   let clip = c.clip();
-  let x0 = i32.from(maxf(x - 1., clip.min.x).floor());
-  let x1 = i32.from(minf(x + w + 1., clip.max.x).ceil());
-  let y0 = i32.from(maxf(y - 1., clip.min.y).floor());
-  let y1 = i32.from(minf(y + h + 1., clip.max.y).ceil());
+  let x0 = i32.from((x - 1.).max(clip.min.x).floor());
+  let x1 = i32.from((x + w + 1.).min(clip.max.x).ceil());
+  let y0 = i32.from((y - 1.).max(clip.min.y).floor());
+  let y1 = i32.from((y + h + 1.).min(clip.max.y).ceil());
   var py = y0;
   while py < y1 {
     var pxl = x0;
     while pxl < x1 {
       let d = sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, r);
-      c.plot(pxl, py, color, clampf(0.5 - d, 0., 1.));
+      c.plot(pxl, py, color, (0.5 - d).clamp(0., 1.));
       pxl = pxl + 1;
     }
     py = py + 1;
@@ -117,16 +117,16 @@ fn fillRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32)
 
 fn strokeRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, thick: f32, color: u32) {
   let clip = c.clip();
-  let x0 = i32.from(maxf(x - 1., clip.min.x).floor());
-  let x1 = i32.from(minf(x + w + 1., clip.max.x).ceil());
-  let y0 = i32.from(maxf(y - 1., clip.min.y).floor());
-  let y1 = i32.from(minf(y + h + 1., clip.max.y).ceil());
+  let x0 = i32.from((x - 1.).max(clip.min.x).floor());
+  let x1 = i32.from((x + w + 1.).min(clip.max.x).ceil());
+  let y0 = i32.from((y - 1.).max(clip.min.y).floor());
+  let y1 = i32.from((y + h + 1.).min(clip.max.y).ceil());
   var py = y0;
   while py < y1 {
     var pxl = x0;
     while pxl < x1 {
       let d = sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, r);
-      let cov = clampf(0.5 - d, 0., 1.) * clampf(0.5 + d + thick, 0., 1.);
+      let cov = (0.5 - d).clamp(0., 1.) * (0.5 + d + thick).clamp(0., 1.);
       c.plot(pxl, py, color, cov);
       pxl = pxl + 1;
     }
@@ -135,10 +135,10 @@ fn strokeRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, thick: f3
 }
 
 fn drawLine(c: &mut Canvas, ax: f32, ay: f32, ex: f32, ey: f32, thick: f32, color: u32) {
-  let x0 = i32.from((minf(ax, ex) - thick - 1.).floor());
-  let x1 = i32.from((maxf(ax, ex) + thick + 1.).ceil());
-  let y0 = i32.from((minf(ay, ey) - thick - 1.).floor());
-  let y1 = i32.from((maxf(ay, ey) + thick + 1.).ceil());
+  let x0 = i32.from((ax.min(ex) - thick - 1.).floor());
+  let x1 = i32.from((ax.max(ex) + thick + 1.).ceil());
+  let y0 = i32.from((ay.min(ey) - thick - 1.).floor());
+  let y1 = i32.from((ay.max(ey) + thick + 1.).ceil());
   let dx = ex - ax;
   let dy = ey - ay;
   let len2 = (dx * dx + dy * dy).max(0.0001);
@@ -148,11 +148,11 @@ fn drawLine(c: &mut Canvas, ax: f32, ay: f32, ex: f32, ey: f32, thick: f32, colo
     while pxl < x1 {
       let qx = f32.from(pxl) + 0.5 - ax;
       let qy = f32.from(py) + 0.5 - ay;
-      let t = clampf((qx * dx + qy * dy) / len2, 0., 1.);
+      let t = ((qx * dx + qy * dy) / len2).clamp(0., 1.);
       let ex = qx - dx * t;
       let ey = qy - dy * t;
       let d = (ex * ex + ey * ey).sqrt() - thick * 0.5;
-      c.plot(pxl, py, color, clampf(0.5 - d, 0., 1.));
+      c.plot(pxl, py, color, (0.5 - d).clamp(0., 1.));
       pxl = pxl + 1;
     }
     py = py + 1;
@@ -183,8 +183,8 @@ fn drawArc(c: &mut Canvas, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, thick: f3
       }
       if inside {
         var cov = 0.f;
-        if thick <= 0. {cov = clampf(r + 0.5 - dist, 0., 1.);}
-        else {cov = clampf(thick * 0.5 + 0.5 - (dist - r).abs(), 0., 1.);}
+        if thick <= 0. {cov = (r + 0.5 - dist).clamp(0., 1.);}
+        else {cov = (thick * 0.5 + 0.5 - (dist - r).abs()).clamp(0., 1.);}
         c.plot(pxl, py, color, cov);
       }
       pxl = pxl + 1;
@@ -317,10 +317,10 @@ fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
 
 fn drawImage(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, tex: u32, u0: f32, v0: f32, u1: f32, v1: f32, radius: f32) {
   let clip = c.clip();
-  let xa = i32.from(maxf(x, clip.min.x).floor());
-  let xb = i32.from(minf(x + w, clip.max.x).ceil());
-  let ya = i32.from(maxf(y, clip.min.y).floor());
-  let yb = i32.from(minf(y + h, clip.max.y).ceil());
+  let xa = i32.from(x.max(clip.min.x).floor());
+  let xb = i32.from((x + w).min(clip.max.x).ceil());
+  let ya = i32.from(y.max(clip.min.y).floor());
+  let yb = i32.from((y + h).min(clip.max.y).ceil());
   var py = ya;
   while py < yb {
     var pxl = xa;
@@ -330,7 +330,7 @@ fn drawImage(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, tex: u32, u0: f32, 
       let d = if radius > 0. {sdRound(f32.from(pxl) + 0.5, f32.from(py) + 0.5, x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, radius)} else {-1.};
       let col = sampleTexture(tex, u0 + (u1 - u0) * fx, v0 + (v1 - v0) * fy);
       if colorA(col) != 0u32 || tex == 7u32 {
-        c.plot(pxl, py, withAlpha(col | 255u32, 255u32), clampf(0.5 - d, 0., 1.));
+        c.plot(pxl, py, withAlpha(col | 255u32, 255u32), (0.5 - d).clamp(0., 1.));
       }
       pxl = pxl + 1;
     }
