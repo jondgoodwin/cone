@@ -116,11 +116,26 @@ pub struct Decompressor {
   // next, or the input piles up.
   pub fn feed(self: &mut, chunk: &Array[u8]) {
     // The room left in the last segment first, then one new buffer for the rest
+    if self.failed() { return; }
     var at = inp.appendLast(chunk);
     while at < chunk.len {
-      var b = IoBuf(chunk.len - at);
-      at = at + b.append(&chunk[at ..< chunk.len]);
-      _ = inp.push(b);
+      // In blocks of at most 1 MiB, so a chunk is never one pool block of its own size
+      let n = if chunk.len - at < 1048576usize { chunk.len - at } else { 1048576usize };
+      var b = match IoBuf.tryMake(n) {
+        case var Some(m) { m }
+        else {
+          err = Some[ZstdError](ZstdError.make(ErrorKind.TooLarge, self.totalIn(), "zstd: the buffer pool has no room for more input; pull until NeedInput before feeding more"));
+          return;
+        }
+      };
+      at = at + b.append(&chunk[at ..< at + n]);
+      match inp.push(b) {
+        case let Some(refused) {
+          err = Some[ZstdError](ZstdError.make(ErrorKind.TooLarge, self.totalIn(), "zstd: more input was fed than is held; pull until NeedInput before feeding more"));
+          return;
+        }
+        case is None[IoBuf] {}
+      }
     }
   }
 
