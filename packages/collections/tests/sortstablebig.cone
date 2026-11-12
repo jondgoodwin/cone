@@ -1,0 +1,103 @@
+// Stability of the stable sort at a million elements, on input the quicksort inside it
+// takes (random keys, and keys of few distinct values) and the merge path.
+//
+// Each element is a (key, id) pair, the id its starting position, sorted by the key alone.
+// The reference is a plain stable counting sort by key (a count per key, the starting place
+// of each key, then one pass placing each id after the ids of its key already placed), so it
+// shares nothing with the sort under test. Ties keeping their order is then: the ids come out
+// exactly as the reference puts them. Each case also checks the keys are in order, that each
+// id appears once (the reference says so), and the comparison count (a few distinct values
+// take under 10 comparisons an element, random keys under n (log2 n + 1) + 6 n, as in
+// sortstable; a merge sort of runs of 32 needs about 15 for few distinct values).
+
+mod sortstablebig;
+
+import testing use *;
+import collections use *;
+
+var @threadlocal calls = 0usize;
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+struct Pair {
+  pub key: u32;
+  pub id: u32;
+}
+
+fn pairOrder(a: &Pair, b: &Pair) i32 {
+  calls = calls + 1usize;
+  a.key <=> b.key
+}
+
+// n pairs with keys below 'distinct' (random keys of 20 bits for 0)
+fn makePairs(n: usize, distinct: u32, seed: u64) List[Pair] {
+  var s = seed;
+  var l = List[Pair].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    let r = u32.from(nextRand(&mut s) >> 44u64);
+    l.push(Pair(if distinct == 0u32 { r } else { r % distinct }, u32.from(i)));
+    i = i + 1usize;
+  }
+  l
+}
+
+// The ids in stable order by key: a counting sort over keys below 2^20
+fn referenceIds(l: &List[Pair]) List[u32] {
+  let n = l.len();
+  let keys = 1048576usize;
+  var start = List[usize].withCapacity(keys + 1usize);
+  var k = 0usize;
+  while k <= keys { start.push(0usize); k = k + 1usize; }
+  var i = 0usize;
+  while i < n { let q = usize.from(l[i].key) + 1usize; start[q] = start[q] + 1usize; i = i + 1usize; }
+  k = 1usize;
+  while k <= keys { start[k] = start[k] + start[k - 1usize]; k = k + 1usize; }
+  var ids = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { ids.push(0u32); i = i + 1usize; }
+  i = 0usize;
+  while i < n {
+    let q = usize.from(l[i].key);
+    ids[start[q]] = l[i].id;
+    start[q] = start[q] + 1usize;
+    i = i + 1usize;
+  }
+  ids
+}
+
+fn check(name: &Array[u8], distinct: u32, seed: u64) {
+  let n = 1000000usize;
+  var l = makePairs(n, distinct, seed);
+  let want = referenceIds(&l);
+  calls = 0usize;
+  l.sortBy(&pairOrder);
+  let used = calls;
+  var wrong = 0usize;
+  var unordered = 0usize;
+  var i = 0usize;
+  while i < n {
+    if l[i].id != want[i] { wrong = wrong + 1usize; }
+    if i > 0usize && l[i].key < l[i - 1usize].key { unordered = unordered + 1usize; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(wrong), 0i64, name);
+  expectInt(i64.from(unordered), 0i64, name);
+  let limit = if distinct == 0u32 { 27usize * n } else { 10usize * n };
+  expectInt(if used <= limit { 1i64 } else { 0i64 }, 1i64, name);
+}
+
+fn main() i32 {
+  check("random keys, ties keep their order", 0u32, 7u64);
+  check("2 distinct keys, ties keep their order", 2u32, 11u64);
+  check("4 distinct keys, ties keep their order", 4u32, 13u64);
+  check("64 distinct keys, ties keep their order", 64u32, 17u64);
+  done()
+}

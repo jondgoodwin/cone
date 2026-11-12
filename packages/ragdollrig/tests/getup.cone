@@ -19,7 +19,7 @@ import collections use List;
 import geomath use *;
 import rigidcollide use *;
 import rigiddynamics use *;
-import bonepose use * but clampf;
+import bonepose use *;
 import poseik use blendPoses;
 import ragdollrig use *;
 
@@ -31,8 +31,8 @@ fn poseDiff(a: &Pose, b: &Pose) f32 {
   var worst = 0.f;
   var i = 0usize;
   while i < a.count() {
-    worst = maxf(worst, rotVec(a.rotation(i) * b.rotation(i).conjugate()).length());
-    worst = maxf(worst, ((*a.locals[i]).translation - (*b.locals[i]).translation).length());
+    worst = worst.max(rotVec(a.rotation(i) * b.rotation(i).conjugate()).length());
+    worst = worst.max(((*a.locals[i]).translation - (*b.locals[i]).translation).length());
     i = i + 1usize;
   }
   worst
@@ -47,7 +47,7 @@ fn pastLimits(skel: &Skeleton, spec: &RigSpec, p: &Pose) f32 {
     if bs.joint == JOINT_HINGE {
       let q = p.rotation(b);
       let a = wrapAngle(2. * atan2(q.x, q.w));
-      worst = maxf(worst, maxf(bs.lo - a, a - bs.hi));
+      worst = worst.max((bs.lo - a).max(a - bs.hi));
     }
     b = b + 1usize;
   }
@@ -89,9 +89,9 @@ fn main() i32 {
     var t = 0.f;
     while t <= clip.duration {
       let p = clip.sample(t);
-      worst = maxf(worst, pastLimits(&skel, &spec, &p));
+      worst = worst.max(pastLimits(&skel, &spec, &p));
       // the lowest point never goes under the floor between keys by more than a few centimetres
-      worst = maxf(worst, -lowestOfPose(&skel, &spec, &p) - 0.05);
+      worst = worst.max(-lowestOfPose(&skel, &spec, &p) - 0.05);
       t = t + 0.1;
     }
     expectBool(worst < 0.05, true, "no hinge in the clip is past its table limit by 0.05 rad, nor the body under the floor by 5 cm");

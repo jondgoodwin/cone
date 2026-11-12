@@ -390,20 +390,20 @@ fn solveAngularLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, angle: f
     let lambda = -km * (angJv(w, s, axis) - j.motorSpeed);
     let maxI = j.motorMax * h;
     let old = j.impMotor;
-    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    j.impMotor = (old + lambda).clamp(-maxI, maxI);
     angApply(w, s, axis, j.impMotor - old);
   }
   if j.limitOn {
     // lower: C = angle - lower; B turning in +axis raises the angle
     let rl = limitRow(angle - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (angJv(w, s, axis) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     angApply(w, s, axis, newLo - j.impLo);
     j.impLo = newLo;
     // upper: C = upper - angle; the row pushes the other way
     let ru = limitRow(j.upper - angle, useBias, soft, invH);
     let lu = -km * ru.massScale * (-angJv(w, s, axis) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     angApply(w, s, axis, -(newHi - j.impHi));
     j.impHi = newHi;
   }
@@ -416,18 +416,18 @@ fn solveLinearLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, pos: f32,
     let lambda = -km * (linJv(w, s, axis, armA, s.rB) - j.motorSpeed);
     let maxI = j.motorMax * h;
     let old = j.impMotor;
-    j.impMotor = clampf(old + lambda, -maxI, maxI);
+    j.impMotor = (old + lambda).clamp(-maxI, maxI);
     linApply(w, s, axis, armA, s.rB, j.impMotor - old);
   }
   if j.limitOn {
     let rl = limitRow(pos - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (linJv(w, s, axis, armA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     linApply(w, s, axis, armA, s.rB, newLo - j.impLo);
     j.impLo = newLo;
     let ru = limitRow(j.upper - pos, useBias, soft, invH);
     let lu = -km * ru.massScale * (-linJv(w, s, axis, armA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     linApply(w, s, axis, armA, s.rB, -(newHi - j.impHi));
     j.impHi = newHi;
   }
@@ -462,13 +462,13 @@ fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Soft
     // not shorter than lower
     let rl = limitRow(len - j.lower, useBias, soft, invH);
     let ll = -km * rl.massScale * (linJv(w, s, n, s.rA, s.rB) + rl.bias) - rl.impulseScale * j.impLo;
-    let newLo = maxf(j.impLo + ll, 0.);
+    let newLo = (j.impLo + ll).max(0.);
     linApply(w, s, n, s.rA, s.rB, newLo - j.impLo);
     j.impLo = newLo;
     // not longer than upper
     let ru = limitRow(j.upper - len, useBias, soft, invH);
     let lu = -km * ru.massScale * (-linJv(w, s, n, s.rA, s.rB) + ru.bias) - ru.impulseScale * j.impHi;
-    let newHi = maxf(j.impHi + lu, 0.);
+    let newHi = (j.impHi + lu).max(0.);
     linApply(w, s, n, s.rA, s.rB, -(newHi - j.impHi));
     j.impHi = newHi;
   }
@@ -509,7 +509,7 @@ fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBia
   let km = invOrZero(angK(s, axis));
   let rw = limitRow(cval, useBias, soft, invH);
   let lambda = -km * rw.massScale * (angJv(w, s, axis) + rw.bias) - rw.impulseScale * j.impEll;
-  let newImp = maxf(j.impEll + lambda, 0.);
+  let newImp = (j.impEll + lambda).max(0.);
   angApply(w, s, axis, newImp - j.impEll);
   j.impEll = newImp;
   j.ellDir = axis;
@@ -531,7 +531,7 @@ fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Sof
     let km = invOrZero(angK(s, u));
     let rl = limitRow(j.coneAngle - swing, useBias, soft, invH);
     let lambda = -km * rl.massScale * (angJv(w, s, u) + rl.bias) - rl.impulseScale * j.impSwing;
-    let newImp = maxf(j.impSwing + lambda, 0.);
+    let newImp = (j.impSwing + lambda).max(0.);
     angApply(w, s, u, newImp - j.impSwing);
     j.impSwing = newImp;
   }
@@ -540,12 +540,12 @@ fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Sof
   let km2 = invOrZero(angK(s, xa));
   let rlo = limitRow(tw - j.twistLo, useBias, soft, invH);
   let llo = -km2 * rlo.massScale * (angJv(w, s, xa) + rlo.bias) - rlo.impulseScale * j.impTwistLo;
-  let newLo = maxf(j.impTwistLo + llo, 0.);
+  let newLo = (j.impTwistLo + llo).max(0.);
   angApply(w, s, xa, newLo - j.impTwistLo);
   j.impTwistLo = newLo;
   let rhi = limitRow(j.twistHi - tw, useBias, soft, invH);
   let lhi = -km2 * rhi.massScale * (-angJv(w, s, xa) + rhi.bias) - rhi.impulseScale * j.impTwistHi;
-  let newHi = maxf(j.impTwistHi + lhi, 0.);
+  let newHi = (j.impTwistHi + lhi).max(0.);
   angApply(w, s, xa, -(newHi - j.impTwistHi));
   j.impTwistHi = newHi;
 }

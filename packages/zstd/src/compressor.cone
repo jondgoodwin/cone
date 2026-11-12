@@ -73,9 +73,11 @@ pub struct Compressor {
   work: Reps;
   seqs: Seqs;
   enc: BlockEnc;
-  // The output: the first 'outPos' bytes of 'out' are delivered
-  out: List[u8];
-  outPos: usize;
+  // The output: the bytes written and not yet pulled. A fallible Writer (the
+  // output's size is the caller's input's); 'blk' is the scratch a block's
+  // body is coded into before it is known to be worth keeping
+  out: Writer;
+  blk: List[u8];
   xxh: Xxh64;
   inTotal: u64;
   outTotal: u64;
@@ -90,7 +92,7 @@ pub struct Compressor {
   pub fn make(level: i32) Compressor {
     let lv = if level < 1 {1} else if level > 3 {3} else {level};
     Compressor(paramsOf(lv), List[u8](), 0u64, 0usize, List[u32](), List[u32](), List[u8](), List[u8](),
-      Reps(1u32, 4u32, 8u32), Reps(1u32, 4u32, 8u32), Seqs(), BlockEnc.make(), List[u8](), 0usize,
+      Reps(1u32, 4u32, 8u32), Reps(1u32, 4u32, 8u32), Seqs(), BlockEnc.make(), Writer.tryEmpty(262144usize), List[u8](),
       Xxh64.make(0u64), 0u64, 0u64, 0u64, false, false, false)
   }
 
@@ -109,7 +111,13 @@ pub struct Compressor {
   pub fn finish(self: &mut) { finishing = true; }
 
   // The Transform's 'failure': a compressor never fails, so always None
-  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+  // (barring the output's memory being refused: then Failed, and a TooLarge)
+  pub fn failure(self: &) Option[AnyError] {
+    if out.starved() {
+      return Some[AnyError](AnyError.from(ZstdError.make(ErrorKind.TooLarge, outTotal, "zstd: no memory for the output")));
+    }
+    None[AnyError]
+  }
 
   // Bytes of input fed so far
   pub fn totalIn(self: &) u64 { inTotal }
@@ -118,7 +126,7 @@ pub struct Compressor {
   pub fn totalOut(self: &) u64 { outTotal }
 
   // Whether the frame is complete and every byte of it delivered
-  pub fn isDone(self: &) bool { done && outPos >= out.len() }
+  pub fn isDone(self: &) bool { done && out.isEmpty() }
 
   // Appends compressed bytes into the buffer's spare room (the Transform of
   // package streams), at most 'dest.room()' of them, and answers what it
@@ -129,8 +137,19 @@ pub struct Compressor {
   pub fn pullBuf overload pull(self: &mut, dest: &mut IoBuf) Status {
     let room = dest.room();
     let n = self.ready(room);
-    dest.append(&out.view()[outPos ..< outPos + n]);
-    self.delivered(n, room)
+    if out.starved() { return Status.Failed; }
+    // Drained through 'blk' (empty between blocks) and appended: handing
+    // drainTo dest's own spare room is error 1339, since the checker cannot
+    // tell that dest's IoBuf and the Writer's are two. Tried and refused, all
+    // with 1339 (drainTo's body is not visible, so it is assumed to reshape
+    // any IoBuf): the spare slice held across the call; the same through a
+    // free function handed '&mut out' and the slice; and the Writer swapped
+    // into a local ('<->') first. The copy stays.
+    blk.resize(n, 0u8);
+    let got = out.drainTo(blk.viewMut());
+    dest.append(&blk.view()[0usize ..< got]);
+    blk.clear();
+    self.delivered(got, room)
   }
 
   // -------- inside --------
@@ -138,10 +157,10 @@ pub struct Compressor {
   // Works until 'max' bytes of output are waiting or the data runs out: how
   // many are waiting to be handed over, at most 'max'
   fn ready(self: &mut, max: usize) usize {
-    while out.len() - outPos < max && !done {
+    while out.len() < max && !done && !out.starved() {
       if !self.step() { break; }
     }
-    let avail = out.len() - outPos;
+    let avail = out.len();
     if avail < max {avail} else {max}
   }
 
@@ -150,27 +169,11 @@ pub struct Compressor {
   // cannot tell whether a block is ready to write, since it writes only as far
   // as the room asks, so it says MoreOutput and the next pull finds out
   fn delivered(self: &mut, n: usize, max: usize) Status {
-    outPos = outPos + n;
     outTotal = outTotal + u64.from(n);
-    self.trimOutput();
-    if outPos < out.len() { return Status.MoreOutput; }
+    if out.len() > 0usize { return Status.MoreOutput; }
     if done { return Status.Done; }
     if n == max && n > 0usize { return Status.MoreOutput; }
     Status.NeedInput
-  }
-
-  // Free the delivered front of the output, when it is at least half of it
-  fn trimOutput(self: &mut) {
-    let total = out.len();
-    if outPos > 0usize && outPos >= total - outPos {
-      var i = 0usize;
-      while i < total - outPos {
-        out.set(i, *out[outPos + i]);
-        i += 1usize;
-      }
-      out.truncate(total - outPos);
-      outPos = 0usize;
-    }
   }
 
   // One block, if one can be written; false when it needs more input
@@ -186,11 +189,7 @@ pub struct Compressor {
     let last = finishing && avail <= blockSizeMax();
     self.block(n, last);
     if last {
-      let sum = u32.from(xxh.digest() & 0xFFFFFFFFu64);
-      out.push(u8.from(sum & 255u32));
-      out.push(u8.from((sum >> 8u32) & 255u32));
-      out.push(u8.from((sum >> 16u32) & 255u32));
-      out.push(u8.from(sum >> 24u32));
+      out.putUintLE(xxh.digest() & 0xFFFFFFFFu64, 4usize);
       done = true;
     }
     self.slide();
@@ -230,10 +229,7 @@ pub struct Compressor {
   // level's window, and the size if known.
   fn header(self: &mut) {
     started = true;
-    out.push(0x28u8);
-    out.push(0xB5u8);
-    out.push(0x2Fu8);
-    out.push(0xFDu8);
+    out.putUintLE(0xFD2FB528u64, 4usize);
     let known = finishing;
     let size = inTotal;
     let single = known && size <= (1u64 << u64.from(par.windowLog));
@@ -244,16 +240,12 @@ pub struct Compressor {
       else if size <= 0xFFFFFFFFu64 { flag = 2u8; }
       else { flag = 3u8; }
     }
-    out.push((flag << 6u8) | (if single {0x20u8} else {0u8}) | 0x04u8);
-    if !single { out.push(u8.from((par.windowLog - 10u32) << 3u32)); }
+    out.putByte((flag << 6u8) | (if single {0x20u8} else {0u8}) | 0x04u8);
+    if !single { out.putByte(u8.from((par.windowLog - 10u32) << 3u32)); }
     if known {
       let bytes = if flag == 0u8 {1usize} else {1usize << usize.from(flag)};
       let v = if flag == 1u8 {size - 256u64} else {size};
-      var k = 0usize;
-      while k < bytes {
-        out.push(u8.from((v >> u64.from(8usize * k)) & 255u64));
-        k += 1usize;
-      }
+      out.putUintLE(v, bytes);
     }
   }
 
@@ -262,15 +254,16 @@ pub struct Compressor {
     let start = cur;
     let end = cur + n;
     let lastBit = if last {1u32} else {0u32};
-    let hpos = out.len();
     if n > 0usize && blocks > 0u64 && allSame(buf.view(), start, end) {
       // RLE: the byte once
-      self.blockHeader(hpos, (u32.from(n) << 3u32) | 2u32 | lastBit);
-      out.push(*buf[start]);
+      out.putUintLE((u64.from(n) << 3u64) | 2u64 | u64.from(lastBit), 3usize);
+      out.putByte(*buf[start]);
     } else {
-      out.push(0u8);
-      out.push(0u8);
-      out.push(0u8);
+      // The 3-byte header is a slot, filled once the size is known. The body
+      // is coded into 'blk' and put only if it is worth keeping; else the mark
+      // cuts the slot back and the bytes go raw
+      let at = out.mark();
+      let hdr = out.slotUint(3usize);
       var coded = false;
       if n > 0usize {
         work = Reps(reps.r1, reps.r2, reps.r3);
@@ -282,37 +275,27 @@ pub struct Compressor {
           matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
             &mut longG, &mut shortG, &mut work, &mut seqs);
         }
-        writeLiterals(&seqs.lits, &mut enc.huf, &mut out);
-        writeSequences(&seqs, &mut enc, &mut out);
-        let size = out.len() - hpos - 3usize;
+        blk.clear();
+        writeLiterals(&seqs.lits, &mut enc.huf, &mut blk);
+        writeSequences(&seqs, &mut enc, &mut blk);
+        let size = blk.len();
         if size + minGain(n) < n {
           coded = true;
           reps = Reps(work.r1, work.r2, work.r3);
-          self.setHeader(hpos, (u32.from(size) << 3u32) | 4u32 | lastBit);
+          out.put(blk.view());
+          out.fillUintLE(hdr, (u64.from(size) << 3u64) | 4u64 | u64.from(lastBit));
         }
       }
       if !coded {
         // Raw: the bytes as they are; the repeat offsets stay as they were
-        out.truncate(hpos + 3usize);
-        self.setHeader(hpos, (u32.from(n) << 3u32) | lastBit);
-        out.appendSlice(&buf.view()[start..<end]);
+        out.truncateTo(at);
+        out.putUintLE((u64.from(n) << 3u64) | u64.from(lastBit), 3usize);
+        out.put(&buf.view()[start..<end]);
       }
+      out.release(at);
     }
     cur = end;
     blocks = blocks + 1u64;
-  }
-
-  fn blockHeader(self: &mut, at: usize, h: u32) {
-    out.push(0u8);
-    out.push(0u8);
-    out.push(0u8);
-    self.setHeader(at, h);
-  }
-
-  fn setHeader(self: &mut, at: usize, h: u32) {
-    out.set(at, u8.from(h & 255u32));
-    out.set(at + 1usize, u8.from((h >> 8u32) & 255u32));
-    out.set(at + 2usize, u8.from(h >> 16u32));
   }
 
   // Drop input no match can reach any more (all but the window before
@@ -340,13 +323,24 @@ pub struct Compressor {
 
   // -------- one-shot use --------
 
-  // Runs to the end of the input, keeping the whole output. For 'compress'.
-  fn runAll(self: &mut) {
-    while self.step() {}
+  // Runs to the end of the input, moving each block's output into 'result'
+  // as it is written. For 'compress'. False if the output's memory was
+  // refused (what is in 'result' is then not the frame).
+  fn runAll(self: &mut, result: &mut List[u8]) bool {
+    while self.step() {
+      if !self.drainAll(result) { return false; }
+    }
+    self.drainAll(result)
   }
 
-  // The output of 'runAll', moved out; the Compressor is given up
-  fn takeOutput(self) List[u8] { self.(out) }
+  fn drainAll(self: &mut, result: &mut List[u8]) bool {
+    if out.starved() { return false; }
+    let n = out.len();
+    let at = result.len();
+    result.resize(at + n, 0u8);
+    _ = out.drainTo(&mut result.viewMut()[at ..< at + n]);
+    true
+  }
 }
 
 // Whether b[start, end) is one byte value

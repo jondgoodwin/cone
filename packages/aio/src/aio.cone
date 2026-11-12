@@ -487,40 +487,30 @@
 // the same folder), the same Output (exit code, a signal on POSIX, 'timedOut',
 // standard output and standard error captured apart), and the same rules for
 // the program ('process' says them: how Windows finds it and quotes the
-// arguments, what '/bin/sh -c' is). Only the waiting is different: the
-// process package's call runs on a thread of the pool's general lane, and the
-// actor's behaviour pauses until it ends. An exit code is an answer (Ok); an
+// arguments, what '/bin/sh -c' is). Only the waiting is different: the child
+// is started by 'process.launch' (or 'launchLine'), its two pipes and the child itself are
+// handed to the Loop, each pipe is read to its end by an actor of the package's
+// and the exit is an operation of the Loop's (no thread waits), so any number of
+// children run at once. The actor's behaviour pauses until all have ended. An
+// exit code is an answer (Ok); an
 // Err is a program that could not be started, an IoError of the system's
 // number (the process package's ProcessError code, which is errno on Linux,
 // turned into the Windows number iocore uses for IoError everywhere). The
 // ProcessError's text (the program's name, the folder) is not carried: the
 // caller has them. 'args' and 'dir' are copied.
 //
-// What the pool's thread does not give: a child's pipes to read or write
-// while it runs, or to wait for it apart from starting it. A run is spawn,
-// wait and the captured standard output and standard error in one awaited
-// call, as the process package's is, because that is the process package's
-// whole interface; a Child you spawn, then await, and whose output you read
-// piece by piece would need that package to offer a spawn that returns the
-// pipes, and the pipes to be handles iocore's Loop holds (a new op in iocore).
-// A deadline or a cancel does not stop a child that is running: put a
-// 'timeout' in the Options for that. A child still running when the program
-// ends is left to the system (its pool thread is not waited for, as iocore
-// says); its record is dissolved when the child ends, if the process is still
-// there.
+// A cancel of the run's group, or a deadline of its IoLimits, ends the run at
+// once: the child and everything it started are stopped, and waited for, and
+// the answer is Cancelled or TimedOut. (The 'timeout' in the Options is the
+// other way: the child is stopped, and the answer is Done with 'timedOut'.)
+// 'crashReport: false' is carried by 'process.launch' too, so it is the same run: no pool thread, no count of
+// children (on Windows the child's debug events are handled by a thread of the process package's, one for the life
+// of each such child).
 //
 // METHOD CHOICES (defaults, not rulings):
-//  - 'run' is the process package's synchronous 'run' on a thread of iocore's
-//    general lane, not a new op in iocore's loop (no async process wait exists
-//    there, and a pipe cannot be given to the Loop). The thread waits for the
-//    child, as that package's 'run' does; at most four children (the lane's
-//    threads) run at once, and a fifth waits queued (a cancel group takes it
-//    out), more than 1,024 queued are refused (ERROR_BUSY).
-//  - The answer of a run (the Output) is left by the pool thread in the run's
-//    record (its run part, an Option), which waits for its job in every case,
-//    so nothing else decides who frees what. The run part is held out of
-//    line, by an owner of its own (one allocation more per run), so that
-//    every other record stays small.
+//  - 'run' is 'process.launch' and the Loop's pipe and child operations (iocore's
+//    PIPES and CHILDREN), driven by an actor made for the run. The output is
+//    collected in memory, as the process package's is.
 //  - A start failure is an IoError of the number the process package gives,
 //    the system's own (Windows' on Windows, the errno on Linux), its kind read
 //    from it as any IoError's is.
@@ -610,9 +600,11 @@ const opConnect = 9u32;       // Result[Socket, IoError]
 const opSleep = 10u32;        // Result[void, IoError]
 const opResolve = 11u32;      // Result[List[SocketAddr], IoError]
 const opStat = 12u32;         // Result[FileStat, IoError]
-const opRun = 13u32;          // Result[process.Output, IoError]
 const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
 const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
+const opPipeRead = 16u32;     // a pipe's read: Result[IoBuf, IoError]
+const opPipeWrite = 17u32;    // a pipe's write: Result[IoBuf, IoError]
+const opWaitChild = 18u32;    // a child's end: Result[ChildExit, IoError]
 
 // What aio keeps in a record with the operation, after iocore's OpCore: the
 // reply the awaiting behaviour's answer goes back in (put in by the 'await';
@@ -627,18 +619,6 @@ struct Ask is Sendable {
   since: i64;                   // a read with no buffer: when its stage was started (the steady clock)
   arg: u64;                     // a read with no buffer: the room of the buffer it takes; a relative sleep's nanoseconds
   limit: Instant;               // the caller's deadline (lim's), the whole of a read with no buffer
-  run: Option[Uni[RunPart]];    // a run's request, and its answer once a pool thread has run it: out of line
-}
-
-// A child process to run, and its answer: written by the pool's thread that
-// runs it, while the record is away (iocore's THE BLOCKING POOL)
-struct RunPart {
-  isLine: bool;
-  line: String;
-  args: List[String];
-  opts: process.Options;
-  dir: Path;
-  out: Option[Result[process.Output, IoError]];
 }
 
 // The process's pool of records: made by the first operation, never freed (an
@@ -704,7 +684,7 @@ fn setBuf(p: *OpCore, b: Option[IoBuf]) {
 // handle), what it is doing and the kind of iocore operation, limited by lim:
 // any thread
 fn takeRec(what: u32, kind: u32, h: Handle, lim: IoLimits) *OpRec[Ask] {
-  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, 0i64, 0u64, forever(), None));
+  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, 0i64, 0u64, forever()));
   let c = &mut (*p).core;
   c.kind = kind;
   c.handle = h;
@@ -1956,8 +1936,10 @@ fn answerRec(rp: *OpRec[Ask]) {
   }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
     actors.answerLentIn[Result[IoBuf, IoError]](back, rp as *Result[IoBuf, IoError], &takeRead);
+  } else if w == opWaitChild {
+    actors.answerLentIn[Result[ChildExit, IoError]](back, rp as *Result[ChildExit, IoError], &takeExit);
   } else if w == opAccept || w == opConnect {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
   } else if w == opRecvFrom {
@@ -1968,8 +1950,6 @@ fn answerRec(rp: *OpRec[Ask]) {
     actors.answerLentIn[Result[List[SocketAddr], IoError]](back, rp as *Result[List[SocketAddr], IoError], &takeResolve);
   } else if w == opStat {
     actors.answerLentIn[Result[FileStat, IoError]](back, rp as *Result[FileStat, IoError], &takeStat);
-  } else if w == opRun {
-    actors.answerLentIn[Result[process.Output, IoError]](back, rp as *Result[process.Output, IoError], &takeRun);
   } else {
     actors.answerLentIn[Result[usize, IoError]](back, rp as *Result[usize, IoError], &takeCount);
   }
@@ -1982,8 +1962,10 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   let e = IoError.timedOut();
-  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt || w == opPipeRead || w == opPipeWrite {
     actors.answerNowIn[Result[IoBuf, IoError]](back, Err[IoBuf, IoError](e));
+  } else if w == opWaitChild {
+    actors.answerNowIn[Result[ChildExit, IoError]](back, Err[ChildExit, IoError](e));
   } else if w == opAccept || w == opConnect {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
   } else if w == opRecvFrom {
@@ -1994,8 +1976,6 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
     actors.answerNowIn[Result[List[SocketAddr], IoError]](back, Err[List[SocketAddr], IoError](e));
   } else if w == opStat {
     actors.answerNowIn[Result[FileStat, IoError]](back, Err[FileStat, IoError](e));
-  } else if w == opRun {
-    actors.answerNowIn[Result[process.Output, IoError]](back, Err[process.Output, IoError](e));
   } else {
     actors.answerNowIn[Result[usize, IoError]](back, Err[usize, IoError](e));
   }
@@ -2084,6 +2064,17 @@ fn takeCount(p: *u8, to: *u8) {
   mem.writeRaw[Result[usize, IoError]](to as *Result[usize, IoError], v);
 }
 
+// A child's end: Done carries the exit code (the count) and, on Linux, the signal that ended it (the code)
+fn takeExit(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Err[ChildExit, IoError](errorOf(core.kind, core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[ChildExit, IoError](ChildExit(u32.from(core.n), core.code));
+  }
+  mem.writeRaw[Result[ChildExit, IoError]](to as *Result[ChildExit, IoError], v);
+}
+
 // A timer's: Done is the success, a Result with nothing in it
 fn takeSleep(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
@@ -2129,60 +2120,6 @@ fn takeStat(p: *u8, to: *u8) {
   let code = core.code;
   let buf = core.(buf);
   mem.writeRaw[Result[FileStat, IoError]](to as *Result[FileStat, IoError], statResult(status, code, buf));
-}
-
-fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.Output, IoError] {
-  if status != diag.outcomeDone {
-    return Err[process.Output, IoError](errorOf(diag.kindCall, status, code));
-  }
-  match run {
-    case var Some(owner) {
-      let part = *owner;
-      let out = part.(out);
-      out || Err[process.Output, IoError](IoError.aborted())
-    }
-    else {Err[process.Output, IoError](IoError.aborted())}
-  }
-}
-
-// A run's: the Output the pool's thread left in the record, or the error
-fn takeRun(p: *u8, to: *u8) {
-  let rec = dissolveTaken(p);
-  let core, ask = rec.(core, ask);
-  let status = core.status;
-  let code = core.code;
-  let run = ask.(run);
-  mem.writeRaw[Result[process.Output, IoError]](to as *Result[process.Output, IoError], runAnswer(status, code, run));
-}
-
-// What the process package answered, as this package's Result: the Output, or
-// the IoError of the number the system gave (the process package's, the
-// system's own: Windows' on Windows, the errno on Linux)
-fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Output, IoError] {
-  // (IoError is iocore's, which does not depend on process, so it can declare
-  // no 'from' for a ProcessError: 'mapError' makes the conversion here)
-  r.mapError(fn(e: process.ProcessError) IoError {IoError(e.code)})
-}
-
-// On a pool thread: the run's record is away, its run part this thread's
-// (iocore's THE BLOCKING POOL); 'arg' is the record. The program is run and
-// waited for, and its answer left in the record, which comes home with it
-fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
-  let rp = usize.from(arg) as *OpRec[Ask];
-  match &mut (*rp).ask.run {
-    case var &mut Some(owner) {
-      let part = &mut **owner;
-      var r: Result[process.Output, IoError];
-      if part.isLine {
-        r = runResult(process.runLine(part.line.view(), part.opts, &part.dir));
-      } else {
-        r = runResult(process.run(part.args.view(), part.opts, &part.dir));
-      }
-      part.out = Some[Result[process.Output, IoError]](r);
-      Outcome.Done(0usize)
-    }
-    else {Outcome.Failed(IoError.aborted().code)}
-  }
 }
 
 // What the records have done so far (opStats)
@@ -2293,6 +2230,34 @@ struct OpenFileJob {
     match lp.openFile(&path, access) {
       case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](newFile(ok)));}
       case let Err(e) {actors.answerNow[Result[File, IoError]](rp, Err[File, IoError](e));}
+    }
+  }
+}
+
+// A pipe end adopted on the I/O thread's Loop, which holds it
+struct AdoptPipeJob {
+  pub raw: usize;
+  pub reply: actors.Reply;
+
+  fn run(self, lp: &mut Loop) {
+    let raw, rp = self.(raw, reply);
+    match lp.adoptPipe(raw) {
+      case let Ok(ok) {actors.answerNow[Result[Pipe, IoError]](rp, Ok[Pipe, IoError](Pipe(ok)));}
+      case let Err(e) {actors.answerNow[Result[Pipe, IoError]](rp, Err[Pipe, IoError](e));}
+    }
+  }
+}
+
+// A child process adopted on the I/O thread's Loop
+struct AdoptChildJob {
+  pub raw: usize;
+  pub reply: actors.Reply;
+
+  fn run(self, lp: &mut Loop) {
+    let raw, rp = self.(raw, reply);
+    match lp.adoptChild(raw) {
+      case let Ok(ok) {actors.answerNow[Result[Child, IoError]](rp, Ok[Child, IoError](Child(ok)));}
+      case let Err(e) {actors.answerNow[Result[Child, IoError]](rp, Err[Child, IoError](e));}
     }
   }
 }
@@ -2619,6 +2584,109 @@ pub struct File is Move, Sendable {
   }
 }
 
+// One end of a pipe the I/O thread's Loop holds (iocore's PIPES): a child's standard output or error, as 'process.launch'
+// hands it back. It moves, and closes when it dies.
+pub struct Pipe is Move, Sendable {
+  h: Handle;
+
+  // A Pipe naming nothing, which closes nothing
+  pub fn none() Pipe {Pipe(Handle.none())}
+
+  pub fn isNone(self: &) bool {h.isNone()}
+
+  // The iocore handle it names, on the I/O thread's Loop
+  pub fn handle(self: &) Handle {h}
+
+  // What the pipe holds, at most buf's room, appended to buf, which is moved in and comes back in the answer; an
+  // answer whose buffer gained nothing is the end of the stream (the other end closed and all it wrote read). A buf
+  // with no room fails (InvalidInput). The pipe's own capacity is the back-pressure: a writer waits while nobody reads
+  pub fn read(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readIn(buf, IoLimits.none())
+  }
+
+  // A read ended if lim says so; then the buffer goes home to its pool
+  pub fn readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    let p = takeRec(opPipeRead, diag.kindPipeRead, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[IoBuf, IoError]](p)
+  }
+
+  // All of buf, which is moved in; buf comes back in the answer once written. A failed write's buffer goes home
+  pub fn write(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.writeIn(buf, IoLimits.none())
+  }
+
+  pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    let p = takeRec(opPipeWrite, diag.kindPipeWrite, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[IoBuf, IoError]](p)
+  }
+
+  // Ask every read (write) in flight on this pipe to end
+  pub fn cancelRead(self: &) {
+    cancelSide(h, false);
+  }
+
+  pub fn cancelWrite(self: &) {
+    cancelSide(h, true);
+  }
+
+  fn final(self: &uni) {
+    closeHandle(h);
+  }
+}
+
+// How a child ended: its exit code, and on Linux the signal that ended it (then the code is 0); the signal is 0
+// otherwise and always on Windows
+pub struct ChildExit {
+  pub code: u32;
+  pub signal: u32;
+}
+
+// A child process the I/O thread's Loop holds (iocore's CHILDREN): it moves, and closes when it dies.
+pub struct Child is Move, Sendable {
+  h: Handle;
+
+  pub fn none() Child {Child(Handle.none())}
+
+  pub fn isNone(self: &) bool {h.isNone()}
+
+  pub fn handle(self: &) Handle {h}
+
+  // The child's end, 'exited': Done when it has ended, with how. The child is waited for once: a second wait on the same
+  // Child fails (iocore's CHILDREN)
+  pub fn exited(self: &) actors.Awaitable[Result[ChildExit, IoError]] {
+    self.exitedIn(IoLimits.none())
+  }
+
+  // A wait ended if lim says so; the child itself goes on
+  pub fn exitedIn(self: &, lim: IoLimits) actors.Awaitable[Result[ChildExit, IoError]] {
+    let p = takeRec(opWaitChild, diag.kindWaitChild, h, lim);
+    recAwaitable[Result[ChildExit, IoError]](p)
+  }
+
+  // Ask the wait in flight to end
+  pub fn cancelWait(self: &) {
+    cancelSide(h, false);
+  }
+
+  fn final(self: &uni) {
+    closeHandle(h);
+  }
+}
+
+// A pipe end ('process.Child.takeStdout' and 'takeStderr') given to the I/O thread's Loop, which owns it from then on
+// (iocore's adoptPipe)
+pub fn adoptPipe(raw: usize) actors.Awaitable[Result[Pipe, IoError]] {
+  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(raw, actors.Reply()))
+}
+
+// A child process ('process.Child.takeProcess') given to the I/O thread's Loop (iocore's adoptChild: Windows' HANDLE is
+// the Loop's from then on, Linux's pid stays the caller's, the Loop owning a pidfd)
+pub fn adoptChild(raw: usize) actors.Awaitable[Result[Child, IoError]] {
+  awaitable[AdoptChildJob, Result[Child, IoError]](AdoptChildJob(raw, actors.Reply()))
+}
+
 // The file at path, opened as access says (the package's header, A FILE)
 pub fn openFile(path: &Path, access: Access) actors.Awaitable[Result[File, IoError]] {
   awaitable[OpenFileJob, Result[File, IoError]](OpenFileJob(path.clone(), access, actors.Reply()))
@@ -2740,17 +2808,202 @@ fn copyArgs(args: &Array[String]) List[String] {
   copy
 }
 
-// A child process's run as a record: a Call on the general lane whose work
-// (runWork) is handed the record itself, its run part the request
+// A run: started on the child's own pipes and exit wait (RunDriver)
 fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
-  let p = takeRec(opRun, diag.kindCall, Handle.none(), lim);
-  let a = &mut (*p).ask;
-  a.run = Some[Uni[RunPart]](Uni[RunPart](RunPart(isLine, String.from(line), args, opts, dir.clone(), None)));
-  let c = &mut (*p).core;
-  c.lane = Lane.general();
-  c.work = &runWork;
-  c.at = u64.from(p as usize);
-  recAwaitable[Result[process.Output, IoError]](p)
+  let drv = RunDriver(isLine, String.from(line), args, opts, dir.clone(), lim);
+  actors.Awaitable[Result[process.Output, IoError]].make(fn(rp: actors.ReplyOf[Result[process.Output, IoError]]) [drv] {
+    drv.go(rp);
+  })
+}
+
+// Collects one pipe of a run to its end, then hands the text to the driver
+actor RunReader {
+  pub async fn go(self, p: Pipe, which: u32, boss: RunDriver) {
+    var all = String();
+    var more = true;
+    while more {
+      let r = await p.read(IoBuf(65536usize));
+      match r {
+        case let Ok(b) {
+          if b.isEmpty() { more = false; } else { all.appendBytes(b.view()); }
+        }
+        case let Err(e) { more = false; }
+      }
+    }
+    boss.piece(which, all);
+  }
+}
+
+// A run on the new path (CHILD PROCESSES): 'process.launch', the pipes and the child adopted by the Loop, each pipe read
+// to its end by a RunReader, the exit awaited as an operation. No thread of the pool is held, so no count of children
+// is limited.
+actor RunDriver {
+  isLine: bool;
+  line: String;
+  args: List[String];
+  opts: process.Options;
+  dir: Path;
+  lim: IoLimits;
+  reply: Option[actors.ReplyOf[Result[process.Output, IoError]]];
+  outText: Option[String];
+  errText: Option[String];
+  exit: Option[ChildExit];
+  timedOut: bool;
+  proc: Option[process.Child];
+
+  pub fn init(self: &new, isLine: bool, line: String, args: List[String], opts: process.Options, dir: Path, lim: IoLimits) {
+    *self = Self(isLine: isLine, line: line, args: args, opts: opts, dir: dir, lim: lim,
+      reply: None[actors.ReplyOf[Result[process.Output, IoError]]], outText: None[String], errText: None[String],
+      exit: None[ChildExit], timedOut: false, proc: None[process.Child]);
+  }
+
+  pub async fn go(self, rp: actors.ReplyOf[Result[process.Output, IoError]]) {
+    reply = Some[actors.ReplyOf[Result[process.Output, IoError]]](rp);
+    var launched: Result[process.Child, process.ProcessError];
+    if isLine { launched = process.launchLine(line.view(), opts, &dir); }
+    else { launched = process.launch(args.view(), opts, &dir); }
+    match launched {
+      case let Err(e) { self.answer(Err[process.Output, IoError](IoError(e.code))); }
+      case var Ok(c) {
+        // As ChildStages.start: the pipes first and the process last, so that a failure leaves the child with 'c', whose
+        // drop kills and reaps it
+        var out = Pipe.none();
+        var err = Pipe.none();
+        var child = Child.none();
+        var bad = None[IoError];
+        if !opts.inherit {
+          let po = await adoptPipe(c.takeStdout());
+          let pe = await adoptPipe(c.takeStderr());
+          match po {
+            case var Ok(p) { out <-> p; }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+          match pe {
+            case var Ok(p) { err <-> p; }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+        }
+        var pipesOk = true;
+        match &bad {
+          case let &Some(_) { pipesOk = false; }
+          case is None {}
+        }
+        if pipesOk {
+          var raw = 0usize;
+          #if #os == .windows {
+            raw = c.takeProcess();
+          } #else {
+            raw = usize.from(c.pid());
+          }
+          let ch = await adoptChild(raw);
+          match ch {
+            case var Ok(x) {
+              child <-> x;
+              #if #os != .windows {
+                _ = c.takeProcess();
+              }
+            }
+            case let Err(e) { bad = Some[IoError](e); }
+          }
+        }
+        match bad {
+          case let Some(e) {
+            c.kill();
+            self.answer(Err[process.Output, IoError](e));
+            return;
+          }
+          case is None {}
+        }
+        proc = Some[process.Child](c);
+        if opts.inherit {
+          outText = Some[String](String());
+          errText = Some[String](String());
+        } else {
+          let r1 = RunReader();
+          r1.go(out, 0u32, selfactor.clone());
+          let r2 = RunReader();
+          r2.go(err, 1u32, selfactor.clone());
+        }
+        // The tighter of the caller's deadline and the Options' timeout ends the wait
+        var deadline = lim.deadline;
+        var byTimeout = false;
+        if opts.timeout.nanos() > 0i64 {
+          let t = Instant.now() + opts.timeout;
+          if t <= deadline { deadline = t; byTimeout = true; }
+        }
+        let w = await child.exitedIn(IoLimits(lim.group.clone(), deadline));
+        match w {
+          case let Ok(x) { exit = Some[ChildExit](x); }
+          case let Err(e) {
+            self.killChild();
+            if byTimeout && e.isTimedOut() {
+              // process.run's own timeout: the child stopped, what it wrote kept, exit code 1
+              timedOut = true;
+              let w2 = await child.exited();
+              match w2 {
+                case let Ok(x) { exit = Some[ChildExit](x); }
+                case let Err(e2) { self.answer(Err[process.Output, IoError](e2)); return; }
+              }
+            } else {
+              // the caller's cancel or deadline: answered at once, the child ended and waited for
+              self.answer(Err[process.Output, IoError](e));
+              let w3 = await child.exited();
+              return;
+            }
+          }
+        }
+        self.check();
+      }
+    }
+  }
+
+  // A pipe is read to its end
+  pub async fn piece(self, which: u32, text: String) {
+    if which == 0u32 { outText = Some[String](text); } else { errText = Some[String](text); }
+    self.check();
+  }
+
+  fn killChild(self) {
+    match &proc {
+      case let &Some(c) { c.kill(); }
+      case is None {}
+    }
+  }
+
+  // The exit is known and both pipes are read: the Output is answered, once
+  fn check(self) {
+    var ex = ChildExit(0u32, 0u32);
+    match &exit {
+      case let &Some(x) { ex = ChildExit(x.code, x.signal); }
+      case is None { return; }
+    }
+    var so = String();
+    var se = String();
+    var haveOut = false;
+    var haveErr = false;
+    match &outText { case let &Some(_) { haveOut = true; } case is None {} }
+    match &errText { case let &Some(_) { haveErr = true; } case is None {} }
+    if !haveOut || !haveErr { return; }
+    var o = None[String];
+    o <-> outText;
+    var e = None[String];
+    e <-> errText;
+    match o { case let Some(s) { so = s; } case is None {} }
+    match e { case let Some(s) { se = s; } case is None {} }
+    var code = ex.code;
+    if timedOut { code = 1u32; } else if ex.signal != 0u32 { code = 128u32 + ex.signal; }
+    self.answer(Ok[process.Output, IoError](process.Output(code, ex.signal, timedOut, so, se)));
+  }
+
+  fn answer(self, r: Result[process.Output, IoError]) {
+    var rp = None[actors.ReplyOf[Result[process.Output, IoError]]];
+    rp <-> reply;
+    match rp {
+      case let Some(x) { x.answer(r); }
+      case is None {}
+    }
+    proc = None[process.Child];
+  }
 }
 
 // Runs args[0] with the rest as its arguments, in the folder dir (the current
@@ -2765,10 +3018,9 @@ pub fn run(args: &Array[String], opts: process.Options = process.Options(), dir:
   runAwaitable(false, "", copyArgs(args), opts, dir, IoLimits.none())
 }
 
-// A run ended if lim says so: a job still queued for a thread is taken out
-// (Cancelled, TimedOut), and one running is answered when it ends, or, for a
-// deadline, TimedOut at once with the child left running (set 'opts.timeout' to
-// stop it)
+// A run ended if lim says so: Cancelled or TimedOut at once, the child and
+// everything it started stopped (the package's header, CHILD PROCESSES, for the
+// 'crashReport: false' run, which is queued and not stopped)
 pub fn runIn(args: &Array[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
   runAwaitable(false, "", copyArgs(args), opts, dir, lim)
 }

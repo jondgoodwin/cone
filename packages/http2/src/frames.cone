@@ -26,6 +26,7 @@ mod frames;
 
 import collections use List, String;
 import iobuf use IoBuf, Chain;
+import streams;
 
 // ---------------------------------------------------------------------------
 // The numbers RFC 9113 fixes
@@ -237,17 +238,19 @@ pub struct FrameHeader {
   // The header at the start of b (at least nine bytes), the reserved bit
   // ignored, as section 4.1 asks
   pub fn read(b: &Array[u8]) FrameHeader {
-    FrameHeader((usize.from(b[0usize]) << 16usize) | (usize.from(b[1usize]) << 8usize) | usize.from(b[2usize]),
-      b[3usize], b[4usize], readU32(b, 5usize) & maxStreamId)
+    var c = streams.ByteCursor.over(b);
+    let length = c.getUintBE(3usize).unwrap();
+    let kind = c.getByte().unwrap();
+    let flags = c.getByte().unwrap();
+    let stream = c.getBE[u32]().unwrap();
+    FrameHeader(usize.from(length), kind, flags, stream & maxStreamId)
   }
 
   // The header at the start of a Chain's unconsumed bytes (at least nine)
   pub fn peek(c: &Chain) FrameHeader {
-    let len = (usize.from(c.byteAt(0usize)) << 16usize) | (usize.from(c.byteAt(1usize)) << 8usize) |
-      usize.from(c.byteAt(2usize));
-    let s = (u32.from(c.byteAt(5usize)) << 24u32) | (u32.from(c.byteAt(6usize)) << 16u32) |
-      (u32.from(c.byteAt(7usize)) << 8u32) | u32.from(c.byteAt(8usize));
-    FrameHeader(len, c.byteAt(3usize), c.byteAt(4usize), s & maxStreamId)
+    var nine = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    _ = c.copyOut(0usize, &mut nine);
+    FrameHeader.read(&nine)
   }
 
   // Write it into the first nine bytes of out, the reserved bit clear
@@ -263,20 +266,19 @@ pub struct FrameHeader {
   fn has(self: &, flag: u8) bool {(flags & flag) != 0u8}
 }
 
-fn readU16(b: &Array[u8], at: usize) u16 {
-  (u16.from(b[at]) << 8u16) | u16.from(b[at + 1usize])
-}
-
-fn readU32(b: &Array[u8], at: usize) u32 {
-  (u32.from(b[at]) << 24u32) | (u32.from(b[at + 1usize]) << 16u32) |
-    (u32.from(b[at + 2usize]) << 8u32) | u32.from(b[at + 3usize])
-}
-
 fn writeU32(b: &mut Array[u8], at: usize, v: u32) {
   b[at] = u8.from(v >> 24u32);
   b[at + 1usize] = u8.from((v >> 16u32) & 0xFFu32);
   b[at + 2usize] = u8.from((v >> 8u32) & 0xFFu32);
   b[at + 3usize] = u8.from(v & 0xFFu32);
+}
+
+// The big-endian number at offset 'at' of a payload whose length the caller
+// has checked: a panic if it is not there
+fn readU32(b: &Array[u8], at: usize) u32 {
+  let rest = &b[at ..< b.len];
+  var c = streams.ByteCursor.over(rest);
+  c.getBE[u32]().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,10 +427,11 @@ fn blockStart(h: FrameHeader, p: &Array[u8]) Result[BlockStart, FrameError] {
 // A SETTINGS frame's parameters, each checked (section 6.5.2; RFC 8441,
 // section 3; RFC 9218, section 2.1), appended to values
 fn parseSettings(p: &Array[u8], client: bool, values: &mut List[Setting]) Option[FrameError] {
-  var i = 0usize;
-  while i < p.len {
-    let id = readU16(p, i);
-    let v = readU32(p, i + 2usize);
+  var cur = streams.ByteCursor.over(p);
+  while !cur.isEmpty() {
+    // The payload is a multiple of 6 bytes (checked with the length)
+    let id = cur.getBE[u16]().unwrap();
+    let v = cur.getBE[u32]().unwrap();
     if id == settingEnablePush {
       if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH other than 0 or 1"));}
       if client && v == 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH of 1 from a server"));}
@@ -444,7 +447,6 @@ fn parseSettings(p: &Array[u8], client: bool, values: &mut List[Setting]) Option
       if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_NO_RFC7540_PRIORITIES other than 0 or 1"));}
     }
     values.push(Setting(id, v));
-    i = i + 6usize;
   }
   None
 }
@@ -469,13 +471,17 @@ fn parseControl(h: FrameHeader, p: &Array[u8], client: bool) Result[Frame, Frame
     return Ok[Frame, FrameError](Frame.Settings(h.has(flagAck), values));
   }
   if h.kind == typePing {
-    let d = (u64.from(readU32(p, 0usize)) << 32u64) | u64.from(readU32(p, 4usize));
+    var c = streams.ByteCursor.over(p);
+    let d = c.getBE[u64]().unwrap();
     return Ok[Frame, FrameError](Frame.Ping(h.has(flagAck), d));
   }
   if h.kind == typeGoAway {
+    var c = streams.ByteCursor.over(p);
+    let last = c.getBE[u32]().unwrap();
+    let code = c.getBE[u32]().unwrap();
     var debug = List[u8]();
-    appendBytes(&mut debug, &p[8usize ..< p.len]);
-    return Ok[Frame, FrameError](Frame.GoAway(readU32(p, 0usize) & maxStreamId, ErrorCode.of(readU32(p, 4usize)), debug));
+    debug.appendSlice(c.getBytes(c.remaining()).unwrap());
+    return Ok[Frame, FrameError](Frame.GoAway(last & maxStreamId, ErrorCode.of(code), debug));
   }
   // WINDOW_UPDATE (section 6.9): an increment of 0 is an error of the
   // window it names
@@ -828,39 +834,38 @@ const packSize = 4096usize;               // a packing buffer's room: the pool's
 // Frames in, buffers out, for one direction of one connection (see the
 // package's header, THE WRITER)
 pub struct FrameWriter {
-  out: Chain;                 // the buffers ready, in order
-  pack: IoBuf;                // the buffer headers and small payloads are packed into; empty when none
+  w: streams.Writer;          // the frames' bytes, packed into the pool's buffers (streams' fallible Writer)
   peerMax: usize;             // the peer's SETTINGS_MAX_FRAME_SIZE
   maxControl: usize;          // maxQueuedControlFrames
   control: usize;             // control frames queued since the last take
-  starved: bool;              // the pool refused a packing buffer (iobuf's tryMake): what is written after is dropped, and the connection fails
 
   pub fn make(cfg: &FrameConfig) FrameWriter {
-    FrameWriter(out: Chain.make(noBound), pack: IoBuf(), peerMax: defaultMaxFrameSize,
-      maxControl: cfg.maxQueuedControlFrames, control: 0usize, starved: false)
+    FrameWriter(w: streams.Writer.tryEmpty(packSize), peerMax: defaultMaxFrameSize,
+      maxControl: cfg.maxQueuedControlFrames, control: 0usize)
   }
 
   // Whether the pool refused a buffer to pack into: the frames since are not
   // all there, so the connection can only end
-  pub fn isStarved(self: &) bool {starved}
+  pub fn isStarved(self: &) bool {w.starved()}
 
   // The peer's SETTINGS_MAX_FRAME_SIZE arrived (the reader has checked it)
   pub fn setPeerMaxFrameSize(self: &mut, n: usize) {peerMax = n;}
   pub fn peerMaxFrameSize(self: &) usize {peerMax}
 
   // The bytes queued, and the control frames among them
-  pub fn queuedBytes(self: &) usize {out.len() + pack.len()}
+  pub fn queuedBytes(self: &) usize {w.len()}
   pub fn queuedControlFrames(self: &) usize {control}
 
   // Every buffer queued, moved out at once as a Chain, in order, for one
-  // gather write; an empty Chain when none
+  // gather write; an empty Chain when none, and when the pool has refused a
+  // buffer (the frames are not all there: they go back to the pool and the
+  // connection can only end)
   pub fn take(self: &mut) Chain {
-    self.flush();
-    // The queue is taken whole: empty is what it is next
-    var all = Chain.make(noBound);
-    all <-> out;
     control = 0usize;
-    all
+    match w.tryFinish() {
+      case let Some(all) {all}
+      else {Chain.make(noBound)}
+    }
   }
 
   // A DATA frame: its header packed, then 'data' itself, moved in whole as a
@@ -1024,75 +1029,21 @@ pub struct FrameWriter {
   }
 
   fn header(self: &mut, length: usize, kind: u8, flags: u8, stream: u32) {
-    if !self.room(frameHeaderLen) {return;}
-    let at = pack.len();
-    FrameHeader(length, kind, flags, stream).write(&mut pack.spare()[0usize ..< frameHeaderLen]);
-    pack.setLen(at + frameHeaderLen);
+    // The 24-bit length, the type, the flags, the stream with its reserved bit clear
+    w.putUintBE(u64.from(length), 3usize);
+    w.putBE[u8](kind);
+    w.putBE[u8](flags);
+    w.putBE[u32](stream & maxStreamId);
   }
 
-  fn byte(self: &mut, b: u8) {
-    if !self.room(1usize) {return;}
-    let at = pack.len();
-    let s = pack.spare();
-    s[0usize] = b;
-    pack.setLen(at + 1usize);
-  }
+  fn byte(self: &mut, b: u8) {w.putByte(b);}
 
-  fn u32be(self: &mut, v: u32) {
-    if !self.room(4usize) {return;}
-    let at = pack.len();
-    writeU32(pack.spare(), 0usize, v);
-    pack.setLen(at + 4usize);
-  }
+  fn u32be(self: &mut, v: u32) {w.putBE[u32](v);}
 
-  fn bytes(self: &mut, b: &Array[u8]) {
-    if b.len == 0usize {return;}
-    if !self.room(b.len) {return;}
-    _ = pack.append(b);
-  }
+  fn bytes(self: &mut, b: &Array[u8]) {w.put(b);}
 
-  fn zeros(self: &mut, n: usize) {
-    if n == 0usize {return;}
-    if !self.room(n) {return;}
-    let at = pack.len();
-    let s = pack.spare();
-    var i = 0usize;
-    while i < n {
-      s[i] = 0u8;
-      i = i + 1usize;
-    }
-    pack.setLen(at + n);
-  }
+  fn zeros(self: &mut, n: usize) {w.repeat(0u8, n);}
 
   // A buffer of the caller's, a segment of its own after what is packed
-  fn segment(self: &mut, buf: IoBuf) {
-    self.flush();
-    _ = out.push(buf);
-  }
-
-  // Room for n more bytes in the packing buffer: when it has too little,
-  // it goes to the queue and a new one is begun. False once the pool has refused
-  // that buffer (iobuf's tryMake), and from then on: nothing more is packed
-  fn room(self: &mut, n: usize) bool {
-    if starved {return false;}
-    if pack.room() >= n {return true;}
-    self.flush();
-    let got = match IoBuf.tryMake(if n > packSize {n} else {packSize}) {
-      case var Some(b) {b}
-      else {
-        starved = true;
-        return false;
-      }
-    };
-    pack = got;
-    true
-  }
-
-  // The packing buffer to the queue; until the next byte, there is none
-  fn flush(self: &mut) {
-    if pack.len() == 0usize {return;}
-    var p = IoBuf();
-    p <-> pack;
-    _ = out.push(p);
-  }
+  fn segment(self: &mut, buf: IoBuf) {w.putBuf(buf);}
 }

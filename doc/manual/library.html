@@ -92,7 +92,11 @@ fn main() {
 		bool or char as the value it lends, and any value with a <span class="pre">toText</span>
 		(<a href="lib-string.html#totext">Writing a value as text</a>). A send statement is one record, written whole:
 		output from several threads never tears a line. Standard output is held in the console's own buffer when it is a
-		file or a pipe; <span class="pre">print.flush()</span> writes it out before another program writes to the same place.</td></tr>
+		file or a pipe; <span class="pre">print.flush()</span> writes it out before another program writes to the same place.
+		<strong>A write to standard output whose reader has gone</strong> (a pipe nobody reads any more: <span class="pre">prog | head</span>)
+		ends the program at once and quietly, with exit status 141 on both systems (128 plus SIGPIPE, what the signal gives a shell): no
+		message, nothing more written. Where SIGPIPE is ignored (a program that uses the asynchronous I/O pipes ignores it) this is what
+		keeps that meaning; elsewhere the signal itself ends the program as always. A failed write to standard error is dropped.</td></tr>
 	<tr><td><span class="pre">libc</span><br><span class="pre">import libc;</span></td><td>The ISO C library as C
 		spells it: C names, C types, errors as C reports them. A raw layer for programs that call C; the
 		packages below wrap it.</td></tr>
@@ -166,6 +170,11 @@ fn main() {
 		<td>Logging and tracing's facade: a package declares kinds of event and emits them through macros that cost
 		a load and a compare while nothing wants them; a program installs a sink and chooses targets and levels, in
 		code or with <span class="pre">CONE_TRACE</span> (<a href="lib-trace.html">Logging and Tracing</a>).</td></tr>
+	<tr><td><span class="pre">logsink</span><br><span class="pre">import logsink;</span></td>
+		<td>A console sink for <span class="pre">trace</span>: one text line an event on standard output, with an
+		RFC 3339 UTC time, the level, the target, the text and the fields as <span class="pre">name=value</span>, kept
+		whole under many threads and beside the actors console owner
+		(<a href="lib-logsink.html">The Console Log Sink</a>).</td></tr>
 	</table>
 
 	<h3 id="files">Files, paths, environment and processes</h3>
@@ -194,10 +203,12 @@ fn main() {
 	<tr><td><span class="pre">calendar</span><br><span class="pre">import calendar;</span></td>
 		<td>Civil dates and times over a <span class="pre">Timestamp</span>, RFC 3339 and HTTP date text, and a time zone's
 			offset at an instant, from a TZif file's bytes.</td></tr>
+	<tr><td><span class="pre">zonedata</span><br><span class="pre">import zonedata;</span></td>
+		<td>A calendar <span class="pre">Zone</span> from the machine: by IANA name from the zoneinfo files, and the machine&#39;s own zone.</td></tr>
 	<tr><td><span class="pre">timewheel</span><br><span class="pre">import timewheel use *;</span></td>
 		<td>Timers that cost almost nothing to arm and cancel, for the I/O loop.</td></tr>
 	</table>
-	<p>All three are on <a href="lib-time.html">their own page</a>.</p>
+	<p>The first three are on <a href="lib-time.html">their own page</a>.</p>
 
 	<h3 id="asyncio">Asynchronous I/O</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
@@ -648,6 +659,66 @@ fn main() i32 {
 </pre>
 	<p>prints <span class="pre">1 -3</span> on every machine.</p>
 
+	<h3 id="bigintpkg">Big integers</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">bigint</span><br><span class="pre">import bigint;</span></td>
+		<td>Whole numbers of any size. This first release holds <span class="pre">BigUint</span>, an unsigned
+		magnitude; the signed <span class="pre">BigInt</span> and faster multiplication come later. Written in Cone,
+		with no C library and no call to the OS.</td></tr>
+	</table>
+
+	<h3 id="bigint">bigint</h3>
+	<p>A <span class="pre">BigUint</span> owns its limbs (<span class="pre">u64</span> digits in a
+		<span class="pre">List</span>, least significant first, with no zero limb at the top) and every method
+		borrows its operands and answers a new value. Operators wait for operator methods, so the arithmetic is named:
+		<span class="pre">add(&amp;o)</span>, <span class="pre">mul(&amp;o)</span> (schoolbook),
+		<span class="pre">mulSmall(word)</span>, <span class="pre">shiftLeft(bits)</span> and
+		<span class="pre">shiftRight(bits)</span> answer a <span class="pre">BigUint</span>.
+		<span class="pre">sub(&amp;o)</span> answers a <span class="pre">Result[BigUint, BigUintError]</span>: a result
+		below zero is the error <span class="pre">Underflow</span>, never a wrapped number.
+		<span class="pre">divmod(&amp;d)</span> answers a <span class="pre">QuotRem</span> (fields
+		<span class="pre">quot</span> and <span class="pre">rem</span>) and <span class="pre">divmodSmall(word)</span> a
+		<span class="pre">QuotRemWord</span> (the remainder a <span class="pre">u64</span>); a zero divisor is
+		<span class="pre">DivideByZero</span>. A <span class="pre">BigUint</span> is <span class="pre">Eq</span>,
+		<span class="pre">Ordered</span> (<span class="pre">cmp</span>), <span class="pre">Hash</span> (so a
+		<span class="pre">Dict</span> key) and <span class="pre">Clone</span>.</p>
+	<p>Text: <span class="pre">BigUint.parse(text)</span> reads base 10, <span class="pre">parseHex(text)</span> base 16
+		and <span class="pre">parseBase(text, base)</span> any base from 2 to 36; digits only, so a sign, a prefix,
+		a space or nothing at all is an error that says its kind and, for a bad character, its byte offset.
+		<span class="pre">String() &lt;- n</span> writes base 10; <span class="pre">n.toTextBase(&amp;uni s.textOut(), base)</span> writes
+		another base. Also <span class="pre">zero()</span>, <span class="pre">one()</span>, <span class="pre">fromU64</span>,
+		<span class="pre">fromLimbs</span>, <span class="pre">toU64</span> (an <span class="pre">Option</span>),
+		<span class="pre">isZero</span>, <span class="pre">bitLen</span> and <span class="pre">limbView</span>.
+		Division is Knuth's Algorithm D on 32-bit digits; text conversion in both directions is quadratic. The
+		package's header lists each choice and what was left out; the tests carry 2<sup>521</sup>&minus;1, 100! and
+		random identities up to 4096 bits.</p>
+	<p><span class="pre">mul</span> is Karatsuba from 64 limbs up, schoolbook below. <span class="pre">BigInt</span> is a sign
+		and a <span class="pre">BigUint</span> magnitude (zero is never negative) with the same methods: <span class="pre">sub</span>
+		never fails; <span class="pre">divmod</span> truncates toward zero like Rust's <span class="pre">/</span> and
+		<span class="pre">%</span> (the remainder takes the dividend's sign); <span class="pre">divEuclid</span> and
+		<span class="pre">remEuclid</span> give a remainder from 0 up to the divisor's magnitude; text accepts and writes a
+		leading <span class="pre">-</span>.</p>
+<pre>
+mod factorial;
+
+import stdio use *;
+import collections use *;
+import bigint;
+
+fn main() i32 {
+  var f = bigint.BigUint.one();
+  var i = 2u64;
+  while i &lt;= 25u64 { f = f.mulSmall(i); i = i + 1u64; }
+  var s = String();
+  s &lt;- f;
+  printStr(s.view());
+  printStr("\n");
+  0i32
+}
+</pre>
+	<p>prints <span class="pre">15511210043330985984000000</span>.</p>
+
 	<h3 id="binarytextpkg">Bytes as text: base64 and hex</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -697,8 +768,8 @@ fn main() i32 {
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
 	<tr><td><span class="pre">cryptohash</span><br><span class="pre">import cryptohash;</span></td>
-		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, and a constant-time
-		comparison for MACs. A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
+		<td>SHA-256, SHA-512 and SHA-1 (legacy, not for new security uses), HMAC over each, a constant-time
+		comparison for MACs, and key derivation over HMAC-SHA-256 (PBKDF2 and HKDF). A hasher is a value fed with <span class="pre">update</span>; one call hashes a whole
 		message. Written in Cone with no C library; the same bytes on Windows and Linux; checked against NIST's
 		and the RFCs' published vectors. Not a password hash.</td></tr>
 	</table>
@@ -720,7 +791,13 @@ fn main() i32 {
 		for one call; <span class="pre">verify(tag)</span> compares a received tag with the right one in constant time
 		(<span class="pre">constantTimeEq(a, b)</span> does it for any two byte strings). SHA-1 collisions can
 		be made: use it only for a format that names it. The package's header lists each method chosen and what was
-		left out, and what the compiler could still do to the constant-time loop.</p>
+		left out, and what the compiler could still do to the constant-time loop.
+		<span class="pre">pbkdf2Sha256(password, salt, iterations, out)</span> and
+		<span class="pre">hkdfSha256(salt, ikm, info, out)</span> fill the caller's buffer <span class="pre">out</span> (any length
+		up to the RFC's limit) and answer a <span class="pre">Result[void, &amp;str]</span>: <span class="pre">Err</span>, with the
+		buffer unwritten, for a request the RFC forbids (zero iterations, too long an output; a dropped Result is warned about).
+		They are not constant-time
+		beyond what HMAC already is, and the <span class="pre">trust</span> design may revisit that.</p>
 <pre>
 mod digest;
 
@@ -784,6 +861,14 @@ fn main() i32 {
 		(over <span class="pre">stages</span> and this package), which hands each entry to a sink of its own; an archive
 		written to a file without blocking a worker is <span class="pre">saveTo</span> in the same package, over
 		<span class="pre">ZipSource</span> and <span class="pre">stageio</span>.</td></tr>
+	<tr><td><span class="pre">tarfile</span><br><span class="pre">import tarfile;</span></td>
+		<td>tar archives (POSIX ustar, and the ustar archives GNU tar makes) read as their bytes arrive, entry by entry,
+		each entry's data coming out in pieces as big as the buffer given and never as a whole copy, and written
+		entry by entry (files and folders, a long name through the prefix field). PAX extended headers are read for
+		<span class="pre">path</span> and <span class="pre">size</span> only; any other record, GNU long names,
+		hard links, devices and base-256 numbers are refused with a reason, never guessed at. No compression: a
+		<span class="pre">.tar.gz</span> goes through <span class="pre">deflate</span>'s gzip inflater first. Over
+		<span class="pre">streams</span> and <span class="pre">iobuf</span>; <a href="#tarfile">tarfile</a> below.</td></tr>
 	<tr><td><span class="pre">zstd</span><br><span class="pre">import zstd;</span></td>
 		<td>Zstandard (RFC 8878) decompressed (every frame and block form, skippable frames, the content checksum,
 		a raw-content dictionary, a window limit) and compressed at levels 1 to 3 (the reference's fast and
@@ -849,6 +934,75 @@ fn main() i32 {
 <pre>
 88 bytes became 72 as a gzip file
 the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog
+</pre>
+
+	<h3 id="tarfile">tarfile</h3>
+	<p>A <span class="pre">TarReader</span> works through an archive from its front, as a codec of
+		<span class="pre">streams</span> does: bytes in with <span class="pre">feed</span> (a copy, split anywhere) or
+		<span class="pre">feedBuf</span> (a filled <span class="pre">IoBuf</span>, taken as it is),
+		<span class="pre">finish</span> when no more will come, and <span class="pre">pull(&amp;mut buf)</span> to get on.
+		The answer is a <span class="pre">Step</span>: <span class="pre">Begin</span> (an entry's header was read;
+		<span class="pre">current()</span> gives its <span class="pre">name</span>, <span class="pre">kind</span>
+		(<span class="pre">File</span>, <span class="pre">Dir</span> or <span class="pre">Symlink</span>),
+		<span class="pre">size</span>, <span class="pre">mode</span>, <span class="pre">mtime</span> and symlink
+		<span class="pre">link</span>), <span class="pre">Data</span> (some of its data was appended to the buffer's spare room,
+		at most as much as that holds), <span class="pre">End</span>, <span class="pre">NeedInput</span>,
+		<span class="pre">Done</span> or <span class="pre">Failed</span>, after which <span class="pre">error()</span> holds a
+		<span class="pre">TarError</span> with a <span class="pre">kind</span>, the archive offset and a
+		<span class="pre">reason</span>. Every header's checksum is checked. An archive cut inside a header, an entry's
+		data or its padding is <span class="pre">Truncated</span>; one cut between entries reads as complete, as GNU tar
+		reads it. Names are given as stored and may be absolute or contain <span class="pre">..</span>: nothing here
+		extracts, so code that writes entries to disk must check each name first, or an archive can write outside
+		the folder it is unpacked into.</p>
+	<p>A <span class="pre">TarWriter</span> takes entries whole, <span class="pre">add(name, data, &amp;opts)</span> and
+		<span class="pre">addDir(name, &amp;opts)</span>, with an <span class="pre">EntryOptions</span> (mode and
+		modification time), and <span class="pre">finish()</span>; <span class="pre">pull(&amp;mut buf, max)</span> hands out
+		what has been made, so pull after each add and an archive of many files is never held. A name over 100 bytes goes
+		through the prefix field, split at the last <span class="pre">/</span> that leaves at most 155 and 100 bytes; one that
+		cannot be split so is refused (<span class="pre">BadArgument</span>), never shortened. An entry over 16 MiB is
+		<span class="pre">TooLarge</span>, because <span class="pre">add</span> copies the entry whole; an
+		<span class="pre">add</span> that takes the size first and the data in pieces is not built yet. For the same entries the bytes are those GNU tar makes with
+		<span class="pre">--format=ustar</span>.</p>
+<pre>
+mod tour;
+
+import stdio use *;
+import iobuf use IoBuf;
+import tarfile;
+
+fn addAll(w: &amp;mut tarfile.TarWriter) Result[void, tarfile.TarError] {
+  w.addDir("docs", &amp;tarfile.EntryOptions.plain())?;
+  w.add("docs/readme.txt", "hello", &amp;tarfile.EntryOptions.plain())?;
+  Ok[void, tarfile.TarError](nil)
+}
+
+fn main() i32 {
+  var w = tarfile.TarWriter.make();
+  match addAll(&amp;mut w) {
+    case let Err(e) { printStr(e.reason.view()); return 1i32; }
+    case let Ok(v) {}
+  }
+  w.finish();
+  var archive = IoBuf(65536usize);
+  _ = w.pull(&amp;mut archive, 65536usize);
+
+  var tar = tarfile.TarReader.make();
+  tar.feed(archive.view());
+  tar.finish();
+  var out = IoBuf(4096usize);
+  while true {
+    let s = tar.pull(&amp;mut out);
+    if s == tarfile.Step.Begin { printStr(tar.current().name.view()); printStr("\n"); }
+    else if s == tarfile.Step.Data { out.clear(); }
+    else if s == tarfile.Step.Done || s == tarfile.Step.Failed { break; }
+  }
+  0i32
+}
+</pre>
+	<p>prints:</p>
+<pre>
+docs/
+docs/readme.txt
 </pre>
 
 	<h3 id="llmpkg">Language models: weights and layers</h3>

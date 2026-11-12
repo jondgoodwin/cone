@@ -13,6 +13,10 @@
 // - the hook the program set with core's 'setPanicHook', if any, is called
 //   with the message and the location. It runs after the line is written, so
 //   a hook that fails cannot lose the report;
+// - if the console's owner could not finish writing what the program printed
+//   (its destination stalled for 500 ms, or the wait passed 10 s), the last
+//   line to stderr says how many lines were dropped: 'console: N lines were
+//   queued but not written' (stdio.cone's op 2);
 // - the program ends through the C library's 'abort': SIGABRT, or on Windows
 //   a fail-fast (exit status 0xC0000409), where a debugger stops. Nothing
 //   unwinds, and no finalizer runs.
@@ -52,7 +56,7 @@ pub fn cone_setPanicHook(hook: Hook) {
 
 pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
   let file = fileBytes as &str;
-  consoleFlushForPanic();
+  consoleFlushForAbort();
   libc.fflush(libc.stdout());
   var out = newText(libc.stderr());
   if panicking {
@@ -65,6 +69,7 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
     out.text("\n");
     out.write();
     libc.fflush(libc.stderr());
+    consoleReportForPanic();
     libc.abort();
   }
   panicking = true;
@@ -92,9 +97,11 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
     let call = hook as Hook;
     call(msg, file, line);
   }
-  consoleFlushForPanic();
+  consoleFlushForAbort();
   libc.fflush(libc.stdout());
   libc.fflush(libc.stderr());
+  // If the console's wait gave up with lines unwritten, the last line says so
+  consoleReportForPanic();
   libc.abort()
 }
 
@@ -156,6 +163,15 @@ pub fn cone_panicAlloc(size: usize, file: *u8, filelen: usize, line: u32) Never 
   msg.text("out of memory allocating ");
   msg.decimal(u64.from(size));
   msg.text(" bytes");
+  cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line)
+}
+
+// A block was asked for with an alignment that is not a power of two
+pub fn cone_panicAlign(align: usize, file: *u8, filelen: usize, line: u32) Never {
+  var msg = newText(null);
+  msg.text("alignment ");
+  msg.decimal(u64.from(align));
+  msg.text(" is not a power of two");
   cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line)
 }
 

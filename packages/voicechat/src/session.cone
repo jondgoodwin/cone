@@ -86,14 +86,6 @@ fn containsLetter(s: &str) bool {
   false
 }
 
-fn bytesOf(s: &str) List[u8] {
-  var out = List[u8]();
-  let b: &Array[u8] = s;
-  var i = 0usize;
-  while i < b.len { out.push(b[i]); i = i + 1usize; }
-  out
-}
-
 // The ids that open a user turn: what closes the reply before it (when there was one), <|im_start|> and "user\n". The
 // turn's words and its end (`tailTokens`) follow. Together they are what `ModelTokens.userTurn` makes; the text is
 // encoded apart from "user\n", which the pre-tokenizer does anyway (a newline never joins the letters after it).
@@ -105,8 +97,7 @@ pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
     while i < c.len() { out.push(*c[i]); i = i + 1usize; }
   }
   out.push(vocab.imStart);
-  let user = bytesOf("user\n");
-  vocab.text(user.view(), &mut out);
+  vocab.text("user\n", &mut out);
   out
 }
 
@@ -114,16 +105,13 @@ pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
 pub fn tailTokens(vocab: &llmrun.ModelTokens) List[u32] {
   var out = List[u32]();
   out.push(vocab.imEnd);
-  let nl = bytesOf("\n");
-  let nn = bytesOf("\n\n");
-  let assistant = bytesOf("assistant\n");
-  vocab.text(nl.view(), &mut out);
+  vocab.text("\n", &mut out);
   out.push(vocab.imStart);
-  vocab.text(assistant.view(), &mut out);
+  vocab.text("assistant\n", &mut out);
   out.push(vocab.think);
-  vocab.text(nn.view(), &mut out);
+  vocab.text("\n\n", &mut out);
   out.push(vocab.thinkEnd);
-  vocab.text(nn.view(), &mut out);
+  vocab.text("\n\n", &mut out);
   out
 }
 
@@ -141,10 +129,41 @@ fn newConversation(engine: &mut llmrun.Engine, device: &mut Device, vocab: &llmr
   Ok[void, String](nil)
 }
 
-// A sentence said: where in the cache it ends and where in the speaker's stream its sound ends
+// A sentence said: where in the cache it ends and where in the speaker's stream its sound ends (in blocks handed to
+// `Talk`, its flush point included)
 struct Mark {
   pos: usize;
-  endSample: usize;
+  endBlock: u64;
+}
+
+// The speaker as the loop sees it. Sentences go to `speech`, an actor that cuts them into blocks as the speaker's
+// credit allows, so `say` never waits; `sink` plays them. `enq` counts the blocks handed over; a block is SETTLED
+// when it has left SDL's stream or was discarded as older than the generation (a cut-off), so
+// `playing` is "something handed over has not settled" (the old `waitingMs() > 0`).
+struct Talk {
+  sink: voiceaudio.SpeakerSink;
+  speech: voiceaudio.SpeechSource;
+  enq: u64;
+
+  fn say(self: &mut, samples: List[f32]) {
+    enq = enq + voiceaudio.speechBlocks(samples.len());
+    speech.speak(samples, sink.generation());
+  }
+
+  fn settled(self: &) u64 { sink.blocksPlayed() + sink.stale() }
+
+  fn playing(self: &) bool { self.settled() < enq }
+}
+
+// Move what the detector's stage has sent to `heard`
+fn takeHeard(src: &mut voiceaudio.Heard, heard: &mut List[voiceaudio.Utterance]) {
+  var more = true;
+  while more {
+    match src.take() {
+      case var Some(u) { heard.push(u); }
+      case is None { more = false; }
+    }
+  }
 }
 
 // What a reply's speaking cost, and the instants of its first sentence
@@ -161,7 +180,7 @@ struct Stats {
 // One finished sentence: Kokoro, then its samples into the speaker's queue, noted in 'stats' and 'marks'. 'at' is the
 // cache position the sentence ends at.
 fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &texttospeech.Voice, speed: f32,
-    out: &mut voiceaudio.Speaker, text: &str, at: usize, stats: &mut Stats, marks: &mut List[Mark]) Result[bool, String] {
+    out: &mut Talk, text: &str, at: usize, stats: &mut Stats, marks: &mut List[Mark]) Result[bool, String] {
   let clean = speechText(text.bytes());
   if clean.len() == 0usize { return Ok[bool, String](false); }
   let t0 = Instant.now();
@@ -173,8 +192,8 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   let spent = seconds(Instant.now(), t0);
   // the silence Kokoro puts at both ends is cut to 80 ms before and 150 ms after (see trimPads)
   let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
-  out.queue(samples.view());
-  out.flush();
+  let count = samples.len();
+  out.say(samples);
   if !stats.spoken {
     stats.spoken = true;
     stats.sentenceAt = t0;
@@ -183,34 +202,31 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   }
   stats.sentences = stats.sentences + 1usize;
   stats.kokoro = stats.kokoro + spent;
-  stats.samples = stats.samples + samples.len();
-  marks.push(Mark(at, out.samplesQueued()));
+  stats.samples = stats.samples + count;
+  marks.push(Mark(at, out.enq));
   Ok[bool, String](true)
 }
 
-// Read what the microphone has into the detector. This loop is blocked for a second or more at a time while Qwen reads
-// a prompt and Kokoro speaks a sentence, so one call hands the detector that much audio at once (an earlier voiceaudio
-// panicked on a push of more than 1.6 s; it takes any length now and a test pins it).
-fn listen(mic: &mut voiceaudio.Microphone, vad: &mut voiceaudio.Vad, heard: &mut List[voiceaudio.Utterance]) {
-  mic.pump(vad, heard);
-}
-
-// The goodbye: said, then waited for (at most 5 s, and not past a Ctrl-C) until the speaker's queue is empty and its own
-// buffer has played
+// The goodbye: said, then waited for (at most 5 s, and not past a Ctrl-C) until the speaker has played it, and 300 ms
+// more for the device's own buffer. The waits are on the bell (rung when everything handed to the speaker has played),
+// with a timeout so that Ctrl-C is seen.
 fn sayGoodbye(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &texttospeech.Voice, speed: f32,
-    out: &mut voiceaudio.Speaker, intr: &mut voiceaudio.Interrupt) {
+    out: &mut Talk, intr: &mut voiceaudio.Interrupt, bell: &voiceaudio.Bell) {
   printStr("ai> Goodbye.\n");
   print.flush();
   match tts.speak(device, "Goodbye.", voice, speed) {
     case let Ok(raw) {
       let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
-      out.queue(samples.view());
-      out.flush();
+      out.say(samples);
       let t0 = Instant.now();
-      while out.waitingMs() > 0u32 && seconds(Instant.now(), t0) < 5.0 && !intr.requested() {
-        thread.sleep(Duration.fromMillis(5));
+      var waiting = true;
+      while waiting {
+        let seen = bell.count();
+        if !out.playing() || seconds(Instant.now(), t0) >= 5.0 || intr.requested() { waiting = false; }
+        else { bell.waitFor(seen, Duration.fromMillis(50)); }
       }
-      thread.sleep(Duration.fromMillis(300));
+      let t1 = Instant.now();
+      while seconds(Instant.now(), t1) < 0.3 { bell.waitFor(bell.count(), Duration.fromMillis(300)); }
     }
     case let Err(m) { say((String() <- m).view()); say("\n"); }
   }
@@ -255,16 +271,14 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let sampler = llmrun.TokenSampler.make(f32.from(o.temperature), o.topK, f32.from(o.topP));
 
   // ---- the conversation starts with the system turn; a short exchange warms the kernels, then the cache is wound back
-  let systemBytes = bytesOf(o.system.view());
-  let sysTurn = vocab.systemTurn(systemBytes.view());
+  let sysTurn = vocab.systemTurn(o.system.view());
   match engine.feed(device, sysTurn.view(), false) {
     case is Ok {}
     case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   }
   let afterSystem = engine.pos;
   {
-    let hello = bytesOf("Hello.");
-    let hi = vocab.userTurn(hello.view(), false);
+    let hi = vocab.userTurn("Hello.", false);
     var logits = List[f32]();
     match engine.feed(device, hi.view(), true) {
       case var Ok(l) { logits = l; }
@@ -314,7 +328,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     case var Ok(m) { m }
     case let Err(e) { say("voicechat: no microphone: "); say((String() <- e).view()); say("\n"); return 1i32; }
   };
-  var out: voiceaudio.Speaker = match voiceaudio.Speaker.open(&driver, 24000u32) {
+  var spk: voiceaudio.Speaker = match voiceaudio.Speaker.open(&driver, 24000u32) {
     case var Ok(s) { s }
     case let Err(e) { say("voicechat: no speaker: "); say((String() <- e).view()); say("\n"); mic.close(); return 1i32; }
   };
@@ -325,7 +339,20 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   // With none, a finished sentence often comes back without its full stop; with 400 ms a fragment ("I often heard her talk") is
   // given one as often as a sentence is (measured on 33 sentences with a pause put inside: 18 split in two turns at 400 ms of
   // trail, 11 at 200, 21 at none; the package's README.md has the table)
-  var vad = voiceaudio.Vad.make(cfg);
+  // THE STREAMS (design-audio-streaming-2026-11-09.md): the microphone's capture thread and attendant feed a VadStage,
+  // which publishes the detector's state to `probe` and sends utterances to `heardSrc`; sentences go to a SpeechSource
+  // under the speaker's credit and a feeder thread plays them. This loop waits on `bell`, which the streams ring when
+  // speech begins, an utterance arrives, or everything handed to the speaker has played. 60 ms ahead is the voice window
+  // (speakersink.cone); the speaker's producer may be 2 s of sound ahead.
+  let bell = voiceaudio.Bell.make();
+  let probe = voiceaudio.VadProbe.make(bell.clone());
+  var heardSrc = voiceaudio.Heard.make(bell.clone());
+  let stage = voiceaudio.VadStage(cfg, 16u32, heardSrc.sink());
+  stage.watch(probe.clone());
+  var micSrc = voiceaudio.MicSource.start(mic, 20u32, 64u32, 16u32, stage);
+  var sinkOut = voiceaudio.SpeakerSink.startWith(spk, 60u32, 2000u32, bell.clone());
+  let speech = voiceaudio.SpeechSource(sinkOut.sink());
+  var out = Talk(sinkOut, speech, 0u64);
   var heard = List[voiceaudio.Utterance]();
 
   printStr("ready (audio: ");
@@ -369,10 +396,11 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
 
     if intr.requested() { printStr("\n(Ctrl-C: ending)\n"); print.flush(); break; }
 
-    // LISTEN
-    vad.setThresholdScale(1.0f);
-    listen(&mut mic, &mut vad, &mut heard);
-    micLag = seconds(Instant.now(), micOpened) - f64.from(mic.samplesTaken()) / 16000.0;
+    // LISTEN. The bell's count is read before looking, so a ring that comes after is not missed by the wait below.
+    let seenBell = bell.count();
+    probe.setThresholdScale(1.0f);
+    takeHeard(&mut heardSrc, &mut heard);
+    micLag = seconds(Instant.now(), micOpened) - f64.from(probe.analysed()) / 16000.0;
     if heard.len() == 0usize {
       // KEEP THE GPU WARM, ONLY WHILE SOMEBODY IS SPEAKING. After a second or two of idle the laptop GPU drops its clock, and
       // Parakeet's 0.1 s on an utterance becomes 0.3 s. So while the detector is inside an utterance AND the latest 20 ms
@@ -380,7 +408,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
       // hangover, or with nobody there, this is false), Parakeet runs on 0.25 s of silence at most every 400 ms (the first run after idle takes 0.1 to 0.4 s, being at the low
       // clock itself; the rest about 0.1 s). Nothing runs
       // while the program is idle or the person is quiet; `--no-gpu-warm` turns it off.
-      if o.keepWarm && vad.speaking() && vad.level() > 2.0f * vad.noiseFloor() && seconds(Instant.now(), lastWarm) >= 0.4 {
+      if o.keepWarm && probe.speaking() && probe.level() > 2.0f * probe.noiseFloor() && seconds(Instant.now(), lastWarm) >= 0.4 {
         let w0 = Instant.now();
         match stt.transcribe(device, warmth.view()) {
           case is Ok {}
@@ -392,10 +420,12 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
         warmAllCalls = warmAllCalls + 1usize;
         warmAllSeconds = warmAllSeconds + seconds(lastWarm, w0);
       } else {
-        thread.sleep(Duration.fromMillis(10));
+        // wait for an event (speech began, an utterance arrived), at most 20 ms: the turn-end rule below goes by the
+        // audio analysed, which advances without a ring, and Ctrl-C is not a stream
+        bell.waitFor(seenBell, Duration.fromMillis(20));
       }
       // an utterance already heard that ended in no full stop waits here for more speech, or for the longer silence
-      if hearing.isEmpty() || !hearing.due(vad.analysed(), vad.speaking(), 16000u32, o.endSilenceMs, o.unfinishedSilenceMs) { continue; }
+      if hearing.isEmpty() || !hearing.due(probe.analysed(), probe.speaking(), 16000u32, o.endSilenceMs, o.unfinishedSilenceMs) { continue; }
     } else {
       // HEAR. The detector ended an utterance (after the end-silence): it joins the turn so far, and Parakeet's text for the
       // whole turn decides whether the turn is over (turns.cone)
@@ -421,7 +451,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
         hearing.clear();
         continue;
       }
-      if !hearing.due(vad.analysed(), vad.speaking(), 16000u32, o.endSilenceMs, o.unfinishedSilenceMs) {
+      if !hearing.due(probe.analysed(), probe.speaking(), 16000u32, o.endSilenceMs, o.unfinishedSilenceMs) {
         printStr("(heard \"");
         printStr(hearing.text.view());
         printStr("\", which does not end a sentence: waiting up to ");
@@ -445,15 +475,14 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     printStr("\n");
     print.flush();
     if isGoodbye(spoken.view()) {
-      sayGoodbye(&mut tts, device, &voice, o.speed, &mut out, &mut intr);
+      sayGoodbye(&mut tts, device, &voice, o.speed, &mut out, &mut intr, &bell);
       break;
     }
 
     // THINK: the user's words and the end of the turn into the cache (its start is already there). Without room for
     // them and a reply, a new conversation.
-    let userBytes = bytesOf(spoken.view());
     var turn = List[u32]();
-    vocab.text(userBytes.view(), &mut turn);
+    vocab.text(spoken.view(), &mut turn);
     {
       let tail = tailTokens(&vocab);
       var i = 0usize;
@@ -491,17 +520,18 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     let answerStart = Instant.now();
     // the speaker's queue is empty now (the last reply played out or was cut), and its count of samples queued runs on from
     // earlier replies; this reply's own are the ones past this
-    let queuedBefore = out.samplesQueued();
+    let enqBefore = out.enq;
     var finished = false;
     var stopped = false;         // Ctrl-C
     while !finished {
       if intr.requested() { stopped = true; break; }
-      let playing = out.waitingMs() > 0u32;
+      let seenAnswer = bell.count();
+      let playing = out.playing();
       // thresholds stay raised for the 300 ms after the queue empties (the device's own buffer is still playing)
       let loud = playing || (quiet && seconds(Instant.now(), quietSince) < 0.3);
-      vad.setThresholdScale(if loud { o.thresholdScale } else { 1.0f });
-      listen(&mut mic, &mut vad, &mut heard);
-      if vad.speaking() || heard.len() > 0usize { interrupted = true; break; }
+      probe.setThresholdScale(if loud { o.thresholdScale } else { 1.0f });
+      takeHeard(&mut heardSrc, &mut heard);
+      if probe.speaking() || heard.len() > 0usize { interrupted = true; break; }
       if generating {
         let id = sampler.sample(logits.view(), &mut rng);
         if vocab.isStop(id) || made >= o.maxTokens {
@@ -561,34 +591,33 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
         } else if seconds(Instant.now(), quietSince) >= 0.3 {
           finished = true;
         }
-        thread.sleep(Duration.fromMillis(5));
+        // wait for the speaker's bell, or speech beginning, or 20 ms (for Ctrl-C and the 300 ms quiet)
+        bell.waitFor(seenAnswer, Duration.fromMillis(20));
       }
       if failed { break; }
     }
     let answerEnd = Instant.now();
     printStr("\n");
     if stopped {
-      out.cutOff();
+      out.sink.cutOff();
       printStr("(Ctrl-C: ending)\n");
       print.flush();
       break;
     }
     if interrupted {
-      let queued = out.samplesQueued();
-      let waiting = out.waiting();
-      var played = 0usize;
-      if queued > waiting { played = queued - waiting; }
+      // blocks that have left the speaker's stream, read before the cut (a cut settles everything)
+      let played = out.settled();
       let cutAt = seconds(Instant.now(), micOpened);
-      var began = f64.from(vad.speechStartSample()) / 16000.0;
+      var began = f64.from(probe.speechStartSample()) / 16000.0;
       if heard.len() > 0usize { began = f64.from(heard[0usize].start) / 16000.0; }
-      out.cutOff();
+      out.sink.cutOff();
       // The model keeps every sentence the person had begun to hear (its sound starts where the one before ends)
       var keep = promptEnd;
       var k = 0usize;
-      var startSample = 0usize;
+      var startBlock = 0u64;
       while k < marks.len() {
-        if startSample < played { keep = marks[k].pos; }
-        startSample = marks[k].endSample;
+        if startBlock < played { keep = marks[k].pos; }
+        startBlock = marks[k].endBlock;
         k = k + 1usize;
       }
       let written = engine.pos - promptEnd;
@@ -599,9 +628,10 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
       note <- " s and the speaker was cut at ";
       note <- fmt2(cutAt).view();
       note <- " s on the microphone's clock, after ";
-      var playedThisReply = 0usize;
-      if played > queuedBefore { playedThisReply = played - queuedBefore; }
-      note <- fmt2(f64.from(playedThisReply) / 24000.0).view();
+      // in blocks of 320 samples (13 ms), the flush points counted as sound: about
+      var playedThisReply = 0u64;
+      if played > enqBefore { playedThisReply = played - enqBefore; }
+      note <- fmt2(f64.from(playedThisReply) * 320.0 / 24000.0).view();
       note <- " s of this reply's speech had played; of the ";
       note <- u64.from(written);
       note <- " tokens written the model keeps ";
@@ -691,9 +721,10 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   }
 
   intr.stop();
-  out.cutOff();
-  out.close();
-  mic.close();
+  out.sink.cutOff();
+  out.speech.finish();
+  micSrc.stop();           // ends the capture thread, which closes the microphone
+  out.sink.stop();         // ends the feeder and closes the speaker
   device.waitIdle();
   if o.echoTimings && o.keepWarm {
     var tail = String();

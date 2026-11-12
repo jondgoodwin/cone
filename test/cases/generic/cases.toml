@@ -660,7 +660,7 @@ diagnostics = 10
 category = "reject"
 description = "Type argument lists written out that do not match the generic's parameters, given to a method that is not generic, and a generic type that writes none outside its own braces: on a path to its member, or where a type is wanted"
 tags = ["typecheck"]
-diagnostics = 24
+diagnostics = 25
 
 [scenario.generic_typecheck_cascade_arg]
 category = "reject"
@@ -935,26 +935,50 @@ category = "reject"
 description = "Default is opt-in: a struct of numbers that declares nothing, a struct that moves, char and a reference are refused at a Default bound; a struct declaring Default is refused at a field with no value and no Default type; a number is still not constructed with an argument"
 tags = ["typecheck"]
 
+[scenario.generic_lazy_wrap]
+category = "run"
+description = "A generic type's method whose result is its own type at a larger argument ('Wrap[R]' giving 'Wrap[Option[R]]'), never called: the nested instance has its template in its chain, so its members wait for a use and the chain stops (Bug 71)"
+tags = ["typecheck"]
+timeout = 20
+
 [scenario.generic_fn_address]
 category = "run"
 description = "A generic function's instance has one address within an object: '&half[i64]' taken in main, passed on, through a type parameter and in a struct's method compares equal, and the instance for another type argument differs"
 tags = ["genllvm", "runtime"]
 
-[scenario.generic_nest_refused_wrap]
-category = "reject"
-description = "A generic type's method whose result is its own type at a larger argument ('Wrap[R]' giving 'Wrap[Option[R]]'): each instance is made while the previous one's members are checked, a queue, so the chain's length is counted and refused at the limit in under a second, naming the chain and the method that makes it (Bug 71)"
+[scenario.generic_lazy_result]
+category = "run"
+description = "The shape that found Bug 71: a wrapper's 'orCancelled' giving the wrapper of a Result of its own argument, never called on the nested instance"
 tags = ["typecheck"]
 timeout = 20
 
-[scenario.generic_nest_refused_chain]
-category = "reject"
-description = "The same chain with the method called twice: refused once, naming the member 'lift'"
+[scenario.generic_lazy_call]
+category = "run"
+description = "The method called twice ('w.lift().lift()'): each call checks the members of the nested instance it is called on, and the program runs correctly"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_enum]
+category = "run"
+description = "The same loop through an enum template ('Pack[R]' giving 'Pack[Option[R]]'), called twice"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_mutual]
+category = "run"
+description = "Mutual recursion: A[T]'s method returns B[A[T]] and B's returns A[B[T]]; each call reaches the next"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_uncalled_error]
+category = "run"
+description = "An error in a nested instance's method that no call reaches is not reported; the first instance of the chain is checked whole"
 tags = ["typecheck"]
 timeout = 20
 
-[scenario.generic_nest_refused_result]
+[scenario.generic_lazy_called_error]
 category = "reject"
-description = "The chain in the shape that found it: a wrapper's 'orCancelled' giving the wrapper of a Result of its own argument"
+description = "The same error is reported once a call reaches the nested instance's method"
 tags = ["typecheck"]
 timeout = 20
 
@@ -967,3 +991,102 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "run"
 description = "A finite chain of 251 generic types, instances 250 deep: just inside the limit of 256 on nested instances (a refusal at 256 must not touch a legitimate chain this long), compiled and run"
 tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_alias_params]
+category = "run"
+description = "A generic alias, 'alias Items[T] = List[T]': of a collection and of a pool, of another alias with a bound, in a struct field, a parameter, a return type and a construction; the alias and its target are one type"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_alias_params_refused]
+category = "reject"
+description = "A generic alias's bound refused where it is used, directly and through another alias, and the wrong number of arguments: too few, too many and none"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.generic_lazy_shape]
+category = "reject"
+description = "Shape inference over a lazy nested instance: calling 'first' on the nested 'Holder[Option[i64]]' checks its members, and a push while the borrow is still to be used is refused"
+tags = ["typecheck", "flow"]
+timeout = 20
+
+[scenario.generic_lazy_depth]
+category = "reject"
+description = "A chain that does not stop on its own: 'deep' calls 'lift' and then 'deep' on the result, so each call checks the next instance at a larger argument; ErrorInstDepth still refuses it at the limit (Bug 71 backstop)"
+tags = ["typecheck"]
+timeout = 20
+
+[scenario.generic_lazy_vtable]
+category = "run"
+description = "A nested instance used without a call: made a virtual reference to a trait and called through its vtable; its members are checked by the coercion and its methods generated"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_vtable_error]
+category = "reject"
+description = "The same use with a method that does not compile for the nested instance's argument: the coercion checks the members, and the error is reported"
+tags = ["typecheck"]
+timeout = 20
+
+[scenario.generic_lazy_uses]
+category = "run"
+description = "Nested instances used without a direct call: a method taken as a function value and called through it, a closure naming the method that is never called, a trait-bounded generic function calling it; each reaches the body, which is checked, generated and runs"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_final]
+category = "run"
+description = "A nested instance that is dropped, never called: the drop needs its 'final', which must be checked and generated"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 20
+
+[scenario.generic_lazy_shapekeep]
+category = "run"
+description = "Shape inference over a lazy nested instance, the keeping way: 'Keep[Option[i64]]' writes only a number field, so once a use checks its members it is found shape-keeping and 'bump' through a shared path is allowed while an element borrow is held. Compiles only if inference ran: an uninferred instance is taken as shape-changing and 'bump' is refused (checked with the answer forced to yes: fails)"
+tags = ["typecheck", "flow"]
+timeout = 60
+
+[scenario.generic_lazy_shapeyes]
+category = "reject"
+description = "Shape inference over a lazy nested instance, the changing way (the guard against a wrong 'keeping'): 'grow' pushes, so the nested 'Slots[Option[i64]]' is found shape-changing once its members are checked, and 'grow' is refused while an element borrow is held; 'put', in place, is not"
+tags = ["typecheck", "flow"]
+timeout = 20
+
+[scenario.generic_lazy_ops]
+category = "run"
+description = "ops on a lazy nested instance: the use checks the members, and the program is generated and run (see the file's header)"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 60
+
+[scenario.generic_lazy_index]
+category = "run"
+description = "index on a lazy nested instance: the use checks the members, and the program is generated and run (see the file's header)"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 60
+
+[scenario.generic_lazy_each]
+category = "run"
+description = "each on a lazy nested instance: the use checks the members, and the program is generated and run (see the file's header)"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 60
+
+[scenario.generic_lazy_clone]
+category = "run"
+description = "clone on a lazy nested instance: the use checks the members, and the program is generated and run (see the file's header)"
+tags = ["typecheck", "genllvm", "runtime"]
+timeout = 60
+
+[scenario.generic_alias_cycle]
+category = "reject"
+description = "A generic alias that names itself, directly ('alias Self[T] = Self[T]') or inside its own argument ('alias Nest[T] = List[Nest[T]]'), is refused where used instead of expanding without end"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.generic_alias_member]
+category = "run"
+description = "A generic alias declared inside a generic struct, used in its field and method, and inside a plain struct, reached from outside by its path (a path through a generic instance, 'Bag[i64].Pair', is a pre-existing defect for any member alias)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.generic_member_alias_instance]
+category = "run"
+description = "A member alias of a generic struct reached through an instance (Bag[i64].Cur): as a field type, a return type and a constructor"
+tags = ["name-resolution", "typecheck", "runtime"]
