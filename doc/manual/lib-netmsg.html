@@ -54,6 +54,7 @@ import collections use *;
 import thread;
 import time use Duration;
 import iocore use SocketAddr;
+import iobuf use Bytes;
 import actors;
 import netmsg use *;
 
@@ -69,10 +70,10 @@ actor Greeter {
   }
 }
 
-fn bytes(s: &amp;str) List[u8] {
+fn bytes(s: &amp;str) Bytes {
   var b = List[u8]();
   putBytes(&amp;mut b, s);
-  b
+  copyPacket(b.view()).freeze()
 }
 
 fn main() {
@@ -94,7 +95,10 @@ fn main() {
 		<span class="pre">CloseReason</span> (<span class="pre">Local</span>, <span class="pre">Remote</span>,
 		<span class="pre">TimedOut</span>, <span class="pre">Overflow</span>, <span class="pre">Refused</span> or
 		<span class="pre">NoAnswer</span>); nothing more arrives for that id. <span class="pre">Message{id, data}</span>: a reliable
-		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. <span class="pre">Refused{id, reliable, stream, why, size, limit}</span>: a send of
+		message. <span class="pre">Update{id, stream, data}</span>: the newest value of a stream. Both carry <span class="pre">data</span> as
+		<span class="pre">iobuf.Bytes</span>, read with <span class="pre">data.view()</span>: a message that arrives in order is a slice of the datagram it came in,
+		copied by no one, and it keeps that datagram's buffer alive for as long as it is held (an application that keeps many for long copies the few bytes it needs).
+		One that arrives ahead of the ones before it waits as a copy of its own bytes. <span class="pre">Refused{id, reliable, stream, why, size, limit}</span>: a send of
 			this connection's was refused and nothing was sent (below). A connection's events arrive
 		one at a time, in the order they happened. A server numbers its clients from 1; a client's one connection is 1.</li>
 	<li><span class="pre">eventHandler(f)</span> makes an <span class="pre">EventHandler</span> of a closure
@@ -128,7 +132,7 @@ fn main() {
 	<h2 id="connection">A connection</h2>
 	<p>A <span class="pre">Connection</span> is an actor handle, Sendable like any, with these behaviours:</p>
 	<ul>
-	<li><span class="pre">sendReliable(data)</span>, <span class="pre">data</span> a <span class="pre">List[u8]</span> of at most
+	<li><span class="pre">sendReliable(data)</span>, <span class="pre">data</span> an <span class="pre">iobuf.Bytes</span> (a built <span class="pre">IoBuf</span> is sent as <span class="pre">buf.freeze()</span>, a <span class="pre">streams.Writer</span>'s as <span class="pre">writer.intoBuf().freeze()</span>, a list's as <span class="pre">copyPacket(list.view()).freeze()</span>), of at most
 		<span class="pre">maxReliableBytes(cfg)</span> bytes (1,173 with the default packet size). A message over that is
 		refused: nothing is sent, the connection goes on, and its own handler hears <span class="pre">Refused</span> (with
 		<span class="pre">why</span> <span class="pre">TooLarge</span>, the <span class="pre">size</span> offered and the
@@ -248,8 +252,8 @@ fn main() {
 	<p>The protocol is plain data and functions, with no socket, no clock and no thread, so it runs inside an actor,
 		on an OS thread, or in a test on a synthetic clock. A <span class="pre">ConnectionCore</span> is one connection's half:
 		<span class="pre">ConnectionCore.make(cfg, session, now)</span>; <span class="pre">sendReliable(bytes)</span> and
-		<span class="pre">sendLatest(stream, bytes)</span> (each answers false when refused);
-		<span class="pre">receive(packet, now, events)</span> acts on one datagram (false if it is not this connection's or is
+		<span class="pre">sendLatest(stream, bytes)</span> (<span class="pre">bytes</span> an <span class="pre">iobuf.Bytes</span>, held until acknowledged or sent; each answers false when refused);
+		<span class="pre">receive(&amp;packet, now, events)</span> acts on one datagram (an <span class="pre">iobuf.Bytes</span>; the events' data are slices of it) (false if it is not this connection's or is
 		malformed); <span class="pre">poll(now, out, events)</span> appends the packets to send (<span class="pre">Packets</span>, a list of IoBufs, each one datagram) and the events that happened;
 		<span class="pre">nextDeadline()</span> says when to call <span class="pre">poll</span> next; and
 		<span class="pre">rtt()</span>, <span class="pre">lossPermille()</span>, <span class="pre">stats()</span>, <span class="pre">close()</span>. The
@@ -262,7 +266,7 @@ fn main() {
 var clock = Clock.synth();
 var p = SimPair.make(NetConfig.defaults(), LinkConfig.lossy(200u32, 40i64, 30i64),
                      LinkConfig.lossy(200u32, 40i64, 30i64), 1u64, clock.now());
-p.a.sendReliable("one");
+p.a.sendReliable(copyPacket("one").freeze());
 var ms = 0i64;
 while ms &lt; 3000i64 {
   clock.advance(Duration.fromMillis(1i64));

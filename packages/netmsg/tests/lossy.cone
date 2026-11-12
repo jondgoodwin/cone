@@ -10,7 +10,11 @@ mod lossy;
 import testing use *;
 import collections use *;
 import time use Duration, Instant, Clock;
+import iobuf use IoBuf, Bytes;
 import netmsg use *;
+
+// A copy of some bytes, frozen: what the core takes to send
+fn fz(b: &Array[u8]) Bytes {copyPacket(b).freeze()}
 
 struct Side {
   pub nextExpected: u64;      // the number of the next reliable message due
@@ -82,17 +86,17 @@ fn one(seed: u64, total: u64) i64 {
     // each sets its latest values
     if ms % 10i64 == 0i64 {
       if sentA < total {
-        if p.a.sendReliable(textOf(sentA).view()) {sentA = sentA + 1u64;} else {refused = refused + 1u64;}
+        if p.a.sendReliable(fz(textOf(sentA).view())) {sentA = sentA + 1u64;} else {refused = refused + 1u64;}
       }
       if sentB < total {
-        if p.b.sendReliable(textOf(sentB).view()) {sentB = sentB + 1u64;} else {refused = refused + 1u64;}
+        if p.b.sendReliable(fz(textOf(sentB).view())) {sentB = sentB + 1u64;} else {refused = refused + 1u64;}
       }
     }
     if ms % 33i64 == 0i64 {
       tick = tick + 1u64;
-      p.a.sendLatest(1u16, textOf(tick).view());
-      p.a.sendLatest(2u16, textOf(tick * 3u64).view());
-      p.b.sendLatest(1u16, textOf(tick).view());
+      p.a.sendLatest(1u16, fz(textOf(tick).view()));
+      p.a.sendLatest(2u16, fz(textOf(tick * 3u64).view()));
+      p.b.sendLatest(1u16, fz(textOf(tick).view()));
     }
     p.step(clock.now());
     absorb(&mut p.eventsA, &mut sa);
