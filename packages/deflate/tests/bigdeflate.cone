@@ -1,0 +1,28 @@
+// Output larger than the buffer pool's bound (64 MiB) is a value, never a panic: rawDeflate of 70 MiB
+// stored (level 0) makes a stream a little over 70 MiB. It once collected its output in a Chain of pool
+// buffers and panicked at the bound; it collects in a List now. The stream inflates back to the data.
+
+mod bigdeflate;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+
+fn main() i32 {
+  let n = 73400320usize;
+  var data = List[u8]();
+  data.reserve(n);
+  var i = 0usize;
+  while i < n { data.push(u8.from((i * 31usize + i / 251usize) % 256usize)); i += 1usize; }
+  let z = rawDeflate(data.view(), 0);
+  expect(z.len() > 67108864usize, "the stream is over the pool bound");
+  var used = 0usize;
+  match inflate(z.view(), 0usize, n, &mut used) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "all the bytes came out");
+      expect(out.view() == data.view(), "the bytes are the data");
+    }
+    case let Err(e) { expect(false, "inflate of a large stream"); }
+  }
+  done()
+}
