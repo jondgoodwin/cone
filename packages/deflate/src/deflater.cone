@@ -323,10 +323,13 @@ pub struct Deflater {
   // (length 0 for none) and not yet written
   savedLen: usize;
   savedDist: usize;
-  // The output so far: bw.out holds it, the first 'outPos' bytes delivered
+  // The output not yet delivered: bw.out holds it, in pool buffers from a
+  // fallible Writer, so a pool that refuses a block fails the stream (TooLarge)
+  // and never panics
   bw: BitWriter;
-  outPos: usize;
   started: bool;
+  failed: bool;
+  err: DeflateError;
   // Level 1: the single fixed block's header is written
   fixedOpen: bool;
   finishing: bool;
@@ -361,7 +364,7 @@ pub struct Deflater {
     var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
     Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](), 0usize, 0usize,
-      BitWriter(List[u8](), 0u64, 0u32), 0usize, false, false, false, false,
+      BitWriter(streams.Writer.tryEmpty(65536usize), 0u64, 0u32), false, false, DeflateError.make(ErrorKind.TooLarge, 0u64, ""), false, false, false,
       Code(List[u8](), List[u32]()), Code(List[u8](), List[u32]()), false,
       Adler32.start(), table, 0u32, 0u64, gz, 0u64)
   }
@@ -376,7 +379,7 @@ pub struct Deflater {
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
   // next, or the input piles up. Bytes fed after 'finish' are ignored.
   pub fn feed(self: &mut, chunk: &Array[u8]) {
-    if finishing { return; }
+    if finishing || failed { return; }
     if format == Format.Zlib { adler.update(chunk, 0usize, chunk.len); }
     else if format == Format.Gzip { crcv = crc.update(crcv, chunk, 0usize, chunk.len); }
     inTotal = inTotal + u64.from(chunk.len);
@@ -387,8 +390,11 @@ pub struct Deflater {
   // pulling until Done
   pub fn finish(self: &mut) { finishing = true; }
 
-  // The Transform's 'failure': a compressor never fails, so always None
-  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+  // The Transform's 'failure': None, unless the buffer pool refused a block of
+  // output (TooLarge), after which a pull answers Failed
+  pub fn failure(self: &) Option[AnyError] {
+    if failed { Some[AnyError](AnyError.from(err.clone())) } else { None[AnyError] }
+  }
 
   // Bytes of input fed so far
   pub fn totalIn(self: &) u64 { inTotal }
@@ -397,7 +403,7 @@ pub struct Deflater {
   pub fn totalOut(self: &) u64 { outTotal }
 
   // Whether the stream is complete and every byte of it delivered
-  pub fn isDone(self: &) bool { done && outPos >= bw.out.len() }
+  pub fn isDone(self: &) bool { done && bw.out.isEmpty() }
 
   // Appends compressed bytes into the buffer's spare room (the Transform of
   // package streams), at most 'out.room()' of them, and answers what it waits
@@ -409,8 +415,15 @@ pub struct Deflater {
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
     let room = out.room();
     let n = self.ready(room);
-    out.append(&bw.out.view()[outPos ..< outPos + n]);
-    self.delivered(n, room)
+    if failed { return Status.Failed; }
+    // Drained into a scratch buffer of our own, then appended: drainTo may change a buffer's
+    // shape, so the compiler (1339) will not take a borrow of the caller's spare room for it
+    var scratch = IoBuf(n);
+    let got = bw.out.drainTo(&mut scratch.whole()[0usize ..< n]);
+    scratch.setLen(got);
+    out.append(scratch.view());
+    if bw.out.starved() { self.starve(); return Status.Failed; }
+    self.delivered(got, room)
   }
 
   // -------- inside --------
@@ -419,10 +432,11 @@ pub struct Deflater {
   // many are waiting to be handed over, at most 'max'
   fn ready(self: &mut, max: usize) usize {
     self.begin();
-    while bw.out.len() - outPos < max && !done {
+    while bw.out.len() < max && !done && !failed {
       if !self.step() { break; }
+      if bw.out.starved() { self.starve(); }
     }
-    let avail = bw.out.len() - outPos;
+    let avail = bw.out.len();
     if avail < max {avail} else {max}
   }
 
@@ -431,10 +445,8 @@ pub struct Deflater {
   // cannot tell whether the matcher has more to write, since it works only as
   // far as the room asks, so it says MoreOutput and the next pull finds out
   fn delivered(self: &mut, n: usize, max: usize) Status {
-    outPos = outPos + n;
     outTotal = outTotal + u64.from(n);
-    self.trimOutput();
-    if outPos < bw.out.len() { return Status.MoreOutput; }
+    if !bw.out.isEmpty() { return Status.MoreOutput; }
     if done { return Status.Done; }
     if n == max && n > 0usize { return Status.MoreOutput; }
     Status.NeedInput
@@ -444,19 +456,20 @@ pub struct Deflater {
   fn begin(self: &mut) {
     if started { return; }
     started = true;
-    if format == Format.Zlib { writeZlibHeader(&mut bw.out, level); }
-    else if format == Format.Gzip { writeGzipHeader(&mut bw.out, &gz); }
+    var head = List[u8]();
+    if format == Format.Zlib { writeZlibHeader(&mut head, level); }
+    else if format == Format.Gzip { writeGzipHeader(&mut head, &gz); }
+    bw.out.put(head.view());
   }
 
-  // Free the delivered front of the output queue, when it is at least half
-  fn trimOutput(self: &mut) {
-    let total = bw.out.len();
-    if outPos > 0usize && outPos >= total - outPos {
-      var i = 0usize;
-      while i < total - outPos { bw.out.set(i, *bw.out[outPos + i]); i += 1usize; }
-      bw.out.truncate(total - outPos);
-      outPos = 0usize;
-    }
+  // The pool refused a block of output: the stream fails, and what was
+  // gathered is dropped
+  fn starve(self: &mut) {
+    if failed { return; }
+    failed = true;
+    err = DeflateError.make(ErrorKind.TooLarge, inTotal, "the compressed output is more than the buffer pool will hold; pull it in smaller pieces");
+    bw.out.clear();
+    tokens.clear();
   }
 
   // One unit of work; false when it can do nothing without more input
@@ -521,8 +534,7 @@ pub struct Deflater {
     bw.put(u32.from(n), 16u32);
     bw.put(u32.from(n) ^ 0xFFFFu32, 16u32);
     let from = usize.from(cur - base);
-    var k = 0usize;
-    while k < n { bw.out.push(*buf[from + k]); k += 1usize; }
+    bw.out.put(&buf.view()[from ..< from + n]);
     cur = cur + i64.from(n);
   }
 
@@ -568,8 +580,10 @@ pub struct Deflater {
 
   fn finishTrailer(self: &mut) {
     bw.align();
-    if format == Format.Zlib { writeZlibTrailer(&mut bw.out, adler.value()); }
-    else if format == Format.Gzip { writeGzipTrailer(&mut bw.out, crcv, inTotal); }
+    var tail = List[u8]();
+    if format == Format.Zlib { writeZlibTrailer(&mut tail, adler.value()); }
+    else if format == Format.Gzip { writeGzipTrailer(&mut tail, crcv, inTotal); }
+    bw.out.put(tail.view());
     done = true;
   }
 }
