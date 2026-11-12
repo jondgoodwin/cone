@@ -1,0 +1,57 @@
+// Times BigUint.mul at 1024, 4096, 16384 and 65536 bits, and prints the nanoseconds a
+// multiplication takes. The operands are SplitMix64 limbs (seeds 1 and 2), the
+// same a Rust benchmark with num-bigint draws, so the products can be checked
+// against each other by their low and top limb. Direction only: a loaded
+// machine, a debug build or a short run moves the numbers.
+//
+//   congo run --release examples/mulbench.cone
+
+mod mulbench;
+
+import stdio use *;
+import collections use *;
+import time use Instant;
+import random;
+import bigint use BigUint;
+
+fn operand(bits: usize, seed: u64) BigUint {
+  var state = seed;
+  var l = List[u64]();
+  var i = 0usize;
+  while i < bits / 64usize {
+    l.push(random.splitMix64(&mut state));
+    i = i + 1usize;
+  }
+  BigUint.fromLimbs(l)
+}
+
+fn measure(bits: usize, reps: i64) {
+  let a = operand(bits, 1u64);
+  let b = operand(bits, 2u64);
+  var p = a.mul(&b);           // warm up
+  let start = Instant.now();
+  var r = 0i64;
+  while r < reps {
+    p = a.mul(&b);
+    r = r + 1i64;
+  }
+  let ns = start.elapsed().nanos();
+  printStr("bits ");
+  printInt(i64.from(bits));
+  printStr("  ns per mul ");
+  printInt(ns / reps);
+  printStr("  low limb ");
+  let v = p.limbView();
+  printInt(i64.from(v[0usize] & 0xFFFFFFFFu64));
+  printStr("  top limb ");
+  printInt(i64.from(v[v.len() - 1usize] & 0xFFFFFFFFu64));
+  printStr("\n");
+}
+
+fn main() i32 {
+  measure(1024usize, 100000i64);
+  measure(4096usize, 10000i64);
+  measure(16384usize, 500i64);
+  measure(65536usize, 40i64);
+  0i32
+}

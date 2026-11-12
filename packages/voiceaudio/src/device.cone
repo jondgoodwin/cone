@@ -108,6 +108,69 @@ pub struct Driver {
   fn release(self: &) { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
 }
 
+// A byte's lower case (ASCII only)
+fn lowerByte(b: u8) u8 {
+  if b >= 65u8 && b <= 90u8 { return b + 32u8; }
+  b
+}
+
+// Whether 'name' contains 'part', ignoring ASCII case (an empty 'part' matches nothing)
+fn containsFold(name: &String, part: &String) bool {
+  let n: &Array[u8] = name.view();
+  let p: &Array[u8] = part.view();
+  if p.len == 0usize { return false; }
+  var i = 0usize;
+  while i + p.len <= n.len {
+    var j = 0usize;
+    while j < p.len && lowerByte(n[i + j]) == lowerByte(p[j]) { j = j + 1usize; }
+    if j == p.len { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The index of the first of 'names' that contains any of 'wants' (case-insensitive), or names.len() when none
+fn firstMatch(names: &List[String], wants: &List[String]) usize {
+  var k = 0usize;
+  while k < names.len() {
+    var w = 0usize;
+    while w < wants.len() {
+      if containsFold(&names[k], &wants[w]) { return k; }
+      w = w + 1usize;
+    }
+    k = k + 1usize;
+  }
+  names.len()
+}
+
+// The recording devices' ids and names, in SDL's order, with the audio already started
+fn captureDevices(ids: &mut List[u32], names: &mut List[String]) {
+  var count = 0i32;
+  let arr = sdl.GetAudioRecordingDevices(&mut count);
+  if arr as usize != 0usize {
+    var k = 0i32;
+    while k < count {
+      let id = *(arr + usize.from(k));
+      let raw = sdl.GetAudioDeviceName(id);
+      ids.push(id);
+      if raw as usize == 0usize { names.push(String()); }
+      else { names.push(String.fromCStr(cstr.fromPtr(raw))); }
+      k = k + 1i32;
+    }
+    sdl.free(arr as *u8);
+  }
+}
+
+// The names of the recording devices under 'driver' (what SDL3 hears of; opens no device)
+pub fn captureNames(driver: &Driver) Result[List[String], AudioError] {
+  driver.acquire()?;
+  var ids = List[u32]();
+  var names = List[String]();
+  captureDevices(&mut ids, &mut names);
+  driver.release();
+  Ok[List[String], AudioError](names)
+}
+
 // The microphone: mono f32 at 'rate'. Nothing runs on a thread of ours: SDL fills the stream, and `read` takes
 // what has arrived.
 pub struct Microphone {
@@ -115,11 +178,39 @@ pub struct Microphone {
   pub rate: u32;
   taken: usize;
   scratch: List[f32];       // SDL writes here, once sized at open (no zero-fill or allocation per read)
+  named: Option[String];    // the recording device's name when 'openOn' matched one; None for the default device
 
   pub fn open(driver: &Driver, rate: u32) Result[Microphone, AudioError] {
     driver.acquire()?;
+    Microphone.begin(driver, sdl.AUDIO_DEVICE_DEFAULT_RECORDING, None[String], rate)
+  }
+
+  // As 'open', but on the first recording device (in SDL's order) whose name contains any of 'wants',
+  // ignoring case; with none matching (or none listed), or when the one that did would not open, it opens
+  // the default, and 'deviceName' is None.
+  pub fn openOn(driver: &Driver, wants: &List[String], rate: u32) Result[Microphone, AudioError] {
+    driver.acquire()?;
+    // The audio subsystem stays started from the listing through the open: SDL numbers device ids afresh
+    // each time it starts, so an id listed under one run is invalid under the next.
+    var ids = List[u32]();
+    var names = List[String]();
+    captureDevices(&mut ids, &mut names);
+    let k = firstMatch(&names, wants);
+    if k < names.len() {
+      let named = Microphone.begin(driver, ids[k], Some(names[k].clone()), rate);
+      match named {
+        case is Ok { return named; }
+        case is Err {}
+      }
+      driver.acquire()?;   // 'begin' let go of its hold on failing; take one again for the default
+    }
+    Microphone.begin(driver, sdl.AUDIO_DEVICE_DEFAULT_RECORDING, None[String], rate)
+  }
+
+  // Open the stream on 'devid' with the audio already acquired; on failure, let that hold go
+  fn begin(driver: &Driver, devid: u32, name: Option[String], rate: u32) Result[Microphone, AudioError] {
     let spec = sdl.AudioSpec(sdl.AUDIO_F32, 1i32, i32.from(rate));
-    let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_RECORDING, &spec, null, null);
+    let stream = sdl.OpenAudioDeviceStream(devid, &spec, null, null);
     if stream as usize == 0usize {
       driver.release();
       return Err[Microphone, AudioError](audioError(3i32, "the recording stream would not open"));
@@ -127,7 +218,15 @@ pub struct Microphone {
     sdl.ResumeAudioStreamDevice(stream);
     var scratch = List[f32]();
     scratch.resize(MIC_CHUNK, 0.);
-    Ok[Microphone, AudioError](Microphone(stream, rate, 0usize, scratch))
+    Ok[Microphone, AudioError](Microphone(stream, rate, 0usize, scratch, name))
+  }
+
+  // The recording device's name when 'openOn' matched one; None for the default device
+  pub fn deviceName(self: &) Option[&str] {
+    match &named {
+      case let Some(s) { Some[&str](s.view()) }
+      else { None }
+    }
   }
 
   // Take up to one chunk of the waiting samples into the scratch buffer (at most 'max'); answers how many.
