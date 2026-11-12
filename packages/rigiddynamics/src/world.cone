@@ -21,6 +21,7 @@ pub struct World {
   pub bodies: List[Body];
   pub freeSlots: List[u32];
   pub joints: List[Joint];
+  pub jointsOf: List[List[u32]];     // per body (parallel to 'bodies'): the joints that name it, so destroyBody visits only its own
   pub bp: SweepAndPrune;
   pub cache: List[Contact];
   pub next: List[Contact];
@@ -40,7 +41,7 @@ pub struct World {
 
   pub fn make() World {
     World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape](), List[Body](), List[u32](),
-      List[Joint](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
+      List[Joint](), List[List[u32]](), SweepAndPrune(), List[Contact](), List[Contact](), List[BodyPair](),
       List[u32](), List[u32](), List[Event](), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.)
   }
 
@@ -80,7 +81,7 @@ pub struct World {
 
   fn velMargin(self: &, i: usize, dt: f32) f32 {
     let b = bodies[i];
-    minf(settings.maxSpeculative, (b.linVel.length() + b.angVel.length() * b.radius) * dt)
+    settings.maxSpeculative.min((b.linVel.length() + b.angVel.length() * b.radius) * dt)
   }
 
   fn bodyBox(self: &, i: usize, dt: f32) Aabb3 {
@@ -122,7 +123,7 @@ pub struct World {
     let mid = lb.center();
     let toFar = Vec3((mid.x - com.x).abs() + ext.x, (mid.y - com.y).abs() + ext.y, (mid.z - com.z).abs() + ext.z);
     let radius = toFar.length();
-    let minExtent = minf(ext.x, minf(ext.y, ext.z));
+    let minExtent = ext.x.min(ext.y.min(ext.z));
     let pos = def.pos + def.rot * com;
     let body = Body(true, motion, def.shape, def.layer, def.mask, def.sensor, def.allowSleep, def.bullet, def.userData,
       pos, def.rot, com, def.linVel, def.angVel, mass, if dynamic { 1. / mass } else { 0. }, inertia, invI,
@@ -139,6 +140,7 @@ pub struct World {
     } else {
       id = u32.from(bodies.len());
       bodies.push(body);
+      jointsOf.push(List[u32]());
     }
     bp.add(id, self.bodyBox(usize.from(id), 0.), def.layer, def.mask, motion == MotionStatic);
     id
@@ -152,10 +154,16 @@ pub struct World {
     bp.remove(id);
     freeSlots.push(id);
     var k = 0usize;
-    while k < joints.len() {
-      if joints[k].alive && (joints[k].a == id || joints[k].b == id) { joints[k].alive = false; }
+    while k < jointsOf[i].len() {
+      let ji = usize.from(*jointsOf[i][k]);
+      if joints[ji].alive {
+        joints[ji].alive = false;
+        let other = if joints[ji].a == id { joints[ji].b } else { joints[ji].a };
+        if other != id { self.unindexJoint(other, u32.from(ji)); }
+      }
       k = k + 1usize;
     }
+    jointsOf[i].clear();
     next.clear();
     k = 0usize;
     while k < cache.len() {
@@ -307,6 +315,9 @@ pub struct World {
     j.fa = bA.rot.conjugate() * f;
     j.fb = bB.rot.conjugate() * f;
     joints.push(j);
+    let ji = u32.from(joints.len()) - 1u32;
+    jointsOf[usize.from(a)].push(ji);
+    if b != a { jointsOf[usize.from(b)].push(ji); }
     noCollideJoints = true;
     self.wake(a);
     self.wake(b);
@@ -384,10 +395,10 @@ pub struct World {
     jj.ellOn = true;
     jj.ellU = uDir.normalize();
     jj.ellV = vDir.normalize();
-    jj.ellFlex = maxf(flex, 0.001);
-    jj.ellExt = maxf(ext, 0.001);
-    jj.ellAbd = maxf(abd, 0.001);
-    jj.ellAdd = maxf(add, 0.001);
+    jj.ellFlex = flex.max(0.001);
+    jj.ellExt = ext.max(0.001);
+    jj.ellAbd = abd.max(0.001);
+    jj.ellAdd = add.max(0.001);
     jj.impEll = 0.;
   }
   pub fn setTwistLimits(self: &mut, j: u32, lo: f32, hi: f32) {
@@ -423,7 +434,29 @@ pub struct World {
     let jj = joints[usize.from(j)];
     joints[usize.from(j)].driveTarget = (jj.fa.conjugate() * bodyRelative * jj.fb).normalize();
   }
-  pub fn removeJoint(self: &mut, j: u32) { joints[usize.from(j)].alive = false; }
+  pub fn removeJoint(self: &mut, j: u32) {
+    if joints[usize.from(j)].alive {
+      joints[usize.from(j)].alive = false;
+      let a = joints[usize.from(j)].a;
+      let b = joints[usize.from(j)].b;
+      self.unindexJoint(a, j);
+      if b != a { self.unindexJoint(b, j); }
+    }
+  }
+
+  // Joint j is dead: drop it from body 'body's list of joints
+  fn unindexJoint(self: &mut, body: u32, j: u32) {
+    let bi = usize.from(body);
+    var k = 0usize;
+    while k < jointsOf[bi].len() {
+      if *jointsOf[bi][k] == j {
+        jointsOf[bi].swap(k, jointsOf[bi].len() - 1usize);
+        jointsOf[bi].truncate(jointsOf[bi].len() - 1usize);
+        return;
+      }
+      k = k + 1usize;
+    }
+  }
   // Make a joint breakable: it is removed, with an EvJointBroken event, in the first sub-step in which the force it
   // carries passes 'force' newtons or the torque it carries passes 'torque' N m (jointLoadOf says which rows count).
   // The load is the sub-step's row impulses over the sub-step's time, which is what PhysX's breakForce reads and what
@@ -498,7 +531,7 @@ pub struct World {
   // Advance by a frame's time in fixed steps (Fiedler, "Fix Your Timestep"); returns
   // the steps taken. The leftover is 'accumulator', over fixedDt the blend for drawing.
   pub fn advance(self: &mut, frameDt: f32) i32 {
-    accumulator = accumulator + minf(frameDt, 0.25);
+    accumulator = accumulator + frameDt.min(0.25);
     var n = 0;
     while accumulator >= fixedDt {
       self.step(fixedDt);
@@ -902,7 +935,7 @@ pub struct World {
       let mA = bodies[usize.from(joints[ji].a)].mass;
       let mB = bodies[usize.from(joints[ji].b)].mass;
       let reduced = if mA <= 0. { mB } else if mB <= 0. { mA } else { mA * mB / (mA + mB) };
-      let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / maxf(mA, mB) };
+      let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / mA.max(mB) };
       let a2 = jsoft.massScale / (1. - jsoft.massScale);
       let js = if rho >= 1. { jsoft } else { Softness(jsoft.biasRate, a2 / (a2 + rho), rho / (a2 + rho)) };
       solveJoint(self, ji, useBias, invH, h, js);
@@ -924,7 +957,7 @@ pub struct World {
     let substeps = if settings.substeps < 1 { 1 } else { settings.substeps };
     let h = dt / f32.from(substeps);
     let invH = 1. / h;
-    let hz = minf(settings.contactHertz, 0.25 * invH);
+    let hz = settings.contactHertz.min(0.25 * invH);
     let soft = makeSoft(hz, settings.contactDamping, h);
     let softStatic = makeSoft(2. * hz, settings.contactDamping, h);
     let jsoft = makeSoft(settings.jointHertz, settings.jointDamping, h);
@@ -1074,7 +1107,7 @@ pub struct World {
             k = k + 1usize;
           }
           if bestT <= 1. {
-            let t = maxf(0., bestT - settings.linearSlop / dist);
+            let t = (bestT - settings.linearSlop / dist).max(0.);
             let origin = b.startPos + disp * t;
             let rot = b.startRot.slerp(b.rot, t);
             bodies[i].rot = rot;
@@ -1113,10 +1146,10 @@ pub struct World {
       let b = &bodies[i];
       if isAwakeDynamic(b) {
         // Box2D's measure: the faster of its speed and its farthest point's speed from spin
-        let slow = maxf(b.linVel.length(), b.angVel.length() * b.radius) < settings.sleepSpeed;
+        let slow = b.linVel.length().max(b.angVel.length() * b.radius) < settings.sleepSpeed;
         if slow && b.allowSleep { bodies[i].sleepTime = b.sleepTime + dt; } else { bodies[i].sleepTime = 0.; }
         let r = usize.from(findSet(&mut parent, u32.from(i)));
-        minSleep.set(r, minf(*minSleep[r], if b.allowSleep { bodies[i].sleepTime } else { 0. }));
+        minSleep.set(r, (*minSleep[r]).min(if b.allowSleep { bodies[i].sleepTime } else { 0. }));
       }
       i = i + 1usize;
     }

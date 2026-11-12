@@ -9,6 +9,9 @@
 
 const noPos = 0xFFFFFFFFFFFFFFFFusize;
 const restoreBit = 0x80000000u32;
+// The bounded backtracker's visited bits: 32 KB, RE2's figure. States x positions within this many
+// bits are answered by the backtracker (when groups are wanted), others by the Pike VM.
+const backtrackBudget = 262144usize;
 
 // A step to take in an epsilon closure: explore a state, or put a slot back
 struct Frame {
@@ -29,6 +32,15 @@ struct Pike {
   pub cur: List[usize];
   // The slots of the match a search found
   pub result: List[usize];
+  // How many slots the Pike run in progress keeps (the whole match's two, or all)
+  pub act: usize;
+  // The arrays above are filled when the first Pike run needs them
+  pub ready: bool;
+  // The bounded backtracker's visited bits: one for each state at each position
+  pub visited: List[u64];
+  // The lazy DFAs' caches, set up at the first search that uses them
+  pub fwd: Dfa;
+  pub rev: Dfa;
 
   pub fn start(prog: &Program, nslots: usize) Pike {
     let n = prog.insts.len();
@@ -38,17 +50,163 @@ struct Pike {
     var result = List[usize]();
     var k = 0usize;
     while k < nslots { cur.push(noPos); result.push(noPos); k = k + 1; }
-    Pike(n, nslots, List[u32](2 * n) <- fill 0u32, List[u32](2 * n) <- fill 0u32, lens,
-      List[usize](2 * n * nslots) <- fill 0usize, List[Frame](), cur, result)
+    Pike(n, nslots, List[u32](), List[u32](), lens, List[usize](), List[Frame](), cur, result, nslots, false, List[u64](), Dfa.empty(), Dfa.empty())
+  }
+
+  // The working arrays of the Pike VM, made at its first use: a search the
+  // backtracker answers never needs them
+  fn ensure(self: &mut) {
+    if ready { return; }
+    ready = true;
+    dense = List[u32](2 * n) <- fill 0u32;
+    sparse = List[u32](2 * n) <- fill 0u32;
+    slots = List[usize](2 * n * nslots) <- fill 0usize;
+  }
+
+  // Search from byte 'from' (see 'pikeRun'). With groups wanted, the bounded
+  // backtracker answers whenever its visited bits fit the budget; a text too long
+  // for that is searched by the Pike VM for the match's bounds only, and the
+  // backtracker then finds the groups within the match.
+  pub fn search(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) bool {
+    if nslots <= 2 {
+      if from <= text.len && n <= dfaMaxStates && text.len - from >= dfaMinText && !fwd.failed && !rev.failed {
+        let r = dfaSearch(prog, text, from, earliest);
+        if r == 0 { return false; }
+        if r == 1 { return true; }
+      }
+      return pikeRun(prog, text, from, earliest, nslots);
+    }
+    let tlen = text.len;
+    if from <= tlen && n * (tlen - from + 1) <= backtrackBudget {
+      return backtrack(prog, text, from, tlen, false);
+    }
+    if !pikeRun(prog, text, from, earliest, 2) { return false; }
+    let s = *result[0];
+    let e = *result[1];
+    if n * (e - s + 1) <= backtrackBudget {
+      if backtrack(prog, text, s, e, true) { return true; }
+    }
+    // a match too long for the bits
+    pikeRun(prog, text, s, earliest, nslots)
+  }
+
+  // The lazy DFAs' answer, for a search that wants only the match's bounds: 0 no match,
+  // 1 a match (its slots in 'result' if the search keeps them), 2 the DFA gave up
+  fn dfaSearch(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) u32 {
+    let dp = &prog.dp;
+    if !fwd.ready { fwd.setup(&dp.fwd, dp, false, if nslots == 0 { dp.budget } else { dp.budget / 2 }); }
+    let e = fwd.forward(&dp.fwd, dp, text, from, earliest, prog.prefix.view());
+    if e == gaveUp { return 2; }
+    if e == noPos { return 0; }
+    if nslots == 0 { return 1; }
+    if !rev.ready { rev.setup(&dp.rev, dp, true, dp.budget / 2); }
+    let s = rev.backward(&dp.rev, dp, text, from, e);
+    if s == gaveUp || s == noPos { return 2; }
+    result.set(0, s);
+    result.set(1, e);
+    1
+  }
+
+  // The bounded backtracker: the same answer as the Pike VM's, found by trying the
+  // alternatives in priority order with a stack, depth first. A state at a position
+  // is tried once (the first time it failed, or the search would have ended), so
+  // the time is bounded by states x positions: the budget. The bytes read stop at
+  // 'limit'; a match is looked for from 'from' on, or at 'from' alone if anchored.
+  fn backtrack(self: &mut, prog: &Program, text: &Array[u8], from: usize, limit: usize, anchored: bool) bool {
+    let ns = nslots;
+    let words = (n * (limit - from + 1) + 63) / 64;
+    visited.clear();
+    var z = 0usize;
+    while z < words { visited.push(0u64); z = z + 1; }
+    var k = 0usize;
+    while k < ns { cur.set(k, noPos); k = k + 1; }
+    let plen = prog.prefix.len();
+    var p = from;
+    while p <= limit {
+      if plen > 0 && !anchored {
+        let at = findPrefix(text, p, prog.prefix.view());
+        if at == noPos || at > limit { return false; }
+        p = at;
+      }
+      stack.push(Frame(prog.start, p));
+      while stack.len() > 0 {
+        let f = stack.pop().unwrap();
+        if (f.tag & restoreBit) != 0 {
+          cur.set(usize.from(f.tag & 0x7FFFFFFF), f.val);
+          continue;
+        }
+        var sid = f.tag;
+        var pos = f.val;
+        while true {
+          let bit = (pos - from) * n + usize.from(sid);
+          let word = bit / 64;
+          let mask = 1u64 << u64.from(bit % 64);
+          let seen = *visited[word];
+          if (seen & mask) != 0u64 { break; }
+          visited.set(word, seen | mask);
+          let inst = &prog.insts[usize.from(sid)];
+          let op = inst.op;
+          if op == opByte {
+            if pos < limit && text[pos] >= inst.lo && text[pos] <= inst.hi {
+              pos = pos + 1;
+              sid = inst.next;
+            }
+            else { break; }
+          }
+          else if op == opSparse {
+            var go = false;
+            if pos < limit {
+              let byte = text[pos];
+              var t = usize.from(inst.x);
+              let end = t + usize.from(inst.y);
+              while t < end {
+                let tr = &prog.trans[t];
+                if byte < tr.lo { break; }
+                if byte <= tr.hi { sid = tr.next; pos = pos + 1; go = true; break; }
+                t = t + 1;
+              }
+            }
+            if !go { break; }
+          }
+          else if op == opSplit {
+            stack.push(Frame(inst.x, pos));
+            sid = inst.next;
+          }
+          else if op == opSave {
+            let slot = usize.from(inst.x);
+            if slot < ns {
+              stack.push(Frame(restoreBit | inst.x, *cur[slot]));
+              cur.set(slot, pos);
+            }
+            sid = inst.next;
+          }
+          else if op == opLook {
+            if holds(inst.x, text, pos) { sid = inst.next; }
+            else { break; }
+          }
+          else if op == opMatch {
+            k = 0;
+            while k < ns { result.set(k, *cur[k]); k = k + 1; }
+            stack.clear();
+            return true;
+          }
+          else { break; }
+        }
+      }
+      if anchored { return false; }
+      p = p + 1;
+    }
+    false
   }
 
   // Whether a search can end the moment it finds any match
   // 'earliest', else it runs to the leftmost-first one. The match's slots are in
   // 'result'. 'from' is where the search begins; the text before it is context
   // for the assertions.
-  pub fn search(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool) bool {
+  fn pikeRun(self: &mut, prog: &Program, text: &Array[u8], from: usize, earliest: bool, ns: usize) bool {
+    ensure();
+    act = ns;
     let tlen = text.len;
-    let ns = nslots;
     var matched = false;
     var w = 0usize;
     lens.set(0, 0);
@@ -124,7 +282,7 @@ struct Pike {
     // a thread that cannot read the byte at 'at' would die in this very step: not added
     if at >= text.len { return; }
     let byte = text[at];
-    let ns = nslots;
+    let ns = act;
     let base = w * n;
     var i = 0usize;
     let count = prog.seed.len();
@@ -149,7 +307,7 @@ struct Pike {
 
   // Move the thread of state 'sid' (list w) along to 'next' in list nw at position at
   fn enter(self: &mut, prog: &Program, text: &Array[u8], w: usize, nw: usize, sid: u32, at: usize, next: u32) {
-    let ns = nslots;
+    let ns = act;
     let base = (w * n + usize.from(sid)) * ns;
     var k = 0usize;
     while k < ns { cur.set(k, *slots[base + k]); k = k + 1; }
@@ -159,7 +317,7 @@ struct Pike {
   // Add state sid0 and everything it leads to without reading a byte to list w,
   // in priority order, with the slots in 'cur' (as changed by Save states on the way)
   fn closure(self: &mut, prog: &Program, text: &Array[u8], w: usize, at: usize, sid0: u32) {
-    let ns = nslots;
+    let ns = act;
     let base = w * n;
     stack.push(Frame(sid0, 0));
     while stack.len() > 0 {

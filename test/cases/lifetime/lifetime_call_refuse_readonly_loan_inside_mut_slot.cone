@@ -1,0 +1,18 @@
+// Bug 77, the caller half: a read-only loan fits no plain '&mut' slot, but the walk goes on past that slot. 'W' holds a '&mut Box' and 'Box' holds a '&BVH' in 'r'; 'inner' is lent 'w' and a read-only borrow of the local 'bvh', so it could store that borrow in 'w.b.r', which outlives 'bvh'. The call is refused.
+mod lifetime_call_refuse_readonly_loan_inside_mut_slot;
+import stdio use *;
+struct BVH { pub n: i64; }
+struct Box['a] { pub r: &'a BVH; }
+struct W['a] { pub b: &'a mut Box['a]; }
+fn inner(w: &mut W, b: &BVH) { w.b.r = b; }
+fn outer(w: &mut W) {
+  var bvh = BVH(7i64);
+  inner(w, &bvh);  //~ ErrorCallEscape
+}
+fn main() {
+  var base = BVH(3i64);
+  var bx = Box(&base);
+  var w = W(&mut bx);
+  outer(&mut w);
+  print <- bx.r.n, "\n";
+}

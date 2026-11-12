@@ -67,7 +67,13 @@ pub struct H3Event {
 // A QUIC and HTTP/3 driver as the client and actorhttp's servers drive one,
 // on the same Loop as their own driver (h3driver's Plugin has these methods;
 // its header says what each does). A plug-in is one per client or server,
-// held behind an owning virtual reference
+// held behind an owning virtual reference.
+//
+// CONTRACT, closing: a plug-in FAILS EVERY OPEN REQUEST of a connection (a
+// Failed event for each, with the connection's reason) BEFORE it sends that
+// connection's Closed event, whether the close is graceful, an abort or the
+// peer's. h1's and h2's closing code relies on the same order, and so does the
+// client's: it treats a request still open at Closed as one the plug-in lost
 pub trait Http3 {
   // Hosting: its turn, a completion offered (true when its own), the latest
   // the loop may wait, its end with the loop still alive
@@ -121,7 +127,7 @@ pub trait Http3 {
 // The plug-in of a client or server made with none: it has no connection,
 // makes none, and has nothing to say. It is what 'no HTTP/3' is, so that a
 // client holds a plug-in whether or not it was given one
-pub struct NoHttp3 {
+pub struct NoHttp3 is Http3 {
   pub refused: u64;          // connects and listens asked of it, each refused
 
   pub fn make() NoHttp3 {NoHttp3(0u64)}
@@ -154,7 +160,6 @@ pub struct NoHttp3 {
   pub fn sendData(self: &mut, req: H3Req, buf: IoBuf) Option[IoBuf] {None}
   pub fn finish(self: &mut, req: H3Req) {}
   pub fn release(self: &mut, req: H3Req, n: usize) {}
-  pub fn stopBody(self: &mut, req: H3Req) bool {false}
   pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool {false}
 }
 
