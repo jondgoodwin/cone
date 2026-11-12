@@ -91,8 +91,8 @@ pub enum CloseReason {
 
 // What happened that the application should hear of
 pub enum CoreEvent {
-  pub struct Reliable {pub data: List[u8];}                      // a reliable message, in order
-  pub struct Latest {pub stream: u16; pub data: List[u8];}        // the newest value of a stream
+  pub struct Reliable {pub data: Bytes;}                        // a reliable message, in order
+  pub struct Latest {pub stream: u16; pub data: Bytes;}        // the newest value of a stream
   pub struct Closed {pub reason: CloseReason;}                   // the connection ended
 }
 
@@ -140,13 +140,15 @@ struct RelSlot {
   used: bool;
   acked: bool;
   lastSent: i64;              // when a packet last carried it; -1 never
-  data: List[u8];
+  data: Option[Bytes];        // the caller's bytes, kept to resend; None when unused or parked
+  heap: List[u8];             // a message that had to wait for credit, kept as a copy of its own bytes
+  parked: bool;               // the message is in 'heap', not in 'data'
 }
 
 // A reliable message a packet carried
 struct RelRecv {
   id: u16;
-  data: List[u8];
+  data: Bytes;
 }
 
 // A latest-wins stream going out
@@ -156,7 +158,7 @@ struct StreamOut {
   acc: u32;                   // priority gathered so far
   nextSeq: u16;
   pending: bool;
-  data: List[u8];
+  data: Option[Bytes];        // the caller's bytes, until a packet carries them
 }
 
 // A latest-wins stream coming in: the newest sequence delivered
@@ -175,15 +177,32 @@ fn readPrefix(c: &mut streams.ByteCursor, protocol: u32, session: u64) Option[u8
   Some[u8](kind)
 }
 
-fn copyOf(b: &Array[u8]) List[u8] {
-  var l = List[u8].withCapacity(b.len);
-  l.appendSlice(b);
-  l
+// The bytes a slot holds: none when it is unused
+fn lenOf(d: &Option[Bytes]) usize {
+  match d {
+    case let &Some[Bytes](b) { b.len() }
+    else { 0usize }
+  }
+}
+
+fn relLen(s: &RelSlot) usize {
+  if s.parked {s.heap.len()} else {lenOf(&s.data)}
+}
+
+fn relPut(p: &mut streams.Writer, s: &RelSlot) {
+  if s.parked {p.put(s.heap.view());} else {putData(p, &s.data);}
+}
+
+fn putData(p: &mut streams.Writer, d: &Option[Bytes]) {
+  match d {
+    case let &Some[Bytes](b) { p.put(b.view()); }
+    else {}
+  }
 }
 
 // The rest of a payload packet, after its prefix, parsed whole: None when it
 // is short, malformed, or has bytes left over
-fn parseBody(c: &mut streams.ByteCursor) Option[Parsed] {
+fn parseBody(c: &mut streams.ByteCursor, dg: &Bytes) Option[Parsed] {
   let seq = c.getBE[u16]()?;
   let ack = c.getBE[u16]()?;
   let bits = c.getBE[u32]()?;
@@ -197,8 +216,9 @@ fn parseBody(c: &mut streams.ByteCursor) Option[Parsed] {
     // The top two bits are reserved for fragmentation (not built): a
     // message that sets either is refused
     if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let from = c.pos();
     let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
-    pk.rel.push(RelRecv(id, copyOf(body)));
+    pk.rel.push(RelRecv(id, dg.slice(from, from + body.len)));
     i = i + 1u8;
   }
   i = 0u8;
@@ -207,8 +227,9 @@ fn parseBody(c: &mut streams.ByteCursor) Option[Parsed] {
     let lseq = c.getBE[u16]()?;
     let lf = c.getBE[u16]()?;
     if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let from = c.pos();
     let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
-    pk.lat.push(LatestItem(stream, lseq, copyOf(body)));
+    pk.lat.push(LatestItem(stream, lseq, dg.slice(from, from + body.len)));
     i = i + 1u8;
   }
   if !c.isEmpty() {return None[Parsed];}
@@ -227,7 +248,7 @@ struct Parsed {
 struct LatestItem {
   stream: u16;
   seq: u16;
-  data: List[u8];
+  data: Bytes;
 }
 
 pub enum CoreState {
@@ -255,7 +276,7 @@ pub struct ConnectionCore {
   rel: List[RelSlot];
   relOldest: u16;             // the oldest id not yet acknowledged
   relNext: u16;               // the id the next message gets
-  recv: Dict[u16, List[u8]];  // received out of order, by id, waiting for the ones before them
+  recv: Dict[u16, List[u8]]; // received out of order, by id, waiting for the ones before them (own copies, see takeReliable)
   relDeliver: u16;            // the next id to give the application
 
   // latest-wins streams
@@ -289,7 +310,7 @@ pub struct ConnectionCore {
     while i < ringSize {
       sent.push(SentSlot(0u16, false, false, 0i64, List[u16]()));
       seen.push(0u32);
-      rel.push(RelSlot(0u16, false, false, -1i64, List[u8]()));
+      rel.push(RelSlot(0u16, false, false, -1i64, None[Bytes], List[u8](), false));
       i = i + 1usize;
     }
     let t = now.nanos();
@@ -321,8 +342,8 @@ pub struct ConnectionCore {
   // reliableWindow() messages are already waiting: the application decides
   // what to do about a peer that is not keeping up. A message of no bytes is
   // a message.
-  pub fn sendReliable(self: &mut, data: &Array[u8]) bool {
-    if state != CoreState.Active || data.len > self.maxReliable() {return false;}
+  pub fn sendReliable(self: &mut, data: Bytes) bool {
+    if state != CoreState.Active || data.len() > self.maxReliable() {return false;}
     let waiting = usize.from(relNext - relOldest);
     if waiting >= reliableWindow {return false;}
     let s = &mut rel[usize.from(relNext) % ringSize];
@@ -330,8 +351,18 @@ pub struct ConnectionCore {
     s.used = true;
     s.acked = false;
     s.lastSent = -1i64;
-    s.data.clear();
-    s.data.appendSlice(data);
+    // A message with others waiting ahead of it has to wait for credit: it is
+    // kept as a copy of its own bytes (the caller's buffer, a pool buffer of
+    // 4 KiB at least, goes back). One that can go at the next poll is not copied.
+    let behind = relNext != relOldest && rel[usize.from(relNext - 1u16) % ringSize].lastSent < 0i64;
+    if behind {
+      s.heap = copyBytes(data.view());
+      s.parked = true;
+      s.data = None[Bytes];
+    } else {
+      s.parked = false;
+      s.data = Some[Bytes](data);
+    }
     relNext = relNext + 1u16;
     true
   }
@@ -343,17 +374,16 @@ pub struct ConnectionCore {
   // room, unless a newer value replaces it first, and is never resent. False
   // when the value is bigger than maxLatest() or the connection already has
   // maxStreams() streams.
-  pub fn sendLatest(self: &mut, stream: u16, data: &Array[u8]) bool {
-    if state != CoreState.Active || data.len > self.maxLatest() {return false;}
+  pub fn sendLatest(self: &mut, stream: u16, data: Bytes) bool {
+    if state != CoreState.Active || data.len() > self.maxLatest() {return false;}
     var k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return false;}
-      outs.push(StreamOut(stream, 1u32, 0u32, 0u16, false, List[u8]()));
+      outs.push(StreamOut(stream, 1u32, 0u32, 0u16, false, None[Bytes]));
       k = outs.len() - 1usize;
     }
     let s = &mut outs[k];
-    s.data.clear();
-    s.data.appendSlice(data);
+    s.data = Some[Bytes](data);
     s.pending = true;
     true
   }
@@ -365,7 +395,7 @@ pub struct ConnectionCore {
     var k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return;}
-      outs.push(StreamOut(stream, weight, 0u32, 0u16, false, List[u8]()));
+      outs.push(StreamOut(stream, weight, 0u32, 0u16, false, None[Bytes]));
       return;
     }
     outs[k].weight = weight;
@@ -631,11 +661,11 @@ pub struct ConnectionCore {
     while id != relNext && nRel < 255u8 {
       let s = &mut rel[usize.from(id) % ringSize];
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
-        let need = reliableOverhead + s.data.len();
+        let need = reliableOverhead + relLen(s);
         if need > budget {break;}
         p.putBE[u16](id);
-        p.putBE[u16](u16.from(s.data.len()));
-        p.put(s.data.view());
+        p.putBE[u16](u16.from(relLen(s)));
+        relPut(&mut p, s);
         budget = budget - need;
         if s.lastSent >= 0i64 {st.reliableResent = st.reliableResent + 1u64;}
         s.lastSent = t;
@@ -661,7 +691,7 @@ pub struct ConnectionCore {
       i = 0usize;
       while i < outs.len() {
         let s = &outs[i];
-        if s.pending && latestOverhead + s.data.len() <= budget {
+        if s.pending && latestOverhead + lenOf(&s.data) <= budget {
           if best == notFound || s.acc > outs[best].acc {best = i;}
         }
         i = i + 1usize;
@@ -670,13 +700,13 @@ pub struct ConnectionCore {
       let s = &mut outs[best];
       p.putBE[u16](s.key);
       p.putBE[u16](s.nextSeq);
-      p.putBE[u16](u16.from(s.data.len()));
-      p.put(s.data.view());
-      budget = budget - (latestOverhead + s.data.len());
+      p.putBE[u16](u16.from(lenOf(&s.data)));
+      putData(&mut p, &s.data);
+      budget = budget - (latestOverhead + lenOf(&s.data));
       s.nextSeq = s.nextSeq + 1u16;
       s.pending = false;
       s.acc = 0u32;
-      s.data.clear();
+      s.data = None[Bytes];
       nLat = nLat + 1u8;
       st.latestSent = st.latestSent + 1u64;
     }
@@ -694,8 +724,9 @@ pub struct ConnectionCore {
   // packet of this session, malformed. A good one is acted on: its
   // acknowledgements, its reliable messages (given to 'events' in order) and
   // its latest-wins values (given if newer than any delivered)
-  pub fn receive(self: &mut, data: &Array[u8], now: Instant, events: &mut List[CoreEvent]) bool {
+  pub fn receive(self: &mut, dg: &Bytes, now: Instant, events: &mut List[CoreEvent]) bool {
     if state != CoreState.Active {return false;}
+    let data = dg.view();
     var c = streams.ByteCursor.over(data);
     let kind = match readPrefix(&mut c, protocolId, session) {
       case let Some(k) {k}
@@ -719,7 +750,7 @@ pub struct ConnectionCore {
       events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
-    var pk = match parseBody(&mut c) {
+    var pk = match parseBody(&mut c, dg) {
       case var Some(p) {p}
       else {
         st.packetsInvalid = st.packetsInvalid + 1u64;
@@ -750,18 +781,13 @@ pub struct ConnectionCore {
 
     self.acknowledge(pk.ack, pk.bits, t);
 
-    // Reliable messages: kept by id, given out in order
-    while pk.rel.len() > 0usize {
-      match pk.rel.pop() {
-        case let Some(m) {
-          let id, body = m.(id, data);
-          self.takeReliable(id, body);
-          ackDirty = true;
-        }
-        case is None[RelRecv] {}
-      }
+    // Reliable messages: kept by id, given out in order. They arrive in
+    // order, so each is usually delivered at once, still a slice of the datagram
+    each m in pk.rel.drain() {
+      let id, body = m.(id, data);
+      self.takeReliable(id, body, events);
+      ackDirty = true;
     }
-    self.deliverReliable(events);
 
     // Latest-wins values: only a newer one than any delivered gets through
     each item in pk.lat.drain() {
@@ -783,22 +809,34 @@ pub struct ConnectionCore {
   }
 
   // Keep a reliable message that arrived, if it is new and inside the window
-  fn takeReliable(self: &mut, id: u16, data: List[u8]) {
+  // The next one in order is given at once, still a slice of its datagram. One
+  // that comes before the ones ahead of it is parked as a copy of its own bytes
+  // on the heap: a slice would keep its whole datagram (a pool buffer of 4 KiB
+  // at least) until the gap is filled, 256 of them 1 MiB, and an IoBuf copy
+  // would be 4 KiB as well. It is copied into a buffer again when delivered.
+  fn takeReliable(self: &mut, id: u16, data: Bytes, events: &mut List[CoreEvent]) {
     let ahead = usize.from(id - relDeliver);
     if ahead >= reliableWindow {return;}
     match recv.get(&id) {
       case is None {}
       else {return;}
     }
-    recv.insert(id, data);
+    if id == relDeliver {
+      events.push(CoreEvent.Reliable(data));
+      st.reliableDelivered = st.reliableDelivered + 1u64;
+      relDeliver = relDeliver + 1u16;
+      self.deliverReliable(events);
+    } else {
+      recv.insert(id, copyBytes(data.view()));
+    }
   }
 
   // Give the application every reliable message that is next in order
   fn deliverReliable(self: &mut, events: &mut List[CoreEvent]) {
     while true {
       match recv.remove(&relDeliver) {
-        case var Some(d) {
-          events.push(CoreEvent.Reliable(d));
+        case let Some(d) {
+          events.push(CoreEvent.Reliable(copyPacket(d.view()).freeze()));
           st.reliableDelivered = st.reliableDelivered + 1u64;
           relDeliver = relDeliver + 1u16;
         }
@@ -829,7 +867,9 @@ pub struct ConnectionCore {
       let s = &mut rel[usize.from(relOldest) % ringSize];
       if !s.acked {break;}
       s.used = false;
-      s.data.clear();
+      s.data = None[Bytes];
+      s.parked = false;
+      s.heap = List[u8]();
       relOldest = relOldest + 1u16;
     }
   }
