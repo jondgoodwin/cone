@@ -298,6 +298,7 @@ window.onload = async function() {
 		initScene = mod.instance.exports.initScene;
 		drawScene = mod.instance.exports.drawScene;
 		updateScene = mod.instance.exports.updateScene;
+        mod.instance.exports.initModules();
         initScene();
         glRenderLoop();
     }, value => {
