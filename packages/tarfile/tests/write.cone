@@ -108,7 +108,26 @@ fn failsWith(r: Result[void, TarError], want: ErrorKind, label: &str) {
   }
 }
 
+// Entries of 15 MiB added with no pull: the held bytes pass the cap at the fourth, and a pull lets it in
+fn heldTest() {
+  var tar = TarWriter.make();
+  var plain = EntryOptions.plain();
+  var data = List[u8].withCapacity(15728640usize);
+  var k = 0usize;
+  while k < 15728640usize { data.push(0u8); k += 1usize; }
+  ok(tar.add("a", data.view(), &plain));
+  ok(tar.add("b", data.view(), &plain));
+  failsWith(tar.add("c", data.view(), &plain), ErrorKind.TooLarge, "the third 15 MiB entry with no pull");
+  expectUInt(u64.from(tar.count()), 2u64, "the refused entry was not added");
+  var out = IoBuf(65536usize);
+  var st = tar.pull(&mut out, 65536usize);
+  while st == Status.MoreOutput { out.clear(); st = tar.pull(&mut out, 65536usize); }
+  ok(tar.add("c", data.view(), &plain));
+  expectUInt(u64.from(tar.count()), 3u64, "the third went in after a pull");
+}
+
 fn main() i32 {
+  heldTest();
   // files and folders round trip
   var tar = TarWriter.make();
   var plain = EntryOptions.plain();

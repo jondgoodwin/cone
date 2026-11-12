@@ -47,6 +47,26 @@ set(LLVM_LINK_COMPONENTS
 
 llvm_map_components_to_libnames(llvm_libs support core irreader ${LLVM_LINK_COMPONENTS})
 
+# Debian/Ubuntu's LLVM is built with Polly as a static extension but ships no
+# libPolly.a, yet LLVMExtensions,
+# which LTO needs, calls into it. A static link then stops on a missing
+# libPolly.a, or on an undefined getPollyPluginInfo. Where the archive is
+# missing, link the shared libLLVM instead; every other LLVM (Windows, a
+# complete static install) links statically as before.
+set(conec_llvm_link ${llvm_libs})
+if(TARGET Polly)
+	foreach(polly_cfg "" _RELEASE _DEBUG _RELWITHDEBINFO _MINSIZEREL)
+		get_target_property(polly_location Polly IMPORTED_LOCATION${polly_cfg})
+		if(polly_location)
+			break()
+		endif()
+	endforeach()
+	if((NOT polly_location OR NOT EXISTS "${polly_location}") AND TARGET LLVM)
+		message(STATUS "No Polly archive in this LLVM: linking the shared libLLVM")
+		set(conec_llvm_link LLVM m)
+	endif()
+endif()
+
 
 add_executable(conec 
 	compiler/c/conec.c
@@ -178,7 +198,7 @@ add_executable(conec
 	compiler/c/genllvm/genllto.cpp
 )
 
-target_link_libraries(conec ${llvm_libs})
+target_link_libraries(conec ${conec_llvm_link})
 
 # The test runner counts this file as a compiler source (R1.1), so a change to
 # it relinks conec, even one that only changes conestd

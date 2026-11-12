@@ -1,0 +1,499 @@
+// Mailbox benchmark for the mailbox-rings lane (was scratch, outside the repo; moved
+// into actors' examples/ by lane 104 so that the package build compiles it).
+// One program for both the unchanged master and the rings: it uses only the
+// public actors API, and 'allocs()' (a shim, edited per variant; here it returns 0, so
+// the "allocations" lines read 0) for counts.
+//
+//   congo run examples/mailboxbench.cone -- <scenario> [workers]
+//   scenarios: busy idle await fanin bytes burst all
+
+mod mailboxbench;
+
+import stdio use *;
+import actors;
+import time use Instant;
+import collections use List;
+
+extern {
+  fn @c(system) GetCurrentProcess() *u8;
+  fn @c(system) K32GetProcessMemoryInfo(h: *u8, ctr: *u8, cb: u32) i32;
+}
+
+fn allocs() u64 {0u64}
+fn liveBytes() u64 {u64.from(actors.liveSegmentBytes())}
+
+fn privateBytes() u64 {
+  var buf: Array[u64, 9] = [72u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  K32GetProcessMemoryInfo(GetCurrentProcess(), &mut buf as *u8, 72u32);
+  buf[7]
+}
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn eq(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] {return false;}
+    i = i + 1usize;
+  }
+  *(a + i) == 0u8
+}
+
+// ---- results: runs, then min / median / max ----
+
+const runs = 5usize;
+
+fn sortRuns(v: &mut Array[u64, 5]) {
+  var i = 1usize;
+  while i < runs {
+    var j = i;
+    while j > 0usize && v[j - 1usize] > v[j] {
+      let t = v[j];
+      v[j] = v[j - 1usize];
+      v[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+// Print name, then min median max of the runs, each as ns per item (x100 for two decimals)
+fn report(name: &str, v: &mut Array[u64, 5]) {
+  sortRuns(v);
+  printStr(name);
+  printStr("  min ");
+  printUInt(v[0usize] / 100u64);
+  printStr(".");
+  printUInt(v[0usize] / 10u64 % 10u64);
+  printStr("  median ");
+  printUInt(v[2usize] / 100u64);
+  printStr(".");
+  printUInt(v[2usize] / 10u64 % 10u64);
+  printStr("  max ");
+  printUInt(v[4usize] / 100u64);
+  printStr(".");
+  printUInt(v[4usize] / 10u64 % 10u64);
+  printStr("  (ns per item)\n");
+}
+
+fn nanos(t: &Instant) u64 {u64.from(t.elapsed().nanos())}
+
+let delivered: Atomic[u64];
+let gate: Atomic[u32];
+
+fn @initpure init() {
+  delivered = Atomic[u64].of(0u64);
+  gate = Atomic[u32].of(0u32);
+}
+
+// ---- actors ----
+
+actor Sink {
+  n: u64;
+  fn init(self: &new) {*self = Self(0u64);}
+  pub async fn take(self, k: u64) {n = n + k; delivered.add(k);}
+  pub async fn total(self) u64 {n}
+  pub async fn hold(self) {
+    while gate.load() == 0u32 {}
+  }
+}
+
+actor Squarer {
+  pub async fn square(self, n: u64) u64 {n * n}
+}
+
+actor Asker {
+  sq: Squarer;
+  sum: u64;
+  fn init(self: &new, s: Squarer) {*self = Self(sq: s, sum: 0u64);}
+  pub async fn loop(self, n: u64) {
+    var i = 0u64;
+    while i < n {
+      let s = await sq.square(i);
+      sum = sum + s;
+      i = i + 1u64;
+    }
+  }
+}
+
+actor Producer {
+  sink: Sink;
+  fn init(self: &new, s: Sink) {*self = Self(sink: s);}
+  pub async fn go(self, k: u64) {
+    var i = 0u64;
+    while i < k {
+      sink.take(1u64);
+      i = i + 1u64;
+    }
+  }
+}
+
+actor Player {
+  peer: Option[Player];
+  hops: u64;
+  fn init(self: &new, hops: u64) {*self = Self(None[Player], hops);}
+  pub async fn meet(self, p: Player) {peer = Some[Player](p);}
+  pub async fn ball(self, n: u64) {
+    if n + 1u64 < hops {
+      match peer {
+        case let Some(p) {p.ball(n + 1u64);}
+        case is None[Player] {}
+      }
+    } else {
+      peer = None;
+    }
+  }
+}
+
+// ---- scenarios ----
+
+const busyN = 2000000u64;
+
+fn scBusy() {
+  var send: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var total: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var r = 0usize;
+  let a0 = allocs();
+  while r < runs {
+    let sink = Sink();
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < busyN {
+      sink.take(1u64);
+      i = i + 1u64;
+    }
+    send[r] = nanos(&t0) * 100u64 / busyN;
+    actors.waitUntilIdle();
+    total[r] = nanos(&t0) * 100u64 / busyN;
+    r = r + 1usize;
+  }
+  report("busy: send call (main thread -> actor)      ", &mut send);
+  report("busy: send until handled (drain included)   ", &mut total);
+  printStr("busy: allocations "); printUInt(allocs() - a0); printStr(" for "); printUInt(busyN * u64.from(runs)); printStr(" sends\n");
+}
+
+const idleHops = 1000000u64;
+
+fn scIdle() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var r = 0usize;
+  let a0 = allocs();
+  while r < runs {
+    let ping = Player(idleHops);
+    let pong = Player(idleHops);
+    ping.meet(pong);
+    pong.meet(ping);
+    actors.waitUntilIdle();
+    let t0 = Instant.now();
+    ping.ball(0u64);
+    actors.waitUntilIdle();
+    v[r] = nanos(&t0) * 100u64 / idleHops;
+    r = r + 1usize;
+  }
+  report("idle: one hop (send to an actor that is idle)", &mut v);
+  printStr("idle: allocations "); printUInt(allocs() - a0); printStr(" for "); printUInt(idleHops * u64.from(runs)); printStr(" hops\n");
+}
+
+const awaitN = 500000u64;
+
+fn scAwait() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var r = 0usize;
+  let a0 = allocs();
+  while r < runs {
+    let sq = Squarer();
+    let a = Asker(sq);
+    actors.waitUntilIdle();
+    let t0 = Instant.now();
+    a.loop(awaitN);
+    actors.waitUntilIdle();
+    v[r] = nanos(&t0) * 100u64 / awaitN;
+    r = r + 1usize;
+  }
+  report("await: one round trip                        ", &mut v);
+  printStr("await: allocations "); printUInt(allocs() - a0); printStr(" for "); printUInt(awaitN * u64.from(runs)); printStr(" awaits\n");
+}
+
+const fanK = 250000u64;
+
+fn scFanin() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var r = 0usize;
+  let a0 = allocs();
+  let d0 = delivered.load();
+  while r < runs {
+    let sink = Sink();
+    let p0 = Producer(sink);
+    let p1 = Producer(sink);
+    let p2 = Producer(sink);
+    let p3 = Producer(sink);
+    let p4 = Producer(sink);
+    let p5 = Producer(sink);
+    let p6 = Producer(sink);
+    let p7 = Producer(sink);
+    actors.waitUntilIdle();
+    let t0 = Instant.now();
+    p0.go(fanK); p1.go(fanK); p2.go(fanK); p3.go(fanK);
+    p4.go(fanK); p5.go(fanK); p6.go(fanK); p7.go(fanK);
+    actors.waitUntilIdle();
+    if delivered.load() - d0 != 8u64 * fanK * u64.from(r + 1usize) {
+      printStr("FANIN LOST: delivered "); printUInt(delivered.load() - d0); printStr(" expected "); printUInt(8u64 * fanK * u64.from(r + 1usize)); printStr("\n");
+    }
+    v[r] = nanos(&t0) * 100u64 / (8u64 * fanK);
+    r = r + 1usize;
+  }
+  report("fanin: 8 senders -> 1 actor, per message     ", &mut v);
+  printStr("fanin: allocations "); printUInt(allocs() - a0); printStr(" for "); printUInt(8u64 * fanK * u64.from(runs)); printStr(" messages\n");
+}
+
+// one measured pass per process (the heap's growth steps are noise at 10,000)
+fn scBytes(withMsg: bool, manyN: usize) {
+  var pass = 0u32;
+  while pass < 1u32 {
+    actors.waitUntilIdle();
+    let b0 = privateBytes();
+    let a0 = allocs();
+    var list = List[Sink]();
+    var i = 0usize;
+    while i < manyN {
+      let s = Sink();
+      if withMsg {s.take(1u64);}
+      list.push(s);
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    let b1 = privateBytes();
+    printStr(if withMsg {"bytes: actors each sent one message: "} else {"bytes: idle actors, never messaged: "});
+    printUInt(u64.from(manyN));
+    printStr(" actors, "); printUInt((b1 - b0) / u64.from(manyN));
+    printStr(" bytes per actor (private bytes delta, includes the List's 8 per handle); segment bytes held per actor ");
+    printUInt(liveBytes() / u64.from(manyN));
+    printStr("; allocations ");
+    printUInt(allocs() - a0);
+    printStr("\n");
+    pass = pass + 1u32;
+  }
+}
+
+// Retained memory: n actors each take one burst of 300 messages, drain, sit quiet
+actor Wide {
+  n: u64;
+  fn init(self: &new) {*self = Self(0u64);}
+  pub async fn take(self, b: Big) {n = n + b.v[0usize];}
+  pub async fn hold(self) {
+    while gate.load() == 0u32 {}
+  }
+}
+
+struct Big {
+  pub v: Array[u64, 110];
+}
+
+fn bigOf(k: u64) Big {
+  var v: Array[u64, 110] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  v[0usize] = k;
+  Big(v)
+}
+
+fn scRetained(big: bool, n: usize, gated: bool) {
+  actors.waitUntilIdle();
+  gate.store(if gated {0u32} else {1u32});
+  let b0 = privateBytes();
+  let l0 = liveBytes();
+  let a0 = allocs();
+  var small = List[Sink]();
+  var wide = List[Wide]();
+  var i = 0usize;
+  while i < n {
+    if big {wide.push(Wide());} else {small.push(Sink());}
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    var j = 0u64;
+    if gated {
+      if big {wide[i].hold();} else {small[i].hold();}
+    }
+    while j < 300u64 {
+      if big {wide[i].take(bigOf(j));} else {small[i].take(j);}
+      j = j + 1u64;
+    }
+    i = i + 1usize;
+  }
+  gate.store(1u32);
+  actors.waitUntilIdle();
+  showRetained(if gated {"after exactly ONE rest (the 300 queued behind a held first message)"} else {"after ONE rest"}, big, n, l0, b0, a0);
+  i = 0usize;
+  while i < n {
+    if big {wide[i].take(bigOf(0u64));} else {small[i].take(0u64);}
+    i = i + 1usize;
+  }
+  actors.waitUntilIdle();
+  showRetained("after the SECOND rest", big, n, l0, b0, a0);
+}
+
+fn showRetained(stage: &str, big: bool, n: usize, l0: u64, b0: u64, a0: u64) {
+  let b1 = privateBytes();
+  printStr(if big {"retained: large-slot (~900 B message) actors, "} else {"retained: small actors, "});
+  printUInt(u64.from(n));
+  printStr(" actors, each took one burst of 300 and sits quiet, "); printStr(stage);
+  printStr(": segment bytes held per actor ");
+  printUInt((liveBytes() - l0) / u64.from(n));
+  printStr("; private bytes delta per actor ");
+  printUInt(if b1 > b0 {(b1 - b0) / u64.from(n)} else {0u64});
+  printStr("; allocations ");
+  printUInt(allocs() - a0);
+  printStr("\n");
+}
+
+// The ORIGINAL ringstream workload (no ballast): a producer holds 30 credits of
+// 100 messages, the consumer does a little work per message and returns a
+// credit per hundred; 1,500,000 messages a run
+const streamTotal = 1500000u64;
+
+actor SConsumer {
+  n: u64;
+  acc: u64;
+  producer: Option[SProducer];
+  fn init(self: &new) {*self = Self(n: 0u64, acc: 0u64, producer: None[SProducer]);}
+  pub async fn start(self, p: SProducer) {producer = Some[SProducer](p);}
+  pub async fn take(self, i: u64) {
+    var k = 0u64;
+    while k < 20u64 {
+      acc = acc * 6364136223846793005u64 + i + k;
+      k = k + 1u64;
+    }
+    n = n + 1u64;
+    if n % 100u64 == 0u64 {
+      match producer {
+        case let Some(p) {p.credit();}
+        case is None[SProducer] {}
+      }
+    }
+    if n == streamTotal {producer = None;}
+  }
+}
+
+actor SProducer {
+  to: SConsumer;
+  sent: u64;
+  fn init(self: &new, to: SConsumer) {*self = Self(to: to, sent: 0u64);}
+  pub async fn credit(self) {self.batch();}
+  pub async fn begin(self) {
+    var c = 0u64;
+    while c < 30u64 {
+      self.batch();
+      c = c + 1u64;
+    }
+  }
+  fn batch(self) {
+    var i = 0u64;
+    while i < 100u64 && sent < streamTotal {
+      to.take(sent);
+      sent = sent + 1u64;
+      i = i + 1u64;
+    }
+  }
+}
+
+fn scStream() {
+  var v: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  var r = 0usize;
+  let a0 = allocs();
+  var per: Array[u64, 5] = [0u64, 0u64, 0u64, 0u64, 0u64];
+  while r < runs {
+    let a1 = allocs();
+    let t0 = Instant.now();
+    {
+      let c = SConsumer();
+      let p = SProducer(c);
+      c.start(p);
+      p.begin();
+      actors.waitUntilIdle();
+    }
+    v[r] = nanos(&t0) * 100u64 / streamTotal;
+    per[r] = (allocs() - a1) * 1000000u64 / streamTotal;
+    r = r + 1usize;
+  }
+  report("stream (original ringstream workload), per message   ", &mut v);
+  sortRuns(&mut per);
+  printStr("stream: allocations per million messages, per run: ");
+  var k = 0usize;
+  while k < runs {
+    printUInt(per[k]); printStr(" ");
+    k = k + 1usize;
+  }
+  printStr("(median "); printUInt(per[2usize]); printStr("); total allocations "); printUInt(allocs() - a0); printStr("\n");
+}
+
+const burstN = 100000u64;
+
+fn scBurst() {
+  let sink = Sink();
+  actors.waitUntilIdle();
+  var round = 0u32;
+  while round < 6u32 {
+    let a0 = allocs();
+    let b0 = privateBytes();
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < burstN {
+      sink.take(1u64);
+      i = i + 1u64;
+    }
+    let bPeak = privateBytes();
+    actors.waitUntilIdle();
+    let ns = nanos(&t0);
+    printStr("burst round "); printUInt(u64.from(round));
+    printStr(": "); printUInt(burstN); printStr(" sends, allocations "); printUInt(allocs() - a0);
+    printStr(", private bytes grew by "); printUInt(if bPeak > b0 {bPeak - b0} else {0u64});
+    printStr(" at the end of the sends, ns/msg "); printUInt(ns / burstN);
+    printStr("\n");
+    round = round + 1u32;
+  }
+}
+
+fn main(argc: i32, argv: **u8) {
+  initAll();
+  var workers = 0u32;
+  if argc > 2i32 {workers = digits(*(argv + 2usize));}
+  actors.configure(actors.Options(workers: workers));
+  var which = argv;
+  if argc >= 2i32 {which = argv + 1usize;}
+  let all = argc < 2i32 || eq(*which, "all");
+  if all || eq(*which, "busy") {scBusy();}
+  if all || eq(*which, "idle") {scIdle();}
+  if all || eq(*which, "await") {scAwait();}
+  if all || eq(*which, "fanin") {scFanin();}
+  if eq(*which, "bytes10k") {scBytes(false, 10000usize);}
+  if eq(*which, "bytesmsg10k") {scBytes(true, 10000usize);}
+  if all || eq(*which, "bytes") {scBytes(false, 100000usize);}
+  if eq(*which, "bytesmsg") {scBytes(true, 100000usize);}
+  if eq(*which, "stream") {scStream();}
+  if eq(*which, "retained") {scRetained(false, 10000usize, false);}
+  if eq(*which, "retainedbig") {scRetained(true, 1000usize, false);}
+  if eq(*which, "retainedone") {scRetained(false, 20usize, true);}
+  if eq(*which, "retainedonebig") {scRetained(true, 20usize, true);}
+  if all || eq(*which, "burst") {scBurst();}
+  finalAll();
+  let st = actors.stats();
+  printStr("workers "); printUInt(u64.from(st.workers)); printStr("\n");
+}
