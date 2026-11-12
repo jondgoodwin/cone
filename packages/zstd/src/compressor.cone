@@ -64,6 +64,9 @@ pub struct Compressor {
   // The matcher's tables (positions in buf; the fast matcher uses shortT alone)
   longT: List[u32];
   shortT: List[u32];
+  // A tag byte for each slot of the two tables (matcher.cone)
+  longG: List[u8];
+  shortG: List[u8];
   // The repeat offsets as the decoder has them after the last block, and as
   // the block being written moves them
   reps: Reps;
@@ -88,7 +91,7 @@ pub struct Compressor {
   // below 1 act as 1, above 3 as 3.
   pub fn make(level: i32) Compressor {
     let lv = if level < 1 {1} else if level > 3 {3} else {level};
-    Compressor(paramsOf(lv), List[u8](), 0u64, 0usize, List[u32](), List[u32](),
+    Compressor(paramsOf(lv), List[u8](), 0u64, 0usize, List[u32](), List[u32](), List[u8](), List[u8](),
       Reps(1u32, 4u32, 8u32), Reps(1u32, 4u32, 8u32), Seqs(), BlockEnc.make(), Writer.tryEmpty(262144usize), List[u8](),
       Xxh64.make(0u64), 0u64, 0u64, 0u64, false, false, false)
   }
@@ -213,6 +216,11 @@ pub struct Compressor {
     par = Params(par.windowLog, longLog, shortLog, par.minMatch);
     if longLog > 0u32 { longT.resize(1usize << usize.from(longLog), 0u32); }
     shortT.resize(1usize << usize.from(shortLog), 0u32);
+    // An empty slot holds position 0: its tag is the tag of the buffer's first 4 bytes (when it has them; the
+    // matcher probes only past 8 bytes, and the first block has at least that if it probes at all)
+    let zero = if buf.len() >= 4usize { tag4(&buf, 0usize) } else { 0u8 };
+    if longLog > 0u32 { longG.resize(1usize << usize.from(longLog), zero); }
+    shortG.resize(1usize << usize.from(shortLog), zero);
   }
 
   // RFC 8878 section 3.1.1.1: the magic number and the frame header. With
@@ -262,10 +270,10 @@ pub struct Compressor {
         seqs.clear();
         let window = 1usize << usize.from(par.windowLog);
         if par.longLog == 0u32 {
-          matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut work, &mut seqs);
+          matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut shortG, &mut work, &mut seqs);
         } else {
           matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
-            &mut work, &mut seqs);
+            &mut longG, &mut shortG, &mut work, &mut seqs);
         }
         blk.clear();
         writeLiterals(&seqs.lits, &mut enc.huf, &mut blk);
@@ -308,8 +316,9 @@ pub struct Compressor {
     buf.truncate(keep);
     base = base + u64.from(drop);
     cur = cur - drop;
-    shiftDown(&mut longT, drop);
-    shiftDown(&mut shortT, drop);
+    let zero = if buf.len() >= 4usize { tag4(&buf, 0usize) } else { 0u8 };
+    shiftDown(&mut longT, &mut longG, drop, zero);
+    shiftDown(&mut shortT, &mut shortG, drop, zero);
   }
 
   // -------- one-shot use --------
@@ -346,13 +355,14 @@ fn allSame(b: &Array[u8], start: usize, end: usize) bool {
 }
 
 // Every position in 't' moved down by 'd', those before it to 0
-fn shiftDown(t: &mut List[u32], d: usize) {
+fn shiftDown(t: &mut List[u32], tags: &mut List[u8], d: usize, zero: u8) {
   let v = t.viewMut();
+  let g = tags.viewMut();
   let dd = u32.from(if d > 0xFFFFFFFFusize {0xFFFFFFFFusize} else {d});
   var i = 0usize;
   while i < v.len {
     let x = v[i];
-    v[i] = if x > dd {x - dd} else {0u32};
+    if x > dd { v[i] = x - dd; } else { v[i] = 0u32; g[i] = zero; }
     i += 1usize;
   }
 }
