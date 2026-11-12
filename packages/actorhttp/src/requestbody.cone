@@ -290,7 +290,7 @@ struct ReqChoiceJob {
           snk.end(Ending.Failed(AnyError.from(BodyError.cancelled())));
           return;
         }
-        let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+        let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
         let cont = {
           let x = s.exs.borrowMutAt(slot).unwrap();
           x.inAwait = false;
@@ -332,7 +332,7 @@ struct ReqDropJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
     if !loc.ok {return;}
-    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
     let sl = usize.from(slot);
     if s.exs.borrowAt(slot).unwrap().inAwait {
       inDiscarded(s, sl);
@@ -364,9 +364,9 @@ struct ReqReleaseJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
     if !loc.ok {return;}
-    let m = lendReturn(&mut sv.srvs.borrowMutAt(loc.k).unwrap().exs.borrowMutAt(slot).unwrap().inLend, buf.base() as usize);
-    inRelease(sv.srvs.borrowMutAt(loc.k).unwrap(), usize.from(slot), m);
-    let x = sv.srvs.borrowMutAt(loc.k).unwrap().exs.borrowMutAt(slot).unwrap();
+    let m = lendReturn(&mut (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap().inLend, buf.base() as usize);
+    inRelease((sv.srvs.rawAt(loc.k) as &mut SrvRec), usize.from(slot), m);
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap();
     drainStaged(&mut x.inLend, &x.inSink);
   }
 }
@@ -384,7 +384,7 @@ struct ReqStopJob {
     w <-> why;
     let loc = locate(sv, srv, slot, id);
     if !loc.ok {return;}
-    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
     let sl = usize.from(slot);
     if !(s.exs.borrowAt(slot).unwrap().inSink is Some) {return;}
     match w {

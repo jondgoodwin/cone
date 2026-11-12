@@ -65,13 +65,13 @@ fn answerKept[R](kept: &mut Option[actors.ReplyOf[R]], v: R) {
 
 // Where the live stream is (its slot's record), or null
 fn streamOf(rec: &ClientRec, slot: u32, id: u64) *StreamRec {
-  let x = rec.streams.at(slot);
+  let x = rec.streams.rawAt(slot);
   if x as usize != 0usize && (*x).used && (*x).id == id {return x;}
   null
 }
 
 fn freeStream(rec: &mut ClientRec, slot: usize) {
-  let x = rec.streams.at(u32.from(slot));
+  let x = rec.streams.rawAt(u32.from(slot));
   if x as usize != 0usize && (*x).up.on {
     let sid = (*x).id;
     let gone = rec.ups.remove(&sid);
@@ -109,7 +109,7 @@ fn terminalError(s: &StreamRec, k: httpclient.EventKind, f: &httpclient.Failure)
 // until the sink gives the buffer back; the final answer is the sink's one 'end'
 // (and a failure before the head is the caller's Err too)
 fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: usize) {
-  let s = rec.streams.borrowMutAt(u32.from(sslot)).unwrap();
+  let s = (rec.streams.rawAt(u32.from(sslot)) as &mut StreamRec);
   let k = e.kind;
   if k == httpclient.EventKind.BodyRoom {
     // an upload's connection has taken every piece pushed: the originals behind them go back, the next piece goes
@@ -282,7 +282,7 @@ struct StreamToJob {
       sink.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openHead = Some[actors.ReplyOf[Result[BodyHead, FetchError]]](rp);
     st.sink = Some[ChunkSink](sink);
@@ -327,7 +327,7 @@ struct StreamOpenJob {
       reader.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openBody = Some[actors.ReplyOf[Result[BodyStream, FetchError]]](rp);
     // no sink yet: the body waits for the BodyStream's 'read' or 'to' (BodyChoiceJob)
@@ -353,7 +353,7 @@ struct EventOpenJob {
       stage.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openEvents = Some[actors.ReplyOf[Result[EventStream, FetchError]]](rp);
     st.sink = Some[ChunkSink](stage);
@@ -379,7 +379,7 @@ struct StreamReleaseJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
@@ -415,7 +415,7 @@ struct BodyChoiceJob {
       }
       return;
     }
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let st = s as &mut StreamRec;
     match sk {
       case let Some(x) {
@@ -450,7 +450,7 @@ struct StreamCancelJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     rec.client.cancel(lp, (s as &StreamRec).fetch);
@@ -469,7 +469,7 @@ struct StreamStopJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clients.borrowMutAt(u32.from(k)).unwrap();
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;

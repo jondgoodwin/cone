@@ -189,7 +189,7 @@ struct SinkOpenJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, self.srv, self.slot, self.id);
     if !loc.ok {return;}
-    let x = sv.srvs.borrowMutAt(loc.k).unwrap().exs.borrowMutAt(self.slot).unwrap();
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(self.slot).unwrap();
     x.sinkOpen = true;
     // the exchange ended already: the source, once attached, is stopped
     if x.over {x.sinkFailed = true;}
@@ -205,7 +205,7 @@ struct SinkGoneJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, self.srv, self.slot, self.id);
     if !loc.ok {return;}
-    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
     let x = s.exs.borrowMutAt(self.slot).unwrap();
     if x.over || x.finished || x.finishing || !x.sinkOpen || x.sinkFailed || x.sinkEnded || x.sinkIn != 0u64 {return;}
     match &x.sinkUp {
@@ -235,7 +235,7 @@ struct SinkAttachJob {
       up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
       return;
     }
-    let x = sv.srvs.borrowMutAt(loc.k).unwrap().exs.borrowMutAt(slot).unwrap();
+    let x = (sv.srvs.rawAt(loc.k) as &mut SrvRec).exs.borrowMutAt(slot).unwrap();
     if x.sinkFailed {
       up.stop(Ending.Failed(AnyError.from(ServerError.closed())));
       return;
@@ -260,7 +260,7 @@ struct SinkChunkJob {
       home.home(buf);
       return;
     }
-    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
     let sl = usize.from(slot);
     let x = s.exs.borrowMutAt(slot).unwrap();
     if !x.sinkOpen || x.sinkFailed || x.over {
@@ -289,7 +289,7 @@ struct SinkEndJob {
     let srv, slot, id, how = self.(srv, slot, id, how);
     let loc = locate(sv, srv, slot, id);
     if !loc.ok {return;}
-    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let s = (sv.srvs.rawAt(loc.k) as &mut SrvRec);
     let sl = usize.from(slot);
     let x = s.exs.borrowMutAt(slot).unwrap();
     if !x.sinkOpen {return;}

@@ -177,18 +177,18 @@ pub struct GenPool[T] is ShapeChanging, CarriesRegion {
     live = live + 1u32;
     Handle(i, (*c).gen)
   }
-
-  // The entry h names, or null if it is gone (or h names nothing). Private: the
-  // address is good only until the pool changes shape
-  fn get(self: &, h: Handle) *T {
+  // TRANSITIONAL, for actorhttp and httpclient only (their records hold plug-ins reached through a Uni[Trait],
+  // which the borrow checker will not let a borrowed cell reach). The entry h names, or null if it is gone (or h names
+  // nothing). The address is good only until the pool changes shape. Other code uses borrow/borrowMut.
+  pub fn rawGet(self: &, h: Handle) *T {
     if h.index >= top {return nullOf[T]();}
     let c = cells + usize.from(h.index);
     if (*c).next != liveMark || (*c).gen != h.gen {return nullOf[T]();}
     &(*c).value as *T
   }
 
-  // The live entry in cell i, or null. Private, as 'get'
-  fn at(self: &, i: u32) *T {
+  // The live entry in cell i, or null. TRANSITIONAL, as 'rawGet': for actorhttp and httpclient only
+  pub fn rawAt(self: &, i: u32) *T {
     if i >= top {return nullOf[T]();}
     let c = cells + usize.from(i);
     if (*c).next != liveMark {return nullOf[T]();}
@@ -196,25 +196,25 @@ pub struct GenPool[T] is ShapeChanging, CarriesRegion {
   }
 
   pub fn borrow(self: &, h: Handle) Option[&T] {
-    let p = self.get(h);
+    let p = self.rawGet(h);
     if p as usize == 0usize {return None;}
     Some[&T](p as &T)
   }
 
   pub fn borrowMut(self: &mut, h: Handle) Option[&mut T] {
-    let p = self.get(h);
+    let p = self.rawGet(h);
     if p as usize == 0usize {return None;}
     Some[&mut T](p as &mut T)
   }
 
   pub fn borrowAt(self: &, i: u32) Option[&T] {
-    let p = self.at(i);
+    let p = self.rawAt(i);
     if p as usize == 0usize {return None;}
     Some[&T](p as &T)
   }
 
   pub fn borrowMutAt(self: &mut, i: u32) Option[&mut T] {
-    let p = self.at(i);
+    let p = self.rawAt(i);
     if p as usize == 0usize {return None;}
     Some[&mut T](p as &mut T)
   }
@@ -383,7 +383,7 @@ pub struct PoolEntries['a, T] is Iterator[(u32, &T)] {
     let i = pool.nextLive(pos);
     if i == noCell {pos = noCell; return None;}
     pos = i + 1u32;
-    Some[(u32, &T)]((i, pool.at(i) as &T))
+    Some[(u32, &T)]((i, pool.rawAt(i) as &T))
   }
 }
 
@@ -496,17 +496,17 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // The row h names, or noCell if it is gone
   pub fn rowIndex(self: &, h: Handle) u32 {
-    let p = index.get(h);
+    let p = index.rawGet(h);
     if p as usize == 0usize {return noCell;}
     *p
   }
 
-  pub fn isLive(self: &, h: Handle) bool {index.get(h) as usize != 0usize}
+  pub fn isLive(self: &, h: Handle) bool {index.rawGet(h) as usize != 0usize}
 
   // The entry h names, or null if it is gone. Private: the address is good
   // only until the pool changes
   fn get(self: &, h: Handle) *T {
-    let p = index.get(h);
+    let p = index.rawGet(h);
     if p as usize == 0usize {return nullOf[T]();}
     block.vals + usize.from(*p)
   }
@@ -548,7 +548,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
   fn dropAt(self: &mut, h: Handle, r: usize, fin: bool) {
     block.dropRow(r, fin);
     if r < block.n {
-      let moved = index.at(*(block.cells + r));
+      let moved = index.rawAt(*(block.cells + r));
       *moved = u32.from(r);
     }
     index.remove(h);
@@ -556,7 +556,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // Finalize the entry h names and take it out: true if there was one
   pub fn remove(self: &mut, h: Handle) bool {
-    let p = index.get(h);
+    let p = index.rawGet(h);
     if p as usize == 0usize {return false;}
     self.dropAt(h, usize.from(*p), true);
     true
@@ -564,7 +564,7 @@ pub struct DensePool[T] is ShapeChanging, CarriesRegion {
 
   // Move the entry out by value; nothing is finalized
   pub fn take(self: &mut, h: Handle) Option[T] {
-    let p = index.get(h);
+    let p = index.rawGet(h);
     if p as usize == 0usize {return None;}
     let r = usize.from(*p);
     let v = mem.readRaw[T](block.vals + r);
