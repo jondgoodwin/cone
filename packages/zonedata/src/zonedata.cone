@@ -1,0 +1,349 @@
+// The zonedata package: where a calendar Zone comes from on this machine. The
+// calendar package reads a Zone from the bytes of a TZif file (RFC 8536) and
+// reads no file and asks the system nothing; this package is the part that
+// asks. It answers a Zone by IANA name, and the machine's own.
+//
+//   import zonedata;
+//
+//   match zonedata.named("America/Sao_Paulo") {
+//     case let Ok(zone) { ... zone.offsetAt(t) ... }
+//     case let Err(e) { ... String() <- e ... }
+//   }
+//   let here = zonedata.localZone();          // Result[Zone, ZoneError]
+//
+// What it has:
+//
+//   named(name)            the Zone of an IANA name, 'Europe/Kyiv'
+//   localZone()            the Zone the machine is set to
+//   localZoneName()        the IANA name of that zone
+//   isValidName(name)      whether a text may be a zone's name (see below)
+//   windowsToIana(id)      the IANA name of a Windows zone id (windowszones.cone,
+//                          generated from CLDR by tools/zonedata/genwindowszones.py)
+//   ZoneError, ZoneErrorKind
+//
+// **What differs by system.**
+//   - Linux and other POSIX systems: 'named' reads /usr/share/zoneinfo/<name>.
+//     'localZone' reads the TZ variable, then /etc/localtime. A TZ that is a name
+//     ('Europe/Paris', or ':Europe/Paris') or an absolute path to a zone file
+//     is read (the path directly, outside the zoneinfo folder, as glibc does);
+//     one that is set and empty means UTC; a POSIX rule that names no file,
+//     such as 'EST5EDT,M3.2.0,M11.1.0' or '<+03>-3', becomes a Zone of that
+//     rule alone (no history), read by calendar's footer parser. With no TZ,
+//     /etc/localtime is read. 'localZoneName' answers TZ's name or, when
+//     /etc/localtime is a link into the zoneinfo folder, the name after
+//     'zoneinfo/'; a copy of the file, or a TZ rule, has no name and is an Err.
+//   - Windows holds no zone files. 'named' answers the Err
+//     'no zone data source on this platform; import tzdata' (the kind is
+//     NoSource). 'localZoneName' asks Windows for the zone's id (as 'Eastern
+//     Standard Time') and maps it to its IANA name; 'localZone' then asks 'named'
+//     for it, and so is the same Err until a data source exists.
+//
+// A name is checked before any file is opened, so a name cannot reach outside
+// the zoneinfo folder: see 'isValidName'.
+
+mod zonedata;
+
+import collections use String;
+import path use Path;
+import calendar use Zone;
+import env;
+import fs;
+import libc;
+
+// -------- failure --------
+
+// What kind of failure it was
+pub enum ZoneErrorKind {
+  BadName,              // the name cannot be a zone's name: nothing was read
+  NotFound,             // no zone of that name
+  NoSource,             // this platform has no zone data to read
+  Unreadable,           // the file or the system's answer could not be read
+  BadData,              // the file is not a TZif file calendar reads
+  NoLocalZone           // the system does not say which zone is the local one
+}
+
+// Why a Zone could not be had: the kind, the name asked for (empty for the
+// local zone), and a line saying what happened
+pub struct ZoneError is Error {
+  pub kind: ZoneErrorKind;
+  pub name: String;
+  pub reason: String;
+
+  // One line for a person: "zone 'Mars/Olympus': no zone of that name"
+  pub fn toText(self: &, out: &uni TextOut) {
+    if !name.isEmpty() { out <- "zone '", name.view(), "': "; }
+    out <- reason.view();
+  }
+}
+
+fn failure[T](kind: ZoneErrorKind, name: &str, reason: &str) Result[T, ZoneError] {
+  Err[T, ZoneError](ZoneError(kind, String.from(name), String.from(reason)))
+}
+
+// -------- names --------
+
+// Whether text may name a zone: one or more parts joined by '/', each part
+// made of ASCII letters and digits and '_', '-', '+' and '.' (the characters
+// IANA's names use, as in 'America/Port-au-Prince' and 'Etc/GMT+5'), no part
+// empty and none '.' or '..'. So no name is absolute, begins or ends with '/',
+// holds '\', ':' or a NUL, or climbs out of a folder.
+pub fn isValidName(name: &str) bool {
+  let b: &Array[u8] = name;
+  if b.len == 0usize { return false; }
+  var partStart = 0usize;
+  var i = 0usize;
+  while i <= b.len {
+    if i == b.len || b[i] == '/' {
+      let n = i - partStart;
+      if n == 0usize { return false; }
+      if n == 1usize && b[partStart] == '.' { return false; }
+      if n == 2usize && b[partStart] == '.' && b[partStart + 1usize] == '.' { return false; }
+      partStart = i + 1usize;
+    } else {
+      let c = b[i];
+      let ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+        || c == '_' || c == '-' || c == '+' || c == '.';
+      if !ok { return false; }
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// -------- reading a file --------
+
+fn zoneOf(file: &String, name: &str) Result[Zone, ZoneError] {
+  match Zone.fromTzif(file.view()) {
+    case let Ok(z) { Ok[Zone, ZoneError](z) }
+    case let Err(e) {
+      var why = String.from("not a TZif file of version 2 or later: ");
+      why <- e;
+      failure[Zone](ZoneErrorKind.BadData, name, why.view())
+    }
+  }
+}
+
+// The Zone in the file at a path; 'name' is what to call it in an Err
+fn readZone(p: &str, name: &str) Result[Zone, ZoneError] {
+  match fs.readFile(&Path.from(p)) {
+    case let Ok(file) { zoneOf(&file, name) }
+    case let Err(e) {
+      if e.notFound() { return failure[Zone](ZoneErrorKind.NotFound, name, "no zone of that name"); }
+      var why = String();
+      why <- e;
+      failure[Zone](ZoneErrorKind.Unreadable, name, why.view())
+    }
+  }
+}
+
+// The Zone of a POSIX TZ rule alone ('EST5EDT,M3.2.0,M11.1.0', '<+03>-3'), or
+// None if the text is no rule. calendar already reads this syntax as the footer
+// of a TZif file, so the rule is wrapped in the smallest version 2 file (no
+// transitions, one type, the rule as the footer) and read by Zone.fromTzif.
+fn ruleZone(rule: &str) Option[Zone] {
+  // Two 44-byte headers, 'TZif2' then counts; the second has 1 type and 4
+  // characters; then the type (offset 0, not DST, abbreviation 0) and "UTC\0"
+  var h = Array[u8, 98]() <- fill 0u8;
+  var k = 0usize;
+  while k < 2usize {
+    let at = k * 44usize;
+    h[at] = 'T'; h[at + 1usize] = 'Z'; h[at + 2usize] = 'i'; h[at + 3usize] = 'f'; h[at + 4usize] = '2';
+    k = k + 1usize;
+  }
+  h[44usize + 39usize] = 1u8;      // typecnt
+  h[44usize + 43usize] = 4u8;      // charcnt
+  h[94usize] = 'U'; h[95usize] = 'T'; h[96usize] = 'C';     // after the 6-byte type at 88
+  var file = String();
+  file.appendBytes(&h);
+  file.appendByte('\n');
+  file.append(rule);
+  file.appendByte('\n');
+  match Zone.fromTzif(file.view()) {
+    case let Ok(z) { Some[Zone](z) }
+    case let Err(e) { None }
+  }
+}
+
+const zoneinfoDir ="/usr/share/zoneinfo/";
+
+// The Zone of an IANA name ('Europe/Kyiv'). On Linux it is read from
+// /usr/share/zoneinfo; Windows has no such folder and answers the Err of kind
+// NoSource until a data package is imported
+pub fn named(name: &str) Result[Zone, ZoneError] {
+  if !isValidName(name) {
+    return failure[Zone](ZoneErrorKind.BadName, name,
+      "not a zone name: parts of letters, digits and _-+. joined by '/', none empty, '.' or '..'");
+  }
+  #if #os == .windows {
+    failure[Zone](ZoneErrorKind.NoSource, name, "no zone data source on this platform; import tzdata")
+  } #else {
+    var p = String.from(zoneinfoDir);
+    p.append(name);
+    readZone(p.view(), name)
+  }
+}
+
+// -------- the local zone --------
+
+// The Zone the machine is set to. On Linux: TZ, then /etc/localtime. TZ may be
+// a name, ':name', an absolute path to a zone file (read directly, outside the
+// zoneinfo directory, as glibc does), empty (UTC), or a POSIX rule string such
+// as 'EST5EDT,M3.2.0,M11.1.0' that names no file (a Zone of that rule alone).
+// On Windows: the Windows zone's IANA name, then 'named'
+pub fn localZone() Result[Zone, ZoneError] {
+  #if #os == .windows {
+    match localZoneName() {
+      case let Ok(name) { named(name.view()) }
+      case let Err(e) { Err[Zone, ZoneError](e) }
+    }
+  } #else {
+    localPosix()
+  }
+}
+
+// The IANA name of the machine's zone, 'Europe/Paris'. An Err of kind
+// NoLocalZone when the system does not say, or says a zone with no IANA name
+// (a copy of a zone file at /etc/localtime, or a Windows zone this package
+// does not know)
+pub fn localZoneName() Result[String, ZoneError] {
+  #if #os == .windows {
+    localNameWindows()
+  } #else {
+    localNamePosix()
+  }
+}
+
+// TZ with a leading ':' dropped, or None if it is not set
+fn tzVariable() Option[String] {
+  match env.get("TZ") {
+    case let Some(v) {
+      if v.view().startsWith(":") { return Some[String](String.from(v.view().sliceFrom(1usize))); }
+      Some[String](v)
+    }
+    case is None { None }
+  }
+}
+
+fn localPosix() Result[Zone, ZoneError] {
+  match tzVariable() {
+    case let Some(tz) {
+      let t = tz.view();
+      if t.len() == 0usize { return named("UTC"); }
+      if t.startsWith("/") { return readZone(t, t); }
+      let r = named(t);
+      // A rule such as 'EST5EDT,M3.2.0,M11.1.0' is no valid name, and one such
+      // as 'EST5' names no file: both may be a rule
+      let mayBeRule = match &r {
+        case let Ok(z) { false }
+        case let Err(e) { e.kind == ZoneErrorKind.BadName || e.kind == ZoneErrorKind.NotFound }
+      };
+      if mayBeRule {
+        match ruleZone(t) {
+          case let Some(z) { return Ok[Zone, ZoneError](z); }
+          case is None { }
+        }
+      }
+      return r;
+    }
+    case is None { }
+  }
+  readZone("/etc/localtime", "/etc/localtime")
+}
+
+// The name after 'zoneinfo/' in a path, if it has one
+fn afterZoneinfo(p: &str) Option[String] {
+  match p.find("zoneinfo/") {
+    case let Some(at) {
+      let rest = p.sliceFrom(at + 9usize);
+      if isValidName(rest) { Some[String](String.from(rest)) } else { None }
+    }
+    case is None { None }
+  }
+}
+
+// POSIX's readlink, which fs does not wrap
+extern fn @c readlink(path: cstr, buf: *u8, size: usize) i64;
+
+fn localNamePosix() Result[String, ZoneError] {
+  match tzVariable() {
+    case let Some(tz) {
+      let t = tz.view();
+      if t.len() == 0usize { return Ok[String, ZoneError](String.from("UTC")); }
+      if t.startsWith("/") {
+        match afterZoneinfo(t) {
+          case let Some(n) { return Ok[String, ZoneError](n); }
+          case is None {
+            return failure[String](ZoneErrorKind.NoLocalZone, t, "TZ is a path outside the zoneinfo folder, which has no name");
+          }
+        }
+      }
+      if isValidName(t) { return Ok[String, ZoneError](String.from(t)); }
+      match ruleZone(t) {
+        case let Some(z) {
+          return failure[String](ZoneErrorKind.NoLocalZone, t, "TZ is a POSIX rule, which has no IANA name");
+        }
+        case is None { }
+      }
+      return failure[String](ZoneErrorKind.BadName, t, "TZ is not a zone name");
+    }
+    case is None { }
+  }
+  // /etc/localtime, when it is a link into zoneinfo/
+  var link = Array[u8, 1024]() <- fill 0u8;
+  let lp: *u8 = &[]link as *u8;
+  let n = readlink("/etc/localtime", lp, 1023usize);
+  if n <= 0i64 {
+    return failure[String](ZoneErrorKind.NoLocalZone, "",
+      "/etc/localtime is not a link into the zoneinfo folder, so it has no zone name");
+  }
+  var target = String();
+  target.appendBytes(mem.sliceFromParts(lp, usize.from(n)));
+  match afterZoneinfo(target.view()) {
+    case let Some(name) { Ok[String, ZoneError](name) }
+    case is None {
+      failure[String](ZoneErrorKind.NoLocalZone, "", "/etc/localtime does not link into the zoneinfo folder")
+    }
+  }
+}
+
+// -------- Windows --------
+
+extern {
+  fn @c(system) WideCharToMultiByte(page: u32, flags: u32, from: *u16, fromLen: i32, to: *u8, toLen: i32,
+      fallback: *u8, usedFallback: *i32) i32;
+  fn @c(system) GetDynamicTimeZoneInformation(info: *u16) u32;
+}
+
+// DYNAMIC_TIME_ZONE_INFORMATION is 432 bytes (216 UTF-16 units); its
+// TimeZoneKeyName, 128 units, starts at byte 172, unit 86: Bias 4,
+// StandardName 64, StandardDate 16, StandardBias 4, DaylightName 64,
+// DaylightDate 16, DaylightBias 4
+const keyNameUnit = 86usize;
+
+fn localNameWindows() Result[String, ZoneError] {
+  var info = Array[u16, 216]() <- fill 0u16;
+  let ip: *u16 = &[]info as *u16;
+  let r = GetDynamicTimeZoneInformation(ip);
+  if r == 0xFFFFFFFFu32 {
+    return failure[String](ZoneErrorKind.Unreadable, "", "Windows would not say which time zone is set");
+  }
+  let key = ip + keyNameUnit;
+  let size = WideCharToMultiByte(65001u32, 0u32, key, -1i32, null, 0i32, null, null);
+  if size <= 1i32 {
+    return failure[String](ZoneErrorKind.NoLocalZone, "", "Windows names no time zone");
+  }
+  let buf = libc.malloc(usize.from(size));
+  WideCharToMultiByte(65001u32, 0u32, key, -1i32, buf, size, null, null);
+  var id = String();
+  id.appendBytes(mem.sliceFromParts(buf, usize.from(size) - 1usize));
+  libc.free(buf);
+  match windowsToIana(id.view()) {
+    case let Some(n) { Ok[String, ZoneError](String.from(n)) }
+    case is None {
+      var why = String.from("no IANA name is known for the Windows zone '");
+      why.append(id.view());
+      why.append("'");
+      failure[String](ZoneErrorKind.NoLocalZone, "", why.view())
+    }
+  }
+}

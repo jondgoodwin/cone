@@ -1,0 +1,412 @@
+// Writer's four additions: 'clear' (drop what is held, keep the buffer in use),
+// 'mark' / 'truncateTo' / 'release' (drop what was written since a mark; a live
+// mark holds its buffers as an unfilled slot does), 'slotUint' with
+// 'fillUintLE' / 'fillUintBE' (odd-width placeholders), and 'drainTo' (copy out
+// and remove from the front, never past the oldest unfilled slot or live mark).
+// The last test is a Writer from tryMake whose pool refuses a block: after that
+// each of them drops what the writer holds.
+
+mod writerops;
+
+import testing use *;
+import iobuf use *;
+import streams use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+// n bytes: from, from + 1, ... (mod 251)
+fn pattern(from: usize, n: usize) IoBuf {
+  var b = IoBuf(n);
+  var i = 0usize;
+  while i < n {
+    _ = b.append(&[u8.from((from + i) % 251usize)]);
+    i = i + 1usize;
+  }
+  b
+}
+
+// Whether a holds the pattern that begins at 'from'
+fn isPattern(a: &Array[u8], n: usize, from: usize) bool {
+  var i = 0usize;
+  while i < n {
+    if a[i] != u8.from((from + i) % 251usize) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+// Mark, roll over several buffers, truncate: back to the mark, in either of the
+// two places a mark can be (the buffer the chain still holds first, or a later one)
+fn markRollTruncate() {
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 100usize).view());
+  let m = w.mark();
+  w.put(pattern(100usize, 10000usize).view());      // rolls over at least twice
+  w.putBE[u32](0xDEADBEEFu32);
+  expect(w.len() > 10100usize, "mark: more than 4096 bytes written since");
+  expect(w.popFull() is None[IoBuf], "mark: popFull gives no buffer while the mark is live");
+  w.truncateTo(m);
+  expectUInt(u64.from(w.len()), 100u64, "mark: truncateTo drops everything since");
+  expectUInt(u64.from(w.total()), 100u64, "mark: total() agrees");
+  expectUInt(u64.from(w.view().len), 100u64, "mark: the buffer in use is the mark's");
+  w.put(pattern(100usize, 5usize).view());          // goes on from the mark
+  w.release(m);
+  let all = w.finish();
+  expectUInt(u64.from(all.len()), 105u64, "mark: the bytes after the truncate are kept");
+  var ok = true;
+  var i = 0usize;
+  while i < 105usize {
+    if all.byteAt(i) != u8.from(i % 251usize) {ok = false;}
+    i = i + 1usize;
+  }
+  expect(ok, "mark: the bytes are those before the mark then those after the truncate");
+
+  // A mark in a later buffer
+  var v = Writer.make(4096usize);
+  v.put(pattern(0usize, 5000usize).view());          // rolled once
+  let m2 = v.mark();
+  v.put(pattern(5000usize, 9000usize).view());
+  v.truncateTo(m2);
+  expectUInt(u64.from(v.len()), 5000u64, "mark: a mark in a later buffer, truncated");
+  v.truncateTo(m2);                                   // the mark is still live
+  v.putByte(1u8);
+  expectUInt(u64.from(v.len()), 5001u64, "mark: truncateTo again, then a put");
+  v.release(m2);
+  let all2 = v.finish();
+  var ok2 = true;
+  i = 0usize;
+  while i < 5000usize {
+    if all2.byteAt(i) != u8.from(i % 251usize) {ok2 = false;}
+    i = i + 1usize;
+  }
+  expect(ok2 && all2.byteAt(5000usize) == 1u8, "mark: the first 5000 bytes are intact");
+
+  // A mark ends the slots made after it, and the marks made after it
+  var u = Writer.make(4096usize);
+  u.putByte(1u8);
+  let a = u.mark();
+  let s = u.slot[u32]();
+  let b = u.mark();
+  u.truncateTo(a);
+  expectUInt(u64.from(u.len()), 1u64, "mark: a slot made after the mark is dropped");
+  u.release(a);
+  expect(u.popFull() is None[IoBuf], "mark: popFull is None for a buffer not full");
+  let c = u.finish();                                 // no slot left unfilled
+  expectUInt(u64.from(c.len()), 1u64, "mark: finish after the dropped slot");
+}
+
+// 'release' lets the buffers go on
+fn releaseFrees() {
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 100usize).view());
+  let m = w.mark();
+  w.put(pattern(0usize, 5000usize).view());
+  expect(w.popFull() is None[IoBuf], "release: held by the mark");
+  w.release(m);
+  match w.popFull() {
+    case let Some(b) {expect(b.len() > 0usize, "release: after it, the buffer goes on");}
+    else {expect(false, "release: popFull gave None after the release");}
+  }
+}
+
+// drainTo copies out and removes from the front
+fn drainBasics() {
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 10000usize).view());
+  var out = IoBuf(10000usize);
+  let spare = out.whole();
+  expectUInt(u64.from(w.drainTo(&mut spare[0usize ..< 100usize])), 100u64, "drainTo: 100 asked, 100 given");
+  expect(isPattern(&spare[0usize ..< 100usize], 100usize, 0usize), "drainTo: the front bytes");
+  expectUInt(u64.from(w.len()), 9900u64, "drainTo: removed");
+  expectUInt(u64.from(w.total()), 10000u64, "drainTo: total() still counts the bytes taken");
+  expectUInt(u64.from(w.drainTo(&mut spare[100usize ..< 6000usize])), 5900u64, "drainTo: across the buffers");
+  expect(isPattern(&spare[100usize ..< 6000usize], 5900usize, 100usize), "drainTo: the next bytes, in order");
+  expectUInt(u64.from(w.drainTo(&mut spare[6000usize ..< 10000usize])), 4000u64, "drainTo: the rest, fewer than asked for room");
+  expect(isPattern(&spare[6000usize ..< 10000usize], 4000usize, 6000usize), "drainTo: the last bytes");
+  expect(w.isEmpty(), "drainTo: nothing held");
+  expectUInt(u64.from(w.drainTo(&mut spare[0usize ..< 10usize])), 0u64, "drainTo: nothing to give");
+  w.putByte(9u8);
+  expectUInt(u64.from(w.drainTo(&mut spare[0usize ..< 10usize])), 1u64, "drainTo: the writer goes on after");
+  expectUInt(u64.from(spare[0usize]), 9u64, "drainTo: the byte put after");
+}
+
+// drainTo stops at the oldest unfilled slot, and at the oldest live mark
+fn drainStops() {
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 10usize).view());
+  let s = w.slot[u32]();
+  w.put(pattern(10usize, 10usize).view());
+  var out = IoBuf(100usize);
+  let d = out.whole();
+  expectUInt(u64.from(w.drainTo(d)), 10u64, "drainTo: stops at an unfilled slot");
+  expect(isPattern(&d[0usize ..< 10usize], 10usize, 0usize), "drainTo: the bytes before the slot");
+  expectUInt(u64.from(w.drainTo(d)), 0u64, "drainTo: gives nothing more while the slot is open");
+  w.fillBE(s, 0x01020304u32);
+  expectUInt(u64.from(w.drainTo(d)), 14u64, "drainTo: the slot filled, the rest goes");
+  expectUInt(u64.from(d[0usize]), 1u64, "drainTo: the filled slot's bytes");
+  expectUInt(u64.from(d[3usize]), 4u64, "drainTo: ...in order");
+
+  // A slot in a later buffer, filled after the bytes before it were drained
+  var v = Writer.make(4096usize);
+  v.put(pattern(0usize, 5000usize).view());
+  let s2 = v.slot[u16]();
+  v.put(pattern(5000usize, 100usize).view());
+  var big = IoBuf(6000usize);
+  let e = big.whole();
+  expectUInt(u64.from(v.drainTo(e)), 5000u64, "drainTo: stops at a slot in a later buffer");
+  v.fillLE(s2, 0x0102u16);
+  expectUInt(u64.from(v.drainTo(e)), 102u64, "drainTo: then the slot and the bytes after");
+  expectUInt(u64.from(e[0usize]), 2u64, "drainTo: the slot filled after the drain");
+  expect(isPattern(&e[2usize ..< 102usize], 100usize, 5000usize), "drainTo: the bytes after the slot");
+
+  // A mark
+  var x = Writer.make(4096usize);
+  x.put(pattern(0usize, 50usize).view());
+  let m = x.mark();
+  x.put(pattern(50usize, 50usize).view());
+  expectUInt(u64.from(x.drainTo(d)), 50u64, "drainTo: stops at a live mark");
+  x.truncateTo(m);                                    // the mark is where it was
+  expectUInt(u64.from(x.len()), 0u64, "drainTo: the mark still marks the point drained to");
+  x.put(pattern(50usize, 50usize).view());
+  expectUInt(u64.from(x.drainTo(d)), 0u64, "drainTo: still held by the mark");
+  x.release(m);
+  expectUInt(u64.from(x.drainTo(d)), 50u64, "drainTo: released, it goes on");
+
+  // A mark at the very end of a buffer that drainTo then empties
+  var y = Writer.make(4096usize);
+  let room = y.room();
+  y.put(pattern(0usize, room).view());
+  let m3 = y.mark();
+  y.put(pattern(room, 10usize).view());               // rolls
+  var all = IoBuf(room + 100usize);
+  expectUInt(u64.from(y.drainTo(all.whole())), u64.from(room), "drainTo: up to a mark at the end of a buffer");
+  y.truncateTo(m3);
+  expectUInt(u64.from(y.len()), 0u64, "drainTo: the mark is at the start of what follows");
+  y.putByte(3u8);
+  y.release(m3);
+  expectUInt(u64.from(y.finish().len()), 1u64, "drainTo: the writer goes on from the mark");
+}
+
+// clear drops what is held and keeps the buffer in use
+fn clearKeeps() {
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 50usize).view());
+  let at = w.buffer().base() as usize;
+  w.clear();
+  expect(w.isEmpty(), "clear: nothing held");
+  expectUInt(u64.from(w.len()), 0u64, "clear: len 0");
+  expect(w.buffer().base() as usize == at, "clear: the same block (the same base address)");
+  expectUInt(u64.from(w.room()), u64.from(w.buffer().capacity()), "clear: all its room");
+
+  // After rolling over: the buffer in use is kept, the others go back
+  w.put(pattern(0usize, 10000usize).view());
+  let at2 = w.buffer().base() as usize;
+  let lentBefore = stats().lent;
+  w.clear();
+  expect(w.buffer().base() as usize == at2, "clear: the buffer in use is the one kept");
+  expect(stats().lent < lentBefore, "clear: the held buffers went back to the pool");
+  expect(w.isEmpty(), "clear: nothing held after the roll");
+
+  // Slots and marks end; the writer goes on
+  w.put(pattern(0usize, 10usize).view());
+  let m = w.mark();
+  _ = w.slot[u32]();
+  w.clear();
+  w.putByte(5u8);
+  expectUInt(u64.from(w.finish().len()), 1u64, "clear: an unfilled slot is dropped, so finish is no panic");
+  expectUInt(u64.from(w.total()), 1u64, "clear: total() counts what is kept");
+}
+
+// slotUint: odd widths
+fn slotUints() {
+  var w = Writer.make(4096usize);
+  let s = w.slotUint(3usize);
+  w.putByte(0xEEu8);
+  w.fillUintBE(s, 0x010203u64);
+  var t = w.slotUint(3usize);
+  w.fillUintLE(t, 0x010203u64);
+  let all = w.finish();
+  expectUInt(u64.from(all.len()), 7u64, "slotUint: three bytes reserved");
+  expectUInt(u64.from(all.byteAt(0usize)), 1u64, "slotUint: BE, the most significant first");
+  expectUInt(u64.from(all.byteAt(2usize)), 3u64, "slotUint: BE, the least significant last");
+  expectUInt(u64.from(all.byteAt(3usize)), 0xEEu64, "slotUint: the byte after");
+  expectUInt(u64.from(all.byteAt(4usize)), 3u64, "slotUint: LE, the least significant first");
+  expectUInt(u64.from(all.byteAt(6usize)), 1u64, "slotUint: LE, the most significant last");
+
+  // It is never split: it goes to the next buffer, and is filled there
+  var v = Writer.make(4096usize);
+  v.repeat(0xAAu8, v.room() - 2usize);
+  let s2 = v.slotUint(3usize);
+  v.put(pattern(0usize, 10usize).view());
+  v.fillUintBE(s2, 0xA0B0C0u64);
+  let all2 = v.finish();
+  expectUInt(u64.from(all2.byteAt(all2.len() - 13usize)), 0xA0u64, "slotUint: filled in a buffer the chain holds");
+  expectUInt(u64.from(all2.byteAt(all2.len() - 11usize)), 0xC0u64, "slotUint: ...all three bytes");
+
+  // And a width of 8
+  var u = Writer.make(4096usize);
+  let s3 = u.slotUint(8usize);
+  u.fillUintLE(s3, 0x0102030405060708u64);
+  expectUInt(u64.from(u.finish().byteAt(0usize)), 8u64, "slotUint: eight bytes");
+}
+
+// Hoard the pool (as starve.cone does), to force a refusal
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+// On a writer that has been starved, each drops what it holds
+fn starvedOps() {
+  let before = stats().lent;
+  {
+    var h = hoard();
+    _ = h.popFront();                                  // the pool lends exactly one block
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.put(pattern(0usize, 3000usize).view());
+    let m = w.mark();
+    let s = w.slotUint(3usize);
+    w.put(pattern(0usize, 3000usize).view());          // the second block is refused
+    expect(w.starved(), "starved: the refusal came");
+    let held = w.len();
+    w.truncateTo(m);
+    expectUInt(u64.from(w.len()), u64.from(held), "starved: truncateTo changes nothing");
+    var sink = IoBuf(100usize);
+    expectUInt(u64.from(w.drainTo(sink.whole())), 0u64, "starved: drainTo gives nothing");
+    w.fillUintBE(s, 1u64);
+    let m2 = w.mark();
+    let s2 = w.slotUint(2usize);
+    w.fillUintLE(s2, 1u64);
+    w.truncateTo(m2);
+    w.release(m2);
+    w.release(m);
+    expectUInt(u64.from(w.len()), u64.from(held), "starved: marks, slots and fills are dropped");
+    w.clear();
+    expectUInt(u64.from(w.len()), 0u64, "starved: clear drops what is held");
+    expect(w.starved(), "starved: ...and the writer stays starved");
+    w.putByte(1u8);
+    expectUInt(u64.from(w.len()), 0u64, "starved: puts are still dropped");
+    expect(w.tryFinish() is None[Chain], "starved: tryFinish still None");
+  }
+  expectUInt(stats().lent, before, "starved: every block back in the pool");
+}
+
+// A partial drainTo leaves the first buffer's bytes where they were; a truncateTo
+// that then compacts that buffer must carry the older slots and marks with it
+fn drainedOffsets() {
+  // A slot in the drained buffer, filled after a truncate to a later mark
+  var w = Writer.make(4096usize);
+  w.put(pattern(0usize, 10usize).view());
+  let s = w.slot[u32]();
+  w.put(pattern(0usize, 5000usize).view());
+  var out = IoBuf(100usize);
+  expectUInt(u64.from(w.drainTo(out.whole())), 10u64, "drained: drainTo stops at the slot");
+  let m = w.mark();                                   // in a later buffer
+  w.put(pattern(0usize, 9000usize).view());
+  w.truncateTo(m);
+  w.fillBE(s, 0x01020304u32);
+  w.release(m);
+  let all = w.finish();
+  expectUInt(u64.from(all.len()), 5004u64, "drained: the slot and the bytes before the mark are held");
+  var ok = all.byteAt(0usize) == 1u8 && all.byteAt(1usize) == 2u8 && all.byteAt(2usize) == 3u8 && all.byteAt(3usize) == 4u8;
+  var i = 0usize;
+  while i < 5000usize {
+    if all.byteAt(4usize + i) != u8.from(i % 251usize) {ok = false;}
+    i = i + 1usize;
+  }
+  expect(ok, "drained: the slot is filled in place and the bytes after it are untouched");
+
+  // An older mark, truncated to after a truncate to a newer one
+  var v = Writer.make(4096usize);
+  v.put(pattern(0usize, 15usize).view());
+  let mo = v.mark();
+  v.put(pattern(0usize, 5000usize).view());
+  var sink = IoBuf(100usize);
+  expectUInt(u64.from(v.drainTo(sink.whole())), 15u64, "drained: drainTo stops at the older mark");
+  let mn = v.mark();
+  v.put(pattern(0usize, 9000usize).view());
+  v.truncateTo(mn);
+  v.truncateTo(mo);
+  expectUInt(u64.from(v.len()), 0u64, "drained: the older mark still cuts back to where it was");
+  v.release(mo);                                      // mn ended with the truncate to mo
+}
+
+// A mark taken before anything is written stays good when a whole buffer is put after it
+fn markOnEmpty() {
+  let plain = Writer.make(4096usize);
+  var w = Writer.make(4096usize);
+  let m = w.mark();
+  w.putBuf(pattern(0usize, 70000usize));
+  w.put(pattern(0usize, 5usize).view());
+  w.truncateTo(m);
+  expectUInt(u64.from(w.len()), 0u64, "markOnEmpty: truncateTo drops the put buffer and the bytes");
+  expectUInt(u64.from(w.room()), u64.from(plain.room()), "markOnEmpty: the buffer in use is still the writer's own");
+  w.release(m);
+
+  // The same through putFrom, which also moves whole segments
+  var r = Reader.make(unbounded);
+  _ = r.push(pattern(0usize, 6000usize));
+  var x = Writer.make(4096usize);
+  let m2 = x.mark();
+  x.putFrom(&mut r, 6000usize);
+  x.put(pattern(0usize, 5usize).view());
+  x.truncateTo(m2);
+  expectUInt(u64.from(x.len()), 0u64, "markOnEmpty: putFrom's whole segments are dropped too");
+  expectUInt(u64.from(x.room()), u64.from(plain.room()), "markOnEmpty: ...and the buffer in use is the writer's own");
+  x.release(m2);
+}
+
+// A partial drainTo of the buffer in use on a writer whose pool is out starves, never panics
+fn starvedDrain() {
+  let before = stats().lent;
+  {
+    var h = hoard();
+    _ = h.popFront();
+    var w = match Writer.tryMake(4096usize) {
+      case var Some(x) {x}
+      else {return;}
+    };
+    w.put(pattern(0usize, 3000usize).view());
+    var sink = IoBuf(100usize);
+    let d = sink.whole();
+    expectUInt(u64.from(w.drainTo(&mut d[0usize ..< 100usize])), 0u64, "starvedDrain: the roll is refused, nothing is drained");
+    expect(w.starved(), "starvedDrain: the writer is starved");
+  }
+  expectUInt(stats().lent, before, "starvedDrain: every block back in the pool");
+}
+
+fn main() i32 {
+  markRollTruncate();
+  releaseFrees();
+  drainBasics();
+  drainStops();
+  clearKeeps();
+  slotUints();
+  starvedOps();
+  drainedOffsets();
+  markOnEmpty();
+  starvedDrain();
+  done()
+}
