@@ -1,0 +1,111 @@
+// A flood of frames written while the pool runs dry (iobuf's tryMake, the pool
+// at the reserve of its maxBytes): the FrameWriter, over streams' fallible
+// Writer, fills the few blocks the pool lends, then the pool refuses; no panic,
+// the writer is starved, every frame after is dropped (HEADERS, DATA, PING,
+// GOAWAY alike), 'take' gives nothing and every block goes back to the pool.
+// A Connection started on a pool that is already dry fails Overloaded with the
+// same result (refused.cone).
+
+mod flood;
+
+import testing use *;
+import collections use List;
+import iobuf use *;
+import http2 use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+fn free(h: &mut Chain, k: usize) {
+  var i = 0usize;
+  while i < k {
+    _ = h.popFront();
+    i = i + 1usize;
+  }
+}
+
+fn block(n: usize) List[u8] {
+  var b = List[u8]();
+  var i = 0usize;
+  while i < n {
+    b.push(u8.from(i & 0x7Fusize));
+    i = i + 1usize;
+  }
+  b
+}
+
+fn main() i32 {
+  let before = stats().lent;
+  {
+    var h = hoard();
+    free(&mut h, 3usize);                          // 12 KiB for the writer to use
+    var w = FrameWriter.make(&FrameConfig.make());
+    let hb = block(200usize);
+    var sent = 0u32;
+    while sent < 500u32 && !w.isStarved() {
+      sent = sent + 1u32;
+      w.headers(1u32, hb.view(), false);
+    }
+    expect(w.isStarved(), "flood: the pool ran dry under HEADERS frames");
+    expect(sent > 40u32, "flood: ...after the lent blocks were filled (about 58 frames of 209 bytes)");
+    let held = w.queuedBytes();
+    expect(held > 0usize, "flood: the frames before the refusal are queued");
+    // everything else is dropped, and none of it panics
+    w.headers(3u32, hb.view(), true);
+    _ = w.ping(1u64, false);
+    _ = w.settingsAck();
+    _ = w.rstStream(1u32, ErrorCode.Cancel);
+    w.goAway(1u32, ErrorCode.EnhanceYourCalm, "flood");
+    var data = IoBuf(1000usize);
+    data.setLen(1000usize);
+    w.data(1u32, data, false);
+    expectUInt(u64.from(w.queuedBytes()), u64.from(held), "flood: later frames of every kind are dropped");
+    let out = w.take();
+    expectUInt(u64.from(out.len()), 0u64, "flood: take gives nothing from a starved writer");
+    expectUInt(u64.from(w.queuedBytes()), 0u64, "flood: ...and the queue is empty");
+    _ = w.ping(2u64, false);
+    expectUInt(u64.from(w.queuedBytes()), 0u64, "flood: it stays starved");
+  }
+  expectUInt(stats().lent, before, "flood: every block back in the pool");
+  {
+    // DATA frames moved in whole until the pool runs dry
+    var h = hoard();
+    free(&mut h, 2usize);
+    var w = FrameWriter.make(&FrameConfig.make());
+    var sent = 0u32;
+    while sent < 100u32 && !w.isStarved() {
+      sent = sent + 1u32;
+      var data = IoBuf(100usize);
+      data.setLen(100usize);
+      w.data(1u32, data, false);
+    }
+    expect(w.isStarved(), "flood: the pool ran dry under DATA frames");
+    _ = w.take();
+  }
+  expectUInt(stats().lent, before, "flood DATA: every block back in the pool");
+  done()
+}
