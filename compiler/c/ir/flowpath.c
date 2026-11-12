@@ -2773,11 +2773,12 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     if (!marked) {
         loanFreezeShared(loan);
         loanFreezeWritable(loan);
-        // A place in a 'var' global freezes against the same name, as above, and is also asked of
-        // every call, which may write the global by its name (reshapeCall's 'globalview')
-        if (loanPlaceInGlobal(pl))
-            loanShapeMark(loan, container);
     }
+    // A place in a 'var' global is asked of every call, which may write the global by its name
+    // (reshapeCall's 'globalview'). A loan only marked lazily (an exclusive one) is asked too: its
+    // freezing stops the global's own name in this function, never a callee that writes it by name
+    if (loanPlaceInGlobal(pl))
+        loanShapeMark(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the

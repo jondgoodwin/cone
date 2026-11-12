@@ -1,0 +1,56 @@
+// A '&mut' borrow taken by a 'var' global's own name, into a collection it holds, across a call that
+// writes the global by its name (Bug 89). The borrow freezes the global's name in this function, but a
+// callee is another function: so the borrow is asked of every call, as a read borrow into a global is
+// (collection_flow_reshape_global holds those). Each function is a program that wrote or read freed
+// memory when it was accepted: 'grow' moves the List's block, 'kill' frees the pool's slot.
+
+mod collection_flow_reshape_global_excl;
+
+import collections use *;
+import pools use *;
+
+struct It { pub v: i64; }
+struct Conn is Move { pub state: u32; pub name: String; }
+struct Ed { pub items: List[It]; }
+
+var gl: List[It];
+var gd: Dict[i64, It];
+var gpool: GenPool[Conn];
+var ed: Ed;
+
+fn @initpure init() {
+  gl = List[It]();
+  gd = Dict[i64, It]();
+  gpool = GenPool[Conn].make(0u32);
+  ed = Ed(List[It]());
+}
+
+fn grow() { gl.push(It(5i64)); }
+fn growDict() { gd.insert(100i64, It(5i64)); }
+fn kill() { gpool.removeAt(0u32); }
+fn growEd() { ed.items.push(It(5i64)); }
+
+fn onList() i64 {
+  let c = &mut gl[0usize];
+  grow();                                                     //~ ErrorShapeReshape "through a global"
+  c.v
+}
+
+fn onDict() i64 {
+  let k = 1i64;
+  let c = gd.getMut(&k).unwrap();
+  growDict();                                                 //~ ErrorShapeReshape "through a global"
+  c.v
+}
+
+fn onPool() u32 {
+  let c = gpool.borrowMutAt(0u32).unwrap();
+  kill();                                                     //~ ErrorShapeReshape "through a global"
+  c.state
+}
+
+fn onWrapped() i64 {
+  let c = &mut ed.items[0usize];
+  growEd();                                                   //~ ErrorShapeReshape "through a global"
+  c.v
+}
