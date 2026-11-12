@@ -1,0 +1,48 @@
+// The one-shot 'compress' of 70 MiB of data that does not compress makes a frame over the buffer
+// pool's bound (64 MiB). The output sits in a List, never in the pool, so it is a value and not a
+// panic. The frame is read back through a Decompressor fed 1 MiB at a time (its input is held in
+// pool buffers, so feeding it whole would hit the bound itself) and is the data.
+
+mod bigcompress;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import iobuf use IoBuf;
+
+fn main() i32 {
+  let n = 73400320usize;
+  var data = List[u8]();
+  data.reserve(n);
+  var s = 12345u32;
+  var i = 0usize;
+  while i < n {
+    s = s * 1664525u32 + 1013904223u32;
+    data.push(u8.from((s >> 16u32) % 256u32));
+    i += 1usize;
+  }
+  let z = compress(data.view(), 1);
+  expect(z.len() > 67108864usize, "the frame is over the pool bound");
+  var d = Decompressor.make();
+  var out = List[u8]();
+  out.reserve(n);
+  var at = 0usize;
+  while at < z.len() {
+    let end = if z.len() - at > 1048576usize {at + 1048576usize} else {z.len()};
+    d.feed(&z.view()[at ..< end]);
+    at = end;
+    if at == z.len() { d.finish(); }
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      var buf = IoBuf(1048576usize);
+      let pre = buf.capacity() - 1048576usize;
+      buf.setLen(pre);
+      st = d.pull(&mut buf);
+      out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    }
+  }
+  expect(d.isDone(), "the frame ended");
+  expectInt(i64.from(out.len()), i64.from(n), "all the bytes came out");
+  expect(out.view() == data.view(), "the bytes are the data");
+  done()
+}
