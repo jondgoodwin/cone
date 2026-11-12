@@ -16,8 +16,7 @@
 	<p style="margin-left: 40px;"><i>Note: Not built yet: local time (a <span class="pre">DateTime</span> is always UTC, and a written
 		offset is only read, into UTC; a <span class="pre">Zone</span> gives the offset at an instant but does not yet
 		turn an instant into a local date-time or back, and nothing yet finds a zone by name or the machine's own);
-		dates written by a pattern or in a person's language (only RFC 3339 and HTTP's
-		dates are written and read); repeating timers; and checked or saturating <span class="pre">Duration</span>
+		dates in a person's language (a pattern writes and reads English names only); repeating timers; and checked or saturating <span class="pre">Duration</span>
 		arithmetic (overflow wraps).</i></p>
 
 	<p>Four library packages deal with time. <span class="pre">time</span> holds the values: how long
@@ -344,6 +343,44 @@ it is after 2026-01-01
 		<span class="pre">&quot;-03&quot;</span>), and <span class="pre">isDst</span>. The abbreviation is borrowed from
 		the zone. Before the first transition it is the file's first time type (local mean time, in the files
 		IANA publishes); at a transition's own instant it is the new offset.</p>
+
+	<h3 id="patterns">Patterns</h3>
+	<p>A pattern, a subset of C's <span class="pre">strftime</span>, writes and reads a date-time in any layout:
+		<span class="pre">dt.format(&quot;%Y-%m-%d %H:%M&quot;)</span> answers a <span class="pre">Result</span> holding the
+		<span class="pre">String</span> <span class="pre">2026-10-03 14:05</span>, and
+		<span class="pre">DateTime.parse(pattern, text)</span> answers the <span class="pre">DateTime</span>. Every
+		byte but <span class="pre">%</span> stands for itself. The directives are these and no others:</p>
+	<ul>
+	<li><span class="pre">%Y</span> the year (four digits, or ISO 8601's expanded form outside 0000 to 9999);
+		<span class="pre">%m</span> the month 01 to 12; <span class="pre">%d</span> the day 01 to 31;
+		<span class="pre">%e</span> the day, space-padded (<span class="pre">&nbsp;6</span>); <span class="pre">%j</span> the day
+		of the year 001 to 366.</li>
+	<li><span class="pre">%H</span> <span class="pre">%M</span> <span class="pre">%S</span> the hour, minute and second;
+		<span class="pre">%f</span> the nanosecond, always nine digits (Python's <span class="pre">%f</span> is six).</li>
+	<li><span class="pre">%a</span> <span class="pre">%A</span> the day's name, three letters or whole;
+		<span class="pre">%b</span> <span class="pre">%B</span> the month's. English only, case-sensitive.</li>
+	<li><span class="pre">%z</span> the offset, <span class="pre">+0530</span> (with seconds, <span class="pre">-045602</span>, when it has
+		them); read as <span class="pre">Z</span>, <span class="pre">+hhmm</span>, <span class="pre">+hh:mm</span>, <span class="pre">+hhmmss</span> or
+			<span class="pre">+hh:mm:ss</span>, so what is written is read back.
+		<span class="pre">%Z</span> the offset's name (<span class="pre">BRT</span>), written only: a name such as
+		<span class="pre">IST</span> belongs to several zones, so a pattern that reads <span class="pre">%Z</span> is refused.
+		<span class="pre">%%</span> is a percent sign.</li>
+	</ul>
+	<p>A pattern with anything else (<span class="pre">%-d</span>, <span class="pre">%c</span>), a
+		<span class="pre">%</span> at its end, or, for reading, a directive named twice, no year, no day, or a
+		day of the year together with a month or a day of the month, is refused with a
+		<span class="pre">TimeError</span> giving the byte of the pattern. Reading is as strict as RFC 3339's: every digit,
+		every part in range, the day's name the date's, nothing after the text. A time part the pattern does not name is
+		zero. A <span class="pre">DateTime</span> is UTC, so it writes <span class="pre">%z</span> as
+		<span class="pre">+0000</span> and <span class="pre">%Z</span> as <span class="pre">UTC</span>, and
+		<span class="pre">parse</span> moves a <span class="pre">%z</span> it reads to UTC.</p>
+	<p>An <span class="pre">OffsetDateTime</span> is a place's wall clock, <span class="pre">dt</span>, and the
+		<span class="pre">Offset</span> that applied there, <span class="pre">offset</span>.
+		<span class="pre">zone.toOffsetDateTime(t)</span> makes one from a <span class="pre">Timestamp</span>; its
+		<span class="pre">format</span> writes <span class="pre">%z</span> and <span class="pre">%Z</span> from the offset
+		(<span class="pre">-0400 EDT</span>), and <span class="pre">OffsetDateTime.parse</span>, whose pattern must have a
+		<span class="pre">%z</span>, keeps the text's wall clock and offset (an offset read from text has no name, and
+		<span class="pre">%Z</span> writes it as <span class="pre">%z</span> does).</p>
 
 	<h3 id="time-error">TimeError</h3>
 	<p>A text that is not a date or a time is refused, never read as some other moment: the whole text must be the format,
