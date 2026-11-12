@@ -1,0 +1,41 @@
+// The ShapeKeeping promise over a nested instance whose members have not been
+// checked. 'throughTrait' (checked first, it is written first) borrows an element and
+// calls through '&<mut Scorer + ShapeKeeping' on the promise alone. 'Pusher[Option[i64]]'
+// is made by the member check of 'Pusher[i64]' and waits for a use; handing it to
+// 'throughTrait' is the first use, and the coercion must check its members (late)
+// and find that its 'bump' pushes to a list, so the promise is refused.
+
+mod generic_lazy_shapekeeping_marker_refused;
+
+import collections use *;
+
+struct Entity { pub hp: i64; }
+struct World { pub score: i64; pub entities: List[Entity]; }
+
+trait Scorer { pub fn bump(self: &mut, w: &mut World); }
+
+fn throughTrait(w: &mut World, s: &<mut Scorer + ShapeKeeping) i64 {
+  let e = &w.entities[0usize];
+  s.bump(w);
+  e.hp
+}
+
+struct Pusher[R] is Scorer {
+  v: R;
+
+  pub fn lift(self: &Pusher[R]) Pusher[Option[R]] {
+    Pusher[Option[R]](None[R])
+  }
+
+  pub fn bump(self: &mut Pusher[R], w: &mut World) {
+    w.entities.push(Entity(1));
+  }
+}
+
+fn main() {
+  let p = Pusher[i64](5);
+  var n = p.lift();
+  var w = World(0, List[Entity]());
+  w.entities.push(Entity(3));
+  throughTrait(&mut w, &mut n);   //~ ErrorNotShapeKeeping "bump"
+}
