@@ -2954,8 +2954,8 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
 // The runtime's entry for each failure the compiler checks for
 // (packages/conestd/panic.cone), and how many values it reports before the
 // location
-static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc", "cone_panicDivide"};
-static unsigned genlPanicValCnt[] = {2, 3, 1, 1};
+static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc", "cone_panicDivide", "cone_panicInitAgain"};
+static unsigned genlPanicValCnt[] = {2, 3, 1, 1, 0};
 
 // End the program where a check the compiler inserted has failed: a call to
 // the runtime's entry for the failure, handed the values it reports (each a
