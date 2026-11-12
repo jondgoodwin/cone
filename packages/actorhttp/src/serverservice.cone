@@ -168,13 +168,6 @@ fn answerKeptIn[R](kept: &mut Option[actors.ReplyOf[R]], v: R) {
   }
 }
 
-// Where the live exchange is (its slot's record), or null: a record that is
-// not in use, was reused (another id) or died before an actor took it names none
-fn exOf(srv: &SrvRec, slot: u32, id: u64) *ExRec {
-  let x = srv.exs.at(slot);
-  if x as usize != 0usize && (*x).used && (*x).id == id && (*x).stage != exDead {return x;}
-  null
-}
 
 // The slot of the request whose key is key, or the number of slots when it is none
 fn slotOfKey(srv: &SrvRec, key: u64) usize { srv.byReq.getCopy(&key) || srv.exs.bound() }
@@ -270,7 +263,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
     if srv.closing {
       x.rejected = true;
       x.stage = exOut;
-      answerText(srv, x, 503u16, "the server is closing", true);
+      answerText(srv, slot, 503u16, "the server is closing", true);
     } else if srv.streamBodies {
       // Delivered at its head: its body is staged until the handler chooses (requestbody.cone). maxBody and the
       // 413 are the gathered path's; a 100 Continue waits for the handler's first read
@@ -281,9 +274,9 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
     } else if framing.isSized() && framing.length > u64.from(srv.maxBody) {
       x.rejected = true;
       x.stage = exOut;
-      answerText(srv, x, 413u16, "the request body is too large", true);
+      answerText(srv, slot, 413u16, "the request body is too large", true);
     } else {
-      if head.headers.hasToken("Expect", "100-continue") {sendContinue(srv, x);}
+      if head.headers.hasToken("Expect", "100-continue") {sendContinue(srv, slot);}
       srv.reading.insert(key, Request(head, String(), peer, srv.secure));
     }
   } else if k == sData && srv.streamBodies {
@@ -305,7 +298,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
           srv.reading.remove(&key);
           x.rejected = true;
           x.stage = exOut;
-          answerText(srv, x, 413u16, "the request body is too large", true);
+          answerText(srv, slot, 413u16, "the request body is too large", true);
         }
       }
     }
@@ -332,8 +325,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
   } else if k == sWritable {
     let slot = slotOfKey(srv, key);
     if slot < srv.exs.bound() {
-      let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
-      pumpWrites(srv, lp, x);
+      pumpWrites(srv, lp, slot);
     }
   } else if k == sDone || k == sOver {
     let slot = slotOfKey(srv, key);
@@ -349,9 +341,10 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
 
 // Its head: a TCP one says where HTTP/3 is, when the server offers it and
 // the program wrote no Alt-Svc of its own
-fn srvRespond(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: BodyLength) {
-  if x.onH3 {
-    srv.h3.respond(x.qreq, head, framing);
+fn srvRespond(srv: &mut SrvRec, slot: usize, head: ResponseHead, framing: BodyLength) {
+  let r = routeOf(srv, slot);
+  if r.onH3 {
+    srv.h3.respond(r.qreq, head, framing);
     return;
   }
   var h = head;
@@ -359,32 +352,35 @@ fn srvRespond(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: Body
     let a = srv.altSvc.clone();
     h.headers.add("Alt-Svc", a.view());
   }
-  srv.drv.respond(x.req, h, framing);
+  srv.drv.respond(r.req, h, framing);
 }
 
 // Body bytes, moved in: None when taken, or the buffer back when the connection refuses it (Writable comes
 // when there is room)
-fn srvSendBuf(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) Option[IoBuf] {
-  if x.onH3 {srv.h3.sendData(x.qreq, b)} else {srv.drv.sendData(x.req, b)}
+fn srvSendBuf(srv: &mut SrvRec, slot: usize, b: IoBuf) Option[IoBuf] {
+  let r = routeOf(srv, slot);
+  if r.onH3 {srv.h3.sendData(r.qreq, b)} else {srv.drv.sendData(r.req, b)}
 }
 
 // Body bytes: whether they were taken (else Writable comes when there is room)
-fn srvSend(srv: &mut SrvRec, x: &mut ExRec, b: IoBuf) bool {
-  if x.onH3 {
-    match srv.h3.sendData(x.qreq, b) {
+fn srvSend(srv: &mut SrvRec, slot: usize, b: IoBuf) bool {
+  let r = routeOf(srv, slot);
+  if r.onH3 {
+    match srv.h3.sendData(r.qreq, b) {
       case is None[IoBuf] {return true;}
       else {return false;}
     }
   }
-  match srv.drv.sendData(x.req, b) {
+  match srv.drv.sendData(r.req, b) {
     case is None[IoBuf] {true}
     else {false}
   }
 }
 
-fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
-  if x.onH3 {srv.h3.finish(x.qreq);} else {srv.drv.finish(x.req);}
-  stopUpload(srv, x);
+fn srvFinish(srv: &mut SrvRec, slot: usize) {
+  let r = routeOf(srv, slot);
+  if r.onH3 {srv.h3.finish(r.qreq);} else {srv.drv.finish(r.req);}
+  stopUpload(srv, slot);
 }
 
 // A streamed request's body nobody wants (dropped unread, never taken, cut by a limit) while its response is
@@ -394,34 +390,53 @@ fn srvFinish(srv: &mut SrvRec, x: &mut ExRec) {
 // body (it reads it, it is staged for it) is not affected: its reads end with End, on HTTP/1.1 too (the
 // connection keeps reading it). On HTTP/1.1 the driver reads the dropped body out instead, up to 256 KiB,
 // and keeps the connection if it ends inside that
-fn stopUpload(srv: &mut SrvRec, x: &mut ExRec) {
-  if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
-  if x.onH3 {srv.h3.stopBody(x.qreq);} else {srv.drv.stopBody(x.req);}
+fn stopUpload(srv: &mut SrvRec, slot: usize) {
+  let r = routeOf(srv, slot);
+  {
+    let x = srv.exs.borrowAt(u32.from(slot)).unwrap();
+    if !x.inMode || !x.inDiscard || x.inEnded || !x.finished || x.over {return;}
+  }
+  if r.onH3 {srv.h3.stopBody(r.qreq);} else {srv.drv.stopBody(r.req);}
 }
 
-fn srvCancel(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
-  if x.onH3 {srv.h3.cancel(lp, x.qreq);} else {srv.drv.cancel(lp, x.req);}
+fn srvCancel(srv: &mut SrvRec, lp: &mut Loop, slot: usize) {
+  let r = routeOf(srv, slot);
+  if r.onH3 {srv.h3.cancel(lp, r.qreq);} else {srv.drv.cancel(lp, r.req);}
 }
 
 // 100 Continue, for a request that asked for it
-fn sendContinue(srv: &mut SrvRec, x: &mut ExRec) {
-  if x.onH3 {srv.h3.sendInterim(x.qreq, ResponseHead.make(100u16));} else {srv.drv.sendContinue(x.req);}
+fn sendContinue(srv: &mut SrvRec, slot: usize) {
+  let r = routeOf(srv, slot);
+  if r.onH3 {srv.h3.sendInterim(r.qreq, ResponseHead.make(100u16));} else {srv.drv.sendContinue(r.req);}
 }
 
+// Where a request's calls go, copied out of its record so that no borrow of the record is held across them
+struct Route {
+  onH3: bool;
+  qreq: httpclient.H3Req;
+  req: httpconn.ReqId;
+}
+
+fn routeOf(srv: &SrvRec, slot: usize) Route {
+  let x = srv.exs.borrowAt(u32.from(slot)).unwrap();
+  Route(x.onH3, x.qreq, x.req)
+}
 // A request whose head and whole body are in: to the actor waiting for one,
 // else into the queue (503 if that is full)
 fn readyEx(srv: &mut SrvRec, slot: usize, r: Request) {
-  let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
   match srv.waiters.popFront() {
     case var Some(rp) {deliverEx(srv, slot, rp, r);}
     else {
       if srv.ready.len() >= srv.maxPending {
-        x.rejected = true;
-        x.inAwait = false;
-        x.stage = exOut;
-        answerText(srv, x, 503u16, "the server is busy", false);
+        {
+          let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
+          x.rejected = true;
+          x.inAwait = false;
+          x.stage = exOut;
+        }
+        answerText(srv, slot, 503u16, "the server is busy", false);
       } else {
-        x.stage = exReady;
+        srv.exs.borrowMutAt(u32.from(slot)).unwrap().stage = exReady;
         srv.ready.push(ReadyEx(slot, r));
       }
     }
@@ -438,14 +453,18 @@ fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.ReplyOf[Result[Exchange, 
 }
 
 // The server answers a request itself, with text
-fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAfter: bool) {
+fn answerText(srv: &mut SrvRec, slot: usize, status: u16, text: &str, closeAfter: bool) {
   var h = ResponseHead.make(status);
   h.headers.add("Content-Type", "text/plain; charset=utf-8");
+  let onH3, isHead = {
+    let x = srv.exs.borrowAt(u32.from(slot)).unwrap();
+    (x.onH3, x.isHead)
+  };
   // HTTP/3 has no Connection field: its stream ends the exchange, the connection carries on
-  if closeAfter && !x.onH3 {h.headers.add("Connection", "close");}
+  if closeAfter && !onH3 {h.headers.add("Connection", "close");}
   let n = text.len;
   var b = IoBuf();
-  if !x.isHead && n > 0usize {
+  if !isHead && n > 0usize {
     // A pool that refuses the text's buffer (iobuf's tryMake) leaves it out:
     // the status, which is the answer, goes with no body
     b = match IoBuf.tryMake(n) {
@@ -455,14 +474,17 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
   }
   let have = b.capacity() > 0usize;
   let len = if have {n} else {0usize};
-  srvRespond(srv, x, h, BodyLength.sized(u64.from(len)));
-  x.responded = true;
-  x.finished = true;
-  x.finishing = true;
+  srvRespond(srv, slot, h, BodyLength.sized(u64.from(len)));
+  {
+    let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
+    x.responded = true;
+    x.finished = true;
+    x.finishing = true;
+  }
   if have {
     b.append(text as &Array[u8]);
-    let taken = srvSend(srv, x, b);
-    srvFinish(srv, x);
+    let taken = srvSend(srv, slot, b);
+    srvFinish(srv, slot);
   }
 }
 
@@ -489,10 +511,12 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool, why: &httpclient.Failure) {
   } else {
     answerKeptIn[Result[u64, ServerError]](&mut x.finishReply, Err[u64, ServerError](ServerError.closed()));
   }
-  if x.inMode {inTerminal(srv, x, why);}
-  if x.stage == exReady {
-    x.stage = exDead;
-  } else if !x.handle && !x.inAwait {
+  let inMode = x.inMode;
+  if inMode {inTerminal(srv, slot, why);}
+  let y = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
+  if y.stage == exReady {
+    y.stage = exDead;
+  } else if !y.handle && !y.inAwait {
     freeEx(srv, slot);
   }
 }
@@ -502,9 +526,10 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool, why: &httpclient.Failure) {
 // ---------------------------------------------------------------------------
 
 // Credit for n body bytes back to the request's connection or stream
-fn inRelease(srv: &mut SrvRec, x: &ExRec, n: usize) {
+fn inRelease(srv: &mut SrvRec, slot: usize, n: usize) {
   if n == 0usize {return;}
-  if x.onH3 {srv.h3.release(x.qreq, n);} else {srv.drv.release(x.req, n);}
+  let r = routeOf(srv, slot);
+  if r.onH3 {srv.h3.release(r.qreq, n);} else {srv.drv.release(r.req, n);}
 }
 
 // The body's end, or its failure: what is staged goes first, in order, whatever the window (no more bytes are
@@ -521,12 +546,15 @@ fn inFinish(x: &mut ExRec, how: Ending) {
 
 // Nobody wants the rest of the body: what is staged is let go and its credit released, and the bytes still to
 // come are released as they arrive (onStreamedData)
-fn inDiscarded(srv: &mut SrvRec, x: &mut ExRec) {
-  x.inAwait = false;
-  x.inDiscard = true;
-  x.inKept = None[Ending];
-  let n = lendDiscard(&mut x.inLend);
-  inRelease(srv, x, n);
+fn inDiscarded(srv: &mut SrvRec, slot: usize) {
+  let n = {
+    let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
+    x.inAwait = false;
+    x.inDiscard = true;
+    x.inKept = None[Ending];
+    lendDiscard(&mut x.inLend)
+  };
+  inRelease(srv, slot, n);
 }
 
 // A piece of a streamed request's body: to the sink, with the lent record (lend.cone), or staged while the
@@ -539,17 +567,17 @@ fn onStreamedData(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
     if e.qreq.isNone() {srv.drv.release(e.req, n);} else {srv.h3.release(e.qreq, n);}
     return;
   }
-  let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
   if n == 0usize {return;}
+  let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
   if !x.inMode || x.rejected || x.inDiscard || x.inRefused || (!x.inAwait && !(x.inSink is Some)) {
-    inRelease(srv, x, n);
+    inRelease(srv, slot, n);
     return;
   }
   let buf = e.(buf);
   if x.inAwait || !(stagingEmpty(&x.inLend) && hasRoom(&x.inLend, buf.capacity())) {
     if !stagePiece(&mut x.inLend, &buf) {
       x.inRefused = true;
-      srvCancel(srv, lp, x);
+      srvCancel(srv, lp, slot);
     }
   } else {
     deliver(&mut x.inLend, &x.inSink, buf);
@@ -558,7 +586,8 @@ fn onStreamedData(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
 
 // The request's final answer has come: a sink still open gets its end (the peer left, or the pool refused
 // a staging buffer); one that is yet to be chosen is told when it is
-fn inTerminal(srv: &mut SrvRec, x: &mut ExRec, why: &httpclient.Failure) {
+fn inTerminal(srv: &mut SrvRec, slot: usize, why: &httpclient.Failure) {
+  let x = srv.exs.borrowMutAt(u32.from(slot)).unwrap();
   if x.inEnded || x.inDiscard {return;}
   let how = if x.inRefused {Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure())))}
     else if why.error.detail.len() > 0usize {Ending.Failed(AnyError.from(FetchError.failed(why.clone())))}
@@ -574,18 +603,26 @@ fn inTerminal(srv: &mut SrvRec, x: &mut ExRec, why: &httpclient.Failure) {
 
 // Write as much of x's pending body as its connection takes now, and finish
 // the body when it has all gone and 'finish' was asked
-fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
-  if x.over {return;}
-  if x.sinkOpen || x.sinkFailed {
-    pumpSink(srv, lp, x);
+fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, slot: usize) {
+  let k = u32.from(slot);
+  let sinkWay = {
+    let x0 = srv.exs.borrowAt(k).unwrap();
+    if x0.over {return;}
+    x0.sinkOpen || x0.sinkFailed
+  };
+  if sinkWay {
+    pumpSink(srv, lp, slot);
     return;
   }
-  while x.wi < x.writes.len() {
+  while true {
+    if !{let x1 = srv.exs.borrowAt(k).unwrap(); x1.wi < x1.writes.len()} {break;}
     // The write is looked up afresh each time round: the driver's call may be
     // taken to change lists, so no borrow of one is kept across it
     while true {
-      let sent = x.writes[x.wi].sent;
-      let total = x.writes[x.wi].data.len();
+      let sent, total = {
+        let x2 = srv.exs.borrowAt(k).unwrap();
+        (x2.writes[x2.wi].sent, x2.writes[x2.wi].data.len())
+      };
       if sent >= total {break;}
       let left = total - sent;
       let n = if left < sendChunk {left} else {sendChunk};
@@ -594,40 +631,52 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
       var b = match IoBuf.tryMake(n) {
         case var Some(got) {got}
         else {
-          srvCancel(srv, lp, x);
+          srvCancel(srv, lp, slot);
           return;
         }
       };
       {
         // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
-        let all = x.writes[x.wi].data.view() as &Array[u8];
+        let x3 = srv.exs.borrowAt(k).unwrap();
+        let all = x3.writes[x3.wi].data.view() as &Array[u8];
         b.append(&all[sent ..< sent + n]);
       }
       // Refused: Writable comes when there is room
-      if !srvSend(srv, x, b) {return;}
-      x.writes[x.wi].sent = sent + n;
-      x.written = x.written + u64.from(n);
+      if !srvSend(srv, slot, b) {return;}
+      {
+        let x4 = srv.exs.borrowMutAt(k).unwrap();
+        x4.writes[x4.wi].sent = sent + n;
+        x4.written = x4.written + u64.from(n);
+      }
     }
-    let w = &mut x.writes[x.wi];
+    let x5 = srv.exs.borrowMutAt(k).unwrap();
+    let w = &mut x5.writes[x5.wi];
     let sentAll = w.data.len();
     answerKeptIn[Result[usize, ServerError]](&mut w.reply, Ok[usize, ServerError](sentAll));
     w.data = String();
-    x.wi = x.wi + 1usize;
+    x5.wi = x5.wi + 1usize;
   }
-  x.writes.clear();
-  x.wi = 0usize;
-  if x.finishing && !x.finished {
-    x.finished = true;
-    if x.sized && x.written != x.length {
+  let fin = {
+    let x6 = srv.exs.borrowMutAt(k).unwrap();
+    x6.writes.clear();
+    x6.wi = 0usize;
+    if x6.finishing && !x6.finished {
+      x6.finished = true;
+      (true, x6.sized && x6.written != x6.length)
+    } else {
+      (false, false)
+    }
+  };
+  if fin.0 {
+    if fin.1 {
       // A write was made and never awaited, so never sent: the body is short
       // of its length, which only the connection's end can say
-      srvCancel(srv, lp, x);
+      srvCancel(srv, lp, slot);
     } else {
-      srvFinish(srv, x);
+      srvFinish(srv, slot);
     }
   }
 }
-
 // Stop listening, refuse what waits, and let the exchanges taken go on
 fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
   if srv.closing {return;}
@@ -652,7 +701,7 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
       x.stage = exOut;
       x.rejected = true;
       x.inAwait = false;
-      answerText(srv, x, 503u16, "the server is closing", true);
+      answerText(srv, slot, 503u16, "the server is closing", true);
     } else if x.stage == exDead {
       freeEx(srv, slot);
     }
@@ -855,32 +904,45 @@ struct NextJob {
   }
 }
 
-// Where a handle's exchange is: its server and record, or null
+// Where a handle's exchange is: its server's cell (the cell is only good until the next call that can change the
+// servers) and whether the exchange is live
 struct Located {
-  srv: *SrvRec;
-  ex: *ExRec;
+  k: u32;
+  ok: bool;
+}
+
+// Whether the slot holds the live exchange id: a record that is not in use, was reused (another id) or died
+// before an actor took it is none
+fn exLive(srv: &SrvRec, slot: u32, id: u64) bool {
+  if !srv.exs.isLive(slot) {return false;}
+  let x = srv.exs.borrowAt(slot).unwrap();
+  x.used && x.id == id && x.stage != exDead
 }
 
 fn locate(sv: &Service, sid: u64, slot: u32, id: u64) Located {
   let k = sv.findSrv(sid);
-  if k >= sv.srvs.bound() {return Located(null, null);}
-  let srv = sv.srvAt(k);
-  Located(srv, exOf(srv as &SrvRec, slot, id))
+  if k >= sv.srvs.bound() {return Located(0u32, false);}
+  let srv = sv.srvs.borrowAt(u32.from(k)).unwrap();
+  Located(u32.from(k), exLive(srv, slot, id))
 }
 
 // Begin an exchange's response: its head and the framing of its body
-fn beginResponse(srv: &mut SrvRec, x: &mut ExRec, head: ResponseHead, framing: BodyLength) {
+fn beginResponse(srv: &mut SrvRec, slot: usize, head: ResponseHead, framing: BodyLength) {
   let st = head.status;
-  x.responded = true;
-  x.sized = framing.isSized();
-  x.length = framing.length;
-  x.chunked = framing.isUnsized();
-  x.bodyless = x.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
-    (framing.isSized() && framing.length == 0u64);
-  srvRespond(srv, x, head, framing);
-  if x.bodyless {
-    x.finished = true;
-    stopUpload(srv, x);
+  let k = u32.from(slot);
+  {
+    let x = srv.exs.borrowMutAt(k).unwrap();
+    x.responded = true;
+    x.sized = framing.isSized();
+    x.length = framing.length;
+    x.chunked = framing.isUnsized();
+    x.bodyless = x.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
+      (framing.isSized() && framing.length == 0u64);
+  }
+  srvRespond(srv, slot, head, framing);
+  if srv.exs.borrowAt(k).unwrap().bodyless {
+    srv.exs.borrowMutAt(k).unwrap().finished = true;
+    stopUpload(srv, slot);
   }
 }
 
@@ -895,19 +957,24 @@ struct RespondJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let srv, slot, id, head, body = self.(srv, slot, id, head, body);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if x.over || x.responded {return;}
+    if !loc.ok {return;}
+    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    {
+      let x = s.exs.borrowAt(slot).unwrap();
+      if x.over || x.responded {return;}
+    }
     let st = head.status;
     let n = body.len();
     let framing = if st == 204u16 || st == 304u16 {BodyLength()} else {BodyLength.sized(u64.from(n))};
-    beginResponse(s, x, head, framing);
-    if !x.bodyless {
+    beginResponse(s, usize.from(slot), head, framing);
+    if !s.exs.borrowAt(slot).unwrap().bodyless {
       let w = PendingWrite(body, 0usize, None);
-      x.writes.push(w);
-      x.finishing = true;
-      pumpWrites(s, lp, x);
+      {
+        let x = s.exs.borrowMutAt(slot).unwrap();
+        x.writes.push(w);
+        x.finishing = true;
+      }
+      pumpWrites(s, lp, usize.from(slot));
     }
   }
 }
@@ -923,11 +990,13 @@ struct StartJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let srv, slot, id, head, framing = self.(srv, slot, id, head, framing);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if x.over || x.responded {return;}
-    beginResponse(s, x, head, framing);
+    if !loc.ok {return;}
+    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    {
+      let x = s.exs.borrowAt(slot).unwrap();
+      if x.over || x.responded {return;}
+    }
+    beginResponse(s, usize.from(slot), head, framing);
   }
 }
 
@@ -941,23 +1010,25 @@ struct WriteJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[usize, ServerError]]) {
     let srv, slot, id, data = self.(srv, slot, id, data);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {
+    if !loc.ok {
       rp.answer(Err[usize, ServerError](ServerError.closed()));
       return;
     }
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if x.bodyless && !x.over {
-      rp.answer(Ok[usize, ServerError](0usize));
-      return;
-    }
-    if x.over || !x.responded || x.finishing {
-      rp.answer(Err[usize, ServerError](ServerError.closed()));
-      return;
+    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    {
+      let x = s.exs.borrowAt(slot).unwrap();
+      if x.bodyless && !x.over {
+        rp.answer(Ok[usize, ServerError](0usize));
+        return;
+      }
+      if x.over || !x.responded || x.finishing {
+        rp.answer(Err[usize, ServerError](ServerError.closed()));
+        return;
+      }
     }
     let w = PendingWrite(data, 0usize, Some[actors.ReplyOf[Result[usize, ServerError]]](rp));
-    x.writes.push(w);
-    pumpWrites(s, lp, x);
+    s.exs.borrowMutAt(slot).unwrap().writes.push(w);
+    pumpWrites(s, lp, usize.from(slot));
   }
 }
 
@@ -970,23 +1041,25 @@ struct FinishJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[u64, ServerError]]) {
     let srv, slot, id = self.(srv, slot, id);
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {
+    if !loc.ok {
       rp.answer(Err[u64, ServerError](ServerError.closed()));
       return;
     }
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    if x.over {
-      if x.ok {
-        rp.answer(Ok[u64, ServerError](x.written));
-      } else {
-        rp.answer(Err[u64, ServerError](ServerError.closed()));
+    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    {
+      let x = s.exs.borrowMutAt(slot).unwrap();
+      if x.over {
+        if x.ok {
+          rp.answer(Ok[u64, ServerError](x.written));
+        } else {
+          rp.answer(Err[u64, ServerError](ServerError.closed()));
+        }
+        return;
       }
-      return;
+      x.finishReply = Some[actors.ReplyOf[Result[u64, ServerError]]](rp);
+      x.finishing = true;
     }
-    x.finishReply = Some[actors.ReplyOf[Result[u64, ServerError]]](rp);
-    x.finishing = true;
-    pumpWrites(s, lp, x);
+    pumpWrites(s, lp, usize.from(slot));
   }
 }
 
@@ -1000,41 +1073,53 @@ struct DropExJob {
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let loc = locate(sv, srv, slot, id);
-    if loc.ex as usize == 0usize {return;}
-    let s = loc.srv as &mut SrvRec;
-    let x = loc.ex as &mut ExRec;
-    x.handle = false;
-    if discard && x.inAwait {
-      inDiscarded(s, x);
-      stopUpload(s, x);
+    if !loc.ok {return;}
+    let s = sv.srvs.borrowMutAt(loc.k).unwrap();
+    let sl = usize.from(slot);
+    let doDiscard = {
+      let x = s.exs.borrowMutAt(slot).unwrap();
+      x.handle = false;
+      discard && x.inAwait
+    };
+    if doDiscard {
+      inDiscarded(s, sl);
+      stopUpload(s, sl);
     }
-    if x.over {
-      if !x.inAwait {freeEx(s, usize.from(slot));}
+    let x1 = s.exs.borrowAt(slot).unwrap();
+    if x1.over {
+      if !x1.inAwait {freeEx(s, sl);}
       return;
     }
-    if !x.responded {
-      answerText(s, x, 500u16, "no response was made", false);
-    } else if !x.finished && !x.finishing {
+    let responded = x1.responded;
+    let finished = x1.finished;
+    let finishing = x1.finishing;
+    let sinkGone = x1.sinkGone;
+    let sinkOpen = x1.sinkOpen;
+    let sinkFailed = x1.sinkFailed;
+    if !responded {
+      answerText(s, sl, 500u16, "no response was made", false);
+    } else if !finished && !finishing {
       // A sink taken keeps the body while it may still be given a source: it finishes the
       // body, or the exchange ends. A sink dropped without ever being given one
       // (sinkGone, from SinkGoneJob) has no body coming: the drop ends the body as
       // without a sink.
-      if x.sinkGone {
-        x.sinkOpen = false;
-        endBodyUnsunk(s, lp, x);
-      } else if !x.sinkOpen && !x.sinkFailed {
-        endBodyUnsunk(s, lp, x);
+      if sinkGone {
+        s.exs.borrowMutAt(slot).unwrap().sinkOpen = false;
+        endBodyUnsunk(s, lp, sl);
+      } else if !sinkOpen && !sinkFailed {
+        endBodyUnsunk(s, lp, sl);
       }
     }
   }
 }
 
 // The Exchange is gone and its body not ended by the handler: an unsized one is finished, a sized one reset
-fn endBodyUnsunk(s: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
-  if x.chunked {
-    x.finishing = true;
-    pumpWrites(s, lp, x);
+fn endBodyUnsunk(s: &mut SrvRec, lp: &mut Loop, slot: usize) {
+  let k = u32.from(slot);
+  if s.exs.borrowAt(k).unwrap().chunked {
+    s.exs.borrowMutAt(k).unwrap().finishing = true;
+    pumpWrites(s, lp, slot);
   } else {
-    srvCancel(s, lp, x);
+    srvCancel(s, lp, slot);
   }
 }

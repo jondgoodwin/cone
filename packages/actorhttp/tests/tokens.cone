@@ -14,7 +14,7 @@ import testing use *;
 import pools use GenPool, Handle;
 import actorhttp use *;
 
-fn found(p: *u32) bool { p as usize != 0usize }
+fn found(h: Handle) bool { !h.isNone() }
 
 fn main() i32 {
   var pool = GenPool[u32](16usize);
@@ -23,7 +23,7 @@ fn main() i32 {
   expect(found(byToken(&pool, t1)), "1: a live entry is found by its token");
   expect(found(byToken(&pool, tokenOf(h1, 0x100000000u64))), "1: and with the stream or connection bit set");
   expectUInt(u64.from(tokCell(t1)), u64.from(h1.index), "1: the token names the cell");
-  expectUInt(u64.from(*byToken(&pool, t1)), 11u64, "1: and the entry");
+  expectUInt(u64.from(*pool.borrow(byToken(&pool, t1)).unwrap()), 11u64, "1: and the entry");
 
   _ = pool.remove(h1);
   expect(!found(byToken(&pool, t1)), "2: a freed entry's token reaches nothing");
@@ -33,7 +33,7 @@ fn main() i32 {
   expect(!found(byToken(&pool, t1)), "3: the old token reaches nothing");
   expect(!found(byToken(&pool, tokenOf(h1, 0x100000000u64))), "3: with its flag bit too");
   expect(found(byToken(&pool, tokenOf(h2, 0u64))), "3: the new entry's token finds it");
-  expectUInt(u64.from(*byToken(&pool, tokenOf(h2, 0u64))), 22u64, "3: and it is the new entry");
+  expectUInt(u64.from(*pool.borrow(byToken(&pool, tokenOf(h2, 0u64))).unwrap()), 22u64, "3: and it is the new entry");
 
   // 126 more reuses: 127 in all since t1
   var cur = h2;
@@ -48,7 +48,7 @@ fn main() i32 {
   _ = pool.remove(cur);
   cur = pool.add(44u32);
   expect(found(byToken(&pool, t1)), "4: at the 128th reuse seven bits wrap and the stale token matches (the documented odds)");
-  expectUInt(u64.from(*byToken(&pool, t1)), 44u64, "4: the entry it reaches is the cell's present one");
+  expectUInt(u64.from(*pool.borrow(byToken(&pool, t1)).unwrap()), 44u64, "4: the entry it reaches is the cell's present one");
 
   expect(!found(byToken(&pool, tokenOf(Handle(h1.index + 1u32, h1.gen), 0u64))), "5: a token of another cell reaches nothing");
   expect(!found(byToken(&pool, tokenOf(Handle.none(), 0u64))), "5: a token of no cell reaches nothing");
