@@ -665,8 +665,15 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
         if (itypeHoldsNoBorrow(place))
             continue;
         // Where the function names no lifetime, a place the checker sees no
-        // borrow in (a type parameter, a closure) is not checked: its verdict
-        // before elided and named shared one path (#1202)
+        // borrow in (a type parameter, a closure) is not checked. This branch
+        // keeps the elided verdicts exactly as they were before elided and
+        // named signatures shared one path (#1202): the old elided-only check
+        // skipped these places, and spatialindex's octree walkRay depends on
+        // it. Named signatures check them, unchanged. Arenas are excluded
+        // because the arena checks moved into this function, and an arena is
+        // checked here whatever the signature (the lifetime_arena_refuse_*
+        // tests). Dropping the branch would change named verdicts, which is a
+        // rule question for Jon, not part of this refactor
         if (!sig->lifenamed && !itypeIsArena(place) && !itypeCarriesBorrow(place))
             continue;
         int slotted = lifeSlotted(place) != NULL;
