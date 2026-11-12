@@ -67,22 +67,25 @@ fn putValue(out: &mut streams.Writer, v: &Value, depth: u32) Option[GgufError] {
 pub struct Writer {
   meta: List[MetaEntry];
   tensors: List[Pending];
+  // Key to its place in 'meta', and tensor name to its place in 'tensors'
+  metaAt: Dict[String, usize];
+  tensorAt: Dict[String, usize];
 
   pub fn make() Writer {
-    Writer(List[MetaEntry](), List[Pending]())
+    Writer(List[MetaEntry](), List[Pending](), Dict[String, usize](), Dict[String, usize]())
   }
 
   // Sets a key: replaces the value of one already put (keeping its place),
   // else adds it at the end
   pub fn put(self: &mut, key: &str, value: Value) {
-    var i = 0usize;
-    while i < meta.len() {
-      if meta[i].key.view() == key {
-        meta.set(i, MetaEntry(String.from(key), value));
+    match metaAt.get(key) {
+      case let Some(i) {
+        meta.set(*i, MetaEntry(String.from(key), value));
         return;
       }
-      i = i + 1usize;
+      case is None {}
     }
+    metaAt.insert(String.from(key), meta.len());
     meta.push(MetaEntry(String.from(key), value));
   }
 
@@ -118,11 +121,10 @@ pub struct Writer {
     if u64.from(data.len()) != geo.bytes {
       return Err[usize, GgufError](badInput("the tensor's bytes are not the number its type and dimensions need"));
     }
-    each p in &tensors {
-      if p.name.view() == name {
-        return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
-      }
+    if tensorAt.contains(name) {
+      return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
     }
+    tensorAt.insert(String.from(name), tensors.len());
     var d = List[u64].withCapacity(dims.len);
     var i = 0usize;
     while i < dims.len {

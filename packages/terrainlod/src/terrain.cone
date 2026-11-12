@@ -110,7 +110,7 @@ pub struct Terrain {
   pub stats: TerrainStats;
   patches: List[Patch];
   index: Dict[u64, usize];
-  freeSlots: List[usize];
+  slots: IdPool;                 // the atlas slots in use, at most across x across
   pipeline: PipelineHandle;
   gridMesh: MeshHandle;
   atlas: TextureHandle;          // every patch on the GPU, a block of texels each
@@ -143,7 +143,7 @@ pub struct Terrain {
     while z < usize.from(texels) * usize.from(texels) { zeros.push(0.); z = z + 1usize; }
     let atlas = renderer.addFieldTexture(device, texels, texels, zeros.view());
     var t = Terrain(cfg, lod, TerrainLook.make(), List[DrawNode](), emptyStats(), List[Patch](),
-      Dict[u64, usize](), List[usize](), pipeline, meshHandle, atlas, MaterialHandle.none(), across, 0u64, 1u64, 0u64, false);
+      Dict[u64, usize](), IdPool.makeBounded(across * across), pipeline, meshHandle, atlas, MaterialHandle.none(), across, 0u64, 1u64, 0u64, false);
     let maps = [atlas];
     let params = t.paramBlock();
     t.material = renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
@@ -158,7 +158,7 @@ pub struct Terrain {
     var across = u32.from(libc.sqrtf(f32.from(cfg.cacheNodes)));
     while across * across < cfg.cacheNodes { across = across + 1u32; }
     Terrain(cfg, lod, TerrainLook.make(), List[DrawNode](), emptyStats(), List[Patch](),
-      Dict[u64, usize](), List[usize](), PipelineHandle.none(), MeshHandle.none(), TextureHandle.none(),
+      Dict[u64, usize](), IdPool.makeBounded(across * across), PipelineHandle.none(), MeshHandle.none(), TextureHandle.none(),
       MaterialHandle.none(), across, 0u64, 1u64, 0u64, false)
   }
 
@@ -201,18 +201,13 @@ pub struct Terrain {
     // A slot of the atlas: a freed one, or the next; none if the cache is full of patches used this frame
     var slot = 0usize;
     var have = false;
-    match freeSlots.pop() {
+    match self.takeSlot() {
       case let Some(s) { slot = s; have = true; }
       else {}
     }
-    if !have && patches.len() < self.capacity() {
-      slot = patches.len();
-      patches.push(emptyPatch());
-      have = true;
-    }
     if !have {
       self.evict(1u64, 0usize);
-      match freeSlots.pop() {
+      match self.takeSlot() {
         case let Some(s) { slot = s; have = true; }
         else {}
       }
@@ -260,7 +255,19 @@ pub struct Terrain {
     let key = nodeKey(patches[s].level, patches[s].ix, patches[s].iz);
     index.remove(&key);
     patches.set(s, emptyPatch());
-    freeSlots.push(s);
+    slots.free(u32.from(s));
+  }
+
+  // A freed slot, else the next; the row of 'patches' for a new slot is added here
+  fn takeSlot(self: &mut) Option[usize] {
+    match slots.alloc() {
+      case let Some(id) {
+        let s = usize.from(id);
+        if s == patches.len() { patches.push(emptyPatch()); }
+        Some(s)
+      }
+      else { None }
+    }
   }
 
   // Put a patch in the atlas if it is not there: its heights in the block of texels its slot names

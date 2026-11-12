@@ -127,7 +127,7 @@ pub struct Loop {
   decided: List[*OpCore];
   done: List[*OpCore];     // an asker's records answered, for takeDone
   cancels: List[Asked];    // Linux: socket operations asked to end, answered at the next wait (linux.cone)
-  held: List[Held];        // answers held back by a full channel
+  held: Deque[Held];       // answers held back by a full channel, oldest first
   handles: HEntries;
   wheel: Wheel;
   expiries: List[Expiry];
@@ -198,7 +198,7 @@ pub struct Loop {
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
       decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
-      held: List[Held](),
+      held: Deque[Held](),
       handles: HEntries.make(64u32),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
@@ -1013,26 +1013,30 @@ pub struct Loop {
     n
   }
 
-  // Try again the answers a full channel held back: the list is drained and
-  // rebuilt of those still held (those taken, or whose receiver has gone,
-  // are done with)
+  // Try again the answers a full channel held back: each is taken off the front
+  // and, if still held, put back on the end, so those still held keep their order
+  // (those taken, or whose receiver has gone, are done with). No list is rebuilt
   fn retryHeld(self: &mut) {
-    if held.len() == 0usize {return;}
-    var keep = List[Held]();
-    each h in held.drain() {
-      let c, tx = h.(c, tx);
-      match tx.trySend(c) {
-        case var Some(back) {
-          if tx.isClosed() {
-            stats.handedDropped = stats.handedDropped + 1u64;
-          } else {
-            keep.push(Held(back, tx));
+    var n = held.len();
+    while n > 0usize {
+      n = n - 1usize;
+      match held.popFront() {
+        case let Some(h) {
+          let c, tx = h.(c, tx);
+          match tx.trySend(c) {
+            case var Some(back) {
+              if tx.isClosed() {
+                stats.handedDropped = stats.handedDropped + 1u64;
+              } else {
+                held.push(Held(back, tx));
+              }
+            }
+            else {stats.handedOff = stats.handedOff + 1u64;}
           }
         }
-        else {stats.handedOff = stats.handedOff + 1u64;}
+        case is None {break;}
       }
     }
-    held = keep;
   }
 
   // Answer every decided record: how many answers went to out

@@ -270,9 +270,15 @@ actor Handler {
 
   // After a body sent to a sink: wait for the sink's end
   async fn awaitSink(self) bool {
-    let limit = Instant.now() + Duration.fromMillis(30000i64);
+    // Waits for the sink's end, giving up only when no byte has reached the sink for 10 s (not after a fixed
+    // total: a slow sink on a loaded machine takes as long as it takes). 10 s is thousands of times the gap
+    // between buffers at 1 ms each, so it still catches a stall.
+    var seen = tally.srvBytes.load();
+    var limit = Instant.now() + Duration.fromMillis(10000i64);
     while tally.sinkEnds.load() == 0u64 && Instant.now() < limit {
       let s = await aio.sleep(Duration.fromMillis(5i64));
+      let now = tally.srvBytes.load();
+      if now != seen {seen = now; limit = Instant.now() + Duration.fromMillis(10000i64);}
     }
     true
   }
@@ -595,10 +601,16 @@ fn scenarios(secure: bool, port: u16, label: &str) {
   {
     let u = Up(newClient(port));
     u.run(url(secure, port, "/slow"), 33554432u64, 65536usize, true);
-    let limit = Instant.now() + Duration.fromMillis(120000i64);
+    // The bound is on progress, not on the total: the section fails only when the server's byte count has not
+    // moved for 10 s (a healthy 1 ms-a-buffer run advances every few ms, so 10 s is thousands of times the
+    // gap, yet a stall is still caught). A loaded machine slows the whole run but cannot trip it.
+    var seen = tally.srvBytes.load();
+    var limit = Instant.now() + Duration.fromMillis(10000i64);
     while tally.ended.load() == 0u64 && Instant.now() < limit {
       let l = lent();
       if l > tally.peak.load() {tally.peak.store(l);}
+      let now = tally.srvBytes.load();
+      if now != seen {seen = now; limit = Instant.now() + Duration.fromMillis(10000i64);}
       thread.sleep(Duration.fromMillis(2i64));
     }
     waitFor(&tally.handled, 1u64);

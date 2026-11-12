@@ -216,6 +216,29 @@ fn testQueue() {
   expectInt(i64.from(w.queue.len()), 0i64, "play empties the queue");
 }
 
+// Three clips queued behind one: they start one at a time, in the order enqueued
+fn testQueueOrder() {
+  var p = Player.make();
+  let a = p.addClip(rampClip("a", 1., 1., LOOP_ONCE));
+  let b = p.addClip(rampClip("b", 1., 1., LOOP_ONCE));
+  let c = p.addClip(rampClip("c", 1., 1., LOOP_ONCE));
+  let d = p.addClip(rampClip("d", 1., 1., LOOP_ONCE));
+  p.play(a);
+  p.enqueue(b, 0., EASE_LINEAR);
+  p.enqueue(c, 0., EASE_LINEAR);
+  p.enqueue(d, 0., EASE_LINEAR);
+  expectInt(i64.from(p.queue.len()), 3i64, "three wait");
+  expectInt(i64.from(p.queue[0].clip), i64.from(b), "b is first in line");
+  var i = 0;
+  while i < 40 && p.queue.len() == 3usize { p.update(0.25); i = i + 1; }
+  expectInt(i64.from(p.queue.len()), 2i64, "a ended and b started: two wait");
+  expectInt(i64.from(p.queue[0].clip), i64.from(c), "c is now first in line");
+  expectInt(i64.from(p.queue[1].clip), i64.from(d), "d behind it");
+  while i < 80 && p.queue.len() == 2usize { p.update(0.25); i = i + 1; }
+  expectInt(i64.from(p.queue.len()), 1i64, "c started");
+  expectInt(i64.from(p.queue[0].clip), i64.from(d), "only d is left");
+}
+
 fn testLayers() {
   var p = Player.make();
   let base = p.addClip(constClip("base", 10., LOOP_LOOP));
@@ -327,6 +350,7 @@ fn testEvents() {
 fn main() i32 {
   testFades();
   testQueue();
+  testQueueOrder();
   testLayers();
   testRate();
   testEvents();
