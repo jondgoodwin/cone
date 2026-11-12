@@ -175,26 +175,26 @@ pub actor Endpoint {
     var failures = 0u32;
     while !stopped && failures <= maxFailures {
       let r = await sock.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
-      match &r {
-        case let &Ok(ok) {
+      match r {
+        case let Ok(dg) {
           failures = 0u32;
-          self.onDatagram(ok.from, copyBytes(ok.buf.view()));
+          // The buffer the socket filled goes on to the connection as it is
+          let buf, from = dg.(buf, from);
+          self.onDatagram(from, buf);
         }
-        case let &Err(e) {
-          if aio.isCancelled(*e) {return;}
-          if !aio.isTruncated(*e) {failures = failures + 1u32;}
+        case let Err(e) {
+          if aio.isCancelled(e) {return;}
+          if !aio.isTruncated(e) {failures = failures + 1u32;}
         }
       }
     }
   }
 
   // A packet to send: one datagram to 'addr'
-  async fn send(self, addr: SocketAddr, data: List[u8]) {
+  async fn send(self, addr: SocketAddr, data: IoBuf) {
     if sock.isNone() {return;}
-    var b = IoBuf(data.len().max(1usize));
-    b.append(data.view());
     inflight = inflight + 1usize;
-    let r = await sock.sendTo(addr, b);
+    let r = await sock.sendTo(addr, data);
     inflight = inflight - 1usize;
   }
 
@@ -241,18 +241,24 @@ pub actor Endpoint {
   // ------------------------------------------------------------------
 
   // A datagram arrived, from 'from'
-  fn onDatagram(self, from: SocketAddr, data: List[u8]) {
+  fn onDatagram(self, from: SocketAddr, data: IoBuf) {
     if stopped {return;}
     let key = from.text();
     if !server && key != remoteKey {return;}
-    let kind = if data.len() > 4usize {*data[4usize]} else {255u8};
+    let kind = if data.len() > 4usize {data.view()[4usize]} else {255u8};
     if kind == kindPayload || kind == kindDisconnect {
       let k = self.find(key.view());
-      if k != notFound {
-        slots[k].conn.packet(copyBytes(data.view()));
-      }
       if dialing {
+        // Not both at once in practice (a dial that connects ends the dialing),
+        // so the copy for the connection is never made on the way a game runs
+        if k != notFound {
+          slots[k].conn.packet(copyPacket(data.view()));
+        }
         self.dial(data);
+        return;
+      }
+      if k != notFound {
+        slots[k].conn.packet(data);
       }
       return;
     }
@@ -260,12 +266,12 @@ pub actor Endpoint {
       self.dial(data);
       return;
     }
-    var reply = List[u8]();
+    var reply = streams.Writer.make(32usize);
     let verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
     match verdict {
       case is Ignore {}
-      case is Reply { self.transmit(from, reply); }
-      case let Accept(a) { self.admit(from, key.view(), a.session, reply, data.view()); }
+      case is Reply { self.transmit(from, reply.intoBuf()); }
+      case let Accept(a) { self.admit(from, key.view(), a.session, reply.intoBuf(), data.view()); }
     }
   }
 
@@ -274,7 +280,7 @@ pub actor Endpoint {
     armed = -1i64;
     let now = Instant.now();
     if dialing {
-      var out = List[List[u8]]();
+      var out = Packets();
       dialer.poll(now, &mut out);
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
@@ -306,7 +312,7 @@ pub actor Endpoint {
   }
 
   // Queue a datagram for the socket (a message to ourselves, as a connection's are)
-  fn transmit(self, to: SocketAddr, data: List[u8]) {
+  fn transmit(self, to: SocketAddr, data: IoBuf) {
     selfactor.send(to, data);
   }
 
@@ -334,7 +340,7 @@ pub actor Endpoint {
 
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
-  fn admit(self, from: SocketAddr, key: &str, session: u64, accept: List[u8], response: &Array[u8]) {
+  fn admit(self, from: SocketAddr, key: &str, session: u64, accept: IoBuf, response: &Array[u8]) {
     let k = self.find(key);
     if k != notFound {
       if slots[k].session == session {
@@ -359,7 +365,7 @@ pub actor Endpoint {
   }
 
   // The client side of the handshake: a datagram from the server
-  fn dial(self, data: List[u8]) {
+  fn dial(self, data: IoBuf) {
     let ev = dialer.receive(data.view());
     match ev {
       case is Connected {

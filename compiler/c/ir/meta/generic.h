@@ -89,6 +89,11 @@ extern INode *genericStatedType;
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
+// Replace a use of a generic alias, 'Items[i32]', by its target with the
+// arguments substituted, after counting them and checking its bounds. Returns 1
+// if the node was such a use (replaced, or an error), else 0.
+int genericAliasExpand(TypeCheckState *pstate, FnCallNode **nodep);
+
 // A macro's type parameters, inferred from its arguments by the rules a
 // generic function's are from a call's. 'parmtypes' and 'args' are paired, a
 // parameter's type as written and its argument type checked, a pair left out

@@ -1,0 +1,69 @@
+// The one BMP writer: a 2 x 2 picture's 70 bytes (54 of headers, 2 rows of
+// 6 pixel bytes padded to 8), bottom row first or top row first, from RGB or
+// RGBA, as one contiguous buffer.
+
+mod bmpwrite;
+
+import testing use *;
+import collections use *;
+import imagedecode use *;
+
+fn at(b: &Array[u8], i: usize) i64 { i64.from(b[i]) }
+
+fn le32(b: &Array[u8], i: usize) i64 {
+  at(b, i) | (at(b, i + 1usize) << 8i64) | (at(b, i + 2usize) << 16i64) | (at(b, i + 3usize) << 24i64)
+}
+
+fn main() i32 {
+  // two rows of two pixels: (255,0,0) (0,255,0) / (0,0,255) (10,20,30)
+  let rgb: Array[u8, 12] = [255u8, 0u8, 0u8, 0u8, 255u8, 0u8, 0u8, 0u8, 255u8, 10u8, 20u8, 30u8];
+  let up = encodeBmp(2i32, 2i32, 3i32, &rgb, true);
+  expectInt(i64.from(up.len()), 70i64, "2x2: 54 bytes of headers, 2 rows of 8");
+  match up.contiguous(0usize, up.len()) {
+    case let Some(b) {
+      expectInt(at(b, 0usize), 66i64, "'B'");
+      expectInt(at(b, 1usize), 77i64, "'M'");
+      expectInt(le32(b, 2usize), 70i64, "the file's size");
+      expectInt(le32(b, 10usize), 54i64, "where the pixels start");
+      expectInt(le32(b, 14usize), 40i64, "the information header's size");
+      expectInt(le32(b, 18usize), 2i64, "the width");
+      expectInt(le32(b, 22usize), 2i64, "the height, positive: bottom row first");
+      expectInt(at(b, 26usize), 1i64, "one plane");
+      expectInt(at(b, 28usize), 24i64, "24 bits a pixel");
+      expectInt(le32(b, 38usize), 2835i64, "a resolution");
+      expectInt(at(b, 56usize), 255i64, "bottom row first: pixel 0 red, stored last");
+      expectInt(at(b, 54usize), 0i64, "and its blue first");
+      expectInt(at(b, 58usize), 255i64, "pixel 1, green, in the middle");
+      expectInt(at(b, 60usize), 0i64, "row padding");
+      expectInt(at(b, 61usize), 0i64, "row padding");
+      expectInt(at(b, 62usize), 255i64, "second row: pixel 0 blue first");
+      expectInt(at(b, 65usize), 30i64, "second row: pixel 1 blue first");
+      expectInt(at(b, 67usize), 10i64, "and red last");
+    }
+    case is None { expect(false, "the whole file is one buffer"); }
+  }
+
+  // top row first: the rows come out swapped
+  let down = encodeBmp(2i32, 2i32, 3i32, &rgb, false);
+  match down.contiguous(0usize, down.len()) {
+    case let Some(b) {
+      expectInt(at(b, 54usize), 255i64, "top row first: the second row is stored first");
+      expectInt(at(b, 65usize), 0i64, "and the first row last, its green pixel");
+      expectInt(at(b, 66usize), 255i64, "green");
+    }
+    case is None { expect(false, "top-first is one buffer"); }
+  }
+
+  // RGBA: the alpha is dropped and the size is the same
+  let rgba: Array[u8, 16] = [255u8, 0u8, 0u8, 9u8, 0u8, 255u8, 0u8, 9u8, 0u8, 0u8, 255u8, 9u8, 10u8, 20u8, 30u8, 9u8];
+  let four = encodeBmp(2i32, 2i32, 4i32, &rgba, true);
+  expectInt(i64.from(four.len()), 70i64, "RGBA: the same size");
+  match four.contiguous(0usize, four.len()) {
+    case let Some(b) {
+      expectInt(at(b, 56usize), 255i64, "RGBA: pixel 0 red");
+      expectInt(at(b, 67usize), 10i64, "RGBA: the last pixel's red");
+    }
+    case is None { expect(false, "RGBA is one buffer"); }
+  }
+  done()
+}

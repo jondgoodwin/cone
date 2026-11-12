@@ -5200,6 +5200,11 @@ fn @initpure init() {
   coWake = sync.Condvar.make();
   coRoom = sync.Condvar.make();
   coDone = sync.Condvar.make();
+  coWriteLock = sync.Mutex.make();
+  coTaken = Atomic[u32].of(0u32);
+  coOwnerTid = Atomic[u32].of(0u32);
+  coPauseMode = Atomic[u32].of(0u32);
+  coPauseMs = Atomic[u32].of(0u32);
   coHold = Atomic[u32].of(0u32);
   coHead =Atomic[usize].of(0usize);
   coTail = Atomic[usize].of(0usize);
@@ -5212,6 +5217,10 @@ fn @initpure init() {
   coDoneWaiters = Atomic[u32].of(0u32);
   coLimit = Atomic[usize].of(consoleLimit);
   coStarted = Atomic[bool].of(false);
+  coBuf = Atomic[usize].of(0usize);
+  coBufLen = Atomic[usize].of(0usize);
+  coBufRecs = Atomic[u64].of(0u64);
+  coTty = Atomic[bool].of(false);
   gLock = Atomic[u32].of(0u32);
   gTable = Atomic[usize].of(0usize);
   gCount = Atomic[usize].of(0usize);
@@ -5522,6 +5531,12 @@ pub fn stats() Stats {
   st.monitorMoved = monitorMovedTotal.loadOrdered(MemOrder.Relaxed);
   st
 }
+
+// Whether the runtime is running now: false before the first actor and after the stop (finalAll). A
+// 'final' or a hook that may run after the stop checks it before it sends, as a send then panics. This
+// narrows the race, it does not close it: the check and the send are two steps, so a death on another thread
+// that passes the check just before the stop can still panic in the send
+pub fn isRunning() bool {running.load() != 0usize}
 
 // The index of the worker running the caller, 0 up to the number of workers
 // less 1; noWorker on any other thread

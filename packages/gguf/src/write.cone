@@ -15,38 +15,40 @@ struct Pending {
   data: List[u8];
 }
 
-fn putStr(out: &mut List[u8], s: &str) {
-  putLe64(out, u64.from(s.len()));
-  var i = 0usize;
-  while i < s.len() {
-    out.push(s[i]);
-    i = i + 1usize;
-  }
+fn putStr(out: &mut streams.Writer, s: &str) {
+  out.putLE[u64](u64.from(s.len()));
+  out.put(s);
 }
 
 fn badInput(reason: &str) GgufError { GgufError.make(ErrorKind.BadInput, 0u64, reason) }
 
+// The buffer pool refused a block: 'reached' is the bytes written before the step that starved
+// (0 when it starved in the header or table, where no position is kept)
+fn starvedError(reached: u64) GgufError {
+  GgufError.make(ErrorKind.TooLarge, reached, "the buffer pool refused a block: the model is larger than the pool allows")
+}
+
 // Appends the bytes of one value (not its type code)
-fn putValue(out: &mut List[u8], v: &Value, depth: u32) Option[GgufError] {
+fn putValue(out: &mut streams.Writer, v: &Value, depth: u32) Option[GgufError] {
   match v {
-    case let U8(x) { out.push(*x); }
-    case let I8(x) { out.push(u8.from(*x)); }
-    case let U16(x) { putHalf(out, *x); }
-    case let I16(x) { putHalf(out, u16.from(*x)); }
-    case let U32(x) { putLe32(out, *x); }
-    case let I32(x) { putLe32(out, u32.from(*x)); }
-    case let F32(x) { putLe32(out, (*x).bits()); }
-    case let Bool(x) { out.push(if *x { 1u8 } else { 0u8 }); }
-    case let U64(x) { putLe64(out, *x); }
-    case let I64(x) { putLe64(out, u64.from(*x)); }
-    case let F64(x) { putLe64(out, (*x).bits()); }
+    case let U8(x) { out.putByte(*x); }
+    case let I8(x) { out.putLE[i8](*x); }
+    case let U16(x) { out.putLE[u16](*x); }
+    case let I16(x) { out.putLE[i16](*x); }
+    case let U32(x) { out.putLE[u32](*x); }
+    case let I32(x) { out.putLE[i32](*x); }
+    case let F32(x) { out.putLE[f32](*x); }
+    case let Bool(x) { out.putByte(if *x { 1u8 } else { 0u8 }); }
+    case let U64(x) { out.putLE[u64](*x); }
+    case let I64(x) { out.putLE[i64](*x); }
+    case let F64(x) { out.putLE[f64](*x); }
     case let Str(x) { putStr(out, x.view()); }
     case let Items(x) {
       if depth >= maxDepth() {
         return Some[GgufError](GgufError.make(ErrorKind.TooDeep, 0u64, "arrays are nested deeper than 8 levels"));
       }
-      putLe32(out, x.elem.code());
-      putLe64(out, u64.from(x.items.len()));
+      out.putLE[u32](x.elem.code());
+      out.putLE[u64](u64.from(x.items.len()));
       each e in &x.items {
         if e.valueType().code() != x.elem.code() {
           return Some[GgufError](badInput("an array holds a value of a type other than its element type"));
@@ -146,56 +148,66 @@ pub struct Writer {
     self.addTensor(name, kind, dims, bytes)
   }
 
-  // The file's bytes
-  pub fn finish(self: &) Result[List[u8], GgufError] {
+  // The file's bytes, as the writer's own chain of buffers (a reader that
+  // wants one block copies it out with 'Chain.copyOut' at its edge)
+  pub fn finish(self: &) Result[Chain, GgufError] {
     // The alignment: general.alignment if put, else 32
     var alignment = 32u64;
     each e in &meta {
       if e.key.view() == "general.alignment" {
         let Some(a) = e.value.asU64() else {
-          return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
+          return Err[Chain, GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
         };
         alignment = a;
       }
     }
     if alignment == 0u64 || (alignment & (alignment - 1u64)) != 0u64 || alignment > maxAlignment() {
-      return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
+      return Err[Chain, GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
     }
 
-    var out = List[u8]();
-    out.push('G');
-    out.push('G');
-    out.push('U');
-    out.push('F');
-    putLe32(&mut out, 3u32);
-    putLe64(&mut out, u64.from(tensors.len()));
-    putLe64(&mut out, u64.from(meta.len()));
+    // A fallible writer: a model larger than the buffer pool allows ends as a TooLarge error, not a panic
+    var out = match streams.Writer.tryMake(65536usize) {
+      case var Some(w) {w}
+      else {return Err[Chain, GgufError](starvedError(0u64));}
+    };
+    out.put("GGUF");
+    out.putLE[u32](3u32);
+    out.putLE[u64](u64.from(tensors.len()));
+    out.putLE[u64](u64.from(meta.len()));
     each e in &meta {
       putStr(&mut out, e.key.view());
-      putLe32(&mut out, e.value.valueType().code());
+      out.putLE[u32](e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
-        case let Some(err) {return Err[List[u8], GgufError](err);}
+        case let Some(err) {return Err[Chain, GgufError](err);}
         case is None {}
       }
     }
+    if out.starved() { return Err[Chain, GgufError](starvedError(0u64)); }
     // The table
     var offset = 0u64;
     each p in &tensors {
       putStr(&mut out, p.name.view());
-      putLe32(&mut out, u32.from(p.dims.len()));
-      each d in &p.dims { putLe64(&mut out, *d); }
-      putLe32(&mut out, p.kind.code());
+      out.putLE[u32](u32.from(p.dims.len()));
+      each d in &p.dims { out.putLE[u64](*d); }
+      out.putLE[u32](p.kind.code());
       offset = alignUp(offset, alignment);
-      putLe64(&mut out, offset);
+      out.putLE[u64](offset);
       offset = offset + u64.from(p.data.len());
     }
-    // The data
-    while u64.from(out.len()) % alignment != 0u64 { out.push(0u8); }
-    let start = out.len();
+    // The data: the table's end is aligned, so each tensor's padding is to the file's own position
+    out.pad(usize.from(alignment));
+    if out.starved() { return Err[Chain, GgufError](starvedError(0u64)); }
     each p in &tensors {
-      while u64.from(out.len() - start) % alignment != 0u64 { out.push(0u8); }
-      each b in &p.data { out.push(*b); }
+      // The bytes written before this tensor: where the file stops if the pool refuses it
+      let reached = u64.from(out.len());
+      out.pad(usize.from(alignment));
+      out.put(p.data.view());
+      if out.starved() { return Err[Chain, GgufError](starvedError(reached)); }
     }
-    Ok[List[u8], GgufError](out)
+    // The file as the writer's own chain of buffers; a pool that refuses the last block ends as TooLarge
+    let Some(chain) = out.tryFinish() else {
+      return Err[Chain, GgufError](starvedError(0u64));
+    };
+    Ok[Chain, GgufError](chain)
   }
 }

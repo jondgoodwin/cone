@@ -114,17 +114,17 @@ pub actor Extractor is ChunkSource {
   // open, or an entry that fails before it, touches nothing.
   pub async fn small(self) {
     if phase != Phase.Small { return; }
-    var piece = List[u8]();
+    var piece = IoBuf();
     var why = None[AnyError];
     var s = zipfile.Status.MoreOutput;
     match &mut reader {
       case let &mut Some(r) {
-        var chunk = List[u8]();
         var limit = r.size();
+        // One more byte of room than the entry says it has, so an entry that is longer shows. The
+        // codec writes straight into the buffer that goes to the file.
+        piece = IoBuf(usize.from(limit) + 1usize);
         while s == zipfile.Status.MoreOutput {
-          chunk.clear();
-          s = r.pull(data.view(), &mut chunk, smallEntry);
-          piece.appendSlice(chunk.view());
+          s = r.pull(data.view(), &mut piece, piece.room());
           if u64.from(piece.len()) > limit {
             s = zipfile.Status.Failed;
             why = Some[AnyError](AnyError.msg("archivestage: the entry is longer than it says"));
@@ -139,6 +139,7 @@ pub actor Extractor is ChunkSource {
       }
       case is None {}
     }
+    let total = piece.len();
     var path = None[Path];
     path <-> file;
     reader = None[zipfile.EntryReader];
@@ -156,8 +157,8 @@ pub actor Extractor is ChunkSource {
         case let Ok(f) {
           var file = f;
           if n > 0usize {
-            var buf = IoBuf(n);
-            buf.append(piece.view());
+            var buf = IoBuf();
+            buf <-> piece;
             let w = await file.writeAt(0u64, buf);
             match w {
               case is Ok {}
@@ -174,7 +175,7 @@ pub actor Extractor is ChunkSource {
     match why {
       case let Some(e) { self.answer(Err[zipfile.Extracted, AnyError](e)); }
       case is None {
-        plan.written(&ar, k, &target, u64.from(piece.len()));
+        plan.written(&ar, k, &target, u64.from(total));
         k += 1usize;
         phase = Phase.Idle;
         self.advance();
@@ -283,12 +284,12 @@ pub actor Extractor is ChunkSource {
           case is None { more = false; }
           case let Some(b) {
             var buf = b;
-            var piece = List[u8]();
+            let before = buf.len();
             var s = zipfile.Status.Failed;
             var why = None[AnyError];
             match &mut reader {
               case let &mut Some(r) {
-                s = r.pull(data.view(), &mut piece, want);
+                s = r.pull(data.view(), &mut buf, buf.room());
                 if s == zipfile.Status.Failed {
                   match r.error() {
                     case let Some(e) { why = Some[AnyError](AnyError.from(e)); }
@@ -308,8 +309,7 @@ pub actor Extractor is ChunkSource {
               self.endEntry(reason, true);
               more = false;
             } else {
-              buf.append(piece.view());
-              sent += u64.from(piece.len());
+              sent += u64.from(buf.len() - before);
               if buf.isEmpty() {
                 link.give(buf);
               } else {

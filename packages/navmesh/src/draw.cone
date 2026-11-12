@@ -3,7 +3,7 @@
 // A Canvas is a small RGB raster of a rectangle of the world seen from above
 // (x to the right, z down the picture), with the few drawing operations
 // needed to see a navigation mesh and a path on it: filled polygons,
-// lines, discs. 'toBmp' gives the bytes of a 24-bit BMP. 'meshLines' gives
+// lines, discs. 'pix' is its pixels, rows top first, for a caller to save (the examples write BMPs). 'meshLines' gives
 // the same mesh as line segments in 3-D, for a renderer's line drawing.
 
 pub struct Canvas {
@@ -40,7 +40,7 @@ pub struct Canvas {
     let ey = self.py(bz);
     let dx = ex - sx;
     let dy = ey - sy;
-    let n = i32.from(fmax(dx.abs(), dy.abs())) + 1i32;
+    let n = i32.from(dx.abs().max(dy.abs())) + 1i32;
     var k = 0i32;
     while k <= n {
       let t = f32.from(k) / f32.from(n);
@@ -77,48 +77,6 @@ pub struct Canvas {
       k = k + 1i32;
     }
   }
-
-  pub fn toBmp(self: &) List[u8] {
-    let rowSize = (w * 3i32 + 3i32) / 4i32 * 4i32;
-    let pixelBytes = rowSize * h;
-    var out = List[u8].withCapacity(usize.from(54i32 + pixelBytes));
-    out.push('B'); out.push('M');
-    put32(&mut out, u32.from(54i32 + pixelBytes));
-    put32(&mut out, 0u32);
-    put32(&mut out, 54u32);
-    put32(&mut out, 40u32);
-    put32(&mut out, u32.from(w));
-    put32(&mut out, u32.from(h));
-    out.push(1u8); out.push(0u8); out.push(24u8); out.push(0u8);
-    put32(&mut out, 0u32);
-    put32(&mut out, u32.from(pixelBytes));
-    put32(&mut out, 2835u32);
-    put32(&mut out, 2835u32);
-    put32(&mut out, 0u32);
-    put32(&mut out, 0u32);
-    var y = h - 1i32;
-    while y >= 0i32 {
-      var x = 0i32;
-      while x < w {
-        let p = usize.from((y * w + x) * 3i32);
-        out.push(*pix[p + 2usize]);
-        out.push(*pix[p + 1usize]);
-        out.push(*pix[p]);
-        x = x + 1i32;
-      }
-      var pad = w * 3i32;
-      while pad < rowSize { out.push(0u8); pad = pad + 1i32; }
-      y = y - 1i32;
-    }
-    out
-  }
-}
-
-fn put32(out: &mut List[u8], v: u32) {
-  out.push(u8.from(v & 255u32));
-  out.push(u8.from((v >> 8u32) & 255u32));
-  out.push(u8.from((v >> 16u32) & 255u32));
-  out.push(u8.from((v >> 24u32) & 255u32));
 }
 
 // Colours of the areas: ground, water, mud, door, others

@@ -1,0 +1,130 @@
+// tempDir and copyFile.
+//
+//   - tempDir makes a new absolute folder, empty, that two calls never share;
+//   - it is removed with what is in it when its owner dies, and not before;
+//   - copyFile copies empty, small and large (3 files of several 64 KiB blocks)
+//     files byte for byte, replaces a file already there, and keeps the
+//     original;
+//   - it refuses a folder, a missing source, a missing target folder and the
+//     same file twice, the failure naming both paths.
+//
+// Everything is made inside a tempDir, so the test also uses it.
+
+mod tempcopy;
+
+import testing use *;
+import collections use *;
+import ioerror use IoErrorKind;
+import posix;
+import path use Path;
+import fs;
+
+fn bytesOf(p: &Path) String {
+  match fs.readFile(p) {
+    case let Ok(s) { s }
+    case is Err { String.from("<unreadable>") }
+  }
+}
+
+fn pattern(n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n {
+    let b = 33u8 + u8.from(i % 90usize);
+    s.appendBytes(mem.sliceFromParts(&b as *u8, 1usize));
+    i = i + 1usize;
+  }
+  s
+}
+
+fn main() i32 {
+  var kept = Path.from("");
+  var other = Path.from("");
+  {
+    match fs.tempDir() {
+      case let Err(e) { expect(false, "tempDir makes a folder"); }
+      case let Ok(t) {
+        let dir = t.path();
+        kept = dir.clone();
+        expect(fs.isDir(dir), "the temp folder is there");
+        expect(dir.isAbsolute(), "its path is absolute");
+        expect(dir.name().startsWith("cone-"), "its name starts 'cone-'");
+        match fs.readDir(dir) {
+          case let Ok(l) { expect(l.len() == 0usize, "it starts empty"); }
+          case is Err { expect(false, "it can be listed"); }
+        }
+        match fs.tempDir() {
+          case let Ok(u) {
+            other = u.path().clone();
+            expect(other.view() != dir.view(), "two calls make two folders");
+          }
+          case is Err { expect(false, "a second tempDir"); }
+        }
+        expect(!fs.exists(&other), "the second folder went when its owner did");
+
+        // copyFile
+        let a = dir.join("a");
+        let b = dir.join("b");
+        expect(fs.writeFile(&a, "hello") is Ok, "write a");
+        expect(fs.copyFile(&a, &b) is Ok, "copy a small file");
+        expect(bytesOf(&b).view() == "hello", "the copy holds the bytes");
+        expect(bytesOf(&a).view() == "hello", "the original stays");
+
+        let empty = dir.join("empty");
+        let emptyCopy = dir.join("empty2");
+        expect(fs.writeFile(&empty, "") is Ok, "write an empty file");
+        expect(fs.copyFile(&empty, &emptyCopy) is Ok, "copy an empty file");
+        match fs.stat(&emptyCopy) {
+          case let Ok(i) { expect(i.size == 0i64 && i.isFile, "the copy is an empty file"); }
+          case is Err { expect(false, "the empty copy is there"); }
+        }
+
+        let big = dir.join("big");
+        let bigCopy = dir.join("big2");
+        let text = pattern(200003usize);
+        expect(fs.writeFile(&big, text.view()) is Ok, "write a large file");
+        expect(fs.copyFile(&big, &bigCopy) is Ok, "copy a large file");
+        expect(bytesOf(&bigCopy).view() == text.view(), "the large copy is byte for byte");
+
+        expect(fs.copyFile(&a, &bigCopy) is Ok, "copy over a file there");
+        expect(bytesOf(&bigCopy).view() == "hello", "it replaced the file, not added to it");
+
+        // Failures
+        match fs.copyFile(&dir.join("nope"), &b) {
+          case let Err(e) {
+            expect(e.kind() == IoErrorKind.NotFound, "a missing source: NotFound");
+            expect(e.op.view() == "copyFile", "and copyFile's failure");
+            expect(e.path.name() == "nope" && e.other.name() == "b", "naming both paths");
+          }
+          case is Ok { expect(false, "a missing source fails"); }
+        }
+        expect(bytesOf(&b).view() == "hello", "a failed copy leaves the target alone");
+        match fs.copyFile(&a, &dir.join("no/such/b")) {
+          case let Err(e) { expect(e.kind() == IoErrorKind.NotFound, "a missing target folder: NotFound"); }
+          case is Ok { expect(false, "a missing target folder fails"); }
+        }
+        match fs.copyFile(dir, &b) {
+          case let Err(e) { expect(e.code == posix.EISDIR, "a folder as source: EISDIR"); }
+          case is Ok { expect(false, "a folder as source fails"); }
+        }
+        match fs.copyFile(&a, &a) {
+          case let Err(e) { expect(e.code == posix.EINVAL, "a file onto itself: EINVAL"); }
+          case is Ok { expect(false, "a file onto itself fails"); }
+        }
+        expect(bytesOf(&a).view() == "hello", "and it is not emptied");
+        match fs.copyFile("bad\x00name", &b) {
+          case let Err(e) { expect(e.code == posix.EINVAL, "a NUL in the path: EINVAL"); }
+          case is Ok { expect(false, "a NUL in the path fails"); }
+        }
+
+        // A subfolder and file are removed with the folder
+        let sub = dir.join("sub/deeper");
+        expect(fs.makeDirAll(&sub) is Ok, "make a subfolder");
+        expect(fs.writeFile(&sub.join("f"), "x") is Ok, "write in it");
+        expect(fs.exists(&kept), "the folder is there while its owner lives");
+      }
+    }
+  }
+  expect(!fs.exists(&kept), "the temp folder and all in it went with its owner");
+  done()
+}

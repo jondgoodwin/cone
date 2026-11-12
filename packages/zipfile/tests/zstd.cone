@@ -7,6 +7,7 @@
 mod zstdtest;
 
 import testing use *;
+import iobuf use IoBuf;
 import collections use *;
 import zipfile use *;
 import deflate;
@@ -110,14 +111,13 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut usize) Result[List[u8], ZipError] {
   var r = ar.reader(data, i)?;
   var all = List[u8]();
-  var chunk = List[u8]();
+  var chunk = IoBuf(65536usize);
   while true {
     chunk.clear();
     let s = r.pull(data, &mut chunk, piece);
     *pulls += 1usize;
     if chunk.len() > piece { expect(false, "a pull gave more than it was allowed"); }
-    var k = 0usize;
-    while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
+    all.appendSlice(chunk.view());
     if s == Status.Failed {
       match r.error() {
         case let Some(e) { return Err[List[u8], ZipError](e); }

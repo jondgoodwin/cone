@@ -49,18 +49,8 @@ import path use Path;
 
 // ---- a glb writer ----
 
-struct Bin {
-  pub b: List[u8];
-
-  pub fn putU8(self: &mut, v: u8) { b.push(v); }
-  pub fn putU16(self: &mut, v: u32) { b.push(u8.from(v & 255u32)); b.push(u8.from((v >> 8u32) & 255u32)); }
-  pub fn putU32(self: &mut, v: u32) { self.putU16(v & 0xFFFFu32); self.putU16(v >> 16u32); }
-  pub fn putF32(self: &mut, v: f32) { self.putU32(v.bits()); }
-  pub fn align4(self: &mut) { while b.len() % 4usize != 0usize { b.push(0u8); } }
-}
-
 struct Glb {
-  pub bin: Bin;
+  pub bin: GlbBin;
   pub views: String;
   pub nviews: usize;
   pub accessors: String;
@@ -73,7 +63,7 @@ fn endView(g: &mut Glb, start: usize) usize {
   g.views.append("{\"buffer\":0,\"byteOffset\":");
   g.views.appendInt(i64.from(start));
   g.views.append(",\"byteLength\":");
-  g.views.appendInt(i64.from(g.bin.b.len() - start));
+  g.views.appendInt(i64.from(g.bin.len() - start));
   g.views.append("}");
   g.bin.align4();
   g.nviews += 1usize;
@@ -101,7 +91,7 @@ fn addAccessor(g: &mut Glb, view: usize, ctype: i32, count: usize, tname: &str, 
 // (for material 'material')
 fn addPrimitive(g: &mut Glb, m: &Mesh, material: i32) String {
   let n = m.positions.len();
-  var s = g.bin.b.len();
+  var s = g.bin.len();
   var min = *m.positions[0usize];
   var max = *m.positions[0usize];
   var i = 0usize;
@@ -113,16 +103,16 @@ fn addPrimitive(g: &mut Glb, m: &Mesh, material: i32) String {
     i += 1usize;
   }
   let pa = addAccessor(g, endView(g, s), 5126, n, "VEC3", "");
-  s = g.bin.b.len();
+  s = g.bin.len();
   i = 0usize;
   while i < n { let v = *m.normals[i]; g.bin.putF32(v.x); g.bin.putF32(v.y); g.bin.putF32(v.z); i += 1usize; }
   let na = addAccessor(g, endView(g, s), 5126, n, "VEC3", "");
-  s = g.bin.b.len();
+  s = g.bin.len();
   // glTF's v runs down the image: mesh's uv v is up, so it is written as 1 - v
   i = 0usize;
   while i < n { let v = *m.uvs[i]; g.bin.putF32(v.x); g.bin.putF32(1. - v.y); i += 1usize; }
   let ta = addAccessor(g, endView(g, s), 5126, n, "VEC2", "");
-  s = g.bin.b.len();
+  s = g.bin.len();
   i = 0usize;
   while i < m.indices.len() { g.bin.putU16(*m.indices[i]); i += 1usize; }
   let ia = addAccessor(g, endView(g, s), 5123, m.indices.len(), "SCALAR", "");
@@ -142,7 +132,7 @@ fn addPrimitive(g: &mut Glb, m: &Mesh, material: i32) String {
 
 // An image's bytes as a buffer view: its number
 fn addBlob(g: &mut Glb, d: &Array[u8]) usize {
-  let s = g.bin.b.len();
+  let s = g.bin.len();
   var i = 0usize;
   while i < d.len { g.bin.putU8(d[i]); i += 1usize; }
   endView(g, s)
@@ -188,7 +178,7 @@ fn readBytes(path: &str) List[u8] {
 
 // The demo model as a .glb file's bytes
 fn demoGlb(jpegPath: &str) List[u8] {
-  var g = Glb(Bin(List[u8]()), String(), 0usize, String(), 0usize);
+  var g = Glb(GlbBin.make(), String(), 0usize, String(), 0usize);
   let ground = Mesh.plane(1, 5.);
   let sphere = Mesh.sphere(1., 40);
   let cube = Mesh.cube(1.);
@@ -242,7 +232,7 @@ fn demoGlb(jpegPath: &str) List[u8] {
   j.append("{\"name\":\"bulb\",\"emissiveFactor\":[1,0.4,0.1],\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.02,0.02,0.02,1],\"metallicFactor\":0,\"roughnessFactor\":0.5},");
   j.append("\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":8}}}],");
   j.append("\"buffers\":[{\"byteLength\":");
-  j.appendInt(i64.from(g.bin.b.len()));
+  j.appendInt(i64.from(g.bin.len()));
   j.append("}],\"bufferViews\":[");
   j.append(g.views.view());
   j.append("],\"accessors\":[");
@@ -250,21 +240,7 @@ fn demoGlb(jpegPath: &str) List[u8] {
   j.append("]}");
   while j.len() % 4usize != 0usize { j.appendByte(' '); }
   // The container: header, JSON chunk, BIN chunk
-  var out = Bin(List[u8]());
-  out.putU32(0x46546C67u32);
-  out.putU32(2u32);
-  out.putU32(u32.from(12usize + 8usize + j.len() + 8usize + g.bin.b.len()));
-  out.putU32(u32.from(j.len()));
-  out.putU32(0x4E4F534Au32);
-  var i = 0usize;
-  while i < j.len() { out.putU8(j[i]); i += 1usize; }
-  out.putU32(u32.from(g.bin.b.len()));
-  out.putU32(0x004E4942u32);
-  i = 0usize;
-  while i < g.bin.b.len() { out.putU8(*g.bin.b[i]); i += 1usize; }
-  var res = List[u8]();
-  res <-> out.b;
-  res
+  writeGlb(j.view(), &mut g.bin)
 }
 
 // ---- from a Gltf to the renderer ----
