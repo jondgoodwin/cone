@@ -5135,13 +5135,20 @@ let opsEnded: Atomic[u64];
 
 // An awaited operation's reply is spent, by its answer (after the answer's
 // push, so that the actor it woke is already counted as scheduled) or by its
-// drop: count it, and wake a thread waiting for idle to look again
+// drop: count it, and, if none is now outstanding, wake a thread waiting for
+// idle to look again
 fn opSpent() {
   opsEnded.addOrdered(1u64, MemOrder.SeqCst);
   let s = running.load() as *Sched;
   if s as usize != 0usize {
-    (*s).quiet.add(1u32);
-    sync.futexWake(&(*s).quiet);
+    // Only the end that leaves none outstanding can make a waiter's look succeed (the
+    // counts meet only by an end, and the last end sees them meet), so the others do not
+    // wake it. A look that raced the end sees the changed 'quiet' and does not sleep. The
+    // other half of idleness, quiescence, is signalled by the park path
+    if opsStarted.loadOrdered(MemOrder.SeqCst) == opsEnded.loadOrdered(MemOrder.SeqCst) {
+      (*s).quiet.add(1u32);
+      sync.futexWake(&(*s).quiet);
+    }
   }
 }
 
