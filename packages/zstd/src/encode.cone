@@ -83,6 +83,21 @@ struct BitRun {
     n = n & 7u32;
   }
 
+  // The low 'bits' of v are added to the container with no store: the caller
+  // keeps n plus all the bits added before the next 'flush' at 64 or fewer
+  fn add(self: &mut, v: u64, bits: u32) inline {
+    acc = acc | ((v & ((1u64 << u64.from(bits)) - 1u64)) << u64.from(n));
+    n = n + bits;
+  }
+
+  // Stores the container and moves past its complete bytes (n goes to 0-7)
+  fn flush(self: &mut) inline {
+    mem.writeRaw[u64](w as *u64, acc);
+    w = w + usize.from(n >> 3u32);
+    acc = acc >> u64.from(n & 248u32);
+    n = n & 7u32;
+  }
+
   // Ends the stream (the closing 1 bit, zero padding to a byte) and gives
   // the bytes to 'out', which is where they were written
   fn finish(self: &mut, out: &mut List[u8]) {
@@ -193,6 +208,8 @@ fn writeNCount(out: &mut List[u8], norm: &Array[i16], log: u32) {
   bw.flushAll(out);
 }
 
+const cellBias: i32 = 1048576i32;
+
 // An FSE encoding table (the reference's FSE_buildCTable): 'states' gives,
 // symbol by symbol in the order of the decoding table, the states to move
 // to; 'deltaBits' and 'deltaFind' say, for each symbol, how many bits a
@@ -204,6 +221,7 @@ struct FseEnc is Default {
   states: List[u16];
   deltaBits: List[u32];
   deltaFind: List[i32];
+  cell: List[u64];
   // Scratch for building: each state's symbol, each symbol's next slot
   spread: List[u8];
   cumul: List[u32];
@@ -278,6 +296,14 @@ struct FseEnc is Default {
       }
       s += 1usize;
     }
+    // One cell a symbol for 'encodeRun': deltaBits below, deltaFind plus
+    // cellBias above (deltaFind is never below -cellBias)
+    cell.clear();
+    s = 0usize;
+    while s < deltaBits.len() {
+      cell.push(u64.from(*deltaBits[s]) | (u64.from(*deltaFind[s] + cellBias) << 32u64));
+      s += 1usize;
+    }
   }
 
   // The table of one symbol that always repeats
@@ -308,9 +334,10 @@ struct FseEnc is Default {
   // 'encode' for a BitRun
   fn encodeRun(self: &, bw: &mut BitRun, state: u32, sym: usize) u32 inline {
     if rle { return 0u32; }
-    let nb = (state + *deltaBits[sym]) >> 16u32;
-    bw.put(u64.from(state), nb);
-    u32.from(*states[usize.from(i64.from(state >> nb) + i64.from(*deltaFind[sym]))])
+    let c = *cell[sym];
+    let nb = (state + u32.from(c & 0xFFFFFFFFu64)) >> 16u32;
+    bw.add(u64.from(state), nb);
+    u32.from(*states[usize.from(u64.from(state >> nb) + (c >> 32u64)) - usize.from(cellBias)])
   }
 
   // 'flush' for a BitRun
