@@ -24,9 +24,19 @@ fn runOneShot(d: Decompressor, data: &Array[u8], expected: usize) Result[List[u8
   run.limit = if expected > 0usize {u64.from(expected)} else {defaultLimit()};
   // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
   run.hist.reserve(if expected > 0usize {if expected < 67108864usize {expected} else {67108864usize}} else {65536usize});
-  run.feed(data);
-  run.finish();
-  let s = run.runAll();
+  // The input goes in 1 MiB at a time, decoding between pieces, so the buffer pool never holds all of it
+  var at = 0usize;
+  var s = Status.NeedInput;
+  while at < data.len && s == Status.NeedInput {
+    let n = if data.len - at < 1048576usize { data.len - at } else { 1048576usize };
+    run.feed(&data[at ..< at + n]);
+    at = at + n;
+    s = run.runAll();
+  }
+  if s != Status.Failed {
+    run.finish();
+    s = run.runAll();
+  }
   if s == Status.Failed {
     match run.error() {
       case let Some(e) { return Err[List[u8], ZstdError](e); }

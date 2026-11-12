@@ -1,0 +1,55 @@
+// The tarfile package: tar archives (POSIX ustar) read as their bytes arrive and written entry by entry, in Cone
+// over the streams and iobuf packages, with no C library. No compression here: a gzip-wrapped tar goes
+// through package deflate's gzip reader first (tests/gzip.cone shows the two composing).
+//
+//   mod untar;
+//   import stdio use *;
+//   import iobuf use IoBuf;
+//   import tarfile;
+//
+//   fn main() i32 {
+//     var tar = tarfile.TarReader.make();
+//     tar.feed(bytes);                       // the archive's bytes, or in pieces
+//     tar.finish();
+//     var out = IoBuf(65536usize);
+//     while true {
+//       let s = tar.pull(&mut out);
+//       if s == tarfile.Step.Begin { printStr(tar.current().name.view()); }
+//       else if s == tarfile.Step.Data { out.clear(); }
+//       else if s == tarfile.Step.Done || s == tarfile.Step.Failed { break; }
+//     }
+//     0i32;
+//   }
+//
+// WHAT IS HERE
+//
+//   READING          an archive read from its front as its bytes arrive (reader.cone has the whole account)
+//     TarReader.make(), feed(bytes), feedBuf(IoBuf), finish(), pull(&mut IoBuf) Step (NeedInput, Begin, Data,
+//       End, Done, Failed), current() &Entry, error() Option[TarError], entriesDone()
+//     Entry: name, kind, size, mode, mtime, link, offset
+//     EntryKind: File, Dir, Symlink
+//   WRITING          entries are added whole; the bytes made come out of 'pull' in pieces of any size
+//     TarWriter.make(), add(name, data, &opts), addDir(name, &opts), finish(), pull(&mut IoBuf, max) Status
+//       (NeedInput, MoreOutput, Done), count(), isFinished()
+//     EntryOptions: mode, modified; plain()
+//   FAILURE          TarError { kind, offset, reason }, clone(); ErrorKind: NotTar, Truncated, Corrupt,
+//     Unsupported, TooLarge, BadArgument, Overloaded
+//
+// Only files, folders and symbolic links are read; an entry's data comes out of 'pull' in pieces as big as the
+// buffer given, never as a whole copy. Names are what the archive says: this package does not extract, so it does
+// not check them for '..' or a leading '/'. What it refuses (PAX records but 'path' and 'size', GNU long names,
+// hard links and devices, base-256 numbers) is refused with a reason, never guessed at.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   tarfile.cone     this overview
+//   types.cone       Step, Status, ErrorKind, TarError, EntryKind, Entry, EntryOptions
+//   bytes.cone       header fields: names, octal and decimal numbers, the checksum
+//   reader.cone      TarReader
+//   writer.cone      TarWriter
+
+mod tarfile;
+
+import collections use *;
+import iobuf use IoBuf, Chain;
+import streams use Reader, Writer;

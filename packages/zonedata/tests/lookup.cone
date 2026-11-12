@@ -1,0 +1,231 @@
+// zonedata: where a calendar Zone comes from on this machine.
+//
+// Every system:
+//   - 'isValidName' accepts IANA's names ('Europe/Kyiv', 'America/Port-au-Prince',
+//     'Etc/GMT+5', 'America/Argentina/Buenos_Aires', 'UTC') and refuses what
+//     could leave the zoneinfo folder or is no name: empty, '..' or '.' as a
+//     part, '../etc/passwd', an absolute path, a trailing, leading or doubled
+//     '/', a backslash, a ':', a NUL, a space;
+//   - 'named' with such a name answers the Err of kind BadName before reading
+//     anything;
+//   - 'windowsToIana' maps Windows' zone ids as CLDR release-49's windowsZones
+//     does for the territory 001 (generated), and answers None for an id it does
+//     not know.
+// On Windows:
+//   - 'named' of a good name answers the Err of kind NoSource, its line the
+//     one the work item gives; 'localZoneName' answers an IANA name that
+//     'isValidName' accepts, or the Err NoLocalZone for a Windows zone the table
+//     lacks (the test cannot tell which zone the machine is in); 'localZone' is
+//     then the same Err as 'named' would give.
+// On Linux (not run on Windows, so untested there): where /usr/share/zoneinfo
+// has America/New_York, 'named' reads it and the offsets are the ones New York
+// had (-5 hours in January 2026, -4 in July), a name with no file is NotFound,
+// and TZ is read by 'localZone'.
+
+mod lookup;
+
+import testing use *;
+import collections use *;
+import time use Timestamp;
+import zonedata use ZoneError, ZoneErrorKind;
+import fs;
+import path use Path;
+import env;
+import calendar use Zone;
+
+fn good(name: &str) { expectBool(zonedata.isValidName(name), true, name); }
+fn bad(name: &str) { expectBool(zonedata.isValidName(name), false, name); }
+
+fn iana(id: &str, expected: &str) {
+  match zonedata.windowsToIana(id) {
+    case let Some(n) { expectStr(n, expected, id); }
+    case is None { require(false, id); }
+  }
+}
+
+fn unknown(id: &str, label: &str) {
+  match zonedata.windowsToIana(id) {
+    case let Some(n) { require(false, label); }
+    case is None { require(true, label); }
+  }
+}
+
+fn kindIs(r: &Result[Zone, ZoneError], kind: ZoneErrorKind, label: &str) {
+  match r {
+    case let Ok(z) { require(false, label); }
+    case let Err(e) { require(e.kind == kind, label); }
+  }
+}
+
+fn names() {
+  good("UTC");
+  good("Europe/Kyiv");
+  good("America/Port-au-Prince");
+  good("Etc/GMT+5");
+  good("America/Argentina/Buenos_Aires");
+  good("a..b");
+  good(".hidden");
+  bad("");
+  bad(".");
+  bad("..");
+  bad("../etc/passwd");
+  bad("Europe/../../etc/passwd");
+  bad("Europe/..");
+  bad("/etc/passwd");
+  bad("Europe/Kyiv/");
+  bad("Europe//Kyiv");
+  bad("Europe\\Kyiv");
+  bad("C:/Windows");
+  bad("C:Windows");
+  bad("Europe/Ky iv");
+  bad("Europe/Kyiv\0x");
+  bad("./Europe/Kyiv");
+}
+
+fn refusals() {
+  kindIs(&zonedata.named(""), ZoneErrorKind.BadName, "named empty");
+  kindIs(&zonedata.named("../../etc/passwd"), ZoneErrorKind.BadName, "named ..");
+  kindIs(&zonedata.named("/etc/passwd"), ZoneErrorKind.BadName, "named absolute");
+  kindIs(&zonedata.named("C:\\Windows\\win.ini"), ZoneErrorKind.BadName, "named windows path");
+  match zonedata.named("a/../b") {
+    case let Ok(z) { require(false, "named a/../b"); }
+    case let Err(e) {
+      var line = String();
+      line <- e;
+      expectStr(line.view(), "zone 'a/../b': not a zone name: parts of letters, digits and _-+. joined by '/', none empty, '.' or '..'", "BadName line");
+    }
+  }
+}
+
+fn windowsIds() {
+  iana("Eastern Standard Time", "America/New_York");
+  iana("Pacific Standard Time", "America/Los_Angeles");
+  iana("E. South America Standard Time", "America/Sao_Paulo");
+  iana("GMT Standard Time", "Europe/London");
+  iana("W. Europe Standard Time", "Europe/Berlin");
+  iana("FLE Standard Time", "Europe/Kiev");                 // CLDR release-49 still spells it so
+  iana("India Standard Time", "Asia/Calcutta");
+  iana("Alberta Standard Time", "America/Edmonton");
+  iana("British Columbia Standard Time", "America/Vancouver");
+  iana("Manitoba Standard Time", "America/Winnipeg");
+  iana("Russia Time Zone 11", "Asia/Kamchatka");
+  unknown("Kamchatka Standard Time", "not in CLDR");
+  unknown("Mid-Atlantic Standard Time", "not in CLDR");
+  iana("Russian Standard Time", "Europe/Moscow");
+  iana("China Standard Time", "Asia/Shanghai");
+  iana("AUS Eastern Standard Time", "Australia/Sydney");
+  iana("Lord Howe Standard Time", "Australia/Lord_Howe");
+  iana("Central Standard Time (Mexico)", "America/Mexico_City");
+  iana("UTC", "Etc/UTC");
+  iana("UTC-11", "Etc/GMT+11");
+  iana("Dateline Standard Time", "Etc/GMT+12");
+  unknown("Mars Standard Time", "unknown id");
+  unknown("", "empty id");
+  unknown("eastern standard time", "ids are exact");
+}
+
+fn onWindows() {
+  #if #os == .windows {
+    match zonedata.named("Europe/Kyiv") {
+      case let Ok(z) { require(false, "named on Windows"); }
+      case let Err(e) {
+        require(e.kind == ZoneErrorKind.NoSource, "NoSource");
+        var line = String();
+        line <- e;
+        expectStr(line.view(), "zone 'Europe/Kyiv': no zone data source on this platform; import tzdata", "NoSource line");
+      }
+    }
+    match zonedata.localZoneName() {
+      case let Ok(n) { expectBool(zonedata.isValidName(n.view()), true, "the local zone's name is a name"); }
+      case let Err(e) { require(e.kind == ZoneErrorKind.NoLocalZone, "an unknown Windows zone"); }
+    }
+    match zonedata.localZone() {
+      case let Ok(z) { require(false, "local on Windows has no data source"); }
+      case let Err(e) {
+        require(e.kind == ZoneErrorKind.NoSource || e.kind == ZoneErrorKind.NoLocalZone, "local's Err");
+      }
+    }
+  }
+}
+
+fn onLinux() {
+  #if #os == .windows {
+  } #else {
+    if !fs.exists(&Path.from("/usr/share/zoneinfo/America/New_York")) { return; }
+    match zonedata.named("America/New_York") {
+      case let Ok(z) {
+        let jan = z.offsetAt(Timestamp.fromUnixSeconds(1767225600));   // 2026-01-01T00:00:00Z
+        expectInt(i64.from(jan.seconds), -18000, "New York in January");
+        expectStr(jan.abbr, "EST", "EST");
+        let jul = z.offsetAt(Timestamp.fromUnixSeconds(1782864000));   // 2026-07-01T00:00:00Z
+        expectInt(i64.from(jul.seconds), -14400, "New York in July");
+        expectStr(jul.abbr, "EDT", "EDT");
+      }
+      case let Err(e) { require(false, "named New York"); }
+    }
+    kindIs(&zonedata.named("Mars/Olympus_Mons"), ZoneErrorKind.NotFound, "no such zone");
+    env.set("TZ", "America/New_York");
+    match zonedata.localZone() {
+      case let Ok(z) {
+        expectInt(i64.from(z.offsetAt(Timestamp.fromUnixSeconds(1767225600)).seconds), -18000, "local by TZ");
+      }
+      case let Err(e) { require(false, "local by TZ"); }
+    }
+    match zonedata.localZoneName() {
+      case let Ok(n) { expectStr(n.view(), "America/New_York", "localName by TZ"); }
+      case let Err(e) { require(false, "localName by TZ"); }
+    }
+    env.set("TZ", ":/usr/share/zoneinfo/America/New_York");
+    match zonedata.localZoneName() {
+      case let Ok(n) { expectStr(n.view(), "America/New_York", "localName by TZ path"); }
+      case let Err(e) { require(false, "localName by TZ path"); }
+    }
+    // A POSIX rule that names no file: a Zone of that rule alone
+    env.set("TZ", "EST5EDT,M3.2.0,M11.1.0");
+    match zonedata.localZone() {
+      case let Ok(z) {
+        let jan = z.offsetAt(Timestamp.fromUnixSeconds(1767225600));
+        expectInt(i64.from(jan.seconds), -18000, "rule in January");
+        expectStr(jan.abbr, "EST", "rule EST");
+        let jul = z.offsetAt(Timestamp.fromUnixSeconds(1782864000));
+        expectInt(i64.from(jul.seconds), -14400, "rule in July");
+        expectStr(jul.abbr, "EDT", "rule EDT");
+      }
+      case let Err(e) { require(false, "local by TZ rule"); }
+    }
+    match zonedata.localZoneName() {
+      case let Ok(n) { require(false, "a rule has no name"); }
+      case let Err(e) { require(e.kind == ZoneErrorKind.NoLocalZone, "rule name is NoLocalZone"); }
+    }
+    env.set("TZ", "<+03>-3");
+    match zonedata.localZone() {
+      case let Ok(z) {
+        let any = z.offsetAt(Timestamp.fromUnixSeconds(1767225600));
+        expectInt(i64.from(any.seconds), 10800, "fixed rule");
+        expectStr(any.abbr, "+03", "fixed rule abbr");
+      }
+      case let Err(e) { require(false, "local by fixed TZ rule"); }
+    }
+    // Neither a file, nor a rule
+    env.set("TZ", "Mars/Olympus_Mons");
+    match zonedata.localZone() {
+      case let Ok(z) { require(false, "TZ nonsense"); }
+      case let Err(e) { require(e.kind == ZoneErrorKind.NotFound, "TZ nonsense is NotFound"); }
+    }
+    env.set("TZ", "not a zone,at all");
+    match zonedata.localZone() {
+      case let Ok(z) { require(false, "TZ junk"); }
+      case let Err(e) { require(e.kind == ZoneErrorKind.BadName, "TZ junk is BadName"); }
+    }
+    env.unset("TZ");
+  }
+}
+
+fn main() i32 {
+  names();
+  refusals();
+  windowsIds();
+  onWindows();
+  onLinux();
+  done()
+}

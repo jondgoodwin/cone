@@ -165,6 +165,56 @@ struct StreamIn {
   seq: u16;
 }
 
+// The start of a packet: protocol id, kind, session. The kind, or None when
+// the packet is too short, or is of another protocol or session
+fn readPrefix(c: &mut streams.ByteCursor, protocol: u32, session: u64) Option[u8] {
+  let magic = c.getBE[u32]()?;
+  let kind = c.getByte()?;
+  let sess = c.getBE[u64]()?;
+  if magic != protocol || sess != session {return None[u8];}
+  Some[u8](kind)
+}
+
+fn copyOf(b: &Array[u8]) List[u8] {
+  var l = List[u8].withCapacity(b.len);
+  l.appendSlice(b);
+  l
+}
+
+// The rest of a payload packet, after its prefix, parsed whole: None when it
+// is short, malformed, or has bytes left over
+fn parseBody(c: &mut streams.ByteCursor) Option[Parsed] {
+  let seq = c.getBE[u16]()?;
+  let ack = c.getBE[u16]()?;
+  let bits = c.getBE[u32]()?;
+  var pk = Parsed(seq, ack, bits, List[RelRecv](), List[LatestItem]());
+  let nRel = c.getByte()?;
+  let nLat = c.getByte()?;
+  var i = 0u8;
+  while i < nRel {
+    let id = c.getBE[u16]()?;
+    let lf = c.getBE[u16]()?;
+    // The top two bits are reserved for fragmentation (not built): a
+    // message that sets either is refused
+    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    pk.rel.push(RelRecv(id, copyOf(body)));
+    i = i + 1u8;
+  }
+  i = 0u8;
+  while i < nLat {
+    let stream = c.getBE[u16]()?;
+    let lseq = c.getBE[u16]()?;
+    let lf = c.getBE[u16]()?;
+    if (lf >> 14u16) != 0u16 {return None[Parsed];}
+    let body = c.getBytes(usize.from(lf & 0x3FFFu16))?;
+    pk.lat.push(LatestItem(stream, lseq, copyOf(body)));
+    i = i + 1u8;
+  }
+  if !c.isEmpty() {return None[Parsed];}
+  Some[Parsed](pk)
+}
+
 // What one packet carries, parsed before any of it is acted on
 struct Parsed {
   seq: u16;
@@ -281,7 +331,7 @@ pub struct ConnectionCore {
     s.acked = false;
     s.lastSent = -1i64;
     s.data.clear();
-    putBytes(&mut s.data, data);
+    s.data.appendSlice(data);
     relNext = relNext + 1u16;
     true
   }
@@ -303,7 +353,7 @@ pub struct ConnectionCore {
     }
     let s = &mut outs[k];
     s.data.clear();
-    putBytes(&mut s.data, data);
+    s.data.appendSlice(data);
     s.pending = true;
     true
   }
@@ -448,7 +498,7 @@ pub struct ConnectionCore {
   // Move time on to 'now': appends to 'out' the packets to send (none, one,
   // or the disconnect copies) and to 'events' what happened. Call it when
   // nextDeadline says, after a packet arrives, and after sending.
-  pub fn poll(self: &mut, now: Instant, out: &mut List[List[u8]], events: &mut List[CoreEvent]) {
+  pub fn poll(self: &mut, now: Instant, out: &mut Packets, events: &mut List[CoreEvent]) {
     let t = now.nanos();
     if state == CoreState.Closed {return;}
     if state == CoreState.Closing {
@@ -523,12 +573,12 @@ pub struct ConnectionCore {
   // Building a packet
   // ------------------------------------------------------------------
 
-  fn disconnectPacket(self: &) List[u8] {
-    var p = List[u8].withCapacity(13usize);
-    putU32(&mut p, protocolId);
-    putU8(&mut p, kindDisconnect);
-    putU64(&mut p, session);
-    p
+  fn disconnectPacket(self: &) IoBuf {
+    var w = streams.Writer.make(13usize);
+    w.putBE[u32](protocolId);
+    w.putByte(kindDisconnect);
+    w.putBE[u64](session);
+    w.intoBuf()
   }
 
   // The bit i of the ack bitfield: whether packet (remoteSeq - 1 - i) arrived
@@ -547,20 +597,19 @@ pub struct ConnectionCore {
 
   // One payload packet: reliable messages that are due, then the latest-wins
   // values in order of priority, as many as fit
-  fn buildPacket(self: &mut, t: i64) List[u8] {
-    var p = List[u8].withCapacity(cfg.maxPacket);
+  fn buildPacket(self: &mut, t: i64) IoBuf {
+    // One buffer holds the packet: the budget below keeps it within maxPacket
+    var p = streams.Writer.make(cfg.maxPacket);
     let seq = nextSeq;
     nextSeq = nextSeq + 1u16;
-    putU32(&mut p, protocolId);
-    putU8(&mut p, kindPayload);
-    putU64(&mut p, session);
-    putU16(&mut p, seq);
-    putU16(&mut p, remoteSeq);
-    putU32(&mut p, self.ackBits());
-    let relCountAt = p.len();
-    putU8(&mut p, 0u8);
-    let latCountAt = p.len();
-    putU8(&mut p, 0u8);
+    p.putBE[u32](protocolId);
+    p.putByte(kindPayload);
+    p.putBE[u64](session);
+    p.putBE[u16](seq);
+    p.putBE[u16](remoteSeq);
+    p.putBE[u32](self.ackBits());
+    let relCount = p.slot[u8]();
+    let latCount = p.slot[u8]();
 
     // The slot this packet is remembered in
     if sent[usize.from(seq) % ringSize].used && !sent[usize.from(seq) % ringSize].acked {
@@ -584,9 +633,9 @@ pub struct ConnectionCore {
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
         let need = reliableOverhead + s.data.len();
         if need > budget {break;}
-        putU16(&mut p, id);
-        putU16(&mut p, u16.from(s.data.len()));
-        putBytes(&mut p, s.data.view());
+        p.putBE[u16](id);
+        p.putBE[u16](u16.from(s.data.len()));
+        p.put(s.data.view());
         budget = budget - need;
         if s.lastSent >= 0i64 {st.reliableResent = st.reliableResent + 1u64;}
         s.lastSent = t;
@@ -596,7 +645,7 @@ pub struct ConnectionCore {
       }
       id = id + 1u16;
     }
-    p.set(relCountAt, nRel);
+    p.fillBE[u8](relCount, nRel);
 
     // Latest-wins values: every waiting stream gains priority; the highest
     // that fit go in, and the ones that do not keep what they gathered
@@ -619,10 +668,10 @@ pub struct ConnectionCore {
       }
       if best == notFound {break;}
       let s = &mut outs[best];
-      putU16(&mut p, s.key);
-      putU16(&mut p, s.nextSeq);
-      putU16(&mut p, u16.from(s.data.len()));
-      putBytes(&mut p, s.data.view());
+      p.putBE[u16](s.key);
+      p.putBE[u16](s.nextSeq);
+      p.putBE[u16](u16.from(s.data.len()));
+      p.put(s.data.view());
       budget = budget - (latestOverhead + s.data.len());
       s.nextSeq = s.nextSeq + 1u16;
       s.pending = false;
@@ -631,10 +680,10 @@ pub struct ConnectionCore {
       nLat = nLat + 1u8;
       st.latestSent = st.latestSent + 1u64;
     }
-    p.set(latCountAt, nLat);
+    p.fillBE[u8](latCount, nLat);
     st.packetsSent = st.packetsSent + 1u64;
     st.bytesSent = st.bytesSent + u64.from(p.len());
-    p
+    p.intoBuf()
   }
 
   // ------------------------------------------------------------------
@@ -647,11 +696,15 @@ pub struct ConnectionCore {
   // its latest-wins values (given if newer than any delivered)
   pub fn receive(self: &mut, data: &Array[u8], now: Instant, events: &mut List[CoreEvent]) bool {
     if state != CoreState.Active {return false;}
-    var c = PacketReader.start();
-    let magic = c.rdU32(data);
-    let kind = c.rdU8(data);
-    let sess = c.rdU64(data);
-    if !c.ok || magic != protocolId || sess != session || (kind != kindPayload && kind != kindDisconnect) {
+    var c = streams.ByteCursor.over(data);
+    let kind = match readPrefix(&mut c, protocolId, session) {
+      case let Some(k) {k}
+      else {
+        st.packetsInvalid = st.packetsInvalid + 1u64;
+        return false;
+      }
+    };
+    if kind != kindPayload && kind != kindDisconnect {
       st.packetsInvalid = st.packetsInvalid + 1u64;
       return false;
     }
@@ -666,34 +719,13 @@ pub struct ConnectionCore {
       events.push(CoreEvent.Closed(CloseReason.Remote));
       return true;
     }
-    var pk = Parsed(c.rdU16(data), c.rdU16(data), c.rdU32(data), List[RelRecv](), List[LatestItem]());
-    let nRel = c.rdU8(data);
-    let nLat = c.rdU8(data);
-    var i = 0u8;
-    while i < nRel && c.ok {
-      let id = c.rdU16(data);
-      let lf = c.rdU16(data);
-      // The top two bits are reserved for fragmentation (not built): a
-      // message that sets either is refused
-      if (lf >> 14u16) != 0u16 {c.ok = false;}
-      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
-      pk.rel.push(RelRecv(id, body));
-      i = i + 1u8;
-    }
-    i = 0u8;
-    while i < nLat && c.ok {
-      let stream = c.rdU16(data);
-      let seq = c.rdU16(data);
-      let lf = c.rdU16(data);
-      if (lf >> 14u16) != 0u16 {c.ok = false;}
-      let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
-      pk.lat.push(LatestItem(stream, seq, body));
-      i = i + 1u8;
-    }
-    if !c.ok || c.pos != data.len {
-      st.packetsInvalid = st.packetsInvalid + 1u64;
-      return false;
-    }
+    var pk = match parseBody(&mut c) {
+      case var Some(p) {p}
+      else {
+        st.packetsInvalid = st.packetsInvalid + 1u64;
+        return false;
+      }
+    };
 
     // It is ours
     let t = now.nanos();

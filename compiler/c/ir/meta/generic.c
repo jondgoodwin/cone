@@ -3140,7 +3140,10 @@ static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type
 static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, GenericInfo *genericinfo, Name *name) {
     Nodes *where = NULL;
     Nodes *parms = genericinfo->parms;
-    if (generic->tag == FnDclTag)
+    // A generic alias has no owner: its bounds are its own (genericAliasExpand)
+    if (generic == NULL)
+        where = genericinfo->where;
+    else if (generic->tag == FnDclTag)
         where = ((FnDclNode*)generic)->where;
     else if (generic->tag == StructTag) {
         StructNode *owner = (StructNode*)generic;
@@ -3774,7 +3777,7 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
         structDeferCheck(pstate, genericLateWhere, instance, wait);
     }
 
-    structInstanceNote(instance);
+    structInstanceNote(pstate, instance);
 
     // Remember instantiation for the future
     if (!genericinfo->memonodes)
@@ -4187,7 +4190,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // generic again at larger type arguments, so this is where depth is counted.
     // An instance made while another's members are checked is deeper by one than
     // that one (structInstanceNest): the stack is not, as those checks are queued.
-    if (!structInstanceNest((INode*)srcgencall))
+    if (!structInstanceNest(pstate, (INode*)srcgencall))
         return newErrorNode((INode*)srcgencall);
     if (!genericInstantiateEnter((INode*)srcgencall))
         return newErrorNode((INode*)srcgencall);
@@ -4304,6 +4307,81 @@ GenericInfo *genericGetInfo(INode *node) {
     default:
         return NULL;
     }
+}
+
+// A use of a generic alias, 'Items[i32]', is replaced by the alias's target with
+// the arguments substituted, then type checked as if it had been written so.
+// The alias is shorthand only: the expansion is an ordinary type expression, so
+// identity, coercion and permission are exactly those of what it expands to.
+// The arguments are counted and checked against the alias's bounds here, where
+// the use is. Returns 1 when the use was a generic alias's (replaced, or an
+// error), 0 when it was not.
+//
+// An alias whose expansion names itself ('alias L[T] = List[L[T]]') would expand
+// without end: the aliases being expanded are tracked, and a use met while its own
+// alias is still being expanded is refused where it is written.
+static AliasDclNode *aliasExpanding[64];
+static int aliasExpandingN = 0;
+
+int genericAliasExpand(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!(node->flags & FlagIndex) || node->methfld != NULL || !isNameUseNode(node->objfn))
+        return 0;
+    INode *dcl = ((NameUseNode*)node->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != AliasDclTag || ((AliasDclNode*)dcl)->genericinfo == NULL)
+        return 0;
+    AliasDclNode *alias = (AliasDclNode*)dcl;
+    GenericInfo *info = alias->genericinfo;
+    uint32_t expected = info->parms->used;
+    uint32_t given = node->args ? node->args->used : 0;
+    if (given != expected) {
+        errorMsgNode((INode*)node, ErrorArgCount, "The alias %s takes %u type argument%s, and this gives %u.",
+            &alias->namesym->namestr, expected, expected == 1 ? "" : "s", given);
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return 1;
+    }
+    INode **argp;
+    uint32_t cnt;
+    int badargs = 0;
+    for (nodesFor(node->args, cnt, argp)) {
+        if (!itypeTypeCheck(pstate, argp) || !isTypeNode(*argp)) {
+            if (!inodeIsError(*argp))
+                errorMsgNode(*argp, ErrorNotType, "Expected a type for a generic parameter");
+            badargs = 1;
+        }
+        else if (itypeRefuseBareGeneric(*argp) || itypeRefuseModule(*argp))
+            badargs = 1;
+    }
+    if (badargs || !genericRequirementsMet(pstate, node, NULL, info, alias->namesym)) {
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return 1;
+    }
+    for (int i = 0; i < aliasExpandingN; ++i) {
+        if (aliasExpanding[i] == alias) {
+            errorMsgNode((INode*)node, ErrorCircular,
+                "%s is defined in terms of itself, so it names no type.", &alias->namesym->namestr);
+            *nodep = (FnCallNode*)newErrorNode((INode*)node);
+            return 1;
+        }
+    }
+    if (aliasExpandingN >= 64) {
+        errorMsgNode((INode*)node, ErrorInstDepth, "Aliases expand too deeply to follow.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return 1;
+    }
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, (INode*)node, NULL, pstate->scope, info->parms, node->args);
+    INode *copy = cloneNode(&cstate, alias->target);
+    clonePopState();
+    cloneDclPop(dclpos);
+    // Placed where the use was written, so what the expansion refuses is reported there
+    inodeLexCopy(copy, (INode*)node);
+    *(INode**)nodep = copy;
+    aliasExpanding[aliasExpandingN++] = alias;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    --aliasExpandingN;
+    return 1;
 }
 
 // The name use of an instance stands where the generic's name was written, so

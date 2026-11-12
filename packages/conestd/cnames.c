@@ -21,13 +21,44 @@
 #include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 FILE *cone_stdin(void) { return stdin; }
 FILE *cone_stdout(void) { return stdout; }
 FILE *cone_stderr(void) { return stderr; }
 
 int *cone_errno(void) { return &errno; }
+
+// A block of 'size' bytes (at least one) whose address is a multiple of 'align',
+// or null when 'align' is not a power of two or there is no room. The Windows
+// runtime and POSIX spell this differently (_aligned_malloc, posix_memalign)
+// and a block from either goes back only through cone_alignedFree: the Windows
+// runtime's free() does not take an _aligned_malloc block. libc's alignedAlloc
+// and alignedFree bind these.
+void *cone_alignedAlloc(size_t size, size_t align) {
+    if (align == 0 || (align & (align - 1)) != 0) return NULL;
+    if (size == 0) size = 1;
+#ifdef _WIN32
+    return _aligned_malloc(size, align);
+#else
+    void *p = NULL;
+    if (align < sizeof(void *)) align = sizeof(void *);
+    if (posix_memalign(&p, align, size) != 0) return NULL;
+    return p;
+#endif
+}
+
+void cone_alignedFree(void *p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
 
 // The numbers that differ by C library (the UCRT's EILSEQ is 42 and glibc's 84,
 // its LC_ALL 0 and glibc's 6; the UCRT's ENAMETOOLONG is 38 and glibc's 36, its

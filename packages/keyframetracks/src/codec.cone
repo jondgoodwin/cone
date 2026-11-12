@@ -13,36 +13,21 @@
 // A key carries its easing as an id (and up to four shape numbers: a back's
 // overshoot, a spring's zeta and omega, or a Bezier's four handle numbers)
 // and its interpolation as an id; shape and tangent numbers are only written
-// when they are not all zero. 'decode...' reads from 'pos' and moves it;
-// each returns false, leaving a partly read result, if the bytes run out or a
-// number is out of range.
+// when they are not all zero. Writing is onto a streams.Writer; reading is by
+// a streams.ByteCursor, which each 'decode...' moves past what it read. Each
+// returns None if the bytes run out or a number is out of range.
 
-fn put8(out: &mut List[u8], v: u32) { out.push(u8.from(v & 0xFFu32)); }
+fn put8(out: &mut streams.Writer, v: u32) { out.putByte(u8.from(v & 0xFFu32)); }
 
-fn put16(out: &mut List[u8], v: u32) { put8(out, v); put8(out, v >> 8u32); }
+fn put16(out: &mut streams.Writer, v: u32) { out.putLE[u16](u16.from(v & 0xFFFFu32)); }
 
-fn put32(out: &mut List[u8], v: u32) { put16(out, v & 0xFFFFu32); put16(out, v >> 16u32); }
+fn put32(out: &mut streams.Writer, v: u32) { out.putLE[u32](v); }
 
-fn putF(out: &mut List[u8], v: f32) { put32(out, v.bits()); }
+fn putF(out: &mut streams.Writer, v: f32) { out.putLE[f32](v); }
 
-fn get8(d: &List[u8], pos: &mut usize, ok: &mut bool) u32 {
-  if *pos >= d.len() { *ok = false; return 0u32; }
-  let v = u32.from(*d[*pos]);
-  *pos = *pos + 1usize;
-  v
-}
+fn get8(c: &mut streams.ByteCursor) Option[u32] { Some[u32](u32.from(c.getByte()?)) }
 
-fn get16(d: &List[u8], pos: &mut usize, ok: &mut bool) u32 {
-  let a = get8(d, pos, ok);
-  a | (get8(d, pos, ok) << 8u32)
-}
-
-fn get32(d: &List[u8], pos: &mut usize, ok: &mut bool) u32 {
-  let a = get16(d, pos, ok);
-  a | (get16(d, pos, ok) << 16u32)
-}
-
-fn getF(d: &List[u8], pos: &mut usize, ok: &mut bool) f32 { f32.fromBits(get32(d, pos, ok)) }
+fn get16(c: &mut streams.ByteCursor) Option[u32] { Some[u32](u32.from(c.getLE[u16]()?)) }
 
 fn anyNonZero(l: &List[f32], from: usize, n: usize) bool {
   var i = 0usize;
@@ -51,7 +36,7 @@ fn anyNonZero(l: &List[f32], from: usize, n: usize) bool {
 }
 
 // Append a track's bytes to 'out'
-pub fn encodeTrack(t: &Track, out: &mut List[u8]) {
+pub fn encodeTrack(t: &Track, out: &mut streams.Writer) {
   put8(out, t.kind);
   put8(out, t.space);
   put16(out, u32.from(t.comps));
@@ -80,53 +65,50 @@ pub fn encodeTrack(t: &Track, out: &mut List[u8]) {
   }
 }
 
-// Read a track from 'd' at 'pos'
-pub fn decodeTrack(d: &List[u8], pos: &mut usize) Option[Track] {
-  var ok = true;
-  let kind = get8(d, pos, &mut ok);
-  let space = get8(d, pos, &mut ok);
-  let comps = usize.from(get16(d, pos, &mut ok));
-  let n = usize.from(get32(d, pos, &mut ok));
-  if !ok || kind > TK_VECN || comps == 0usize || comps > 4096usize || n > 16777216usize { return None; }
+// Read a track at the cursor, which moves past it
+pub fn decodeTrack(cur: &mut streams.ByteCursor) Option[Track] {
+  let kind = get8(cur)?;
+  let space = get8(cur)?;
+  let comps = usize.from(get16(cur)?);
+  let n = usize.from(cur.getLE[u32]()?);
+  if kind > TK_VECN || comps == 0usize || comps > 4096usize || n > 16777216usize { return None; }
   var t = if kind == TK_VECN { Track.makeVecN(comps) } else { Track.make(kind) };
   if t.comps != comps { return None; }
   t.space = space;
   var k = 0usize;
-  while k < n && ok {
-    let time = getF(d, pos, &mut ok);
+  while k < n {
+    let time = cur.getLE[f32]()?;
     let idx = t.appendBlank(time);
-    t.interps.set(idx, get8(d, pos, &mut ok));
-    t.eases.set(idx, get8(d, pos, &mut ok));
-    let flags = get8(d, pos, &mut ok);
+    t.interps.set(idx, get8(cur)?);
+    t.eases.set(idx, get8(cur)?);
+    let flags = get8(cur)?;
     var c = 0usize;
-    while c < comps { t.values.set(idx * comps + c, getF(d, pos, &mut ok)); c = c + 1usize; }
+    while c < comps { t.values.set(idx * comps + c, cur.getLE[f32]()?); c = c + 1usize; }
     if (flags & 1u32) != 0u32 {
       c = 0usize;
-      while c < 4usize { t.shapes.set(idx * 4usize + c, getF(d, pos, &mut ok)); c = c + 1usize; }
+      while c < 4usize { t.shapes.set(idx * 4usize + c, cur.getLE[f32]()?); c = c + 1usize; }
     }
     if (flags & 2u32) != 0u32 {
       c = 0usize;
-      while c < comps { t.inTan.set(idx * comps + c, getF(d, pos, &mut ok)); c = c + 1usize; }
+      while c < comps { t.inTan.set(idx * comps + c, cur.getLE[f32]()?); c = c + 1usize; }
       c = 0usize;
-      while c < comps { t.outTan.set(idx * comps + c, getF(d, pos, &mut ok)); c = c + 1usize; }
+      while c < comps { t.outTan.set(idx * comps + c, cur.getLE[f32]()?); c = c + 1usize; }
     }
     k = k + 1usize;
   }
-  if !ok { return None; }
   Some(t)
 }
 
 // A clip's bytes
-pub fn encodeClip(c: &Clip) List[u8] {
-  var out = List[u8]();
-  out.push('K'); out.push('F'); out.push('C'); out.push('1');
+pub fn encodeClip(c: &Clip) Chain {
+  var out = streams.Writer.make(4096usize);
+  out.put("KFC1");
   put16(&mut out, u32.from(c.name.len()));
-  var i = 0usize;
-  while i < c.name.len() { out.push(c.name[i]); i = i + 1usize; }
+  out.put(c.name.view());
   putF(&mut out, c.length);
   put8(&mut out, c.mode);
   put32(&mut out, u32.from(c.bindings.len()));
-  i = 0usize;
+  var i = 0usize;
   while i < c.bindings.len() {
     put32(&mut out, (*c.bindings[i]).target);
     put32(&mut out, (*c.bindings[i]).prop);
@@ -141,48 +123,37 @@ pub fn encodeClip(c: &Clip) List[u8] {
     putF(&mut out, (*c.markers[i]).arg);
     i = i + 1usize;
   }
-  out
+  out.finish()
 }
 
 // A clip from bytes (None if they are not a clip or run out)
-pub fn decodeClip(d: &List[u8]) Option[Clip] {
-  var ok = true;
-  var pos = 0usize;
-  if d.len() < 4usize { return None; }
-  if *d[0usize] != 'K' || *d[1usize] != 'F' || *d[2usize] != 'C' || *d[3usize] != '1' { return None; }
-  pos = 4usize;
-  let nameLen = usize.from(get16(d, &mut pos, &mut ok));
-  var nameBytes = List[u8]();
-  var i = 0usize;
-  while i < nameLen && ok {
-    nameBytes.push(u8.from(get8(d, &mut pos, &mut ok)));
-    i = i + 1usize;
-  }
-  let name = String.fromBytes(nameBytes.view());
+pub fn decodeClip(d: &Array[u8]) Option[Clip] {
+  if d.len < 4usize { return None; }
+  if d[0usize] != 'K' || d[1usize] != 'F' || d[2usize] != 'C' || d[3usize] != '1' { return None; }
+  var cur = streams.ByteCursor.over(d);
+  _ = cur.skip(4usize);
+  let nameLen = usize.from(get16(&mut cur)?);
+  let name = String.fromBytes(cur.getBytes(nameLen)?);
   var clip = Clip.make(name.view(), LOOP_ONCE);
-  clip.length = getF(d, &mut pos, &mut ok);
-  clip.mode = get8(d, &mut pos, &mut ok);
-  let nb = usize.from(get32(d, &mut pos, &mut ok));
-  if !ok || nb > 1048576usize || clip.mode > LOOP_PINGPONG { return None; }
-  i = 0usize;
+  clip.length = cur.getLE[f32]()?;
+  clip.mode = get8(&mut cur)?;
+  let nb = usize.from(cur.getLE[u32]()?);
+  if nb > 1048576usize || clip.mode > LOOP_PINGPONG { return None; }
+  var i = 0usize;
   while i < nb {
-    let target = get32(d, &mut pos, &mut ok);
-    let prop = get32(d, &mut pos, &mut ok);
-    if !ok { return None; }
-    match decodeTrack(d, &mut pos) {
-      case let Some(tr) { clip.bindings.push(Binding(target, prop, tr)); }
-      case None { return None; }
-    }
+    let target = cur.getLE[u32]()?;
+    let prop = cur.getLE[u32]()?;
+    let tr = decodeTrack(&mut cur)?;
+    clip.bindings.push(Binding(target, prop, tr));
     i = i + 1usize;
   }
-  let nm = usize.from(get32(d, &mut pos, &mut ok));
-  if !ok || nm > 16777216usize { return None; }
+  let nm = usize.from(cur.getLE[u32]()?);
+  if nm > 16777216usize { return None; }
   i = 0usize;
   while i < nm {
-    let time = getF(d, &mut pos, &mut ok);
-    let id = get32(d, &mut pos, &mut ok);
-    let arg = getF(d, &mut pos, &mut ok);
-    if !ok { return None; }
+    let time = cur.getLE[f32]()?;
+    let id = cur.getLE[u32]()?;
+    let arg = cur.getLE[f32]()?;
     clip.markers.push(Marker(time, id, arg));
     i = i + 1usize;
   }
