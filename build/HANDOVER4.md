@@ -26,3 +26,6 @@ Options for design chat: (a) take the Driver and the Http3 plug-in OUT of the Sr
 
 ## Left (unchanged otherwise)
 tests of h3driver (needs actorhttp), docs (doc/reference, compiler/c/doc, slots row of doc/manual/library.html), the four speed pairs: NOTE `speed-pair-cpu.ps1` only knows kinds aio, zstd, sort, gc; it has no slotbench/densebench/churn/echo kind, so the pairs need a kind added or another script, PR body (HANDOVER2/3 judgement calls plus: `byToken` returns EntryId; `Located`/`routeOf`/(srv, slot) helpers private).
+
+## Also this lane
+render/tests/visibility.cone moved off the private GenPool `at` to borrowAt (5 sites): render 29/29 expected, visibility + visibilitygpu pass alone. Tests run on this compiler: pools 2/2, slots 2/2, iocore 38/38, http2 20/20, http3 11/11, quic 5/5; httpconn 20/20 and httpclient 15/15 (lane 240, before the rebuild, not re-run).
