@@ -31,12 +31,15 @@ pub trait BroadPhase {
 }
 
 struct Proxy {
-  alive: bool;
+  id: u32;
   box: Aabb3;
   layer: u32;
   mask: u32;
   isStatic: bool;
 }
+
+// The live proxies, one per body that has been added and not removed
+alias Proxies = GenPool[Proxy];
 
 struct SortKey {
   key: f32;
@@ -54,40 +57,41 @@ fn byPair(a: &BodyPair, b: &BodyPair) i32 {
 // Sweep and prune (Baraff 1992; Bullet's btAxisSweep3, ODE's quickspace):
 // sort the boxes along the axis they spread over most, and compare each box
 // with the following ones only while their intervals on that axis overlap.
-// Ids index a list of proxies, so they should be small and dense, as body
-// numbers are.
+// 'slots' maps a body id to its proxy's handle, so ids should be small and
+// dense, as body numbers are; the proxies themselves sit in a pool, and the
+// sweeps walk the live ones only (a pool does not hand back the ids in
+// order, so the queries sort what they find).
 pub struct SweepAndPrune is Default, BroadPhase {
-  proxies: List[Proxy];
-  count: usize;
+  proxies: Proxies;
+  slots: List[Handle];   // a body id's proxy, Handle.none() if it has none
 
-  pub fn len(self: &) usize { count }
+  pub fn init(self: &new) { *self = SweepAndPrune(Proxies(), List[Handle]()); }
+
+  pub fn len(self: &) usize { proxies.len() }
+
+  fn handleOf(self: &, id: u32) Handle {
+    let i = usize.from(id);
+    if i < slots.len() { *slots[i] } else { Handle.none() }
+  }
 
   pub fn add(self: &mut, id: u32, box: Aabb3, layer: u32, mask: u32, isStatic: bool) {
     let i = usize.from(id);
-    while proxies.len() <= i {
-      proxies.push(Proxy(false, Aabb3(), 0u32, 0u32, false));
+    while slots.len() <= i {
+      slots.push(Handle.none());
     }
-    if !proxies[i].alive { count = count + 1usize; }
-    proxies.set(i, Proxy(true, box, layer, mask, isStatic));
+    proxies.remove(*slots[i]);
+    slots.set(i, proxies.add(Proxy(id, box, layer, mask, isStatic)));
   }
 
   pub fn update(self: &mut, id: u32, box: Aabb3) {
-    let i = usize.from(id);
-    if i < proxies.len() && proxies[i].alive {
-      var p = *proxies[i];
-      p.box = box;
-      proxies.set(i, p);
+    match proxies.borrowMut(self.handleOf(id)) {
+      case let Some(p) { p.box = box; }
+      else {}
     }
   }
 
   pub fn remove(self: &mut, id: u32) {
-    let i = usize.from(id);
-    if i < proxies.len() && proxies[i].alive {
-      var p = *proxies[i];
-      p.alive = false;
-      proxies.set(i, p);
-      count = count - 1usize;
-    }
+    if proxies.remove(self.handleOf(id)) { slots.set(usize.from(id), Handle.none()); }
   }
 
   fn axisOf(self: &) usize {
@@ -95,15 +99,17 @@ pub struct SweepAndPrune is Default, BroadPhase {
     var sum = Vec3(0., 0., 0.);
     var sq = Vec3(0., 0., 0.);
     var n = 0.f;
-    var i = 0usize;
-    while i < proxies.len() {
-      if proxies[i].alive {
-        let c = proxies[i].box.center();
-        sum = sum + c;
-        sq = sq + c * c;
-        n = n + 1.;
+    var it = proxies.iter();
+    while true {
+      match it.next() {
+        case let Some(p) {
+          let c = p.box.center();
+          sum = sum + c;
+          sq = sq + c * c;
+          n = n + 1.;
+        }
+        case is None { break; }
       }
-      i = i + 1usize;
     }
     if n < 2. { return 0usize; }
     let mean = sum * (1. / n);
@@ -118,20 +124,22 @@ pub struct SweepAndPrune is Default, BroadPhase {
     out.clear();
     let ax = axisOf();
     var keys = List[SortKey]();
-    var i = 0usize;
-    while i < proxies.len() {
-      if proxies[i].alive { keys.push(SortKey(vecGet(proxies[i].box.min, ax), u32.from(i))); }
-      i = i + 1usize;
+    var it = proxies.iter();
+    while true {
+      match it.next() {
+        case let Some(p) { keys.push(SortKey(vecGet(p.box.min, ax), p.id)); }
+        case is None { break; }
+      }
     }
     keys.sortBy(&byKey);
-    i = 0usize;
+    var i = 0usize;
     while i < keys.len() {
-      let pa = proxies[usize.from(keys[i].id)];
+      let pa = *proxies.borrow(self.handleOf(keys[i].id)).unwrap();
       let maxA = vecGet(pa.box.max, ax);
       var j = i + 1usize;
       while j < keys.len() && keys[j].key <= maxA {
         let idB = keys[j].id;
-        let pb = proxies[usize.from(idB)];
+        let pb = *proxies.borrow(self.handleOf(idB)).unwrap();
         if (!(pa.isStatic && pb.isStatic)) && (pa.layer & pb.mask) != 0u32 && (pb.layer & pa.mask) != 0u32
             && pa.box.overlaps(pb.box) {
           let idA = keys[i].id;
@@ -146,23 +154,33 @@ pub struct SweepAndPrune is Default, BroadPhase {
 
   pub fn queryBox(self: &mut, box: Aabb3, mask: u32, out: &mut List[u32]) {
     out.clear();
-    var i = 0usize;
-    while i < proxies.len() {
-      if proxies[i].alive && (proxies[i].layer & mask) != 0u32 && proxies[i].box.overlaps(box) { out.push(u32.from(i)); }
-      i = i + 1usize;
+    var it = proxies.iter();
+    while true {
+      match it.next() {
+        case let Some(p) {
+          if (p.layer & mask) != 0u32 && p.box.overlaps(box) { out.push(p.id); }
+        }
+        case is None { break; }
+      }
     }
+    out.sort();
   }
 
   pub fn queryRay(self: &mut, origin: Vec3, dir: Vec3, maxT: f32, mask: u32, out: &mut List[u32]) {
     out.clear();
     let inv = Vec3(if dir.x.abs() > 1.0e-20 { 1. / dir.x } else { 1.0e20 }, if dir.y.abs() > 1.0e-20 { 1. / dir.y } else { 1.0e20 },
                        if dir.z.abs() > 1.0e-20 { 1. / dir.z } else { 1.0e20 });
-    var i = 0usize;
-    while i < proxies.len() {
-      if proxies[i].alive && (proxies[i].layer & mask) != 0u32 {
-        if rayBoxEnter(origin, inv, proxies[i].box.min, proxies[i].box.max, maxT) < bigNumber { out.push(u32.from(i)); }
+    var it = proxies.iter();
+    while true {
+      match it.next() {
+        case let Some(p) {
+          if (p.layer & mask) != 0u32 {
+            if rayBoxEnter(origin, inv, p.box.min, p.box.max, maxT) < bigNumber { out.push(p.id); }
+          }
+        }
+        case is None { break; }
       }
-      i = i + 1usize;
     }
+    out.sort();
   }
 }

@@ -1,0 +1,98 @@
+// Bench: the broad phase per step on the real clock. 'full' keeps 4,000 proxies
+// alive; 'sparse' adds 8,000 and removes every other one (4,000 alive among 8,000
+// ids). Each line is the mean time of one call. Build it optimised to measure:
+//
+//   congo run --release packages/rigidcollide/examples/broadbench.cone
+
+mod broadbench;
+
+import stdio use *;
+import collections use List;
+import time use Duration, Instant;
+import geomath use *;
+import rigidcollide use *;
+
+fn boxAt(i: u32, shift: f32) Aabb3 {
+  let x = f32.from(i % 40u32) * 1.0 + shift;
+  let y = f32.from((i / 40u32) % 25u32) * 1.0;
+  let z = f32.from(i / 1000u32) * 1.0;
+  Aabb3(Vec3(x, y, z), Vec3(x + 1.2, y + 1.2, z + 1.2))
+}
+
+fn line(what: &str, took: Duration, n: u64, extra: u64) {
+  printStr(what);
+  printFloat(f64.from(took.nanos()) / f64.from(n) / 1000.);
+  printStr(" us per call, ");
+  printFloat(f64.from(extra));
+  printStr(" checksum\n");
+}
+
+fn scene(name: &str, total: u32, sparse: bool) {
+  var bp = SweepAndPrune();
+  var i = 0u32;
+  while i < total {
+    bp.add(i, boxAt(i, 0.), 1u32, 0xffffffffu32, i % 4u32 == 0u32);
+    i = i + 1u32;
+  }
+  if sparse {
+    i = 1u32;
+    while i < total { bp.remove(i); i = i + 2u32; }
+  }
+  printStr(name); printStr("\n");
+  var pairs = List[BodyPair]();
+  var ids = List[u32]();
+  var sum = 0u64;
+  // warm
+  bp.pairs(&mut pairs);
+  // pairs
+  let reps = 40u64;
+  var t0 = Instant.now();
+  var r = 0u64;
+  while r < reps {
+    bp.pairs(&mut pairs);
+    sum = sum + u64.from(pairs.len());
+    r = r + 1u64;
+  }
+  line("  pairs      ", t0.elapsed(), reps, sum);
+  // update every alive proxy
+  t0 = Instant.now();
+  r = 0u64;
+  while r < reps {
+    i = 0u32;
+    while i < total {
+      bp.update(i, boxAt(i, f32.from(r % 3u64) * 0.1));
+      i = i + 1u32;
+    }
+    r = r + 1u64;
+  }
+  line("  update all ", t0.elapsed(), reps, 0u64);
+  // box queries
+  let qreps = 400u64;
+  sum = 0u64;
+  t0 = Instant.now();
+  r = 0u64;
+  while r < qreps {
+    let x = f32.from(r % 40u64);
+    bp.queryBox(Aabb3(Vec3(x, 2., 0.), Vec3(x + 3., 6., 2.)), 0xffffffffu32, &mut ids);
+    sum = sum + u64.from(ids.len()) + u64.from(ids[0usize]);
+    r = r + 1u64;
+  }
+  line("  queryBox   ", t0.elapsed(), qreps, sum);
+  // ray queries
+  sum = 0u64;
+  t0 = Instant.now();
+  r = 0u64;
+  while r < qreps {
+    let y = f32.from(r % 25u64) + 0.5;
+    bp.queryRay(Vec3(-1., y, 0.5), Vec3(1., 0., 0.), 100., 0xffffffffu32, &mut ids);
+    sum = sum + u64.from(ids.len());
+    r = r + 1u64;
+  }
+  line("  queryRay   ", t0.elapsed(), qreps, sum);
+}
+
+fn main() i32 {
+  scene("full: 4000 alive", 4000u32, false);
+  scene("sparse: 4000 alive of 8000 ids", 8000u32, true);
+  0i32
+}
