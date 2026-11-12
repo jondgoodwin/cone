@@ -140,7 +140,9 @@ struct RelSlot {
   used: bool;
   acked: bool;
   lastSent: i64;              // when a packet last carried it; -1 never
-  data: Option[Bytes];        // the caller's bytes, kept to resend; None when unused
+  data: Option[Bytes];        // the caller's bytes, kept to resend; None when unused or parked
+  heap: List[u8];             // a message that had to wait for credit, kept as a copy of its own bytes
+  parked: bool;               // the message is in 'heap', not in 'data'
 }
 
 // A reliable message a packet carried
@@ -181,6 +183,14 @@ fn lenOf(d: &Option[Bytes]) usize {
     case let &Some[Bytes](b) { b.len() }
     else { 0usize }
   }
+}
+
+fn relLen(s: &RelSlot) usize {
+  if s.parked {s.heap.len()} else {lenOf(&s.data)}
+}
+
+fn relPut(p: &mut streams.Writer, s: &RelSlot) {
+  if s.parked {p.put(s.heap.view());} else {putData(p, &s.data);}
 }
 
 fn putData(p: &mut streams.Writer, d: &Option[Bytes]) {
@@ -300,7 +310,7 @@ pub struct ConnectionCore {
     while i < ringSize {
       sent.push(SentSlot(0u16, false, false, 0i64, List[u16]()));
       seen.push(0u32);
-      rel.push(RelSlot(0u16, false, false, -1i64, None[Bytes]));
+      rel.push(RelSlot(0u16, false, false, -1i64, None[Bytes], List[u8](), false));
       i = i + 1usize;
     }
     let t = now.nanos();
@@ -341,7 +351,18 @@ pub struct ConnectionCore {
     s.used = true;
     s.acked = false;
     s.lastSent = -1i64;
-    s.data = Some[Bytes](data);
+    // A message with others waiting ahead of it has to wait for credit: it is
+    // kept as a copy of its own bytes (the caller's buffer, a pool buffer of
+    // 4 KiB at least, goes back). One that can go at the next poll is not copied.
+    let behind = relNext != relOldest && rel[usize.from(relNext - 1u16) % ringSize].lastSent < 0i64;
+    if behind {
+      s.heap = copyBytes(data.view());
+      s.parked = true;
+      s.data = None[Bytes];
+    } else {
+      s.parked = false;
+      s.data = Some[Bytes](data);
+    }
     relNext = relNext + 1u16;
     true
   }
@@ -640,11 +661,11 @@ pub struct ConnectionCore {
     while id != relNext && nRel < 255u8 {
       let s = &mut rel[usize.from(id) % ringSize];
       if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
-        let need = reliableOverhead + lenOf(&s.data);
+        let need = reliableOverhead + relLen(s);
         if need > budget {break;}
         p.putBE[u16](id);
-        p.putBE[u16](u16.from(lenOf(&s.data)));
-        putData(&mut p, &s.data);
+        p.putBE[u16](u16.from(relLen(s)));
+        relPut(&mut p, s);
         budget = budget - need;
         if s.lastSent >= 0i64 {st.reliableResent = st.reliableResent + 1u64;}
         s.lastSent = t;
@@ -847,6 +868,8 @@ pub struct ConnectionCore {
       if !s.acked {break;}
       s.used = false;
       s.data = None[Bytes];
+      s.parked = false;
+      s.heap = List[u8]();
       relOldest = relOldest + 1u16;
     }
   }
