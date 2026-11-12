@@ -18,18 +18,18 @@
 // never written as a PAX or GNU long-name record. The archive ends with two blocks of zeros.
 //
 // THE BOUND. 'add' copies an entry into the writer whole, and the writer's pooled buffer panics past the pool's
-// 64 MiB bound, so an entry of more than 16 MiB is TooLarge. What is not pulled is held, and the held bytes count
-// against the same bound: an 'add' that would take the bytes held (headers and padding too) past 48 MiB, three
-// entries' worth, is TooLarge as well, and the caller pulls and adds again. The way past the bound is not built yet: an 'add' that takes the size up front and then pulls the data in
+// 64 MiB bound, so an entry of more than 16 MiB is TooLarge. What is not pulled is held, and the bound is on the
+// bytes held across entries: an 'add' that would take them (headers and padding too) past 32 MiB, two entries'
+// worth, is TooLarge as well. Pulling between adds keeps the bound clear. The way past the bound is not built yet: an 'add' that takes the size up front and then pulls the data in
 // pieces, which ustar allows because its header needs only the size first. Real archives hold larger files, so
 // that is the next tarfile PR.
 
 // The most data one entry may carry
 let maxEntry: usize = 16777216usize;
 
-// The most the writer may hold, made and not yet pulled: 48 MiB, which leaves the pool's 64 MiB bound room for the
-// copy 'pull' makes when it moves what was made on to the chain
-let maxHeld: usize = 50331648usize;
+// The most the writer may hold, made and not yet pulled: 32 MiB, two entries' worth. The pool's 64 MiB is shared by
+// the whole process, so one writer takes no more than half of it.
+let maxHeld: usize = 33554432usize;
 
 // Whether a name could be a ustar name field and prefix field, and where it splits: None, or the offset of the '/'
 // where the prefix ends (0 for no prefix at all)
@@ -85,13 +85,13 @@ pub struct TarWriter is Move {
   pub fn isFinished(self: &) bool { finished }
 
   // Adds a regular file. TooLarge if the data is over 16 MiB, or if the bytes made and not yet pulled, with this
-  // entry, would pass 48 MiB: pull, then add again.
+  // entry, would pass 32 MiB. The bound is on the bytes held across entries; pulling between adds keeps it clear.
   pub fn add(self: &mut, name: &str, data: &Array[u8], opts: &EntryOptions) Result[void, TarError] {
     if data.len > maxEntry {
       return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "is larger than 16 MiB, the most one entry may carry").view());
     }
     if held + 512usize + data.len + padFor(u64.from(data.len)) > maxHeld {
-      return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "would take the bytes held and not pulled past 48 MiB, pull first").view());
+      return refusal[void](ErrorKind.TooLarge, 0u64, about("the entry", name, "would take the bytes held and not pulled past 32 MiB, pull first").view());
     }
     self.entry(name, false, data, opts)
   }
