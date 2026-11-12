@@ -853,7 +853,7 @@ pub struct Loop {
     r.code = code;
     r.early = false;
     if r.state == stDecided {return;}
-    r.state = stDecided;
+    setState(p, stDecided);
     if !r.timer.isNone() {
       wheel.cancel(r.timer);
       r.timer = TimerId.none();
@@ -896,8 +896,7 @@ pub struct Loop {
     let submitted = r.submitted;
     let dequeued = r.dequeued;
     if r.early {
-      r.gen = nextGen(r.gen);
-      r.state = stAbandoned;
+      publishWord(p, stAbandoned, nextGen(r.gen));
       // The target is used where it lies, in the record (no other reference
       // reaches it while the answer is sent)
       let a = &mut (*(p as *OpRec[OldAsk])).ask;
@@ -931,11 +930,10 @@ pub struct Loop {
       (sub)(&rec);
     }
     if r.early {
-      r.gen = nextGen(r.gen);
-      r.state = stAbandoned;
+      publishWord(p, stAbandoned, nextGen(r.gen));
     } else {
       self.unlinkSide(p);
-      r.state = stDone;
+      setState(p, stDone);
     }
     r.listed = true;
     done.push(p);
@@ -955,7 +953,7 @@ pub struct Loop {
       return;
     }
     r.late = true;
-    r.state = stDone;
+    setState(p, stDone);
     r.listed = true;
     done.push(p);
   }
@@ -1362,7 +1360,7 @@ pub struct Loop {
   // stamped (counted)
   fn stamp(self: &mut, p: *OpCore) {
     let r = p as &mut OpCore;
-    r.state = stFlight;
+    setState(p, stFlight);
     r.asked = askedNone;
     r.hit = false;
     r.lapses = false;
@@ -1856,7 +1854,7 @@ pub struct Loop {
     if rp as usize == 0usize {return false;}
     let p = rp as *OpCore;
     let r = p as &mut OpCore;
-    if r.gen != id.gen || r.state != stFlight {return false;}
+    if !inFlightAt(p, id.gen) {return false;}
     if r.asked == askedNone {
       stats.cancelsAsked = stats.cancelsAsked + 1u64;
       self.askCancel(p, askedCancel);
