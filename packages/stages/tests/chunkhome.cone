@@ -1,0 +1,154 @@
+// chunkHome(src): a buffer given the source's home returns its credit when it dies, wherever that is, by
+// sending the source 'giveBack' with an empty buffer on the same block, so the source's ChunkWindow counts
+// the capacity back and the block goes to the pool.
+//
+//   1. 100 buffers taken from the source's window and dropped inside an actor (a worker): every credit
+//      comes back, the window ends empty;
+//   2. 5,000 buffers taken in rounds and dropped on a plain thread: every credit comes back;
+//   3. a buffer whose home was cleared and which the source gives back by hand: the credit comes back once
+//      (the window panics on a double return, so the test would die);
+//   4. a homed buffer that outlives the runtime: its death after finalAll sends nothing (no panic), and
+//      the block goes home.
+
+mod chunkhometest;
+
+import testing use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import actors;
+import stages use *;
+
+struct Seen {
+  pub back: Atomic[u64];       // giveBack calls
+  pub inFlight: Atomic[u64];   // the window's bytes in flight after the last one
+  pub taken: Atomic[u64];      // buffers taken
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Src is ChunkSource {
+  link: ChunkWindow;
+
+  pub fn init(self: &new) {
+    *self = Self(link: ChunkWindow.own(1048576usize));
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    seen.back.add(1u64);
+    seen.inFlight.store(u64.from(link.inFlightBytes()));
+  }
+
+  pub async fn stop(self, why: Ending) {}
+
+  // Takes n buffers of 4 KiB, homes them, and drops them here (mode 0), sends them to a thread (mode 1),
+  // or clears the home and hands the credit back by hand (mode 2)
+  pub async fn lend(self, n: u64, mode: u32, tx: Sender[IoBuf]) {
+    let h = chunkHome(selfactor);
+    var i = 0u64;
+    while i < n {
+      match link.take(4096usize) {
+        case let Some(b) {
+          var buf = b;
+          seen.taken.add(1u64);
+          if mode == 2u32 {
+            buf.clearHome();
+            link.give(buf);
+          } else {
+            buf.setHome(&h);
+            if mode == 1u32 {tx.send(buf);}
+          }
+          i = i + 1u64;
+        }
+        case is None {
+          // the window is full: the returned credits are in the mailbox behind this message. Stop here
+          i = n;
+        }
+      }
+    }
+    seen.inFlight.store(u64.from(link.inFlightBytes()));
+  }
+}
+
+fn drain(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  while r.recv() is Some[IoBuf] {
+    n = n + 1u64;
+  }
+  n
+}
+
+fn reset() {
+  seen.back.store(0u64);
+  seen.inFlight.store(0u64);
+  seen.taken.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  var tx: Sender[IoBuf];
+  var rx: Receiver[IoBuf];
+
+  // 1. dropped in the actor
+  tx, rx = Channel[IoBuf].bounded(1usize);
+  {
+    let s = Src();
+    s.lend(100u64, 0u32, tx);
+  }
+  actors.waitUntilIdle();
+  expectUInt(seen.taken.load(), 100u64, "1. a hundred taken");
+  expectUInt(seen.back.load(), 100u64, "1. every one came back");
+  expectUInt(seen.inFlight.load(), 0u64, "1. nothing in the window");
+  expectUInt(iobuf.stats().lent, 0u64, "1. every block home");
+
+  // 2. dropped on a plain thread (a window holds 256 buffers: 25 rounds of 200, each with a source of its own)
+  reset();
+  var round = 0u64;
+  var total = 0u64;
+  while round < 25u64 {
+    tx, rx = Channel[IoBuf].bounded(16usize);
+    let t = thread.start(rx, &drain);
+    {
+      let s = Src();
+      s.lend(200u64, 1u32, tx);
+    }
+    total = total + t.join();
+    actors.waitUntilIdle();
+    round = round + 1u64;
+  }
+  expectUInt(total, seen.taken.load(), "2. the thread dropped every buffer taken");
+  expectUInt(seen.back.load(), seen.taken.load(), "2. every one came back");
+  expectUInt(seen.inFlight.load(), 0u64, "2. nothing in the window");
+  expectUInt(iobuf.stats().lent, 0u64, "2. every block home");
+
+  // 3. cleared, then given back by hand
+  reset();
+  tx, rx = Channel[IoBuf].bounded(1usize);
+  {
+    let s = Src();
+    s.lend(50u64, 2u32, tx);
+  }
+  actors.waitUntilIdle();
+  expectUInt(seen.taken.load(), 50u64, "3. fifty taken");
+  expectUInt(seen.back.load(), 0u64, "3. no giveBack message: the hand-back was direct");
+  expectUInt(seen.inFlight.load(), 0u64, "3. nothing in the window, no double return");
+  expectUInt(iobuf.stats().lent, 0u64, "3. every block home");
+
+  // 4. a homed buffer outliving the runtime
+  var late = IoBuf(4096usize);
+  {
+    let h = chunkHome(Src());
+    late.setHome(&h);
+  }
+  finalAll();
+  expect(!actors.isRunning(), "4. the runtime has stopped");
+  late = IoBuf();
+  expectUInt(iobuf.stats().lent, 0u64, "4. the late death sent nothing and the block is home");
+  done()
+}

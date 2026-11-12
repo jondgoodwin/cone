@@ -1059,6 +1059,8 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                     fnSigRefusalMsg(*argsp, whycode, why);
                 else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
                     errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
+                else if (structDefaultRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
+                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter.%s", privwhy);
                 else
                     errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter%s",
                         iexpImmBorrowHint(*argsp, ((IExpNode*)*parmp)->vtype));
@@ -1233,6 +1235,10 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
                     return;
             }
         }
+        // A value refused for a '+ ShapeKeeping' reference is the reason, and is told as
+        // a function taking the same value tells it
+        if (status == OverloadNone && shapeRefusedReport(callnode))
+            return;
         errorMsgNode(callnode, ErrorNoCandidate,
             "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
     }
@@ -2048,6 +2054,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (!isMethodType(objdereftype)) {
         return 0;
     }
+    structMembersUse(pstate, objdereftype, 0);
 
     // 'mask.select(a, b)' chooses between two vectors of any lane type, which
     // no signature can say
@@ -2277,6 +2284,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // Test every candidate the name declares, without altering the call
     fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
+    shapeRefusedClear();
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
 
     // A receiver held through a reference or a pointer still satisfies a method that
@@ -3187,6 +3195,7 @@ int fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode **nodep) {
     // each analyzed first (Rule 1), as a function named alone is by its name use
     fnCallDemandCandidates((INode*)overloadnode);
     enum OverloadMatch status;
+    shapeRefusedClear();
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {
         fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
@@ -3450,7 +3459,8 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
             found = astate;
     }
     // A const of the instance ('Vec3[f32].zero') is a path to it as a function is
-    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag))
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag && found->tag != ConstDclTag
+        && found->tag != AliasDclTag))
         return 0;
     member->dclnode = found;
     member->flags |= FlagQualified;
@@ -5048,6 +5058,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         return;
     }
 
+    // 'Items[i32]' over a generic alias: its target, with the arguments in
+    if (genericAliasExpand(pstate, nodep))
+        return;
+
     // 'C.Cursor' in an instance: the type C's argument says its bound's
     // associated type is, which stands in its place (genericAssocPathNameRes)
     if (genericAssocPathTypeCheck(pstate, (INode**)nodep))
@@ -5337,6 +5351,14 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             }
         }
         else if (dcl->tag == FnDclTag) {
+            // A generic function of a generic type, reached through the type itself
+            // ('Bag.from(x)' on 'struct Bag[T]'): the same refusal a plain method
+            // gets in nameUseTypeCheck. Without it the function's instance is made
+            // with the type's own parameter unbound, which the clone dereferenced
+            if (nameUseTemplateMember((NameUseNode*)node->objfn, dcl)) {
+                node->vtype = errorType;
+                return;
+            }
             gengeneric = (FnDclNode*)dcl;
             firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
         }
@@ -5587,7 +5609,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // a struct or a trait. One that arrives here is one it could not -- an
         // alias, a number type's member other than 'from' (fnCallNumberFrom
         // took that), a generic parameter, or a generic instance's member other
-        // than a function (fnCallTypeInstancePath took those). Diagnosed rather
+        // than a function, const or alias (fnCallTypeInstancePath took those). Diagnosed rather
         // than left to read as a bad call.
         if (node->methfld != NULL) {
             // A name a struct (a generic's instance, 'T.maxValue' at a struct) does

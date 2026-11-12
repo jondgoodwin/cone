@@ -104,7 +104,7 @@ fn falloff(kind: u32, d: f32) f32 {falloffWeight(kind, d)}
 fn cornerAngle(p: Vec3, a: Vec3, b: Vec3) f32 {
   let u = (a - p).normalize();
   let w = (b - p).normalize();
-  acos(clampf(u.dot(w), -1., 1.))
+  acos(u.dot(w).clamp(-1., 1.))
 }
 
 // A rule resolved against a spec: the points it needs, found
@@ -208,10 +208,10 @@ pub fn buildTargets(mesh: &Mesh, spec: &FaceSpec, units: &List[UnitDef]) FaceTar
   var disp = List[Vec3]();
   v = 0usize;
   while v < n { disp.push(Vec3(0., 0., 0.)); v = v + 1usize; }
-  var touched = List[u8]();
-  touched.resize(n, 0u8);
-  var affected = List[u8]();
-  affected.resize(n, 0u8);
+  var touched = List[bool]();
+  touched.resize(n, false);
+  var affected = List[bool]();
+  affected.resize(n, false);
 
   var ui = 0usize;
   while ui < units.len() {
@@ -242,7 +242,7 @@ pub fn buildTargets(mesh: &Mesh, spec: &FaceSpec, units: &List[UnitDef]) FaceTar
         let d = ruleDisplacement(rule, &res, spec, p);
         if d.x != 0. || d.y != 0. || d.z != 0. {
           disp.set(v, *disp[v] + d);
-          if *touched[v] == 0u8 { touched.set(v, 1u8); touchedList.push(u32.from(v)); }
+          if !*touched[v] { touched.set(v, true); touchedList.push(u32.from(v)); }
         }
         v = v + 1usize;
       }
@@ -261,7 +261,7 @@ pub fn buildTargets(mesh: &Mesh, spec: &FaceSpec, units: &List[UnitDef]) FaceTar
         var c = 0usize;
         while c < 3usize {
           let nb = usize.from(*mesh.indices[3usize * tri + c]);
-          if *affected[nb] == 0u8 { affected.set(nb, 1u8); affectedList.push(u32.from(nb)); }
+          if !*affected[nb] { affected.set(nb, true); affectedList.push(u32.from(nb)); }
           c = c + 1usize;
         }
         a = a + 1usize;
@@ -321,11 +321,11 @@ pub fn buildTargets(mesh: &Mesh, spec: &FaceSpec, units: &List[UnitDef]) FaceTar
     while k < touchedList.len() {
       let tv = usize.from(*touchedList[k]);
       disp.set(tv, Vec3(0., 0., 0.));
-      touched.set(tv, 0u8);
+      touched.set(tv, false);
       k = k + 1usize;
     }
     k = 0usize;
-    while k < affectedList.len() { affected.set(usize.from(*affectedList[k]), 0u8); k = k + 1usize; }
+    while k < affectedList.len() { affected.set(usize.from(*affectedList[k]), false); k = k + 1usize; }
     ui = ui + 1usize;
   }
 

@@ -370,14 +370,34 @@ static int loanVarIsGlobal(VarDclNode *var) {
     return var->scope == 0 || (var->flags & FlagStatic);
 }
 
+// Why a borrow of a thread-local may not last past the code that took it
+static const char *loanThreadLocalWhy = " A thread-local is the current worker's copy; after the 'await' this code may run on another worker, so a borrow of it cannot be kept across the 'await'.";
+
+// A thread-local variable: a global, but each worker has its own copy of it
+int loanVarIsThreadLocal(VarDclNode *var) {
+    return var->scope == 0 && (var->dclinfo.facts & DclThreadLocal);
+}
+
+// A borrow of a thread-local, whole or through its parts (not through a
+// reference stored in it): it names the copy of the worker running the code
+// that took it, and the code may change worker at a seam (Bug 87)
+int loanIsThreadLocal(uint32_t id) {
+    Loan *loan = &loans[id];
+    return loan->kind != LoanCaller && !loan->place.deref
+        && loanVarIsThreadLocal(pathVars[loan->place.var].var);
+}
+
 int loanOfGlobal(uint32_t id) {
-    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var);
+    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var)
+        && !loanIsThreadLocal(id);
 }
 
 int loanIsLocal(uint32_t id) {
     Loan *loan = &loans[id];
+    // A thread-local counts with the function's own storage: its borrow ends
+    // at a seam and may be stored nowhere that outlives the call
     return loan->kind != LoanCaller && !loan->place.deref
-        && !loanVarIsGlobal(pathVars[loan->place.var].var);
+        && (!loanVarIsGlobal(pathVars[loan->place.var].var) || loanVarIsThreadLocal(pathVars[loan->place.var].var));
 }
 
 uint32_t loanLocalIn(PathSet *set) {
@@ -486,30 +506,6 @@ static INode *loanCallerPlace(uint32_t id) {
     return loans[id].part == LifePartHeld ? lifePointee(held) : held;
 }
 
-uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
-    if (refholds == NULL || stored == NULL)
-        return 0;
-    uint32_t n = refholds->cnt;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t id = refholds->ids[i];
-        if ((id & LoanFar) && !beyond)
-            continue;
-        id = loanOf(id);
-        INode *place = loans[id].kind == LoanCaller ? loanCallerPlace(id) : NULL;
-        if (place == NULL || !itypeCarriesBorrow(place) || itypeCarriesEndingBorrow(place))
-            continue;
-        uint32_t nstored = stored->cnt;
-        for (uint32_t k = 0; k < nstored; ++k) {
-            uint32_t sid = loanOf(stored->ids[k]);
-            if (loans[sid].kind == LoanCaller) {
-                *through = loanParm(id);
-                return sid;
-            }
-        }
-    }
-    return 0;
-}
-
 // Whether the loans an arena reference holds are to be checked. One holding no
 // loan but what was stored through it was made by a route the walk does not
 // follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena,
@@ -563,9 +559,9 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
 // that a caller may keep past this function, by a route that tells the body
-// nothing of what else the caller lent: the arena a parameter points at, where
-// the function names no lifetime; or an arena reached through a struct's field
-// whose root a caller lent, named lifetimes or not. That route is seen two
+// nothing of what else the caller lent: an arena reached through a struct's
+// field whose root a caller lent (the arena a parameter points at is checked
+// by loanStoredApart, as every signature's, elided or named). That route is seen two
 // ways: the pin an arena's method made of its receiver's place in this body
 // (viafield), or, where a helper made the node or the reference and left no
 // pin here, a far loan of a parameter whose type holds an arena in a field
@@ -587,17 +583,18 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // result, a node of the arena, and the caller never asks (a holder has
 // writable-borrow depth 0). The exception (#992): a node whose death reads no
 // borrow ('readsnothing') may hold a shorter one, as nothing reads it later.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing) {
+int loanArenaNodeBarred(PathSet *refholds, int byparm, int readsnothing) {
     if (refholds == NULL)
         return 0;
-    int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
+    int caller = 0, viafield = 0, heldfield = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         uint32_t id = loanOf(refholds->ids[i]);
         if (loans[id].kind == LoanCaller) {
             caller = 1;
             INode *place = lifePointee(loanParm(id)->vtype);
+            // The arena a parameter points at: loanStoredApart checks it
             if (itypeIsArena(place) && !lifeSlotted(place))
-                arenaparm = 1;
+                ;
             else if ((!byparm || !readsnothing) && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
@@ -613,7 +610,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsn
                 viafield = 1;
         }
     }
-    return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
+    return (viafield && caller) || heldfield;
 }
 
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, VarDclNode **through) {
@@ -648,6 +645,74 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode *root, 
     return 0;
 }
 
+// Does a written type show a borrow of its own, one the signature writes
+// (an unnamed '&i32' in 'Vec[&i32]')? A type parameter shows none: what it
+// holds is hidden, whatever it is instantiated with.
+static int loanWritesBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) == borrowRef)
+            return 1;
+        return loanWritesBorrow(ref->vtexp);
+    }
+    case PtrTag:
+        return loanWritesBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return loanWritesBorrow(arrayElemType(type));
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (loanWritesBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case NameUseTag:
+    {
+        LifeUse *lifeuse = ((NameUseNode *)type)->lifeuse;
+        if (lifeuse && lifeuse->typeargs) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(lifeuse->typeargs, cnt, nodesp)) {
+                if (loanWritesBorrow(*nodesp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Do two parameters, the first the one written through, share one written
+// lifetime name so that a store between them is tied by it? Only where the
+// borrows the first's place holds are hidden: a type parameter's (a closure's
+// captures), which no signature writes, sit under the reference reaching
+// them, so by the elided signature's one-name rule they take that name.
+// Jon's rule (11 Nov): an unnamed borrow a signature WRITES, inside a
+// signature that writes names, is a fresh name of its own, so in
+// 'g: &'a mut Vec[&i32]' the inner '&i32' is not 'a, and 'v: &'a i32' is
+// refused there. The two are told apart by whether the written type shows a
+// borrow beneath the reference (loanWritesBorrow), not by elided versus named.
+int loanSameOwnName(INode *a, INode *b) {
+    INode *ad = itypeGetTypeDcl(a), *bd = itypeGetTypeDcl(b);
+    if (ad->tag != RefTag || bd->tag != RefTag)
+        return 0;
+    if (loanWritesBorrow(((RefNode *)ad)->vtexp))
+        return 0;
+    Name *name = ((RefNode *)ad)->lifename;
+    return name != NULL && name == ((RefNode *)bd)->lifename;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
@@ -664,9 +729,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
         // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
-        // takes none, so nothing stored can land in it; as loanStoredStatic
-        // skips one holding no borrow
+        // takes none, so nothing stored can land in it
         if (itypeHoldsNoBorrow(place))
+            continue;
+        // Nor does one that shows no borrow at all, 'static ones included (an
+        // arena holds borrows its type does not show, so it is always asked).
+        // The same for the unnamed lifetime as for a named one, and the same
+        // question lifeCarry asks of a call
+        if (!itypeMayHoldStoredBorrow(place))
             continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
@@ -703,6 +773,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, LifeAllSlots, 1);
             else
                 flows = lifePartFlows(sig, sparm->vtype, spart, place);
+            // One name ties: the borrows a place shows only unnamed (a type
+            // argument's, as a closure's captures) sit under the reference
+            // reaching them, so a borrow of that reference's own name may be
+            // stored there, as an elided signature's one name may. The body
+            // is then legal, and the caller is held to the tie.
+            if (!flows && !slotted && loans[id].part <= LifePartHeld && spart == LifePartOwn
+                    && loanSameOwnName(parm->vtype, sparm->vtype) && lifeHolds(place, NULL))
+                flows = 1;
             if (!flows) {
                 *through = parm;
                 return sid;
@@ -1165,6 +1243,13 @@ void loanEscape(INode *node, uint32_t loan, int how) {
                 loanTempEnds(temp));
         return;
     }
+    if (loanIsThreadLocal(loan)) {
+        errorMsgNode(node, how == LoanEscapeStore || how == LoanEscapeReturn ? ErrorEscape : ErrorCallEscape,
+            "%s a borrow of the thread-local '%s' (made %s) where it may outlive this function: a thread-local is the current worker's copy, so a borrow of it is good only within the code that took it, and may not be stored in an actor's field, a global or a message, or be a 'static borrow. Read the value instead, or take the borrow again where it is used.",
+            how == LoanEscapeStore ? "Stored here is" : how == LoanEscapeReturn ? "Returned here is"
+                : "A value here carries", srcname, where);
+        return;
+    }
     char advice[400];
     loanCaptureAdvice(loan, advice, sizeof(advice));
     switch (how) {
@@ -1364,7 +1449,9 @@ void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field)
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     errorMsgNode(node, ErrorEscape,
         "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries a borrow of '%s' (made %s).%s%s",
-        what, srcname, loanWhere(&loans[loan], where, sizeof(where)), hint, loanCaptureAdvice(loan, advice, sizeof(advice)));
+        what, srcname, loanWhere(&loans[loan], where, sizeof(where)),
+        loanIsThreadLocal(loan) ? "" : hint,
+        loanIsThreadLocal(loan) ? " A thread-local is the current worker's copy, so a borrow of it is never 'static: it is good only within the code that took it." : loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
 void loanNotBound(INode *node, uint32_t loan, Name *bound) {
@@ -1501,9 +1588,9 @@ static void loanReport(Pending *pend, INode *usenode) {
     if (pend->kind == AccessSeam) {
         char of[200];
         errorMsgNode(pend->access, ErrorFrozen,
-            "The borrow '%s' holds %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and '%s' is used again %s.",
+            "The borrow '%s' holds %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and '%s' is used again %s.%s",
             &holder->namesym->namestr, loanSeamOf(pend->loan, of, sizeof(of)), where,
-            &holder->namesym->namestr, used);
+            &holder->namesym->namestr, used, loanIsThreadLocal(pend->loan) ? loanThreadLocalWhy : "");
         return;
     }
     loanTieNote(loan, holder, tie, sizeof(tie));
@@ -1830,8 +1917,8 @@ void loanSeamFlight(INode *seam) {
             char where[160];
             loanWhere(&loans[id], where, sizeof(where));
             errorMsgNode(seam, ErrorFrozen,
-                "A borrow %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and a call or value still being made around it uses that borrow after it.",
-                loanSeamOf(id, of, sizeof(of)), where);
+                "A borrow %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and a call or value still being made around it uses that borrow after it.%s",
+                loanSeamOf(id, of, sizeof(of)), where, loanIsThreadLocal(id) ? loanThreadLocalWhy : "");
             return;
         }
     }
@@ -2627,5 +2714,29 @@ int loanIsExclusive(uint32_t entry) {
 // that diverges from the loan's can be what the loan points into
 int loanShapeDisjoint(uint32_t loan, Place *pl) {
     Place *lp = loanShapePlace(&loans[loan]);
-    return lp->var == pl->var && lp->deref == pl->deref && !placeOverlaps(lp, pl);
+    if (lp->var != pl->var || lp->deref != pl->deref || placeOverlaps(lp, pl))
+        return 0;
+    // Two fields past an owner others may own too (an 'Rc[mut, ..]' field) may own one collection:
+    // only a path diverging before every such dereference (Place.owned) is another collection
+    uint8_t n = lp->nsteps < pl->nsteps ? lp->nsteps : pl->nsteps;
+    uint8_t d = 0;
+    while (d < n && !(lp->steps[d] != pl->steps[d] && (lp->steps[d] & 1) == 0 && (pl->steps[d] & 1) == 0))
+        ++d;
+    return lp->owned <= d && pl->owned <= d;
+}
+
+// Is the argument borrow 'site' (the borrow expression itself), whose loan is among those its value
+// carries ('set': the loan it made, and what the root of its place holds), of a place that
+// diverges from the shape loan's, as loanShapeDisjoint says of one place? Then the argument is a
+// value of the function's own, apart from the collection the loan points into. A place reached
+// through a reference read from a borrowed one ('far') says nothing of where it is
+int loanShapeDisjointAt(uint32_t loan, PathSet *set, INode *site) {
+    if (set == NULL)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        Loan *l = &loans[loanOf(set->ids[i])];
+        if (l->site == site && l->kind != LoanCaller)
+            return !l->source && !l->place.far && loanShapeDisjoint(loan, &l->place);
+    }
+    return 0;
 }

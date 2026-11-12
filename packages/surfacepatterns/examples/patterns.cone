@@ -17,6 +17,7 @@ import fs;
 import path use Path;
 import collections use *;
 import geomath use *;
+import imagedecode;
 import time use Instant;
 import pbrmaterial use *;
 import surfacepatterns use *;
@@ -57,39 +58,13 @@ fn cstrString(s: *u8) String {
 
 // ---- BMP output ----
 
-fn put32(out: &mut List[u8], v: u32) {
-  out.push(u8.from(v & 0xFFu32));
-  out.push(u8.from((v >> 8u32) & 0xFFu32));
-  out.push(u8.from((v >> 16u32) & 0xFFu32));
-  out.push(u8.from((v >> 24u32) & 0xFFu32));
-}
-
 // A 24-bit BMP of a texel map, rows bottom first as the format has them
 // (gray made RGB); 'tiled' repeats it 2 x 2 at half the resolution
 fn saveBmp(dir: &String, name: &str, map: &str, m: &TexelMap, tiled: bool) bool {
   let w = m.width;
   let h = m.height;
-  let rowSize = (w * 3 + 3) / 4 * 4;
-  let pixelBytes = rowSize * h;
-  var out = List[u8].withCapacity(usize.from(54 + pixelBytes));
-  out.push('B');
-  out.push('M');
-  put32(&mut out, u32.from(54 + pixelBytes));
-  put32(&mut out, 0u32);
-  put32(&mut out, 54u32);
-  put32(&mut out, 40u32);
-  put32(&mut out, u32.from(w));
-  put32(&mut out, u32.from(h));
-  out.push(1u8);
-  out.push(0u8);
-  out.push(24u8);
-  out.push(0u8);
-  put32(&mut out, 0u32);
-  put32(&mut out, u32.from(pixelBytes));
-  put32(&mut out, 2835u32);
-  put32(&mut out, 2835u32);
-  put32(&mut out, 0u32);
-  put32(&mut out, 0u32);
+  // The map as RGB (gray made RGB), then imagedecode's one BMP writer
+  var rgb = List[u8].withCapacity(usize.from(w * h * 3));
   var y = 0;
   while y < h {
     var x = 0;
@@ -97,30 +72,27 @@ fn saveBmp(dir: &String, name: &str, map: &str, m: &TexelMap, tiled: bool) bool 
       var sx = x;
       var sy = y;
       if tiled { sx = (x * 2) % w; sy = (y * 2) % h; }
-      // BMP wants blue, green, red
-      var c = 2;
-      while c >= 0 {
-        if m.channels == 1 { out.push(m.at(sx, sy, 0)); } else { out.push(m.at(sx, sy, c)); }
-        c = c - 1;
+      var c = 0;
+      while c < 3 {
+        if m.channels == 1 { rgb.push(m.at(sx, sy, 0)); } else { rgb.push(m.at(sx, sy, c)); }
+        c = c + 1;
       }
       x = x + 1;
     }
-    var pad = w * 3;
-    while pad < rowSize {
-      out.push(0u8);
-      pad = pad + 1;
-    }
     y = y + 1;
   }
+  let bmp = imagedecode.encodeBmp(w, h, 3, rgb.view(), true);
   var path = dir.clone();
   path <- "/";
   path <- name;
   path <- "-";
   path <- map;
   path <- ".bmp";
-  let v = out.view();
   let file = Path.from(path.view());
-  fs.writeFile(&file, v) is Ok
+  match bmp.contiguous(0usize, bmp.len()) {
+    case let Some(v) { fs.writeFile(&file, v) is Ok }
+    case is None { false }
+  }
 }
 
 fn saveSet(dir: &String, name: &str, set: &TextureSet) bool {

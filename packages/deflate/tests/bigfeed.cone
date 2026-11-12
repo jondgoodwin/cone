@@ -1,0 +1,75 @@
+// Input larger than the buffer pool's bound (64 MiB) is a value, never a panic:
+//   - the one-shot helpers take a stream over the bound by feeding it in pieces;
+//   - 'feed' of one chunk over the bound fails the stream with TooLarge, and a feed or a pull
+//     after that does no harm;
+//   - the same input fed in pieces with a pull between is fine.
+
+mod bigfeed;
+
+import testing use *;
+import collections use *;
+import deflate use *;
+import iobuf use IoBuf;
+
+fn pullAll(x: &mut Inflater, out: &mut List[u8]) Status {
+  var s = Status.MoreOutput;
+  while s == Status.MoreOutput {
+    var buf = IoBuf(1048576usize);
+    let pre = buf.capacity() - 1048576usize;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  }
+  s
+}
+
+fn main() i32 {
+  // 70 MiB of data as stored blocks: a raw stream a little longer than that
+  let n = 73400320usize;
+  var data = List[u8]();
+  data.reserve(n);
+  var i = 0usize;
+  while i < n { data.push(u8.from((i * 31usize + i / 251usize) % 256usize)); i += 1usize; }
+  let z = rawDeflate(data.view(), 0);
+  expect(z.len() > 67108864usize, "the stream is over the pool bound");
+
+  // The one-shot helper
+  var used = 0usize;
+  match inflate(z.view(), 0usize, n, &mut used) {
+    case var Ok(out) {
+      expectInt(i64.from(out.len()), i64.from(n), "inflate: all the bytes came out");
+      expect(out.view() == data.view(), "inflate: the bytes are the data");
+      expectInt(i64.from(used), i64.from(z.len()), "inflate: used");
+    }
+    case let Err(e) { expect(false, "inflate of a large stream"); }
+  }
+
+  // One chunk over the bound: Failed, TooLarge, and no panic; later calls do no harm
+  var one = Inflater.make(Format.Raw);
+  one.setLimit(1073741824u64);
+  one.feed(z.view());
+  one.finish();
+  var sink = List[u8]();
+  let st = pullAll(&mut one, &mut sink);
+  expect(st == Status.Failed, "a one-shot input over the bound fails");
+  expect(one.error().kind == ErrorKind.TooLarge, "the failure is TooLarge");
+  one.feed(z.view());
+  expect(pullAll(&mut one, &mut sink) == Status.Failed, "still failed after a feed");
+
+  // The same stream in pieces of 1 MiB with a pull between
+  var two = Inflater.make(Format.Raw);
+  var got = List[u8]();
+  var at = 0usize;
+  var last = Status.NeedInput;
+  while at < z.len() {
+    let m = if z.len() - at < 1048576usize {z.len() - at} else {1048576usize};
+    two.feed(&z.view()[at ..< at + m]);
+    at += m;
+    if at == z.len() { two.finish(); }
+    last = pullAll(&mut two, &mut got);
+    if last == Status.Failed { break; }
+  }
+  expect(last == Status.Done, "fed in pieces, the stream is Done");
+  expect(got.view() == data.view(), "fed in pieces, the bytes are the data");
+  done()
+}

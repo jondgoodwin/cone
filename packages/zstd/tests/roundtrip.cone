@@ -279,5 +279,21 @@ fn main() i32 {
   expectInt(i64.from(xxh64(compress(words.view(), 1).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 2157519614544107660i64, "words, level 1");
   expectInt(i64.from(xxh64(compress(words.view(), 2).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 4238822938692158098i64, "words, level 2");
   expectInt(i64.from(xxh64(compress(words.view(), 3).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 4856258419342525521i64, "words, level 3");
+  // The window slides: 2 MiB at level 1 (window 512 KiB) slides it several
+  // times. Kind 4 is noise with copies at the window's far edge; kind 5 is
+  // words. Each frame is pinned by XXH64, decodes to its input, and the
+  // streamed frame (fed whole) is the same bytes as the one-call frame.
+  let noise = data(4, 2097152usize);
+  let one4 = compress(noise.view(), 1);
+  expectInt(i64.from(xxh64(one4.view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 3337032725675059279i64, "2 MiB window edges, level 1");
+  expect(decodesTo(one4.view(), noise.view()), "2 MiB window edges decodes to its input");
+  var sf4 = List[u8]();
+  expect(streamed(noise.view(), 1, 0usize, 65536usize, true, &mut sf4) && same(sf4.view(), one4.view()), "2 MiB window edges streamed is the one-call frame");
+  let wtext = data(5, 2097152usize);
+  let one5 = compress(wtext.view(), 1);
+  expectInt(i64.from(xxh64(one5.view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 2550405804319780480i64, "2 MiB words, level 1");
+  expect(decodesTo(one5.view(), wtext.view()), "2 MiB words decodes to its input");
+  var sf5 = List[u8]();
+  expect(streamed(wtext.view(), 1, 0usize, 65536usize, true, &mut sf5) && same(sf5.view(), one5.view()), "2 MiB words streamed is the one-call frame");
   done()
 }

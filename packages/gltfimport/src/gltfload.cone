@@ -116,14 +116,20 @@ fn loadImage(ld: &mut Ld, im: u32, index: usize) GltfImage {
     var len = 0usize;
     var stride = 0usize;
     if !viewPlace(ld, usize.from(vi), &mut buf, &mut off, &mut len, &mut stride) { return out; }
-    let d = ld.buffers[buf].view();
-    bytes.reserve(len);
-    var i = 0usize;
-    while i < len { bytes.push(d[off + i]); i += 1usize; }
+    // The image is a slice of its buffer, not a copy
+    if !ld.decodeImages { return out; }
+    let res = decode(&ld.buffers[buf].view()[off..<off + len]);
+    noteDecoded(ld, &mut out, index, res);
+    return out;
   }
   if !ld.decodeImages { return out; }
-  match decode(bytes.view()) {
-    case let Ok(ok) { out.raster = ok; }
+  noteDecoded(ld, &mut out, index, decode(bytes.view()));
+  out
+}
+
+fn noteDecoded(ld: &mut Ld, out: &mut GltfImage, index: usize, res: Result[Raster, DecodeError]) {
+  match res {
+    case var Ok(ok) { out.raster = ok; }
     case let Err(e) {
       out.error = e.reason.clone();
       var w = String.from("image ");
@@ -133,7 +139,6 @@ fn loadImage(ld: &mut Ld, im: u32, index: usize) GltfImage {
       ld.gltf.warnings.push(w);
     }
   }
-  out
 }
 
 // ---- nodes ----
@@ -656,9 +661,7 @@ fn loadDocument(ld: &mut Ld, glbBin: &Array[u8], hasBin: bool) {
         return;
       }
     } else if i == 0usize && hasBin {
-      bytes.reserve(glbBin.len);
-      var k = 0usize;
-      while k < glbBin.len { bytes.push(glbBin[k]); k += 1usize; }
+      bytes.appendSlice(glbBin);
     } else {
       // No bytes: a fallback buffer of a compressed file; fine until read
       ok = false;
@@ -811,8 +814,9 @@ pub fn loadGltfBytes(data: &Array[u8], decodeImages: bool) Result[Gltf, GltfErro
 }
 
 fn loadCore(data: &Array[u8], baseDir: &Path, canRead: bool, decodeImages: bool) Result[Gltf, GltfError] {
-  var jsonBytes = List[u8]();
-  var bin = List[u8]();
+  // The JSON and BIN are slices of the input, not copies
+  var jsonBytes = data;
+  var bin = &data[0usize..<0usize];
   var hasBin = false;
   if data.len >= 12usize && data[0usize] == 'g' && data[1usize] == 'l' && data[2usize] == 'T' && data[3usize] == 'F' {
     // GLB: 12-byte header (magic, version 2, total length), then chunks of
@@ -828,30 +832,22 @@ fn loadCore(data: &Array[u8], baseDir: &Path, canRead: bool, decodeImages: bool)
       if pos + 8usize + len > total { return loadFail("glb: a chunk runs past the end of the file"); }
       if tag == 0x4E4F534Au32 && !sawJson {
         sawJson = true;
-        jsonBytes.reserve(len);
-        var k = 0usize;
-        while k < len { jsonBytes.push(data[pos + 8usize + k]); k += 1usize; }
+        jsonBytes = &data[pos + 8usize..<pos + 8usize + len];
       } else if tag == 0x004E4942u32 && !hasBin {
         hasBin = true;
-        bin.reserve(len);
-        var k = 0usize;
-        while k < len { bin.push(data[pos + 8usize + k]); k += 1usize; }
+        bin = &data[pos + 8usize..<pos + 8usize + len];
       }
       pos = pos + 8usize + ((len + 3usize) / 4usize) * 4usize;
     }
     if !sawJson { return loadFail("glb: no JSON chunk"); }
-  } else {
-    jsonBytes.reserve(data.len);
-    var k = 0usize;
-    while k < data.len { jsonBytes.push(data[k]); k += 1usize; }
   }
-  let parsed = parseJson(jsonBytes.view())?;
+  let parsed = parseJson(jsonBytes)?;
   if parsed.nodes.len() == 0usize || parsed.nodes[0usize].kind != JsonKind.Object {
     return loadFail("gltf: the JSON is not an object");
   }
   var ld = Ld(parsed, 0u32, List[List[u8]](), List[bool](), baseDir.clone(), canRead, decodeImages,
     Gltf(), false, String());
-  loadDocument(&mut ld, bin.view(), hasBin);
+  loadDocument(&mut ld, bin, hasBin);
   if ld.failed { return Err[Gltf, GltfError](GltfError(ld.reason.clone())); }
   let out = ld.(gltf);
   Ok[Gltf, GltfError](out)

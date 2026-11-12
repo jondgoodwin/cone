@@ -1108,10 +1108,20 @@ the store itself is the error (`ErrorSelfStore`, `loanSelfStore`, from `pwStoreE
 reference by name, never a caller loan, so a borrow the function was given, or one read out of a
 borrow field, still stores). A borrow reached through *another* reference parameter is not this
 error: the caller sees it, as the other arguments' loans. One exception keeps two such places
-lent to one call apart: a borrow written as an argument is stored only where the
-place's type can hold a borrow of what it borrows (`itypeHoldsBorrowOf`), so
-`arrive(&mut world, &mut seen, name)` leaves `world`, a `List[Named]`, holding
-nothing of `seen`, a `List[&Array[u8]]`, and each is free while the other is used.
+lent to one call apart: a borrow written as an argument (or an auto-borrowed
+receiver) is stored only where the place's type can hold a borrow whose target
+type is reachable *inside* what it borrows (`itypeMayHoldBorrowInside`: the
+type itself, its fields and elements, what it owns through owning references and
+pointers; a type either side shows only in part, such as a type parameter, trait,
+virtual reference, closure or arena, answers "can hold"; a read-only borrow is
+held by no `&mut` slot). So `arrive(&mut world, &mut all, name)` leaves `world`,
+which holds `&str` and handles, holding nothing of `all`, a `List[Ref[Creature]]`
+with no `str` inside, and each is free while the other is used; `put(&mut h, &mut l)`
+with `h` holding a `&Pt` and `l` a `List[Pt]` is not (`&l[0]` is a `&Pt`: the old
+test asked only of `l`'s own type, Bug 77). Calls only (not the struct-literal
+join), and not where another argument is a writable borrow of an arena. A
+parameter declared `&` is no store target when the pointee cannot change through
+a shared view (`itypeMayMutateShared`), whatever the argument written.
 
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
 carries the loans of every argument: Cone's rule for a signature without
@@ -1208,9 +1218,11 @@ receiver included, only the loans rooted at a global (`pwCall`'s
 while it is used; and a `&mut` argument to such a type, with no writable
 borrow past it, takes of the others only those (`pwCallStores`). The callee
 is held to the same: naming no lifetimes, it may return no caller loan in a
-result of such a type (`loanNotGlobalIn`), nor store one where a parameter
-points at one (`loanStoredStatic`, from `pwStoreApart`): `ErrorEscape` or
-`ErrorCallEscape` (`loanApart`).
+result of such a type, nor store one where a parameter points at one. These
+are not separate checks: an elided signature's borrows are its one unnamed
+lifetime, a name like any other, and the walk that holds a named signature
+(`loanCallerApart` for a return, `loanStoredApart` from `pwStoreApart` for a
+store) refuses both: `ErrorEscape` or `ErrorCallEscape` (`loanApart`).
 
 A value returned, or stored through `*p`, where the type the function's own
 names give that place is a virtual reference bounded by `'a`
@@ -1726,7 +1738,10 @@ locals, which only a call that reaches one of them is asked of):
   (`loanPlaceInGlobal`: by the name, or through a reference whose own loans were of one, as the
   `[]` of `gl.items[0usize].label.view()` leaves in its stand-in), and `pwShapeLent` marks such a
   loan for the check though its path is not shared (it still freezes against the same name, as any
-  unmarked loan of a path does). `reshapeCall` asks the ordinary check first, then, for such a loan,
+  unmarked loan of a path does). Every kind of loan is marked, an exclusive `&mut gl[0usize]` too
+  (Bug 89: it was left to its own freezing, which stops only the global's name in this function,
+  never a callee that writes the global by name; `collection_flow_reshape_global_excl`).
+  `reshapeCall` asks the ordinary check first, then, for such a loan,
   answers yes to a call that is not exempt (`reshapeExempt`: an intrinsic, an init, `+ ShapeKeeping`)
   when its code is unknown (a virtual call or a call of a function value, a `&fn` held in a field,
   parameter, global or local; an `extern` C function handed anything whose type can reach something
@@ -1772,7 +1787,12 @@ locals, which only a call that reaches one of them is asked of):
   a struct that merely holds a String, and a field of the element written through the
   borrow of the element do not. The place the store names is skipped as a call's
   receiver is, where the loan freezes it or where it is another field of the same
-  root. A function that does so on its own account, handed a reference, is a callee
+  root, except past a copyable owner (`Place.owned`: two `Rc[mut, ..]` fields may own one
+  collection, `loanShapeDisjoint`, bug 88). An argument that is a borrow (`&mut hist`) of
+  such a sibling place (`loanShapeDisjointAt`, the loan whose site is the borrow, 1339 Option A) is a
+  value the function owns whole to `reshapeCallBody` (its `apart` argument): it counts only for
+  what it reaches through references, pointers and virtual references, and the per-type answer cache
+  is skipped for the call. A method's receiver is not asked this way. A function that does so on its own account, handed a reference, is a callee
   that reshapes (`siTypeWriteHits`, which asks the same). The gate
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
@@ -2126,7 +2146,25 @@ with a value â€” its declaration, a parameter at function or inline-body entry â
 and `0` where it begins without one; `0` at each marked move, `2` at each
 marked hollowing, `1` after each store over it whole.
 
+**Paths that hollow it by different parts** (Bug 69; `VarPartFlag`). Where
+paths that left the variable hollow join with different sets of moves *taking
+different parts* (`pathJoinParts`, `dropHollowShapesDiffer`: the same part
+moved at two nodes is not different), the union in `hmask` would release a
+part one path still owns. The variable is then flagged (`PathVar.partmix`;
+`dropWalkEnd` sets `VarPartFlag` where a release sees it hollow), and its
+flag holds, above the two low bits, one bit for each of the first five
+hollowing moves and one for every later one (`genlDropFlagHollow`: the bit is
+ORed in at the move; a store of `0` or `1` clears them). Every hollow release
+of such a variable (`genlHollowReleaseRef`, with the flag's value, also for a
+parked record's drop) tests the bits of up to four of its moves and is
+generated for each combination (`genlHollowChoose`); beyond four, or in the
+shared bit, a move is taken as having happened, which can leak but not free
+twice. A variable with no such join has none of this, and its code is as it
+was.
+
 ### A seam
+
+**A thread-local's borrow ends at a seam.** A global's borrow is 'static and survives one, but a @threadlocal seen from an actor is the *current worker's* copy, and the continuation may run on another worker (Bug 87). So loanIsLocal counts a loan of a thread-local (loanIsThreadLocal) with the function's own storage, not with a global's: the seam ends it (ErrorFrozen, message naming the reason), and a store where it outlives the call, or a return, is ErrorEscape; a 'static position takes a global's loans only (loanOfGlobal excludes it).
 
 An actor's behaviour may `await`: the behaviour is cut there, a **seam**,
 where it returns to the actor's dispatcher to wait, and what it needs
@@ -2559,7 +2597,7 @@ the record takes its owner's state instead, not the binding's.
 | | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
 | `ir/flowloan.c` | `loanMake`, `loanCaller`, `loanHeldBy` | a borrow's loan, a parameter's caller loan, and who may hold it |
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
-| | `loanCallerApart`, `loanStoredApart`, `loanStoredStatic`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or, unnamed, one stored where a parameter points at a value holding only `'static` borrows; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
+| | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | lifetimes, named or elided (one path): a caller loan whose part flows to no lifetime where it goes; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |

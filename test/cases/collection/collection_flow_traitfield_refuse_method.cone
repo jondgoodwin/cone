@@ -1,0 +1,39 @@
+// Bug 72. The same refusal as collection_flow_traitfield_refuse, met through a method: a value whose
+// method pushes to a list it reaches through a shared mutable path, pushed onto a
+// 'List[Uni[Waker + ShapeKeeping]]'. The method has candidates to try, and none took the value, but
+// the reason is the marker, so the report is the marker's, naming the push, not "No method declared
+// by `push` accepts the call's arguments". A value that keeps shape is accepted, and a wrong type of
+// argument for the same method still gets the candidate report.
+
+mod collection_flow_traitfield_refuse_method;
+
+import collections use *;
+
+struct World { pub log: List[i64]; }
+
+trait Waker { pub fn wake(self: &mut, w: &mut World); }
+
+struct Quiet is Waker {
+  pub n: i64;
+  pub fn wake(self: &mut, w: &mut World) { n = n + 1i64; }
+}
+
+struct Pushy is Waker {
+  pub n: i64;
+  pub fn wake(self: &mut, w: &mut World) { w.log.push(n); }
+}
+
+struct Holder { pub wakers: List[Uni[Waker + ShapeKeeping]]; }
+
+fn quiet(r: &mut Holder) {
+  r.wakers.push(Uni[Quiet](Quiet(1i64)));
+}
+
+fn pushy(r: &mut Holder) {
+  let u = Uni[Pushy](Pushy(1i64));
+  r.wakers.push(u);   //~ ErrorNotShapeKeeping "calls `List.push`"
+}
+
+fn wrong(r: &mut Holder) {
+  r.wakers.push(5i64);   //~ ErrorNoCandidate "No method declared by `push`"
+}

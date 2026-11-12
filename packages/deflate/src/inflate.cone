@@ -26,15 +26,38 @@
 // load into the buffer; 'bits' holds 'nbits' bits, the oldest in the lowest
 // place. Loading past the end supplies zeros (see 'overrun' and 'unpad').
 struct BitIn {
-  buf: List[u8];
+  // The input fed and not yet used: a streams.Reader whose front is what
+  // 'dropUsedInput' consumed; 'pos' counts from that front
+  rd: streams.Reader;
   pos: usize;
   bits: u64;
   nbits: u32;
 
   // Top up the bit buffer to at least 57 bits
   fn refill(self: &mut) {
+    // Eight bytes at once while the input has them: the whole bytes that fit
+    // (the same ones the loop below would take one at a time)
+    if pos + 8usize <= rd.len() {
+      var w = 0u64;
+      match rd.peek(pos + 8usize) {
+        case let Some(v) {
+          w = u64.from(v[pos]) | (u64.from(v[pos + 1usize]) << 8u64) | (u64.from(v[pos + 2usize]) << 16u64)
+            | (u64.from(v[pos + 3usize]) << 24u64) | (u64.from(v[pos + 4usize]) << 32u64)
+            | (u64.from(v[pos + 5usize]) << 40u64) | (u64.from(v[pos + 6usize]) << 48u64)
+            | (u64.from(v[pos + 7usize]) << 56u64);
+        }
+        case is None[&Array[u8]] {}
+      }
+      let k = (64u32 - nbits) / 8u32;
+      let take = k * 8u32;
+      let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
+      bits = bits | ((w & m) << u64.from(nbits));
+      pos = pos + usize.from(k);
+      nbits = nbits + take;
+      return;
+    }
     while nbits <= 56u32 {
-      let b = if pos < buf.len() {u64.from(*buf[pos])} else {0u64};
+      let b = if pos < rd.len() {u64.from(rd.byteAt(pos))} else {0u64};
       bits = bits | (b << u64.from(nbits));
       pos = pos + 1usize;
       nbits = nbits + 8u32;
@@ -50,19 +73,25 @@ struct BitIn {
     v
   }
 
+  // The four bytes at offset p as a number, least significant first (they must be held)
+  fn leAt(self: &, p: usize) u32 {
+    u32.from(rd.byteAt(p)) | (u32.from(rd.byteAt(p + 1usize)) << 8u32)
+      | (u32.from(rd.byteAt(p + 2usize)) << 16u32) | (u32.from(rd.byteAt(p + 3usize)) << 24u32)
+  }
+
   // Whether more bytes were consumed than the input holds. Zeros past the
   // end are then part of what was taken.
   fn overrun(self: &) bool {
-    pos - usize.from(nbits / 8u32) > buf.len()
+    pos - usize.from(nbits / 8u32) > rd.len()
   }
 
   // Give back the zeros loaded past the end of the input and not taken
   fn unpad(self: &mut) {
-    if pos > buf.len() {
-      let padBits = u32.from(pos - buf.len()) * 8u32;
+    if pos > rd.len() {
+      let padBits = u32.from(pos - rd.len()) * 8u32;
       nbits = nbits - padBits;
       bits = bits & ((1u64 << u64.from(nbits)) - 1u64);
-      pos = buf.len();
+      pos = rd.len();
     }
   }
 
@@ -192,23 +221,48 @@ pub struct Inflater {
   header: GzipHeader;
   failed: bool;
   err: DeflateError;
+  // False switches 'fastRun' off, for tests/fastdiff.cone, which decodes with and without it
+  fast: bool;
 
   // An inflater for a stream in 'format'. A gzip stream may hold several
   // members, all inflated one after another (see 'setMultiMember').
   pub fn make(format: Format) Inflater {
     let startStage = if format == Format.Raw {Stage.Body} else {Stage.Head};
     let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
-    Inflater(format, BitIn(List[u8](), 0usize, 0u64, 0u32), 0u64, false, startStage, Phase.BlockHead,
+    Inflater(format, BitIn(streams.Reader.make(0xFFFFFFFFFFFFFFFFusize), 0usize, 0u64, 0u32), 0u64, false, startStage, Phase.BlockHead,
       false, false, Huffman(), Huffman(), 0usize, 0usize, 0usize, List[u8](), 0usize, 0usize, 0usize,
       false, 0u64, defaultLimit(), 0u64, Adler32.start(), table, 0u32, true, 0u32, GzipHeader.plain(), false,
-      DeflateError.make(ErrorKind.BadBlock, 0u64, ""))
+      DeflateError.make(ErrorKind.BadBlock, 0u64, ""), true)
   }
+
+  // (pub for tests/fastdiff.cone, not an API) Turns the fast inner loop 'fastRun' on or off; off, every
+  // symbol takes the slow path. The output and the Status must not depend on it.
+  pub fn setFastLoop(self: &mut, on: bool) { fast = on; }
 
   // Appends input. It is copied, so the caller's bytes are its own again at
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
-  // next, or the input piles up.
+  // next, or the input piles up. The input held is in pool buffers, so held
+  // input past about the pool's bound fails the stream with TooLarge rather
+  // than panicking; feeding in pieces and pulling between
+  // keeps the held input small. After a failure, feed does nothing.
   pub fn feed(self: &mut, chunk: &Array[u8]) {
-    bi.buf.appendSlice(chunk);
+    if failed { return; }
+    // The room left in the last segment first, then buffers of at most 1 MiB for the rest
+    var at = bi.rd.appendLast(chunk);
+    while at < chunk.len {
+      let want = if chunk.len - at < 1048576usize {chunk.len - at} else {1048576usize};
+      match IoBuf.tryMake(want) {
+        case var Some(b) {
+          at = at + b.append(&chunk[at ..< chunk.len]);
+          _ = bi.rd.push(b);
+        }
+        case is None[IoBuf] {
+          self.fail(ErrorKind.TooLarge, "the input fed is more than the buffer pool will hold; feed it in pieces");
+          bi.rd = streams.Reader.make(0usize);
+          return;
+        }
+      }
+    }
   }
 
   // Says that no more input will come: what is still waiting in the decoder
@@ -257,9 +311,12 @@ pub struct Inflater {
   pub fn takeRest(self: &mut) List[u8] {
     var rest = List[u8]();
     if stage == Stage.End {
-      var i = bi.pos;
-      while i < bi.buf.len() { rest.push(*bi.buf[i]); i = i + 1usize; }
-      bi.buf.truncate(bi.pos);
+      // What the Reader holds after 'pos' (at End the bit buffer holds no whole byte)
+      inBase = inBase + u64.from(bi.pos);
+      bi.rd.consume(bi.pos);
+      bi.pos = 0usize;
+      rest.resize(bi.rd.len(), 0u8);
+      _ = bi.rd.take(rest.viewMut());
     }
     rest
   }
@@ -370,8 +427,7 @@ pub struct Inflater {
   fn trimHistory(self: &mut) {
     if hist.len() >= 98304usize && mark == hist.len() {
       let drop = hist.len() - 32768usize;
-      var k = 0usize;
-      while k < 32768usize { hist.set(k, *hist[drop + k]); k = k + 1usize; }
+      hist.copyWithin(drop, hist.len(), 0usize);
       hist.truncate(32768usize);
       mark = 32768usize;
       sumMark = 32768usize;
@@ -381,12 +437,15 @@ pub struct Inflater {
 
   // Drop the front of the input that is used, when that is at least half of it
   fn dropUsedInput(self: &mut) {
+    // A failed stream uses no more input: its buffers go back to their pool now
+    if failed {
+      bi.rd = streams.Reader.make(0usize);
+      return;
+    }
     let used = bi.pos - usize.from(bi.nbits / 8u32);
-    let total = bi.buf.len();
+    let total = bi.rd.len();
     if used > 0usize && used >= total - used {
-      var i = 0usize;
-      while i < total - used { bi.buf.set(i, *bi.buf[used + i]); i = i + 1usize; }
-      bi.buf.truncate(total - used);
+      bi.rd.consume(used);
       bi.pos = bi.pos - used;
       inBase = inBase + u64.from(used);
     }
@@ -396,9 +455,9 @@ pub struct Inflater {
 
   // RFC 1950 section 2.2: CMF, FLG
   fn zlibHeader(self: &mut) Status {
-    if bi.buf.len() - bi.pos < 2usize { return self.starved("zlib: the stream is too short"); }
-    let cmf = u32.from(*bi.buf[bi.pos]);
-    let flg = u32.from(*bi.buf[bi.pos + 1usize]);
+    if bi.rd.len() - bi.pos < 2usize { return self.starved("zlib: the stream is too short"); }
+    let cmf = u32.from(bi.rd.byteAt(bi.pos));
+    let flg = u32.from(bi.rd.byteAt(bi.pos + 1usize));
     if (cmf & 15u32) != 8u32 || (cmf >> 4u32) > 7u32 {
       self.fail(ErrorKind.BadHeader, "zlib: not deflate with a window of 32 KiB or less");
       return Status.Failed;
@@ -419,7 +478,12 @@ pub struct Inflater {
   // wait and read it again from its start
   fn gzipHeaderRead(self: &mut) Status {
     var h = GzipHeader.plain();
-    let p = parseGzipHeader(bi.buf.view(), bi.pos, &crc, &mut h);
+    var p = -1i64;
+    let held = bi.rd.len();
+    match bi.rd.peek(held) {
+      case let Some(v) { p = parseGzipHeader(v, bi.pos, &crc, &mut h); }
+      case is None[&Array[u8]] {}
+    }
     if p == -1i64 { return self.starved("gzip: the header is cut off"); }
     if p == -2i64 {
       self.fail(ErrorKind.BadHeader, "gzip: not a gzip stream (the first two bytes are not 1F 8B)");
@@ -448,10 +512,10 @@ pub struct Inflater {
 
   // RFC 1950: the Adler-32, most significant byte first
   fn zlibTrailer(self: &mut) Status {
-    if bi.buf.len() - bi.pos < 4usize { return self.starved("zlib: the Adler-32 is missing"); }
+    if bi.rd.len() - bi.pos < 4usize { return self.starved("zlib: the Adler-32 is missing"); }
     let p = bi.pos;
-    let want = (u32.from(*bi.buf[p]) << 24u32) | (u32.from(*bi.buf[p + 1usize]) << 16u32)
-      | (u32.from(*bi.buf[p + 2usize]) << 8u32) | u32.from(*bi.buf[p + 3usize]);
+    let want = (u32.from(bi.rd.byteAt(p)) << 24u32) | (u32.from(bi.rd.byteAt(p + 1usize)) << 16u32)
+      | (u32.from(bi.rd.byteAt(p + 2usize)) << 8u32) | u32.from(bi.rd.byteAt(p + 3usize));
     if adler.value() != want {
       self.fail(ErrorKind.BadChecksum, "zlib: the Adler-32 does not match");
       return Status.Failed;
@@ -462,10 +526,10 @@ pub struct Inflater {
 
   // RFC 1952: the CRC-32, then the size modulo 2^32, least significant byte first
   fn gzipTrailer(self: &mut) Status {
-    if bi.buf.len() - bi.pos < 8usize { return self.starved("gzip: the trailer is cut off"); }
+    if bi.rd.len() - bi.pos < 8usize { return self.starved("gzip: the trailer is cut off"); }
     let p = bi.pos;
-    let wantCrc = le32(bi.buf.view(), p);
-    let wantSize = le32(bi.buf.view(), p + 4usize);
+    let wantCrc = bi.leAt(p);
+    let wantSize = bi.leAt(p + 4usize);
     if crcv != wantCrc {
       self.fail(ErrorKind.BadChecksum, "gzip: the CRC-32 does not match");
       return Status.Failed;
@@ -481,19 +545,19 @@ pub struct Inflater {
   // After a gzip member: padding zeros (as gzip tools allow), another member,
   // or the end of the input
   fn betweenMembers(self: &mut) Status {
-    while bi.pos < bi.buf.len() && *bi.buf[bi.pos] == 0u8 { bi.pos = bi.pos + 1usize; }
-    if bi.pos >= bi.buf.len() {
+    while bi.pos < bi.rd.len() && bi.rd.byteAt(bi.pos) == 0u8 { bi.pos = bi.pos + 1usize; }
+    if bi.pos >= bi.rd.len() {
       if finished { stage = Stage.End; return Status.Done; }
       return Status.NeedInput;
     }
-    if bi.buf.len() - bi.pos < 2usize {
+    if bi.rd.len() - bi.pos < 2usize {
       if finished {
         self.fail(ErrorKind.TrailingData, "gzip: a stray byte after the last member");
         return Status.Failed;
       }
       return Status.NeedInput;
     }
-    if *bi.buf[bi.pos] != 0x1Fu8 || *bi.buf[bi.pos + 1usize] != 0x8Bu8 {
+    if bi.rd.byteAt(bi.pos) != 0x1Fu8 || bi.rd.byteAt(bi.pos + 1usize) != 0x8Bu8 {
       self.fail(ErrorKind.TrailingData, "gzip: bytes after the last member are not another member");
       return Status.Failed;
     }
@@ -577,16 +641,17 @@ pub struct Inflater {
   // block allow
   fn storedBytes(self: &mut, room: &mut usize) Status {
     if storedLeft > 0usize {
-      let avail = bi.buf.len() - bi.pos;
+      let avail = bi.rd.len() - bi.pos;
       var n = if storedLeft < avail {storedLeft} else {avail};
       if n > *room { n = *room; }
       if outTotal + u64.from(n) > limit {
         self.fail(ErrorKind.TooLarge, "output larger than expected");
         return Status.Failed;
       }
-      hist.reserve(n);
-      var k = 0usize;
-      while k < n { hist.push(*bi.buf[bi.pos + k]); k = k + 1usize; }
+      match bi.rd.peek(bi.pos + n) {
+        case let Some(v) { hist.appendSlice(&v[bi.pos ..< bi.pos + n]); }
+        case is None[&Array[u8]] {}
+      }
       bi.pos = bi.pos + n;
       storedLeft = storedLeft - n;
       *room = *room - n;
@@ -716,6 +781,104 @@ pub struct Inflater {
     }
   }
 
+  // The hot loop of a Huffman block: literals and matches whose codes the
+  // first-level tables hold, with the bit buffer and the positions in locals.
+  // It runs while at least 8 input bytes and 258 bytes of the 'maxOut' room
+  // remain, and stops before any symbol it does not do whole (an end of
+  // block, a long code, an invalid one, a distance past the start): that
+  // symbol is left unread for 'codes' to handle, with its checks and errors.
+  // Answers the bytes it appended to the history.
+  fn fastRun(self: &mut, maxOut: usize) usize {
+    hist.reserve(maxOut);
+    var produced = 0usize;
+    var bits = bi.bits;
+    var nbits = bi.nbits;
+    var pos = bi.pos;
+    let held = bi.rd.len();
+    match bi.rd.peek(held) {
+      case let Some(src) {
+        produced = Inflater.fastLoop(src, lit.fast.view(), dist.fast.view(), &mut hist, base, maxOut, &mut bits, &mut nbits, &mut pos);
+      }
+      case is None[&Array[u8]] {}
+    }
+    bi.bits = bits;
+    bi.nbits = nbits;
+    bi.pos = pos;
+    produced
+  }
+
+  // The loop of 'fastRun' over the input bytes 'src' (all that is held), the
+  // bit buffer and the input position passed in and out
+  fn fastLoop(src: &Array[u8], lf: &Array[u16], df: &Array[u16], hist: &mut List[u8], start: usize, maxOut: usize,
+      bitsIn: &mut u64, nbitsIn: &mut u32, posIn: &mut usize) usize {
+    var bits = *bitsIn;
+    var nbits = *nbitsIn;
+    var pos = *posIn;
+    let inLen = src.len;
+    let fmask = (1u64 << u64.from(FastBits)) - 1u64;
+    var produced = 0usize;
+    while produced + 258usize <= maxOut && pos + 8usize <= inLen {
+      if nbits < 48u32 {
+        let w = u64.from(src[pos]) | (u64.from(src[pos + 1usize]) << 8u64) | (u64.from(src[pos + 2usize]) << 16u64)
+          | (u64.from(src[pos + 3usize]) << 24u64) | (u64.from(src[pos + 4usize]) << 32u64)
+          | (u64.from(src[pos + 5usize]) << 40u64) | (u64.from(src[pos + 6usize]) << 48u64)
+          | (u64.from(src[pos + 7usize]) << 56u64);
+        let k = (64u32 - nbits) / 8u32;
+        let take = k * 8u32;
+        let m = if take >= 64u32 {18446744073709551615u64} else {(1u64 << u64.from(take)) - 1u64};
+        bits = bits | ((w & m) << u64.from(nbits));
+        pos = pos + usize.from(k);
+        nbits = nbits + take;
+      }
+      let e = lf[usize.from(bits & fmask)];
+      if e == 0u16 { break; }
+      let l = u32.from(e & 15u16);
+      let sym = usize.from(e >> 4u16);
+      if sym < 256usize {
+        bits = bits >> u64.from(l);
+        nbits = nbits - l;
+        hist.push(u8.from(sym));
+        produced = produced + 1usize;
+      } else {
+        if sym == 256usize || sym >= 286usize { break; }
+        let li = sym - 257usize;
+        var b = bits >> u64.from(l);
+        var nb = nbits - l;
+        let le = u32.from(lenExtra[li]);
+        let len = usize.from(lenBase[li]) + usize.from(b & ((1u64 << u64.from(le)) - 1u64));
+        b = b >> u64.from(le);
+        nb = nb - le;
+        let de = df[usize.from(b & fmask)];
+        if de == 0u16 { break; }
+        let ds = usize.from(de >> 4u16);
+        if ds >= 30usize { break; }
+        let dl = u32.from(de & 15u16);
+        b = b >> u64.from(dl);
+        nb = nb - dl;
+        let dx = u32.from(distExtra[ds]);
+        let d = usize.from(distBase[ds]) + usize.from(b & ((1u64 << u64.from(dx)) - 1u64));
+        b = b >> u64.from(dx);
+        nb = nb - dx;
+        if d > hist.len() - start { break; }
+        bits = b;
+        nbits = nb;
+        var from = hist.len() - d;
+        var j = 0usize;
+        while j < len {
+          hist.push(*hist[from]);
+          from = from + 1usize;
+          j = j + 1usize;
+        }
+        produced = produced + len;
+      }
+    }
+    // The bits above 'nbits' stay zero, as 'refill' keeps them
+    *bitsIn = bits;
+    *nbitsIn = nbits;
+    *posIn = pos;
+    produced
+  }
+
   // One compressed block's symbols until the end-of-block code. Done at the
   // end of the block.
   fn codes(self: &mut, room: &mut usize) Status {
@@ -740,6 +903,15 @@ pub struct Inflater {
       if produced >= cap && !limited {
         result = Status.MoreOutput;
         break;
+      }
+      // While input and output room are ample, symbols run in 'fastRun'; it
+      // stops at the first symbol it does not do whole, which goes below
+      if fast && cap - produced >= 258usize {
+        produced = produced + self.fastRun(if cap - produced < 262144usize {cap - produced} else {262144usize});
+        if produced >= cap && !limited {
+          result = Status.MoreOutput;
+          break;
+        }
       }
       let p0 = bi.pos;
       let b0 = bi.bits;

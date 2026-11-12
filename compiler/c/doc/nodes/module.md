@@ -988,7 +988,15 @@ under his authorisation]. The regions' `alloc` and `free` call `RawBlocks`, core
 raw blocks layer: three inline functions (`alloc`, `resize`, `release`) over three
 private `extern` declarations bound by `@c` to `cone_rawBlockAlloc`,
 `cone_rawBlockResize` and `cone_rawBlockRelease`, which conestd's `rawblocks.cone`
-defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. It is
+defines as `libc.malloc`, `libc.realloc` and `libc.free` and nothing more. A second
+pair, `allocAligned` (`cone_rawBlockAllocAligned`) and a release
+(`cone_rawBlockReleaseAligned`), reached only through the owning move type
+`AlignedBlock` that `allocAligned` returns (its `final` is the release, so the
+wrong free cannot be called; `addr` gives the address), gives a block aligned to any power of two through
+`libc.alignedAlloc` and `libc.alignedFree` (conestd's `cnames.c`: `_aligned_malloc`
+on Windows, `posix_memalign` on POSIX); it is a separate pair because `release` is
+handed the address alone and the Windows runtime frees an aligned block only with
+`_aligned_free`. It is
 the one place that names where the heap's bytes come from: the heap region
 (`heapregion.c`), `Uni`, `Rc`, `Arc`, `Rcw`, a collection's `freeze`, an arena's
 blocks and an actor's chunks and large objects go through it, so an allocator
@@ -2221,10 +2229,12 @@ hides them; a module-level one is refused as a duplicate at parse
 (`modAddNamedNode`), as one named `i64` is — Jon, 24 September 2026: the
 compiler is right, and they hold that place for now
 ([Name Resolution](../phases/name-resolution.md), "Some bindings are never hooked").
-Both stitched functions swap one flag, `cone.live`, as their first act: the init
-does nothing on a program already live and the final nothing on one that is not,
-so a call after the entry's runs nothing, and a program that finalizes and
-initializes again runs both again. A library called from C gets no entry, and the
+Both stitched functions change one three-state flag, `cone.live` (0 never live,
+1 live, 2 finished), as their first act: the init does nothing on a program
+already live and the final nothing on one that is not live, so a call after the
+entry's runs nothing. Init runs once per process (Jon, 6 November): an init that
+finds the program finished panics (`cone_panicInitAgain`, `PanicInitAgain`).
+A library called from C gets no entry, and the
 C caller sets it up.
 
 **A C-named module's `init` is a static constructor, not a stitched call**

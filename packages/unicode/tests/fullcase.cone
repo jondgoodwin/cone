@@ -1,0 +1,105 @@
+// unicode.toUpper / toLower on text: SpecialCasing.txt's unconditional entries
+// (Unicode 18.0.0) checked by hand, ASCII and mixed scripts, then every code
+// point but the surrogates as a one-char text against toUpperSimple /
+// toLowerSimple (a mapping that is one char must be the simple one; the
+// others are counted against the generator's 103 upper and 1 lower expansions).
+
+mod fullcase;
+
+import testing use *;
+import collections use *;
+import unicode;
+
+fn encode(out: &mut String, x: u32) {
+  if x < 0x80u32 { out.appendByte(u8.from(x)); }
+  else if x < 0x800u32 {
+    out.appendByte(0xC0u8 | u8.from(x >> 6u32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else if x < 0x10000u32 {
+    out.appendByte(0xE0u8 | u8.from(x >> 12u32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+  else {
+    out.appendByte(0xF0u8 | u8.from(x >> 18u32));
+    out.appendByte(0x80u8 | u8.from((x >> 12u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from((x >> 6u32) & 0x3Fu32));
+    out.appendByte(0x80u8 | u8.from(x & 0x3Fu32));
+  }
+}
+
+fn up(s: &str, want: &str, label: &Array[u8]) bool { let u = unicode.toUpper(s); expectStr(u.view(), want, label) }
+fn lo(s: &str, want: &str, label: &Array[u8]) bool { let l = unicode.toLower(s); expectStr(l.view(), want, label) }
+
+fn main() i32 {
+  // The headline
+  up("ß", "SS", "sharp s");
+  up("straße", "STRASSE", "strasse");
+  up("ﬀ", "FF", "ff ligature"); up("ﬁ", "FI", "fi ligature"); up("ﬆ", "ST", "st ligature");
+  up("ﬗ", "ՄԽ", "armenian men xeh");
+  up("ŉ", "ʼN", "n with apostrophe");
+  up("ǰ", "J̌", "j caron");
+  up("ΐ", "Ϊ́", "iota dialytika tonos");
+
+  // Greek with iota subscript
+  up("ᾳ", "ΑΙ", "alpha ypogegrammeni");
+  up("ᾀ", "ἈΙ", "alpha psili ypogegrammeni");
+  up("ᾷ", "Α͂Ι", "alpha perispomeni ypogegrammeni, three chars");
+  up("ῷ", "Ω͂Ι", "omega perispomeni ypogegrammeni");
+  lo("ᾼ", "ᾳ", "capital alpha with prosgegrammeni lowers simply");
+
+  // Lower case: one expansion only
+  lo("İ", "i̇", "dotted I");
+  lo("İSTANBUL", "i̇stanbul", "dotted I in a word");
+  lo("ẞ", "ß", "capital sharp s");
+  lo("ΣΑΣ", "σασ", "final sigma is not applied");
+  up("ς", "Σ", "final sigma upper");
+
+  // Plain and mixed
+  up("hello, World 123", "HELLO, WORLD 123", "ascii up");
+  lo("Hello, World 123", "hello, world 123", "ascii low");
+  up("", "", "empty up"); lo("", "", "empty low");
+  up("aß中é\U00010428z", "ASS中É\U00010400Z", "mixed scripts up");
+  lo("AẞЖÉ\U00010400Z中", "aßжé\U00010428z中", "mixed scripts low");
+  up("ǆ", "Ǆ", "dz simple");
+  lo("ǅ", "ǆ", "dz titlecase low");
+
+  // Every code point but the surrogates
+  var expUp = 0u64; var expLow = 0u64; var bad = 0u64;
+  var all = String();
+  var extraUp = 0u64;
+  var x = 0u32;
+  while x <= 0x10FFFFu32 {
+    if x < 0xD800u32 || x > 0xDFFFu32 {
+      var one = String();
+      encode(&mut one, x);
+      let c = char.from(x);
+      let u = unicode.toUpper(one.view());
+      let l = unicode.toLower(one.view());
+      let un = u.view().charCount();
+      if un == 1usize {
+        if u.view().chars().next().unwrap() != unicode.toUpperSimple(c) { bad = bad + 1u64; }
+      }
+      else { expUp = expUp + 1u64; extraUp = extraUp + u64.from(un) - 1u64; }
+      if l.view().charCount() == 1usize {
+        if l.view().chars().next().unwrap() != unicode.toLowerSimple(c) { bad = bad + 1u64; }
+      }
+      else { expLow = expLow + 1u64; }
+      encode(&mut all, x);
+    }
+    x = x + 1u32;
+  }
+  expectUInt(bad, 0u64, "one-char mappings agree with the simple ones");
+  expectUInt(expUp, 103u64, "upper expansions");
+  expectUInt(expLow, 1u64, "lower expansions");
+
+  // The whole text at once: every char kept or expanded, valid UTF-8 throughout
+  let nChars = all.view().charCount();
+  let allUp = unicode.toUpper(all.view());
+  let allLow = unicode.toLower(all.view());
+  expectUInt(u64.from(allUp.view().charCount()), u64.from(nChars) + extraUp, "whole text upper length");
+  expectUInt(u64.from(allLow.view().charCount()), u64.from(nChars) + 1u64, "whole text lower length");
+  expect(allUp.view().charCount() > 0usize && unicode.toLower(allLow.view()).view().charCount() == allLow.view().charCount(), "lower of lower is stable in length");
+  return done();
+}

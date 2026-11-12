@@ -15,7 +15,7 @@
 mod latequiet;
 
 import testing use *;
-import sync use Oneshot, OneshotSender, OneshotReceiver;
+import sync use Arc, Mutex, Oneshot, OneshotSender, OneshotReceiver;
 import collections use String;
 import time use Duration, Instant;
 import iobuf use IoBuf;
@@ -23,11 +23,10 @@ import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket, IoLimits;
 
-var seen: String;
-
-fn @initpure init() {
-  seen = String.from("");
-}
+// What the reads brought, the actor's to write and main's to read: it lives
+// in an Arc[Mutex, Seen] that main hands to the actor
+struct Seen {pub text: String;}
+alias SeenText = Arc[Mutex, Seen];
 
 fn socketOf(r: Result[Socket, IoError]) Socket { r || Socket.none() }
 
@@ -38,7 +37,7 @@ fn text(s: &str) IoBuf {
 }
 
 actor Reader {
-  pub async fn run(self, done: OneshotSender[u64]) {
+  pub async fn run(self, seen: SeenText, done: OneshotSender[u64]) {
     let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
     var port = 0u16;
     match await ls.localAddr() {
@@ -57,10 +56,10 @@ actor Reader {
       let w = await a.write(text(word));
       let r = await b.readIn(IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
       match r {
-        case let Ok(buf) {let got = String.fromBytes(buf.view()); seen.append(got.view());}
-        case let Err(e) {seen.append(if aio.isTimedOut(e) {"<timed out>"} else {"<failed>"});}
+        case let Ok(buf) {let got = String.fromBytes(buf.view()); (&mut *seen).text.append(got.view());}
+        case let Err(e) {(&mut *seen).text.append(if aio.isTimedOut(e) {"<timed out>"} else {"<failed>"});}
       }
-      seen.append("|");
+      (&mut *seen).text.append("|");
       k = k + 1u32;
     }
     aio.setReadQuiet(Duration.fromMillis(2i64));
@@ -71,20 +70,21 @@ actor Reader {
 
 fn main() i32 {
   initAll();
+  let seen = SeenText(Seen(String.from("")));
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let r = Reader();
-    r.run(tx);
+    r.run(seen, tx);
   }
   match rx.recv() {
     case is None[u64] {expect(false, "Reader said it was done");}
     else {}
   }
-  // Read before finalAll, which finalizes this module's globals: 'seen' among
-  // them, its text freed (read after, it is freed memory)
-  expectStr(seen.view(), "one|two|three|", "the bytes of the late receive are the read's answer, the stream in order");
+  // Read before the actor's owner of 'seen' goes: main's own owner keeps the
+  // text alive to here
+  expectStr((&*seen).text.view(), "one|two|three|", "the bytes of the late receive are the read's answer, the stream in order");
   finalAll();
   let st = iobuf.stats();
   expectUInt(st.lent, 0u64, "every buffer is home");

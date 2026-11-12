@@ -303,6 +303,11 @@ fn enter() {
 		<li><b>Only a global declared in a module may be thread-local</b>: not a local, a function's or a type's
 			static, a parameter, a field, or a module trait's global.</li>
 	</ul>
+	<p><b>A borrow of a thread-local lasts only within the code that took it.</b> In an actor, an <span class="pre">await</span>
+		lets the behaviour resume on another worker, whose copy is a different one, so a borrow of a thread-local cannot be kept across an
+		<span class="pre">await</span> (nor a copy of it, a struct or closure holding it), and cannot be stored where it outlives the call: an actor's
+		field, a global, a <span class="pre">'static</span> borrow, a message, or a returned reference. It may be passed to a function called within that stretch. Read the
+		value, or take the borrow again where it is used.</p>
 	<p>A thread-local global is declared <span class="pre">extern</span> like any other, with
 		<span class="pre">@threadlocal</span> kept and no value, and a library's
 		<a href="safe-c.html#includefile">include file</a> declares its thread-local globals that way. Every
@@ -452,7 +457,10 @@ fn main() i32 {
 		module can use, run the same two stitched sequences, and each runs its modules once: a program that calls
 		them itself, as programs did before the entry was built, finds nothing left to run at
 		<span class="pre">initAll()</span>, and runs the finalizers at its first <span class="pre">finalAll()</span>
-		(so it may finalize early) and not again when <span class="pre">main</span> returns.</p>
+		(so it may finalize early) and not again when <span class="pre">main</span> returns.
+		<span class="pre">init</span> runs once per process: an <span class="pre">initAll()</span> after
+		<span class="pre">finalAll()</span> has run the finalizers does not start the program again but panics,
+		saying so.</p>
 	<p><i>A program ends without running any finalizer when it panics, or calls the C library's
 		<span class="pre">exit</span> or <span class="pre">abort</span>: the entry's finalizers run only when
 		<span class="pre">main</span> returns. A library compiled on its own has no entry of its own, and keeps its

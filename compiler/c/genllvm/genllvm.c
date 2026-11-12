@@ -1039,6 +1039,13 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
         genlBorrowAttrs(gen, glofn, glofn->llvmvar);
+        // '@noalias': the pointer returned is a fresh allocation. Honors --no-noalias
+        if ((glofn->dclinfo.facts & DclNoAlias) && LLVMGetTypeKind(LLVMGetReturnType(fntype)) != LLVMPointerTypeKind)
+            errorMsgNode((INode*)glofn, ErrorNoAliasAttr, "'@noalias' says the pointer a function returns is a fresh block, "
+                "so the function must return a pointer or a thin reference: this one returns neither.");
+        else if ((glofn->dclinfo.facts & DclNoAlias) && !gen->opt->no_noalias && !gen->opt->gpu)
+            LLVMAddAttributeAtIndex(glofn->llvmvar, LLVMAttributeReturnIndex, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("noalias", 7), 0));
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
@@ -1073,6 +1080,13 @@ void genlGlobalSyms(GenState *gen, INode *node);
 // of a generic trait or enum splits its members as a non-generic one does: its
 // methods belong to the implementers, its static functions to itself, and
 // genlGlobalImpl generates their bodies.
+// A member of an instance whose members wait for a use (structMembersUse), which no
+// use has checked: it is not generated. One checked some other way (a vtable
+// slot, say) is generated like any other.
+static int genlMemberUnchecked(INode *type, INode *member) {
+    return structMembersLazy(type) && !(member->flags & TypeChecked);
+}
+
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag)
         return;
@@ -1081,6 +1095,8 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     uint32_t cnt;
     for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
         if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
+            continue;
+        if (genlMemberUnchecked(instance, *nodesp))
             continue;
         genlGlobalSyms(gen, *nodesp);
     }
@@ -1124,6 +1140,8 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 // A trait's methods are not its own to generate: a requirement has
                 // no body, and a default was cloned into each implementer, which
                 // owns and names the copy. Its static functions are its own --
@@ -1208,6 +1226,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             uint32_t cnt;
             int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (genlMemberUnchecked(node, *nodesp))
+                    continue;
                 if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalImpl(gen, *nodesp);
@@ -1415,12 +1435,15 @@ static void genlStitch(GenState *gen, int which) {
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, fn, "entry");
     LLVMPositionBuilderAtEnd(builder, entry);
-    // The program is live between its init and its final. A call that finds it
-    // already in the state it asks for returns at once: the swap of the flag
-    // is the call's first instruction, so the second of two calls (the entry's
-    // and the program's own, or two threads') does nothing, and a program that
-    // finalizes and initializes again still runs both. A final with no init in
-    // this object to set the flag always runs.
+    // The flag has three states: 0 never live, 1 live, 2 finished. The program
+    // is live between its init and its final. A call that finds it already in
+    // the state it asks for returns at once: the init's swap or the final's
+    // compare-exchange is the call's first instruction, so the second of two
+    // calls (the entry's and the program's own, or two threads') does nothing.
+    // Init runs once per process [Jon 6 Nov]: an init that finds the program
+    // finished panics (cone_panicInitAgain). A final that finds the program
+    // never live does nothing and leaves it so. A final with no init in this
+    // object to set the flag always runs.
     if (which == 0 || gen->stitch[0] != NULL) {
         LLVMTypeRef flagtype = LLVMInt8TypeInContext(gen->context);
         LLVMValueRef flag = LLVMGetNamedGlobal(gen->module, "cone.live");
@@ -1431,12 +1454,38 @@ static void genlStitch(GenState *gen, int which) {
         }
         LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(gen->context, fn, "run");
         LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(gen->context, fn, "done");
-        LLVMValueRef before = LLVMBuildAtomicRMW(builder, LLVMAtomicRMWBinOpXchg, flag,
-            LLVMConstInt(flagtype, which == 0 ? 1 : 0, 0), LLVMAtomicOrderingSequentiallyConsistent, 0);
-        LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
-            LLVMConstInt(flagtype, which == 0 ? 0 : 1, 0), ""), run, done);
+        LLVMBasicBlockRef again = which == 0 ? LLVMAppendBasicBlockInContext(gen->context, fn, "again") : NULL;
+        if (which == 0) {
+            LLVMValueRef before = LLVMBuildAtomicRMW(builder, LLVMAtomicRMWBinOpXchg, flag,
+                LLVMConstInt(flagtype, 1, 0), LLVMAtomicOrderingSequentiallyConsistent, 0);
+            LLVMBasicBlockRef notnew = LLVMAppendBasicBlockInContext(gen->context, fn, "notnew");
+            LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
+                LLVMConstInt(flagtype, 0, 0), ""), run, notnew);
+            LLVMPositionBuilderAtEnd(builder, notnew);
+            LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, before,
+                LLVMConstInt(flagtype, 1, 0), ""), done, again);
+        }
+        else {
+            LLVMValueRef swap = LLVMBuildAtomicCmpXchg(builder, flag, LLVMConstInt(flagtype, 1, 0),
+                LLVMConstInt(flagtype, 2, 0), LLVMAtomicOrderingSequentiallyConsistent,
+                LLVMAtomicOrderingSequentiallyConsistent, 0);
+            LLVMBuildCondBr(builder, LLVMBuildExtractValue(builder, swap, 1, ""), run, done);
+        }
         LLVMPositionBuilderAtEnd(builder, done);
         LLVMBuildRetVoid(builder);
+        if (again != NULL) {
+            // A stand-in site: the report names no source file. It still prints as
+            // "panic at :0:" because every conestd panic entry (cone_panic, which
+            // cone_panicAlloc also ends in) always prints file:line, and a site-less
+            // path would need a new public name in conestd [design chat 12 Nov].
+            INode site;
+            memset(&site, 0, sizeof(site));
+            LLVMBuilderRef saved = gen->builder;
+            LLVMPositionBuilderAtEnd(builder, again);
+            gen->builder = builder;
+            genlPanic(gen, &site, PanicInitAgain, NULL);
+            gen->builder = saved;
+        }
         LLVMPositionBuilderAtEnd(builder, run);
     }
     Nodes *order = gen->pgm->initorder;
