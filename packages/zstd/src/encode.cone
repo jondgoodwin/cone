@@ -614,12 +614,46 @@ struct HufEnc is Default {
     let src = lits as *u8;
     let cnt = to - from;
     var bw = BitRun.open(out, cnt + cnt / 2usize + 16usize);
+    var acc = 0u64;
+    var n = 0u32;
+    var w = bw.w;
     var i = to;
+    // Five literals to a store: at most 7 held bits and 5 codes of 11 bits fit in 64
+    while i >= from + 5usize {
+      let e0 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 1usize)))) as *u32));
+      let e1 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 2usize)))) as *u32));
+      let e2 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 3usize)))) as *u32));
+      let e3 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 4usize)))) as *u32));
+      let e4 = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + (i - 5usize)))) as *u32));
+      i -= 5usize;
+      acc = acc | ((e0 & 65535u64) << u64.from(n));
+      n = n + u32.from(e0 >> 16u64);
+      acc = acc | ((e1 & 65535u64) << u64.from(n));
+      n = n + u32.from(e1 >> 16u64);
+      acc = acc | ((e2 & 65535u64) << u64.from(n));
+      n = n + u32.from(e2 >> 16u64);
+      acc = acc | ((e3 & 65535u64) << u64.from(n));
+      n = n + u32.from(e3 >> 16u64);
+      acc = acc | ((e4 & 65535u64) << u64.from(n));
+      n = n + u32.from(e4 >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
+    }
     while i > from {
       i -= 1usize;
-      let e = mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + i))) as *u32);
-      bw.put(u64.from(e & 65535u32), e >> 16u32);
+      let e = u64.from(mem.readRaw[u32]((t + 4usize * usize.from(mem.readRaw[u8](src + i))) as *u32));
+      acc = acc | ((e & 65535u64) << u64.from(n));
+      n = n + u32.from(e >> 16u64);
+      mem.writeRaw[u64](w as *u64, acc);
+      w = w + usize.from(n >> 3u32);
+      acc = acc >> u64.from(n & 248u32);
+      n = n & 7u32;
     }
+    bw.acc = acc;
+    bw.n = n;
+    bw.w = w;
     bw.finish(out);
   }
 }
