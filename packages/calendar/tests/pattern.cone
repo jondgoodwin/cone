@@ -1,4 +1,4 @@
-// Patterns: the strftime subset of DateTime.formatWith, DateTime.parseWith,
+// Patterns: the strftime subset of DateTime.format, DateTime.parse,
 // OffsetDateTime and Zone.toOffsetDateTime. The strings written were checked
 // against Python's strftime (%Y %m %d %e %j %H %M %S %a %A %b %B) for the dates
 // below; %f (nine digits), %z with seconds and the refusals are this package's
@@ -54,14 +54,14 @@ fn utc(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) Timestamp {
 
 // What writing gives: the text, or the error's message
 fn writeDt(x: DateTime, pattern: &str) String {
-  match x.formatWith(pattern) {
+  match x.format(pattern) {
     case let Ok(ok) { ok }
     case let Err(e) { String() <- e }
   }
 }
 
 fn writeOdt(x: OffsetDateTime, pattern: &str) String {
-  match x.formatWith(pattern) {
+  match x.format(pattern) {
     case let Ok(ok) { ok }
     case let Err(e) { String() <- e }
   }
@@ -69,7 +69,7 @@ fn writeOdt(x: OffsetDateTime, pattern: &str) String {
 
 // What reading gives: the UTC date-time in RFC 3339, or the error's message
 fn readDt(pattern: &str, text: &str) String {
-  match DateTime.parseWith(pattern, text) {
+  match DateTime.parse(pattern, text) {
     case let Ok(ok) { ok.rfc3339() }
     case let Err(e) { String() <- e }
   }
@@ -77,7 +77,7 @@ fn readDt(pattern: &str, text: &str) String {
 
 // The wall clock in RFC 3339 form, then the offset in seconds
 fn readOdt(pattern: &str, text: &str) String {
-  match OffsetDateTime.parseWith(pattern, text) {
+  match OffsetDateTime.parse(pattern, text) {
     case let Ok(ok) {
       var m = ok.dt.rfc3339();
       m.append(" ");
@@ -135,6 +135,12 @@ fn zones() {
   expectStr(writeOdt(zKy.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 15:00:00 +0300 EEST", "Kyiv in summer");
   expectStr(writeOdt(zFat.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "2026-07-01 08:00:00 -0400 EDT", "the fat file agrees");
   expectStr(writeOdt(zNy.toOffsetDateTime(utc(1850i64, 1i64, 1i64, 12i64, 0i64, 0i64)), p).view(), "1850-01-01 07:03:58 -045602 LMT", "an offset with seconds");
+  // What %z writes it reads: the LMT offset with seconds round-trips
+  let lmt = zNy.toOffsetDateTime(utc(1850i64, 1i64, 1i64, 12i64, 0i64, 0i64));
+  let w = writeOdt(lmt, "%Y-%m-%d %H:%M:%S %z");
+  expectStr(readOdt("%Y-%m-%d %H:%M:%S %z", w.view()).view(), "1850-01-01T07:03:58Z -17762", "a written offset with seconds is read back");
+  expectStr(readOdt("%Y-%m-%d %H:%M:%S %z", "1850-01-01 07:03:58 -04:56:02").view(), "1850-01-01T07:03:58Z -17762", "hh:mm:ss is read too");
+  expectStr(readDt("%Y-%m-%d %H:%M:%S %z", w.view()).view(), "1850-01-01T12:00:00Z", "and moves a DateTime to UTC");
   let o = zNy.toOffsetDateTime(utc(2026i64, 7i64, 1i64, 12i64, 0i64, 0i64));
   expectInt(i64.from(o.offset.seconds), -14400i64, "the OffsetDateTime keeps the offset");
   expectStr(o.dt.rfc3339().view(), "2026-07-01T08:00:00Z", "and the wall clock");
@@ -162,7 +168,7 @@ fn readingGood() {
   expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09+05:30").view(), "2026-10-03T14:05:09Z 19800", "the wall clock and its offset");
   expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09-0300").view(), "2026-10-03T14:05:09Z -10800", "a west offset");
   expectStr(readOdt("%Y-%m-%dT%H:%M:%S%z", "2026-10-03T14:05:09Z").view(), "2026-10-03T14:05:09Z 0", "Z");
-  match OffsetDateTime.parseWith("%Y-%m-%d %H:%M %z", "2026-10-03 14:05 +0530") {
+  match OffsetDateTime.parse("%Y-%m-%d %H:%M %z", "2026-10-03 14:05 +0530") {
     case let Ok(ok) {
       expectStr(writeOdt(ok, "%H:%M %z|%Z").view(), "14:05 +0530|+0530", "written again, an unnamed offset writes as %z");
     }
@@ -186,6 +192,7 @@ fn readingBad() {
   expectStr(readDt("%Y %b %d", "2026 oct 03").view(), "at byte 5: expected a month's English name of three letters", "names are case-sensitive");
   expectStr(readDt("%Y-%m-%e", "2026-03-06").view(), "at byte 8: expected a space, not a zero, in front of a one-digit day (%e)", "%e is read as written");
   expectStr(readDt("%Y-%m-%d %z", "2026-10-03 +0560").view(), "at byte 14: the offset's minute is 60, outside 00 to 59", "an offset's minutes");
+  expectStr(readDt("%Y-%m-%d %z", "2026-10-03 +01:00:60").view(), "at byte 18: the offset's second is 60, outside 00 to 59", "an offset's seconds");
   expectStr(readDt("%Y-%m-%d %z", "2026-10-03 0530").view(), "at byte 11: expected the offset: 'Z', '+hhmm' or '+hh:mm'", "an offset without a sign");
   expectStr(readDt("%Y-%m-%d %f", "2026-10-03 123").view(), "at byte 14: expected nine digits for the nanoseconds", "a fraction is nine digits");
   // The pattern's own faults come before the text is read

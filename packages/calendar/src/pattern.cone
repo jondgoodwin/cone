@@ -15,7 +15,8 @@
 //   %a  the day's name, three letters ('Sun')    %A  the whole name ('Sunday')
 //   %b  the month's name, three letters ('Nov')  %B  the whole name ('November')
 //   %z  the offset from UTC: '+hhmm' or '-hhmm' ('+0530'); written '+hhmmss'
-//       when it has seconds. Read as 'Z', '+hhmm' or '+hh:mm'
+//       when it has seconds. Read as 'Z', '+hhmm', '+hh:mm', '+hhmmss' or
+//       '+hh:mm:ss', so that what is written is read back
 //   %Z  the offset's name, 'BRT': written only, never read, since a name such
 //       as 'IST' is the name of several zones
 //
@@ -235,7 +236,8 @@ fn scanZ(text: &Array[u8], s: &mut Scan) i64 {
   s.pos = s.pos + 1usize;
   let hourAt = s.pos;
   let hours = digits(text, s, 2usize, "the offset's hours");
-  if !s.failed && s.pos < text.len && text[s.pos] == ':' { s.pos = s.pos + 1usize; }
+  var colons = false;
+  if !s.failed && s.pos < text.len && text[s.pos] == ':' { s.pos = s.pos + 1usize; colons = true; }
   let minuteAt = s.pos;
   let minutes = digits(text, s, 2usize, "the offset's minutes");
   if s.failed { return 0i64; }
@@ -247,7 +249,25 @@ fn scanZ(text: &Array[u8], s: &mut Scan) i64 {
     outOfRange(s, minuteAt, "offset's minute", minutes, "00 to 59");
     return 0i64;
   }
-  let total = hours * 3600i64 + minutes * 60i64;
+  // Seconds, as %z writes them for an offset that has some: '+hhmmss' or '+hh:mm:ss'
+  var secs = 0i64;
+  var secondAt = s.pos;
+  if colons {
+    if s.pos < text.len && text[s.pos] == ':' {
+      s.pos = s.pos + 1usize;
+      secondAt = s.pos;
+      secs = digits(text, s, 2usize, "the offset's seconds");
+    }
+  }
+  else if s.pos + 1usize < text.len && isDigit(text[s.pos]) && isDigit(text[s.pos + 1usize]) {
+    secs = digits(text, s, 2usize, "the offset's seconds");
+  }
+  if s.failed { return 0i64; }
+  if secs > 59i64 {
+    outOfRange(s, secondAt, "offset's second", secs, "00 to 59");
+    return 0i64;
+  }
+  let total = hours * 3600i64 + minutes * 60i64 + secs;
   if c == '-' {0i64 - total} else {total}
 }
 
@@ -417,11 +437,11 @@ pub struct OffsetDateTime {
   pub offset: Offset = Offset(0i32, "", false);
 
   // Written by a pattern, %z and %Z as the offset
-  pub fn formatWith(self, pattern: &str) Result[String, TimeError] { formatPattern(dt, offset, pattern) }
+  pub fn format(self, pattern: &str) Result[String, TimeError] { formatPattern(dt, offset, pattern) }
 
   // Read by a pattern, which must have a %z; the date-time is the text's, not
   // moved to UTC, and the offset has no name
-  pub fn parseWith(pattern: &str, text: &str) Result[OffsetDateTime, TimeError] {
+  pub fn parse(pattern: &str, text: &str) Result[OffsetDateTime, TimeError] {
     parseOffsetPattern(pattern, text, true)
   }
 }
