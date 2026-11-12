@@ -254,10 +254,11 @@ pub struct Writer is Move {
 
   // A filled buffer of the caller's moved into the stream whole, never copied
   // (not even a small one: it is a segment of its own, as a DATA frame's body
-  // is). The buffer in use, if it holds bytes, is held first, then b, then a
-  // fresh buffer goes on (fallible: the pool may refuse it, and the writer is
-  // starved, b already held). A buffer in use that holds nothing stays in
-  // use after b. An empty b is dropped. A starved writer drops b
+  // is). The buffer in use, if it holds bytes, is held first, then b. Then
+  // an infallible writer takes its fresh buffer at the next write that needs
+  // room (an idle writer lends no empty block); a fallible one takes it now (the
+  // pool may refuse it, and the writer is starved, b already held). A buffer in
+  // use that holds nothing stays in use after b. An empty b is dropped. A starved writer drops b
   pub fn putBuf(self: &mut, b: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if refused || b.len() == 0usize {return;}
     if buf.len() == 0usize {
@@ -268,6 +269,10 @@ pub struct Writer is Move {
     last <-> buf;
     _ = chain.push(last);
     _ = chain.push(b);
+    if !fallible {
+      buf = IoBuf();            // no fresh block yet: the next write that needs room takes one (rollFor), so an idle writer holds no empty block
+      return;
+    }
     match self.fresh(size, file, line) {
       case var Some(f) {buf = f;}
       else {self.starve();}
@@ -689,7 +694,7 @@ pub struct Writer is Move {
   fn rollFor(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
     if refused {return false;}
     if n > buf.capacity() && buf.len() == 0usize {
-      match self.fresh(n, file, line) {
+      match self.fresh(if n > size {n} else {size}, file, line) {
         case var Some(b) {buf = b;}
         else {
           self.starve();
