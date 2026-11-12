@@ -397,7 +397,27 @@ fn starvedDrain() {
   expectUInt(stats().lent, before, "starvedDrain: every block back in the pool");
 }
 
+// An infallible writer takes no fresh block at putBuf: idle after it, only the
+// blocks holding bytes are lent; the next write takes a block of the writer's size
+fn putBufLazy() {
+  let before = stats().lent;
+  {
+    var w = Writer.make(4096usize);
+    w.put(pattern(0usize, 10usize).view());
+    w.putBuf(pattern(0usize, 5000usize));
+    expectUInt(stats().lent - before, 2u64, "putBufLazy: idle after putBuf, only the two blocks with bytes are lent");
+    w.put(pattern(10usize, 20usize).view());
+    expectUInt(u64.from(w.room()), 4096u64 - 20u64, "putBufLazy: the next write took a block of the writer's size");
+    w.putBuf(pattern(0usize, 6usize));
+    let c = w.finish();
+    expectUInt(u64.from(c.len()), 10u64 + 5000u64 + 20u64 + 6u64, "putBufLazy: every byte finished, in order");
+    expectUInt(stats().lent - before, 4u64, "putBufLazy: after finish, only the four chained blocks are lent");
+  }
+  expectUInt(stats().lent, before, "putBufLazy: every block back in the pool");
+}
+
 fn main() i32 {
+  putBufLazy();
   markRollTruncate();
   releaseFrees();
   drainBasics();
