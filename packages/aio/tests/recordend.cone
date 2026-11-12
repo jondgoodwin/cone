@@ -5,8 +5,9 @@
 //      and W1's paused behaviour also holds a read made and never started
 //      (its record taken, not started);
 //   2. W2's sleep of an hour is in the Loop's wheel;
-//   3. W3's child process is running on a thread of the blocking pool (its
-//      record away);
+//   3. W3's child process is running, its two pipe reads and its exit wait
+//      records of the Loop's (since the run left the pool's thread; what the
+//      test once pinned, a record away on that thread, is gone with it);
 //   4. W4's read has been answered and its answer is LENT, waiting in W4's
 //      mailbox, because W4 is busy in another behaviour; nobody has taken it;
 //   5. main holds a socket, which it drops after finalAll: its close is a
@@ -17,8 +18,8 @@
 // waits for W4, which is queued); (1) and (2) are abandoned when the Loop
 // dies, their records dissolved, the notes their behaviours held dropped and
 // nothing after their awaits run, the record never started dissolved with
-// the paused behaviour that held it; (3) is abandoned when the child ends,
-// its record dissolved then by the pool's thread; (5) is dissolved where it is
+// the paused behaviour that held it; (3) is abandoned with the run, the child
+// stopped and its records dissolved; (5) is dissolved where it is
 // queued. At the end no record is in use and every buffer is home.
 
 mod recordend;
@@ -30,6 +31,7 @@ import time use Duration, Instant;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
+import process;
 import aio use Socket;
 
 let notes: Atomic[u64];       // the notes dropped: 1 + 2 + 4 when all three are
@@ -176,7 +178,7 @@ fn main() i32 {
   // A socket dropped after the end: its close record is dissolved where it is queued
   a1 = Socket.none();
   expectUInt(aio.opStats().inUse, end.inUse, "a close queued after the end is dissolved where it is queued");
-  // W3's child ends a moment later: its record, away, is dissolved then
+  // W3's child may still be ending a moment later: any record it holds is dissolved then
   let limit = Instant.now() + Duration.fromSeconds(10i64);
   while aio.opStats().inUse > base.inUse && Instant.now() < limit {
     thread.sleep(Duration.fromMillis(20i64));

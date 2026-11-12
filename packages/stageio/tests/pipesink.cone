@@ -31,7 +31,7 @@ import iobuf use IoBuf;
 import process;
 import actors;
 import cancelgroups use *;
-import aio use ChildExit;
+import aio use ChildExit, Pipe;
 import streams use *;
 import stages use *;
 import stageio use *;
@@ -474,6 +474,19 @@ fn main() i32 {
   } #else {
     expectUInt(ex6, 9u64, "6: the idle source saw the cancel and the child was killed (signal 9)");
   }
+
+  // 7. startOn(Pipe.none()) with no chunk in hand and a source that has not sent: the sink fails at once and stops the source
+  clear();
+  var wtx7: OneshotSender[Result[u64, AnyError]];
+  var wrx7: OneshotReceiver[Result[u64, AnyError]];
+  wtx7, wrx7 = Oneshot[Result[u64, AnyError]].make();
+  let sink7 = PipeSink(wtx7);
+  let src7 = PatSource(sink7, 1048576u64);       // never started: it sends nothing
+  sink7.startOn(Pipe.none());
+  expectUInt(writtenOf(&mut wrx7), 999999999u64, "7: the sink's 'done' is an Err at once");
+  waitFor(&tally.srcEnds, 1u64, 10000i64);
+  expectUInt(tally.srcEnds.load(), 1u64, "7: the source was told to stop");
+  expectUInt(tally.srcFail.load(), 1u64, "7: ...with a Failed");
 
   finalAll();
   expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");

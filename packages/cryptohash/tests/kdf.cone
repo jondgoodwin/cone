@@ -1,0 +1,107 @@
+// PBKDF2-HMAC-SHA-256 and HKDF-SHA-256.
+//
+// Sources of the vectors:
+// - PBKDF2-HMAC-SHA-256: RFC 7914 (scrypt) section 11, "PBKDF2-HMAC-SHA-256
+//   Test Vectors": (P="passwd", S="salt", c=1, dkLen=64) and
+//   (P="Password", S="NaCl", c=80000, dkLen=64). RFC 6070's vectors are for
+//   SHA-1 and are not used.
+// - HKDF-SHA-256: RFC 5869 appendix A, test cases 1 to 3 (the OKM of each).
+//   The expected bytes were checked against the RFC's text, not from memory.
+// The edge cases (refused requests, a length that is not a block multiple)
+// have no published vector.
+
+mod kdf;
+
+import testing use *;
+import collections use *;
+import cryptohash;
+
+fn hexOf(s: &Array[u8]) String {
+  var h = String();
+  var i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h
+}
+
+fn repeated(b: u8, n: usize) List[u8] {
+  var out = List[u8]();
+  var i = 0usize;
+  while i < n { out.push(b); i = i + 1usize; }
+  out
+}
+
+// n bytes counting up from first
+fn counting(first: u8, n: usize) List[u8] {
+  var out = List[u8]();
+  var i = 0usize;
+  while i < n { out.push(first + u8.from(i)); i = i + 1usize; }
+  out
+}
+
+fn pbk(label: &str, pw: &Array[u8], salt: &Array[u8], c: u32, n: usize, want: &str) {
+  var buf = repeated(0u8, n);
+  let r = cryptohash.pbkdf2Sha256(pw, salt, c, buf.viewMut());
+  expect(r.isTrue(), label);
+  let hex = hexOf(buf.view());
+  expectStr(hex.view(), want, label);
+}
+
+fn hk(label: &str, salt: &Array[u8], ikm: &Array[u8], info: &Array[u8], n: usize, want: &str) {
+  var buf = repeated(0u8, n);
+  let r = cryptohash.hkdfSha256(salt, ikm, info, buf.viewMut());
+  expect(r.isTrue(), label);
+  let hex = hexOf(buf.view());
+  expectStr(hex.view(), want, label);
+}
+
+fn main() i32 {
+  // RFC 7914 section 11
+  pbk("RFC 7914 PBKDF2 c=1", "passwd", "salt", 1u32, 64usize,
+      "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783");
+  pbk("RFC 7914 PBKDF2 c=80000", "Password", "NaCl", 80000u32, 64usize,
+      "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d");
+
+  // A length that is not a multiple of 32 is the first bytes of the same stream
+  pbk("PBKDF2 c=1, 40 bytes", "passwd", "salt", 1u32, 40usize,
+      "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645");
+
+  // RFC 5869 appendix A, case 1
+  let ikm1 = repeated(0x0bu8, 22usize);
+  let salt1 = counting(0u8, 13usize);
+  let info1 = counting(0xf0u8, 10usize);
+  hk("RFC 5869 case 1", salt1.view(), ikm1.view(), info1.view(), 42usize,
+     "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865");
+
+  // Case 2: 80-byte IKM, salt and info, 82 bytes out
+  let ikm2 = counting(0u8, 80usize);
+  let salt2 = counting(0x60u8, 80usize);
+  let info2 = counting(0xb0u8, 80usize);
+  hk("RFC 5869 case 2", salt2.view(), ikm2.view(), info2.view(), 82usize,
+     "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c58179ec3e87c14c01d5c1f3434f1d87");
+
+  // Case 3: empty salt and info
+  let empty = List[u8]();
+  hk("RFC 5869 case 3", empty.view(), ikm1.view(), empty.view(), 42usize,
+     "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8");
+
+  // A bad request is an Err, with a reason, and writes nothing: the buffer
+  // keeps the 0x77 marker the test put there, no derived bytes
+  var small = repeated(0x77u8, 4usize);
+  let r1 = cryptohash.pbkdf2Sha256("p", "s", 0u32, small.viewMut());
+  expect(!r1.isTrue(), "PBKDF2 refuses 0 iterations");
+  expect(r1.error().isTrue(), "the refusal gives a reason");
+  expect(small[0usize] == 0x77u8 && small[3usize] == 0x77u8, "buffer unwritten after refused PBKDF2");
+  var big = repeated(0x77u8, 8161usize);
+  let r2 = cryptohash.hkdfSha256("s", "k", "i", big.viewMut());
+  expect(!r2.isTrue(), "HKDF refuses more than 8160 bytes");
+  expect(r2.error().isTrue(), "the refusal gives a reason");
+  expect(big[0usize] == 0x77u8 && big[8160usize] == 0x77u8, "buffer unwritten after refused HKDF");
+  var maxb = repeated(0u8, 8160usize);
+  let r3 = cryptohash.hkdfSha256("s", "k", "i", maxb.viewMut());
+  expect(r3.isTrue(), "HKDF gives 8160 bytes");
+
+  done()
+}

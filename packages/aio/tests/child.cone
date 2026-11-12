@@ -1,7 +1,6 @@
 // aio.run and aio.runLine: an actor runs a child process and pauses meanwhile;
-// a thread of iocore's blocking pool (its general lane) runs the process
-// package's synchronous 'run' and waits for the child, and the actor's worker
-// is free. One actor runs the basic cases in turn and reports numbers on a
+// the child is started by process.launch, its pipes read and its exit awaited
+// as operations of iocore's Loop, and the actor's worker is free. One actor runs the basic cases in turn and reports numbers on a
 // channel; main checks them. The programs are the system's own (Windows:
 // 'cmd /c ...' and 'ping -n N 127.0.0.1', which waits N-1 seconds; Linux:
 // 'echo', 'sh -c' lines and 'sleep N'):
@@ -14,13 +13,16 @@
 //     (ERROR_FILE_NOT_FOUND, ENOENT); a folder that is not there -- an Err;
 //   a child slower than Options.timeout -- Done, 'timedOut', in time.
 //
-// Then: twenty children at once (four at a time, the rest queued, all Done);
-// a child that takes about a second, and, while it runs, another actor
-// sleeping in 100 ms steps -- the sleeper finishes first (nothing waits on a
-// worker); four children holding the lane's four threads and a fifth, queued
-// behind them in a cancel group main cancels -- Cancelled at once, not when a
-// thread frees; a running child under a deadline -- TimedOut at the deadline
-// (the child left running, and ended by its own timeout).
+// Then: twenty children at once (all Done); twelve children of a second each
+// at once (more than four: all Done together in well under the three seconds
+// a cap of four would take); a child that takes about a second, and, while it
+// runs, another actor sleeping in 100 ms steps -- the sleeper finishes first
+// (nothing waits on a worker); a running child in a cancel group main cancels
+// -- Cancelled at once; a running child under a deadline -- TimedOut at the
+// deadline (the child stopped, and waited for).
+//
+// A run with 'crashReport: false' goes the same way (process.launch carries that option): twelve at once, all Done
+// together, and a fifth beside four timeout-stopped ones, in a cancel group main cancels -- Cancelled at once.
 
 mod child;
 
@@ -33,6 +35,7 @@ import sync use Channel, Sender, Receiver;
 import iocore use IoError, CancelGroup;
 import ioerror use IoErrorKind;
 import process;
+import fs;
 import actors;
 import aio use IoLimits;
 
@@ -189,21 +192,73 @@ actor Napper {
   }
 }
 
-// A child that holds a thread of the pool's lane for a second, then is stopped
+// A child writing 1 MiB to its standard output and 1 MiB to its standard error: both are collected whole (neither
+// pipe holds the child up while the other is read)
+actor Big {
+  pub async fn go(self, out: Sender[u64]) {
+    var data = List[u8]();
+    var k = 0usize;
+    while k < 1048576usize {
+      data.push(120u8);
+      k = k + 1usize;
+    }
+    let file = Path.from("aiochild.tmp");
+    _ = fs.writeFile(&file, data.view());
+    let r = await aio.runLine(#if #os == .windows {"cmd /c \"type aiochild.tmp & type aiochild.tmp 1>&2\""} #else {"cat aiochild.tmp; cat aiochild.tmp >&2"});
+    _ = fs.removeFile(&file);
+    let how = endedBy(&r);
+    let o = outputOf(r);
+    out.send(how);
+    out.send(u64.from(o.stdout.len()));
+    out.send(u64.from(o.stderr.len()));
+  }
+}
+
+// A child of about a second, one of many at once
+actor Crowd {
+  pub async fn go(self, out: Sender[u64]) {
+    let r = await aio.runLine(slowLine(1u64).view());
+    let how = endedBy(&r);
+    let o = outputOf(r);
+    out.send(b(how == 1u64 && o.exitCode == 0u32));
+  }
+}
+
+// A 'crashReport: false' child of about a second, one of many at once
+actor QuietCrowd {
+  pub async fn go(self, out: Sender[u64]) {
+    let r = await aio.runLine(slowLine(1u64).view(), process.Options(crashReport: false));
+    let how = endedBy(&r);
+    let o = outputOf(r);
+    out.send(b(how == 1u64 && o.exitCode == 0u32));
+  }
+}
+
+// A 'crashReport: false' child that runs for a second, then is stopped by its timeout
 actor Holder {
   pub async fn go(self, out: Sender[u64]) {
-    let r = await aio.runLine(slowLine(5u64).view(), process.Options(timeout: Duration.fromMillis(1000i64)));
+    let r = await aio.runLine(slowLine(5u64).view(), process.Options(timeout: Duration.fromMillis(1000i64), crashReport: false));
     let how = endedBy(&r);
     let o = outputOf(r);
     out.send(b(how == 1u64 && o.timedOut));
   }
 }
 
-// A child queued behind the four, in a group main cancels
+// A 'crashReport: false' child running beside the four, in a group main cancels
 actor Waiter {
   pub async fn go(self, g: CancelGroup, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(1u64).view(), process.Options(), "", IoLimits.within(g));
+    let r = await aio.runLineIn(slowLine(1u64).view(), process.Options(crashReport: false), "", IoLimits.within(g));
+    out.send(endedBy(&r));
+    out.send(ms(t));
+  }
+}
+
+// A running child in a group main cancels
+actor Cancelee {
+  pub async fn go(self, g: CancelGroup, out: Sender[u64]) {
+    let t = Instant.now();
+    let r = await aio.runLineIn(slowLine(5u64).view(), process.Options(), "", IoLimits.within(g));
     out.send(endedBy(&r));
     out.send(ms(t));
   }
@@ -252,7 +307,35 @@ fn main() i32 {
   expectUInt(take(&mut rx), 1u64, "...timedOut");
   expectUInt(take(&mut rx), 1u64, "...stopped in time, not after four seconds");
 
-  // Twenty at once: four run at a time, the rest wait their turn
+  // Twelve children of a second at once: more than four run together
+  {
+    let t = Instant.now();
+    var k = 0u64;
+    while k < 12u64 {
+      let c = Crowd();
+      c.go(tx.clone());
+      k = k + 1u64;
+    }
+    var all = 0u64;
+    k = 0u64;
+    while k < 12u64 {
+      all = all + take(&mut rx);
+      k = k + 1u64;
+    }
+    expectUInt(all, 12u64, "twelve children at once: each Done");
+    expect(ms(t) < 2500u64, "...together, not four at a time");
+  }
+
+  // 1 MiB on each stream
+  {
+    let big = Big();
+    big.go(tx.clone());
+    expectUInt(take(&mut rx), 1u64, "a child writing 1 MiB to each stream: Done");
+    expectUInt(take(&mut rx), 1048576u64, "...standard output whole");
+    expectUInt(take(&mut rx), 1048576u64, "...standard error whole");
+  }
+
+  // Twenty at once
   {
     var k = 0u64;
     while k < 20u64 {
@@ -279,7 +362,26 @@ fn main() i32 {
   expectUInt(take(&mut rx), 11u64, "a sleeper finishes while the child still runs");
   expectUInt(take(&mut rx), 12u64, "...and the child ends Done, exit code 0");
 
-  // The lane's four threads held, a fifth child queued behind them
+  // Twelve 'crashReport: false' children of a second at once: no cap of four (they were a pool thread's each)
+  {
+    let t = Instant.now();
+    var k = 0u64;
+    while k < 12u64 {
+      let c = QuietCrowd();
+      c.go(tx.clone());
+      k = k + 1u64;
+    }
+    var all = 0u64;
+    k = 0u64;
+    while k < 12u64 {
+      all = all + take(&mut rx);
+      k = k + 1u64;
+    }
+    expectUInt(all, 12u64, "twelve crashReport:false children at once: each Done");
+    expect(ms(t) < 2500u64, "...together, not four at a time");
+  }
+
+  // Four 'crashReport: false' children stopped by their timeouts, and a fifth running in a group main cancels
   {
     var k = 0u64;
     while k < 4u64 {
@@ -294,8 +396,8 @@ fn main() i32 {
   w.go(g, tx.clone());
   thread.sleep(Duration.fromMillis(150i64));
   expect(g.cancel(), "the group was live");
-  expectUInt(take(&mut rx), 2u64, "a child queued behind four: Cancelled");
-  expect(take(&mut rx) < 900u64, "...at once, not when a thread freed");
+  expectUInt(take(&mut rx), 2u64, "a fifth crashReport:false child, running beside four: Cancelled");
+  expect(take(&mut rx) < 900u64, "...at once");
   var held = 0u64;
   {
     var k = 0u64;
@@ -305,6 +407,17 @@ fn main() i32 {
     }
   }
   expectUInt(held, 4u64, "the four children were stopped by their timeouts, Done");
+
+  // A running child in a group that is cancelled
+  {
+    let g2 = CancelGroup.make();
+    let ce = Cancelee();
+    ce.go(g2, tx.clone());
+    thread.sleep(Duration.fromMillis(300i64));
+    expect(g2.cancel(), "the group was live");
+    expectUInt(take(&mut rx), 2u64, "a running child in a cancelled group: Cancelled");
+    expect(take(&mut rx) < 1500u64, "...at once, not when the child ended");
+  }
 
   // A running child under a deadline
   let d = Deadliner();
