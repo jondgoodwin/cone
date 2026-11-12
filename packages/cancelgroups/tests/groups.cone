@@ -216,6 +216,23 @@ fn main() i32 {
     expect(a.isCancelled(), "a copy's drop leaves the timer");
   }
 
+  // 5b. A stale slot after reuse: an old group fires and frees its slot, a new
+  // group takes the slot, and then the old group's last handle goes. The old
+  // slot's name must not reach the new group's timer: it still fires
+  {
+    var olds = List[CancelGroup]();
+    olds.push(CancelGroup.until(Instant.now() + Duration.fromMillis(20i64)));
+    waitUntilCancelled(&olds[0usize], 5000i64);
+    expect(olds[0usize].isCancelled(), "the old group fired");
+    let unarmedBy = Instant.now() + Duration.fromMillis(5000i64);
+    while armedTimers() != 0usize && Instant.now() < unarmedBy {thread.sleep(Duration.fromMillis(1i64));}
+    let fresh = CancelGroup.until(Instant.now() + Duration.fromMillis(300i64));
+    olds.clear();
+    expectUInt(u64.from(armedTimers()), 1u64, "the new group's timer is still armed");
+    waitUntilCancelled(&fresh, 5000i64);
+    expect(fresh.isCancelled() && causeIs(&fresh, Cause.TimedOut), "the new group still times out");
+  }
+
   // 6. A cancel from another thread
   {
     let g = CancelGroup.make();
