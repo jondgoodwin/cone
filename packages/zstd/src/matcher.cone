@@ -284,6 +284,19 @@ fn prF(src: &Array[u8], p: usize, sh: u64, mul: u64) u64 inline { (rd64(src, p) 
 // tag of a position in locals, and touch no List in the loop. The input stays a bounds-checked '&Array'.
 
 // matchFast with tags: 'tags' is as long as 'table'
+//
+// The miss path is a pair loop, libzstd's shape: each turn probes the pair p and p + 1 (the hash and tag of p + 1 come
+// from the word already read at p), and takes the repeat check once, at p2 = p + step, the position the next turn starts
+// at, whose word the next turn reuses. The step starts at 2 and grows by one every 128 bytes from the start of the run
+// ('nextStep'), compared once a turn. A hit leaves the loop with the match's position and candidate; what follows a
+// match (extension, 'emit', the fills, the second repeat) is as before.
+//
+// BOUNDS. The loop reads the input through a raw pointer. Its condition 'p + step + 8 <= end', checked every turn
+// (one compare for all), covers every read the turn makes: the 8 bytes at p (read checked at the run's start, then
+// the previous turn's p2 read), at p + 1 (taken from the word at p, no read), and at p2 = p + step (ends at
+// p2 + 8 <= end). A candidate is read only when 'cand < pos' (pos = p or p + 1), so its 4 bytes end at
+// cand + 4 <= pos + 4 <= p + 5 <= end. The repeat's 4 bytes at p2 - r start at p2 - r >= 0 because r <= p2
+// (checked) and end at p2 - r + 4 <= p2 + 4 <= end. The run starts with p + 9 <= end (the outer condition).
 fn matchFast(src: &Array[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
     tags: &mut List[u8], reps: &mut Reps, seqs: &mut Seqs) {
   seqs.prepare(end - start);
@@ -293,40 +306,70 @@ fn matchFast(src: &Array[u8], start: usize, end: usize, window: usize, log: u32,
   let shift = (64u64 - u64.from(log)) & 63u64;
   let sh = if mls == 7u32 {8u64} else {16u64};
   let mul = if mls == 7u32 {MUL_FAST7} else {MUL_FAST6};
+  let sp = src as *u8;
   var ip = start;
   var anchor = start;
   while ip + 9usize <= end {
-    let w = rd64(src, ip);
-    let r = reps.r1;
-    if repFits(ip + 1usize, r, window) && low32(w >> 8u64) == rd32(src, ip + 1usize - usize.from(r)) {
-      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
-      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, &mut so);
-      ip = ip + 1usize + ml;
-      anchor = ip;
-    } else {
-      let w32 = low32(w);
-      let cand = slot(t, g, (w << sh) * mul, shift, tagOf(w32), ip, ip);
-      if cand < ip && ip - cand <= window && rd32(src, cand) == w32 {
-        var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
-        var s = ip;
-        var c = cand;
-        while s > anchor && c > 0usize && src[s - 1usize] == src[c - 1usize] {
-          s -= 1usize;
-          c -= 1usize;
-          ml += 1usize;
-        }
-        emit(src, anchor, s - anchor, u32.from(ip - cand), ml, reps, &mut so);
-        let at = ip;
-        ip = s + ml;
-        anchor = ip;
-        if ip + 8usize <= end {
-          putTag(src, t, g, prF(src, at + 2usize, sh, mul), shift, at + 2usize);
-          putTag(src, t, g, prF(src, ip - 2usize, sh, mul), shift, ip - 2usize);
-        }
-      } else {
-        ip += ((ip - anchor) >> 7usize) + 1usize;
-        continue;
+    var p = ip;
+    var step = 2usize;
+    var nextStep = ip + 128usize;
+    var w0 = rd64(src, p);
+    var kind = 0u32;
+    var mp = 0usize;
+    var mc = 0usize;
+    while p + step + 8usize <= end {
+      let p2 = p + step;
+      let w2 = mem.readRaw[u64]((sp + p2) as *u64);
+      let r = usize.from(reps.r1);
+      if r <= p2 && r <= window && low32(w2) == mem.readRaw[u32]((sp + (p2 - r)) as *u32) {
+        // a repeat at p2; p and p + 1 enter the table first
+        slot(t, g, (w0 << sh) * mul, shift, tagOf(low32(w0)), p, p);
+        let w1 = w0 >> 8u64;
+        slot(t, g, (w1 << sh) * mul, shift, tagOf(low32(w1)), p + 1usize, p + 1usize);
+        kind = 3u32;
+        mp = p2;
+        mc = p2 - r;
+        break;
       }
+      let w32 = low32(w0);
+      let c0 = slot(t, g, (w0 << sh) * mul, shift, tagOf(w32), p, p);
+      if c0 < p && p - c0 <= window && mem.readRaw[u32]((sp + c0) as *u32) == w32 {
+        kind = 1u32;
+        mp = p;
+        mc = c0;
+        break;
+      }
+      let w1 = w0 >> 8u64;
+      let w132 = low32(w1);
+      let c1 = slot(t, g, (w1 << sh) * mul, shift, tagOf(w132), p + 1usize, p + 1usize);
+      if c1 < p + 1usize && p + 1usize - c1 <= window && mem.readRaw[u32]((sp + c1) as *u32) == w132 {
+        kind = 1u32;
+        mp = p + 1usize;
+        mc = c1;
+        break;
+      }
+      p = p2;
+      w0 = w2;
+      if p >= nextStep {
+        step += 1usize;
+        nextStep += 128usize;
+      }
+    }
+    if kind == 0u32 { break; }
+    var ml = 4usize + matchLen(src, mp + 4usize, mc + 4usize, end);
+    var s = mp;
+    var c = mc;
+    while s > anchor && c > 0usize && src[s - 1usize] == src[c - 1usize] {
+      s -= 1usize;
+      c -= 1usize;
+      ml += 1usize;
+    }
+    emit(src, anchor, s - anchor, u32.from(mp - mc), ml, reps, &mut so);
+    ip = s + ml;
+    anchor = ip;
+    if ip + 8usize <= end {
+      putTag(src, t, g, prF(src, mp + 2usize, sh, mul), shift, mp + 2usize);
+      putTag(src, t, g, prF(src, ip - 2usize, sh, mul), shift, ip - 2usize);
     }
     while ip + 8usize <= end && repFits(ip, reps.r2, window)
         && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
