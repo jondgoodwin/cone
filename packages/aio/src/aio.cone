@@ -2593,15 +2593,26 @@ struct AdoptPipeJob {
   }
 }
 
-// A child process adopted on the I/O thread's Loop
+// A child process adopted on the I/O thread's Loop. The ChildProcess is let go ('intoRaw') once the Loop holds it: on
+// Windows at once (the Loop owns the HANDLE whatever the result), on Linux only after the pidfd was made, so that a failed
+// adopt drops it here and the child is ended and reaped
 struct AdoptChildJob {
-  pub raw: usize;
+  pub proc: process.ChildProcess;
   pub reply: actors.Reply;
 
   fn run(self, lp: &mut Loop) {
-    let raw, rp = self.(raw, reply);
+    let proc, rp = self.(proc, reply);
+    var raw = 0usize;
+    #if #os == .windows {
+      raw = proc.intoRaw();
+    } #else {
+      raw = usize.from(proc.pid());
+    }
     match lp.adoptChild(raw) {
-      case let Ok(ok) {actors.answerNow[Result[Child, IoError]](rp, Ok[Child, IoError](Child(ok)));}
+      case let Ok(ok) {
+        #if #os != .windows { _ = proc.intoRaw(); }
+        actors.answerNow[Result[Child, IoError]](rp, Ok[Child, IoError](Child(ok)));
+      }
       case let Err(e) {actors.answerNow[Result[Child, IoError]](rp, Err[Child, IoError](e));}
     }
   }
@@ -3020,16 +3031,23 @@ pub struct Child is Move, Sendable {
   }
 }
 
-// A pipe end ('process.Child.takeStdout' and 'takeStderr') given to the I/O thread's Loop, which owns it from then on
-// (iocore's adoptPipe)
-pub fn adoptPipe(raw: usize) actors.Awaitable[Result[Pipe, IoError]] {
-  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(raw, actors.Reply()))
+// A pipe end ('process.Child.takeStdout', 'takeStderr' and 'takeStdin': 'adoptStdout', 'adoptStderr', 'adoptStdin') given to the I/O thread's Loop, which owns it from
+// then on (iocore's adoptPipe); the end gives its number away ('intoRaw') here
+pub fn adoptStdout(end: process.ChildStdout) actors.Awaitable[Result[Pipe, IoError]] {
+  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(end.intoRaw(), actors.Reply()))
+}
+pub fn adoptStderr(end: process.ChildStderr) actors.Awaitable[Result[Pipe, IoError]] {
+  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(end.intoRaw(), actors.Reply()))
+}
+pub fn adoptStdin(end: process.ChildStdin) actors.Awaitable[Result[Pipe, IoError]] {
+  awaitable[AdoptPipeJob, Result[Pipe, IoError]](AdoptPipeJob(end.intoRaw(), actors.Reply()))
 }
 
 // A child process ('process.Child.takeProcess') given to the I/O thread's Loop (iocore's adoptChild: Windows' HANDLE is
-// the Loop's from then on, Linux's pid stays the caller's, the Loop owning a pidfd)
-pub fn adoptChild(raw: usize) actors.Awaitable[Result[Child, IoError]] {
-  awaitable[AdoptChildJob, Result[Child, IoError]](AdoptChildJob(raw, actors.Reply()))
+// the Loop's from then on, Linux's pid stays the caller's, the Loop owning a pidfd). If the adopt fails on Linux the
+// ChildProcess drops on the I/O thread, which ends and reaps the child
+pub fn adoptChild(proc: process.ChildProcess) actors.Awaitable[Result[Child, IoError]] {
+  awaitable[AdoptChildJob, Result[Child, IoError]](AdoptChildJob(proc, actors.Reply()))
 }
 
 // The file at path, opened as access says (the package's header, A FILE)
@@ -3216,16 +3234,29 @@ actor RunDriver {
         var err = Pipe.none();
         var child = Child.none();
         var bad = None[IoError];
+        var taken = false;
         if !opts.inherit {
-          let po = await adoptPipe(c.takeStdout());
-          let pe = await adoptPipe(c.takeStderr());
-          match po {
-            case var Ok(p) { out <-> p; }
-            case let Err(e) { bad = Some[IoError](e); }
+          var oe = c.takeStdout();
+          var ee = c.takeStderr();
+          match oe {
+            case var Some(x) {
+              let po = await adoptStdout(x);
+              match po {
+                case var Ok(p) { out <-> p; }
+                case let Err(e) { bad = Some[IoError](e); }
+              }
+            }
+            case is None {}
           }
-          match pe {
-            case var Ok(p) { err <-> p; }
-            case let Err(e) { bad = Some[IoError](e); }
+          match ee {
+            case var Some(x) {
+              let pe = await adoptStderr(x);
+              match pe {
+                case var Ok(p) { err <-> p; }
+                case let Err(e) { bad = Some[IoError](e); }
+              }
+            }
+            case is None {}
           }
         }
         var pipesOk = true;
@@ -3234,26 +3265,23 @@ actor RunDriver {
           case is None {}
         }
         if pipesOk {
-          var raw = 0usize;
-          #if #os == .windows {
-            raw = c.takeProcess();
-          } #else {
-            raw = usize.from(c.pid());
-          }
-          let ch = await adoptChild(raw);
-          match ch {
-            case var Ok(x) {
-              child <-> x;
-              #if #os != .windows {
-                _ = c.takeProcess();
+          // The ChildProcess goes to the loop; if its adopt fails it is dropped there, which ends and reaps the child
+          var pr = c.takeProcess();
+          match pr {
+            case var Some(x) {
+              taken = true;
+              let ch = await adoptChild(x);
+              match ch {
+                case var Ok(y) { child <-> y; }
+                case let Err(e) { bad = Some[IoError](e); }
               }
             }
-            case let Err(e) { bad = Some[IoError](e); }
+            case is None {}
           }
         }
         match bad {
           case let Some(e) {
-            c.kill();
+            if !taken { c.kill(); }
             self.answer(Err[process.Output, IoError](e));
             return;
           }

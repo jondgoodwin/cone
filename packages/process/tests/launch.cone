@@ -54,6 +54,13 @@ extern {
 const synchronize = 0x100000u32;     // SYNCHRONIZE
 const noEnd = 0xFFFFFFFFFFFFFFFFusize;
 
+// The owned ends and process the 'take' calls give, as the raw numbers the helpers below read and close
+fn rawOut(o: Option[process.ChildStdout]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn rawErr(o: Option[process.ChildStderr]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn rawIn(o: Option[process.ChildStdin]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn rawProc(o: Option[process.ChildProcess]) usize { match o { case var Some(x) { x.intoRaw() } case is None { noEnd } } }
+fn absent[T](o: Option[T]) bool { match o { case is None { true } else { false } } }
+
 fn number(s: &String) u64 { u64.parse(s.view()) || 0u64 }
 
 // n bytes to each stream: stdout 'a', stderr 'B'
@@ -114,7 +121,7 @@ fn child(a: &List[String]) i32 {
     match process.launch(c.view(), process.Options(crashReport: false)) {
       case var Ok(k) {
         let id = k.pid();
-        k.takeProcess();
+        _ = rawProc(k.takeProcess());       // given away for good: the owned value would end the child as it drops
         #if #os == .windows {ExitProcess(id);} #else {_exit(0i32);};
       }
       case is Err { return 1i32; }
@@ -232,8 +239,8 @@ struct Waited {
   pub n: usize;
   pub code: u32;
 }
-
 fn waitFor(lp: &mut Loop, raw: usize, seconds: i64) Waited {
+
   var h = Handle.none();
   match lp.adoptChild(raw) {
     case let Ok(x) { h = x; }
@@ -284,17 +291,17 @@ fn main(argc: i32, argv: **u8) i32 {
     match process.launch(cmd.view()) {
       case var Ok(c) {
         expect(c.pid() != 0u32, "1: a process id");
-        let oe = c.takeStdout();
-        let ee = c.takeStderr();
-        expect(oe != noEnd && ee != noEnd, "1: both ends given");
-        expectBool(c.takeStdout() == noEnd, true, "6: a second take of an end answers noEnd");
+        let oe = rawOut(c.takeStdout());
+        let ee = rawErr(c.takeStderr());
+        expectBool(absent(c.takeStderr()), true, "6: a second take of the error end answers None");
+        expectBool(absent(c.takeStdout()), true, "6: a second take of an end answers None");
         let out = readAll(oe);
         let err = readAll(ee);
         expectUInt(u64.from(out.len()), 3000u64, "1: 3000 bytes of output");
         expectUInt(u64.from(err.len()), 3000u64, "1: 3000 bytes of error");
         expect(out.view()[0usize] == 'a' && out.view()[2999usize] == 'a', "1: ...all 'a'");
         expect(err.view()[0usize] == 'B' && err.view()[2999usize] == 'B', "1: ...and all 'B', apart");
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 0u32, "1: the exit code 0 through WaitChild");
       }
       case is Err { expect(false, "1: launch started"); }
@@ -304,10 +311,10 @@ fn main(argc: i32, argv: **u8) i32 {
     cmd = command(exe.view(), "exit", "7");
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        let o = readAll(c.takeStdout());
-        let e = readAll(c.takeStderr());
+        let o = readAll(rawOut(c.takeStdout()));
+        let e = readAll(rawErr(c.takeStderr()));
         expect(o.len() == 0usize && e.len() == 0usize, "2: nothing written: the ends reach their end");
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         expect(w.status == diag.outcomeDone && w.n == 7usize, "2: exit code 7");
       }
       case is Err { expect(false, "2: launch started"); }
@@ -319,16 +326,16 @@ fn main(argc: i32, argv: **u8) i32 {
       case var Ok(c) {
         let t0 = Instant.now();
         c.kill();
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         #if #os == .windows {
           expect(w.status == diag.outcomeDone && w.n == 1usize, "3: kill ends a sleeping child (exit code 1)");
         } #else {
           expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 9u32, "3: kill ends a sleeping child (SIGKILL)");
         }
         expect((Instant.now() - t0).millis() < 15000i64, "3: ...at once, not when its sleep is over");
-        let rest = readAll(c.takeStdout());
+        let rest = readAll(rawOut(c.takeStdout()));
         expectUInt(u64.from(rest.len()), 0u64, "3: its output ends with it");
-        closeEnd(c.takeStderr());
+        closeEnd(rawErr(c.takeStderr()));
       }
       case is Err { expect(false, "3: launch started"); }
     }
@@ -364,16 +371,19 @@ fn main(argc: i32, argv: **u8) i32 {
     match process.launch(cmd.view(), process.Options(stdin: true)) {
       case var Ok(c) {
         let ie = c.takeStdin();
-        expect(ie != noEnd, "7: the stdin end is given");
-        expectBool(c.takeStdin() == noEnd, true, "7: a second take of the stdin end answers noEnd");
-        let oe = c.takeStdout();
-        let ee = c.takeStderr();
-        expect(writeAll(ie, &data), "7: 100000 bytes written");
-        closeEnd(ie);
+        expectBool(absent(c.takeStdin()), true, "7: a second take of the stdin end answers None");
+        let oe = rawOut(c.takeStdout());
+        let ee = rawErr(c.takeStderr());
+        match ie {
+          case var Some(x) {
+            expect(x.write(data.view()), "7: 100000 bytes written through ChildStdin.write");
+          }       // x drops here: the child sees end of input
+          case is None { expect(false, "7: the stdin end is given"); }
+        }
         let out = readAll(oe);
         closeEnd(ee);
         expect(out.equals(wantLine.view()), "7: the child read exactly those bytes, then end of input");
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         expect(w.status == diag.outcomeDone && w.n == 0usize && w.code == 0u32, "7: exit code 0");
       }
       case is Err { expect(false, "7: launch with stdin started"); }
@@ -383,11 +393,11 @@ fn main(argc: i32, argv: **u8) i32 {
     cmd = command(exe.view(), "sum", "");
     match process.launch(cmd.view()) {
       case var Ok(c) {
-        expectBool(c.takeStdin() == noEnd, true, "8: no stdin end without the option");
-        let out = readAll(c.takeStdout());
-        closeEnd(c.takeStderr());
+        expectBool(absent(c.takeStdin()), true, "8: no stdin end without the option");
+        let out = readAll(rawOut(c.takeStdout()));
+        closeEnd(rawErr(c.takeStderr()));
         expect(out.equals("0 0"), "8: the child reads NUL: no bytes");
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         expect(w.status == diag.outcomeDone && w.n == 0usize, "8: exit code 0");
       }
       case is Err { expect(false, "8: launch started"); }
@@ -404,15 +414,61 @@ fn main(argc: i32, argv: **u8) i32 {
     }
     expect(id != 0u32 && gone(id), "9: a Child dropped with its stdin end open ends and reaps its process");
 
+    // 12. An owned ChildStdin closes when dropped: the child (sum) reads to end of input and reports 0 bytes; the output
+    // is read through ChildStdout.read
+    cmd = command(exe.view(), "sum", "");
+    match process.launch(cmd.view(), process.Options(stdin: true)) {
+      case var Ok(c) {
+        {
+          let ie = c.takeStdin();
+          expectBool(absent(ie), false, "12: the stdin end is given");
+        }                                // dropped here, unwritten
+        var text = String();
+        match c.takeStdout() {
+          case var Some(x) {
+            var buf = Array[u8, 64]() <- fill 0u8;
+            var more = true;
+            while more {
+              let n = x.read(&mut buf);
+              if n <= 0isize { more = false; }
+              else { text.appendBytes(mem.sliceFromParts(&[]buf as *u8, usize.from(n))); }
+            }
+          }
+          case is None { expect(false, "12: the output end is given"); }
+        }
+        expect(text.equals("0 0"), "12: the child saw end of input after the drop, read through ChildStdout.read");
+        closeEnd(rawErr(c.takeStderr()));
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
+        expect(w.status == diag.outcomeDone && w.n == 0usize, "12: exit code 0");
+      }
+      case is Err { expect(false, "12: launch with stdin started"); }
+    }
+
+    // 13. An owned ChildProcess dropped (not given away with intoRaw) ends its child and reaps it
+    id = 0u32;
+    cmd = command(exe.view(), "sleep", "");
+    match process.launch(cmd.view()) {
+      case var Ok(c) {
+        id = c.pid();
+        match c.takeProcess() {
+          case var Some(p) { expect(p.pid() == id, "13: the ChildProcess knows the pid"); }   // dropped here
+          case is None { expect(false, "13: the process is given"); }
+        }
+        expectBool(absent(c.takeProcess()), true, "13: a second take answers None");
+      }
+      case is Err { expect(false, "13: launch started"); }
+    }
+    expect(id != 0u32 && gone(id), "13: a dropped ChildProcess ends and reaps the child");
+
     // 10. 'crashReport: false': a panic ends the child at once with the exit code Windows would have given it (the
     // exception's own code), or POSIX's SIGABRT; the options of a launch otherwise unchanged (the output ends)
     cmd = command(exe.view(), "panic", "");
     match process.launch(cmd.view(), process.Options(crashReport: false)) {
       case var Ok(c) {
-        let o = readAll(c.takeStdout());
-        let e = readAll(c.takeStderr());
+        let o = readAll(rawOut(c.takeStdout()));
+        let e = readAll(rawErr(c.takeStderr()));
         expect(e.view().startsWith("panic at "), "10: the panic's line on standard error");
-        let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+        let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
         #if #os == .windows {
           expect(w.status == diag.outcomeDone && w.n == 3221226505usize, "10: an unreported panic's exit code");
         } #else {
@@ -429,9 +485,9 @@ fn main(argc: i32, argv: **u8) i32 {
       cmd = command(exe.view(), "orphan", "");
       match process.launch(cmd.view()) {
         case var Ok(c) {
-          closeEnd(c.takeStdout());
-          closeEnd(c.takeStderr());
-          let w = waitFor(&mut lp, c.takeProcess(), 20i64);
+          closeEnd(rawOut(c.takeStdout()));
+          closeEnd(rawErr(c.takeStderr()));
+          let w = waitFor(&mut lp, rawProc(c.takeProcess()), 20i64);
           expect(w.status == diag.outcomeDone && w.n != 0usize && w.n != 1usize, "11: the orphan parent exited with a pid");
           expect(gone(u32.from(w.n)), "11: its crashReport:false child died with it");
         }

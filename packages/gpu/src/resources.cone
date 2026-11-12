@@ -135,6 +135,19 @@ pub struct Buffer {
     backend.mapped
   }
 
+  // Its bytes as an array of 'size' bytes, for a buffer the CPU maps; an empty
+  // array for any other. Read-only, and it borrows the buffer, so it cannot
+  // outlive it. As with 'mappedRange' (which it calls, so the mapping is made
+  // current), what the GPU wrote is there only once the frame that wrote it is
+  // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later): ask for it
+  // then, and read through what it answers.
+  pub fn mappedBytes(self: &) &Array[u8] {
+    let p = mappedRange();
+    // The one place a mapped range becomes an array: the length is the buffer's own size
+    if (p as usize) == 0usize { return mem.sliceFromParts(p, 0usize); }
+    mem.sliceFromParts(p, usize.from(size))
+  }
+
   // Its end, once the GPU is idle
   fn final(self: &uni) {
     if backend.buffer.h != 0u64 {
