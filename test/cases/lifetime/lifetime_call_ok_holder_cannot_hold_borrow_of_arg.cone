@@ -1,0 +1,26 @@
+// Bug 77, the caller half: a '&mut' argument is stored in the holder the call can reach only if the holder can hold a borrow of something reachable inside it. 'World' holds a '&str' and 'all' is a 'List[i64]' with no str inside, so lending both to 'arrive' (an unnamed signature, which ties every borrow in it) leaves 'world' holding nothing of 'all', and 'all' may die first. (game.cone in pool has this shape.)
+mod lifetime_call_ok_holder_cannot_hold_borrow_of_arg;
+import stdio use *;
+import collections use List;
+struct World { pub last: &str; pub hp: i64; }
+fn arrive(world: &mut World, all: &mut List[i64], name: &str, hp: i64) {  //~ WarnLifetimeTie
+  world.last = name;
+  world.hp = world.hp + hp;
+  all.push(hp);
+}
+fn tally(world: &mut World, all: &List[i64]) {
+  var i = 0usize;
+  while i < all.len() {
+    world.hp = world.hp + all[i];
+    i = i + 1usize;
+  }
+}
+fn main() {
+  var world = World("nobody", 0i64);
+  var all = List[i64]();
+  arrive(&mut world, &mut all, "orc", 10i64);
+  arrive(&mut world, &mut all, "elf", 8i64);
+  tally(&mut world, &all);
+  arrive(&mut world, &mut all, "troll", 12i64);
+  print <- world.last, " ", world.hp, " ", all.len(), "\n";
+}

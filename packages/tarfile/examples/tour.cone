@@ -1,0 +1,46 @@
+// Writing a small archive in memory, then reading it back entry by entry: names, kinds, sizes and data.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import iobuf use IoBuf;
+import tarfile;
+
+fn addAll(w: &mut tarfile.TarWriter) Result[void, tarfile.TarError] {
+  w.addDir("docs", &tarfile.EntryOptions.plain())?;
+  w.add("docs/readme.txt", "hello", &tarfile.EntryOptions.plain())?;
+  Ok[void, tarfile.TarError](nil)
+}
+
+fn main() i32 {
+  var w = tarfile.TarWriter.make();
+  match addAll(&mut w) {
+    case let Err(e) { printStr(e.reason.view()); return 1i32; }
+    case let Ok(v) {}
+  }
+  w.finish();
+  var archive = IoBuf(65536usize);
+  _ = w.pull(&mut archive, 65536usize);
+
+  var tar = tarfile.TarReader.make();
+  tar.feed(archive.view());
+  tar.finish();
+  var out = IoBuf(4096usize);
+  while true {
+    let s = tar.pull(&mut out);
+    if s == tarfile.Step.Begin {
+      printStr(tar.current().name.view());
+      printStr("\n");
+    } else if s == tarfile.Step.Data {
+      out.clear();
+    } else if s == tarfile.Step.Done {
+      break;
+    } else if s == tarfile.Step.Failed {
+      printStr("failed\n");
+      return 1i32;
+    }
+  }
+  0i32
+}

@@ -10,12 +10,16 @@
 // is the default, 6, and above 9 is 9)
 pub fn rawDeflate(data: &Array[u8], level: i32) List[u8] {
   var d = Deflater.make(Format.Raw, level);
-  var out = List[u8]();
-  _ = streams.runAll(&mut d, data, &mut out);
+  var chain = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  _ = streams.runAll(&mut d, data, &mut chain);    // the chain is unbounded, and a Deflater only ends Done
   // Data that does not compress is stored, as zlib does
-  if level != 0 && out.len() > data.len + 5usize * (data.len / 65535usize + 1usize) {
+  if level != 0 && chain.len() > data.len + 5usize * (data.len / 65535usize + 1usize) {
     return rawDeflate(data, 0);
   }
+  // The List this function returns: the chain's bytes copied out once, here at the edge
+  var out = List[u8]();
+  out.resize(chain.len(), 0u8);
+  _ = chain.copyOut(0usize, out.viewMut());
   out
 }
 
