@@ -55,7 +55,18 @@ AliasDclNode *newTypeAliasDclNode(Name *namesym, INode *typeexp) {
 INode *cloneAliasDclNode(CloneState *cstate, AliasDclNode *node) {
     AliasDclNode *newnode = memAllocBlk(sizeof(AliasDclNode));
     memcpy(newnode, node, sizeof(AliasDclNode));
+    // A generic alias keeps its own parameters, hooked to themselves for the
+    // copy, as a generic type's are (cloneStructNode)
+    if (node->genericinfo) {
+        nametblHookPush();
+        INode **parmp;
+        uint32_t parmcnt;
+        for (nodesFor(node->genericinfo->parms, parmcnt, parmp))
+            nametblHookNode(((GenVarDclNode*)*parmp)->namesym, *parmp);
+    }
     newnode->target = cloneNode(cstate, node->target);
+    if (node->genericinfo)
+        nametblHookPop();
     cloneDclSetMap((INode*)node, (INode*)newnode);
     return (INode*)newnode;
 }
@@ -77,8 +88,19 @@ void aliasDclPrint(AliasDclNode *node) {
 // where the fold that made the alias is expanded, exactly as a call's member
 // slot is; a type alias's target is a type expression and is resolved here.
 void aliasDclNameRes(NameResState *pstate, AliasDclNode *node) {
-    if (node->flags & FlagTypeAlias)
+    if (!(node->flags & FlagTypeAlias))
+        return;
+    if (node->genericinfo == NULL) {
         inodeNameRes(pstate, &node->target);
+        return;
+    }
+    // Type parameters are hooked for the target alone, as a generic type's are
+    nametblHookPush();
+    genericParmsNameRes(pstate, node->genericinfo->parms);
+    genericConstraintsNameRes(pstate, node->genericinfo->parms, &node->genericinfo->where);
+    genericRefuseValueParms(node->genericinfo->parms, node->namesym);
+    inodeNameRes(pstate, &node->target);
+    nametblHookPop();
 }
 
 // Type check an alias. A folded name's target is checked as itself, by whatever
@@ -86,6 +108,10 @@ void aliasDclNameRes(NameResState *pstate, AliasDclNode *node) {
 // other node owns, so it is checked here.
 void aliasDclTypeCheck(TypeCheckState *pstate, AliasDclNode *node) {
     if (!(node->flags & FlagTypeAlias))
+        return;
+    // A generic alias's target names its parameters: it is a template, checked
+    // where a use has substituted the arguments (genericAliasExpand)
+    if (node->genericinfo)
         return;
     // Rule 3, as for a variable's declared type (varDclTypeCheck): the target is
     // in place before the members queue its check may fill is worked, so a

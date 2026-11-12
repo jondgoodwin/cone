@@ -81,21 +81,36 @@ fn main() i32 {
   all.push(named("XR_FB_hand_tracking_aim"));
   all.push(named("XR_EXT_hand_tracking"));
   all.push(named("XR_META_hand_tracking_microgestures"));
+  all.push(named("XR_EXT_hand_interaction"));
   let everything = offered(&all);
   expectBool(everything.tracking && everything.aim && everything.microgestures && everything.simultaneous, true, "all four offered");
-  expectUInt(u64.from(everything.count()), 4u64, "four to enable");
+  expectUInt(u64.from(everything.count()), 5u64, "five to enable, microgestures' dependency included");
   var names = List[*u8]();
   everything.addNames(&mut names);
-  expectUInt(u64.from(names.len()), 4u64, "four names added");
+  expectUInt(u64.from(names.len()), 5u64, "five names added");
   expectInt(i64.from(libc.strcmp(cstr.fromPtr(*names[0]), "XR_EXT_hand_tracking")), 0, "the first is hand tracking");
+  expectInt(i64.from(libc.strcmp(cstr.fromPtr(*names[2]), "XR_EXT_hand_interaction")), 0, "hand interaction before microgestures");
+  expectInt(i64.from(libc.strcmp(cstr.fromPtr(*names[3]), "XR_META_hand_tracking_microgestures")), 0, "then microgestures");
+
+  // Microgestures offered without XR_EXT_hand_interaction is not enabled: an
+  // instance asked for it alone fails with ERROR_EXTENSION_DEPENDENCY_NOT_ENABLED
+  // (the Oculus runtime over Link, 11 Nov)
+  var noInteraction = List[ExtensionProperties]();
+  noInteraction.push(named("XR_EXT_hand_tracking"));
+  noInteraction.push(named("XR_META_hand_tracking_microgestures"));
+  let gesturesAlone = offered(&noInteraction);
+  expectBool(gesturesAlone.microgestures, false, "microgestures not enabled without hand interaction");
+  expectUInt(u64.from(gesturesAlone.count()), 1u64, "hand tracking only");
+  expectStr(resultName(-1000710001i32), "ERROR_EXTENSION_DEPENDENCY_NOT_ENABLED", "the dependency result named");
 
   var onlyAim = List[ExtensionProperties]();
   onlyAim.push(named("XR_FB_hand_tracking_aim"));
   onlyAim.push(named("XR_META_hand_tracking_microgestures"));
+  onlyAim.push(named("XR_EXT_hand_interaction"));
   let aimAlone = offered(&onlyAim);
   expectBool(aimAlone.aim, false, "aim is not enabled without hand tracking");
   expectBool(aimAlone.microgestures, true, "microgestures offered");
-  expectUInt(u64.from(aimAlone.count()), 1u64, "one to enable");
+  expectUInt(u64.from(aimAlone.count()), 2u64, "two to enable");
 
   // A hand
   var hand = HandJoints.none();
