@@ -1783,7 +1783,11 @@ locals, which only a call that reaches one of them is asked of):
   borrow of the element do not. The place the store names is skipped as a call's
   receiver is, where the loan freezes it or where it is another field of the same
   root, except past a copyable owner (`Place.owned`: two `Rc[mut, ..]` fields may own one
-  collection, `loanShapeDisjoint`, bug 88). A function that does so on its own account, handed a reference, is a callee
+  collection, `loanShapeDisjoint`, bug 88). An argument that is a borrow (`&mut hist`) of
+  such a sibling place (`loanShapeDisjointAt`, the loan whose site is the borrow, 1339 Option A) is a
+  value the function owns whole to `reshapeCallBody` (its `apart` argument): it counts only for
+  what it reaches through references, pointers and virtual references, and the per-type answer cache
+  is skipped for the call. A method's receiver is not asked this way. A function that does so on its own account, handed a reference, is a callee
   that reshapes (`siTypeWriteHits`, which asks the same). The gate
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.

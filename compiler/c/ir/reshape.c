@@ -562,7 +562,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
+        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -639,7 +639,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             wt = at;
         unsigned bits;
         if (ba->tag == BorrowTag && at->tag == RefTag
-                && reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine, cont)) {
+                && ((apart && k < 16 && apart[k]) || reshapeUniqueLocalExcept(((RefNode *)ba)->vtexp, mine, nmine, cont))) {
             // The callee may write what the borrow lends only if its parameter says so: a
             // read-only one, through what the local holds by a 'mut' reference
             INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
@@ -675,8 +675,8 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
 }
 
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv))
+        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv, apart))
         return 1;
     // The borrow points into a 'var' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
