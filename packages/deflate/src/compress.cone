@@ -39,7 +39,7 @@
 
 // A bit writer: bits go in least-significant first
 struct BitWriter {
-  pub out: List[u8];
+  pub out: streams.Writer;
   pub acc: u64;
   pub n: u32;
 
@@ -47,7 +47,7 @@ struct BitWriter {
     acc = acc | (u64.from(value) << u64.from(n));
     n = n + bits;
     while n >= 8u32 {
-      out.push(u8.from(acc & 255u64));
+      out.putByte(u8.from(acc & 255u64));
       acc = acc >> 8u64;
       n = n - 8u32;
     }
@@ -247,8 +247,7 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
   while i < to {
     let t = tokens[i];
     if n >= 32u64 {
-      w.out.push(u8.from(acc & 255u64)); w.out.push(u8.from((acc >> 8u64) & 255u64));
-      w.out.push(u8.from((acc >> 16u64) & 255u64)); w.out.push(u8.from((acc >> 24u64) & 255u64));
+      w.out.putLE[u32](u32.from(acc & 0xFFFFFFFFu64));
       acc = acc >> 32u64; n -= 32u64;
     }
     if (t & 0x80000000u32) == 0u32 {
@@ -263,8 +262,7 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
       acc = acc | (u64.from(len - usize.from(lenBase[ls])) << n);
       n += u64.from(lenExtra[ls]);
       if n >= 32u64 {
-        w.out.push(u8.from(acc & 255u64)); w.out.push(u8.from((acc >> 8u64) & 255u64));
-        w.out.push(u8.from((acc >> 16u64) & 255u64)); w.out.push(u8.from((acc >> 24u64) & 255u64));
+        w.out.putLE[u32](u32.from(acc & 0xFFFFFFFFu64));
         acc = acc >> 32u64; n -= 32u64;
       }
       let ds = usize.from(dsym[if d <= 256usize {d - 1usize} else {256usize + ((d - 1usize) >> 7u32)}]);
@@ -277,7 +275,7 @@ fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usiz
   }
   // leave fewer than 8 bits in the writer
   while n >= 8u64 {
-    w.out.push(u8.from(acc & 255u64));
+    w.out.putByte(u8.from(acc & 255u64));
     acc = acc >> 8u64; n -= 8u64;
   }
   w.acc = acc;
