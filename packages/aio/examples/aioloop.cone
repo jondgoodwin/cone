@@ -1,0 +1,307 @@
+// aio over loopback, timed: a stream of 16 KiB writes read by an actor on the
+// other end (reads/s, MB/s), and 64-byte ping-pong round trips. Every buffer
+// is taken from a Pool and goes home through the I/O thread. Run five times
+// each; prints the median and the spread.
+//
+// zz-xlang-bench copy of C:\src\zz-spin-bench\aioloop.cone (25 Oct). Two changes, both in main() and outside
+// the timed loops: an argument sets the number of workers (as pingpong.cone's does; 0 or none = one per
+// logical processor), and a second argument PART=1 runs only the stream, PART=2 only the ping-pong, 0 or
+// none both.
+//
+//   congo run examples/aioloop.cone -- [workers [part]]
+//
+// Moved into the aio package's examples/ (lane 104) from scratch outside the repo, so that building the
+// package builds it; -D defines are gone from Cone, so PART is an argument and MODE is fixed at 0.
+mod aioloop;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use List;
+import iobuf use IoBuf, osBlocks, stats;
+import iocore use SocketAddr, IoError;
+import time use Instant;
+import actors;
+import aio use Socket;
+
+const reps = 5u32;
+const streamWrites = 60000u64;
+const chunk = 16384usize;
+const pingRounds = 40000u64;
+
+let t0: Atomic[u64];
+let t1: Atomic[u64];
+let nReads: Atomic[u64];
+let nBytes: Atomic[u64];
+
+fn @initpure init() {
+  t0 = Atomic[u64].of(0u64);
+  t1 = Atomic[u64].of(0u64);
+  nReads = Atomic[u64].of(0u64);
+  nBytes = Atomic[u64].of(0u64);
+}
+
+// read(IoBuf(n)) straight in (the old MODE 0)
+fn readMode(s: &Socket, room: usize) actors.Awaitable[Result[IoBuf, IoError]] {
+  s.read(IoBuf(room))
+}
+
+// A decimal number's value, from its digits (from pingpong.cone)
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn nowNs() u64 {u64.from(Instant.now().nanos())}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// ---- stream: Client writes `streamWrites` buffers of 16 KiB; Server reads ----
+
+actor StreamClient {
+
+  pub async fn dial(self, port: u16, n: u64) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var k = 0u64;
+    while k < n {
+      var b = IoBuf(chunk);
+      b.setLen(chunk);
+      let w = await s.write(b);
+      match w {
+        case let Ok(m) {}
+        case is Err {k = n;}
+      }
+      k = k + 1u64;
+    }
+  }
+}
+
+actor StreamServer {
+
+  pub async fn serve(self, client: StreamClient, n: u64, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    client.dial(port, n);
+    let ac = await ls.accept();
+    let conn = socketOf(ac);
+    t0.store(nowNs());
+    var reads = 0u64;
+    var bytes = 0u64;
+    var more = true;
+    while more {
+      let r = await readMode(&conn, chunk);
+      match r {
+        case let Ok(b) {
+          if b.len() == 0usize {more = false;} else {
+            reads = reads + 1u64;
+            bytes = bytes + u64.from(b.len());
+          }
+        }
+        case is Err {more = false;}
+      }
+    }
+    t1.store(nowNs());
+    nReads.store(reads);
+    nBytes.store(bytes);
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+// ---- ping-pong: 64-byte messages, echoed ----
+
+actor PingClient {
+
+  pub async fn dial(self, port: u16, n: u64) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var k = 0u64;
+    while k < n {
+      var b = IoBuf(64usize);
+      b.setLen(64usize);
+      let w = await s.write(b);
+      match w {
+        case is Err {k = n;}
+        else {}
+      }
+      let r = await readMode(&s, 64usize);
+      match r {
+        case let Ok(m) {if m.len() == 0usize {k = n;}}
+        case is Err {k = n;}
+      }
+      k = k + 1u64;
+    }
+  }
+}
+
+actor PingServer {
+
+  pub async fn serve(self, client: PingClient, n: u64, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    client.dial(port, n);
+    let ac = await ls.accept();
+    let conn = socketOf(ac);
+    t0.store(nowNs());
+    var rounds = 0u64;
+    var more = true;
+    while more {
+      var r = await readMode(&conn, 64usize);
+      match &mut r {
+        case var &mut Ok(ok) {
+          var b = IoBuf();
+          b <-> *ok;
+          if b.len() == 0usize {more = false;} else {
+            rounds = rounds + 1u64;
+            let w = await conn.write(b);
+            match w {
+              case is Err {more = false;}
+              else {}
+            }
+          }
+        }
+        case is Err {more = false;}
+      }
+    }
+    t1.store(nowNs());
+    nReads.store(rounds);
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn sort(v: &mut List[f64]) {
+  var i = 1usize;
+  while i < v.len() {
+    var j = i;
+    while j > 0usize && *v[j - 1usize] > *v[j] {
+      let t = *v[j];
+      v[j] = *v[j - 1usize];
+      v[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn show(what: &str, v: &mut List[f64], unit: &str) {
+  sort(v);
+  printStr(what);
+  printStr(": median ");
+  printFloat(*v[v.len() / 2usize]);
+  printStr(" ");
+  printStr(unit);
+  printStr("  (min ");
+  printFloat(*v[0usize]);
+  printStr(", max ");
+  printFloat(*v[v.len() - 1usize]);
+  printStr(")\n");
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var workers = 0u32;
+  if argc > 1i32 {
+    workers = digits(*(argv + 1usize));
+  }
+  var part = 0u32;
+  if argc > 2i32 {
+    part = digits(*(argv + 2usize));
+  }
+  actors.configure(actors.Options(workers: workers));
+  var readsPerSec = List[f64]();
+  var mbPerSec = List[f64]();
+  var rtPerSec = List[f64]();
+  var r = 0u32;
+  if part == 2u32 {r = reps + 1u32;}
+  while r < reps + 1u32 {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    {
+      let client = StreamClient();
+      let server = StreamServer();
+      server.serve(client, streamWrites, tx);
+    }
+    rx.recv();
+    let secs = f64.from(t1.load() - t0.load()) / 1000000000.0;
+    if r > 0u32 {          // the first is a warm-up
+      readsPerSec.push(f64.from(nReads.load()) / secs);
+      mbPerSec.push(f64.from(nBytes.load()) / secs / 1048576.0);
+    }
+    r = r + 1u32;
+  }
+  r = 0u32;
+  if part == 1u32 {r = reps + 1u32;}
+  while r < reps + 1u32 {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    {
+      let client = PingClient();
+      let server = PingServer();
+      server.serve(client, pingRounds, tx);
+    }
+    rx.recv();
+    let secs = f64.from(t1.load() - t0.load()) / 1000000000.0;
+    if r > 0u32 {
+      rtPerSec.push(f64.from(nReads.load()) / secs);
+    }
+    r = r + 1u32;
+  }
+  printStr("stream reps in order:");
+  var q = 0usize;
+  while q < readsPerSec.len() {
+    printStr(" ");
+    printInt(i64.from(*readsPerSec[q]));
+    q = q + 1usize;
+  }
+  printStr("\n");
+  if readsPerSec.len() > 0usize {
+    show("aio stream 16 KiB, reads/s", &mut readsPerSec, "reads/s");
+    show("aio stream 16 KiB, throughput", &mut mbPerSec, "MB/s");
+  }
+  if rtPerSec.len() > 0usize {
+    show("aio ping-pong 64 B, round trips/s", &mut rtPerSec, "rt/s");
+  }
+  printStr("last rep: count "); printUInt(nReads.load()); printStr(" bytes "); printUInt(nBytes.load());
+  printStr("\n");
+  printStr("workers "); printUInt(u64.from(actors.stats().workers)); printStr("\n");
+  let st = stats();
+  printStr("pool: takes "); printUInt(st.takes);
+  printStr(" reuses "); printUInt(st.reuses);
+  printStr(" osAllocs "); printUInt(st.osAllocs);
+  printStr(" osFrees "); printUInt(st.osFrees);
+  printStr(" slabs "); printUInt(u64.from(st.slabs));
+  printStr(" cachedBytes "); printUInt(u64.from(st.cachedBytes));
+  printStr(" stockBytes "); printUInt(u64.from(st.stockBytes));
+  printStr(" lent "); printUInt(st.lent);
+  printStr("\n");
+  finalAll();
+  0i32
+}
