@@ -1082,8 +1082,12 @@ path beyond it shows as `?` where the linker wrote one; and the environment
   folder it found `core` in, so the prelude is the very file Congo compiles
   `core` from.
 
-A lone file's build goes in the Congo home, `lone/<file>-<hash>/<mode>/`, not
-beside the file.
+A lone file's build goes in the Congo home, `lone/<file>-<hash>/<c8>/<mode>/`,
+not beside the file. `<c8>` is the first 8 hex digits of the content hash of the
+`conec` that builds it, so two compilers building one file keep a build each and
+switching between them recompiles nothing. (A build made before this, in
+`lone/<file>-<hash>/<mode>/`, is not read again; `congo clean <file>` removes
+the whole `lone/<file>-<hash>/` folder, old and new.)
 
 ## Checking Congo
 

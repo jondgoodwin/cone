@@ -1,0 +1,98 @@
+// What building and parsing a payload packet costs, with no socket and no
+// clock but a virtual one: one connection core sends 3 reliable messages of 40
+// bytes and 4 latest-wins values of 60 bytes in each packet, the other receives
+// it; the other's acknowledgements go back untimed. The time of 'poll' (which
+// builds the packet) and of 'receive' (which parses it) is added over 20000
+// packets, the best of five rounds printed. Run it in a release build:
+//
+//   congo run --release examples/packetbench.cone
+
+mod packetbench;
+
+import stdio use *;
+import collections use *;
+import time use *;
+import netmsg use *;
+
+fn body(n: usize, seed: u8) List[u8] {
+  var b = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.push(seed + u8.from(i & 0x3Fusize));
+    i = i + 1usize;
+  }
+  b
+}
+
+fn main() i32 {
+  let cfg = NetConfig.defaults();
+  let t0 = Instant.now();
+  var a = ConnectionCore.make(cfg, 0x1122334455667788u64, t0);
+  var b = ConnectionCore.make(cfg, 0x1122334455667788u64, t0);
+  var evA = List[CoreEvent]();
+  var evB = List[CoreEvent]();
+  let rel = body(40usize, 1u8);
+  let lat = body(60usize, 9u8);
+  var bestBuild = 0i64;
+  var bestParse = 0i64;
+  var now = t0;
+  var round = 0usize;
+  while round < 5usize {
+    var buildNs = 0i64;
+    var parseNs = 0i64;
+    var packets = 0i64;
+    var n = 0usize;
+    while n < 20000usize {
+      now = now + Duration.fromMillis(100i64);
+      var k = 0usize;
+      while k < 3usize {
+        _ = a.sendReliable(rel.view());
+        k = k + 1usize;
+      }
+      k = 0usize;
+      while k < 4usize {
+        _ = a.sendLatest(u16.from(k), lat.view());
+        k = k + 1usize;
+      }
+      var out = Packets();
+      let s1 = Instant.now();
+      a.poll(now, &mut out, &mut evA);
+      buildNs = buildNs + i64.from(s1.elapsed().nanos());
+      each p in out.drain() {
+        let s2 = Instant.now();
+        let ok = b.receive(p.view(), now, &mut evB);
+        parseNs = parseNs + i64.from(s2.elapsed().nanos());
+        if !ok { printStr("WRONG: packet refused\n"); return 1i32; }
+        packets = packets + 1i64;
+      }
+      evB.clear();
+      // The acknowledgements back, untimed
+      var back = Packets();
+      b.poll(now, &mut back, &mut evB);
+      each p in back.drain() {
+        _ = a.receive(p.view(), now, &mut evA);
+      }
+      evA.clear();
+      evB.clear();
+      n = n + 1usize;
+    }
+    if packets == 0i64 { printStr("WRONG: no packets\n"); return 1i32; }
+    let bn = buildNs / packets;
+    let pn = parseNs / packets;
+    if round == 0usize || bn < bestBuild { bestBuild = bn; }
+    if round == 0usize || pn < bestParse { bestParse = pn; }
+    if round == 0usize {
+      printStr("packets in a round: ");
+      printInt(packets);
+      printStr("\n");
+    }
+    round = round + 1usize;
+  }
+  printStr("build (poll) best of 5: ");
+  printInt(bestBuild);
+  printStr(" ns a packet\n");
+  printStr("parse (receive) best of 5: ");
+  printInt(bestParse);
+  printStr(" ns a packet\n");
+  0i32
+}

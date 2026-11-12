@@ -1,0 +1,228 @@
+// Workers taking completions (the package's header, A WORKER'S PASS): while the
+// I/O thread stands aside, a worker's pass after its turn takes what its own
+// send raised, which is another actor's answer, so two kinds of thread may
+// dequeue, one at a time. The failure this hunts is silent: a completion lost
+// (a hang) or handled twice (a doubled answer is the runtime's panic; a stale
+// one a wrong number here).
+//
+// Eight pairs of actors, each pair on a socket of its own, play 3,000 round
+// trips each. Every message carries its sequence number, the answer the number
+// after it, and each side checks the number it reads against the one it
+// expects, so a read answered twice, or from another pair's completion, or a
+// message lost, shows at once; and the reads and writes answered are counted
+// exactly. Beside them Churn runs 1,000 rounds of a read on a fresh loopback
+// pair, the read cancelled by its group, or its peer writing and closing, or
+// its peer closing with nothing written, from another actor and after a
+// spin of a different length each time, so cancels and closes land against the
+// workers' passes the pairs keep up. Each read is answered once: Churn runs to
+// its end.
+//
+// At the end every record is dissolved, and workers' passes answered some of
+// the operations (a worker's poll found another actor's completion). The suite
+// runs this once; run it repeatedly, under load, to hunt.
+
+mod workerpass;
+
+import testing use *;
+import sync use Channel, Sender, Receiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+const pairs = 8u64;
+const rounds = 3000u64;
+const churnRounds = 1000u64;
+
+struct Got {
+  pub reads: Atomic[u64];       // reads answered with what was expected
+  pub writes: Atomic[u64];      // writes answered with their count
+  pub bad: Atomic[u64];         // anything else on a pair's socket
+  pub churned: Atomic[u64];     // Churn's reads answered
+  pub churnBad: Atomic[u64];    // ...with what none of the rounds can answer
+  pub spin: Atomic[u64];        // what the spinning adds to, so it is not optimised away
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn spinFor(n: u64) {
+  var k = 0u64;
+  while k < n {
+    got.spin.add(1u64);
+    k = k + 1u64;
+  }
+}
+
+// A message: the number in three bytes
+fn numbered(k: u64) IoBuf {
+  var b = IoBuf(8usize);
+  let bytes = [u8.from(k & 255u64), u8.from((k >> 8u64) & 255u64), u8.from((k >> 16u64) & 255u64)];
+  b.append(&bytes);
+  b
+}
+
+// The number a message read carries: bad if it is not k
+fn check(r: Result[IoBuf, IoError], k: u64) {
+  match r {
+    case let Ok(b) {
+      if b.len() != 3usize {
+        got.bad.add(1u64);
+        return;
+      }
+      let v = b.view();
+      let n = u64.from(v[0usize]) | (u64.from(v[1usize]) << 8u64) | (u64.from(v[2usize]) << 16u64);
+      if n == k {got.reads.add(1u64);} else {got.bad.add(1u64);}
+    }
+    else {got.bad.add(1u64);}
+  }
+}
+
+fn wrote(r: Result[usize, IoError]) {
+  match r {
+    case let Ok(n) {
+      if n == 3usize {got.writes.add(1u64);} else {got.bad.add(1u64);}
+    }
+    else {got.bad.add(1u64);}
+  }
+}
+
+actor Caller {
+  pub async fn play(self, port: u16, finished: Sender[u64]) {
+    let s = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var k = 0u64;
+    while k < rounds {
+      wrote(await s.write(numbered(k * 2u64)));
+      check(await s.read(IoBuf(8usize)), k * 2u64 + 1u64);
+      k = k + 1u64;
+    }
+    finished.send(1u64);
+  }
+}
+
+actor Answerer {
+  pub async fn play(self, finished: Sender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    Caller().play(port, finished.clone());
+    let s = socketOf(await ls.accept());
+    var k = 0u64;
+    while k < rounds {
+      check(await s.read(IoBuf(8usize)), k * 2u64);
+      wrote(await s.write(numbered(k * 2u64 + 1u64)));
+      k = k + 1u64;
+    }
+    finished.send(1u64);
+  }
+}
+
+actor Far {
+  pub async fn stop(self, g: CancelGroup, spin: u64) {
+    spinFor(spin);
+    g.cancel();
+  }
+
+  // A byte written, and the socket dropped: closed
+  pub async fn writeAndClose(self, s: Socket, spin: u64) {
+    spinFor(spin);
+    var b = IoBuf(8usize);
+    let one = [7u8];
+    b.append(&one);
+    let w = await s.write(b);
+  }
+
+  pub async fn close(self, s: Socket, spin: u64) {
+    spinFor(spin);
+  }
+}
+
+actor Churn {
+  pub async fn run(self, far: Far, finished: Sender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    var i = 0u64;
+    while i < churnRounds {
+      let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+      let b = socketOf(await ls.accept());
+      let g = CancelGroup.make();
+      let rd = a.readIn(IoBuf(8usize), IoLimits.within(g));
+      let spin = ((i * 104729u64) % 211u64) * 20u64;
+      let kind = i % 3u64;
+      if kind == 0u64 {
+        far.stop(g, spin);
+      } else if kind == 1u64 {
+        far.writeAndClose(b, spin);
+      } else {
+        far.close(b, spin);
+      }
+      let r = await rd;
+      match r {
+        case let Ok(buf) {
+          // A byte, or the end of the stream; a cancelled round has neither
+          if kind == 0u64 || buf.len() > 1usize {got.churnBad.add(1u64);}
+        }
+        case let Err(e) {
+          // Only the group ends a read; a peer's close can reset it
+          if kind == 0u64 && !aio.isCancelled(e) {got.churnBad.add(1u64);}
+        }
+      }
+      got.churned.add(1u64);
+      i = i + 1u64;
+    }
+    finished.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  {
+    var i = 0u64;
+    while i < pairs {
+      Answerer().play(tx.clone());
+      i = i + 1u64;
+    }
+    Churn().run(Far(), tx.clone());
+  }
+  var left = pairs * 2u64 + 1u64;
+  while left > 0u64 {
+    let v = rx.recv() || 0u64;
+    require(v == 1u64, "every actor said it was done");
+    left = left - 1u64;
+  }
+  actors.waitUntilIdle();
+  let st = aio.opStats();
+  finalAll();
+  expectUInt(got.bad.load(), 0u64, "every message was the one expected");
+  expectUInt(got.reads.load(), pairs * rounds * 2u64, "every read answered, once");
+  expectUInt(got.writes.load(), pairs * rounds * 2u64, "every write answered, once");
+  expectUInt(got.churned.load(), churnRounds, "every read of the churn answered");
+  expectUInt(got.churnBad.load(), 0u64, "the churn's answers were ones its rounds can give");
+  expect(st.workerDone > 0u64, "workers' passes answered operations");
+  expectUInt(aio.opStats().inUse, 0u64, "every record dissolved");
+  done()
+}

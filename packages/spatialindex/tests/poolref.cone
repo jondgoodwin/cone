@@ -22,7 +22,7 @@ struct Npc {
 fn box(x: f32) Aabb3 {Aabb3.fromCenter(Vec3(x, 0., 0.), Vec3(1., 1., 1.))}
 
 fn main() i32 {
-  var world = GenPool[Npc].make();
+  var world = GenPool[Npc]();
   let a = world.add(Npc(10i64));
   let b = world.add(Npc(20i64));
   let c = world.add(Npc(30i64));
@@ -44,35 +44,35 @@ fn main() i32 {
   match bvh.rayNearest(ray, 100.) {
     case let Some(h) {
       expectFloat(h.t, 4., 0.00001, "bvh ray enters at 4");
-      expectInt((*world.get(h.handle)).hp, 10i64, "bvh ray finds the first creature through its Handle");
+      expectInt(world.borrow(h.handle).unwrap().hp, 10i64, "bvh ray finds the first creature through its Handle");
     }
     case is None { expect(false, "bvh ray hits"); }
   }
   match oct.rayNearest(ray, 100.) {
-    case let Some(h) { expectInt((*world.get(h.handle)).hp, 10i64, "octree ray finds the first creature"); }
+    case let Some(h) { expectInt(world.borrow(h.handle).unwrap().hp, 10i64, "octree ray finds the first creature"); }
     case is None { expect(false, "octree ray hits"); }
   }
   match grid.rayNearest(ray, 100.) {
-    case let Some(h) { expectInt((*world.get(h.handle)).hp, 10i64, "grid ray finds the first creature"); }
+    case let Some(h) { expectInt(world.borrow(h.handle).unwrap().hp, 10i64, "grid ray finds the first creature"); }
     case is None { expect(false, "grid ray hits"); }
   }
 
   var near = List[Neighbor[Handle]]();
   bvh.nearest(Vec3(12., 0., 0.), 1usize, &mut near);
-  expectInt((*world.get(near[0usize].handle)).hp, 20i64, "bvh nearest to x = 12 is the creature at 10");
+  expectInt(world.borrow(near[0usize].handle).unwrap().hp, 20i64, "bvh nearest to x = 12 is the creature at 10");
   expectFloat(near[0usize].distSq, 1., 0.00001, "one away");
   oct.nearest(Vec3(12., 0., 0.), 1usize, &mut near);
-  expectInt((*world.get(near[0usize].handle)).hp, 20i64, "octree nearest");
+  expectInt(world.borrow(near[0usize].handle).unwrap().hp, 20i64, "octree nearest");
   grid.nearest(Vec3(12., 0., 0.), 1usize, &mut near);
-  expectInt((*world.get(near[0usize].handle)).hp, 20i64, "grid nearest");
+  expectInt(world.borrow(near[0usize].handle).unwrap().hp, 20i64, "grid nearest");
 
   // the first creature dies: out of the pool and out of the indexes
   expect(world.remove(a), "removed from the pool");
   expect(bvh.remove(ba) && oct.remove(oa) && grid.remove(ga), "removed from the indexes");
-  expect(world.get(a) as usize == 0usize, "the Handle is dead in the pool");
+  expect(world.borrow(a) is None, "the Handle is dead in the pool");
   expect(!bvh.contains(ba) && !oct.contains(oa) && !grid.contains(ga), "the Proxies are dead");
   match bvh.rayNearest(ray, 100.) {
-    case let Some(h) { expectInt((*world.get(h.handle)).hp, 20i64, "the ray now meets the second"); }
+    case let Some(h) { expectInt(world.borrow(h.handle).unwrap().hp, 20i64, "the ray now meets the second"); }
     case is None { expect(false, "ray still hits"); }
   }
   done()

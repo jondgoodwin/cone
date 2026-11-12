@@ -31,9 +31,56 @@ fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: u
     conn: 0usize, bodyDone: false)
 }
 
+// The pools of this package, named for what each holds (the pool kind is spelled here and nowhere else)
+alias EntryId = Handle;                // a pool's handle for one entry (the token helpers below take one)
+alias Waits = GenPool[Wait];           // a client's fetches awaiting their reply
+alias XWaits = GenPool[Wait];          // the exchanges on the service's own connections awaiting theirs
+alias Streams = GenPool[StreamRec];   // a client's streamed responses
+alias Clients = GenPool[ClientRec];
+alias Conns = GenPool[ConnRec];
+alias Srvs = GenPool[SrvRec];
+
 // A sink's token for a stream's fetch: this bit and the stream's slot. A
 // whole fetch's token is its wait slot alone
 const streamBit = 0x100000000u64;
+
+// THE TOKEN. The layer above's own part of a sink token is forty bits (httpconn/driver.cone), used so: the cell
+// index in bits 0 to 31, the stream or connection bit at 32 (above), and the low SEVEN bits of the cell's
+// generation in bits 33 to 39. A lookup through a token (byToken) finds the cell's entry only if the cell is live
+// and those seven bits are its generation's: a token whose entry is gone, and whose cell is free or has been
+// reused, reaches nothing. The pool's full Handle stays wherever the service keeps one. WRAP ODDS: a cell's
+// generation goes up by one each time it is freed, so a stale token names a reused cell again only if the cell has
+// been reused a multiple of 128 times since (128, 256, ...) and is live at that moment. Never for fewer than 128
+// reuses of that one cell; after that, 1 in 128 of the moments it is live.
+const tokGenShift = 33u64;
+const tokGenMask = 0x7Fu64;
+
+// (pub for tests/tokens.cone, not an API) The token for the entry h, with a flag bit (streamBit, connBit, or 0)
+pub fn tokenOf(h: EntryId, flag: u64) u64 {
+  flag | ((u64.from(h.gen) & tokGenMask) << tokGenShift) | u64.from(h.index)
+}
+
+// The cell index a token names
+pub fn tokCell(t: u64) u32 { u32.from(t & 0xFFFFFFFFu64) }
+
+// The live entry a token names, or null (the cell is free, or was reused since: its generation's low bits differ)
+pub fn byToken[T](pool: &GenPool[T], t: u64) EntryId {
+  let i = tokCell(t);
+  let h = pool.slotAt(i);
+  if h.isNone() || (u64.from(h.gen) & tokGenMask) != ((t >> tokGenShift) & tokGenMask) {
+    return EntryId.none();
+  }
+  h
+}
+
+// WHY DROPPING A STALE EVENT IS SAFE. A token's entry leaves its table only when its owner has finished with it:
+// a fetch's Wait is taken out whole at its terminal event and its reply answered then (onFetchEvent), a stream's
+// record goes when the stream ends, a connection's goes after its Closed event, and an exchange's Wait likewise ends
+// at its terminal event. So an event whose token no longer reaches a live entry belongs to something already
+// answered and released: nothing is left waiting on it (no reply unanswered, no connection-closed notice owed), and
+// the entry now in that cell, if any, is another one's and must not be touched. A Data event's buffer drops with the
+// event; the fetch or exchange it flowed to is gone, so no credit is owed for it.
+// Checked by staleEventDropped (end of this file), driven by tests/stale.cone.
 
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
@@ -42,8 +89,8 @@ struct ClientRec {
   dying: bool;                   // no handle is left: it is ended, and goes when its connections have
   maxBody: usize;
   client: httpclient.Client;
-  waits: SlotTable[Wait];
-  streams: SlotTable[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
+  waits: Waits;
+  streams: Streams;     // the responses actors read as they arrive; each holds a count of 'refs'
   ups: Dict[u64, u32];               // an upload's stream id: its slot in 'streams' (upload.cone: its sink knows the id alone)
 }
 
@@ -69,40 +116,40 @@ const connBit = 0x100000000u64;
 // connections a program makes itself, and what is awaited on those. A service
 // hosted on aio's I/O thread (aio.Hosted: turn, complete, wakeAt, end)
 struct Service {
-  clients: SlotTable[ClientRec];
+  clients: Clients;
   drv: httpconn.Driver;
-  conns: SlotTable[ConnRec];
-  xwaits: SlotTable[Wait];
-  srvs: SlotTable[SrvRec];       // the servers listening, each with a driver of its own
+  conns: Conns;
+  xwaits: XWaits;
+  srvs: Srvs;       // the servers listening, each with a driver of its own
 
   fn make() Service {
-    Service(clients: SlotTable[ClientRec].make(4u32),
-      drv: httpconn.Driver.make(httpconn.Config.make()), conns: SlotTable[ConnRec].make(16u32),
-      xwaits: SlotTable[Wait].make(16u32), srvs: SlotTable[SrvRec].make(4u32))
+    Service(clients: Clients(4usize),
+      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Conns(16usize),
+      xwaits: XWaits(16usize), srvs: Srvs(4usize))
   }
 
-  // The record in cell k, or null if that cell is free
-  fn clientAt(self: &, k: usize) *ClientRec {clients.at(u32.from(k))}
-
-  fn srvAt(self: &, k: usize) *SrvRec {srvs.at(u32.from(k))}
 
   // Where the live server id is in its cells, or their number
   fn findSrv(self: &, id: u64) usize {
     var k = 0usize;
     while k < srvs.bound() {
-      let p = self.srvAt(k);
-      if p as usize != 0usize && (*p).id == id {return k;}
+      if srvs.isLive(u32.from(k)) && srvs.borrowAt(u32.from(k)).unwrap().id == id {return k;}
       k = k + 1usize;
     }
     srvs.bound()
   }
 
   // Where the live client id is in its cells, or their number
+  // The client record in cell k (transitional raw access, see GenPool.rawAt); panics if the cell is not live
+  fn clientAt(self: &, k: usize) *ClientRec {clients.rawAt(u32.from(k))}
+
   fn findClient(self: &, id: u64) usize {
     var k = 0usize;
     while k < clients.bound() {
-      let p = self.clientAt(k);
-      if p as usize != 0usize && (*p).id == id && !(*p).dying {return k;}
+      if clients.isLive(u32.from(k)) {
+        let p = clients.borrowAt(u32.from(k)).unwrap();
+        if p.id == id && !p.dying {return k;}
+      }
       k = k + 1usize;
     }
     clients.bound()
@@ -112,8 +159,10 @@ struct Service {
   fn findConn(self: &, id: u64) usize {
     var k = 0usize;
     while k < conns.bound() {
-      let p = conns.at(u32.from(k));
-      if p as usize != 0usize && (*p).used && (*p).id == id {return k;}
+      if conns.isLive(u32.from(k)) {
+        let p = conns.borrowAt(u32.from(k)).unwrap();
+        if p.used && p.id == id {return k;}
+      }
       k = k + 1usize;
     }
     conns.bound()
@@ -126,7 +175,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        pumpClient(self.clientAt(k) as &mut ClientRec, lp);
+        pumpClient((self.clients.rawAt(u32.from(k)) as &mut ClientRec), lp);
       }
       k = k + 1usize;
     }
@@ -134,7 +183,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        pumpServer(self.srvAt(s) as &mut SrvRec, lp);
+        pumpServer((self.srvs.rawAt(u32.from(s)) as &mut SrvRec), lp);
       }
       s = s + 1usize;
     }
@@ -149,7 +198,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let w = (self.clientAt(k) as &ClientRec).client.wakeAt();
+        let w = (self.clients.borrowAt(u32.from(k)).unwrap()).client.wakeAt();
         if w < limit {limit = w;}
       }
       k = k + 1usize;
@@ -157,7 +206,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &SrvRec;
+        let srec = self.srvs.borrowAt(u32.from(s)).unwrap();
         let sw = srec.drv.wakeAt();
         if sw < limit {limit = sw;}
         let hw = srec.h3.wakeAt();
@@ -174,7 +223,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let rec = self.clientAt(k) as &mut ClientRec;
+        let rec = (self.clients.rawAt(u32.from(k)) as &mut ClientRec);
         if rec.client.complete(lp, c) {return true;}
       }
       k = k + 1usize;
@@ -182,9 +231,8 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &mut SrvRec;
-        if srec.drv.complete(lp, c) {return true;}
-        if srec.h3.complete(lp, c) {return true;}
+        if (self.srvs.rawAt(u32.from(s)) as &mut SrvRec).drv.complete(lp, c) {return true;}
+        if (self.srvs.rawAt(u32.from(s)) as &mut SrvRec).h3.complete(lp, c) {return true;}
       }
       s = s + 1usize;
     }
@@ -200,16 +248,15 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        (self.clientAt(k) as &mut ClientRec).client.abortAll(lp);
+        ((self.clients.rawAt(u32.from(k)) as &mut ClientRec)).client.abortAll(lp);
       }
       k = k + 1usize;
     }
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &mut SrvRec;
-        srec.drv.abortAll(lp);
-        srec.h3.end(lp);
+        (self.srvs.rawAt(u32.from(s)) as &mut SrvRec).drv.abortAll(lp);
+        (self.srvs.rawAt(u32.from(s)) as &mut SrvRec).h3.end(lp);
       }
       s = s + 1usize;
     }
@@ -222,14 +269,15 @@ struct Service {
     var k = 0usize;
     while k < srvs.bound() {
       if srvs.isLive(u32.from(k)) {
-        let srec = self.srvAt(k) as &mut SrvRec;
+        let srec = (self.srvs.rawAt(u32.from(k)) as &mut SrvRec);
         if srec.closing && srec.live == 0usize {
           if !srec.aborted {
             srec.aborted = true;
             srec.drv.abortAll(lp);
-            srec.h3.abortAll(lp);
+            (self.srvs.rawAt(u32.from(k)) as &mut SrvRec).h3.abortAll(lp);
           }
-          if srec.drv.live() == 0u32 && srec.h3.live() == 0usize {
+          let srec2 = (self.srvs.rawAt(u32.from(k)) as &mut SrvRec);
+          if srec2.drv.live() == 0u32 && srec2.h3.live() == 0usize {
             srvs.removeAt(u32.from(k));
           }
         }
@@ -243,7 +291,7 @@ struct Service {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let rec = self.clientAt(k) as &ClientRec;
+        let rec = self.clients.borrowAt(u32.from(k)).unwrap();
         if rec.dying && rec.client.live() == 0u32 {
           let ds = rec.client.driverStats();
           if ds.connects == ds.closed && rec.client.http3Live() == 0usize {
@@ -271,8 +319,9 @@ struct Service {
 
   // A connection's own event: it connected, or it is over
   fn onConnEvent(self: &mut, lp: &mut Loop, e: &httpconn.Event) {
-    let slot = usize.from(e.token & 0xFFFFFFFFu64);
-    let c = conns.at(u32.from(slot)) as &mut ConnRec;
+    if byToken(&conns, e.token).isNone() { return; }
+    let slot = usize.from(tokCell(e.token));
+    let c = conns.borrowMutAt(tokCell(e.token)).unwrap();
     let k = e.kind;
     if k == httpconn.EventKind.Connected {
       c.open = true;
@@ -299,8 +348,9 @@ struct Service {
   // An event of an exchange on a connection, taken by value: its head's
   // fields go whole into the response gathered
   fn onExchangeEvent(self: &mut, lp: &mut Loop, e: httpconn.Event) {
-    let slot = usize.from(e.token);
-    let w = xwaits.at(u32.from(slot)) as &mut Wait;
+    if byToken(&xwaits, e.token).isNone() { return; }
+    let slot = usize.from(tokCell(e.token));
+    let w = xwaits.borrowMutAt(tokCell(e.token)).unwrap();
     let k = e.kind;
     if k == httpconn.EventKind.Response {
       let status, version, headers = e.(response).(status, version, headers);
@@ -317,7 +367,7 @@ struct Service {
     } else if k == httpconn.EventKind.Writable {
       self.sendBody(lp, slot);
     } else if e.isTerminal() {
-      let c = conns.at(u32.from(w.conn)) as &mut ConnRec;
+      let c = conns.borrowMutAt(u32.from(w.conn)).unwrap();
       if c.busy > 0u32 {c.busy = c.busy - 1u32;}
       let timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
         e.timing.ended, 1u32, 0u32, false);
@@ -348,7 +398,7 @@ struct Service {
 
   // As much of exchange slot's body as its connection takes now
   fn sendBody(self: &mut, lp: &mut Loop, slot: usize) {
-    let w = xwaits.at(u32.from(slot)) as &mut Wait;
+    let w = (xwaits.rawAt(u32.from(slot)) as &mut Wait);
     if w.bodyDone {return;}
     while w.sent < w.body.len() {
       let left = w.body.len() - w.sent;
@@ -419,8 +469,11 @@ fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
   rec.client.pump(lp, &uni evs);
   each e in evs.drain() {
     if (e.token & streamBit) != 0u64 {
-      let sslot = usize.from(e.token & 0xFFFFFFFFu64);
-      onStreamEvent(rec, lp, e, sslot);
+      // an event of a stream already freed (its cell free or reused) reaches nothing
+      if !byToken(&rec.streams, e.token).isNone() {
+        let sslot = usize.from(tokCell(e.token));
+        onStreamEvent(rec, lp, e, sslot);
+      }
     } else {
       onFetchEvent(rec, lp, e);
     }
@@ -430,8 +483,9 @@ fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
 // An event of a whole fetch, taken by value: its head's fields go whole into
 // the response gathered
 fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
-  let slot = usize.from(e.token);
-  let w = rec.waits.at(u32.from(slot)) as &mut Wait;
+  if byToken(&rec.waits, e.token).isNone() { return; }
+  let slot = usize.from(tokCell(e.token));
+  let w = rec.waits.borrowMutAt(tokCell(e.token)).unwrap();
   let k = e.kind;
   if k == httpclient.EventKind.Response {
     let response, url = e.(response, url);
@@ -484,7 +538,7 @@ struct CreateClientJob {
   pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     sv.clients.add(ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
-      SlotTable[Wait].make(16u32), SlotTable[StreamRec].make(16u32), Dict[u64, u32]()));
+      Waits(16usize), Streams(16usize), Dict[u64, u32]()));
   }
 }
 
@@ -497,7 +551,7 @@ struct RefJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     if add {
       rec.refs = rec.refs + 1u32;
       return;
@@ -519,10 +573,11 @@ struct FetchJob {
         Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
-    let slot = usize.from(rec.waits.add(waitFor(rp, rec.maxBody)).index);
-    let fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(slot)));
-    (rec.waits.at(u32.from(slot)) as &mut Wait).fetch = fetch;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
+    let wh = rec.waits.add(waitFor(rp, rec.maxBody));
+    let slot = usize.from(wh.index);
+    let fetch = rec.client.send(lp, req, httpclient.Sink.Here(tokenOf(wh, 0u64)));
+    (rec.waits.borrowMutAt(u32.from(slot)).unwrap()).fetch = fetch;
   }
 }
 
@@ -539,10 +594,11 @@ struct ConnectJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Conn, FetchError]]) {
     let host, port, secure, cfg = self.(host, port, secure, cfg);
-    let slot = usize.from(sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
-      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp))).index);
-    let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
-    let sink = httpconn.Sink.Here(connBit | u64.from(slot));
+    let ch = sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
+      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp)));
+    let slot = usize.from(ch.index);
+    let c = (sv.conns.rawAt(u32.from(slot)) as &mut ConnRec);
+    let sink = httpconn.Sink.Here(tokenOf(ch, connBit));
     // The driver is handed a copy of the host: it holds Strings, and nothing
     // shows the job's is none of them
     let name = host.clone();
@@ -581,14 +637,15 @@ struct ExchangeJob {
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }
-    let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
-    let slot = usize.from(sv.xwaits.add(waitFor(rp, defaultMaxBody)).index);
-    let w = sv.xwaits.at(u32.from(slot)) as &mut Wait;
+    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
+    let xh = sv.xwaits.add(waitFor(rp, defaultMaxBody));
+    let slot = usize.from(xh.index);
+    let w = (sv.xwaits.rawAt(u32.from(slot)) as &mut Wait);
     w.conn = k;
     w.body = body;
     c.busy = c.busy + 1u32;
     let length = if w.body.len() > 0usize {BodyLength.sized(u64.from(w.body.len()))} else {BodyLength()};
-    let sink = httpconn.Sink.Here(u64.from(slot));
+    let sink = httpconn.Sink.Here(tokenOf(xh, 0u64));
     match group {
       case let Some(g) {w.req = sv.drv.requestIn(lp, c.conn, head, length, sink, g, deadline);}
       else {
@@ -609,7 +666,7 @@ struct DropConnJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {return;}
-    let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
+    let c = sv.conns.borrowMutAt(u32.from(k)).unwrap();
     c.dropped = true;
     if c.closed {
       sv.freeConn(k);
@@ -619,4 +676,27 @@ struct DropConnJob {
       sv.drv.close(lp, c.conn);
     }
   }
+}
+
+// (pub for tests/stale.cone, not an API) A stale connection event driven through a Service: a connection record is
+// added and freed, its cell reused by another record, and the first record's Closed event (its old token) is
+// delivered to onConnEvent. True if the second record is left as it was and its own event still takes effect
+pub fn staleEventDropped() bool {
+  var sv = Service.make();
+  var lpr = Loop.mustMake();
+  let h1 = sv.conns.add(ConnRec(true, 1u64, httpconn.ConnId.none(), false, false, false, false, 0u32,
+    None[actors.ReplyOf[Result[Conn, FetchError]]]));
+  let t1 = tokenOf(h1, connBit);
+  sv.freeConn(usize.from(h1.index));
+  let h2 = sv.conns.add(ConnRec(true, 2u64, httpconn.ConnId.none(), false, true, false, false, 0u32,
+    None[actors.ReplyOf[Result[Conn, FetchError]]]));
+  if h2.index != h1.index {return false;}
+  var stale = httpconn.Event.make(httpconn.EventKind.Closed, t1, httpconn.ConnId.none(), httpconn.ReqId.none());
+  sv.onConnEvent(&mut lpr, &stale);
+  let c = sv.conns.borrowMutAt(h2.index).unwrap();
+  if !c.open || c.closed {return false;}
+  var live = httpconn.Event.make(httpconn.EventKind.Closed, tokenOf(h2, connBit), httpconn.ConnId.none(), httpconn.ReqId.none());
+  sv.onConnEvent(&mut lpr, &live);
+  let c2 = sv.conns.borrowMutAt(h2.index).unwrap();
+  c2.closed && !c2.open
 }

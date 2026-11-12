@@ -27,6 +27,16 @@
 //   SocketSource(down)  a ChunkSource that reads a TCP connection into the stream, 64 KiB a chunk:
 //                  'start(addr)' connects first, 'startOn(conn)' reads one the program has
 //                  (socketsource.cone, over package aio's Socket)
+//   PipeSource(down)  a ChunkSource that reads a pipe (a child's end) into the stream, 64 KiB a chunk:
+//                  'startOn(pipe)'; a ChildStages' own sources are started by 'startFor(pipe, owner)' and
+//                  tell their owner of their end by 'sourceEnded(failed)'
+//   PipeSink(done)  a ChunkSink that writes the stream to a pipe (a child's standard input), and tells 'done' the
+//                  bytes written or why not; it closes the pipe at the stream's end (pipesink.cone)
+//   ChildStages(out, err, done, stdin = None)  a child's standard output and error as two streams (PipeSources into
+//                  the sinks out and err), and its exit, told on 'done' (a OneshotSender[Result[ChildExit,
+//                  AnyError]]) only after both streams have ended (a grandchild still holding a pipe delays it):
+//                  'start(args, dir)', 'kill()'; a sink that stops a stream, or a cancel of the group, kills the child
+//                  (both in pipesource.cone, over package aio's Pipe and Child and package process)
 //
 // The types they plug into, ChunkSink, ChunkSource, ChunkInbox, ChunkWindow, Ending and the
 // constants linkWindow and linkBytes, are package stages'.
@@ -34,12 +44,13 @@
 mod stageio;
 
 import iobuf use IoBuf;
-import collections use AnyError, String;
+import collections use AnyError, String, List;
+import process;
 import actors;
 import streams use *;
 import stages use *;
 import sync use OneshotSender;
 import path use Path;
 import fs;
-import iocore use Access, SocketAddr, CancelGroup;
-import aio use File, Socket, IoLimits;
+import iocore use Access, SocketAddr, CancelGroup, IoError;
+import aio use File, Socket, Pipe, ChildExit, IoLimits;

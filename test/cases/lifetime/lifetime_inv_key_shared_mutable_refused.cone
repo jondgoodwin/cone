@@ -1,0 +1,34 @@
+// The same read as lifetime_inv_key_holds_borrow, but the value a key names
+// also holds an atomic: a callee given only a '&' view of it could still
+// change it, so the '&mut' key given to the index's '&'-typed key is not
+// known to store nothing, and the call is refused (ErrorCallEscape) as well.
+//
+// Verdict: refuse, ErrorKeyBorrow twice and ErrorCallEscape at the read.
+// Basis: a read-only parameter limits what a callee stores only where nothing
+// inside its pointee changes through a shared view (itypeMayMutateShared).
+
+mod lifetime_inv_key_shared_mutable_refused;
+
+import stdio use *;
+import arena use *;
+
+struct Holder { pub r: &i64; pub n: Atomic[u32]; }
+
+struct Box['=a] {
+  pub ar: DynArena['=a];
+  pub h: &'=a mut Holder;            //~ ErrorKeyBorrow
+}
+
+fn make() Box['=a] {
+  let x = 77i64;
+  var ar = DynArena.empty();
+  let h = ar.alloc(Holder(&x, Atomic[u32].of(0u32))); //~ ErrorKeyBorrow
+  Box(ar, h)
+}
+
+fn main() {
+  let b = make();
+  printStr("read = ");
+  printInt(*b.ar[b.h].r); //~ ErrorCallEscape
+  printStr("\n");
+}

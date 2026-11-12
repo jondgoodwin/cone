@@ -1,0 +1,578 @@
+// parallel each measurement (lane D4). One program, every workload && every Cone
+// variant. Arguments: workers (0 = one per logical processor), then an optional
+// filter word (u = uniform, v = uneven, s = small, b = builder, a = actor).
+//
+// Each timing: 3 warm-up runs, 15 timed runs; prints
+//   RESULT <workload> <variant> <workers> <median_ns> <min_ns> <max_ns>
+// Every variant of a workload starts from the same fresh data && runs the same
+// number of times, so a checksum after the runs must be the same for all of them.
+
+// (Moved into actors' examples/ by lane 104, from scratch outside the repo; ported to current syntax.)
+//   congo run examples/parbench.cone -- [workers [filter]]
+
+mod parbench;
+
+import stdio use *;
+import collections use List;
+import libc;
+import actors;
+import time use Instant;
+
+const warm = 3u64;
+const runs = 15u64;
+
+// ---- data ----
+
+struct V3 {
+  pub x: f32;
+  pub y: f32;
+  pub z: f32;
+}
+
+// A rotation about z (cos .8, sin .6) with a small drift: a few multiplies each
+struct Xf {
+  pub a: f32; pub b: f32; pub c: f32;
+  pub d: f32; pub e: f32; pub f: f32;
+  pub g: f32; pub h: f32; pub i: f32;
+  pub tx: f32; pub ty: f32; pub tz: f32;
+}
+
+fn makeXf() Xf {
+  Xf(0.8, -0.6, 0.0, 0.6, 0.8, 0.0, 0.0, 0.0, 1.0, 0.001, 0.002, 0.0005)
+}
+
+fn xform(v: &mut V3, m: &Xf) {
+  let x = v.x;
+  let y = v.y;
+  let z = v.z;
+  v.x = m.a * x + m.b * y + m.c * z + m.tx;
+  v.y = m.d * x + m.e * y + m.f * z + m.ty;
+  v.z = m.g * x + m.h * y + m.i * z + m.tz;
+}
+
+struct Item {
+  pub id: u64;
+  pub out: u64;
+}
+
+fn mix(i: u64, n: u64) u64 {
+  var x = i + 1u64;
+  var k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x
+}
+
+fn hash(i: u64) u64 {
+  var x = (i + 1u64) * 11400714819323198485u64;
+  x = x ^ (x >> 29u64);
+  x = x * 14181476777654739573u64;
+  x ^ (x >> 32u64)
+}
+
+// 1 to 100 rounds, from the item's id
+fn unevenWork(id: u64) u64 {
+  mix(id, 1u64 + hash(id) % 100u64)
+}
+
+fn keep(x: u64) bool {
+  (x * 11400714819323198485u64) >> 62u64 == 0u64
+}
+
+fn makePts(n: usize) List[V3] {
+  var l = List[V3]();
+  var i = 0usize;
+  while i < n {
+    let f = f32.from(i % 1000usize) * 0.001;
+    l.push(V3(f, 1.0 - f, 0.5 * f));
+    i = i + 1usize;
+  }
+  l
+}
+
+fn makeItems(n: usize) List[Item] {
+  var l = List[Item]();
+  var i = 0usize;
+  while i < n {
+    l.push(Item(u64.from(i), 0u64));
+    i = i + 1usize;
+  }
+  l
+}
+
+fn makeNums(n: usize) List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < n {
+    l.push(u64.from(i));
+    i = i + 1usize;
+  }
+  l
+}
+
+fn sumPts(l: &List[V3]) f64 {
+  var s = 0.0f64;
+  each v in l {
+    s = s + f64.from(v.x) + f64.from(v.y) * 2.0f64 + f64.from(v.z) * 3.0f64;
+  }
+  s
+}
+
+fn sumItems(l: &List[Item]) u64 {
+  var s = 0u64;
+  each v in l {
+    s = s + v.out;
+  }
+  s
+}
+
+fn sumNums(l: &List[u64]) u64 {
+  var s = 0u64;
+  each v in l {
+    s = s + v;
+  }
+  s
+}
+
+// ---- timing ----
+
+fn median(t: &List[u64]) u64 {
+  var a = List[u64]();
+  each x in t {
+    a.push(x);
+  }
+  var i = 1usize;
+  while i < a.len() {
+    var j = i;
+    while j > 0usize && *a[j - 1usize] > *a[j] {
+      let tmp = *a[j];
+      a[j] = *a[j - 1usize];
+      a[j - 1usize] = tmp;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  *a[a.len() / 2usize]
+}
+
+fn minOf(t: &List[u64]) u64 {
+  var m = *t[0usize];
+  each x in t {
+    if x < m {
+      m = x;
+    }
+  }
+  m
+}
+
+fn maxOf(t: &List[u64]) u64 {
+  var m = 0u64;
+  each x in t {
+    if x > m {
+      m = x;
+    }
+  }
+  m
+}
+
+fn emit(workload: &str, variant: &str, t: &List[u64]) {
+  let w = actors.stats().workers;
+  printStr("RESULT "); printStr(workload); printStr(" "); printStr(variant); printStr(" ");
+  printUInt(u64.from(w)); printStr(" ");
+  printUInt(median(t)); printStr(" "); printUInt(minOf(t)); printStr(" "); printUInt(maxOf(t));
+  printStr("\n");
+}
+
+// What a variant is handed
+struct Work {
+  pub pts: List[V3];
+  pub items: List[Item];
+  pub nums: List[u64];
+  pub xf: Xf;
+  pub rawPts: *V3;
+  pub rawItems: *Item;
+  pub n: usize;
+  pub workers: usize;
+  pub sink: u64;
+}
+
+alias Run = &fn(w: *Work);
+
+fn timeIt(workload: &str, variant: &str, f: Run, w: *Work) {
+  var t = List[u64]();
+  var r = 0u64;
+  while r < warm + runs {
+    let t0 = Instant.now();
+    f(w);
+    let ns = u64.from(t0.elapsed().nanos());
+    if r >= warm {
+      t.push(ns);
+    }
+    r = r + 1u64;
+  }
+  emit(workload, variant, &t);
+}
+
+fn grainFor(n: usize, workers: usize) usize {
+  let g = n / (workers * 8usize);
+  if g == 0usize { 1usize } else { g }
+}
+
+// ---- workload 1 && 3: vec3 transform, uniform work ----
+
+fn plainV3(w: *Work) {
+  let m = &(*w).xf;
+  each v in (*w).pts.mutItems() {
+    xform(v, m);
+  }
+}
+
+fn parV3(w: *Work) {
+  let m = &(*w).xf;
+  parallel each v in (*w).pts.mutItems() {
+    xform(v, m);
+  }
+}
+
+// The body of the library form: parallelRange now takes a closure listing what it uses,
+// not a function reference and a data pointer
+fn libV3Body(p: *V3, m: &Xf, lo: usize, hi: usize) {
+  var i = lo;
+  while i < hi {
+    let q = p + i;
+    let x = (*q).x;
+    let y = (*q).y;
+    let z = (*q).z;
+    *q = V3(m.a * x + m.b * y + m.c * z + m.tx,
+                m.d * x + m.e * y + m.f * z + m.ty,
+                m.g * x + m.h * y + m.i * z + m.tz);
+    i = i + 1usize;
+  }
+}
+
+fn libV3(w: *Work) {
+  let p = (*w).rawPts;
+  let xf = (*w).xf;
+  actors.parallelRange(0usize, (*w).n, grainFor((*w).n, (*w).workers), fn(lo: usize, hi: usize) [p, xf] { libV3Body(p, &xf, lo, hi); });
+}
+
+fn rawSumPts(p: *V3, n: usize) f64 {
+  var s = 0.0f64;
+  var i = 0usize;
+  while i < n {
+    let q = p + i;
+    s = s + f64.from((*q).x) + f64.from((*q).y) * 2.0f64 + f64.from((*q).z) * 3.0f64;
+    i = i + 1usize;
+  }
+  s
+}
+
+fn fillRaw(p: *V3, n: usize) {
+  var i = 0usize;
+  while i < n {
+    let f = f32.from(i % 1000usize) * 0.001;
+    *(p + i) = V3(f, 1.0 - f, 0.5 * f);
+    i = i + 1usize;
+  }
+}
+
+fn uniform(name: &str, n: usize, workers: usize) {
+  var w = Work(makePts(n), List[Item](), List[u64](), makeXf(),
+    libc.calloc(n, 12usize) as *V3, libc.calloc(1usize, 16usize) as *Item, n, workers, 0u64);
+  let wp = &mut w as *Work;
+  timeIt(name, "plain-each", &plainV3, wp);
+  printStr("CHECK "); printStr(name); printStr(" plain "); printInt(i64.from(sumPts(&w.pts) * 1000.0f64)); printStr("\n");
+  w.pts = makePts(n);
+  timeIt(name, "parallel-each", &parV3, wp);
+  printStr("CHECK "); printStr(name); printStr(" par "); printInt(i64.from(sumPts(&w.pts) * 1000.0f64)); printStr("\n");
+  fillRaw(w.rawPts, n);
+  timeIt(name, "parallelRange", &libV3, wp);
+  printStr("CHECK "); printStr(name); printStr(" lib "); printInt(i64.from(rawSumPts(w.rawPts, n) * 1000.0f64)); printStr("\n");
+  libc.free(w.rawPts as *u8);
+  libc.free(w.rawItems as *u8);
+}
+
+// ---- workload 2 && 3: uneven work per item ----
+
+fn plainItems(w: *Work) {
+  each it in (*w).items.mutItems() {
+    it.out = unevenWork(it.id);
+  }
+}
+
+fn parItems(w: *Work) {
+  parallel each it in (*w).items.mutItems() {
+    it.out = unevenWork(it.id);
+  }
+}
+
+fn libItemBody(p: *Item, lo: usize, hi: usize) {
+  var i = lo;
+  while i < hi {
+    let q = p + i;
+    *q = Item((*q).id, unevenWork((*q).id));
+    i = i + 1usize;
+  }
+}
+
+fn libItems(w: *Work) {
+  let p = (*w).rawItems;
+  actors.parallelRange(0usize, (*w).n, grainFor((*w).n, (*w).workers), fn(lo: usize, hi: usize) [p] { libItemBody(p, lo, hi); });
+}
+
+fn rawSumItems(p: *Item, n: usize) u64 {
+  var s = 0u64;
+  var i = 0usize;
+  while i < n {
+    s = s + (*(p + i)).out;
+    i = i + 1usize;
+  }
+  s
+}
+
+fn uneven(name: &str, n: usize, workers: usize) {
+  var raw = libc.calloc(n, 16usize) as *Item;
+  var i = 0usize;
+  while i < n {
+    *(raw + i) = Item(u64.from(i), 0u64);
+    i = i + 1usize;
+  }
+  var w = Work(List[V3](), makeItems(n), List[u64](), makeXf(), libc.calloc(1usize, 12usize) as *V3, raw, n, workers, 0u64);
+  let wp = &mut w as *Work;
+  timeIt(name, "plain-each", &plainItems, wp);
+  printStr("CHECK "); printStr(name); printStr(" plain "); printUInt(sumItems(&w.items)); printStr("\n");
+  w.items = makeItems(n);
+  timeIt(name, "parallel-each", &parItems, wp);
+  printStr("CHECK "); printStr(name); printStr(" par "); printUInt(sumItems(&w.items)); printStr("\n");
+  timeIt(name, "parallelRange", &libItems, wp);
+  printStr("CHECK "); printStr(name); printStr(" lib "); printUInt(rawSumItems(w.rawItems, n)); printStr("\n");
+  libc.free(w.rawPts as *u8);
+  libc.free(w.rawItems as *u8);
+}
+
+// ---- workload 4: a filtered builder ----
+
+fn plainBuild(w: *Work) {
+  let out = List[u64]() <- each x in (*w).nums if keep(x) yield mix(x, 8u64);
+  (*w).sink = u64.from(out.len());
+}
+
+fn parBuild(w: *Work) {
+  let out = List[u64]() <- parallel each x in (*w).nums if keep(x) yield mix(x, 8u64);
+  (*w).sink = u64.from(out.len());
+}
+
+fn plainBuildLight(w: *Work) {
+  let out = List[u64]() <- each x in (*w).nums if keep(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn parBuildLight(w: *Work) {
+  let out = List[u64]() <- parallel each x in (*w).nums if keep(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn keepNone(x: u64) bool { hash(x) == 1u64 }
+fn keepAll(x: u64) bool { hash(x) != 1u64 }
+
+fn plainBuildNone(w: *Work) {
+  let out = List[u64]() <- each x in (*w).nums if keepNone(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn parBuildNone(w: *Work) {
+  let out = List[u64]() <- parallel each x in (*w).nums if keepNone(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn plainBuildAll(w: *Work) {
+  let out = List[u64]() <- each x in (*w).nums if keepAll(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn parBuildAll(w: *Work) {
+  let out = List[u64]() <- parallel each x in (*w).nums if keepAll(x) yield x + 1u64;
+  (*w).sink = u64.from(out.len());
+}
+
+fn builderParts(n: usize, workers: usize) {
+  var w = Work(List[V3](), List[Item](), makeNums(n), makeXf(), libc.calloc(1usize, 12usize) as *V3, libc.calloc(1usize, 16usize) as *Item, n, workers, 0u64);
+  let wp = &mut w as *Work;
+  timeIt("builder1M-keep-none", "plain-<-each", &plainBuildNone, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-keep-none", "parallel-<-each", &parBuildNone, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-keep-all", "plain-<-each", &plainBuildAll, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-keep-all", "parallel-<-each", &parBuildAll, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  libc.free(w.rawPts as *u8);
+  libc.free(w.rawItems as *u8);
+}
+
+fn builder(n: usize, workers: usize) {
+  var w = Work(List[V3](), List[Item](), makeNums(n), makeXf(), libc.calloc(1usize, 12usize) as *V3, libc.calloc(1usize, 16usize) as *Item, n, workers, 0u64);
+  let wp = &mut w as *Work;
+  timeIt("builder1M-yield8", "plain-<-each", &plainBuild, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-yield8", "parallel-<-each", &parBuild, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-light", "plain-<-each", &plainBuildLight, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  timeIt("builder1M-light", "parallel-<-each", &parBuildLight, wp);
+  printStr("CHECK builder len "); printUInt(w.sink); printStr("\n");
+  libc.free(w.rawPts as *u8);
+  libc.free(w.rawItems as *u8);
+}
+
+// ---- workload 5: parallel each in an actor's behaviour ----
+
+actor Scene {
+  pts: List[V3];
+  items: List[Item];
+  xf: Xf;
+
+  fn init(self: &new, n: usize) {
+    *self = Self(makePts(n), makeItems(n), makeXf());
+  }
+
+  pub async fn uniformStep(self) u64 {
+    let t0 = Instant.now();
+    parallel each v in pts.mutItems() {
+      xform(v, &xf);
+    }
+    u64.from(t0.elapsed().nanos())
+  }
+
+  pub async fn unevenStep(self) u64 {
+    let t0 = Instant.now();
+    parallel each it in items.mutItems() {
+      it.out = unevenWork(it.id);
+    }
+    u64.from(t0.elapsed().nanos())
+  }
+
+  pub async fn reset(self, n: usize) u64 {
+    pts = makePts(n);
+    items = makeItems(n);
+    0u64
+  }
+
+  pub async fn checkU(self) u64 {
+    u64.from(i64.from(sumPts(&pts) * 1000.0f64))
+  }
+
+  pub async fn checkV(self) u64 {
+    sumItems(&items)
+  }
+}
+
+actor Driver {
+  pub async fn runUniform(self, n: usize) u64 {
+    let s = Scene(n);
+    var t = List[u64]();
+    var r = 0u64;
+    while r < warm + runs {
+      let ns = await s.uniformStep();
+      if r >= warm {
+        t.push(ns);
+      }
+      r = r + 1u64;
+    }
+    let label = if n == 1000000usize { "uniform1M" } else { "uniform1k" };
+    emit(label, "actor-parallel-each", &t);
+    let cu = await s.checkU();
+    printStr("CHECK "); printStr(label); printStr(" actor "); printInt(i64.from(cu)); printStr("\n");
+    0u64
+  }
+
+  pub async fn runUneven(self, n: usize) u64 {
+    let s = Scene(n);
+    var t = List[u64]();
+    var r = 0u64;
+    while r < warm + runs {
+      let ns = await s.unevenStep();
+      if r >= warm {
+        t.push(ns);
+      }
+      r = r + 1u64;
+    }
+    let label = if n == 100000usize { "uneven100k" } else { "uneven1k" };
+    emit(label, "actor-parallel-each", &t);
+    let cv = await s.checkV();
+    printStr("CHECK "); printStr(label); printStr(" actor "); printUInt(cv); printStr("\n");
+    0u64
+  }
+}
+
+actor Boss {
+  pub async fn all(self, d: Driver) u64 {
+    let a = await d.runUniform(1000000usize);
+    let b = await d.runUniform(1000usize);
+    let c = await d.runUneven(100000usize);
+    let e = await d.runUneven(1000usize);
+    0u64
+  }
+}
+
+// A decimal number's value, from its digits
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn has(argc: i32, argv: **u8, c: u8) bool {
+  if argc <= 2i32 { return true; }
+  var p = *(argv + 2usize);
+  while *p != 0u8 {
+    if *p == c { return true; }
+    p = p + 1usize;
+  }
+  false
+}
+
+fn main(argc: i32, argv: **u8) {
+  initAll();
+  var workers = 0u32;
+  if argc > 1i32 {
+    workers = digits(*(argv + 1usize));
+  }
+  actors.configure(actors.Options(workers: workers));
+  // start the workers && read their number
+  {
+    let warmup = Atomic[u64].of(0u64);
+    parallel each i in 0usize ..< 1000usize { warmup.add(1u64); }
+  }
+  let wn = usize.from(actors.stats().workers);
+  printStr("WORKERS "); printUInt(u64.from(wn)); printStr("\n");
+
+  if has(argc, argv, 117u8) {          // u
+    uniform("uniform1M", 1000000usize, wn);
+  }
+  if has(argc, argv, 118u8) {          // v
+    uneven("uneven100k", 100000usize, wn);
+  }
+  if has(argc, argv, 115u8) {          // s
+    uniform("uniform1k", 1000usize, wn);
+    uneven("uneven1k", 1000usize, wn);
+  }
+  if has(argc, argv, 98u8) {           // b
+    builder(1000000usize, wn);
+  }
+  if has(argc, argv, 112u8) {          // p (builder parts)
+    builderParts(1000000usize, wn);
+  }
+  if has(argc, argv, 97u8) {           // a
+    let d = Driver();
+    let boss = Boss();
+    boss.all(d);
+  }
+  finalAll();
+}

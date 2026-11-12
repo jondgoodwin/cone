@@ -65,13 +65,15 @@ fn answerKept[R](kept: &mut Option[actors.ReplyOf[R]], v: R) {
 
 // Where the live stream is (its slot's record), or null
 fn streamOf(rec: &ClientRec, slot: u32, id: u64) *StreamRec {
-  let x = rec.streams.at(slot);
+  if !rec.streams.isLive(slot) {return null;}
+  let x = rec.streams.rawAt(slot);
   if x as usize != 0usize && (*x).used && (*x).id == id {return x;}
   null
 }
 
 fn freeStream(rec: &mut ClientRec, slot: usize) {
-  let x = rec.streams.at(u32.from(slot));
+  var x: *StreamRec = null;
+  if rec.streams.isLive(u32.from(slot)) {x = rec.streams.rawAt(u32.from(slot));}
   if x as usize != 0usize && (*x).up.on {
     let sid = (*x).id;
     let gone = rec.ups.remove(&sid);
@@ -109,7 +111,7 @@ fn terminalError(s: &StreamRec, k: httpclient.EventKind, f: &httpclient.Failure)
 // until the sink gives the buffer back; the final answer is the sink's one 'end'
 // (and a failure before the head is the caller's Err too)
 fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: usize) {
-  let s = rec.streams.at(u32.from(sslot)) as &mut StreamRec;
+  let s = (rec.streams.rawAt(u32.from(sslot)) as &mut StreamRec);
   let k = e.kind;
   if k == httpclient.EventKind.BodyRoom {
     // an upload's connection has taken every piece pushed: the originals behind them go back, the next piece goes
@@ -282,7 +284,7 @@ struct StreamToJob {
       sink.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openHead = Some[actors.ReplyOf[Result[BodyHead, FetchError]]](rp);
     st.sink = Some[ChunkSink](sink);
@@ -298,14 +300,15 @@ fn startStream(rec: &mut ClientRec, lp: &mut Loop, st: StreamRec, req: httpclien
     case let &Some(sk) {sink = Some[ChunkSink](sk.clone());}
     else {}
   }
-  let sslot = usize.from(rec.streams.add(st).index);
+  let sh = rec.streams.add(st);
+  let sslot = usize.from(sh.index);
   rec.refs = rec.refs + 1u32;
   match sink {
     case let Some(sk) {sk.attach(BodySource(rec.id, u32.from(sslot), sid));}
     else {}
   }
-  let fetch = rec.client.send(lp, req, httpclient.Sink.Here(streamBit | u64.from(sslot)));
-  (rec.streams.at(u32.from(sslot)) as &mut StreamRec).fetch = fetch;
+  let fetch = rec.client.send(lp, req, httpclient.Sink.Here(tokenOf(sh, streamBit)));
+  (rec.streams.borrowMutAt(u32.from(sslot)).unwrap()).fetch = fetch;
 }
 
 // A fetch whose response an actor reads as it comes, as chunks of bytes: the
@@ -326,7 +329,7 @@ struct StreamOpenJob {
       reader.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openBody = Some[actors.ReplyOf[Result[BodyStream, FetchError]]](rp);
     // no sink yet: the body waits for the BodyStream's 'read' or 'to' (BodyChoiceJob)
@@ -352,7 +355,7 @@ struct EventOpenJob {
       stage.end(Ending.Failed(AnyError.from(FetchError.cancelled())));
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     var st = openingStream(newId());
     st.openEvents = Some[actors.ReplyOf[Result[EventStream, FetchError]]](rp);
     st.sink = Some[ChunkSink](stage);
@@ -378,7 +381,7 @@ struct StreamReleaseJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
@@ -405,7 +408,7 @@ struct BodyChoiceJob {
     let k = sv.findClient(client);
     var s = null as *StreamRec;
     if k < sv.clients.bound() {
-      s = streamOf(sv.clientAt(k) as &ClientRec, slot, id);
+      s = streamOf(sv.clients.borrowAt(u32.from(k)).unwrap(), slot, id);
     }
     if s as usize == 0usize {
       match sk {
@@ -414,7 +417,7 @@ struct BodyChoiceJob {
       }
       return;
     }
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let st = s as &mut StreamRec;
     match sk {
       case let Some(x) {
@@ -449,7 +452,7 @@ struct StreamCancelJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     rec.client.cancel(lp, (s as &StreamRec).fetch);
@@ -468,7 +471,7 @@ struct StreamStopJob {
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
     if k >= sv.clients.bound() {return;}
-    let rec = sv.clientAt(k) as &mut ClientRec;
+    let rec = (sv.clients.rawAt(u32.from(k)) as &mut ClientRec);
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;

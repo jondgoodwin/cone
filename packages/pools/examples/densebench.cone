@@ -1,0 +1,281 @@
+mod densebench;
+
+// densebench: DensePool against lights' hand-built parallel columns (LightSet:
+// rows, colors, owners, flags, slotRow, slotGen, freeSlots), in the A B B A order
+// of pool-family-measure-2026-11-08.md: each case runs old, new, new, old, each
+// run at least 300 ms; the figure to quote is the BEST PASS (ns per op) with cpu%.
+// For the walk, a plain List of rows is a third column (the floor).
+//
+//   congo run --release packages/pools/examples/densebench.cone
+//
+// RUN IT ON A QUIET MACHINE: a row whose cpu% is under about 90 was disturbed.
+// Cases at 1,000 entries (MAX_LIGHTS is 1,024): a frame of churn (remove 100 at
+// random, add 100 new), the dense walk (read two fields of every row), and get(h)
+// at random. The entry is 22 floats (88 bytes), like a light: 16 row floats, 4
+// colour floats, the owner and the flags.
+
+import stdio use *;
+import collections use List;
+import time use Instant;
+import iocore use threadTimes;
+import pools use DensePool, Handle;
+
+fn cpuNs() u64 {
+  let u, k = threadTimes();
+  u + k
+}
+
+struct Meas {
+  t0: i64 = 0i64;
+  c0: u64 = 0u64;
+  ns: f64 = 0.;
+  cpu: f64 = 0.;
+  last: i64 = 0i64;
+  best: f64 = 1000000000000.;
+  perPass: u64 = 1u64;
+
+  fn begin(self: &mut, opsPerPass: u64) {
+    perPass = opsPerPass; best = 1000000000000.;
+    t0 = Instant.now().nanos(); last = t0; c0 = cpuNs();
+  }
+  fn expired(self: &mut) bool {
+    let now = Instant.now().nanos();
+    let b = f64.from(now - last) / f64.from(perPass);
+    if b < best { best = b; }
+    last = now;
+    now - t0 >= 300000000i64
+  }
+  fn end(self: &mut, sink: f64) {
+    let wall = Instant.now().nanos() - t0;
+    let dc = cpuNs() - c0;
+    cpu = 100. * f64.from(dc) / f64.from(wall);
+    if sink == 123456.5 { print <- "(sink)\n"; }
+  }
+}
+
+fn r2(x: f64) f64 { f64.from(i64.from(x * 100. + 0.5)) / 100. }
+fn r0(x: f64) f64 { f64.from(i64.from(x + 0.5)) }
+
+struct Rng { s: u64; }
+fn next(r: &mut Rng) u64 {
+  var x = r.s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  r.s = x;
+  x
+}
+
+const N = 1000usize;
+const FRAME = 100usize;      // 10% of 1,000
+const NO = 0xFFFFFFFFu32;
+
+// A light's row: floats 0..15 are the row (x, y, z, range, ...), 16..19 colour
+struct Light {
+  w: Array[f32, 22];
+}
+
+fn mkLight(i: usize) Light {
+  var l = Light(Array[f32, 22]() <- fill 0.);
+  l.w[0] = f32.from(i);
+  l.w[3] = 2.;
+  l
+}
+
+// Today's LightSet, reduced to its parallel columns and slot bookkeeping
+struct OldSet {
+  rows: List[f32];
+  colors: List[f32];
+  owners: List[u32];
+  flags: List[u32];
+  slotRow: List[u32];
+  slotGen: List[u32];
+  freeSlots: List[u32];
+
+  fn add(self: &mut, l: Light) Handle {
+    var slot = 0u32;
+    if freeSlots.len() > 0usize {
+      slot = *freeSlots[freeSlots.len() - 1usize];
+      freeSlots.pop();
+    } else {
+      slot = u32.from(slotRow.len());
+      slotRow.push(NO);
+      slotGen.push(1u32);
+    }
+    slotRow.set(usize.from(slot), u32.from(owners.len()));
+    owners.push(slot);
+    var k = 0usize;
+    while k < 16usize { rows.push(l.w[k]); k = k + 1usize; }
+    while k < 20usize { colors.push(l.w[k]); k = k + 1usize; }
+    flags.push(0u32);
+    Handle(slot, *slotGen[usize.from(slot)])
+  }
+
+  fn alive(self: &, h: Handle) bool {
+    usize.from(h.index) < slotGen.len() && *slotGen[usize.from(h.index)] == h.gen && *slotRow[usize.from(h.index)] != NO
+  }
+
+  fn remove(self: &mut, h: Handle) bool {
+    if !self.alive(h) { return false; }
+    let row = usize.from(*slotRow[usize.from(h.index)]);
+    let last = owners.len() - 1usize;
+    if row != last {
+      var k = 0usize;
+      while k < 16usize { rows.set(row * 16usize + k, *rows[last * 16usize + k]); k = k + 1usize; }
+      k = 0usize;
+      while k < 4usize { colors.set(row * 4usize + k, *colors[last * 4usize + k]); k = k + 1usize; }
+      flags.set(row, *flags[last]);
+      let moved = *owners[last];
+      owners.set(row, moved);
+      slotRow.set(usize.from(moved), u32.from(row));
+    }
+    rows.truncate(last * 16usize);
+    colors.truncate(last * 4usize);
+    flags.truncate(last);
+    owners.truncate(last);
+    slotRow.set(usize.from(h.index), NO);
+    slotGen.set(usize.from(h.index), h.gen + 1u32);
+    freeSlots.push(h.index);
+    true
+  }
+
+  fn rowOf(self: &, h: Handle) usize { usize.from(*slotRow[usize.from(h.index)]) }
+}
+
+fn newOld() OldSet {
+  OldSet(List[f32](), List[f32](), List[u32](), List[u32](), List[u32](), List[u32](), List[u32]())
+}
+
+// which: 0 old, 1 new
+fn churn(which: u32) Meas {
+  var m = Meas();
+  var rng = Rng(88172645463325252u64);
+  var hs = List[Handle]();
+  var old = newOld();
+  var dp = DensePool[Light]();
+  var i = 0usize;
+  while i < N {
+    if which == 0u32 { hs.push(old.add(mkLight(i))); } else { hs.push(dp.add(mkLight(i))); }
+    i = i + 1usize;
+  }
+  var sink = 0u64;
+  m.begin(1u64);
+  // a frame: remove FRAME random live entries, add FRAME new ones in their places
+  while true {
+    var j = 0usize;
+    while j < FRAME {
+      let k = usize.from(next(&mut rng) % u64.from(N));
+      let h = *hs[k];
+      if which == 0u32 {
+        if old.remove(h) { hs.set(k, old.add(mkLight(k))); sink = sink + 1u64; }
+      } else {
+        if dp.remove(h) { hs.set(k, dp.add(mkLight(k))); sink = sink + 1u64; }
+      }
+      j = j + 1usize;
+    }
+    if m.expired() { break; }
+  }
+  m.ns = m.best / f64.from(FRAME * 2usize);
+  m.end(f64.from(sink));
+  m
+}
+
+// which: 0 old columns, 1 DensePool rows(), 2 plain List of rows
+fn walk(which: u32) Meas {
+  var m = Meas();
+  var old = newOld();
+  var dp = DensePool[Light]();
+  var pl = List[Light]();
+  var i = 0usize;
+  while i < N {
+    if which == 0u32 { old.add(mkLight(i)); }
+    if which == 1u32 { dp.add(mkLight(i)); }
+    if which == 2u32 { pl.push(mkLight(i)); }
+    i = i + 1usize;
+  }
+  var sink = 0.;
+  m.begin(1u64);
+  while true {
+    var r = 0usize;
+    if which == 0u32 {
+      while r < N { sink = sink + *old.rows[r * 16usize] + *old.rows[r * 16usize + 3usize]; r = r + 1usize; }
+    }
+    if which == 1u32 {
+      let rs = dp.rows();
+      while r < N { sink = sink + rs[r].w[0] + rs[r].w[3]; r = r + 1usize; }
+    }
+    if which == 2u32 {
+      while r < N { let l = pl[r]; sink = sink + l.w[0] + l.w[3]; r = r + 1usize; }
+    }
+    if m.expired() { break; }
+  }
+  m.ns = m.best / f64.from(N);
+  m.end(sink);
+  m
+}
+
+// which: 0 old (alive + rowOf, then the row's range), 1 DensePool get(h)
+fn lookup(which: u32) Meas {
+  var m = Meas();
+  var rng = Rng(88172645463325252u64);
+  var hs = List[Handle]();
+  var old = newOld();
+  var dp = DensePool[Light]();
+  var i = 0usize;
+  while i < N {
+    if which == 0u32 { hs.push(old.add(mkLight(i))); } else { hs.push(dp.add(mkLight(i))); }
+    i = i + 1usize;
+  }
+  var sink = 0.;
+  m.begin(1000u64);
+  while true {
+    var j = 0usize;
+    while j < 1000usize {
+      let h = *hs[usize.from(next(&mut rng) % u64.from(N))];
+      if which == 0u32 {
+        if old.alive(h) { sink = sink + *old.rows[old.rowOf(h) * 16usize + 3usize]; }
+      } else {
+        match dp.borrow(h) {
+          case let Some(p) { sink = sink + p.w[3]; }
+          else {}
+        }
+      }
+      j = j + 1usize;
+    }
+    if m.expired() { break; }
+  }
+  m.ns = m.best;
+  m.end(sink);
+  m
+}
+
+fn show(name: &str, tag: &str, m: &Meas) {
+  print <- "  ", name, " ", tag, ": best pass ", r2(m.ns), " ns/op, cpu ", r0(m.cpu), "%\n";
+}
+
+fn abba(name: &str, kind: u32, a: u32, b: u32) {
+  var o1 = Meas();
+  var n1 = Meas();
+  var n2 = Meas();
+  var o2 = Meas();
+  if kind == 0u32 { o1 = churn(a); n1 = churn(b); n2 = churn(b); o2 = churn(a); }
+  if kind == 1u32 { o1 = walk(a); n1 = walk(b); n2 = walk(b); o2 = walk(a); }
+  if kind == 2u32 { o1 = lookup(a); n1 = lookup(b); n2 = lookup(b); o2 = lookup(a); }
+  show(name, "A", &o1);
+  show(name, "B", &n1);
+  show(name, "B", &n2);
+  show(name, "A", &o2);
+}
+
+fn main() i32 {
+  print <- "densebench: ", N, " entries, 88-byte rows; A = first named, B = second\n";
+  print <- "churn (A columns, B DensePool; ns per add or remove)\n";
+  abba("churn", 0u32, 0u32, 1u32);
+  print <- "walk (A columns, B DensePool rows(); ns per row)\n";
+  abba("walk", 1u32, 0u32, 1u32);
+  print <- "walk (A plain List, B DensePool rows(); ns per row)\n";
+  abba("walk", 1u32, 2u32, 1u32);
+  print <- "get(h) random (A columns alive+rowOf+read, B DensePool get; ns per lookup)\n";
+  abba("get", 2u32, 0u32, 1u32);
+  0i32
+}

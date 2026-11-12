@@ -9,6 +9,7 @@ mod roundtrip;
 import testing use *;
 import collections use *;
 import gguf use *;
+import iobuf;
 
 // An Option's value, or the fallback (the language's '||' on an Option is not built yet)
 fn orS(o: Option[&str], d: &str) &str { match o { case let Some(v) { return v; } case is None { return d; } } }
@@ -63,9 +64,17 @@ fn strs(a: &str, b: &str, c: &str) Value {
 
 fn emptyU32() Value { Value.Items(ValueType.U32, List[Value]()) }
 
+// A Chain's bytes as one list: the reader wants a block
+fn flat(c: &iobuf.Chain) List[u8] {
+  var b = List[u8]();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  b
+}
+
 fn written(w: &Writer) List[u8] {
   match w.finish() {
-    case var Ok(ok) { var b = List[u8](); b <-> ok; return b; }
+    case let Ok(ok) { return flat(&ok); }
     case let Err(e) {
       let m = String() <- e;
       expectStr(m.view(), "<written>", "finish");
@@ -130,10 +139,9 @@ fn metadataFile() List[u8] {
   // put again: the value is replaced, and keeps its place
   w.put("t.u8", Value.U8(201u8));
   match w.finish() {
-    case var Ok(ok) {
-      var bytes = List[u8]();
-      bytes <-> ok;
-      return bytes;
+    case let Ok(ok) {
+      expectInt(i64.from(ok.len()), i64.from(flat(&ok).len()), "finish answers a chain of the file's length");
+      return flat(&ok);
     }
     case let Err(e) {
       let m = String() <- e;
@@ -248,7 +256,7 @@ fn main() i32 {
   add(&mut w, "g.q6_k", TensorType.Q6_K, &[512u64], 7u32);
   add(&mut w, "h.f32x4", TensorType.F32, &[2u64, 2u64, 2u64, 2u64], 8u32);
   let tfile = written(&w);
-  let tm = modelOf(&tfile);
+  var tm = modelOf(&tfile);
   expectUInt(u64.from(tm.tensors.len()), 8u64, "8 tensors");
   expectUInt(tm.dataStart % 32u64, 0u64, "data begins on the alignment");
   expectUInt(u64.from(tfile.len()) - tm.dataStart, tm.tensors[7usize].offset + tm.tensors[7usize].bytes, "the file ends with the last tensor");
@@ -294,6 +302,11 @@ fn main() i32 {
   }
   expect((tm.find("nope") is None), "find misses");
   expectUInt(u64.from(orZ(tm.indexOf("c.bf16"), 99usize)), 2u64, "indexOf");
+  // The list is public: an entry replaced in place (same length) is found by its new name only
+  tm.tensors[2usize].name = String.from("renamed");
+  expect((tm.find("c.bf16") is None), "a replaced name is gone");
+  expectUInt(u64.from(orZ(tm.indexOf("renamed"), 99usize)), 2u64, "the new name is found");
+  tm.tensors[2usize].name = String.from("c.bf16");
 
   // The plain floats read back whole
   match tensorToF32(&tm, tfile.view(), &tm.tensors[0usize]) {

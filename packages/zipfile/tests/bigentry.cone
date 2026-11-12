@@ -1,0 +1,60 @@
+// Entries larger than the buffer pool's bound (64 MiB): the whole-entry read answers the bytes for a stored, a
+// deflated and a zstd entry of 70 MiB, and the streaming reader, fed the whole archive in one call, refuses
+// with TooLarge (the held bytes are bounded) rather than panicking.
+
+mod bigentry;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+
+fn pattern(n: usize) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n { d.push(u8.from((i / 7usize + i / 4093usize) % 251usize)); i += 1usize; }
+  d
+}
+
+fn check(w: &mut ZipWriter, name: &str, data: &Array[u8], o: &EntryOptions, method: u16) {
+  expect(w.add(name, data, o) is Ok, "add a large entry");
+}
+
+fn main() i32 {
+  let n = 73400320usize;
+  let data = pattern(n);
+  var w = ZipWriter.make();
+  check(&mut w, "stored", data.view(), &EntryOptions.stored(), 0u16);
+  check(&mut w, "deflated", data.view(), &EntryOptions.deflated(1i32), 8u16);
+  check(&mut w, "zstd", data.view(), &EntryOptions.zstd(1i32), 93u16);
+  match w.bytes() {
+    case var Ok(zip) {
+      expect(zip.len() > 67108864usize, "the archive is over the pool bound");
+      match Archive.open(zip.view()) {
+        case var Ok(ar) {
+          expectInt(i64.from(ar.count()), 3i64, "three entries");
+          var k = 0usize;
+          while k < ar.count() {
+            match ar.read(zip.view(), k) {
+              case var Ok(out) {
+                expectInt(i64.from(out.len()), i64.from(n), "all the bytes came out");
+                expect(out.view() == data.view(), "the bytes are the data");
+              }
+              case let Err(e) { expect(false, "read of a large entry"); }
+            }
+            k += 1usize;
+          }
+        }
+        case let Err(e) { expect(false, "open"); }
+      }
+      var st = ArchiveStream.make();
+      st.feed(zip.view());
+      st.finish();
+      match st.error() {
+        case let Some(e) { expect(e.kind == ErrorKind.TooLarge, "a whole archive fed at once is refused as TooLarge"); }
+        case is None { expect(false, "a whole archive over the held bound is refused"); }
+      }
+    }
+    case let Err(e) { expect(false, "write"); }
+  }
+  done()
+}

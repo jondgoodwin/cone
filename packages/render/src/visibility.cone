@@ -186,7 +186,7 @@ pub struct SetRange {
 }
 
 // The pool that holds the scene items (the pool kind is spelled here and nowhere else in render)
-pub alias SceneItems = pools.GenPool[SceneItem];
+pub alias SceneItems = GenPool[SceneItem];
 
 pub struct Visibility {
   pub settings: VisibilitySettings;
@@ -209,7 +209,7 @@ pub struct Visibility {
   pub fn create(margin: f32) Visibility {
     var s = VisibilitySettings();
     s.margin = margin;
-    Visibility(s, SceneItems.make(), Bvh[u32].create(margin), List[LodChain](),
+    Visibility(s, SceneItems(), Bvh[u32].create(margin), List[LodChain](),
       List[LodSlot](), 0u32, List[u32](), VisibilityStats(), List[SetRange]())
   }
 
@@ -223,7 +223,7 @@ pub struct Visibility {
   pub fn slotCount(self: &) usize { items.bound() }
 
   pub fn alive(self: &, h: SceneHandle) bool {
-    h.slot != SCENE_NONE && items.get(pools.Handle(h.slot, h.gen)) as usize != 0usize
+    h.slot != SCENE_NONE && items.borrow(pools.Handle(h.slot, h.gen)) is Some
   }
 
   // Add an item whose mesh has the bounds given (its own coordinates); the
@@ -239,7 +239,7 @@ pub struct Visibility {
     let h = items.add(SceneItem(mesh, material, model, tint, 1u32, true, true, world.center(),
       world.halfExtents(), sc, r, boundsCenter, boundsHalf, boundsRadius, Proxy.none(), -1i32, 0., 0., 0.));
     let proxy = tree.insert(world, h.index);
-    (*items.at(h.index)).proxy = proxy;
+    items.borrowMutAt(h.index).unwrap().proxy = proxy;
     // The level columns have a row of LOD_SLOTS for every slot, started afresh
     while lodSlots.len() < (usize.from(h.index) + 1usize) * LOD_SLOTS {
       lodSlots.push(LodSlot(0u32, 0u32, 1., 0u32));
@@ -255,7 +255,7 @@ pub struct Visibility {
   // Take an item out; its handle reaches nothing from now on
   pub fn remove(self: &mut, h: SceneHandle) bool {
     if !self.alive(h) { return false; }
-    tree.remove((*items.at(h.slot)).proxy);
+    tree.remove(items.borrowAt(h.slot).unwrap().proxy);
     items.removeAt(h.slot);
     true
   }
@@ -265,7 +265,7 @@ pub struct Visibility {
     var i = 0u32;
     while usize.from(i) < items.bound() {
       if items.isLive(i) {
-        tree.remove((*items.at(i)).proxy);
+        tree.remove(items.borrowAt(i).unwrap().proxy);
         items.removeAt(i);
       }
       i = i + 1u32;
@@ -276,12 +276,12 @@ pub struct Visibility {
   // box leaves the old one's margin)
   pub fn move(self: &mut, h: SceneHandle, model: Mat4) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     let oldCenter = it.center;
     it.model = model;
     self.rebound(&mut it);
     tree.move(it.proxy, Aabb3.fromCenter(it.center, it.half), it.center - oldCenter);
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
@@ -298,62 +298,62 @@ pub struct Visibility {
   // mesh), after the mesh was replaced
   pub fn setBounds(self: &mut, h: SceneHandle, boundsCenter: Vec3, boundsHalf: Vec3, boundsRadius: f32) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.localCenter = boundsCenter;
     it.localHalf = boundsHalf;
     it.localRadius = boundsRadius;
     self.rebound(&mut it);
     tree.setBox(it.proxy, Aabb3.fromCenter(it.center, it.half));
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   pub fn setTint(self: &mut, h: SceneHandle, tint: Color) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.tint = tint;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   pub fn setMaterial(self: &mut, h: SceneHandle, material: MaterialHandle) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.material = material;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   pub fn setMesh(self: &mut, h: SceneHandle, mesh: MeshHandle) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.mesh = mesh;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   pub fn setLayers(self: &mut, h: SceneHandle, layers: u32) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.layers = layers;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   pub fn setCastsShadow(self: &mut, h: SceneHandle, casts: bool) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.castsShadow = casts;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
   // Whether the depth pyramid may cull the item (hiz.cone)
   pub fn setOccludable(self: &mut, h: SceneHandle, occludable: bool) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.occludable = occludable;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
@@ -361,11 +361,11 @@ pub struct Visibility {
   // bounding sphere's centre; 0 for no limit), each edge fading over 'margin'
   pub fn setRange(self: &mut, h: SceneHandle, minDistance: f32, maxDistance: f32, margin: f32) bool {
     if !self.alive(h) { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     it.rangeMin = minDistance;
     it.rangeMax = maxDistance;
     it.rangeMargin = margin;
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
@@ -373,7 +373,7 @@ pub struct Visibility {
   // levels, by projected size, and 'chain.levels[0]' is its mesh
   pub fn setChain(self: &mut, h: SceneHandle, chain: &LodChain) bool {
     if !self.alive(h) || chain.levels.len() == 0usize { return false; }
-    var it = *items.at(h.slot);
+    var it = *items.borrowAt(h.slot).unwrap();
     var copy = LodChain.empty(chain.hysteresis);
     var k = 0usize;
     while k < chain.levels.len() {
@@ -387,7 +387,7 @@ pub struct Visibility {
       chains.push(copy);
     }
     it.mesh = *chain.levels[0usize];
-    *items.at(h.slot) = it;
+    *items.borrowMutAt(h.slot).unwrap() = it;
     true
   }
 
@@ -406,19 +406,19 @@ pub struct Visibility {
     let n = items.bound();
     stats.items = u32.from(self.count());
     if n == 0usize { return; }
-    var mark = List[u8].withCapacity(n);
-    mark.resize(n, 0u8);
+    var mark = List[bool].withCapacity(n);
+    mark.resize(n, false);
     var i = 0usize;
     if !settings.frustumCulling {
       while i < n {
-        if items.isLive(u32.from(i)) { mark.set(i, 1u8); }
+        if items.isLive(u32.from(i)) { mark.set(i, true); }
         i = i + 1usize;
       }
     }
     if settings.frustumCulling {
       let vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
       let fr = Frustum.fromMatrix(vp);
-      var visit = fn(h: u32, p: Proxy) bool { mark.set(usize.from(h), 1u8); true };
+      var visit = fn(h: u32, p: Proxy) bool { mark.set(usize.from(h), true); true };
       tree.frustum(&fr, &mut visit);
     }
     let eye = camera.position();
@@ -428,9 +428,9 @@ pub struct Visibility {
     let step = settings.timeStep / (if settings.fadeSeconds > 0.0001 { settings.fadeSeconds } else { 0.0001 });
     i = 0usize;
     while i < n {
-      if *mark[i] != 0u8 {
+      if *mark[i] {
         stats.candidates = stats.candidates + 1u32;
-        let it = *items.at(u32.from(i));
+        let it = *items.borrowAt(u32.from(i)).unwrap();
         if (it.layers & layerMask) == 0u32 {
           stats.layerCulled = stats.layerCulled + 1u32;
         } else {
@@ -519,17 +519,17 @@ pub struct Visibility {
     let n = items.bound();
     if n == 0usize { return; }
     stats.casterSets = stats.casterSets + 1u32;
-    var mark = List[u8].withCapacity(n);
-    mark.resize(n, 0u8);
+    var mark = List[bool].withCapacity(n);
+    mark.resize(n, false);
     var i = 0usize;
     if !settings.frustumCulling {
       while i < n {
-        if items.isLive(u32.from(i)) { mark.set(i, 1u8); }
+        if items.isLive(u32.from(i)) { mark.set(i, true); }
         i = i + 1usize;
       }
     }
     if settings.frustumCulling {
-      var visit = fn(h: u32, p: Proxy) bool { mark.set(usize.from(h), 1u8); true };
+      var visit = fn(h: u32, p: Proxy) bool { mark.set(usize.from(h), true); true };
       tree.frustum(volume, &mut visit);
     }
     let eye = camera.position();
@@ -538,8 +538,8 @@ pub struct Visibility {
     let bias = settings.shadowLodBias;
     i = 0usize;
     while i < n {
-      if *mark[i] != 0u8 {
-        let it = *items.at(u32.from(i));
+      if *mark[i] {
+        let it = *items.borrowAt(u32.from(i)).unwrap();
         if it.castsShadow && (it.layers & layerMask) != 0u32 {
           let d = eye.distance(it.sphereCenter);
           if !settings.ranges || rangeShare(&it, d) > 0. {

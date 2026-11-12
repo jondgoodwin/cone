@@ -277,7 +277,7 @@ pub struct Editor {
 
   fn maxScrollY(self: &, ui: &Ui) f32 {
     let total = f32.from(doc.lineCount()) * lineHeight();
-    maxf(0., total - viewHeight(ui) + lineHeight())
+    (total - viewHeight(ui) + lineHeight()).max(0.)
   }
 
   // The line under a y (in the Ui's pixels)
@@ -318,7 +318,7 @@ pub struct Editor {
 
   // Scrolls so that a line is a given fraction of the way down the view (0 the top, 0.5 the middle)
   pub fn showLine(self: &mut, ui: &Ui, line: usize, fraction: f32) {
-    scrollY = clampf(f32.from(line) * lineHeight() - viewHeight(ui) * fraction, 0., maxScrollY(ui));
+    scrollY = (f32.from(line) * lineHeight() - viewHeight(ui) * fraction).clamp(0., maxScrollY(ui));
     revealPending = false;
     dirty = true;
   }
@@ -363,10 +363,10 @@ pub struct Editor {
     if k == EK_FOCUS_IN {focused = true; caretOn = true; return;}
     if k == EK_FOCUS_OUT {focused = false; dragging = false; return;}
     if k == EK_WHEEL {
-      if (ev.mods & MOD_SHIFT) != 0u32 {scrollX = maxf(0., scrollX - ev.dy * 40.);}
+      if (ev.mods & MOD_SHIFT) != 0u32 {scrollX = (scrollX - ev.dy * 40.).max(0.);}
       else {
-        scrollY = clampf(scrollY - ev.dy * lineHeight() * 3., 0., maxScrollY(ui));
-        scrollX = maxf(0., scrollX - ev.dx * 40.);
+        scrollY = (scrollY - ev.dy * lineHeight() * 3.).clamp(0., maxScrollY(ui));
+        scrollX = (scrollX - ev.dx * 40.).max(0.);
       }
       return;
     }
@@ -432,7 +432,7 @@ pub struct Editor {
   // The scroll bar's thumb centred on y
   fn scrollToBar(self: &mut, ui: &Ui, ly: f32) {
     let h = viewHeight(ui);
-    scrollY = clampf((ly / h) * (maxScrollY(ui) + h) - h * 0.5, 0., maxScrollY(ui));
+    scrollY = ((ly / h) * (maxScrollY(ui) + h) - h * 0.5).clamp(0., maxScrollY(ui));
   }
 
   // The text or the carets changed through the editor: show the caret, keep it in view
@@ -458,12 +458,12 @@ pub struct Editor {
     else if code == KEY_PAGEUP {
       doc.pageLines = pageLines(ui);
       doc.move(MOVE_PAGE_UP, shift);
-      scrollY = clampf(scrollY - f32.from(doc.pageLines) * lineHeight(), 0., maxScrollY(ui));
+      scrollY = (scrollY - f32.from(doc.pageLines) * lineHeight()).clamp(0., maxScrollY(ui));
     }
     else if code == KEY_PAGEDOWN {
       doc.pageLines = pageLines(ui);
       doc.move(MOVE_PAGE_DOWN, shift);
-      scrollY = clampf(scrollY + f32.from(doc.pageLines) * lineHeight(), 0., maxScrollY(ui));
+      scrollY = (scrollY + f32.from(doc.pageLines) * lineHeight()).clamp(0., maxScrollY(ui));
     }
     else if code == KEY_BACKSPACE {doc.deleteBackward(ctrl);}
     else if code == KEY_DELETE {doc.deleteForward(ctrl);}
@@ -613,7 +613,7 @@ pub struct Editor {
       revealPending = false;
       reveal(ui, m, tok);
     }
-    scrollY = clampf(scrollY, 0., maxScrollY(ui));
+    scrollY = scrollY.clamp(0., maxScrollY(ui));
     let sig = caretSig();
     if !dirty && lastVersion == doc.version() && lastSX == scrollX && lastSY == scrollY && lastW == w && lastH == h
         && lastFocus == focused && lastCaretOn == caretOn && lastCaretSig == sig {return false;}
@@ -671,13 +671,13 @@ pub struct Editor {
     let h = viewHeight(ui);
     if top < scrollY {scrollY = top;}
     else if top + lh > scrollY + h {scrollY = top + lh - h;}
-    scrollY = clampf(scrollY, 0., maxScrollY(ui));
+    scrollY = scrollY.clamp(0., maxScrollY(ui));
     // horizontally
     let v = buildLine(line, m, tok);
     let rel = c.head - doc.buffer().lineStart(line);
     let x = *v.xs[rel.min(v.text.len())];
     let vw = viewWidth(ui) - textLeft() - style.scrollbar;
-    if x < scrollX {scrollX = maxf(0., x - charW * 4.);}
+    if x < scrollX {scrollX = (x - charW * 4.).max(0.);}
     else if x + charW > scrollX + vw {scrollX = x + charW * 2. - vw;}
   }
 
@@ -800,7 +800,7 @@ pub struct Editor {
     if maxS > 0. {
       let sb = style.scrollbar;
       let total = maxS + h;
-      let thumbH = maxf(24., h * h / total);
+      let thumbH = (h * h / total).max(24.);
       let thumbY = (h - thumbH) * (scrollY / maxS);
       out.rect(gx + w - sb, gy, sb, h, 0xffffff0cu32, 0., node);
       out.rect(gx + w - sb + 2., gy + thumbY, sb - 4., thumbH, 0xffffff40u32, 3., node);

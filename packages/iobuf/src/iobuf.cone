@@ -39,6 +39,14 @@
 //   b.whole()             the whole block, '&mut Array[u8]'
 //   b.setLen(n)           say how many bytes it holds (a panic past capacity)
 //   b.append(bytes)       copy in as many as fit: how many
+//   b.putNum(v, big)      a number or float v after the held bytes, most significant
+//                         byte first when big: false, nothing written, if it does not fit
+//   b.putUint(v, n, big)  the low n bytes (1 to 8) of a u64, as putNum
+//   b.setNum(at, v, big)  overwrite held bytes at 'at' with v
+//   b.putRepeat(byte, n)  n copies of a byte, as many as fit: how many
+//   tryLoadNum(bytes, at, big), tryLoadUint(bytes, at, n, big)
+//                         the number at an offset of a slice, or None when
+//                         the slice ends first (the loads under streams' ByteCursor)
 //   b.clear()             hold none
 //   b.base()              the block's address, for the OS
 //   b.freeze()            the buffer moved into shared, read-only Bytes
@@ -58,6 +66,8 @@
 //   c.findByte(b, from)   the offset of byte b
 //   c.matchesAt(i, pat)   whether pat is there at offset i
 //   c.byteAt(i)  c.peek(i)                  one byte (a panic, or None, past the end)
+//   c.setNum(k, at, v, big)  overwrite held bytes of the k-th segment with a number
+//                         (a slot's fill in streams' Writer)
 //   c.contiguous(from, n) Some slice when the n bytes lie in one segment
 //   c.copyOut(from, dest) copy bytes out: how many
 //   c.advance(n)          consume n bytes: segments wholly consumed go home
@@ -188,6 +198,19 @@
 // worker that ends with the process, leaves its blocks in its record, counted
 // in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
 //
+// HOMES. A buffer may be lent: 'buf.setHome(&home)' (home an IoHome, made by the lender with
+// 'IoHome.make(ctx, give)', which owns the Sendable ctx) makes its death, instead of releasing the
+// block, call 'give(&ctx, m)'
+// with a fresh empty buffer m on the same block, which has no home and so releases the block when it dies.
+// That is how a sender that moved a buffer into a driver is told it is done with it, with no call from the
+// driver: the death is the signal, on whatever thread it falls (the I/O thread when a send completes).
+// 'buf.clearHome()' makes it plain again (a buffer handed back by hand must be cleared first, or its credit
+// returns twice). The home is counted: each homed buffer holds one count, as does the IoHome, and the
+// lender's ctx is dropped (its 'final' is the release) when the last is gone. A plain buffer pays one test of its home word in
+// 'final'. A 'give' must be quick and must not panic; one that sends to an actor checks 'actors.isRunning()'
+// first, which NARROWS the race with the runtime stopping but does not close it (a death on another thread
+// can pass the check just before the stop and still panic in the send). stages.chunkHome is the lender for a ChunkSource.
+//
 // SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
 // read-only, shared by any number of owners on any number of threads, as one
 // send fanned out to many sockets needs (the kernel only reads a send's
@@ -302,7 +325,7 @@ fn acquire(size: usize, file: &Array[u8], line: u32) IoBuf {
   let room = pool.sizeFor(size, page);
   let b = pool.allocate(size, page);
   if b as usize == 0usize {outOfMemory(file, line);}
-  IoBuf(b, 0usize, room)
+  IoBuf(b, 0usize, room, 0usize)
 }
 
 // Out of memory is a panic for now: the bound on bytes held from the OS is
@@ -319,10 +342,94 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
+// A lender of buffers, as the buffers it lent know it. 'IoHome.make(ctx, give)' moves the lender's
+// state 'ctx' (a Sendable C) into one counted record that the home owns: each buffer given this home
+// ('setHome') holds one count too, and the record goes when the last count does, by the drop of ctx (C's
+// own 'final' is the lender's release, and runs on whichever thread dropped the last count: the I/O
+// thread when the last homed buffer outlives its owner). 'give(&ctx, b)' is called when a homed buffer dies, on whatever thread it dies on,
+// with a fresh empty buffer on the same block (len 0, the same capacity, no home): the lender takes it
+// back, and if it only drops it the block goes to the pool. ctx is only ever borrowed by the callbacks and
+// never leaves the record, so safe code cannot hand a home a dangling pointer. 'give' runs on another
+// thread, so it must be quick (a send from a thread that is not a worker takes the actors' inject-queue
+// mutex, briefly) and must not panic. A send to an actor from it can still panic if the runtime stops
+// between a check of actors.isRunning() and the send (see HOMES in the package header)
+pub struct IoHome is Move, Sendable {
+  rec: *HomeRec;
+
+  pub fn make[C: Sendable](ctx: C, give: &fn(ctx: &C, b: IoBuf)) IoHome {
+    let t = libc.malloc(mem.sizeof[TypedHome[C]]()) as *TypedHome[C];
+    mem.writeRaw[TypedHome[C]](t, TypedHome[C](ctx, give));
+    let r = libc.malloc(mem.sizeof[HomeRec]()) as *HomeRec;
+    mem.writeRaw[HomeRec](r, HomeRec(t as *u8, &giveTyped[C], &releaseTyped[C], Atomic[usize].of(1usize)));
+    IoHome(r)
+  }
+
+  fn final(self: &uni) {
+    if rec as usize != 0usize {homeRelease(rec);}
+  }
+}
+
+// The lender's state and its callbacks, one block: the typed ctx of an IoHome
+struct TypedHome[C] {
+  ctx: C;
+  give: &fn(ctx: &C, b: IoBuf);
+}
+
+fn giveTyped[C](p: *u8, b: IoBuf) {
+  let t = p as *TypedHome[C];
+  let g = (*t).give;
+  g(&(*t).ctx, b);
+}
+
+fn releaseTyped[C](p: *u8) {
+  let t = p as *TypedHome[C];
+  mem.finalize(t);
+  libc.free(p);
+}
+
+// The record every IoHome points at: its ctx is a *TypedHome[C], give and release the matching
+// trampolines. Private to this file
+struct HomeRec {
+  ctx: *u8;
+  give: &fn(ctx: *u8, b: IoBuf);
+  release: &fn(ctx: *u8);
+  count: Atomic[usize];
+}
+
+// One count of a home gone; the last frees the record and releases the lender's ctx
+fn homeRelease(r: *HomeRec) {
+  if (*r).count.sub(1usize) == 1usize {
+    let f = (*r).release;
+    f((*r).ctx);
+    libc.free(r as *u8);
+  }
+}
+
 pub struct IoBuf is Default, Move, Sendable {
   data: *u8;
   used: usize;
   cap: usize;
+  home: usize;                  // 0, or a *HomeRec of which this buffer holds one count
+
+  // Lend this buffer to h: when it dies, h's 'give' is called with an empty buffer on the same block. A
+  // buffer already homed leaves its old home first, WITHOUT that home's 'give': the old lender is never
+  // paid this buffer's credit. Right for a plain chunk; a chunk one lender owns must be cleared (and given
+  // back by hand) before another lender homes it
+  pub fn setHome(self: &mut, h: &IoHome) {
+    self.clearHome();
+    let r = h.rec;
+    (*r).count.add(1usize);
+    home = r as usize;
+  }
+
+  // Back to a plain buffer: its death releases the block to the pool and calls nobody
+  pub fn clearHome(self: &mut) {
+    if home != 0usize {
+      let r = home as *HomeRec;
+      home = 0usize;
+      homeRelease(r);
+    }
+  }
 
   // A buffer with room for at least size bytes, empty: 'IoBuf(4096)'. The type
   // decides where the block comes from: the buffer pool region, the class that
@@ -334,7 +441,7 @@ pub struct IoBuf is Default, Move, Sendable {
   }
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize);}
+  pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize, 0usize);}
 
   // A buffer like 'IoBuf(size)', or None when the pool will not give one without
   // growing the try bank past maxBytes less its reserve (THE RESERVE): a refusal
@@ -345,7 +452,7 @@ pub struct IoBuf is Default, Move, Sendable {
     let room = (bufpool.bufferPool() as &MemRegion).sizeFor(size, page);
     let b = bufpool.tryAllocate(size);
     if b as usize == 0usize {return None[IoBuf];}
-    Some[IoBuf](IoBuf(b, 0usize, room))
+    Some[IoBuf](IoBuf(b, 0usize, room, 0usize))
   }
 
   pub fn len(self: &) usize {used}
@@ -381,11 +488,135 @@ pub struct IoBuf is Default, Move, Sendable {
     n
   }
 
+  // A whole number or float v after the held bytes, its bytes in the order
+  // 'big' says (most significant first when true, else least): false, and
+  // nothing written, when the room is too small. This is the trusted store
+  // under streams' ByteWriter: one check and one store
+  pub fn putNum[T](self: &mut, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let n = mem.sizeof[T]();
+    if cap - used < n {return false;}
+    storeNum[T](data + used, v, big);
+    used = used + n;
+    true
+  }
+
+  // The low nbytes (1 to 8) of v after the held bytes, in the order 'big'
+  // says: false, and nothing written, when the room is too small. A panic, at
+  // the caller's line, for an nbytes outside 1 to 8
+  pub fn putUint(self: &mut, v: u64, nbytes: usize, big: bool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool inline {
+    if nbytes == 0usize || nbytes > 8usize {panic("iobuf: putUint takes 1 to 8 bytes", file, line);}
+    if cap - used < nbytes {return false;}
+    storeUint(data + used, v, nbytes, big);
+    used = used + nbytes;
+    true
+  }
+
+  // Overwrite held bytes at offset 'at' with v: false, and nothing written,
+  // when they are not all held
+  pub fn setNum[T](self: &mut, at: usize, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    let n = mem.sizeof[T]();
+    if at > used || used - at < n {return false;}
+    storeNum[T](data + at, v, big);
+    true
+  }
+
+  // n bytes of value b after the held bytes, as many as fit: how many
+  pub fn putRepeat(self: &mut, b: u8, n: usize) usize {
+    let k = if n < cap - used {n} else {cap - used};
+    if k > 0usize {libc.memset(data + used, i32.from(b), k);}
+    used = used + k;
+    k
+  }
+
   fn final(self: &uni) {
-    if data as usize != 0usize {
+    if home != 0usize {
+      let r = home as *HomeRec;
+      if data as usize != 0usize {
+        let m = IoBuf(data, 0usize, cap, 0usize);
+        data = null;
+        let g = (*r).give;
+        g((*r).ctx, m);
+      }
+      homeRelease(r);
+    } else if data as usize != 0usize {
       (bufpool.bufferPool() as &MemRegion).release(data, cap);
     }
   }
+}
+
+// The trusted stores and loads of numbers in bytes, under every checked
+// caller above and in streams. Machines are little-endian (x86-64, arm64,
+// wasm), so the least-significant-first order is the memory order of a number
+// and the other is its bytes reversed; a number's bytes are copied, never
+// reached through a cast pointer, so an unaligned place is no different.
+fn storeNum[T](dst: *u8, v: T, big: bool) inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+  let n = mem.sizeof[T]();
+  var tmp = v;
+  let src = &mut tmp as *u8;
+  if big {
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (n - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src, n);
+  }
+}
+
+fn storeUint(dst: *u8, v: u64, nbytes: usize, big: bool) inline {
+  var tmp = v;
+  let src = &mut tmp as *u8;
+  if big {
+    var i = 0usize;
+    while i < nbytes {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (nbytes - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src, nbytes);
+  }
+}
+
+// The number of type T in bytes b at offset 'at', its bytes in the order 'big'
+// says, or None when b does not hold all of them from there. One check, one
+// load; the cursor of streams moves on a Some
+pub fn tryLoadNum[T](b: &Array[u8], at: usize, big: bool) Option[T] inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+  let n = mem.sizeof[T]();
+  if at > b.len || b.len - at < n {return None[T];}
+  var tmp = T.from(0u8);
+  let dst = &mut tmp as *u8;
+  let src = &b[0usize] as *u8;
+  if big {
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (at + n - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src + at, n);
+  }
+  Some[T](tmp)
+}
+
+// An unsigned number of nbytes (1 to 8) at offset 'at', widened to u64, or
+// None when b does not hold them from there. A panic for an nbytes outside 1 to 8
+pub fn tryLoadUint(b: &Array[u8], at: usize, nbytes: usize, big: bool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[u64] inline {
+  if nbytes == 0usize || nbytes > 8usize {panic("iobuf: tryLoadUint takes 1 to 8 bytes", file, line);}
+  if at > b.len || b.len - at < nbytes {return None[u64];}
+  var tmp = 0u64;
+  let dst = &mut tmp as *u8;
+  let src = &b[0usize] as *u8;
+  if big {
+    var i = 0usize;
+    while i < nbytes {
+      mem.writeRaw[u8](dst + i, mem.readRaw[u8](src + (at + nbytes - 1usize - i)));
+      i = i + 1usize;
+    }
+  } else {
+    libc.memcpy(dst, src + at, nbytes);
+  }
+  Some[u64](tmp)
 }
 
 
@@ -713,6 +944,19 @@ pub struct Chain is Move, Sendable {
     }
     total = total - b.used;
     Some[IoBuf](b)
+  }
+
+  // Overwrite held bytes of the k-th segment, from the segment's own start,
+  // with v: false, and nothing written, when k is past the segments or the
+  // bytes are not all held. For a patch of a number written earlier (a slot of
+  // streams' ByteWriter); the chain's length does not change
+  pub fn setNum[T](self: &mut, k: usize, at: usize, v: T, big: bool) bool inline where T is u8 || T is u16 || T is u32 || T is u64 || T is i8 || T is i16 || T is i32 || T is i64 || T is f32 || T is f64 {
+    if k >= count {return false;}
+    let b = self.at(k) as &IoBuf;
+    let n = mem.sizeof[T]();
+    if at > b.used || b.used - at < n {return false;}
+    storeNum[T](b.data + at, v, big);
+    true
   }
 
   // Its death: every segment it still holds, back to its pool

@@ -1,0 +1,99 @@
+// What writing and reading a GGUF file's bytes costs: a model with 50000
+// tokens and scores in its metadata and 40 tensors of 64 KiB f32 (2.5 MB of
+// tensor bytes, a 150000-entry vocabulary's worth of small strings). Each of the
+// two is timed over repeated runs and the best of five rounds printed. Run it
+// in a release build:
+//
+//   congo run --release examples/filebench.cone
+
+mod filebench;
+
+import stdio use *;
+import collections use *;
+import time use *;
+import gguf;
+
+const tokens = 50000usize;
+const tensorCount = 40usize;
+const tensorFloats = 16384usize;
+
+fn build() gguf.Writer {
+  var w = gguf.Writer.make();
+  w.putText("general.architecture", "bench");
+  w.putU32("bench.block_count", 40u32);
+  var toks = List[String]();
+  var i = 0usize;
+  while i < tokens {
+    var t = String();
+    t <- "token_";
+    t <- i;
+    toks.push(t);
+    i = i + 1usize;
+  }
+  w.putTexts("tokenizer.ggml.tokens", toks.view());
+  var vals = List[f32]();
+  i = 0usize;
+  while i < tensorFloats {
+    vals.push(f32.from(i32.from(i % 1000usize)) / 500.0);
+    i = i + 1usize;
+  }
+  var k = 0usize;
+  while k < tensorCount {
+    var name = String();
+    name <- "blk.";
+    name <- k;
+    _ =w.addValues(name.view(), gguf.TensorType.F32, &[u64.from(tensorFloats)], vals.view());
+    k = k + 1usize;
+  }
+  w
+}
+
+fn main() i32 {
+  let w = build();
+  var file = List[u8]();
+  match w.finish() {
+    case let Ok(ok) {
+      file.resize(ok.len(), 0u8);
+      _ = ok.copyOut(0usize, file.viewMut());
+    }
+    case is Err { printStr("finish failed\n"); return 1i32; }
+  }
+  printStr("file bytes ");
+  printInt(i64.from(file.len()));
+  printStr("\n");
+  var bestW = 0i64;
+  var bestR = 0i64;
+  var round = 0usize;
+  while round < 5usize {
+    let t = Instant.now();
+    var n = 0usize;
+    while n < 10usize {
+      match w.finish() {
+        case is Ok {}
+        case is Err { return 1i32; }
+      }
+      n = n + 1usize;
+    }
+    let wns = i64.from(t.elapsed().nanos()) / 10i64;
+    let t2 = Instant.now();
+    n = 0usize;
+    while n < 10usize {
+      match gguf.parse(file.view()) {
+        case is Ok {}
+        case is Err { return 1i32; }
+      }
+      n = n + 1usize;
+    }
+    let rns = i64.from(t2.elapsed().nanos()) / 10i64;
+    if round == 0usize || wns < bestW { bestW = wns; }
+    if round == 0usize || rns < bestR { bestR = rns; }
+    round = round + 1usize;
+  }
+  printStr("write (finish) best of 5: ");
+  printInt(bestW / 1000i64);
+  printStr(" us\n");
+  printStr("read (parse) best of 5: ");
+  printInt(bestR / 1000i64);
+  printStr(" us\n");
+  0i32
+}

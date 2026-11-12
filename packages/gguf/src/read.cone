@@ -42,40 +42,28 @@ struct Cursor {
     true
   }
 
-  fn rd8(self: &mut, d: &Array[u8], what: &str) u8 {
-    if !self.need(d, 1u64, what) { return 0u8; }
-    let v = d[pos];
-    pos = pos + 1usize;
-    v
-  }
-
-  fn rd16(self: &mut, d: &Array[u8], what: &str) u16 {
-    if !self.need(d, 2u64, what) { return 0u16; }
-    let v = u16.from(d[pos]) | (u16.from(d[pos + 1usize]) << 8u16);
-    pos = pos + 2usize;
-    v
-  }
-
-  fn rd32(self: &mut, d: &Array[u8], what: &str) u32 {
-    if !self.need(d, 4u64, what) { return 0u32; }
-    let v = u32.from(d[pos]) | (u32.from(d[pos + 1usize]) << 8u32)
-          | (u32.from(d[pos + 2usize]) << 16u32) | (u32.from(d[pos + 3usize]) << 24u32);
-    pos = pos + 4usize;
-    v
-  }
-
-  fn rd64(self: &mut, d: &Array[u8], what: &str) u64 {
-    if !self.need(d, 8u64, what) { return 0u64; }
-    var v = 0u64;
-    var i = 7usize;
-    while true {
-      v = (v << 8u64) | u64.from(d[pos + i]);
-      if i == 0usize { break; }
-      i = i - 1usize;
+  // The next number, little-endian, read by a ByteCursor over the bytes left;
+  // zero, and the cursor failed, when they are too few
+  fn rd[T](self: &mut, d: &Array[u8], what: &str) T where T is Numeric {
+    if failed { return T.from(0u8); }
+    let rest = &d[pos ..< d.len];
+    var c = streams.ByteCursor.over(rest);
+    match c.getLE[T]() {
+      case let Some(v) {
+        pos = pos + c.pos();
+        return v;
+      }
+      case is None[T] {
+        self.fail(ErrorKind.Truncated, pos, what);
+        return T.from(0u8);
+      }
     }
-    pos = pos + 8usize;
-    v
   }
+
+  fn rd8(self: &mut, d: &Array[u8], what: &str) u8 { self.rd[u8](d, what) }
+  fn rd16(self: &mut, d: &Array[u8], what: &str) u16 { self.rd[u16](d, what) }
+  fn rd32(self: &mut, d: &Array[u8], what: &str) u32 { self.rd[u32](d, what) }
+  fn rd64(self: &mut, d: &Array[u8], what: &str) u64 { self.rd[u64](d, what) }
 
   // A string: a u64 length, then that many bytes (no terminator)
   fn rdString(self: &mut, d: &Array[u8], what: &str) String {
@@ -288,6 +276,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
 
   // The tensor table: name, dimensions, type, offset
   var tensors = List[Tensor].withCapacity(usize.from(tensorCount));
+  var byName = Dict[String, usize]();
   i = 0u64;
   while i < tensorCount && !c.failed {
     let entryAt = c.pos;
@@ -312,11 +301,10 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
         if geo.fault != 0u32 {
           return problem(ErrorKind.BadDimensions, u64.from(entryAt), faultText(geo.fault));
         }
-        each prev in &tensors {
-          if prev.name.view() == name.view() {
-            return problem(ErrorKind.DuplicateTensor, u64.from(entryAt), "a tensor name is written twice");
-          }
+        if byName.contains(name.view()) {
+          return problem(ErrorKind.DuplicateTensor, u64.from(entryAt), "a tensor name is written twice");
         }
+        byName.insert(name.clone(), tensors.len());
         tensors.push(Tensor(name, kind.clone(), dims, offset, geo.elements, geo.bytes));
       }
       case is None {
@@ -345,5 +333,5 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
       return problem(ErrorKind.BadOffset, dataStart + t.offset, "a tensor reaches past the end of the file");
     }
   }
-  Ok[Model, GgufError](Model(version, alignment, dataStart, meta, tensors))
+  Ok[Model, GgufError](Model(version, alignment, dataStart, meta, tensors, byName))
 }
