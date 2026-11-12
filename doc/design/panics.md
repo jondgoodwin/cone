@@ -10,7 +10,14 @@ follows panics through the language, core, the compiler and the C runtime.
 ## Principles
 
 - **A panic ends the program, at once.** Nothing unwinds: no finalizer runs,
-  no caller sees it, no thread goes on without it. This keeps every function
+  no caller sees it, no thread goes on without it. (At once means once its
+  output is written: with the actors runtime, what the program printed before
+  is queued for the console's owner, and a panic that finds the owner has not
+  written it writes it itself, on its own thread, before its message. As in
+  Rust and Go, that write can block for ever on a destination that never
+  drains, such as a pipe whose reader is stuck; only an owner stuck inside its
+  own write is given up on, at a ceiling of 10 s, and the last line counts the
+  lines left unwritten.) This keeps every function
   free of landing pads and unwind tables, which is the speed half of Cone's
   aims, and it is what the compiler assumes elsewhere — a function's frame of
   traced roots is never popped by a panic (`genlRootFrame`), and the locks in
