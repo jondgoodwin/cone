@@ -1,0 +1,37 @@
+// aio.Host[S] is Shareable whatever S holds (the package's header, HOSTED
+// SERVICES): it keeps one address, and its methods only queue a job for the
+// I/O thread or read that address, so no code of S runs on a caller's thread.
+// S here holds a List, which is not Shareable, and a Host[S] still passes a
+// Shareable bound, as the 'let' global of a hosting package needs.
+
+mod hostshareable;
+
+import stdio use *;
+import collections use List;
+import time use Instant;
+import iocore use Loop, Completion;
+import aio use Host;
+
+struct Svc {
+  items: List[u64];
+
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {Instant.now()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+fn makeSvc() Svc {Svc(List[u64]())}
+
+fn shared[T: Shareable](h: &T) u32 {1u32}
+
+// The global a hosting package keeps (as actorhttp's svcHost)
+let kept: Host[Svc];
+
+fn @initpure init() {
+  kept = aio.host[Svc](&makeSvc);
+}
+
+fn main() {
+  printStr("shareable "); printUInt(u64.from(shared(&kept))); printStr("\n");
+}
